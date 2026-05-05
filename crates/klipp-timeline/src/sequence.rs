@@ -483,6 +483,7 @@ impl Track {
             matte_source: None,
             matte_stencil: None,
             consumed_as_matte: false,
+            transform_link: None,
             grade_versions: Vec::new(),
             active_grade_version: None,
             multicam_group: None,
@@ -721,6 +722,7 @@ impl Track {
             matte_source: clip.matte_source.clone(),
             matte_stencil: clip.matte_stencil.clone(),
             consumed_as_matte: clip.consumed_as_matte,
+            transform_link: None,
             grade_versions: clip.grade_versions.clone(),
             active_grade_version: clip.active_grade_version,
             multicam_group: clip.multicam_group,
@@ -778,6 +780,7 @@ impl Track {
             matte_source: clip.matte_source.clone(),
             matte_stencil: clip.matte_stencil.clone(),
             consumed_as_matte: clip.consumed_as_matte,
+            transform_link: None,
             grade_versions: clip.grade_versions.clone(),
             active_grade_version: clip.active_grade_version,
             multicam_group: clip.multicam_group,
@@ -853,6 +856,77 @@ pub struct ClipMarker {
     pub name: String,
     /// Color.
     pub color: MarkerColor,
+}
+
+/// Composition rule for a clip whose `transform_link` points at
+/// another clip. `Absolute` overrides this clip's transform with the
+/// target's; `Additive` composes (positions add, scales multiply,
+/// rotations add). Anchor inheritance is always Absolute regardless
+/// of mode — anchor is the *origin* the other ops happen from, so
+/// "additive anchor" doesn't have a well-defined meaning.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum LinkMode {
+    #[default]
+    Absolute,
+    Additive,
+}
+
+/// Inherit one clip's transform from another. Used by hyperzoom (V2
+/// fill scales with V3 text), parenting (lower-third tracks a
+/// speaker), compound rigs, etc. Per-axis inherit flags let a
+/// child inherit just the bits it needs (e.g., "follow my parent's
+/// position but keep my own scale"). Self-link, cycles, and
+/// AdjustmentLayer targets are rejected at command-dispatch time.
+///
+/// Render-path cost is zero when no clip in the active sequence has
+/// a `transform_link` set. When at least one does, the engine builds
+/// a per-frame `HashMap<ClipId, ResolvedTransform>` cache so a deep
+/// chain or many-children-of-one-parent setup resolves in O(N) rather
+/// than O(N·depth).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TransformLink {
+    /// The clip whose transform we inherit. Must exist in the active
+    /// sequence at bind time. If the target is removed later, the
+    /// `cascade_clear_transform_link` sweep drops this binding.
+    pub target: ClipId,
+    /// Composition rule. See [`LinkMode`].
+    #[serde(default)]
+    pub mode: LinkMode,
+    /// Inherit the target's `(scale_x, scale_y)`. Composed with the
+    /// child's scale per `mode` (multiplied for Additive, replaced
+    /// for Absolute). When `false`, the child uses its own scale.
+    #[serde(default = "default_true")]
+    pub inherit_scale: bool,
+    /// Inherit the target's `(position_x, position_y)`. Composed
+    /// per `mode` (added for Additive, replaced for Absolute).
+    #[serde(default = "default_true")]
+    pub inherit_position: bool,
+    /// Inherit the target's `rotation` (degrees, Z-axis). Composed
+    /// per `mode` (added for Additive, replaced for Absolute).
+    #[serde(default = "default_true")]
+    pub inherit_rotation: bool,
+    /// Inherit the target's `(anchor_x, anchor_y)`. Always Absolute
+    /// regardless of `mode` — see the type-level note on `LinkMode`.
+    /// When `false`, the child uses its own anchor.
+    #[serde(default = "default_true")]
+    pub inherit_anchor: bool,
+}
+
+impl TransformLink {
+    /// Build a link to `target` with all four inherit flags on, in
+    /// the default `Absolute` mode. Matches the easy-path defaults a
+    /// command-dispatch path uses when a user simply drops one clip
+    /// onto another with "link transforms".
+    pub fn new(target: ClipId) -> Self {
+        Self {
+            target,
+            mode: LinkMode::default(),
+            inherit_scale: true,
+            inherit_position: true,
+            inherit_rotation: true,
+            inherit_anchor: true,
+        }
+    }
 }
 
 /// Binds another timeline clip as the alpha/luma source ("track matte") for
@@ -1071,6 +1145,18 @@ pub struct Clip {
     /// renders the clip either way; this flag only gates the visible blend.
     #[serde(default)]
     pub consumed_as_matte: bool,
+    /// Inherit transform from another clip in this sequence. When
+    /// `Some`, the engine resolves the linked clip's evaluated
+    /// transform at the same playhead and composes it into this
+    /// clip's transform per `link.mode` and per-axis flags. None →
+    /// no inheritance, this clip's own transform stands alone (the
+    /// existing behaviour). Validated at command-dispatch time:
+    /// self-link / cycle / AdjustmentLayer-target are rejected.
+    /// Cascade-cleared in `remove_clip_impl` when the target is
+    /// removed, so a stale `target` ClipId can never linger past
+    /// the target's lifetime.
+    #[serde(default)]
+    pub transform_link: Option<TransformLink>,
     /// Named grade versions. Each is a complete NodeGraph snapshot.
     /// The active grade is always `node_graph` — versions are stored copies.
     #[serde(default)]
@@ -1338,6 +1424,7 @@ impl Clip {
             matte_source: None,
             matte_stencil: None,
             consumed_as_matte: false,
+            transform_link: None,
             grade_versions: Vec::new(),
             active_grade_version: None,
             multicam_group: None,
@@ -1405,6 +1492,7 @@ impl Clip {
             matte_source: None,
             matte_stencil: None,
             consumed_as_matte: false,
+            transform_link: None,
             grade_versions: Vec::new(),
             active_grade_version: None,
             multicam_group: None,
@@ -1471,6 +1559,7 @@ impl Clip {
             matte_source: None,
             matte_stencil: None,
             consumed_as_matte: false,
+            transform_link: None,
             grade_versions: Vec::new(),
             active_grade_version: None,
             multicam_group: None,
@@ -1641,6 +1730,54 @@ mod tests {
         let json = serde_json::to_string(&b).expect("serialise MatteBinding");
         let back: MatteBinding = serde_json::from_str(&json).expect("deserialise");
         assert_eq!(back, b);
+    }
+
+    #[test]
+    fn transform_link_default_constructor_uses_safe_defaults() {
+        // `TransformLink::new(target)` is what the "easy path" UX
+        // produces — pin the defaults so a casual edit can't shift
+        // their meaning. All four inherit flags on, Absolute mode.
+        let target = ClipId::new();
+        let link = TransformLink::new(target);
+        assert_eq!(link.target, target);
+        assert_eq!(link.mode, LinkMode::Absolute);
+        assert!(link.inherit_scale);
+        assert!(link.inherit_position);
+        assert!(link.inherit_rotation);
+        assert!(link.inherit_anchor);
+    }
+
+    #[test]
+    fn transform_link_round_trips_through_serde() {
+        let target = ClipId::new();
+        let link = TransformLink {
+            target,
+            mode: LinkMode::Additive,
+            inherit_scale: true,
+            inherit_position: false,
+            inherit_rotation: true,
+            inherit_anchor: false,
+        };
+        let json = serde_json::to_string(&link).expect("serialise TransformLink");
+        let back: TransformLink = serde_json::from_str(&json).expect("deserialise");
+        assert_eq!(back, link);
+    }
+
+    #[test]
+    fn transform_link_legacy_json_defaults_inherit_flags_to_true() {
+        // Older save format may have only written `target`. Loading
+        // such JSON should fill the inherit flags + mode with their
+        // safe defaults so a roundtrip through an older project file
+        // doesn't silently disable inheritance on every link.
+        let target = ClipId::new();
+        let json = format!(r#"{{"target":"{}"}}"#, target.0);
+        let back: TransformLink = serde_json::from_str(&json).expect("deserialise minimal");
+        assert_eq!(back.target, target);
+        assert_eq!(back.mode, LinkMode::Absolute);
+        assert!(back.inherit_scale);
+        assert!(back.inherit_position);
+        assert!(back.inherit_rotation);
+        assert!(back.inherit_anchor);
     }
 
     #[test]

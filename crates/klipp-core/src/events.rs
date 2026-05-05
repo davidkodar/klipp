@@ -2242,6 +2242,29 @@ pub enum AppCommand {
     /// handler walks the sequence to check for other consumers.
     ClearClipMatte { clip_id: ClipId },
 
+    /// Inherit `clip_id`'s transform from `target` per the supplied
+    /// composition rule and per-axis flags. `mode` is 0 = Absolute
+    /// (override) or 1 = Additive (compose: positions add, scales
+    /// multiply, rotations add). The handler validates: source != self,
+    /// target exists, target is not an `AdjustmentLayer`, and the bind
+    /// would not introduce a cycle (A→B→A). Failed validation logs a
+    /// warning and leaves the clip untouched.
+    SetClipTransformLink {
+        clip_id: ClipId,
+        target: ClipId,
+        /// 0 = Absolute, 1 = Additive. Mirrors the
+        /// `klipp_timeline::LinkMode` discriminant order.
+        mode: u8,
+        inherit_scale: bool,
+        inherit_position: bool,
+        inherit_rotation: bool,
+        inherit_anchor: bool,
+    },
+
+    /// Remove a clip's `transform_link`. Idempotent — a clip with no
+    /// link is left as-is.
+    ClearClipTransformLink { clip_id: ClipId },
+
     /// Toggle the "hide matte source from visible composite" flag on a
     /// clip. Default behaviour when bound via `SetClipMatte` is `true`;
     /// pros can flip this to keep the matte source visible for

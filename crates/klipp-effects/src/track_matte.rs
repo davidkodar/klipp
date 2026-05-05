@@ -49,6 +49,16 @@ impl Default for MatteChannel {
 /// Panics: never. Input length is checked: a buffer that isn't a
 /// multiple of 4 returns an empty vec, matching the defensive shape of
 /// the rest of the compositor.
+//
+// TODO: un-premultiply before luma extraction for premult-encoded
+// sources. Pinned by `linear_luma_does_not_un_premultiply` (and its
+// srgb_u8 sibling): a "white at 50% alpha" pixel encoded premult
+// (RGB pre-darkened to 0.5) yields luma 0.5 instead of 1.0. Common
+// for ProRes 4444 / PSD exports from AE. The fix is gated on the
+// decoder reporting alpha mode; both pin tests must flip from
+// `does_not_un_premultiply` to `correctly_un_premultiplies` when
+// the fix lands. See memory note `reference_track_matte_followups.md`
+// section 4 for the verification recipe.
 pub fn extract_mask_linear(
     rgba: &[f32],
     channel: MatteChannel,

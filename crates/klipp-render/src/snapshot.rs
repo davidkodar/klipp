@@ -114,6 +114,11 @@ pub struct ClipSnapshot {
     /// True when this clip is being used as a matte source by another clip
     /// AND should be hidden from the visible composite. Default false.
     pub consumed_as_matte: bool,
+    /// Optional transform inheritance from another clip in the same
+    /// sequence. Forwarded as-is from the authoring `Clip` so the
+    /// renderer/export resolves it via the same per-frame cache the
+    /// playback compositor uses.
+    pub transform_link: Option<klipp_timeline::TransformLink>,
 }
 
 #[derive(Clone)]
@@ -535,6 +540,7 @@ fn flatten_multicam_video_clips(
             matte_source: angle_clip.matte_source.clone(),
             matte_stencil: angle_clip.matte_stencil.clone(),
             consumed_as_matte: angle_clip.consumed_as_matte,
+            transform_link: None,
         });
     }
 
@@ -784,6 +790,7 @@ fn snapshot_clip(
         matte_source: clip.matte_source.clone(),
         matte_stencil: clip.matte_stencil.clone(),
         consumed_as_matte: clip.consumed_as_matte,
+        transform_link: None,
     })
 }
 

@@ -846,6 +846,7 @@ mod tests {
             matte_source: None,
             matte_stencil: None,
             consumed_as_matte: false,
+            transform_link: None,
         }
     }
 
@@ -1102,6 +1103,7 @@ mod tests {
             matte_source: None,
             matte_stencil: None,
             consumed_as_matte: false,
+            transform_link: None,
         }
     }
 
@@ -1235,6 +1237,7 @@ mod tests {
             matte_source: None,
             matte_stencil: None,
             consumed_as_matte: false,
+            transform_link: None,
         }
     }
 

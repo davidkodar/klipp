@@ -4780,6 +4780,13 @@ impl KlippApp {
             if c.matte_source.as_ref().is_some_and(|b| b.source_clip_id == clip_id) {
                 c.matte_source = None;
             }
+            // Same cascade-clear policy for transform_link: a clip
+            // pointing at the removed clip as its transform-link
+            // target loses the binding so a stale ClipId never
+            // outlives its target.
+            if c.transform_link.as_ref().is_some_and(|tl| tl.target == clip_id) {
+                c.transform_link = None;
+            }
         }
 
         // Check if this clip is on a magnetic track
@@ -6163,6 +6170,7 @@ impl KlippApp {
                                     matte_source: clip.matte_source.clone(),
                                     matte_stencil: clip.matte_stencil.clone(),
                                     consumed_as_matte: clip.consumed_as_matte,
+                                    transform_link: None,
                                     grade_versions: clip.grade_versions.clone(),
                                     active_grade_version: clip.active_grade_version,
                                     multicam_group: clip.multicam_group,
@@ -6335,6 +6343,7 @@ impl KlippApp {
                             matte_source: clip.matte_source.clone(),
                             matte_stencil: clip.matte_stencil.clone(),
                             consumed_as_matte: clip.consumed_as_matte,
+                            transform_link: None,
                             grade_versions: clip.grade_versions.clone(),
                             active_grade_version: clip.active_grade_version,
                             multicam_group: clip.multicam_group,
@@ -6475,6 +6484,66 @@ impl KlippApp {
                                 src.consumed_as_matte = false;
                             }
                         }
+                    }
+                    self.state.dirty = true;
+                    self.sync_sequence_to_engine();
+                    return true;
+                }
+                AppCommand::SetClipTransformLink {
+                    clip_id, target, mode, inherit_scale, inherit_position, inherit_rotation, inherit_anchor,
+                } => {
+                    let consumer_id = *clip_id;
+                    let target_id = *target;
+                    let seq_idx = self.state.active_sequence_idx;
+
+                    // Reject self-link.
+                    if consumer_id == target_id {
+                        tracing::warn!("SetClipTransformLink: refusing self-link for clip {consumer_id:?}");
+                        return true;
+                    }
+
+                    // Validate target exists, is not an AdjustmentLayer
+                    // (no own transform — we want pixel-bearing clips
+                    // as targets), and the bind would not introduce a
+                    // cycle.
+                    {
+                        let seq = &self.state.sequences[seq_idx];
+                        let Some(target_clip) = seq.tracks.iter().flat_map(|t| t.clips.iter()).find(|c| c.id == target_id) else {
+                            tracing::warn!("SetClipTransformLink: target clip {target_id:?} not found in active sequence");
+                            return true;
+                        };
+                        if matches!(target_clip.kind, klipp_timeline::ClipKind::AdjustmentLayer) {
+                            tracing::warn!("SetClipTransformLink: AdjustmentLayer cannot be a transform-link target — it has no transform of its own");
+                            return true;
+                        }
+                        if transform_link_chain_creates_cycle(seq, consumer_id, target_id) {
+                            tracing::warn!("SetClipTransformLink: rejecting bind that would create a transform-link cycle ({consumer_id:?} ← {target_id:?})");
+                            return true;
+                        }
+                    }
+
+                    let link_mode = if *mode == 1 { klipp_timeline::LinkMode::Additive } else { klipp_timeline::LinkMode::Absolute };
+                    let link = klipp_timeline::TransformLink {
+                        target: target_id,
+                        mode: link_mode,
+                        inherit_scale: *inherit_scale,
+                        inherit_position: *inherit_position,
+                        inherit_rotation: *inherit_rotation,
+                        inherit_anchor: *inherit_anchor,
+                    };
+                    let seq = &mut self.state.sequences[seq_idx];
+                    if let Some(consumer) = seq.all_clips_mut().find(|c| c.id == consumer_id) {
+                        consumer.transform_link = Some(link);
+                    }
+                    self.state.dirty = true;
+                    self.sync_sequence_to_engine();
+                    return true;
+                }
+                AppCommand::ClearClipTransformLink { clip_id } => {
+                    let cid = *clip_id;
+                    let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+                    if let Some(clip) = seq.all_clips_mut().find(|c| c.id == cid) {
+                        clip.transform_link = None;
                     }
                     self.state.dirty = true;
                     self.sync_sequence_to_engine();
@@ -12852,6 +12921,7 @@ impl KlippApp {
                     matte_source: None,
                     matte_stencil: None,
                     consumed_as_matte: false,
+                    transform_link: None,
                     grade_versions: Vec::new(),
                     active_grade_version: None,
                     multicam_group: None,
@@ -13229,6 +13299,7 @@ impl KlippApp {
             matte_source: None,
             matte_stencil: None,
             consumed_as_matte: false,
+            transform_link: None,
             grade_versions: Vec::new(),
             active_grade_version: None,
             multicam_group: None,
@@ -20655,6 +20726,7 @@ impl KlippApp {
                 matte_source: clip.matte_source.clone(),
                 matte_stencil: clip.matte_stencil.clone(),
                 consumed_as_matte: clip.consumed_as_matte,
+                transform_link: None,
                 grade_versions: clip.grade_versions.clone(),
                 active_grade_version: clip.active_grade_version,
                 multicam_group: clip.multicam_group,
@@ -20781,6 +20853,7 @@ impl KlippApp {
                 matte_source: clip.matte_source.clone(),
                 matte_stencil: clip.matte_stencil.clone(),
                 consumed_as_matte: clip.consumed_as_matte,
+                transform_link: None,
                 grade_versions: clip.grade_versions.clone(),
                 active_grade_version: clip.active_grade_version,
                 multicam_group: clip.multicam_group,
@@ -30775,6 +30848,36 @@ fn matte_chain_creates_cycle(
     true
 }
 
+/// Mirror of `matte_chain_creates_cycle` for the `transform_link`
+/// chain: returns true iff binding `consumer.transform_link.target =
+/// target` would create a cycle (consumer → … → target → consumer).
+/// Uses a 64-link depth cap so a corrupt pre-existing cycle is
+/// detected as "always rejecting any new bind" rather than spinning.
+fn transform_link_chain_creates_cycle(
+    seq: &klipp_timeline::Sequence,
+    consumer: klipp_core::ClipId,
+    target: klipp_core::ClipId,
+) -> bool {
+    if consumer == target {
+        return true;
+    }
+    let mut current = target;
+    for _ in 0..64 {
+        let next = seq
+            .tracks
+            .iter()
+            .flat_map(|t| t.clips.iter())
+            .find(|c| c.id == current)
+            .and_then(|c| c.transform_link.as_ref().map(|tl| tl.target));
+        match next {
+            None => return false,
+            Some(n) if n == consumer => return true,
+            Some(n) => current = n,
+        }
+    }
+    true
+}
+
 /// by the DVD tooling, so we drop them. DVDStyler expects the very first
 /// chapter at `00:00:00.000`; if the earliest marker isn't within 0.1s of
 /// zero (or there are no markers), a leading `00:00:00.000` line is
@@ -33269,6 +33372,68 @@ mod track_matte_handler_tests {
         // Asking "would bind consumer=b, source=<dangling>" — the chain
         // from a-not-in-seq trivially terminates.
         assert!(!matte_chain_creates_cycle(&seq, bid, ClipId::new()));
+    }
+}
+
+#[cfg(test)]
+mod transform_link_handler_tests {
+    //! Pure-function tests for the `transform_link` cycle walker. The
+    //! `SetClipTransformLink` handler itself needs a full `App`; these
+    //! exercise the data-model invariants on a hand-built `Sequence`.
+    use super::transform_link_chain_creates_cycle;
+    use klipp_core::{ClipId, MediaId, RationalTime};
+    use klipp_timeline::{Clip, Sequence, Track, TrackKind, TransformLink};
+
+    fn tc(frames: i64) -> RationalTime { RationalTime::from_frames(frames, 24) }
+
+    fn seq_with_clips(clips: Vec<Clip>) -> Sequence {
+        let mut s = Sequence::new_default();
+        let mut tr = Track::new("V1", TrackKind::Video);
+        tr.clips = clips;
+        s.tracks.push(tr);
+        s
+    }
+
+    fn fresh_clip() -> Clip {
+        Clip::media(MediaId::new(), tc(0), tc(24), tc(0), tc(24))
+    }
+
+    #[test]
+    fn cycle_check_rejects_self_reference() {
+        let a = fresh_clip();
+        let id = a.id;
+        let seq = seq_with_clips(vec![a]);
+        assert!(transform_link_chain_creates_cycle(&seq, id, id));
+    }
+
+    #[test]
+    fn cycle_check_passes_for_unrelated_clips() {
+        let a = fresh_clip();
+        let b = fresh_clip();
+        let (aid, bid) = (a.id, b.id);
+        let seq = seq_with_clips(vec![a, b]);
+        assert!(!transform_link_chain_creates_cycle(&seq, aid, bid));
+    }
+
+    #[test]
+    fn cycle_check_detects_two_hop_cycle() {
+        // B already links → A. Setting A → B closes the loop.
+        let a = fresh_clip();
+        let mut b = fresh_clip();
+        let (aid, bid) = (a.id, b.id);
+        b.transform_link = Some(TransformLink::new(aid));
+        let seq = seq_with_clips(vec![a, b]);
+        assert!(transform_link_chain_creates_cycle(&seq, aid, bid));
+    }
+
+    #[test]
+    fn cycle_check_handles_dangling_target() {
+        let mut a = fresh_clip();
+        a.transform_link = Some(TransformLink::new(ClipId::new())); // dangling
+        let b = fresh_clip();
+        let bid = b.id;
+        let seq = seq_with_clips(vec![a]);
+        assert!(!transform_link_chain_creates_cycle(&seq, bid, ClipId::new()));
     }
 }
 

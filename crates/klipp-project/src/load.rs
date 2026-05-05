@@ -477,6 +477,7 @@ fn load_sequence_from_json(seq_json: &SequenceJson, project_dir: &Path) -> Resul
                         choke_px: s.choke_px,
                     }),
                     consumed_as_matte: c.consumed_as_matte.unwrap_or(false),
+                    transform_link: c.transform_link.as_ref().and_then(load_transform_link),
                     grade_versions: c.grade_versions.iter().map(|gv| {
                         let mut g = gv.node_graph.clone();
                         migrate_graph(&mut g);
@@ -799,6 +800,22 @@ fn load_matte_binding(j: &crate::format::MatteBindingJson) -> Option<klipp_timel
         invert: j.invert,
         feather_px: j.feather_px,
         choke_px: j.choke_px,
+    })
+}
+
+/// Resolve a `TransformLinkJson` back to its in-memory form. Same
+/// dangling-id policy as `load_matte_binding`: a malformed UUID is
+/// dropped, but a well-formed-but-missing target survives this
+/// function and gets cleaned up by the post-load orphan sweep.
+fn load_transform_link(j: &crate::format::TransformLinkJson) -> Option<klipp_timeline::TransformLink> {
+    let id = parse_uuid(&j.target).ok()?;
+    Some(klipp_timeline::TransformLink {
+        target: ClipId(id),
+        mode: j.mode,
+        inherit_scale: j.inherit_scale,
+        inherit_position: j.inherit_position,
+        inherit_rotation: j.inherit_rotation,
+        inherit_anchor: j.inherit_anchor,
     })
 }
 

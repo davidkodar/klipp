@@ -345,6 +345,7 @@ impl NewInspectorPanel {
                             matte_source: None,
                             matte_stencil: None,
                             consumed_as_matte: false,
+                            transform_link: None,
                             grade_versions: Vec::new(),
                             active_grade_version: None,
                             multicam_group: None,

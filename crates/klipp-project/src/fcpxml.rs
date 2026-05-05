@@ -466,6 +466,7 @@ mod tests {
             matte_source: None,
             matte_stencil: None,
             consumed_as_matte: false,
+            transform_link: None,
             matte_feather_keyframes: Vec::new(),
             matte_choke_keyframes: Vec::new(),
             grade_versions: Vec::new(),

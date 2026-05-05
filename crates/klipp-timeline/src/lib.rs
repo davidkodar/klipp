@@ -63,7 +63,7 @@ pub use clip_kind::{
 pub use marker::Marker;
 pub use sequence::{
     effective_timeline_duration_for_keyframes, speed_at_keyframes, speed_integral_keyframes,
-    AnchorAlignment, ChannelConfig, Clip, ClipMarker, ClipRole, FadeCurve, GradeVersion, Look,
-    MagneticAnchor, MatteBinding, Sequence, StencilSettings, Track, TrackKind, TrackRole,
-    Transition, TransitionKind, SPEED_MAX, SPEED_MIN,
+    AnchorAlignment, ChannelConfig, Clip, ClipMarker, ClipRole, FadeCurve, GradeVersion, LinkMode,
+    Look, MagneticAnchor, MatteBinding, Sequence, StencilSettings, Track, TrackKind, TrackRole,
+    Transition, TransitionKind, TransformLink, SPEED_MAX, SPEED_MIN,
 };

@@ -124,6 +124,125 @@ fn eval_with_modifiers(
     }
 }
 
+/// Resolved transform tuple: `(position_x, position_y, scale_x,
+/// scale_y, rotation_deg, anchor_x, anchor_y)`. Matches the argument
+/// order of `klipp_effects::transform::apply` and the seven scalar
+/// fields the title / V2 paths feed into `BuiltinEffect::Transform`.
+type ResolvedTransform = (f32, f32, f32, f32, f32, f32, f32);
+
+/// Evaluate a single clip's *own* transform — keyframes + modifiers
+/// resolved against the clip's `BuiltinEffect::Transform` defaults
+/// (or the conventional `(0,0,1,1,0,0.5,0.5)` if no Transform effect
+/// exists). This is the pre-link version; callers that respect
+/// `transform_link` should go through `resolve_clip_transform`
+/// instead.
+fn evaluate_clip_own_transform(
+    clip: &klipp_timeline::Clip,
+    clip_time_secs: f64,
+    eval_ctx: &klipp_core::EvalContext,
+) -> ResolvedTransform {
+    let tdef = clip.builtin_effects.iter()
+        .find_map(|e| match e {
+            klipp_effects::BuiltinEffect::Transform {
+                position_x, position_y, scale_x, scale_y, rotation, anchor_x, anchor_y, ..
+            } => Some((*position_x, *position_y, *scale_x, *scale_y, *rotation, *anchor_x, *anchor_y)),
+            _ => None,
+        })
+        .unwrap_or((0.0, 0.0, 1.0, 1.0, 0.0, 0.5, 0.5));
+    let px = eval_with_modifiers(&clip.transform_pos_x_keyframes, &clip.param_modifiers, &klipp_core::ParamId::PositionX, clip_time_secs, tdef.0, eval_ctx);
+    let py = eval_with_modifiers(&clip.transform_pos_y_keyframes, &clip.param_modifiers, &klipp_core::ParamId::PositionY, clip_time_secs, tdef.1, eval_ctx);
+    let sc = eval_with_modifiers(&clip.transform_scale_keyframes, &clip.param_modifiers, &klipp_core::ParamId::Scale, clip_time_secs, tdef.2, eval_ctx);
+    let ro = eval_with_modifiers(&clip.transform_rotation_keyframes, &clip.param_modifiers, &klipp_core::ParamId::Rotation, clip_time_secs, tdef.4, eval_ctx);
+    // Scale is single-axis in our model — same value on x and y.
+    (px, py, sc, sc, ro, tdef.5, tdef.6)
+}
+
+/// Compose `own` with `target` per the link's mode and per-axis
+/// inherit flags. Anchor inheritance is always Absolute regardless
+/// of mode (see the `LinkMode` doc comment for why).
+fn compose_transform(
+    own: ResolvedTransform,
+    target: ResolvedTransform,
+    link: &klipp_timeline::TransformLink,
+) -> ResolvedTransform {
+    use klipp_timeline::LinkMode;
+    let (own_px, own_py, own_sx, own_sy, own_ro, own_ax, own_ay) = own;
+    let (t_px, t_py, t_sx, t_sy, t_ro, t_ax, t_ay) = target;
+    let (px, py) = match (link.inherit_position, link.mode) {
+        (false, _) => (own_px, own_py),
+        (true, LinkMode::Absolute) => (t_px, t_py),
+        (true, LinkMode::Additive) => (own_px + t_px, own_py + t_py),
+    };
+    let (sx, sy) = match (link.inherit_scale, link.mode) {
+        (false, _) => (own_sx, own_sy),
+        (true, LinkMode::Absolute) => (t_sx, t_sy),
+        (true, LinkMode::Additive) => (own_sx * t_sx, own_sy * t_sy),
+    };
+    let ro = match (link.inherit_rotation, link.mode) {
+        (false, _) => own_ro,
+        (true, LinkMode::Absolute) => t_ro,
+        (true, LinkMode::Additive) => own_ro + t_ro,
+    };
+    let (ax, ay) = if link.inherit_anchor { (t_ax, t_ay) } else { (own_ax, own_ay) };
+    (px, py, sx, sy, ro, ax, ay)
+}
+
+/// Resolve a clip's transform with `transform_link` chase + cache.
+/// `cache` is a per-frame scratch keyed by ClipId — passes itself by
+/// `&mut` so a recursive resolve hits the cache after the first
+/// climb. Cycle protection: command-time validation prevents real
+/// cycles, so the recursion is bounded by chain length; we also
+/// add a depth cap (64) as belt-and-suspenders against a corrupt
+/// project file.
+fn resolve_clip_transform(
+    clip: &klipp_timeline::Clip,
+    seq: &klipp_timeline::Sequence,
+    playhead: klipp_core::Timecode,
+    fps: f64,
+    cache: &mut std::collections::HashMap<klipp_core::ClipId, ResolvedTransform>,
+) -> ResolvedTransform {
+    resolve_clip_transform_depth(clip, seq, playhead, fps, cache, 0)
+}
+
+fn resolve_clip_transform_depth(
+    clip: &klipp_timeline::Clip,
+    seq: &klipp_timeline::Sequence,
+    playhead: klipp_core::Timecode,
+    fps: f64,
+    cache: &mut std::collections::HashMap<klipp_core::ClipId, ResolvedTransform>,
+    depth: u32,
+) -> ResolvedTransform {
+    if let Some(cached) = cache.get(&clip.id) { return *cached; }
+    let clip_time = (playhead - clip.timeline_in).to_secs_f64().max(0.0);
+    let eval_ctx = klipp_core::EvalContext {
+        clip_time_secs: clip_time,
+        clip_duration_secs: (clip.source_out.to_secs_f64() - clip.source_in.to_secs_f64()),
+        timeline_time_secs: playhead.to_secs_f64(),
+        fps,
+        seed: clip.id.0.as_u64_pair().0,
+    };
+    let own = evaluate_clip_own_transform(clip, clip_time, &eval_ctx);
+    let result = match (&clip.transform_link, depth < 64) {
+        (Some(link), true) => {
+            let target = seq.tracks.iter()
+                .flat_map(|t| t.clips.iter())
+                .find(|c| c.id == link.target);
+            match target {
+                None => own, // Stale target id — fall back to own transform.
+                Some(target_clip) => {
+                    let target_xform = resolve_clip_transform_depth(
+                        target_clip, seq, playhead, fps, cache, depth + 1,
+                    );
+                    compose_transform(own, target_xform, link)
+                }
+            }
+        }
+        _ => own,
+    };
+    cache.insert(clip.id, result);
+    result
+}
+
 /// Bulk sRGB u8 RGBA → linear f32 RGBA. Alpha stays linear per sRGB
 /// spec. Used at composite call sites while grade and GPU effects
 /// still run in u8 sRGB (migrates in 10c).
@@ -4009,6 +4128,25 @@ impl PlaybackEngine {
             }).collect()
         };
 
+        // transform_link — pre-resolve composed transforms for V1 + every
+        // overlay clip (and any chain targets reachable from them). Done
+        // under one short seq-read so we can pass entries into
+        // apply_clip_effects (which holds &mut self) by clip-id later.
+        let transform_cache: std::collections::HashMap<klipp_core::ClipId, ResolvedTransform> = {
+            let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
+            let fps_f64 = self.fps.as_f64();
+            let mut cache = std::collections::HashMap::new();
+            if let Some(c) = &v1_clip {
+                let _ = resolve_clip_transform(c, &seq, self.playhead, fps_f64, &mut cache);
+            }
+            for (_, _, c) in &overlay_clip_data {
+                if let Some(c) = c {
+                    let _ = resolve_clip_transform(c, &seq, self.playhead, fps_f64, &mut cache);
+                }
+            }
+            cache
+        };
+
         // Phase 2 — track matte: build the set of clip-ids that are
         // referenced as matte sources by SOME clip active in this
         // frame. Empty in the dominant no-matte case; the cache below
@@ -4168,7 +4306,10 @@ impl PlaybackEngine {
             if let Some(c) = clip {
                 let clip_time = (self.playhead.to_secs_f64() - c.timeline_in.to_secs_f64()).max(0.0);
                 let t_grade = std::time::Instant::now();
-                ov_linear = self.apply_clip_effects(ov_linear, work_w, work_h, c, clip_time);
+                let resolved = if c.transform_link.is_some() {
+                    transform_cache.get(&c.id).copied()
+                } else { None };
+                ov_linear = self.apply_clip_effects(ov_linear, work_w, work_h, c, clip_time, resolved);
                 ov_grade_us += t_grade.elapsed().as_micros();
             }
             // Decide where the buffer goes: matte sources marked
@@ -4291,7 +4432,10 @@ impl PlaybackEngine {
                 if matches!(c.kind, klipp_timeline::ClipKind::AdjustmentLayer) {
                     let clip_time = (self.playhead.to_secs_f64() - c.timeline_in.to_secs_f64()).max(0.0);
                     let pass = std::mem::take(&mut accumulated_linear);
-                    accumulated_linear = self.apply_clip_effects(pass, final_w, final_h, c, clip_time);
+                    // AdjustmentLayer is rejected as a transform_link
+                    // origin/target by the AppCommand handler, so no
+                    // resolved transform applies here.
+                    accumulated_linear = self.apply_clip_effects(pass, final_w, final_h, c, clip_time, None);
                     continue;
                 }
                 // `consumed_as_matte` clips render but never appear in
@@ -4900,6 +5044,17 @@ impl PlaybackEngine {
         }
         let active_track_indices: std::collections::HashSet<usize> = active_overlays.iter().map(|(ti, _, _)| *ti).collect();
         let res = seq.resolution;
+        // Pre-resolve transforms while the seq read lock is still
+        // held. Recursively walks `transform_link` chains and caches
+        // each result by ClipId. After the lock is dropped, the
+        // per-overlay loop reads from `transform_cache` without
+        // re-locking. Empty when no overlay clip has a link.
+        let mut transform_cache: std::collections::HashMap<klipp_core::ClipId, ResolvedTransform>
+            = std::collections::HashMap::new();
+        let fps_f64 = self.fps.as_f64();
+        for (_, _, clip) in &active_overlays {
+            let _ = resolve_clip_transform(clip, &seq, playhead, fps_f64, &mut transform_cache);
+        }
         drop(seq);
         let collect_us = t_collect.elapsed().as_micros();
 
@@ -5115,7 +5270,8 @@ impl PlaybackEngine {
                     || clip.param_modifiers.contains_key(&klipp_core::ParamId::PositionX)
                     || clip.param_modifiers.contains_key(&klipp_core::ParamId::PositionY)
                     || clip.param_modifiers.contains_key(&klipp_core::ParamId::Scale)
-                    || clip.param_modifiers.contains_key(&klipp_core::ParamId::Rotation);
+                    || clip.param_modifiers.contains_key(&klipp_core::ParamId::Rotation)
+                    || clip.transform_link.is_some();
 
                 if has_transform {
                     let tdef = clip.builtin_effects.iter()
@@ -5134,7 +5290,15 @@ impl PlaybackEngine {
                         seed: clip.id.0.as_u64_pair().0,
                     };
 
-                    let motion_blur = title_data.motion_blur().filter(|mb| mb.samples >= 2);
+                    // Per-sample motion blur is incompatible with
+                    // transform_link (the chain target's per-sample
+                    // values would also need resolving). For Phase 1
+                    // we collapse linked clips to the single resolved
+                    // transform, skipping motion-blur sample loop.
+                    let has_link = clip.transform_link.is_some();
+                    let motion_blur = title_data.motion_blur()
+                        .filter(|mb| mb.samples >= 2)
+                        .filter(|_| !has_link);
 
                     if let Some(mb) = motion_blur {
                         let frame_dur = self.fps.frame_duration_secs();
@@ -5190,28 +5354,19 @@ impl PlaybackEngine {
                         }
                         rgba = accum.iter().map(|v| (*v / n as u32) as u8).collect();
                     } else {
-                        let px = match clip.param_modifiers.get(&klipp_core::ParamId::PositionX) {
-                            Some(stack) if !stack.modifiers.is_empty() =>
-                                klipp_core::evaluate_param(&clip.transform_pos_x_keyframes, stack, clip_relative_secs, tdef.0, &eval_ctx),
-                            _ => klipp_core::keyframe::evaluate(&clip.transform_pos_x_keyframes, clip_relative_secs, tdef.0),
-                        };
-                        let py = match clip.param_modifiers.get(&klipp_core::ParamId::PositionY) {
-                            Some(stack) if !stack.modifiers.is_empty() =>
-                                klipp_core::evaluate_param(&clip.transform_pos_y_keyframes, stack, clip_relative_secs, tdef.1, &eval_ctx),
-                            _ => klipp_core::keyframe::evaluate(&clip.transform_pos_y_keyframes, clip_relative_secs, tdef.1),
-                        };
-                        let sc = match clip.param_modifiers.get(&klipp_core::ParamId::Scale) {
-                            Some(stack) if !stack.modifiers.is_empty() =>
-                                klipp_core::evaluate_param(&clip.transform_scale_keyframes, stack, clip_relative_secs, tdef.2, &eval_ctx),
-                            _ => klipp_core::keyframe::evaluate(&clip.transform_scale_keyframes, clip_relative_secs, tdef.2),
-                        };
-                        let ro = match clip.param_modifiers.get(&klipp_core::ParamId::Rotation) {
-                            Some(stack) if !stack.modifiers.is_empty() =>
-                                klipp_core::evaluate_param(&clip.transform_rotation_keyframes, stack, clip_relative_secs, tdef.4, &eval_ctx),
-                            _ => klipp_core::keyframe::evaluate(&clip.transform_rotation_keyframes, clip_relative_secs, tdef.4),
-                        };
+                        // Use the pre-resolved transform from the
+                        // overlay-decoder cache. Falls back to a fresh
+                        // own-only evaluation if (somehow) the cache
+                        // doesn't have it — should never happen since
+                        // we pre-resolve every active overlay above.
+                        let (px, py, sx, sy, ro, ax, ay) = transform_cache
+                            .get(&clip.id)
+                            .copied()
+                            .unwrap_or_else(|| {
+                                evaluate_clip_own_transform(&clip, clip_relative_secs, &eval_ctx)
+                            });
 
-                        rgba = klipp_effects::transform::apply(rgba, res.width, res.height, px, py, sc, sc, ro, tdef.5, tdef.6, 0.0, 0.0, 0.0);
+                        rgba = klipp_effects::transform::apply(rgba, res.width, res.height, px, py, sx, sy, ro, ax, ay, 0.0, 0.0, 0.0);
                     }
                 }
 
@@ -7265,6 +7420,7 @@ impl PlaybackEngine {
         height: u32,
         clip: &klipp_timeline::Clip,
         clip_time_secs: f64,
+        transform_resolved: Option<ResolvedTransform>,
     ) -> Vec<f32> {
         // 1. Node graph (color grade) — takes linear natively via
         //    `execute_linear`, skipping the u8 round-trip that
@@ -7343,8 +7499,8 @@ impl PlaybackEngine {
                     || !clip.transform_scale_keyframes.is_empty()
                     || !clip.transform_rotation_keyframes.is_empty();
 
-                if has_transform_kf {
-                    let (mut pos_x, mut pos_y, mut scale_x, mut scale_y, mut rotation, anchor_x, anchor_y, rotation_x_val, rotation_y_val, perspective_val) =
+                if has_transform_kf || transform_resolved.is_some() {
+                    let (mut pos_x, mut pos_y, mut scale_x, mut scale_y, mut rotation, mut anchor_x, mut anchor_y, rotation_x_val, rotation_y_val, perspective_val) =
                         fx.iter().find_map(|e| match e {
                             klipp_effects::BuiltinEffect::Transform {
                                 position_x, position_y, scale_x, scale_y, rotation, anchor_x, anchor_y,
@@ -7353,19 +7509,34 @@ impl PlaybackEngine {
                             _ => None,
                         }).unwrap_or((0.0, 0.0, 1.0, 1.0, 0.0, 0.5, 0.5, 0.0, 0.0, 0.0));
 
-                    if !clip.transform_pos_x_keyframes.is_empty() {
-                        pos_x = eval_with_modifiers(&clip.transform_pos_x_keyframes, &clip.param_modifiers, &klipp_core::ParamId::PositionX, clip_time_secs, pos_x, &eval_ctx);
-                    }
-                    if !clip.transform_pos_y_keyframes.is_empty() {
-                        pos_y = eval_with_modifiers(&clip.transform_pos_y_keyframes, &clip.param_modifiers, &klipp_core::ParamId::PositionY, clip_time_secs, pos_y, &eval_ctx);
-                    }
-                    if !clip.transform_scale_keyframes.is_empty() {
-                        let s = eval_with_modifiers(&clip.transform_scale_keyframes, &clip.param_modifiers, &klipp_core::ParamId::Scale, clip_time_secs, scale_x, &eval_ctx);
-                        scale_x = s;
-                        scale_y = s;
-                    }
-                    if !clip.transform_rotation_keyframes.is_empty() {
-                        rotation = eval_with_modifiers(&clip.transform_rotation_keyframes, &clip.param_modifiers, &klipp_core::ParamId::Rotation, clip_time_secs, rotation, &eval_ctx);
+                    // A resolved transform from transform_link short-circuits
+                    // the own-keyframe evaluation: the resolver already ran
+                    // own keyframes for this clip and composed them with the
+                    // target's. Mixing the two paths would double-apply the
+                    // owns.
+                    if let Some((rpx, rpy, rsx, rsy, rro, rax, ray)) = transform_resolved {
+                        pos_x = rpx;
+                        pos_y = rpy;
+                        scale_x = rsx;
+                        scale_y = rsy;
+                        rotation = rro;
+                        anchor_x = rax;
+                        anchor_y = ray;
+                    } else {
+                        if !clip.transform_pos_x_keyframes.is_empty() {
+                            pos_x = eval_with_modifiers(&clip.transform_pos_x_keyframes, &clip.param_modifiers, &klipp_core::ParamId::PositionX, clip_time_secs, pos_x, &eval_ctx);
+                        }
+                        if !clip.transform_pos_y_keyframes.is_empty() {
+                            pos_y = eval_with_modifiers(&clip.transform_pos_y_keyframes, &clip.param_modifiers, &klipp_core::ParamId::PositionY, clip_time_secs, pos_y, &eval_ctx);
+                        }
+                        if !clip.transform_scale_keyframes.is_empty() {
+                            let s = eval_with_modifiers(&clip.transform_scale_keyframes, &clip.param_modifiers, &klipp_core::ParamId::Scale, clip_time_secs, scale_x, &eval_ctx);
+                            scale_x = s;
+                            scale_y = s;
+                        }
+                        if !clip.transform_rotation_keyframes.is_empty() {
+                            rotation = eval_with_modifiers(&clip.transform_rotation_keyframes, &clip.param_modifiers, &klipp_core::ParamId::Rotation, clip_time_secs, rotation, &eval_ctx);
+                        }
                     }
 
                     let new_transform = klipp_effects::BuiltinEffect::Transform {
@@ -7598,6 +7769,25 @@ impl PlaybackEngine {
             }).collect()
         };
 
+        // transform_link — pre-resolve composed transforms for V1 +
+        // every overlay clip under one short seq-read so the per-clip
+        // calls into apply_clip_effects (which holds &mut self) can
+        // look up by clip-id.
+        let transform_cache: std::collections::HashMap<klipp_core::ClipId, ResolvedTransform> = {
+            let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
+            let fps_f64 = self.fps.as_f64();
+            let mut cache = std::collections::HashMap::new();
+            if let Some(c) = &v1_clip {
+                let _ = resolve_clip_transform(c, &seq, self.playhead, fps_f64, &mut cache);
+            }
+            for (_, _, c) in &overlay_clip_data {
+                if let Some(c) = c {
+                    let _ = resolve_clip_transform(c, &seq, self.playhead, fps_f64, &mut cache);
+                }
+            }
+            cache
+        };
+
         let matte_source_ids: std::collections::HashSet<klipp_core::ClipId> = {
             let mut s = std::collections::HashSet::new();
             for (_, _, c) in &overlay_clip_data {
@@ -7691,7 +7881,10 @@ impl PlaybackEngine {
             };
             if let Some(c) = clip {
                 let clip_time = (self.playhead.to_secs_f64() - c.timeline_in.to_secs_f64()).max(0.0);
-                ov_linear = self.apply_clip_effects(ov_linear, work_w, work_h, c, clip_time);
+                let resolved = if c.transform_link.is_some() {
+                    transform_cache.get(&c.id).copied()
+                } else { None };
+                ov_linear = self.apply_clip_effects(ov_linear, work_w, work_h, c, clip_time, resolved);
             }
             let is_consumed = clip.as_ref()
                 .is_some_and(|c| c.consumed_as_matte || c.matte_stencil.is_some());
@@ -7763,7 +7956,7 @@ impl PlaybackEngine {
                 if matches!(c.kind, klipp_timeline::ClipKind::AdjustmentLayer) {
                     let clip_time = (self.playhead.to_secs_f64() - c.timeline_in.to_secs_f64()).max(0.0);
                     let pass = std::mem::take(&mut accumulated_linear);
-                    accumulated_linear = self.apply_clip_effects(pass, final_w, final_h, c, clip_time);
+                    accumulated_linear = self.apply_clip_effects(pass, final_w, final_h, c, clip_time, None);
                     continue;
                 }
                 if c.consumed_as_matte || c.matte_stencil.is_some() { continue; }
@@ -11530,6 +11723,191 @@ impl Drop for SequentialFrameDecoder {
         if let Some(sws) = self.sws_cache.take() {
             unsafe { ffmpeg_next::ffi::sws_freeContext(sws); }
         }
+    }
+}
+
+#[cfg(test)]
+mod transform_link_compose_tests {
+    //! Pure-function tests for `compose_transform` (per-axis inherit
+    //! flags + Absolute/Additive mode) and `resolve_clip_transform`
+    //! (chain walk + missing-target fallback). The integration into
+    //! `update_overlay_decoders` / `apply_clip_effects` is exercised
+    //! at a higher level — these pin the math.
+    use super::{compose_transform, resolve_clip_transform, ResolvedTransform};
+    use klipp_core::{ClipId, MediaId, RationalTime, Timecode};
+    use klipp_timeline::{Clip, LinkMode, Sequence, Track, TrackKind, TransformLink};
+    use klipp_effects::BuiltinEffect;
+
+    fn tc(frames: i64) -> Timecode { RationalTime::from_frames(frames, 24) }
+
+    fn link_all_on(target: ClipId, mode: LinkMode) -> TransformLink {
+        TransformLink {
+            target,
+            mode,
+            inherit_scale: true,
+            inherit_position: true,
+            inherit_rotation: true,
+            inherit_anchor: true,
+        }
+    }
+
+    fn approx_eq(a: ResolvedTransform, b: ResolvedTransform) {
+        let (a0, a1, a2, a3, a4, a5, a6) = a;
+        let (b0, b1, b2, b3, b4, b5, b6) = b;
+        let eps = 1e-5;
+        assert!((a0 - b0).abs() < eps, "px {a0} vs {b0}");
+        assert!((a1 - b1).abs() < eps, "py {a1} vs {b1}");
+        assert!((a2 - b2).abs() < eps, "sx {a2} vs {b2}");
+        assert!((a3 - b3).abs() < eps, "sy {a3} vs {b3}");
+        assert!((a4 - b4).abs() < eps, "ro {a4} vs {b4}");
+        assert!((a5 - b5).abs() < eps, "ax {a5} vs {b5}");
+        assert!((a6 - b6).abs() < eps, "ay {a6} vs {b6}");
+    }
+
+    #[test]
+    fn compose_absolute_replaces_every_inherited_axis() {
+        let own:    ResolvedTransform = (10.0, 20.0, 1.5, 1.5, 30.0, 0.5, 0.5);
+        let target: ResolvedTransform = (100.0, 200.0, 2.0, 2.0, 90.0, 0.25, 0.75);
+        let link = link_all_on(ClipId::new(), LinkMode::Absolute);
+        let out = compose_transform(own, target, &link);
+        // Position / scale / rotation come from target. Anchor likewise
+        // (always Absolute). Own values are dropped entirely.
+        approx_eq(out, (100.0, 200.0, 2.0, 2.0, 90.0, 0.25, 0.75));
+    }
+
+    #[test]
+    fn compose_additive_adds_pos_rot_and_multiplies_scale() {
+        let own:    ResolvedTransform = (10.0, 20.0, 1.5, 1.5, 30.0, 0.5, 0.5);
+        let target: ResolvedTransform = (100.0, 200.0, 2.0, 2.0, 90.0, 0.25, 0.75);
+        let link = link_all_on(ClipId::new(), LinkMode::Additive);
+        let out = compose_transform(own, target, &link);
+        // Position adds. Scale multiplies. Rotation adds. Anchor
+        // remains Absolute regardless of mode.
+        approx_eq(out, (110.0, 220.0, 3.0, 3.0, 120.0, 0.25, 0.75));
+    }
+
+    #[test]
+    fn compose_per_axis_flags_off_keep_own() {
+        let own:    ResolvedTransform = (10.0, 20.0, 1.5, 1.5, 30.0, 0.5, 0.5);
+        let target: ResolvedTransform = (100.0, 200.0, 2.0, 2.0, 90.0, 0.25, 0.75);
+        let link = TransformLink {
+            target: ClipId::new(),
+            mode: LinkMode::Absolute,
+            inherit_scale: false,
+            inherit_position: false,
+            inherit_rotation: false,
+            inherit_anchor: false,
+        };
+        let out = compose_transform(own, target, &link);
+        // Every flag off → composer is the identity over `own`.
+        approx_eq(out, own);
+    }
+
+    #[test]
+    fn compose_mixed_flags_inherit_only_position() {
+        let own:    ResolvedTransform = (10.0, 20.0, 1.5, 1.5, 30.0, 0.5, 0.5);
+        let target: ResolvedTransform = (100.0, 200.0, 2.0, 2.0, 90.0, 0.25, 0.75);
+        let link = TransformLink {
+            target: ClipId::new(),
+            mode: LinkMode::Absolute,
+            inherit_scale: false,
+            inherit_position: true,
+            inherit_rotation: false,
+            inherit_anchor: false,
+        };
+        let out = compose_transform(own, target, &link);
+        // Only px/py from target; rest from own.
+        approx_eq(out, (100.0, 200.0, 1.5, 1.5, 30.0, 0.5, 0.5));
+    }
+
+    fn clip_with_transform(px: f32, py: f32, sc: f32, ro: f32, ax: f32, ay: f32) -> Clip {
+        let mut c = Clip::media(MediaId::new(), tc(0), tc(48), tc(0), tc(48));
+        c.builtin_effects.push(BuiltinEffect::Transform {
+            position_x: px, position_y: py,
+            scale_x: sc, scale_y: sc,
+            rotation: ro,
+            anchor_x: ax, anchor_y: ay,
+            rotation_x: 0.0, rotation_y: 0.0, perspective: 0.0,
+        });
+        c.builtin_effects_enabled.push(true);
+        c
+    }
+
+    fn seq_with_clips(clips: Vec<Clip>) -> Sequence {
+        let mut s = Sequence::new_default();
+        let mut tr = Track::new("V1", TrackKind::Video);
+        tr.clips = clips;
+        s.tracks.push(tr);
+        s
+    }
+
+    #[test]
+    fn resolve_no_link_returns_own_transform() {
+        let c = clip_with_transform(7.0, 11.0, 1.25, 45.0, 0.5, 0.5);
+        let seq = seq_with_clips(vec![c.clone()]);
+        let mut cache = std::collections::HashMap::new();
+        let out = resolve_clip_transform(&c, &seq, tc(0), 24.0, &mut cache);
+        approx_eq(out, (7.0, 11.0, 1.25, 1.25, 45.0, 0.5, 0.5));
+    }
+
+    #[test]
+    fn resolve_absolute_link_inherits_target_pos_scale_rotation() {
+        // child links to parent with all-on Absolute. Resolved values
+        // should equal parent's, ignoring child's own.
+        let parent = clip_with_transform(100.0, 200.0, 2.0, 90.0, 0.3, 0.7);
+        let mut child = clip_with_transform(5.0, 6.0, 0.5, 10.0, 0.5, 0.5);
+        child.transform_link = Some(link_all_on(parent.id, LinkMode::Absolute));
+        let parent_id = parent.id;
+        let child_clone = child.clone();
+        let seq = seq_with_clips(vec![parent, child]);
+        let mut cache = std::collections::HashMap::new();
+        let out = resolve_clip_transform(&child_clone, &seq, tc(0), 24.0, &mut cache);
+        approx_eq(out, (100.0, 200.0, 2.0, 2.0, 90.0, 0.3, 0.7));
+        // Cache populated for both clips so a second call is O(1).
+        assert!(cache.contains_key(&parent_id));
+        assert!(cache.contains_key(&child_clone.id));
+    }
+
+    #[test]
+    fn resolve_additive_link_composes_per_mode() {
+        let parent = clip_with_transform(100.0, 200.0, 2.0, 90.0, 0.3, 0.7);
+        let mut child = clip_with_transform(5.0, 6.0, 0.5, 10.0, 0.5, 0.5);
+        child.transform_link = Some(link_all_on(parent.id, LinkMode::Additive));
+        let child_clone = child.clone();
+        let seq = seq_with_clips(vec![parent, child]);
+        let mut cache = std::collections::HashMap::new();
+        let out = resolve_clip_transform(&child_clone, &seq, tc(0), 24.0, &mut cache);
+        // pos: 5+100, 6+200; scale: 0.5*2; rot: 10+90; anchor: parent (always Absolute).
+        approx_eq(out, (105.0, 206.0, 1.0, 1.0, 100.0, 0.3, 0.7));
+    }
+
+    #[test]
+    fn resolve_falls_back_to_own_when_target_is_missing() {
+        // Stale link: target id doesn't exist in the sequence.
+        // Resolver must drop the link composition and return own.
+        let mut child = clip_with_transform(5.0, 6.0, 0.5, 10.0, 0.5, 0.5);
+        child.transform_link = Some(link_all_on(ClipId::new(), LinkMode::Absolute));
+        let child_clone = child.clone();
+        let seq = seq_with_clips(vec![child]);
+        let mut cache = std::collections::HashMap::new();
+        let out = resolve_clip_transform(&child_clone, &seq, tc(0), 24.0, &mut cache);
+        approx_eq(out, (5.0, 6.0, 0.5, 0.5, 10.0, 0.5, 0.5));
+    }
+
+    #[test]
+    fn resolve_three_clip_chain_composes_through_intermediate() {
+        // a → b → c (Absolute through). a's resolved transform should
+        // equal c's pos/scale/rot.
+        let c = clip_with_transform(50.0, 60.0, 4.0, 180.0, 0.1, 0.9);
+        let mut b = clip_with_transform(20.0, 30.0, 2.0, 45.0, 0.5, 0.5);
+        b.transform_link = Some(link_all_on(c.id, LinkMode::Absolute));
+        let mut a = clip_with_transform(1.0, 2.0, 0.5, 5.0, 0.5, 0.5);
+        a.transform_link = Some(link_all_on(b.id, LinkMode::Absolute));
+        let a_clone = a.clone();
+        let seq = seq_with_clips(vec![a, b, c]);
+        let mut cache = std::collections::HashMap::new();
+        let out = resolve_clip_transform(&a_clone, &seq, tc(0), 24.0, &mut cache);
+        approx_eq(out, (50.0, 60.0, 4.0, 4.0, 180.0, 0.1, 0.9));
     }
 }
 

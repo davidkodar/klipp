@@ -292,6 +292,11 @@ pub struct ClipJson {
     /// AND should be hidden from the visible composite. Default false.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub consumed_as_matte: Option<bool>,
+    /// Optional transform inheritance binding. None = no link.
+    /// Skipped on save when None to keep the wire format quiet for
+    /// the dominant unlinked case.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transform_link: Option<TransformLinkJson>,
     #[serde(default)]
     pub grade_versions: Vec<GradeVersionJson>,
     #[serde(default)]
@@ -314,6 +319,29 @@ pub struct MatteBindingJson {
     #[serde(default)]
     pub choke_px: f32,
 }
+
+/// Wire-format mirror of [`klipp_timeline::TransformLink`]. The
+/// target clip-id is stored as a string for stable cross-platform
+/// serialisation; the inherit flags default to `true` so an old
+/// project file that learns about a partial-spec link (e.g. just
+/// `target` + `mode`) deserialises with full inheritance — the same
+/// shape as the easy-path `TransformLink::new` constructor.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TransformLinkJson {
+    pub target: String,
+    #[serde(default)]
+    pub mode: klipp_timeline::LinkMode,
+    #[serde(default = "default_true_json")]
+    pub inherit_scale: bool,
+    #[serde(default = "default_true_json")]
+    pub inherit_position: bool,
+    #[serde(default = "default_true_json")]
+    pub inherit_rotation: bool,
+    #[serde(default = "default_true_json")]
+    pub inherit_anchor: bool,
+}
+
+fn default_true_json() -> bool { true }
 
 /// Phase 4B wire-format mirror of [`klipp_timeline::StencilSettings`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -825,6 +853,7 @@ mod tests {
             matte_source: None,
             matte_stencil: None,
             consumed_as_matte: None,
+            transform_link: None,
             grade_versions: vec![],
             active_grade_version: None,
             track_points: vec![],
@@ -890,6 +919,7 @@ mod tests {
             matte_source: None,
             matte_stencil: None,
             consumed_as_matte: None,
+            transform_link: None,
             grade_versions: vec![],
             active_grade_version: None,
             track_points: vec![],
@@ -1049,6 +1079,7 @@ mod tests {
             matte_source: None,
             matte_stencil: None,
             consumed_as_matte: None,
+            transform_link: None,
             grade_versions: vec![],
             active_grade_version: None,
             track_points: vec![],
