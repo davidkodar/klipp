@@ -713,7 +713,8 @@ fn show_preset_selectors(
                 position_x: 0.0, position_y: 0.0,
                 scale_x: 1.0, scale_y: 1.0,
                 rotation: 0.0,
-                anchor_x: 0.5, anchor_y: 0.5, rotation_x: 0.0, rotation_y: 0.0, perspective: 0.0 }),
+                anchor_x: 0.5, anchor_y: 0.5, rotation_x: 0.0, rotation_y: 0.0, perspective: 0.0,
+                focal_ref: None }),
             ("Chroma Key", klipp_effects::BuiltinEffect::ChromaKey {
                 key_color: [0, 255, 0],
                 tolerance: 0.2,
@@ -1166,7 +1167,8 @@ fn builtin_effect_default(effect: &klipp_effects::BuiltinEffect) -> klipp_effect
         BuiltinEffect::Crop { .. } => BuiltinEffect::Crop { left: 0.0, right: 0.0, top: 0.0, bottom: 0.0, feather: 0.0 },
         BuiltinEffect::Transform { .. } => BuiltinEffect::Transform {
             position_x: 0.0, position_y: 0.0, scale_x: 1.0, scale_y: 1.0,
-            rotation: 0.0, anchor_x: 0.5, anchor_y: 0.5, rotation_x: 0.0, rotation_y: 0.0, perspective: 0.0 },
+            rotation: 0.0, anchor_x: 0.5, anchor_y: 0.5, rotation_x: 0.0, rotation_y: 0.0, perspective: 0.0,
+            focal_ref: None },
         BuiltinEffect::ChromaKey { .. } => BuiltinEffect::ChromaKey {
             key_color: [0, 255, 0], tolerance: 0.2, spill_suppression: 0.1,
         },

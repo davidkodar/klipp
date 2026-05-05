@@ -3963,6 +3963,7 @@ impl GpuEffectsPipeline {
                     rotation_x,
                     rotation_y,
                     perspective,
+                    focal_ref: _,
                 } => {
                     if *position_x == 0.0
                         && *position_y == 0.0

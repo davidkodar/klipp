@@ -9,6 +9,12 @@ wgpu = { workspace = true }
 pollster = { workspace = true }
 tracing = { workspace = true }
 bytemuck = { workspace = true }
+# Used by `FocalRef::Glyph` to identify the title clip without
+# depending on `klipp-core` (which would close the dep cycle —
+# klipp-core already depends on us). See the BlendMode pattern
+# below: callers in klipp-core re-export `FocalRef` and convert
+# between `ClipId` and the raw uuid at the boundary.
+uuid = { workspace = true }
 # rayon brings the parallel chunked composite path moved here from
 # klipp-engine in Phase 4G. klipp-core can NOT be a regular dep
 # because klipp-core already depends on klipp-effects (via the

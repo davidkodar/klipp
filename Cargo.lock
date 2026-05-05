@@ -2608,6 +2608,7 @@ dependencies = [
  "serde",
  "tracing",
  "tracing-subscriber",
+ "uuid",
  "wgpu",
 ]
 

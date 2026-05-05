@@ -194,14 +194,29 @@ fn compose_transform(
 /// cycles, so the recursion is bounded by chain length; we also
 /// add a depth cap (64) as belt-and-suspenders against a corrupt
 /// project file.
+///
+/// `glyph_cache` + `title_renderer` + `(frame_w, frame_h)` thread
+/// through for the glyph-anchored focal-point resolution path
+/// (HZ-NEXT-GLYPH-LOCK). When a clip's `BuiltinEffect::Transform`
+/// carries a `FocalRef::Glyph`, the resolver looks up the
+/// referenced title clip's glyph layout (via the shared
+/// `klipp_title::ensure_glyph_positions` cache), composes through
+/// the title's own resolved transform, and overrides the static
+/// `anchor_x` / `anchor_y` with the resolved glyph centroid.
+/// Failed resolution (clip missing, kind changed, char_index
+/// out of range) falls back to the static fields silently.
 fn resolve_clip_transform(
     clip: &klipp_timeline::Clip,
     seq: &klipp_timeline::Sequence,
     playhead: klipp_core::Timecode,
     fps: f64,
     cache: &mut std::collections::HashMap<klipp_core::ClipId, ResolvedTransform>,
+    glyph_cache: &mut std::collections::HashMap<klipp_core::ClipId, klipp_title::GlyphCacheEntry>,
+    title_renderer: &mut klipp_title::TitleRenderer,
+    frame_w: u32,
+    frame_h: u32,
 ) -> ResolvedTransform {
-    resolve_clip_transform_depth(clip, seq, playhead, fps, cache, 0)
+    resolve_clip_transform_depth(clip, seq, playhead, fps, cache, glyph_cache, title_renderer, frame_w, frame_h, 0)
 }
 
 fn resolve_clip_transform_depth(
@@ -210,6 +225,10 @@ fn resolve_clip_transform_depth(
     playhead: klipp_core::Timecode,
     fps: f64,
     cache: &mut std::collections::HashMap<klipp_core::ClipId, ResolvedTransform>,
+    glyph_cache: &mut std::collections::HashMap<klipp_core::ClipId, klipp_title::GlyphCacheEntry>,
+    title_renderer: &mut klipp_title::TitleRenderer,
+    frame_w: u32,
+    frame_h: u32,
     depth: u32,
 ) -> ResolvedTransform {
     if let Some(cached) = cache.get(&clip.id) { return *cached; }
@@ -221,7 +240,26 @@ fn resolve_clip_transform_depth(
         fps,
         seed: clip.id.0.as_u64_pair().0,
     };
-    let own = evaluate_clip_own_transform(clip, clip_time, &eval_ctx);
+    let mut own = evaluate_clip_own_transform(clip, clip_time, &eval_ctx);
+
+    // Glyph-anchored focal-point override. Reads `focal_ref` off the
+    // first `Transform` builtin on this clip; resolves to clip-space
+    // `(focal_x, focal_y)` via the title's glyph layout + the
+    // title's own resolved transform. Failed resolution falls back
+    // to the static `anchor_x` / `anchor_y` (already in `own.5/6`).
+    let focal_ref = clip.builtin_effects.iter().find_map(|e| match e {
+        klipp_effects::BuiltinEffect::Transform { focal_ref, .. } => focal_ref.as_ref().copied(),
+        _ => None,
+    });
+    if let Some(fr) = focal_ref {
+        if let Some((fx, fy)) = resolve_focal_ref_to_clip_space(
+            &fr, seq, playhead, fps, cache, glyph_cache, title_renderer, frame_w, frame_h, depth + 1,
+        ) {
+            own.5 = fx;
+            own.6 = fy;
+        }
+    }
+
     let result = match (&clip.transform_link, depth < 64) {
         (Some(link), true) => {
             let target = seq.tracks.iter()
@@ -231,7 +269,8 @@ fn resolve_clip_transform_depth(
                 None => own, // Stale target id — fall back to own transform.
                 Some(target_clip) => {
                     let target_xform = resolve_clip_transform_depth(
-                        target_clip, seq, playhead, fps, cache, depth + 1,
+                        target_clip, seq, playhead, fps, cache,
+                        glyph_cache, title_renderer, frame_w, frame_h, depth + 1,
                     );
                     compose_transform(own, target_xform, link)
                 }
@@ -241,6 +280,107 @@ fn resolve_clip_transform_depth(
     };
     cache.insert(clip.id, result);
     result
+}
+
+/// Resolve a [`FocalRef`] to a clip-space `(focal_x, focal_y)` in
+/// `[0, 1]` for use as the effective anchor on the clip carrying
+/// the reference. `None` return means resolution failed — caller
+/// falls back to the clip's static `anchor_x` / `anchor_y`.
+///
+/// Failure paths (all return `None`):
+///
+/// * Title clip not in the active sequence (removed since picker time)
+/// * Referenced clip is no longer a Title kind (kind changed)
+/// * `char_index` is past the end of the title's current glyph layout
+///   (text shortened)
+///
+/// Success path: glyph centroid in title's frame pixels →
+/// normalised by `(frame_w, frame_h)` → composed through the title
+/// clip's own resolved transform (so a title that's been moved /
+/// scaled / link-following lands its glyph centroid at the
+/// post-transform screen position) → clamped to `[0, 1]`.
+///
+/// Rotation through the title's transform is NOT applied for v1 —
+/// rotated titles are rare and the math adds visible complexity for
+/// little gain. Filed under HZ-NEXT-GLYPH-LOCK followups if a real
+/// use case shows up.
+fn resolve_focal_ref_to_clip_space(
+    focal_ref: &klipp_effects::FocalRef,
+    seq: &klipp_timeline::Sequence,
+    playhead: klipp_core::Timecode,
+    fps: f64,
+    transform_cache: &mut std::collections::HashMap<klipp_core::ClipId, ResolvedTransform>,
+    glyph_cache: &mut std::collections::HashMap<klipp_core::ClipId, klipp_title::GlyphCacheEntry>,
+    title_renderer: &mut klipp_title::TitleRenderer,
+    frame_w: u32,
+    frame_h: u32,
+    depth: u32,
+) -> Option<(f32, f32)> {
+    if depth >= 64 {
+        // Defence-in-depth against pathological project files —
+        // matches the transform_link recursion cap.
+        return None;
+    }
+    match focal_ref {
+        klipp_effects::FocalRef::Glyph { title_clip_id, char_index, fallback_xy: _ } => {
+            // Wrap the raw uuid in ClipId at the boundary (FocalRef
+            // carries `uuid::Uuid` because klipp-effects can't
+            // depend on klipp-core; see the type-level note on
+            // `klipp_effects::FocalRef`).
+            let cid = klipp_core::ClipId(*title_clip_id);
+            let title_clip = seq.tracks.iter()
+                .flat_map(|t| t.clips.iter())
+                .find(|c| c.id == cid)?;
+            let td = title_clip.title_data()?;
+
+            let positions = klipp_title::ensure_glyph_positions(
+                glyph_cache, cid, title_renderer, td, frame_w, frame_h,
+            );
+            let cp = positions.get(*char_index as usize)?;
+
+            // Glyph centroid in title's frame pixels.
+            let centroid_px = (cp.x + cp.advance * 0.5, cp.y + cp.height * 0.5);
+
+            // Title's own resolved transform — recurses into
+            // resolve_clip_transform_depth which uses the same
+            // transform_cache for memoisation. Title rarely has a
+            // focal_ref of its own, but if it did the recursion
+            // bounded by the depth cap above.
+            let title_xform = resolve_clip_transform_depth(
+                title_clip, seq, playhead, fps, transform_cache,
+                glyph_cache, title_renderer, frame_w, frame_h, depth + 1,
+            );
+
+            // Apply the title's anchor + scale + position to the
+            // glyph centroid. The Transform model is:
+            //   (px, py, sx, sy, ro, ax, ay) where `ax/ay` are
+            //   normalised pivots and `position` / `scale` are
+            //   pixel-domain offsets / multipliers around the pivot.
+            //
+            // Mapping a glyph at `(gx, gy)` frame-px through the
+            // title's transform (rotation skipped for v1):
+            //
+            //   anchor_px = (ax * frame_w, ay * frame_h)
+            //   relative   = centroid_px - anchor_px
+            //   scaled     = relative * (sx, sy)   (uniform)
+            //   screen_px  = anchor_px + scaled + (position_x, position_y)
+            //
+            // Then normalise by frame to land in clip-space [0, 1].
+            let (px, py, sx, _sy, _ro, ax, ay) = title_xform;
+            let fw = frame_w.max(1) as f32;
+            let fh = frame_h.max(1) as f32;
+            let ax_px = ax * fw;
+            let ay_px = ay * fh;
+            let dx = centroid_px.0 - ax_px;
+            let dy = centroid_px.1 - ay_px;
+            let screen_x = ax_px + dx * sx + px;
+            let screen_y = ay_px + dy * sx + py;
+            Some((
+                (screen_x / fw).clamp(0.0, 1.0),
+                (screen_y / fh).clamp(0.0, 1.0),
+            ))
+        }
+    }
 }
 
 /// Bulk sRGB u8 RGBA → linear f32 RGBA. Alpha stays linear per sRGB
@@ -1301,6 +1441,15 @@ pub struct PlaybackEngine {
     pub transition_degradation: crate::transition::TransitionDegradation,
     // Title renderer — generates RGBA frames for title clips
     title_renderer: klipp_title::TitleRenderer,
+    /// Glyph-position cache for the glyph-anchored focal-point
+    /// resolver (HZ-NEXT-GLYPH-LOCK). Keyed by title clip id; entries
+    /// rebuild via `klipp_title::ensure_glyph_positions` when the
+    /// `layout_hash` no longer matches the title's current
+    /// `TitleData` + render frame size. Mirrors the inspector
+    /// picker's cache shape so both surfaces share the
+    /// `klipp_title` primitives — different consumer, identical
+    /// logic.
+    glyph_position_cache: std::collections::HashMap<klipp_core::ClipId, klipp_title::GlyphCacheEntry>,
     // VU metering — emit peak levels at ~30Hz
     last_peak_time: std::time::Instant,
     // Proxy: when true, decode from proxy files instead of originals
@@ -1588,6 +1737,7 @@ impl PlaybackEngine {
             transition_partner_eof: false,
             transition_degradation: Default::default(),
             title_renderer,
+            glyph_position_cache: std::collections::HashMap::new(),
             last_peak_time: std::time::Instant::now(),
             use_proxies: true,
             skim_consumer,
@@ -4132,16 +4282,24 @@ impl PlaybackEngine {
         // overlay clip (and any chain targets reachable from them). Done
         // under one short seq-read so we can pass entries into
         // apply_clip_effects (which holds &mut self) by clip-id later.
+        // glyph_position_cache + title_renderer thread through for
+        // the glyph-anchored focal-point resolver
+        // (HZ-NEXT-GLYPH-LOCK); they're untouched on clips with no
+        // FocalRef on their Transform builtin.
         let transform_cache: std::collections::HashMap<klipp_core::ClipId, ResolvedTransform> = {
             let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
             let fps_f64 = self.fps.as_f64();
+            let frame_w = seq.resolution.width;
+            let frame_h = seq.resolution.height;
             let mut cache = std::collections::HashMap::new();
             if let Some(c) = &v1_clip {
-                let _ = resolve_clip_transform(c, &seq, self.playhead, fps_f64, &mut cache);
+                let _ = resolve_clip_transform(c, &seq, self.playhead, fps_f64, &mut cache,
+                    &mut self.glyph_position_cache, &mut self.title_renderer, frame_w, frame_h);
             }
             for (_, _, c) in &overlay_clip_data {
                 if let Some(c) = c {
-                    let _ = resolve_clip_transform(c, &seq, self.playhead, fps_f64, &mut cache);
+                    let _ = resolve_clip_transform(c, &seq, self.playhead, fps_f64, &mut cache,
+                        &mut self.glyph_position_cache, &mut self.title_renderer, frame_w, frame_h);
                 }
             }
             cache
@@ -5052,8 +5210,11 @@ impl PlaybackEngine {
         let mut transform_cache: std::collections::HashMap<klipp_core::ClipId, ResolvedTransform>
             = std::collections::HashMap::new();
         let fps_f64 = self.fps.as_f64();
+        let frame_w = res.width;
+        let frame_h = res.height;
         for (_, _, clip) in &active_overlays {
-            let _ = resolve_clip_transform(clip, &seq, playhead, fps_f64, &mut transform_cache);
+            let _ = resolve_clip_transform(clip, &seq, playhead, fps_f64, &mut transform_cache,
+                &mut self.glyph_position_cache, &mut self.title_renderer, frame_w, frame_h);
         }
         drop(seq);
         let collect_us = t_collect.elapsed().as_micros();
@@ -7504,7 +7665,7 @@ impl PlaybackEngine {
                         fx.iter().find_map(|e| match e {
                             klipp_effects::BuiltinEffect::Transform {
                                 position_x, position_y, scale_x, scale_y, rotation, anchor_x, anchor_y,
-                                rotation_x, rotation_y, perspective,
+                                rotation_x, rotation_y, perspective, focal_ref: _,
                             } => Some((*position_x, *position_y, *scale_x, *scale_y, *rotation, *anchor_x, *anchor_y, *rotation_x, *rotation_y, *perspective)),
                             _ => None,
                         }).unwrap_or((0.0, 0.0, 1.0, 1.0, 0.0, 0.5, 0.5, 0.0, 0.0, 0.0));
@@ -7543,6 +7704,12 @@ impl PlaybackEngine {
                         position_x: pos_x, position_y: pos_y,
                         scale_x, scale_y, rotation, anchor_x, anchor_y,
                         rotation_x: rotation_x_val, rotation_y: rotation_y_val, perspective: perspective_val,
+                        // Static rebuild — focal_ref preservation
+                        // belongs in evaluate_clip_own_transform's
+                        // glyph-anchor resolution path (commit 2 of
+                        // HZ-NEXT-GLYPH-LOCK), not here. None is
+                        // the back-compat default.
+                        focal_ref: None,
                     };
                     let mut found = false;
                     for effect in &mut fx {
@@ -7776,13 +7943,17 @@ impl PlaybackEngine {
         let transform_cache: std::collections::HashMap<klipp_core::ClipId, ResolvedTransform> = {
             let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
             let fps_f64 = self.fps.as_f64();
+            let frame_w = seq.resolution.width;
+            let frame_h = seq.resolution.height;
             let mut cache = std::collections::HashMap::new();
             if let Some(c) = &v1_clip {
-                let _ = resolve_clip_transform(c, &seq, self.playhead, fps_f64, &mut cache);
+                let _ = resolve_clip_transform(c, &seq, self.playhead, fps_f64, &mut cache,
+                    &mut self.glyph_position_cache, &mut self.title_renderer, frame_w, frame_h);
             }
             for (_, _, c) in &overlay_clip_data {
                 if let Some(c) = c {
-                    let _ = resolve_clip_transform(c, &seq, self.playhead, fps_f64, &mut cache);
+                    let _ = resolve_clip_transform(c, &seq, self.playhead, fps_f64, &mut cache,
+                        &mut self.glyph_position_cache, &mut self.title_renderer, frame_w, frame_h);
                 }
             }
             cache
@@ -8768,7 +8939,7 @@ impl PlaybackEngine {
                     fx.iter().find_map(|e| match e {
                         klipp_effects::BuiltinEffect::Transform {
                             position_x, position_y, scale_x, scale_y, rotation, anchor_x, anchor_y,
-                            rotation_x, rotation_y, perspective,
+                            rotation_x, rotation_y, perspective, focal_ref: _,
                         } => Some((*position_x, *position_y, *scale_x, *scale_y, *rotation, *anchor_x, *anchor_y, *rotation_x, *rotation_y, *perspective)),
                         _ => None,
                     }).unwrap_or((0.0, 0.0, 1.0, 1.0, 0.0, 0.5, 0.5, 0.0, 0.0, 0.0));
@@ -8796,6 +8967,11 @@ impl PlaybackEngine {
                     position_x: pos_x, position_y: pos_y,
                     scale_x, scale_y, rotation, anchor_x, anchor_y,
                     rotation_x: rotation_x_val, rotation_y: rotation_y_val, perspective: perspective_val,
+                    // Static rebuild — see HZ-NEXT-GLYPH-LOCK note
+                    // at the matching site above; focal_ref
+                    // resolution lives in the engine's own-transform
+                    // evaluator, not in this re-emit.
+                    focal_ref: None,
                 };
                 let mut found = false;
                 for effect in &mut fx {
@@ -11828,6 +12004,7 @@ mod transform_link_compose_tests {
             rotation: ro,
             anchor_x: ax, anchor_y: ay,
             rotation_x: 0.0, rotation_y: 0.0, perspective: 0.0,
+            focal_ref: None,
         });
         c.builtin_effects_enabled.push(true);
         c
@@ -11841,12 +12018,26 @@ mod transform_link_compose_tests {
         s
     }
 
+    /// Test wrapper around `resolve_clip_transform` that supplies the
+    /// extra glyph-resolver args (cache, renderer, frame dims) with
+    /// safe defaults. Lets the existing transform_link compose tests
+    /// stay focused on their original concern (link composition)
+    /// without each test re-constructing a TitleRenderer.
+    fn resolve_for_test(
+        c: &Clip, seq: &Sequence,
+        cache: &mut std::collections::HashMap<klipp_core::ClipId, ResolvedTransform>,
+    ) -> ResolvedTransform {
+        let mut glyph_cache = std::collections::HashMap::new();
+        let mut tr = klipp_title::TitleRenderer::new();
+        resolve_clip_transform(c, seq, tc(0), 24.0, cache, &mut glyph_cache, &mut tr, 1920, 1080)
+    }
+
     #[test]
     fn resolve_no_link_returns_own_transform() {
         let c = clip_with_transform(7.0, 11.0, 1.25, 45.0, 0.5, 0.5);
         let seq = seq_with_clips(vec![c.clone()]);
         let mut cache = std::collections::HashMap::new();
-        let out = resolve_clip_transform(&c, &seq, tc(0), 24.0, &mut cache);
+        let out = resolve_for_test(&c, &seq, &mut cache);
         approx_eq(out, (7.0, 11.0, 1.25, 1.25, 45.0, 0.5, 0.5));
     }
 
@@ -11861,7 +12052,7 @@ mod transform_link_compose_tests {
         let child_clone = child.clone();
         let seq = seq_with_clips(vec![parent, child]);
         let mut cache = std::collections::HashMap::new();
-        let out = resolve_clip_transform(&child_clone, &seq, tc(0), 24.0, &mut cache);
+        let out = resolve_for_test(&child_clone, &seq, &mut cache);
         approx_eq(out, (100.0, 200.0, 2.0, 2.0, 90.0, 0.3, 0.7));
         // Cache populated for both clips so a second call is O(1).
         assert!(cache.contains_key(&parent_id));
@@ -11876,7 +12067,7 @@ mod transform_link_compose_tests {
         let child_clone = child.clone();
         let seq = seq_with_clips(vec![parent, child]);
         let mut cache = std::collections::HashMap::new();
-        let out = resolve_clip_transform(&child_clone, &seq, tc(0), 24.0, &mut cache);
+        let out = resolve_for_test(&child_clone, &seq, &mut cache);
         // pos: 5+100, 6+200; scale: 0.5*2; rot: 10+90; anchor: parent (always Absolute).
         approx_eq(out, (105.0, 206.0, 1.0, 1.0, 100.0, 0.3, 0.7));
     }
@@ -11890,7 +12081,7 @@ mod transform_link_compose_tests {
         let child_clone = child.clone();
         let seq = seq_with_clips(vec![child]);
         let mut cache = std::collections::HashMap::new();
-        let out = resolve_clip_transform(&child_clone, &seq, tc(0), 24.0, &mut cache);
+        let out = resolve_for_test(&child_clone, &seq, &mut cache);
         approx_eq(out, (5.0, 6.0, 0.5, 0.5, 10.0, 0.5, 0.5));
     }
 
@@ -11906,8 +12097,255 @@ mod transform_link_compose_tests {
         let a_clone = a.clone();
         let seq = seq_with_clips(vec![a, b, c]);
         let mut cache = std::collections::HashMap::new();
-        let out = resolve_clip_transform(&a_clone, &seq, tc(0), 24.0, &mut cache);
+        let out = resolve_for_test(&a_clone, &seq, &mut cache);
         approx_eq(out, (50.0, 60.0, 4.0, 4.0, 180.0, 0.1, 0.9));
+    }
+}
+
+#[cfg(test)]
+mod glyph_focal_resolution_tests {
+    //! HZ-NEXT-GLYPH-LOCK — engine resolver tests.
+    //!
+    //! Pin the load-bearing back-compat guarantee (focal_ref=None →
+    //! byte-identical to today) plus the glyph-anchored resolution
+    //! math, title-transform composition, and the three fallback
+    //! paths (missing clip / kind changed / char_index out of range).
+    use super::{resolve_clip_transform, ResolvedTransform};
+    use klipp_core::{ClipId, MediaId, RationalTime, Timecode};
+    use klipp_effects::{BuiltinEffect, FocalRef};
+    use klipp_timeline::{Clip, ClipKind, FontStyle, Sequence, TextAlignment, TextBox, TitleData, Track, TrackKind};
+    use std::collections::HashMap;
+
+    fn tc(frames: i64) -> Timecode { RationalTime::from_frames(frames, 24) }
+
+    fn approx_eq(a: ResolvedTransform, b: ResolvedTransform) {
+        let eps = 1e-3;
+        assert!((a.0 - b.0).abs() < eps, "px {} vs {}", a.0, b.0);
+        assert!((a.1 - b.1).abs() < eps, "py {} vs {}", a.1, b.1);
+        assert!((a.2 - b.2).abs() < eps, "sx {} vs {}", a.2, b.2);
+        assert!((a.3 - b.3).abs() < eps, "sy {} vs {}", a.3, b.3);
+        assert!((a.4 - b.4).abs() < eps, "ro {} vs {}", a.4, b.4);
+        assert!((a.5 - b.5).abs() < eps, "ax {} vs {}", a.5, b.5);
+        assert!((a.6 - b.6).abs() < eps, "ay {} vs {}", a.6, b.6);
+    }
+
+    fn make_title_data(text: &str) -> TitleData {
+        let mut tb = TextBox::default();
+        tb.text = text.to_string();
+        tb.font_name = "Sans".to_string();
+        tb.font_size = 72.0;
+        tb.font_style = FontStyle::Regular;
+        tb.alignment = TextAlignment::Center;
+        TitleData::single_text(tb)
+    }
+
+    fn title_clip(text: &str) -> Clip {
+        let mut c = Clip::media(MediaId::new(), tc(0), tc(48), tc(0), tc(48));
+        c.kind = ClipKind::Title(make_title_data(text));
+        c
+    }
+
+    fn media_clip_with_anchor(anchor_x: f32, anchor_y: f32) -> Clip {
+        let mut c = Clip::media(MediaId::new(), tc(0), tc(48), tc(0), tc(48));
+        c.builtin_effects.push(BuiltinEffect::Transform {
+            position_x: 0.0, position_y: 0.0,
+            scale_x: 1.0, scale_y: 1.0,
+            rotation: 0.0,
+            anchor_x, anchor_y,
+            rotation_x: 0.0, rotation_y: 0.0, perspective: 0.0,
+            focal_ref: None,
+        });
+        c.builtin_effects_enabled.push(true);
+        c
+    }
+
+    fn seq_with(clips: Vec<Clip>) -> Sequence {
+        let mut s = Sequence::new_default();
+        let mut tr = Track::new("V1", TrackKind::Video);
+        tr.clips = clips;
+        s.tracks.push(tr);
+        s
+    }
+
+    fn resolve(clip: &Clip, seq: &Sequence) -> ResolvedTransform {
+        let mut tcache = HashMap::new();
+        let mut gcache = HashMap::new();
+        let mut tr = klipp_title::TitleRenderer::new();
+        resolve_clip_transform(clip, seq, tc(0), 24.0, &mut tcache, &mut gcache, &mut tr, 1920, 1080)
+    }
+
+    // ─────────── Back-compat parity pin ───────────
+
+    #[test]
+    fn focal_ref_none_yields_static_anchor() {
+        // The load-bearing guarantee: focal_ref=None on the
+        // Transform builtin → resolved anchor IS the static
+        // (anchor_x, anchor_y). Any drift here means the
+        // glyph-resolver leaked into the no-focal-ref path and
+        // existing projects would render differently.
+        let consumer = media_clip_with_anchor(0.42, 0.58);
+        let seq = seq_with(vec![consumer.clone()]);
+        let out = resolve(&consumer, &seq);
+        assert!((out.5 - 0.42).abs() < 1e-6, "anchor_x preserved");
+        assert!((out.6 - 0.58).abs() < 1e-6, "anchor_y preserved");
+    }
+
+    // ─────────── Glyph-anchor resolution ───────────
+
+    fn build_glyph_test_setup(char_index: u32, fallback_xy: (f32, f32)) -> (Clip, Clip, Sequence) {
+        // Title clip + consumer clip with FocalRef::Glyph pointing
+        // at the title. Returns (consumer, title, sequence).
+        let title = title_clip("Hi");
+        let title_id = title.id;
+        let mut consumer = Clip::media(MediaId::new(), tc(0), tc(48), tc(0), tc(48));
+        consumer.builtin_effects.push(BuiltinEffect::Transform {
+            position_x: 0.0, position_y: 0.0,
+            scale_x: 1.0, scale_y: 1.0,
+            rotation: 0.0,
+            anchor_x: fallback_xy.0, anchor_y: fallback_xy.1,
+            rotation_x: 0.0, rotation_y: 0.0, perspective: 0.0,
+            focal_ref: Some(FocalRef::Glyph {
+                title_clip_id: title_id.0,
+                char_index,
+                fallback_xy,
+            }),
+        });
+        consumer.builtin_effects_enabled.push(true);
+        let seq = seq_with(vec![consumer.clone(), title.clone()]);
+        (consumer, title, seq)
+    }
+
+    #[test]
+    fn focal_ref_glyph_resolves_to_glyph_centroid_in_clip_space() {
+        // First glyph of "Hi" in a 1920×1080 frame. Exact pixel
+        // centroid depends on fontdue's layout output for the
+        // bundled NotoSans, but the resolver should produce SOME
+        // anchor in [0, 1] that's NOT the fallback (which is set
+        // to a recognisable distinct value).
+        let fallback = (0.123, 0.876);
+        let (consumer, _title, seq) = build_glyph_test_setup(0, fallback);
+        let out = resolve(&consumer, &seq);
+        // The glyph centroid must differ from the fallback —
+        // resolution succeeded.
+        let dx = (out.5 - fallback.0).abs();
+        let dy = (out.6 - fallback.1).abs();
+        assert!(dx > 1e-3 || dy > 1e-3,
+            "resolved anchor should differ from fallback when glyph resolution succeeds, got ({}, {})", out.5, out.6);
+        // And both should be in [0, 1].
+        assert!((0.0..=1.0).contains(&out.5), "anchor_x in clip space, got {}", out.5);
+        assert!((0.0..=1.0).contains(&out.6), "anchor_y in clip space, got {}", out.6);
+    }
+
+    // ─────────── Fallback paths ───────────
+
+    #[test]
+    fn fallback_when_title_clip_missing() {
+        // FocalRef points at a uuid that's not in the sequence.
+        let fallback = (0.25, 0.75);
+        let mut consumer = Clip::media(MediaId::new(), tc(0), tc(48), tc(0), tc(48));
+        consumer.builtin_effects.push(BuiltinEffect::Transform {
+            position_x: 0.0, position_y: 0.0,
+            scale_x: 1.0, scale_y: 1.0,
+            rotation: 0.0,
+            anchor_x: fallback.0, anchor_y: fallback.1,
+            rotation_x: 0.0, rotation_y: 0.0, perspective: 0.0,
+            focal_ref: Some(FocalRef::Glyph {
+                title_clip_id: ClipId::new().0, // never inserted into seq
+                char_index: 0,
+                fallback_xy: fallback,
+            }),
+        });
+        consumer.builtin_effects_enabled.push(true);
+        let seq = seq_with(vec![consumer.clone()]);
+        let out = resolve(&consumer, &seq);
+        assert!((out.5 - fallback.0).abs() < 1e-6, "fell back to anchor_x");
+        assert!((out.6 - fallback.1).abs() < 1e-6, "fell back to anchor_y");
+    }
+
+    #[test]
+    fn fallback_when_referenced_clip_is_not_a_title() {
+        // FocalRef points at a clip that exists but isn't a Title.
+        let fallback = (0.30, 0.70);
+        let non_title = Clip::media(MediaId::new(), tc(0), tc(48), tc(0), tc(48));
+        let non_title_id = non_title.id;
+        let mut consumer = Clip::media(MediaId::new(), tc(0), tc(48), tc(0), tc(48));
+        consumer.builtin_effects.push(BuiltinEffect::Transform {
+            position_x: 0.0, position_y: 0.0,
+            scale_x: 1.0, scale_y: 1.0,
+            rotation: 0.0,
+            anchor_x: fallback.0, anchor_y: fallback.1,
+            rotation_x: 0.0, rotation_y: 0.0, perspective: 0.0,
+            focal_ref: Some(FocalRef::Glyph {
+                title_clip_id: non_title_id.0,
+                char_index: 0,
+                fallback_xy: fallback,
+            }),
+        });
+        consumer.builtin_effects_enabled.push(true);
+        let seq = seq_with(vec![consumer.clone(), non_title]);
+        let out = resolve(&consumer, &seq);
+        assert!((out.5 - fallback.0).abs() < 1e-6, "kind-changed → fall back to anchor_x");
+        assert!((out.6 - fallback.1).abs() < 1e-6, "kind-changed → fall back to anchor_y");
+    }
+
+    #[test]
+    fn fallback_when_char_index_past_end_of_text() {
+        // Title is "Hi" (2 chars). char_index=99 is past the end.
+        let fallback = (0.20, 0.80);
+        let (consumer, _title, seq) = build_glyph_test_setup(99, fallback);
+        let out = resolve(&consumer, &seq);
+        assert!((out.5 - fallback.0).abs() < 1e-6, "stale char_index → fall back to anchor_x");
+        assert!((out.6 - fallback.1).abs() < 1e-6, "stale char_index → fall back to anchor_y");
+    }
+
+    // ─────────── Title-transform composition ───────────
+
+    #[test]
+    fn glyph_resolution_picks_up_title_position_offset() {
+        // Same title + consumer, but the title carries a static
+        // Transform with a position offset. The glyph's resolved
+        // screen position should shift by the offset (in clip space).
+        let fallback = (0.5, 0.5);
+        let mut title = title_clip("Hi");
+        title.builtin_effects.push(BuiltinEffect::Transform {
+            position_x: 100.0, position_y: 50.0,  // offset 100 px right, 50 px down
+            scale_x: 1.0, scale_y: 1.0,
+            rotation: 0.0,
+            anchor_x: 0.5, anchor_y: 0.5,
+            rotation_x: 0.0, rotation_y: 0.0, perspective: 0.0,
+            focal_ref: None,
+        });
+        title.builtin_effects_enabled.push(true);
+        let title_id = title.id;
+        let mut consumer = Clip::media(MediaId::new(), tc(0), tc(48), tc(0), tc(48));
+        consumer.builtin_effects.push(BuiltinEffect::Transform {
+            position_x: 0.0, position_y: 0.0, scale_x: 1.0, scale_y: 1.0,
+            rotation: 0.0,
+            anchor_x: fallback.0, anchor_y: fallback.1,
+            rotation_x: 0.0, rotation_y: 0.0, perspective: 0.0,
+            focal_ref: Some(FocalRef::Glyph {
+                title_clip_id: title_id.0,
+                char_index: 0,
+                fallback_xy: fallback,
+            }),
+        });
+        consumer.builtin_effects_enabled.push(true);
+        let seq = seq_with(vec![consumer.clone(), title]);
+
+        // Reference resolution with no title offset.
+        let (ref_consumer, _, ref_seq) = build_glyph_test_setup(0, fallback);
+        let ref_out = resolve(&ref_consumer, &ref_seq);
+        let off_out = resolve(&consumer, &seq);
+
+        // Offset should shift x by 100/1920 ≈ 0.0521, y by 50/1080 ≈ 0.0463.
+        let expected_dx = 100.0 / 1920.0;
+        let expected_dy = 50.0 / 1080.0;
+        assert!(((off_out.5 - ref_out.5) - expected_dx).abs() < 1e-3,
+            "title position_x=100 should shift glyph anchor by ~{:.4}, got {:.4}",
+            expected_dx, off_out.5 - ref_out.5);
+        assert!(((off_out.6 - ref_out.6) - expected_dy).abs() < 1e-3,
+            "title position_y=50 should shift glyph anchor by ~{:.4}, got {:.4}",
+            expected_dy, off_out.6 - ref_out.6);
     }
 }
 

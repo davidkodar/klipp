@@ -91,6 +91,12 @@ pub enum LogFormat {
 // existing `klipp_core::BlendMode` import paths working unchanged.
 pub use klipp_effects::BlendMode;
 
+// `FocalRef` follows the same pattern: lives in klipp-effects so the
+// `BuiltinEffect::Transform.focal_ref` payload owns its definition;
+// re-exported here so AppCommand variants (`ApplyHyperzoom`) and
+// other klipp-core consumers can reference the type directly.
+pub use klipp_effects::FocalRef;
+
 /// Per-clip audio channel routing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum ChannelConfig {

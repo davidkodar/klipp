@@ -93,7 +93,8 @@ impl TransformParams {
             scale_y: self.scale_y,
             rotation: self.rotation,
             anchor_x: self.anchor_x,
-            anchor_y: self.anchor_y, rotation_x: 0.0, rotation_y: 0.0, perspective: 0.0 }
+            anchor_y: self.anchor_y, rotation_x: 0.0, rotation_y: 0.0, perspective: 0.0,
+            focal_ref: None }
     }
 }
 

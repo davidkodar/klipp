@@ -299,7 +299,8 @@ fn builtin_preview_params(effect: &klipp_effects::BuiltinEffect) -> klipp_effect
                 position_x: 0.0, position_y: 0.0,
                 scale_x: 0.7, scale_y: 0.7,
                 rotation: 12.0,
-                anchor_x: 0.5, anchor_y: 0.5, rotation_x: 0.0, rotation_y: 0.0, perspective: 0.0 }
+                anchor_x: 0.5, anchor_y: 0.5, rotation_x: 0.0, rotation_y: 0.0, perspective: 0.0,
+                focal_ref: None }
         }
         klipp_effects::BuiltinEffect::ChromaKey { .. } => {
             klipp_effects::BuiltinEffect::ChromaKey {
@@ -990,7 +991,8 @@ fn builtin_proxy_for(n: &str, plugin_name: &str) -> Option<klipp_effects::Builti
     if n.contains("transform") || n.contains("card3d") || n.contains("cornerpin") || n.contains("lensdistortion") || n.contains("idistort") {
         return Some(klipp_effects::BuiltinEffect::Transform {
             position_x: 0.0, position_y: 0.0, scale_x: 0.75, scale_y: 0.75,
-            rotation: 10.0, anchor_x: 0.5, anchor_y: 0.5, rotation_x: 0.0, rotation_y: 0.0, perspective: 0.0 });
+            rotation: 10.0, anchor_x: 0.5, anchor_y: 0.5, rotation_x: 0.0, rotation_y: 0.0, perspective: 0.0,
+            focal_ref: None });
     }
     if n.contains("timeblur") || n.contains("timedissolve") {
         return Some(klipp_effects::BuiltinEffect::GaussianBlur { radius: 3.0 });

@@ -102,6 +102,42 @@ impl BlendMode {
     ];
 }
 
+/// Override pointer for the focal anchor on `BuiltinEffect::Transform`.
+///
+/// When set on a Transform effect, the engine's render path resolves
+/// this reference to clip-space `(focal_x, focal_y)` each frame and
+/// uses the result as the anchor — *overriding* the static
+/// `anchor_x` / `anchor_y` fields. When `None`, the static fields are
+/// used directly (today's behaviour).
+///
+/// **Why a uuid and not a `ClipId`**: klipp-effects can't depend on
+/// klipp-core (the cycle hint at the top of `Cargo.toml` explains).
+/// Callers in klipp-core / klipp-ui / klipp-engine wrap this raw
+/// uuid in `ClipId` at the boundary. Same pattern as `BlendMode`
+/// living here and being re-exported from klipp-core.
+///
+/// Pinned by HZ-NEXT-GLYPH-LOCK as the schema growth point for
+/// glyph-anchored hyperzoom focal points; future references
+/// (tracker-driven, marker-driven) extend this enum.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum FocalRef {
+    /// Focal point follows a glyph in a title clip's shaped layout.
+    /// `char_index` indexes into `klipp_title::compute_char_positions`'s
+    /// returned vec for the referenced title's current `TitleData`.
+    /// `fallback_xy` is the picker-time snapshot in clip-space —
+    /// used by the resolver when the live lookup fails (clip
+    /// removed, kind changed, char_index past end of glyphs).
+    Glyph {
+        /// Raw uuid of the title clip — wrapped in `klipp_core::ClipId`
+        /// at every boundary. See type-level note for the cycle
+        /// rationale.
+        title_clip_id: uuid::Uuid,
+        char_index: u32,
+        fallback_xy: (f32, f32),
+    },
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum BuiltinEffect {
@@ -141,6 +177,16 @@ pub enum BuiltinEffect {
         /// Perspective strength (0 = none/orthographic, 1.0 = moderate, 2.0 = strong)
         #[serde(default)]
         perspective: f32,
+        /// Optional focal-anchor override. When `Some`, the engine
+        /// resolves the reference each frame (e.g. a glyph centroid
+        /// from a referenced title clip) and uses the result as the
+        /// effective anchor — `anchor_x` / `anchor_y` become the
+        /// fallback for the resolution failure paths. When `None`
+        /// (default), the static `anchor_x` / `anchor_y` are used
+        /// directly. Old project files load with `None` via
+        /// `serde(default)` — back-compat is byte-identical.
+        #[serde(default)]
+        focal_ref: Option<FocalRef>,
     },
     Opacity {
         /// Opacity value (0.0–1.0)
@@ -587,6 +633,7 @@ fn apply_one(effect: &BuiltinEffect, rgba: Vec<u8>, width: u32, height: u32) -> 
             position_x, position_y, scale_x, scale_y,
             rotation, anchor_x, anchor_y,
             rotation_x, rotation_y, perspective,
+            focal_ref: _,
         } => {
             transform::apply(
                 rgba, width, height,
@@ -1480,6 +1527,7 @@ mod tests {
             rotation: 0.0,
             anchor_x: 0.5, anchor_y: 0.5,
             rotation_x: 0.0, rotation_y: 0.0, perspective: 0.0,
+            focal_ref: None,
         }));
 
         // Effects whose visual contribution is non-trivial when set.
@@ -1495,6 +1543,7 @@ mod tests {
             rotation: 0.0,
             anchor_x: 0.5, anchor_y: 0.5,
             rotation_x: 0.0, rotation_y: 0.0, perspective: 0.0,
+            focal_ref: None,
         }));
     }
 
@@ -1895,6 +1944,7 @@ mod tests {
                 anchor_x: 0.5, anchor_y: 0.5,
                 rotation_x: 0.0, rotation_y: 0.0,
                 perspective: 0.0,
+                focal_ref: None,
             }],
             rgba.clone(), w, h,
         );
@@ -1924,6 +1974,7 @@ mod tests {
                 anchor_x: 0.5, anchor_y: 0.5,
                 rotation_x: 0.0, rotation_y: 0.0,
                 perspective: 0.0,
+                focal_ref: None,
             }],
             rgba.clone(), w, h,
         );

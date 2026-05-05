@@ -288,7 +288,7 @@ impl ProcessingStage for BuiltinEffectsStage {
                 fx.iter().find_map(|e| match e {
                     BuiltinEffect::Transform {
                         position_x, position_y, scale_x, scale_y, rotation, anchor_x, anchor_y,
-                        rotation_x, rotation_y, perspective,
+                        rotation_x, rotation_y, perspective, focal_ref: _,
                     } => Some((*position_x, *position_y, *scale_x, *scale_y, *rotation, *anchor_x, *anchor_y, *rotation_x, *rotation_y, *perspective)),
                     _ => None,
                 }).unwrap_or((0.0, 0.0, 1.0, 1.0, 0.0, 0.5, 0.5, 0.0, 0.0, 0.0));
@@ -312,6 +312,11 @@ impl ProcessingStage for BuiltinEffectsStage {
                 position_x: pos_x, position_y: pos_y,
                 scale_x, scale_y, rotation, anchor_x, anchor_y,
                 rotation_x: rotation_x_val, rotation_y: rotation_y_val, perspective: perspective_val,
+                // Render-stage rebuild — focal_ref preservation lives
+                // in the engine's evaluate_clip_own_transform path
+                // (HZ-NEXT-GLYPH-LOCK), not in this static-anchor
+                // re-emit. Defaulting to None here is intentional.
+                focal_ref: None,
             };
             let mut found = false;
             for effect in &mut fx {
