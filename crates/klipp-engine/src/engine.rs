@@ -4911,8 +4911,36 @@ impl PlaybackEngine {
         // Count live media decoders (for cap enforcement later)
         let mut media_decoder_count = self.overlay_decoders.len();
 
-        // Compute current frame number for synthetic clip caching
-        let current_frame = playhead.value;
+        // Cache key for synthetic-clip skip. Defaults to the frame
+        // number so animated content is re-rendered each tick, but
+        // a frame-invariant title (no animation_type, no per-object
+        // position keyframes, no clip-level transform keyframes /
+        // modifiers) gets a constant 0 — meaning the synthetic-skip
+        // cache hits forever after the first render of that clip.
+        // Without this, a static "Best Picture" title burned ~5–10 ms
+        // every tick re-rasterising identical pixels.
+        let synth_frame_key_for = |clip: &klipp_timeline::Clip, default_frame: i64| -> i64 {
+            use klipp_core::ParamId;
+            let title_static = match clip.title_data() {
+                None => false,
+                Some(td) => matches!(td.animation_type, klipp_timeline::TitleAnimationType::Static)
+                    && td.objects.iter().all(|obj|
+                        obj.transform.center_x_keyframes.is_empty()
+                            && obj.transform.center_y_keyframes.is_empty()),
+            };
+            let no_clip_anim = clip.transform_pos_x_keyframes.is_empty()
+                && clip.transform_pos_y_keyframes.is_empty()
+                && clip.transform_scale_keyframes.is_empty()
+                && clip.transform_rotation_keyframes.is_empty()
+                && clip.opacity_keyframes.is_empty()
+                && !clip.param_modifiers.contains_key(&ParamId::PositionX)
+                && !clip.param_modifiers.contains_key(&ParamId::PositionY)
+                && !clip.param_modifiers.contains_key(&ParamId::Scale)
+                && !clip.param_modifiers.contains_key(&ParamId::Rotation)
+                && !clip.param_modifiers.contains_key(&ParamId::Opacity);
+            if title_static && no_clip_anim { 0 } else { default_frame }
+        };
+        let default_frame = playhead.value;
 
         // Process each active overlay track
         for (track_idx, clip_idx, clip) in active_overlays {
@@ -4920,12 +4948,15 @@ impl PlaybackEngine {
             // This mirrors the `last_synth_frame_rendered` optimization on the V1 path and
             // prevents ~1000 re-renders/sec for static titles/generators.
             let is_synthetic = clip.title_data().is_some() || clip.generator_data().is_some();
+            let frame_key = synth_frame_key_for(&clip, default_frame);
             if is_synthetic
                 && self.overlay_clips.get(&track_idx) == Some(&clip_idx)
-                && self.overlay_synth_frame.get(&track_idx) == Some(&current_frame)
+                && self.overlay_synth_frame.get(&track_idx) == Some(&frame_key)
                 && self.overlay_frames.contains_key(&track_idx)
             {
-                // Same synthetic clip at same frame already rendered — skip
+                // Same synthetic clip at same frame-key already rendered — skip.
+                // For frame-invariant titles, `frame_key` is constant 0
+                // so the cache hits forever after the first render.
                 continue;
             }
 
@@ -4947,7 +4978,7 @@ impl PlaybackEngine {
                         == Some(&(gen_data.clone(), res.width, res.height))
                     && self.overlay_frames.contains_key(&track_idx)
                 {
-                    self.overlay_synth_frame.insert(track_idx, current_frame);
+                    self.overlay_synth_frame.insert(track_idx, frame_key);
                     continue;
                 }
             }
@@ -5091,7 +5122,7 @@ impl PlaybackEngine {
                 };
                 self.overlay_frames.insert(track_idx, u8_frame.to_linear());
                 self.overlay_clips.insert(track_idx, clip_idx);
-                self.overlay_synth_frame.insert(track_idx, current_frame);
+                self.overlay_synth_frame.insert(track_idx, frame_key);
                 continue;
             }
 
@@ -5126,7 +5157,7 @@ impl PlaybackEngine {
                 };
                 self.overlay_frames.insert(track_idx, u8_frame.to_linear());
                 self.overlay_clips.insert(track_idx, clip_idx);
-                self.overlay_synth_frame.insert(track_idx, current_frame);
+                self.overlay_synth_frame.insert(track_idx, frame_key);
                 // Record the static-generator fingerprint so the
                 // fast path above can short-circuit subsequent ticks.
                 // Countdown is excluded — its rendered numeral changes
