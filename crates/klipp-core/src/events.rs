@@ -2265,6 +2265,37 @@ pub enum AppCommand {
     /// link is left as-is.
     ClearClipTransformLink { clip_id: ClipId },
 
+    /// Apply a hyperzoom transition between `source_clip_id` (typically
+    /// a title clip the camera flies *into*) and a target clip (the
+    /// shot that emerges from inside the focal point). The handler
+    /// writes scale keyframes on both clips:
+    ///
+    /// * Source: scale 1.0 → `max_scale` over the last `duration_secs`,
+    ///   pivoting around `(focal_x_norm, focal_y_norm)` so the focal
+    ///   point stays fixed on screen as the rest zooms past.
+    /// * Target: scale `max_scale` → 1.0 over the first `duration_secs`,
+    ///   anchored at the same focal point so the new shot emerges from
+    ///   the matching position.
+    ///
+    /// `target_clip_id = None` resolves to "the next clip on
+    /// `source_clip_id`'s track" (handler walks the sequence; gives up
+    /// if the source is the track's last clip). `focal_*_norm` are in
+    /// `0.0 ..= 1.0` (normalised screen coords; 0.5/0.5 = centre).
+    ///
+    /// Layer 2 of the hyperzoom delivery: this is a preset, not a new
+    /// effect type — it writes through the existing transform-keyframe
+    /// machinery so the result is fully editable in the keyframe
+    /// editor and round-trips through save/load like any other
+    /// keyframed clip.
+    ApplyHyperzoom {
+        source_clip_id: ClipId,
+        target_clip_id: Option<ClipId>,
+        focal_x_norm: f32,
+        focal_y_norm: f32,
+        duration_secs: f64,
+        max_scale: f32,
+    },
+
     /// Toggle the "hide matte source from visible composite" flag on a
     /// clip. Default behaviour when bound via `SetClipMatte` is `true`;
     /// pros can flip this to keep the matte source visible for

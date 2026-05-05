@@ -503,6 +503,24 @@ pub fn build(state: &AppState) -> Vec<PaletteEntry> {
             action: PaletteAction::Cmd(AppCommand::ClearClipTransformLink { clip_id: cid }),
             enabled: true,
         });
+        // Hyperzoom: same target-picker constraint, so the palette
+        // hosts the easy-path variant (auto target = next clip on
+        // this track, focal = clip centre, default duration + peak).
+        // Power users tweak focal/duration in the inspector before
+        // applying.
+        e.push(PaletteEntry {
+            label: Cow::Borrowed("Apply hyperzoom (auto, centre)"),
+            shortcut: Cow::Borrowed(""),
+            action: PaletteAction::Cmd(AppCommand::ApplyHyperzoom {
+                source_clip_id: cid,
+                target_clip_id: None,
+                focal_x_norm: 0.5,
+                focal_y_norm: 0.5,
+                duration_secs: 0.5,
+                max_scale: 50.0,
+            }),
+            enabled: true,
+        });
         // Common blend modes only — the full 13-mode list would
         // dilute the palette. Users who want the full set go through
         // the Inspector COMPOSITING section.
@@ -538,6 +556,12 @@ pub fn build(state: &AppState) -> Vec<PaletteEntry> {
         });
         e.push(PaletteEntry {
             label: Cow::Borrowed("Clear transform link"),
+            shortcut: Cow::Borrowed(""),
+            action: PaletteAction::Cmd(AppCommand::Undo),
+            enabled: false,
+        });
+        e.push(PaletteEntry {
+            label: Cow::Borrowed("Apply hyperzoom (auto, centre)"),
             shortcut: Cow::Borrowed(""),
             action: PaletteAction::Cmd(AppCommand::Undo),
             enabled: false,
@@ -666,6 +690,11 @@ mod tests {
         // wants a target picker we don't have here yet). Pinned to
         // keep the entry from disappearing into a refactor.
         "Clear transform link",
+        // Hyperzoom discovery anchor — the easy-path variant (auto
+        // target, focal = clip centre, default duration + peak) is
+        // what the palette exposes. Power users tweak in the
+        // inspector before applying.
+        "Apply hyperzoom",
     ];
 
     #[test]

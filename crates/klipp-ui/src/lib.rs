@@ -54,6 +54,7 @@ pub mod command_palette;
 pub mod drag_drop;
 pub mod model_download;
 pub mod history;
+pub mod hyperzoom;
 pub mod icons;
 pub mod inspector;
 pub mod keybindings;

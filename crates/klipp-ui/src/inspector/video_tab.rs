@@ -1100,6 +1100,15 @@ fn show_clip_video(
     // preset) writes through here; a savvy user can also bind directly.
     show_transform_link_section(ui, theme, state, clip, cmds);
 
+    ui.add_space(8.0);
+
+    // ── HYPERZOOM ──
+    // Layer 2 preset: scale-keyframe + anchor pair on this clip and
+    // the next clip on its track that produces a "fly into the focal
+    // point" transition. Spinbox-fallback UI for the focal point
+    // (visual letter picker is a deferred follow-up).
+    show_hyperzoom_section(ui, theme, state, clip, cmds);
+
     // ── SPEED RAMP (timeline only) ──
     if is_timeline {
         ui.add_space(8.0);
@@ -2197,6 +2206,255 @@ fn show_transform_link_section(
             });
         ui.add_space(8.0);
     });
+}
+
+fn show_hyperzoom_section(
+    ui: &mut egui::Ui,
+    theme: &KlippTheme,
+    state: &AppState,
+    clip: &Clip,
+    cmds: &mut Vec<AppCommand>,
+) {
+    let clip_id = clip.id;
+    let pad = 14.0;
+
+    // Hyperzoom needs a target clip to fly into. Skip for clip kinds
+    // where the operation makes no sense:
+    //  • AdjustmentLayer — no own pixels
+    //  • Gap — silence; not a visible shot
+    //  • Sequence — nested sequences are out of scope for v1
+    use klipp_timeline::ClipKind;
+    if matches!(
+        clip.kind,
+        ClipKind::AdjustmentLayer | ClipKind::Gap | ClipKind::Sequence { .. }
+    ) {
+        return;
+    }
+
+    // egui-id-keyed scratch state for the spinboxes — survives
+    // across frames as long as this section keeps rendering.
+    // Defaults track the recommended starting point: focal centre,
+    // half-second ramp, 50× peak.
+    let state_id = egui::Id::new(("video:hyperzoom_state", clip_id));
+    let (mut focal_x, mut focal_y, mut duration_secs, mut max_scale, mut target_choice) = ui
+        .ctx()
+        .data_mut(|d| {
+            let stored: HyperzoomScratch = d.get_temp(state_id).unwrap_or(HyperzoomScratch {
+                focal_x: 0.5,
+                focal_y: 0.5,
+                duration_secs: 0.5,
+                max_scale: 50.0,
+                target_choice: HyperzoomTargetChoice::Auto,
+            });
+            (
+                stored.focal_x,
+                stored.focal_y,
+                stored.duration_secs,
+                stored.max_scale,
+                stored.target_choice,
+            )
+        });
+
+    section_card(ui, "HYPERZOOM", theme, |ui| {
+        ui.add_space(6.0);
+        egui::Frame::default()
+            .inner_margin(egui::Margin { left: pad, right: pad, top: 0.0, bottom: 0.0 })
+            .fill(egui::Color32::TRANSPARENT)
+            .stroke(egui::Stroke::NONE)
+            .show(ui, |ui| {
+                ui.spacing_mut().item_spacing = egui::vec2(6.0, 8.0);
+
+                // ── Target picker ──
+                // "Auto" = next clip on this clip's track. Anything
+                // else explicitly names a clip elsewhere in the
+                // sequence — useful when the next clip in track order
+                // isn't the one the user wants to fly into.
+                let active_idx = state.active_sequence_idx;
+                let candidates: Vec<(klipp_core::ClipId, String)> = state
+                    .sequences
+                    .get(active_idx)
+                    .map(|seq| {
+                        seq.tracks.iter().enumerate().flat_map(|(ti, track)| {
+                            let track_label = if track.name.is_empty() {
+                                format!("Track {}", ti + 1)
+                            } else {
+                                track.name.clone()
+                            };
+                            track.clips.iter().filter_map(move |c| {
+                                if c.id == clip_id { return None; }
+                                if matches!(c.kind, ClipKind::AdjustmentLayer | ClipKind::Gap | ClipKind::Sequence { .. }) {
+                                    return None;
+                                }
+                                let label = format!("{} · clip {}…",
+                                    track_label,
+                                    short_clip_id(&c.id));
+                                Some((c.id, label))
+                            }).collect::<Vec<_>>()
+                        }).collect()
+                    })
+                    .unwrap_or_default();
+
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new("Target").size(11.0).color(theme.text_dim));
+                    ui.add_space(8.0);
+                    let current_label = match target_choice {
+                        HyperzoomTargetChoice::Auto => "(next clip on this track)".to_string(),
+                        HyperzoomTargetChoice::Explicit(id) => candidates
+                            .iter()
+                            .find(|(cid, _)| *cid == id)
+                            .map(|(_, l)| l.clone())
+                            .unwrap_or_else(|| "(missing — falls back to auto)".to_string()),
+                    };
+                    egui::ComboBox::from_id_salt(("video:hyperzoom_target", clip_id))
+                        .selected_text(current_label)
+                        .width(220.0)
+                        .show_ui(ui, |ui| {
+                            let auto = matches!(target_choice, HyperzoomTargetChoice::Auto);
+                            if ui.selectable_label(auto, "(next clip on this track)").clicked() && !auto {
+                                target_choice = HyperzoomTargetChoice::Auto;
+                            }
+                            for (cand_id, label) in &candidates {
+                                let sel = matches!(target_choice, HyperzoomTargetChoice::Explicit(id) if id == *cand_id);
+                                if ui.selectable_label(sel, label).clicked() && !sel {
+                                    target_choice = HyperzoomTargetChoice::Explicit(*cand_id);
+                                }
+                            }
+                        });
+                });
+
+                ui.add_space(4.0);
+                ui.separator();
+                ui.add_space(4.0);
+
+                // ── Focal point (X / Y) ──
+                // Spinbox fallback for the visual letter picker. 0,0
+                // = top-left; 1,1 = bottom-right; 0.5,0.5 = centre.
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new("Focal X").size(11.0).color(theme.text_dim));
+                    ui.add_space(8.0);
+                    ui.add(
+                        egui::DragValue::new(&mut focal_x)
+                            .range(0.0_f32..=1.0)
+                            .speed(0.005)
+                            .fixed_decimals(3),
+                    );
+                });
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new("Focal Y").size(11.0).color(theme.text_dim));
+                    ui.add_space(8.0);
+                    ui.add(
+                        egui::DragValue::new(&mut focal_y)
+                            .range(0.0_f32..=1.0)
+                            .speed(0.005)
+                            .fixed_decimals(3),
+                    );
+                });
+                ui.label(
+                    egui::RichText::new("0.5 / 0.5 = clip centre. Visual letter picker arriving in a follow-up.")
+                        .size(10.0)
+                        .color(theme.text_dim),
+                );
+
+                ui.add_space(4.0);
+                ui.separator();
+                ui.add_space(4.0);
+
+                // ── Duration + peak scale ──
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new("Duration").size(11.0).color(theme.text_dim));
+                    ui.add_space(8.0);
+                    ui.add(
+                        egui::DragValue::new(&mut duration_secs)
+                            .range(0.05_f64..=10.0)
+                            .speed(0.05)
+                            .suffix(" s")
+                            .fixed_decimals(2),
+                    );
+                });
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new("Peak scale").size(11.0).color(theme.text_dim));
+                    ui.add_space(8.0);
+                    ui.add(
+                        egui::DragValue::new(&mut max_scale)
+                            .range(1.5_f32..=200.0)
+                            .speed(0.5)
+                            .suffix(" ×")
+                            .fixed_decimals(1),
+                    );
+                });
+
+                ui.add_space(8.0);
+
+                // ── Apply ──
+                let apply_label = "Apply hyperzoom";
+                if ui.add_sized(
+                    egui::vec2(150.0, 26.0),
+                    egui::Button::new(
+                        egui::RichText::new(apply_label)
+                            .size(11.0)
+                            .color(theme.text_on_accent),
+                    )
+                    .fill(theme.accent)
+                    .rounding(6.0),
+                )
+                .on_hover_text(
+                    "Writes anchor + scale keyframes on this clip and the chosen target. \
+                     Re-applying replaces the previous ramp; tweak in the keyframe editor afterwards.",
+                )
+                .clicked()
+                {
+                    let target_clip_id = match target_choice {
+                        HyperzoomTargetChoice::Auto => None,
+                        HyperzoomTargetChoice::Explicit(id) => Some(id),
+                    };
+                    cmds.push(AppCommand::ApplyHyperzoom {
+                        source_clip_id: clip_id,
+                        target_clip_id,
+                        focal_x_norm: focal_x,
+                        focal_y_norm: focal_y,
+                        duration_secs,
+                        max_scale,
+                    });
+                }
+            });
+        ui.add_space(8.0);
+    });
+
+    // Persist edited spinbox values across frames.
+    ui.ctx().data_mut(|d| {
+        d.insert_temp(state_id, HyperzoomScratch {
+            focal_x,
+            focal_y,
+            duration_secs,
+            max_scale,
+            target_choice,
+        });
+    });
+}
+
+/// Per-clip persistent state for the HYPERZOOM section's spinboxes.
+/// Lives in egui's per-frame `Memory` keyed by clip-id so each clip
+/// remembers its own values without polluting `AppState`. Clones the
+/// `HyperzoomTargetChoice` enum directly — both variants are `Copy`.
+#[derive(Debug, Clone, Copy)]
+struct HyperzoomScratch {
+    focal_x: f32,
+    focal_y: f32,
+    duration_secs: f64,
+    max_scale: f32,
+    target_choice: HyperzoomTargetChoice,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HyperzoomTargetChoice {
+    /// "Use whatever clip follows this one on the same track." The
+    /// handler resolves this at apply time, so the user can change
+    /// track contents between configuring and applying without the
+    /// inspector going stale.
+    Auto,
+    /// Explicit pick — the handler will reject if the clip is gone
+    /// at apply time.
+    Explicit(klipp_core::ClipId),
 }
 
 /// Local cycle predicate for the inspector's candidate filter. Mirrors

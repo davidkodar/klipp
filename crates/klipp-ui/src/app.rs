@@ -6549,6 +6549,71 @@ impl KlippApp {
                     self.sync_sequence_to_engine();
                     return true;
                 }
+                AppCommand::ApplyHyperzoom {
+                    source_clip_id, target_clip_id, focal_x_norm, focal_y_norm,
+                    duration_secs, max_scale,
+                } => {
+                    let src_id = *source_clip_id;
+                    let seq_idx = self.state.active_sequence_idx;
+
+                    // Resolve source + target. If `target_clip_id` is
+                    // None, the handler walks the source's track and
+                    // picks the next clip; absent a "next" clip the
+                    // operation is a no-op (warn only — we don't want
+                    // a partial application that left a dangling
+                    // ramp on the source).
+                    let (src_dur_secs, tgt_id, tgt_dur_secs) = {
+                        let seq = &self.state.sequences[seq_idx];
+                        let mut found: Option<(f64, klipp_core::ClipId, f64)> = None;
+                        'outer: for track in &seq.tracks {
+                            for (idx, c) in track.clips.iter().enumerate() {
+                                if c.id == src_id {
+                                    let src_dur = c.duration().to_secs_f64().max(0.0);
+                                    let tgt = match target_clip_id {
+                                        Some(t) => track.clips.iter().find(|c| c.id == *t).cloned(),
+                                        None => track.clips.get(idx + 1).cloned(),
+                                    };
+                                    let Some(tgt) = tgt else {
+                                        tracing::warn!(
+                                            "ApplyHyperzoom: source {src_id:?} has no resolvable target clip — \
+                                             pass an explicit target or ensure a clip follows it on the same track"
+                                        );
+                                        return true;
+                                    };
+                                    found = Some((src_dur, tgt.id, tgt.duration().to_secs_f64().max(0.0)));
+                                    break 'outer;
+                                }
+                            }
+                        }
+                        let Some(found) = found else {
+                            tracing::warn!("ApplyHyperzoom: source clip {src_id:?} not found in active sequence");
+                            return true;
+                        };
+                        found
+                    };
+
+                    if src_id == tgt_id {
+                        tracing::warn!("ApplyHyperzoom: refusing self-target ({src_id:?})");
+                        return true;
+                    }
+
+                    let plan = crate::hyperzoom::plan_hyperzoom(crate::hyperzoom::HyperzoomInput {
+                        source_clip_dur_secs: src_dur_secs,
+                        target_clip_dur_secs: tgt_dur_secs,
+                        focal_x_norm: *focal_x_norm,
+                        focal_y_norm: *focal_y_norm,
+                        duration_secs: *duration_secs,
+                        max_scale: *max_scale,
+                    });
+
+                    let seq = &mut self.state.sequences[seq_idx];
+                    apply_hyperzoom_plan_to_clip(seq, src_id, plan.source_anchor, &plan.source_scale_kfs);
+                    apply_hyperzoom_plan_to_clip(seq, tgt_id, plan.target_anchor, &plan.target_scale_kfs);
+
+                    self.state.dirty = true;
+                    self.sync_sequence_to_engine();
+                    return true;
+                }
                 AppCommand::SetClipConsumedAsMatte { clip_id, consumed } => {
                     let cid = *clip_id;
                     let c = *consumed;
@@ -30848,6 +30913,64 @@ fn matte_chain_creates_cycle(
     true
 }
 
+/// Apply one half of a planned hyperzoom to `clip_id` in `seq`:
+///
+/// * Set the clip's `BuiltinEffect::Transform` anchor to the focal
+///   point (creating the effect with otherwise-default values if the
+///   clip didn't already have one).
+/// * Replace the clip's `transform_scale_keyframes` with the planned
+///   pair so the ramp is exact regardless of any pre-existing scale
+///   keyframes (re-applying hyperzoom should be idempotent — a stale
+///   ramp from an earlier application doesn't accumulate).
+///
+/// No-ops if the clip can't be located. The handler logs the failure
+/// path so a stale dispatch doesn't silently mutate an unrelated clip.
+fn apply_hyperzoom_plan_to_clip(
+    seq: &mut klipp_timeline::Sequence,
+    clip_id: klipp_core::ClipId,
+    anchor: (f32, f32),
+    scale_kfs: &[klipp_core::keyframe::Keyframe],
+) {
+    let Some(clip) = seq.all_clips_mut().find(|c| c.id == clip_id) else {
+        tracing::warn!("apply_hyperzoom_plan_to_clip: clip {clip_id:?} no longer in sequence");
+        return;
+    };
+
+    // Update or insert the Transform builtin so the anchor lands at
+    // the focal point. Other Transform fields keep their existing
+    // values when one is already present — the user might have a
+    // baseline rotation or perspective they want preserved.
+    let mut found = false;
+    for fx in clip.builtin_effects.iter_mut() {
+        if let klipp_effects::BuiltinEffect::Transform {
+            anchor_x, anchor_y, ..
+        } = fx
+        {
+            *anchor_x = anchor.0;
+            *anchor_y = anchor.1;
+            found = true;
+            break;
+        }
+    }
+    if !found {
+        clip.builtin_effects.push(klipp_effects::BuiltinEffect::Transform {
+            position_x: 0.0,
+            position_y: 0.0,
+            scale_x: 1.0,
+            scale_y: 1.0,
+            rotation: 0.0,
+            anchor_x: anchor.0,
+            anchor_y: anchor.1,
+            rotation_x: 0.0,
+            rotation_y: 0.0,
+            perspective: 0.0,
+        });
+        clip.builtin_effects_enabled.push(true);
+    }
+
+    clip.transform_scale_keyframes = scale_kfs.to_vec();
+}
+
 /// Mirror of `matte_chain_creates_cycle` for the `transform_link`
 /// chain: returns true iff binding `consumer.transform_link.target =
 /// target` would create a cycle (consumer → … → target → consumer).
@@ -33434,6 +33557,123 @@ mod transform_link_handler_tests {
         let bid = b.id;
         let seq = seq_with_clips(vec![a]);
         assert!(!transform_link_chain_creates_cycle(&seq, bid, ClipId::new()));
+    }
+}
+
+#[cfg(test)]
+mod hyperzoom_handler_tests {
+    //! Pure-function tests for `apply_hyperzoom_plan_to_clip` — the
+    //! per-clip half of the hyperzoom dispatcher. The full
+    //! `ApplyHyperzoom` AppCommand handler needs a `App` for
+    //! `dirty`/`sync_sequence_to_engine`; these exercise the core
+    //! mutation invariants on a hand-built sequence.
+    use super::apply_hyperzoom_plan_to_clip;
+    use klipp_core::{ClipId, MediaId, RationalTime};
+    use klipp_core::keyframe::{Interpolation, Keyframe};
+    use klipp_effects::BuiltinEffect;
+    use klipp_timeline::{Clip, Sequence, Track, TrackKind};
+
+    fn tc(frames: i64) -> RationalTime { RationalTime::from_frames(frames, 24) }
+
+    fn seq_with_clips(clips: Vec<Clip>) -> Sequence {
+        let mut s = Sequence::new_default();
+        let mut tr = Track::new("V1", TrackKind::Video);
+        tr.clips = clips;
+        s.tracks.push(tr);
+        s
+    }
+
+    fn fresh_clip() -> Clip {
+        Clip::media(MediaId::new(), tc(0), tc(48), tc(0), tc(48))
+    }
+
+    fn kf(t: f64, v: f32) -> Keyframe {
+        Keyframe { time_secs: t, value: v, interpolation: Interpolation::Linear,
+                   tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0) }
+    }
+
+    #[test]
+    fn applies_anchor_by_inserting_transform_when_absent() {
+        // Clip has no Transform builtin to start. Plan should insert
+        // one with the focal point as anchor and the rest at default.
+        let c = fresh_clip();
+        let cid = c.id;
+        let mut seq = seq_with_clips(vec![c]);
+        apply_hyperzoom_plan_to_clip(&mut seq, cid, (0.3, 0.7), &[kf(0.0, 1.0), kf(0.5, 50.0)]);
+        let clip = seq.tracks.iter().flat_map(|t| t.clips.iter()).find(|c| c.id == cid).unwrap();
+        let xform = clip.builtin_effects.iter().find_map(|e| match e {
+            BuiltinEffect::Transform { anchor_x, anchor_y, scale_x, .. } => Some((*anchor_x, *anchor_y, *scale_x)),
+            _ => None,
+        }).expect("Transform builtin should have been inserted");
+        assert!((xform.0 - 0.3).abs() < 1e-6);
+        assert!((xform.1 - 0.7).abs() < 1e-6);
+        assert!((xform.2 - 1.0).abs() < 1e-6); // default scale, not the keyframe value
+    }
+
+    #[test]
+    fn updates_existing_transform_anchor_in_place() {
+        // Pre-existing Transform with non-default rotation + scale. The
+        // plan should ONLY rewrite anchor — the user's other field
+        // values must survive (re-applying hyperzoom shouldn't blow
+        // away a baseline rotation, for example).
+        let mut c = fresh_clip();
+        c.builtin_effects.push(BuiltinEffect::Transform {
+            position_x: 10.0, position_y: 20.0,
+            scale_x: 1.5, scale_y: 1.5,
+            rotation: 45.0,
+            anchor_x: 0.5, anchor_y: 0.5,
+            rotation_x: 0.0, rotation_y: 0.0, perspective: 0.0,
+        });
+        c.builtin_effects_enabled.push(true);
+        let cid = c.id;
+        let mut seq = seq_with_clips(vec![c]);
+        apply_hyperzoom_plan_to_clip(&mut seq, cid, (0.2, 0.8), &[kf(0.0, 1.0), kf(0.5, 50.0)]);
+        let clip = seq.tracks.iter().flat_map(|t| t.clips.iter()).find(|c| c.id == cid).unwrap();
+        let xform = clip.builtin_effects.iter().find_map(|e| match e {
+            BuiltinEffect::Transform { position_x, position_y, scale_x, rotation, anchor_x, anchor_y, .. } =>
+                Some((*position_x, *position_y, *scale_x, *rotation, *anchor_x, *anchor_y)),
+            _ => None,
+        }).unwrap();
+        assert!((xform.0 - 10.0).abs() < 1e-6, "position_x preserved");
+        assert!((xform.1 - 20.0).abs() < 1e-6, "position_y preserved");
+        assert!((xform.2 - 1.5).abs() < 1e-6, "scale_x preserved");
+        assert!((xform.3 - 45.0).abs() < 1e-6, "rotation preserved");
+        assert!((xform.4 - 0.2).abs() < 1e-6, "anchor_x updated");
+        assert!((xform.5 - 0.8).abs() < 1e-6, "anchor_y updated");
+    }
+
+    #[test]
+    fn replaces_existing_scale_keyframes_for_idempotency() {
+        // Re-applying hyperzoom should overwrite — never accumulate.
+        // Otherwise a user clicking Apply twice with different settings
+        // would end up with stale keyframes from the first application
+        // bleeding into the second.
+        let mut c = fresh_clip();
+        c.transform_scale_keyframes = vec![kf(0.0, 0.5), kf(0.25, 2.0), kf(0.5, 5.0)];
+        let cid = c.id;
+        let mut seq = seq_with_clips(vec![c]);
+        let new_kfs = vec![kf(2.5, 1.0), kf(3.0, 50.0)];
+        apply_hyperzoom_plan_to_clip(&mut seq, cid, (0.5, 0.5), &new_kfs);
+        let clip = seq.tracks.iter().flat_map(|t| t.clips.iter()).find(|c| c.id == cid).unwrap();
+        assert_eq!(clip.transform_scale_keyframes.len(), 2);
+        assert!((clip.transform_scale_keyframes[0].time_secs - 2.5).abs() < 1e-9);
+        assert!((clip.transform_scale_keyframes[1].time_secs - 3.0).abs() < 1e-9);
+        assert!((clip.transform_scale_keyframes[1].value - 50.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn missing_clip_is_a_no_op() {
+        // Stale dispatch (clip removed between dispatch and handler).
+        // The function should warn and return without panicking; the
+        // sequence stays unchanged.
+        let c = fresh_clip();
+        let mut seq = seq_with_clips(vec![c.clone()]);
+        let other_id = ClipId::new();
+        apply_hyperzoom_plan_to_clip(&mut seq, other_id, (0.5, 0.5), &[kf(0.0, 1.0), kf(0.5, 50.0)]);
+        // Original clip untouched.
+        let same = seq.tracks.iter().flat_map(|t| t.clips.iter()).find(|x| x.id == c.id).unwrap();
+        assert!(same.transform_scale_keyframes.is_empty());
+        assert!(same.builtin_effects.iter().all(|e| !matches!(e, BuiltinEffect::Transform { .. })));
     }
 }
 
