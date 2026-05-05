@@ -7708,8 +7708,7 @@ impl TimelinePanel {
                         if ui.button("Push to Resolve").clicked() {
                             let result = klipp_timeline::magnetic::MagneticEditor::resolve_collision_push(
                                 state.sequence_mut(), clip_id, colliding_id);
-                            state.history.push(crate::history::HistoryEntry {
-                                sequence_idx: state.active_sequence_idx,
+                            state.active_history_mut().push(crate::history::HistoryEntry {
                                 command: crate::history::EditCommand::Magnetic(result.command),
                             });
                             state.dirty = true;
@@ -8562,7 +8561,7 @@ impl TimelinePanel {
                                         }
                                     }
                                 };
-                                state.history.push(crate::history::HistoryEntry { sequence_idx: state.active_sequence_idx, command: crate::history::EditCommand::Magnetic(result.command) });
+                                state.active_history_mut().push(crate::history::HistoryEntry { command: crate::history::EditCommand::Magnetic(result.command) });
                                 state.dirty = true;
                                 cmds.push(AppCommand::SequenceUpdated);
                             }
@@ -8615,8 +8614,7 @@ impl TimelinePanel {
                                             let result = klipp_timeline::magnetic::MagneticEditor::connect_clip(
                                                 state.sequence_mut(), clip_id, anchor_id,
                                                 klipp_timeline::AnchorAlignment::StartAligned);
-                                            state.history.push(crate::history::HistoryEntry {
-                                                sequence_idx: state.active_sequence_idx,
+                                            state.active_history_mut().push(crate::history::HistoryEntry {
                                                 command: crate::history::EditCommand::Magnetic(result.command),
                                             });
                                             state.dirty = true;
@@ -8627,8 +8625,7 @@ impl TimelinePanel {
                                     // Auto-disconnect
                                     let result = klipp_timeline::magnetic::MagneticEditor::disconnect_clip(
                                         state.sequence_mut(), clip_id);
-                                    state.history.push(crate::history::HistoryEntry {
-                                        sequence_idx: state.active_sequence_idx,
+                                    state.active_history_mut().push(crate::history::HistoryEntry {
                                         command: crate::history::EditCommand::Magnetic(result.command),
                                     });
                                     state.dirty = true;
@@ -8857,8 +8854,7 @@ impl TimelinePanel {
                             let old_l_out = slide.original_left_out;
                             let r_id = slide.right_clip_id;
                             let old_r_in = slide.original_right_in;
-                            state.history.push(crate::history::HistoryEntry {
-                                sequence_idx: state.active_sequence_idx,
+                            state.active_history_mut().push(crate::history::HistoryEntry {
                                 command: crate::history::EditCommand::LegacySlideClip {
                                     clip_id: cid,
                                     old_timeline_in: old_tl_in,
@@ -8985,8 +8981,7 @@ impl TimelinePanel {
                             let cid = slip.clip_id;
                             let old_si = slip.original_source_in;
                             let old_so = slip.original_source_out;
-                            state.history.push(crate::history::HistoryEntry {
-                                sequence_idx: state.active_sequence_idx,
+                            state.active_history_mut().push(crate::history::HistoryEntry {
                                 command: crate::history::EditCommand::LegacySlipClip {
                                     clip_id: cid,
                                     old_source_in: old_si,
@@ -10297,8 +10292,7 @@ impl TimelinePanel {
                                 let new_in = state.sequence().in_point;
                                 let new_out = state.sequence().out_point;
                                 if drag.original_in != new_in || drag.original_out != new_out {
-                                    state.history.push(crate::history::HistoryEntry {
-                                        sequence_idx: state.active_sequence_idx,
+                                    state.active_history_mut().push(crate::history::HistoryEntry {
                                         command: crate::history::EditCommand::SetRange {
                                             old_in: drag.original_in,
                                             old_out: drag.original_out,
@@ -13416,7 +13410,8 @@ impl TimelinePanel {
                 cmds.push(AppCommand::LoadSourceMedia { media_id: item.id });
             }
             if resp.double_clicked() {
-                cmds.push(AppCommand::ImportMediaLinked { media_id: item.id });
+                let on_new_tracks = ui.input(|i| i.modifiers.shift);
+                cmds.push(AppCommand::ImportMediaLinked { media_id: item.id, on_new_tracks });
             }
             // Drag: start dragging media to a track
             if resp.drag_started() {

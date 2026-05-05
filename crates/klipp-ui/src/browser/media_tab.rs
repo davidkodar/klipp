@@ -1099,7 +1099,8 @@ fn render_list_view(
                 cmds.push(AppCommand::LoadSourceMedia { media_id: item.id });
             }
             if resp.double_clicked() {
-                cmds.push(AppCommand::ImportMediaLinked { media_id: item.id });
+                let on_new_tracks = ui.input(|i| i.modifiers.shift);
+                cmds.push(AppCommand::ImportMediaLinked { media_id: item.id, on_new_tracks });
             }
             if resp.dragged() {
                 // Drag all selected items if the dragged item is in the selection
@@ -1445,7 +1446,8 @@ fn render_grid_view(
                 cmds.push(AppCommand::LoadSourceMedia { media_id: item.id });
             }
             if card_resp.double_clicked() {
-                cmds.push(AppCommand::ImportMediaLinked { media_id: item.id });
+                let on_new_tracks = ui.input(|i| i.modifiers.shift);
+                cmds.push(AppCommand::ImportMediaLinked { media_id: item.id, on_new_tracks });
             }
 
             // Drag disambiguation
@@ -1854,7 +1856,7 @@ fn show_context_menu(
         ui.close_menu();
     }
     if ui.button("Add to Timeline").clicked() {
-        cmds.push(AppCommand::ImportMediaLinked { media_id });
+        cmds.push(AppCommand::ImportMediaLinked { media_id, on_new_tracks: false });
         ui.close_menu();
     }
     if ui.button("Generate Proxy").clicked() {

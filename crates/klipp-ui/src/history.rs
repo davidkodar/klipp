@@ -1,6 +1,6 @@
 use std::collections::{HashMap, VecDeque};
 use std::time::{Duration, Instant};
-use klipp_core::{AudioEffectInstance, BinId, ClipId, Keyframe, MediaId, RationalTime};
+use klipp_core::{AudioEffectInstance, BinId, ClipId, Fps, Keyframe, MediaId, RationalTime, Resolution};
 use klipp_timeline::Clip;
 
 /// Window during which consecutive "Edit Title Text" pushes for the
@@ -118,6 +118,26 @@ pub enum EditCommand {
     LegacyAppendClip {
         clip: Clip,
         track_index: usize,
+    },
+    /// Atomic undo for "double-click bin item to timeline" / dragged-from-bin
+    /// linked-import. Captures every side-effect of one user gesture so a
+    /// single ctrl+z reverts all of: appended video clip, appended audio
+    /// clip, an audio track auto-created to host it, and the
+    /// resolution/fps autoset that fires when the sequence was empty.
+    LinkedImport {
+        video: Option<(Clip, usize)>,
+        audio: Option<(Clip, usize)>,
+        /// Set when a new video track was auto-created above the stack
+        /// to host this import (Shift+double-click escape hatch). Undo
+        /// removes it. Index is captured *after* creation, before any
+        /// audio track was pushed.
+        created_video_track_at: Option<usize>,
+        /// Set when the audio track was auto-created at the end of the
+        /// track list to host the imported audio. Undo removes it.
+        created_audio_track_at: Option<usize>,
+        /// (prev, new) resolution + fps when the import triggered the
+        /// empty-sequence autoset. Undo restores prev; redo restores new.
+        autoset: Option<((Resolution, Fps), (Resolution, Fps))>,
     },
     /// Title clip added (with optional track creation for undo)
     AddTitleClip {
@@ -417,11 +437,95 @@ pub enum EditCommand {
     },
 }
 
+/// Undo the side-effects of `EditCommand::LinkedImport` on a Sequence.
+/// Returns the Fps the caller should propagate to its own UI state
+/// when the autoset is being reverted.
+pub fn apply_linked_import_inverse(
+    seq: &mut klipp_timeline::Sequence,
+    video: &Option<(Clip, usize)>,
+    audio: &Option<(Clip, usize)>,
+    created_video_track_at: Option<usize>,
+    created_audio_track_at: Option<usize>,
+    autoset: &Option<((Resolution, Fps), (Resolution, Fps))>,
+) -> Option<Fps> {
+    if let Some((clip, ti)) = video {
+        if let Some(track) = seq.tracks.get_mut(*ti) {
+            track.remove_clip(clip.id);
+        }
+    }
+    if let Some((clip, ti)) = audio {
+        if let Some(track) = seq.tracks.get_mut(*ti) {
+            track.remove_clip(clip.id);
+        }
+    }
+    // Drop auto-created tracks in descending index order so the lower
+    // index stays valid through the higher-index removal.
+    let mut to_drop: Vec<usize> = [created_video_track_at, created_audio_track_at]
+        .into_iter().flatten().collect();
+    to_drop.sort_unstable();
+    while let Some(at) = to_drop.pop() {
+        if at < seq.tracks.len() {
+            seq.tracks.remove(at);
+        }
+    }
+    if let Some((prev, _new)) = autoset {
+        seq.resolution = prev.0;
+        seq.fps = prev.1;
+        Some(prev.1)
+    } else {
+        None
+    }
+}
+
+/// Re-apply the side-effects of `EditCommand::LinkedImport` on a Sequence.
+/// Returns the Fps the caller should propagate when the autoset is being
+/// re-applied.
+pub fn apply_linked_import_forward(
+    seq: &mut klipp_timeline::Sequence,
+    video: &Option<(Clip, usize)>,
+    audio: &Option<(Clip, usize)>,
+    created_video_track_at: Option<usize>,
+    created_audio_track_at: Option<usize>,
+    autoset: &Option<((Resolution, Fps), (Resolution, Fps))>,
+) -> Option<Fps> {
+    let propagated_fps = if let Some((_prev, new)) = autoset {
+        seq.resolution = new.0;
+        seq.fps = new.1;
+        Some(new.1)
+    } else {
+        None
+    };
+    // Re-create video track first (inserts at index 0, shifts everyone),
+    // then audio (push to end). Order matches the original gesture.
+    if created_video_track_at.is_some() {
+        let video_count = seq.tracks.iter().filter(|t| t.kind == klipp_timeline::TrackKind::Video).count();
+        seq.add_video_track(format!("Video {}", video_count + 1));
+    }
+    if created_audio_track_at.is_some() {
+        let audio_count = seq.tracks.iter().filter(|t| t.kind == klipp_timeline::TrackKind::Audio).count();
+        seq.add_audio_track(format!("Audio {}", audio_count + 1));
+    }
+    if let Some((clip, ti)) = video {
+        if let Some(track) = seq.tracks.get_mut(*ti) {
+            track.clips.push(clip.clone());
+            track.sort_clips();
+        }
+    }
+    if let Some((clip, ti)) = audio {
+        if let Some(track) = seq.tracks.get_mut(*ti) {
+            track.clips.push(clip.clone());
+            track.sort_clips();
+        }
+    }
+    propagated_fps
+}
+
 impl EditCommand {
     pub fn label(&self) -> &'static str {
         match self {
             EditCommand::AddTitleClip { .. } => "Add Title",
             EditCommand::LegacyAppendClip { .. } => "Append Clip",
+            EditCommand::LinkedImport { .. } => "Add to Timeline",
             EditCommand::LegacyRemoveClip { .. } | EditCommand::LegacyRippleRemove { .. } => "Remove Clip",
             EditCommand::LegacyMoveClip { .. } | EditCommand::LegacyMoveClipToTrack { .. } => "Move Clip",
             EditCommand::LegacyTrimClip { .. } | EditCommand::LegacyRippleTrimClip { .. } => "Trim Clip",
@@ -460,10 +564,12 @@ impl EditCommand {
     }
 }
 
-/// Wraps an EditCommand with the sequence index it targets.
+/// One entry on a sequence's undo/redo stack. The sequence is implicit
+/// in *which* `CommandHistory` the entry is stored on
+/// (`AppState::command_histories[seq_id]`) — there's no need to tag
+/// entries with their sequence id.
 #[derive(Debug, Clone)]
 pub struct HistoryEntry {
-    pub sequence_idx: usize,
     pub command: EditCommand,
 }
 
@@ -490,11 +596,6 @@ pub struct CommandHistory {
     /// undo entry. Cleared whenever a non-text-edit push happens (so
     /// intervening edits cleanly break the burst).
     last_title_text_edit: Option<(ClipId, Instant)>,
-
-    /// Number of ops pushed since the last project save. Incremented by push(),
-    /// reset to 0 by reset_ops_since_save() when the project is saved. Used by
-    /// the op-count autosave trigger.
-    pub ops_since_save: u64,
 }
 
 impl CommandHistory {
@@ -506,13 +607,7 @@ impl CommandHistory {
             pending_coalesce_key: None,
             pending_old_entry: None,
             last_title_text_edit: None,
-            ops_since_save: 0,
         }
-    }
-
-    /// Reset the ops-since-save counter. Call from the project-save path.
-    pub fn reset_ops_since_save(&mut self) {
-        self.ops_since_save = 0;
     }
 
     /// Set the maximum undo stack size. 0 = unlimited.
@@ -535,7 +630,6 @@ impl CommandHistory {
         if self.max_size > 0 && self.undo_stack.len() > self.max_size {
             self.undo_stack.pop_front();
         }
-        self.ops_since_save = self.ops_since_save.saturating_add(1);
     }
 
     /// Title-text-edit coalescing: if `old → new` is a text-only delta
@@ -625,6 +719,17 @@ impl CommandHistory {
     /// Command handlers check this to suppress individual undo pushes during drag.
     pub fn is_dragging(&self, key: &str) -> bool {
         self.pending_coalesce_key.as_deref() == Some(key)
+    }
+
+    /// Discard any pending drag-coalesce envelope without pushing.
+    /// Called when the user navigates away (e.g. switches sequences)
+    /// before releasing a drag — the gesture can never close in this
+    /// stack, so we stop tracking it. Intentionally does NOT push the
+    /// pre-drag snapshot; doing so would synthesise an undo entry for
+    /// a non-edit, which surprises users.
+    pub fn abandon_pending_drag(&mut self) {
+        self.pending_coalesce_key = None;
+        self.pending_old_entry = None;
     }
 
     /// Returns true if ANY drag-coalesce envelope is currently open (regardless
@@ -797,7 +902,6 @@ fn combine_old_new(old_entry: HistoryEntry, new_entry: HistoryEntry) -> HistoryE
         }
     };
     HistoryEntry {
-        sequence_idx: new_entry.sequence_idx,
         command,
     }
 }
@@ -1202,7 +1306,6 @@ mod drag_coalesce_tests {
         // begin_drag / end_drag, so each individual entry just carries
         // the same value on both sides.
         HistoryEntry {
-            sequence_idx: 0,
             command: EditCommand::EditClipAudio {
                 clip_id: ClipId::new(),
                 old_gain: gain, old_volume: gain, old_pan: 0.0,
@@ -1221,7 +1324,6 @@ mod drag_coalesce_tests {
         // arm. LegacySlipClip has no matching arm in combine_old_new,
         // so pairing it with EditClipAudio reaches the fallback.
         HistoryEntry {
-            sequence_idx: 0,
             command: EditCommand::LegacySlipClip {
                 clip_id: ClipId::new(),
                 old_source_in: klipp_core::RationalTime::ZERO,
@@ -1241,7 +1343,6 @@ mod drag_coalesce_tests {
         // `new_entry` so undo rolls back to the pre-drag state and
         // redo restores the post-drag state.
         let old = HistoryEntry {
-            sequence_idx: 7,
             command: EditCommand::EditClipAudio {
                 clip_id: ClipId::new(),
                 old_gain: 1.0, old_volume: 1.0, old_pan: 0.0,
@@ -1253,7 +1354,6 @@ mod drag_coalesce_tests {
             },
         };
         let new = HistoryEntry {
-            sequence_idx: 7,
             command: EditCommand::EditClipAudio {
                 clip_id: ClipId::new(),
                 old_gain: 9.0, old_volume: 9.0, old_pan: 0.9,
@@ -1265,7 +1365,6 @@ mod drag_coalesce_tests {
             },
         };
         let combined = combine_old_new(old, new);
-        assert_eq!(combined.sequence_idx, 7);
         match combined.command {
             EditCommand::EditClipAudio {
                 old_gain, old_volume, old_pan, old_fade_in, old_fade_out,
@@ -1768,7 +1867,6 @@ mod title_text_coalesce_tests {
 
     fn entry(clip_id: ClipId, old: TitleData, new: TitleData) -> HistoryEntry {
         HistoryEntry {
-            sequence_idx: 0,
             command: EditCommand::EditTitle {
                 clip_id,
                 description: "Edit Title Text",
@@ -1854,7 +1952,6 @@ mod title_text_coalesce_tests {
         // A non-text-edit push (different description) must clear the
         // burst marker so the next text edit pushes a fresh entry.
         let other = HistoryEntry {
-            sequence_idx: 0,
             command: EditCommand::EditTitle {
                 clip_id: cid,
                 description: "Set Font",
@@ -1931,5 +2028,208 @@ mod title_text_coalesce_tests {
             content: klipp_timeline::TitleObjectContent::TextBox(tb_extra),
         });
         assert!(!title_diff_is_text_only(&a, &b));
+    }
+}
+
+#[cfg(test)]
+mod linked_import_tests {
+    use super::*;
+    use klipp_core::{Fps, MediaId, Resolution, Timecode};
+    use klipp_timeline::{Sequence, TrackKind};
+
+    fn dur(secs: i64, rate: u32) -> Timecode {
+        Timecode { value: secs * rate as i64, rate }
+    }
+
+    /// Simulates the import side of the gesture: append linked V+A clips,
+    /// no autoset (sequence already has tracks at default fps), no
+    /// auto-created audio track, returns the LinkedImport variant fields
+    /// the inverse helper would receive.
+    fn run_import_va(seq: &mut Sequence) -> (
+        Option<(Clip, usize)>,
+        Option<(Clip, usize)>,
+        Option<usize>,
+        Option<((Resolution, Fps), (Resolution, Fps))>,
+    ) {
+        let mid = MediaId::new();
+        let video_clip_id = seq.tracks[0].append_clip(mid, dur(2, 24));
+        let audio_clip_id = seq.tracks[1].append_clip(mid, dur(2, 24));
+        let v_snap = seq.tracks[0].find_clip(video_clip_id).unwrap().clone();
+        let a_snap = seq.tracks[1].find_clip(audio_clip_id).unwrap().clone();
+        (Some((v_snap, 0)), Some((a_snap, 1)), None, None)
+    }
+
+    #[test]
+    fn inverse_removes_appended_va_clips() {
+        let mut seq = Sequence::new_default();
+        assert_eq!(seq.tracks[0].clips.len(), 0);
+        assert_eq!(seq.tracks[1].clips.len(), 0);
+        let (video, audio, created, autoset) = run_import_va(&mut seq);
+        assert_eq!(seq.tracks[0].clips.len(), 1);
+        assert_eq!(seq.tracks[1].clips.len(), 1);
+
+        let fps_change = apply_linked_import_inverse(&mut seq, &video, &audio, None, created, &autoset);
+        assert!(fps_change.is_none());
+        assert_eq!(seq.tracks[0].clips.len(), 0);
+        assert_eq!(seq.tracks[1].clips.len(), 0);
+    }
+
+    #[test]
+    fn forward_replays_appended_va_clips() {
+        let mut seq = Sequence::new_default();
+        let (video, audio, created, autoset) = run_import_va(&mut seq);
+        // Roll back, then redo.
+        apply_linked_import_inverse(&mut seq, &video, &audio, None, created, &autoset);
+        let fps_change = apply_linked_import_forward(&mut seq, &video, &audio, None, created, &autoset);
+        assert!(fps_change.is_none());
+        assert_eq!(seq.tracks[0].clips.len(), 1);
+        assert_eq!(seq.tracks[1].clips.len(), 1);
+    }
+
+    #[test]
+    fn inverse_drops_auto_created_audio_track() {
+        let mut seq = Sequence::new_default();
+        // Drop the default audio track to simulate "no audio track exists".
+        seq.tracks.retain(|t| t.kind != TrackKind::Audio);
+        assert_eq!(seq.tracks.len(), 1);
+        // Simulate import side: append a video clip on V1, auto-create
+        // an audio track at the end, append the audio clip there.
+        let mid = MediaId::new();
+        let video_clip_id = seq.tracks[0].append_clip(mid, dur(2, 24));
+        seq.add_audio_track("Audio 1".to_string());
+        let audio_track_idx = seq.tracks.len() - 1;
+        let audio_clip_id = seq.tracks[audio_track_idx].append_clip(mid, dur(2, 24));
+        let v = Some((seq.tracks[0].find_clip(video_clip_id).unwrap().clone(), 0usize));
+        let a = Some((seq.tracks[audio_track_idx].find_clip(audio_clip_id).unwrap().clone(), audio_track_idx));
+
+        apply_linked_import_inverse(&mut seq, &v, &a, None, Some(audio_track_idx), &None);
+
+        // Audio track and both clips are gone; only V1 remains.
+        assert_eq!(seq.tracks.len(), 1);
+        assert_eq!(seq.tracks[0].kind, TrackKind::Video);
+        assert!(seq.tracks[0].clips.is_empty());
+    }
+
+    #[test]
+    fn inverse_restores_prev_resolution_and_fps_on_autoset() {
+        let mut seq = Sequence::new_default();
+        let prev = (seq.resolution, seq.fps);
+        let new_res = Resolution { width: 3840, height: 2160 };
+        let new_fps = Fps::new(60, 1);
+        seq.resolution = new_res;
+        seq.fps = new_fps;
+        let autoset = Some((prev, (new_res, new_fps)));
+        let (video, audio, created, _) = run_import_va(&mut seq);
+
+        let fps_change = apply_linked_import_inverse(&mut seq, &video, &audio, None, created, &autoset);
+        assert_eq!(fps_change, Some(prev.1));
+        assert_eq!(seq.resolution, prev.0);
+        assert_eq!(seq.fps, prev.1);
+    }
+
+    #[test]
+    fn forward_reapplies_autoset_resolution_and_fps() {
+        let mut seq = Sequence::new_default();
+        let prev = (seq.resolution, seq.fps);
+        let new_res = Resolution { width: 3840, height: 2160 };
+        let new_fps = Fps::new(60, 1);
+        let autoset = Some((prev, (new_res, new_fps)));
+
+        let fps_change = apply_linked_import_forward(&mut seq, &None, &None, None, None, &autoset);
+        assert_eq!(fps_change, Some(new_fps));
+        assert_eq!(seq.resolution, new_res);
+        assert_eq!(seq.fps, new_fps);
+    }
+
+    #[test]
+    fn label_is_user_visible_string() {
+        let cmd = EditCommand::LinkedImport {
+            video: None,
+            audio: None,
+            created_video_track_at: None,
+            created_audio_track_at: None,
+            autoset: None,
+        };
+        assert_eq!(cmd.label(), "Add to Timeline");
+    }
+
+    #[test]
+    fn inverse_drops_both_auto_created_tracks_in_shift_mode() {
+        // Shift-mode V+A import: a fresh video track is added on top
+        // (index 0) and a fresh audio track is pushed at the end. Undo
+        // must drop both without leaving orphan clips behind.
+        let mut seq = Sequence::new_default();
+        let video_track_count_before = seq.tracks.iter().filter(|t| t.kind == TrackKind::Video).count();
+        let audio_track_count_before = seq.tracks.iter().filter(|t| t.kind == TrackKind::Audio).count();
+
+        // Mirror the shift-mode handler: create new V at top, new A at end.
+        seq.add_video_track("Video 2".to_string());
+        let new_video_idx = 0usize;
+        seq.add_audio_track("Audio 2".to_string());
+        let new_audio_idx = seq.tracks.len() - 1;
+
+        let mid = MediaId::new();
+        let video_clip_id = seq.tracks[new_video_idx].append_clip(mid, dur(2, 24));
+        let audio_clip_id = seq.tracks[new_audio_idx].append_clip(mid, dur(2, 24));
+        let v = Some((seq.tracks[new_video_idx].find_clip(video_clip_id).unwrap().clone(), new_video_idx));
+        let a = Some((seq.tracks[new_audio_idx].find_clip(audio_clip_id).unwrap().clone(), new_audio_idx));
+
+        apply_linked_import_inverse(
+            &mut seq, &v, &a,
+            Some(new_video_idx),
+            Some(new_audio_idx),
+            &None,
+        );
+
+        let video_track_count_after = seq.tracks.iter().filter(|t| t.kind == TrackKind::Video).count();
+        let audio_track_count_after = seq.tracks.iter().filter(|t| t.kind == TrackKind::Audio).count();
+        assert_eq!(video_track_count_after, video_track_count_before);
+        assert_eq!(audio_track_count_after, audio_track_count_before);
+        // No track left holding clips from this import.
+        assert!(seq.tracks.iter().all(|t| t.clips.is_empty()));
+    }
+
+    #[test]
+    fn forward_recreates_both_tracks_in_shift_mode() {
+        let mut seq = Sequence::new_default();
+        let starting_video = seq.tracks.iter().filter(|t| t.kind == TrackKind::Video).count();
+        let starting_audio = seq.tracks.iter().filter(|t| t.kind == TrackKind::Audio).count();
+        // Capture clip snapshots from a faux import on hypothetical new tracks.
+        let mid = MediaId::new();
+        seq.add_video_track("Video 2".to_string());
+        seq.add_audio_track("Audio 2".to_string());
+        let v_idx = 0usize;
+        let a_idx = seq.tracks.len() - 1;
+        let v_id = seq.tracks[v_idx].append_clip(mid, dur(2, 24));
+        let a_id = seq.tracks[a_idx].append_clip(mid, dur(2, 24));
+        let v_snap = seq.tracks[v_idx].find_clip(v_id).unwrap().clone();
+        let a_snap = seq.tracks[a_idx].find_clip(a_id).unwrap().clone();
+
+        // Roll back by inverse, then redo via forward.
+        apply_linked_import_inverse(
+            &mut seq,
+            &Some((v_snap.clone(), v_idx)),
+            &Some((a_snap.clone(), a_idx)),
+            Some(v_idx),
+            Some(a_idx),
+            &None,
+        );
+        assert_eq!(seq.tracks.iter().filter(|t| t.kind == TrackKind::Video).count(), starting_video);
+        assert_eq!(seq.tracks.iter().filter(|t| t.kind == TrackKind::Audio).count(), starting_audio);
+
+        apply_linked_import_forward(
+            &mut seq,
+            &Some((v_snap, v_idx)),
+            &Some((a_snap, a_idx)),
+            Some(v_idx),
+            Some(a_idx),
+            &None,
+        );
+
+        assert_eq!(seq.tracks.iter().filter(|t| t.kind == TrackKind::Video).count(), starting_video + 1);
+        assert_eq!(seq.tracks.iter().filter(|t| t.kind == TrackKind::Audio).count(), starting_audio + 1);
+        // Clips landed on the recreated tracks.
+        assert_eq!(seq.tracks[0].clips.len(), 1);
+        assert_eq!(seq.tracks[seq.tracks.len() - 1].clips.len(), 1);
     }
 }

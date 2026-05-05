@@ -664,8 +664,7 @@ pub fn show(
                         if let Some(anchor_id) = anchor_id {
                             let result = klipp_timeline::magnetic::MagneticEditor::promote_to_storyline(
                                 state.sequence_mut(), ti, anchor_id);
-                            state.history.push(crate::history::HistoryEntry {
-                                sequence_idx: state.active_sequence_idx,
+                            state.active_history_mut().push(crate::history::HistoryEntry {
                                 command: crate::history::EditCommand::Magnetic(result.command),
                             });
                             state.dirty = true;
@@ -677,8 +676,7 @@ pub fn show(
             TrackAction::BreakApartStoryline(ti) => {
                 let result = klipp_timeline::magnetic::MagneticEditor::break_apart_storyline(
                     state.sequence_mut(), ti);
-                state.history.push(crate::history::HistoryEntry {
-                    sequence_idx: state.active_sequence_idx,
+                state.active_history_mut().push(crate::history::HistoryEntry {
                     command: crate::history::EditCommand::Magnetic(result.command),
                 });
                 state.dirty = true;

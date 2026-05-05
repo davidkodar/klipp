@@ -1604,7 +1604,13 @@ pub enum AppCommand {
     },
 
     // Linked clips
-    ImportMediaLinked { media_id: MediaId },
+    ImportMediaLinked {
+        media_id: MediaId,
+        /// When `true`, append on freshly created tracks above the
+        /// existing stack (Shift+double-click escape hatch). When
+        /// `false`, append onto V1/A1 (the FCP-style default).
+        on_new_tracks: bool,
+    },
     UnlinkClip { clip_id: ClipId },
     LinkClips { clip_a: ClipId, clip_b: ClipId },
 

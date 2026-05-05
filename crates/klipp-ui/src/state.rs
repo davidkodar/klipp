@@ -1,5 +1,5 @@
-use crate::history::CommandHistory;
-use klipp_core::{AudioParam, ClipId, Fps, MediaId, Timecode, Tool, TrackId, TransitionId, VideoParam, ViewerMode};
+use crate::history::{CommandHistory, EditCommand, HistoryEntry};
+use klipp_core::{AudioParam, ClipId, Fps, MediaId, SequenceId, Timecode, Tool, TrackId, TransitionId, VideoParam, ViewerMode};
 use klipp_engine::PlaybackState;
 use klipp_media::{MediaItem, MediaPool, ThumbnailCache};
 use klipp_timeline::{Clip, Sequence};
@@ -850,7 +850,21 @@ pub struct AppState {
     /// 4× true-peak or sample-hold.
     pub tp_oversample: bool,
     pub dirty: bool,
-    pub history: CommandHistory,
+    /// Per-sequence undo stack. Keyed by `SequenceId` (stable across
+    /// reorder/delete) so an entry never points at a sequence that
+    /// shifted underneath it. Use `active_history` /
+    /// `active_history_mut` / `push_history` to access the current
+    /// sequence's stack.
+    pub command_histories: std::collections::HashMap<SequenceId, CommandHistory>,
+    /// Project-level autosave counter — incremented on every history
+    /// push regardless of which sequence owned it. Cleared by the
+    /// project-save path. Lives on AppState (not on CommandHistory)
+    /// because autosave fires on total project mutations.
+    pub history_ops_since_save: u64,
+    /// Mirrors the `editing.undo_limit` pref so newly-created sequences
+    /// can be initialised with the same per-sequence cap. Updated
+    /// alongside `set_max_size` calls on existing histories.
+    pub history_max_size: usize,
 
     // Layout
     pub viewer_inspector_split: f32,
@@ -2685,7 +2699,9 @@ impl Default for AppState {
             project_path: None,
             created_at: None,
             dirty: false,
-            history: CommandHistory::new(),
+            command_histories: std::collections::HashMap::new(),
+            history_ops_since_save: 0,
+            history_max_size: 1000,
             viewer_inspector_split: 0.6,
             upper_timeline_split: 0.65,
             timeline_zoom: 50.0,
@@ -3134,6 +3150,64 @@ impl AppState {
         self.sequence().total_duration()
     }
 
+    /// Read-only access to the active sequence's undo/redo stack. Falls
+    /// back to a pinned default when the map entry hasn't been seeded
+    /// yet (only happens for legacy on-disk projects loaded before the
+    /// per-sequence migration).
+    pub fn active_history(&self) -> &CommandHistory {
+        let id = self.sequences[self.active_sequence_idx].id;
+        self.history_for(id)
+    }
+    /// Mutable access to the active sequence's undo/redo stack. Lazily
+    /// inserts an empty history sized by `history_max_size` if needed.
+    pub fn active_history_mut(&mut self) -> &mut CommandHistory {
+        let id = self.sequences[self.active_sequence_idx].id;
+        self.history_for_mut(id)
+    }
+    pub fn history_for(&self, seq_id: SequenceId) -> &CommandHistory {
+        // The map is seeded eagerly on sequence creation, so a missing
+        // entry indicates a project loaded before the migration —
+        // return a pinned empty history rather than panic on undo.
+        static EMPTY: std::sync::OnceLock<CommandHistory> = std::sync::OnceLock::new();
+        self.command_histories
+            .get(&seq_id)
+            .unwrap_or_else(|| EMPTY.get_or_init(CommandHistory::new))
+    }
+    pub fn history_for_mut(&mut self, seq_id: SequenceId) -> &mut CommandHistory {
+        let max = self.history_max_size;
+        self.command_histories.entry(seq_id).or_insert_with(|| {
+            let mut h = CommandHistory::new();
+            h.set_max_size(max);
+            h
+        })
+    }
+    /// Push a single edit onto the active sequence's undo stack and
+    /// bump the project-level autosave counter. Replaces the prior
+    /// `state.active_history_mut().push(HistoryEntry { sequence_idx, command })`
+    /// idiom — callers no longer pass a sequence index.
+    pub fn push_history(&mut self, command: EditCommand) {
+        self.active_history_mut().push(HistoryEntry { command });
+        self.history_ops_since_save = self.history_ops_since_save.saturating_add(1);
+    }
+    /// Reset the project-level autosave counter. Call from the
+    /// project-save path.
+    pub fn reset_ops_since_save(&mut self) {
+        self.history_ops_since_save = 0;
+    }
+    /// Apply `max` to every existing per-sequence history and update
+    /// the seed for sequences created later. Call from the prefs-changed path.
+    pub fn set_history_max_size(&mut self, max: usize) {
+        self.history_max_size = max;
+        for h in self.command_histories.values_mut() {
+            h.set_max_size(max);
+        }
+    }
+    /// Are *any* of the per-sequence histories mid-drag? Used by the
+    /// autosave timer to skip while the user is gesturing.
+    pub fn any_drag_in_progress(&self) -> bool {
+        self.command_histories.values().any(|h| h.is_any_drag_in_progress())
+    }
+
     /// Resolve `selected_clip` to its (track_idx, &Clip) location in
     /// the active sequence, using the `selected_clip_loc_cache` to
     /// avoid the O(tracks × clips) walk on every UI render.
@@ -3572,5 +3646,143 @@ mod rubber_band_param_tests {
         assert_ne!(a, b, "different indices must not match");
         assert_ne!(a, c, "different param names must not match");
         assert_eq!(a, a_clone, "clone must equal");
+    }
+}
+
+#[cfg(test)]
+mod per_sequence_history_tests {
+    //! Behavioural tests for the per-sequence undo stack. These walk the
+    //! AppState helpers directly so they're independent of the broader
+    //! Klipp app machinery.
+    use super::*;
+    use klipp_core::Resolution;
+    use klipp_timeline::Sequence;
+
+    fn add_seq(state: &mut AppState, name: &str) -> SequenceId {
+        let mut seq = Sequence::new_default();
+        seq.name = name.to_string();
+        let id = seq.id;
+        state.sequences.push(seq);
+        id
+    }
+
+    fn dummy_command() -> EditCommand {
+        // SetRange has no required-borrow side effects and a small payload.
+        EditCommand::SetRange {
+            old_in: None,
+            old_out: None,
+            new_in: None,
+            new_out: None,
+        }
+    }
+
+    #[test]
+    fn push_targets_active_sequence() {
+        let mut state = AppState::default();
+        // Make sure we have a known starting active sequence.
+        assert!(!state.sequences.is_empty());
+        let seq_a_id = state.sequences[0].id;
+        let seq_b_id = add_seq(&mut state, "B");
+
+        state.active_sequence_idx = 0;
+        state.push_history(dummy_command());
+        assert_eq!(state.history_for(seq_a_id).undo_count(), 1);
+        assert_eq!(state.history_for(seq_b_id).undo_count(), 0);
+
+        state.active_sequence_idx = 1;
+        state.push_history(dummy_command());
+        state.push_history(dummy_command());
+        assert_eq!(state.history_for(seq_a_id).undo_count(), 1);
+        assert_eq!(state.history_for(seq_b_id).undo_count(), 2);
+    }
+
+    #[test]
+    fn switching_does_not_bleed_history() {
+        let mut state = AppState::default();
+        let _seq_a = state.sequences[0].id;
+        let _seq_b = add_seq(&mut state, "B");
+        state.active_sequence_idx = 0;
+        state.push_history(dummy_command());
+        // Switch to B; B's history should be empty.
+        state.active_sequence_idx = 1;
+        assert!(!state.active_history().can_undo(),
+            "B should not see A's edits — that's the point of per-sequence history");
+        // Pop on B is a no-op.
+        let popped = state.active_history_mut().undo();
+        assert!(popped.is_none());
+    }
+
+    #[test]
+    fn ops_since_save_is_project_global() {
+        let mut state = AppState::default();
+        let _seq_a = state.sequences[0].id;
+        let _seq_b = add_seq(&mut state, "B");
+        state.active_sequence_idx = 0;
+        state.push_history(dummy_command());
+        state.active_sequence_idx = 1;
+        state.push_history(dummy_command());
+        state.push_history(dummy_command());
+        assert_eq!(state.history_ops_since_save, 3, "autosave counter sums across all sequences");
+        state.reset_ops_since_save();
+        assert_eq!(state.history_ops_since_save, 0);
+    }
+
+    #[test]
+    fn set_history_max_size_propagates_to_all_existing() {
+        let mut state = AppState::default();
+        let _seq_a = state.sequences[0].id;
+        let seq_b = add_seq(&mut state, "B");
+        state.active_sequence_idx = 0;
+        state.push_history(dummy_command()); // seeds A's history
+        state.active_sequence_idx = 1;
+        state.push_history(dummy_command()); // seeds B's history
+
+        state.set_history_max_size(50);
+        // We can't observe max_size directly, but we can fill A past 50
+        // and confirm the cap kicks in.
+        state.active_sequence_idx = 0;
+        for _ in 0..120 {
+            state.push_history(dummy_command());
+        }
+        assert!(state.active_history().undo_count() <= 50);
+        // B unaffected by activity on A.
+        assert_eq!(state.history_for(seq_b).undo_count(), 1);
+    }
+
+    #[test]
+    fn abandon_pending_drag_drops_envelope_without_pushing() {
+        let mut state = AppState::default();
+        state.active_sequence_idx = 0;
+        let h = state.active_history_mut();
+        h.begin_drag(
+            "test_key".into(),
+            HistoryEntry { command: EditCommand::SetRange {
+                old_in: None, old_out: None, new_in: None, new_out: None,
+            } },
+        );
+        assert!(h.is_dragging("test_key"));
+        h.abandon_pending_drag();
+        assert!(!h.is_dragging("test_key"));
+        assert_eq!(h.undo_count(), 0, "abandon must NOT push the pre-drag snapshot");
+    }
+
+    #[test]
+    fn lazy_history_seed_for_unseen_sequence() {
+        let mut state = AppState::default();
+        let new_id = SequenceId::new();
+        // Reading a never-pushed sequence's history returns empty.
+        assert_eq!(state.history_for(new_id).undo_count(), 0);
+        // Writing creates the entry on demand.
+        let _ = state.history_for_mut(new_id);
+        assert!(state.command_histories.contains_key(&new_id));
+    }
+
+    /// Avoid breaking the legacy default-resolution check — included
+    /// here so adding a new test doesn't require touching unrelated
+    /// expectations.
+    #[test]
+    fn new_default_seq_has_known_shape() {
+        let seq = Sequence::new_default();
+        assert_eq!(seq.resolution, Resolution::hd_1080());
     }
 }

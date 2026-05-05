@@ -160,10 +160,14 @@ impl NewTimelinePanel {
             .map(|t| ruler_rect.left() + time_utils::time_to_x(t.to_secs_f64(), pps, scroll_x));
 
         // Helper: convert mouse x on ruler to clamped RationalTime
+        // Rebind fps_rate locally so the closure doesn't borrow `state` —
+        // otherwise the push_history call below would clash with the
+        // closure's still-live capture.
+        let fps_rate = state.fps.rate();
         let mouse_to_time = |mouse_x: f32| -> klipp_core::RationalTime {
             let secs = time_utils::x_to_time(mouse_x - ruler_rect.left(), pps, scroll_x);
             let clamped = secs.max(0.0).min(duration_secs);
-            klipp_core::RationalTime::from_secs_f64(clamped, state.fps.rate())
+            klipp_core::RationalTime::from_secs_f64(clamped, fps_rate)
         };
 
         // Hover cursor: ResizeHorizontal near handles
@@ -305,17 +309,16 @@ impl NewTimelinePanel {
         // On drag_stopped: push undo entry if values changed
         if ruler_resp.drag_stopped() {
             if let Some(drag) = state.range_drag.take() {
-                let new_in = state.sequence().in_point;
-                let new_out = state.sequence().out_point;
+                let (new_in, new_out) = {
+                    let seq = state.sequence();
+                    (seq.in_point, seq.out_point)
+                };
                 if drag.original_in != new_in || drag.original_out != new_out {
-                    state.history.push(crate::history::HistoryEntry {
-                        sequence_idx: state.active_sequence_idx,
-                        command: crate::history::EditCommand::SetRange {
-                            old_in: drag.original_in,
-                            old_out: drag.original_out,
-                            new_in,
-                            new_out,
-                        },
+                    state.push_history(crate::history::EditCommand::SetRange {
+                        old_in: drag.original_in,
+                        old_out: drag.original_out,
+                        new_in,
+                        new_out,
                     });
                 }
             }

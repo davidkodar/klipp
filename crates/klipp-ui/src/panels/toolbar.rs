@@ -474,8 +474,8 @@ impl ToolbarPanel {
 
     fn edit_menu(ui: &mut egui::Ui, cmds: &mut Vec<AppCommand>, state: &mut AppState) {
         ui.menu_button(egui::RichText::new("Edit").size(11.0), |ui| {
-            if ui.add_enabled(state.history.can_undo(), egui::Button::new(state.history.undo_label().map(|d| format!("Undo {d}")).unwrap_or("Undo".into())).shortcut_text("Ctrl+Z")).clicked() { cmds.push(AppCommand::Undo); ui.close_menu(); }
-            if ui.add_enabled(state.history.can_redo(), egui::Button::new(state.history.redo_label().map(|d| format!("Redo {d}")).unwrap_or("Redo".into())).shortcut_text("Ctrl+Shift+Z")).clicked() { cmds.push(AppCommand::Redo); ui.close_menu(); }
+            if ui.add_enabled(state.active_history().can_undo(), egui::Button::new(state.active_history().undo_label().map(|d| format!("Undo {d}")).unwrap_or("Undo".into())).shortcut_text("Ctrl+Z")).clicked() { cmds.push(AppCommand::Undo); ui.close_menu(); }
+            if ui.add_enabled(state.active_history().can_redo(), egui::Button::new(state.active_history().redo_label().map(|d| format!("Redo {d}")).unwrap_or("Redo".into())).shortcut_text("Ctrl+Shift+Z")).clicked() { cmds.push(AppCommand::Redo); ui.close_menu(); }
             if ui.button("History...").clicked() { state.show_history_panel = true; ui.close_menu(); }
             ui.separator();
             if ui.add_enabled(state.selected_clip.is_some(), egui::Button::new("Cut").shortcut_text("Ctrl+X")).clicked() {
