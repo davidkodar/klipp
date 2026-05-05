@@ -541,6 +541,40 @@ pub fn apply_effects(effects: &[BuiltinEffect], linear_rgba: Vec<f32>, width: u3
     srgb_u8_to_linear_f32_rgba(&rgba)
 }
 
+/// Returns true when the effect is at its default / identity values
+/// and therefore a no-op. Lets callers strip such entries before
+/// dispatching to GPU/CPU pipelines, which saves the
+/// linear → upload → download round-trip on a list whose effective
+/// content is nothing. Used by the per-clip effects chain to keep
+/// "default Transform / Opacity 1.0 / zero-radius blur" lists from
+/// triggering GPU traffic each frame.
+pub fn is_identity_effect(effect: &BuiltinEffect) -> bool {
+    match effect {
+        BuiltinEffect::Opacity { value } => (value - 1.0).abs() < f32::EPSILON,
+        BuiltinEffect::GaussianBlur { radius } => *radius < 0.5,
+        BuiltinEffect::Sharpen { amount } => amount.abs() < f32::EPSILON,
+        BuiltinEffect::Crop { left, right, top, bottom, feather } => {
+            *left == 0.0 && *right == 0.0 && *top == 0.0 && *bottom == 0.0 && *feather == 0.0
+        }
+        BuiltinEffect::Transform {
+            position_x, position_y, scale_x, scale_y,
+            rotation, rotation_x, rotation_y, ..
+        } => {
+            *position_x == 0.0 && *position_y == 0.0
+                && (scale_x - 1.0).abs() < f32::EPSILON
+                && (scale_y - 1.0).abs() < f32::EPSILON
+                && rotation.abs() < f32::EPSILON
+                && rotation_x.abs() < f32::EPSILON
+                && rotation_y.abs() < f32::EPSILON
+        }
+        // Effects whose visual contribution depends on data (chroma
+        // key, bloom, glow, light rays, vignette etc.) — be
+        // conservative and never claim identity. False positives
+        // here would silently drop user intent.
+        _ => false,
+    }
+}
+
 fn apply_one(effect: &BuiltinEffect, rgba: Vec<u8>, width: u32, height: u32) -> Vec<u8> {
     match effect {
         BuiltinEffect::Opacity { value } => opacity::apply(rgba, *value),
@@ -1428,6 +1462,40 @@ mod tests {
         let linear = srgb_u8_to_linear_f32_rgba(&rgba);
         let out = super::apply_effects(effects, linear, width, height);
         linear_f32_rgba_to_srgb_u8(&out)
+    }
+
+    #[test]
+    fn is_identity_effect_classifies_default_values() {
+        // Default-valued effects with no visual contribution.
+        assert!(is_identity_effect(&BuiltinEffect::Opacity { value: 1.0 }));
+        assert!(is_identity_effect(&BuiltinEffect::GaussianBlur { radius: 0.0 }));
+        assert!(is_identity_effect(&BuiltinEffect::GaussianBlur { radius: 0.4 }));
+        assert!(is_identity_effect(&BuiltinEffect::Sharpen { amount: 0.0 }));
+        assert!(is_identity_effect(&BuiltinEffect::Crop {
+            left: 0.0, right: 0.0, top: 0.0, bottom: 0.0, feather: 0.0,
+        }));
+        assert!(is_identity_effect(&BuiltinEffect::Transform {
+            position_x: 0.0, position_y: 0.0,
+            scale_x: 1.0, scale_y: 1.0,
+            rotation: 0.0,
+            anchor_x: 0.5, anchor_y: 0.5,
+            rotation_x: 0.0, rotation_y: 0.0, perspective: 0.0,
+        }));
+
+        // Effects whose visual contribution is non-trivial when set.
+        assert!(!is_identity_effect(&BuiltinEffect::Opacity { value: 0.5 }));
+        assert!(!is_identity_effect(&BuiltinEffect::GaussianBlur { radius: 5.0 }));
+        assert!(!is_identity_effect(&BuiltinEffect::Sharpen { amount: 0.3 }));
+        assert!(!is_identity_effect(&BuiltinEffect::Crop {
+            left: 0.1, right: 0.0, top: 0.0, bottom: 0.0, feather: 0.0,
+        }));
+        assert!(!is_identity_effect(&BuiltinEffect::Transform {
+            position_x: 10.0, position_y: 0.0,
+            scale_x: 1.0, scale_y: 1.0,
+            rotation: 0.0,
+            anchor_x: 0.5, anchor_y: 0.5,
+            rotation_x: 0.0, rotation_y: 0.0, perspective: 0.0,
+        }));
     }
 
     #[test]

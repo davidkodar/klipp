@@ -7088,7 +7088,9 @@ impl PlaybackEngine {
         // 1. Node graph (color grade) — takes linear natively via
         //    `execute_linear`, skipping the u8 round-trip that
         //    `execute` would otherwise introduce.
-        let rgba = if !clip.node_graph.is_identity() {
+        let t_graph = std::time::Instant::now();
+        let graph_identity = clip.node_graph.is_identity();
+        let rgba = if !graph_identity {
             self.graph_executor.prepare_clip(&clip.node_graph);
             let frame_number = (clip_time_secs * self.fps.as_f64()).max(0.0) as u64;
             self.graph_executor.set_working_colorspace(
@@ -7101,8 +7103,14 @@ impl PlaybackEngine {
                 Err(e) => { tracing::error!("Overlay node graph failed: {e:?}"); linear_rgba }
             }
         } else { linear_rgba };
+        let graph_us = t_graph.elapsed().as_micros();
 
         // 2. Builtin effects (GPU preferred, CPU fallback) with keyframe evaluation
+        let t_fx = std::time::Instant::now();
+        let fx_count_initial = clip.builtin_effects.iter()
+            .zip(clip.builtin_effects_enabled.iter().chain(std::iter::repeat(&true)))
+            .filter(|(_, enabled)| **enabled)
+            .count();
         let rgba = if !clip.builtin_effects.is_empty() {
             let mut fx: Vec<_> = clip.builtin_effects.iter()
                 .zip(clip.builtin_effects_enabled.iter().chain(std::iter::repeat(&true)))
@@ -7248,7 +7256,17 @@ impl PlaybackEngine {
                     }
                 }
 
-                if let Some(gpu) = &mut self.gpu_effects {
+                // Strip identity-valued effects before dispatch. GPU
+                // and CPU paths each have per-effect skips, but they
+                // don't avoid the surrounding upload/download (GPU)
+                // or sRGB bridge (CPU) — so a list of "Opacity 1.0 +
+                // default Transform" still pays the round-trip even
+                // though no pixel changes. Filtering here drops that.
+                fx.retain(|e| !klipp_effects::is_identity_effect(e));
+
+                if fx.is_empty() {
+                    rgba
+                } else if let Some(gpu) = &mut self.gpu_effects {
                     gpu.apply_effects(&fx, rgba, width, height)
                 } else {
                     klipp_effects::apply_effects(&fx, rgba, width, height)
@@ -7256,17 +7274,38 @@ impl PlaybackEngine {
             } else { rgba }
         } else { rgba };
 
+        let fx_us = t_fx.elapsed().as_micros();
+
         // 3. OFX effects chain — OFX plugins are an external boundary we
         //    don't control, so they still receive sRGB u8. Bridge
         //    locally (linear → u8 in, u8 → linear out) and keep the
         //    round-trip scoped to just the OFX call.
-        if !clip.effects.is_empty() {
+        let t_ofx = std::time::Instant::now();
+        let result = if !clip.effects.is_empty() {
             let rgba_u8 = klipp_effects::linear_f32_rgba_to_srgb_u8(&rgba);
             let out_u8 = self.ofx_host.apply_effects_chain(&clip.effects, &rgba_u8, width, height, clip_time_secs);
             klipp_effects::srgb_u8_to_linear_f32_rgba(&out_u8)
         } else {
             rgba
+        };
+        let ofx_us = t_ofx.elapsed().as_micros();
+        let total_us = graph_us + fx_us + ofx_us;
+        // Log when the per-clip-effects chain spends >2 ms — same
+        // threshold as the matte and composite perf lines, so the
+        // non-trivial paths jump out in the log.
+        if total_us > 2_000 {
+            tracing::debug!(
+                "PERF clip_effects: {:.2}ms (graph={:.2}{} fx={:.2} fx_count={fx_count_initial} ofx={:.2}) \
+                 res={width}x{height} clip={:?}",
+                total_us as f64 / 1000.0,
+                graph_us as f64 / 1000.0,
+                if graph_identity { " IDENTITY_SKIP" } else { "" },
+                fx_us as f64 / 1000.0,
+                ofx_us as f64 / 1000.0,
+                clip.id,
+            );
         }
+        result
     }
 
     /// Phase 4d.3 companion to `post_process_rgba`: call this when the
