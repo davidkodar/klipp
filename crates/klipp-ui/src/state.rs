@@ -1891,6 +1891,23 @@ pub struct AppState {
     /// via `SetInspectorMattePreviewTarget`). Used to debounce the
     /// dispatch — without it we'd send a command on every paint.
     pub matte_preview_active_target: Option<klipp_core::ClipId>,
+    /// Visual letter picker — per-title-clip cache of glyph positions
+    /// for the HYPERZOOM inspector preview. Keyed by the title clip's
+    /// id (NOT the hyperzoom source's id — multiple sources may pick
+    /// from the same title). Recomputed via
+    /// `crate::inspector::letter_picker::ensure_glyph_positions` when
+    /// the cached `layout_hash` no longer matches the title's current
+    /// `TitleData` + render frame size.
+    ///
+    /// Wrapped in `RefCell` so the inspector — which runs through
+    /// `&AppState` references — can write to the cache without
+    /// propagating `&mut` up the entire `show_clip_video` →
+    /// `show_hyperzoom_section` call chain. Single-threaded UI; no
+    /// concurrency concern.
+    pub glyph_position_cache: std::cell::RefCell<std::collections::HashMap<
+        klipp_core::ClipId,
+        crate::inspector::letter_picker::GlyphCacheEntry,
+    >>,
     /// Set during scrub when no title clip is under the playhead — signals
     /// the next `upload_title_overlay` to clear the overlay so stale titles
     /// don't linger as the user drags past them.
@@ -3114,6 +3131,7 @@ impl Default for AppState {
             pending_title_preview_clip: None,
             matte_thumb_for: None,
             matte_thumb_handle: None,
+            glyph_position_cache: std::cell::RefCell::new(std::collections::HashMap::new()),
             matte_preview_active_target: None,
             pending_title_overlay_clear: false,
             clear_title_overlay: false,

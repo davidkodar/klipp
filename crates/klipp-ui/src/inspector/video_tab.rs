@@ -2344,10 +2344,175 @@ fn show_hyperzoom_section(
                     );
                 });
                 ui.label(
-                    egui::RichText::new("0.5 / 0.5 = clip centre. Visual letter picker arriving in a follow-up.")
+                    egui::RichText::new("0.5 / 0.5 = clip centre. Click a letter in the preview below to snap.")
                         .size(10.0)
                         .color(theme.text_dim),
                 );
+
+                // ── Visual letter picker ──
+                // Renders a small preview of the title clip whose
+                // glyphs feed the picker (resolved via
+                // letter_picker::picker_target_for_clip — matte
+                // source first, overlapping title fallback). Click
+                // a glyph → focal X/Y snaps to its centroid; the
+                // glyph stays outlined while the picker is visible.
+                // Hidden silently when no title context exists; the
+                // user falls back to the spinboxes + draggable
+                // crosshair on the main viewer.
+                let target = crate::inspector::letter_picker::picker_target_for_clip(
+                    state.sequence(),
+                    clip_id,
+                    state.playhead,
+                );
+                if let Some(title_clip) = target {
+                    let title_clip_id = title_clip.id;
+                    if let Some(td) = title_clip.title_data().cloned() {
+                        ui.add_space(6.0);
+                        // Preview slot: ~210×118 px, 16:9-ish so an
+                        // FHD title fits without distortion.
+                        let preview_w = 210.0_f32;
+                        let preview_h = 118.0_f32;
+                        let (preview_rect, preview_resp) = ui.allocate_exact_size(
+                            egui::vec2(preview_w, preview_h),
+                            egui::Sense::click_and_drag(),
+                        );
+                        // Backdrop so the white-on-transparent title
+                        // reads. Matches the matte preview's tile
+                        // aesthetic in the COMPOSITING section.
+                        ui.painter().rect_filled(preview_rect, 4.0, theme.bg_deep);
+                        ui.painter().rect_stroke(preview_rect, 4.0,
+                            egui::Stroke::new(0.5, theme.border));
+
+                        // Render the title bitmap at the preview's
+                        // pixel size + upload as an egui texture.
+                        // Per-paint TitleRenderer is wasteful but
+                        // contained; the picker UX is rare enough
+                        // that the cost is fine. If perf hurts, the
+                        // bitmap can be cached alongside the glyph
+                        // positions on AppState.
+                        let frame_w = preview_w as u32;
+                        let frame_h = preview_h as u32;
+                        let mut tr = klipp_title::TitleRenderer::new();
+                        let bitmap = tr.render(&td, frame_w, frame_h);
+                        let img = egui::ColorImage::from_rgba_unmultiplied(
+                            [frame_w as usize, frame_h as usize],
+                            &bitmap,
+                        );
+                        let tex = ui.ctx().load_texture(
+                            format!("hyperzoom_picker_{}", title_clip_id.0),
+                            img,
+                            egui::TextureOptions::LINEAR,
+                        );
+                        ui.painter().image(
+                            tex.id(),
+                            preview_rect.shrink(2.0),
+                            egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                            egui::Color32::WHITE,
+                        );
+
+                        // Glyph positions — refreshed via the
+                        // shared cache helper on hash mismatch.
+                        // RefCell borrow is scoped to the helper
+                        // call; the .to_vec() decouples the result
+                        // from the borrow before any other state
+                        // access in this block.
+                        let positions: Vec<klipp_title::CharPosition> = {
+                            let mut cache = state.glyph_position_cache.borrow_mut();
+                            crate::inspector::letter_picker::ensure_glyph_positions(
+                                &mut cache, &mut tr, title_clip, frame_w, frame_h,
+                            ).to_vec()
+                        };
+
+                        // Hover + snapped state derived from the
+                        // pointer + persisted scratch. snapped_index
+                        // is committed only on click (hover alone
+                        // doesn't persist).
+                        let pointer = preview_resp.interact_pointer_pos()
+                            .or_else(|| ui.input(|i| i.pointer.hover_pos()))
+                            .filter(|p| preview_rect.contains(*p));
+                        let proj = |fx: f32, fy: f32| {
+                            crate::panels::viewer::viewer_frame_px_to_screen(
+                                preview_rect.shrink(2.0),
+                                frame_w as f32, frame_h as f32, fx, fy,
+                            )
+                        };
+                        let hover_index = pointer.and_then(|p| {
+                            match crate::inspector::letter_picker::hit_test_glyphs(&positions, p, proj) {
+                                crate::inspector::letter_picker::HitTest::InsideGlyph { char_index }
+                                | crate::inspector::letter_picker::HitTest::NearGlyph { char_index } => Some(char_index),
+                                crate::inspector::letter_picker::HitTest::FreePosition => None,
+                            }
+                        });
+
+                        // Snapped (persistent) — stored in scratch as
+                        // an Option<usize>. We have no field for it
+                        // on HyperzoomScratch yet; use egui Memory
+                        // keyed by the clip-id so picker state is
+                        // per-source-clip and survives across paints.
+                        let snap_id = egui::Id::new(("hyperzoom_picker_snapped", clip_id));
+                        let mut snapped_index: Option<usize> = ui.ctx().data_mut(|d|
+                            d.get_temp(snap_id).unwrap_or(None)
+                        );
+
+                        // Click-to-commit: if a click landed on a
+                        // glyph, snap focal_x/y to its centroid +
+                        // record the char_index.
+                        if preview_resp.clicked() || preview_resp.dragged() {
+                            if let Some(p) = pointer {
+                                match crate::inspector::letter_picker::hit_test_glyphs(&positions, p, proj) {
+                                    crate::inspector::letter_picker::HitTest::InsideGlyph { char_index }
+                                    | crate::inspector::letter_picker::HitTest::NearGlyph { char_index } => {
+                                        if let Some(cp) = positions.iter().find(|cp| cp.char_index == char_index) {
+                                            let (nx, ny) = crate::inspector::letter_picker::glyph_centroid_to_focal(cp, frame_w, frame_h);
+                                            focal_x = nx;
+                                            focal_y = ny;
+                                            snapped_index = Some(char_index);
+                                        }
+                                    }
+                                    crate::inspector::letter_picker::HitTest::FreePosition => {
+                                        // Drag past glyphs — free-
+                                        // position the focal to the
+                                        // pointer, drop snap state.
+                                        let (nx, ny) = crate::panels::viewer::viewer_screen_to_norm(preview_rect.shrink(2.0), p);
+                                        focal_x = nx.clamp(0.0, 1.0);
+                                        focal_y = ny.clamp(0.0, 1.0);
+                                        snapped_index = None;
+                                    }
+                                }
+                            }
+                        }
+
+                        // Persist snap state for next paint.
+                        ui.ctx().data_mut(|d| d.insert_temp(snap_id, snapped_index));
+
+                        // Paint hit-rect overlays + persistent
+                        // snapped indicator. Goes ON TOP of the
+                        // bitmap so glyph outlines remain visible.
+                        crate::inspector::letter_picker::paint_glyph_overlays(
+                            ui,
+                            preview_rect.shrink(2.0),
+                            &positions,
+                            frame_w, frame_h,
+                            hover_index, snapped_index, theme.accent,
+                        );
+
+                        // Crosshair at current focal location —
+                        // mirrors the main-viewer focal-handle so
+                        // the user sees both their click target
+                        // and the resulting focal point.
+                        let centre = crate::panels::viewer::viewer_norm_to_screen(
+                            preview_rect.shrink(2.0), focal_x, focal_y,
+                        );
+                        ui.painter().circle_stroke(centre, 5.0,
+                            egui::Stroke::new(1.5, theme.accent));
+                        ui.painter().line_segment(
+                            [egui::pos2(centre.x - 8.0, centre.y), egui::pos2(centre.x + 8.0, centre.y)],
+                            egui::Stroke::new(1.0, theme.accent));
+                        ui.painter().line_segment(
+                            [egui::pos2(centre.x, centre.y - 8.0), egui::pos2(centre.x, centre.y + 8.0)],
+                            egui::Stroke::new(1.0, theme.accent));
+                    }
+                }
 
                 ui.add_space(4.0);
                 ui.separator();

@@ -65,10 +65,8 @@ pub(crate) fn viewer_screen_to_norm(image_rect: egui::Rect, p: egui::Pos2) -> (f
 /// with the frame_w/h normalisation; pulls a degenerate-frame guard
 /// (`>= 1.0`) so a zero-sized frame doesn't divide-by-zero.
 ///
-/// First consumer is the visual letter picker (commit 2 of
-/// HZ-NEXT-LETTER-PICKER). Lives in this prep commit so the geom
-/// helper trio lands as a unit.
-#[allow(dead_code)]
+/// Used by the visual letter picker
+/// (`crate::inspector::letter_picker`).
 pub(crate) fn viewer_frame_px_to_screen(
     image_rect: egui::Rect,
     frame_w: f32, frame_h: f32,
