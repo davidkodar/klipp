@@ -23317,7 +23317,7 @@ impl KlippApp {
             );
             target_clip.and_then(|c| {
                 c.title_data().map(|td| {
-                    let hash = crate::inspector::letter_picker::glyph_layout_hash(td, PREVIEW_W, PREVIEW_H);
+                    let hash = klipp_title::glyph_layout_hash(td, PREVIEW_W, PREVIEW_H);
                     (c.id, hash, td.clone())
                 })
             })

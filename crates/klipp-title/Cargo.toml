@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+klipp-core = { path = "../klipp-core" }
 klipp-timeline = { path = "../klipp-timeline" }
 fontdue = "0.9"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
@@ -11,6 +12,3 @@ tracing = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 dirs = { workspace = true }
-
-[dev-dependencies]
-klipp-core = { path = "../klipp-core" }

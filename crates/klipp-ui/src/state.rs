@@ -1895,8 +1895,8 @@ pub struct AppState {
     /// for the HYPERZOOM inspector preview. Keyed by the title clip's
     /// id (NOT the hyperzoom source's id — multiple sources may pick
     /// from the same title). Recomputed via
-    /// `crate::inspector::letter_picker::ensure_glyph_positions` when
-    /// the cached `layout_hash` no longer matches the title's current
+    /// `klipp_title::ensure_glyph_positions` when the cached
+    /// `layout_hash` no longer matches the title's current
     /// `TitleData` + render frame size.
     ///
     /// Wrapped in `RefCell` so the inspector — which runs through
@@ -1904,9 +1904,13 @@ pub struct AppState {
     /// propagating `&mut` up the entire `show_clip_video` →
     /// `show_hyperzoom_section` call chain. Single-threaded UI; no
     /// concurrency concern.
+    ///
+    /// Cache primitives live in `klipp-title` so the engine's
+    /// glyph-anchored focal-point resolver (HZ-NEXT-GLYPH-LOCK) can
+    /// share the same shape — different consumer, identical logic.
     pub glyph_position_cache: std::cell::RefCell<std::collections::HashMap<
         klipp_core::ClipId,
-        crate::inspector::letter_picker::GlyphCacheEntry,
+        klipp_title::GlyphCacheEntry,
     >>,
     /// Letter-picker preview texture — title bitmap rasterised at the
     /// inspector preview's pixel size. Owned by AppState so the App

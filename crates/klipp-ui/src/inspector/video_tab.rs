@@ -2427,10 +2427,15 @@ fn show_hyperzoom_section(
                         // rasterising and the cache pins the cost
                         // to "once per layout-hash change".
                         let positions: Vec<klipp_title::CharPosition> = {
+                            let Some(td) = title_clip.title_data() else {
+                                // Caller already gated on title_data().is_some()
+                                // above; this is defence-in-depth.
+                                return;
+                            };
                             let mut tr_local = klipp_title::TitleRenderer::new();
                             let mut cache = state.glyph_position_cache.borrow_mut();
-                            crate::inspector::letter_picker::ensure_glyph_positions(
-                                &mut cache, &mut tr_local, title_clip, frame_w, frame_h,
+                            klipp_title::ensure_glyph_positions(
+                                &mut cache, title_clip.id, &mut tr_local, td, frame_w, frame_h,
                             ).to_vec()
                         };
 

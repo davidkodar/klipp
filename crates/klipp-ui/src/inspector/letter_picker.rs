@@ -32,8 +32,8 @@
 
 use egui::{Color32, Pos2, Rect, Stroke, Ui};
 use klipp_core::{ClipId, Timecode};
-use klipp_timeline::{Clip, Sequence, TitleData};
-use klipp_title::{CharPosition, TitleRenderer};
+use klipp_timeline::{Clip, Sequence};
+use klipp_title::CharPosition;
 
 /// Snap radius in **logical screen pixels** (egui's pos2 units —
 /// already DPI-aware, so `12.0` reads as the same physical distance
@@ -121,99 +121,16 @@ pub fn picker_target_for_clip<'a>(
     None
 }
 
-/// Hash every `TitleData` field that affects glyph layout. Used as
-/// the cache key so position recomputation fires when (and only
-/// when) one of these fields changes. Frame dimensions are folded
-/// into the hash too — a 1920×1080 layout differs from 1280×720
-/// for the same TitleData.
-///
-/// Deliberately **excludes** fields that don't affect glyph
-/// positions: color, gradient, glow, outline, shadow, extrusion,
-/// motion blur, character animation, texture fill, … A colour
-/// tweak shouldn't invalidate the cache.
-pub fn glyph_layout_hash(td: &TitleData, frame_w: u32, frame_h: u32) -> u64 {
-    use std::hash::{Hash, Hasher};
-    let mut h = std::collections::hash_map::DefaultHasher::new();
-
-    let tb = td.primary_text_or_default();
-    tb.text.hash(&mut h);
-    tb.font_name.hash(&mut h);
-    std::mem::discriminant(&tb.font_style).hash(&mut h);
-    tb.font_size.to_bits().hash(&mut h);
-    std::mem::discriminant(&tb.case_transform).hash(&mut h);
-    std::mem::discriminant(&tb.alignment).hash(&mut h);
-    tb.tracking.to_bits().hash(&mut h);
-    tb.line_spacing.to_bits().hash(&mut h);
-    tb.baseline_shift.to_bits().hash(&mut h);
-
-    // Style runs: only start, end, and font_size are read by
-    // `compute_char_positions` — per-run font_name and font_style
-    // are silently dropped today (the renderer uses the base
-    // tb.font_name + tb.font_style for the whole text). Include
-    // only the fields that actually affect layout.
-    for run in &tb.style_runs {
-        run.start.hash(&mut h);
-        run.end.hash(&mut h);
-        run.font_size.map(f32::to_bits).hash(&mut h);
-    }
-
-    let pos = td.position();
-    pos.x.to_bits().hash(&mut h);
-    pos.y.to_bits().hash(&mut h);
-
-    frame_w.hash(&mut h);
-    frame_h.hash(&mut h);
-
-    h.finish()
-}
-
-/// One per-clip entry in the picker's position cache. Lives on
-/// `AppState.glyph_position_cache`; recomputed when `layout_hash`
-/// no longer matches the current `TitleData` + render dimensions.
-#[derive(Debug, Clone)]
-pub struct GlyphCacheEntry {
-    pub layout_hash: u64,
-    pub frame_w: u32,
-    pub frame_h: u32,
-    pub positions: Vec<CharPosition>,
-}
-
-/// Look up or refresh the glyph positions for `title_clip`.
-/// `cache` is mutably borrowed because a stale entry triggers a
-/// recompute via `renderer.compute_char_positions`. Returns
-/// `&[CharPosition]` valid for the lifetime of the cache entry.
-pub fn ensure_glyph_positions<'a>(
-    cache: &'a mut std::collections::HashMap<ClipId, GlyphCacheEntry>,
-    renderer: &mut TitleRenderer,
-    title_clip: &Clip,
-    frame_w: u32,
-    frame_h: u32,
-) -> &'a [CharPosition] {
-    let Some(td) = title_clip.title_data() else {
-        // Caller's responsibility to pass a Title clip; if not, an
-        // empty slice keeps the picker silently no-op rather than
-        // panicking.
-        return &[];
-    };
-    let target_hash = glyph_layout_hash(td, frame_w, frame_h);
-    let needs_refresh = cache
-        .get(&title_clip.id)
-        .map(|e| e.layout_hash != target_hash || e.frame_w != frame_w || e.frame_h != frame_h)
-        .unwrap_or(true);
-    if needs_refresh {
-        let positions = renderer.compute_char_positions(td, frame_w, frame_h);
-        cache.insert(
-            title_clip.id,
-            GlyphCacheEntry {
-                layout_hash: target_hash,
-                frame_w,
-                frame_h,
-                positions,
-            },
-        );
-    }
-    &cache.get(&title_clip.id).expect("just inserted").positions
-}
+// `glyph_layout_hash`, `GlyphCacheEntry`, and `ensure_glyph_positions`
+// live in `klipp_title` — the engine's glyph-anchored focal-point
+// resolver (HZ-NEXT-GLYPH-LOCK) needs the same primitives, so the
+// shared logic is hoisted to the lowest crate that holds the
+// shaping data. The inspector's call site uses
+// `klipp_title::ensure_glyph_positions` directly; the cache type
+// stored on AppState is `klipp_title::GlyphCacheEntry`. Re-exports
+// kept here as `pub use` so existing in-tree callers don't have to
+// change their import path mid-migration.
+pub use klipp_title::{ensure_glyph_positions, glyph_layout_hash, GlyphCacheEntry};
 
 /// Hit-test result of a pointer position against a glyph list.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -365,8 +282,8 @@ mod tests {
     use super::*;
     use klipp_core::{MediaId, RationalTime};
     use klipp_timeline::{
-        Clip, ClipKind, FontStyle, MatteBinding, Sequence, StyleRun, TextAlignment,
-        TextBox, TextCase, TitleData, TitlePosition, Track, TrackKind,
+        Clip, ClipKind, FontStyle, MatteBinding, Sequence, TextAlignment,
+        TextBox, TitleData, Track, TrackKind,
     };
 
     fn tc(frames: i64) -> RationalTime { RationalTime::from_frames(frames, 24) }
@@ -497,133 +414,11 @@ mod tests {
         assert!(r.is_none());
     }
 
-    // ────────────────── glyph_layout_hash ──────────────────
-    //
-    // Per-field invalidation pin: change ONE layout-affecting field
-    // → hash changes. Change a non-layout field (color, glow, etc)
-    // → hash UNCHANGED. Tests document which fields are layout vs
-    // visual-fill.
-
-    fn baseline_layout_hash() -> u64 {
-        glyph_layout_hash(&make_title("Hello"), 1920, 1080)
-    }
-
-    fn modify_baseline_and_hash(modify: impl FnOnce(&mut TitleData)) -> u64 {
-        let mut td = make_title("Hello");
-        modify(&mut td);
-        glyph_layout_hash(&td, 1920, 1080)
-    }
-
-    fn modify_text_box(td: &mut TitleData, modify: impl FnOnce(&mut TextBox)) {
-        let tb = td.primary_text_mut().expect("make_title produced a TextBox object");
-        modify(tb);
-    }
-
-    #[test]
-    fn hash_changes_on_text_edit() {
-        let baseline = baseline_layout_hash();
-        let modified = modify_baseline_and_hash(|td| modify_text_box(td, |tb| tb.text = "World".into()));
-        assert_ne!(baseline, modified, "text edit must invalidate cache");
-    }
-
-    #[test]
-    fn hash_changes_on_font_name() {
-        let baseline = baseline_layout_hash();
-        let modified = modify_baseline_and_hash(|td| modify_text_box(td, |tb| tb.font_name = "Mono".into()));
-        assert_ne!(baseline, modified, "font_name must invalidate cache");
-    }
-
-    #[test]
-    fn hash_changes_on_font_style() {
-        let baseline = baseline_layout_hash();
-        let modified = modify_baseline_and_hash(|td| modify_text_box(td, |tb| tb.font_style = FontStyle::Bold));
-        assert_ne!(baseline, modified, "font_style must invalidate cache");
-    }
-
-    #[test]
-    fn hash_changes_on_font_size() {
-        let baseline = baseline_layout_hash();
-        let modified = modify_baseline_and_hash(|td| modify_text_box(td, |tb| tb.font_size = 144.0));
-        assert_ne!(baseline, modified, "font_size must invalidate cache");
-    }
-
-    #[test]
-    fn hash_changes_on_case_transform() {
-        let baseline = baseline_layout_hash();
-        let modified = modify_baseline_and_hash(|td| modify_text_box(td, |tb| tb.case_transform = TextCase::Uppercase));
-        assert_ne!(baseline, modified, "case_transform must invalidate cache");
-    }
-
-    #[test]
-    fn hash_changes_on_alignment() {
-        let baseline = baseline_layout_hash();
-        let modified = modify_baseline_and_hash(|td| modify_text_box(td, |tb| tb.alignment = TextAlignment::Left));
-        assert_ne!(baseline, modified, "alignment must invalidate cache");
-    }
-
-    #[test]
-    fn hash_changes_on_tracking() {
-        let baseline = baseline_layout_hash();
-        let modified = modify_baseline_and_hash(|td| modify_text_box(td, |tb| tb.tracking = 5.0));
-        assert_ne!(baseline, modified, "tracking must invalidate cache");
-    }
-
-    #[test]
-    fn hash_changes_on_line_spacing() {
-        let baseline = baseline_layout_hash();
-        let modified = modify_baseline_and_hash(|td| modify_text_box(td, |tb| tb.line_spacing = 1.5));
-        assert_ne!(baseline, modified, "line_spacing must invalidate cache");
-    }
-
-    #[test]
-    fn hash_changes_on_baseline_shift() {
-        let baseline = baseline_layout_hash();
-        let modified = modify_baseline_and_hash(|td| modify_text_box(td, |tb| tb.baseline_shift = 20.0));
-        assert_ne!(baseline, modified, "baseline_shift must invalidate cache");
-    }
-
-    #[test]
-    fn hash_changes_on_style_run_addition() {
-        let baseline = baseline_layout_hash();
-        let modified = modify_baseline_and_hash(|td| modify_text_box(td, |tb| {
-            tb.style_runs.push(StyleRun {
-                start: 0, end: 1,
-                font_name: None, font_size: Some(120.0),
-                color: None, font_style: None, tracking: None, baseline_offset: None,
-            });
-        }));
-        assert_ne!(baseline, modified, "style_run addition must invalidate cache");
-    }
-
-    #[test]
-    fn hash_changes_on_position() {
-        let mut td = make_title("Hello");
-        let h0 = glyph_layout_hash(&td, 1920, 1080);
-        // `TitleData::position()` reads from `objects[0].transform.center`;
-        // mutate that directly — there's no `set_position` setter today.
-        td.objects.first_mut().expect("default object exists").transform.center =
-            TitlePosition { x: 0.25, y: 0.75 };
-        let h1 = glyph_layout_hash(&td, 1920, 1080);
-        assert_ne!(h0, h1, "position change must invalidate cache");
-    }
-
-    #[test]
-    fn hash_changes_on_frame_dimensions() {
-        let td = make_title("Hello");
-        let h_1080 = glyph_layout_hash(&td, 1920, 1080);
-        let h_720 = glyph_layout_hash(&td, 1280, 720);
-        assert_ne!(h_1080, h_720, "frame dimensions must invalidate cache");
-    }
-
-    #[test]
-    fn hash_does_not_change_on_color_only_edit() {
-        // Pin: color is a fill-only field; doesn't move glyphs.
-        // Changing it must NOT invalidate the cache or the picker
-        // recomputes wastefully on every colour drag.
-        let baseline = baseline_layout_hash();
-        let modified = modify_baseline_and_hash(|td| modify_text_box(td, |tb| tb.color = [255, 0, 0, 255]));
-        assert_eq!(baseline, modified, "color is fill-only, must NOT invalidate");
-    }
+    // glyph_layout_hash + ensure_glyph_positions invalidation tests
+    // moved to klipp_title alongside the helpers themselves — see
+    // `klipp_title::tests::glyph_hash_*`. The picker re-exports both
+    // names for back-compat, so any future tests in this module
+    // referencing them by their old paths still resolve.
 
     // ────────────────── hit_test_glyphs ──────────────────
 
