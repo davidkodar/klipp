@@ -993,6 +993,12 @@ pub struct PlaybackEngine {
     /// log line has already fired this session. Keeps the diagnostic
     /// log to one line per overlay rather than spamming per-frame.
     overlay_dim_logged: std::collections::HashSet<usize>,
+    /// Same one-shot policy for title-cache-miss diagnostics. Logs
+    /// the reason a synthetic-skip cache missed once per overlay
+    /// track, so the perf log shows whether the cache key is
+    /// landing on `clip changed`, `frame_key mismatch`, or `no
+    /// overlay frame` — and we can target the right fix.
+    title_cache_diag_logged: std::collections::HashSet<usize>,
 
     // ── Source Viewer playback (separate from timeline) ───────────
     /// Persistent decoder for whatever media the user has loaded into
@@ -1406,6 +1412,7 @@ impl PlaybackEngine {
             thumb_capture_suspended: false,
             pending_paused_refresh: false,
             overlay_dim_logged: std::collections::HashSet::new(),
+            title_cache_diag_logged: std::collections::HashSet::new(),
             source_decoder: None,
             source_path: None,
             source_state: PlaybackState::Idle,
@@ -4958,6 +4965,29 @@ impl PlaybackEngine {
                 // For frame-invariant titles, `frame_key` is constant 0
                 // so the cache hits forever after the first render.
                 continue;
+            }
+            // One-shot diagnostic: when a title clip ISN'T being
+            // cached, log why so we can spot which condition broke.
+            // Fires once per (track_idx, miss-reason); subsequent
+            // misses for the same reason stay silent.
+            if is_synthetic && clip.title_data().is_some()
+                && !self.title_cache_diag_logged.contains(&track_idx)
+            {
+                let reason = if self.overlay_clips.get(&track_idx) != Some(&clip_idx) {
+                    format!("clip changed (cached_idx={:?} new_idx={clip_idx})", self.overlay_clips.get(&track_idx))
+                } else if self.overlay_synth_frame.get(&track_idx) != Some(&frame_key) {
+                    format!("frame_key mismatch (cached={:?} new={frame_key} default={default_frame})",
+                        self.overlay_synth_frame.get(&track_idx))
+                } else if !self.overlay_frames.contains_key(&track_idx) {
+                    "no overlay frame".to_string()
+                } else {
+                    "unknown".to_string()
+                };
+                tracing::debug!(
+                    "title cache miss track={track_idx} reason: {reason} (frame_key={frame_key} animation_type={:?})",
+                    clip.title_data().unwrap().animation_type,
+                );
+                self.title_cache_diag_logged.insert(track_idx);
             }
 
             // Static-generator fast path: SolidColor / Gradient /
