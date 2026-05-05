@@ -4977,13 +4977,11 @@ impl PlaybackEngine {
                 per_iter_log.push((track_idx, is_synthetic, true, us, "synthetic_cache_hit"));
                 continue;
             }
-            // One-shot diagnostic: when a title clip ISN'T being
-            // cached, log why so we can spot which condition broke.
-            // Fires once per (track_idx, miss-reason); subsequent
-            // misses for the same reason stay silent.
-            if is_synthetic && clip.title_data().is_some()
-                && !self.title_cache_diag_logged.contains(&track_idx)
-            {
+            // Diagnostic: log every title-cache miss with the
+            // condition that broke it, plus the cached vs new key
+            // values. Will spam during playback, but we need the
+            // signal until the cache actually holds.
+            if is_synthetic && clip.title_data().is_some() {
                 let reason = if self.overlay_clips.get(&track_idx) != Some(&clip_idx) {
                     format!("clip changed (cached_idx={:?} new_idx={clip_idx})", self.overlay_clips.get(&track_idx))
                 } else if self.overlay_synth_frame.get(&track_idx) != Some(&frame_key) {
@@ -4998,7 +4996,6 @@ impl PlaybackEngine {
                     "title cache miss track={track_idx} reason: {reason} (frame_key={frame_key} animation_type={:?})",
                     clip.title_data().unwrap().animation_type,
                 );
-                self.title_cache_diag_logged.insert(track_idx);
             }
 
             // Static-generator fast path: SolidColor / Gradient /
