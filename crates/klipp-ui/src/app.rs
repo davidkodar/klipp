@@ -6600,6 +6600,7 @@ impl KlippApp {
                 AppCommand::ApplyHyperzoom {
                     source_clip_id, target_clip_id, focal_x_norm, focal_y_norm,
                     duration_secs, max_scale, easing, hold_secs,
+                    add_radial_blur, radial_blur_amount,
                 } => {
                     let src_id = *source_clip_id;
                     let seq_idx = self.state.active_sequence_idx;
@@ -6654,11 +6655,17 @@ impl KlippApp {
                         max_scale: *max_scale,
                         easing: crate::hyperzoom::HyperzoomEasing::from_u8(*easing),
                         hold_secs: *hold_secs,
+                        add_radial_blur: *add_radial_blur,
+                        radial_blur_amount: *radial_blur_amount,
                     });
 
                     let seq = &mut self.state.sequences[seq_idx];
                     apply_hyperzoom_plan_to_clip(seq, src_id, plan.source_anchor, &plan.source_scale_kfs);
                     apply_hyperzoom_plan_to_clip(seq, tgt_id, plan.target_anchor, &plan.target_scale_kfs);
+                    if let Some(rb) = plan.radial_blur.as_ref() {
+                        apply_hyperzoom_radial_blur_to_clip(seq, src_id, rb.center, rb.peak_amount, &rb.source_amount_kfs);
+                        apply_hyperzoom_radial_blur_to_clip(seq, tgt_id, rb.center, rb.peak_amount, &rb.target_amount_kfs);
+                    }
 
                     self.state.dirty = true;
                     self.sync_sequence_to_engine();
@@ -31021,6 +31028,69 @@ fn apply_hyperzoom_plan_to_clip(
     clip.transform_scale_keyframes = scale_kfs.to_vec();
 }
 
+/// Mirror of [`apply_hyperzoom_plan_to_clip`] for the radial-blur
+/// convenience layer:
+///
+/// * Find or insert a `BuiltinEffect::RadialBlur` on `clip_id`. If a
+///   RadialBlur already exists (e.g. from a prior Apply Hyperzoom or
+///   manual user edit), its `center` is rewritten to the focal point
+///   and `amount` is rewritten to the peak so the static fallback
+///   matches the keyframes' peak value. `samples` and `mode` keep
+///   their existing values (preserves user tweaks); when inserting
+///   a fresh RadialBlur we use the standard zoom-blur defaults
+///   (samples=12, mode=0 = zoom).
+/// * Replace `clip.effect_keyframes["{idx}:amount"]` with the
+///   planned ramp so re-applying is idempotent.
+///
+/// No-ops with a debug log if the clip can't be located. Same
+/// fault-tolerance contract as `apply_hyperzoom_plan_to_clip`.
+fn apply_hyperzoom_radial_blur_to_clip(
+    seq: &mut klipp_timeline::Sequence,
+    clip_id: klipp_core::ClipId,
+    center: (f32, f32),
+    peak_amount: f32,
+    amount_kfs: &[klipp_core::keyframe::Keyframe],
+) {
+    let Some(clip) = seq.all_clips_mut().find(|c| c.id == clip_id) else {
+        tracing::debug!("apply_hyperzoom_radial_blur_to_clip: clip {clip_id:?} no longer in sequence");
+        return;
+    };
+
+    // Update existing RadialBlur if present, else append a fresh one.
+    let mut found_idx: Option<usize> = None;
+    for (i, fx) in clip.builtin_effects.iter_mut().enumerate() {
+        if let klipp_effects::BuiltinEffect::RadialBlur { center_x, center_y, amount, .. } = fx {
+            *center_x = center.0;
+            *center_y = center.1;
+            *amount = peak_amount;
+            found_idx = Some(i);
+            break;
+        }
+    }
+    let idx = match found_idx {
+        Some(i) => i,
+        None => {
+            clip.builtin_effects.push(klipp_effects::BuiltinEffect::RadialBlur {
+                center_x: center.0,
+                center_y: center.1,
+                amount: peak_amount,
+                // Sample count of 12 matches the "Subtle Zoom" preset
+                // and is the engine's standard sweet-spot trade-off
+                // between quality and per-pixel cost. Mode 0 = zoom
+                // (the canonical hyperzoom blur direction; spin
+                // would feel wrong at the cut).
+                samples: 12,
+                mode: 0,
+            });
+            clip.builtin_effects_enabled.push(true);
+            clip.builtin_effects.len() - 1
+        }
+    };
+
+    let key = format!("{}:amount", idx);
+    clip.effect_keyframes.insert(key, amount_kfs.to_vec());
+}
+
 /// Mirror of `matte_chain_creates_cycle` for the `transform_link`
 /// chain: returns true iff binding `consumer.transform_link.target =
 /// target` would create a cycle (consumer → … → target → consumer).
@@ -33724,6 +33794,72 @@ mod hyperzoom_handler_tests {
         let same = seq.tracks.iter().flat_map(|t| t.clips.iter()).find(|x| x.id == c.id).unwrap();
         assert!(same.transform_scale_keyframes.is_empty());
         assert!(same.builtin_effects.iter().all(|e| !matches!(e, BuiltinEffect::Transform { .. })));
+    }
+
+    use super::apply_hyperzoom_radial_blur_to_clip;
+
+    #[test]
+    fn radial_blur_inserts_builtin_when_absent_and_keys_amount() {
+        let c = fresh_clip();
+        let cid = c.id;
+        let mut seq = seq_with_clips(vec![c]);
+        apply_hyperzoom_radial_blur_to_clip(
+            &mut seq, cid, (0.3, 0.7), 15.0,
+            &[kf(0.0, 0.0), kf(0.5, 15.0)],
+        );
+        let clip = seq.tracks.iter().flat_map(|t| t.clips.iter()).find(|c| c.id == cid).unwrap();
+        // RadialBlur builtin inserted with focal-point center +
+        // peak amount + canonical defaults (samples=12, mode=0).
+        let (idx, cx, cy, amt, samples, mode) = clip.builtin_effects.iter().enumerate().find_map(|(i, e)| match e {
+            BuiltinEffect::RadialBlur { center_x, center_y, amount, samples, mode } =>
+                Some((i, *center_x, *center_y, *amount, *samples, *mode)),
+            _ => None,
+        }).expect("RadialBlur should have been inserted");
+        assert!((cx - 0.3).abs() < 1e-6);
+        assert!((cy - 0.7).abs() < 1e-6);
+        assert!((amt - 15.0).abs() < 1e-6);
+        assert_eq!(samples, 12);
+        assert_eq!(mode, 0);
+        // Amount keyframes registered under "{idx}:amount" so the
+        // engine's per-effect-keyframe lookup picks them up.
+        let key = format!("{}:amount", idx);
+        let kfs = clip.effect_keyframes.get(&key).expect("amount keyframes registered");
+        assert_eq!(kfs.len(), 2);
+        assert!((kfs[1].value - 15.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn radial_blur_updates_existing_builtin_in_place() {
+        // Pre-existing RadialBlur with non-default samples + mode
+        // (user manually configured spin mode + 24 samples). The
+        // hyperzoom helper should rewrite center + amount but
+        // preserve samples/mode — re-applying must not clobber the
+        // user's tweaks.
+        let mut c = fresh_clip();
+        c.builtin_effects.push(BuiltinEffect::RadialBlur {
+            center_x: 0.0, center_y: 0.0,
+            amount: 0.0,
+            samples: 24,
+            mode: 1, // spin
+        });
+        c.builtin_effects_enabled.push(true);
+        let cid = c.id;
+        let mut seq = seq_with_clips(vec![c]);
+        apply_hyperzoom_radial_blur_to_clip(
+            &mut seq, cid, (0.4, 0.6), 22.0,
+            &[kf(0.0, 0.0), kf(0.5, 22.0)],
+        );
+        let clip = seq.tracks.iter().flat_map(|t| t.clips.iter()).find(|c| c.id == cid).unwrap();
+        let (cx, cy, amt, samples, mode) = clip.builtin_effects.iter().find_map(|e| match e {
+            BuiltinEffect::RadialBlur { center_x, center_y, amount, samples, mode } =>
+                Some((*center_x, *center_y, *amount, *samples, *mode)),
+            _ => None,
+        }).unwrap();
+        assert!((cx - 0.4).abs() < 1e-6, "center_x rewritten");
+        assert!((cy - 0.6).abs() < 1e-6, "center_y rewritten");
+        assert!((amt - 22.0).abs() < 1e-6, "amount rewritten to peak");
+        assert_eq!(samples, 24, "user-configured samples preserved");
+        assert_eq!(mode, 1, "user-configured mode (spin) preserved");
     }
 }
 

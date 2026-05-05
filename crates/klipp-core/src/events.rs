@@ -2305,6 +2305,19 @@ pub enum AppCommand {
         /// its first `hold_secs`. `0.0` (default) reproduces the
         /// original two-keyframe behaviour exactly.
         hold_secs: f64,
+        /// When `true`, the handler additionally inserts a
+        /// `BuiltinEffect::RadialBlur` on source + target with center
+        /// bound to the focal point and amount keyframed
+        /// `0 → peak → 0` across the ramp window (sharing time-shape
+        /// with the scale ramp so the two motions stay locked).
+        /// `false` (default) skips the radial-blur insertion entirely.
+        add_radial_blur: bool,
+        /// Peak `RadialBlur::amount` value the keyframes climb to
+        /// (matches the standalone effect's `amount` field). Ignored
+        /// when `add_radial_blur` is `false`. `0.0` is treated as
+        /// "off" even when `add_radial_blur` is `true` — guards
+        /// against an inspector race producing a zero-blur insertion.
+        radial_blur_amount: f32,
     },
 
     /// Auto-apply `transform_link` to every clip *beneath* the

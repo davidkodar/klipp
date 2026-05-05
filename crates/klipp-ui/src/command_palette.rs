@@ -518,11 +518,14 @@ pub fn build(state: &AppState) -> Vec<PaletteEntry> {
                 focal_y_norm: 0.5,
                 duration_secs: 0.5,
                 max_scale: 50.0,
-                // Palette easy-path keeps Linear easing + no hold so
-                // the back-compat path is reachable without typing
-                // into the inspector.
+                // Palette easy-path keeps every polish layer at its
+                // back-compat default (Linear easing, no hold, no
+                // radial blur) so it's reachable without typing into
+                // the inspector. Power users tweak there.
                 easing: 0,
                 hold_secs: 0.0,
+                add_radial_blur: false,
+                radial_blur_amount: 0.0,
             }),
             enabled: true,
         });

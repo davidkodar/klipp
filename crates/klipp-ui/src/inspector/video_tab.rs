@@ -2237,7 +2237,7 @@ fn show_hyperzoom_section(
     // dragging on the canvas updates the spinboxes live and vice-
     // versa. Defaults: focal centre, half-second ramp, 50× peak.
     let stored = crate::hyperzoom::read_hyperzoom_scratch(ui.ctx(), clip_id);
-    let (mut focal_x, mut focal_y, mut duration_secs, mut max_scale, mut target_choice, mut easing, mut hold_secs) = (
+    let (mut focal_x, mut focal_y, mut duration_secs, mut max_scale, mut target_choice, mut easing, mut hold_secs, mut add_radial_blur, mut radial_blur_amount) = (
         stored.focal_x,
         stored.focal_y,
         stored.duration_secs,
@@ -2245,6 +2245,8 @@ fn show_hyperzoom_section(
         stored.target_choice,
         stored.easing,
         stored.hold_secs,
+        stored.add_radial_blur,
+        stored.radial_blur_amount,
     );
 
     section_card(ui, "HYPERZOOM", theme, |ui| {
@@ -2429,6 +2431,43 @@ fn show_hyperzoom_section(
                     );
                 });
 
+                ui.add_space(4.0);
+                ui.separator();
+                ui.add_space(4.0);
+
+                // ── Radial blur (opt-in convenience) ──
+                // Off by default. When toggled on, Apply Hyperzoom
+                // additionally inserts a `RadialBlur` builtin on
+                // source + target with center bound to focal X/Y
+                // and amount keyframed 0 → peak → 0 across the same
+                // ramp window as the scale animation.
+                ui.horizontal(|ui| {
+                    ui.checkbox(&mut add_radial_blur, "Add radial blur on apply")
+                        .on_hover_text(
+                            "Inserts a zoom-mode RadialBlur builtin on the source and target \
+                             clips, with center pinned to the focal point and amount ramped \
+                             0 → peak → 0 over the hyperzoom window.",
+                        );
+                });
+                if add_radial_blur {
+                    ui.horizontal(|ui| {
+                        ui.add_space(16.0);
+                        ui.label(egui::RichText::new("Amount").size(11.0).color(theme.text_dim));
+                        ui.add_space(8.0);
+                        ui.add(
+                            egui::DragValue::new(&mut radial_blur_amount)
+                                .range(0.0_f32..=50.0)
+                                .speed(0.5)
+                                .fixed_decimals(1),
+                        ).on_hover_text(
+                            "Peak `RadialBlur::amount` value. 5 = subtle; 15 = the standard \
+                             zoom-blur preset; 30+ is stylised. Identical to the standalone \
+                             RadialBlur effect's `amount` field — the keyframes just animate \
+                             0 → here → 0 across the ramp.",
+                        );
+                    });
+                }
+
                 ui.add_space(8.0);
 
                 // ── Apply + Link beneath ──
@@ -2469,6 +2508,8 @@ fn show_hyperzoom_section(
                             max_scale,
                             easing: easing.as_u8(),
                             hold_secs,
+                            add_radial_blur,
+                            radial_blur_amount,
                         });
                     }
 
@@ -2524,6 +2565,8 @@ fn show_hyperzoom_section(
         s.target_choice = target_choice;
         s.easing = easing;
         s.hold_secs = hold_secs;
+        s.add_radial_blur = add_radial_blur;
+        s.radial_blur_amount = radial_blur_amount;
     });
 }
 

@@ -38,6 +38,8 @@ pub struct HyperzoomScratch {
     pub target_choice: HyperzoomTargetChoice,
     pub easing: HyperzoomEasing,
     pub hold_secs: f64,
+    pub add_radial_blur: bool,
+    pub radial_blur_amount: f32,
 }
 
 impl Default for HyperzoomScratch {
@@ -50,6 +52,11 @@ impl Default for HyperzoomScratch {
             target_choice: HyperzoomTargetChoice::Auto,
             easing: HyperzoomEasing::Linear,
             hold_secs: 0.0,
+            add_radial_blur: false,
+            // Match the "Zoom Blur" preset baseline so toggling on
+            // gives a punchy default — but only fires when the user
+            // actually flips the checkbox.
+            radial_blur_amount: 15.0,
         }
     }
 }
@@ -156,6 +163,17 @@ pub struct HyperzoomInput {
     /// duration is `2 * hold_secs`. Set to `0.0` for the original
     /// two-keyframe ramp.
     pub hold_secs: f64,
+    /// When `true`, the planner additionally emits radial-blur amount
+    /// keyframes alongside the scale ramp. Defaults to `false` for
+    /// back-compat — the standalone `RadialBlur` effect is always
+    /// available from the effects library; this is just the
+    /// convenience flag that wires it through Apply Hyperzoom.
+    pub add_radial_blur: bool,
+    /// Peak radial-blur amount (passed to `BuiltinEffect::RadialBlur`'s
+    /// `amount` field). Same shape as the scale ramp: source ramps
+    /// `0.0 → amount` over the source ramp; target ramps `amount → 0.0`
+    /// over the target ramp; held segments stay at peak.
+    pub radial_blur_amount: f32,
 }
 
 /// Output of [`plan_hyperzoom`]. Keyframe times are clip-local seconds
@@ -167,6 +185,26 @@ pub struct HyperzoomPlan {
     pub source_scale_kfs: Vec<Keyframe>,
     pub target_anchor: (f32, f32),
     pub target_scale_kfs: Vec<Keyframe>,
+    /// Radial-blur center + per-side amount keyframes when
+    /// `HyperzoomInput::add_radial_blur` was true. `None` otherwise so
+    /// the handler can skip the radial-blur insertion entirely on
+    /// the back-compat path.
+    pub radial_blur: Option<RadialBlurPlan>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct RadialBlurPlan {
+    /// Normalised screen coords — same value as the focal point.
+    pub center: (f32, f32),
+    /// Peak amount the ramp climbs to (mirrors the input field).
+    pub peak_amount: f32,
+    /// `BuiltinEffect::RadialBlur::amount` keyframes for the source
+    /// clip. Same time-shape as the scale ramp: ramps `0.0 → amount`
+    /// over the source ramp window; under hold > 0 a 3rd keyframe
+    /// pins the held segment at peak.
+    pub source_amount_kfs: Vec<Keyframe>,
+    /// Mirror of `source_amount_kfs` for the target side.
+    pub target_amount_kfs: Vec<Keyframe>,
 }
 
 /// Compute the keyframes + anchor for a hyperzoom transition between
@@ -232,11 +270,46 @@ pub fn plan_hyperzoom(input: HyperzoomInput) -> HyperzoomPlan {
         easing,
     );
 
+    // Radial-blur amount keyframes share the source/target ramp
+    // window with the scale animation, but the values run 0.0 →
+    // peak instead of 1.0 → max_scale. Reusing the same
+    // build_ramp_keyframes helpers keeps the time math identical
+    // by construction — there's exactly one place where the
+    // ramp_start / peak / hold-tail times are computed.
+    let radial_blur = if input.add_radial_blur && input.radial_blur_amount > 0.0 {
+        let amount = input.radial_blur_amount.max(0.0);
+        let src_amount_kfs = build_ramp_keyframes(
+            (src_ramp_start, 0.0),
+            (peak_src, amount),
+            easing,
+            if hold > 0.0 {
+                Some(input.source_clip_dur_secs.max(peak_src + 0.05))
+            } else {
+                None
+            },
+        );
+        let tgt_amount_kfs = build_ramp_keyframes_target(
+            if hold > 0.0 { Some(0.0) } else { None },
+            (tgt_ramp_start, amount),
+            (tgt_ramp_end, 0.0),
+            easing,
+        );
+        Some(RadialBlurPlan {
+            center: (fx, fy),
+            peak_amount: amount,
+            source_amount_kfs: src_amount_kfs,
+            target_amount_kfs: tgt_amount_kfs,
+        })
+    } else {
+        None
+    };
+
     HyperzoomPlan {
         source_anchor: (fx, fy),
         source_scale_kfs,
         target_anchor: (fx, fy),
         target_scale_kfs,
+        radial_blur,
     }
 }
 
@@ -466,8 +539,8 @@ mod tests {
 
     fn input(focal_x: f32, focal_y: f32, dur: f64, max: f32, src: f64, tgt: f64) -> HyperzoomInput {
         // Default constructor used by the original two-keyframe tests:
-        // Linear easing, no hold — matches the pre-easing-feature
-        // output exactly so those tests stay green.
+        // Linear easing, no hold, no radial blur — matches the
+        // pre-feature output exactly so those tests stay green.
         HyperzoomInput {
             source_clip_dur_secs: src,
             target_clip_dur_secs: tgt,
@@ -477,6 +550,8 @@ mod tests {
             max_scale: max,
             easing: HyperzoomEasing::Linear,
             hold_secs: 0.0,
+            add_radial_blur: false,
+            radial_blur_amount: 0.0,
         }
     }
 
@@ -551,6 +626,8 @@ mod tests {
             max_scale: max,
             easing,
             hold_secs: hold,
+            add_radial_blur: false,
+            radial_blur_amount: 0.0,
         }
     }
 
@@ -667,6 +744,106 @@ mod tests {
         assert_eq!(s_tail.tangent_out, (0.0, 0.0));
         assert_eq!(t_head.tangent_in, (0.0, 0.0));
         assert_eq!(t_head.tangent_out, (0.0, 0.0));
+    }
+
+    // ─────────── Radial-blur convenience layer (opt-in) ───────────
+
+    fn input_with_blur(
+        easing: HyperzoomEasing, hold: f64,
+        add_blur: bool, blur_amount: f32,
+    ) -> HyperzoomInput {
+        HyperzoomInput {
+            source_clip_dur_secs: 3.0,
+            target_clip_dur_secs: 3.0,
+            focal_x_norm: 0.5,
+            focal_y_norm: 0.5,
+            duration_secs: 0.5,
+            max_scale: 50.0,
+            easing,
+            hold_secs: hold,
+            add_radial_blur: add_blur,
+            radial_blur_amount: blur_amount,
+        }
+    }
+
+    #[test]
+    fn radial_blur_disabled_yields_none_in_plan() {
+        // Pin: by default no radial-blur entry — handler skips the
+        // RadialBlur insertion entirely. Ensures back-compat for
+        // every existing Apply Hyperzoom invocation.
+        let plan = plan_hyperzoom(input(0.5, 0.5, 0.5, 50.0, 3.0, 3.0));
+        assert!(plan.radial_blur.is_none());
+    }
+
+    #[test]
+    fn radial_blur_zero_amount_yields_none_even_when_enabled() {
+        // Toggle on but amount=0: the visual effect is identity, so
+        // the planner short-circuits. Avoids inserting a zero-blur
+        // RadialBlur builtin that would just round-trip pixels
+        // through the GPU/CPU dispatch for nothing.
+        let plan = plan_hyperzoom(input_with_blur(HyperzoomEasing::Linear, 0.0, true, 0.0));
+        assert!(plan.radial_blur.is_none());
+    }
+
+    #[test]
+    fn radial_blur_enabled_emits_amount_keyframes_with_scale_timing() {
+        // Same time-shape as the scale ramp, values 0 → amount → 0.
+        let plan = plan_hyperzoom(input_with_blur(HyperzoomEasing::Linear, 0.0, true, 15.0));
+        let rb = plan.radial_blur.expect("radial blur enabled with positive amount");
+        assert_eq!(rb.center, (0.5, 0.5));
+        assert!((rb.peak_amount - 15.0).abs() < 1e-6);
+        // Source: (2.5, 0.0) → (3.0, 15.0) — same times as scale_kfs.
+        assert_eq!(rb.source_amount_kfs.len(), 2);
+        assert!((rb.source_amount_kfs[0].time_secs - 2.5).abs() < 1e-9);
+        assert!(rb.source_amount_kfs[0].value.abs() < 1e-6);
+        assert!((rb.source_amount_kfs[1].time_secs - 3.0).abs() < 1e-9);
+        assert!((rb.source_amount_kfs[1].value - 15.0).abs() < 1e-6);
+        // Target: (0.0, 15.0) → (0.5, 0.0).
+        assert_eq!(rb.target_amount_kfs.len(), 2);
+        assert!((rb.target_amount_kfs[0].time_secs - 0.0).abs() < 1e-9);
+        assert!((rb.target_amount_kfs[0].value - 15.0).abs() < 1e-6);
+        assert!((rb.target_amount_kfs[1].time_secs - 0.5).abs() < 1e-9);
+        assert!(rb.target_amount_kfs[1].value.abs() < 1e-6);
+
+        // Time-shape parity with scale_kfs — drift between the two
+        // would mean the blur ramp leads or lags the zoom ramp,
+        // which would feel weirdly disconnected.
+        for (a, b) in plan.source_scale_kfs.iter().zip(&rb.source_amount_kfs) {
+            assert!((a.time_secs - b.time_secs).abs() < 1e-9);
+        }
+        for (a, b) in plan.target_scale_kfs.iter().zip(&rb.target_amount_kfs) {
+            assert!((a.time_secs - b.time_secs).abs() < 1e-9);
+        }
+    }
+
+    #[test]
+    fn radial_blur_picks_up_hold_segment_three_keyframes() {
+        // 3-keyframe shape mirrors the scale ramp under hold > 0.
+        let plan = plan_hyperzoom(input_with_blur(HyperzoomEasing::Linear, 0.2, true, 15.0));
+        let rb = plan.radial_blur.unwrap();
+        assert_eq!(rb.source_amount_kfs.len(), 3);
+        assert_eq!(rb.target_amount_kfs.len(), 3);
+        // Source held tail at peak amount.
+        assert!((rb.source_amount_kfs[1].value - 15.0).abs() < 1e-6);
+        assert!((rb.source_amount_kfs[2].value - 15.0).abs() < 1e-6);
+        // Target head held at peak amount.
+        assert!((rb.target_amount_kfs[0].value - 15.0).abs() < 1e-6);
+        assert!((rb.target_amount_kfs[1].value - 15.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn radial_blur_inherits_bezier_easing_on_ramp_endpoints() {
+        // Bezier flag flows through to the radial-blur amount kfs
+        // identically — so the blur ramps with the same S-curve as
+        // the zoom and the two motions stay locked.
+        let plan = plan_hyperzoom(input_with_blur(HyperzoomEasing::Bezier, 0.0, true, 15.0));
+        let rb = plan.radial_blur.unwrap();
+        for kf in &rb.source_amount_kfs {
+            assert!(matches!(kf.interpolation, Interpolation::Bezier));
+        }
+        for kf in &rb.target_amount_kfs {
+            assert!(matches!(kf.interpolation, Interpolation::Bezier));
+        }
     }
 
     #[test]
