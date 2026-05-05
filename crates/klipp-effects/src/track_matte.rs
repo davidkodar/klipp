@@ -390,6 +390,57 @@ mod tests {
         assert!(approx(m[0], 1.0));
     }
 
+    /// Pin the contract: luma extraction reads RGB as-given, with no
+    /// un-premultiply step. A "white-at-50%-alpha" pixel encoded
+    /// premultiplied (RGB pre-darkened to 0.5) yields luma = 0.5.
+    /// Encoded straight (RGB = 1.0, alpha = 0.5) yields luma = 1.0.
+    ///
+    /// The implication is real: clips coming through `opacity::apply`
+    /// (which premultiplies) or premult-encoded sources (typical
+    /// ProRes 4444 from AE) feed dim luma into the matte extractor.
+    /// Out-of-band, this means a luma-keyed matte over a title with
+    /// antialiased semi-transparent edges renders softer than the
+    /// user expects. Documented here so a future un-premultiply pass
+    /// (or a decoder-side mode flag) doesn't regress this behaviour
+    /// without us noticing.
+    #[test]
+    fn linear_luma_does_not_un_premultiply() {
+        // Same logical pixel, two encodings.
+        let straight: Vec<f32>   = vec![1.0, 1.0, 1.0, 0.5];
+        let premult:  Vec<f32>   = vec![0.5, 0.5, 0.5, 0.5];
+
+        let m_straight = extract_mask_linear(&straight, MatteChannel::Luminance, false);
+        let m_premult  = extract_mask_linear(&premult,  MatteChannel::Luminance, false);
+
+        // Straight: BT.709 weights on (1,1,1) sum to 1.0.
+        assert!(approx(m_straight[0], 1.0),
+            "straight-alpha luma should be 1.0 for (1,1,1,0.5), got {}", m_straight[0]);
+        // Premult: RGB is already alpha-darkened, so luma = 0.5.
+        assert!(approx(m_premult[0], 0.5),
+            "premult luma reflects the darkened RGB — got {} (expected 0.5 to confirm \
+             current behaviour; if a fix lands this should become 1.0 and the test \
+             should be updated alongside the fix)", m_premult[0]);
+    }
+
+    #[test]
+    fn srgb_luma_does_not_un_premultiply() {
+        // Same logical pixel as above, encoded as 8-bit sRGB.
+        // 128/255 ≈ 0.502; the BT.709 sum lands at ~0.502.
+        let straight: Vec<u8> = vec![255, 255, 255, 128];
+        let premult:  Vec<u8> = vec![128, 128, 128, 128];
+
+        let m_straight = extract_mask_srgb_u8(&straight, MatteChannel::Luminance, false);
+        let m_premult  = extract_mask_srgb_u8(&premult,  MatteChannel::Luminance, false);
+
+        assert!(approx(m_straight[0], 1.0),
+            "straight-alpha luma = 1.0, got {}", m_straight[0]);
+        // 128/255 = 0.5019…; the BT.709 sum on (0.5019, 0.5019, 0.5019)
+        // is the same 0.5019. Tolerance must allow ~0.002 slack vs 0.5
+        // — the existing `approx` helper uses 1e-3 which is too tight.
+        assert!((m_premult[0] - 0.5019).abs() < 0.002,
+            "premult luma reflects the darkened RGB — got {}", m_premult[0]);
+    }
+
     #[test]
     fn srgb_invert_flips_signal() {
         let rgba = vec![128, 128, 128, 255];
