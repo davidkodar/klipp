@@ -6412,9 +6412,28 @@ impl PlaybackEngine {
                 // once at the viewer seam.
                 frame.ensure_cpu_data();
                 let gpu_source = frame.gpu_source.clone();
-                let final_linear = self.post_process_rgba_with_gpu_source(
+                let v1_graded_linear = self.post_process_rgba_with_gpu_source(
                     frame.data, w, h, gpu_source.as_ref(),
                 );
+                // Pump overlay decoder queues so any frames the
+                // async decoders have pushed during the V1 wait land
+                // in `overlay_frames` before the composite runs.
+                // Without this, a paused seek-then-composite races
+                // V2's decoder and misses its first frame.
+                let ph = self.playhead;
+                self.pop_overlay_frames(ph);
+                // Composite overlays + matte on top of V1's graded
+                // buffer. Without this, an immediate seek-while-paused
+                // writes V1 alone and matte effects only appear after
+                // the user starts playback.
+                let final_linear = if self.overlay_frames.is_empty() {
+                    v1_graded_linear
+                } else {
+                    let composited = self.compose_with_overlays_and_matte(v1_graded_linear, w, h);
+                    let to_encode = composited.clone();
+                    self.composite_scratch_linear = composited;
+                    to_encode
+                };
                 let final_rgba = self.display_encode(&final_linear);
                 let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
                 fb.write_frame(final_rgba, w, h);
@@ -6455,9 +6474,27 @@ impl PlaybackEngine {
         let (w, h) = (frame.width, frame.height);
         frame.ensure_cpu_data();
         let gpu_source = frame.gpu_source.clone();
-        let final_linear = self.post_process_rgba_with_gpu_source(
+        let v1_graded_linear = self.post_process_rgba_with_gpu_source(
             frame.data, w, h, gpu_source.as_ref(),
         );
+        // Pump overlay decoder queues so V2 / other media-overlay
+        // frames that arrived during the deferred wait land in
+        // `overlay_frames` before the composite runs.
+        let ph = self.playhead;
+        self.pop_overlay_frames(ph);
+        // Composite overlays + matte on top of V1's graded buffer.
+        // Without this the deferred paused refresh writes V1 alone,
+        // so video-in-text and other matte effects don't show after
+        // a cold seek (the original "freeze on the pre-seek frame"
+        // path that this function exists to recover from).
+        let final_linear = if self.overlay_frames.is_empty() {
+            v1_graded_linear
+        } else {
+            let composited = self.compose_with_overlays_and_matte(v1_graded_linear, w, h);
+            let to_encode = composited.clone();
+            self.composite_scratch_linear = composited;
+            to_encode
+        };
         let final_rgba = self.display_encode(&final_linear);
         {
             let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
@@ -7157,6 +7194,300 @@ impl PlaybackEngine {
     /// `bridge_u8_to_linear` compute shader — the CPU upload that
     /// `start_chain` would otherwise do is skipped entirely.
     ///
+    /// Pump overlay decoder frame queues, depositing frames whose pts
+    /// is at-or-before the playhead's source time into
+    /// `overlay_frames`. Used by paused-state composite paths that
+    /// want fresh overlay frames before running the matte composite —
+    /// without this, a paused-after-seek paint can race ahead of the
+    /// async overlay decoders and miss V2's first frame, leaving
+    /// `compose_with_overlays_and_matte` with no graded buffer for V2.
+    fn pop_overlay_frames(&mut self, playhead: Timecode) {
+        const FRAME_TOLERANCE: f64 = 0.01;
+        let track_indices: Vec<usize> = self.overlay_decoders.keys().copied().collect();
+        let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
+        for track_idx in track_indices {
+            let overlay_source_secs = if let Some(clip_idx) = self.overlay_clips.get(&track_idx) {
+                seq.tracks.get(track_idx)
+                    .and_then(|t| t.clips.get(*clip_idx))
+                    .map(|clip| {
+                        clip.source_in.to_secs_f64()
+                            + (playhead - clip.timeline_in).to_secs_f64() * clip.speed
+                    })
+                    .unwrap_or(0.0)
+            } else {
+                0.0
+            };
+            if let Some(dec) = self.overlay_decoders.get(&track_idx) {
+                let mut queue = dec.frame_queue().lock().unwrap_or_else(|e| e.into_inner());
+                while let Some(f) = queue.front() {
+                    if f.is_eof {
+                        let _ = queue.pop();
+                        break;
+                    }
+                    let pts = f.pts_secs();
+                    if pts <= overlay_source_secs + FRAME_TOLERANCE {
+                        let ovf = queue.pop().unwrap();
+                        if let Some(next) = queue.front() {
+                            if !next.is_eof && next.pts_secs() <= overlay_source_secs + FRAME_TOLERANCE {
+                                continue;
+                            }
+                        }
+                        self.overlay_frames.insert(track_idx, ovf);
+                        break;
+                    } else {
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    /// Run the matte-aware overlay composite pipeline. Takes V1's
+    /// already-graded linear buffer and returns the final composited
+    /// linear buffer with all overlays, matte sources, stencils,
+    /// blend modes, and adjustment layers applied at the sequence's
+    /// final resolution. Caller owns the returned buffer; the pooled
+    /// `self.composite_scratch_linear` is left empty after the call
+    /// (caller is expected to write the final result back to it once
+    /// it has run any post-composite stages — transition, display
+    /// encode, framebuffer upload).
+    ///
+    /// This is the same logic that lives inline in `update_playback`,
+    /// extracted so paused-state paths (`regrade_cached_frame`,
+    /// `grab_single_frame_timeout`, `try_drain_paused_refresh_frame`)
+    /// can reuse it. Without that, matte_source bindings only render
+    /// during active playback — pausing or scrubbing freezes a
+    /// composite that ignores the matte chain, so the user sees V1
+    /// alone (or V1 + naive overlay-stack) instead of the masked
+    /// result. The user-visible symptom was "video-in-text only
+    /// works while playing; paused or after a click it disappears."
+    fn compose_with_overlays_and_matte(
+        &mut self,
+        v1_graded_linear: Vec<f32>,
+        final_w: u32,
+        final_h: u32,
+    ) -> Vec<f32> {
+        let v1_opacity = {
+            let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
+            seq.tracks.get(self.current_track_index).map(|t| t.opacity).unwrap_or(1.0)
+        };
+
+        let v1_clip: Option<klipp_timeline::Clip> = {
+            let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
+            seq.tracks.get(self.current_track_index)
+                .and_then(|t| t.clip_at_timecode(self.playhead).map(|(_, c)| c.clone()))
+        };
+
+        let overlay_clip_data: Vec<(usize, f32, Option<klipp_timeline::Clip>)> = {
+            let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
+            let fps_f64 = self.fps.as_f64();
+            let overlay_tracks = seq.overlay_video_tracks(self.current_track_index);
+            overlay_tracks.iter().filter_map(|(track_idx, track)| {
+                self.overlay_frames.get(track_idx).map(|_| {
+                    let clip_opacity = track
+                        .clip_at_timecode(self.playhead)
+                        .map(|(_, clip)| evaluate_clip_opacity(clip, self.playhead, fps_f64))
+                        .unwrap_or(1.0);
+                    let effective = track.opacity * clip_opacity;
+                    let clip = track.clip_at_timecode(self.playhead).map(|(_, c)| c.clone());
+                    (*track_idx, effective, clip)
+                })
+            }).collect()
+        };
+
+        let matte_source_ids: std::collections::HashSet<klipp_core::ClipId> = {
+            let mut s = std::collections::HashSet::new();
+            for (_, _, c) in &overlay_clip_data {
+                if let Some(c) = c {
+                    if let Some(b) = c.matte_source.as_ref() {
+                        s.insert(b.source_clip_id);
+                    }
+                    if c.matte_stencil.is_some() {
+                        s.insert(c.id);
+                    }
+                }
+            }
+            if let Some(c) = &v1_clip {
+                if let Some(b) = c.matte_source.as_ref() {
+                    s.insert(b.source_clip_id);
+                }
+                if c.matte_stencil.is_some() {
+                    s.insert(c.id);
+                }
+            }
+            s
+        };
+
+        let mut stencil_clips: Vec<(usize, klipp_core::ClipId, klipp_timeline::StencilSettings, f64)> = Vec::new();
+        for (track_idx, _, c) in &overlay_clip_data {
+            if let Some(c) = c {
+                if let Some(s) = c.matte_stencil.as_ref() {
+                    let clip_time = (self.playhead.to_secs_f64() - c.timeline_in.to_secs_f64()).max(0.0);
+                    stencil_clips.push((*track_idx, c.id, s.clone(), clip_time));
+                }
+            }
+        }
+        if let Some(c) = &v1_clip {
+            if let Some(s) = c.matte_stencil.as_ref() {
+                let clip_time = (self.playhead.to_secs_f64() - c.timeline_in.to_secs_f64()).max(0.0);
+                stencil_clips.push((self.current_track_index, c.id, s.clone(), clip_time));
+            }
+        }
+
+        let pixel_count = (final_w * final_h) as usize;
+        let needed_f = pixel_count * 4;
+        let mut accumulated_linear = std::mem::take(&mut self.composite_scratch_linear);
+        if accumulated_linear.len() != needed_f {
+            accumulated_linear.resize(needed_f, 0.0);
+        } else {
+            accumulated_linear.fill(0.0);
+        }
+
+        let mut graded_layers: std::collections::HashMap<klipp_core::ClipId, Vec<f32>> =
+            std::collections::HashMap::new();
+        if let Some(c) = &v1_clip {
+            if matte_source_ids.contains(&c.id) {
+                graded_layers.insert(c.id, v1_graded_linear.clone());
+            }
+        }
+
+        struct PreRenderedLayer {
+            track_idx: usize,
+            effective: f32,
+            clip: Option<klipp_timeline::Clip>,
+            graded: Option<Vec<f32>>,
+        }
+        let mut pre_rendered: Vec<PreRenderedLayer> = Vec::with_capacity(overlay_clip_data.len());
+        for (track_idx, effective, clip) in &overlay_clip_data {
+            if matches!(clip.as_ref().map(|c| &c.kind), Some(klipp_timeline::ClipKind::AdjustmentLayer)) {
+                pre_rendered.push(PreRenderedLayer {
+                    track_idx: *track_idx, effective: *effective, clip: clip.clone(), graded: None,
+                });
+                continue;
+            }
+            let Some(ov_frame) = self.overlay_frames.get(track_idx) else {
+                pre_rendered.push(PreRenderedLayer {
+                    track_idx: *track_idx, effective: *effective, clip: clip.clone(), graded: None,
+                });
+                continue;
+            };
+            let (ov_w, ov_h) = (ov_frame.width, ov_frame.height);
+            let mut ov_linear = ov_frame.data.clone();
+            if let Some(c) = clip {
+                let clip_time = (self.playhead.to_secs_f64() - c.timeline_in.to_secs_f64()).max(0.0);
+                ov_linear = self.apply_clip_effects(ov_linear, ov_w, ov_h, c, clip_time);
+            }
+            let src_linear = if ov_w == final_w && ov_h == final_h {
+                ov_linear
+            } else {
+                crate::grade_resample::upsample_linear_bilinear(&ov_linear, ov_w, ov_h, final_w, final_h)
+            };
+            if let Some(c) = clip {
+                if matte_source_ids.contains(&c.id) {
+                    graded_layers.insert(c.id, src_linear.clone());
+                }
+            }
+            pre_rendered.push(PreRenderedLayer {
+                track_idx: *track_idx, effective: *effective, clip: clip.clone(), graded: Some(src_linear),
+            });
+        }
+
+        // Blend V1 (with stencils + matte if applicable) onto the zero canvas.
+        let v1_blend_mode = v1_clip.as_ref().map(|c| c.blend_mode).unwrap_or(klipp_core::BlendMode::Normal);
+        let v1_matte = v1_clip.as_ref().and_then(|c| c.matte_source.as_ref());
+        if v1_matte.is_some() || stencil_clips.iter().any(|(t, id, _, _)| *t > self.current_track_index && Some(*id) != v1_clip.as_ref().map(|c| c.id)) {
+            let mut v1_masked = v1_graded_linear.clone();
+            if let Some(c) = &v1_clip {
+                for (st_track_idx, st_clip_id, st_settings, _) in &stencil_clips {
+                    if *st_track_idx <= self.current_track_index { continue; }
+                    if *st_clip_id == c.id { continue; }
+                    let pseudo_binding = klipp_timeline::MatteBinding {
+                        source_clip_id: *st_clip_id,
+                        channel: st_settings.channel,
+                        invert: st_settings.invert,
+                        feather_px: st_settings.feather_px,
+                        choke_px: st_settings.choke_px,
+                    };
+                    Self::apply_track_matte_linear(&mut v1_masked, &graded_layers, &pseudo_binding, final_w, final_h);
+                }
+            }
+            if let Some(binding) = v1_matte {
+                let v1_clip_time = v1_clip.as_ref()
+                    .map(|c| (self.playhead.to_secs_f64() - c.timeline_in.to_secs_f64()).max(0.0))
+                    .unwrap_or(0.0);
+                let effective = klipp_timeline::MatteBinding {
+                    source_clip_id: binding.source_clip_id,
+                    channel: binding.channel,
+                    invert: binding.invert,
+                    feather_px: v1_clip.as_ref()
+                        .map(|c| klipp_core::keyframe::evaluate(&c.matte_feather_keyframes, v1_clip_time, binding.feather_px))
+                        .unwrap_or(binding.feather_px),
+                    choke_px: v1_clip.as_ref()
+                        .map(|c| klipp_core::keyframe::evaluate(&c.matte_choke_keyframes, v1_clip_time, binding.choke_px))
+                        .unwrap_or(binding.choke_px),
+                };
+                Self::apply_track_matte_linear(&mut v1_masked, &graded_layers, &effective, final_w, final_h);
+                if let Some(c) = &v1_clip {
+                    if self.inspector_matte_preview_target == Some(c.id) {
+                        Self::emit_matte_preview(&self.event_tx, c.id, &effective, &graded_layers, final_w, final_h);
+                    }
+                }
+            }
+            klipp_effects::composite::blend_layer_linear(&mut accumulated_linear, &v1_masked, v1_opacity, v1_blend_mode);
+        } else {
+            klipp_effects::composite::blend_layer_linear(&mut accumulated_linear, &v1_graded_linear, v1_opacity, v1_blend_mode);
+        }
+
+        for entry in pre_rendered {
+            if entry.effective <= 0.001 { continue; }
+            if let Some(c) = &entry.clip {
+                if matches!(c.kind, klipp_timeline::ClipKind::AdjustmentLayer) {
+                    let clip_time = (self.playhead.to_secs_f64() - c.timeline_in.to_secs_f64()).max(0.0);
+                    let pass = std::mem::take(&mut accumulated_linear);
+                    accumulated_linear = self.apply_clip_effects(pass, final_w, final_h, c, clip_time);
+                    continue;
+                }
+                if c.consumed_as_matte || c.matte_stencil.is_some() { continue; }
+            }
+            let Some(mut graded) = entry.graded else { continue; };
+            if let Some(c) = &entry.clip {
+                let consumer_track = entry.track_idx;
+                for (st_track_idx, st_clip_id, st_settings, _st_time) in &stencil_clips {
+                    if *st_track_idx <= consumer_track { continue; }
+                    if *st_clip_id == c.id { continue; }
+                    let pseudo_binding = klipp_timeline::MatteBinding {
+                        source_clip_id: *st_clip_id,
+                        channel: st_settings.channel,
+                        invert: st_settings.invert,
+                        feather_px: st_settings.feather_px,
+                        choke_px: st_settings.choke_px,
+                    };
+                    Self::apply_track_matte_linear(&mut graded, &graded_layers, &pseudo_binding, final_w, final_h);
+                }
+            }
+            if let Some(c) = &entry.clip {
+                if let Some(binding) = c.matte_source.as_ref() {
+                    let clip_time = (self.playhead.to_secs_f64() - c.timeline_in.to_secs_f64()).max(0.0);
+                    let effective = klipp_timeline::MatteBinding {
+                        source_clip_id: binding.source_clip_id,
+                        channel: binding.channel,
+                        invert: binding.invert,
+                        feather_px: klipp_core::keyframe::evaluate(&c.matte_feather_keyframes, clip_time, binding.feather_px),
+                        choke_px: klipp_core::keyframe::evaluate(&c.matte_choke_keyframes, clip_time, binding.choke_px),
+                    };
+                    Self::apply_track_matte_linear(&mut graded, &graded_layers, &effective, final_w, final_h);
+                    if self.inspector_matte_preview_target == Some(c.id) {
+                        Self::emit_matte_preview(&self.event_tx, c.id, &effective, &graded_layers, final_w, final_h);
+                    }
+                }
+            }
+            let blend_mode = entry.clip.as_ref().map(|c| c.blend_mode).unwrap_or(klipp_core::BlendMode::Normal);
+            klipp_effects::composite::blend_layer_linear(&mut accumulated_linear, &graded, entry.effective, blend_mode);
+        }
+
+        accumulated_linear
+    }
+
     /// Falls through to the normal `post_process_rgba` path when
     /// `gpu_source` is `None`, priming fails, or the GPU pipeline
     /// isn't available.
@@ -7584,48 +7915,25 @@ impl PlaybackEngine {
             let linear_in = u8_rgba_to_linear(rgba_arc.as_ref());
             let graded_linear = self.post_process_rgba_inner_drag_aware(linear_in, w, h);
 
-            // Composite overlay frames (titles etc.) over V1, in track order.
-            // Effective opacity = track.opacity * clip-level opacity (with keyframes/modifiers).
-            // Evaluating here means paused opacity drags update the visible composite.
+            // Pump any overlay-decoder frames that arrived since the
+            // last composite, then route through the matte-aware
+            // composite. Without the pump, a regrade triggered before
+            // V2's first frame lands paints with stale or missing
+            // overlays. Without the matte route, track-matte
+            // bindings and stencil clips don't render in paused
+            // state — the video-in-text effect only appears during
+            // active playback. Both fixes together keep the paused
+            // composite consistent with the playing one.
+            let ph = self.playhead;
+            self.pop_overlay_frames(ph);
             let has_overlays = !self.overlay_frames.is_empty();
             let out_u8 = if has_overlays {
-                use klipp_effects::composite::{composite_layers_linear, CompositeLayerLinear};
-                let mut layers = vec![CompositeLayerLinear {
-                    rgba: graded_linear,
-                    width: w,
-                    height: h,
-                    opacity: 1.0,
-                    blend_mode: klipp_core::BlendMode::Normal,
-                }];
-                {
-                    let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
-                    let fps_f64 = self.fps.as_f64();
-                    for (track_idx, track) in &seq.overlay_video_tracks(self.current_track_index) {
-                        if let Some(ov_frame) = self.overlay_frames.get(track_idx) {
-                            let clip_opacity = track
-                                .clip_at_timecode(self.playhead)
-                                .map(|(_, clip)| evaluate_clip_opacity(clip, self.playhead, fps_f64))
-                                .unwrap_or(1.0);
-                            let effective = track.opacity * clip_opacity;
-                            if effective > 0.001 {
-                                // overlay_frames is already linear f32 —
-                                // clone the buffer instead of doing a
-                                // 12 ms u8→linear decode per regrade.
-                                layers.push(CompositeLayerLinear {
-                                    rgba: ov_frame.data.clone(),
-                                    width: ov_frame.width,
-                                    height: ov_frame.height,
-                                    opacity: effective,
-                                    blend_mode: klipp_core::BlendMode::Normal,
-                                });
-                            }
-                        }
-                    }
-                }
-                let linear_out = composite_layers_linear(&layers, w, h);
-                // Display boundary — same tone-map path as the main
-                // playback compositor.
-                self.display_encode(&linear_out)
+                let composited = self.compose_with_overlays_and_matte(graded_linear, w, h);
+                let encoded = self.display_encode(&composited);
+                // Return the linear buffer to the pool so the next
+                // composite tick reuses it.
+                self.composite_scratch_linear = composited;
+                encoded
             } else {
                 // No overlays — the single-layer graded frame IS the
                 // output; display_encode at the viewer seam.
