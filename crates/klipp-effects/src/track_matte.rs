@@ -112,6 +112,45 @@ pub fn extract_mask_srgb_u8(
     mask
 }
 
+/// Fast path for `extract_mask_linear → apply_mask_to_alpha_linear`
+/// when neither choke nor feather are in use. Skips the intermediate
+/// mask buffer entirely: for each pixel, derives the channel value
+/// from the source, applies invert, and multiplies the consumer's
+/// alpha in one pass. Saves ~16 MB of memory traffic per matte per
+/// 1080p frame (no 8 MB mask write + no 8 MB mask read), which the
+/// hot logs flag as the dominant matte cost when choke/feather are
+/// zero — i.e. the default user case.
+///
+/// Caller must guarantee the buffers are the same length and a
+/// multiple of 4 (RGBA) — the slow path's defensive checks live in
+/// `apply_track_matte_linear`'s caller.
+pub fn apply_matte_fused_linear(
+    consumer_rgba: &mut [f32],
+    source_rgba: &[f32],
+    channel: MatteChannel,
+    invert: bool,
+) {
+    debug_assert_eq!(consumer_rgba.len(), source_rgba.len());
+    debug_assert!(consumer_rgba.len() % 4 == 0);
+    let pixels = consumer_rgba.len() / 4;
+    for i in 0..pixels {
+        let r = source_rgba[i * 4];
+        let g = source_rgba[i * 4 + 1];
+        let b = source_rgba[i * 4 + 2];
+        let a = source_rgba[i * 4 + 3];
+        let raw = match channel {
+            MatteChannel::Alpha => a,
+            MatteChannel::Luminance => 0.2126 * r + 0.7152 * g + 0.0722 * b,
+            MatteChannel::Red => r,
+            MatteChannel::Green => g,
+            MatteChannel::Blue => b,
+        };
+        let m = raw.clamp(0.0, 1.0);
+        let mask_value = if invert { 1.0 - m } else { m };
+        consumer_rgba[i * 4 + 3] *= mask_value;
+    }
+}
+
 /// Soften mask edges with a Gaussian blur of `radius_px`. Skips when
 /// the radius is below a quarter-pixel — anything smaller is sub-sample
 /// noise the bilinear taps in the downstream blend already swallow.
@@ -694,6 +733,55 @@ mod tests {
         // expect of "invert + choke" semantically — but we don't
         // promise that either, so just sanity-check the lengths line up.
         assert_eq!(inverted.len(), b.len());
+    }
+
+    /// Pin: the fused fast path produces byte-identical alpha to the
+    /// extract + apply slow path when choke/feather are zero. If the
+    /// fast path ever drifts, this catches it before users see a
+    /// visual difference between "no feather" and "feather=0.0".
+    #[test]
+    fn fused_matches_kernel_path_zero_radii() {
+        let w = 16u32;
+        let h = 16u32;
+        let pixels = (w * h) as usize;
+        // Random-ish source: gradient + per-channel variation.
+        let source: Vec<f32> = (0..pixels * 4).map(|i| {
+            let p = i / 4;
+            let c = i % 4;
+            let base = (p as f32) / (pixels as f32);
+            match c {
+                0 => base,                  // R
+                1 => 1.0 - base,            // G
+                2 => (base * 7.0).fract(),  // B
+                _ => 0.5 + 0.5 * base,      // A
+            }
+        }).collect();
+        // Consumer starts with full alpha; both paths multiply alpha
+        // by the derived mask.
+        let mut consumer_fused: Vec<f32> = vec![0.5; pixels * 4];
+        let mut consumer_kernel: Vec<f32> = consumer_fused.clone();
+
+        for ch in [
+            MatteChannel::Alpha,
+            MatteChannel::Luminance,
+            MatteChannel::Red,
+            MatteChannel::Green,
+            MatteChannel::Blue,
+        ] {
+            for invert in [false, true] {
+                consumer_fused.fill(0.5);
+                consumer_kernel.fill(0.5);
+                apply_matte_fused_linear(&mut consumer_fused, &source, ch, invert);
+                let mask = extract_mask_linear(&source, ch, invert);
+                apply_mask_to_alpha_linear(&mut consumer_kernel, &mask);
+                for i in 0..pixels * 4 {
+                    let f = consumer_fused[i];
+                    let k = consumer_kernel[i];
+                    assert!((f - k).abs() < 1e-6,
+                        "fused vs kernel divergence at i={i} ch={ch:?} invert={invert}: {f} vs {k}");
+                }
+            }
+        }
     }
 
     /// Sanity perf test: a 1080p mask feather completes in reasonable

@@ -6983,17 +6983,41 @@ impl PlaybackEngine {
         }
         let channel = matte_channel_to_effects(binding.channel);
 
-        // Stage timing — logged at trace level for normal frames,
-        // promoted to debug when the total exceeds 2 ms (matches the
-        // composite-budget threshold elsewhere in this file).
+        // Fast path: when neither choke nor feather is in use, fuse
+        // extract + apply into one pass. Skips the 8 MB mask
+        // allocation + write + read per frame — the dominant matte
+        // cost when both radii are zero (the default user case the
+        // perf logs flagged).
+        let no_choke = binding.choke_px < 0.5;
+        let no_feather = binding.feather_px < 0.25;
+        if no_choke && no_feather {
+            let t_fused = std::time::Instant::now();
+            klipp_effects::track_matte::apply_matte_fused_linear(
+                consumer_linear, source, channel, binding.invert,
+            );
+            let fused_us = t_fused.elapsed().as_micros();
+            tracing::trace!(
+                "matte stage_us fused={fused_us} total={fused_us} \
+                 res={width}x{height} choke_px=0.0 feather_px=0.0 ch={channel:?} cpu_fused",
+            );
+            if fused_us > 2_000 {
+                tracing::debug!(
+                    "PERF matte: {:.2}ms (fused) res={width}x{height} ch={channel:?} CPU_FUSED",
+                    fused_us as f64 / 1000.0,
+                );
+            }
+            return;
+        }
+
+        // Slow path: choke and/or feather are non-zero, so we need
+        // the intermediate mask buffer for the kernels.
         let t_extract = std::time::Instant::now();
         let mut mask = klipp_effects::track_matte::extract_mask_linear(source, channel, binding.invert);
         let extract_us = t_extract.elapsed().as_micros();
 
         // Choke before feather so the soft edge of feather sits on top of
         // the eroded boundary (chromakey clean-up convention: tighten,
-        // then soften). Both no-op at zero radius — common case stays
-        // free.
+        // then soften).
         let t_choke = std::time::Instant::now();
         klipp_effects::track_matte::apply_choke_mask(&mut mask, width, height, binding.choke_px);
         let choke_us = t_choke.elapsed().as_micros();
@@ -7007,18 +7031,15 @@ impl PlaybackEngine {
         let apply_us = t_apply.elapsed().as_micros();
 
         let total_us = extract_us + choke_us + feather_us + apply_us;
-        // Trace at every call so RUST_LOG=trace shows the per-stage
-        // breakdown; debug only fires when the matte cost is non-trivial.
         tracing::trace!(
-            target: "klipp::matte",
             "matte stage_us extract={extract_us} choke={choke_us} feather={feather_us} apply={apply_us} total={total_us} \
-             res={width}x{height} choke_px={:.1} feather_px={:.1} ch={channel:?} cpu",
+             res={width}x{height} choke_px={:.1} feather_px={:.1} ch={channel:?} cpu_kernel",
             binding.choke_px, binding.feather_px,
         );
         if total_us > 2_000 {
             tracing::debug!(
                 "PERF matte: {:.2}ms (extract={:.2} choke={:.2} feather={:.2} apply={:.2}) \
-                 res={width}x{height} ch={channel:?} choke_px={:.1} feather_px={:.1} CPU",
+                 res={width}x{height} ch={channel:?} choke_px={:.1} feather_px={:.1} CPU_KERNEL",
                 total_us as f64 / 1000.0,
                 extract_us as f64 / 1000.0,
                 choke_us as f64 / 1000.0,
