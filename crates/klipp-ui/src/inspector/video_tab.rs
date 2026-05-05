@@ -2365,8 +2365,11 @@ fn show_hyperzoom_section(
                     state.playhead,
                 );
                 if let Some(title_clip) = target {
-                    let title_clip_id = title_clip.id;
-                    if let Some(td) = title_clip.title_data().cloned() {
+                    // Existence guard — bitmap clone is no longer
+                    // needed here (App pre-rendered it); the picker
+                    // only needs glyph positions, which the cache
+                    // helper computes from `title_clip` directly.
+                    if title_clip.title_data().is_some() {
                         ui.add_space(6.0);
                         // Preview slot: ~210×118 px, 16:9-ish so an
                         // FHD title fits without distortion.
@@ -2383,43 +2386,51 @@ fn show_hyperzoom_section(
                         ui.painter().rect_stroke(preview_rect, 4.0,
                             egui::Stroke::new(0.5, theme.border));
 
-                        // Render the title bitmap at the preview's
-                        // pixel size + upload as an egui texture.
-                        // Per-paint TitleRenderer is wasteful but
-                        // contained; the picker UX is rare enough
-                        // that the cost is fine. If perf hurts, the
-                        // bitmap can be cached alongside the glyph
-                        // positions on AppState.
                         let frame_w = preview_w as u32;
                         let frame_h = preview_h as u32;
-                        let mut tr = klipp_title::TitleRenderer::new();
-                        let bitmap = tr.render(&td, frame_w, frame_h);
-                        let img = egui::ColorImage::from_rgba_unmultiplied(
-                            [frame_w as usize, frame_h as usize],
-                            &bitmap,
-                        );
-                        let tex = ui.ctx().load_texture(
-                            format!("hyperzoom_picker_{}", title_clip_id.0),
-                            img,
-                            egui::TextureOptions::LINEAR,
-                        );
-                        ui.painter().image(
-                            tex.id(),
-                            preview_rect.shrink(2.0),
-                            egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-                            egui::Color32::WHITE,
-                        );
+
+                        // Title bitmap is rendered + uploaded by the
+                        // App layer (refresh_letter_picker_texture)
+                        // BEFORE this code runs — texture lifecycle
+                        // can't be managed from the inspector
+                        // because dropping a TextureHandle inline
+                        // trips wgpu validation. We just read the
+                        // cached handle. Falls back to a placeholder
+                        // text when the texture isn't ready yet
+                        // (e.g. first paint after selection).
+                        if let Some(tex) = state.letter_picker_texture.as_ref() {
+                            ui.painter().image(
+                                tex.id(),
+                                preview_rect.shrink(2.0),
+                                egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                                egui::Color32::WHITE,
+                            );
+                        } else {
+                            ui.painter().text(
+                                preview_rect.center(),
+                                egui::Align2::CENTER_CENTER,
+                                "rendering…",
+                                egui::FontId::proportional(11.0),
+                                theme.text_dim,
+                            );
+                        }
 
                         // Glyph positions — refreshed via the
                         // shared cache helper on hash mismatch.
                         // RefCell borrow is scoped to the helper
                         // call; the .to_vec() decouples the result
                         // from the borrow before any other state
-                        // access in this block.
+                        // access in this block. Renderer is local
+                        // to this lookup; the engine-side title
+                        // renderer isn't reachable from here, but
+                        // computing positions is far cheaper than
+                        // rasterising and the cache pins the cost
+                        // to "once per layout-hash change".
                         let positions: Vec<klipp_title::CharPosition> = {
+                            let mut tr_local = klipp_title::TitleRenderer::new();
                             let mut cache = state.glyph_position_cache.borrow_mut();
                             crate::inspector::letter_picker::ensure_glyph_positions(
-                                &mut cache, &mut tr, title_clip, frame_w, frame_h,
+                                &mut cache, &mut tr_local, title_clip, frame_w, frame_h,
                             ).to_vec()
                         };
 

@@ -23277,6 +23277,91 @@ impl KlippApp {
         self.state.deferred_texture_drops[slot].push(h);
     }
 
+    /// Refresh the letter-picker preview texture if the selected
+    /// clip's resolved title-context has changed since the last paint.
+    /// Runs from `render_inspector_panel` while the App still has
+    /// `&mut self` access — texture lifecycle (creation + the
+    /// `defer_drop_texture` call on the prior handle) stays in this
+    /// layer. The inspector then reads `state.letter_picker_texture`
+    /// without ever touching wgpu.
+    ///
+    /// Resolution flow:
+    /// 1. No clip selected → drop the texture (defer-drop the old).
+    /// 2. Selected clip resolves a Title via `picker_target_for_clip`
+    ///    AND `(clip_id, layout_hash, w, h)` differs from the cache
+    ///    key → render the title bitmap, upload, swap (defer-drop).
+    /// 3. Same target + hash → no-op; texture is reused.
+    /// 4. Selected clip with no title context → drop the texture.
+    ///
+    /// Frame dimensions are pinned at the inspector preview's fixed
+    /// size (210×118 px) — no need to thread the rect down here.
+    fn refresh_letter_picker_texture(&mut self, ctx: &egui::Context) {
+        const PREVIEW_W: u32 = 210;
+        const PREVIEW_H: u32 = 118;
+
+        let Some(selected_clip_id) = self.state.selected_clip else {
+            if let Some(stale) = self.state.letter_picker_texture.take() {
+                self.defer_drop_texture(stale);
+            }
+            self.state.letter_picker_texture_for = None;
+            return;
+        };
+
+        // Resolve target + compute layout hash under one read of the
+        // sequence; the rest of the function works off snapshots so
+        // we don't hold the borrow across the texture upload.
+        let target_info: Option<(klipp_core::ClipId, u64, klipp_timeline::TitleData)> = {
+            let seq = self.state.sequence();
+            let target_clip = crate::inspector::letter_picker::picker_target_for_clip(
+                seq, selected_clip_id, self.state.playhead,
+            );
+            target_clip.and_then(|c| {
+                c.title_data().map(|td| {
+                    let hash = crate::inspector::letter_picker::glyph_layout_hash(td, PREVIEW_W, PREVIEW_H);
+                    (c.id, hash, td.clone())
+                })
+            })
+        };
+
+        let Some((title_clip_id, layout_hash, td)) = target_info else {
+            // No title context for this selection — drop any leftover
+            // texture so the inspector falls back to the spinbox flow.
+            if let Some(stale) = self.state.letter_picker_texture.take() {
+                self.defer_drop_texture(stale);
+            }
+            self.state.letter_picker_texture_for = None;
+            return;
+        };
+
+        let new_key = (title_clip_id, layout_hash, PREVIEW_W, PREVIEW_H);
+        if self.state.letter_picker_texture_for == Some(new_key)
+            && self.state.letter_picker_texture.is_some()
+        {
+            return; // cache hit — texture stays.
+        }
+
+        // Cache miss: render bitmap, upload, defer-drop the old.
+        // Per-paint TitleRenderer is wasteful but contained here —
+        // refresh fires only when the layout hash changes.
+        let mut tr = klipp_title::TitleRenderer::new();
+        let bitmap = tr.render(&td, PREVIEW_W, PREVIEW_H);
+        let img = egui::ColorImage::from_rgba_unmultiplied(
+            [PREVIEW_W as usize, PREVIEW_H as usize],
+            &bitmap,
+        );
+        let tex = ctx.load_texture(
+            format!("hyperzoom_picker_{}", title_clip_id.0.as_simple()),
+            img,
+            egui::TextureOptions::LINEAR,
+        );
+
+        if let Some(stale) = self.state.letter_picker_texture.take() {
+            self.defer_drop_texture(stale);
+        }
+        self.state.letter_picker_texture = Some(tex);
+        self.state.letter_picker_texture_for = Some(new_key);
+    }
+
     /// Phase 5 — fire any one-shot first-time tips whose unlock
     /// condition is satisfied by the active sequence and that haven't
     /// already been dismissed. Each tip records its key in
@@ -28409,6 +28494,16 @@ impl KlippApp {
         inspector_rect: egui::Rect,
         all_cmds: &mut Vec<AppCommand>,
     ) {
+        // Refresh the letter-picker texture BEFORE the inspector
+        // tabs render. Texture lifecycle stays in the App layer so
+        // the old handle goes through `defer_drop_texture`; the
+        // inspector itself reads `state.letter_picker_texture`
+        // without touching wgpu (creating/dropping a TextureHandle
+        // mid-frame from inside the inspector trips wgpu's
+        // "Texture has been destroyed" validation —
+        // feedback_defer_drop_texture).
+        self.refresh_letter_picker_texture(ui.ctx());
+
         let bg_panel = self.theme.bg_panel;
         crate::ui_util::allocate_clipped_ui(ui, inspector_rect, |ui| {
             ui.set_min_size(inspector_rect.size());

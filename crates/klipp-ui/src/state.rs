@@ -1908,6 +1908,20 @@ pub struct AppState {
         klipp_core::ClipId,
         crate::inspector::letter_picker::GlyphCacheEntry,
     >>,
+    /// Letter-picker preview texture — title bitmap rasterised at the
+    /// inspector preview's pixel size. Owned by AppState so the App
+    /// layer can manage the handle's lifecycle through
+    /// `defer_drop_texture`; the inspector only ever reads it.
+    /// Creating + dropping a `TextureHandle` mid-frame from inside
+    /// the inspector trips wgpu's "Texture has been destroyed"
+    /// validation (see feedback_defer_drop_texture memory note).
+    pub letter_picker_texture: Option<egui::TextureHandle>,
+    /// Cache key for `letter_picker_texture` —
+    /// `(title_clip_id, layout_hash, frame_w, frame_h)`. The App
+    /// refreshes the texture only when this tuple changes; the
+    /// `layout_hash` covers every TitleData field that affects
+    /// rendering output (text, font, style, position, …).
+    pub letter_picker_texture_for: Option<(klipp_core::ClipId, u64, u32, u32)>,
     /// Set during scrub when no title clip is under the playhead — signals
     /// the next `upload_title_overlay` to clear the overlay so stale titles
     /// don't linger as the user drags past them.
@@ -3132,6 +3146,8 @@ impl Default for AppState {
             matte_thumb_for: None,
             matte_thumb_handle: None,
             glyph_position_cache: std::cell::RefCell::new(std::collections::HashMap::new()),
+            letter_picker_texture: None,
+            letter_picker_texture_for: None,
             matte_preview_active_target: None,
             pending_title_overlay_clear: false,
             clear_title_overlay: false,
