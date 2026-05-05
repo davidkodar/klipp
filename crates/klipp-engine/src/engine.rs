@@ -10273,6 +10273,68 @@ pub fn generate_thumbnail_at_size(
     }
 }
 
+/// Same as [`generate_thumbnail_at_size`] but lets the caller force a
+/// specific rotation instead of auto-detecting from the file's metadata.
+///
+/// Needed by the browser-skim path: ffmpeg's skim transcode runs autorotate
+/// on the input (consuming the displaymatrix and writing upright pixels)
+/// AND keeps the displaymatrix on the output stream. Auto-detecting from
+/// such a skim file then sees rotation=90 and rotates the already-upright
+/// pixels — the symptom is portrait phone clips playing sideways in the
+/// source viewer when hover-skimming. The caller passes `0` for skim/proxy
+/// paths via `MediaItem::effective_rotation_for`.
+pub fn generate_thumbnail_at_size_with_rotation(
+    path: &std::path::Path,
+    seek_secs: f64,
+    max_width: u32,
+    rotation: i32,
+) -> Result<(Vec<u8>, u32, u32), String> {
+    let mut format_ctx = ffmpeg_next::format::input(path)
+        .map_err(|e| format!("ffmpeg open: {e}"))?;
+    let (mut decoder, stream_index) = open_sw_decoder(&format_ctx)?;
+
+    let target = if seek_secs > 0.1 {
+        let ts = (seek_secs * 1_000_000.0) as i64;
+        format_ctx.seek(ts, ..ts).map_err(|e| format!("seek: {e}"))?;
+        Some(seek_secs)
+    } else {
+        None
+    };
+
+    let mut decoded_frame = ffmpeg_next::frame::Video::empty();
+    let got_frame = decode_frame_at_or_after(
+        &mut format_ctx,
+        &mut decoder,
+        stream_index,
+        &mut decoded_frame,
+        target,
+    );
+    if !got_frame {
+        return Err("No frame decoded".to_string());
+    }
+
+    let src_w = decoded_frame.width();
+    let src_h = decoded_frame.height();
+    let (eff_w, _eff_h) = if rotation == 90 || rotation == 270 {
+        (src_h, src_w)
+    } else {
+        (src_w, src_h)
+    };
+    let scale = (max_width as f64 / eff_w as f64).min(1.0);
+    let dst_w = ((src_w as f64 * scale) as u32).max(1);
+    let dst_h = ((src_h as f64 * scale) as u32).max(1);
+
+    let rgba = sw_frame_to_rgba(&decoded_frame, dst_w, dst_h)
+        .ok_or("Failed to convert frame to RGBA")?;
+
+    if rotation != 0 {
+        let (rotated, rw, rh) = rotate_rgba(&rgba, dst_w, dst_h, rotation);
+        Ok((rotated, rw, rh))
+    } else {
+        Ok((rgba, dst_w, dst_h))
+    }
+}
+
 /// Cached frame decoder — keeps the ffmpeg context open for fast temporal access.
 /// Optimized for sequential and near-sequential access patterns (common in Retime).
 /// Only seeks when the requested time is far from the current position.

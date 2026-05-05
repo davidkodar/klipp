@@ -16909,16 +16909,15 @@ impl KlippApp {
                     } else {
                         item.path.clone()
                     };
+                    // Path-aware rotation: ffmpeg's skim transcode runs
+                    // autorotate on input AND keeps the displaymatrix on
+                    // the output stream, so auto-detecting from the skim
+                    // file would double-rotate. effective_rotation_for
+                    // returns 0 for skim/proxy, source_rotation otherwise.
+                    let rotation = item.effective_rotation_for(&decode_path);
                     let mid = *media_id;
                     let t = *time_secs;
                     let dst = *target;
-                    // Decode resolution: use the larger of the pref-capped
-                    // value and (source_height, 1080 cap). Previously fixed
-                    // to `prefs.playback.skim_resolution` (480/720) which
-                    // threw away pixels on every 1080p+ source — now that
-                    // the skim file itself is source-height (capped 1080),
-                    // decoding at 720 is a needless downsample. Cap keeps
-                    // CPU bounded on 6K+ sources.
                     let source_height = item.resolution.height.max(240);
                     let skim_res = self.prefs.playback.skim_resolution
                         .max(source_height.min(1080));
@@ -16926,7 +16925,7 @@ impl KlippApp {
                     self.state.skim_decode_in_flight = true;
                     self.state.skim_decode_started_at = Some(std::time::Instant::now());
                     std::thread::spawn(move || {
-                        match klipp_engine::generate_thumbnail_at_size(&decode_path, t, skim_res) {
+                        match klipp_engine::generate_thumbnail_at_size_with_rotation(&decode_path, t, skim_res, rotation) {
                             Ok((rgba, w, h)) => {
                                 let _ = event_tx.send(AppEvent::BrowserSkimFrameReady {
                                     media_id: mid,
