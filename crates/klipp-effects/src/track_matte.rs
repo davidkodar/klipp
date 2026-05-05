@@ -116,12 +116,12 @@ pub fn extract_mask_srgb_u8(
 /// the radius is below a quarter-pixel — anything smaller is sub-sample
 /// noise the bilinear taps in the downstream blend already swallow.
 ///
-/// Implemented as: pack the f32 mask into an RGBA u8 buffer (R = mask,
-/// G/B/A unused), reuse the existing `blur::apply` (CPU 2-pass
-/// separable Gaussian), unpack the R channel back to f32. Slightly
-/// wasteful at 4×, but the mask is one-channel-equivalent traffic and
-/// avoids a second blur kernel. Phase 4 can drop in a single-channel
-/// GPU compute pass if the perf budget needs it.
+/// Direct single-channel f32 separable box blur (3-pass box → Gaussian
+/// approximation; same Bock's-method radii as `blur::apply` so visual
+/// output matches the RGBA path closely). Operates on the mask's own
+/// f32 buffer with no u8 round-trip — a 1920x1080 mask used to allocate
+/// an 8.3 MB RGBA u8 packing buffer + run a 4-channel blur + unpack;
+/// this version touches just the 4 MB f32 buffer + one scratch.
 pub fn feather_mask(
     mask: &mut Vec<f32>,
     width: u32,
@@ -134,20 +134,97 @@ pub fn feather_mask(
     if mask.len() != (width as usize) * (height as usize) {
         return;
     }
-    let pixels = mask.len();
-    let mut packed = Vec::with_capacity(pixels * 4);
-    for &m in mask.iter() {
-        let v = (m.clamp(0.0, 1.0) * 255.0) as u8;
-        packed.extend_from_slice(&[v, 0, 0, 0]);
+    let w = width as usize;
+    let h = height as usize;
+    let radii = blur::boxes_for_gaussian(radius_px);
+    let mut tmp = vec![0.0f32; mask.len()];
+    for &r in &radii {
+        box_blur_h_f32(mask, &mut tmp, w, h, r);
+        box_blur_v_f32(&tmp, mask, w, h, r);
     }
-    let blurred = blur::apply(packed, width, height, radius_px);
-    if blurred.len() != pixels * 4 {
-        // Blur returned a different size — the kernel rejected the input.
-        // Leave the original mask in place rather than corrupt it.
+}
+
+/// Single-channel horizontal box blur on an f32 buffer. Sliding-window
+/// running sum — O(N) regardless of radius.
+fn box_blur_h_f32(src: &[f32], dst: &mut [f32], w: usize, h: usize, r: usize) {
+    if r == 0 {
+        dst.copy_from_slice(src);
         return;
     }
-    for i in 0..pixels {
-        mask[i] = blurred[i * 4] as f32 / 255.0;
+    let diam = r + r + 1;
+    let inv = 1.0 / diam as f32;
+    for y in 0..h {
+        let row = y * w;
+        // Seed: replicate left-edge pixel for the window's "before-zero" overhang.
+        let left = src[row];
+        let mut sum = left * r as f32;
+        let init_end = r.min(w - 1);
+        for x in 0..=init_end {
+            sum += src[row + x];
+        }
+        if r >= w {
+            let right = src[row + w - 1];
+            sum += right * (r + 1 - w) as f32;
+        }
+        for x in 0..w {
+            dst[row + x] = sum * inv;
+            let ax = (x + r + 1).min(w - 1);
+            sum += src[row + ax];
+            let sx = x.saturating_sub(r);
+            sum -= src[row + sx];
+        }
+    }
+}
+
+/// Single-channel vertical box blur on an f32 buffer. Tile across
+/// columns for cache locality, same shape as `blur::box_blur_v` but
+/// f32-native.
+fn box_blur_v_f32(src: &[f32], dst: &mut [f32], w: usize, h: usize, r: usize) {
+    if r == 0 {
+        dst.copy_from_slice(src);
+        return;
+    }
+    let diam = r + r + 1;
+    let inv = 1.0 / diam as f32;
+    const TILE: usize = 64;
+    let mut x = 0;
+    while x < w {
+        let x_end = (x + TILE).min(w);
+        let tile_w = x_end - x;
+        let mut sums = vec![0.0f32; tile_w];
+        // Seed: top-edge replication for window overhang.
+        for c in 0..tile_w {
+            sums[c] = src[x + c] * r as f32;
+        }
+        let init_end = r.min(h - 1);
+        for y in 0..=init_end {
+            let off = y * w + x;
+            for c in 0..tile_w {
+                sums[c] += src[off + c];
+            }
+        }
+        if r >= h {
+            let bot_off = (h - 1) * w + x;
+            let cnt = (r + 1 - h) as f32;
+            for c in 0..tile_w {
+                sums[c] += src[bot_off + c] * cnt;
+            }
+        }
+        for y in 0..h {
+            let oi = y * w + x;
+            for c in 0..tile_w {
+                dst[oi + c] = sums[c] * inv;
+            }
+            let ay = (y + r + 1).min(h - 1);
+            let ai = ay * w + x;
+            let sy = y.saturating_sub(r);
+            let si = sy * w + x;
+            for c in 0..tile_w {
+                sums[c] += src[ai + c];
+                sums[c] -= src[si + c];
+            }
+        }
+        x = x_end;
     }
 }
 
@@ -617,5 +694,25 @@ mod tests {
         // expect of "invert + choke" semantically — but we don't
         // promise that either, so just sanity-check the lengths line up.
         assert_eq!(inverted.len(), b.len());
+    }
+
+    /// Sanity perf test: a 1080p mask feather completes in reasonable
+    /// time. The previous u8-RGBA-round-trip path allocated a 8.3 MB
+    /// scratch buffer + ran a 4-channel blur; the f32-direct path
+    /// touches just the 4 MB mask + a single f32 scratch, so this
+    /// should comfortably stay under the 60 Hz budget at large radii.
+    #[test]
+    fn feather_1080p_perf_sanity() {
+        let w = 1920u32;
+        let h = 1080u32;
+        let mut mask = vec![0.5f32; (w as usize) * (h as usize)];
+        let t = std::time::Instant::now();
+        feather_mask(&mut mask, w, h, 25.0);
+        let ms = t.elapsed().as_secs_f64() * 1000.0;
+        assert!(ms < 200.0, "feather_mask 1080p radius=25 took {ms:.1}ms — too slow");
+        // Uniform input should stay (close to) uniform.
+        for &m in mask.iter().take(100) {
+            assert!((m - 0.5).abs() < 0.01, "uniform input should stay uniform, got {m}");
+        }
     }
 }

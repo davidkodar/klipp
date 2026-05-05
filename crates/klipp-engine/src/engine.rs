@@ -6982,14 +6982,51 @@ impl PlaybackEngine {
             return;
         }
         let channel = matte_channel_to_effects(binding.channel);
+
+        // Stage timing — logged at trace level for normal frames,
+        // promoted to debug when the total exceeds 2 ms (matches the
+        // composite-budget threshold elsewhere in this file).
+        let t_extract = std::time::Instant::now();
         let mut mask = klipp_effects::track_matte::extract_mask_linear(source, channel, binding.invert);
+        let extract_us = t_extract.elapsed().as_micros();
+
         // Choke before feather so the soft edge of feather sits on top of
         // the eroded boundary (chromakey clean-up convention: tighten,
         // then soften). Both no-op at zero radius — common case stays
         // free.
+        let t_choke = std::time::Instant::now();
         klipp_effects::track_matte::apply_choke_mask(&mut mask, width, height, binding.choke_px);
+        let choke_us = t_choke.elapsed().as_micros();
+
+        let t_feather = std::time::Instant::now();
         klipp_effects::track_matte::feather_mask(&mut mask, width, height, binding.feather_px);
+        let feather_us = t_feather.elapsed().as_micros();
+
+        let t_apply = std::time::Instant::now();
         klipp_effects::track_matte::apply_mask_to_alpha_linear(consumer_linear, &mask);
+        let apply_us = t_apply.elapsed().as_micros();
+
+        let total_us = extract_us + choke_us + feather_us + apply_us;
+        // Trace at every call so RUST_LOG=trace shows the per-stage
+        // breakdown; debug only fires when the matte cost is non-trivial.
+        tracing::trace!(
+            target: "klipp::matte",
+            "matte stage_us extract={extract_us} choke={choke_us} feather={feather_us} apply={apply_us} total={total_us} \
+             res={width}x{height} choke_px={:.1} feather_px={:.1} ch={channel:?} cpu",
+            binding.choke_px, binding.feather_px,
+        );
+        if total_us > 2_000 {
+            tracing::debug!(
+                "PERF matte: {:.2}ms (extract={:.2} choke={:.2} feather={:.2} apply={:.2}) \
+                 res={width}x{height} ch={channel:?} choke_px={:.1} feather_px={:.1} CPU",
+                total_us as f64 / 1000.0,
+                extract_us as f64 / 1000.0,
+                choke_us as f64 / 1000.0,
+                feather_us as f64 / 1000.0,
+                apply_us as f64 / 1000.0,
+                binding.choke_px, binding.feather_px,
+            );
+        }
     }
 
     /// Apply a clip's effects (node graph → builtin effects → OFX) to a decoded frame.
@@ -7267,6 +7304,7 @@ impl PlaybackEngine {
         final_w: u32,
         final_h: u32,
     ) -> Vec<f32> {
+        let t_compose = std::time::Instant::now();
         let v1_opacity = {
             let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
             seq.tracks.get(self.current_track_index).map(|t| t.opacity).unwrap_or(1.0)
@@ -7483,6 +7521,41 @@ impl PlaybackEngine {
             }
             let blend_mode = entry.clip.as_ref().map(|c| c.blend_mode).unwrap_or(klipp_core::BlendMode::Normal);
             klipp_effects::composite::blend_layer_linear(&mut accumulated_linear, &graded, entry.effective, blend_mode);
+        }
+
+        // Frame-level summary: how many matte chains were active, how
+        // many stencils, total composite cost. The matte primitives
+        // themselves run on CPU today (extract/choke/feather/apply all
+        // f32 single-channel SIMD-friendly loops); the surrounding
+        // clip-effects chain uses GPU when `gpu_effects` is available
+        // — the "gpu_clip_fx={...}" field reports that. A future
+        // klipp_effects::track_matte_gpu pipeline would flip the
+        // matte-side label to "matte=gpu" without touching this log.
+        let compose_ms = t_compose.elapsed().as_secs_f64() * 1000.0;
+        let matte_count = overlay_clip_data.iter()
+            .filter(|(_, _, c)| c.as_ref().is_some_and(|c| c.matte_source.is_some()))
+            .count()
+            + v1_clip.as_ref().is_some_and(|c| c.matte_source.is_some()) as usize;
+        let stencil_count = stencil_clips.len();
+        if matte_count > 0 || stencil_count > 0 {
+            // Only log when there's something matte-related to report.
+            // No matte/stencil → silent (the existing PERF lines in
+            // update_playback already cover the no-matte fast path).
+            let gpu_clip_fx = self.gpu_effects.is_some();
+            tracing::trace!(
+                "compose_with_overlays_and_matte: {compose_ms:.2}ms mattes={matte_count} stencils={stencil_count} \
+                 res={final_w}x{final_h} overlays={} gpu_clip_fx={gpu_clip_fx} matte=cpu",
+                overlay_clip_data.len(),
+            );
+            // Promote to debug when the composite blew the 16ms (60Hz)
+            // budget — that's when users start seeing dropped frames.
+            if compose_ms > 16.0 {
+                tracing::debug!(
+                        "PERF compose_matte_overbudget: {compose_ms:.2}ms mattes={matte_count} stencils={stencil_count} \
+                     res={final_w}x{final_h} overlays={} gpu_clip_fx={gpu_clip_fx} matte=cpu",
+                    overlay_clip_data.len(),
+                );
+            }
         }
 
         accumulated_linear
