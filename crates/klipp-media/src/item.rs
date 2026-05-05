@@ -267,31 +267,28 @@ impl MediaItem {
     }
 
     /// Rotation (degrees) the decoder should apply when reading
-    /// `decode_path`. Returns `0` when `decode_path` is this item's
-    /// skim or proxy file — those are produced by ffmpeg with its
-    /// default `-autorotate 1`, which consumes the source's display-
-    /// matrix side-data and writes upright pixels with no rotation
-    /// metadata. Re-applying `source_rotation` on top would
-    /// double-rotate (the symptom: portrait phone clip plays sideways
-    /// in the source viewer).
+    /// `decode_path`. **Currently always returns `source_rotation`** —
+    /// kept as a helper because the read sites need a path-aware
+    /// answer once the skim transcode learns to autorotate.
     ///
-    /// For the original file, returns `source_rotation` unchanged.
-    /// Used by every `VideoDecoder::open(path, rotation)` site that
-    /// might be handed a skim or proxy.
-    pub fn effective_rotation_for(&self, decode_path: &std::path::Path) -> i32 {
-        let is_optimised = self
-            .skim_file
-            .as_deref()
-            .is_some_and(|p| p == decode_path)
-            || self
-                .proxy_path
-                .as_deref()
-                .is_some_and(|p| p == decode_path);
-        if is_optimised {
-            0
-        } else {
-            self.source_rotation
-        }
+    /// Today's skim transcode runs through `nvenc` with
+    /// `-hwaccel cuda -hwaccel_output_format cuda`, which keeps frames
+    /// in CUDA memory; the libavformat autorotate filter only inserts
+    /// a CPU `transpose` and silently skips for CUDA frames. The
+    /// resulting skim has the same pixel orientation as the source
+    /// (sideways for portrait phone clips) and no rotation metadata
+    /// in the mkv segments — so the same `source_rotation` that
+    /// makes the original render upright also makes the skim render
+    /// upright.
+    ///
+    /// Once the transcode pipeline learns to autorotate (e.g. by
+    /// routing portrait sources through the libx264 fallback where
+    /// CPU autorotate works, plus bumping the skim cache version so
+    /// stale sideways skims are regenerated), this helper should
+    /// return `0` for skim/proxy paths and the regression test in
+    /// the tests module below should switch with it.
+    pub fn effective_rotation_for(&self, _decode_path: &std::path::Path) -> i32 {
+        self.source_rotation
     }
 
     /// True when this item is a synthetic project asset (title /
@@ -706,30 +703,31 @@ mod effective_rotation_tests {
     }
 
     #[test]
-    fn skim_path_returns_zero() {
-        // Skim is autorotated by ffmpeg during transcode. Re-applying
-        // source_rotation would double-rotate.
+    fn skim_path_returns_source_rotation_until_transcode_autorotates() {
+        // Today's nvenc/CUDA skim path can't autorotate (no CUDA-aware
+        // transpose filter), so the skim has the same pixel orientation
+        // as the source. Apply source_rotation, same as for the original.
+        // When the transcode pipeline gains autorotate (and a cache
+        // version bump invalidates stale sideways skims), this test
+        // should flip to expecting 0.
         let item = item_with(90, Some("/tmp/skim.mkv"), None);
-        assert_eq!(item.effective_rotation_for(&PathBuf::from("/tmp/skim.mkv")), 0);
+        assert_eq!(item.effective_rotation_for(&PathBuf::from("/tmp/skim.mkv")), 90);
     }
 
     #[test]
-    fn proxy_path_returns_zero() {
-        // Proxies share the same autorotate behaviour during transcode.
+    fn proxy_path_returns_source_rotation_until_transcode_autorotates() {
         let item = item_with(180, None, Some("/tmp/proxy.mov"));
-        assert_eq!(item.effective_rotation_for(&PathBuf::from("/tmp/proxy.mov")), 0);
+        assert_eq!(item.effective_rotation_for(&PathBuf::from("/tmp/proxy.mov")), 180);
     }
 
     #[test]
-    fn unrelated_path_returns_source_rotation() {
-        // A path that's neither original nor skim/proxy gets the cached
-        // value — defensive default rather than silent zero.
+    fn unrelated_path_also_returns_source_rotation() {
         let item = item_with(270, Some("/tmp/skim.mkv"), None);
         assert_eq!(item.effective_rotation_for(&PathBuf::from("/somewhere/else.mp4")), 270);
     }
 
     #[test]
-    fn no_rotation_metadata_returns_zero_either_way() {
+    fn no_rotation_metadata_returns_zero_for_any_path() {
         let item = item_with(0, Some("/tmp/skim.mkv"), None);
         assert_eq!(item.effective_rotation_for(&PathBuf::from("/tmp/orig.mp4")), 0);
         assert_eq!(item.effective_rotation_for(&PathBuf::from("/tmp/skim.mkv")), 0);
