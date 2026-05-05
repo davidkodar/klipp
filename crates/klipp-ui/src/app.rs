@@ -24997,6 +24997,18 @@ impl KlippApp {
             let source_height = item.resolution.height.max(2);
             let target_height = source_height.min(1080);
             let skim_quality = self.prefs.media_cache.skim_transcode_quality;
+            // Capture source_rotation for the encode-chain decision below.
+            // Non-zero rotation (portrait phone clips) routes around the
+            // nvenc/CUDA path because libavformat's autorotate filter only
+            // inserts a CPU `transpose`, which can't sit between
+            // `scale_cuda` and `h264_nvenc` — the autorotate is silently
+            // skipped, and the skim ends up with sideways pixels that
+            // disagree with how every other tool (and Klipp's own bin
+            // thumbnail) renders the source. Routing portrait clips
+            // through libx264 lets CPU autorotate kick in normally so the
+            // skim has upright pixels matching the original's display
+            // orientation.
+            let source_rotation = item.source_rotation;
 
             // Detect HDR source (PQ/HLG/BT.2020). For HDR clips we
             // need to tone-map down to BT.709 SDR during the skim
@@ -25028,6 +25040,18 @@ impl KlippApp {
                 format!("{base_key}.hdrtm")
             } else {
                 base_key
+            };
+            // Rotation cache marker: portrait clips now go through the
+            // libx264 path so the skim has upright pixels (was sideways
+            // when nvenc was the only encoder). Stale sideways skims
+            // from before that change must NOT be reused — the read
+            // path now passes 0 for skim/proxy assuming upright pixels.
+            // Marker only appears on rotated clips; landscape (the
+            // dominant case) keeps its existing cache keys unchanged.
+            let cache_key = if source_rotation != 0 {
+                format!("{cache_key}.r{source_rotation}")
+            } else {
+                cache_key
             };
             let skim_path = klipp_media::disk_cache::skim_transcode_path(
                 &cache_key,
@@ -25330,7 +25354,36 @@ impl KlippApp {
                 let seg_start = resume_from_segment.to_string();
                 let seg_pattern = parts_dir.join("seg_%05d.mkv").to_string_lossy().into_owned();
 
-                let result = if is_hdr_source {
+                let result = if source_rotation != 0 && !is_hdr_source {
+                    // Portrait/rotated SDR source: skip nvenc/CUDA entirely.
+                    // libavformat's autorotate filter only inserts a CPU
+                    // `transpose`, which can't sit between scale_cuda and
+                    // h264_nvenc — autorotate gets silently skipped, and
+                    // the skim ends up sideways. libx264 runs on CPU
+                    // frames where autorotate works normally, so the
+                    // skim file has upright pixels. Trade ~3-5x realtime
+                    // (nvenc) for ~1-1.5x realtime (libx264 ultrafast),
+                    // but only for rotated clips and only the one-time
+                    // background transcode — playback is unaffected.
+                    tracing::info!(
+                        "Skim transcode: portrait source ({}°) — using libx264 + autorotate",
+                        source_rotation,
+                    );
+                    run_ffmpeg(&[
+                        "-y",
+                        "-ss", &start_ss,
+                        "-i", src,
+                        "-c:v", "libx264", "-g", "15", "-crf", &qp_str,
+                        "-preset", "ultrafast",
+                        "-an", "-vf", &cpu_vf_sdr,
+                        "-f", "segment",
+                        "-segment_time", &seg_time,
+                        "-segment_format", "matroska",
+                        "-reset_timestamps", "1",
+                        "-segment_start_number", &seg_start,
+                        &seg_pattern,
+                    ], "skim-encode-sdr-libx264-portrait")
+                } else if is_hdr_source {
                     let caps = klipp_engine::ffmpeg_caps::FfmpegCaps::detect();
                     let chain = caps.pick_hdr_chain(target_height);
                     tracing::info!(
