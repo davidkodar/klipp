@@ -1506,7 +1506,7 @@ fn show_compositing_section(
                     );
                     ui.add_space(8.0);
                     let mut current = clip.blend_mode;
-                    let combo = egui::ComboBox::from_id_source(("video:blend_mode", clip_id))
+                    let combo = egui::ComboBox::from_id_salt(("video:blend_mode", clip_id))
                         .selected_text(current.display_name())
                         .width(160.0);
                     combo.show_ui(ui, |ui| {
@@ -1643,7 +1643,7 @@ fn show_compositing_section(
                             .map(|(_, l)| l.clone())
                             .unwrap_or_else(|| "(missing — see banner)".to_string()),
                     };
-                    egui::ComboBox::from_id_source(("video:matte_source", clip_id))
+                    egui::ComboBox::from_id_salt(("video:matte_source", clip_id))
                         .selected_text(current_label)
                         .width(220.0)
                         .show_ui(ui, |ui| {
@@ -1768,7 +1768,7 @@ fn show_compositing_section(
                         );
                         if ui.add(egui::Slider::new(&mut feather, 0.0..=50.0)
                             .suffix(" px")
-                            .clamp_to_range(true)).changed()
+                            .clamping(egui::SliderClamping::Always)).changed()
                         {
                             // If kfs exist near the playhead, rewrite
                             // that kf; otherwise fold the static value.
@@ -1837,7 +1837,7 @@ fn show_compositing_section(
                         );
                         if ui.add(egui::Slider::new(&mut choke, 0.0..=50.0)
                             .suffix(" px")
-                            .clamp_to_range(true)).changed()
+                            .clamping(egui::SliderClamping::Always)).changed()
                         {
                             let near_kf = clip.matte_choke_keyframes.iter()
                                 .position(|k| (k.time_secs - clip_time_secs).abs() < kf_tolerance_secs);
