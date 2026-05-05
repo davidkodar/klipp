@@ -4119,23 +4119,26 @@ impl PlaybackEngine {
             let t_clone = std::time::Instant::now();
             let mut ov_linear = ov_frame.data.clone();
             ov_clone_us += t_clone.elapsed().as_micros();
+            // Resize FIRST so the grade chain runs at final resolution
+            // rather than source. For a 4K overlay → 1080p sequence,
+            // that's 4× less work for every effect / colour-grade
+            // node. Direction-aware: `resize_linear` picks the box
+            // downsample for shrinks and bilinear upsample for grows.
+            let (work_w, work_h) = if ov_w == final_w && ov_h == final_h {
+                (ov_w, ov_h)
+            } else {
+                let t_resize = std::time::Instant::now();
+                ov_linear = crate::grade_resample::resize_linear(&ov_linear, ov_w, ov_h, final_w, final_h);
+                ov_resize_us += t_resize.elapsed().as_micros();
+                (final_w, final_h)
+            };
             if let Some(c) = clip {
                 let clip_time = (self.playhead.to_secs_f64() - c.timeline_in.to_secs_f64()).max(0.0);
                 let t_grade = std::time::Instant::now();
-                ov_linear = self.apply_clip_effects(ov_linear, ov_w, ov_h, c, clip_time);
+                ov_linear = self.apply_clip_effects(ov_linear, work_w, work_h, c, clip_time);
                 ov_grade_us += t_grade.elapsed().as_micros();
             }
-            let src_linear = if ov_w == final_w && ov_h == final_h {
-                ov_linear
-            } else {
-                // P-4: linear-light bilinear resize, gamma-correct.
-                let t_resize = std::time::Instant::now();
-                let out = crate::grade_resample::upsample_linear_bilinear(
-                    &ov_linear, ov_w, ov_h, final_w, final_h,
-                );
-                ov_resize_us += t_resize.elapsed().as_micros();
-                out
-            };
+            let src_linear = ov_linear;
             // Cache for matte lookups before moving into pre_rendered.
             // Conditional clone — only pay the bandwidth when someone
             // else's matte_source actually points at this clip.
@@ -7432,15 +7435,20 @@ impl PlaybackEngine {
             };
             let (ov_w, ov_h) = (ov_frame.width, ov_frame.height);
             let mut ov_linear = ov_frame.data.clone();
+            // Resize-before-grade — same fix as the inline block in
+            // update_playback. Keeps paused-state composite consistent
+            // with the playing-state cost profile.
+            let (work_w, work_h) = if ov_w == final_w && ov_h == final_h {
+                (ov_w, ov_h)
+            } else {
+                ov_linear = crate::grade_resample::resize_linear(&ov_linear, ov_w, ov_h, final_w, final_h);
+                (final_w, final_h)
+            };
             if let Some(c) = clip {
                 let clip_time = (self.playhead.to_secs_f64() - c.timeline_in.to_secs_f64()).max(0.0);
-                ov_linear = self.apply_clip_effects(ov_linear, ov_w, ov_h, c, clip_time);
+                ov_linear = self.apply_clip_effects(ov_linear, work_w, work_h, c, clip_time);
             }
-            let src_linear = if ov_w == final_w && ov_h == final_h {
-                ov_linear
-            } else {
-                crate::grade_resample::upsample_linear_bilinear(&ov_linear, ov_w, ov_h, final_w, final_h)
-            };
+            let src_linear = ov_linear;
             if let Some(c) = clip {
                 if matte_source_ids.contains(&c.id) {
                     graded_layers.insert(c.id, src_linear.clone());
