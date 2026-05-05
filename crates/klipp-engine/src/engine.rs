@@ -5006,38 +5006,11 @@ impl PlaybackEngine {
             // not in the title raster — they don't affect the
             // cached overlay frame.
 
-            let result = if any_kf {
+            if any_kf {
                 hasher.finish() as i64
             } else {
                 0
-            };
-            // One-shot trace per clip-id: log the first 5 (clip_id,
-            // hash, evaluated values) tuples so we can see whether
-            // the hash is stable across ticks for a clip whose
-            // keyframes look constant.
-            // Implemented as a thread_local counter map keyed by
-            // (clip_id) — we want at most ~5 lines per clip total.
-            // Wrap in `if any_kf` so the empty-kf fast path stays
-            // free.
-            if any_kf {
-                let pos_x = if !clip.transform_pos_x_keyframes.is_empty() {
-                    klipp_core::keyframe::evaluate(&clip.transform_pos_x_keyframes, clip_relative_secs, 0.0)
-                } else { f32::NAN };
-                let pos_y = if !clip.transform_pos_y_keyframes.is_empty() {
-                    klipp_core::keyframe::evaluate(&clip.transform_pos_y_keyframes, clip_relative_secs, 0.0)
-                } else { f32::NAN };
-                let scale = if !clip.transform_scale_keyframes.is_empty() {
-                    klipp_core::keyframe::evaluate(&clip.transform_scale_keyframes, clip_relative_secs, 1.0)
-                } else { f32::NAN };
-                let rot = if !clip.transform_rotation_keyframes.is_empty() {
-                    klipp_core::keyframe::evaluate(&clip.transform_rotation_keyframes, clip_relative_secs, 0.0)
-                } else { f32::NAN };
-                tracing::debug!(
-                    "synth_key clip={:?} t={clip_relative_secs:.3} pos=({pos_x:.4},{pos_y:.4}) scale={scale:.4} rot={rot:.4} key={result}",
-                    clip.id,
-                );
             }
-            result
         };
         let default_frame = playhead.value;
 
