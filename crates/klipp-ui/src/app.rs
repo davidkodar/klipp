@@ -33394,7 +33394,8 @@ mod matte_candidate_finder_tests {
             .find(|c| c.id == current_clip_id)?;
         let lo = current_clip.timeline_in;
         let hi = current_clip.timeline_out;
-        for (_, track) in seq.tracks.iter().enumerate().skip(current_track_idx + 1) {
+        for idx in (0..current_track_idx).rev() {
+            let track = &seq.tracks[idx];
             if !matches!(
                 track.kind,
                 TrackKind::Video | TrackKind::Text | TrackKind::Subtitle
@@ -33434,6 +33435,11 @@ mod matte_candidate_finder_tests {
         Clip::media(MediaId::new(), tc(in_f), tc(out_f), tc(0), tc(out_f - in_f))
     }
 
+    // Test fixtures use the production array convention: tracks[0]
+    // is at the TOP of the panel (visually highest = lowest array
+    // idx). For "find candidate above the consumer", the source
+    // sits at a LOWER idx than the consumer.
+
     #[test]
     fn returns_overlap_on_track_directly_above() {
         let consumer = media_clip(0, 24);
@@ -33441,60 +33447,58 @@ mod matte_candidate_finder_tests {
         let source = media_clip(0, 24);
         let source_id = source.id;
         let seq = seq_with_tracks(vec![
-            video_track("V1", vec![consumer]),
-            video_track("V2", vec![source]),
+            video_track("V_above (source)", vec![source]),  // idx 0 — visually above
+            video_track("V_below (consumer)", vec![consumer]), // idx 1
         ]);
-        let (cand, _kind) = find_candidate(&seq, 0, consumer_id).expect("candidate");
+        let (cand, _kind) = find_candidate(&seq, 1, consumer_id).expect("candidate");
         assert_eq!(cand, source_id);
     }
 
     #[test]
     fn skips_track_with_no_overlap() {
-        // V2 has a clip but it doesn't overlap consumer's [0..24).
         let consumer = media_clip(0, 24);
         let consumer_id = consumer.id;
         let too_late = media_clip(48, 72);
         let seq = seq_with_tracks(vec![
-            video_track("V1", vec![consumer]),
-            video_track("V2", vec![too_late]),
+            video_track("V_above", vec![too_late]),    // idx 0
+            video_track("V_below", vec![consumer]),    // idx 1
         ]);
-        assert!(find_candidate(&seq, 0, consumer_id).is_none());
+        assert!(find_candidate(&seq, 1, consumer_id).is_none());
     }
 
     #[test]
     fn skips_adjustment_layer_above() {
         let consumer = media_clip(0, 24);
         let consumer_id = consumer.id;
-        // V2 is an adjustment layer (no own pixels — invalid matte
-        // source). V3 is a regular media clip overlapping consumer.
+        // From top to bottom: valid media, adjustment layer (skipped),
+        // consumer. Walk goes from consumer up; first valid match is
+        // the topmost media clip.
         let mut adj = media_clip(0, 24);
         adj.kind = ClipKind::AdjustmentLayer;
         let valid = media_clip(0, 24);
         let valid_id = valid.id;
         let seq = seq_with_tracks(vec![
-            video_track("V1", vec![consumer]),
-            video_track("V2", vec![adj]),
-            video_track("V3", vec![valid]),
+            video_track("V_top (valid)", vec![valid]),    // idx 0
+            video_track("V_mid (adj)",   vec![adj]),      // idx 1
+            video_track("V_bot (consumer)", vec![consumer]), // idx 2
         ]);
-        let (cand, _) = find_candidate(&seq, 0, consumer_id).expect("candidate");
-        assert_eq!(cand, valid_id, "should jump past V2's adjustment layer to V3's media");
+        let (cand, _) = find_candidate(&seq, 2, consumer_id).expect("candidate");
+        assert_eq!(cand, valid_id, "should jump past the adjustment layer to the valid clip above");
     }
 
     #[test]
     fn skips_audio_track() {
-        // V2's "track" is actually audio, so it can't host a video
-        // matte source. V3 has the real candidate.
         let consumer = media_clip(0, 24);
         let consumer_id = consumer.id;
         let audio_clip = media_clip(0, 24);
         let video_above = media_clip(0, 24);
         let video_id = video_above.id;
         let seq = seq_with_tracks(vec![
-            video_track("V1", vec![consumer]),
-            audio_track("A1", vec![audio_clip]),
-            video_track("V2", vec![video_above]),
+            video_track("V_top",   vec![video_above]),   // idx 0 — valid candidate
+            audio_track("A_mid",   vec![audio_clip]),    // idx 1 — audio, skipped
+            video_track("V_bot",   vec![consumer]),      // idx 2 — consumer
         ]);
-        let (cand, _) = find_candidate(&seq, 0, consumer_id).expect("candidate");
+        let (cand, _) = find_candidate(&seq, 2, consumer_id).expect("candidate");
         assert_eq!(cand, video_id);
     }
 
@@ -33503,7 +33507,7 @@ mod matte_candidate_finder_tests {
         let consumer = media_clip(0, 24);
         let consumer_id = consumer.id;
         let seq = seq_with_tracks(vec![
-            video_track("V1", vec![consumer]),
+            video_track("V1", vec![consumer]), // idx 0 — nothing above
         ]);
         assert!(find_candidate(&seq, 0, consumer_id).is_none(),
             "no tracks above → no candidate");
@@ -33511,18 +33515,18 @@ mod matte_candidate_finder_tests {
 
     #[test]
     fn ignores_consumer_itself_even_if_listed_above() {
-        // Defensive: if the consumer's id somehow appeared on a higher
-        // track, we still skip it (a clip cannot matte itself).
+        // Defensive: if the consumer's id somehow appeared on a track
+        // above, we still skip it (a clip cannot matte itself).
         let consumer = media_clip(0, 24);
         let consumer_id = consumer.id;
         let mut self_copy = media_clip(0, 24);
-        self_copy.id = consumer_id; // same id on a higher track
+        self_copy.id = consumer_id;
         let seq = seq_with_tracks(vec![
-            video_track("V1", vec![consumer]),
-            video_track("V2", vec![self_copy]),
+            video_track("V_above", vec![self_copy]),   // idx 0 — same id, must be skipped
+            video_track("V_below", vec![consumer]),    // idx 1 — consumer
         ]);
-        assert!(find_candidate(&seq, 0, consumer_id).is_none(),
-            "consumer id on higher track must not be returned as its own candidate");
+        assert!(find_candidate(&seq, 1, consumer_id).is_none(),
+            "consumer id on track above must not be returned as its own candidate");
     }
 }
 
