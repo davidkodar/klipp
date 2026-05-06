@@ -6544,6 +6544,63 @@ impl KlippApp {
                     self.sync_sequence_to_engine();
                     return true;
                 }
+                AppCommand::SetClipTransformLinkTracker {
+                    clip_id, host_clip_id, point_index, mode,
+                    inherit_scale, inherit_position, inherit_rotation, inherit_anchor,
+                } => {
+                    let consumer_id = *clip_id;
+                    let host_id = *host_clip_id;
+                    let pt_idx = *point_index;
+                    let seq_idx = self.state.active_sequence_idx;
+
+                    // Validate: host clip exists; named tracker
+                    // exists on it; binding doesn't close a cycle
+                    // (a Tracker variant can't form a transform_link
+                    // chain on its own, but a host clip whose own
+                    // transform_link points back at consumer would
+                    // — defence-in-depth covers that).
+                    {
+                        let seq = &self.state.sequences[seq_idx];
+                        let Some(host) = seq.tracks.iter().flat_map(|t| t.clips.iter())
+                            .find(|c| c.id == host_id) else {
+                            tracing::warn!(
+                                "SetClipTransformLinkTracker: host clip {host_id:?} not found in active sequence"
+                            );
+                            return true;
+                        };
+                        if host.track_points.get(pt_idx as usize).is_none() {
+                            tracing::warn!(
+                                "SetClipTransformLinkTracker: tracker {pt_idx} doesn't exist on clip {host_id:?}"
+                            );
+                            return true;
+                        }
+                        if transform_link_chain_creates_cycle(seq, consumer_id, host_id) {
+                            tracing::warn!(
+                                "SetClipTransformLinkTracker: rejecting bind that would close a cycle ({consumer_id:?} ← tracker on {host_id:?})"
+                            );
+                            return true;
+                        }
+                    }
+
+                    let link_mode = if *mode == 1 { klipp_timeline::LinkMode::Additive } else { klipp_timeline::LinkMode::Absolute };
+                    let link = klipp_timeline::TransformLink {
+                        target: klipp_timeline::TransformLinkTarget::Tracker {
+                            clip_id: host_id, point_index: pt_idx,
+                        },
+                        mode: link_mode,
+                        inherit_scale: *inherit_scale,
+                        inherit_position: *inherit_position,
+                        inherit_rotation: *inherit_rotation,
+                        inherit_anchor: *inherit_anchor,
+                    };
+                    let seq = &mut self.state.sequences[seq_idx];
+                    if let Some(consumer) = seq.all_clips_mut().find(|c| c.id == consumer_id) {
+                        consumer.transform_link = Some(link);
+                    }
+                    self.state.dirty = true;
+                    self.sync_sequence_to_engine();
+                    return true;
+                }
                 AppCommand::ClearClipTransformLink { clip_id } => {
                     let cid = *clip_id;
                     let seq = &mut self.state.sequences[self.state.active_sequence_idx];

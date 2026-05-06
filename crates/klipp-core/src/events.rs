@@ -2261,6 +2261,36 @@ pub enum AppCommand {
         inherit_anchor: bool,
     },
 
+    /// Bind `clip_id`'s transform to a tracker target instead of
+    /// another clip's transform — `TransformLinkTarget::Tracker`
+    /// (HZ-MATTE-NEXT-TRACKER-DRIVER). The link's `target` becomes
+    /// `Tracker { clip_id: host_clip_id, point_index }`; per-axis
+    /// inherit flags + mode work the same as the clip-target path.
+    /// Sibling AppCommand to `SetClipTransformLink` rather than a
+    /// discriminator on it — keeps each variant's signature focused
+    /// on its target shape, and the inspector dispatch picks the
+    /// right command based on which dropdown section the user
+    /// selected.
+    ///
+    /// The handler validates: `host_clip_id` exists in the active
+    /// sequence, the named tracker (`host_clip.track_points
+    /// .get(point_index as usize)`) exists, and binding doesn't
+    /// close a cycle (a tracker target can't form a transform_link
+    /// chain by itself, but defence-in-depth covers a clip whose
+    /// own transform_link points back at the consumer).
+    SetClipTransformLinkTracker {
+        clip_id: ClipId,
+        host_clip_id: ClipId,
+        point_index: u32,
+        /// 0 = Absolute, 1 = Additive. Same wire-format tag as
+        /// `SetClipTransformLink::mode`.
+        mode: u8,
+        inherit_scale: bool,
+        inherit_position: bool,
+        inherit_rotation: bool,
+        inherit_anchor: bool,
+    },
+
     /// Remove a clip's `transform_link`. Idempotent — a clip with no
     /// link is left as-is.
     ClearClipTransformLink { clip_id: ClipId },

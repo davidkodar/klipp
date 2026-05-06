@@ -2058,16 +2058,34 @@ fn show_transform_link_section(
                             .color(theme.text_dim),
                     );
                     ui.add_space(8.0);
+                    // The dropdown's selected_text needs to read the
+                    // right thing for both target shapes. For
+                    // `Clip(...)` we look up the clip-candidates
+                    // list; for `Tracker { ... }` we enumerate
+                    // tracker targets and find the matching one.
+                    let tracker_candidates = state.sequences.get(active_idx)
+                        .map(|seq| crate::inspector::tracker_picker::enumerate_tracker_targets(seq))
+                        .unwrap_or_default();
                     let current_label = match clip.transform_link.as_ref() {
                         None => "(none)".to_string(),
-                        Some(tl) => candidates.iter()
-                            .find(|(id, _)| *id == tl.target.referenced_clip_id())
-                            .map(|(_, l)| l.clone())
-                            .unwrap_or_else(|| "(missing — see banner)".to_string()),
+                        Some(tl) => match &tl.target {
+                            klipp_timeline::TransformLinkTarget::Clip(id) => {
+                                candidates.iter()
+                                    .find(|(cid, _)| cid == id)
+                                    .map(|(_, l)| l.clone())
+                                    .unwrap_or_else(|| "(missing — see banner)".to_string())
+                            }
+                            klipp_timeline::TransformLinkTarget::Tracker { clip_id: hid, point_index } => {
+                                tracker_candidates.iter()
+                                    .find(|(cid, pi, _)| cid == hid && *pi == *point_index)
+                                    .map(|(_, _, l)| l.clone())
+                                    .unwrap_or_else(|| "(missing tracker — see banner)".to_string())
+                            }
+                        },
                     };
                     egui::ComboBox::from_id_salt(("video:transform_link_target", clip_id))
                         .selected_text(current_label)
-                        .width(220.0)
+                        .width(260.0)
                         .show_ui(ui, |ui| {
                             let none_selected = clip.transform_link.is_none();
                             if ui.selectable_label(none_selected, "(none)").clicked() {
@@ -2075,9 +2093,19 @@ fn show_transform_link_section(
                                     cmds.push(AppCommand::ClearClipTransformLink { clip_id });
                                 }
                             }
+                            // ── Clips section ──
+                            // Headline only when there's something to
+                            // show beneath it; same for the Trackers
+                            // section below.
+                            if !candidates.is_empty() {
+                                ui.label(egui::RichText::new("── Clips ──").size(9.0).color(theme.text_dim));
+                            }
                             for (cand_id, label) in &candidates {
                                 let selected = clip.transform_link.as_ref()
-                                    .is_some_and(|tl| tl.target.referenced_clip_id() == *cand_id);
+                                    .is_some_and(|tl| match &tl.target {
+                                        klipp_timeline::TransformLinkTarget::Clip(id) => id == cand_id,
+                                        _ => false,
+                                    });
                                 if ui.selectable_label(selected, label).clicked() {
                                     if !selected {
                                         // Re-pointing at a new target: keep the
@@ -2108,8 +2136,62 @@ fn show_transform_link_section(
                                     }
                                 }
                             }
+                            // ── Trackers section ──
+                            // (HZ-MATTE-NEXT-TRACKER-DRIVER) — bind
+                            // the link to a tracker on any clip in
+                            // the active sequence. Picker logic is
+                            // shared with the HYPERZOOM "Track this
+                            // point" surface via tracker_picker.
+                            if !tracker_candidates.is_empty() {
+                                ui.label(egui::RichText::new("── Trackers ──").size(9.0).color(theme.text_dim));
+                                if let Some(seq) = state.sequences.get(active_idx) {
+                                    let cur = clip.transform_link.clone();
+                                    let mode_flags = match cur.as_ref() {
+                                        Some(tl) => (
+                                            link_mode_to_u8(tl.mode),
+                                            tl.inherit_scale, tl.inherit_position,
+                                            tl.inherit_rotation, tl.inherit_anchor,
+                                        ),
+                                        None => (0u8, true, true, true, true),
+                                    };
+                                    crate::inspector::tracker_picker::tracker_menu_items(
+                                        ui, seq,
+                                        |hid, pi| cur.as_ref().is_some_and(|tl| match &tl.target {
+                                            klipp_timeline::TransformLinkTarget::Tracker { clip_id, point_index } =>
+                                                *clip_id == hid && *point_index == pi,
+                                            _ => false,
+                                        }),
+                                        |hid, pi, _label| {
+                                            cmds.push(AppCommand::SetClipTransformLinkTracker {
+                                                clip_id,
+                                                host_clip_id: hid,
+                                                point_index: pi,
+                                                mode: mode_flags.0,
+                                                inherit_scale: mode_flags.1,
+                                                inherit_position: mode_flags.2,
+                                                inherit_rotation: mode_flags.3,
+                                                inherit_anchor: mode_flags.4,
+                                            });
+                                        },
+                                    );
+                                }
+                            }
                         });
                 });
+
+                // Help text — distinguishes one-shot keyframe paste
+                // (the existing `GenerateKeyframesFromTrack` flow
+                // surfaced in the TRACKING section) from this live
+                // binding. Audit handoff implementation note (iv).
+                ui.add_space(2.0);
+                ui.label(
+                    egui::RichText::new(
+                        "Clip targets follow another clip's resolved transform. Tracker targets bind live — re-tracking updates this link automatically. (For a static one-shot copy, use 'Link to → Transform Pos' in the TRACKING section instead.)"
+                    )
+                    .size(9.5)
+                    .italics()
+                    .color(theme.text_dim),
+                );
 
                 // Detail rows only meaningful when a binding exists.
                 if let Some(link) = clip.transform_link.clone() {
@@ -2349,6 +2431,64 @@ fn show_hyperzoom_section(
                         .size(10.0)
                         .color(theme.text_dim),
                 );
+
+                // ── Track this point (HZ-MATTE-NEXT-TRACKER-DRIVER) ──
+                // Alternative to the static focal X/Y / glyph snap:
+                // bind the focal point to a tracker on any clip in
+                // the active sequence. At Apply time, this becomes
+                // a `FocalRef::Tracker` on the source clip's
+                // Transform builtin — engine resolves the tracker
+                // position each frame so the focal follows it
+                // through the source clip's ramp window.
+                let tracker_focal_id = egui::Id::new(("hyperzoom_picker_tracker", clip_id));
+                let tracker_target: Option<(klipp_core::ClipId, u32)> = ui.ctx().data_mut(|d|
+                    d.get_temp(tracker_focal_id).unwrap_or(None)
+                );
+                let tracker_label = match tracker_target {
+                    None => "(static focal — no tracker)".to_string(),
+                    Some((hid, pi)) => state.sequences.get(state.active_sequence_idx)
+                        .and_then(|seq| crate::inspector::tracker_picker::enumerate_tracker_targets(seq)
+                            .into_iter().find(|(c, p, _)| *c == hid && *p == pi)
+                            .map(|(_, _, l)| l))
+                        .unwrap_or_else(|| "(missing tracker)".to_string()),
+                };
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new("Track this point").size(11.0).color(theme.text_dim));
+                    ui.add_space(8.0);
+                    egui::ComboBox::from_id_salt(("video:hyperzoom_tracker_target", clip_id))
+                        .selected_text(tracker_label)
+                        .width(260.0)
+                        .show_ui(ui, |ui| {
+                            // "(off)" entry — clears the tracker
+                            // binding so Apply falls back to focal
+                            // X/Y or the glyph snap.
+                            let off_selected = tracker_target.is_none();
+                            if ui.selectable_label(off_selected, "(static focal — no tracker)").clicked() {
+                                if !off_selected {
+                                    ui.ctx().data_mut(|d| d.insert_temp::<Option<(klipp_core::ClipId, u32)>>(tracker_focal_id, None));
+                                }
+                            }
+                            if let Some(seq) = state.sequences.get(state.active_sequence_idx) {
+                                let trackers = crate::inspector::tracker_picker::enumerate_tracker_targets(seq);
+                                if !trackers.is_empty() {
+                                    ui.label(egui::RichText::new("── Trackers ──").size(9.0).color(theme.text_dim));
+                                }
+                                // Hoist the ctx clone out so the
+                                // on_pick closure doesn't re-borrow
+                                // ui while tracker_menu_items already
+                                // holds &mut ui (egui Context is
+                                // cheap to clone — Arc inside).
+                                let ctx_for_pick = ui.ctx().clone();
+                                crate::inspector::tracker_picker::tracker_menu_items(
+                                    ui, seq,
+                                    |hid, pi| tracker_target == Some((hid, pi)),
+                                    |hid, pi, _label| {
+                                        ctx_for_pick.data_mut(|d| d.insert_temp::<Option<(klipp_core::ClipId, u32)>>(tracker_focal_id, Some((hid, pi))));
+                                    },
+                                );
+                            }
+                        });
+                });
 
                 // ── Visual letter picker ──
                 // Renders a small preview of the title clip whose
@@ -2735,15 +2875,32 @@ fn show_hyperzoom_section(
                         let snapped: Option<usize> = ui.ctx().data_mut(|d|
                             d.get_temp(snap_id).unwrap_or(None)
                         );
-                        let focal_ref = snapped.and_then(|char_idx| {
-                            crate::inspector::letter_picker::picker_target_for_clip(
-                                state.sequence(), clip_id, state.playhead,
-                            ).map(|title_clip| klipp_core::FocalRef::Glyph {
-                                title_clip_id: title_clip.id.0,
-                                char_index: char_idx as u32,
+                        let tracker_focal_id = egui::Id::new(("hyperzoom_picker_tracker", clip_id));
+                        let tracker_target: Option<(klipp_core::ClipId, u32)> =
+                            ui.ctx().data_mut(|d| d.get_temp(tracker_focal_id).unwrap_or(None));
+                        // Precedence at Apply time: tracker pick wins
+                        // over glyph snap (more specific binding,
+                        // user-explicit). Glyph snap wins over None
+                        // (today's behaviour). Static focal_x/y is
+                        // always written into anchor_x/y as the
+                        // resolution-failure fallback regardless.
+                        let focal_ref = if let Some((hid, pi)) = tracker_target {
+                            Some(klipp_core::FocalRef::Tracker {
+                                clip_id: hid.0,
+                                point_index: pi,
                                 fallback_xy: (focal_x, focal_y),
                             })
-                        });
+                        } else {
+                            snapped.and_then(|char_idx| {
+                                crate::inspector::letter_picker::picker_target_for_clip(
+                                    state.sequence(), clip_id, state.playhead,
+                                ).map(|title_clip| klipp_core::FocalRef::Glyph {
+                                    title_clip_id: title_clip.id.0,
+                                    char_index: char_idx as u32,
+                                    fallback_xy: (focal_x, focal_y),
+                                })
+                            })
+                        };
                         cmds.push(AppCommand::ApplyHyperzoom {
                             source_clip_id: clip_id,
                             target_clip_id,
