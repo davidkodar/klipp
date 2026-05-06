@@ -441,6 +441,84 @@ pub fn dispatch_whip_pan_right(state: &mut AppState, cmds: &mut Vec<AppCommand>)
     dispatch_template(state, &TemplateKind::WhipPanTransition { direction: WhipDirection::Right }, cmds);
 }
 
+// ──────────── Shared menu surface ────────────
+
+/// One row of the cut-templates dispatch table — shared between
+/// the command palette and the timeline right-click context menu.
+/// Single source of truth for label / kind / dispatch fn / disabled
+/// reason; adding a sixth template is a one-place change.
+#[derive(Debug, Clone, Copy)]
+pub struct TemplateMenuRow {
+    /// Bare canonical label — e.g. `"Hyperzoom Letter Transition"`.
+    /// The palette site synthesises the verb form
+    /// (`"Apply template → " + label`) so the right-click submenu,
+    /// which is already nested under `"Cut Templates"`, can render
+    /// the bare form without a strip step. Keeps the right-click
+    /// labels concise and avoids silent fragility if a future label
+    /// diverges from the palette prefix.
+    pub label: &'static str,
+    pub kind: TemplateKind,
+    pub dispatch: fn(&mut AppState, &mut Vec<AppCommand>),
+    /// Static tooltip shown when this row's [`can_apply`] is false.
+    /// Per-template strings are accurate enough to be useful (a
+    /// shared message would be wrong for four of the five). A
+    /// "precise per-failed-condition" reason (e.g. "no matte
+    /// candidate" vs. "no next clip on track") is a follow-up.
+    pub disabled_hint: &'static str,
+}
+
+/// Every cut template that should appear in user-facing menus.
+/// Iterated by `command_palette::build` and by the timeline
+/// right-click context menu. Coverage is pinned by
+/// `every_template_kind_variant_has_menu_row` — adding a
+/// `TemplateKind` variant without adding a row here will fail
+/// that test.
+pub const MENU_ROWS: [TemplateMenuRow; 5] = [
+    TemplateMenuRow {
+        label: "Hyperzoom Letter Transition",
+        kind: TemplateKind::HyperzoomLetterTransition,
+        dispatch: dispatch_hyperzoom_letter_transition,
+        disabled_hint: "Needs a selected clip with a matte source above and a next clip on the same track.",
+    },
+    TemplateMenuRow {
+        label: "Track Matte Reveal",
+        kind: TemplateKind::TrackMatteReveal,
+        dispatch: dispatch_track_matte_reveal,
+        disabled_hint: "Needs a selected clip with a matte source on a higher track at the same time-range.",
+    },
+    TemplateMenuRow {
+        label: "Cross-Dissolve with Hyperzoom Bridge",
+        kind: TemplateKind::CrossDissolveHyperzoomBridge,
+        dispatch: dispatch_cross_dissolve_hyperzoom_bridge,
+        disabled_hint: "Needs a selected clip with a next clip on the same track for the hyperzoom to bridge into.",
+    },
+    TemplateMenuRow {
+        label: "Whip Pan (left)",
+        kind: TemplateKind::WhipPanTransition { direction: WhipDirection::Left },
+        dispatch: dispatch_whip_pan_left,
+        disabled_hint: "Needs a selected clip with a next clip on the same track to whip pan into.",
+    },
+    TemplateMenuRow {
+        label: "Whip Pan (right)",
+        kind: TemplateKind::WhipPanTransition { direction: WhipDirection::Right },
+        dispatch: dispatch_whip_pan_right,
+        disabled_hint: "Needs a selected clip with a next clip on the same track to whip pan into.",
+    },
+];
+
+/// Build a [`TemplateContext`] from app state. Single source of
+/// truth for what "applying a template" sees, so palette /
+/// right-click / future surfaces can't drift on which AppState
+/// fields they read.
+pub fn template_context(state: &AppState) -> TemplateContext<'_> {
+    TemplateContext {
+        seq: state.sequence(),
+        selected_clip_id: state.selected_clip,
+        playhead: state.playhead,
+        fps: state.fps,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -836,5 +914,84 @@ mod tests {
         // 48 frames @ 24fps = 2.0 s; 72 frames = 3.0 s.
         assert!((src_dur - 2.0).abs() < 1e-9);
         assert!((tgt_dur - 3.0).abs() < 1e-9);
+    }
+
+    // ────────── Menu-row coverage ──────────
+
+    #[test]
+    fn every_template_kind_variant_has_menu_row() {
+        // Coverage assertion: every TemplateKind discriminant must
+        // appear in at least one MENU_ROW. Catches "added a kind
+        // but forgot to add a menu row". Compares by
+        // `mem::discriminant` so WhipPanTransition's two-row
+        // double-coverage (Left + Right) doesn't trigger a false
+        // miss — the variant is covered if either direction is
+        // present.
+        use std::mem::discriminant;
+        let must_cover = [
+            TemplateKind::HyperzoomLetterTransition,
+            TemplateKind::TrackMatteReveal,
+            TemplateKind::CrossDissolveHyperzoomBridge,
+            TemplateKind::WhipPanTransition { direction: WhipDirection::Left },
+        ];
+        for v in must_cover {
+            let covered = MENU_ROWS
+                .iter()
+                .any(|r| discriminant(&r.kind) == discriminant(&v));
+            assert!(
+                covered,
+                "TemplateKind variant {:?} has no MENU_ROW. \
+                 Adding a TemplateKind requires a corresponding \
+                 entry in MENU_ROWS so the palette + right-click \
+                 submenu pick it up.",
+                v,
+            );
+        }
+    }
+
+    #[test]
+    fn menu_row_dispatch_matches_kind() {
+        // Round-trip pin: each MENU_ROW.dispatch fn produces the
+        // same plan as calling `plan_template(&row.kind, &ctx)`
+        // directly. Catches a copy-paste where the wrong
+        // `dispatch_*` fn is wired to a kind. We stand up a
+        // sequence + AppState that satisfies every can_apply so
+        // every dispatcher produces a non-empty plan.
+        use crate::state::AppState;
+        let consumer = media_clip(0, 48);
+        let consumer_id = consumer.id;
+        let next = media_clip(48, 96);
+        let above = media_clip(0, 48);
+        let seq = seq_with(vec![
+            track("V1", TrackKind::Video, vec![consumer, next]),
+            track("V2", TrackKind::Video, vec![above]),
+        ]);
+        let mut state = AppState::default();
+        state.sequences[0] = seq;
+        state.selected_clip = Some(consumer_id);
+
+        for row in MENU_ROWS {
+            let ctx = template_context(&state);
+            let direct = plan_template(&row.kind, &ctx);
+            assert!(
+                !direct.is_empty(),
+                "test setup failed: row {:?} expected to produce \
+                 a non-empty plan against the round-trip fixture",
+                row.label,
+            );
+            let mut via_dispatch = Vec::new();
+            (row.dispatch)(&mut state, &mut via_dispatch);
+            // ClipIds carry random uuids per run, so compare
+            // shape-only Debug strings (same shape() helper the
+            // plan-snapshot tests use above).
+            assert_eq!(
+                shape_all(&direct),
+                shape_all(&via_dispatch),
+                "row {:?}: dispatch fn produced a different plan \
+                 than plan_template(&row.kind, &ctx). Likely a \
+                 wrong dispatch_* fn was wired to this kind.",
+                row.label,
+            );
+        }
     }
 }

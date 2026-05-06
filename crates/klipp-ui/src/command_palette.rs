@@ -99,17 +99,14 @@ pub struct PaletteEntry {
     pub enabled: bool,
 }
 
-/// Labels for the cut-template palette entries. Shared between the
-/// focused-clip branch (active, gated by per-template `can_apply`)
-/// and the no-selection branch (always disabled) so the two stay in
-/// lock-step — the no-duplicate-labels test catches drift.
-const TEMPLATE_LABELS: [&str; 5] = [
-    "Apply template → Hyperzoom Letter Transition",
-    "Apply template → Track Matte Reveal",
-    "Apply template → Cross-Dissolve with Hyperzoom Bridge",
-    "Apply template → Whip Pan (left)",
-    "Apply template → Whip Pan (right)",
-];
+/// Synthesise the palette form of a cut-template's bare canonical
+/// label. The right-click context menu shows the bare form (it's
+/// already nested under "Cut Templates"); the palette is a flat
+/// searchable list and needs the verb prefix so users typing "apply"
+/// find the templates.
+fn template_palette_label(bare: &str) -> Cow<'static, str> {
+    Cow::Owned(format!("Apply template → {bare}"))
+}
 
 /// Build the full palette entry list against the current state.
 /// Called per palette frame so entries reflect live enable/disable
@@ -562,58 +559,20 @@ pub fn build(state: &AppState) -> Vec<PaletteEntry> {
         });
         // Cut templates — multi-step recipes that compose existing
         // primitives (matte / transform_link / hyperzoom / keyframes)
-        // into one-click operations. Each entry's `enabled` flag is
-        // the template's own `can_apply` predicate so unrelated
-        // templates aren't greyed together (e.g. Track Matte Reveal
-        // stays enabled even when the active clip has no track-
-        // neighbour for hyperzoom to fly into).
-        let template_ctx = crate::cut_templates::TemplateContext {
-            seq: state.sequence(),
-            selected_clip_id: Some(cid),
-            playhead: state.playhead,
-            fps: state.fps,
-        };
-        let template_dispatch: [(
-            &str,
-            crate::cut_templates::TemplateKind,
-            fn(&mut AppState, &mut Vec<AppCommand>),
-        ); 5] = [
-            (
-                TEMPLATE_LABELS[0],
-                crate::cut_templates::TemplateKind::HyperzoomLetterTransition,
-                crate::cut_templates::dispatch_hyperzoom_letter_transition,
-            ),
-            (
-                TEMPLATE_LABELS[1],
-                crate::cut_templates::TemplateKind::TrackMatteReveal,
-                crate::cut_templates::dispatch_track_matte_reveal,
-            ),
-            (
-                TEMPLATE_LABELS[2],
-                crate::cut_templates::TemplateKind::CrossDissolveHyperzoomBridge,
-                crate::cut_templates::dispatch_cross_dissolve_hyperzoom_bridge,
-            ),
-            (
-                TEMPLATE_LABELS[3],
-                crate::cut_templates::TemplateKind::WhipPanTransition {
-                    direction: crate::cut_templates::WhipDirection::Left,
-                },
-                crate::cut_templates::dispatch_whip_pan_left,
-            ),
-            (
-                TEMPLATE_LABELS[4],
-                crate::cut_templates::TemplateKind::WhipPanTransition {
-                    direction: crate::cut_templates::WhipDirection::Right,
-                },
-                crate::cut_templates::dispatch_whip_pan_right,
-            ),
-        ];
-        for (label, kind, dispatch_fn) in template_dispatch {
-            let enabled = crate::cut_templates::can_apply(&kind, &template_ctx);
+        // into one-click operations. Iterates the shared
+        // `cut_templates::MENU_ROWS` table (also driving the timeline
+        // right-click submenu) so adding a sixth template is a
+        // one-place change. Each entry's `enabled` flag is the
+        // template's own `can_apply` predicate so unrelated
+        // templates aren't greyed together.
+        let _ = cid; // gating uses template_context, not cid directly
+        let template_ctx = crate::cut_templates::template_context(state);
+        for row in crate::cut_templates::MENU_ROWS {
+            let enabled = crate::cut_templates::can_apply(&row.kind, &template_ctx);
             e.push(PaletteEntry {
-                label: Cow::Borrowed(label),
+                label: template_palette_label(row.label),
                 shortcut: Cow::Borrowed(""),
-                action: PaletteAction::Custom(dispatch_fn),
+                action: PaletteAction::Custom(row.dispatch),
                 enabled,
             });
         }
@@ -670,10 +629,11 @@ pub fn build(state: &AppState) -> Vec<PaletteEntry> {
         });
         // Cut templates — greyed twins so the labels are reachable
         // from search even with no selection (anchors test runs
-        // against default state).
-        for label in TEMPLATE_LABELS {
+        // against default state). Same MENU_ROWS table as the
+        // active branch so labels can't drift.
+        for row in crate::cut_templates::MENU_ROWS {
             e.push(PaletteEntry {
-                label: Cow::Borrowed(label),
+                label: template_palette_label(row.label),
                 shortcut: Cow::Borrowed(""),
                 action: PaletteAction::Cmd(AppCommand::Undo),
                 enabled: false,

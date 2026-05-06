@@ -7349,6 +7349,34 @@ impl TimelinePanel {
                             }
                         }
                     });
+                    // Cut Templates submenu — multi-step recipes
+                    // (matte / transform_link / hyperzoom / keyframes
+                    // composed into one click). Same MENU_ROWS table
+                    // + template_context helper as the command
+                    // palette so the two surfaces can't drift.
+                    // Per-row gating: each entry's `can_apply`
+                    // predicate decides enabled/disabled, and the
+                    // disabled hint explains *why*.
+                    ui.menu_button("Cut Templates", |ui| {
+                        for row in crate::cut_templates::MENU_ROWS {
+                            // Block-scope the immutable ctx borrow so
+                            // it dies before `(row.dispatch)(state, …)`
+                            // takes a mutable one. Cheap to rebuild —
+                            // ctx is four field reads.
+                            let enabled = {
+                                let template_ctx = crate::cut_templates::template_context(state);
+                                crate::cut_templates::can_apply(&row.kind, &template_ctx)
+                            };
+                            let resp = ui.add_enabled(enabled, egui::Button::new(row.label));
+                            if !enabled {
+                                resp.clone().on_disabled_hover_text(row.disabled_hint);
+                            }
+                            if resp.clicked() {
+                                (row.dispatch)(state, cmds);
+                                ui.close_menu();
+                            }
+                        }
+                    });
                 }
                 ui.separator();
                 // Enable/Disable clip
