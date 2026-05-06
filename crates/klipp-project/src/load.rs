@@ -804,13 +804,15 @@ fn load_matte_binding(j: &crate::format::MatteBindingJson) -> Option<klipp_timel
 }
 
 /// Resolve a `TransformLinkJson` back to its in-memory form. Same
-/// dangling-id policy as `load_matte_binding`: a malformed UUID is
-/// dropped, but a well-formed-but-missing target survives this
-/// function and gets cleaned up by the post-load orphan sweep.
+/// dangling-id policy as `load_matte_binding`: a well-formed-but-
+/// missing target survives this function and gets cleaned up by
+/// the post-load orphan sweep. The malformed-uuid path is now
+/// handled by `TransformLinkTarget`'s own deserialization (a
+/// non-uuid string fails the `Clip(ClipId)` arm of the untagged
+/// enum and the file load surfaces the error there).
 fn load_transform_link(j: &crate::format::TransformLinkJson) -> Option<klipp_timeline::TransformLink> {
-    let id = parse_uuid(&j.target).ok()?;
     Some(klipp_timeline::TransformLink {
-        target: ClipId(id),
+        target: j.target,
         mode: j.mode,
         inherit_scale: j.inherit_scale,
         inherit_position: j.inherit_position,

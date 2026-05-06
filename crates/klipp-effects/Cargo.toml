@@ -33,6 +33,7 @@ tracing-subscriber = { workspace = true }
 klipp-color = { workspace = true }
 klipp-core = { workspace = true }
 klipp-testing = { workspace = true }
+serde_json = { workspace = true }
 # naga is a transitive dep of wgpu (same version pin); using it
 # directly in tests parses our WGSL strings without needing a GPU.
 naga = { version = "22", features = ["wgsl-in"] }

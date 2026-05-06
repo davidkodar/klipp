@@ -513,7 +513,7 @@ fn would_create_link_cycle(seq: &Sequence, consumer: ClipId, target: ClipId) -> 
             .iter()
             .flat_map(|t| t.clips.iter())
             .find(|c| c.id == current)
-            .and_then(|c| c.transform_link.as_ref().map(|tl| tl.target));
+            .and_then(|c| c.transform_link.as_ref().map(|tl| tl.target.referenced_clip_id()));
         match next {
             None => return false,
             Some(n) if n == consumer => return true,

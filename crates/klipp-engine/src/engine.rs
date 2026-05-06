@@ -262,11 +262,25 @@ fn resolve_clip_transform_depth(
 
     let result = match (&clip.transform_link, depth < 64) {
         (Some(link), true) => {
-            let target = seq.tracks.iter()
-                .flat_map(|t| t.clips.iter())
-                .find(|c| c.id == link.target);
+            // For commit 1 of HZ-MATTE-NEXT-TRACKER-DRIVER, only the
+            // `Clip` variant of `TransformLinkTarget` resolves —
+            // `Tracker` falls through to the static-anchor path
+            // until commit 2 wires the live tracker resolution.
+            // `referenced_clip_id` returns the same uuid for both
+            // variants; we only handle the resolution side here.
+            let referenced_id = link.target.referenced_clip_id();
+            let is_tracker_variant = matches!(
+                link.target, klipp_timeline::TransformLinkTarget::Tracker { .. }
+            );
+            let target = if is_tracker_variant {
+                None
+            } else {
+                seq.tracks.iter()
+                    .flat_map(|t| t.clips.iter())
+                    .find(|c| c.id == referenced_id)
+            };
             match target {
-                None => own, // Stale target id — fall back to own transform.
+                None => own, // Stale target id (or Tracker variant pre-commit-2) — fall back to own transform.
                 Some(target_clip) => {
                     let target_xform = resolve_clip_transform_depth(
                         target_clip, seq, playhead, fps, cache,
@@ -390,6 +404,14 @@ fn resolve_focal_ref_to_clip_space(
                 (screen_x / fw).clamp(0.0, 1.0),
                 (screen_y / fh).clamp(0.0, 1.0),
             ))
+        }
+        klipp_effects::FocalRef::Tracker { .. } => {
+            // HZ-MATTE-NEXT-TRACKER-DRIVER commit 2 wires the live
+            // tracker resolution. Commit 1 ships only the schema
+            // shape — the variant exists, project files round-trip,
+            // but the resolver returns None so the static fallback
+            // kicks in (anchor_x/y from the Transform builtin).
+            None
         }
     }
 }
@@ -11922,14 +11944,14 @@ mod transform_link_compose_tests {
     //! at a higher level — these pin the math.
     use super::{compose_transform, resolve_clip_transform, ResolvedTransform};
     use klipp_core::{ClipId, MediaId, RationalTime, Timecode};
-    use klipp_timeline::{Clip, LinkMode, Sequence, Track, TrackKind, TransformLink};
+    use klipp_timeline::{Clip, LinkMode, Sequence, Track, TrackKind, TransformLink, TransformLinkTarget};
     use klipp_effects::BuiltinEffect;
 
     fn tc(frames: i64) -> Timecode { RationalTime::from_frames(frames, 24) }
 
     fn link_all_on(target: ClipId, mode: LinkMode) -> TransformLink {
         TransformLink {
-            target,
+            target: TransformLinkTarget::Clip(target),
             mode,
             inherit_scale: true,
             inherit_position: true,
@@ -11978,7 +12000,7 @@ mod transform_link_compose_tests {
         let own:    ResolvedTransform = (10.0, 20.0, 1.5, 1.5, 30.0, 0.5, 0.5);
         let target: ResolvedTransform = (100.0, 200.0, 2.0, 2.0, 90.0, 0.25, 0.75);
         let link = TransformLink {
-            target: ClipId::new(),
+            target: TransformLinkTarget::Clip(ClipId::new()),
             mode: LinkMode::Absolute,
             inherit_scale: false,
             inherit_position: false,
@@ -11995,7 +12017,7 @@ mod transform_link_compose_tests {
         let own:    ResolvedTransform = (10.0, 20.0, 1.5, 1.5, 30.0, 0.5, 0.5);
         let target: ResolvedTransform = (100.0, 200.0, 2.0, 2.0, 90.0, 0.25, 0.75);
         let link = TransformLink {
-            target: ClipId::new(),
+            target: TransformLinkTarget::Clip(ClipId::new()),
             mode: LinkMode::Absolute,
             inherit_scale: false,
             inherit_position: true,

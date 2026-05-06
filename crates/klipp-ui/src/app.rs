@@ -4784,7 +4784,7 @@ impl KlippApp {
             // pointing at the removed clip as its transform-link
             // target loses the binding so a stale ClipId never
             // outlives its target.
-            if c.transform_link.as_ref().is_some_and(|tl| tl.target == clip_id) {
+            if c.transform_link.as_ref().is_some_and(|tl| tl.target.referenced_clip_id() == clip_id) {
                 c.transform_link = None;
             }
         }
@@ -6523,8 +6523,13 @@ impl KlippApp {
                     }
 
                     let link_mode = if *mode == 1 { klipp_timeline::LinkMode::Additive } else { klipp_timeline::LinkMode::Absolute };
+                    // SetClipTransformLink today only takes a ClipId
+                    // target — wrap into the Clip variant. The
+                    // tracker-target path (HZ-MATTE-NEXT-TRACKER-DRIVER
+                    // commit 3) will surface as a separate AppCommand
+                    // or a discriminator on this one.
                     let link = klipp_timeline::TransformLink {
-                        target: target_id,
+                        target: klipp_timeline::TransformLinkTarget::Clip(target_id),
                         mode: link_mode,
                         inherit_scale: *inherit_scale,
                         inherit_position: *inherit_position,
@@ -6580,7 +6585,7 @@ impl KlippApp {
                     for cid in &targets {
                         if let Some(clip) = seq.all_clips_mut().find(|c| c.id == *cid) {
                             clip.transform_link = Some(klipp_timeline::TransformLink {
-                                target: src_id,
+                                target: klipp_timeline::TransformLinkTarget::Clip(src_id),
                                 mode: link_mode,
                                 inherit_scale: inherit.0,
                                 inherit_position: inherit.1,
@@ -31266,7 +31271,7 @@ pub(crate) fn transform_link_chain_creates_cycle(
             .iter()
             .flat_map(|t| t.clips.iter())
             .find(|c| c.id == current)
-            .and_then(|c| c.transform_link.as_ref().map(|tl| tl.target));
+            .and_then(|c| c.transform_link.as_ref().map(|tl| tl.target.referenced_clip_id()));
         match next {
             None => return false,
             Some(n) if n == consumer => return true,
@@ -34120,6 +34125,9 @@ mod hyperzoom_handler_tests {
             klipp_core::FocalRef::Glyph { title_clip_id, char_index, .. } => {
                 assert_eq!(title_clip_id, new_uuid, "focal_ref replaced not stacked");
                 assert_eq!(char_index, 9);
+            }
+            klipp_core::FocalRef::Tracker { .. } => {
+                panic!("test set up Glyph variant; got Tracker — schema regression?");
             }
         }
     }

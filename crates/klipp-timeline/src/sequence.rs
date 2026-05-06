@@ -883,12 +883,64 @@ pub enum LinkMode {
 /// a per-frame `HashMap<ClipId, ResolvedTransform>` cache so a deep
 /// chain or many-children-of-one-parent setup resolves in O(N) rather
 /// than O(N·depth).
+/// Where a [`TransformLink`] inherits its values from. Today's
+/// dominant case is `Clip(ClipId)` — inherit from another clip's
+/// resolved transform. `Tracker { … }` is HZ-MATTE-NEXT-TRACKER-
+/// DRIVER's growth point: the link target is a tracker on
+/// `clip_id`'s `track_points[point_index]`, and the engine
+/// synthesises a position-only `ResolvedTransform` from the
+/// tracker's per-frame `(x, y)` output.
+///
+/// **Save format back-compat** is the load-bearing concern. Old
+/// `.klipp` files have `"target": "<uuid>"` directly. The
+/// `#[serde(untagged)]` attribute below makes this enum accept
+/// both shapes:
+/// * Bare uuid string → `Clip(ClipId)` (legacy + the default
+///   for new files using `Clip` variant — same on-disk shape, no
+///   migration needed)
+/// * Tagged object `{ "clip_id": ..., "point_index": N }` →
+///   `Tracker { ... }`
+///
+/// Round-trip stability: serializing `Clip(uuid)` produces a bare
+/// uuid string (newtype-style serde for `ClipId`), and loading a
+/// bare uuid back lands in `Clip(...)`. Serializing
+/// `Tracker { ... }` produces an object; loading the object lands
+/// in `Tracker(...)`. Tests pin both directions plus the legacy-
+/// load path explicitly.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum TransformLinkTarget {
+    Clip(ClipId),
+    Tracker {
+        clip_id: ClipId,
+        point_index: u32,
+    },
+}
+
+impl TransformLinkTarget {
+    /// Convenience: when the caller only cares about the clip the
+    /// link references (e.g. the `cascade_clear_transform_link`
+    /// sweep, the cycle-detection walker, the inspector candidate
+    /// filter), reduce both variants to a single `ClipId`. For
+    /// `Clip(id)` it's the linked clip; for `Tracker { clip_id, .. }`
+    /// it's the clip the tracker lives on.
+    pub fn referenced_clip_id(&self) -> ClipId {
+        match self {
+            Self::Clip(id) => *id,
+            Self::Tracker { clip_id, .. } => *clip_id,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TransformLink {
-    /// The clip whose transform we inherit. Must exist in the active
-    /// sequence at bind time. If the target is removed later, the
-    /// `cascade_clear_transform_link` sweep drops this binding.
-    pub target: ClipId,
+    /// What this link inherits from. `Clip(...)` for the dominant
+    /// "follow another clip's resolved transform" case;
+    /// `Tracker { ... }` for the "follow a tracker on a clip" case
+    /// (HZ-MATTE-NEXT-TRACKER-DRIVER). Old project files load the
+    /// bare-uuid form into `Clip(...)` via `#[serde(untagged)]` —
+    /// see [`TransformLinkTarget`] for the migration story.
+    pub target: TransformLinkTarget,
     /// Composition rule. See [`LinkMode`].
     #[serde(default)]
     pub mode: LinkMode,
@@ -917,9 +969,31 @@ impl TransformLink {
     /// the default `Absolute` mode. Matches the easy-path defaults a
     /// command-dispatch path uses when a user simply drops one clip
     /// onto another with "link transforms".
+    ///
+    /// Accepts a bare `ClipId` and wraps it in
+    /// `TransformLinkTarget::Clip` — keeps the call-site API the
+    /// same after the schema migration so the dominant
+    /// "link clip → clip" path doesn't churn at every site. Use
+    /// `TransformLink::new_tracker(...)` (or build the struct
+    /// directly) for the tracker-target case.
     pub fn new(target: ClipId) -> Self {
         Self {
-            target,
+            target: TransformLinkTarget::Clip(target),
+            mode: LinkMode::default(),
+            inherit_scale: true,
+            inherit_position: true,
+            inherit_rotation: true,
+            inherit_anchor: true,
+        }
+    }
+
+    /// Build a link that follows a tracker on `clip_id`'s
+    /// `track_points[point_index]`. Sibling to [`Self::new`] for
+    /// the HZ-MATTE-NEXT-TRACKER-DRIVER case; defaults match
+    /// `new` (Absolute mode, all four inherit flags on).
+    pub fn new_tracker(clip_id: ClipId, point_index: u32) -> Self {
+        Self {
+            target: TransformLinkTarget::Tracker { clip_id, point_index },
             mode: LinkMode::default(),
             inherit_scale: true,
             inherit_position: true,
@@ -1739,7 +1813,7 @@ mod tests {
         // their meaning. All four inherit flags on, Absolute mode.
         let target = ClipId::new();
         let link = TransformLink::new(target);
-        assert_eq!(link.target, target);
+        assert_eq!(link.target, TransformLinkTarget::Clip(target));
         assert_eq!(link.mode, LinkMode::Absolute);
         assert!(link.inherit_scale);
         assert!(link.inherit_position);
@@ -1751,7 +1825,7 @@ mod tests {
     fn transform_link_round_trips_through_serde() {
         let target = ClipId::new();
         let link = TransformLink {
-            target,
+            target: TransformLinkTarget::Clip(target),
             mode: LinkMode::Additive,
             inherit_scale: true,
             inherit_position: false,
@@ -1763,6 +1837,92 @@ mod tests {
         assert_eq!(back, link);
     }
 
+    // ─── HZ-MATTE-NEXT-TRACKER-DRIVER: TransformLinkTarget migration ───
+    //
+    // Focused tests for the schema migration shape itself. Pre-migration
+    // the wire format was a bare uuid string at `target`; post-migration
+    // the field is `TransformLinkTarget` with `#[serde(untagged)]`. The
+    // round-trip + legacy-load tests below pin that the migration is
+    // bidirectionally byte-compatible — every existing `.klipp` file in
+    // the wild still loads, and re-saving doesn't change the on-disk
+    // shape for the dominant `Clip` variant.
+
+    #[test]
+    fn transform_link_target_clip_serialises_as_bare_uuid_string() {
+        // Pin: the `Clip(uuid)` variant of `TransformLinkTarget`
+        // serialises as the SAME bare-uuid string the legacy
+        // `target: ClipId` field used. New files writing this
+        // variant produce on-disk shapes byte-identical to old
+        // files — so a project saved with this build can be opened
+        // by the previous build (forward-compat for the dominant
+        // case).
+        let target = ClipId::new();
+        let t = TransformLinkTarget::Clip(target);
+        let json = serde_json::to_string(&t).expect("serialise");
+        // ClipId is a tuple-newtype around Uuid; serde serialises
+        // it as a bare uuid string in JSON.
+        let expected = format!("\"{}\"", target.0);
+        assert_eq!(json, expected, "Clip variant must serialise as bare uuid string");
+    }
+
+    #[test]
+    fn transform_link_target_tracker_serialises_as_tagged_object() {
+        // The `Tracker` variant doesn't have a back-compat constraint
+        // (no legacy form exists); it serialises as the natural
+        // untagged-struct shape.
+        let clip_id = ClipId::new();
+        let t = TransformLinkTarget::Tracker { clip_id, point_index: 7 };
+        let json = serde_json::to_string(&t).expect("serialise");
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert!(parsed.is_object(), "Tracker variant serialises as object");
+        assert_eq!(parsed["point_index"].as_u64(), Some(7));
+        assert_eq!(parsed["clip_id"].as_str(), Some(clip_id.0.to_string().as_str()));
+    }
+
+    #[test]
+    fn transform_link_target_legacy_bare_uuid_loads_as_clip_variant() {
+        // The load-bearing migration test. A pre-migration save file
+        // wrote `"target": "<uuid>"` directly; the new
+        // `TransformLinkTarget` enum's `#[serde(untagged)]` must
+        // accept this and deserialise it as `Clip(<uuid>)`. Without
+        // this, every existing `.klipp` file with a transform_link
+        // would fail to load.
+        let target = ClipId::new();
+        let bare_uuid_json = format!("\"{}\"", target.0);
+        let back: TransformLinkTarget =
+            serde_json::from_str(&bare_uuid_json).expect("legacy bare uuid loads");
+        assert_eq!(back, TransformLinkTarget::Clip(target));
+    }
+
+    #[test]
+    fn transform_link_target_tracker_object_loads_as_tracker_variant() {
+        let clip_id = ClipId::new();
+        let json = format!(
+            r#"{{"clip_id":"{}","point_index":3}}"#,
+            clip_id.0,
+        );
+        let back: TransformLinkTarget = serde_json::from_str(&json).expect("tracker object loads");
+        assert_eq!(back, TransformLinkTarget::Tracker { clip_id, point_index: 3 });
+    }
+
+    #[test]
+    fn transform_link_target_round_trip_clip_variant() {
+        let target = ClipId::new();
+        let t = TransformLinkTarget::Clip(target);
+        let json = serde_json::to_string(&t).expect("serialise");
+        let back: TransformLinkTarget = serde_json::from_str(&json).expect("deserialise");
+        assert_eq!(back, t, "round-trip stable for Clip variant");
+    }
+
+    #[test]
+    fn transform_link_target_round_trip_tracker_variant() {
+        let clip_id = ClipId::new();
+        let t = TransformLinkTarget::Tracker { clip_id, point_index: 12 };
+        let json = serde_json::to_string(&t).expect("serialise");
+        let back: TransformLinkTarget = serde_json::from_str(&json).expect("deserialise");
+        assert_eq!(back, t, "round-trip stable for Tracker variant");
+    }
+
     #[test]
     fn transform_link_legacy_json_defaults_inherit_flags_to_true() {
         // Older save format may have only written `target`. Loading
@@ -1772,7 +1932,7 @@ mod tests {
         let target = ClipId::new();
         let json = format!(r#"{{"target":"{}"}}"#, target.0);
         let back: TransformLink = serde_json::from_str(&json).expect("deserialise minimal");
-        assert_eq!(back.target, target);
+        assert_eq!(back.target, TransformLinkTarget::Clip(target));
         assert_eq!(back.mode, LinkMode::Absolute);
         assert!(back.inherit_scale);
         assert!(back.inherit_position);

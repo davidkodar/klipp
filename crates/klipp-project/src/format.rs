@@ -328,7 +328,17 @@ pub struct MatteBindingJson {
 /// shape as the easy-path `TransformLink::new` constructor.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TransformLinkJson {
-    pub target: String,
+    /// Migrated from `String` (bare uuid) to
+    /// `klipp_timeline::TransformLinkTarget` to support tracker
+    /// targets (HZ-MATTE-NEXT-TRACKER-DRIVER). The
+    /// `#[serde(untagged)]` on `TransformLinkTarget` means legacy
+    /// project files with `"target": "<uuid>"` still load — the
+    /// bare-uuid form deserialises into `Clip(...)`. Tagged-object
+    /// form deserialises into `Tracker { ... }`. Round-trip
+    /// stability: serializing `Clip(uuid)` produces the same bare
+    /// uuid string the legacy field used. Tests pin the migration
+    /// shape directly.
+    pub target: klipp_timeline::TransformLinkTarget,
     #[serde(default)]
     pub mode: klipp_timeline::LinkMode,
     #[serde(default = "default_true_json")]

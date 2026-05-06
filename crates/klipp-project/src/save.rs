@@ -313,7 +313,7 @@ fn sequence_to_json(seq: &Sequence, color: &ColorSettings, project_dir: &Path) -
                         }),
                         consumed_as_matte: if c.consumed_as_matte { Some(true) } else { None },
                         transform_link: c.transform_link.as_ref().map(|tl| crate::format::TransformLinkJson {
-                            target: tl.target.0.to_string(),
+                            target: tl.target,
                             mode: tl.mode,
                             inherit_scale: tl.inherit_scale,
                             inherit_position: tl.inherit_position,

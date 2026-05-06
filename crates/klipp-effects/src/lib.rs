@@ -142,6 +142,20 @@ pub enum FocalRef {
         char_index: u32,
         fallback_xy: (f32, f32),
     },
+    /// Focal point follows a tracker output. The tracker lives on
+    /// `clip_id`'s `Clip.track_points[point_index]`; its
+    /// per-frame `(x, y)` positions feed the focal point each
+    /// render frame. Out-of-range frames (before `start_frame` or
+    /// past the end of `positions`) fall back to `fallback_xy` —
+    /// same silent-fallback contract as `Glyph`.
+    ///
+    /// Same dep-cycle rationale for `uuid::Uuid` over `ClipId`
+    /// (see `Glyph::title_clip_id`).
+    Tracker {
+        clip_id: uuid::Uuid,
+        point_index: u32,
+        fallback_xy: (f32, f32),
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -1515,6 +1529,19 @@ mod tests {
         let linear = srgb_u8_to_linear_f32_rgba(&rgba);
         let out = super::apply_effects(effects, linear, width, height);
         linear_f32_rgba_to_srgb_u8(&out)
+    }
+
+    #[test]
+    fn focal_ref_tracker_round_trips_through_serde() {
+        // HZ-MATTE-NEXT-TRACKER-DRIVER commit 1 — additive growth
+        // pin. Adding the Tracker variant is purely additive: old
+        // files with Glyph still load (existing tests cover that),
+        // and new files with Tracker round-trip cleanly here.
+        let cid = uuid::Uuid::new_v4();
+        let fr = FocalRef::Tracker { clip_id: cid, point_index: 4, fallback_xy: (0.3, 0.7) };
+        let json = serde_json::to_string(&fr).expect("serialise");
+        let back: FocalRef = serde_json::from_str(&json).expect("deserialise");
+        assert_eq!(back, fr);
     }
 
     #[test]

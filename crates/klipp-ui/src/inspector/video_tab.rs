@@ -2061,7 +2061,7 @@ fn show_transform_link_section(
                     let current_label = match clip.transform_link.as_ref() {
                         None => "(none)".to_string(),
                         Some(tl) => candidates.iter()
-                            .find(|(id, _)| *id == tl.target)
+                            .find(|(id, _)| *id == tl.target.referenced_clip_id())
                             .map(|(_, l)| l.clone())
                             .unwrap_or_else(|| "(missing — see banner)".to_string()),
                     };
@@ -2077,7 +2077,7 @@ fn show_transform_link_section(
                             }
                             for (cand_id, label) in &candidates {
                                 let selected = clip.transform_link.as_ref()
-                                    .is_some_and(|tl| tl.target == *cand_id);
+                                    .is_some_and(|tl| tl.target.referenced_clip_id() == *cand_id);
                                 if ui.selectable_label(selected, label).clicked() {
                                     if !selected {
                                         // Re-pointing at a new target: keep the
@@ -2113,7 +2113,7 @@ fn show_transform_link_section(
 
                 // Detail rows only meaningful when a binding exists.
                 if let Some(link) = clip.transform_link.clone() {
-                    let target_id = link.target;
+                    let target_id = link.target.referenced_clip_id();
                     let target_present = state.sequences.get(active_idx)
                         .map(|seq| seq.tracks.iter().any(|t| t.clips.iter().any(|c| c.id == target_id)))
                         .unwrap_or(false);
@@ -2147,7 +2147,7 @@ fn show_transform_link_section(
                             if resp.on_hover_text(hover).clicked() && mode != link.mode {
                                 cmds.push(AppCommand::SetClipTransformLink {
                                     clip_id,
-                                    target: link.target,
+                                    target: link.target.referenced_clip_id(),
                                     mode: link_mode_to_u8(mode),
                                     inherit_scale: link.inherit_scale,
                                     inherit_position: link.inherit_position,
@@ -2179,7 +2179,7 @@ fn show_transform_link_section(
                     if changed {
                         cmds.push(AppCommand::SetClipTransformLink {
                             clip_id,
-                            target: link.target,
+                            target: link.target.referenced_clip_id(),
                             mode: link_mode_to_u8(link.mode),
                             inherit_scale,
                             inherit_position,
@@ -2842,7 +2842,7 @@ fn transform_link_chain_creates_cycle_local(
             .iter()
             .flat_map(|t| t.clips.iter())
             .find(|c| c.id == current)
-            .and_then(|c| c.transform_link.as_ref().map(|tl| tl.target));
+            .and_then(|c| c.transform_link.as_ref().map(|tl| tl.target.referenced_clip_id()));
         match next {
             None => return false,
             Some(n) if n == consumer => return true,
