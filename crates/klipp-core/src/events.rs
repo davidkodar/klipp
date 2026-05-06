@@ -2380,6 +2380,35 @@ pub enum AppCommand {
         /// `focal_ref_none_yields_static_anchor` in the engine
         /// resolver tests.
         focal_ref: Option<crate::FocalRef>,
+        /// Opt-in audio stinger inserted on apply (HZ-NEXT-WHOOSH).
+        /// `false` (default) skips every whoosh code path —
+        /// no synthesis, no media-pool registration, no audio
+        /// clip insertion. Pinned to byte-identical behaviour
+        /// against pre-feature applies.
+        ///
+        /// This and the two follow-up whoosh fields are
+        /// **additive** — callers that don't care default to
+        /// `false` / `0` / `None` and the handler short-circuits
+        /// before any audio work runs. The forward-looking
+        /// expectation: if `AppCommand` gains `Serialize` /
+        /// `Deserialize` derives in a future refactor, these
+        /// three fields should receive `#[serde(default)]` at
+        /// the same time so old serialised commands round-trip
+        /// to safe defaults. We don't add the derives here
+        /// because that's a separate refactor (every nested
+        /// type would need serde guarantees too).
+        add_whoosh: bool,
+        /// Variant id for the synthesised whoosh: `0 = Short`,
+        /// `1 = Medium`, `2 = Long`, `255 = Custom`. Custom reads
+        /// from `whoosh_custom_path` and ignores the built-in
+        /// synth. Unknown values fall back to Medium in the
+        /// handler so a stale dispatch can never produce silence
+        /// when the user ticked the box.
+        whoosh_variant: u8,
+        /// Path to a user-specified WAV / audio file when
+        /// `whoosh_variant == 255` (Custom). Ignored otherwise.
+        /// `None` (default) is the built-in-synth path.
+        whoosh_custom_path: Option<std::path::PathBuf>,
     },
 
     /// Auto-apply `transform_link` to every clip *beneath* the

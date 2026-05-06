@@ -2913,6 +2913,13 @@ fn show_hyperzoom_section(
                             add_radial_blur,
                             radial_blur_amount,
                             focal_ref,
+                            // Inspector wires the whoosh checkbox in
+                            // commit 3 of HZ-NEXT-WHOOSH; for now,
+                            // the byte-identical-to-pre-feature
+                            // defaults.
+                            add_whoosh: false,
+                            whoosh_variant: 0,
+                            whoosh_custom_path: None,
                         });
                     }
 

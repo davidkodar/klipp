@@ -830,6 +830,14 @@ pub struct AppState {
     /// (parent_sequence_idx, parent_playhead) so we can navigate back.
     pub compound_clip_stack: Vec<(usize, klipp_core::Timecode)>,
     pub media_pool: MediaPool,
+    /// Cache of synthesised whoosh `MediaId`s, keyed by the
+    /// `WhooshVariant` u8 wire-format tag (0/1/2). Populated lazily
+    /// the first time `ApplyHyperzoom { add_whoosh: true, .. }`
+    /// fires for a given variant; subsequent applies reuse the
+    /// existing pool entry. AppState-scoped per audit note (iv);
+    /// a global cache index file is a polish item if cross-session
+    /// re-synth becomes a noticeable cost.
+    pub whoosh_media_ids: std::collections::HashMap<u8, klipp_core::MediaId>,
     /// Project-scoped synthetic title assets, keyed by the
     /// `MediaId` of the matching synthetic `MediaItem` in the pool.
     /// The map is the canonical source of truth for `TitleData`
@@ -2730,6 +2738,7 @@ impl Default for AppState {
             active_sequence_idx: 0,
             compound_clip_stack: Vec::new(),
             media_pool: MediaPool::new(),
+            whoosh_media_ids: std::collections::HashMap::new(),
             title_assets: std::collections::HashMap::new(),
             project_path: None,
             created_at: None,

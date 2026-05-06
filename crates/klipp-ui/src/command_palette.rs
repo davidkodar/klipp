@@ -537,6 +537,12 @@ pub fn build(state: &AppState) -> Vec<PaletteEntry> {
                 add_radial_blur: false,
                 radial_blur_amount: 0.0,
                 focal_ref: None,
+                // Palette easy-path stays whoosh-free for the same
+                // reason as the other polish layers — power users
+                // tick the box in the inspector after applying.
+                add_whoosh: false,
+                whoosh_variant: 0,
+                whoosh_custom_path: None,
             }),
             enabled: true,
         });
