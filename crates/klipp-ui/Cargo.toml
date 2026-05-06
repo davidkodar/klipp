@@ -58,3 +58,13 @@ egui_extras = { workspace = true }
 chrono = { workspace = true }
 bytemuck = { workspace = true }
 libc = "0.2"
+
+[dev-dependencies]
+# Snapshot-style assertion library for the cut-templates plan
+# tests (HZ-NEXT-CUT-TEMPLATES). `expect![[r#"..."#]]
+# .assert_eq(&actual)` reads better than inline vec![] equality
+# for 5+-command sequences, and `UPDATE_EXPECT=1 cargo test` keeps
+# the snapshots maintainable when AppCommand variants grow fields.
+# Tiny crate, no transitive deps, maintained by matklad — same
+# trust profile as anyhow / thiserror.
+expect-test = "1.5"
