@@ -99,6 +99,18 @@ pub struct PaletteEntry {
     pub enabled: bool,
 }
 
+/// Labels for the cut-template palette entries. Shared between the
+/// focused-clip branch (active, gated by per-template `can_apply`)
+/// and the no-selection branch (always disabled) so the two stay in
+/// lock-step — the no-duplicate-labels test catches drift.
+const TEMPLATE_LABELS: [&str; 5] = [
+    "Apply template → Hyperzoom Letter Transition",
+    "Apply template → Track Matte Reveal",
+    "Apply template → Cross-Dissolve with Hyperzoom Bridge",
+    "Apply template → Whip Pan (left)",
+    "Apply template → Whip Pan (right)",
+];
+
 /// Build the full palette entry list against the current state.
 /// Called per palette frame so entries reflect live enable/disable
 /// gates (selected clip, source loaded, history depth, etc.).
@@ -548,6 +560,63 @@ pub fn build(state: &AppState) -> Vec<PaletteEntry> {
             }),
             enabled: true,
         });
+        // Cut templates — multi-step recipes that compose existing
+        // primitives (matte / transform_link / hyperzoom / keyframes)
+        // into one-click operations. Each entry's `enabled` flag is
+        // the template's own `can_apply` predicate so unrelated
+        // templates aren't greyed together (e.g. Track Matte Reveal
+        // stays enabled even when the active clip has no track-
+        // neighbour for hyperzoom to fly into).
+        let template_ctx = crate::cut_templates::TemplateContext {
+            seq: state.sequence(),
+            selected_clip_id: Some(cid),
+            playhead: state.playhead,
+            fps: state.fps,
+        };
+        let template_dispatch: [(
+            &str,
+            crate::cut_templates::TemplateKind,
+            fn(&mut AppState, &mut Vec<AppCommand>),
+        ); 5] = [
+            (
+                TEMPLATE_LABELS[0],
+                crate::cut_templates::TemplateKind::HyperzoomLetterTransition,
+                crate::cut_templates::dispatch_hyperzoom_letter_transition,
+            ),
+            (
+                TEMPLATE_LABELS[1],
+                crate::cut_templates::TemplateKind::TrackMatteReveal,
+                crate::cut_templates::dispatch_track_matte_reveal,
+            ),
+            (
+                TEMPLATE_LABELS[2],
+                crate::cut_templates::TemplateKind::CrossDissolveHyperzoomBridge,
+                crate::cut_templates::dispatch_cross_dissolve_hyperzoom_bridge,
+            ),
+            (
+                TEMPLATE_LABELS[3],
+                crate::cut_templates::TemplateKind::WhipPanTransition {
+                    direction: crate::cut_templates::WhipDirection::Left,
+                },
+                crate::cut_templates::dispatch_whip_pan_left,
+            ),
+            (
+                TEMPLATE_LABELS[4],
+                crate::cut_templates::TemplateKind::WhipPanTransition {
+                    direction: crate::cut_templates::WhipDirection::Right,
+                },
+                crate::cut_templates::dispatch_whip_pan_right,
+            ),
+        ];
+        for (label, kind, dispatch_fn) in template_dispatch {
+            let enabled = crate::cut_templates::can_apply(&kind, &template_ctx);
+            e.push(PaletteEntry {
+                label: Cow::Borrowed(label),
+                shortcut: Cow::Borrowed(""),
+                action: PaletteAction::Custom(dispatch_fn),
+                enabled,
+            });
+        }
         // Common blend modes only — the full 13-mode list would
         // dilute the palette. Users who want the full set go through
         // the Inspector COMPOSITING section.
@@ -599,6 +668,17 @@ pub fn build(state: &AppState) -> Vec<PaletteEntry> {
             action: PaletteAction::Cmd(AppCommand::Undo),
             enabled: false,
         });
+        // Cut templates — greyed twins so the labels are reachable
+        // from search even with no selection (anchors test runs
+        // against default state).
+        for label in TEMPLATE_LABELS {
+            e.push(PaletteEntry {
+                label: Cow::Borrowed(label),
+                shortcut: Cow::Borrowed(""),
+                action: PaletteAction::Cmd(AppCommand::Undo),
+                enabled: false,
+            });
+        }
     }
 
     e
@@ -732,6 +812,16 @@ mod tests {
         // helper. Pinned so the easy-path discovery surface stays
         // visible across refactors.
         "Link clips beneath",
+        // Cut-template anchors — five one-click multi-step recipes.
+        // Pinned individually because each is a distinct concept
+        // (different gating, different output) and the discovery
+        // value of the palette as a tutorial surface is in the
+        // names being typeable.
+        "Hyperzoom Letter Transition",
+        "Track Matte Reveal",
+        "Hyperzoom Bridge",
+        "Whip Pan (left)",
+        "Whip Pan (right)",
     ];
 
     #[test]
