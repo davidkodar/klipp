@@ -567,6 +567,23 @@ pub enum AppCommand {
     SetSpeed(f64),
     AppendClip { media_id: MediaId },
     AppendClipToTrack { media_id: MediaId, track_index: usize },
+    /// Insert an existing audio media item as a clip at a specific
+    /// timeline position. Building block for opt-in audio
+    /// sweetener layers (hyperzoom whoosh today; transition
+    /// stingers, marker pings later). The caller is responsible
+    /// for ensuring the [`MediaId`] already resolves in the media
+    /// pool — this command does not import or probe.
+    ///
+    /// `track_index` semantics:
+    /// - `Some(idx)` — must reference an existing audio track.
+    /// - `None` — handler picks the lowest-indexed audio track,
+    ///   or auto-creates one at the end of the track list when
+    ///   the sequence has no audio tracks yet.
+    InsertAudioMediaClip {
+        media_id: MediaId,
+        track_index: Option<usize>,
+        timeline_in: Timecode,
+    },
     RemoveClip { clip_id: ClipId },
     MoveClip { clip_id: ClipId, new_timeline_in: Timecode },
     MoveClipToTrack { clip_id: ClipId, new_timeline_in: Timecode, from_track: usize, to_track: usize },

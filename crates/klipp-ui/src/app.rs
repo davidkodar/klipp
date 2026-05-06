@@ -10138,6 +10138,40 @@ impl KlippApp {
                     }
                     true
                 }
+                AppCommand::InsertAudioMediaClip { media_id, track_index, timeline_in } => {
+                    // Audio-clip-only insertion at a specific
+                    // timeline position. Caller is responsible for
+                    // ensuring `media_id` is already in the pool —
+                    // this command does not import or probe (which
+                    // is what makes it cheap enough for opt-in
+                    // sweetener layers like the hyperzoom whoosh to
+                    // dispatch synchronously inside another
+                    // handler).
+                    let active_idx = self.state.active_sequence_idx;
+                    let result = insert_audio_media_clip_into_seq(
+                        &mut self.state.sequences[active_idx],
+                        &self.state.media_pool,
+                        *media_id,
+                        *track_index,
+                        *timeline_in,
+                    );
+                    match result {
+                        Ok(inserted) => {
+                            self.state.push_history(EditCommand::LegacyAppendClip {
+                                clip: inserted.clip,
+                                track_index: inserted.track_index,
+                            });
+                            self.state.dirty = true;
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                "InsertAudioMediaClip rejected for media={:?} track={:?}: {e}",
+                                media_id, track_index,
+                            );
+                        }
+                    }
+                    true
+                }
                 AppCommand::ImportMediaLinked { media_id, on_new_tracks } => {
                     if self.maybe_prompt_framerate_mismatch(media_id, cmd.clone()) {
                         return true;
@@ -31154,6 +31188,114 @@ fn matte_chain_creates_cycle(
 ///
 /// No-ops if the clip can't be located. The handler logs the failure
 /// path so a stale dispatch doesn't silently mutate an unrelated clip.
+/// Outcome of a successful [`AppCommand::InsertAudioMediaClip`]
+/// dispatch — the inserted clip plus the track index it landed on.
+/// Caller records the pair in the undo stack via
+/// `EditCommand::LegacyAppendClip`.
+#[derive(Debug)]
+struct InsertedAudioClip {
+    clip: klipp_timeline::Clip,
+    track_index: usize,
+}
+
+/// Reasons [`insert_audio_media_clip_into_seq`] declines to insert.
+/// Surface as a tracing warning at the dispatch arm — these are
+/// programmer / state-shape errors, not user-recoverable conditions.
+#[derive(Debug)]
+enum InsertAudioMediaClipError {
+    MediaNotInPool,
+    TrackIndexOutOfRange,
+    TrackIsNotAudio,
+    ZeroDuration,
+}
+
+impl std::fmt::Display for InsertAudioMediaClipError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::MediaNotInPool => f.write_str("media id not present in pool"),
+            Self::TrackIndexOutOfRange => f.write_str("track_index out of range"),
+            Self::TrackIsNotAudio => f.write_str("track at track_index is not an audio track"),
+            Self::ZeroDuration => f.write_str("media duration is zero"),
+        }
+    }
+}
+
+/// Mutation core of [`AppCommand::InsertAudioMediaClip`]. Pure-ish
+/// (only mutates `seq`); separated from the dispatch arm so unit
+/// tests can hit it without a full `App`.
+///
+/// `track_index` semantics match the AppCommand contract: `Some(i)`
+/// must reference an existing audio track; `None` picks the lowest
+/// audio track index, auto-creating one if the sequence has none.
+fn insert_audio_media_clip_into_seq(
+    seq: &mut klipp_timeline::Sequence,
+    media_pool: &klipp_media::MediaPool,
+    media_id: klipp_core::MediaId,
+    track_index: Option<usize>,
+    timeline_in: klipp_core::Timecode,
+) -> Result<InsertedAudioClip, InsertAudioMediaClipError> {
+    let item = media_pool
+        .get(&media_id)
+        .ok_or(InsertAudioMediaClipError::MediaNotInPool)?;
+    let duration = item.duration;
+    if duration.value <= 0 {
+        return Err(InsertAudioMediaClipError::ZeroDuration);
+    }
+    let track_idx = match track_index {
+        Some(idx) => {
+            let track = seq
+                .tracks
+                .get(idx)
+                .ok_or(InsertAudioMediaClipError::TrackIndexOutOfRange)?;
+            if track.kind != klipp_timeline::TrackKind::Audio {
+                return Err(InsertAudioMediaClipError::TrackIsNotAudio);
+            }
+            idx
+        }
+        None => match seq
+            .tracks
+            .iter()
+            .position(|t| t.kind == klipp_timeline::TrackKind::Audio)
+        {
+            Some(i) => i,
+            None => {
+                seq.add_audio_track("Audio 1".to_string());
+                seq.tracks
+                    .iter()
+                    .position(|t| t.kind == klipp_timeline::TrackKind::Audio)
+                    .expect("audio track was just appended")
+            }
+        },
+    };
+    // RationalTime addition rescales RHS to LHS rate (project memory:
+    // see "RationalTime rate gotcha"). To keep frame-accurate
+    // arithmetic, rescale the timeline anchor to the source rate
+    // before the add.
+    let timeline_in_rescaled = if timeline_in.rate != duration.rate {
+        timeline_in.rescale_to(duration.rate)
+    } else {
+        timeline_in
+    };
+    let timeline_out = timeline_in_rescaled + duration;
+    let source_in = klipp_core::Timecode {
+        value: 0,
+        rate: duration.rate,
+    };
+    let clip = klipp_timeline::Clip::media(
+        media_id,
+        timeline_in_rescaled,
+        timeline_out,
+        source_in,
+        duration,
+    );
+    let clip_for_history = clip.clone();
+    seq.tracks[track_idx].clips.push(clip);
+    Ok(InsertedAudioClip {
+        clip: clip_for_history,
+        track_index: track_idx,
+    })
+}
+
 fn apply_hyperzoom_plan_to_clip(
     seq: &mut klipp_timeline::Sequence,
     clip_id: klipp_core::ClipId,
@@ -34458,6 +34600,198 @@ mod matte_candidate_finder_tests {
         ]);
         assert!(find_candidate(&seq, 1, consumer_id).is_none(),
             "consumer id on track above must not be returned as its own candidate");
+    }
+}
+
+#[cfg(test)]
+mod insert_audio_media_clip_tests {
+    //! Pure-mutation tests for `insert_audio_media_clip_into_seq`.
+    //! Builds a sequence + media pool inline; the dispatch arm in
+    //! `update()` is the thin caller that records undo + dirties.
+    use super::{insert_audio_media_clip_into_seq, InsertAudioMediaClipError};
+    use klipp_core::{Fps, MediaId, RationalTime, Resolution};
+    use klipp_media::{ColorLabel, ColourSpace, MediaItem, MediaItemKind, MediaPool};
+    use klipp_timeline::{Sequence, Track, TrackKind};
+
+    fn tc(frames: i64) -> RationalTime {
+        RationalTime::from_frames(frames, 48)
+    }
+
+    fn audio_media_item(duration: RationalTime) -> MediaItem {
+        MediaItem {
+            id: MediaId::new(),
+            path: std::path::PathBuf::from("/tmp/whoosh-test.wav"),
+            kind: MediaItemKind::File,
+            filename: "whoosh-test.wav".into(),
+            duration,
+            fps: Fps::film_24(),
+            resolution: Resolution { width: 0, height: 0 },
+            video_codec: String::new(),
+            audio_codec: "pcm_s16le".into(),
+            has_audio: true,
+            file_size_bytes: 0,
+            sample_rate: Some(48_000),
+            audio_channels: Some(1),
+            offline: false,
+            is_still: false,
+            proxy_path: None,
+            proxy_ready: false,
+            default_source_in: None,
+            default_source_out: None,
+            rating: 0,
+            tags: Vec::new(),
+            user_notes: String::new(),
+            bin: None,
+            bin_id: None,
+            parent_media_id: None,
+            added_at: 0,
+            fingerprint: None,
+            file_modified_at: None,
+            media_created_at: None,
+            color_label: ColorLabel::default(),
+            colour_space: ColourSpace::default(),
+            log_format: klipp_core::LogFormat::default(),
+            source_rotation: 0,
+            camera_make: None,
+            camera_model: None,
+            encoder: None,
+            bit_depth: None,
+            video_bitrate_kbps: None,
+            audio_bitrate_kbps: None,
+            color_primaries: None,
+            color_transfer: None,
+            pixel_format: None,
+            detected_log_format: klipp_core::LogFormat::default(),
+            skim_file: None,
+            needs_reprobe: false,
+            waveform_data: None,
+            audio_cache: None,
+        }
+    }
+
+    fn seq_video_only() -> Sequence {
+        let mut s = Sequence::new_default();
+        // new_default ships one video + one audio track. Strip the
+        // audio so we exercise the "auto-create when none exists"
+        // branch.
+        s.tracks.retain(|t| t.kind != TrackKind::Audio);
+        assert!(
+            !s.tracks.iter().any(|t| t.kind == TrackKind::Audio),
+            "fixture invariant: no audio tracks expected after retain",
+        );
+        s
+    }
+
+    fn seq_with_audio_at(idx: usize) -> Sequence {
+        let mut s = Sequence::new_default();
+        s.tracks.retain(|t| t.kind != TrackKind::Audio);
+        // Pad the track list with extra video tracks so the audio
+        // lands at the requested index.
+        while s.tracks.len() < idx {
+            let name = format!("V{}", s.tracks.len() + 1);
+            s.tracks.push(Track::new(&name, TrackKind::Video));
+        }
+        s.tracks
+            .insert(idx, Track::new("Audio 1", TrackKind::Audio));
+        s
+    }
+
+    #[test]
+    fn picks_first_audio_track_when_track_index_is_none() {
+        let mut seq = seq_with_audio_at(2); // V1, V2, A1
+        let mut pool = MediaPool::new();
+        let item = audio_media_item(tc(24));
+        let media_id = pool.add(item);
+        let inserted = insert_audio_media_clip_into_seq(&mut seq, &pool, media_id, None, tc(48))
+            .expect("insert");
+        assert_eq!(inserted.track_index, 2);
+        assert_eq!(seq.tracks[2].clips.len(), 1);
+        assert_eq!(seq.tracks[2].clips[0].timeline_in, tc(48));
+    }
+
+    #[test]
+    fn auto_creates_audio_track_when_none_exists() {
+        let mut seq = seq_video_only();
+        let video_count = seq.tracks.len();
+        let mut pool = MediaPool::new();
+        let media_id = pool.add(audio_media_item(tc(24)));
+        let inserted = insert_audio_media_clip_into_seq(&mut seq, &pool, media_id, None, tc(0))
+            .expect("insert");
+        assert_eq!(seq.tracks.len(), video_count + 1, "audio track auto-created");
+        let new_track = &seq.tracks[inserted.track_index];
+        assert_eq!(new_track.kind, TrackKind::Audio);
+        assert_eq!(new_track.clips.len(), 1);
+    }
+
+    #[test]
+    fn inserts_at_explicit_audio_track_index() {
+        let mut seq = seq_with_audio_at(1); // V1, A1
+        let mut pool = MediaPool::new();
+        let media_id = pool.add(audio_media_item(tc(24)));
+        let inserted =
+            insert_audio_media_clip_into_seq(&mut seq, &pool, media_id, Some(1), tc(0))
+                .expect("insert");
+        assert_eq!(inserted.track_index, 1);
+        assert_eq!(seq.tracks[1].clips.len(), 1);
+    }
+
+    #[test]
+    fn errors_when_media_id_not_in_pool() {
+        let mut seq = seq_with_audio_at(1);
+        let pool = MediaPool::new(); // empty
+        let phantom = MediaId::new();
+        let err = insert_audio_media_clip_into_seq(&mut seq, &pool, phantom, None, tc(0))
+            .expect_err("should error");
+        assert!(matches!(err, InsertAudioMediaClipError::MediaNotInPool));
+    }
+
+    #[test]
+    fn errors_when_track_index_out_of_range() {
+        let mut seq = seq_with_audio_at(1);
+        let mut pool = MediaPool::new();
+        let media_id = pool.add(audio_media_item(tc(24)));
+        let err = insert_audio_media_clip_into_seq(&mut seq, &pool, media_id, Some(99), tc(0))
+            .expect_err("should error");
+        assert!(matches!(err, InsertAudioMediaClipError::TrackIndexOutOfRange));
+    }
+
+    #[test]
+    fn errors_when_track_index_points_at_video_track() {
+        let mut seq = seq_with_audio_at(1); // V1 (idx 0), A1 (idx 1)
+        let mut pool = MediaPool::new();
+        let media_id = pool.add(audio_media_item(tc(24)));
+        let err = insert_audio_media_clip_into_seq(&mut seq, &pool, media_id, Some(0), tc(0))
+            .expect_err("should error");
+        assert!(matches!(err, InsertAudioMediaClipError::TrackIsNotAudio));
+    }
+
+    #[test]
+    fn errors_when_media_duration_zero() {
+        let mut seq = seq_with_audio_at(1);
+        let mut pool = MediaPool::new();
+        let zero = RationalTime { value: 0, rate: 48 };
+        let media_id = pool.add(audio_media_item(zero));
+        let err = insert_audio_media_clip_into_seq(&mut seq, &pool, media_id, None, tc(0))
+            .expect_err("should error");
+        assert!(matches!(err, InsertAudioMediaClipError::ZeroDuration));
+    }
+
+    #[test]
+    fn timeline_in_rescaled_to_source_rate() {
+        // Pin the RationalTime gotcha — caller passes a 24-rate
+        // timecode, source is 48-rate. Without rescale the
+        // timeline_in.value would be misinterpreted as 48-rate
+        // frames and the clip would land at the wrong time.
+        let mut seq = seq_with_audio_at(1);
+        let mut pool = MediaPool::new();
+        let dur_48 = RationalTime { value: 24, rate: 48 };
+        let media_id = pool.add(audio_media_item(dur_48));
+        let timeline_in_24 = RationalTime { value: 12, rate: 24 }; // 0.5 s
+        insert_audio_media_clip_into_seq(&mut seq, &pool, media_id, None, timeline_in_24)
+            .expect("insert");
+        let clip = &seq.tracks[1].clips[0];
+        assert_eq!(clip.timeline_in.rate, 48, "rescaled to source rate");
+        assert_eq!(clip.timeline_in.value, 24, "0.5 s @ 48 rate = 24 ticks");
     }
 }
 
