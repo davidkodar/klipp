@@ -907,9 +907,28 @@ pub enum LinkMode {
 /// `Tracker { ... }` produces an object; loading the object lands
 /// in `Tracker(...)`. Tests pin both directions plus the legacy-
 /// load path explicitly.
+// `#[serde(untagged)]` dispatches between variants based on **shape**,
+// not a tag field. That's deliberate — it lets the legacy bare-uuid
+// form (a JSON string) deserialise as `Clip(uuid)` without a wire-
+// format break. **The constraint this places on future variants**:
+// any variant added here MUST serialise to a JSON shape that's
+// structurally distinct from every existing variant. If a future
+// variant happens to deserialise from the same shape as `Clip`
+// (a string) or `Tracker` (an object with `clip_id` + `point_index`),
+// untagged dispatch becomes ambiguous and serde picks the first
+// matching variant — silent data corruption. When adding variants:
+// either use a clearly different shape (a number, an array, an
+// object with a unique field), or migrate this enum to
+// `#[serde(tag = "kind")]` with explicit migration logic.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum TransformLinkTarget {
+    /// Inherit from another clip's resolved transform. Serialises
+    /// as a **bare uuid string** — intentionally byte-identical to
+    /// the pre-migration `target: ClipId` field. This means a
+    /// project saved by current Klipp using the `Clip` variant can
+    /// be loaded by an older Klipp build that pre-dates the enum
+    /// migration. Forward-compat for the dominant case.
     Clip(ClipId),
     Tracker {
         clip_id: ClipId,

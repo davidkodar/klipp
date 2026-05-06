@@ -262,32 +262,48 @@ fn resolve_clip_transform_depth(
 
     let result = match (&clip.transform_link, depth < 64) {
         (Some(link), true) => {
-            // For commit 1 of HZ-MATTE-NEXT-TRACKER-DRIVER, only the
-            // `Clip` variant of `TransformLinkTarget` resolves —
-            // `Tracker` falls through to the static-anchor path
-            // until commit 2 wires the live tracker resolution.
-            // `referenced_clip_id` returns the same uuid for both
-            // variants; we only handle the resolution side here.
-            let referenced_id = link.target.referenced_clip_id();
-            let is_tracker_variant = matches!(
-                link.target, klipp_timeline::TransformLinkTarget::Tracker { .. }
-            );
-            let target = if is_tracker_variant {
-                None
-            } else {
-                seq.tracks.iter()
-                    .flat_map(|t| t.clips.iter())
-                    .find(|c| c.id == referenced_id)
-            };
-            match target {
-                None => own, // Stale target id (or Tracker variant pre-commit-2) — fall back to own transform.
-                Some(target_clip) => {
-                    let target_xform = resolve_clip_transform_depth(
-                        target_clip, seq, playhead, fps, cache,
-                        glyph_cache, title_renderer, frame_w, frame_h, depth + 1,
-                    );
-                    compose_transform(own, target_xform, link)
+            // Two link-target shapes:
+            //
+            //   `Clip(id)` — recurse into the linked clip's resolved
+            //     transform (today's behaviour) and compose per the
+            //     link's mode + per-axis flags.
+            //
+            //   `Tracker { clip_id, point_index }` — synthesise a
+            //     position-only `ResolvedTransform` from the tracker's
+            //     per-frame output. The synthetic target has identity
+            //     scale/rotation/anchor and translation derived from
+            //     the tracker's normalised position, so the existing
+            //     `compose_transform` honours the link's
+            //     inherit-position-only / inherit-scale-only flags
+            //     unchanged. Resolution failure (host clip missing,
+            //     point_index out of range, before start_frame, past
+            //     end of positions) → silent fallback to `own` —
+            //     same contract as the Glyph focal-ref path.
+            let target_xform: Option<ResolvedTransform> = match &link.target {
+                klipp_timeline::TransformLinkTarget::Clip(id) => {
+                    seq.tracks.iter()
+                        .flat_map(|t| t.clips.iter())
+                        .find(|c| c.id == *id)
+                        .map(|target_clip| {
+                            resolve_clip_transform_depth(
+                                target_clip, seq, playhead, fps, cache,
+                                glyph_cache, title_renderer, frame_w, frame_h, depth + 1,
+                            )
+                        })
                 }
+                klipp_timeline::TransformLinkTarget::Tracker { clip_id, point_index } => {
+                    seq.tracks.iter()
+                        .flat_map(|t| t.clips.iter())
+                        .find(|c| c.id == *clip_id)
+                        .and_then(|host_clip| {
+                            tracker_position_at_playhead(host_clip, *point_index, playhead, fps)
+                        })
+                        .map(|(tx, ty)| synthesise_tracker_transform(tx, ty, frame_w, frame_h))
+                }
+            };
+            match target_xform {
+                None => own, // resolution failed → silent fallback
+                Some(t) => compose_transform(own, t, link),
             }
         }
         _ => own,
@@ -405,15 +421,88 @@ fn resolve_focal_ref_to_clip_space(
                 (screen_y / fh).clamp(0.0, 1.0),
             ))
         }
-        klipp_effects::FocalRef::Tracker { .. } => {
-            // HZ-MATTE-NEXT-TRACKER-DRIVER commit 2 wires the live
-            // tracker resolution. Commit 1 ships only the schema
-            // shape — the variant exists, project files round-trip,
-            // but the resolver returns None so the static fallback
-            // kicks in (anchor_x/y from the Transform builtin).
-            None
+        klipp_effects::FocalRef::Tracker { clip_id, point_index, fallback_xy: _ } => {
+            // HZ-MATTE-NEXT-TRACKER-DRIVER commit 2 — live tracker
+            // resolution. Look up the tracker's per-frame position
+            // and return it as the focal point. Tracker positions
+            // are already in normalised clip-space `[0, 1]` (see
+            // `klipp_core::TrackPoint::positions` doc), so no
+            // composition-through-title-transform is needed (unlike
+            // the Glyph arm above) — we go straight to the focal
+            // value, bypassing the transform_cache reentry.
+            let cid = klipp_core::ClipId(*clip_id);
+            let host_clip = seq.tracks.iter()
+                .flat_map(|t| t.clips.iter())
+                .find(|c| c.id == cid)?;
+            tracker_position_at_playhead(host_clip, *point_index, playhead, fps)
         }
     }
+}
+
+/// Build a position-only [`ResolvedTransform`] from a tracker's
+/// per-frame `(x, y)` output. Used by
+/// [`resolve_clip_transform_depth`] when a `transform_link.target`
+/// is `Tracker { ... }`.
+///
+/// Tracker positions are in normalised clip-space `[0, 1]`. The
+/// `compose_transform` step that consumes this synthetic target
+/// expects pixel-domain `position_x` / `position_y` (centre-relative)
+/// — so we convert with `(tracker - 0.5) * frame_dim`. Identity
+/// for scale (1.0) / rotation (0.0) / anchor (0.5, 0.5) so a link
+/// configured with `inherit_position=true, inherit_scale=false,
+/// inherit_rotation=false` correctly transports only the tracker
+/// position; the consumer's own scale/rotation/anchor survive.
+fn synthesise_tracker_transform(tracker_x_norm: f32, tracker_y_norm: f32, frame_w: u32, frame_h: u32) -> ResolvedTransform {
+    let pos_x = (tracker_x_norm - 0.5) * frame_w as f32;
+    let pos_y = (tracker_y_norm - 0.5) * frame_h as f32;
+    (pos_x, pos_y, 1.0, 1.0, 0.0, 0.5, 0.5)
+}
+
+/// Look up a tracker's `(focal_x, focal_y)` in normalised clip-
+/// space at the given timeline `playhead`. The tracker lives on
+/// `host_clip.track_points[point_index]`, and its `positions`
+/// vector indexes from `start_frame` (not from `clip.timeline_in`)
+/// so the lookup is:
+///
+/// ```text
+///   playhead_secs    = (playhead - host_clip.timeline_in).to_secs_f64()
+///   playhead_frame   = (playhead_secs * fps).floor() as i64
+///   pos_idx          = playhead_frame - tp.start_frame   (signed!)
+///   if pos_idx < 0:                  → before start, return None
+///   if pos_idx >= positions.len():   → past end,    return None
+///   else:                             positions[pos_idx]
+/// ```
+///
+/// The signed `pos_idx` matters: `start_frame` is `usize` but the
+/// playhead can land before it (negative offset), and that should
+/// fall back silently — not panic on `usize` underflow.
+///
+/// Returns `None` for any failure (point_index out of range,
+/// before `start_frame`, past end of `positions`, or empty
+/// `positions` vec). Caller treats `None` as "use static
+/// fallback" — same contract as the Glyph arm.
+fn tracker_position_at_playhead(
+    host_clip: &klipp_timeline::Clip,
+    point_index: u32,
+    playhead: klipp_core::Timecode,
+    fps: f64,
+) -> Option<(f32, f32)> {
+    let tp = host_clip.track_points.get(point_index as usize)?;
+    if tp.positions.is_empty() {
+        return None;
+    }
+    // Frame index relative to the host clip's timeline_in. fps
+    // matches what the rest of the resolver uses; falls out of
+    // the engine's per-frame call.
+    let clip_local_secs = (playhead - host_clip.timeline_in).to_secs_f64();
+    let playhead_frame = (clip_local_secs * fps).floor() as i64;
+    let pos_idx_signed = playhead_frame - tp.start_frame as i64;
+    if pos_idx_signed < 0 {
+        return None; // before tracker started
+    }
+    let pos_idx = pos_idx_signed as usize;
+    let (x, y) = *tp.positions.get(pos_idx)?; // past end → None
+    Some((x as f32, y as f32))
 }
 
 /// Bulk sRGB u8 RGBA → linear f32 RGBA. Alpha stays linear per sRGB
@@ -12379,6 +12468,305 @@ mod glyph_focal_resolution_tests {
         assert!(((off_out.6 - ref_out.6) - expected_dy).abs() < 1e-3,
             "title position_y=50 should shift glyph anchor by ~{:.4}, got {:.4}",
             expected_dy, off_out.6 - ref_out.6);
+    }
+}
+
+#[cfg(test)]
+mod tracker_resolution_tests {
+    //! HZ-MATTE-NEXT-TRACKER-DRIVER — engine resolver tests.
+    //!
+    //! Pins the load-bearing pieces of commit 2:
+    //!
+    //! * `tracker_position_at_playhead` — the boundary behaviour at
+    //!   `start_frame`, before / at / mid / exactly-end / one-past-
+    //!   end, plus the empty-positions and missing-point-index
+    //!   cases. Audit handoff implementation note (iii).
+    //!
+    //! * `TransformLinkTarget::Tracker` resolves through
+    //!   `resolve_clip_transform_depth` and synthesises a position-
+    //!   only `ResolvedTransform` with identity scale/rotation/anchor
+    //!   so the per-axis inherit flags work cleanly.
+    //!
+    //! * Behavior-emerges-from-composition: a matte source clip with
+    //!   `transform_link.target = Tracker(...)` produces a tracker-
+    //!   driven matte composition without any `MatteBinding` code
+    //!   path being touched. Audit handoff implementation note (ii).
+    use super::{
+        resolve_clip_transform, synthesise_tracker_transform,
+        tracker_position_at_playhead, ResolvedTransform,
+    };
+    use klipp_core::{ClipId, MediaId, RationalTime, TrackPoint};
+    use klipp_timeline::{
+        Clip, MatteBinding, Sequence, TransformLink, TransformLinkTarget, Track, TrackKind,
+    };
+    use std::collections::HashMap;
+
+    fn tc(frames: i64) -> RationalTime { RationalTime::from_frames(frames, 24) }
+
+    /// Build a TrackPoint with the given `start_frame` and a known
+    /// 4-position vector at frames `[start_frame .. start_frame+4]`:
+    ///   frame 0 → (0.10, 0.10)
+    ///   frame 1 → (0.20, 0.20)
+    ///   frame 2 → (0.30, 0.30)
+    ///   frame 3 → (0.40, 0.40)
+    fn tp_with_positions(start_frame: usize) -> TrackPoint {
+        // `TrackPoint::default()` produces a fresh uuid + safe
+        // defaults; we override only the fields the tests assert
+        // on. Avoids pulling `uuid` into klipp-engine's dev-deps
+        // just to build test fixtures.
+        let mut tp = TrackPoint::default();
+        tp.positions = vec![(0.10, 0.10), (0.20, 0.20), (0.30, 0.30), (0.40, 0.40)];
+        tp.start_frame = start_frame;
+        tp
+    }
+
+    fn host_clip_with_tracker(start_frame: usize) -> Clip {
+        let mut c = Clip::media(MediaId::new(), tc(0), tc(120), tc(0), tc(120));
+        c.track_points.push(tp_with_positions(start_frame));
+        c
+    }
+
+    // ─────── Boundary 5-case (audit handoff note iii) ───────
+
+    #[test]
+    fn tracker_lookup_before_start_frame_returns_none() {
+        // start_frame=10. Playhead at frame 5 → before tracker
+        // started → None (caller falls back to static anchor).
+        let host = host_clip_with_tracker(10);
+        let out = tracker_position_at_playhead(&host, 0, tc(5), 24.0);
+        assert!(out.is_none(), "before start_frame → None");
+    }
+
+    #[test]
+    fn tracker_lookup_at_start_frame_returns_first_position() {
+        // start_frame=10. Playhead at frame 10 → positions[0].
+        let host = host_clip_with_tracker(10);
+        let out = tracker_position_at_playhead(&host, 0, tc(10), 24.0).unwrap();
+        assert!((out.0 - 0.10).abs() < 1e-5);
+        assert!((out.1 - 0.10).abs() < 1e-5);
+    }
+
+    #[test]
+    fn tracker_lookup_mid_range_returns_indexed_position() {
+        // Playhead at frame 12 → pos_idx=2 → positions[2] = (0.30, 0.30).
+        let host = host_clip_with_tracker(10);
+        let out = tracker_position_at_playhead(&host, 0, tc(12), 24.0).unwrap();
+        assert!((out.0 - 0.30).abs() < 1e-5);
+        assert!((out.1 - 0.30).abs() < 1e-5);
+    }
+
+    #[test]
+    fn tracker_lookup_exactly_at_end_returns_last_position() {
+        // 4 positions, indices 0..=3. start_frame=10, playhead at
+        // frame 13 → pos_idx=3 → positions[3] = (0.40, 0.40).
+        let host = host_clip_with_tracker(10);
+        let out = tracker_position_at_playhead(&host, 0, tc(13), 24.0).unwrap();
+        assert!((out.0 - 0.40).abs() < 1e-5);
+        assert!((out.1 - 0.40).abs() < 1e-5);
+    }
+
+    #[test]
+    fn tracker_lookup_one_past_end_returns_none() {
+        // pos_idx=4 is past the end (positions.len() == 4).
+        let host = host_clip_with_tracker(10);
+        let out = tracker_position_at_playhead(&host, 0, tc(14), 24.0);
+        assert!(out.is_none(), "one past end → None");
+    }
+
+    #[test]
+    fn tracker_lookup_missing_point_index_returns_none() {
+        // Defensive — point_index out of range means stale dispatch
+        // (tracker removed since FocalRef was set).
+        let host = host_clip_with_tracker(10);
+        let out = tracker_position_at_playhead(&host, 99, tc(11), 24.0);
+        assert!(out.is_none());
+    }
+
+    #[test]
+    fn tracker_lookup_empty_positions_returns_none() {
+        let mut host = host_clip_with_tracker(0);
+        host.track_points[0].positions.clear();
+        let out = tracker_position_at_playhead(&host, 0, tc(0), 24.0);
+        assert!(out.is_none());
+    }
+
+    // ─── synthesise_tracker_transform (position-only) ───
+
+    #[test]
+    fn synthetic_tracker_transform_is_position_only_centre_relative() {
+        // tracker_x=0.5, tracker_y=0.5 → centre of frame → (0, 0)
+        // pixel offset; identity scale/rotation/anchor.
+        let t = synthesise_tracker_transform(0.5, 0.5, 1920, 1080);
+        let (px, py, sx, sy, ro, ax, ay) = t;
+        assert!(px.abs() < 1e-5);
+        assert!(py.abs() < 1e-5);
+        assert!((sx - 1.0).abs() < 1e-5);
+        assert!((sy - 1.0).abs() < 1e-5);
+        assert!(ro.abs() < 1e-5);
+        assert!((ax - 0.5).abs() < 1e-5);
+        assert!((ay - 0.5).abs() < 1e-5);
+    }
+
+    #[test]
+    fn synthetic_tracker_transform_offsets_from_centre() {
+        // tracker (0.75, 0.25) → +25% right, -25% up of frame.
+        // (0.75-0.5) * 1920 = +480 px; (0.25-0.5) * 1080 = -270 px.
+        let t = synthesise_tracker_transform(0.75, 0.25, 1920, 1080);
+        assert!((t.0 - 480.0).abs() < 1e-3);
+        assert!((t.1 - -270.0).abs() < 1e-3);
+    }
+
+    // ─── transform_link.target = Tracker through resolve_clip_transform ───
+
+    fn seq_with(clips: Vec<Clip>) -> Sequence {
+        let mut s = Sequence::new_default();
+        let mut tr = Track::new("V1", TrackKind::Video);
+        tr.clips = clips;
+        s.tracks.push(tr);
+        s
+    }
+
+    fn resolve(clip: &Clip, seq: &Sequence, playhead: RationalTime) -> ResolvedTransform {
+        let mut tcache = HashMap::new();
+        let mut gcache = HashMap::new();
+        let mut tr = klipp_title::TitleRenderer::new();
+        resolve_clip_transform(clip, seq, playhead, 24.0, &mut tcache, &mut gcache, &mut tr, 1920, 1080)
+    }
+
+    #[test]
+    fn link_to_tracker_resolves_position_at_playhead() {
+        // host clip carries the tracker; consumer clip has
+        // transform_link.target = Tracker pointing at it.
+        let host = host_clip_with_tracker(0);
+        let host_id = host.id;
+        let mut consumer = Clip::media(MediaId::new(), tc(0), tc(120), tc(0), tc(120));
+        consumer.transform_link = Some(TransformLink {
+            target: TransformLinkTarget::Tracker { clip_id: host_id, point_index: 0 },
+            mode: klipp_timeline::LinkMode::Absolute,
+            inherit_scale: false,
+            inherit_position: true,
+            inherit_rotation: false,
+            inherit_anchor: false,
+        });
+        let consumer_clone = consumer.clone();
+        let seq = seq_with(vec![consumer, host]);
+        // Playhead at frame 1 → positions[1] = (0.20, 0.20)
+        // → centre-relative pixels: (0.20-0.5)*1920 = -576, (0.20-0.5)*1080 = -324
+        let out = resolve(&consumer_clone, &seq, tc(1));
+        assert!((out.0 - -576.0).abs() < 1e-3, "px = (0.20-0.5)*1920, got {}", out.0);
+        assert!((out.1 - -324.0).abs() < 1e-3, "py = (0.20-0.5)*1080, got {}", out.1);
+    }
+
+    #[test]
+    fn link_to_tracker_falls_back_when_host_clip_missing() {
+        let mut consumer = Clip::media(MediaId::new(), tc(0), tc(120), tc(0), tc(120));
+        consumer.transform_link = Some(TransformLink {
+            target: TransformLinkTarget::Tracker { clip_id: ClipId::new(), point_index: 0 },
+            mode: klipp_timeline::LinkMode::Absolute,
+            inherit_scale: true,
+            inherit_position: true,
+            inherit_rotation: true,
+            inherit_anchor: true,
+        });
+        let consumer_clone = consumer.clone();
+        let seq = seq_with(vec![consumer]);
+        // Resolution fails → falls back to consumer's own transform
+        // (identity here since no Transform builtin).
+        let out = resolve(&consumer_clone, &seq, tc(0));
+        // Identity own transform: (0,0,1,1,0,0.5,0.5)
+        assert!(out.0.abs() < 1e-5);
+        assert!(out.1.abs() < 1e-5);
+        assert!((out.2 - 1.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn link_to_tracker_falls_back_before_start_frame() {
+        // start_frame=10, playhead at frame 5 → before start.
+        // Resolution fails → fallback to own transform.
+        let host = host_clip_with_tracker(10);
+        let host_id = host.id;
+        let mut consumer = Clip::media(MediaId::new(), tc(0), tc(120), tc(0), tc(120));
+        consumer.transform_link = Some(TransformLink {
+            target: TransformLinkTarget::Tracker { clip_id: host_id, point_index: 0 },
+            mode: klipp_timeline::LinkMode::Absolute,
+            inherit_scale: true,
+            inherit_position: true,
+            inherit_rotation: true,
+            inherit_anchor: true,
+        });
+        let consumer_clone = consumer.clone();
+        let seq = seq_with(vec![consumer, host]);
+        let out = resolve(&consumer_clone, &seq, tc(5));
+        // Identity own transform (no Transform builtin on consumer).
+        assert!(out.0.abs() < 1e-5, "fell back to own px=0");
+        assert!(out.1.abs() < 1e-5, "fell back to own py=0");
+    }
+
+    // ── Note (ii): behavior-emerges-from-composition for matte ──
+
+    #[test]
+    fn matte_source_with_tracker_link_is_tracker_driven_via_composition() {
+        // Pin the load-bearing audit finding: a matte source clip
+        // with transform_link.target = Tracker(...) produces
+        // tracker-driven matte composition WITHOUT any MatteBinding
+        // code path being touched. The matte source's resolved
+        // transform (which the engine reads when extracting the
+        // alpha mask) IS the tracker output, by virtue of the
+        // existing transform_link composition machinery.
+        //
+        // We don't render pixels here — we verify the resolver
+        // contract: matte_source clip's resolved transform must
+        // equal the tracker output (per-frame), with no
+        // MatteBinding involvement.
+        let host = host_clip_with_tracker(0);
+        let host_id = host.id;
+        // Mask source clip — pretend it's a matte source someone
+        // else (the consumer) is binding via MatteBinding. From
+        // the resolver's perspective it's just a clip with a
+        // transform_link to a tracker.
+        let mut mask_source = Clip::media(MediaId::new(), tc(0), tc(120), tc(0), tc(120));
+        mask_source.transform_link = Some(TransformLink {
+            target: TransformLinkTarget::Tracker { clip_id: host_id, point_index: 0 },
+            mode: klipp_timeline::LinkMode::Absolute,
+            inherit_scale: false,
+            inherit_position: true,
+            inherit_rotation: false,
+            inherit_anchor: false,
+        });
+        // Hypothetical consumer with a MatteBinding pointing at
+        // mask_source. The MatteBinding itself is unchanged
+        // schema; we're pinning that no matte code path is touched
+        // for this contract.
+        let mut consumer = Clip::media(MediaId::new(), tc(0), tc(120), tc(0), tc(120));
+        consumer.matte_source = Some(MatteBinding::new(mask_source.id));
+        let mask_source_clone = mask_source.clone();
+        let seq = seq_with(vec![consumer, mask_source, host]);
+
+        // At frame 2 → tracker positions[2] = (0.30, 0.30)
+        // → mask_source's resolved px/py = (-0.20*1920, -0.20*1080)
+        //   = (-384, -216).
+        let out = resolve(&mask_source_clone, &seq, tc(2));
+        assert!((out.0 - -384.0).abs() < 1e-3,
+            "mask source px follows tracker: expected -384, got {}", out.0);
+        assert!((out.1 - -216.0).abs() < 1e-3,
+            "mask source py follows tracker: expected -216, got {}", out.1);
+
+        // Pin the integration: the consumer's matte_source binding
+        // exists and points at the mask_source — no MatteBinding
+        // schema field changed, the matte path will read this same
+        // resolved transform when extracting alpha, and the
+        // tracker movement transports through naturally. We don't
+        // re-derive the matte composition here (out of scope for
+        // a unit test) but the consumer's matte_source field is
+        // intact and the mask_source's own resolved transform IS
+        // tracker-driven — which is the load-bearing claim.
+        let consumer_in_seq = seq.tracks.iter().flat_map(|t| t.clips.iter())
+            .find(|c| c.matte_source.is_some()).unwrap();
+        assert_eq!(
+            consumer_in_seq.matte_source.as_ref().unwrap().source_clip_id,
+            mask_source_clone.id,
+            "MatteBinding shape unchanged — emerges via transform_link, not a new matte field"
+        );
     }
 }
 
