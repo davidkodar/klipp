@@ -47,6 +47,24 @@ pub fn passes_color_filter(label: klipp_media::ColorLabel, filter: u8) -> bool {
     filter & bit != 0
 }
 
+/// Returns true when a media item should pass the smart-bin filter.
+/// `usage_count` is the cached number of timeline references to the
+/// item — only consulted by `Unused`. Pure — testable without egui.
+pub fn passes_smart_bin_filter(
+    item: &klipp_media::MediaItem,
+    filter: super::SmartBinFilter,
+    usage_count: usize,
+) -> bool {
+    match filter {
+        super::SmartBinFilter::None => true,
+        super::SmartBinFilter::Unused => usage_count == 0,
+        super::SmartBinFilter::VideoOnly => !item.video_codec.is_empty() && !item.is_still,
+        super::SmartBinFilter::AudioOnly => item.has_audio && item.video_codec.is_empty(),
+        super::SmartBinFilter::StillsOnly => item.is_still,
+        super::SmartBinFilter::Offline => item.offline,
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn show(
     ui: &mut egui::Ui,
@@ -85,20 +103,9 @@ pub fn show(
                 }
             }
             // Smart bin filter (AND-combined with the rating filter below).
-            match smart_filter {
-                super::SmartBinFilter::None => {}
-                super::SmartBinFilter::Unused => {
-                    if state.media_usage_cache.get(&m.id).copied().unwrap_or(0) > 0 { return false; }
-                }
-                super::SmartBinFilter::VideoOnly => {
-                    if m.video_codec.is_empty() || m.is_still { return false; }
-                }
-                super::SmartBinFilter::AudioOnly => {
-                    if !m.has_audio || !m.video_codec.is_empty() { return false; }
-                }
-                super::SmartBinFilter::StillsOnly => {
-                    if !m.is_still { return false; }
-                }
+            let usage = state.media_usage_cache.get(&m.id).copied().unwrap_or(0);
+            if !passes_smart_bin_filter(m, smart_filter, usage) {
+                return false;
             }
             // Minimum star rating filter.
             if !passes_rating_filter(m.rating, min_rating_filter) {
@@ -2116,5 +2123,75 @@ mod color_filter_tests {
         assert_eq!(filter & bit, bit);
         filter ^= bit; // toggle off
         assert_eq!(filter & bit, 0);
+    }
+}
+
+#[cfg(test)]
+mod smart_bin_filter_tests {
+    use super::passes_smart_bin_filter;
+    use crate::browser::SmartBinFilter;
+    use klipp_core::{Fps, MediaId, RationalTime};
+    use klipp_media::MediaItem;
+
+    /// Build a base MediaItem we can mutate per-case. Synthetic-title
+    /// constructor gives us every required field at sane defaults so
+    /// each test only has to flip the bits that matter.
+    fn item() -> MediaItem {
+        MediaItem::new_synthetic_title(
+            MediaId::new(),
+            "test.mp4".into(),
+            RationalTime { value: 240, rate: 24 },
+            Fps::film_24(),
+        )
+    }
+
+    #[test]
+    fn smart_bin_none_passes_everything() {
+        let m = item();
+        assert!(passes_smart_bin_filter(&m, SmartBinFilter::None, 0));
+        assert!(passes_smart_bin_filter(&m, SmartBinFilter::None, 5));
+    }
+
+    #[test]
+    fn smart_bin_offline_only_passes_offline() {
+        let mut online = item();
+        online.offline = false;
+        let mut offline = item();
+        offline.offline = true;
+        assert!(!passes_smart_bin_filter(&online, SmartBinFilter::Offline, 0));
+        assert!(passes_smart_bin_filter(&offline, SmartBinFilter::Offline, 0));
+    }
+
+    #[test]
+    fn smart_bin_offline_ignores_usage_count() {
+        let mut m = item();
+        m.offline = true;
+        // Even when used, an offline item still passes — usage_count is
+        // only consulted by Unused. Otherwise the dropdown would never
+        // show offline files that were once placed on the timeline.
+        assert!(passes_smart_bin_filter(&m, SmartBinFilter::Offline, 5));
+    }
+
+    #[test]
+    fn smart_bin_unused_uses_usage_count() {
+        let m = item();
+        assert!(passes_smart_bin_filter(&m, SmartBinFilter::Unused, 0));
+        assert!(!passes_smart_bin_filter(&m, SmartBinFilter::Unused, 1));
+    }
+
+    #[test]
+    fn smart_bin_video_only_excludes_audio_and_stills() {
+        let mut video = item();
+        video.video_codec = "h264".into();
+        video.is_still = false;
+        let mut still = item();
+        still.video_codec = "mjpeg".into();
+        still.is_still = true;
+        let mut audio = item();
+        audio.video_codec.clear();
+        audio.has_audio = true;
+        assert!(passes_smart_bin_filter(&video, SmartBinFilter::VideoOnly, 0));
+        assert!(!passes_smart_bin_filter(&still, SmartBinFilter::VideoOnly, 0));
+        assert!(!passes_smart_bin_filter(&audio, SmartBinFilter::VideoOnly, 0));
     }
 }

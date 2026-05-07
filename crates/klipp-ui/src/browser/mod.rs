@@ -523,6 +523,11 @@ pub enum SmartBinFilter {
     VideoOnly,
     AudioOnly,
     StillsOnly,
+    /// Show media items whose source file is currently offline /
+    /// missing on disk. Reads `MediaItem.offline`, which the project
+    /// loader and media-pool refresh paths set when stat fails on
+    /// the recorded path. Useful for triaging broken-link projects.
+    Offline,
 }
 
 /// Thumbnail size for the Files tab. Controls row height, thumb box size,
@@ -4111,10 +4116,11 @@ impl BrowserPanel {
                 SmartBinFilter::VideoOnly => "Video Only",
                 SmartBinFilter::AudioOnly => "Audio Only",
                 SmartBinFilter::StillsOnly => "Stills Only",
+                SmartBinFilter::Offline => "Offline",
             };
             egui::ComboBox::from_id_salt("smart_bin")
                 .selected_text(filter_label)
-                .width(100.0)
+                .width(110.0)
                 .show_ui(ui, |ui| {
                     ui.selectable_value(&mut self.smart_bin_filter, SmartBinFilter::None, "All Media");
                     ui.separator();
@@ -4122,6 +4128,8 @@ impl BrowserPanel {
                     ui.selectable_value(&mut self.smart_bin_filter, SmartBinFilter::VideoOnly, "Video Only");
                     ui.selectable_value(&mut self.smart_bin_filter, SmartBinFilter::AudioOnly, "Audio Only");
                     ui.selectable_value(&mut self.smart_bin_filter, SmartBinFilter::StillsOnly, "Stills Only");
+                    ui.separator();
+                    ui.selectable_value(&mut self.smart_bin_filter, SmartBinFilter::Offline, "Offline");
                 });
 
             ui.add_space(8.0);
