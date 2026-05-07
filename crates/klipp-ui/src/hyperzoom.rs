@@ -40,6 +40,14 @@ pub struct HyperzoomScratch {
     pub hold_secs: f64,
     pub add_radial_blur: bool,
     pub radial_blur_amount: f32,
+    /// Whoosh stinger checkbox (HZ-NEXT-WHOOSH). Inspector-side
+    /// scratch — when true, Apply populates `ApplyHyperzoom`'s
+    /// `add_whoosh` + `whoosh_variant` + `whoosh_custom_path`.
+    pub whoosh_enabled: bool,
+    /// Wire-format tag for the variant combo: `0/1/2 = Short /
+    /// Medium / Long`, `255 = Custom`. Round-trips through
+    /// [`WhooshChoice::from_u8`] / [`WhooshChoice::as_u8`].
+    pub whoosh_variant: u8,
 }
 
 impl Default for HyperzoomScratch {
@@ -57,8 +65,221 @@ impl Default for HyperzoomScratch {
             // gives a punchy default — but only fires when the user
             // actually flips the checkbox.
             radial_blur_amount: 15.0,
+            // Whoosh defaults match the AppCommand back-compat
+            // path: opt-in checkbox off; variant tag = 0 (Short)
+            // so the combo opens at a sensible default the
+            // moment the checkbox turns on.
+            whoosh_enabled: false,
+            whoosh_variant: WhooshChoice::Short.as_u8(),
         }
     }
+}
+
+/// Inspector combo choice for `ApplyHyperzoom.whoosh_variant`.
+/// Mirrors the [`HyperzoomEasing`] pattern — wire-format `u8` round-
+/// trips through `as_u8` / `from_u8` so the UI carries the canonical
+/// tag without holding a separate enum value alongside.
+///
+/// `Custom` (tag 255) carries no enum payload — the actual
+/// `PathBuf` lives in a separate egui-Memory slot keyed by the same
+/// clip id (see [`read_whoosh_custom`] / [`update_whoosh_custom`])
+/// because `HyperzoomScratch` is `Copy`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WhooshChoice {
+    Short,
+    Medium,
+    Long,
+    Custom,
+}
+
+impl WhooshChoice {
+    pub const fn as_u8(self) -> u8 {
+        match self {
+            Self::Short => 0,
+            Self::Medium => 1,
+            Self::Long => 2,
+            Self::Custom => 255,
+        }
+    }
+
+    /// Map a wire-format tag back to a UI choice. Unknown tags map
+    /// to `Medium` to mirror the AppCommand handler's
+    /// "stale-dispatch never produces silence when the box is
+    /// ticked" contract.
+    pub const fn from_u8(tag: u8) -> Self {
+        match tag {
+            0 => Self::Short,
+            1 => Self::Medium,
+            2 => Self::Long,
+            255 => Self::Custom,
+            _ => Self::Medium,
+        }
+    }
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Short => "Short",
+            Self::Medium => "Medium",
+            Self::Long => "Long",
+            Self::Custom => "Custom Sample\u{2026}",
+        }
+    }
+
+    pub const ALL: [WhooshChoice; 4] = [
+        WhooshChoice::Short,
+        WhooshChoice::Medium,
+        WhooshChoice::Long,
+        WhooshChoice::Custom,
+    ];
+}
+
+/// Per-clip "Custom Sample" picker state. Lives in egui Memory
+/// alongside `HyperzoomScratch` (separate slot because PathBuf
+/// isn't `Copy`). The `length_secs` field is populated when the
+/// user picks the file — `None` when the probe couldn't read the
+/// duration (non-WAV format, malformed header). The inspector
+/// shows the soft warning from
+/// [`whoosh_custom_length_warning`] when length exceeds the
+/// audit-note-(v) 5-second threshold.
+#[derive(Debug, Clone, Default)]
+pub struct WhooshCustomState {
+    pub path: Option<std::path::PathBuf>,
+    pub length_secs: Option<f32>,
+}
+
+pub fn whoosh_custom_id(clip_id: ClipId) -> egui::Id {
+    egui::Id::new(("video:hyperzoom_whoosh_custom", clip_id))
+}
+
+pub fn read_whoosh_custom(ctx: &egui::Context, clip_id: ClipId) -> WhooshCustomState {
+    ctx.data_mut(|d| {
+        d.get_temp::<WhooshCustomState>(whoosh_custom_id(clip_id))
+            .unwrap_or_default()
+    })
+}
+
+pub fn update_whoosh_custom(
+    ctx: &egui::Context,
+    clip_id: ClipId,
+    edit: impl FnOnce(&mut WhooshCustomState),
+) {
+    ctx.data_mut(|d| {
+        let id = whoosh_custom_id(clip_id);
+        let mut s: WhooshCustomState = d.get_temp(id).unwrap_or_default();
+        edit(&mut s);
+        d.insert_temp(id, s);
+    });
+}
+
+/// Threshold above which the inspector shows a soft "this is
+/// longer than typical" warning under the Custom Sample picker.
+/// Per audit note (v): warning only — no truncation, no length
+/// picker. Stricter enforcement is a v2 if foot-guns surface.
+pub const WHOOSH_CUSTOM_LENGTH_WARN_SECS: f32 = 5.0;
+
+/// Soft-warning text for the inspector's Custom Sample row.
+/// Returns `None` when the file length is unknown OR ≤ threshold;
+/// `Some(message)` when the file is unusually long. Pure function
+/// so the threshold logic can be unit-tested without standing up
+/// egui.
+pub fn whoosh_custom_length_warning(length_secs: Option<f32>) -> Option<String> {
+    let len = length_secs?;
+    if len > WHOOSH_CUSTOM_LENGTH_WARN_SECS {
+        Some(format!(
+            "Custom sample is {:.1} s — typical whooshes are under 1 s. \
+             Long samples will overlap downstream clips.",
+            len,
+        ))
+    } else {
+        None
+    }
+}
+
+/// Build the three whoosh fields the Apply button passes to
+/// `ApplyHyperzoom`, given the inspector's scratch state. Pure
+/// helper — extracted from the inspector body so the
+/// scratch → AppCommand mapping is unit-testable without standing
+/// up egui.
+///
+/// Returns `(add_whoosh, whoosh_variant, whoosh_custom_path)`.
+/// The custom path is included only when the checkbox is on AND
+/// the variant is Custom — otherwise it's `None` regardless of
+/// what the picker last left in memory (so an old custom file
+/// doesn't get attached when the user picks a built-in variant).
+pub fn build_whoosh_fields_for_apply(
+    scratch: &HyperzoomScratch,
+    custom: &WhooshCustomState,
+) -> (bool, u8, Option<std::path::PathBuf>) {
+    let custom_path = if scratch.whoosh_enabled
+        && scratch.whoosh_variant == WhooshChoice::Custom.as_u8()
+    {
+        custom.path.clone()
+    } else {
+        None
+    };
+    (scratch.whoosh_enabled, scratch.whoosh_variant, custom_path)
+}
+
+/// Read a WAV file's duration in seconds without pulling in an
+/// audio decoder dep. Walks RIFF chunks until it finds `fmt ` +
+/// `data`; tolerant of intervening chunks (`LIST`, `JUNK`, etc.).
+/// Returns `None` for non-WAV files or malformed headers — the
+/// inspector treats `None` as "duration unknown, skip the soft
+/// warning". MP3/FLAC/OGG users get no warning today; that's the
+/// v2 follow-up.
+pub fn probe_wav_duration_secs(path: &std::path::Path) -> Option<f32> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut f = std::fs::File::open(path).ok()?;
+    let mut riff = [0u8; 12];
+    f.read_exact(&mut riff).ok()?;
+    if &riff[0..4] != b"RIFF" || &riff[8..12] != b"WAVE" {
+        return None;
+    }
+    let mut channels: u32 = 0;
+    let mut sample_rate: u32 = 0;
+    let mut bits_per_sample: u32 = 0;
+    let mut data_size: Option<u32> = None;
+    loop {
+        let mut hdr = [0u8; 8];
+        if f.read_exact(&mut hdr).is_err() {
+            break;
+        }
+        let size = u32::from_le_bytes(hdr[4..8].try_into().ok()?);
+        if &hdr[0..4] == b"fmt " {
+            // Read at least the 16-byte PCM fmt subchunk.
+            let read_len = size.min(16) as usize;
+            let mut fmt = vec![0u8; read_len];
+            f.read_exact(&mut fmt).ok()?;
+            if read_len < 16 {
+                return None;
+            }
+            channels = u16::from_le_bytes([fmt[2], fmt[3]]) as u32;
+            sample_rate = u32::from_le_bytes(fmt[4..8].try_into().ok()?);
+            bits_per_sample = u16::from_le_bytes([fmt[14], fmt[15]]) as u32;
+            // Skip any extension bytes after the canonical 16.
+            let extra = size as i64 - 16;
+            if extra > 0 {
+                f.seek(SeekFrom::Current(extra)).ok()?;
+            }
+        } else if &hdr[0..4] == b"data" {
+            data_size = Some(size);
+            break;
+        } else {
+            // Even-byte alignment per RIFF spec.
+            let skip = size as i64 + (size as i64 & 1);
+            f.seek(SeekFrom::Current(skip)).ok()?;
+        }
+    }
+    let data_size = data_size?;
+    if channels == 0 || sample_rate == 0 || bits_per_sample == 0 {
+        return None;
+    }
+    let bytes_per_sample = bits_per_sample / 8;
+    if bytes_per_sample == 0 {
+        return None;
+    }
+    let total_frames = data_size / (channels * bytes_per_sample);
+    Some(total_frames as f32 / sample_rate as f32)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1038,5 +1259,295 @@ mod tests {
         ]);
         assert!(collect_auto_link_targets(&seq, title_id, 0.0).is_empty());
         assert!(collect_auto_link_targets(&seq, title_id, -1.0).is_empty());
+    }
+
+    // ────────── WhooshChoice round-trip + labels ──────────
+
+    #[test]
+    fn whoosh_choice_u8_round_trip() {
+        for c in WhooshChoice::ALL {
+            assert_eq!(WhooshChoice::from_u8(c.as_u8()), c);
+        }
+    }
+
+    #[test]
+    fn whoosh_choice_unknown_tag_falls_back_to_medium() {
+        // Mirrors the AppCommand handler's
+        // "stale-dispatch never produces silence" contract —
+        // unknown wire-format tags coerce to Medium so the combo
+        // shows a sensible default if a stale value lands here.
+        for tag in [3u8, 7, 100, 254] {
+            assert_eq!(WhooshChoice::from_u8(tag), WhooshChoice::Medium);
+        }
+    }
+
+    #[test]
+    fn whoosh_choice_labels_distinct_and_non_empty() {
+        let labels: Vec<&'static str> =
+            WhooshChoice::ALL.iter().map(|c| c.label()).collect();
+        for l in &labels {
+            assert!(!l.is_empty());
+        }
+        // Distinct
+        let unique: std::collections::HashSet<_> = labels.iter().collect();
+        assert_eq!(unique.len(), labels.len());
+    }
+
+    // ────────── Soft-warning threshold ──────────
+
+    #[test]
+    fn whoosh_warning_none_when_length_unknown() {
+        assert!(whoosh_custom_length_warning(None).is_none());
+    }
+
+    #[test]
+    fn whoosh_warning_none_at_or_below_threshold() {
+        assert!(whoosh_custom_length_warning(Some(0.0)).is_none());
+        assert!(whoosh_custom_length_warning(Some(1.0)).is_none());
+        assert!(whoosh_custom_length_warning(Some(WHOOSH_CUSTOM_LENGTH_WARN_SECS)).is_none());
+    }
+
+    #[test]
+    fn whoosh_warning_fires_above_threshold() {
+        let w = whoosh_custom_length_warning(Some(6.5));
+        let msg = w.expect("over-threshold should warn");
+        assert!(msg.contains("6.5"), "warning includes the actual length");
+        assert!(
+            msg.to_ascii_lowercase().contains("long"),
+            "warning frames the length as long: {msg}",
+        );
+    }
+
+    #[test]
+    fn whoosh_warning_strict_inequality_at_boundary() {
+        // Pin: strict greater-than. A file exactly at the
+        // threshold doesn't warn — keeps the warning rare and
+        // signal-bearing.
+        assert!(whoosh_custom_length_warning(Some(5.0)).is_none());
+        assert!(whoosh_custom_length_warning(Some(5.000_001)).is_some());
+    }
+
+    // ────────── WAV duration probe ──────────
+
+    fn write_pcm16_wav(path: &std::path::Path, sample_rate: u32, channels: u16, samples: u32) {
+        use std::io::Write;
+        let bytes_per_sample = 2u32;
+        let data_size = samples * channels as u32 * bytes_per_sample;
+        let mut f = std::fs::File::create(path).unwrap();
+        f.write_all(b"RIFF").unwrap();
+        f.write_all(&(36 + data_size).to_le_bytes()).unwrap();
+        f.write_all(b"WAVE").unwrap();
+        f.write_all(b"fmt ").unwrap();
+        f.write_all(&16u32.to_le_bytes()).unwrap();
+        f.write_all(&1u16.to_le_bytes()).unwrap();
+        f.write_all(&channels.to_le_bytes()).unwrap();
+        f.write_all(&sample_rate.to_le_bytes()).unwrap();
+        f.write_all(&(sample_rate * channels as u32 * bytes_per_sample).to_le_bytes()).unwrap();
+        f.write_all(&(channels * bytes_per_sample as u16).to_le_bytes()).unwrap();
+        f.write_all(&16u16.to_le_bytes()).unwrap();
+        f.write_all(b"data").unwrap();
+        f.write_all(&data_size.to_le_bytes()).unwrap();
+        let zero = vec![0u8; data_size as usize];
+        f.write_all(&zero).unwrap();
+    }
+
+    fn tmp_path(name: &str) -> std::path::PathBuf {
+        let mut p = std::env::temp_dir();
+        p.push(format!("klipp-wav-probe-{name}"));
+        p
+    }
+
+    #[test]
+    fn probe_wav_duration_matches_synthesised_length() {
+        // 1.5 s @ 48 kHz mono → 72 000 frames.
+        let path = tmp_path("klipp-1500ms-mono.wav");
+        write_pcm16_wav(&path, 48_000, 1, 72_000);
+        let dur = probe_wav_duration_secs(&path).expect("probe wav");
+        assert!((dur - 1.5).abs() < 0.001, "got {dur}, want ~1.5");
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn probe_wav_handles_stereo_and_44100() {
+        // 0.5 s @ 44.1 kHz stereo → 22 050 frames; the probe
+        // must divide out channels correctly.
+        let path = tmp_path("klipp-500ms-stereo.wav");
+        write_pcm16_wav(&path, 44_100, 2, 22_050);
+        let dur = probe_wav_duration_secs(&path).expect("probe wav");
+        assert!((dur - 0.5).abs() < 0.001, "got {dur}, want ~0.5");
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn probe_returns_none_for_non_wav() {
+        let path = tmp_path("not-a-wav.txt");
+        std::fs::write(&path, b"this is not a RIFF file").unwrap();
+        assert!(probe_wav_duration_secs(&path).is_none());
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn probe_returns_none_for_missing_file() {
+        let path = tmp_path("definitely-does-not-exist.wav");
+        let _ = std::fs::remove_file(&path);
+        assert!(probe_wav_duration_secs(&path).is_none());
+    }
+
+    #[test]
+    fn probe_handles_klipp_synth_output() {
+        // The synth's own output should round-trip through our
+        // probe — the dogfood test.
+        let path = tmp_path("klipp-synth-medium.wav");
+        klipp_audio::write_whoosh_wav(klipp_audio::WhooshVariant::Medium, &path).unwrap();
+        let dur = probe_wav_duration_secs(&path).expect("probe synth");
+        // Medium variant = 0.50 s. Allow 1 ms slack for
+        // sample-count rounding.
+        assert!((dur - 0.50).abs() < 0.001, "got {dur}, want ~0.50");
+        std::fs::remove_file(&path).ok();
+    }
+
+    // ────────── HyperzoomScratch whoosh defaults + round-trip ──────────
+
+    #[test]
+    fn scratch_default_whoosh_is_disabled_short() {
+        // Pin: defaults match the AppCommand back-compat path.
+        // Combo opens at Short so flipping the checkbox on is
+        // instantly meaningful — no "(none selected)" blank.
+        let s = HyperzoomScratch::default();
+        assert!(!s.whoosh_enabled);
+        assert_eq!(s.whoosh_variant, WhooshChoice::Short.as_u8());
+    }
+
+    #[test]
+    fn scratch_round_trips_whoosh_fields_through_egui_memory() {
+        // Toggle checkbox + pick Long via update_hyperzoom_scratch;
+        // read back via read_hyperzoom_scratch; verify the values
+        // survived the memory round-trip. Pinned because every
+        // surface that reads HyperzoomScratch (inspector, viewer
+        // crosshair, future palette) depends on this contract.
+        let ctx = egui::Context::default();
+        let cid = ClipId::new();
+        // Default before any write.
+        let initial = read_hyperzoom_scratch(&ctx, cid);
+        assert!(!initial.whoosh_enabled);
+        // Write non-default values.
+        update_hyperzoom_scratch(&ctx, cid, |s| {
+            s.whoosh_enabled = true;
+            s.whoosh_variant = WhooshChoice::Long.as_u8();
+        });
+        let after = read_hyperzoom_scratch(&ctx, cid);
+        assert!(after.whoosh_enabled);
+        assert_eq!(after.whoosh_variant, WhooshChoice::Long.as_u8());
+    }
+
+    #[test]
+    fn whoosh_custom_state_round_trips_through_egui_memory() {
+        let ctx = egui::Context::default();
+        let cid = ClipId::new();
+        // Empty before any write.
+        let initial = read_whoosh_custom(&ctx, cid);
+        assert!(initial.path.is_none());
+        assert!(initial.length_secs.is_none());
+        // Write path + length.
+        let path = std::path::PathBuf::from("/tmp/user-custom.wav");
+        update_whoosh_custom(&ctx, cid, |s| {
+            s.path = Some(path.clone());
+            s.length_secs = Some(0.7);
+        });
+        let after = read_whoosh_custom(&ctx, cid);
+        assert_eq!(after.path.as_deref(), Some(path.as_path()));
+        assert_eq!(after.length_secs, Some(0.7));
+    }
+
+    #[test]
+    fn whoosh_custom_state_isolated_per_clip() {
+        // Two clip ids must not share scratch — pinning the
+        // egui::Id keying contract.
+        let ctx = egui::Context::default();
+        let a = ClipId::new();
+        let b = ClipId::new();
+        update_whoosh_custom(&ctx, a, |s| {
+            s.path = Some(std::path::PathBuf::from("/tmp/a.wav"));
+            s.length_secs = Some(0.2);
+        });
+        let b_read = read_whoosh_custom(&ctx, b);
+        assert!(b_read.path.is_none(), "clip B sees no leak from clip A");
+    }
+
+    // ────────── Apply-button field construction ──────────
+
+    #[test]
+    fn apply_fields_disabled_returns_canonical_defaults() {
+        // Checkbox off → all three fields default regardless of
+        // what the variant tag or custom path happen to hold (the
+        // user might have toggled off after picking a custom
+        // file; we don't ship a stale path).
+        let mut scratch = HyperzoomScratch::default();
+        scratch.whoosh_enabled = false;
+        scratch.whoosh_variant = WhooshChoice::Custom.as_u8();
+        let custom = WhooshCustomState {
+            path: Some(std::path::PathBuf::from("/tmp/stale.wav")),
+            length_secs: Some(2.0),
+        };
+        let (add_whoosh, variant, path) = build_whoosh_fields_for_apply(&scratch, &custom);
+        assert!(!add_whoosh);
+        // Variant tag is preserved (it's just the combo's value);
+        // the AppCommand handler ignores it when add_whoosh is
+        // false anyway.
+        assert_eq!(variant, WhooshChoice::Custom.as_u8());
+        // BUT — the custom path is suppressed, mirroring the
+        // off-state byte-identical behaviour.
+        assert!(path.is_none(), "stale custom path not attached when checkbox off");
+    }
+
+    #[test]
+    fn apply_fields_enabled_builtin_passes_no_custom_path() {
+        // Checkbox on + variant = Medium → wire-tag 1, path None
+        // even when the custom-state slot has stale data from a
+        // previous Custom selection.
+        let mut scratch = HyperzoomScratch::default();
+        scratch.whoosh_enabled = true;
+        scratch.whoosh_variant = WhooshChoice::Medium.as_u8();
+        let custom = WhooshCustomState {
+            path: Some(std::path::PathBuf::from("/tmp/old-custom.wav")),
+            length_secs: Some(0.4),
+        };
+        let (add_whoosh, variant, path) = build_whoosh_fields_for_apply(&scratch, &custom);
+        assert!(add_whoosh);
+        assert_eq!(variant, 1);
+        assert!(path.is_none());
+    }
+
+    #[test]
+    fn apply_fields_enabled_custom_passes_path_when_picked() {
+        let mut scratch = HyperzoomScratch::default();
+        scratch.whoosh_enabled = true;
+        scratch.whoosh_variant = WhooshChoice::Custom.as_u8();
+        let custom_path = std::path::PathBuf::from("/tmp/user-pick.wav");
+        let custom = WhooshCustomState {
+            path: Some(custom_path.clone()),
+            length_secs: Some(0.6),
+        };
+        let (add_whoosh, variant, path) = build_whoosh_fields_for_apply(&scratch, &custom);
+        assert!(add_whoosh);
+        assert_eq!(variant, 255);
+        assert_eq!(path.as_deref(), Some(custom_path.as_path()));
+    }
+
+    #[test]
+    fn apply_fields_enabled_custom_with_no_pick_yet_passes_none() {
+        // User opened the inspector, ticked the checkbox, picked
+        // Custom in the combo, but hasn't actually clicked the
+        // file picker yet. Apply must surface this as path=None;
+        // the AppCommand handler then logs a warning and skips
+        // the whoosh insertion (commit 2 contract).
+        let mut scratch = HyperzoomScratch::default();
+        scratch.whoosh_enabled = true;
+        scratch.whoosh_variant = WhooshChoice::Custom.as_u8();
+        let custom = WhooshCustomState::default();
+        let (add_whoosh, variant, path) = build_whoosh_fields_for_apply(&scratch, &custom);
+        assert!(add_whoosh);
+        assert_eq!(variant, 255);
+        assert!(path.is_none());
     }
 }

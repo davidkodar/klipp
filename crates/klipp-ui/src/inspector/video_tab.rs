@@ -2320,7 +2320,7 @@ fn show_hyperzoom_section(
     // dragging on the canvas updates the spinboxes live and vice-
     // versa. Defaults: focal centre, half-second ramp, 50× peak.
     let stored = crate::hyperzoom::read_hyperzoom_scratch(ui.ctx(), clip_id);
-    let (mut focal_x, mut focal_y, mut duration_secs, mut max_scale, mut target_choice, mut easing, mut hold_secs, mut add_radial_blur, mut radial_blur_amount) = (
+    let (mut focal_x, mut focal_y, mut duration_secs, mut max_scale, mut target_choice, mut easing, mut hold_secs, mut add_radial_blur, mut radial_blur_amount, mut whoosh_enabled, mut whoosh_variant_tag) = (
         stored.focal_x,
         stored.focal_y,
         stored.duration_secs,
@@ -2330,6 +2330,8 @@ fn show_hyperzoom_section(
         stored.hold_secs,
         stored.add_radial_blur,
         stored.radial_blur_amount,
+        stored.whoosh_enabled,
+        stored.whoosh_variant,
     );
 
     section_card(ui, "HYPERZOOM", theme, |ui| {
@@ -2832,6 +2834,92 @@ fn show_hyperzoom_section(
                     });
                 }
 
+                ui.add_space(4.0);
+
+                // ── Whoosh stinger (HZ-NEXT-WHOOSH) ──
+                // Off by default. When enabled, Apply additionally
+                // inserts an audio whoosh on the lowest audio
+                // track centred on the cut frame.
+                ui.horizontal(|ui| {
+                    ui.checkbox(&mut whoosh_enabled, "Add whoosh on apply")
+                        .on_hover_text(
+                            "Inserts a short audio stinger on the lowest audio track, \
+                             timed so its peak lands on the cut frame. Synthesised \
+                             whooshes ship in three lengths; pick a custom WAV for \
+                             your own pack.",
+                        );
+                });
+                if whoosh_enabled {
+                    let mut choice = crate::hyperzoom::WhooshChoice::from_u8(whoosh_variant_tag);
+                    ui.horizontal(|ui| {
+                        ui.add_space(16.0);
+                        ui.label(egui::RichText::new("Variant").size(11.0).color(theme.text_dim));
+                        ui.add_space(8.0);
+                        let prev_label = choice.label();
+                        egui::ComboBox::from_id_salt(("hyperzoom_whoosh_variant", clip_id))
+                            .selected_text(prev_label)
+                            .show_ui(ui, |ui| {
+                                for opt in crate::hyperzoom::WhooshChoice::ALL {
+                                    ui.selectable_value(&mut choice, opt, opt.label());
+                                }
+                            });
+                    });
+                    whoosh_variant_tag = choice.as_u8();
+                    if matches!(choice, crate::hyperzoom::WhooshChoice::Custom) {
+                        let custom = crate::hyperzoom::read_whoosh_custom(ui.ctx(), clip_id);
+                        ui.horizontal(|ui| {
+                            ui.add_space(16.0);
+                            ui.label(egui::RichText::new("Sample").size(11.0).color(theme.text_dim));
+                            ui.add_space(8.0);
+                            let label = custom
+                                .path
+                                .as_ref()
+                                .and_then(|p| p.file_name())
+                                .and_then(|n| n.to_str())
+                                .map(|s| s.to_string())
+                                .unwrap_or_else(|| "Pick file\u{2026}".to_string());
+                            if ui
+                                .button(label)
+                                .on_hover_text(
+                                    "Pick a WAV (or other supported audio format) to use \
+                                     as the whoosh. The file must already be imported in \
+                                     the media pool — drag it into the media browser if \
+                                     it isn't yet. Length probe and the soft warning only \
+                                     work for WAV today.",
+                                )
+                                .clicked()
+                            {
+                                if let Some(picked) = rfd::FileDialog::new()
+                                    .set_title("Pick custom whoosh sample")
+                                    .add_filter("Audio", klipp_core::media_extensions::AUDIO_EXTENSIONS)
+                                    .pick_file()
+                                {
+                                    let length = crate::hyperzoom::probe_wav_duration_secs(&picked);
+                                    crate::hyperzoom::update_whoosh_custom(ui.ctx(), clip_id, |s| {
+                                        s.path = Some(picked);
+                                        s.length_secs = length;
+                                    });
+                                }
+                            }
+                        });
+                        // Soft length warning per audit note (v).
+                        // Warning only — no truncation, no length
+                        // picker.
+                        if let Some(msg) =
+                            crate::hyperzoom::whoosh_custom_length_warning(custom.length_secs)
+                        {
+                            ui.horizontal(|ui| {
+                                ui.add_space(16.0);
+                                ui.label(
+                                    egui::RichText::new(format!("\u{26A0} {msg}"))
+                                        .size(10.5)
+                                        .color(theme.marker_warning),
+                                );
+                            });
+                        }
+                    }
+                }
+
                 ui.add_space(8.0);
 
                 // ── Apply + Link beneath ──
@@ -2901,6 +2989,28 @@ fn show_hyperzoom_section(
                                 })
                             })
                         };
+                        // Whoosh fields routed through the pure
+                        // build_whoosh_fields_for_apply helper so
+                        // the scratch → AppCommand mapping is
+                        // testable without standing up egui. When
+                        // the checkbox is off, the helper returns
+                        // canonical defaults — the AppCommand
+                        // handler short-circuits before any audio
+                        // work runs.
+                        let whoosh_scratch_snapshot = crate::hyperzoom::HyperzoomScratch {
+                            whoosh_enabled,
+                            whoosh_variant: whoosh_variant_tag,
+                            // Other fields not consulted by the
+                            // helper — pass defaults to keep the
+                            // construction local.
+                            ..crate::hyperzoom::HyperzoomScratch::default()
+                        };
+                        let custom_state = crate::hyperzoom::read_whoosh_custom(ui.ctx(), clip_id);
+                        let (add_whoosh, whoosh_variant, whoosh_custom_path) =
+                            crate::hyperzoom::build_whoosh_fields_for_apply(
+                                &whoosh_scratch_snapshot,
+                                &custom_state,
+                            );
                         cmds.push(AppCommand::ApplyHyperzoom {
                             source_clip_id: clip_id,
                             target_clip_id,
@@ -2913,13 +3023,9 @@ fn show_hyperzoom_section(
                             add_radial_blur,
                             radial_blur_amount,
                             focal_ref,
-                            // Inspector wires the whoosh checkbox in
-                            // commit 3 of HZ-NEXT-WHOOSH; for now,
-                            // the byte-identical-to-pre-feature
-                            // defaults.
-                            add_whoosh: false,
-                            whoosh_variant: 0,
-                            whoosh_custom_path: None,
+                            add_whoosh,
+                            whoosh_variant,
+                            whoosh_custom_path,
                         });
                     }
 
@@ -2977,6 +3083,8 @@ fn show_hyperzoom_section(
         s.hold_secs = hold_secs;
         s.add_radial_blur = add_radial_blur;
         s.radial_blur_amount = radial_blur_amount;
+        s.whoosh_enabled = whoosh_enabled;
+        s.whoosh_variant = whoosh_variant_tag;
     });
 }
 
