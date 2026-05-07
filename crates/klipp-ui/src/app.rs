@@ -12013,65 +12013,71 @@ impl KlippApp {
                 true
             }
             AppCommand::CopyColorNodes { clip_id } => {
-                // Copy nodes that the user has selected — fall back to
-                // the primary `selected_node_id` when the multi-select
-                // set is empty (single-click case). Source clip graph
-                // is read-only; we clone Node by Node so the clipboard
-                // owns the data and a subsequent edit on the source
-                // clip can't disturb the clipboard contents.
-                let selection: Vec<klipp_nodes::NodeId> = if !self.state.selected_node_ids.is_empty() {
+                // Build the selection set: prefer the multi-select if
+                // populated, otherwise fall back to the primary selected
+                // node id (single-click case).
+                use std::collections::HashSet;
+                let selection: HashSet<klipp_nodes::NodeId> = if !self.state.selected_node_ids.is_empty() {
                     self.state.selected_node_ids.iter().copied().collect()
                 } else if let Some(id) = self.state.selected_node_id {
-                    vec![id]
+                    [id].into_iter().collect()
                 } else {
-                    Vec::new()
+                    HashSet::new()
                 };
                 if selection.is_empty() {
                     self.state.toast.show("Copy: no color node selected");
                     return true;
                 }
                 let seq = &self.state.sequences[self.state.active_sequence_idx];
-                let nodes_to_copy: Vec<klipp_nodes::Node> = seq.tracks.iter()
+                let clipboard = seq.tracks.iter()
                     .flat_map(|t| t.clips.iter())
                     .find(|c| c.id == *clip_id)
-                    .map(|c| {
-                        c.node_graph.nodes.iter()
-                            .filter(|n| selection.contains(&n.id))
-                            .cloned()
-                            .collect()
-                    })
-                    .unwrap_or_default();
-                let count = nodes_to_copy.len();
-                if count == 0 {
+                    .map(|c| crate::state::GradeNodeClipboard::from_selection(&c.node_graph, &selection))
+                    .unwrap_or(crate::state::GradeNodeClipboard {
+                        nodes: Vec::new(), edges: Vec::new(),
+                        node_positions: std::collections::HashMap::new(),
+                    });
+                let node_count = clipboard.nodes.len();
+                let edge_count = clipboard.edges.len();
+                if node_count == 0 {
                     self.state.toast.show("Copy: selected nodes not in clip's graph");
                 } else {
-                    self.state.grade_node_clipboard = Some(nodes_to_copy);
-                    self.state.toast.show(format!("Copied {count} color node(s)"));
+                    self.state.grade_node_clipboard = Some(clipboard);
+                    if edge_count > 0 {
+                        self.state.toast.show(format!(
+                            "Copied {node_count} color node(s) + {edge_count} internal edge(s)"
+                        ));
+                    } else {
+                        self.state.toast.show(format!("Copied {node_count} color node(s)"));
+                    }
                 }
                 true
             }
             AppCommand::PasteColorNodes { clip_id } => {
-                // Snapshot the clipboard before mutating the graph so a
-                // missing-or-empty clipboard short-circuits cleanly.
                 let Some(template) = self.state.grade_node_clipboard.clone() else {
                     self.state.toast.show("Paste: nothing in the color clipboard");
                     return true;
                 };
-                if template.is_empty() {
+                if template.nodes.is_empty() {
                     self.state.toast.show("Paste: clipboard is empty");
                     return true;
                 }
-                let count = template.len();
+                let edge_count = template.edges.len();
+                // Layout offset so pasted nodes don't stack exactly on
+                // top of existing nodes. Small enough to keep them
+                // visually grouped; big enough to be visible.
+                const PASTE_OFFSET: (f32, f32) = (40.0, 40.0);
+                let mut node_count = 0usize;
                 self.with_current_clip_graph_mut(*clip_id, needs_refresh, |graph| {
-                    for mut node in template.into_iter() {
-                        // Fresh ids so multiple pastes don't collide
-                        // and so the source clip's own nodes aren't
-                        // confused for the new ones.
-                        node.id = klipp_nodes::NodeId::new_v4();
-                        graph.nodes.push(node);
-                    }
+                    node_count = template.merge_into(graph, PASTE_OFFSET);
                 });
-                self.state.toast.show(format!("Pasted {count} color node(s)"));
+                if edge_count > 0 {
+                    self.state.toast.show(format!(
+                        "Pasted {node_count} color node(s) + {edge_count} edge(s)"
+                    ));
+                } else {
+                    self.state.toast.show(format!("Pasted {node_count} color node(s)"));
+                }
                 true
             }
             _ => false,
@@ -22548,20 +22554,82 @@ impl KlippApp {
                     }
                 }
             }
-            // Copy / Copy Attributes
-            if kb.is_action_pressed("copy_clip", i) {
-                if let Some(clip_id) = self.state.selected_clip {
-                    cmds.push(AppCommand::CopyClip { clip_id });
+            // Copy / Copy Attributes / Copy Color Nodes
+            //
+            // Two distinct rebindable actions share defaults at Ctrl+C:
+            // `copy_clip` (timeline) and `copy_color_nodes` (node graph).
+            // When both fire the same frame (the shared-default case),
+            // panel context disambiguates — color path wins inside the
+            // node graph / color inspector with a node selection;
+            // otherwise the clip path wins. When the user explicitly
+            // rebinds one to a distinct combo, only that action fires
+            // and the panel gate is bypassed (the user's explicit binding
+            // is treated as authoritative). egui's TextEdit consumes
+            // Ctrl+C internally when a text field has focus, so this
+            // dispatch never fights the OS-level text clipboard.
+            let in_color_panel = matches!(
+                self.state.active_panel,
+                Some(crate::state::PanelKind::NodeGraph) | Some(crate::state::PanelKind::NodeInspector)
+            );
+            let has_node_selection = !self.state.selected_node_ids.is_empty()
+                || self.state.selected_node_id.is_some();
+            let copy_clip_pressed = kb.is_action_pressed("copy_clip", i);
+            let copy_color_pressed = kb.is_action_pressed("copy_color_nodes", i);
+            match (copy_color_pressed, copy_clip_pressed) {
+                (true, true) => {
+                    // Shared-default conflict — panel context decides.
+                    if in_color_panel && has_node_selection {
+                        if let Some(clip_id) = self.state.selected_clip {
+                            cmds.push(AppCommand::CopyColorNodes { clip_id });
+                        }
+                    } else if let Some(clip_id) = self.state.selected_clip {
+                        cmds.push(AppCommand::CopyClip { clip_id });
+                    }
                 }
+                (true, false) => {
+                    if let Some(clip_id) = self.state.selected_clip {
+                        cmds.push(AppCommand::CopyColorNodes { clip_id });
+                    }
+                }
+                (false, true) => {
+                    if let Some(clip_id) = self.state.selected_clip {
+                        cmds.push(AppCommand::CopyClip { clip_id });
+                    }
+                }
+                (false, false) => {}
             }
             if kb.is_action_pressed("copy_attributes", i) {
                 if let Some(clip_id) = self.state.selected_clip {
                     cmds.push(AppCommand::CopyAttributes { clip_id });
                 }
             }
-            // Paste / Paste Attributes
-            if kb.is_action_pressed("paste_clip", i) {
-                cmds.push(AppCommand::PasteClip);
+            // Paste / Paste Attributes / Paste Color Nodes
+            //
+            // Same shape as Ctrl+C: distinct rebindable actions sharing
+            // the Ctrl+V default; panel context disambiguates.
+            let paste_clip_pressed = kb.is_action_pressed("paste_clip", i);
+            let paste_color_pressed = kb.is_action_pressed("paste_color_nodes", i);
+            let color_clipboard_ready = self.state.grade_node_clipboard.as_ref()
+                .map_or(false, |c| !c.nodes.is_empty());
+            match (paste_color_pressed, paste_clip_pressed) {
+                (true, true) => {
+                    if in_color_panel && color_clipboard_ready {
+                        if let Some(clip_id) = self.state.selected_clip {
+                            cmds.push(AppCommand::PasteColorNodes { clip_id });
+                        }
+                    } else {
+                        cmds.push(AppCommand::PasteClip);
+                    }
+                }
+                (true, false) => {
+                    if let Some(clip_id) = self.state.selected_clip {
+                        cmds.push(AppCommand::PasteColorNodes { clip_id });
+                    }
+                }
+                (false, true) => {
+                    cmds.push(AppCommand::PasteClip);
+                }
+                (false, false) => {}
             }
             if kb.is_action_pressed("paste_attributes", i)
                 && self.state.attributes_clipboard.is_some() && self.state.selected_clip.is_some() {
@@ -30282,7 +30350,8 @@ impl KlippApp {
                             Ok(g) => g,
                             Err(_) => &mut clip.node_graph,
                         };
-                        self.node_graph_v2_panel.show(
+                        let panel_rect = ui.max_rect();
+                        let cmds = self.node_graph_v2_panel.show(
                             ui, &mut self.state.selected_node_id,
                             &mut self.state.selected_node_ids,
                             graph, cid, &self.theme,
@@ -30294,7 +30363,22 @@ impl KlippApp {
                             &grade_version_names,
                             active_grade_version,
                             clip_time_secs,
-                        )
+                        );
+                        // Tag the node-graph panel as the active panel
+                        // when the user clicks anywhere inside its rect
+                        // — including on a node, the canvas background,
+                        // or any inner widget. The keybinding dispatcher
+                        // reads `state.active_panel` to decide whether
+                        // Ctrl+C means "copy color nodes" (here) or
+                        // "copy clip" (elsewhere).
+                        let ctx = ui.ctx().clone();
+                        crate::state::note_active_panel(
+                            &mut self.state,
+                            crate::state::PanelKind::NodeGraph,
+                            &ctx,
+                            panel_rect,
+                        );
+                        cmds
                     } else {
                         self.node_graph_panel.show(
                             ui, &mut self.state.selected_node_id,

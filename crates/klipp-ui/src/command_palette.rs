@@ -353,7 +353,7 @@ pub fn build(state: &AppState) -> Vec<PaletteEntry> {
             }
         }),
         enabled: state.selected_clip.is_some()
-            && state.grade_node_clipboard.as_ref().map_or(false, |c| !c.is_empty()) });
+            && state.grade_node_clipboard.as_ref().map_or(false, |c| !c.nodes.is_empty()) });
     // Bake Grade — closure form because we need the selected clip + chosen
     // size + a synchronous save-file dialog, none of which fits the simple
     // Cmd / ToggleState shapes.

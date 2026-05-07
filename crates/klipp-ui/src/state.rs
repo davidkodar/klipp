@@ -5,6 +5,151 @@ use klipp_media::{MediaItem, MediaPool, ThumbnailCache};
 use klipp_timeline::{Clip, Sequence};
 use std::path::PathBuf;
 
+/// Identifies which panel is currently the user's primary interaction
+/// target — set by panels via [`note_active_panel`] in their update
+/// fn and consulted by the keybinding dispatcher to scope shortcuts
+/// (e.g. Ctrl+C should mean "copy color nodes" only when the node
+/// graph or color inspector is active, not when the user happens to
+/// have the timeline panel's container under focus).
+///
+/// Variants exist for every panel that has — or might have — a
+/// panel-scoped keybinding. Adding a new panel without adding a
+/// variant here is fine; it just won't be addressable as a key-gate
+/// target until the variant is added.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum PanelKind {
+    NodeGraph,
+    NodeInspector,
+    MediaBrowser,
+    FileBrowser,
+    Timeline,
+    Viewer,
+    Inspector,
+    AudioMixer,
+    SubtitleEditor,
+    LooksPanel,
+    Markers,
+    CurveEditor,
+    Transport,
+    Toolbar,
+    StatusBar,
+    Palette,
+}
+
+/// Mark `kind` as the active panel when the user clicks or drags
+/// inside `panel_rect` this frame. Called once per frame from each
+/// panel's update fn against its outer rect (typically `ui.max_rect()`).
+/// Detection is "did any pointer press start inside the rect this
+/// frame", which catches clicks on inner widgets (nodes, buttons,
+/// dropdowns) as well as raw clicks on empty panel space — i.e. any
+/// pointer interaction that the user reasonably intends as "I'm
+/// focusing on this panel now".
+///
+/// The setter never CLEARS the active panel — once a panel claims
+/// focus it stays active until another panel claims it. That matches
+/// the user's mental model: keyboard focus persists across mouse
+/// movement (e.g. Ctrl+C should still mean "copy color nodes" when
+/// the user has clicked the node graph and is now hovering the
+/// inspector to read details).
+pub fn note_active_panel(
+    state: &mut AppState,
+    kind: PanelKind,
+    ctx: &egui::Context,
+    panel_rect: egui::Rect,
+) {
+    let pressed_inside = ctx.input(|i| {
+        i.pointer.any_pressed()
+            && i.pointer.interact_pos().map_or(false, |p| panel_rect.contains(p))
+    });
+    if pressed_inside {
+        state.active_panel = Some(kind);
+    }
+}
+
+/// Subgraph snapshot held in the grade-node copy/paste clipboard.
+///
+/// Edges with both endpoints inside the copied node set are
+/// preserved; edges with one endpoint outside the selection are
+/// dropped (the half-attached edge would dangle on paste). The
+/// `node_positions` map keeps relative layout so a multi-node paste
+/// reproduces the source clip's arrangement, offset by a default
+/// delta so it doesn't stack on top of existing graph nodes.
+#[derive(Debug, Clone)]
+pub struct GradeNodeClipboard {
+    pub nodes: Vec<klipp_nodes::Node>,
+    pub edges: Vec<klipp_nodes::Edge>,
+    pub node_positions: std::collections::HashMap<klipp_nodes::NodeId, klipp_nodes::NodePos>,
+}
+
+impl GradeNodeClipboard {
+    /// Extract the subgraph induced by `selection` from `graph` —
+    /// i.e. the nodes whose ids are in `selection`, the edges whose
+    /// BOTH endpoints are in `selection`, and the positions for
+    /// those nodes. Pure — testable without app state.
+    pub fn from_selection(
+        graph: &klipp_nodes::NodeGraph,
+        selection: &std::collections::HashSet<klipp_nodes::NodeId>,
+    ) -> Self {
+        let nodes: Vec<klipp_nodes::Node> = graph.nodes.iter()
+            .filter(|n| selection.contains(&n.id))
+            .cloned()
+            .collect();
+        let edges: Vec<klipp_nodes::Edge> = graph.edges.iter()
+            .filter(|e| selection.contains(&e.from_node) && selection.contains(&e.to_node))
+            .cloned()
+            .collect();
+        let node_positions: std::collections::HashMap<_, _> = graph.node_positions.iter()
+            .filter(|(id, _)| selection.contains(id))
+            .map(|(id, pos)| (*id, *pos))
+            .collect();
+        Self { nodes, edges, node_positions }
+    }
+
+    /// Merge `self` into `target`, allocating fresh ids for every
+    /// pasted node and rewriting Edge endpoints + positions via the
+    /// (old → new) remap. `position_offset` shifts every pasted
+    /// position so the new nodes don't stack exactly on top of any
+    /// existing nodes. Returns the number of nodes appended (always
+    /// equal to `self.nodes.len()` unless caller mutates between).
+    pub fn merge_into(
+        self,
+        target: &mut klipp_nodes::NodeGraph,
+        position_offset: (f32, f32),
+    ) -> usize {
+        use std::collections::HashMap;
+        let remap: HashMap<klipp_nodes::NodeId, klipp_nodes::NodeId> = self.nodes.iter()
+            .map(|n| (n.id, klipp_nodes::NodeId::new_v4()))
+            .collect();
+        let count = self.nodes.len();
+        for node in self.nodes.into_iter() {
+            let new_id = remap[&node.id];
+            let mut new_node = node;
+            new_node.id = new_id;
+            target.nodes.push(new_node);
+        }
+        for edge in self.edges.into_iter() {
+            let (Some(&new_from), Some(&new_to)) =
+                (remap.get(&edge.from_node), remap.get(&edge.to_node))
+            else { continue };
+            target.edges.push(klipp_nodes::Edge {
+                from_node: new_from,
+                from_port: edge.from_port,
+                to_node: new_to,
+                to_port: edge.to_port,
+            });
+        }
+        for (old_id, pos) in self.node_positions.into_iter() {
+            if let Some(&new_id) = remap.get(&old_id) {
+                target.node_positions.insert(new_id, klipp_nodes::NodePos {
+                    x: pos.x + position_offset.0,
+                    y: pos.y + position_offset.1,
+                });
+            }
+        }
+        count
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct BrowserClipSelection {
     pub media_id: MediaId,
@@ -1403,16 +1548,18 @@ pub struct AppState {
     /// use `selected_node_id` instead. Always either empty or
     /// containing `selected_node_id` as one of its members.
     pub selected_node_ids: std::collections::HashSet<klipp_nodes::NodeId>,
+    /// Which panel is currently the user's primary interaction
+    /// target. Read by the keybinding dispatcher to scope shortcuts
+    /// to a panel — e.g. Ctrl+C means "copy color nodes" only when
+    /// `Some(PanelKind::NodeGraph)` or `Some(PanelKind::NodeInspector)`.
+    /// Panels mark themselves active via [`note_active_panel`].
+    pub active_panel: Option<PanelKind>,
     /// In-memory clipboard for grade-node copy/paste between clips.
-    /// `Some(nodes)` means a Copy gesture has stashed clones of one or
-    /// more `klipp_nodes::Node` here; the next Paste appends them to the
-    /// target clip's `node_graph.nodes` after assigning fresh `NodeId`s
-    /// (the node_id rewrite avoids collisions when the source + target
-    /// clips have a shared ancestor or when pasting twice). Edges
-    /// between copied nodes are NOT preserved — that would need a
-    /// fresh-id rewrite on every Edge endpoint and is deferred. Use
-    /// the Looks library for whole-grade snapshots.
-    pub grade_node_clipboard: Option<Vec<klipp_nodes::Node>>,
+    /// Holds nodes plus edges induced by the copy selection, so a
+    /// multi-node copy round-trips internal wiring; the paste handler
+    /// remaps every Edge endpoint via the fresh-NodeId table built
+    /// during paste. `None` means nothing has been copied yet.
+    pub grade_node_clipboard: Option<GradeNodeClipboard>,
     /// Stack of NodeIds representing the V2 canvas's descent path into
     /// nested compound subgraphs. Empty = editing the clip's root
     /// graph (the common case). Each entry is the id of a
@@ -2978,6 +3125,7 @@ impl Default for AppState {
             color_tools_position: ColorToolsPosition::Right,
             selected_node_id: None,
             selected_node_ids: std::collections::HashSet::new(),
+            active_panel: None,
             grade_node_clipboard: None,
             graph_descent_path: Vec::new(),
             show_node_strip: false,
@@ -3896,5 +4044,160 @@ mod per_sequence_history_tests {
     fn new_default_seq_has_known_shape() {
         let seq = Sequence::new_default();
         assert_eq!(seq.resolution, Resolution::hd_1080());
+    }
+}
+
+#[cfg(test)]
+mod grade_node_clipboard_tests {
+    use super::GradeNodeClipboard;
+    use klipp_nodes::{Edge, Node, NodeGraph, NodeId, NodeKind, NodePos};
+    use std::collections::HashSet;
+
+    fn make_graph_with_corrector_and_lift() -> (NodeGraph, NodeId, NodeId, NodeId) {
+        // Build a tiny graph: Source → Corrector → Output, plus an
+        // unrelated "Wheels" node sitting on the side.
+        let source_id = NodeId::new_v4();
+        let corrector_id = NodeId::new_v4();
+        let output_id = NodeId::new_v4();
+        let wheels_id = NodeId::new_v4();
+        let mut graph = NodeGraph {
+            nodes: vec![
+                Node { id: source_id, kind: NodeKind::Source, label: "Src".into(), enabled: true, params: Default::default(), keyframes: Default::default(), output_link: None, input_links: Vec::new() },
+                Node { id: corrector_id, kind: NodeKind::Corrector, label: "Corr".into(), enabled: true, params: Default::default(), keyframes: Default::default(), output_link: None, input_links: Vec::new() },
+                Node { id: output_id, kind: NodeKind::Output, label: "Out".into(), enabled: true, params: Default::default(), keyframes: Default::default(), output_link: None, input_links: Vec::new() },
+                Node { id: wheels_id, kind: NodeKind::ColorWheels, label: "Wheels".into(), enabled: true, params: Default::default(), keyframes: Default::default(), output_link: None, input_links: Vec::new() },
+            ],
+            edges: vec![
+                Edge { from_node: source_id, from_port: 0, to_node: corrector_id, to_port: 0 },
+                Edge { from_node: corrector_id, from_port: 0, to_node: output_id, to_port: 0 },
+                // Half-attached: from wheels (outside) to corrector (inside)
+                // — should be dropped on copy when only Corrector is selected.
+                Edge { from_node: wheels_id, from_port: 0, to_node: corrector_id, to_port: 1 },
+            ],
+            output_node_id: output_id,
+            node_positions: [
+                (source_id, NodePos { x: 0.0, y: 0.0 }),
+                (corrector_id, NodePos { x: 100.0, y: 50.0 }),
+                (output_id, NodePos { x: 200.0, y: 0.0 }),
+                (wheels_id, NodePos { x: 100.0, y: 200.0 }),
+            ].into_iter().collect(),
+            working_space_override: None,
+        };
+        (graph, source_id, corrector_id, output_id)
+    }
+
+    #[test]
+    fn copy_includes_only_selected_nodes() {
+        let (graph, _src, corr, _out) = make_graph_with_corrector_and_lift();
+        let mut sel = HashSet::new();
+        sel.insert(corr);
+        let cb = GradeNodeClipboard::from_selection(&graph, &sel);
+        assert_eq!(cb.nodes.len(), 1);
+        assert_eq!(cb.nodes[0].id, corr);
+    }
+
+    #[test]
+    fn copy_drops_edges_with_endpoint_outside_selection() {
+        let (graph, _src, corr, _out) = make_graph_with_corrector_and_lift();
+        let mut sel = HashSet::new();
+        sel.insert(corr);
+        let cb = GradeNodeClipboard::from_selection(&graph, &sel);
+        // All three edges either start or end outside Corrector,
+        // so none should make it into the clipboard.
+        assert_eq!(cb.edges.len(), 0);
+    }
+
+    #[test]
+    fn copy_preserves_edges_when_both_endpoints_selected() {
+        let (graph, src, corr, _out) = make_graph_with_corrector_and_lift();
+        let mut sel = HashSet::new();
+        sel.insert(src);
+        sel.insert(corr);
+        let cb = GradeNodeClipboard::from_selection(&graph, &sel);
+        assert_eq!(cb.nodes.len(), 2);
+        // Source → Corrector edge is in; Corrector → Output is out (output not selected).
+        assert_eq!(cb.edges.len(), 1);
+        assert_eq!(cb.edges[0].from_node, src);
+        assert_eq!(cb.edges[0].to_node, corr);
+    }
+
+    #[test]
+    fn copy_filters_node_positions_to_selection() {
+        let (graph, _src, corr, _out) = make_graph_with_corrector_and_lift();
+        let mut sel = HashSet::new();
+        sel.insert(corr);
+        let cb = GradeNodeClipboard::from_selection(&graph, &sel);
+        assert_eq!(cb.node_positions.len(), 1);
+        assert!(cb.node_positions.contains_key(&corr));
+    }
+
+    #[test]
+    fn paste_assigns_fresh_ids_to_nodes() {
+        let (mut graph, _src, corr, _out) = make_graph_with_corrector_and_lift();
+        let mut sel = HashSet::new();
+        sel.insert(corr);
+        let cb = GradeNodeClipboard::from_selection(&graph, &sel);
+        let n_before = graph.nodes.len();
+        let count = cb.merge_into(&mut graph, (10.0, 10.0));
+        assert_eq!(count, 1);
+        assert_eq!(graph.nodes.len(), n_before + 1);
+        // The new node must NOT share an id with the original Corrector.
+        let pasted = graph.nodes.last().unwrap();
+        assert_ne!(pasted.id, corr);
+        // Same kind / label / enabled state.
+        assert!(matches!(pasted.kind, NodeKind::Corrector));
+    }
+
+    #[test]
+    fn paste_remaps_edges_via_id_table() {
+        let (mut graph, src, corr, _out) = make_graph_with_corrector_and_lift();
+        let mut sel = HashSet::new();
+        sel.insert(src);
+        sel.insert(corr);
+        let cb = GradeNodeClipboard::from_selection(&graph, &sel);
+        let edges_before = graph.edges.len();
+        cb.merge_into(&mut graph, (0.0, 0.0));
+        assert_eq!(graph.edges.len(), edges_before + 1);
+        // The pasted edge should reference the two NEW node ids, not
+        // the originals — find the new edge by exclusion.
+        let new_edge = graph.edges.last().unwrap();
+        assert_ne!(new_edge.from_node, src);
+        assert_ne!(new_edge.to_node, corr);
+    }
+
+    #[test]
+    fn paste_offset_shifts_positions() {
+        let (mut graph, _src, corr, _out) = make_graph_with_corrector_and_lift();
+        let mut sel = HashSet::new();
+        sel.insert(corr);
+        let cb = GradeNodeClipboard::from_selection(&graph, &sel);
+        let pasted_id = cb.nodes[0].id;
+        cb.merge_into(&mut graph, (40.0, 40.0));
+        // The clipboard's source position was (100.0, 50.0) — the
+        // pasted entry uses the NEW id, so look for the offset
+        // values rather than the original key.
+        let offset_pos = graph.node_positions.values()
+            .find(|p| (p.x - 140.0).abs() < 0.01 && (p.y - 90.0).abs() < 0.01);
+        assert!(offset_pos.is_some(), "no position with paste offset found");
+        // Original id no longer maps to its old position because we
+        // didn't touch the source — it should still be at (100, 50).
+        let _ = pasted_id; // silence unused — we asserted via value match
+    }
+
+    #[test]
+    fn paste_skips_dangling_edges_defensively() {
+        // Construct a clipboard that — by misuse — references a node
+        // id NOT in its node set. The merge should silently skip it
+        // rather than panicking.
+        let mut graph = NodeGraph::default();
+        let stray_id = NodeId::new_v4();
+        let cb = GradeNodeClipboard {
+            nodes: Vec::new(),
+            edges: vec![Edge { from_node: stray_id, from_port: 0, to_node: stray_id, to_port: 0 }],
+            node_positions: std::collections::HashMap::new(),
+        };
+        let edges_before = graph.edges.len();
+        cb.merge_into(&mut graph, (0.0, 0.0));
+        assert_eq!(graph.edges.len(), edges_before);
     }
 }

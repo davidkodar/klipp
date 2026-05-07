@@ -112,6 +112,15 @@ impl KeyBindings {
         bind(&mut b, "cut_clip", vec![KeyCombo::ctrl("X")]);
         bind(&mut b, "copy_clip", vec![KeyCombo::ctrl("C")]);
         bind(&mut b, "paste_clip", vec![KeyCombo::ctrl("V")]);
+        // Same default key combo as copy/paste_clip on purpose — the
+        // dispatcher resolves the conflict by panel context. When the
+        // shared combo fires and the active panel is the node graph
+        // (with nodes selected) the color-node path wins; everywhere
+        // else the clip path wins. A user who wants distinct bindings
+        // remaps these in Prefs → Keybindings and the dispatcher fires
+        // each independently.
+        bind(&mut b, "copy_color_nodes", vec![KeyCombo::ctrl("C")]);
+        bind(&mut b, "paste_color_nodes", vec![KeyCombo::ctrl("V")]);
         bind(&mut b, "copy_attributes", vec![KeyCombo::ctrl_shift("C")]);
         bind(&mut b, "paste_attributes", vec![KeyCombo::ctrl_shift("V")]);
         bind(&mut b, "duplicate_clip", vec![KeyCombo::ctrl("D")]);
@@ -344,6 +353,8 @@ impl KeyBindings {
             "cut_clip" => "Cut Clip",
             "copy_clip" => "Copy Clip",
             "paste_clip" => "Paste Clip",
+            "copy_color_nodes" => "Copy Color Nodes",
+            "paste_color_nodes" => "Paste Color Nodes",
             "copy_attributes" => "Copy Attributes",
             "paste_attributes" => "Paste Attributes",
             "duplicate_clip" => "Duplicate Clip",
@@ -457,7 +468,7 @@ impl KeyBindings {
                 "multicam_angle_4", "multicam_angle_5", "multicam_angle_6",
                 "multicam_angle_7", "multicam_angle_8", "multicam_angle_9",
                 "create_multicam"]),
-            ("Color", &["prev_color_node", "next_color_node", "toggle_node_bypass", "reset_current_node", "cycle_scope_mode"]),
+            ("Color", &["prev_color_node", "next_color_node", "toggle_node_bypass", "reset_current_node", "cycle_scope_mode", "copy_color_nodes", "paste_color_nodes"]),
             ("AI Tools", &["ai_remove_background", "ai_isolate_object", "ai_detect_objects", "ai_run_inference", "ai_cancel_inference", "toggle_ai_tools_panel"]),
             ("Other", &["create_title", "connect_clip", "disconnect_clip"]),
         ]
