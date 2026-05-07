@@ -65,6 +65,75 @@ pub fn passes_smart_bin_filter(
     }
 }
 
+/// Returns true when a media item should pass the metadata filter.
+/// AND-combined with the smart-bin / rating / colour filters by the
+/// caller. Pure — testable without egui.
+pub fn passes_metadata_filter(
+    item: &klipp_media::MediaItem,
+    filter: &super::MetadataFilter,
+) -> bool {
+    use super::MetadataFilter;
+    match filter {
+        MetadataFilter::Any => true,
+        MetadataFilter::Codec(c) => item.video_codec.eq_ignore_ascii_case(c),
+        MetadataFilter::Fps { num, den } => {
+            item.fps.num == *num && item.fps.den == *den
+        }
+        MetadataFilter::Camera(c) => item.camera_make.as_deref()
+            .map_or(false, |m| m.eq_ignore_ascii_case(c)),
+    }
+}
+
+/// Walk the media pool and return distinct values for each metadata
+/// dimension, sorted alphabetically / numerically. Empty / None values
+/// are skipped (a clip with no recorded camera-make doesn't show up
+/// in the camera dropdown). Used by the toolbar to populate the
+/// metadata filter dropdown.
+///
+/// Returns a tuple of (codecs, fps_pairs, cameras). Codec strings
+/// preserve their stored case for display but are matched
+/// case-insensitively in `passes_metadata_filter`.
+pub fn enumerate_metadata_filter_values(
+    items: &[klipp_media::MediaItem],
+) -> (Vec<String>, Vec<(u32, u32)>, Vec<String>) {
+    use std::collections::BTreeSet;
+    let mut codecs: BTreeSet<String> = BTreeSet::new();
+    let mut fps_set: BTreeSet<(u32, u32)> = BTreeSet::new();
+    let mut cameras: BTreeSet<String> = BTreeSet::new();
+    for item in items {
+        if !item.video_codec.is_empty() {
+            codecs.insert(item.video_codec.clone());
+        }
+        // Skip 1/1 (fallback / unknown) — not a meaningful filter
+        // value and would otherwise pollute the dropdown.
+        if !(item.fps.num == 1 && item.fps.den == 1) {
+            fps_set.insert((item.fps.num, item.fps.den));
+        }
+        if let Some(make) = &item.camera_make {
+            if !make.is_empty() {
+                cameras.insert(make.clone());
+            }
+        }
+    }
+    (codecs.into_iter().collect(), fps_set.into_iter().collect(), cameras.into_iter().collect())
+}
+
+/// Format an (fps_num, fps_den) pair as a human-readable label —
+/// "24" for film 24 (24/1), "23.976" for ntsc-24 (24000/1001), etc.
+/// Used by the metadata filter dropdown so users see "FPS: 23.976"
+/// rather than "FPS: 24000/1001".
+pub fn format_fps_label(num: u32, den: u32) -> String {
+    if den == 0 {
+        return "—".to_string();
+    }
+    let f = num as f64 / den as f64;
+    if (f - f.round()).abs() < 1e-3 {
+        format!("{}", f.round() as u32)
+    } else {
+        format!("{:.3}", f)
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn show(
     ui: &mut egui::Ui,
@@ -81,6 +150,7 @@ pub fn show(
     smart_filter: super::SmartBinFilter,
     min_rating_filter: Option<u8>,
     color_label_filter: u8,
+    metadata_filter: &super::MetadataFilter,
 ) -> Vec<AppCommand> {
     let mut cmds = Vec::new();
 
@@ -115,6 +185,10 @@ pub fn show(
             // `0` disables the filter. `ColorLabel::None` (to_u8() == 0) is
             // bit 0 — setting it filters to unlabelled clips only.
             if !passes_color_filter(m.color_label, color_label_filter) {
+                return false;
+            }
+            // Metadata filter (codec / fps / camera). Any disables.
+            if !passes_metadata_filter(m, metadata_filter) {
                 return false;
             }
             if !search_lower.is_empty() {
@@ -2193,5 +2267,84 @@ mod smart_bin_filter_tests {
         assert!(passes_smart_bin_filter(&video, SmartBinFilter::VideoOnly, 0));
         assert!(!passes_smart_bin_filter(&still, SmartBinFilter::VideoOnly, 0));
         assert!(!passes_smart_bin_filter(&audio, SmartBinFilter::VideoOnly, 0));
+    }
+}
+
+#[cfg(test)]
+mod metadata_filter_tests {
+    use super::{enumerate_metadata_filter_values, format_fps_label, passes_metadata_filter};
+    use crate::browser::MetadataFilter;
+    use klipp_core::{Fps, MediaId, RationalTime};
+    use klipp_media::MediaItem;
+
+    fn item() -> MediaItem {
+        MediaItem::new_synthetic_title(
+            MediaId::new(),
+            "test.mp4".into(),
+            RationalTime { value: 240, rate: 24 },
+            Fps::film_24(),
+        )
+    }
+
+    #[test]
+    fn metadata_any_passes_everything() {
+        let m = item();
+        assert!(passes_metadata_filter(&m, &MetadataFilter::Any));
+    }
+
+    #[test]
+    fn metadata_codec_filters_case_insensitively() {
+        let mut m = item();
+        m.video_codec = "H264".into();
+        // Filter set with the lowercase form — should still match.
+        assert!(passes_metadata_filter(&m, &MetadataFilter::Codec("h264".into())));
+        assert!(!passes_metadata_filter(&m, &MetadataFilter::Codec("hevc".into())));
+    }
+
+    #[test]
+    fn metadata_fps_requires_exact_match() {
+        let m = item();
+        // film_24 = 24/1
+        assert!(passes_metadata_filter(&m, &MetadataFilter::Fps { num: 24, den: 1 }));
+        // ntsc_24 (23.976) shouldn't match film_24
+        assert!(!passes_metadata_filter(&m, &MetadataFilter::Fps { num: 24000, den: 1001 }));
+    }
+
+    #[test]
+    fn metadata_camera_excludes_items_without_camera_make() {
+        let mut with_cam = item();
+        with_cam.camera_make = Some("Sony A7S".into());
+        let no_cam = item();
+        assert!(passes_metadata_filter(&with_cam, &MetadataFilter::Camera("Sony A7S".into())));
+        assert!(!passes_metadata_filter(&no_cam, &MetadataFilter::Camera("Sony A7S".into())));
+    }
+
+    #[test]
+    fn enumerate_returns_distinct_sorted_values() {
+        let mut a = item(); a.video_codec = "h264".into();
+        let mut b = item(); b.video_codec = "hevc".into();
+        let mut c = item(); c.video_codec = "h264".into(); // dup
+        let mut d = item(); d.video_codec.clear(); // skipped — empty
+        let pool = vec![a, b, c, d];
+        let (codecs, _, _) = enumerate_metadata_filter_values(&pool);
+        assert_eq!(codecs, vec!["h264".to_string(), "hevc".to_string()]);
+    }
+
+    #[test]
+    fn enumerate_skips_unknown_fps_1_1() {
+        let mut a = item(); a.fps = Fps::film_24();
+        let mut b = item(); b.fps = Fps { num: 1, den: 1 }; // fallback / unknown
+        let pool = vec![a, b];
+        let (_, fps_pairs, _) = enumerate_metadata_filter_values(&pool);
+        assert_eq!(fps_pairs, vec![(24, 1)]);
+    }
+
+    #[test]
+    fn format_fps_label_renders_round_and_fractional_correctly() {
+        assert_eq!(format_fps_label(24, 1), "24");
+        assert_eq!(format_fps_label(30, 1), "30");
+        assert_eq!(format_fps_label(24000, 1001), "23.976");
+        assert_eq!(format_fps_label(30000, 1001), "29.970");
+        assert_eq!(format_fps_label(60, 0), "—");
     }
 }

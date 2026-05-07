@@ -530,6 +530,32 @@ pub enum SmartBinFilter {
     Offline,
 }
 
+/// Parametric metadata filter for the bin — narrows by codec, source
+/// fps, or camera identifier, with the available values pulled
+/// dynamically from the current bin contents (see
+/// `enumerate_metadata_filter_values`). Combines with `SmartBinFilter`
+/// + the rating + colour-label filters using AND semantics.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MetadataFilter {
+    /// Disable the filter — every item passes.
+    Any,
+    /// Only show items whose `MediaItem.video_codec` (case-insensitive
+    /// equal) matches the chosen value (e.g. "h264", "hevc").
+    Codec(String),
+    /// Only show items whose `MediaItem.fps` matches exactly. Encodes
+    /// num + den as plain ints so the dropdown round-trips between
+    /// renders without floating-point drift.
+    Fps { num: u32, den: u32 },
+    /// Only show items whose `MediaItem.camera_make` matches the
+    /// chosen value (case-insensitive equal). Items with no recorded
+    /// camera-make are excluded.
+    Camera(String),
+}
+
+impl Default for MetadataFilter {
+    fn default() -> Self { Self::Any }
+}
+
 /// Thumbnail size for the Files tab. Controls row height, thumb box size,
 /// and where the filename is positioned. Persisted in FileBrowserPrefs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
@@ -581,6 +607,10 @@ pub struct BrowserPanel {
     /// a clip passes when ANY of its label bits matches an active bit.
     /// `0` disables the filter (all labels pass). Session state only.
     pub color_label_filter: u8,
+    /// Metadata filter — narrows by codec / fps / camera using a single
+    /// parametric enum. Available values are computed from current bin
+    /// contents at render time (see `enumerate_metadata_filter_values`).
+    pub metadata_filter: MetadataFilter,
     pub browser_view_mode: media_tab::BrowserViewMode,
     // Bin management state
     pub renaming_bin: Option<(String, String)>,  // (old_name, current_edit_text)
@@ -849,6 +879,7 @@ impl Default for BrowserPanel {
             smart_bin_filter: SmartBinFilter::None,
             min_rating_filter: None,
             color_label_filter: 0,
+            metadata_filter: MetadataFilter::Any,
             browser_view_mode: media_tab::BrowserViewMode::default(),
             renaming_bin: None,
             creating_bin: None,
@@ -1463,7 +1494,7 @@ impl BrowserPanel {
                         // Smart bin + rating + colour-label filters.
                         // AND-combined across categories, OR-combined
                         // within the colour-label bitmask.
-                        self.render_media_filter_toolbar(ui, theme);
+                        self.render_media_filter_toolbar(ui, theme, state);
                         let tab_cmds = media_tab::show(
                             ui,
                             state,
@@ -1479,6 +1510,7 @@ impl BrowserPanel {
                             self.smart_bin_filter,
                             self.min_rating_filter,
                             self.color_label_filter,
+                            &self.metadata_filter,
                         );
                         cmds.extend(tab_cmds);
                     }
@@ -1501,7 +1533,7 @@ impl BrowserPanel {
                     // non-split path too — otherwise the filters are only
                     // visible when Files is pinned, which is poor
                     // discoverability.
-                    self.render_media_filter_toolbar(ui, theme);
+                    self.render_media_filter_toolbar(ui, theme, state);
                     let tab_cmds = media_tab::show(
                         ui,
                         state,
@@ -1517,6 +1549,7 @@ impl BrowserPanel {
                         self.smart_bin_filter,
                         self.min_rating_filter,
                         self.color_label_filter,
+                        &self.metadata_filter,
                     );
                     cmds.extend(tab_cmds);
                 }
@@ -4107,7 +4140,7 @@ impl BrowserPanel {
     ///
     /// Called from both the split-view right pane and the non-split Media
     /// tab so both layouts have the filters above the item list.
-    fn render_media_filter_toolbar(&mut self, ui: &mut egui::Ui, theme: &KlippTheme) {
+    fn render_media_filter_toolbar(&mut self, ui: &mut egui::Ui, theme: &KlippTheme, state: &AppState) {
         ui.horizontal(|ui| {
             ui.label(egui::RichText::new("Filter:").size(10.0).color(theme.text_dim));
             let filter_label = match self.smart_bin_filter {
@@ -4156,6 +4189,65 @@ impl BrowserPanel {
                             format!("{stars}+ {glyphs}")
                         };
                         ui.selectable_value(&mut self.min_rating_filter, Some(stars), label);
+                    }
+                });
+
+            // ── Metadata filter (codec / fps / camera) ──
+            // Single dropdown with grouped flat entries. Available
+            // values are pulled from current bin contents, so a project
+            // with only h264 footage shows only "Codec: h264" — the
+            // dropdown stays as small as the actual diversity in the
+            // pool.
+            ui.add_space(8.0);
+            ui.label(egui::RichText::new("Metadata:").size(10.0).color(theme.text_dim));
+            let pool_snapshot: Vec<_> = state.media_pool.all().cloned().collect();
+            let (codecs, fps_pairs, cameras) =
+                media_tab::enumerate_metadata_filter_values(&pool_snapshot);
+            let metadata_label = match &self.metadata_filter {
+                MetadataFilter::Any => "Any".to_string(),
+                MetadataFilter::Codec(c) => format!("Codec: {c}"),
+                MetadataFilter::Fps { num, den } => {
+                    format!("FPS: {}", media_tab::format_fps_label(*num, *den))
+                }
+                MetadataFilter::Camera(c) => format!("Camera: {c}"),
+            };
+            egui::ComboBox::from_id_salt("metadata_filter")
+                .selected_text(metadata_label)
+                .width(160.0)
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(&mut self.metadata_filter, MetadataFilter::Any, "Any");
+                    if !codecs.is_empty() {
+                        ui.separator();
+                        ui.label(egui::RichText::new("Codec").size(9.0).color(theme.text_dim));
+                        for c in &codecs {
+                            ui.selectable_value(
+                                &mut self.metadata_filter,
+                                MetadataFilter::Codec(c.clone()),
+                                format!("Codec: {c}"),
+                            );
+                        }
+                    }
+                    if !fps_pairs.is_empty() {
+                        ui.separator();
+                        ui.label(egui::RichText::new("FPS").size(9.0).color(theme.text_dim));
+                        for (num, den) in &fps_pairs {
+                            ui.selectable_value(
+                                &mut self.metadata_filter,
+                                MetadataFilter::Fps { num: *num, den: *den },
+                                format!("FPS: {}", media_tab::format_fps_label(*num, *den)),
+                            );
+                        }
+                    }
+                    if !cameras.is_empty() {
+                        ui.separator();
+                        ui.label(egui::RichText::new("Camera").size(9.0).color(theme.text_dim));
+                        for c in &cameras {
+                            ui.selectable_value(
+                                &mut self.metadata_filter,
+                                MetadataFilter::Camera(c.clone()),
+                                format!("Camera: {c}"),
+                            );
+                        }
                     }
                 });
 
