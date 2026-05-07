@@ -188,6 +188,14 @@ fn plan_hyperzoom_letter_transition(ctx: &TemplateContext) -> Vec<AppCommand> {
         add_whoosh: false,
         whoosh_variant: 0,
         whoosh_custom_path: None,
+        // Templates also ship light-leak / chromatic-aberration
+        // free — same convention as whoosh. The HYPERZOOM
+        // inspector is the tuning surface; templates are the
+        // skeleton.
+        add_chromatic_aberration: false,
+        chromatic_aberration_amount: 0.0,
+        add_light_leak: false,
+        light_leak_intensity: 0.0,
     });
     cmds
 }
@@ -248,10 +256,15 @@ fn plan_cross_dissolve_hyperzoom_bridge(ctx: &TemplateContext) -> Vec<AppCommand
         radial_blur_amount: 0.0,
         focal_ref: None,
         // Templates ship whoosh-free per HZ-NEXT-WHOOSH audit
-        // note (iii).
+        // note (iii). Same applies to the
+        // HZ-NEXT-LIGHT-LEAK-CHROMATIC polish layers.
         add_whoosh: false,
         whoosh_variant: 0,
         whoosh_custom_path: None,
+        add_chromatic_aberration: false,
+        chromatic_aberration_amount: 0.0,
+        add_light_leak: false,
+        light_leak_intensity: 0.0,
     }]
 }
 
@@ -788,7 +801,7 @@ mod tests {
             SetClipMatte { clip_id: ClipId(<uuid>), source_clip_id: ClipId(<uuid>), channel: 0, invert: false, feather_px: 0.0, choke_px: 0.0 }
             SetClipTransformLink { clip_id: ClipId(<uuid>), target: ClipId(<uuid>), mode: 0, inherit_scale: true, inherit_position: true, inherit_rotation: true, inherit_anchor: true }
             AutoLinkClipsBeneathSource { source_clip_id: ClipId(<uuid>), ramp_secs: 0.5, mode: 0, inherit_scale: true, inherit_position: true, inherit_rotation: true, inherit_anchor: true }
-            ApplyHyperzoom { source_clip_id: ClipId(<uuid>), target_clip_id: None, focal_x_norm: 0.5, focal_y_norm: 0.5, duration_secs: 0.5, max_scale: 50.0, easing: 1, hold_secs: 0.0, add_radial_blur: false, radial_blur_amount: 0.0, focal_ref: None, add_whoosh: false, whoosh_variant: 0, whoosh_custom_path: None }"#]]
+            ApplyHyperzoom { source_clip_id: ClipId(<uuid>), target_clip_id: None, focal_x_norm: 0.5, focal_y_norm: 0.5, duration_secs: 0.5, max_scale: 50.0, easing: 1, hold_secs: 0.0, add_radial_blur: false, radial_blur_amount: 0.0, focal_ref: None, add_whoosh: false, whoosh_variant: 0, whoosh_custom_path: None, add_chromatic_aberration: false, chromatic_aberration_amount: 0.0, add_light_leak: false, light_leak_intensity: 0.0 }"#]]
             .assert_eq(&actual);
     }
 
@@ -824,7 +837,7 @@ mod tests {
             &ctx(&seq, Some(aid)),
         );
         let actual = shape_all(&cmds);
-        expect!["ApplyHyperzoom { source_clip_id: ClipId(<uuid>), target_clip_id: None, focal_x_norm: 0.5, focal_y_norm: 0.5, duration_secs: 0.4, max_scale: 15.0, easing: 1, hold_secs: 0.05, add_radial_blur: false, radial_blur_amount: 0.0, focal_ref: None, add_whoosh: false, whoosh_variant: 0, whoosh_custom_path: None }"]
+        expect!["ApplyHyperzoom { source_clip_id: ClipId(<uuid>), target_clip_id: None, focal_x_norm: 0.5, focal_y_norm: 0.5, duration_secs: 0.4, max_scale: 15.0, easing: 1, hold_secs: 0.05, add_radial_blur: false, radial_blur_amount: 0.0, focal_ref: None, add_whoosh: false, whoosh_variant: 0, whoosh_custom_path: None, add_chromatic_aberration: false, chromatic_aberration_amount: 0.0, add_light_leak: false, light_leak_intensity: 0.0 }"]
             .assert_eq(&actual);
     }
 

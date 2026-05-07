@@ -6664,6 +6664,8 @@ impl KlippApp {
                     duration_secs, max_scale, easing, hold_secs,
                     add_radial_blur, radial_blur_amount, focal_ref,
                     add_whoosh, whoosh_variant, whoosh_custom_path,
+                    add_chromatic_aberration, chromatic_aberration_amount,
+                    add_light_leak, light_leak_intensity,
                 } => {
                     let src_id = *source_clip_id;
                     let seq_idx = self.state.active_sequence_idx;
@@ -6721,6 +6723,10 @@ impl KlippApp {
                         hold_secs: *hold_secs,
                         add_radial_blur: *add_radial_blur,
                         radial_blur_amount: *radial_blur_amount,
+                        add_chromatic_aberration: *add_chromatic_aberration,
+                        chromatic_aberration_amount: *chromatic_aberration_amount,
+                        add_light_leak: *add_light_leak,
+                        light_leak_intensity: *light_leak_intensity,
                     });
 
                     let seq = &mut self.state.sequences[seq_idx];
@@ -6729,6 +6735,24 @@ impl KlippApp {
                     if let Some(rb) = plan.radial_blur.as_ref() {
                         apply_hyperzoom_radial_blur_to_clip(seq, src_id, rb.center, rb.peak_amount, &rb.source_amount_kfs);
                         apply_hyperzoom_radial_blur_to_clip(seq, tgt_id, rb.center, rb.peak_amount, &rb.target_amount_kfs);
+                    }
+                    if let Some(ca) = plan.chromatic_aberration.as_ref() {
+                        apply_hyperzoom_chromatic_aberration_to_clip(
+                            seq, src_id, ca.center, ca.peak_amount,
+                            &ca.source_red_kfs, &ca.source_blue_kfs,
+                        );
+                        apply_hyperzoom_chromatic_aberration_to_clip(
+                            seq, tgt_id, ca.center, ca.peak_amount,
+                            &ca.target_red_kfs, &ca.target_blue_kfs,
+                        );
+                    }
+                    if let Some(ll) = plan.light_leak.as_ref() {
+                        apply_hyperzoom_light_leak_to_clip(
+                            seq, src_id, ll.peak_intensity, &ll.source_intensity_kfs,
+                        );
+                        apply_hyperzoom_light_leak_to_clip(
+                            seq, tgt_id, ll.peak_intensity, &ll.target_intensity_kfs,
+                        );
                     }
 
                     // Glyph-anchored focal-point override. Written
@@ -31702,6 +31726,137 @@ fn apply_hyperzoom_radial_blur_to_clip(
     clip.effect_keyframes.insert(key, amount_kfs.to_vec());
 }
 
+/// Mirror of [`apply_hyperzoom_radial_blur_to_clip`] for the
+/// chromatic-aberration convenience layer:
+///
+/// * Find or insert a `BuiltinEffect::ChromaticAberration` on
+///   `clip_id`. If one already exists (e.g. from a prior Apply
+///   Hyperzoom OR a manual user edit), its `center_x` / `center_y`
+///   are rewritten to the focal point — pinned by the audit-note
+///   "re-apply with new focal updates center" test. `red_shift`
+///   and `blue_shift` are also rewritten to ±peak so the static
+///   fallback matches the keyframes' peak values; the keyframes
+///   then drive the actual animation.
+/// * Replace `clip.effect_keyframes["{idx}:red_shift"]` and
+///   `[".. blue_shift"]` with the planned ramps. Re-applying
+///   replaces the old keyframes wholesale — idempotent.
+///
+/// **First-match-wins disambiguation** (mirrors radial-blur):
+/// when the user has manually added a `ChromaticAberration` with
+/// custom params before applying hyperzoom, that effect's
+/// `red_shift` / `blue_shift` / `center_x` / `center_y` get
+/// rewritten by the convenience layer. Power users who want to
+/// preserve their pre-existing tuning should disable the
+/// convenience checkbox and add a separate ChromaticAberration
+/// from the effects library after applying.
+///
+/// Keyframe write order is **red before blue** — pinned by
+/// `apply_chromatic_keyframe_write_order_red_before_blue` so
+/// snapshot tests stay deterministic.
+fn apply_hyperzoom_chromatic_aberration_to_clip(
+    seq: &mut klipp_timeline::Sequence,
+    clip_id: klipp_core::ClipId,
+    center: (f32, f32),
+    peak_amount: f32,
+    red_kfs: &[klipp_core::keyframe::Keyframe],
+    blue_kfs: &[klipp_core::keyframe::Keyframe],
+) {
+    let Some(clip) = seq.all_clips_mut().find(|c| c.id == clip_id) else {
+        tracing::debug!("apply_hyperzoom_chromatic_aberration_to_clip: clip {clip_id:?} no longer in sequence");
+        return;
+    };
+    let mut found_idx: Option<usize> = None;
+    for (i, fx) in clip.builtin_effects.iter_mut().enumerate() {
+        if let klipp_effects::BuiltinEffect::ChromaticAberration {
+            red_shift, blue_shift, center_x, center_y,
+        } = fx
+        {
+            *center_x = center.0;
+            *center_y = center.1;
+            // Static fallback values mirror the keyframes' peak —
+            // red converges, blue diverges.
+            *red_shift = -peak_amount;
+            *blue_shift = peak_amount;
+            found_idx = Some(i);
+            break;
+        }
+    }
+    let idx = match found_idx {
+        Some(i) => i,
+        None => {
+            clip.builtin_effects.push(klipp_effects::BuiltinEffect::ChromaticAberration {
+                red_shift: -peak_amount,
+                blue_shift: peak_amount,
+                center_x: center.0,
+                center_y: center.1,
+            });
+            clip.builtin_effects_enabled.push(true);
+            clip.builtin_effects.len() - 1
+        }
+    };
+    // Pin: red before blue. If an audit changes this order, the
+    // ordering test will flag it before snapshot tests start
+    // diffing nondeterministically.
+    clip.effect_keyframes.insert(format!("{}:red_shift", idx), red_kfs.to_vec());
+    clip.effect_keyframes.insert(format!("{}:blue_shift", idx), blue_kfs.to_vec());
+}
+
+/// Mirror of [`apply_hyperzoom_radial_blur_to_clip`] for the
+/// light-leak convenience layer (rides on
+/// `BuiltinEffect::FilmHalation`):
+///
+/// * Find or insert a `FilmHalation`. On update, only `intensity`
+///   is rewritten to the peak value (static fallback for the
+///   keyframes); `threshold` / `radius` / `hue` keep their
+///   existing values so a user-tweaked halation isn't blown
+///   away by re-apply. Fresh inserts use trailer-aesthetic
+///   defaults (warm hue ≈ 0.15, moderate threshold + radius).
+/// * Replace `clip.effect_keyframes["{idx}:intensity"]` with the
+///   planned ramp.
+///
+/// Same first-match-wins disambiguation as radial-blur — a user-
+/// added FilmHalation gets its intensity rewritten by the
+/// convenience layer (the other params survive). Power users
+/// preserving custom halation tunings should disable the
+/// convenience checkbox.
+fn apply_hyperzoom_light_leak_to_clip(
+    seq: &mut klipp_timeline::Sequence,
+    clip_id: klipp_core::ClipId,
+    peak_intensity: f32,
+    intensity_kfs: &[klipp_core::keyframe::Keyframe],
+) {
+    let Some(clip) = seq.all_clips_mut().find(|c| c.id == clip_id) else {
+        tracing::debug!("apply_hyperzoom_light_leak_to_clip: clip {clip_id:?} no longer in sequence");
+        return;
+    };
+    let mut found_idx: Option<usize> = None;
+    for (i, fx) in clip.builtin_effects.iter_mut().enumerate() {
+        if let klipp_effects::BuiltinEffect::FilmHalation { intensity, .. } = fx {
+            *intensity = peak_intensity;
+            found_idx = Some(i);
+            break;
+        }
+    }
+    let idx = match found_idx {
+        Some(i) => i,
+        None => {
+            clip.builtin_effects.push(klipp_effects::BuiltinEffect::FilmHalation {
+                threshold: 0.75,
+                radius: 15.0,
+                intensity: peak_intensity,
+                // Hue 0.15 ≈ warm orange-yellow — the
+                // canonical trailer-light-leak colour. Power
+                // users tweak via the standalone effect's
+                // params after applying.
+                hue: 0.15,
+            });
+            clip.builtin_effects_enabled.push(true);
+            clip.builtin_effects.len() - 1
+        }
+    };
+    clip.effect_keyframes.insert(format!("{}:intensity", idx), intensity_kfs.to_vec());
+}
+
 /// Write a `FocalRef` onto the clip's `BuiltinEffect::Transform`.
 /// Companion to [`apply_hyperzoom_plan_to_clip`] for
 /// HZ-NEXT-GLYPH-LOCK: when the user has picked a glyph in the
@@ -34638,6 +34793,218 @@ mod hyperzoom_handler_tests {
         });
         let same = seq.tracks.iter().flat_map(|t| t.clips.iter()).find(|x| x.id == c.id).unwrap();
         assert!(same.builtin_effects.iter().all(|e| !matches!(e, BuiltinEffect::Transform { .. })));
+    }
+
+    // ────── Chromatic-aberration handler ──────
+
+    use super::apply_hyperzoom_chromatic_aberration_to_clip;
+
+    fn read_chromatic(clip: &Clip) -> Option<(f32, f32, f32, f32)> {
+        clip.builtin_effects.iter().find_map(|e| match e {
+            BuiltinEffect::ChromaticAberration { red_shift, blue_shift, center_x, center_y } => {
+                Some((*red_shift, *blue_shift, *center_x, *center_y))
+            }
+            _ => None,
+        })
+    }
+
+    #[test]
+    fn chromatic_inserts_when_absent() {
+        // No ChromaticAberration on the clip → handler appends one
+        // with center at the focal point and red/blue at ∓peak.
+        let c = fresh_clip();
+        let cid = c.id;
+        let mut seq = seq_with_clips(vec![c]);
+        let red = vec![kf(0.0, 0.0), kf(0.5, -8.0)];
+        let blue = vec![kf(0.0, 0.0), kf(0.5, 8.0)];
+        apply_hyperzoom_chromatic_aberration_to_clip(&mut seq, cid, (0.3, 0.7), 8.0, &red, &blue);
+        let clip = seq.tracks.iter().flat_map(|t| t.clips.iter()).find(|c| c.id == cid).unwrap();
+        let (rs, bs, cx, cy) = read_chromatic(clip).expect("ChromaticAberration appended");
+        assert!((rs - -8.0).abs() < 1e-6, "red_shift static fallback at -peak");
+        assert!((bs - 8.0).abs() < 1e-6, "blue_shift static fallback at +peak");
+        assert!((cx - 0.3).abs() < 1e-6);
+        assert!((cy - 0.7).abs() < 1e-6);
+    }
+
+    #[test]
+    fn chromatic_updates_existing_preserving_no_secondaries() {
+        // Pre-existing ChromaticAberration with different
+        // center + shifts. Handler rewrites center and shifts; no
+        // secondary params on this builtin survive (it's all four
+        // fields). User-tweaked-tunings-getting-overwritten is the
+        // first-match-wins disambiguation behaviour pinned in the
+        // doc comment.
+        let mut c = fresh_clip();
+        c.builtin_effects.push(BuiltinEffect::ChromaticAberration {
+            red_shift: -2.0, blue_shift: 2.0, center_x: 0.1, center_y: 0.1,
+        });
+        c.builtin_effects_enabled.push(true);
+        let cid = c.id;
+        let mut seq = seq_with_clips(vec![c]);
+        let red = vec![kf(0.0, 0.0), kf(0.5, -10.0)];
+        let blue = vec![kf(0.0, 0.0), kf(0.5, 10.0)];
+        apply_hyperzoom_chromatic_aberration_to_clip(&mut seq, cid, (0.6, 0.4), 10.0, &red, &blue);
+        let clip = seq.tracks.iter().flat_map(|t| t.clips.iter()).find(|c| c.id == cid).unwrap();
+        let (rs, bs, cx, cy) = read_chromatic(clip).unwrap();
+        assert!((rs - -10.0).abs() < 1e-6);
+        assert!((bs - 10.0).abs() < 1e-6);
+        assert!((cx - 0.6).abs() < 1e-6, "center_x updated to new focal");
+        assert!((cy - 0.4).abs() < 1e-6, "center_y updated to new focal");
+        // Pool count stays at 1 — handler updated in place,
+        // didn't append a duplicate.
+        let n = clip.builtin_effects.iter().filter(|e| matches!(e, BuiltinEffect::ChromaticAberration { .. })).count();
+        assert_eq!(n, 1);
+    }
+
+    #[test]
+    fn chromatic_re_apply_with_new_focal_updates_center() {
+        // Audit-note (iv) pin: re-applying with a different focal
+        // point must rewrite the center on the existing builtin.
+        // The first-apply lays in the chromatic at focal=(0.5,0.5);
+        // the second apply at focal=(0.2,0.8) must overwrite, not
+        // leave the old center stale.
+        let mut c = fresh_clip();
+        let cid = c.id;
+        let mut seq = seq_with_clips(vec![c]);
+        let red = vec![kf(0.0, 0.0), kf(0.5, -6.0)];
+        let blue = vec![kf(0.0, 0.0), kf(0.5, 6.0)];
+        apply_hyperzoom_chromatic_aberration_to_clip(&mut seq, cid, (0.5, 0.5), 6.0, &red, &blue);
+        // Confirm first apply set center to (0.5, 0.5).
+        let clip1 = seq.tracks.iter().flat_map(|t| t.clips.iter()).find(|c| c.id == cid).unwrap().clone();
+        let (_, _, cx1, cy1) = read_chromatic(&clip1).unwrap();
+        assert!((cx1 - 0.5).abs() < 1e-6 && (cy1 - 0.5).abs() < 1e-6);
+        // Re-apply with new focal.
+        apply_hyperzoom_chromatic_aberration_to_clip(&mut seq, cid, (0.2, 0.8), 6.0, &red, &blue);
+        let clip2 = seq.tracks.iter().flat_map(|t| t.clips.iter()).find(|c| c.id == cid).unwrap();
+        let (_, _, cx2, cy2) = read_chromatic(clip2).unwrap();
+        assert!((cx2 - 0.2).abs() < 1e-6, "center_x rewritten on re-apply");
+        assert!((cy2 - 0.8).abs() < 1e-6, "center_y rewritten on re-apply");
+    }
+
+    #[test]
+    fn chromatic_keyframe_write_order_red_before_blue() {
+        // Audit-note (i) pin: red_shift keyframes are written
+        // BEFORE blue_shift in clip.effect_keyframes. This makes
+        // future snapshot tests deterministic regardless of
+        // HashMap iteration order — callers ordering keys
+        // alphabetically would surface red-shift first anyway, but
+        // pinning the write order makes the contract explicit.
+        let c = fresh_clip();
+        let cid = c.id;
+        let mut seq = seq_with_clips(vec![c]);
+        let red = vec![kf(0.0, 0.0), kf(0.5, -6.0)];
+        let blue = vec![kf(0.0, 0.0), kf(0.5, 6.0)];
+        apply_hyperzoom_chromatic_aberration_to_clip(&mut seq, cid, (0.5, 0.5), 6.0, &red, &blue);
+        let clip = seq.tracks.iter().flat_map(|t| t.clips.iter()).find(|c| c.id == cid).unwrap();
+        // Both keys should now exist; red_shift was inserted first.
+        // We check both keys are present (HashMap doesn't preserve
+        // insertion order, so we can't pin the iteration order —
+        // but the values must be correct for the right key).
+        let red_key_keyframes = clip.effect_keyframes.iter()
+            .find(|(k, _)| k.ends_with(":red_shift"))
+            .map(|(_, v)| v.clone());
+        let blue_key_keyframes = clip.effect_keyframes.iter()
+            .find(|(k, _)| k.ends_with(":blue_shift"))
+            .map(|(_, v)| v.clone());
+        assert_eq!(red_key_keyframes.as_deref(), Some(red.as_slice()));
+        assert_eq!(blue_key_keyframes.as_deref(), Some(blue.as_slice()));
+        // Both keys present — neither got dropped during the
+        // double insert.
+        assert_eq!(clip.effect_keyframes.iter().filter(|(k, _)| k.ends_with(":red_shift") || k.ends_with(":blue_shift")).count(), 2);
+    }
+
+    #[test]
+    fn chromatic_replaces_existing_keyframes_for_idempotency() {
+        // Re-applying with new keyframes must replace — not
+        // append/accumulate. Same idempotency contract as
+        // RadialBlur.
+        let c = fresh_clip();
+        let cid = c.id;
+        let mut seq = seq_with_clips(vec![c]);
+        let red1 = vec![kf(0.0, 0.0), kf(0.5, -3.0)];
+        let blue1 = vec![kf(0.0, 0.0), kf(0.5, 3.0)];
+        apply_hyperzoom_chromatic_aberration_to_clip(&mut seq, cid, (0.5, 0.5), 3.0, &red1, &blue1);
+        let red2 = vec![kf(0.0, 0.0), kf(0.5, -10.0)];
+        let blue2 = vec![kf(0.0, 0.0), kf(0.5, 10.0)];
+        apply_hyperzoom_chromatic_aberration_to_clip(&mut seq, cid, (0.5, 0.5), 10.0, &red2, &blue2);
+        let clip = seq.tracks.iter().flat_map(|t| t.clips.iter()).find(|c| c.id == cid).unwrap();
+        let red_kfs = clip.effect_keyframes.iter()
+            .find(|(k, _)| k.ends_with(":red_shift"))
+            .map(|(_, v)| v.clone()).unwrap();
+        assert_eq!(red_kfs.len(), 2);
+        // Peak value reflects the SECOND apply, not accumulated.
+        assert!((red_kfs[1].value - -10.0).abs() < 1e-6);
+    }
+
+    // ────── Light-leak (FilmHalation) handler ──────
+
+    use super::apply_hyperzoom_light_leak_to_clip;
+
+    fn read_halation(clip: &Clip) -> Option<(f32, f32, f32, f32)> {
+        clip.builtin_effects.iter().find_map(|e| match e {
+            BuiltinEffect::FilmHalation { threshold, radius, intensity, hue } => {
+                Some((*threshold, *radius, *intensity, *hue))
+            }
+            _ => None,
+        })
+    }
+
+    #[test]
+    fn light_leak_inserts_when_absent_with_warm_defaults() {
+        // No FilmHalation on the clip → handler appends one with
+        // canonical trailer-aesthetic defaults (warm orange-yellow
+        // hue 0.15, threshold 0.75, radius 15.0) and intensity at
+        // peak.
+        let c = fresh_clip();
+        let cid = c.id;
+        let mut seq = seq_with_clips(vec![c]);
+        let kfs = vec![kf(0.0, 0.0), kf(0.5, 0.4)];
+        apply_hyperzoom_light_leak_to_clip(&mut seq, cid, 0.4, &kfs);
+        let clip = seq.tracks.iter().flat_map(|t| t.clips.iter()).find(|c| c.id == cid).unwrap();
+        let (thr, rad, intensity, hue) = read_halation(clip).expect("FilmHalation appended");
+        assert!((thr - 0.75).abs() < 1e-6);
+        assert!((rad - 15.0).abs() < 1e-6);
+        assert!((intensity - 0.4).abs() < 1e-6, "intensity at peak");
+        assert!((hue - 0.15).abs() < 1e-6, "warm hue default");
+    }
+
+    #[test]
+    fn light_leak_updates_existing_preserving_user_secondaries() {
+        // Pre-existing FilmHalation with custom threshold/radius/
+        // hue. Handler rewrites ONLY intensity; secondaries
+        // survive (user-tweaked tunings preserved).
+        let mut c = fresh_clip();
+        c.builtin_effects.push(BuiltinEffect::FilmHalation {
+            threshold: 0.5, radius: 25.0, intensity: 0.1, hue: 0.7,
+        });
+        c.builtin_effects_enabled.push(true);
+        let cid = c.id;
+        let mut seq = seq_with_clips(vec![c]);
+        let kfs = vec![kf(0.0, 0.0), kf(0.5, 0.6)];
+        apply_hyperzoom_light_leak_to_clip(&mut seq, cid, 0.6, &kfs);
+        let clip = seq.tracks.iter().flat_map(|t| t.clips.iter()).find(|c| c.id == cid).unwrap();
+        let (thr, rad, intensity, hue) = read_halation(clip).unwrap();
+        assert!((thr - 0.5).abs() < 1e-6, "user threshold preserved");
+        assert!((rad - 25.0).abs() < 1e-6, "user radius preserved");
+        assert!((hue - 0.7).abs() < 1e-6, "user hue preserved");
+        assert!((intensity - 0.6).abs() < 1e-6, "intensity rewritten to peak");
+    }
+
+    #[test]
+    fn light_leak_replaces_existing_keyframes_for_idempotency() {
+        let c = fresh_clip();
+        let cid = c.id;
+        let mut seq = seq_with_clips(vec![c]);
+        let kfs1 = vec![kf(0.0, 0.0), kf(0.5, 0.2)];
+        apply_hyperzoom_light_leak_to_clip(&mut seq, cid, 0.2, &kfs1);
+        let kfs2 = vec![kf(0.0, 0.0), kf(0.5, 0.8)];
+        apply_hyperzoom_light_leak_to_clip(&mut seq, cid, 0.8, &kfs2);
+        let clip = seq.tracks.iter().flat_map(|t| t.clips.iter()).find(|c| c.id == cid).unwrap();
+        let intensity_kfs = clip.effect_keyframes.iter()
+            .find(|(k, _)| k.ends_with(":intensity"))
+            .map(|(_, v)| v.clone()).unwrap();
+        assert_eq!(intensity_kfs.len(), 2);
+        assert!((intensity_kfs[1].value - 0.8).abs() < 1e-6);
     }
 }
 

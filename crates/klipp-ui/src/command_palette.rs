@@ -543,6 +543,10 @@ pub fn build(state: &AppState) -> Vec<PaletteEntry> {
                 add_whoosh: false,
                 whoosh_variant: 0,
                 whoosh_custom_path: None,
+                add_chromatic_aberration: false,
+                chromatic_aberration_amount: 0.0,
+                add_light_leak: false,
+                light_leak_intensity: 0.0,
             }),
             enabled: true,
         });

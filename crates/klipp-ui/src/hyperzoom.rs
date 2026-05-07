@@ -395,6 +395,33 @@ pub struct HyperzoomInput {
     /// `0.0 → amount` over the source ramp; target ramps `amount → 0.0`
     /// over the target ramp; held segments stay at peak.
     pub radial_blur_amount: f32,
+    /// When `true`, the planner additionally emits chromatic-
+    /// aberration keyframes alongside the scale ramp. Same opt-in
+    /// pattern as `add_radial_blur`. The standalone
+    /// `BuiltinEffect::ChromaticAberration` is always available
+    /// from the effects library; this just wires it through Apply
+    /// Hyperzoom.
+    pub add_chromatic_aberration: bool,
+    /// Peak chromatic-aberration amount (pixels). One symmetric
+    /// knob — the planner emits `red_shift` keyframes at
+    /// `0.0 → -amount → 0.0` and `blue_shift` keyframes at
+    /// `0.0 → +amount → 0.0` so red converges + blue diverges
+    /// from the focal point (the canonical trailer-RGB-split
+    /// look). Power users wanting asymmetric splits tweak the
+    /// inserted builtin afterwards.
+    pub chromatic_aberration_amount: f32,
+    /// When `true`, the planner additionally emits film-halation
+    /// intensity keyframes alongside the scale ramp. Light-leak
+    /// aesthetic rides on `BuiltinEffect::FilmHalation` rather
+    /// than `LensFlare` — halation's "bright pixels glow warmly"
+    /// matches the trailer feel without needing a defined
+    /// source point (the focal point is convergence-of-motion,
+    /// not sun-position).
+    pub add_light_leak: bool,
+    /// Peak film-halation intensity (passed to
+    /// `BuiltinEffect::FilmHalation::intensity`). Same time-shape
+    /// as the scale ramp.
+    pub light_leak_intensity: f32,
 }
 
 /// Output of [`plan_hyperzoom`]. Keyframe times are clip-local seconds
@@ -411,6 +438,13 @@ pub struct HyperzoomPlan {
     /// the handler can skip the radial-blur insertion entirely on
     /// the back-compat path.
     pub radial_blur: Option<RadialBlurPlan>,
+    /// Chromatic-aberration center + per-side red/blue keyframes
+    /// when `HyperzoomInput::add_chromatic_aberration` was true.
+    /// `None` otherwise — same opt-in semantics as `radial_blur`.
+    pub chromatic_aberration: Option<ChromaticAberrationPlan>,
+    /// Film-halation per-side intensity keyframes when
+    /// `HyperzoomInput::add_light_leak` was true. `None` otherwise.
+    pub light_leak: Option<LightLeakPlan>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -426,6 +460,56 @@ pub struct RadialBlurPlan {
     pub source_amount_kfs: Vec<Keyframe>,
     /// Mirror of `source_amount_kfs` for the target side.
     pub target_amount_kfs: Vec<Keyframe>,
+}
+
+/// Sub-plan for the chromatic-aberration convenience layer. Two
+/// keyframe sets per side — `red_shift` ramps `0 → -amount → 0`
+/// while `blue_shift` ramps `0 → +amount → 0` so red converges
+/// and blue diverges from the focal point (the canonical
+/// trailer-RGB-split look). Both ride the same `build_ramp_*`
+/// helpers as the scale ramp so the four animations stay
+/// lock-step in time by construction.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ChromaticAberrationPlan {
+    /// Normalised screen coords for the split center — same value
+    /// as the focal point.
+    pub center: (f32, f32),
+    /// Peak split magnitude (pixels). The handler uses this for
+    /// the static fallback values it writes onto the inserted
+    /// `BuiltinEffect::ChromaticAberration`; the keyframes drive
+    /// the actual animation.
+    pub peak_amount: f32,
+    /// `BuiltinEffect::ChromaticAberration::red_shift` keyframes
+    /// for the source clip. Values run `0 → -amount → 0` (red
+    /// converges inward at peak).
+    pub source_red_kfs: Vec<Keyframe>,
+    /// `BuiltinEffect::ChromaticAberration::blue_shift` keyframes
+    /// for the source clip. Values run `0 → +amount → 0` (blue
+    /// diverges outward at peak). Mirror sign of red.
+    pub source_blue_kfs: Vec<Keyframe>,
+    /// Target-side red mirror — `0 → -amount → 0` riding the
+    /// same time-shape as the scale ramp's target side.
+    pub target_red_kfs: Vec<Keyframe>,
+    /// Target-side blue mirror.
+    pub target_blue_kfs: Vec<Keyframe>,
+}
+
+/// Sub-plan for the light-leak convenience layer. Rides
+/// `BuiltinEffect::FilmHalation` (the "bright pixels glow warmly"
+/// pass) rather than `LensFlare` — halation doesn't need a
+/// defined source point and matches the trailer-style warm-bleed
+/// aesthetic for the whole-image cut.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LightLeakPlan {
+    /// Peak halation intensity (mirrors the input field).
+    pub peak_intensity: f32,
+    /// `BuiltinEffect::FilmHalation::intensity` keyframes for the
+    /// source clip. Same time-shape as the scale ramp: ramps
+    /// `0.0 → intensity` over the source ramp window; under
+    /// hold > 0 a 3rd keyframe pins the held segment at peak.
+    pub source_intensity_kfs: Vec<Keyframe>,
+    /// Mirror of `source_intensity_kfs` for the target side.
+    pub target_intensity_kfs: Vec<Keyframe>,
 }
 
 /// Compute the keyframes + anchor for a hyperzoom transition between
@@ -525,12 +609,94 @@ pub fn plan_hyperzoom(input: HyperzoomInput) -> HyperzoomPlan {
         None
     };
 
+    // Chromatic-aberration keyframes — two paired ramps per side
+    // (red_shift and blue_shift). Red converges (negative shift)
+    // at peak; blue diverges (positive shift). Same time-shape as
+    // the scale ramp via the shared build_ramp_* helpers.
+    let chromatic_aberration = if input.add_chromatic_aberration && input.chromatic_aberration_amount > 0.0 {
+        let amount = input.chromatic_aberration_amount.max(0.0);
+        let src_red_kfs = build_ramp_keyframes(
+            (src_ramp_start, 0.0),
+            (peak_src, -amount),
+            easing,
+            if hold > 0.0 {
+                Some(input.source_clip_dur_secs.max(peak_src + 0.05))
+            } else {
+                None
+            },
+        );
+        let src_blue_kfs = build_ramp_keyframes(
+            (src_ramp_start, 0.0),
+            (peak_src, amount),
+            easing,
+            if hold > 0.0 {
+                Some(input.source_clip_dur_secs.max(peak_src + 0.05))
+            } else {
+                None
+            },
+        );
+        let tgt_red_kfs = build_ramp_keyframes_target(
+            if hold > 0.0 { Some(0.0) } else { None },
+            (tgt_ramp_start, -amount),
+            (tgt_ramp_end, 0.0),
+            easing,
+        );
+        let tgt_blue_kfs = build_ramp_keyframes_target(
+            if hold > 0.0 { Some(0.0) } else { None },
+            (tgt_ramp_start, amount),
+            (tgt_ramp_end, 0.0),
+            easing,
+        );
+        Some(ChromaticAberrationPlan {
+            center: (fx, fy),
+            peak_amount: amount,
+            source_red_kfs: src_red_kfs,
+            source_blue_kfs: src_blue_kfs,
+            target_red_kfs: tgt_red_kfs,
+            target_blue_kfs: tgt_blue_kfs,
+        })
+    } else {
+        None
+    };
+
+    // Light-leak intensity keyframes — single ramp per side on
+    // FilmHalation::intensity. Same time-shape via the shared
+    // build_ramp_* helpers.
+    let light_leak = if input.add_light_leak && input.light_leak_intensity > 0.0 {
+        let intensity = input.light_leak_intensity.max(0.0);
+        let src_intensity_kfs = build_ramp_keyframes(
+            (src_ramp_start, 0.0),
+            (peak_src, intensity),
+            easing,
+            if hold > 0.0 {
+                Some(input.source_clip_dur_secs.max(peak_src + 0.05))
+            } else {
+                None
+            },
+        );
+        let tgt_intensity_kfs = build_ramp_keyframes_target(
+            if hold > 0.0 { Some(0.0) } else { None },
+            (tgt_ramp_start, intensity),
+            (tgt_ramp_end, 0.0),
+            easing,
+        );
+        Some(LightLeakPlan {
+            peak_intensity: intensity,
+            source_intensity_kfs: src_intensity_kfs,
+            target_intensity_kfs: tgt_intensity_kfs,
+        })
+    } else {
+        None
+    };
+
     HyperzoomPlan {
         source_anchor: (fx, fy),
         source_scale_kfs,
         target_anchor: (fx, fy),
         target_scale_kfs,
         radial_blur,
+        chromatic_aberration,
+        light_leak,
     }
 }
 
@@ -773,6 +939,10 @@ mod tests {
             hold_secs: 0.0,
             add_radial_blur: false,
             radial_blur_amount: 0.0,
+            add_chromatic_aberration: false,
+            chromatic_aberration_amount: 0.0,
+            add_light_leak: false,
+            light_leak_intensity: 0.0,
         }
     }
 
@@ -849,6 +1019,10 @@ mod tests {
             hold_secs: hold,
             add_radial_blur: false,
             radial_blur_amount: 0.0,
+            add_chromatic_aberration: false,
+            chromatic_aberration_amount: 0.0,
+            add_light_leak: false,
+            light_leak_intensity: 0.0,
         }
     }
 
@@ -984,6 +1158,10 @@ mod tests {
             hold_secs: hold,
             add_radial_blur: add_blur,
             radial_blur_amount: blur_amount,
+            add_chromatic_aberration: false,
+            chromatic_aberration_amount: 0.0,
+            add_light_leak: false,
+            light_leak_intensity: 0.0,
         }
     }
 
@@ -1088,6 +1266,192 @@ mod tests {
         let tgt = &plan.target_scale_kfs;
         assert!((src[1].time_secs - src[0].time_secs).abs() > 0.02);
         assert!((tgt[1].time_secs - tgt[0].time_secs).abs() > 0.02);
+    }
+
+    // ────── Chromatic-aberration convenience layer (opt-in) ──────
+
+    fn input_with_chroma(
+        easing: HyperzoomEasing, hold: f64,
+        add_chroma: bool, chroma_amount: f32,
+    ) -> HyperzoomInput {
+        HyperzoomInput {
+            source_clip_dur_secs: 3.0,
+            target_clip_dur_secs: 3.0,
+            focal_x_norm: 0.5,
+            focal_y_norm: 0.5,
+            duration_secs: 0.5,
+            max_scale: 50.0,
+            easing,
+            hold_secs: hold,
+            add_radial_blur: false,
+            radial_blur_amount: 0.0,
+            add_chromatic_aberration: add_chroma,
+            chromatic_aberration_amount: chroma_amount,
+            add_light_leak: false,
+            light_leak_intensity: 0.0,
+        }
+    }
+
+    #[test]
+    fn chromatic_disabled_yields_none_in_plan() {
+        let plan = plan_hyperzoom(input(0.5, 0.5, 0.5, 50.0, 3.0, 3.0));
+        assert!(plan.chromatic_aberration.is_none());
+    }
+
+    #[test]
+    fn chromatic_zero_amount_yields_none_even_when_enabled() {
+        let plan = plan_hyperzoom(input_with_chroma(HyperzoomEasing::Linear, 0.0, true, 0.0));
+        assert!(plan.chromatic_aberration.is_none());
+    }
+
+    #[test]
+    fn chromatic_enabled_emits_red_and_blue_keyframes_with_scale_timing() {
+        let plan = plan_hyperzoom(input_with_chroma(HyperzoomEasing::Linear, 0.0, true, 6.0));
+        let ca = plan.chromatic_aberration.expect("chromatic enabled with positive amount");
+        assert_eq!(ca.center, (0.5, 0.5));
+        assert!((ca.peak_amount - 6.0).abs() < 1e-6);
+        // Source red: (2.5, 0.0) → (3.0, -6.0). Source blue:
+        // (2.5, 0.0) → (3.0, +6.0). Lock-step times.
+        assert_eq!(ca.source_red_kfs.len(), 2);
+        assert_eq!(ca.source_blue_kfs.len(), 2);
+        assert!((ca.source_red_kfs[1].value - -6.0).abs() < 1e-6);
+        assert!((ca.source_blue_kfs[1].value - 6.0).abs() < 1e-6);
+        // Target sides mirror.
+        assert!((ca.target_red_kfs[0].value - -6.0).abs() < 1e-6);
+        assert!((ca.target_blue_kfs[0].value - 6.0).abs() < 1e-6);
+        assert!(ca.target_red_kfs[1].value.abs() < 1e-6);
+        assert!(ca.target_blue_kfs[1].value.abs() < 1e-6);
+        // Time-shape parity with scale_kfs — all four chromatic
+        // keyframe sets ride the same time-shape as the scale ramp.
+        for (a, b) in plan.source_scale_kfs.iter().zip(&ca.source_red_kfs) {
+            assert!((a.time_secs - b.time_secs).abs() < 1e-9);
+        }
+        for (a, b) in plan.source_scale_kfs.iter().zip(&ca.source_blue_kfs) {
+            assert!((a.time_secs - b.time_secs).abs() < 1e-9);
+        }
+        for (a, b) in plan.target_scale_kfs.iter().zip(&ca.target_red_kfs) {
+            assert!((a.time_secs - b.time_secs).abs() < 1e-9);
+        }
+        for (a, b) in plan.target_scale_kfs.iter().zip(&ca.target_blue_kfs) {
+            assert!((a.time_secs - b.time_secs).abs() < 1e-9);
+        }
+    }
+
+    #[test]
+    fn chromatic_red_and_blue_are_sign_mirrors() {
+        // Pin the symmetric-split convention: at every keyframe,
+        // red_shift == -blue_shift. If a future audit changes the
+        // convention (e.g. asymmetric ramps), this test surfaces
+        // it before trailer aesthetics drift.
+        let plan = plan_hyperzoom(input_with_chroma(HyperzoomEasing::Bezier, 0.2, true, 8.0));
+        let ca = plan.chromatic_aberration.unwrap();
+        for (r, b) in ca.source_red_kfs.iter().zip(&ca.source_blue_kfs) {
+            assert!((r.value + b.value).abs() < 1e-6,
+                "red={} blue={} at t={} not sign-mirrors", r.value, b.value, r.time_secs);
+        }
+        for (r, b) in ca.target_red_kfs.iter().zip(&ca.target_blue_kfs) {
+            assert!((r.value + b.value).abs() < 1e-6,
+                "red={} blue={} at t={} not sign-mirrors", r.value, b.value, r.time_secs);
+        }
+    }
+
+    #[test]
+    fn chromatic_picks_up_hold_segment_three_keyframes() {
+        let plan = plan_hyperzoom(input_with_chroma(HyperzoomEasing::Linear, 0.2, true, 6.0));
+        let ca = plan.chromatic_aberration.unwrap();
+        assert_eq!(ca.source_red_kfs.len(), 3);
+        assert_eq!(ca.source_blue_kfs.len(), 3);
+        assert_eq!(ca.target_red_kfs.len(), 3);
+        assert_eq!(ca.target_blue_kfs.len(), 3);
+    }
+
+    #[test]
+    fn chromatic_inherits_bezier_easing_on_ramp_endpoints() {
+        let plan = plan_hyperzoom(input_with_chroma(HyperzoomEasing::Bezier, 0.0, true, 6.0));
+        let ca = plan.chromatic_aberration.unwrap();
+        for kf in ca.source_red_kfs.iter().chain(&ca.source_blue_kfs)
+            .chain(&ca.target_red_kfs).chain(&ca.target_blue_kfs)
+        {
+            assert!(matches!(kf.interpolation, Interpolation::Bezier));
+        }
+    }
+
+    // ────── Light-leak (FilmHalation) convenience layer (opt-in) ──────
+
+    fn input_with_leak(
+        easing: HyperzoomEasing, hold: f64,
+        add_leak: bool, leak_intensity: f32,
+    ) -> HyperzoomInput {
+        HyperzoomInput {
+            source_clip_dur_secs: 3.0,
+            target_clip_dur_secs: 3.0,
+            focal_x_norm: 0.5,
+            focal_y_norm: 0.5,
+            duration_secs: 0.5,
+            max_scale: 50.0,
+            easing,
+            hold_secs: hold,
+            add_radial_blur: false,
+            radial_blur_amount: 0.0,
+            add_chromatic_aberration: false,
+            chromatic_aberration_amount: 0.0,
+            add_light_leak: add_leak,
+            light_leak_intensity: leak_intensity,
+        }
+    }
+
+    #[test]
+    fn light_leak_disabled_yields_none_in_plan() {
+        let plan = plan_hyperzoom(input(0.5, 0.5, 0.5, 50.0, 3.0, 3.0));
+        assert!(plan.light_leak.is_none());
+    }
+
+    #[test]
+    fn light_leak_zero_intensity_yields_none_even_when_enabled() {
+        let plan = plan_hyperzoom(input_with_leak(HyperzoomEasing::Linear, 0.0, true, 0.0));
+        assert!(plan.light_leak.is_none());
+    }
+
+    #[test]
+    fn light_leak_enabled_emits_intensity_keyframes_with_scale_timing() {
+        let plan = plan_hyperzoom(input_with_leak(HyperzoomEasing::Linear, 0.0, true, 0.4));
+        let ll = plan.light_leak.expect("light-leak enabled with positive intensity");
+        assert!((ll.peak_intensity - 0.4).abs() < 1e-6);
+        assert_eq!(ll.source_intensity_kfs.len(), 2);
+        assert_eq!(ll.target_intensity_kfs.len(), 2);
+        assert!(ll.source_intensity_kfs[0].value.abs() < 1e-6);
+        assert!((ll.source_intensity_kfs[1].value - 0.4).abs() < 1e-6);
+        assert!((ll.target_intensity_kfs[0].value - 0.4).abs() < 1e-6);
+        assert!(ll.target_intensity_kfs[1].value.abs() < 1e-6);
+        // Lock-step with scale ramp.
+        for (a, b) in plan.source_scale_kfs.iter().zip(&ll.source_intensity_kfs) {
+            assert!((a.time_secs - b.time_secs).abs() < 1e-9);
+        }
+        for (a, b) in plan.target_scale_kfs.iter().zip(&ll.target_intensity_kfs) {
+            assert!((a.time_secs - b.time_secs).abs() < 1e-9);
+        }
+    }
+
+    #[test]
+    fn light_leak_picks_up_hold_segment_three_keyframes() {
+        let plan = plan_hyperzoom(input_with_leak(HyperzoomEasing::Linear, 0.2, true, 0.4));
+        let ll = plan.light_leak.unwrap();
+        assert_eq!(ll.source_intensity_kfs.len(), 3);
+        assert_eq!(ll.target_intensity_kfs.len(), 3);
+        // Source held tail + target held head at peak intensity.
+        assert!((ll.source_intensity_kfs[1].value - 0.4).abs() < 1e-6);
+        assert!((ll.source_intensity_kfs[2].value - 0.4).abs() < 1e-6);
+        assert!((ll.target_intensity_kfs[0].value - 0.4).abs() < 1e-6);
+        assert!((ll.target_intensity_kfs[1].value - 0.4).abs() < 1e-6);
+    }
+
+    #[test]
+    fn light_leak_inherits_bezier_easing_on_ramp_endpoints() {
+        let plan = plan_hyperzoom(input_with_leak(HyperzoomEasing::Bezier, 0.0, true, 0.4));
+        let ll = plan.light_leak.unwrap();
+        for kf in ll.source_intensity_kfs.iter().chain(&ll.target_intensity_kfs) {
+            assert!(matches!(kf.interpolation, Interpolation::Bezier));
+        }
     }
 
     // ──────────────── Auto-link target collection ────────────────

@@ -2409,6 +2409,39 @@ pub enum AppCommand {
         /// `whoosh_variant == 255` (Custom). Ignored otherwise.
         /// `None` (default) is the built-in-synth path.
         whoosh_custom_path: Option<std::path::PathBuf>,
+        /// Opt-in chromatic-aberration ramp inserted on apply
+        /// (HZ-NEXT-LIGHT-LEAK-CHROMATIC). `false` (default) skips
+        /// every chromatic-aberration code path — pinned to
+        /// byte-identical behaviour against pre-feature applies.
+        ///
+        /// When `true`, the handler inserts/updates a
+        /// `BuiltinEffect::ChromaticAberration` on source + target
+        /// with `center` bound to the focal point and `red_shift` /
+        /// `blue_shift` keyframed `0 → ∓amount → 0` across the
+        /// same ramp window as the scale animation (red converges,
+        /// blue diverges — the canonical trailer-RGB-split look).
+        ///
+        /// Same additive-defaulting-to-safe-values intent as the
+        /// whoosh fields: when `AppCommand` gains
+        /// `Serialize`/`Deserialize` derives in a future refactor,
+        /// this field should receive `#[serde(default)]` so old
+        /// commands round-trip to safe defaults.
+        add_chromatic_aberration: bool,
+        /// Peak chromatic-aberration amount (pixels). Drives both
+        /// `red_shift` (animated `0 → -amount → 0`) and `blue_shift`
+        /// (animated `0 → +amount → 0`) symmetrically. Ignored
+        /// when `add_chromatic_aberration` is `false`. `0.0` is
+        /// treated as "off" even when the bool is `true` —
+        /// guards against a stale dispatch producing a zero-effect
+        /// insertion.
+        chromatic_aberration_amount: f32,
+        /// Opt-in light-leak (film-halation) ramp inserted on
+        /// apply. Same shape as `add_chromatic_aberration`.
+        add_light_leak: bool,
+        /// Peak `BuiltinEffect::FilmHalation::intensity` value the
+        /// keyframes climb to. Ignored when `add_light_leak` is
+        /// `false`; `0.0` short-circuits to "off".
+        light_leak_intensity: f32,
     },
 
     /// Auto-apply `transform_link` to every clip *beneath* the

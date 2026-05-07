@@ -3026,6 +3026,15 @@ fn show_hyperzoom_section(
                             add_whoosh,
                             whoosh_variant,
                             whoosh_custom_path,
+                            // Inspector wires the chromatic-aberration
+                            // and light-leak checkboxes in commit 2 of
+                            // HZ-NEXT-LIGHT-LEAK-CHROMATIC; for now,
+                            // canonical defaults preserve byte-identical
+                            // behaviour.
+                            add_chromatic_aberration: false,
+                            chromatic_aberration_amount: 0.0,
+                            add_light_leak: false,
+                            light_leak_intensity: 0.0,
                         });
                     }
 
