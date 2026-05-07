@@ -2068,6 +2068,13 @@ pub enum AppCommand {
     RippleTrimHead { clip_id: ClipId },
     RippleTrimTail { clip_id: ClipId },
     InsertGapAtPlayhead,
+    /// Insert a silence / gap clip on a specific track at the playhead.
+    /// Distinct from `InsertGapAtPlayhead` (which routes through the
+    /// magnetic editor and lands on the primary track only). Used for
+    /// "Insert N seconds of silence on this audio track" workflows
+    /// where the user has a specific track in mind and a non-default
+    /// duration. Subsequent clips on the target track ripple right.
+    InsertGapOnTrack { track_idx: usize, duration_secs: f64 },
     /// Q — trim the OUT edge of the clip whose OUT is at or before the playhead
     /// to the playhead position. Picks target by proximity; no selection required.
     TrimOutToPlayhead,

@@ -4756,6 +4756,47 @@ impl KlippApp {
                     self.trim_to_playhead_dispatch(TrimToPlayheadDir::In);
                     return true;
                 }
+                // Insert silence / gap on a specific track at the playhead.
+                // Distinct from InsertGapAtPlayhead which routes through the
+                // magnetic editor and only lands on the primary track. Used
+                // for "Insert N seconds of silence on this audio track" —
+                // shifts every clip on the target track whose timeline_in
+                // is at or after the playhead by `duration_secs`. Clips that
+                // straddle the playhead stay where they are (the conventional
+                // "click at a boundary" case is the common one; clip-splitting
+                // mid-clip is a separate workflow).
+                AppCommand::InsertGapOnTrack { track_idx, duration_secs } => {
+                    let track_idx = *track_idx;
+                    let duration_secs = *duration_secs;
+                    if duration_secs <= 0.0 {
+                        return true;
+                    }
+                    let playhead = self.state.playhead;
+                    let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+                    let Some(track) = seq.tracks.get_mut(track_idx) else {
+                        self.state.toast.show("Insert silence — track not found");
+                        return true;
+                    };
+                    let rate = if playhead.rate > 1 { playhead.rate } else { track.clips.first()
+                        .map(|c| c.timeline_in.rate)
+                        .unwrap_or(24) };
+                    let delta = klipp_core::RationalTime::from_secs_f64(duration_secs, rate);
+                    let mut shifted = 0usize;
+                    for clip in &mut track.clips {
+                        if clip.timeline_in >= playhead {
+                            clip.timeline_in = clip.timeline_in + delta;
+                            clip.timeline_out = clip.timeline_out + delta;
+                            shifted += 1;
+                        }
+                    }
+                    track.sort_clips();
+                    self.state.toast.show(format!(
+                        "Inserted {duration_secs:.2}s silence on track {track_idx} ({shifted} clip(s) rippled)"
+                    ));
+                    self.state.dirty = true;
+                    self.sync_sequence_to_engine();
+                    return true;
+                }
                 // Magnetic: Insert 1-second gap at playhead
                 AppCommand::InsertGapAtPlayhead => {
                     let playhead = self.state.playhead;

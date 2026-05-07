@@ -256,6 +256,39 @@ pub fn build(state: &AppState) -> Vec<PaletteEntry> {
         action: PaletteAction::Cmd(AppCommand::AddVideoTrack), enabled: true });
     e.push(PaletteEntry { label: Cow::Borrowed("Add Audio Track"), shortcut: Cow::Borrowed(""),
         action: PaletteAction::Cmd(AppCommand::AddAudioTrack), enabled: true });
+    // "Insert N seconds of silence" — three common durations, targeting the
+    // first audio track so the entry has a single deterministic effect from
+    // the palette. Power users with multi-track edits can right-click the
+    // track header (later UX) for arbitrary track targeting.
+    let first_audio_idx = state.sequences.get(state.active_sequence_idx)
+        .and_then(|seq| seq.tracks.iter().position(|t| t.kind == klipp_timeline::TrackKind::Audio));
+    e.push(PaletteEntry { label: Cow::Borrowed("Insert 1 s Silence on First Audio Track"), shortcut: Cow::Borrowed(""),
+        action: PaletteAction::Custom(|state, cmds| {
+            if let Some(idx) = state.sequences.get(state.active_sequence_idx)
+                .and_then(|seq| seq.tracks.iter().position(|t| t.kind == klipp_timeline::TrackKind::Audio))
+            {
+                cmds.push(AppCommand::InsertGapOnTrack { track_idx: idx, duration_secs: 1.0 });
+            }
+        }),
+        enabled: first_audio_idx.is_some() });
+    e.push(PaletteEntry { label: Cow::Borrowed("Insert 2 s Silence on First Audio Track"), shortcut: Cow::Borrowed(""),
+        action: PaletteAction::Custom(|state, cmds| {
+            if let Some(idx) = state.sequences.get(state.active_sequence_idx)
+                .and_then(|seq| seq.tracks.iter().position(|t| t.kind == klipp_timeline::TrackKind::Audio))
+            {
+                cmds.push(AppCommand::InsertGapOnTrack { track_idx: idx, duration_secs: 2.0 });
+            }
+        }),
+        enabled: first_audio_idx.is_some() });
+    e.push(PaletteEntry { label: Cow::Borrowed("Insert 5 s Silence on First Audio Track"), shortcut: Cow::Borrowed(""),
+        action: PaletteAction::Custom(|state, cmds| {
+            if let Some(idx) = state.sequences.get(state.active_sequence_idx)
+                .and_then(|seq| seq.tracks.iter().position(|t| t.kind == klipp_timeline::TrackKind::Audio))
+            {
+                cmds.push(AppCommand::InsertGapOnTrack { track_idx: idx, duration_secs: 5.0 });
+            }
+        }),
+        enabled: first_audio_idx.is_some() });
 
     // ── Mark / Navigation ───────────────────────────────────
     e.push(PaletteEntry { label: Cow::Borrowed("Add Marker"), shortcut: Cow::Borrowed("M"),
