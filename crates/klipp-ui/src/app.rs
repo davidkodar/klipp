@@ -28319,6 +28319,7 @@ impl KlippApp {
                 &mut self.key_bindings,
                 &self.theme_registry,
                 &self.theme,
+                self.state.snap,
             );
             cmds.extend(pref_cmds);
             // Sync skim_audio pref → state (checkbox may have changed)

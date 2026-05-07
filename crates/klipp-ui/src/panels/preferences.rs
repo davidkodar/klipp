@@ -70,6 +70,7 @@ impl PreferencesPanel {
         key_bindings: &mut crate::keybindings::KeyBindings,
         theme_registry: &crate::theme::ThemeRegistry,
         theme: &KlippTheme,
+        snap_config: klipp_core::SnapConfig,
     ) -> (bool, Vec<AppCommand>) {
         let mut open = true;
         let mut cmds = Vec::new();
@@ -274,7 +275,7 @@ impl PreferencesPanel {
                         match self.active_tab {
                             PrefsTab::General => self.show_general(ui, prefs, prefs_dirty, theme),
                             PrefsTab::Playback => self.show_playback(ui, prefs, prefs_dirty, &mut cmds, theme),
-                            PrefsTab::Editing => self.show_editing(ui, prefs, prefs_dirty, &mut cmds, theme),
+                            PrefsTab::Editing => self.show_editing(ui, prefs, prefs_dirty, &mut cmds, theme, snap_config),
                             PrefsTab::FileBrowser => self.show_file_browser(ui, prefs, prefs_dirty, theme),
                             PrefsTab::Audio => self.show_audio(ui, prefs, prefs_dirty, theme),
                             PrefsTab::Export => self.show_export(ui, prefs, prefs_dirty, &mut cmds, theme),
@@ -843,6 +844,7 @@ impl PreferencesPanel {
         dirty: &mut bool,
         cmds: &mut Vec<AppCommand>,
         theme: &KlippTheme,
+        snap_config: klipp_core::SnapConfig,
     ) {
         // Page heading
         ui.horizontal(|ui| {
@@ -910,8 +912,17 @@ impl PreferencesPanel {
                                     other => other,
                                 };
                                 if new_val != cur {
+                                    // Dispatch through AppCommand so the
+                                    // handler also mirrors to state.grid_
+                                    // snap_interval (consulted live by
+                                    // the snap-resolution layer). Direct
+                                    // mutation here only would require a
+                                    // restart for the change to take
+                                    // effect, since the prefs→state mirror
+                                    // at app.rs:570 only fires at startup.
                                     prefs.editing.grid_snap_interval = new_val;
                                     *dirty = true;
+                                    cmds.push(AppCommand::SetGridInterval(new_val));
                                 }
                             }
                         }
@@ -919,11 +930,49 @@ impl PreferencesPanel {
                 if let GridInterval::Custom(secs) = prefs.editing.grid_snap_interval {
                     let mut v = secs;
                     if ui.add(egui::DragValue::new(&mut v).range(0.001..=60.0).speed(0.05).suffix(" s").fixed_decimals(3)).changed() {
-                        prefs.editing.grid_snap_interval = GridInterval::Custom(v.max(0.001));
+                        let new_val = GridInterval::Custom(v.max(0.001));
+                        prefs.editing.grid_snap_interval = new_val;
                         *dirty = true;
+                        cmds.push(AppCommand::SetGridInterval(new_val));
                     }
                 }
             });
+        });
+
+        // Per-target snap toggles. Mirror the right-click context
+        // menu on the timeline-toolbar Snap icon and the ruler context
+        // menu — both surfaces share the same SnapConfig, so this
+        // pane is just a third view of the same state. Each row
+        // dispatches AppCommand::SetSnapMaster / SetSnapTarget; the
+        // central handler is the single mutation path (no direct
+        // writes from this pane). SnapConfig itself lives on
+        // LayoutState (not prefs.editing), so the rows are read-only
+        // mirrors of `state.snap` until a row is clicked.
+        Self::setting_row_with_subtitle(ui, "Snap (master)", "Disables every per-target snap below (also bound to N)", theme, |ui| {
+            let mut val = snap_config.master;
+            if ui.add(crate::widgets::toggle::toggle(&mut val)).changed() {
+                cmds.push(AppCommand::SetSnapMaster(val));
+            }
+        });
+        // Per-target rows: greyed when master is off, since the
+        // booleans only have effect with master on.
+        ui.add_enabled_ui(snap_config.master, |ui| {
+            use klipp_core::SnapTargetKind;
+            let rows: &[(SnapTargetKind, &str, &str, bool)] = &[
+                (SnapTargetKind::ClipEdge, "Snap to clip edges", "Across all tracks", snap_config.clips),
+                (SnapTargetKind::Playhead, "Snap to playhead", "Match the current playhead position", snap_config.playhead),
+                (SnapTargetKind::Marker, "Snap to markers", "User-placed and range markers", snap_config.markers),
+                (SnapTargetKind::InPoint, "Snap to in/out", "Sequence in / out / start (t=0)", snap_config.in_out),
+                (SnapTargetKind::Grid, "Snap to grid", "Uses the Grid snap interval above", snap_config.grid),
+            ];
+            for &(target, label, subtitle, enabled) in rows {
+                Self::setting_row_with_subtitle(ui, label, subtitle, theme, |ui| {
+                    let mut val = enabled;
+                    if ui.add(crate::widgets::toggle::toggle(&mut val)).changed() {
+                        cmds.push(AppCommand::SetSnapTarget { target, enabled: val });
+                    }
+                });
+            }
         });
 
         Self::setting_row(ui, "Zoom step multiplier", theme, |ui| {
