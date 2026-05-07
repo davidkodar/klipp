@@ -1272,6 +1272,10 @@ pub enum AppCommand {
         target: crate::SnapTargetKind,
         enabled: bool,
     },
+    /// Set the grid-snap interval. Mirrored to `prefs.editing.
+    /// grid_snap_interval` and to `state.grid_snap_interval` so the
+    /// preferences pane and the ruler context menu stay in sync.
+    SetGridInterval(crate::GridInterval),
     SetRippleEnabled(bool),
 
     // Filmstrip

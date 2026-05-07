@@ -18703,7 +18703,7 @@ impl KlippApp {
                     SnapTargetKind::Marker => self.state.snap.markers = *enabled,
                     // SequenceStart / InPoint / OutPoint share one
                     // user-facing toggle. The kind variants stay
-                    // distinct for the on-snap legend in commit 3.
+                    // distinct for the on-snap legend.
                     SnapTargetKind::SequenceStart | SnapTargetKind::InPoint | SnapTargetKind::OutPoint => {
                         self.state.snap.in_out = *enabled;
                     }
@@ -18711,6 +18711,14 @@ impl KlippApp {
                 }
                 self.layout.snap = self.state.snap;
                 self.layout_dirty = true;
+                true
+            }
+            AppCommand::SetGridInterval(interval) => {
+                // Mirror to both prefs (persisted) and state
+                // (consulted live by the snap-resolution layer).
+                self.prefs.editing.grid_snap_interval = *interval;
+                self.state.grid_snap_interval = *interval;
+                self.prefs_dirty = true;
                 true
             }
             AppCommand::SetMasterMute(muted) => {

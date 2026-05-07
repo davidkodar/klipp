@@ -766,6 +766,55 @@ pub struct TimelinePanel {
     renaming_track: Option<(usize, String)>,
     /// Per-frame scratch cache — cleared at the top of `show()`.
     pub(crate) frame_cache: TimelineFrameCache,
+    /// Cross-frame state for the on-snap legend's fade-on-kind-change
+    /// behaviour. Persists between paints so the alpha can ease in
+    /// over ~300 ms when the user crosses a semantic boundary
+    /// (Clip edge → Grid). ClipEdge → ClipEdge across different clips
+    /// does NOT reset the timer — kind change, not instance change.
+    pub(crate) legend_state: SnapLegendState,
+}
+
+/// Tracks the most-recent on-snap legend kind + when it changed, so
+/// the renderer can fade the label/line in over ~300 ms when the user
+/// crosses a semantic snap-target boundary. See `alpha_for_kind_change`
+/// for the pure timing math.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct SnapLegendState {
+    pub last_kind: Option<klipp_core::SnapTargetKind>,
+    pub last_change_time: std::time::Instant,
+}
+
+impl Default for SnapLegendState {
+    fn default() -> Self {
+        Self {
+            last_kind: None,
+            last_change_time: std::time::Instant::now(),
+        }
+    }
+}
+
+/// Duration of the fade-in after a snap-target-kind change.
+pub(crate) const SNAP_LEGEND_FADE_MS: u64 = 300;
+
+/// Pure timing math for the on-snap legend's fade-on-kind-change.
+/// Returns `1.0` when no kind change happened (or the fade has
+/// completed); otherwise eases linearly from 0.0 → 1.0 across
+/// `SNAP_LEGEND_FADE_MS`. Pulled out as a free fn so it can be unit
+/// tested without standing up egui or a mutable TimelinePanel.
+pub(crate) fn alpha_for_kind_change(
+    prev_kind: Option<klipp_core::SnapTargetKind>,
+    current_kind: Option<klipp_core::SnapTargetKind>,
+    last_change_time: std::time::Instant,
+    now: std::time::Instant,
+) -> f32 {
+    // No current snap → no legend → alpha is moot.
+    let Some(_) = current_kind else { return 1.0; };
+    // First-ever snap counts as a kind change (prev_kind = None).
+    let kind_changed = prev_kind != current_kind;
+    if !kind_changed { return 1.0; }
+    let elapsed_ms = now.saturating_duration_since(last_change_time).as_millis() as u64;
+    if elapsed_ms >= SNAP_LEGEND_FADE_MS { 1.0 }
+    else { elapsed_ms as f32 / SNAP_LEGEND_FADE_MS as f32 }
 }
 
 #[allow(dead_code)]
@@ -3119,7 +3168,147 @@ impl TimelinePanel {
                     }
                 }
             }
+            // Right-click context menu. egui's context_menu hooks on
+            // any response that sensed click — `click_and_drag()` does
+            // — and the secondary-button gesture is a separate code
+            // path from `clicked()` / `dragged()`, so the existing
+            // scrub flow above is unaffected (audit-finding (e)).
+            self.show_ruler_context_menu(state, cmds, &ruler_response, &content_rect);
         }
+    }
+
+    /// Right-click menu on the ruler. Per the brief: snap master
+    /// toggle, per-target submenu, grid interval picker, "Add marker
+    /// here" (uses the right-click time, not the playhead), set in/
+    /// out at playhead, zoom to fit. Each entry dispatches an
+    /// existing AppCommand — `AddMarker`, `SetSequenceInPoint`,
+    /// `SetSequenceOutPoint`, `FitTimelineToWindow`, `SetSnapMaster`,
+    /// `SetSnapTarget`, `SetGridInterval` — so the central handlers
+    /// continue to be the single source of truth (and persistence
+    /// dirties propagate as usual).
+    fn show_ruler_context_menu(
+        &self,
+        state: &AppState,
+        cmds: &mut Vec<AppCommand>,
+        response: &egui::Response,
+        content_rect: &egui::Rect,
+    ) {
+        // Capture the ruler-time of the right-click before the menu
+        // closure runs (the click position is otherwise lost by the
+        // time the user picks an entry).
+        let click_secs = response.interact_pointer_pos().map(|p| {
+            let x_in_content = p.x - content_rect.left() + state.timeline_scroll_x;
+            (x_in_content / state.timeline_zoom).max(0.0) as f64
+        });
+        let fps = state.fps;
+        let snap_cfg = state.snap;
+        let cur_grid = state.grid_snap_interval;
+
+        response.context_menu(|ui| {
+            use klipp_core::{GridInterval, SnapTargetKind};
+            ui.set_min_width(200.0);
+
+            // ── Snap (master + per-target submenu) ──
+            let master_label = if snap_cfg.master { "\u{2714} Snap" } else { "    Snap" };
+            if ui.button(format!("{master_label} (N)")).clicked() {
+                cmds.push(AppCommand::SetSnapMaster(!snap_cfg.master));
+                ui.close_menu();
+            }
+            ui.menu_button("Snap targets", |ui| {
+                ui.add_enabled_ui(snap_cfg.master, |ui| {
+                    let rows: &[(SnapTargetKind, &str, bool)] = &[
+                        (SnapTargetKind::ClipEdge, "Clip edges", snap_cfg.clips),
+                        (SnapTargetKind::Playhead, "Playhead", snap_cfg.playhead),
+                        (SnapTargetKind::Marker, "Markers", snap_cfg.markers),
+                        (SnapTargetKind::InPoint, "In/Out", snap_cfg.in_out),
+                        (SnapTargetKind::Grid, "Grid", snap_cfg.grid),
+                    ];
+                    for &(target, label, enabled) in rows {
+                        let row_label = if enabled { format!("\u{2714} {label}") } else { format!("    {label}") };
+                        if ui.button(row_label).clicked() {
+                            cmds.push(AppCommand::SetSnapTarget { target, enabled: !enabled });
+                            ui.close_menu();
+                        }
+                    }
+                });
+            });
+
+            // ── Grid interval picker ──
+            ui.menu_button(format!("Grid: {}", cur_grid.label()), |ui| {
+                const PRESETS: &[GridInterval] = &[
+                    GridInterval::Off,
+                    GridInterval::Adaptive,
+                    GridInterval::Frame,
+                    GridInterval::HalfSecond,
+                    GridInterval::Second,
+                    GridInterval::TwoSeconds,
+                    GridInterval::FiveSeconds,
+                ];
+                for &preset in PRESETS {
+                    let is_selected = matches!(
+                        (preset, cur_grid),
+                        (GridInterval::Off, GridInterval::Off)
+                            | (GridInterval::Adaptive, GridInterval::Adaptive)
+                            | (GridInterval::Frame, GridInterval::Frame)
+                            | (GridInterval::HalfSecond, GridInterval::HalfSecond)
+                            | (GridInterval::Second, GridInterval::Second)
+                            | (GridInterval::TwoSeconds, GridInterval::TwoSeconds)
+                            | (GridInterval::FiveSeconds, GridInterval::FiveSeconds)
+                    );
+                    let prefix = if is_selected { "\u{2714} " } else { "    " };
+                    if ui.button(format!("{prefix}{}", preset.label())).clicked() {
+                        cmds.push(AppCommand::SetGridInterval(preset));
+                        ui.close_menu();
+                    }
+                }
+                // Custom secs is configured from preferences only —
+                // mention it so the user knows where to find it.
+                ui.separator();
+                ui.add_enabled(false, egui::Button::new("Custom… (Preferences › Editing)"));
+            });
+
+            ui.separator();
+
+            // ── Add marker here ──
+            // Uses the right-click time, not the playhead — that's
+            // the user-visible difference from M (which adds at
+            // playhead). Falls back to playhead if the click position
+            // somehow isn't available (defensive; should never fire).
+            let marker_pos = click_secs
+                .map(|s| klipp_core::RationalTime::from_secs_f64(s, fps.rate()))
+                .unwrap_or(state.playhead);
+            if ui.button("Add marker here").clicked() {
+                cmds.push(AppCommand::AddMarker {
+                    position: marker_pos,
+                    label: String::new(),
+                    color: klipp_core::MarkerColor::Blue,
+                });
+                ui.close_menu();
+            }
+
+            ui.separator();
+
+            // ── Set in/out at playhead ──
+            // Uses the playhead, not the click position, because
+            // setting in/out from a casual right-click position would
+            // be footgun-y (range edits are deliberate). I/O shortcuts
+            // already use playhead — match that convention.
+            if ui.button("Set in point at playhead (I)").clicked() {
+                cmds.push(AppCommand::SetSequenceInPoint(state.playhead));
+                ui.close_menu();
+            }
+            if ui.button("Set out point at playhead (O)").clicked() {
+                cmds.push(AppCommand::SetSequenceOutPoint(state.playhead));
+                ui.close_menu();
+            }
+
+            ui.separator();
+
+            if ui.button("Zoom to fit (Shift+Z)").clicked() {
+                cmds.push(AppCommand::FitTimelineToWindow);
+                ui.close_menu();
+            }
+        });
     }
 
     fn handle_overview_bar_interaction(
@@ -3852,57 +4041,150 @@ impl TimelinePanel {
         }
     }
 
-    fn draw_snap_line(&self, state: &AppState, painter: &egui::Painter, content_rect: egui::Rect, tracks_start_y: f32) {
-        // Commit 1: kind is plumbed through `frame_cache.snap_line_x`
-        // but the renderer still draws the existing timecode-only
-        // label. Commit 3 swaps in the target-aware label and the
-        // ~300 ms fade on kind-change.
-        if let Some((snap_x, _kind)) = self.frame_cache.snap_line_x {
-            if snap_x >= content_rect.left() && snap_x <= content_rect.right() {
-                let tt = theme();
-                let snap_color = tt.accent;
-                // Thick amber line spanning full track area
-                painter.line_segment(
-                    [
-                        egui::pos2(snap_x, tracks_start_y),
-                        egui::pos2(snap_x, content_rect.bottom()),
-                    ],
-                    egui::Stroke::new(2.0_f32, snap_color),
-                );
-                // Glow effect — wider translucent line behind
-                painter.line_segment(
-                    [
-                        egui::pos2(snap_x, tracks_start_y),
-                        egui::pos2(snap_x, content_rect.bottom()),
-                    ],
-                    egui::Stroke::new(6.0_f32, egui::Color32::from_rgba_unmultiplied(snap_color.r(), snap_color.g(), snap_color.b(), 50)),
-                );
-                // Timecode label with background pill at top of snap line
-                let snap_secs = (snap_x - content_rect.left() + state.timeline_scroll_x) / state.timeline_zoom;
-                let snap_tc = RationalTime::from_secs_f64(snap_secs as f64, state.fps.rate());
-                let label = snap_tc.to_timecode_string();
-                let label_pos = egui::pos2(snap_x + 4.0, tracks_start_y + 3.0);
-                // Background pill for readability
-                let text_galley = painter.layout_no_wrap(
-                    label.clone(),
-                    egui::FontId::monospace(9.0),
-                    snap_color,
-                );
-                let pill_rect = egui::Rect::from_min_size(
-                    egui::pos2(label_pos.x - 2.0, label_pos.y - 1.0),
-                    egui::vec2(text_galley.size().x + 4.0, text_galley.size().y + 2.0),
-                );
-                let bgd = tt.bg_deep;
-                painter.rect_filled(pill_rect, 2.0, egui::Color32::from_rgba_unmultiplied(bgd.r(), bgd.g(), bgd.b(), 220));
-                painter.text(
-                    label_pos,
-                    egui::Align2::LEFT_TOP,
-                    &label,
-                    egui::FontId::monospace(9.0),
-                    snap_color,
-                );
+    /// Build the legend label for a given snap target kind. ClipEdge
+    /// hits annotate with the snapped clip's name when locatable;
+    /// Grid hits annotate with the resolved interval (uses the same
+    /// label() helper as the preferences picker so the strings match).
+    fn snap_legend_label_for_kind(
+        kind: klipp_core::SnapTargetKind,
+        snap_secs: f64,
+        state: &AppState,
+    ) -> String {
+        use klipp_core::SnapTargetKind;
+        match kind {
+            SnapTargetKind::ClipEdge => {
+                // Find a clip whose timeline_in or timeline_out is
+                // closest to snap_secs across all tracks. Tolerance
+                // is one frame at the active fps — the snap collector
+                // tagged this entry by exact equality of `target_secs`
+                // to one of those edges, so a frame-wide tolerance is
+                // safe and tracks rate-rescale roundoff.
+                let rate = state.fps.rate();
+                let one_frame = 1.0 / rate as f64;
+                let mut clip_name: Option<String> = None;
+                'outer: for track in &state.sequence().tracks {
+                    for clip in &track.clips {
+                        let in_diff = (clip.timeline_in.to_secs_f64() - snap_secs).abs();
+                        let out_diff = (clip.timeline_out.to_secs_f64() - snap_secs).abs();
+                        if in_diff < one_frame || out_diff < one_frame {
+                            // Display name: media filename for media
+                            // clips, generic kind label otherwise.
+                            // Mirrors the timeline status-bar pattern.
+                            clip_name = clip.media_id()
+                                .and_then(|mid| state.media_pool.get(&mid))
+                                .map(|m| m.filename.clone());
+                            break 'outer;
+                        }
+                    }
+                }
+                match clip_name {
+                    Some(n) if !n.is_empty() => format!("Clip edge: {n}"),
+                    _ => "Clip edge".to_string(),
+                }
             }
+            SnapTargetKind::Marker => {
+                let one_frame = 1.0 / state.fps.rate() as f64;
+                for marker in &state.sequence().markers {
+                    let pos = marker.position.to_secs_f64();
+                    let end = marker.duration.map(|d| pos + d.to_secs_f64()).unwrap_or(pos);
+                    if (pos - snap_secs).abs() < one_frame || (end - snap_secs).abs() < one_frame {
+                        if !marker.label.is_empty() {
+                            return format!("Marker: {}", marker.label);
+                        }
+                        return "Marker".to_string();
+                    }
+                }
+                "Marker".to_string()
+            }
+            SnapTargetKind::Grid => {
+                // Show the interval the user picked, not the resolved
+                // seconds — Adaptive should read "Grid: Adaptive (match
+                // ruler)" etc. Pulls from state.grid_snap_interval, the
+                // canonical source of truth.
+                format!("Grid: {}", state.grid_snap_interval.label())
+            }
+            SnapTargetKind::Playhead => "Playhead".to_string(),
+            SnapTargetKind::SequenceStart => "Start".to_string(),
+            SnapTargetKind::InPoint => "In point".to_string(),
+            SnapTargetKind::OutPoint => "Out point".to_string(),
         }
+    }
+
+    fn draw_snap_line(&mut self, state: &AppState, painter: &egui::Painter, content_rect: egui::Rect, tracks_start_y: f32) {
+        let snap_data = self.frame_cache.snap_line_x;
+        // Update the kind-change timer EVERY frame (whether snapping
+        // is active or not) so the next snap re-fades correctly.
+        let current_kind = snap_data.map(|(_, k)| k);
+        if current_kind != self.legend_state.last_kind {
+            self.legend_state.last_kind = current_kind;
+            self.legend_state.last_change_time = std::time::Instant::now();
+        }
+        let Some((snap_x, kind)) = snap_data else { return; };
+        if snap_x < content_rect.left() || snap_x > content_rect.right() { return; }
+
+        let tt = theme();
+        let alpha_factor = alpha_for_kind_change(
+            self.legend_state.last_kind,
+            current_kind,
+            self.legend_state.last_change_time,
+            std::time::Instant::now(),
+        );
+        let line_alpha = (255.0 * alpha_factor) as u8;
+        let glow_alpha = (50.0 * alpha_factor) as u8;
+        let pill_alpha = (220.0 * alpha_factor) as u8;
+        let snap_color = tt.accent;
+        let snap_color_faded = egui::Color32::from_rgba_unmultiplied(
+            snap_color.r(), snap_color.g(), snap_color.b(), line_alpha,
+        );
+        // Thick amber line spanning full track area
+        painter.line_segment(
+            [
+                egui::pos2(snap_x, tracks_start_y),
+                egui::pos2(snap_x, content_rect.bottom()),
+            ],
+            egui::Stroke::new(2.0_f32, snap_color_faded),
+        );
+        // Glow effect — wider translucent line behind
+        painter.line_segment(
+            [
+                egui::pos2(snap_x, tracks_start_y),
+                egui::pos2(snap_x, content_rect.bottom()),
+            ],
+            egui::Stroke::new(
+                6.0_f32,
+                egui::Color32::from_rgba_unmultiplied(snap_color.r(), snap_color.g(), snap_color.b(), glow_alpha),
+            ),
+        );
+        // Target-aware legend label — replaces the old timecode-only
+        // string. Commit 3 surfaces what was snapped to ("Clip edge:
+        // foo.mp4", "Grid: 1 s", "Playhead") so the snap line carries
+        // semantic information instead of just a number.
+        let snap_secs = (snap_x - content_rect.left() + state.timeline_scroll_x) as f64
+            / state.timeline_zoom as f64;
+        let label = Self::snap_legend_label_for_kind(kind, snap_secs, state);
+        let label_pos = egui::pos2(snap_x + 4.0, tracks_start_y + 3.0);
+        let text_galley = painter.layout_no_wrap(
+            label.clone(),
+            egui::FontId::monospace(9.0),
+            snap_color_faded,
+        );
+        let pill_rect = egui::Rect::from_min_size(
+            egui::pos2(label_pos.x - 2.0, label_pos.y - 1.0),
+            egui::vec2(text_galley.size().x + 4.0, text_galley.size().y + 2.0),
+        );
+        let bgd = tt.bg_deep;
+        painter.rect_filled(
+            pill_rect,
+            2.0,
+            egui::Color32::from_rgba_unmultiplied(bgd.r(), bgd.g(), bgd.b(), pill_alpha),
+        );
+        painter.text(
+            label_pos,
+            egui::Align2::LEFT_TOP,
+            &label,
+            egui::FontId::monospace(9.0),
+            snap_color_faded,
+        );
     }
 
     fn draw_connection_lines(&self, state: &AppState, painter: &egui::Painter, content_rect: egui::Rect) {
@@ -16688,5 +16970,203 @@ mod snap_tests {
             without_config.map(|(_, _, k)| k),
             "default SnapConfig must produce identical results to None config"
         );
+    }
+
+    // ── On-snap legend fade timing (commit 3) ─────────────────────────
+
+    use std::time::{Duration, Instant};
+
+    // Pinned: alpha is 1.0 (fully visible) when there is no current
+    // snap — the renderer short-circuits before the alpha is read,
+    // but a sane value here keeps the helper composable.
+    #[test]
+    fn alpha_is_full_when_no_current_snap() {
+        let now = Instant::now();
+        let alpha = alpha_for_kind_change(
+            Some(klipp_core::SnapTargetKind::ClipEdge),
+            None,
+            now,
+            now,
+        );
+        assert!((alpha - 1.0).abs() < 1e-6);
+    }
+
+    // Pinned: when prev_kind matches current_kind, alpha stays at 1.0
+    // regardless of elapsed time. This is the "instance change" case
+    // — the brief explicitly says ClipEdge → ClipEdge across two
+    // different clips must NOT fade.
+    #[test]
+    fn alpha_does_not_reset_when_kind_unchanged() {
+        let earlier = Instant::now() - Duration::from_millis(50);
+        let now = Instant::now();
+        let alpha = alpha_for_kind_change(
+            Some(klipp_core::SnapTargetKind::ClipEdge),
+            Some(klipp_core::SnapTargetKind::ClipEdge),
+            earlier,
+            now,
+        );
+        assert!((alpha - 1.0).abs() < 1e-6,
+            "same-kind transitions must stay at full alpha");
+    }
+
+    // Pinned: when kind changes, alpha eases linearly from 0 → 1
+    // across SNAP_LEGEND_FADE_MS. At t=0 just after the change,
+    // alpha is approximately 0; at t=SNAP_LEGEND_FADE_MS/2 it is
+    // approximately 0.5; at t=SNAP_LEGEND_FADE_MS it is 1.0.
+    #[test]
+    fn alpha_eases_in_after_kind_change() {
+        let change_time = Instant::now();
+        // At zero elapsed (or near-zero), alpha should be very low.
+        let alpha_at_zero = alpha_for_kind_change(
+            Some(klipp_core::SnapTargetKind::ClipEdge),
+            Some(klipp_core::SnapTargetKind::Grid),
+            change_time,
+            change_time,
+        );
+        assert!(alpha_at_zero < 0.05,
+            "fade should start near zero immediately after a kind change, got {}", alpha_at_zero);
+
+        let half = change_time + Duration::from_millis(SNAP_LEGEND_FADE_MS / 2);
+        let alpha_at_half = alpha_for_kind_change(
+            Some(klipp_core::SnapTargetKind::ClipEdge),
+            Some(klipp_core::SnapTargetKind::Grid),
+            change_time,
+            half,
+        );
+        assert!((alpha_at_half - 0.5).abs() < 0.05,
+            "fade should be ~0.5 at half the duration, got {}", alpha_at_half);
+
+        let full = change_time + Duration::from_millis(SNAP_LEGEND_FADE_MS);
+        let alpha_at_full = alpha_for_kind_change(
+            Some(klipp_core::SnapTargetKind::ClipEdge),
+            Some(klipp_core::SnapTargetKind::Grid),
+            change_time,
+            full,
+        );
+        assert!((alpha_at_full - 1.0).abs() < 1e-6,
+            "fade should reach 1.0 at SNAP_LEGEND_FADE_MS, got {}", alpha_at_full);
+    }
+
+    // Pinned: first-ever snap (prev_kind = None → current_kind = Some)
+    // counts as a kind change — the legend fades in on first
+    // appearance instead of popping.
+    #[test]
+    fn alpha_treats_first_snap_as_kind_change() {
+        let change_time = Instant::now();
+        let alpha = alpha_for_kind_change(
+            None,
+            Some(klipp_core::SnapTargetKind::ClipEdge),
+            change_time,
+            change_time,
+        );
+        assert!(alpha < 0.05,
+            "first snap should be a kind change (None → Some), got alpha={}", alpha);
+    }
+
+    // Pinned: alpha is clamped at 1.0 once the fade duration has
+    // elapsed (not e.g. 1.5x the duration).
+    #[test]
+    fn alpha_clamps_at_one_after_fade_complete() {
+        let change_time = Instant::now();
+        let way_after = change_time + Duration::from_millis(SNAP_LEGEND_FADE_MS * 10);
+        let alpha = alpha_for_kind_change(
+            Some(klipp_core::SnapTargetKind::ClipEdge),
+            Some(klipp_core::SnapTargetKind::Grid),
+            change_time,
+            way_after,
+        );
+        assert!((alpha - 1.0).abs() < 1e-6, "alpha must clamp at 1.0, got {}", alpha);
+    }
+
+    // ── On-snap legend labels ─────────────────────────────────────────
+
+    // Pinned: each kind produces a non-empty label and uses the
+    // expected substring. The "table-driven" pattern from the brief.
+    // Some kinds also augment with metadata (clip name, marker label,
+    // grid interval) which is covered separately.
+    #[test]
+    fn snap_legend_label_for_kind_table_driven() {
+        let state = AppState::default();
+        let cases = [
+            (klipp_core::SnapTargetKind::Playhead, "Playhead"),
+            (klipp_core::SnapTargetKind::SequenceStart, "Start"),
+            (klipp_core::SnapTargetKind::InPoint, "In point"),
+            (klipp_core::SnapTargetKind::OutPoint, "Out point"),
+        ];
+        for (kind, expected) in cases {
+            let label = TimelinePanel::snap_legend_label_for_kind(kind, 0.0, &state);
+            assert_eq!(label, expected, "kind {:?} should label {}", kind, expected);
+        }
+    }
+
+    // Pinned: ClipEdge with no clip locatable falls back to the bare
+    // "Clip edge" label rather than panicking or returning empty.
+    #[test]
+    fn snap_legend_clip_edge_fallback_when_no_clip_at_position() {
+        let state = AppState::default();
+        let label = TimelinePanel::snap_legend_label_for_kind(
+            klipp_core::SnapTargetKind::ClipEdge,
+            42.0, // arbitrary time with no clip
+            &state,
+        );
+        assert_eq!(label, "Clip edge");
+    }
+
+    // Pinned: Marker with no marker locatable falls back to "Marker".
+    #[test]
+    fn snap_legend_marker_fallback_when_no_marker_at_position() {
+        let state = AppState::default();
+        let label = TimelinePanel::snap_legend_label_for_kind(
+            klipp_core::SnapTargetKind::Marker,
+            42.0,
+            &state,
+        );
+        assert_eq!(label, "Marker");
+    }
+
+    // Pinned: Grid label includes the interval label from
+    // GridInterval — so "Grid: 1 s" / "Grid: Frame" / "Grid: Adaptive
+    // (match ruler)" / etc. Catches a regression where the renderer
+    // hardcodes a single string.
+    #[test]
+    fn snap_legend_grid_label_carries_interval_name() {
+        let mut state = AppState::default();
+        state.grid_snap_interval = klipp_core::GridInterval::Second;
+        let label = TimelinePanel::snap_legend_label_for_kind(
+            klipp_core::SnapTargetKind::Grid,
+            0.0,
+            &state,
+        );
+        assert!(label.starts_with("Grid: "), "expected 'Grid: …', got {}", label);
+        assert!(label.contains("1 s"), "interval suffix missing: {}", label);
+
+        state.grid_snap_interval = klipp_core::GridInterval::Frame;
+        let label = TimelinePanel::snap_legend_label_for_kind(
+            klipp_core::SnapTargetKind::Grid,
+            0.0,
+            &state,
+        );
+        assert!(label.contains("Frame"), "Frame suffix missing: {}", label);
+    }
+
+    // Pinned: Marker label includes the marker's user label when set.
+    // Verifies the augment path (not just the fallback above).
+    #[test]
+    fn snap_legend_marker_label_includes_user_label() {
+        let mut state = AppState::default();
+        let pos = klipp_core::RationalTime::from_secs_f64(2.0, state.fps.rate());
+        state.sequence_mut().markers.push(klipp_timeline::Marker {
+            id: klipp_core::MarkerId::new(),
+            position: pos,
+            label: "Hero shot".to_string(),
+            color: klipp_core::MarkerColor::Yellow,
+            duration: None,
+        });
+        let label = TimelinePanel::snap_legend_label_for_kind(
+            klipp_core::SnapTargetKind::Marker,
+            2.0,
+            &state,
+        );
+        assert_eq!(label, "Marker: Hero shot");
     }
 }
