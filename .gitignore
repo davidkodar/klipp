@@ -5,8 +5,15 @@ icon-src/
 # Local-only planning / tracker docs (no private files in git).
 CODE_AUDIT.html
 CODE_AUDIT.md
+FEATURES.html
 kdenlive_audit.md
 klipp_audit.md
 klipp_vs_kdenlive_gap.md
 PHILOSOPHY.md
 PHASE_*_PLAN.md
+
+# Editor / harness local state.
+.claude/
+
+# Model weights (large binary blobs).
+*.pt
