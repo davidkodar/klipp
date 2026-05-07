@@ -304,6 +304,24 @@ pub fn build(state: &AppState) -> Vec<PaletteEntry> {
         action: PaletteAction::Cmd(AppCommand::ToggleAudioSkim), enabled: true });
     e.push(PaletteEntry { label: Cow::Borrowed("Toggle Color Panel"), shortcut: Cow::Borrowed("C"),
         action: PaletteAction::Cmd(AppCommand::ToggleColorPanel), enabled: true });
+    // Bake Grade — closure form because we need the selected clip + chosen
+    // size + a synchronous save-file dialog, none of which fits the simple
+    // Cmd / ToggleState shapes.
+    e.push(PaletteEntry { label: Cow::Borrowed("Bake Grade as 3D LUT (.cube)"), shortcut: Cow::Borrowed(""),
+        action: PaletteAction::Custom(|state, cmds| {
+            let Some(clip_id) = state.selected_clip else { return; };
+            let size = state.bake_lut_size;
+            if let Some(path) = rfd::FileDialog::new()
+                .set_title("Save baked grade as .cube")
+                .add_filter("3D LUT (.cube)", &["cube"])
+                .set_file_name(format!("klipp_grade_{size}.cube"))
+                .save_file()
+            {
+                let output_path = if path.extension().is_some() { path } else { path.with_extension("cube") };
+                cmds.push(AppCommand::BakeGradeToLut { clip_id, output_path, lut_size: size });
+            }
+        }),
+        enabled: state.selected_clip.is_some() });
     e.push(PaletteEntry { label: Cow::Borrowed("Toggle Scopes"), shortcut: Cow::Borrowed("V"),
         action: PaletteAction::ToggleState(|s| s.show_scopes = !s.show_scopes), enabled: true });
     e.push(PaletteEntry { label: Cow::Borrowed("Toggle Inspector Panel"), shortcut: Cow::Borrowed("Ctrl+Shift+I"),

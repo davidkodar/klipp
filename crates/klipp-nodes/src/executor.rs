@@ -4137,6 +4137,52 @@ mod tests {
         );
     }
 
+    /// Full pipe: bake the active grade chain to a 3D LUT, write it as a
+    /// .cube file, load it back, and assert the loaded cube matches the
+    /// in-memory bake within float-text precision. This is the round-trip
+    /// the inspector "Bake Grade as .cube..." button relies on.
+    #[test]
+    fn bake_then_write_cube_round_trips() {
+        let graph = default_graph();
+        let mut executor = GraphExecutor::new_cpu_only();
+        let lut = bake_graph_to_lut(&graph, &mut executor, 17);
+
+        // Deterministic tmp path with PID + nanos so parallel test
+        // runs don't collide. Cleaned up at end of test on success.
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let tmp_path = std::env::temp_dir()
+            .join(format!("klipp_bake_roundtrip_{}_{nanos}.cube", std::process::id()));
+
+        klipp_color::write_cube(&tmp_path, &lut, 17, "round-trip-test")
+            .expect("write_cube should succeed");
+
+        let reloaded_result = klipp_color::load_cube(&tmp_path);
+        // Clean up before assertions so a failing assert doesn't leak the file.
+        let _ = std::fs::remove_file(&tmp_path);
+        let reloaded = reloaded_result.expect("load_cube should round-trip our own output");
+
+        assert_eq!(reloaded.size, 17, "size should round-trip");
+        assert_eq!(
+            reloaded.data.len(),
+            17 * 17 * 17 * 3,
+            "loaded LUT should have size^3 * 3 floats",
+        );
+
+        // Compare every entry. write_cube formats with "{:.6}" so f32
+        // quantisation tolerance is ~1e-6; we use 1e-5 for safety.
+        for (i, baked) in lut.iter().enumerate() {
+            let r = reloaded.data[i * 3];
+            let g = reloaded.data[i * 3 + 1];
+            let b = reloaded.data[i * 3 + 2];
+            assert!((baked[0] - r).abs() < 1e-5, "LUT[{i}] R drift: baked {:.6} loaded {:.6}", baked[0], r);
+            assert!((baked[1] - g).abs() < 1e-5, "LUT[{i}] G drift: baked {:.6} loaded {:.6}", baked[1], g);
+            assert!((baked[2] - b).abs() < 1e-5, "LUT[{i}] B drift: baked {:.6} loaded {:.6}", baked[2], b);
+        }
+    }
+
     // ── GPU-resident chain tests (skipped on machines without wgpu) ──────
     //
     // These tests exercise the single-fence chain path end-to-end. They

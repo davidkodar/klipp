@@ -2032,6 +2032,23 @@ pub enum AppCommand {
     ClearTransformKeyframes { clip_id: ClipId },
     ClearVideoParamKeyframes { clip_id: ClipId, param: VideoParam },
 
+    /// Bake the current grade chain of `clip_id` to a 3D LUT and write it
+    /// to `output_path` as Adobe .cube format. `lut_size` is the cube edge
+    /// length (17 = preview, 33 = broadcast standard, 65 = high-quality).
+    /// Spatial nodes (Qualifier / Mask / matte ops) are skipped during
+    /// bake — only the per-pixel grade chain is captured. Runs CPU-only on
+    /// a fresh executor; live state untouched.
+    BakeGradeToLut {
+        clip_id: ClipId,
+        output_path: PathBuf,
+        lut_size: usize,
+    },
+
+    /// Persist the user's chosen LUT cube edge length for the next bake.
+    /// Decoupled from BakeGradeToLut so the inspector dropdown can update
+    /// the AppState without immediately running a bake.
+    SetBakeLutSize(usize),
+
     // Audio ducking
     AutoDuckAudio {
         target_clip_id: ClipId,

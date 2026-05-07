@@ -1380,6 +1380,10 @@ pub struct AppState {
     pub global_lut_opacity: f32,
     pub global_lut_enabled: bool,
 
+    /// Cube edge length for the next "Bake Grade as .cube" action.
+    /// 17 = preview, 33 = broadcast default, 65 = high-quality.
+    pub bake_lut_size: usize,
+
     // Color panel / node graph
     pub show_color_panel: bool,
     /// Where color tools are docked: Right (inspector) or Bottom (below viewer).
@@ -2959,6 +2963,7 @@ impl Default for AppState {
             global_lut_path: None,
             global_lut_opacity: 1.0,
             global_lut_enabled: true,
+            bake_lut_size: 33,
             show_color_panel: false,
             color_tools_position: ColorToolsPosition::Right,
             selected_node_id: None,

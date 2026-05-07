@@ -12980,6 +12980,56 @@ impl KlippApp {
                 true
             }
 
+            // Bake the current clip's grade chain to a 3D LUT (.cube file).
+            // Runs CPU-only on a fresh executor against a clone of the graph
+            // so live state and the engine's GPU pipeline are untouched.
+            // Spatial nodes (Qualifier / Mask / matte ops) are auto-disabled
+            // by `bake_graph_to_lut` since they can't be captured per-pixel.
+            AppCommand::BakeGradeToLut { clip_id, output_path, lut_size } => {
+                let clip_id = *clip_id;
+                let output_path = output_path.clone();
+                let lut_size = *lut_size;
+                let working_cs = self.state.project_working_colorspace;
+
+                let graph = {
+                    let seq = &self.state.sequences[self.state.active_sequence_idx];
+                    seq.all_clips().find(|c| c.id == clip_id).map(|c| c.node_graph.clone())
+                };
+                let Some(graph) = graph else {
+                    self.state.toast.show("Bake failed — clip not found");
+                    return true;
+                };
+
+                let title = output_path.file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("Klipp Grade")
+                    .to_string();
+
+                let mut executor = klipp_nodes::GraphExecutor::new_cpu_only();
+                executor.set_working_colorspace(working_cs);
+                let lut = klipp_nodes::bake_graph_to_lut(&graph, &mut executor, lut_size);
+
+                match klipp_color::write_cube(&output_path, &lut, lut_size as u32, &title) {
+                    Ok(()) => {
+                        self.state.toast.show(format!(
+                            "Baked grade → {} ({}³)",
+                            output_path.file_name()
+                                .and_then(|n| n.to_str())
+                                .unwrap_or("LUT"),
+                            lut_size,
+                        ));
+                    }
+                    Err(e) => {
+                        self.state.toast.show(format!("Bake failed — {e}"));
+                    }
+                }
+                true
+            }
+            AppCommand::SetBakeLutSize(size) => {
+                self.state.bake_lut_size = *size;
+                true
+            }
+
             // Grade versions
             AppCommand::SaveGradeVersion { clip_id, name } => {
                 let seq = &mut self.state.sequences[self.state.active_sequence_idx];

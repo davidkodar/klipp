@@ -130,6 +130,66 @@ pub fn show_color_and_luts(
             }
         });
 
+        // Bake Grade — export the active clip's full grade chain to a .cube file.
+        // Spatial nodes (qualifier / masks) are auto-skipped by the bake
+        // function; the LUT captures the per-pixel colour mapping only.
+        ui.add_space(12.0);
+        ui.label(egui::RichText::new("Bake Grade").strong().size(12.0));
+        ui.separator();
+        ui.add_space(4.0);
+        if let Some(clip_id) = state.selected_clip {
+            let mut size = state.bake_lut_size;
+            let size_label = match size {
+                17 => "17 (preview)".to_string(),
+                33 => "33 (standard)".to_string(),
+                65 => "65 (HQ)".to_string(),
+                n => format!("{n}"),
+            };
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("Size").size(10.0).color(theme.text_dim));
+                egui::ComboBox::from_id_salt("bake_lut_size")
+                    .selected_text(size_label)
+                    .width(140.0)
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(&mut size, 17, "17 (preview)");
+                        ui.selectable_value(&mut size, 33, "33 (standard)");
+                        ui.selectable_value(&mut size, 65, "65 (HQ)");
+                    });
+            });
+            // Persist size selection back into AppState via a setter command —
+            // a direct mutation here would fight the &AppState borrow.
+            if size != state.bake_lut_size {
+                cmds.push(AppCommand::SetBakeLutSize(size));
+            }
+            ui.add_space(4.0);
+            if ui.button(
+                egui::RichText::new("Bake Grade as .cube...").size(11.0)
+            ).clicked() {
+                if let Some(path) = rfd::FileDialog::new()
+                    .set_title("Save baked grade as .cube")
+                    .add_filter("3D LUT (.cube)", &["cube"])
+                    .set_file_name(format!("klipp_grade_{size}.cube"))
+                    .save_file()
+                {
+                    let output_path = if path.extension().is_some() {
+                        path
+                    } else {
+                        path.with_extension("cube")
+                    };
+                    cmds.push(AppCommand::BakeGradeToLut {
+                        clip_id, output_path, lut_size: size,
+                    });
+                }
+            }
+            ui.add_space(2.0);
+            ui.label(egui::RichText::new(
+                "Captures the current clip's grade chain. Qualifier / mask / matte nodes are skipped."
+            ).size(9.0).color(theme.text_dim));
+        } else {
+            ui.label(egui::RichText::new("Select a clip to bake its grade.")
+                .size(10.0).color(theme.text_dim));
+        }
+
         // Global LUT
         ui.add_space(12.0);
         ui.label(egui::RichText::new("Global LUT").strong().size(12.0));
