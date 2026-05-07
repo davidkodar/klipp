@@ -12012,6 +12012,68 @@ impl KlippApp {
                 });
                 true
             }
+            AppCommand::CopyColorNodes { clip_id } => {
+                // Copy nodes that the user has selected — fall back to
+                // the primary `selected_node_id` when the multi-select
+                // set is empty (single-click case). Source clip graph
+                // is read-only; we clone Node by Node so the clipboard
+                // owns the data and a subsequent edit on the source
+                // clip can't disturb the clipboard contents.
+                let selection: Vec<klipp_nodes::NodeId> = if !self.state.selected_node_ids.is_empty() {
+                    self.state.selected_node_ids.iter().copied().collect()
+                } else if let Some(id) = self.state.selected_node_id {
+                    vec![id]
+                } else {
+                    Vec::new()
+                };
+                if selection.is_empty() {
+                    self.state.toast.show("Copy: no color node selected");
+                    return true;
+                }
+                let seq = &self.state.sequences[self.state.active_sequence_idx];
+                let nodes_to_copy: Vec<klipp_nodes::Node> = seq.tracks.iter()
+                    .flat_map(|t| t.clips.iter())
+                    .find(|c| c.id == *clip_id)
+                    .map(|c| {
+                        c.node_graph.nodes.iter()
+                            .filter(|n| selection.contains(&n.id))
+                            .cloned()
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                let count = nodes_to_copy.len();
+                if count == 0 {
+                    self.state.toast.show("Copy: selected nodes not in clip's graph");
+                } else {
+                    self.state.grade_node_clipboard = Some(nodes_to_copy);
+                    self.state.toast.show(format!("Copied {count} color node(s)"));
+                }
+                true
+            }
+            AppCommand::PasteColorNodes { clip_id } => {
+                // Snapshot the clipboard before mutating the graph so a
+                // missing-or-empty clipboard short-circuits cleanly.
+                let Some(template) = self.state.grade_node_clipboard.clone() else {
+                    self.state.toast.show("Paste: nothing in the color clipboard");
+                    return true;
+                };
+                if template.is_empty() {
+                    self.state.toast.show("Paste: clipboard is empty");
+                    return true;
+                }
+                let count = template.len();
+                self.with_current_clip_graph_mut(*clip_id, needs_refresh, |graph| {
+                    for mut node in template.into_iter() {
+                        // Fresh ids so multiple pastes don't collide
+                        // and so the source clip's own nodes aren't
+                        // confused for the new ones.
+                        node.id = klipp_nodes::NodeId::new_v4();
+                        graph.nodes.push(node);
+                    }
+                });
+                self.state.toast.show(format!("Pasted {count} color node(s)"));
+                true
+            }
             _ => false,
         }
     }

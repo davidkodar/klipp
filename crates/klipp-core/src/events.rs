@@ -1061,6 +1061,16 @@ pub enum AppCommand {
     SetNodeInputLink { clip_id: ClipId, node_id: uuid::Uuid, port: u8, label: Option<String> },
     MoveNode { clip_id: ClipId, node_id: uuid::Uuid, delta_x: f32, delta_y: f32 },
     ToggleNodeEnabled { clip_id: ClipId, node_id: uuid::Uuid },
+    /// Copy the currently-selected color nodes (from `selected_node_ids`)
+    /// into AppState's grade-node clipboard. Emits a toast with the count;
+    /// no-op + toast when the selection is empty. Edges between copied
+    /// nodes are not preserved.
+    CopyColorNodes { clip_id: ClipId },
+    /// Paste the grade-node clipboard into `clip_id`'s node graph. Each
+    /// pasted node receives a freshly-allocated `NodeId` so collisions
+    /// with existing nodes — or with a previous paste — are impossible.
+    /// No-op + toast when the clipboard is empty.
+    PasteColorNodes { clip_id: ClipId },
     RenameNode { clip_id: ClipId, node_id: uuid::Uuid, label: String },
     SetScopeTapNode { clip_id: ClipId, node_id: Option<uuid::Uuid> },
     /// Set which scope mode the engine should render (0=waveform, 1=parade, 3=histogram).

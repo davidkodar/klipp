@@ -1403,6 +1403,16 @@ pub struct AppState {
     /// use `selected_node_id` instead. Always either empty or
     /// containing `selected_node_id` as one of its members.
     pub selected_node_ids: std::collections::HashSet<klipp_nodes::NodeId>,
+    /// In-memory clipboard for grade-node copy/paste between clips.
+    /// `Some(nodes)` means a Copy gesture has stashed clones of one or
+    /// more `klipp_nodes::Node` here; the next Paste appends them to the
+    /// target clip's `node_graph.nodes` after assigning fresh `NodeId`s
+    /// (the node_id rewrite avoids collisions when the source + target
+    /// clips have a shared ancestor or when pasting twice). Edges
+    /// between copied nodes are NOT preserved — that would need a
+    /// fresh-id rewrite on every Edge endpoint and is deferred. Use
+    /// the Looks library for whole-grade snapshots.
+    pub grade_node_clipboard: Option<Vec<klipp_nodes::Node>>,
     /// Stack of NodeIds representing the V2 canvas's descent path into
     /// nested compound subgraphs. Empty = editing the clip's root
     /// graph (the common case). Each entry is the id of a
@@ -2968,6 +2978,7 @@ impl Default for AppState {
             color_tools_position: ColorToolsPosition::Right,
             selected_node_id: None,
             selected_node_ids: std::collections::HashSet::new(),
+            grade_node_clipboard: None,
             graph_descent_path: Vec::new(),
             show_node_strip: false,
             use_node_graph_v2: true,

@@ -337,6 +337,23 @@ pub fn build(state: &AppState) -> Vec<PaletteEntry> {
         action: PaletteAction::Cmd(AppCommand::ToggleAudioSkim), enabled: true });
     e.push(PaletteEntry { label: Cow::Borrowed("Toggle Color Panel"), shortcut: Cow::Borrowed("C"),
         action: PaletteAction::Cmd(AppCommand::ToggleColorPanel), enabled: true });
+    // Copy / paste color nodes between clips. Both gated on having a
+    // selected clip — Copy needs a source, Paste needs a target.
+    e.push(PaletteEntry { label: Cow::Borrowed("Copy Color Nodes"), shortcut: Cow::Borrowed(""),
+        action: PaletteAction::Custom(|state, cmds| {
+            if let Some(clip_id) = state.selected_clip {
+                cmds.push(AppCommand::CopyColorNodes { clip_id });
+            }
+        }),
+        enabled: state.selected_clip.is_some() });
+    e.push(PaletteEntry { label: Cow::Borrowed("Paste Color Nodes"), shortcut: Cow::Borrowed(""),
+        action: PaletteAction::Custom(|state, cmds| {
+            if let Some(clip_id) = state.selected_clip {
+                cmds.push(AppCommand::PasteColorNodes { clip_id });
+            }
+        }),
+        enabled: state.selected_clip.is_some()
+            && state.grade_node_clipboard.as_ref().map_or(false, |c| !c.is_empty()) });
     // Bake Grade — closure form because we need the selected clip + chosen
     // size + a synchronous save-file dialog, none of which fits the simple
     // Cmd / ToggleState shapes.
