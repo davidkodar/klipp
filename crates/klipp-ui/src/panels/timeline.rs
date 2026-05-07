@@ -2577,6 +2577,12 @@ impl TimelinePanel {
                                     match text_idx {
                                         Some(idx) => idx,
                                         None => {
+                                            // REMOVE WITH BUG FIX — diagnostic tracing for T-TRACK-SPAWN-ORPHAN
+                                            tracing::warn!(
+                                                target: "klipp_ui::track_spawn",
+                                                "SITE_2_TITLE_ON_VIDEO_TRACK fired: video_track_idx={}, searching_for_text_track, will_create=true",
+                                                track_idx
+                                            );
                                             let track_num = state.sequences[state.active_sequence_idx].tracks.iter()
                                                 .filter(|t| t.kind == TrackKind::Text).count() + 1;
                                             let track = klipp_timeline::Track::new(
@@ -2868,8 +2874,15 @@ impl TimelinePanel {
             if let Some(cursor_pos) = ui.input(|i| i.pointer.hover_pos()) {
                 // Check if cursor is outside all track rects
                 let on_any_track = self.frame_cache.track_rects.iter().any(|(_, _, r)| r.contains(cursor_pos));
-                if !on_any_track && content_rect.contains(cursor_pos) {
+                let content_rect_contains_cursor = content_rect.contains(cursor_pos);
+                if !on_any_track && content_rect_contains_cursor {
                     if let Some(crate::drag_drop::DragPayload::Title { title_data, template_name, animation }) = state.drag_drop.end() {
+                        // REMOVE WITH BUG FIX — diagnostic tracing for T-TRACK-SPAWN-ORPHAN
+                        tracing::warn!(
+                            target: "klipp_ui::track_spawn",
+                            "SITE_3_TITLE_TEMPLATE_DROP fired: cursor_pos={:?}, on_any_track={}, content_rect_contains={}",
+                            cursor_pos, on_any_track, content_rect_contains_cursor
+                        );
                         // Create a new text track and place the title there
                         let track_num = state.sequence().tracks.iter()
                             .filter(|t| t.kind == TrackKind::Text).count() + 1;
@@ -2946,6 +2959,20 @@ impl TimelinePanel {
                         let last_rect_bottom = self.frame_cache.track_rects.last().map(|(_, _, r)| r.bottom());
                         let above_all = first_rect_top.is_some_and(|top| cursor_pos.y < top);
                         let below_all = last_rect_bottom.is_some_and(|bot| cursor_pos.y > bot);
+
+                        // REMOVE WITH BUG FIX — diagnostic tracing for T-TRACK-SPAWN-ORPHAN
+                        // Logs when handle_media_auto_create_tracks is about to spawn
+                        // any of its four track-kind variants. Gated on (above_all || below_all)
+                        // because that's the union condition for any of the four arms below
+                        // to fire — false here means none of the spawn branches will run.
+                        if above_all || below_all {
+                            tracing::warn!(
+                                target: "klipp_ui::track_spawn",
+                                "SITE_4_MEDIA_BROWSER_DROP fired: media_kind={}, above_all={}, below_all={}, cursor_pos={:?}",
+                                if is_audio_only { "audio" } else { "video" },
+                                above_all, below_all, cursor_pos
+                            );
+                        }
 
                         if above_all && !is_audio_only {
                             // Create new video track at top
@@ -8810,6 +8837,16 @@ impl TimelinePanel {
                         .map(|(idx, _, _)| *idx)
                 });
 
+                // REMOVE WITH BUG FIX — diagnostic tracing for T-TRACK-SPAWN-ORPHAN
+                // Catch-all log on every clip-drag drop. If the user reproduces the
+                // bug and only DROP_DETECTED appears (without any SITE_N), the
+                // orphan path is something static analysis missed.
+                tracing::warn!(
+                    target: "klipp_ui::track_spawn",
+                    "DROP_DETECTED: from_track={}, pointer_pos={:?}, target_track_resolved={:?}, n_track_rects={}",
+                    from_track, pointer_pos, target_track, self.frame_cache.track_rects.len()
+                );
+
                 if let Some(to_track) = target_track {
                     if to_track != from_track {
                         let source_kind = state.sequence().tracks.get(from_track).map(|t| t.kind);
@@ -8972,6 +9009,12 @@ impl TimelinePanel {
                                 TrackKind::Audio => below_all || above_all,
                             };
                             if should_create {
+                                // REMOVE WITH BUG FIX — diagnostic tracing for T-TRACK-SPAWN-ORPHAN
+                                tracing::warn!(
+                                    target: "klipp_ui::track_spawn",
+                                    "SITE_1_AUTO_CREATE_DROP fired: above_all={}, below_all={}, target_track={:?}, source_clip_kind={:?}, cursor_pos={:?}, drag_origin={:?}",
+                                    above_all, below_all, target_track, kind, pos, drag.original_timeline_in
+                                );
                                 let name = state.sequence().next_track_name(kind);
                                 let new_track_idx = match kind {
                                     TrackKind::Video => {
