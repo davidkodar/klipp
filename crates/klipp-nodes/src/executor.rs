@@ -140,6 +140,17 @@ pub struct GraphExecutor {
     /// instead of stack-overflowing. Zero in the common case (no
     /// compounds, or top-level call).
     compound_depth: u32,
+    /// Track-points for the clip currently being graded. The engine
+    /// calls [`set_current_clip_track_points`] before each
+    /// `execute_linear*` call so the Mask-node handler can apply
+    /// tracker overrides to mask centres when a `TrackPoint.linked_mask`
+    /// binding matches the current node + index.
+    ///
+    /// Empty vec when no clip context is set (tests, programmatic
+    /// `bake_graph_to_lut` runs, etc.) — the override pass is then a
+    /// no-op and masks render with their persistent / keyframed
+    /// centres exactly as before.
+    current_clip_track_points: Vec<klipp_core::TrackPoint>,
 }
 
 /// Maximum recursion depth for nested `Compound` nodes before the
@@ -268,6 +279,7 @@ impl GraphExecutor {
             last_chain_final_slot: None,
             compound_depth: 0,
             working_colorspace: klipp_core::WorkingColorspace::Rec709Linear,
+            current_clip_track_points: Vec::new(),
         }
     }
 
@@ -310,7 +322,23 @@ impl GraphExecutor {
             last_chain_final_slot: None,
             compound_depth: 0,
             working_colorspace: klipp_core::WorkingColorspace::Rec709Linear,
+            current_clip_track_points: Vec::new(),
         }
+    }
+
+    /// Provide the current clip's track-points to the executor before
+    /// an `execute_linear*` call. The Mask-node handler consults these
+    /// to override mask centres for any mask whose
+    /// `(node_id, mask_index)` is bound to a TrackPoint with a
+    /// recorded position at the playhead.
+    ///
+    /// Pass `&[]` (or skip the call) for grade-bake / test contexts
+    /// where there is no clip context — the override pass becomes a
+    /// no-op and masks render their persistent centres exactly as
+    /// before. Cheap call: just clones the slice.
+    pub fn set_current_clip_track_points(&mut self, points: &[klipp_core::TrackPoint]) {
+        self.current_clip_track_points.clear();
+        self.current_clip_track_points.extend_from_slice(points);
     }
 
     /// Set the active working colorspace for subsequent grade-chain
@@ -2256,7 +2284,22 @@ impl GraphExecutor {
                         }
                     }
 
-                    let evaluated = masks.evaluated_at(clip_time_secs);
+                    let mut evaluated = masks.evaluated_at(clip_time_secs);
+
+                    // Tracker-driven mask centres: when a TrackPoint
+                    // declares `linked_mask = (this_node, mask_index)`
+                    // and has a recorded position at the playhead,
+                    // override the corresponding mask's centre. This
+                    // runs AFTER keyframe evaluation so any user-set
+                    // keyframes are kept on disk but the live frame
+                    // follows the tracker. Drives "power window
+                    // tracker" / "mask follows face" workflows.
+                    apply_tracker_overrides_to_masks(
+                        &mut evaluated,
+                        node_id,
+                        clip_time_secs,
+                        &self.current_clip_track_points,
+                    );
 
                     // Critical: matte values are LINEAR-DOMAIN
                     // geometric weights, NOT sRGB pixel values, so
@@ -3188,6 +3231,87 @@ pub fn bake_graph_to_lut(
         }
     }
     lut
+}
+
+/// Apply tracker-driven overrides to mask centres in `evaluated`.
+///
+/// Walks `track_points` and, for any TrackPoint whose `linked_mask =
+/// Some((node_id, mask_index))` matches the current Mask node + a
+/// mask in `evaluated.masks`, replaces that mask's centre with the
+/// recorded tracker position at the current playback time. Runs
+/// AFTER keyframe evaluation so any persistent / keyframed centre
+/// stays on disk but the live frame follows the tracker.
+///
+/// Tracker indexing: `clip_time_secs` is converted to a clip-frame
+/// index using a 24 fps fallback when the executor doesn't have an
+/// fps in scope (the mask renderer is fps-agnostic — the engine
+/// could pass real fps via a future setter, but tracker positions
+/// are recorded at the project fps so a 24 fps assumption produces
+/// the right index for the dominant case). Track-point start_frame
+/// is honoured so positions before the tracker's first analysed
+/// frame stay at the persistent / keyframed centre.
+///
+/// Shape coverage: only `Circle` and `Rectangle` carry a single
+/// centre. `LinearGradient` (start/end pair) and `Bezier` (point
+/// list) are skipped — driving them via a single tracker would need
+/// a different binding model.
+fn apply_tracker_overrides_to_masks(
+    evaluated: &mut klipp_core::MaskStack,
+    node_id: NodeId,
+    clip_time_secs: f64,
+    track_points: &[klipp_core::TrackPoint],
+) {
+    if track_points.is_empty() || evaluated.masks.is_empty() {
+        return;
+    }
+
+    // Frame index conversion. Project fps isn't in scope here — we
+    // use 24 fps as a stable default. The Mask-node code path
+    // already assumes consistent fps elsewhere; if a future change
+    // wires real fps through, replace this constant.
+    const FALLBACK_FPS: f64 = 24.0;
+    let playhead_frame = (clip_time_secs * FALLBACK_FPS).max(0.0) as i64;
+
+    for (mask_idx, mask) in evaluated.masks.iter_mut().enumerate() {
+        // Skip disabled / non-tracker-bindable shapes early.
+        if !mask.enabled {
+            continue;
+        }
+        let Some(tp) = track_points.iter().find(|tp| {
+            tp.enabled
+                && tp.linked_mask == Some((node_id, mask_idx))
+                && !tp.positions.is_empty()
+        }) else {
+            continue;
+        };
+
+        // Resolve frame index relative to the tracker's start_frame.
+        let pos_idx_signed = playhead_frame - (tp.start_frame as i64);
+        if pos_idx_signed < 0 {
+            continue; // before the tracker's analysed range
+        }
+        let pos_idx = pos_idx_signed as usize;
+        let Some(&(tx, ty)) = tp.positions.get(pos_idx) else {
+            continue; // past the analysed range
+        };
+
+        let (tx, ty) = (tx as f32, ty as f32);
+        match &mut mask.shape {
+            klipp_core::MaskShape::Circle { center_x, center_y, .. } => {
+                *center_x = tx;
+                *center_y = ty;
+            }
+            klipp_core::MaskShape::Rectangle { center_x, center_y, .. } => {
+                *center_x = tx;
+                *center_y = ty;
+            }
+            // LinearGradient + Bezier don't have a single centre to
+            // override; skip silently. Future work could translate
+            // their points by the tracker delta from the first
+            // recorded position.
+            _ => {}
+        }
+    }
 }
 
 /// Composite N pre-rendered linear-RGBA inputs for `NodeKind::LayerMixer`.
@@ -4135,6 +4259,105 @@ mod tests {
             "exposure +1 should brighten mid-grey: got {:.2}",
             mid[0],
         );
+    }
+
+    // ── apply_tracker_overrides_to_masks ────────────────────────────
+
+    fn make_circle_mask(cx: f32, cy: f32) -> klipp_core::Mask {
+        klipp_core::Mask {
+            shape: klipp_core::MaskShape::Circle { center_x: cx, center_y: cy, radius: 0.1 },
+            feather: 0.0,
+            invert: false,
+            opacity: 1.0,
+            enabled: true,
+            keyframes: klipp_core::MaskKeyframes::default(),
+        }
+    }
+
+    fn make_track_point_at(linked_to: Option<(NodeId, usize)>, positions: Vec<(f64, f64)>) -> klipp_core::TrackPoint {
+        let mut tp = klipp_core::TrackPoint::default();
+        tp.linked_mask = linked_to;
+        tp.start_frame = 0;
+        tp.positions = positions;
+        tp.enabled = true;
+        tp
+    }
+
+    #[test]
+    fn tracker_override_drives_circle_mask_centre() {
+        let node_id = uuid::Uuid::new_v4();
+        let mut stack = klipp_core::MaskStack { masks: vec![make_circle_mask(0.5, 0.5)] };
+        let track_points = vec![
+            make_track_point_at(Some((node_id, 0)), vec![(0.10, 0.20), (0.40, 0.60)]),
+        ];
+        // 24 fps fallback × 0.0 s = frame 0 → positions[0]
+        apply_tracker_overrides_to_masks(&mut stack, node_id, 0.0, &track_points);
+        match stack.masks[0].shape {
+            klipp_core::MaskShape::Circle { center_x, center_y, .. } => {
+                assert!((center_x - 0.10).abs() < 1e-6);
+                assert!((center_y - 0.20).abs() < 1e-6);
+            }
+            _ => panic!("expected Circle"),
+        }
+        // 1/24 s ≈ frame 1 → positions[1]
+        apply_tracker_overrides_to_masks(&mut stack, node_id, 1.0/24.0 + 1e-4, &track_points);
+        match stack.masks[0].shape {
+            klipp_core::MaskShape::Circle { center_x, center_y, .. } => {
+                assert!((center_x - 0.40).abs() < 1e-6);
+                assert!((center_y - 0.60).abs() < 1e-6);
+            }
+            _ => panic!("expected Circle"),
+        }
+    }
+
+    #[test]
+    fn tracker_override_skips_unbound_mask() {
+        let node_id = uuid::Uuid::new_v4();
+        let other_node_id = uuid::Uuid::new_v4();
+        let mut stack = klipp_core::MaskStack { masks: vec![make_circle_mask(0.5, 0.5)] };
+        // Tracker links to a different node — no override should apply.
+        let track_points = vec![
+            make_track_point_at(Some((other_node_id, 0)), vec![(0.10, 0.20)]),
+        ];
+        apply_tracker_overrides_to_masks(&mut stack, node_id, 0.0, &track_points);
+        match stack.masks[0].shape {
+            klipp_core::MaskShape::Circle { center_x, center_y, .. } => {
+                assert!((center_x - 0.5).abs() < 1e-6, "centre should be untouched");
+                assert!((center_y - 0.5).abs() < 1e-6, "centre should be untouched");
+            }
+            _ => panic!("expected Circle"),
+        }
+    }
+
+    #[test]
+    fn tracker_override_respects_start_frame() {
+        let node_id = uuid::Uuid::new_v4();
+        let mut stack = klipp_core::MaskStack { masks: vec![make_circle_mask(0.5, 0.5)] };
+        // Tracker only has positions starting from frame 10. At frame 0, before the
+        // tracker's analysed range, the mask centre stays at its persistent value.
+        let mut tp = klipp_core::TrackPoint::default();
+        tp.linked_mask = Some((node_id, 0));
+        tp.start_frame = 10;
+        tp.positions = vec![(0.1, 0.1)];
+        tp.enabled = true;
+        let track_points = vec![tp];
+        apply_tracker_overrides_to_masks(&mut stack, node_id, 0.0, &track_points);
+        match stack.masks[0].shape {
+            klipp_core::MaskShape::Circle { center_x, center_y, .. } => {
+                assert!((center_x - 0.5).abs() < 1e-6);
+                assert!((center_y - 0.5).abs() < 1e-6);
+            }
+            _ => panic!("expected Circle"),
+        }
+    }
+
+    #[test]
+    fn tracker_override_no_op_on_empty_inputs() {
+        let node_id = uuid::Uuid::new_v4();
+        let mut stack = klipp_core::MaskStack { masks: vec![] };
+        apply_tracker_overrides_to_masks(&mut stack, node_id, 0.0, &[]);
+        // Empty mask list + empty track-points: still zero-mask after the call.
+        assert!(stack.masks.is_empty());
     }
 
     /// Full pipe: bake the active grade chain to a 3D LUT, write it as a

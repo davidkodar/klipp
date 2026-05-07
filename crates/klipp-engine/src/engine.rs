@@ -7181,14 +7181,14 @@ impl PlaybackEngine {
         }
         // Clone the graph under a short read lock so the executor call
         // below doesn't hold the sequence lock.
-        let (graph, clip_time_secs) = {
+        let (graph, clip_track_points, clip_time_secs) = {
             let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
             let found = seq.tracks.iter().find_map(|track| {
                 track.clips.iter().find(|c| c.id == clip_id).map(|c| {
                     let speed = c.speed.max(0.001);
                     let clip_t = c.source_in.to_secs_f64()
                         + (playhead - c.timeline_in).to_secs_f64() * speed;
-                    (c.node_graph.clone(), clip_t.max(0.0))
+                    (c.node_graph.clone(), c.track_points.clone(), clip_t.max(0.0))
                 })
             });
             match found {
@@ -7221,6 +7221,7 @@ impl PlaybackEngine {
         self.graph_executor.set_working_colorspace(
             crate::video_decoder::working_colorspace(),
         );
+        self.graph_executor.set_current_clip_track_points(&clip_track_points);
         match self.graph_executor.execute_linear_with_thumbs(
             &linear_in,
             &graph,
@@ -7716,6 +7717,10 @@ impl PlaybackEngine {
             self.graph_executor.set_working_colorspace(
                 crate::video_decoder::working_colorspace(),
             );
+            // Hand the clip's track-points to the executor so any
+            // tracker-bound mask centres get overridden per-frame
+            // inside the Mask node handler.
+            self.graph_executor.set_current_clip_track_points(&clip.track_points);
             match self.graph_executor.execute_linear(
                 &linear_rgba, &clip.node_graph, width, height, clip_time_secs, frame_number, None, None,
             ) {
@@ -8976,6 +8981,13 @@ impl PlaybackEngine {
         // the seq lock drops. Some() only when we actually have a clip.
         let current_clip_id: Option<klipp_core::ClipId> = clip.map(|c| c.id);
         let ofx_effects = clip.map(|c| c.effects.clone()).unwrap_or_default();
+        // Track-points are needed by the graph executor's Mask handler
+        // to override mask centres for tracker-bound masks. Capture
+        // here while the seq lock is held so the executor sees an
+        // up-to-date snapshot when invoked below.
+        let clip_track_points: Vec<klipp_core::TrackPoint> = clip
+            .map(|c| c.track_points.clone())
+            .unwrap_or_default();
         // Reuse the cached Arc<NodeGraph> when the current clip still matches.
         // The Arc is invalidated on SequenceUpdated (graph mutation) and on clip
         // switch, so a cache hit here means we can skip the multi-kB node/edge/
@@ -9371,6 +9383,7 @@ impl PlaybackEngine {
                 self.graph_executor.set_working_colorspace(
                     crate::video_decoder::working_colorspace(),
                 );
+                self.graph_executor.set_current_clip_track_points(&clip_track_points);
                 match self.graph_executor.execute_linear_with_thumbs(
                     &rgba,
                     graph,
