@@ -1276,6 +1276,31 @@ pub enum AppCommand {
     /// grid_snap_interval` and to `state.grid_snap_interval` so the
     /// preferences pane and the ruler context menu stay in sync.
     SetGridInterval(crate::GridInterval),
+    /// Pixel distance before snapping fires during a drag. Mirrors
+    /// `prefs.editing.snap_threshold_px` ↔ `state.snap_threshold_px`.
+    SetSnapThresholdPx(f32),
+    /// Mouse-wheel / Ctrl+= zoom step multiplier. Mirrors
+    /// `prefs.editing.zoom_step` ↔ `state.zoom_step`.
+    SetZoomStep(f32),
+    /// Toggle the magnetic timeline behaviour. Bridges the naming
+    /// asymmetry: `prefs.editing.magnetic_timeline` (bool) ↔
+    /// `state.magnetic_timeline_enabled` (bool).
+    SetMagneticTimeline(bool),
+    /// Default resolution preset for new sequences (index into
+    /// `RESOLUTION_PRESETS`). Mirrors `prefs.editing.
+    /// default_sequence_resolution_idx` ↔
+    /// `state.default_sequence_resolution_idx`. Read at "+ new
+    /// sequence" time, so mid-session changes need to propagate
+    /// before the next click.
+    SetDefaultSequenceResolutionIdx(usize),
+    /// Default transition duration in frames. Mirrors
+    /// `prefs.editing.default_transition_frames` ↔
+    /// `state.default_transition_frames`.
+    SetDefaultTransitionFrames(u32),
+    /// Whether multicam clips show angle-number overlays. Mirrors
+    /// `prefs.editing.multicam_show_angles` ↔
+    /// `state.multicam_show_angles`.
+    SetMulticamShowAngles(bool),
     SetRippleEnabled(bool),
 
     // Filmstrip

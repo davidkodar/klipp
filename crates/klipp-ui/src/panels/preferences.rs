@@ -859,7 +859,13 @@ impl PreferencesPanel {
         Self::setting_row_with_subtitle(ui, "Snap threshold", "Distance in pixels before snapping", theme, |ui| {
             let mut v = prefs.editing.snap_threshold_px;
             if ui.add(egui::DragValue::new(&mut v).range(2.0..=30.0).speed(0.5).suffix(" px").fixed_decimals(0)).changed() {
-                prefs.editing.snap_threshold_px = v; *dirty = true;
+                // Dispatch through AppCommand so the handler also
+                // mirrors to state.snap_threshold_px (consulted live
+                // by the snap-resolution layer via the per-paint
+                // sync_editing_prefs_to_timeline at panels/timeline.rs:1060).
+                prefs.editing.snap_threshold_px = v;
+                *dirty = true;
+                cmds.push(AppCommand::SetSnapThresholdPx(v));
             }
         });
 
@@ -977,16 +983,22 @@ impl PreferencesPanel {
 
         Self::setting_row(ui, "Zoom step multiplier", theme, |ui| {
             let steps = [(1.25_f32, "1.25\u{00d7}"), (1.5, "1.5\u{00d7}"), (2.0, "2\u{00d7}")];
+            let cur = prefs.editing.zoom_step;
             let current = steps.iter()
-                .find(|(v, _)| (*v - prefs.editing.zoom_step).abs() < 0.01)
+                .find(|(v, _)| (*v - cur).abs() < 0.01)
                 .map(|(_, l)| *l).unwrap_or("1.5\u{00d7}");
             egui::ComboBox::from_id_salt("zoom_step")
                 .selected_text(current)
                 .width(55.0)
                 .show_ui(ui, |ui| {
                     for (val, label) in &steps {
-                        if ui.selectable_value(&mut prefs.editing.zoom_step, *val, *label).changed() {
+                        if ui.selectable_label((*val - cur).abs() < 0.01, *label).clicked()
+                            && (*val - cur).abs() >= 0.01
+                        {
+                            // Dispatch through AppCommand for live-sync to state.zoom_step.
+                            prefs.editing.zoom_step = *val;
                             *dirty = true;
+                            cmds.push(AppCommand::SetZoomStep(*val));
                         }
                     }
                 });
@@ -1003,8 +1015,14 @@ impl PreferencesPanel {
         Self::setting_row(ui, "Magnetic timeline", theme, |ui| {
             let mut val = prefs.editing.magnetic_timeline;
             if ui.add(crate::widgets::toggle::toggle(&mut val)).changed() {
+                // Dispatch through AppCommand: bridges the
+                // magnetic_timeline (pref) ↔ magnetic_timeline_enabled
+                // (state) naming asymmetry. Without this, mid-session
+                // changes only propagated via the debounced 1s
+                // re-sync block in app.rs.
                 prefs.editing.magnetic_timeline = val;
                 *dirty = true;
+                cmds.push(AppCommand::SetMagneticTimeline(val));
             }
         });
 
@@ -1023,8 +1041,14 @@ impl PreferencesPanel {
                         // Hide "Custom..." — preset must be a concrete size.
                         if *name == "Custom..." { continue; }
                         if ui.selectable_label(prefs.editing.default_sequence_resolution_idx == i, *name).clicked() {
+                            // Dispatch through AppCommand for live-sync.
+                            // Read at "+ new sequence" time (timeline/
+                            // sequence_tabs.rs:182) — mid-session
+                            // changes need to propagate so the very
+                            // next "+" click picks up the new default.
                             prefs.editing.default_sequence_resolution_idx = i;
                             *dirty = true;
+                            cmds.push(AppCommand::SetDefaultSequenceResolutionIdx(i));
                         }
                     }
                 });
@@ -1049,7 +1073,12 @@ impl PreferencesPanel {
         Self::setting_row(ui, "Default transition duration", theme, |ui| {
             let mut v = prefs.editing.default_transition_frames;
             if ui.add(egui::DragValue::new(&mut v).range(1..=120).speed(1.0).suffix(" fr")).changed() {
-                prefs.editing.default_transition_frames = v; *dirty = true;
+                // Dispatch through AppCommand for live-sync to
+                // state.default_transition_frames (read by transition
+                // application sites in timeline.rs and transitions_tab.rs).
+                prefs.editing.default_transition_frames = v;
+                *dirty = true;
+                cmds.push(AppCommand::SetDefaultTransitionFrames(v));
             }
         });
 
@@ -1067,8 +1096,12 @@ impl PreferencesPanel {
         Self::setting_row(ui, "Show angle badges on timeline", theme, |ui| {
             let mut val = prefs.editing.multicam_show_angles;
             if ui.add(crate::widgets::toggle::toggle(&mut val)).changed() {
+                // Dispatch through AppCommand for live-sync. Was
+                // covered by the debounced 1s re-sync block before
+                // T-PREFS-LIVE-SYNC; now applies immediately.
                 prefs.editing.multicam_show_angles = val;
                 *dirty = true;
+                cmds.push(AppCommand::SetMulticamShowAngles(val));
             }
         });
 
