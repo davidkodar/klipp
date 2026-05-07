@@ -86,6 +86,8 @@ pub enum SnapKind {
     Playhead,
     /// Snap back to where clip started (original position).
     OriginalPosition,
+    /// Snap to a tick on the user-configured time grid.
+    Grid,
 }
 
 /// Auto-connect/disconnect thresholds.
@@ -155,8 +157,11 @@ impl MagneticEditor {
             .primary_track_index()
             .expect("insert_primary requires a primary track");
 
-        // Snap
-        let snapped = Self::snap_to_boundary(sequence, at_time, Some(new_clip.id));
+        // Snap. Grid snap is intentionally None at this call site for
+        // commit 1 — wider plumbing of `SnapConfig` through magnetic
+        // edit operations (so this insert honours user-configured
+        // grid snap) is commit 2's scope.
+        let snapped = Self::snap_to_boundary(sequence, at_time, Some(new_clip.id), None);
         let at_time = snapped.unwrap_or(at_time);
 
         let clip_dur = new_clip.timeline_out - new_clip.timeline_in;
@@ -1273,22 +1278,34 @@ impl MagneticEditor {
     // ───────────────────────────────────────────────────────────────
     // 18. snap_to_boundary
     // ───────────────────────────────────────────────────────────────
+    /// `grid_interval_secs`: optional grid spacing in seconds. When
+    /// `Some(secs)` and `secs > 0`, a constant-time post-pass adds a
+    /// grid-tick candidate at `round(raw / secs) * secs`. Pass `None`
+    /// for back-compat: behaviour is byte-identical to the
+    /// pre-grid-snap implementation.
     pub fn snap_to_boundary(
         sequence: &Sequence,
         raw_time: RationalTime,
         exclude_clip_id: Option<ClipId>,
+        grid_interval_secs: Option<f64>,
     ) -> Option<RationalTime> {
-        let points = Self::active_snap_points(sequence, raw_time, exclude_clip_id);
+        let points = Self::active_snap_points(sequence, raw_time, exclude_clip_id, grid_interval_secs);
         points.into_iter().next().map(|sp| sp.time)
     }
 
     // ───────────────────────────────────────────────────────────────
     // 19. active_snap_points
     // ───────────────────────────────────────────────────────────────
+    /// `grid_interval_secs`: see `snap_to_boundary`. When `Some` and
+    /// the resulting grid tick lies within `SNAP_THRESHOLD_FRAMES` of
+    /// `raw_time`, a `SnapKind::Grid` candidate is appended. The
+    /// implementation is constant-time per call (no enumeration of
+    /// grid points across the timeline) — see audit-finding (l).
     pub fn active_snap_points(
         sequence: &Sequence,
         raw_time: RationalTime,
         exclude_clip_id: Option<ClipId>,
+        grid_interval_secs: Option<f64>,
     ) -> Vec<SnapPoint> {
         let rate = sequence.fps.rate();
         let threshold = RationalTime::from_frames(SNAP_THRESHOLD_FRAMES, rate);
@@ -1336,6 +1353,24 @@ impl MagneticEditor {
                     points.push(SnapPoint {
                         time: end,
                         kind: SnapKind::Marker,
+                    });
+                }
+            }
+        }
+
+        // Grid post-pass — constant-time. Snap to round(raw / interval)
+        // * interval if within threshold. No enumeration of grid points
+        // across the timeline (see audit-finding (l)).
+        if let Some(interval) = grid_interval_secs {
+            if interval > 0.0 {
+                let raw_secs = raw_time.to_secs_f64();
+                let nearest = (raw_secs / interval).round() * interval;
+                let grid_time = RationalTime::from_secs_f64(nearest, rate);
+                let diff = (raw_time - grid_time).abs();
+                if diff <= threshold {
+                    points.push(SnapPoint {
+                        time: grid_time,
+                        kind: SnapKind::Grid,
                     });
                 }
             }
@@ -2628,7 +2663,7 @@ mod tests {
     fn test_snap_within_threshold() {
         let seq = make_sequence(&[(0, 24), (24, 48)]);
         // 3 frames away from boundary at 24 — should snap
-        let snapped = MagneticEditor::snap_to_boundary(&seq, tc(27), None);
+        let snapped = MagneticEditor::snap_to_boundary(&seq, tc(27), None, None);
         assert_eq!(snapped, Some(tc(24)));
     }
 
@@ -2636,7 +2671,7 @@ mod tests {
     fn test_snap_beyond_threshold() {
         let seq = make_sequence(&[(0, 24), (24, 48)]);
         // 10 frames away — beyond 8 frame threshold
-        let snapped = MagneticEditor::snap_to_boundary(&seq, tc(34), None);
+        let snapped = MagneticEditor::snap_to_boundary(&seq, tc(34), None, None);
         assert_eq!(snapped, None);
     }
 
@@ -2647,7 +2682,7 @@ mod tests {
         // 3 frames from clip 0's out-point at 24 — but exclude clip 0
         // Clip 1's in-point is also at 24, so it should still snap
         let clip1_id = seq.tracks[0].clips[1].id;
-        let snapped = MagneticEditor::snap_to_boundary(&seq, tc(27), Some(clip1_id));
+        let snapped = MagneticEditor::snap_to_boundary(&seq, tc(27), Some(clip1_id), None);
         // Should snap to clip 0's boundary
         assert_eq!(snapped, Some(tc(24)));
 
@@ -2656,7 +2691,7 @@ mod tests {
         let seq2 = make_sequence(&[(0, 24)]);
         let only_clip_id = seq2.tracks[0].clips[0].id;
         // 3 frames from boundary at 0
-        let snapped2 = MagneticEditor::snap_to_boundary(&seq2, tc(3), Some(only_clip_id));
+        let snapped2 = MagneticEditor::snap_to_boundary(&seq2, tc(3), Some(only_clip_id), None);
         // No snap targets (the only clip is excluded)
         assert_eq!(snapped2, None);
     }
@@ -2672,8 +2707,51 @@ mod tests {
             duration: None,
         });
 
-        let snapped = MagneticEditor::snap_to_boundary(&seq, tc(33), None);
+        let snapped = MagneticEditor::snap_to_boundary(&seq, tc(33), None, None);
         assert_eq!(snapped, Some(tc(36)));
+    }
+
+    // Pinned: passing `None` for grid_interval_secs preserves the
+    // pre-grid-snap snap behaviour byte-for-byte. If a future refactor
+    // accidentally enables grid snap by default, this test fails.
+    #[test]
+    fn test_grid_snap_off_is_back_compat() {
+        let seq = make_sequence(&[(0, 24), (24, 48)]);
+        // 5 frames past the boundary at 24 — beyond clip-edge threshold
+        // (3 frame distance from 27 was within threshold above; 5
+        // frames is still within the 8-frame threshold so this is
+        // already a clip-edge hit). What we actually want to verify:
+        // the result is identical to the pre-feature impl when
+        // grid_interval_secs is None. So compare with a query that
+        // has NO clip-edge hit.
+        let snapped_no_grid = MagneticEditor::snap_to_boundary(&seq, tc(35), None, None);
+        // 35 is 11 frames from 24 (out of threshold) and 13 from 48
+        // (out of threshold). With None grid: no snap.
+        assert_eq!(snapped_no_grid, None);
+    }
+
+    // Pinned: when grid_interval_secs is Some, grid candidates appear.
+    // Sequence is 24 fps so 1 second = 24 frames. Querying at frame 35
+    // (= 1.458 s) with a 1.0 s grid: nearest tick is 1.0 s = frame 24.
+    // 35 - 24 = 11 frames > 8-frame threshold, so no grid hit.
+    // Query at frame 26 (= 1.083 s) with a 1.0 s grid: nearest tick
+    // is 1.0 s = frame 24. 26 - 24 = 2 frames < threshold → hit.
+    // BUT clip-edge at 24 also hits (2 frames). Distance ties go to
+    // first-pushed which is clip-edge, so the grid candidate is in
+    // the points list but sorted second.
+    #[test]
+    fn test_grid_snap_on_emits_grid_candidate() {
+        let seq = make_sequence(&[(0, 24)]); // single clip, ends at frame 24
+        // Query at frame 50 (= ~2.083 s) — well past any clip edge.
+        // With 1-second grid, nearest is 2.0s = frame 48. Distance
+        // 50-48 = 2 frames, within threshold → grid hit.
+        let snapped = MagneticEditor::snap_to_boundary(&seq, tc(50), None, Some(1.0));
+        assert_eq!(snapped, Some(tc(48)));
+
+        // And without the grid hint, no snap (clip ends at 24, far
+        // beyond threshold).
+        let snapped_off = MagneticEditor::snap_to_boundary(&seq, tc(50), None, None);
+        assert_eq!(snapped_off, None);
     }
 
     // ─────────────────────────────────────────────────────────────
@@ -3153,7 +3231,7 @@ mod tests {
     fn test_active_snap_points_sorted_by_distance() {
         let seq = make_sequence(&[(0, 24), (24, 48), (48, 72)]);
         // Query at frame 26 — closest to 24, then 48, then 0
-        let points = MagneticEditor::active_snap_points(&seq, tc(26), None);
+        let points = MagneticEditor::active_snap_points(&seq, tc(26), None, None);
         // Should include 24 (2 frames away) but not 48 (22 frames) or 0 (26 frames)
         assert!(!points.is_empty());
         assert_eq!(points[0].time, tc(24));

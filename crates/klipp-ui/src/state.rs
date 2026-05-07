@@ -1019,6 +1019,12 @@ pub struct AppState {
     pub viewer_prefs: crate::prefs::ViewerPrefs,
     /// Snap threshold in pixels (synced from prefs).
     pub snap_threshold_px: f32,
+    /// Grid-snap interval (synced from prefs.editing.grid_snap_interval).
+    /// `Off` (default) means dragged clip edges never snap to a time
+    /// grid; flipping to any other variant adds a grid-tick snap
+    /// candidate on top of the existing clip-edge / playhead /
+    /// marker / range targets.
+    pub grid_snap_interval: klipp_core::GridInterval,
     /// Zoom step multiplier (synced from prefs).
     pub zoom_step: f32,
     /// Default resolution preset index for new sequences (mirrored from
@@ -2828,6 +2834,7 @@ impl Default for AppState {
             timeline_prefs: Default::default(),
             viewer_prefs: Default::default(),
             snap_threshold_px: 10.0,
+            grid_snap_interval: klipp_core::GridInterval::Off,
             zoom_step: 1.5,
             default_sequence_resolution_idx: 0,
             toast_duration_secs: 2.2,

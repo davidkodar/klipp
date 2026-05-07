@@ -5,7 +5,12 @@ const MIN_LABEL_SPACING_PX: f32 = 80.0;
 const MIN_MINOR_TICK_PX: f32 = 6.0;
 
 /// Choose the best major tick interval so labels are at least 80px apart.
-fn choose_major_interval(pixels_per_second: f32) -> f64 {
+///
+/// Public so the snap layer can reuse the same tick-density logic for
+/// `GridInterval::Adaptive`: when the user wants to snap to "whatever
+/// the ruler is showing", both rendering and snap consult this fn at
+/// the current pixels-per-second.
+pub fn choose_major_interval(pixels_per_second: f32) -> f64 {
     const CANDIDATES: &[f64] = &[
         0.001,          // 1ms
         0.005,          // 5ms
@@ -43,7 +48,7 @@ fn choose_major_interval(pixels_per_second: f32) -> f64 {
 }
 
 /// Choose minor tick subdivisions for a given major interval.
-fn choose_minor_subdivisions(major_interval_secs: f64, pixels_per_second: f32) -> u32 {
+pub fn choose_minor_subdivisions(major_interval_secs: f64, pixels_per_second: f32) -> u32 {
     for &sub in &[10u32, 5, 4, 2] {
         let minor = major_interval_secs / sub as f64;
         if minor as f32 * pixels_per_second >= MIN_MINOR_TICK_PX {

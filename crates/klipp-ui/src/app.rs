@@ -563,6 +563,7 @@ impl KlippApp {
         app.state.auto_create_tracks = app.prefs.editing.auto_create_tracks;
         app.state.default_transition_frames = app.prefs.editing.default_transition_frames;
         app.state.snap_threshold_px = app.prefs.editing.snap_threshold_px;
+        app.state.grid_snap_interval = app.prefs.editing.grid_snap_interval;
         app.state.zoom_step = app.prefs.editing.zoom_step;
         app.state.default_sequence_resolution_idx = app.prefs.editing.default_sequence_resolution_idx;
         app.state.timeline_prefs = app.prefs.timeline.clone();

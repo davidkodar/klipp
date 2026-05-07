@@ -578,6 +578,12 @@ pub struct EditingPrefs {
     /// Snap threshold in pixels (how close clips must be to snap).
     #[serde(default = "default_snap_px")]
     pub snap_threshold_px: f32,
+    /// Grid-snap interval. `Off` (default) preserves byte-identical
+    /// pre-feature behaviour; flipping to any other variant makes
+    /// dragged clip edges snap to the chosen grid spacing in addition
+    /// to the existing clip-edge / playhead / marker / range targets.
+    #[serde(default)]
+    pub grid_snap_interval: klipp_core::GridInterval,
     /// Zoom step multiplier (e.g. 1.5 = 50% zoom per step).
     #[serde(default = "default_zoom_step")]
     pub zoom_step: f32,
@@ -662,6 +668,7 @@ impl Default for EditingPrefs {
             default_video_track_height: default_video_track_h(),
             default_audio_track_height: default_audio_track_h(),
             snap_threshold_px: default_snap_px(),
+            grid_snap_interval: klipp_core::GridInterval::default(),
             zoom_step: default_zoom_step(),
             backup_count: default_backup_count(),
             playhead_follows_playback: true,
@@ -1846,6 +1853,10 @@ mod tests {
         assert_eq!(rt.editing.default_video_track_height, 50.0);
         assert_eq!(rt.editing.default_audio_track_height, 48.0);
         assert_eq!(rt.editing.snap_threshold_px, 10.0);
+        // Pinned: default grid_snap_interval MUST be Off — preserves
+        // byte-identical pre-feature snap behaviour for users who
+        // never opt in to grid snap.
+        assert_eq!(rt.editing.grid_snap_interval, klipp_core::GridInterval::Off);
         assert_eq!(rt.editing.zoom_step, 1.5);
         assert_eq!(rt.editing.backup_count, 5);
 
@@ -2077,6 +2088,7 @@ mod tests {
         prefs.editing.default_video_track_height = 80.0;
         prefs.editing.default_audio_track_height = 60.0;
         prefs.editing.snap_threshold_px = 20.0;
+        prefs.editing.grid_snap_interval = klipp_core::GridInterval::Custom(0.25);
         prefs.editing.zoom_step = 2.0;
         prefs.editing.backup_count = 10;
 
@@ -2203,6 +2215,7 @@ mod tests {
         assert_eq!(rt.editing.default_video_track_height, 80.0);
         assert_eq!(rt.editing.default_audio_track_height, 60.0);
         assert_eq!(rt.editing.snap_threshold_px, 20.0);
+        assert_eq!(rt.editing.grid_snap_interval, klipp_core::GridInterval::Custom(0.25));
         assert_eq!(rt.editing.zoom_step, 2.0);
         assert_eq!(rt.editing.backup_count, 10);
 

@@ -861,6 +861,71 @@ impl PreferencesPanel {
             }
         });
 
+        Self::setting_row_with_subtitle(ui, "Grid snap", "Snap dragged clip edges to a time grid (Off keeps current behaviour)", theme, |ui| {
+            use klipp_core::GridInterval;
+            let cur = prefs.editing.grid_snap_interval;
+            let cur_label = match cur {
+                GridInterval::Custom(_) => "Custom",
+                _ => cur.label(),
+            };
+            // Custom variant is keyed by tag; the seconds value lives
+            // in a separate DragValue rendered next to the combo.
+            const PRESETS: &[GridInterval] = &[
+                GridInterval::Off,
+                GridInterval::Adaptive,
+                GridInterval::Frame,
+                GridInterval::HalfSecond,
+                GridInterval::Second,
+                GridInterval::TwoSeconds,
+                GridInterval::FiveSeconds,
+                GridInterval::Custom(0.25),
+            ];
+            ui.horizontal(|ui| {
+                egui::ComboBox::from_id_salt("grid_snap_interval")
+                    .selected_text(cur_label)
+                    .width(180.0)
+                    .show_ui(ui, |ui| {
+                        for &preset in PRESETS {
+                            let label = preset.label();
+                            // Selection compares by tag for Custom so picking
+                            // "Custom" doesn't reset the user's seconds value.
+                            let is_selected = matches!(
+                                (preset, cur),
+                                (GridInterval::Off, GridInterval::Off)
+                                    | (GridInterval::Adaptive, GridInterval::Adaptive)
+                                    | (GridInterval::Frame, GridInterval::Frame)
+                                    | (GridInterval::HalfSecond, GridInterval::HalfSecond)
+                                    | (GridInterval::Second, GridInterval::Second)
+                                    | (GridInterval::TwoSeconds, GridInterval::TwoSeconds)
+                                    | (GridInterval::FiveSeconds, GridInterval::FiveSeconds)
+                                    | (GridInterval::Custom(_), GridInterval::Custom(_))
+                            );
+                            if ui.selectable_label(is_selected, label).clicked() {
+                                let new_val = match preset {
+                                    GridInterval::Custom(_) => match cur {
+                                        // Preserve existing custom value.
+                                        GridInterval::Custom(secs) => GridInterval::Custom(secs),
+                                        _ => GridInterval::Custom(0.25),
+                                    },
+                                    other => other,
+                                };
+                                if new_val != cur {
+                                    prefs.editing.grid_snap_interval = new_val;
+                                    *dirty = true;
+                                }
+                            }
+                        }
+                    });
+                if let GridInterval::Custom(secs) = prefs.editing.grid_snap_interval {
+                    let mut v = secs;
+                    if ui.add(egui::DragValue::new(&mut v).range(0.001..=60.0).speed(0.05).suffix(" s").fixed_decimals(3)).changed() {
+                        prefs.editing.grid_snap_interval = GridInterval::Custom(v.max(0.001));
+                        *dirty = true;
+                    }
+                }
+            });
+        });
+
         Self::setting_row(ui, "Zoom step multiplier", theme, |ui| {
             let steps = [(1.25_f32, "1.25\u{00d7}"), (1.5, "1.5\u{00d7}"), (2.0, "2\u{00d7}")];
             let current = steps.iter()

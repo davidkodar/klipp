@@ -6,6 +6,7 @@ pub mod skimmer;
 pub mod sequence_tabs;
 pub mod time_utils;
 pub mod range_visuals;
+pub mod grid_snap;
 
 use crate::state::AppState;
 use crate::theme::KlippTheme;
@@ -206,6 +207,14 @@ impl NewTimelinePanel {
             if let Some(pos) = ui.input(|i| i.pointer.latest_pos()) {
                 let snap_threshold = 10.0 / pps as f64;
                 let snap_targets = range_visuals::collect_snap_targets(state);
+                // Resolve the user's grid-snap interval at current zoom.
+                // None when GridInterval::Off (back-compat default) — the
+                // post-pass in find_nearest_snap is then a no-op.
+                let grid_interval_secs = grid_snap::resolve_grid_interval_secs(
+                    state.grid_snap_interval,
+                    state.fps.rate(),
+                    pps,
+                );
 
                 if let Some(ref drag) = state.range_drag {
                     // Active drag — update in/out points
@@ -214,7 +223,8 @@ impl NewTimelinePanel {
 
                     // Apply snap
                     let (snapped_tc, snapped_secs) = if state.snap_enabled {
-                        range_visuals::find_nearest_snap(raw_secs, &snap_targets, snap_threshold)
+                        range_visuals::find_nearest_snap(raw_secs, &snap_targets, snap_threshold, grid_interval_secs, state.fps.rate())
+                            .map(|(tc, secs, _kind)| (tc, secs))
                             .unwrap_or((raw_tc, raw_secs))
                     } else {
                         (raw_tc, raw_secs)
