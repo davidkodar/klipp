@@ -221,9 +221,10 @@ impl NewTimelinePanel {
                     let raw_tc = mouse_to_time(pos.x);
                     let raw_secs = raw_tc.to_secs_f64();
 
-                    // Apply snap
-                    let (snapped_tc, snapped_secs) = if state.snap_enabled {
-                        range_visuals::find_nearest_snap(raw_secs, &snap_targets, snap_threshold, grid_interval_secs, state.fps.rate())
+                    // Apply snap (master gate; per-target gating
+                    // happens inside find_nearest_snap via SnapConfig).
+                    let (snapped_tc, snapped_secs) = if state.snap.master {
+                        range_visuals::find_nearest_snap(raw_secs, &snap_targets, snap_threshold, grid_interval_secs, state.fps.rate(), Some(&state.snap))
                             .map(|(tc, secs, _kind)| (tc, secs))
                             .unwrap_or((raw_tc, raw_secs))
                     } else {
@@ -231,7 +232,7 @@ impl NewTimelinePanel {
                     };
 
                     // Show snap line if snapped
-                    if state.snap_enabled && (snapped_secs - raw_secs).abs() > 0.0001 {
+                    if state.snap.master && (snapped_secs - raw_secs).abs() > 0.0001 {
                         let snap_x = ruler_rect.left() + time_utils::time_to_x(snapped_secs, pps, scroll_x);
                         state.range_snap_line_x = Some(snap_x);
                     }

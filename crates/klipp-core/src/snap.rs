@@ -14,6 +14,53 @@
 
 use serde::{Deserialize, Serialize};
 
+/// Per-target snap configuration. `master` gates everything (matches
+/// the pre-feature `snap_enabled: bool`); the per-target booleans add
+/// granular control. Defaults preserve byte-identical behaviour for
+/// existing users — every category that snapped before still does, and
+/// `grid` defaults off so users who never opt in see no change.
+///
+/// Lives in klipp-core (rather than the UI layer) so that the
+/// magnetic-edit layer in `klipp-timeline` can consult it without
+/// pulling a UI dependency. UI persists the struct in `layout.json`.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct SnapConfig {
+    pub master: bool,
+    pub clips: bool,
+    pub playhead: bool,
+    pub markers: bool,
+    pub in_out: bool,
+    pub grid: bool,
+}
+
+impl Default for SnapConfig {
+    fn default() -> Self {
+        Self {
+            master: true,
+            clips: true,
+            playhead: true,
+            markers: true,
+            in_out: true,
+            grid: false,
+        }
+    }
+}
+
+impl SnapConfig {
+    /// Per-target gate. Caller checks `master` separately — a
+    /// master-off short-circuit happens before any kind-by-kind
+    /// filtering in the snap-resolution functions.
+    pub fn is_kind_enabled(&self, kind: SnapTargetKind) -> bool {
+        match kind {
+            SnapTargetKind::ClipEdge => self.clips,
+            SnapTargetKind::Playhead => self.playhead,
+            SnapTargetKind::Marker => self.markers,
+            SnapTargetKind::SequenceStart | SnapTargetKind::InPoint | SnapTargetKind::OutPoint => self.in_out,
+            SnapTargetKind::Grid => self.grid,
+        }
+    }
+}
+
 /// User-facing grid-snap interval choice. Stored in preferences.
 ///
 /// Resolving to seconds is the UI layer's job: `Adaptive` consults the
@@ -137,6 +184,42 @@ mod tests {
         assert_eq!(GridInterval::Second.fixed_secs(), Some(1.0));
         assert_eq!(GridInterval::TwoSeconds.fixed_secs(), Some(2.0));
         assert_eq!(GridInterval::FiveSeconds.fixed_secs(), Some(5.0));
+    }
+
+    // ── SnapConfig ──
+
+    // Pinned: defaults match the pre-feature behaviour exactly. Master
+    // on, every per-target except Grid on. If a future refactor flips
+    // any of these, the back-compat invariant breaks.
+    #[test]
+    fn snap_config_defaults_preserve_prior_behaviour() {
+        let cfg = SnapConfig::default();
+        assert!(cfg.master);
+        assert!(cfg.clips);
+        assert!(cfg.playhead);
+        assert!(cfg.markers);
+        assert!(cfg.in_out);
+        assert!(!cfg.grid, "grid must default off — existing users opt in");
+    }
+
+    #[test]
+    fn snap_config_is_kind_enabled_routes_each_variant() {
+        let cfg = SnapConfig {
+            master: true,
+            clips: false,
+            playhead: true,
+            markers: false,
+            in_out: true,
+            grid: false,
+        };
+        assert!(!cfg.is_kind_enabled(SnapTargetKind::ClipEdge));
+        assert!(cfg.is_kind_enabled(SnapTargetKind::Playhead));
+        assert!(!cfg.is_kind_enabled(SnapTargetKind::Marker));
+        // SequenceStart / InPoint / OutPoint share the in_out flag.
+        assert!(cfg.is_kind_enabled(SnapTargetKind::SequenceStart));
+        assert!(cfg.is_kind_enabled(SnapTargetKind::InPoint));
+        assert!(cfg.is_kind_enabled(SnapTargetKind::OutPoint));
+        assert!(!cfg.is_kind_enabled(SnapTargetKind::Grid));
     }
 
     #[test]

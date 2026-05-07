@@ -1262,7 +1262,16 @@ pub enum AppCommand {
     },
 
     // Snap & Ripple
-    SetSnapEnabled(bool),
+    /// Toggle the master snap gate. When `false`, every per-target
+    /// snap (clip-edge, playhead, marker, in/out, grid) is disabled
+    /// regardless of the per-target booleans.
+    SetSnapMaster(bool),
+    /// Toggle a single per-target snap kind. Has no effect when
+    /// `SetSnapMaster(false)` was the most recent master toggle.
+    SetSnapTarget {
+        target: crate::SnapTargetKind,
+        enabled: bool,
+    },
     SetRippleEnabled(bool),
 
     // Filmstrip

@@ -1,6 +1,12 @@
 use serde::{Deserialize, Serialize};
 use crate::theme::*;
 
+// SnapConfig is shared across crates (used by klipp-timeline's
+// magnetic-edit layer + klipp-ui's UI snap path) and lives in
+// klipp-core. Re-exported here so existing call sites that imported
+// it from `crate::layout_state::SnapConfig` keep working.
+pub use klipp_core::SnapConfig;
+
 /// Persistent UI layout state — panel sizes, active tabs, tool selection.
 /// Saved to disk on every change and restored on launch.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -12,7 +18,12 @@ pub struct LayoutState {
     pub active_inspector_tab: InspectorTab,
     pub active_tool: EditTool,
     pub skimming_enabled: bool,
-    pub snap_enabled: bool,
+    /// Snap configuration: master + per-target booleans. Older
+    /// layout.json files carry a bare `snap_enabled: bool` instead;
+    /// `LayoutState::load()` migrates them on read into `SnapConfig
+    /// { master: <legacy>, ...defaults }`.
+    #[serde(default)]
+    pub snap: SnapConfig,
     #[serde(default = "default_color_panel_height")]
     pub color_panel_height: f32,
 
@@ -48,7 +59,7 @@ impl Default for LayoutState {
             active_inspector_tab: InspectorTab::Video,
             active_tool: EditTool::Select,
             skimming_enabled: true,
-            snap_enabled: true,
+            snap: SnapConfig::default(),
             color_panel_height: default_color_panel_height(),
             color_viewer_height_ratio: default_color_viewer_ratio(),
             color_inspector_width: default_color_inspector_width(),
@@ -65,11 +76,31 @@ impl LayoutState {
     }
 
     /// Load from disk, falling back to defaults.
+    ///
+    /// Pre-SnapConfig layouts carry a bare `snap_enabled: bool`; we
+    /// rewrite that into the `snap` struct on the JSON value before
+    /// `serde_json::from_value` so the modern struct type-checks.
+    /// Modern layouts (with `snap` already present) skip the migration.
     pub fn load() -> Self {
-        Self::config_path()
-            .and_then(|p| std::fs::read_to_string(p).ok())
-            .and_then(|s| serde_json::from_str(&s).ok())
-            .unwrap_or_default()
+        let Some(path) = Self::config_path() else { return Self::default(); };
+        let Ok(raw) = std::fs::read_to_string(path) else { return Self::default(); };
+        let Ok(mut v) = serde_json::from_str::<serde_json::Value>(&raw) else { return Self::default(); };
+        if let Some(obj) = v.as_object_mut() {
+            if !obj.contains_key("snap") {
+                if let Some(legacy) = obj.remove("snap_enabled").and_then(|val| val.as_bool()) {
+                    let default = SnapConfig::default();
+                    obj.insert("snap".to_string(), serde_json::json!({
+                        "master": legacy,
+                        "clips": default.clips,
+                        "playhead": default.playhead,
+                        "markers": default.markers,
+                        "in_out": default.in_out,
+                        "grid": default.grid,
+                    }));
+                }
+            }
+        }
+        serde_json::from_value(v).unwrap_or_default()
     }
 
     /// Persist to disk. Errors are logged, not propagated.
@@ -125,4 +156,121 @@ pub enum EditTool {
     Blade,
     Range,
     Zoom,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Pinned: layout.json that predates the SnapConfig migration
+    // carries a bare `snap_enabled: bool`. Loading it must produce
+    // a SnapConfig whose `master` mirrors the legacy value, with the
+    // other booleans at their `Default::default()` values. This is
+    // the load-bearing back-compat assertion.
+    #[test]
+    fn legacy_snap_enabled_true_loads_as_snap_config_master_true() {
+        let legacy = serde_json::json!({
+            "browser_width": 200.0,
+            "inspector_width": 280.0,
+            "timeline_height": 280.0,
+            "active_browser_tab": "Media",
+            "active_inspector_tab": "Video",
+            "active_tool": "Select",
+            "skimming_enabled": true,
+            "snap_enabled": true,
+            "color_panel_height": 200.0
+        });
+        // Mirror LayoutState::load's migration step in-process so the
+        // test does not depend on a layout.json on disk.
+        let mut v = legacy.clone();
+        if let Some(obj) = v.as_object_mut() {
+            if !obj.contains_key("snap") {
+                if let Some(legacy_b) = obj.remove("snap_enabled").and_then(|val| val.as_bool()) {
+                    let default = SnapConfig::default();
+                    obj.insert("snap".to_string(), serde_json::json!({
+                        "master": legacy_b,
+                        "clips": default.clips,
+                        "playhead": default.playhead,
+                        "markers": default.markers,
+                        "in_out": default.in_out,
+                        "grid": default.grid,
+                    }));
+                }
+            }
+        }
+        let loaded: LayoutState = serde_json::from_value(v).expect("legacy + migration deserialises");
+        assert!(loaded.snap.master);
+        assert!(loaded.snap.clips);
+        assert!(loaded.snap.playhead);
+        assert!(loaded.snap.markers);
+        assert!(loaded.snap.in_out);
+        assert!(!loaded.snap.grid);
+    }
+
+    #[test]
+    fn legacy_snap_enabled_false_preserves_master_off() {
+        let mut v = serde_json::json!({
+            "browser_width": 200.0,
+            "inspector_width": 280.0,
+            "timeline_height": 280.0,
+            "active_browser_tab": "Media",
+            "active_inspector_tab": "Video",
+            "active_tool": "Select",
+            "skimming_enabled": true,
+            "snap_enabled": false,
+            "color_panel_height": 200.0
+        });
+        if let Some(obj) = v.as_object_mut() {
+            if !obj.contains_key("snap") {
+                if let Some(legacy_b) = obj.remove("snap_enabled").and_then(|val| val.as_bool()) {
+                    let default = SnapConfig::default();
+                    obj.insert("snap".to_string(), serde_json::json!({
+                        "master": legacy_b,
+                        "clips": default.clips,
+                        "playhead": default.playhead,
+                        "markers": default.markers,
+                        "in_out": default.in_out,
+                        "grid": default.grid,
+                    }));
+                }
+            }
+        }
+        let loaded: LayoutState = serde_json::from_value(v).expect("deserialises");
+        assert!(!loaded.snap.master, "legacy snap_enabled=false must produce master=false");
+    }
+
+    // Pinned: round-trip preserves SnapConfig exactly. If a future
+    // refactor changes the on-disk shape, this fails.
+    #[test]
+    fn snap_config_round_trip_through_json() {
+        let mut layout = LayoutState::default();
+        layout.snap.master = false;
+        layout.snap.grid = true;
+        layout.snap.clips = false;
+        let json = serde_json::to_string(&layout).expect("serialise");
+        let back: LayoutState = serde_json::from_str(&json).expect("deserialise");
+        assert!(!back.snap.master);
+        assert!(back.snap.grid);
+        assert!(!back.snap.clips);
+        assert!(back.snap.playhead, "untouched fields preserve their values");
+    }
+
+    // Pinned: a layout.json with no snap field at all (truly fresh
+    // first launch) loads with the SnapConfig default. Catches a
+    // regression where serde(default) is dropped from the field.
+    #[test]
+    fn missing_snap_field_uses_default() {
+        let json = serde_json::json!({
+            "browser_width": 200.0,
+            "inspector_width": 280.0,
+            "timeline_height": 280.0,
+            "active_browser_tab": "Media",
+            "active_inspector_tab": "Video",
+            "active_tool": "Select",
+            "skimming_enabled": true,
+            "color_panel_height": 200.0
+        });
+        let loaded: LayoutState = serde_json::from_value(json).expect("missing snap is OK");
+        assert_eq!(loaded.snap, SnapConfig::default());
+    }
 }

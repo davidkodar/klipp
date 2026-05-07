@@ -409,6 +409,10 @@ impl KlippApp {
                     s.spectrum_ring = buf;
                 }
                 s.spectrum_sample_rate = spectrum_sample_rate.max(1);
+                // Snap config persists in layout.json. Older layouts
+                // carried only `snap_enabled: bool` and are migrated
+                // to a full SnapConfig on read (see LayoutState::load).
+                s.snap = layout.snap;
                 s
             },
             toolbar: ToolbarPanel { logo_texture: None },
@@ -4757,8 +4761,20 @@ impl KlippApp {
                     let playhead = self.state.playhead;
                     let rate = if playhead.rate > 1 { playhead.rate } else { 24 };
                     let one_sec = klipp_core::RationalTime::from_frames(rate as i64, rate);
+                    // Resolve user snap config so a gap inserted at the
+                    // playhead respects the same snap rules as a clip
+                    // dragged onto the timeline.
+                    let active_seq = &self.state.sequences[self.state.active_sequence_idx];
+                    let pps = self.state.timeline_zoom;
+                    let grid_interval_secs = crate::timeline::grid_snap::resolve_grid_interval_secs(
+                        self.state.grid_snap_interval,
+                        active_seq.fps.rate(),
+                        pps,
+                    );
+                    let snap_cfg = self.state.snap;
                     let result = klipp_timeline::magnetic::MagneticEditor::insert_gap(
-                        &mut self.state.sequences[self.state.active_sequence_idx], one_sec, playhead);
+                        &mut self.state.sequences[self.state.active_sequence_idx],
+                        one_sec, playhead, grid_interval_secs, Some(&snap_cfg));
                     self.state.push_history(EditCommand::Magnetic(result.command));
                     self.state.dirty = true;
                     self.sync_sequence_to_engine();
@@ -18673,8 +18689,28 @@ impl KlippApp {
                 }
                 true
             }
-            AppCommand::SetSnapEnabled(enabled) => {
-                self.state.snap_enabled = *enabled;
+            AppCommand::SetSnapMaster(enabled) => {
+                self.state.snap.master = *enabled;
+                self.layout.snap = self.state.snap;
+                self.layout_dirty = true;
+                true
+            }
+            AppCommand::SetSnapTarget { target, enabled } => {
+                use klipp_core::SnapTargetKind;
+                match target {
+                    SnapTargetKind::ClipEdge => self.state.snap.clips = *enabled,
+                    SnapTargetKind::Playhead => self.state.snap.playhead = *enabled,
+                    SnapTargetKind::Marker => self.state.snap.markers = *enabled,
+                    // SequenceStart / InPoint / OutPoint share one
+                    // user-facing toggle. The kind variants stay
+                    // distinct for the on-snap legend in commit 3.
+                    SnapTargetKind::SequenceStart | SnapTargetKind::InPoint | SnapTargetKind::OutPoint => {
+                        self.state.snap.in_out = *enabled;
+                    }
+                    SnapTargetKind::Grid => self.state.snap.grid = *enabled,
+                }
+                self.layout.snap = self.state.snap;
+                self.layout_dirty = true;
                 true
             }
             AppCommand::SetMasterMute(muted) => {
@@ -20881,12 +20917,28 @@ impl KlippApp {
             None
         };
 
+        // Thread user snap config through the magnetic edit so an
+        // insert from the source viewer respects the same snap rules
+        // (master + per-target + grid) as a drag-from-source-to-track
+        // edit. apply_inverse / apply_forward replays already-snapped
+        // commands and don't re-resolve, so the snap-time choice is
+        // recorded into the resulting MagneticEditCommand.
+        let pps = self.state.timeline_zoom;
+        let fps_rate = self.state.sequences[seq_idx].fps.rate();
+        let grid_interval_secs = crate::timeline::grid_snap::resolve_grid_interval_secs(
+            self.state.grid_snap_interval,
+            fps_rate,
+            pps,
+        );
+        let snap_cfg = self.state.snap;
         let result = klipp_timeline::magnetic::MagneticEditor::three_point_edit(
             &mut self.state.sequences[seq_idx],
             new_clip,
             timeline_in,
             true,
             mode,
+            grid_interval_secs,
+            Some(&snap_cfg),
         );
 
         match (audio_clip_id, audio_track_info) {
@@ -22492,9 +22544,11 @@ impl KlippApp {
                     cmds.push(AppCommand::CreateMulticamClip);
                 }
             }
-            // N — Toggle snap
+            // N — Toggle snap (dispatches through AppCommand so layout
+            // persists on flip, matching the toolbar / palette / View
+            // menu surfaces).
             if i.key_pressed(egui::Key::N) && !i.modifiers.ctrl {
-                self.state.snap_enabled = !self.state.snap_enabled;
+                cmds.push(AppCommand::SetSnapMaster(!self.state.snap.master));
             }
             // I/O — In/Out markers (context-dependent on viewer mode)
             if i.key_pressed(egui::Key::I) && !i.modifiers.ctrl {

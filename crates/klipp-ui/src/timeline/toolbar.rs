@@ -40,19 +40,70 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState, theme: &KlippTheme, cmds: &
 
         separator(ui, theme);
 
-        // ── Snap toggle ──
-        let snap_active = state.snap_enabled;
+        // ── Snap toggle (left-click = master; right-click = per-target dropdown) ──
+        // Dispatches through AppCommand so the central handler can
+        // persist state.snap → layout.snap on every flip (and so the
+        // four snap-toggle surfaces — toolbar, N shortcut, palette,
+        // View menu — stay in sync without parallel mutation paths).
+        let snap_active = state.snap.master;
         let (snap_bg, snap_fg) = if snap_active {
             (theme.accent, theme.bg_void)
         } else {
             (egui::Color32::TRANSPARENT, theme.text_dim)
         };
-        let (rect, resp) = ui.allocate_exact_size(egui::vec2(26.0, 26.0), egui::Sense::click());
+        let (rect, resp) = ui.allocate_exact_size(
+            egui::vec2(26.0, 26.0),
+            egui::Sense::click().union(egui::Sense::hover()),
+        );
         let bg = if resp.hovered() && !snap_active { theme.bg_hover } else { snap_bg };
         ui.painter().rect_filled(rect, 5.0, bg);
         draw_tl_snap_icon(ui.painter(), rect, snap_fg);
-        styled_tooltip(&resp, theme, "Snap to Clips", Some("N"));
-        if resp.clicked() { state.snap_enabled = !state.snap_enabled; }
+        // Small ▾ chevron in the lower-right corner hints at the
+        // per-target dropdown (right-click reveals it). Same colour
+        // as the icon so it tracks active/inactive state.
+        ui.painter().text(
+            egui::pos2(rect.right() - 4.0, rect.bottom() - 6.0),
+            egui::Align2::RIGHT_BOTTOM,
+            "\u{25BE}",
+            egui::FontId::proportional(8.0),
+            snap_fg,
+        );
+        styled_tooltip(&resp, theme, "Snap (right-click for per-target options)", Some("N"));
+        if resp.clicked() {
+            cmds.push(AppCommand::SetSnapMaster(!state.snap.master));
+        }
+        // Right-click opens the per-target dropdown. Each entry
+        // dispatches AppCommand::SetSnapTarget which the central
+        // handler routes into state.snap and persists to layout.json.
+        // Per-target rows are greyed when master is off (they have
+        // no effect until master is back on).
+        resp.context_menu(|ui| {
+            use klipp_core::SnapTargetKind;
+            let cfg = state.snap;
+            ui.set_min_width(180.0);
+            let master_label = if cfg.master { "\u{2714} Snap (master)" } else { "    Snap (master)" };
+            if ui.button(master_label).clicked() {
+                cmds.push(AppCommand::SetSnapMaster(!cfg.master));
+                ui.close_menu();
+            }
+            ui.separator();
+            ui.add_enabled_ui(cfg.master, |ui| {
+                let rows: &[(SnapTargetKind, &str, bool)] = &[
+                    (SnapTargetKind::ClipEdge, "Snap to clips", cfg.clips),
+                    (SnapTargetKind::Playhead, "Snap to playhead", cfg.playhead),
+                    (SnapTargetKind::Marker, "Snap to markers", cfg.markers),
+                    (SnapTargetKind::InPoint, "Snap to in/out", cfg.in_out),
+                    (SnapTargetKind::Grid, "Snap to grid", cfg.grid),
+                ];
+                for &(target, label, enabled) in rows {
+                    let row_label = if enabled { format!("\u{2714} {label}") } else { format!("    {label}") };
+                    if ui.button(row_label).clicked() {
+                        cmds.push(AppCommand::SetSnapTarget { target, enabled: !enabled });
+                        ui.close_menu();
+                    }
+                }
+            });
+        });
 
         // ── Skimming toggle ──
         let skim_active = state.skimming_enabled;

@@ -290,8 +290,14 @@ pub fn build(state: &AppState) -> Vec<PaletteEntry> {
         action: PaletteAction::Cmd(AppCommand::FitTimelineToWindow), enabled: true });
     e.push(PaletteEntry { label: Cow::Borrowed("Toggle Loop Playback"), shortcut: Cow::Borrowed("Ctrl+L"),
         action: PaletteAction::Cmd(AppCommand::ToggleLoopPlayback), enabled: true });
+    // Toggle Snap dispatches the master toggle through AppCommand
+    // (was a direct ToggleState mutator) so the central handler can
+    // persist `state.snap` → `layout.snap` on every flip. The four
+    // snap-master surfaces (palette, N shortcut, timeline toolbar,
+    // View menu) all route through `AppCommand::SetSnapMaster` after
+    // commit 2.
     e.push(PaletteEntry { label: Cow::Borrowed("Toggle Snap"), shortcut: Cow::Borrowed("N"),
-        action: PaletteAction::ToggleState(|s| s.snap_enabled = !s.snap_enabled), enabled: true });
+        action: PaletteAction::Custom(|s, cmds| { cmds.push(AppCommand::SetSnapMaster(!s.snap.master)); }), enabled: true });
     e.push(PaletteEntry { label: Cow::Borrowed("Toggle Skimming"), shortcut: Cow::Borrowed("S"),
         action: PaletteAction::ToggleState(|s| s.skimming_enabled = !s.skimming_enabled), enabled: true });
     e.push(PaletteEntry { label: Cow::Borrowed("Toggle Audio Skim"), shortcut: Cow::Borrowed("Shift+S"),

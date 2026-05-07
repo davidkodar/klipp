@@ -395,27 +395,37 @@ pub fn collect_snap_targets(state: &AppState) -> Vec<(f64, klipp_core::RationalT
 /// audit-finding (l) this MUST stay constant-time — never enumerate.
 /// `rate`: timeline fps rate, used to construct the grid `RationalTime`
 /// when the post-pass wins.
+/// `snap_config`: when `Some`, gates per-target kinds — a candidate of
+/// kind `K` is only considered if `cfg.is_kind_enabled(K)` is true.
+/// `None` disables per-target gating.
 pub fn find_nearest_snap(
     edge_secs: f64,
     targets: &[(f64, klipp_core::RationalTime, klipp_core::SnapTargetKind)],
     threshold_secs: f64,
     grid_interval_secs: Option<f64>,
     rate: u32,
+    snap_config: Option<&crate::layout_state::SnapConfig>,
 ) -> Option<(klipp_core::RationalTime, f64, klipp_core::SnapTargetKind)> {
     let mut best: Option<(f64, klipp_core::RationalTime, klipp_core::SnapTargetKind)> = None;
     for &(target_secs, target_tc, kind) in targets {
+        if let Some(cfg) = snap_config {
+            if !cfg.is_kind_enabled(kind) { continue; }
+        }
         let dist = (edge_secs - target_secs).abs();
         if dist < threshold_secs && best.as_ref().is_none_or(|(d, _, _)| dist < *d) {
             best = Some((dist, target_tc, kind));
         }
     }
-    if let Some(interval) = grid_interval_secs {
-        if interval > 0.0 {
-            let nearest = (edge_secs / interval).round() * interval;
-            let dist = (edge_secs - nearest).abs();
-            if dist < threshold_secs && best.as_ref().is_none_or(|(d, _, _)| dist < *d) {
-                let grid_tc = klipp_core::RationalTime::from_secs_f64(nearest, rate);
-                best = Some((dist, grid_tc, klipp_core::SnapTargetKind::Grid));
+    let grid_allowed = snap_config.is_none_or(|c| c.grid);
+    if grid_allowed {
+        if let Some(interval) = grid_interval_secs {
+            if interval > 0.0 {
+                let nearest = (edge_secs / interval).round() * interval;
+                let dist = (edge_secs - nearest).abs();
+                if dist < threshold_secs && best.as_ref().is_none_or(|(d, _, _)| dist < *d) {
+                    let grid_tc = klipp_core::RationalTime::from_secs_f64(nearest, rate);
+                    best = Some((dist, grid_tc, klipp_core::SnapTargetKind::Grid));
+                }
             }
         }
     }
@@ -516,7 +526,7 @@ mod tests {
     #[test]
     fn find_nearest_snap_returns_clip_edge_kind() {
         let targets = vec![target_at(1.0, SnapTargetKind::ClipEdge, 24)];
-        let result = find_nearest_snap(1.05, &targets, 0.1, None, 24);
+        let result = find_nearest_snap(1.05, &targets, 0.1, None, 24, None);
         let (_, _, kind) = result.expect("expected hit");
         assert_eq!(kind, SnapTargetKind::ClipEdge);
     }
@@ -528,14 +538,14 @@ mod tests {
     #[test]
     fn find_nearest_snap_off_grid_yields_no_grid_candidate() {
         let targets: Vec<_> = Vec::new();
-        let result = find_nearest_snap(2.05, &targets, 0.1, None, 24);
+        let result = find_nearest_snap(2.05, &targets, 0.1, None, 24, None);
         assert!(result.is_none());
     }
 
     #[test]
     fn find_nearest_snap_grid_post_pass_emits_grid_kind() {
         let targets: Vec<_> = Vec::new();
-        let result = find_nearest_snap(2.05, &targets, 0.1, Some(1.0), 24);
+        let result = find_nearest_snap(2.05, &targets, 0.1, Some(1.0), 24, None);
         let (_, _, kind) = result.expect("expected grid hit");
         assert_eq!(kind, SnapTargetKind::Grid);
     }
@@ -543,7 +553,7 @@ mod tests {
     #[test]
     fn find_nearest_snap_existing_target_wins_tie_over_grid() {
         let targets = vec![target_at(2.0, SnapTargetKind::ClipEdge, 24)];
-        let result = find_nearest_snap(1.99, &targets, 0.1, Some(1.0), 24);
+        let result = find_nearest_snap(1.99, &targets, 0.1, Some(1.0), 24, None);
         let (_, _, kind) = result.expect("expected hit");
         assert_eq!(kind, SnapTargetKind::ClipEdge);
     }
@@ -552,7 +562,7 @@ mod tests {
     fn find_nearest_snap_grid_respects_threshold() {
         let targets: Vec<_> = Vec::new();
         // 2.5s with 1.0s grid: 0.5s from nearest grid, 0.1 threshold.
-        let result = find_nearest_snap(2.5, &targets, 0.1, Some(1.0), 24);
+        let result = find_nearest_snap(2.5, &targets, 0.1, Some(1.0), 24, None);
         assert!(result.is_none());
     }
 }

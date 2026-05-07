@@ -5366,7 +5366,7 @@ impl TimelinePanel {
             if let Some(pos) = pointer_pos {
                 if clip_rect.contains(pos) && content_rect.contains(pos) {
                     ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair);
-                    let blade_snap = state.snap_enabled && !ui.input(|i| i.modifiers.shift);
+                    let blade_snap = state.snap.master && !ui.input(|i| i.modifiers.shift);
                     let raw_x = pos.x - content_rect.left() + scroll;
                     let raw_secs = (raw_x as f64 / zoom as f64).max(0.0);
                     let mut blade_x = pos.x;
@@ -6827,7 +6827,7 @@ impl TimelinePanel {
                     if state.active_tool == Tool::Blade {
                         // Snap blade position when snap is enabled (hold Shift to override)
                         let mut cut_secs = click_secs;
-                        let blade_snap = state.snap_enabled && !ui.input(|i| i.modifiers.shift);
+                        let blade_snap = state.snap.master && !ui.input(|i| i.modifiers.shift);
                         if blade_snap {
                             let snap_thresh_secs = (snap_threshold_px() * 2.0) as f64 / zoom as f64;
                             let mut best_dist = f64::MAX;
@@ -7866,8 +7866,9 @@ impl TimelinePanel {
     ) {
         let tt = theme();
         let rate = fps.rate();
+        let snap_cfg = state.snap;
         let find_snap = |edge_time: RationalTime, exclude_clip: ClipId| -> Option<(RationalTime, f64, klipp_core::SnapTargetKind)> {
-            Self::find_snap_target(snap_enabled, snap_threshold_secs, snap_targets, edge_time, exclude_clip, grid_interval_secs, rate)
+            Self::find_snap_target(snap_enabled, snap_threshold_secs, snap_targets, edge_time, exclude_clip, grid_interval_secs, rate, Some(&snap_cfg))
         };
 
         // Handle ongoing drag (only process once, on the drag's source track)
@@ -9124,9 +9125,12 @@ impl TimelinePanel {
 
                     let pre_snap_tl_out = roll.original_a_timeline_out + use_delta;
 
-                    // Snap the boundary to playhead (8px threshold)
+                    // Snap the boundary to playhead (8px threshold).
+                    // Gated on master + per-target Playhead — flipping
+                    // off "Snap to playhead" in the per-target dropdown
+                    // disables this site too (trace-full-chain).
                     let mut snapped_boundary = pre_snap_tl_out;
-                    if snap_enabled {
+                    if snap_enabled && state.snap.playhead {
                         let playhead_secs = state.playhead.to_secs_f64();
                         let boundary_secs = pre_snap_tl_out.to_secs_f64();
                         let dist_px = ((boundary_secs - playhead_secs).abs() * zoom as f64) as f32;
@@ -9207,15 +9211,22 @@ impl TimelinePanel {
 
     /// Find the best snap target for a given edge time.
     ///
-    /// `grid_interval_secs`: when `Some(secs)` and `secs > 0`, a
-    /// constant-time grid post-pass checks `round(edge / secs) *
-    /// secs` against the threshold. Pass `None` to disable grid snap
-    /// (back-compat with pre-feature behaviour). Per audit-finding (l)
-    /// the grid pass MUST stay constant-time — never enumerate.
+    /// `snap_enabled` is the master gate (already short-circuits Shift-
+    /// drag). `snap_config`, when `Some`, gates per-target kinds — a
+    /// candidate of kind `K` is only considered if
+    /// `snap_config.is_kind_enabled(K)` is true. `None` disables
+    /// per-target filtering (every kind is in scope) — used in tests.
+    ///
+    /// `grid_interval_secs`: when `Some(secs > 0)` and grid is enabled
+    /// in `snap_config`, a constant-time grid post-pass checks
+    /// `round(edge / secs) * secs` against the threshold. Pass `None`
+    /// (or grid disabled in config) for no grid snap. Per audit-
+    /// finding (l) the grid pass MUST stay constant-time — never
+    /// enumerate.
     ///
     /// Returns the snapped time, its seconds value, and the
-    /// `SnapTargetKind` of the matched target (used by commit 3's
-    /// on-snap legend).
+    /// `SnapTargetKind` of the matched target.
+    #[allow(clippy::too_many_arguments)]
     fn find_snap_target(
         snap_enabled: bool,
         snap_threshold_secs: f64,
@@ -9224,25 +9235,33 @@ impl TimelinePanel {
         exclude_clip: ClipId,
         grid_interval_secs: Option<f64>,
         rate: u32,
+        snap_config: Option<&crate::layout_state::SnapConfig>,
     ) -> Option<(RationalTime, f64, klipp_core::SnapTargetKind)> {
         if !snap_enabled { return None; }
         let edge_secs = edge_time.to_secs_f64();
         let mut best: Option<(f64, RationalTime, klipp_core::SnapTargetKind)> = None;
         for &(target_secs, target_tc, owner, kind) in snap_targets {
             if owner == Some(exclude_clip) { continue; }
+            if let Some(cfg) = snap_config {
+                if !cfg.is_kind_enabled(kind) { continue; }
+            }
             let dist = (edge_secs - target_secs).abs();
             if dist < snap_threshold_secs && best.as_ref().is_none_or(|(d, _, _)| dist < *d) {
                 best = Some((dist, target_tc, kind));
             }
         }
-        // Grid post-pass — constant-time, no enumeration.
-        if let Some(interval) = grid_interval_secs {
-            if interval > 0.0 {
-                let nearest = (edge_secs / interval).round() * interval;
-                let dist = (edge_secs - nearest).abs();
-                if dist < snap_threshold_secs && best.as_ref().is_none_or(|(d, _, _)| dist < *d) {
-                    let grid_tc = RationalTime::from_secs_f64(nearest, rate);
-                    best = Some((dist, grid_tc, klipp_core::SnapTargetKind::Grid));
+        // Grid post-pass — constant-time, no enumeration. Gated by
+        // both the config flag (per-target) and a positive interval.
+        let grid_allowed = snap_config.is_none_or(|c| c.grid);
+        if grid_allowed {
+            if let Some(interval) = grid_interval_secs {
+                if interval > 0.0 {
+                    let nearest = (edge_secs / interval).round() * interval;
+                    let dist = (edge_secs - nearest).abs();
+                    if dist < snap_threshold_secs && best.as_ref().is_none_or(|(d, _, _)| dist < *d) {
+                        let grid_tc = RationalTime::from_secs_f64(nearest, rate);
+                        best = Some((dist, grid_tc, klipp_core::SnapTargetKind::Grid));
+                    }
                 }
             }
         }
@@ -9272,8 +9291,9 @@ impl TimelinePanel {
         pointer_released: bool,
     ) {
         let rate = fps.rate();
+        let snap_cfg = state.snap;
         let find_snap = |edge_time: RationalTime, exclude_clip: ClipId| -> Option<(RationalTime, f64, klipp_core::SnapTargetKind)> {
-            Self::find_snap_target(snap_enabled, snap_threshold_secs, snap_targets, edge_time, exclude_clip, grid_interval_secs, rate)
+            Self::find_snap_target(snap_enabled, snap_threshold_secs, snap_targets, edge_time, exclude_clip, grid_interval_secs, rate, Some(&snap_cfg))
         };
 
         // Handle ongoing trim (only process on the trim's own track to avoid duplicate tooltips)
@@ -10301,7 +10321,7 @@ impl TimelinePanel {
         self.process_fade_drag(state, cmds, track_idx, content_rect, track_rect, zoom, scroll, track_height, pointer_pos, pointer_down, pointer_released);
 
         // Collect snap targets upfront (avoids borrow conflicts with state mutation)
-        let snap_enabled = state.snap_enabled && !ui.input(|i| i.modifiers.shift);
+        let snap_enabled = state.snap.master && !ui.input(|i| i.modifiers.shift);
         let snap_threshold_secs = snap_threshold_px() as f64 / zoom as f64;
         // Collect all snap points: (time_secs, RationalTime, owner_clip, kind)
         // The kind is plumbed through find_snap_target so commit 3 can render
@@ -13518,12 +13538,12 @@ impl TimelinePanel {
             egui::vec2(btn_w, btn_h),
         );
         let snap_resp = ui.interact(snap_rect, ui.id().with("snap_toggle"), egui::Sense::click());
-        let snap_col = if state.snap_enabled { tt.marker_info } else { tt.bg_raised };
+        let snap_col = if state.snap.master { tt.marker_info } else { tt.bg_raised };
         painter.rect_filled(snap_rect, 2.0, snap_col);
         painter.text(snap_rect.center(), egui::Align2::CENTER_CENTER, "Snap",
             egui::FontId::proportional(8.0), tt.text_primary);
         if snap_resp.clicked() {
-            cmds.push(AppCommand::SetSnapEnabled(!state.snap_enabled));
+            cmds.push(AppCommand::SetSnapMaster(!state.snap.master));
         }
 
         // Ripple toggle
@@ -16498,7 +16518,7 @@ mod snap_tests {
         let targets = make_targets_with_clip_edge(1.0, 24);
         let edge = RationalTime::from_secs_f64(1.05, 24);
         let result = TimelinePanel::find_snap_target(
-            true, 0.1, &targets, edge, ClipId::new(), None, 24,
+            true, 0.1, &targets, edge, ClipId::new(), None, 24, None,
         );
         let (_, _, kind) = result.expect("expected snap hit");
         assert_eq!(kind, klipp_core::SnapTargetKind::ClipEdge);
@@ -16512,7 +16532,7 @@ mod snap_tests {
         let targets: Vec<_> = Vec::new();
         let edge = RationalTime::from_secs_f64(2.05, 24);
         let result = TimelinePanel::find_snap_target(
-            true, 0.1, &targets, edge, ClipId::new(), Some(1.0), 24,
+            true, 0.1, &targets, edge, ClipId::new(), Some(1.0), 24, None,
         );
         let (_, _, kind) = result.expect("expected grid hit");
         assert_eq!(kind, klipp_core::SnapTargetKind::Grid);
@@ -16528,7 +16548,7 @@ mod snap_tests {
         // configured, but with None nothing snaps.
         let edge = RationalTime::from_secs_f64(2.05, 24);
         let result = TimelinePanel::find_snap_target(
-            true, 0.1, &targets, edge, ClipId::new(), None, 24,
+            true, 0.1, &targets, edge, ClipId::new(), None, 24, None,
         );
         assert!(result.is_none(), "Off (None grid_interval_secs) must produce no grid hit");
     }
@@ -16549,7 +16569,7 @@ mod snap_tests {
         let targets = make_targets_with_clip_edge(2.0, 24);
         let edge = RationalTime::from_secs_f64(1.99, 24);
         let result = TimelinePanel::find_snap_target(
-            true, 0.1, &targets, edge, ClipId::new(), Some(1.0), 24,
+            true, 0.1, &targets, edge, ClipId::new(), Some(1.0), 24, None,
         );
         let (_, _, kind) = result.expect("expected snap hit");
         assert_eq!(kind, klipp_core::SnapTargetKind::ClipEdge,
@@ -16563,7 +16583,7 @@ mod snap_tests {
         let targets: Vec<_> = Vec::new();
         let edge = RationalTime::from_secs_f64(2.5, 24);
         let result = TimelinePanel::find_snap_target(
-            true, 0.1, &targets, edge, ClipId::new(), Some(1.0), 24,
+            true, 0.1, &targets, edge, ClipId::new(), Some(1.0), 24, None,
         );
         assert!(result.is_none(), "grid candidate outside threshold must not hit");
     }
@@ -16577,8 +16597,96 @@ mod snap_tests {
         let targets = make_targets_with_clip_edge(1.0, 24);
         let edge = RationalTime::from_secs_f64(1.0, 24);
         let result = TimelinePanel::find_snap_target(
-            false, 0.1, &targets, edge, ClipId::new(), Some(1.0), 24,
+            false, 0.1, &targets, edge, ClipId::new(), Some(1.0), 24, None,
         );
         assert!(result.is_none(), "snap_enabled=false must short-circuit even with grid configured");
+    }
+
+    // ── Per-target gating (commit 2) ──────────────────────────────────
+
+    fn cfg_all_off_except_master() -> klipp_core::SnapConfig {
+        klipp_core::SnapConfig {
+            master: true,
+            clips: false,
+            playhead: false,
+            markers: false,
+            in_out: false,
+            grid: false,
+        }
+    }
+
+    // Pinned: with `clips` disabled in SnapConfig, a clip-edge target
+    // that would otherwise hit is filtered out. Catches a regression
+    // where the per-target gate is bypassed (e.g. someone adds a new
+    // call site without the `snap_config` argument).
+    #[test]
+    fn per_target_clips_off_suppresses_clip_edge_match() {
+        let targets = make_targets_with_clip_edge(1.0, 24);
+        let edge = RationalTime::from_secs_f64(1.05, 24);
+        let cfg = cfg_all_off_except_master();
+        let result = TimelinePanel::find_snap_target(
+            true, 0.1, &targets, edge, ClipId::new(), None, 24, Some(&cfg),
+        );
+        assert!(result.is_none(),
+            "clips=false in SnapConfig must suppress clip-edge matches");
+    }
+
+    // Pinned: with `grid` disabled in SnapConfig, the grid post-pass
+    // is skipped even when grid_interval_secs is supplied. Trace-full-
+    // chain coverage — the same gate exists in range_visuals and
+    // magnetic.rs.
+    #[test]
+    fn per_target_grid_off_suppresses_grid_post_pass() {
+        let targets: Vec<_> = Vec::new();
+        let edge = RationalTime::from_secs_f64(2.05, 24);
+        let cfg = cfg_all_off_except_master();
+        // `grid: false` in cfg, but caller passes Some(1.0) for the
+        // resolved interval — config must still suppress the match.
+        let result = TimelinePanel::find_snap_target(
+            true, 0.1, &targets, edge, ClipId::new(), Some(1.0), 24, Some(&cfg),
+        );
+        assert!(result.is_none(),
+            "grid=false in SnapConfig must skip the grid post-pass even when interval is Some");
+    }
+
+    // Pinned: master-off in SnapConfig short-circuits before any
+    // per-target check. Already covered for the bool-master path
+    // (find_snap_target_disabled_yields_none_regardless_of_grid).
+    // This test pins the SnapConfig path: external master gating
+    // happens at the call site (state.snap.master), not inside
+    // find_snap_target — so the snap_enabled bool is the canonical
+    // master gate. Including it here confirms the SnapConfig
+    // per-target booleans don't accidentally re-enable snap when
+    // master is off.
+    #[test]
+    fn master_off_short_circuits_even_with_all_per_target_on() {
+        let targets = make_targets_with_clip_edge(1.0, 24);
+        let edge = RationalTime::from_secs_f64(1.05, 24);
+        let cfg = klipp_core::SnapConfig::default(); // every per-target on
+        let result = TimelinePanel::find_snap_target(
+            false, 0.1, &targets, edge, ClipId::new(), None, 24, Some(&cfg),
+        );
+        assert!(result.is_none());
+    }
+
+    // Pinned: SnapConfig::default() produces the same hits as the
+    // pre-SnapConfig find_snap_target (which had no config arg).
+    // Back-compat parity at the SnapConfig boundary.
+    #[test]
+    fn snap_config_default_is_back_compat_with_pre_config_behaviour() {
+        let targets = make_targets_with_clip_edge(1.0, 24);
+        let edge = RationalTime::from_secs_f64(1.05, 24);
+        let cfg = klipp_core::SnapConfig::default();
+        let with_default = TimelinePanel::find_snap_target(
+            true, 0.1, &targets, edge, ClipId::new(), None, 24, Some(&cfg),
+        );
+        let without_config = TimelinePanel::find_snap_target(
+            true, 0.1, &targets, edge, ClipId::new(), None, 24, None,
+        );
+        assert_eq!(
+            with_default.map(|(_, _, k)| k),
+            without_config.map(|(_, _, k)| k),
+            "default SnapConfig must produce identical results to None config"
+        );
     }
 }

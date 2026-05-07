@@ -148,20 +148,30 @@ impl MagneticEditor {
     // ───────────────────────────────────────────────────────────────
     // 1. insert_primary
     // ───────────────────────────────────────────────────────────────
+    /// `grid_interval_secs` and `snap_config`: live snap inputs from
+    /// the UI layer. `None` for both = no per-target filtering, no
+    /// grid post-pass — equivalent to pre-feature snap behaviour.
     pub fn insert_primary(
         sequence: &mut Sequence,
         mut new_clip: Clip,
         at_time: RationalTime,
+        grid_interval_secs: Option<f64>,
+        snap_config: Option<&klipp_core::SnapConfig>,
     ) -> MagneticResult {
         let primary_idx = sequence
             .primary_track_index()
             .expect("insert_primary requires a primary track");
 
-        // Snap. Grid snap is intentionally None at this call site for
-        // commit 1 — wider plumbing of `SnapConfig` through magnetic
-        // edit operations (so this insert honours user-configured
-        // grid snap) is commit 2's scope.
-        let snapped = Self::snap_to_boundary(sequence, at_time, Some(new_clip.id), None);
+        // Master gate: when snap is off (or no config supplied with
+        // explicit-off intent), skip the boundary check entirely. The
+        // is_none_or branch keeps None-callers (tests + back-compat)
+        // running the existing behaviour.
+        let master_on = snap_config.is_none_or(|c| c.master);
+        let snapped = if master_on {
+            Self::snap_to_boundary(sequence, at_time, Some(new_clip.id), grid_interval_secs, snap_config)
+        } else {
+            None
+        };
         let at_time = snapped.unwrap_or(at_time);
 
         let clip_dur = new_clip.timeline_out - new_clip.timeline_in;
@@ -674,9 +684,11 @@ impl MagneticEditor {
         sequence: &mut Sequence,
         duration: RationalTime,
         at_time: RationalTime,
+        grid_interval_secs: Option<f64>,
+        snap_config: Option<&klipp_core::SnapConfig>,
     ) -> MagneticResult {
         let gap = Clip::gap(at_time, at_time + duration);
-        let result = Self::insert_primary(sequence, gap.clone(), at_time);
+        let result = Self::insert_primary(sequence, gap.clone(), at_time, grid_interval_secs, snap_config);
 
         // Re-wrap the command as InsertGap
         let (rippled_clips, cascaded_clips, track_index) = match result.command {
@@ -1280,16 +1292,20 @@ impl MagneticEditor {
     // ───────────────────────────────────────────────────────────────
     /// `grid_interval_secs`: optional grid spacing in seconds. When
     /// `Some(secs)` and `secs > 0`, a constant-time post-pass adds a
-    /// grid-tick candidate at `round(raw / secs) * secs`. Pass `None`
-    /// for back-compat: behaviour is byte-identical to the
-    /// pre-grid-snap implementation.
+    /// grid-tick candidate at `round(raw / secs) * secs`.
+    /// `snap_config`: optional per-target filter. When `Some`,
+    /// candidates of disabled kinds are skipped (e.g. `clips=false`
+    /// suppresses ClipBoundary). `None` disables per-target filtering
+    /// (every kind is in scope) — used for back-compat when callers
+    /// don't yet pass a config.
     pub fn snap_to_boundary(
         sequence: &Sequence,
         raw_time: RationalTime,
         exclude_clip_id: Option<ClipId>,
         grid_interval_secs: Option<f64>,
+        snap_config: Option<&klipp_core::SnapConfig>,
     ) -> Option<RationalTime> {
-        let points = Self::active_snap_points(sequence, raw_time, exclude_clip_id, grid_interval_secs);
+        let points = Self::active_snap_points(sequence, raw_time, exclude_clip_id, grid_interval_secs, snap_config);
         points.into_iter().next().map(|sp| sp.time)
     }
 
@@ -1301,59 +1317,71 @@ impl MagneticEditor {
     /// `raw_time`, a `SnapKind::Grid` candidate is appended. The
     /// implementation is constant-time per call (no enumeration of
     /// grid points across the timeline) — see audit-finding (l).
+    /// `snap_config` filters candidate emission by per-target kind;
+    /// `None` lets every kind through.
     pub fn active_snap_points(
         sequence: &Sequence,
         raw_time: RationalTime,
         exclude_clip_id: Option<ClipId>,
         grid_interval_secs: Option<f64>,
+        snap_config: Option<&klipp_core::SnapConfig>,
     ) -> Vec<SnapPoint> {
         let rate = sequence.fps.rate();
         let threshold = RationalTime::from_frames(SNAP_THRESHOLD_FRAMES, rate);
         let mut points = Vec::new();
+        let clips_allowed = snap_config.is_none_or(|c| c.clips);
+        let markers_allowed = snap_config.is_none_or(|c| c.markers);
+        let grid_allowed = snap_config.is_none_or(|c| c.grid);
 
-        // Check clip boundaries on all tracks
-        for track in &sequence.tracks {
-            for clip in &track.clips {
-                if Some(clip.id) == exclude_clip_id {
-                    continue;
-                }
-                // Clip in-point
-                let diff_in = (raw_time - clip.timeline_in).abs();
-                if diff_in <= threshold {
-                    points.push(SnapPoint {
-                        time: clip.timeline_in,
-                        kind: SnapKind::ClipBoundary,
-                    });
-                }
-                // Clip out-point
-                let diff_out = (raw_time - clip.timeline_out).abs();
-                if diff_out <= threshold {
-                    points.push(SnapPoint {
-                        time: clip.timeline_out,
-                        kind: SnapKind::ClipBoundary,
-                    });
+        // Check clip boundaries on all tracks. Gated on `clips`
+        // per-target flag — flipping "Snap to clips" off in the
+        // toolbar dropdown suppresses every emission site for the
+        // ClipBoundary kind in this layer (trace-full-chain).
+        if clips_allowed {
+            for track in &sequence.tracks {
+                for clip in &track.clips {
+                    if Some(clip.id) == exclude_clip_id {
+                        continue;
+                    }
+                    let diff_in = (raw_time - clip.timeline_in).abs();
+                    if diff_in <= threshold {
+                        points.push(SnapPoint {
+                            time: clip.timeline_in,
+                            kind: SnapKind::ClipBoundary,
+                        });
+                    }
+                    let diff_out = (raw_time - clip.timeline_out).abs();
+                    if diff_out <= threshold {
+                        points.push(SnapPoint {
+                            time: clip.timeline_out,
+                            kind: SnapKind::ClipBoundary,
+                        });
+                    }
                 }
             }
         }
 
-        // Check markers — both the start position and, for range markers,
-        // the end position (position + duration) become snap targets.
-        for marker in &sequence.markers {
-            let diff = (raw_time - marker.position).abs();
-            if diff <= threshold {
-                points.push(SnapPoint {
-                    time: marker.position,
-                    kind: SnapKind::Marker,
-                });
-            }
-            if let Some(dur) = marker.duration {
-                let end = marker.position + dur;
-                let diff_end = (raw_time - end).abs();
-                if diff_end <= threshold {
+        // Check markers — both the start position and, for range
+        // markers, the end position become snap targets. Gated on
+        // `markers`.
+        if markers_allowed {
+            for marker in &sequence.markers {
+                let diff = (raw_time - marker.position).abs();
+                if diff <= threshold {
                     points.push(SnapPoint {
-                        time: end,
+                        time: marker.position,
                         kind: SnapKind::Marker,
                     });
+                }
+                if let Some(dur) = marker.duration {
+                    let end = marker.position + dur;
+                    let diff_end = (raw_time - end).abs();
+                    if diff_end <= threshold {
+                        points.push(SnapPoint {
+                            time: end,
+                            kind: SnapKind::Marker,
+                        });
+                    }
                 }
             }
         }
@@ -1361,17 +1389,19 @@ impl MagneticEditor {
         // Grid post-pass — constant-time. Snap to round(raw / interval)
         // * interval if within threshold. No enumeration of grid points
         // across the timeline (see audit-finding (l)).
-        if let Some(interval) = grid_interval_secs {
-            if interval > 0.0 {
-                let raw_secs = raw_time.to_secs_f64();
-                let nearest = (raw_secs / interval).round() * interval;
-                let grid_time = RationalTime::from_secs_f64(nearest, rate);
-                let diff = (raw_time - grid_time).abs();
-                if diff <= threshold {
-                    points.push(SnapPoint {
-                        time: grid_time,
-                        kind: SnapKind::Grid,
-                    });
+        if grid_allowed {
+            if let Some(interval) = grid_interval_secs {
+                if interval > 0.0 {
+                    let raw_secs = raw_time.to_secs_f64();
+                    let nearest = (raw_secs / interval).round() * interval;
+                    let grid_time = RationalTime::from_secs_f64(nearest, rate);
+                    let diff = (raw_time - grid_time).abs();
+                    if diff <= threshold {
+                        points.push(SnapPoint {
+                            time: grid_time,
+                            kind: SnapKind::Grid,
+                        });
+                    }
                 }
             }
         }
@@ -1969,6 +1999,8 @@ impl MagneticEditor {
         timeline_point: RationalTime,
         point_is_in: bool,
         mode: EditMode,
+        grid_interval_secs: Option<f64>,
+        snap_config: Option<&klipp_core::SnapConfig>,
     ) -> MagneticResult {
         let at_time = if point_is_in {
             timeline_point
@@ -1984,7 +2016,7 @@ impl MagneticEditor {
         clip.timeline_out = at_time + dur;
 
         match mode {
-            EditMode::Insert => Self::insert_primary(sequence, clip, at_time),
+            EditMode::Insert => Self::insert_primary(sequence, clip, at_time, grid_interval_secs, snap_config),
             EditMode::Overwrite => Self::overwrite_primary(sequence, clip, at_time),
         }
     }
@@ -2075,7 +2107,7 @@ mod tests {
         let new_clip = media_clip(0, 12); // 12-frame clip
 
         // Insert at frame 24 (between clip 0 and clip 1)
-        let result = MagneticEditor::insert_primary(&mut seq, new_clip, tc(24));
+        let result = MagneticEditor::insert_primary(&mut seq, new_clip, tc(24), None, None);
 
         let track = &seq.tracks[0];
         assert_eq!(track.clips.len(), 4);
@@ -2106,7 +2138,7 @@ mod tests {
         let mut seq = make_sequence(&[(0, 24), (24, 48)]);
         let new_clip = media_clip(0, 12);
 
-        MagneticEditor::insert_primary(&mut seq, new_clip, tc(0));
+        MagneticEditor::insert_primary(&mut seq, new_clip, tc(0), None, None);
 
         let track = &seq.tracks[0];
         assert_eq!(track.clips.len(), 3);
@@ -2123,7 +2155,7 @@ mod tests {
         let mut seq = make_sequence(&[(0, 24), (24, 48)]);
         let new_clip = media_clip(0, 12);
 
-        MagneticEditor::insert_primary(&mut seq, new_clip, tc(48));
+        MagneticEditor::insert_primary(&mut seq, new_clip, tc(48), None, None);
 
         let track = &seq.tracks[0];
         assert_eq!(track.clips.len(), 3);
@@ -2526,7 +2558,7 @@ mod tests {
 
         // Now insert a clip at the beginning of primary, pushing everything right
         let new_clip = media_clip(0, 12);
-        MagneticEditor::insert_primary(&mut seq, new_clip, tc(0));
+        MagneticEditor::insert_primary(&mut seq, new_clip, tc(0), None, None);
 
         // Primary clip 0 moved from [0..24] to [12..36]
         // Connected clip should follow: from [0..24] to [12..36]
@@ -2663,7 +2695,7 @@ mod tests {
     fn test_snap_within_threshold() {
         let seq = make_sequence(&[(0, 24), (24, 48)]);
         // 3 frames away from boundary at 24 — should snap
-        let snapped = MagneticEditor::snap_to_boundary(&seq, tc(27), None, None);
+        let snapped = MagneticEditor::snap_to_boundary(&seq, tc(27), None, None, None);
         assert_eq!(snapped, Some(tc(24)));
     }
 
@@ -2671,7 +2703,7 @@ mod tests {
     fn test_snap_beyond_threshold() {
         let seq = make_sequence(&[(0, 24), (24, 48)]);
         // 10 frames away — beyond 8 frame threshold
-        let snapped = MagneticEditor::snap_to_boundary(&seq, tc(34), None, None);
+        let snapped = MagneticEditor::snap_to_boundary(&seq, tc(34), None, None, None);
         assert_eq!(snapped, None);
     }
 
@@ -2682,7 +2714,7 @@ mod tests {
         // 3 frames from clip 0's out-point at 24 — but exclude clip 0
         // Clip 1's in-point is also at 24, so it should still snap
         let clip1_id = seq.tracks[0].clips[1].id;
-        let snapped = MagneticEditor::snap_to_boundary(&seq, tc(27), Some(clip1_id), None);
+        let snapped = MagneticEditor::snap_to_boundary(&seq, tc(27), Some(clip1_id), None, None);
         // Should snap to clip 0's boundary
         assert_eq!(snapped, Some(tc(24)));
 
@@ -2691,7 +2723,7 @@ mod tests {
         let seq2 = make_sequence(&[(0, 24)]);
         let only_clip_id = seq2.tracks[0].clips[0].id;
         // 3 frames from boundary at 0
-        let snapped2 = MagneticEditor::snap_to_boundary(&seq2, tc(3), Some(only_clip_id), None);
+        let snapped2 = MagneticEditor::snap_to_boundary(&seq2, tc(3), Some(only_clip_id), None, None);
         // No snap targets (the only clip is excluded)
         assert_eq!(snapped2, None);
     }
@@ -2707,7 +2739,7 @@ mod tests {
             duration: None,
         });
 
-        let snapped = MagneticEditor::snap_to_boundary(&seq, tc(33), None, None);
+        let snapped = MagneticEditor::snap_to_boundary(&seq, tc(33), None, None, None);
         assert_eq!(snapped, Some(tc(36)));
     }
 
@@ -2724,7 +2756,7 @@ mod tests {
         // the result is identical to the pre-feature impl when
         // grid_interval_secs is None. So compare with a query that
         // has NO clip-edge hit.
-        let snapped_no_grid = MagneticEditor::snap_to_boundary(&seq, tc(35), None, None);
+        let snapped_no_grid = MagneticEditor::snap_to_boundary(&seq, tc(35), None, None, None);
         // 35 is 11 frames from 24 (out of threshold) and 13 from 48
         // (out of threshold). With None grid: no snap.
         assert_eq!(snapped_no_grid, None);
@@ -2745,12 +2777,12 @@ mod tests {
         // Query at frame 50 (= ~2.083 s) — well past any clip edge.
         // With 1-second grid, nearest is 2.0s = frame 48. Distance
         // 50-48 = 2 frames, within threshold → grid hit.
-        let snapped = MagneticEditor::snap_to_boundary(&seq, tc(50), None, Some(1.0));
+        let snapped = MagneticEditor::snap_to_boundary(&seq, tc(50), None, Some(1.0), None);
         assert_eq!(snapped, Some(tc(48)));
 
         // And without the grid hint, no snap (clip ends at 24, far
         // beyond threshold).
-        let snapped_off = MagneticEditor::snap_to_boundary(&seq, tc(50), None, None);
+        let snapped_off = MagneticEditor::snap_to_boundary(&seq, tc(50), None, None, None);
         assert_eq!(snapped_off, None);
     }
 
@@ -2773,7 +2805,7 @@ mod tests {
         let orig_clip2_id = seq.tracks[0].clips[2].id;
 
         let new_clip = media_clip(0, 12);
-        let result = MagneticEditor::insert_primary(&mut seq, new_clip, tc(24));
+        let result = MagneticEditor::insert_primary(&mut seq, new_clip, tc(24), None, None);
 
         // Verify insertion happened
         assert_eq!(seq.tracks[0].clips.len(), 4);
@@ -3077,7 +3109,7 @@ mod tests {
     fn test_insert_gap() {
         let mut seq = make_sequence(&[(0, 24), (24, 48)]);
 
-        MagneticEditor::insert_gap(&mut seq, tc(12), tc(24));
+        MagneticEditor::insert_gap(&mut seq, tc(12), tc(24), None, None);
 
         let track = &seq.tracks[0];
         assert_eq!(track.clips.len(), 3);
@@ -3123,6 +3155,8 @@ mod tests {
             tc(24),
             true,
             EditMode::Insert,
+            None,
+            None,
         );
 
         let track = &seq.tracks[0];
@@ -3143,6 +3177,8 @@ mod tests {
             tc(36),
             false,
             EditMode::Insert,
+            None,
+            None,
         );
 
         let track = &seq.tracks[0];
@@ -3190,7 +3226,7 @@ mod tests {
 
         // Insert at beginning of primary, shifting everything right by 12
         let new_clip = media_clip(0, 12);
-        MagneticEditor::insert_primary(&mut seq, new_clip, tc(0));
+        MagneticEditor::insert_primary(&mut seq, new_clip, tc(0), None, None);
 
         // All storyline clips should have moved right by 12
         assert_eq!(seq.tracks[0].clips[0].timeline_in, tc(12));
@@ -3231,7 +3267,7 @@ mod tests {
     fn test_active_snap_points_sorted_by_distance() {
         let seq = make_sequence(&[(0, 24), (24, 48), (48, 72)]);
         // Query at frame 26 — closest to 24, then 48, then 0
-        let points = MagneticEditor::active_snap_points(&seq, tc(26), None, None);
+        let points = MagneticEditor::active_snap_points(&seq, tc(26), None, None, None);
         // Should include 24 (2 frames away) but not 48 (22 frames) or 0 (26 frames)
         assert!(!points.is_empty());
         assert_eq!(points[0].time, tc(24));

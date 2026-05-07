@@ -1009,7 +1009,12 @@ pub struct AppState {
     // Phase 4: Tools & modes
     pub active_tool: Tool,
     pub viewer_mode: ViewerMode,
-    pub snap_enabled: bool,
+    /// Snap configuration: master gate + per-target booleans (clip
+    /// edges, playhead, markers, in/out, grid). Synced from
+    /// `LayoutState.snap` at startup; mutated via the
+    /// `AppCommand::SetSnapMaster` and `AppCommand::SetSnapTarget`
+    /// handlers (and persisted back via `layout_dirty`).
+    pub snap: crate::layout_state::SnapConfig,
     pub ripple_enabled: bool,
     /// Default transition duration in frames (synced from prefs).
     pub default_transition_frames: u32,
@@ -2828,7 +2833,7 @@ impl Default for AppState {
             clip_properties_tab: ClipPropertiesTab::default(),
             active_tool: Tool::Select,
             viewer_mode: ViewerMode::Program,
-            snap_enabled: true,
+            snap: crate::layout_state::SnapConfig::default(),
             ripple_enabled: true,
             default_transition_frames: 24,
             timeline_prefs: Default::default(),
