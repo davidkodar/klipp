@@ -307,6 +307,71 @@ pub fn build(state: &AppState) -> Vec<PaletteEntry> {
     // Bake Grade — closure form because we need the selected clip + chosen
     // size + a synchronous save-file dialog, none of which fits the simple
     // Cmd / ToggleState shapes.
+    // Fade-from / fade-to colour presets — both append a `BuiltinEffect::ColorFade`
+    // to the selected clip with the conventional 1-second duration. The user can
+    // then tweak colour + duration in the inspector. Disabled when no clip is
+    // selected (the AddBuiltinEffect handler would no-op anyway, but the palette
+    // staying greyed-out matches the rest of the clip-targeted entries).
+    e.push(PaletteEntry { label: Cow::Borrowed("Fade From Black (1 s)"), shortcut: Cow::Borrowed(""),
+        action: PaletteAction::Custom(|state, cmds| {
+            if let Some(clip_id) = state.selected_clip {
+                cmds.push(AppCommand::AddBuiltinEffect {
+                    clip_id,
+                    effect: klipp_effects::BuiltinEffect::ColorFade {
+                        color: [0, 0, 0, 255],
+                        duration_secs: 1.0,
+                        mode: klipp_effects::ColorFadeMode::In,
+                        progress: 0.0,
+                    },
+                });
+            }
+        }),
+        enabled: state.selected_clip.is_some() });
+    e.push(PaletteEntry { label: Cow::Borrowed("Fade To Black (1 s)"), shortcut: Cow::Borrowed(""),
+        action: PaletteAction::Custom(|state, cmds| {
+            if let Some(clip_id) = state.selected_clip {
+                cmds.push(AppCommand::AddBuiltinEffect {
+                    clip_id,
+                    effect: klipp_effects::BuiltinEffect::ColorFade {
+                        color: [0, 0, 0, 255],
+                        duration_secs: 1.0,
+                        mode: klipp_effects::ColorFadeMode::Out,
+                        progress: 0.0,
+                    },
+                });
+            }
+        }),
+        enabled: state.selected_clip.is_some() });
+    e.push(PaletteEntry { label: Cow::Borrowed("Fade From White (1 s)"), shortcut: Cow::Borrowed(""),
+        action: PaletteAction::Custom(|state, cmds| {
+            if let Some(clip_id) = state.selected_clip {
+                cmds.push(AppCommand::AddBuiltinEffect {
+                    clip_id,
+                    effect: klipp_effects::BuiltinEffect::ColorFade {
+                        color: [255, 255, 255, 255],
+                        duration_secs: 1.0,
+                        mode: klipp_effects::ColorFadeMode::In,
+                        progress: 0.0,
+                    },
+                });
+            }
+        }),
+        enabled: state.selected_clip.is_some() });
+    e.push(PaletteEntry { label: Cow::Borrowed("Fade To White (1 s)"), shortcut: Cow::Borrowed(""),
+        action: PaletteAction::Custom(|state, cmds| {
+            if let Some(clip_id) = state.selected_clip {
+                cmds.push(AppCommand::AddBuiltinEffect {
+                    clip_id,
+                    effect: klipp_effects::BuiltinEffect::ColorFade {
+                        color: [255, 255, 255, 255],
+                        duration_secs: 1.0,
+                        mode: klipp_effects::ColorFadeMode::Out,
+                        progress: 0.0,
+                    },
+                });
+            }
+        }),
+        enabled: state.selected_clip.is_some() });
     e.push(PaletteEntry { label: Cow::Borrowed("Bake Grade as 3D LUT (.cube)"), shortcut: Cow::Borrowed(""),
         action: PaletteAction::Custom(|state, cmds| {
             let Some(clip_id) = state.selected_clip else { return; };

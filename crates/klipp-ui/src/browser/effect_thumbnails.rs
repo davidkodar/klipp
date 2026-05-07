@@ -280,6 +280,18 @@ impl ThumbnailRenderer {
 /// Exaggerated parameters for built-in effect thumbnails.
 fn builtin_preview_params(effect: &klipp_effects::BuiltinEffect) -> klipp_effects::BuiltinEffect {
     match effect {
+        klipp_effects::BuiltinEffect::ColorFade { color, mode, duration_secs, .. } => {
+            // Render the thumbnail mid-fade so the user can see the
+            // colour mix; default to black if the source had a
+            // transparent colour.
+            let preview_color = if color[3] == 0 { [0, 0, 0, 255] } else { *color };
+            klipp_effects::BuiltinEffect::ColorFade {
+                color: preview_color,
+                duration_secs: *duration_secs,
+                mode: *mode,
+                progress: 0.5,
+            }
+        }
         klipp_effects::BuiltinEffect::Opacity { .. } => {
             klipp_effects::BuiltinEffect::Opacity { value: 0.4 }
         }

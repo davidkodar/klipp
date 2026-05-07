@@ -1112,6 +1112,7 @@ fn show_ofx_param(
 
 fn builtin_effect_name(effect: &klipp_effects::BuiltinEffect) -> &'static str {
     match effect {
+        klipp_effects::BuiltinEffect::ColorFade { .. } => "Color Fade",
         klipp_effects::BuiltinEffect::Opacity { .. } => "Opacity",
         klipp_effects::BuiltinEffect::GaussianBlur { .. } => "Gaussian Blur",
         klipp_effects::BuiltinEffect::Sharpen { .. } => "Sharpen",
@@ -1161,6 +1162,9 @@ fn builtin_effect_name(effect: &klipp_effects::BuiltinEffect) -> &'static str {
 fn builtin_effect_default(effect: &klipp_effects::BuiltinEffect) -> klipp_effects::BuiltinEffect {
     use klipp_effects::BuiltinEffect;
     match effect {
+        BuiltinEffect::ColorFade { mode, .. } => BuiltinEffect::ColorFade {
+            color: [0, 0, 0, 255], duration_secs: 1.0, mode: *mode, progress: 0.0,
+        },
         BuiltinEffect::Opacity { .. } => BuiltinEffect::Opacity { value: 1.0 },
         BuiltinEffect::GaussianBlur { .. } => BuiltinEffect::GaussianBlur { radius: 0.0 },
         BuiltinEffect::Sharpen { .. } => BuiltinEffect::Sharpen { amount: 0.0 },
@@ -1503,6 +1507,44 @@ fn show_builtin_effect_params(
     }
 
     match &mut updated {
+        klipp_effects::BuiltinEffect::ColorFade { color, duration_secs, mode, .. } => {
+            // Mode picker (In / Out)
+            ui.horizontal(|ui| {
+                ui.label("Mode");
+                let mut m = *mode;
+                egui::ComboBox::from_id_salt(("color_fade_mode", effect_index))
+                    .selected_text(match m {
+                        klipp_effects::ColorFadeMode::In => "Fade From",
+                        klipp_effects::ColorFadeMode::Out => "Fade To",
+                    })
+                    .show_ui(ui, |ui| {
+                        if ui.selectable_value(&mut m, klipp_effects::ColorFadeMode::In, "Fade From").clicked() {}
+                        if ui.selectable_value(&mut m, klipp_effects::ColorFadeMode::Out, "Fade To").clicked() {}
+                    });
+                if m != *mode { *mode = m; changed = true; }
+            });
+            // Colour picker
+            ui.horizontal(|ui| {
+                ui.label("Colour");
+                let mut c = egui::Color32::from_rgba_premultiplied(color[0], color[1], color[2], color[3]);
+                if ui.color_edit_button_srgba(&mut c).changed() {
+                    *color = [c.r(), c.g(), c.b(), c.a()];
+                    changed = true;
+                }
+            });
+            // Duration
+            ui.horizontal(|ui| {
+                ui.label("Duration");
+                if ui.add(egui::DragValue::new(duration_secs)
+                    .range(0.05..=10.0)
+                    .speed(0.05)
+                    .suffix(" s")
+                    .fixed_decimals(2)
+                ).changed() {
+                    changed = true;
+                }
+            });
+        }
         klipp_effects::BuiltinEffect::Opacity { value } => {
             *value = eval_effect_kf(clip, effect_index, "value", clip_time_secs, *value);
             let ks = Some(effect_keyframe_state(clip, effect_index, "value", clip_time_secs));

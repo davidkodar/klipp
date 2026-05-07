@@ -434,6 +434,7 @@ impl PresetManager {
 /// Map a BuiltinEffect to its preset key.
 pub fn builtin_effect_key(effect: &klipp_effects::BuiltinEffect) -> &'static str {
     match effect {
+        klipp_effects::BuiltinEffect::ColorFade { .. } => "color_fade",
         klipp_effects::BuiltinEffect::Opacity { .. } => "opacity",
         klipp_effects::BuiltinEffect::GaussianBlur { .. } => "gaussian_blur",
         klipp_effects::BuiltinEffect::Sharpen { .. } => "sharpen",

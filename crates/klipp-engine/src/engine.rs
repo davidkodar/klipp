@@ -7908,7 +7908,11 @@ impl PlaybackEngine {
                 if fx.is_empty() {
                     rgba
                 } else if let Some(gpu) = &mut self.gpu_effects {
-                    gpu.apply_effects(&fx, rgba, width, height)
+                    if klipp_effects::chain_supports_gpu(&fx) {
+                        gpu.apply_effects(&fx, rgba, width, height)
+                    } else {
+                        klipp_effects::apply_effects(&fx, rgba, width, height)
+                    }
                 } else {
                     klipp_effects::apply_effects(&fx, rgba, width, height)
                 }
@@ -9044,6 +9048,30 @@ impl PlaybackEngine {
                 }
             }
 
+            // Patch ColorFade `progress` per-frame from clip-time + duration + mode.
+            // Same per-frame patch pattern used by Opacity above. The
+            // `progress` field is `#[serde(skip)]` so the value here is
+            // engine-transient and never written to project files.
+            let clip_dur_secs = (c.source_out.to_secs_f64() - c.source_in.to_secs_f64()).max(0.0);
+            for effect in &mut fx {
+                if let klipp_effects::BuiltinEffect::ColorFade { duration_secs, mode, progress, .. } = effect {
+                    let dur = (*duration_secs as f64).max(0.0);
+                    *progress = if dur <= 0.0 {
+                        1.0 // zero-duration fade is identity (passes through unchanged)
+                    } else {
+                        match *mode {
+                            klipp_effects::ColorFadeMode::In => {
+                                (clip_relative_secs / dur).clamp(0.0, 1.0) as f32
+                            }
+                            klipp_effects::ColorFadeMode::Out => {
+                                let from_end = (clip_dur_secs - clip_relative_secs).max(0.0);
+                                (from_end / dur).clamp(0.0, 1.0) as f32
+                            }
+                        }
+                    };
+                }
+            }
+
             // Evaluate transform keyframes + modifiers
             let has_transform_modifiers = c.param_modifiers.contains_key(&klipp_core::ParamId::PositionX)
                 || c.param_modifiers.contains_key(&klipp_core::ParamId::PositionY)
@@ -9615,7 +9643,11 @@ impl PlaybackEngine {
         //    linear-f32 natively — no u8 round-trip here.
         let rgba = if !builtin_fx.is_empty() {
             if let Some(gpu) = &mut self.gpu_effects {
-                gpu.apply_effects(&builtin_fx, rgba, width, height)
+                if klipp_effects::chain_supports_gpu(&builtin_fx) {
+                    gpu.apply_effects(&builtin_fx, rgba, width, height)
+                } else {
+                    klipp_effects::apply_effects(&builtin_fx, rgba, width, height)
+                }
             } else {
                 klipp_effects::apply_effects(&builtin_fx, rgba, width, height)
             }
@@ -9658,7 +9690,11 @@ impl PlaybackEngine {
                 .collect();
             let r = if !no_stab.is_empty() {
                 if let Some(gpu) = &mut self.gpu_effects {
-                    gpu.apply_effects(&no_stab, pre_builtin, width, height)
+                    if klipp_effects::chain_supports_gpu(&no_stab) {
+                        gpu.apply_effects(&no_stab, pre_builtin, width, height)
+                    } else {
+                        klipp_effects::apply_effects(&no_stab, pre_builtin, width, height)
+                    }
                 } else {
                     klipp_effects::apply_effects(&no_stab, pre_builtin, width, height)
                 }
@@ -9685,7 +9721,11 @@ impl PlaybackEngine {
                 // Builtin path: re-run builtin chain with compare_builtin_fx.
                 let r = if !compare_builtin_fx.is_empty() {
                     if let Some(gpu) = &mut self.gpu_effects {
-                        gpu.apply_effects(&compare_builtin_fx, pre.clone(), width, height)
+                        if klipp_effects::chain_supports_gpu(&compare_builtin_fx) {
+                            gpu.apply_effects(&compare_builtin_fx, pre.clone(), width, height)
+                        } else {
+                            klipp_effects::apply_effects(&compare_builtin_fx, pre.clone(), width, height)
+                        }
                     } else {
                         klipp_effects::apply_effects(&compare_builtin_fx, pre.clone(), width, height)
                     }
@@ -9720,7 +9760,11 @@ impl PlaybackEngine {
                 let r = u8_rgba_to_linear(&r_u8);
                 let r = if !builtin_fx.is_empty() {
                     if let Some(gpu) = &mut self.gpu_effects {
-                        gpu.apply_effects(&builtin_fx, r, width, height)
+                        if klipp_effects::chain_supports_gpu(&builtin_fx) {
+                            gpu.apply_effects(&builtin_fx, r, width, height)
+                        } else {
+                            klipp_effects::apply_effects(&builtin_fx, r, width, height)
+                        }
                     } else {
                         klipp_effects::apply_effects(&builtin_fx, r, width, height)
                     }

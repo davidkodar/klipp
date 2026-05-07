@@ -1094,6 +1094,17 @@ fn show_clip_video(
 
     ui.add_space(8.0);
 
+    // ── COLOR FADE ──
+    // Per-clip fade-from / fade-to a target colour. When set, the
+    // clip's first / last `duration_secs` mix from the picked colour
+    // toward the source pixels (or vice-versa). Implemented as
+    // BuiltinEffect::ColorFade entries on the clip's effects chain;
+    // the engine patches each effect's `progress` per-frame from
+    // clip-time + duration + mode (same pattern as Opacity).
+    show_color_fade_section(ui, theme, clip, cmds);
+
+    ui.add_space(8.0);
+
     // ── TRANSFORM LINK ──
     // Layer 1 of the hyperzoom delivery: bind this clip's transform to
     // another clip's resolved transform with per-axis flags + a
@@ -3488,6 +3499,112 @@ fn show_speed_section(ui: &mut egui::Ui, theme: &KlippTheme, clip: &Clip, cmds: 
                     }
                 });
             });
+    });
+}
+
+fn show_color_fade_section(ui: &mut egui::Ui, theme: &KlippTheme, clip: &Clip, cmds: &mut Vec<AppCommand>) {
+    section_card(ui, "COLOR FADE", theme, |ui| {
+        ui.add_space(4.0);
+        egui::Frame::default()
+            .inner_margin(egui::Margin { left: 14.0, right: 14.0, top: 0.0, bottom: 0.0 })
+            .fill(egui::Color32::TRANSPARENT)
+            .stroke(egui::Stroke::NONE)
+            .shadow(egui::Shadow::NONE)
+            .show(ui, |ui| {
+                color_fade_row(ui, theme, clip, cmds, klipp_effects::ColorFadeMode::In, "Fade From Color");
+                ui.add_space(6.0);
+                color_fade_row(ui, theme, clip, cmds, klipp_effects::ColorFadeMode::Out, "Fade To Color");
+            });
+        ui.add_space(6.0);
+    });
+}
+
+/// One row of the COLOR FADE section. Renders the effect's index in
+/// the clip's chain (when present) so Update / Remove commands target
+/// the right entry; if the effect doesn't exist yet, an Add button
+/// creates one with sane defaults (1.0 s, opaque black).
+fn color_fade_row(
+    ui: &mut egui::Ui,
+    theme: &KlippTheme,
+    clip: &Clip,
+    cmds: &mut Vec<AppCommand>,
+    mode: klipp_effects::ColorFadeMode,
+    label: &str,
+) {
+    use klipp_effects::BuiltinEffect;
+    let existing = clip.builtin_effects.iter().enumerate().find_map(|(i, e)| match e {
+        BuiltinEffect::ColorFade { color, duration_secs, mode: m, .. } if *m == mode => {
+            Some((i, *color, *duration_secs))
+        }
+        _ => None,
+    });
+    let clip_id = clip.id;
+
+    ui.horizontal(|ui| {
+        let enabled = existing.is_some();
+        let mut want_enabled = enabled;
+        if ui.checkbox(&mut want_enabled, "").changed() {
+            if want_enabled && !enabled {
+                cmds.push(AppCommand::AddBuiltinEffect {
+                    clip_id,
+                    effect: BuiltinEffect::ColorFade {
+                        color: [0, 0, 0, 255],
+                        duration_secs: 1.0,
+                        mode,
+                        progress: 0.0,
+                    },
+                });
+            } else if !want_enabled && enabled {
+                if let Some((idx, _, _)) = existing {
+                    cmds.push(AppCommand::RemoveBuiltinEffect { clip_id, index: idx });
+                }
+            }
+        }
+        ui.label(egui::RichText::new(label).size(11.0).color(if enabled {
+            theme.text_primary
+        } else {
+            theme.text_dim
+        }));
+
+        if let Some((idx, color, duration)) = existing {
+            ui.add_space(8.0);
+            // Colour picker — reads/writes on change.
+            let mut c = egui::Color32::from_rgba_premultiplied(color[0], color[1], color[2], color[3]);
+            if ui.color_edit_button_srgba(&mut c).changed() {
+                cmds.push(AppCommand::UpdateBuiltinEffect {
+                    clip_id,
+                    index: idx,
+                    effect: BuiltinEffect::ColorFade {
+                        color: [c.r(), c.g(), c.b(), c.a()],
+                        duration_secs: duration,
+                        mode,
+                        progress: 0.0,
+                    },
+                });
+            }
+            ui.add_space(4.0);
+            // Duration scrubby. egui's DragValue is enough — no need for
+            // a heavyweight scrubby with keyframe affordances since the
+            // ColorFade's progress is engine-driven, not user-keyframed.
+            let mut dur = duration;
+            if ui.add(egui::DragValue::new(&mut dur)
+                .range(0.05..=10.0)
+                .speed(0.05)
+                .suffix(" s")
+                .fixed_decimals(2)
+            ).changed() {
+                cmds.push(AppCommand::UpdateBuiltinEffect {
+                    clip_id,
+                    index: idx,
+                    effect: BuiltinEffect::ColorFade {
+                        color,
+                        duration_secs: dur,
+                        mode,
+                        progress: 0.0,
+                    },
+                });
+            }
+        }
     });
 }
 

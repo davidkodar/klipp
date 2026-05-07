@@ -4625,6 +4625,13 @@ impl GpuEffectsPipeline {
                     // SpeedRamp is handled at the engine level (frame queue + GPU blend),
                     // not in the per-frame GPU effects chain. Pass through.
                 }
+                BuiltinEffect::ColorFade { .. } => {
+                    // ColorFade is CPU-only for now. Engine dispatch falls back
+                    // to klipp_effects::apply_effects when any ColorFade is in the
+                    // chain (see chain_supports_gpu); reaching this arm means the
+                    // dispatcher decided to run it anyway, so silently pass through
+                    // rather than corrupt downstream effects.
+                }
             }
         }
 

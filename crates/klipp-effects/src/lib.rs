@@ -35,6 +35,7 @@
 pub mod aces_rrt_wgsl;
 pub mod blur;
 mod chroma_key;
+pub mod color_fade;
 pub mod color_wgsl;
 pub mod composite;
 mod crop;
@@ -158,6 +159,22 @@ pub enum FocalRef {
     },
 }
 
+/// Direction of a `BuiltinEffect::ColorFade` region.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ColorFadeMode {
+    /// Fade FROM colour at the start of the clip — first
+    /// `duration_secs` of the clip's playable range.
+    In,
+    /// Fade TO colour at the end of the clip — last
+    /// `duration_secs` of the clip's playable range.
+    Out,
+}
+
+impl Default for ColorFadeMode {
+    fn default() -> Self { Self::In }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum BuiltinEffect {
@@ -211,6 +228,29 @@ pub enum BuiltinEffect {
     Opacity {
         /// Opacity value (0.0–1.0)
         value: f32,
+    },
+    /// Per-clip colour fade region — mixes the source pixels toward
+    /// `color` over a `duration_secs` window at the start (mode = In)
+    /// or end (mode = Out) of the clip. The engine patches `progress`
+    /// every frame from clip-time + duration + mode, the same way it
+    /// patches `Opacity { value }`. Persisted fields are `color`,
+    /// `duration_secs`, `mode`; `progress` is engine-transient and
+    /// skipped during serialization so project files don't carry a
+    /// per-frame value.
+    ColorFade {
+        /// RGBA target colour. Alpha = 255 means the fade region
+        /// fully covers below-track content (typical fade-from-black);
+        /// alpha < 255 lets the source bleed through at progress = 0.
+        color: [u8; 4],
+        /// Length of the fade region in seconds.
+        duration_secs: f32,
+        /// `In` = fade FROM colour at the start of the clip;
+        /// `Out` = fade TO colour at the end of the clip.
+        mode: ColorFadeMode,
+        /// 0.0 = full colour, 1.0 = full source. Engine-overwritten
+        /// every frame from clip-time; not user-editable.
+        #[serde(skip)]
+        progress: f32,
     },
     GaussianBlur {
         /// Blur radius in pixels
@@ -607,6 +647,16 @@ pub fn apply_effects(effects: &[BuiltinEffect], linear_rgba: Vec<f32>, width: u3
     srgb_u8_to_linear_f32_rgba(&rgba)
 }
 
+/// Returns false when the chain contains any effect that has no GPU
+/// implementation, so the engine knows to fall back to the CPU path
+/// (`apply_effects`) for the whole chain. Today the only CPU-only
+/// effect is `ColorFade` — fade regions are short (1–2 s typically)
+/// so the perf cost of CPU-pathing them is acceptable until a WGSL
+/// shader lands.
+pub fn chain_supports_gpu(effects: &[BuiltinEffect]) -> bool {
+    !effects.iter().any(|e| matches!(e, BuiltinEffect::ColorFade { .. }))
+}
+
 /// Returns true when the effect is at its default / identity values
 /// and therefore a no-op. Lets callers strip such entries before
 /// dispatching to GPU/CPU pipelines, which saves the
@@ -617,6 +667,13 @@ pub fn apply_effects(effects: &[BuiltinEffect], linear_rgba: Vec<f32>, width: u3
 pub fn is_identity_effect(effect: &BuiltinEffect) -> bool {
     match effect {
         BuiltinEffect::Opacity { value } => (value - 1.0).abs() < f32::EPSILON,
+        // Outside the fade region the engine drives progress to 1.0 so
+        // we can short-circuit to "no work" — the per-pixel apply does
+        // the same fast path at progress >= 0.9999, but skipping the
+        // upload/download bridge is cheaper.
+        BuiltinEffect::ColorFade { progress, duration_secs, .. } => {
+            *progress >= 0.9999 || *duration_secs <= 0.0
+        }
         BuiltinEffect::GaussianBlur { radius } => *radius < 0.5,
         BuiltinEffect::Sharpen { amount } => amount.abs() < f32::EPSILON,
         BuiltinEffect::Crop { left, right, top, bottom, feather } => {
@@ -644,6 +701,9 @@ pub fn is_identity_effect(effect: &BuiltinEffect) -> bool {
 fn apply_one(effect: &BuiltinEffect, rgba: Vec<u8>, width: u32, height: u32) -> Vec<u8> {
     match effect {
         BuiltinEffect::Opacity { value } => opacity::apply(rgba, *value),
+        BuiltinEffect::ColorFade { color, progress, .. } => {
+            color_fade::apply(rgba, *color, *progress)
+        }
         BuiltinEffect::Crop { left, right, top, bottom, feather } => {
             crop::apply(rgba, width, height, *left, *right, *top, *bottom, *feather)
         }
