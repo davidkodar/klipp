@@ -2320,7 +2320,14 @@ fn show_hyperzoom_section(
     // dragging on the canvas updates the spinboxes live and vice-
     // versa. Defaults: focal centre, half-second ramp, 50× peak.
     let stored = crate::hyperzoom::read_hyperzoom_scratch(ui.ctx(), clip_id);
-    let (mut focal_x, mut focal_y, mut duration_secs, mut max_scale, mut target_choice, mut easing, mut hold_secs, mut add_radial_blur, mut radial_blur_amount, mut whoosh_enabled, mut whoosh_variant_tag) = (
+    let (
+        mut focal_x, mut focal_y, mut duration_secs, mut max_scale,
+        mut target_choice, mut easing, mut hold_secs,
+        mut add_radial_blur, mut radial_blur_amount,
+        mut add_chromatic_aberration, mut chromatic_aberration_amount,
+        mut add_light_leak, mut light_leak_intensity,
+        mut whoosh_enabled, mut whoosh_variant_tag,
+    ) = (
         stored.focal_x,
         stored.focal_y,
         stored.duration_secs,
@@ -2330,6 +2337,10 @@ fn show_hyperzoom_section(
         stored.hold_secs,
         stored.add_radial_blur,
         stored.radial_blur_amount,
+        stored.add_chromatic_aberration,
+        stored.chromatic_aberration_amount,
+        stored.add_light_leak,
+        stored.light_leak_intensity,
         stored.whoosh_enabled,
         stored.whoosh_variant,
     );
@@ -2836,6 +2847,75 @@ fn show_hyperzoom_section(
 
                 ui.add_space(4.0);
 
+                // ── Chromatic aberration (opt-in convenience) ──
+                // Inserts/updates a `ChromaticAberration` builtin
+                // on source + target with center pinned to the
+                // focal point and red/blue keyframed
+                // 0 → ∓amount → 0 (red converges, blue diverges).
+                ui.horizontal(|ui| {
+                    ui.checkbox(&mut add_chromatic_aberration, "Add chromatic aberration on apply")
+                        .on_hover_text(
+                            "Inserts a ChromaticAberration builtin on source + target with \
+                             center pinned to the focal point. Red converges and blue \
+                             diverges from the focal point at peak — the canonical \
+                             trailer-RGB-split look. Power users wanting asymmetric splits \
+                             can tweak the inserted builtin afterwards.",
+                        );
+                });
+                if add_chromatic_aberration {
+                    ui.horizontal(|ui| {
+                        ui.add_space(16.0);
+                        ui.label(egui::RichText::new("Amount").size(11.0).color(theme.text_dim));
+                        ui.add_space(8.0);
+                        ui.add(
+                            egui::DragValue::new(&mut chromatic_aberration_amount)
+                                .range(0.0_f32..=30.0)
+                                .speed(0.25)
+                                .fixed_decimals(1),
+                        ).on_hover_text(
+                            "Peak split magnitude in pixels. 3 = subtle fringe; 6 = the \
+                             default punchy-but-readable trailer split; 15+ is stylised. \
+                             Drives both red_shift (0 → -amount → 0) and blue_shift \
+                             (0 → +amount → 0) symmetrically across the ramp.",
+                        );
+                    });
+                }
+
+                ui.add_space(4.0);
+
+                // ── Light leak / FilmHalation (opt-in convenience) ──
+                // Rides BuiltinEffect::FilmHalation: bright pixels
+                // bloom warmly across the cut.
+                ui.horizontal(|ui| {
+                    ui.checkbox(&mut add_light_leak, "Add light leak on apply")
+                        .on_hover_text(
+                            "Inserts a FilmHalation builtin on source + target with intensity \
+                             keyframed 0 → peak → 0 across the ramp. Bright pixels bloom \
+                             warmly (orange-yellow hue) at the cut — the trailer-style warm-\
+                             bleed look. Threshold/radius/hue use trailer defaults; tweak the \
+                             inserted builtin for custom looks.",
+                        );
+                });
+                if add_light_leak {
+                    ui.horizontal(|ui| {
+                        ui.add_space(16.0);
+                        ui.label(egui::RichText::new("Intensity").size(11.0).color(theme.text_dim));
+                        ui.add_space(8.0);
+                        ui.add(
+                            egui::DragValue::new(&mut light_leak_intensity)
+                                .range(0.0_f32..=1.0)
+                                .speed(0.01)
+                                .fixed_decimals(2),
+                        ).on_hover_text(
+                            "Peak FilmHalation intensity (0..1). 0.2 = subtle; 0.4 = the \
+                             default punchy trailer-bleed; 0.7+ is heavy bloom. Same value \
+                             scale as the standalone FilmHalation effect's intensity field.",
+                        );
+                    });
+                }
+
+                ui.add_space(4.0);
+
                 // ── Whoosh stinger (HZ-NEXT-WHOOSH) ──
                 // Off by default. When enabled, Apply additionally
                 // inserts an audio whoosh on the lowest audio
@@ -3026,15 +3106,17 @@ fn show_hyperzoom_section(
                             add_whoosh,
                             whoosh_variant,
                             whoosh_custom_path,
-                            // Inspector wires the chromatic-aberration
-                            // and light-leak checkboxes in commit 2 of
-                            // HZ-NEXT-LIGHT-LEAK-CHROMATIC; for now,
-                            // canonical defaults preserve byte-identical
-                            // behaviour.
-                            add_chromatic_aberration: false,
-                            chromatic_aberration_amount: 0.0,
-                            add_light_leak: false,
-                            light_leak_intensity: 0.0,
+                            // Chromatic-aberration + light-leak fields
+                            // from the inspector's scratch slot. When
+                            // their checkboxes are off, we still pass
+                            // the scratch's stored amount/intensity —
+                            // the AppCommand handler short-circuits on
+                            // the bool before any work runs, so the
+                            // magnitude doesn't matter.
+                            add_chromatic_aberration,
+                            chromatic_aberration_amount,
+                            add_light_leak,
+                            light_leak_intensity,
                         });
                     }
 
@@ -3092,6 +3174,10 @@ fn show_hyperzoom_section(
         s.hold_secs = hold_secs;
         s.add_radial_blur = add_radial_blur;
         s.radial_blur_amount = radial_blur_amount;
+        s.add_chromatic_aberration = add_chromatic_aberration;
+        s.chromatic_aberration_amount = chromatic_aberration_amount;
+        s.add_light_leak = add_light_leak;
+        s.light_leak_intensity = light_leak_intensity;
         s.whoosh_enabled = whoosh_enabled;
         s.whoosh_variant = whoosh_variant_tag;
     });

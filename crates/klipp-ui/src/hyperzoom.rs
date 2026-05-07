@@ -40,6 +40,23 @@ pub struct HyperzoomScratch {
     pub hold_secs: f64,
     pub add_radial_blur: bool,
     pub radial_blur_amount: f32,
+    /// Chromatic-aberration checkbox
+    /// (HZ-NEXT-LIGHT-LEAK-CHROMATIC). When true, Apply populates
+    /// `ApplyHyperzoom`'s `add_chromatic_aberration` +
+    /// `chromatic_aberration_amount`.
+    pub add_chromatic_aberration: bool,
+    /// Peak chromatic-aberration amount (pixels). Inspector
+    /// DragValue range 0..30; default 6.0 — visibly meaningful at
+    /// first toggle, well below stylised territory.
+    pub chromatic_aberration_amount: f32,
+    /// Light-leak / FilmHalation checkbox.
+    pub add_light_leak: bool,
+    /// Peak FilmHalation intensity. Inspector DragValue range
+    /// 0..1; default 0.4 — punchy enough that first toggle-on is
+    /// visibly meaningful (FilmHalation's standalone default is
+    /// 0.3; the hyperzoom version ramps to peak so needs more
+    /// budget).
+    pub light_leak_intensity: f32,
     /// Whoosh stinger checkbox (HZ-NEXT-WHOOSH). Inspector-side
     /// scratch — when true, Apply populates `ApplyHyperzoom`'s
     /// `add_whoosh` + `whoosh_variant` + `whoosh_custom_path`.
@@ -65,6 +82,19 @@ impl Default for HyperzoomScratch {
             // gives a punchy default — but only fires when the user
             // actually flips the checkbox.
             radial_blur_amount: 15.0,
+            // Chromatic + light-leak follow the same two-layer
+            // defaults pattern as radial-blur and whoosh: the
+            // ApplyHyperzoom call sites pass 0.0 / false (off-state
+            // canonical), but the inspector's scratch defaults are
+            // visibly-meaningful first-toggle-on values per audit
+            // (E). 6.0 px chromatic split = subtle but readable;
+            // 0.4 halation intensity = punchier than FilmHalation's
+            // 0.3 standalone default because the hyperzoom version
+            // ramps to peak across the cut.
+            add_chromatic_aberration: false,
+            chromatic_aberration_amount: 6.0,
+            add_light_leak: false,
+            light_leak_intensity: 0.4,
             // Whoosh defaults match the AppCommand back-compat
             // path: opt-in checkbox off; variant tag = 0 (Short)
             // so the combo opens at a sensible default the
@@ -1913,5 +1943,90 @@ mod tests {
         assert!(add_whoosh);
         assert_eq!(variant, 255);
         assert!(path.is_none());
+    }
+
+    // ────────── Chromatic + light-leak scratch defaults ──────────
+
+    #[test]
+    fn scratch_default_chromatic_disabled_amount_is_six() {
+        // Audit (E) pin: scratch defaults are visibly-meaningful
+        // first-toggle-on values, NOT 0.0. The AppCommand call
+        // sites pass 0.0 (off-state magnitude irrelevant); the
+        // inspector's scratch carries 6.0 so the moment the user
+        // ticks the box, the result reads visually.
+        let s = HyperzoomScratch::default();
+        assert!(!s.add_chromatic_aberration);
+        assert!((s.chromatic_aberration_amount - 6.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn scratch_default_light_leak_disabled_intensity_is_point_four() {
+        let s = HyperzoomScratch::default();
+        assert!(!s.add_light_leak);
+        assert!((s.light_leak_intensity - 0.4).abs() < 1e-6);
+    }
+
+    #[test]
+    fn scratch_round_trips_chromatic_and_light_leak_through_egui_memory() {
+        let ctx = egui::Context::default();
+        let cid = ClipId::new();
+        // Default before any write — uses the audit (E) values.
+        let initial = read_hyperzoom_scratch(&ctx, cid);
+        assert!(!initial.add_chromatic_aberration);
+        assert!(!initial.add_light_leak);
+        assert!((initial.chromatic_aberration_amount - 6.0).abs() < 1e-6);
+        assert!((initial.light_leak_intensity - 0.4).abs() < 1e-6);
+        // Toggle on + tweak amounts.
+        update_hyperzoom_scratch(&ctx, cid, |s| {
+            s.add_chromatic_aberration = true;
+            s.chromatic_aberration_amount = 12.5;
+            s.add_light_leak = true;
+            s.light_leak_intensity = 0.65;
+        });
+        let after = read_hyperzoom_scratch(&ctx, cid);
+        assert!(after.add_chromatic_aberration);
+        assert!(after.add_light_leak);
+        assert!((after.chromatic_aberration_amount - 12.5).abs() < 1e-6);
+        assert!((after.light_leak_intensity - 0.65).abs() < 1e-6);
+    }
+
+    #[test]
+    fn scratch_chromatic_and_light_leak_isolated_per_clip() {
+        // Two clip ids must not share scratch — same key contract
+        // as the existing whoosh fields.
+        let ctx = egui::Context::default();
+        let a = ClipId::new();
+        let b = ClipId::new();
+        update_hyperzoom_scratch(&ctx, a, |s| {
+            s.add_chromatic_aberration = true;
+            s.chromatic_aberration_amount = 10.0;
+        });
+        let b_read = read_hyperzoom_scratch(&ctx, b);
+        assert!(!b_read.add_chromatic_aberration);
+        assert!((b_read.chromatic_aberration_amount - 6.0).abs() < 1e-6,
+            "clip B sees the default 6.0, no leak from clip A");
+    }
+
+    #[test]
+    fn first_toggle_on_uses_audit_defaults_not_zero() {
+        // The contract: when the user ticks the chromatic checkbox
+        // for the first time on a fresh clip, the Apply button
+        // must construct ApplyHyperzoom with amount=6.0 (audit E),
+        // NOT 0.0. If the inspector defaulted scratch to 0.0
+        // instead of 6.0, the first toggle-on apply would be a
+        // visual no-op even though the user opted in. This test
+        // pins the visibly-meaningful contract.
+        let mut scratch = HyperzoomScratch::default();
+        scratch.add_chromatic_aberration = true; // user just ticked
+        // No other changes — no DragValue interaction yet.
+        assert!(scratch.chromatic_aberration_amount > 0.5,
+            "first-toggle-on must pass a meaningful amount, got {}",
+            scratch.chromatic_aberration_amount);
+
+        let mut scratch2 = HyperzoomScratch::default();
+        scratch2.add_light_leak = true;
+        assert!(scratch2.light_leak_intensity > 0.05,
+            "first-toggle-on must pass a meaningful intensity, got {}",
+            scratch2.light_leak_intensity);
     }
 }
