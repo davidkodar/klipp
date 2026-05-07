@@ -673,4 +673,119 @@ mod tests {
         let reg = HyperzoomPresetRegistry::for_test(dir);
         assert_eq!(reg.presets().len(), 0);
     }
+
+    // ─────────── AppState dialog wiring ───────────
+
+    #[test]
+    fn appstate_save_dialog_fields_default_to_closed_and_empty() {
+        // Pin: the four AppState fields the inspector dialog
+        // uses are at their canonical "no dialog open" defaults.
+        // If a future refactor accidentally flips these to open
+        // by default, the modal would block app startup.
+        let state = crate::state::AppState::default();
+        assert!(!state.show_save_hyperzoom_preset_dialog);
+        assert!(state.save_hyperzoom_preset_name.is_empty());
+        assert!(state.save_hyperzoom_preset_error.is_none());
+        assert!(state.save_hyperzoom_preset_source_clip.is_none());
+    }
+
+    #[test]
+    fn appstate_save_dialog_fields_round_trip() {
+        // Pin: mutating the dialog state holds the values we
+        // wrote. Trivial in isolation, but wiring regressions
+        // (e.g. a Default impl reset, or a hidden derive that
+        // wipes one field) get caught here.
+        let mut state = crate::state::AppState::default();
+        let cid = ClipId::new();
+        state.show_save_hyperzoom_preset_dialog = true;
+        state.save_hyperzoom_preset_name = "My signature".into();
+        state.save_hyperzoom_preset_error = Some("preset name is empty".into());
+        state.save_hyperzoom_preset_source_clip = Some(cid);
+        assert!(state.show_save_hyperzoom_preset_dialog);
+        assert_eq!(state.save_hyperzoom_preset_name, "My signature");
+        assert_eq!(state.save_hyperzoom_preset_error.as_deref(), Some("preset name is empty"));
+        assert_eq!(state.save_hyperzoom_preset_source_clip, Some(cid));
+    }
+
+    #[test]
+    fn appstate_registry_initialised_at_default() {
+        // Pin: AppState::default() initialises the preset
+        // registry without panicking, and the registry is
+        // queryable. First-run path — ~/.config/klipp/hyperzoom_presets/
+        // probably doesn't exist; registry should be empty, not error.
+        let state = crate::state::AppState::default();
+        // Touch the field — if the Default impl forgot to wire
+        // it, this won't compile.
+        let _ = state.hyperzoom_preset_registry.presets();
+    }
+
+    // ─────────── End-to-end save → load → apply integration ───────────
+
+    #[test]
+    fn save_then_load_round_trips_through_egui_memory() {
+        // Pin the full inspector flow: tune scratch, save preset,
+        // reload registry, click load on a different clip, verify
+        // the new clip's scratch matches the saved preset on
+        // preset-worthy fields and KEEPS its own focal/target.
+        use crate::hyperzoom::{HyperzoomTargetChoice, read_hyperzoom_scratch, update_hyperzoom_scratch};
+        let dir = tmp_dir("e2e");
+        let ctx = egui::Context::default();
+        let source_clip = ClipId::new();
+        let target_clip = ClipId::new();
+
+        // 1. Tune the source clip's scratch.
+        update_hyperzoom_scratch(&ctx, source_clip, |s| {
+            *s = tweaked_scratch();
+        });
+
+        // 2. Build preset from source scratch + save.
+        let mut reg = HyperzoomPresetRegistry::for_test(dir.clone());
+        let scratch_at_save = read_hyperzoom_scratch(&ctx, source_clip);
+        let preset = HyperzoomPreset::from_scratch("Signature".into(), &scratch_at_save);
+        reg.save(preset.clone()).expect("save");
+
+        // 3. Set up the target clip with a DIFFERENT focal +
+        //    Explicit target so we can confirm those survive load.
+        let target_focal_x = 0.18_f32;
+        let target_focal_y = 0.82_f32;
+        let target_pinned_clip = ClipId::new();
+        update_hyperzoom_scratch(&ctx, target_clip, |s| {
+            s.focal_x = target_focal_x;
+            s.focal_y = target_focal_y;
+            s.target_choice = HyperzoomTargetChoice::Explicit(target_pinned_clip);
+        });
+
+        // 4. Reload registry from disk (simulates app restart).
+        let reg2 = HyperzoomPresetRegistry::for_test(dir);
+        let loaded_preset = reg2.presets()
+            .iter()
+            .find(|p| p.name == "Signature")
+            .expect("preset on disk")
+            .clone();
+
+        // 5. Apply to target clip's scratch.
+        update_hyperzoom_scratch(&ctx, target_clip, |s| {
+            loaded_preset.apply_to_scratch(s);
+        });
+
+        // 6. Verify: preset-worthy fields match, per-cut survive.
+        let target_after = read_hyperzoom_scratch(&ctx, target_clip);
+        // Per-cut survived
+        assert_eq!(target_after.focal_x, target_focal_x);
+        assert_eq!(target_after.focal_y, target_focal_y);
+        assert_eq!(target_after.target_choice, HyperzoomTargetChoice::Explicit(target_pinned_clip));
+        // Preset-worthy match the saved values
+        assert_eq!(target_after.duration_secs, scratch_at_save.duration_secs);
+        assert_eq!(target_after.max_scale, scratch_at_save.max_scale);
+        assert_eq!(target_after.easing, scratch_at_save.easing);
+        assert_eq!(target_after.hold_secs, scratch_at_save.hold_secs);
+        assert_eq!(target_after.add_radial_blur, scratch_at_save.add_radial_blur);
+        assert_eq!(target_after.radial_blur_amount, scratch_at_save.radial_blur_amount);
+        assert_eq!(target_after.add_chromatic_aberration, scratch_at_save.add_chromatic_aberration);
+        assert_eq!(target_after.chromatic_aberration_amount, scratch_at_save.chromatic_aberration_amount);
+        assert_eq!(target_after.add_light_leak, scratch_at_save.add_light_leak);
+        assert_eq!(target_after.light_leak_intensity, scratch_at_save.light_leak_intensity);
+        assert_eq!(target_after.whoosh_enabled, scratch_at_save.whoosh_enabled);
+        assert_eq!(target_after.whoosh_variant, scratch_at_save.whoosh_variant);
+    }
 }

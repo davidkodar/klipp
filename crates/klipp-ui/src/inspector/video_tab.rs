@@ -3000,6 +3000,87 @@ fn show_hyperzoom_section(
                     }
                 }
 
+                ui.add_space(4.0);
+
+                // ── Saved presets (HZ-NEXT-SAVED-PRESETS) ──
+                // Save the current hyperzoom config (without focal
+                // / target — those stay per-cut) under a name, or
+                // load a previously-saved preset into this clip's
+                // scratch. Files live at
+                // `~/.config/klipp/hyperzoom_presets/`.
+                ui.horizontal(|ui| {
+                    if ui
+                        .button("Save as preset\u{2026}")
+                        .on_hover_text(
+                            "Save the current hyperzoom config under a name. Focal point + \
+                             target clip stay per-cut and are NOT part of the saved preset — \
+                             every load on a new clip re-uses your existing focal pick.",
+                        )
+                        .clicked()
+                    {
+                        cmds.push(AppCommand::OpenSaveHyperzoomPresetDialog {
+                            source_clip: clip_id,
+                        });
+                    }
+                    ui.add_space(8.0);
+                    let presets = state.hyperzoom_preset_registry.presets();
+                    let combo_label = if presets.is_empty() {
+                        "Load preset (none saved)"
+                    } else {
+                        "Load preset"
+                    };
+                    egui::ComboBox::from_id_salt(("hyperzoom_load_preset", clip_id))
+                        .selected_text(combo_label)
+                        .show_ui(ui, |ui| {
+                            if presets.is_empty() {
+                                ui.label(
+                                    egui::RichText::new("No presets yet — Save as preset\u{2026} to start")
+                                        .size(11.0)
+                                        .color(theme.text_dim),
+                                );
+                            } else {
+                                for preset in presets {
+                                    if ui.button(&preset.name).clicked() {
+                                        let p = preset.clone();
+                                        crate::hyperzoom::update_hyperzoom_scratch(
+                                            ui.ctx(), clip_id, |s| p.apply_to_scratch(s),
+                                        );
+                                        // Refresh local mut vars from the
+                                        // post-load scratch — otherwise
+                                        // the bottom-of-function persist
+                                        // step writes back the stale
+                                        // pre-load locals and undoes the
+                                        // load. Only the preset-worthy
+                                        // fields need refreshing; focal
+                                        // / target / per-cut survive
+                                        // untouched.
+                                        let fresh = crate::hyperzoom::read_hyperzoom_scratch(ui.ctx(), clip_id);
+                                        duration_secs = fresh.duration_secs;
+                                        max_scale = fresh.max_scale;
+                                        easing = fresh.easing;
+                                        hold_secs = fresh.hold_secs;
+                                        add_radial_blur = fresh.add_radial_blur;
+                                        radial_blur_amount = fresh.radial_blur_amount;
+                                        add_chromatic_aberration = fresh.add_chromatic_aberration;
+                                        chromatic_aberration_amount = fresh.chromatic_aberration_amount;
+                                        add_light_leak = fresh.add_light_leak;
+                                        light_leak_intensity = fresh.light_leak_intensity;
+                                        whoosh_enabled = fresh.whoosh_enabled;
+                                        whoosh_variant_tag = fresh.whoosh_variant;
+                                    }
+                                }
+                            }
+                        })
+                        .response
+                        .on_hover_text(format!(
+                            "Click a preset to load it into this clip's hyperzoom scratch. \
+                             Focal point + target clip are preserved (preset doesn't carry \
+                             those). To delete presets, remove their JSON files from \
+                             {}",
+                            state.hyperzoom_preset_registry.presets_dir().display(),
+                        ));
+                });
+
                 ui.add_space(8.0);
 
                 // ── Apply + Link beneath ──

@@ -2443,6 +2443,13 @@ pub enum AppCommand {
         /// `false`; `0.0` short-circuits to "off".
         light_leak_intensity: f32,
     },
+    /// Open the "Save hyperzoom as preset" modal dialog
+    /// (HZ-NEXT-SAVED-PRESETS). Pins `source_clip` so the dialog
+    /// reads the right clip's hyperzoom scratch even if the user
+    /// navigates the timeline before clicking Save.
+    OpenSaveHyperzoomPresetDialog {
+        source_clip: ClipId,
+    },
 
     /// Auto-apply `transform_link` to every clip *beneath* the
     /// hyperzoom source within the ramp window so they fly into the

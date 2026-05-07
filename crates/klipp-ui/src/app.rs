@@ -6795,6 +6795,17 @@ impl KlippApp {
                     self.sync_sequence_to_engine();
                     return true;
                 }
+                AppCommand::OpenSaveHyperzoomPresetDialog { source_clip } => {
+                    // Pin the source clip so the dialog reads the
+                    // right scratch even if the user navigates the
+                    // timeline before clicking Save. Clear any
+                    // stale name + error from a prior open.
+                    self.state.show_save_hyperzoom_preset_dialog = true;
+                    self.state.save_hyperzoom_preset_source_clip = Some(*source_clip);
+                    self.state.save_hyperzoom_preset_name.clear();
+                    self.state.save_hyperzoom_preset_error = None;
+                    return true;
+                }
                 AppCommand::SetClipConsumedAsMatte { clip_id, consumed } => {
                     let cid = *clip_id;
                     let c = *consumed;
@@ -27523,6 +27534,94 @@ impl KlippApp {
                 });
             if !open {
                 self.state.show_save_workspace_dialog = false;
+            }
+        }
+
+        // ── Save hyperzoom preset dialog (HZ-NEXT-SAVED-PRESETS) ──
+        if self.state.show_save_hyperzoom_preset_dialog {
+            let mut open = true;
+            egui::Window::new("Save Hyperzoom as Preset")
+                .collapsible(false)
+                .resizable(false)
+                .open(&mut open)
+                .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+                .show(ctx, |ui| {
+                    ui.set_min_width(280.0);
+                    ui.horizontal(|ui| {
+                        ui.label("Name:");
+                        let resp = ui.text_edit_singleline(&mut self.state.save_hyperzoom_preset_name);
+                        // Clear inline validation error on edit so
+                        // the user gets immediate feedback that the
+                        // text is being accepted.
+                        if resp.changed() {
+                            self.state.save_hyperzoom_preset_error = None;
+                        }
+                    });
+                    if let Some(err) = self.state.save_hyperzoom_preset_error.as_ref() {
+                        ui.add_space(2.0);
+                        ui.label(
+                            egui::RichText::new(format!("\u{26A0} {err}"))
+                                .size(11.0)
+                                .color(egui::Color32::from_rgb(0xE0, 0x80, 0x40)),
+                        );
+                    }
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        if ui.button("Save").clicked() {
+                            // Read the bound clip's scratch.
+                            // Source clip was pinned at dialog-open
+                            // time; if it's gone (clip deleted while
+                            // dialog open), we close gracefully.
+                            let Some(source_clip) = self.state.save_hyperzoom_preset_source_clip else {
+                                self.state.show_save_hyperzoom_preset_dialog = false;
+                                self.state.toast.show("Preset save cancelled (no source clip)".to_string());
+                                return;
+                            };
+                            let scratch = crate::hyperzoom::read_hyperzoom_scratch(ctx, source_clip);
+                            let name = self.state.save_hyperzoom_preset_name.clone();
+                            let preset = crate::hyperzoom_presets::HyperzoomPreset::from_scratch(name, &scratch);
+                            match self.state.hyperzoom_preset_registry.save(preset) {
+                                Ok(()) => {
+                                    let saved_name = self.state.save_hyperzoom_preset_name.clone();
+                                    self.state.save_hyperzoom_preset_name.clear();
+                                    self.state.save_hyperzoom_preset_error = None;
+                                    self.state.save_hyperzoom_preset_source_clip = None;
+                                    self.state.show_save_hyperzoom_preset_dialog = false;
+                                    self.state.toast.show(format!("Saved hyperzoom preset '{saved_name}'"));
+                                }
+                                Err(crate::hyperzoom_presets::SaveError::BadName(e)) => {
+                                    // Inline validation — keep the
+                                    // dialog open so the user can
+                                    // type a fresh name.
+                                    self.state.save_hyperzoom_preset_error = Some(e.to_string());
+                                }
+                                Err(crate::hyperzoom_presets::SaveError::Io(e)) => {
+                                    tracing::warn!("hyperzoom preset save IO failure: {e}");
+                                    self.state.toast.show("Couldn't save preset (disk error)".to_string());
+                                    self.state.show_save_hyperzoom_preset_dialog = false;
+                                    self.state.save_hyperzoom_preset_source_clip = None;
+                                }
+                                Err(crate::hyperzoom_presets::SaveError::Serialize(e)) => {
+                                    tracing::error!("hyperzoom preset save serialize failure: {e}");
+                                    self.state.toast.show("Couldn't save preset".to_string());
+                                    self.state.show_save_hyperzoom_preset_dialog = false;
+                                    self.state.save_hyperzoom_preset_source_clip = None;
+                                }
+                            }
+                        }
+                        if ui.button("Cancel").clicked() {
+                            self.state.save_hyperzoom_preset_name.clear();
+                            self.state.save_hyperzoom_preset_error = None;
+                            self.state.save_hyperzoom_preset_source_clip = None;
+                            self.state.show_save_hyperzoom_preset_dialog = false;
+                        }
+                    });
+                });
+            if !open {
+                self.state.save_hyperzoom_preset_name.clear();
+                self.state.save_hyperzoom_preset_error = None;
+                self.state.save_hyperzoom_preset_source_clip = None;
+                self.state.show_save_hyperzoom_preset_dialog = false;
             }
         }
 

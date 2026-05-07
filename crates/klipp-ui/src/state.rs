@@ -816,6 +816,29 @@ pub struct AppState {
     pub show_save_workspace_dialog: bool,
     /// Name for the workspace being saved.
     pub save_workspace_name: String,
+    /// Show the "Save hyperzoom as preset" modal dialog
+    /// (HZ-NEXT-SAVED-PRESETS). Separate slot from
+    /// `show_save_workspace_dialog` per the feature audit —
+    /// avoids one-of-N-modals-open tracking + keeps the save-
+    /// preset code path independent of workspace lifecycle.
+    pub show_save_hyperzoom_preset_dialog: bool,
+    /// Name being typed into the save-preset dialog. Persists
+    /// across frames while the dialog is open; cleared on
+    /// successful save or cancel. The clip-id whose hyperzoom
+    /// scratch the dialog is reading from at open time —
+    /// stashed so a focus loss on the inspector doesn't lose
+    /// the binding.
+    pub save_hyperzoom_preset_name: String,
+    /// Inline validation message shown under the save-preset
+    /// dialog's text input. Set when the user submits an empty /
+    /// whitespace-only / all-disallowed-chars name.
+    /// `None` means no error visible.
+    pub save_hyperzoom_preset_error: Option<String>,
+    /// Source clip the save-preset dialog is bound to. Pinned
+    /// when the dialog opens so the saved preset reflects the
+    /// hyperzoom scratch state of that specific clip — even if
+    /// the user navigates the timeline before clicking Save.
+    pub save_hyperzoom_preset_source_clip: Option<klipp_core::ClipId>,
     /// Show the workspace-manager modal (delete/rename/export/import).
     pub show_workspace_manager: bool,
     /// Currently highlighted workspace name in the manager dialog.
@@ -2741,6 +2764,10 @@ impl Default for AppState {
             custom_workspaces: Vec::new(),
             show_save_workspace_dialog: false,
             save_workspace_name: String::new(),
+            show_save_hyperzoom_preset_dialog: false,
+            save_hyperzoom_preset_name: String::new(),
+            save_hyperzoom_preset_error: None,
+            save_hyperzoom_preset_source_clip: None,
             show_workspace_manager: false,
             workspace_manager_selected: None,
             sequences: vec![Sequence::new_default()],
