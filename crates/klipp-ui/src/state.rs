@@ -838,6 +838,15 @@ pub struct AppState {
     /// a global cache index file is a polish item if cross-session
     /// re-synth becomes a noticeable cost.
     pub whoosh_media_ids: std::collections::HashMap<u8, klipp_core::MediaId>,
+    /// Saved hyperzoom presets (HZ-NEXT-SAVED-PRESETS). Loaded
+    /// once at app startup from `~/.config/klipp/hyperzoom_presets/`;
+    /// mutations (save / delete) refresh in-memory + write to
+    /// disk synchronously. Per-cut fields (focal_x/y,
+    /// target_choice, custom whoosh path) are explicitly NOT
+    /// part of the saved preset shape — see
+    /// `hyperzoom_presets::HyperzoomPreset` for the type-level
+    /// exclusion.
+    pub hyperzoom_preset_registry: crate::hyperzoom_presets::HyperzoomPresetRegistry,
     /// Project-scoped synthetic title assets, keyed by the
     /// `MediaId` of the matching synthetic `MediaItem` in the pool.
     /// The map is the canonical source of truth for `TitleData`
@@ -2739,6 +2748,7 @@ impl Default for AppState {
             compound_clip_stack: Vec::new(),
             media_pool: MediaPool::new(),
             whoosh_media_ids: std::collections::HashMap::new(),
+            hyperzoom_preset_registry: crate::hyperzoom_presets::HyperzoomPresetRegistry::new(),
             title_assets: std::collections::HashMap::new(),
             project_path: None,
             created_at: None,
