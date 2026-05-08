@@ -388,8 +388,19 @@ impl NodeGraphV2Panel {
         painter.rect_filled(canvas_rect, 0.0, theme.bg_deep);
         self.draw_grid(&painter, canvas_rect, theme);
 
-        // Pan / zoom interactions.
-        self.handle_pan_zoom(ui, &canvas_rect, &canvas_resp);
+        // Pan / zoom interactions. Suppressed while a popup menu is
+        // open (right-click add-node menu, per-node context menu, or
+        // the wireless-label editor) so scroll-wheel events inside
+        // the popup don't ALSO zoom the canvas behind it. Egui's
+        // ScrollArea consumes scroll for its own content, but the
+        // raw scroll delta we read here is global — without the gate
+        // both the menu and the canvas react.
+        let any_menu_open = self.add_menu_open
+            || self.node_menu.is_some()
+            || self.wireless_label_editor.is_some();
+        if !any_menu_open {
+            self.handle_pan_zoom(ui, &canvas_rect, &canvas_resp);
+        }
 
         // Coordinate-transform helpers — closures capture the current
         // pan + zoom + canvas origin so positions update mid-frame
@@ -1536,7 +1547,12 @@ impl NodeGraphV2Panel {
         clip_id: ClipId,
         cmds: &mut Vec<AppCommand>,
     ) {
-        let menu_id = ui.id().with("ngv2_add_menu");
+        // Salt the menu id with `add_menu_opened_frame` so each open
+        // is a fresh egui::Area / ScrollArea layer with no cached
+        // state from previous invocations (the Area's saved size
+        // could otherwise carry a tiny rect over from a prior search
+        // session into the next open).
+        let menu_id = ui.id().with(("ngv2_add_menu", self.add_menu_opened_frame));
         let search_id = menu_id.with("search");
         let mut close = false;
         let mut chosen_kind: Option<&'static str> = None;
@@ -1612,9 +1628,18 @@ impl NodeGraphV2Panel {
         let area_resp = egui::Area::new(menu_id)
             .fixed_pos(self.add_menu_screen_pos)
             .order(egui::Order::Foreground)
+            .constrain(true)
             .show(ui.ctx(), |ui| {
                 egui::Frame::popup(ui.style()).show(ui, |ui| {
-                    ui.set_min_width(220.0);
+                    // Lock the popup width so it doesn't oscillate
+                    // as the visible-entry count changes while the
+                    // user types. Without this, a 2-match result
+                    // measures narrower than the 29-entry list, the
+                    // popup reflows narrower, then on backspace the
+                    // popup has to grow back — which egui sometimes
+                    // resolves a frame late and looks janky.
+                    ui.set_min_width(260.0);
+                    ui.set_max_width(260.0);
 
                     // ── Search field ─────────────────────────────
                     let search_resp = ui.add(
@@ -1642,7 +1667,16 @@ impl NodeGraphV2Panel {
                     };
 
                     egui::ScrollArea::vertical()
-                        .id_salt("ngv2_add_node_scroll")
+                        .id_salt(("ngv2_add_node_scroll", self.add_menu_opened_frame))
+                        // auto_shrink Y = false: the ScrollArea
+                        // always fills max_height, so backspacing
+                        // a search query restores the full-size
+                        // menu rather than the popup retaining the
+                        // shrunk-to-a-handful-of-matches height
+                        // from when the query had matches. X stays
+                        // shrink-to-content so the popup width
+                        // doesn't blow up to fill the screen.
+                        .auto_shrink([true, false])
                         .max_height(max_h)
                         .show(ui, |ui| {
                             // ── Recent (only when not searching) ──
