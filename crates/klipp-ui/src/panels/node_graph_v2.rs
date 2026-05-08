@@ -199,6 +199,13 @@ pub struct NodeGraphV2Panel {
     /// plumbing AppState into the panel for what is purely a node-
     /// graph navigation cue).
     bookmark_toast: Option<(String, std::time::Instant)>,
+    /// Minimap visibility — toggleable via the `M` hotkey (gated on
+    /// canvas focus + no popup) and the toolbar `Map` button. The
+    /// minimap is a 140 × 100 px overview painted in the canvas's
+    /// bottom-right corner: every node's bounding rect scaled to
+    /// fit, plus a viewport-rect overlay showing what's currently
+    /// on-screen. Click + drag to pan.
+    minimap_visible: bool,
 }
 
 impl Default for NodeGraphV2Panel {
@@ -227,6 +234,7 @@ impl Default for NodeGraphV2Panel {
             wireless_label_editor: None,
             view_bookmarks: [None; 9],
             bookmark_toast: None,
+            minimap_visible: true,
         }
     }
 }
@@ -439,6 +447,18 @@ impl NodeGraphV2Panel {
                 1…9                 jump back\n\n\
                 {hint}"
             ));
+        toolbar_ui.add_space(8.0);
+        // Minimap toggle — proper selectable button so the on/off
+        // state is unambiguous (selected = highlighted in accent).
+        // Same M shortcut shown on hover. The glyph + label combo
+        // ("▦ Map") reads as a labelled chip rather than a tiny
+        // unmarked icon, which earlier reviewers couldn't find.
+        if toolbar_ui.selectable_label(
+            self.minimap_visible,
+            egui::RichText::new("\u{25A6} Map").small(),
+        ).on_hover_text("Toggle minimap (M)\nClick + drag the minimap to pan").clicked() {
+            self.minimap_visible = !self.minimap_visible;
+        }
         toolbar_ui.add_space(8.0);
         // Solo indicator — only visible when a node is currently
         // soloed. Shows the soloed node's label (so the user knows
@@ -1605,6 +1625,13 @@ impl NodeGraphV2Panel {
                 if mods.ctrl || mods.alt || mods.command { continue; }
                 if mods.shift { self.set_bookmark(i); } else { self.jump_bookmark(i); }
             }
+            // M — toggle minimap. Bare key, same gate as bookmarks.
+            if ui.input(|inp| inp.key_pressed(egui::Key::M)) {
+                let mods = ui.input(|inp| inp.modifiers);
+                if !mods.ctrl && !mods.alt && !mods.command && !mods.shift {
+                    self.minimap_visible = !self.minimap_visible;
+                }
+            }
         }
 
         // Right-click handling. Three cases, in priority order:
@@ -1705,6 +1732,140 @@ impl NodeGraphV2Panel {
             self.last_visible_thumb_nodes = current_visible;
         }
 
+        // ── Minimap ──────────────────────────────────────────────
+        // 140 × 100 px overview anchored bottom-right of the canvas
+        // with an 8 px inset. Each node paints as a kind-coloured
+        // rect scaled to fit the minimap; the visible canvas area
+        // draws as an accent-coloured stroke rect overlay. Click +
+        // drag inside the minimap pans the canvas to centre on the
+        // graph point under the cursor.
+        //
+        // Rendering is gated on graph_bounds — empty graphs simply
+        // skip the minimap (the toolbar toggle still works; the
+        // map just won't paint until there's anything to show).
+        if self.minimap_visible {
+            if let Some(bounds) = graph_bounds(graph) {
+                const MAP_W: f32 = 140.0;
+                const MAP_H: f32 = 100.0;
+                const MAP_INSET: f32 = 8.0;
+                let map_min = egui::pos2(
+                    canvas_rect.max.x - MAP_W - MAP_INSET,
+                    canvas_rect.max.y - MAP_H - MAP_INSET,
+                );
+                let map_rect = egui::Rect::from_min_size(map_min, egui::vec2(MAP_W, MAP_H));
+
+                // Map graph bounds → minimap rect, with a small inner
+                // padding so node rects don't kiss the minimap border.
+                const MAP_PAD: f32 = 4.0;
+                let inner = map_rect.shrink(MAP_PAD);
+                let scale_x = inner.width() / bounds.width().max(1.0);
+                let scale_y = inner.height() / bounds.height().max(1.0);
+                let scale = scale_x.min(scale_y);
+                // Centre the scaled graph inside `inner` so non-square
+                // graphs aren't pinned to a corner.
+                let scaled_w = bounds.width() * scale;
+                let scaled_h = bounds.height() * scale;
+                let map_origin = egui::pos2(
+                    inner.min.x + (inner.width() - scaled_w) * 0.5,
+                    inner.min.y + (inner.height() - scaled_h) * 0.5,
+                );
+                let graph_to_map = |g: egui::Pos2| -> egui::Pos2 {
+                    egui::pos2(
+                        map_origin.x + (g.x - bounds.min.x) * scale,
+                        map_origin.y + (g.y - bounds.min.y) * scale,
+                    )
+                };
+                let map_to_graph = |m: egui::Pos2| -> egui::Pos2 {
+                    egui::pos2(
+                        bounds.min.x + (m.x - map_origin.x) / scale,
+                        bounds.min.y + (m.y - map_origin.y) / scale,
+                    )
+                };
+
+                // Background + border. Translucent so the canvas
+                // behind faintly shows through (helps users see
+                // they're not covering content).
+                painter.rect_filled(
+                    map_rect, 4.0,
+                    egui::Color32::from_rgba_unmultiplied(
+                        theme.bg_deep.r(), theme.bg_deep.g(), theme.bg_deep.b(), 200,
+                    ),
+                );
+                painter.rect_stroke(map_rect, 4.0, egui::Stroke::new(1.0, theme.border));
+
+                // Node rects.
+                for node in &graph.nodes {
+                    let pos = graph.node_positions.get(&node.id).copied()
+                        .unwrap_or(NodePos { x: 0.0, y: 0.0 });
+                    let (half_w, half_h) = if matches!(node.kind, NodeKind::Reroute) {
+                        (REROUTE_SIZE * 0.5, REROUTE_SIZE * 0.5)
+                    } else {
+                        (NODE_W * 0.5, NODE_H * 0.5)
+                    };
+                    let n_min = graph_to_map(egui::pos2(pos.x - half_w, pos.y - half_h));
+                    let n_max = graph_to_map(egui::pos2(pos.x + half_w, pos.y + half_h));
+                    let n_rect = egui::Rect::from_min_max(n_min, n_max);
+                    let is_selected_n = *selected_node == Some(node.id)
+                        || selected_set.contains(&node.id);
+                    let is_soloed_n = solo_node == Some(node.id);
+                    let on_n = klipp_nodes::effective_enabled(node, clip_time_secs);
+                    let mut fill = node_color(&node.kind, theme);
+                    if is_selected_n { fill = theme.accent; }
+                    if is_soloed_n { fill = egui::Color32::from_rgb(0xff, 0xd5, 0x3a); }
+                    let alpha: u8 = if on_n { 220 } else { 100 };
+                    let fill_a = egui::Color32::from_rgba_unmultiplied(
+                        fill.r(), fill.g(), fill.b(), alpha,
+                    );
+                    if matches!(node.kind, NodeKind::Reroute) {
+                        painter.circle_filled(n_rect.center(), n_rect.width().max(2.0) * 0.5, fill_a);
+                    } else {
+                        painter.rect_filled(n_rect, 1.0, fill_a);
+                    }
+                }
+
+                // Viewport overlay — the canvas's visible area
+                // mapped onto the minimap. Painted last so it sits
+                // on top of every node rect.
+                let canvas_centre = canvas_rect.center();
+                let viewport_min_g = egui::pos2(
+                    (canvas_rect.min.x - canvas_centre.x) / self.zoom - self.pan.x,
+                    (canvas_rect.min.y - canvas_centre.y) / self.zoom - self.pan.y,
+                );
+                let viewport_max_g = egui::pos2(
+                    (canvas_rect.max.x - canvas_centre.x) / self.zoom - self.pan.x,
+                    (canvas_rect.max.y - canvas_centre.y) / self.zoom - self.pan.y,
+                );
+                let v_rect = egui::Rect::from_min_max(
+                    graph_to_map(viewport_min_g),
+                    graph_to_map(viewport_max_g),
+                ).intersect(map_rect);
+                if v_rect.is_positive() {
+                    painter.rect_stroke(
+                        v_rect, 2.0,
+                        egui::Stroke::new(1.5, theme.accent),
+                    );
+                }
+
+                // Click + drag → pan canvas to centre on the graph
+                // point under the cursor in the minimap. Sense both
+                // click and drag so a single click also re-centres
+                // (no need to wiggle the cursor to get a pan).
+                let map_resp = ui.interact(
+                    map_rect,
+                    ui.id().with("ngv2_minimap"),
+                    egui::Sense::click_and_drag(),
+                );
+                if map_resp.clicked() || map_resp.dragged() {
+                    if let Some(p) = ui.input(|i| i.pointer.hover_pos()) {
+                        if map_rect.contains(p) {
+                            let target = map_to_graph(p);
+                            self.pan = egui::vec2(-target.x, -target.y);
+                        }
+                    }
+                }
+            }
+        }
+
         // Bookmark toast — transient feedback for set/jump/empty.
         // Self-fading; ~1.5 s lifetime, painted in the canvas's top-
         // right corner. Polarity-aware via theme tokens so it stays
@@ -1752,25 +1913,9 @@ impl NodeGraphV2Panel {
     /// inside the canvas with a comfortable margin. Called on first
     /// open of a clip, on Fit toolbar click, and on `F` press.
     fn fit_to_nodes(&mut self, graph: &NodeGraph, canvas_rect: egui::Rect) {
-        let mut min_x = f32::INFINITY;
-        let mut min_y = f32::INFINITY;
-        let mut max_x = f32::NEG_INFINITY;
-        let mut max_y = f32::NEG_INFINITY;
-        for node in &graph.nodes {
-            let pos = graph.node_positions.get(&node.id).copied()
-                .unwrap_or(NodePos { x: 0.0, y: 0.0 });
-            // Node bounds in graph coords = (pos ± NODE_W/2, pos ± NODE_H/2)
-            let half_w = NODE_W * 0.5;
-            let half_h = NODE_H * 0.5;
-            min_x = min_x.min(pos.x - half_w);
-            min_y = min_y.min(pos.y - half_h);
-            max_x = max_x.max(pos.x + half_w);
-            max_y = max_y.max(pos.y + half_h);
-        }
-        if !min_x.is_finite() || !max_x.is_finite() { return; }
-
-        let graph_w = (max_x - min_x).max(1.0);
-        let graph_h = (max_y - min_y).max(1.0);
+        let Some(bounds) = graph_bounds(graph) else { return; };
+        let graph_w = bounds.width().max(1.0);
+        let graph_h = bounds.height().max(1.0);
         // 12 % padding on each side so framed nodes don't touch the edge.
         let target_w = canvas_rect.width() * 0.76;
         let target_h = canvas_rect.height() * 0.76;
@@ -1779,14 +1924,13 @@ impl NodeGraphV2Panel {
         let new_zoom = zoom_x.min(zoom_y).clamp(0.25, 3.0);
 
         // Pan so the graph centre lands on the canvas centre.
-        let graph_cx = (min_x + max_x) * 0.5;
-        let graph_cy = (min_y + max_y) * 0.5;
+        let graph_centre = bounds.center();
         // Inverse of `to_screen`: screen = origin + (graph + pan) * zoom
         // We want graph_centre to map to canvas_centre, so:
         //   canvas_centre = canvas_centre + (graph_centre + pan) * zoom
         //   pan = -graph_centre
         self.zoom = new_zoom;
-        self.pan = egui::vec2(-graph_cx, -graph_cy);
+        self.pan = egui::vec2(-graph_centre.x, -graph_centre.y);
     }
 
     fn draw_grid(&self, painter: &egui::Painter, rect: egui::Rect, theme: &KlippTheme) {
@@ -2394,6 +2538,36 @@ impl NodeGraphV2Panel {
 // ── Port position helpers ─────────────────────────────────────────
 // Ports are evenly distributed along the left (input) / right
 // (output) edge of the node body rectangle.
+
+/// Bounding box of every node's body rectangle in graph coordinates.
+/// Empty graphs return `None` (defensive — fit-to-view + minimap
+/// short-circuit cleanly). Reroute nodes contribute their smaller
+/// 20×20 footprint rather than NODE_W×NODE_H so the bounds reflect
+/// what's actually painted.
+pub(super) fn graph_bounds(graph: &NodeGraph) -> Option<egui::Rect> {
+    let mut min_x = f32::INFINITY;
+    let mut min_y = f32::INFINITY;
+    let mut max_x = f32::NEG_INFINITY;
+    let mut max_y = f32::NEG_INFINITY;
+    for node in &graph.nodes {
+        let pos = graph.node_positions.get(&node.id).copied()
+            .unwrap_or(NodePos { x: 0.0, y: 0.0 });
+        let (half_w, half_h) = if matches!(node.kind, NodeKind::Reroute) {
+            (REROUTE_SIZE * 0.5, REROUTE_SIZE * 0.5)
+        } else {
+            (NODE_W * 0.5, NODE_H * 0.5)
+        };
+        min_x = min_x.min(pos.x - half_w);
+        min_y = min_y.min(pos.y - half_h);
+        max_x = max_x.max(pos.x + half_w);
+        max_y = max_y.max(pos.y + half_h);
+    }
+    if !min_x.is_finite() || !max_x.is_finite() { return None; }
+    Some(egui::Rect::from_min_max(
+        egui::pos2(min_x, min_y),
+        egui::pos2(max_x, max_y),
+    ))
+}
 
 fn input_port_pos(rect: &egui::Rect, port: u8, count: u8) -> egui::Pos2 {
     port_pos_on_edge(rect, port, count.max(1), false)
