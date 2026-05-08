@@ -856,6 +856,16 @@ pub enum AppCommand {
     /// ("H:MM:SS Label" per line, with a synthetic "Intro" at 0:00 when
     /// the first marker is after the start).
     ExportYouTubeChapters { path: PathBuf },
+    /// Open the export dialog with the range pre-set to "Selected
+    /// clips" mode. Dispatched by the timeline clip-context-menu
+    /// "Export This Clip…" entry and the matching palette command —
+    /// both surfaces select the clip(s) first via [`Self::SelectClip`]
+    /// or rely on an existing multi-select. The export-range itself
+    /// is computed from `state.selected_clips` at dispatch time by
+    /// the same code path the dialog uses for its "Selected clips"
+    /// radio (`selected_clips_frame_range`), so behaviour stays in
+    /// sync with the existing in-dialog flow.
+    OpenExportDialogForSelectedClips,
     /// Generate a headless bash render script that calls ffmpeg to render
     /// the current sequence. Cuts only — effects/grades/transitions are NOT
     /// serialized. The script includes a prominent WARNING comment advising

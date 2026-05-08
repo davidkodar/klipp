@@ -3509,15 +3509,22 @@ impl ViewerPanel {
             rotate_point(raw_corners[i], pos_screen, rotation_rad)
         });
 
-        // Use a painter with an expanded clip rect so transform handles
-        // near the edges of image_rect are not clipped (FCP-style: handles
-        // remain visible even when the bounding box extends outside the video frame).
-        // Use an expanded clip rect so transform handles at the frame edges are fully visible.
-        // The handles are 8px squares and the rotation handle extends 30px above the frame.
-        // Use a foreground-layer painter so transform handles draw ON TOP of
-        // everything (toolbar, transport bar, etc.) and are never covered.
+        // Painter for the transform overlay. Sits in `Order::Middle` —
+        // above the viewer image (which paints in the central panel
+        // at `Order::Background`) but BELOW everything in
+        // `Order::Foreground`: context menus, dropdowns, modal
+        // dialogs, tooltips. Earlier this layer was on `Foreground`,
+        // which made the bounding-box outline + handles bleed
+        // through any open clip-context menu (egui's menus also live
+        // on `Foreground`, and within the same Order they stack by
+        // creation sequence — the per-frame redraw of the overlay
+        // ended up on top). `Middle` keeps the overlay visible over
+        // the viewer image (the toolbar / transport / panel chrome
+        // don't overlap the viewer rect, so they don't visually
+        // cover the handles in regular dock layouts) while letting
+        // every popup naturally occlude it.
         let painter = ui.ctx().layer_painter(egui::LayerId::new(
-            egui::Order::Foreground,
+            egui::Order::Middle,
             ui.id().with("transform_controls"),
         ));
 

@@ -7303,6 +7303,19 @@ impl TimelinePanel {
                 let track_kind = state.sequence().tracks.get(track_idx).map(|t| t.kind);
                 let is_video_track = track_kind == Some(TrackKind::Video);
 
+                // ── Export this clip ──
+                // Open the export dialog with the range pre-set to
+                // "Selected clips" mode. The handler ensures the
+                // right-clicked clip is selected first and lets the
+                // existing range-mode-2 dispatch path do the
+                // bounds calculation.
+                if ui.button("\u{2B07} Export This Clip\u{2026}").clicked() {
+                    cmds.push(AppCommand::SelectClip(Some(clip_id)));
+                    cmds.push(AppCommand::OpenExportDialogForSelectedClips);
+                    ui.close_menu();
+                }
+                ui.separator();
+
                 // ── Title/Text clip actions ──
                 let title_data_cloned: Option<klipp_timeline::TitleData> = state.sequence().tracks.iter()
                     .flat_map(|t| t.clips.iter())
@@ -7908,18 +7921,29 @@ impl TimelinePanel {
                                 }
                             } else {
                                 ui.menu_button("Add Transition →", |ui| {
-                                    for &(kind_id, label) in klipp_engine::transition::all_transition_kinds() {
-                                        if ui.button(label).clicked() {
-                                            cmds.push(AppCommand::AddTransition {
-                                                track_index: track_idx,
-                                                clip_a_id: clip_id,
-                                                clip_b_id: next_id,
-                                                kind_id,
-                                                duration_frames: state.default_transition_frames,
-                                            });
-                                            ui.close_menu();
-                                        }
-                                    }
+                                    // Cap the submenu height at 70 %
+                                    // of the screen so the 30+
+                                    // transition kinds stay reachable
+                                    // on small viewports. ScrollArea
+                                    // handles wheel scroll for free.
+                                    let max_h = (ui.ctx().screen_rect().height() * 0.70).max(240.0);
+                                    egui::ScrollArea::vertical()
+                                        .id_salt("transition_submenu_right")
+                                        .max_height(max_h)
+                                        .show(ui, |ui| {
+                                            for &(kind_id, label) in klipp_engine::transition::all_transition_kinds() {
+                                                if ui.button(label).clicked() {
+                                                    cmds.push(AppCommand::AddTransition {
+                                                        track_index: track_idx,
+                                                        clip_a_id: clip_id,
+                                                        clip_b_id: next_id,
+                                                        kind_id,
+                                                        duration_frames: state.default_transition_frames,
+                                                    });
+                                                    ui.close_menu();
+                                                }
+                                            }
+                                        });
                                 });
                             }
                         }
@@ -7945,18 +7969,24 @@ impl TimelinePanel {
                                 }
                             } else {
                                 ui.menu_button("Add Transition ←", |ui| {
-                                    for &(kind_id, label) in klipp_engine::transition::all_transition_kinds() {
-                                        if ui.button(label).clicked() {
-                                            cmds.push(AppCommand::AddTransition {
-                                                track_index: track_idx,
-                                                clip_a_id: prev_id,
-                                                clip_b_id: clip_id,
-                                                kind_id,
-                                                duration_frames: state.default_transition_frames,
-                                            });
-                                            ui.close_menu();
-                                        }
-                                    }
+                                    let max_h = (ui.ctx().screen_rect().height() * 0.70).max(240.0);
+                                    egui::ScrollArea::vertical()
+                                        .id_salt("transition_submenu_left")
+                                        .max_height(max_h)
+                                        .show(ui, |ui| {
+                                            for &(kind_id, label) in klipp_engine::transition::all_transition_kinds() {
+                                                if ui.button(label).clicked() {
+                                                    cmds.push(AppCommand::AddTransition {
+                                                        track_index: track_idx,
+                                                        clip_a_id: prev_id,
+                                                        clip_b_id: clip_id,
+                                                        kind_id,
+                                                        duration_frames: state.default_transition_frames,
+                                                    });
+                                                    ui.close_menu();
+                                                }
+                                            }
+                                        });
                                 });
                             }
                         }

@@ -147,6 +147,24 @@ pub fn build(state: &AppState) -> Vec<PaletteEntry> {
         action: PaletteAction::OpenDialog(DialogKind::ImportOtio), enabled: true });
     e.push(PaletteEntry { label: Cow::Borrowed("Export…"), shortcut: Cow::Borrowed("Ctrl+E"),
         action: PaletteAction::Cmd(AppCommand::ShowExportDialog), enabled: true });
+    // Per-clip export — opens the dialog with range_mode pre-set to
+    // "Selected clips" so the right edit lands without the user
+    // having to hunt for the radio. Gated on having any selection;
+    // a 0-clip dispatch toasts and bails.
+    {
+        let sel_count = state.selected_clips.len();
+        let label_text = if sel_count == 1 {
+            "Export Selected Clip\u{2026}".to_string()
+        } else {
+            format!("Export Selected Clips ({sel_count})\u{2026}")
+        };
+        e.push(PaletteEntry {
+            label: Cow::Owned(label_text),
+            shortcut: Cow::Borrowed(""),
+            action: PaletteAction::Cmd(AppCommand::OpenExportDialogForSelectedClips),
+            enabled: sel_count > 0,
+        });
+    }
     e.push(PaletteEntry { label: Cow::Borrowed("Export Subtitles…"), shortcut: Cow::Borrowed(""),
         action: PaletteAction::OpenDialog(DialogKind::ExportSubtitles), enabled: true });
     e.push(PaletteEntry { label: Cow::Borrowed("Export FCPXML…"), shortcut: Cow::Borrowed(""),
@@ -971,6 +989,12 @@ mod tests {
         // when the multi-select isn't a 2-clip pair, so the substring
         // is reachable in the no-selection default state.
         "Swap Selected Clips",
+        // Per-clip export — entry is rendered greyed when nothing
+        // is selected, so the substring "Export Selected Clip"
+        // (which the dynamic label always starts with) is reachable
+        // in the default state. Pin so a refactor can't quietly
+        // remove the discovery surface.
+        "Export Selected Clip",
     ];
 
     #[test]

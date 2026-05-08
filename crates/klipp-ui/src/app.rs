@@ -18519,6 +18519,30 @@ impl KlippApp {
                 }
                 true
             }
+            AppCommand::OpenExportDialogForSelectedClips => {
+                // Dispatched by the clip-context "Export This Clip…"
+                // gesture and the matching palette entry. We mirror
+                // the Ctrl+E open path (path defaulting + dialog
+                // state) and force the range radio to `2` (Selected
+                // clips) — `selected_clips_frame_range` reads
+                // `state.selected_clips` at export time and writes
+                // the right `export_range` into the snapshot, so we
+                // don't need to compute the range here.
+                if self.state.selected_clips.is_empty() {
+                    self.state.toast.show("No clips selected");
+                    return true;
+                }
+                self.state.show_export_dialog = true;
+                self.export_dialog.range_mode = 2;
+                if self.export_dialog.output_path.is_empty() {
+                    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
+                    self.export_dialog.output_path = format!(
+                        "{home}/output.{}",
+                        self.export_dialog.format.extension(),
+                    );
+                }
+                true
+            }
             AppCommand::GenerateRenderScript { path } => {
                 let path = path.clone();
                 let seq = &self.state.sequences[self.state.active_sequence_idx];
