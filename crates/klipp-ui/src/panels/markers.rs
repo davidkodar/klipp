@@ -1,11 +1,27 @@
 use crate::icons::Icon;
-use crate::state::AppState;
+use crate::state::{AppState, PanelKind};
 use klipp_core::{AppCommand, MarkerColor, MarkerId, RationalTime};
 
 #[derive(Default)]
 pub struct MarkersPanel {
     editing_label: Option<MarkerId>,
     label_buf: String,
+    /// Case-insensitive substring filter on marker labels. When
+    /// non-empty, the rendered list is narrowed to matches; pressing
+    /// Enter while focused jumps the playhead to the first match.
+    /// Marker comments don't exist as a field today (GAP-EDIT-011);
+    /// when they do, extend `marker_matches` to also search them.
+    search_query: String,
+}
+
+/// Case-insensitive substring match between marker label and query.
+/// Empty query matches everything. Pulled out of show() so unit tests
+/// can exercise the predicate without the egui surface.
+pub fn marker_matches(label: &str, query: &str) -> bool {
+    if query.is_empty() {
+        return true;
+    }
+    label.to_lowercase().contains(&query.to_lowercase())
 }
 
 impl MarkersPanel {
@@ -13,12 +29,43 @@ impl MarkersPanel {
         let mut cmds = Vec::new();
         let mut open = state.show_markers_panel;
 
-        egui::Window::new("Markers")
+        let response = egui::Window::new("Markers")
             .open(&mut open)
             .default_width(280.0)
             .default_height(300.0)
             .resizable(true)
             .show(ctx, |ui| {
+                // Search field. Filters the rendered list by
+                // case-insensitive substring match on label. Enter
+                // jumps to the first matching marker (point or range
+                // start). Honours Ctrl+F focus_search_request.
+                ui.horizontal(|ui| {
+                    let search = egui::TextEdit::singleline(&mut self.search_query)
+                        .hint_text("Filter markers\u{2026}")
+                        .desired_width(ui.available_width());
+                    let resp = ui.add(search);
+                    if state.focus_search_request == Some(PanelKind::Markers) {
+                        resp.request_focus();
+                        state.focus_search_request = None;
+                    }
+                    if resp.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                        // Jump to first match. Lookup runs against
+                        // the live sequence rather than caching, so
+                        // the filtered set is always fresh.
+                        let q = self.search_query.clone();
+                        if let Some(first) = state
+                            .sequence()
+                            .markers
+                            .iter()
+                            .find(|m| marker_matches(&m.label, &q))
+                        {
+                            cmds.push(AppCommand::JumpToMarker { marker_id: first.id });
+                        }
+                    }
+                });
+
+                ui.separator();
+
                 // Add marker button + export.
                 ui.horizontal(|ui| {
                     if ui.button("+ Add Marker").clicked() {
@@ -69,9 +116,11 @@ impl MarkersPanel {
                 egui::ScrollArea::vertical().show(ui, |ui| {
                     let mut remove_id = None;
                     let fps_rate = state.sequence().fps.rate();
-                    let markers: Vec<_> = state.sequence().markers.iter().map(|m| {
-                        (m.id, m.position, m.label.clone(), m.color, m.duration)
-                    }).collect();
+                    let query = self.search_query.clone();
+                    let markers: Vec<_> = state.sequence().markers.iter()
+                        .filter(|m| marker_matches(&m.label, &query))
+                        .map(|m| (m.id, m.position, m.label.clone(), m.color, m.duration))
+                        .collect();
 
                     for (id, position, label, color, duration) in &markers {
                         ui.horizontal(|ui| {
@@ -181,14 +230,26 @@ impl MarkersPanel {
                     }
 
                     if markers.is_empty() {
+                        let msg = if self.search_query.is_empty() {
+                            "No markers. Press M to add one.".to_string()
+                        } else {
+                            format!("No markers match \u{201C}{}\u{201D}", self.search_query)
+                        };
                         ui.label(
-                            egui::RichText::new("No markers. Press M to add one.")
+                            egui::RichText::new(msg)
                                 .size(11.0)
                                 .color(egui::Color32::from_rgb(100, 100, 110)),
                         );
                     }
                 });
             });
+
+        // Mark the panel active when any pointer press lands inside
+        // its window rect this frame. Scopes Ctrl+F (and any future
+        // panel-keyed shortcuts) to this panel when it has focus.
+        if let Some(inner) = response.as_ref() {
+            crate::state::note_active_panel(state, PanelKind::Markers, ctx, inner.response.rect);
+        }
 
         state.show_markers_panel = open;
         cmds
@@ -199,4 +260,31 @@ fn format_timecode_short(secs: f64) -> String {
     let m = (secs / 60.0) as u32;
     let s = secs % 60.0;
     format!("{:02}:{:05.2}", m, s)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn empty_query_matches_everything() {
+        assert!(marker_matches("", ""));
+        assert!(marker_matches("anything", ""));
+        assert!(marker_matches("Cut on action", ""));
+    }
+
+    #[test]
+    fn query_is_case_insensitive_substring() {
+        assert!(marker_matches("Cut on action", "cut"));
+        assert!(marker_matches("Cut on action", "CUT"));
+        assert!(marker_matches("Cut on action", "ACTION"));
+        assert!(marker_matches("Cut on action", "n a"));
+    }
+
+    #[test]
+    fn non_matching_query_filters_out() {
+        assert!(!marker_matches("Cut on action", "music"));
+        assert!(!marker_matches("Best take", "cut"));
+        assert!(!marker_matches("", "anything"));
+    }
 }

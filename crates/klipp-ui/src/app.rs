@@ -22120,6 +22120,15 @@ impl KlippApp {
                 self.state.command_palette_query.clear();
                 self.state.command_palette_selected = 0;
             }
+            // Ctrl+F — Focus the search field of the currently active
+            // panel. Sets a one-shot flag that the target panel
+            // consumes on its next show() (request_focus on its
+            // TextEdit, clear the flag). When the active panel has no
+            // search surface (Viewer / Inspector / Timeline) the
+            // end-of-update watchdog below clears the flag silently.
+            if kb.is_action_pressed("focus_panel_search", i) {
+                self.state.focus_search_request = self.state.active_panel;
+            }
             // Ctrl+W — Close Project (return to project selector)
             if i.modifiers.ctrl && !i.modifiers.shift && i.key_pressed(egui::Key::W) {
                 cmds.push(AppCommand::CloseProject);
@@ -25789,6 +25798,14 @@ impl eframe::App for KlippApp {
         if self.state.playback == PlaybackState::Playing || self.state.render_queue.has_active_job() {
             ctx.request_repaint();
         }
+
+        // Watchdog: clear any unconsumed Ctrl+F focus request. If the
+        // active panel had a search field, its show() already
+        // request_focus'd and reset the field. If not (Inspector /
+        // Viewer / Timeline / etc.), this clears the stale request so
+        // the next Ctrl+F starts from a clean slate instead of
+        // fighting a leftover one.
+        self.state.focus_search_request = None;
 
         // Log slow UI ticks. 25 ms is a conservative threshold — at 60 fps
         // we have 16.6 ms, so anything > 25 ms dropped at least one frame.
@@ -29518,6 +29535,17 @@ impl KlippApp {
         if self.browser.favorite_effects != self.prefs.effects_browser.favorite_effects {
             self.browser.favorite_effects = self.prefs.effects_browser.favorite_effects.clone();
         }
+
+        // Mark which kind of "panel" the browser registers as for the
+        // active_panel / Ctrl+F dispatcher. Files tab → FileBrowser,
+        // every other tab → MediaBrowser. Both PanelKinds are routed
+        // to the same widget; the consumer picks the right query
+        // buffer (search_query vs files_search_query) on its own.
+        let browser_panel_kind = match self.layout.active_browser_tab {
+            crate::layout_state::BrowserTab::Files => crate::state::PanelKind::FileBrowser,
+            _ => crate::state::PanelKind::MediaBrowser,
+        };
+        crate::state::note_active_panel(&mut self.state, browser_panel_kind, ui.ctx(), browser_rect);
 
         let bg_panel = self.theme.bg_panel;
         crate::ui_util::allocate_clipped_ui(ui, browser_rect, |ui| {

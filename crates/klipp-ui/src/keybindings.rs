@@ -198,6 +198,12 @@ impl KeyBindings {
 
         // Window panels
         bind(&mut b, "toggle_project_notes", vec![KeyCombo::ctrl_shift("N")]);
+        // Per-panel search focus. Hits the search field of whichever
+        // panel the user last clicked into (resolved via active_panel
+        // / PanelKind). When the active panel has no search surface
+        // (Inspector / Viewer / Timeline) the action is a silent
+        // no-op — see app.rs dispatcher for the watchdog clear.
+        bind(&mut b, "focus_panel_search", vec![KeyCombo::ctrl("F")]);
 
         // Timeline display
         bind(&mut b, "toggle_snap", vec![KeyCombo::new("N")]);
@@ -411,6 +417,7 @@ impl KeyBindings {
             "toggle_safe_areas" => "Toggle Safe Areas",
             "toggle_grid_overlay" => "Toggle Grid & Crosshair",
             "toggle_project_notes" => "Toggle Project Notes",
+            "focus_panel_search" => "Focus Panel Search",
             "toggle_snap" => "Toggle Snap",
             "toggle_skimming" => "Toggle Skimming",
             "fit_to_window" => "Fit to Window",
@@ -461,7 +468,7 @@ impl KeyBindings {
             ("Navigation", &["next_edit_point", "prev_edit_point", "set_in_point", "set_out_point", "clear_in_point", "clear_out_point", "clear_in_out", "set_range_to_clip"]),
             ("Transport", &["play_pause", "step_forward", "step_backward", "go_to_start", "go_to_end", "shuttle_reverse", "shuttle_pause", "shuttle_forward", "toggle_loop"]),
             ("Viewer", &["toggle_fullscreen", "toggle_before_after", "toggle_color_panel", "toggle_scopes", "toggle_zebra", "toggle_false_color", "toggle_perf_overlay", "toggle_perf_recording", "toggle_matte_preview", "toggle_safe_areas", "toggle_grid_overlay", "extract_frame_to_file", "extract_frame_to_bin"]),
-            ("Window", &["toggle_project_notes"]),
+            ("Window", &["toggle_project_notes", "focus_panel_search"]),
             ("Display", &["toggle_snap", "toggle_skimming", "toggle_audio_skim", "fit_to_window", "zoom_to_selection", "zoom_in", "zoom_out"]),
             ("Markers", &["add_marker", "add_clip_marker", "toggle_keyframe", "toggle_keyframe_editor", "prev_keyframe", "next_keyframe"]),
             ("Multicam", &["multicam_angle_1", "multicam_angle_2", "multicam_angle_3",

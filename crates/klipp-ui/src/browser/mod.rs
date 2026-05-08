@@ -1364,6 +1364,21 @@ impl BrowserPanel {
                             .text_color(theme.text_primary)
                             .frame(false);
                         let resp = ui.add(search);
+                        // Ctrl+F focus consumer. Match against the
+                        // PanelKind that this tab registered with the
+                        // dispatcher (Files → FileBrowser, others →
+                        // MediaBrowser) so a focus request fired while
+                        // the user was on Media doesn't accidentally
+                        // grab the field after they switched to Files.
+                        let want_kind = if *active_tab == BrowserTab::Files {
+                            crate::state::PanelKind::FileBrowser
+                        } else {
+                            crate::state::PanelKind::MediaBrowser
+                        };
+                        if state.focus_search_request == Some(want_kind) {
+                            resp.request_focus();
+                            state.focus_search_request = None;
+                        }
                         if resp.has_focus() {
                             // Accent border + soft glow ring. The glow
                             // sits OUTSIDE the border so the rectangle
@@ -1467,6 +1482,14 @@ impl BrowserPanel {
                             .text_color(theme.text_primary)
                             .frame(false);
                         let resp = ui.add(search);
+                        // Ctrl+F focus consumer (split-view right pane,
+                        // always Media-side here — the left pane is
+                        // Files with its own search inside
+                        // show_files_tab).
+                        if state.focus_search_request == Some(crate::state::PanelKind::MediaBrowser) {
+                            resp.request_focus();
+                            state.focus_search_request = None;
+                        }
                         if resp.has_focus() {
                             // Accent border + soft glow ring. The glow
                             // sits OUTSIDE the border so the rectangle

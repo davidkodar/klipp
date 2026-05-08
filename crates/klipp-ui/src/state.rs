@@ -1554,6 +1554,15 @@ pub struct AppState {
     /// `Some(PanelKind::NodeGraph)` or `Some(PanelKind::NodeInspector)`.
     /// Panels mark themselves active via [`note_active_panel`].
     pub active_panel: Option<PanelKind>,
+    /// One-shot focus request for a panel's search field. Set by the
+    /// global Ctrl+F (focus_panel_search) dispatcher to the current
+    /// `active_panel`. Each search-bearing panel checks this on its
+    /// next show(), calls `request_focus()` on its TextEdit, then
+    /// clears the field. If no panel consumes it (e.g. active panel is
+    /// Inspector / Viewer / Timeline — none of which expose a search
+    /// surface today), app.rs clears it at end-of-update as a
+    /// watchdog so a stale request can't get stuck.
+    pub focus_search_request: Option<PanelKind>,
     /// In-memory clipboard for grade-node copy/paste between clips.
     /// Holds nodes plus edges induced by the copy selection, so a
     /// multi-node copy round-trips internal wiring; the paste handler
@@ -3126,6 +3135,7 @@ impl Default for AppState {
             selected_node_id: None,
             selected_node_ids: std::collections::HashSet::new(),
             active_panel: None,
+            focus_search_request: None,
             grade_node_clipboard: None,
             graph_descent_path: Vec::new(),
             show_node_strip: false,
@@ -4199,5 +4209,61 @@ mod grade_node_clipboard_tests {
         let edges_before = graph.edges.len();
         cb.merge_into(&mut graph, (0.0, 0.0));
         assert_eq!(graph.edges.len(), edges_before);
+    }
+}
+
+#[cfg(test)]
+mod focus_search_request_tests {
+    use super::PanelKind;
+
+    /// AppState's Default initialiser leaves the request unset so a
+    /// fresh app can't have a stale Ctrl+F focus pending.
+    #[test]
+    fn default_is_none() {
+        let s = super::AppState::default();
+        assert!(s.focus_search_request.is_none());
+    }
+
+    /// Round-trip: dispatcher copies active_panel into the request,
+    /// the consumer reads it, clears it, and the next read sees None.
+    #[test]
+    fn round_trip_set_then_clear() {
+        let mut s = super::AppState::default();
+        s.active_panel = Some(PanelKind::MediaBrowser);
+
+        // Dispatcher path
+        s.focus_search_request = s.active_panel;
+        assert_eq!(s.focus_search_request, Some(PanelKind::MediaBrowser));
+
+        // Consumer path (matches the panel — clears)
+        if s.focus_search_request == Some(PanelKind::MediaBrowser) {
+            s.focus_search_request = None;
+        }
+        assert!(s.focus_search_request.is_none());
+    }
+
+    /// Consumer in a different panel should NOT clear someone else's
+    /// request — the watchdog clears it at end-of-update instead.
+    #[test]
+    fn wrong_panel_does_not_consume() {
+        let mut s = super::AppState::default();
+        s.focus_search_request = Some(PanelKind::Markers);
+
+        // Browser's MediaBrowser consumer runs but the request is
+        // for Markers — must leave the flag intact.
+        if s.focus_search_request == Some(PanelKind::MediaBrowser) {
+            s.focus_search_request = None;
+        }
+        assert_eq!(s.focus_search_request, Some(PanelKind::Markers));
+    }
+
+    /// When active_panel is None (no panel claimed focus yet),
+    /// dispatching Ctrl+F leaves request as None — silent no-op.
+    #[test]
+    fn no_active_panel_yields_no_request() {
+        let mut s = super::AppState::default();
+        s.active_panel = None;
+        s.focus_search_request = s.active_panel;
+        assert!(s.focus_search_request.is_none());
     }
 }

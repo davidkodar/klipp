@@ -449,6 +449,12 @@ pub fn build(state: &AppState) -> Vec<PaletteEntry> {
         action: PaletteAction::ToggleState(|s| s.show_curve_editor = !s.show_curve_editor), enabled: true });
     e.push(PaletteEntry { label: Cow::Borrowed("Toggle Markers Panel"), shortcut: Cow::Borrowed(""),
         action: PaletteAction::ToggleState(|s| s.show_markers_panel = !s.show_markers_panel), enabled: true });
+    // Focus the search field of whichever panel was last clicked.
+    // Routes through the same one-shot focus_search_request flag the
+    // Ctrl+F dispatcher uses, so the next show() of the active panel
+    // grabs focus and clears the request.
+    e.push(PaletteEntry { label: Cow::Borrowed("Focus Search in Current Panel"), shortcut: Cow::Borrowed("Ctrl+F"),
+        action: PaletteAction::ToggleState(|s| { s.focus_search_request = s.active_panel; }), enabled: true });
     e.push(PaletteEntry { label: Cow::Borrowed("Toggle History Panel"), shortcut: Cow::Borrowed(""),
         action: PaletteAction::ToggleState(|s| s.show_history_panel = !s.show_history_panel), enabled: true });
     e.push(PaletteEntry { label: Cow::Borrowed("Toggle Subtitle Editor"), shortcut: Cow::Borrowed("Ctrl+Shift+T"),
@@ -931,6 +937,9 @@ mod tests {
         "Hyperzoom Bridge",
         "Whip Pan (left)",
         "Whip Pan (right)",
+        // Per-panel search hotkey discovery anchor. Pinned so the
+        // Ctrl+F entry can't disappear into a refactor.
+        "Focus Search in Current Panel",
     ];
 
     #[test]
