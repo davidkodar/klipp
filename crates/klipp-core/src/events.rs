@@ -314,6 +314,9 @@ pub enum ExportFormat {
     Mkv,
     Mov,
     WebM,
+    /// Animated GIF (CPU-only, two-pass palette via palettegen +
+    /// paletteuse). No audio, no subtitles, no chapters, no HDR.
+    Gif,
 }
 
 impl ExportFormat {
@@ -323,6 +326,7 @@ impl ExportFormat {
             Self::Mkv => "mkv",
             Self::Mov => "mov",
             Self::WebM => "webm",
+            Self::Gif => "gif",
         }
     }
 
@@ -332,7 +336,24 @@ impl ExportFormat {
             Self::Mkv => "MKV",
             Self::Mov => "MOV",
             Self::WebM => "WebM",
+            Self::Gif => "GIF",
         }
+    }
+
+    /// Whether this format can carry audio. GIF cannot.
+    pub fn supports_audio(&self) -> bool {
+        !matches!(self, Self::Gif)
+    }
+
+    /// Whether this format supports embedded chapter atoms.
+    /// MP4/MKV/MOV do; WebM and GIF do not.
+    pub fn supports_chapters(&self) -> bool {
+        matches!(self, Self::Mp4 | Self::Mkv | Self::Mov)
+    }
+
+    /// Whether this format supports embedded subtitle streams.
+    pub fn supports_subtitles(&self) -> bool {
+        !matches!(self, Self::Gif)
     }
 }
 
@@ -347,6 +368,9 @@ pub enum ExportVideoCodec {
     DNxHD145,
     Av1,
     Vp9,
+    /// Animated GIF — two-pass palette workflow inside the encoder.
+    /// CPU-only, no audio/subtitles, no HDR.
+    Gif,
 }
 
 impl ExportVideoCodec {
@@ -358,6 +382,7 @@ impl ExportVideoCodec {
             Self::DNxHD115 | Self::DNxHD145 => "dnxhd",
             Self::Av1 => "libsvtav1",
             Self::Vp9 => "libvpx-vp9",
+            Self::Gif => "gif",
         }
     }
 
@@ -372,6 +397,7 @@ impl ExportVideoCodec {
             Self::DNxHD145 => "DNxHD 145 Mbps",
             Self::Av1 => "AV1",
             Self::Vp9 => "VP9",
+            Self::Gif => "GIF (animated)",
         }
     }
 
@@ -386,6 +412,7 @@ impl ExportVideoCodec {
             Self::DNxHD145 => "CPU only — Avid interchange, high bitrate",
             Self::Av1 => "CPU — next-gen, best compression, slow encode",
             Self::Vp9 => "CPU — web video (YouTube, WebM)",
+            Self::Gif => "CPU only — animated GIF, 256-colour palette",
         }
     }
 
@@ -407,6 +434,13 @@ impl ExportVideoCodec {
     /// Whether this codec requires a WebM container.
     pub fn requires_webm(&self) -> bool {
         matches!(self, Self::Vp9)
+    }
+
+    /// Whether this codec requires the GIF container. Mutually
+    /// exclusive with every other format — no other codec writes to
+    /// `.gif`, and the GIF codec doesn't go anywhere else.
+    pub fn requires_gif(&self) -> bool {
+        matches!(self, Self::Gif)
     }
 }
 
@@ -2993,5 +3027,69 @@ mod odt_choice_tests {
             assert!(!choice.label().is_empty());
         }
         assert_eq!(OdtChoice::Unknown.label(), "Unknown");
+    }
+}
+
+#[cfg(test)]
+mod gif_format_tests {
+    use super::*;
+
+    #[test]
+    fn gif_format_extension_and_label() {
+        assert_eq!(ExportFormat::Gif.extension(), "gif");
+        assert_eq!(ExportFormat::Gif.label(), "GIF");
+    }
+
+    #[test]
+    fn gif_format_capability_gates() {
+        // GIF must report no audio / no chapters / no subtitles so
+        // the export dialog hides or disables those sections.
+        assert!(!ExportFormat::Gif.supports_audio());
+        assert!(!ExportFormat::Gif.supports_chapters());
+        assert!(!ExportFormat::Gif.supports_subtitles());
+    }
+
+    #[test]
+    fn standard_formats_keep_full_capabilities() {
+        // Defensive — make sure the new helpers didn't accidentally
+        // weaken any of the existing formats.
+        for f in [ExportFormat::Mp4, ExportFormat::Mkv, ExportFormat::Mov] {
+            assert!(f.supports_audio());
+            assert!(f.supports_chapters());
+            assert!(f.supports_subtitles());
+        }
+        // WebM has no chapters but does carry audio + subtitles.
+        assert!(ExportFormat::WebM.supports_audio());
+        assert!(!ExportFormat::WebM.supports_chapters());
+        assert!(ExportFormat::WebM.supports_subtitles());
+    }
+
+    #[test]
+    fn gif_codec_is_mutually_exclusive() {
+        // The GIF codec only fits the GIF container; no other codec
+        // claims it. Both directions tested.
+        assert!(ExportVideoCodec::Gif.requires_gif());
+        for c in [
+            ExportVideoCodec::H264,
+            ExportVideoCodec::H265,
+            ExportVideoCodec::ProRes422,
+            ExportVideoCodec::ProRes422HQ,
+            ExportVideoCodec::ProRes4444,
+            ExportVideoCodec::DNxHD115,
+            ExportVideoCodec::DNxHD145,
+            ExportVideoCodec::Av1,
+            ExportVideoCodec::Vp9,
+        ] {
+            assert!(!c.requires_gif(), "codec {:?} must not claim GIF", c);
+        }
+        // The GIF codec is also explicitly NOT in any other
+        // container's requirement set.
+        assert!(!ExportVideoCodec::Gif.requires_mov());
+        assert!(!ExportVideoCodec::Gif.requires_webm());
+    }
+
+    #[test]
+    fn gif_codec_uses_ffmpeg_gif_encoder() {
+        assert_eq!(ExportVideoCodec::Gif.ffmpeg_codec(), "gif");
     }
 }

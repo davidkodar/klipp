@@ -77,6 +77,11 @@ pub struct Encoder {
     /// from the engine's atomic at export start so the export pixels
     /// match what the user sees in the viewer.
     working_colorspace: klipp_core::WorkingColorspace,
+    /// When `Some`, this is a GIF export. The two-pass palette
+    /// pipeline lives entirely behind this filter graph; the standard
+    /// RGBA→YUV / audio / subtitle paths short-circuit when set.
+    /// See [`crate::gif_filter`] for the palettegen/paletteuse spec.
+    gif_filter: Option<crate::gif_filter::GifFilter>,
 }
 
 /// Pick the best available video encoder for the given codec.
@@ -124,6 +129,7 @@ fn pick_video_encoder(codec: &ExportVideoCodec, width: u32, height: u32) -> (&'s
             ("libsvtav1", false)
         }
         ExportVideoCodec::Vp9 => ("libvpx-vp9", false),
+        ExportVideoCodec::Gif => ("gif", false),
     }
 }
 
@@ -199,6 +205,7 @@ impl Encoder {
                 ExportFormat::Mkv => "matroska",
                 ExportFormat::Mov => "mov",
                 ExportFormat::WebM => "webm",
+                ExportFormat::Gif => "gif",
             },
         };
 
@@ -275,6 +282,10 @@ impl Encoder {
                 }
             }
             ExportVideoCodec::Vp9 => ffmpeg_next::format::Pixel::YUV420P,
+            // GIF encoder takes 8-bit palettized frames. The two-pass
+            // palette path inside encode_video_frame / finalise feeds
+            // the encoder with `paletteuse` filter output (PAL8).
+            ExportVideoCodec::Gif => ffmpeg_next::format::Pixel::PAL8,
         };
         video_ctx.set_format(pix_fmt);
 
@@ -368,6 +379,12 @@ impl Encoder {
                     klipp_core::EncoderPreset::VerySlow => "0",
                 };
                 video_opts.set("speed", speed);
+            }
+            ExportVideoCodec::Gif => {
+                // Loop count: 0 = infinite (the standard for animated
+                // GIFs). Any positive value would be `loop_count - 1`
+                // playbacks before stopping.
+                video_opts.set("loop", "0");
             }
         }
 
@@ -568,11 +585,18 @@ impl Encoder {
 
         let mut subtitle_stream_idx = None;
 
-        if settings.embed_subtitles && !snapshot.subtitle_tracks.is_empty() {
+        // GIF can't carry subtitles — silently skip even when the
+        // user toggled "embed subtitles". The dialog also greys the
+        // option out so this is a defensive belt-and-braces gate.
+        if settings.embed_subtitles
+            && !snapshot.subtitle_tracks.is_empty()
+            && settings.format.supports_subtitles()
+        {
             let sub_codec_id = match settings.format {
                 klipp_core::ExportFormat::Mp4 | klipp_core::ExportFormat::Mov => ffmpeg_next::codec::Id::MOV_TEXT,
                 klipp_core::ExportFormat::Mkv => ffmpeg_next::codec::Id::SUBRIP,
                 klipp_core::ExportFormat::WebM => ffmpeg_next::codec::Id::WEBVTT,
+                klipp_core::ExportFormat::Gif => unreachable!("supports_subtitles guards this"),
             };
 
             let sub_codec = ffmpeg_next::encoder::find(sub_codec_id)
@@ -752,6 +776,12 @@ impl Encoder {
             // mid-export flip of the project setting can't make
             // pixels diverge across frames.
             working_colorspace: snapshot.working_colorspace,
+            gif_filter: if matches!(settings.format, ExportFormat::Gif) {
+                let fps_den = (snapshot.fps.max(1.0).round() as u32).max(1);
+                Some(crate::gif_filter::GifFilter::new(out_w, out_h, fps_den)?)
+            } else {
+                None
+            },
         })
     }
 
@@ -826,6 +856,16 @@ impl Encoder {
         width: u32,
         height: u32,
     ) -> Result<(), RenderError> {
+        // GIF mode short-circuit: route the RGBA bytes through the
+        // palettegen+paletteuse filter graph instead of the YUV path.
+        // Output frames trickle out only after end-of-stream because
+        // `palettegen=stats_mode=full` waits for every frame before
+        // emitting its global palette — that's why the body of this
+        // call typically returns before pushing anything to the gif
+        // encoder, and the bulk of the work happens in `finalise`.
+        if self.gif_filter.is_some() {
+            return self.encode_video_frame_gif(rgba);
+        }
         // Build RGBA source frame
         let mut rgba_frame = ffmpeg_next::frame::Video::new(
             ffmpeg_next::format::Pixel::RGBA,
@@ -870,7 +910,9 @@ impl Encoder {
     /// Feed audio samples for one video frame (interleaved stereo f32).
     /// Buffers internally and encodes when enough samples accumulate.
     pub fn encode_audio_samples(&mut self, samples: &[f32]) -> Result<(), RenderError> {
-        if self.audio_encoder.is_none() {
+        if self.audio_encoder.is_none() || self.gif_filter.is_some() {
+            // GIF has no audio — silently drop. The export dialog
+            // also disables the audio settings UI when format is GIF.
             return Ok(());
         }
 
@@ -983,6 +1025,31 @@ impl Encoder {
 
     /// Finalise the output file. Must be called after all frames are encoded.
     pub fn finalise(mut self) -> Result<(), RenderError> {
+        // GIF mode: flush the filter graph (this is when palettegen
+        // emits its global palette and paletteuse drains all the
+        // buffered video frames as PAL8), feed each through the gif
+        // encoder, then write the trailer. No HDR side-data, no audio
+        // flush, no MaxCLL — those concepts don't apply to GIF.
+        if let Some(mut gif) = self.gif_filter.take() {
+            let frames = gif.finish()?;
+            for mut frame in frames {
+                frame.set_pts(Some(self.video_pts));
+                self.video_pts += 1;
+                self.video_encoder
+                    .send_frame(&frame)
+                    .map_err(|e| RenderError::Encode(format!("gif send_frame: {e}")))?;
+                self.drain_video_packets()?;
+            }
+            self.video_encoder
+                .send_eof()
+                .map_err(|e| RenderError::Encode(format!("gif send_eof: {e}")))?;
+            self.drain_video_packets()?;
+            self.output_ctx
+                .write_trailer()
+                .map_err(|e| RenderError::Encode(format!("gif write trailer: {e}")))?;
+            debug!("Encoder: GIF finalised ({} frames)", self.video_pts);
+            return Ok(());
+        }
         // Flush video encoder
         self.video_encoder
             .send_eof()
@@ -1066,6 +1133,29 @@ impl Encoder {
             .map_err(|e| RenderError::Encode(format!("write trailer: {e}")))?;
 
         debug!("Encoder: finalised");
+        Ok(())
+    }
+
+    /// GIF-mode video frame ingest. Pushes the RGBA bytes through
+    /// the palettegen+paletteuse filter graph and forwards any
+    /// completed PAL8 frames into the gif encoder. The graph buffers
+    /// internally until end-of-stream because palettegen needs every
+    /// frame before emitting its global palette — so the bulk of
+    /// drained frames typically come back during `finalise`.
+    fn encode_video_frame_gif(&mut self, rgba: &[u8]) -> Result<(), RenderError> {
+        let frames = self
+            .gif_filter
+            .as_mut()
+            .expect("encode_video_frame_gif called without gif_filter")
+            .push_frame(rgba)?;
+        for mut frame in frames {
+            frame.set_pts(Some(self.video_pts));
+            self.video_pts += 1;
+            self.video_encoder
+                .send_frame(&frame)
+                .map_err(|e| RenderError::Encode(format!("gif send_frame: {e}")))?;
+            self.drain_video_packets()?;
+        }
         Ok(())
     }
 

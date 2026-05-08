@@ -27296,10 +27296,18 @@ impl KlippApp {
                         egui::ComboBox::from_id_salt("export_format")
                             .selected_text(self.export_dialog.format.label())
                             .show_ui(ui, |ui| {
-                                // Only show MOV for ProRes/DNxHD codecs; show all for H.264/H.265
+                                // Format options follow the codec's container
+                                // requirements. ProRes/DNxHD must be in MOV;
+                                // VP9 must be in WebM or MKV; the GIF codec
+                                // requires the GIF container exclusively;
+                                // H.264/H.265 accept any of the four
+                                // mainstream containers.
                                 let codec_requires_mov = self.export_dialog.video_codec.requires_mov();
+                                let codec_requires_gif = self.export_dialog.video_codec.requires_gif();
                                 if codec_requires_mov {
                                     ui.selectable_value(&mut self.export_dialog.format, ExportFormat::Mov, "MOV");
+                                } else if codec_requires_gif {
+                                    ui.selectable_value(&mut self.export_dialog.format, ExportFormat::Gif, "GIF");
                                 } else if self.export_dialog.video_codec.requires_webm() {
                                     ui.selectable_value(&mut self.export_dialog.format, ExportFormat::WebM, "WebM");
                                     ui.selectable_value(&mut self.export_dialog.format, ExportFormat::Mkv, "MKV");
@@ -27308,6 +27316,7 @@ impl KlippApp {
                                     ui.selectable_value(&mut self.export_dialog.format, ExportFormat::Mkv, "MKV");
                                     ui.selectable_value(&mut self.export_dialog.format, ExportFormat::Mov, "MOV");
                                     ui.selectable_value(&mut self.export_dialog.format, ExportFormat::WebM, "WebM");
+                                    ui.selectable_value(&mut self.export_dialog.format, ExportFormat::Gif, "GIF");
                                 }
                             });
                         // If format changed away from MOV, reset codec if it requires MOV
@@ -27316,6 +27325,21 @@ impl KlippApp {
                             && self.export_dialog.video_codec.requires_mov()
                         {
                             self.export_dialog.video_codec = ExportVideoCodec::H264;
+                        }
+                        // If user picked GIF format from a non-GIF codec,
+                        // auto-switch to the GIF codec. Inverse: if the
+                        // codec was Gif and user picked a non-GIF format,
+                        // fall back to H.264.
+                        if self.export_dialog.format != prev_format {
+                            match self.export_dialog.format {
+                                ExportFormat::Gif if !self.export_dialog.video_codec.requires_gif() => {
+                                    self.export_dialog.video_codec = ExportVideoCodec::Gif;
+                                }
+                                _ if self.export_dialog.video_codec.requires_gif() => {
+                                    self.export_dialog.video_codec = ExportVideoCodec::H264;
+                                }
+                                _ => {}
+                            }
                         }
                         // Update file extension when format changes
                         if self.export_dialog.format != prev_format {
@@ -27521,52 +27545,69 @@ impl KlippApp {
                             ui.end_row();
                         }
 
-                        ui.label("Audio codec:");
-                        egui::ComboBox::from_id_salt("export_acodec")
-                            .selected_text(self.export_dialog.audio_codec.label())
-                            .show_ui(ui, |ui| {
-                                ui.selectable_value(&mut self.export_dialog.audio_codec, ExportAudioCodec::Aac, "AAC");
-                                ui.selectable_value(&mut self.export_dialog.audio_codec, ExportAudioCodec::Mp3, "MP3");
-                                ui.selectable_value(&mut self.export_dialog.audio_codec, ExportAudioCodec::Opus, "Opus");
-                                ui.separator();
-                                ui.selectable_value(&mut self.export_dialog.audio_codec, ExportAudioCodec::Flac, "FLAC (lossless)");
-                                ui.selectable_value(&mut self.export_dialog.audio_codec, ExportAudioCodec::Pcm16, "PCM 16-bit (WAV)");
-                                ui.selectable_value(&mut self.export_dialog.audio_codec, ExportAudioCodec::Pcm24, "PCM 24-bit (WAV)");
-                                ui.separator();
-                                ui.selectable_value(&mut self.export_dialog.audio_codec, ExportAudioCodec::Copy, "Copy Source");
-                            });
+                        // Audio settings disabled for GIF — the format
+                        // can't carry audio, so the encoder silently
+                        // drops it. Showing the controls in a disabled
+                        // state is more informative than hiding them.
+                        let audio_supported = self.export_dialog.format.supports_audio();
+                        ui.add_enabled_ui(audio_supported, |ui| {
+                            ui.label("Audio codec:");
+                        });
+                        ui.add_enabled_ui(audio_supported, |ui| {
+                            egui::ComboBox::from_id_salt("export_acodec")
+                                .selected_text(self.export_dialog.audio_codec.label())
+                                .show_ui(ui, |ui| {
+                                    ui.selectable_value(&mut self.export_dialog.audio_codec, ExportAudioCodec::Aac, "AAC");
+                                    ui.selectable_value(&mut self.export_dialog.audio_codec, ExportAudioCodec::Mp3, "MP3");
+                                    ui.selectable_value(&mut self.export_dialog.audio_codec, ExportAudioCodec::Opus, "Opus");
+                                    ui.separator();
+                                    ui.selectable_value(&mut self.export_dialog.audio_codec, ExportAudioCodec::Flac, "FLAC (lossless)");
+                                    ui.selectable_value(&mut self.export_dialog.audio_codec, ExportAudioCodec::Pcm16, "PCM 16-bit (WAV)");
+                                    ui.selectable_value(&mut self.export_dialog.audio_codec, ExportAudioCodec::Pcm24, "PCM 24-bit (WAV)");
+                                    ui.separator();
+                                    ui.selectable_value(&mut self.export_dialog.audio_codec, ExportAudioCodec::Copy, "Copy Source");
+                                });
+                        });
                         ui.end_row();
 
-                        ui.label("Audio bitrate:");
-                        egui::ComboBox::from_id_salt("export_abitrate")
-                            .selected_text(format!("{} kbps", self.export_dialog.audio_bitrate))
-                            .show_ui(ui, |ui| {
-                                for rate in [128, 192, 256, 320] {
-                                    ui.selectable_value(&mut self.export_dialog.audio_bitrate, rate, format!("{rate} kbps"));
-                                }
-                            });
+                        ui.add_enabled_ui(audio_supported, |ui| {
+                            ui.label("Audio bitrate:");
+                        });
+                        ui.add_enabled_ui(audio_supported, |ui| {
+                            egui::ComboBox::from_id_salt("export_abitrate")
+                                .selected_text(format!("{} kbps", self.export_dialog.audio_bitrate))
+                                .show_ui(ui, |ui| {
+                                    for rate in [128, 192, 256, 320] {
+                                        ui.selectable_value(&mut self.export_dialog.audio_bitrate, rate, format!("{rate} kbps"));
+                                    }
+                                });
+                        });
                         ui.end_row();
 
-                        // Loudness normalization
-                        ui.label("Loudness:");
-                        ui.horizontal(|ui| {
-                            ui.checkbox(&mut self.export_dialog.normalize_loudness, "Normalize");
-                            if self.export_dialog.normalize_loudness {
-                                let preset_labels = ["YouTube / Spotify (-14)", "Podcast (-16)", "EBU R128 (-23)", "ATSC A/85 (-24)", "Custom"];
-                                egui::ComboBox::from_id_salt("export_lufs_preset")
-                                    .selected_text(preset_labels[self.export_dialog.loudness_preset as usize])
-                                    .show_ui(ui, |ui| {
-                                        for (i, label) in preset_labels.iter().enumerate() {
-                                            ui.selectable_value(&mut self.export_dialog.loudness_preset, i as u8, *label);
+                        // Loudness normalization (also gated on audio support)
+                        ui.add_enabled_ui(audio_supported, |ui| {
+                            ui.label("Loudness:");
+                        });
+                        ui.add_enabled_ui(audio_supported, |ui| {
+                            ui.horizontal(|ui| {
+                                ui.checkbox(&mut self.export_dialog.normalize_loudness, "Normalize");
+                                if self.export_dialog.normalize_loudness {
+                                    let preset_labels = ["YouTube / Spotify (-14)", "Podcast (-16)", "EBU R128 (-23)", "ATSC A/85 (-24)", "Custom"];
+                                    egui::ComboBox::from_id_salt("export_lufs_preset")
+                                        .selected_text(preset_labels[self.export_dialog.loudness_preset as usize])
+                                        .show_ui(ui, |ui| {
+                                            for (i, label) in preset_labels.iter().enumerate() {
+                                                ui.selectable_value(&mut self.export_dialog.loudness_preset, i as u8, *label);
+                                            }
+                                        });
+                                    if self.export_dialog.loudness_preset == 4 {
+                                        let mut v = self.export_dialog.custom_lufs;
+                                        if ui.add(egui::DragValue::new(&mut v).range(-30.0..=-5.0).speed(0.5).suffix(" LUFS")).changed() {
+                                            self.export_dialog.custom_lufs = v;
                                         }
-                                    });
-                                if self.export_dialog.loudness_preset == 4 {
-                                    let mut v = self.export_dialog.custom_lufs;
-                                    if ui.add(egui::DragValue::new(&mut v).range(-30.0..=-5.0).speed(0.5).suffix(" LUFS")).changed() {
-                                        self.export_dialog.custom_lufs = v;
                                     }
                                 }
-                            }
+                            });
                         });
                         ui.end_row();
 
@@ -27691,14 +27732,19 @@ impl KlippApp {
                 };
                 if has_subtitle_tracks {
                     ui.add_space(8.0);
+                    // Burn-in works for any format (it's video pixels);
+                    // soft-track embedding requires a format that
+                    // carries subtitle streams (everything but GIF).
                     ui.checkbox(
                         &mut self.export_dialog.burn_in_subtitles,
                         "Burn subtitles into video",
                     );
-                    ui.checkbox(
-                        &mut self.export_dialog.embed_subtitles,
-                        "Embed subtitles as soft track",
-                    );
+                    ui.add_enabled_ui(self.export_dialog.format.supports_subtitles(), |ui| {
+                        ui.checkbox(
+                            &mut self.export_dialog.embed_subtitles,
+                            "Embed subtitles as soft track",
+                        );
+                    });
                     if self.export_dialog.embed_subtitles
                         && matches!(self.export_dialog.format, klipp_core::ExportFormat::WebM)
                     {
@@ -27711,15 +27757,10 @@ impl KlippApp {
                 }
 
                 // Chapters — only show for formats that carry chapter metadata
-                // (MP4/MKV/MOV). WebM has no chapter concept, so we hide the
-                // option entirely rather than render a checkbox that silently
-                // does nothing on export.
-                let format_supports_chapters = matches!(
-                    self.export_dialog.format,
-                    klipp_core::ExportFormat::Mp4
-                        | klipp_core::ExportFormat::Mkv
-                        | klipp_core::ExportFormat::Mov
-                );
+                // (MP4/MKV/MOV). WebM and GIF have no chapter concept, so the
+                // option is hidden entirely rather than rendered as a
+                // checkbox that silently does nothing on export.
+                let format_supports_chapters = self.export_dialog.format.supports_chapters();
                 if format_supports_chapters {
                     ui.add_space(4.0);
                     ui.checkbox(

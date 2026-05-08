@@ -54,6 +54,7 @@ pub mod stages;
 pub mod audio_mixdown;
 pub mod encoder;
 pub mod export_job;
+pub mod gif_filter;
 
 pub use audio_mixdown::AudioMixdown;
 pub use clip_decoder::{detect_gpu, GpuVendor, RenderDecoder};

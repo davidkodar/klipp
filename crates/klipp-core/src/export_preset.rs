@@ -266,5 +266,61 @@ pub fn builtin_presets() -> Vec<ExportPreset> {
                 target_lufs: None,
             },
         },
+        // Animated GIF — two-pass palette workflow. 480p / 15fps is
+        // the social-media sweet spot; users override resolution / fps
+        // via the export dialog when they want larger or slower.
+        // Audio settings are nominally present but ignored by the GIF
+        // encoder path — the dialog also greys them out.
+        ExportPreset {
+            id: "00000000-0000-4000-a000-00000000000c".into(),
+            name: "Animated GIF (480p, 15fps)".into(),
+            built_in: true,
+            settings: ExportPresetSettings {
+                format: ExportFormat::Gif,
+                video_codec: ExportVideoCodec::Gif,
+                resolution: Some(Resolution { width: 854, height: 480 }),
+                fps: Some(Fps::new(15, 1)),
+                crf: 0,
+                preset: EncoderPreset::Medium,
+                audio_codec: ExportAudioCodec::Aac, // ignored
+                audio_bitrate_kbps: None,
+                video_bitrate_kbps: None,
+                rate_control: RateControl::Crf,
+                target_lufs: None,
+            },
+        },
     ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn gif_preset_is_present_and_well_formed() {
+        let presets = builtin_presets();
+        let gif = presets
+            .iter()
+            .find(|p| p.settings.format == ExportFormat::Gif)
+            .expect("GIF preset must be in builtin_presets");
+        assert_eq!(gif.settings.video_codec, ExportVideoCodec::Gif);
+        // 480p / 15fps default — the social-media sweet spot. Pinned
+        // here so an accidental tweak doesn't quietly bloat exported
+        // file sizes.
+        let res = gif.settings.resolution.expect("GIF preset must pin resolution");
+        assert_eq!(res.height, 480);
+        let fps = gif.settings.fps.expect("GIF preset must pin fps");
+        assert_eq!(fps.num, 15);
+    }
+
+    #[test]
+    fn preset_ids_are_unique() {
+        // Defensive against copy-paste id duplicates when adding a
+        // new preset (the GIF entry got a fresh "...000c" suffix).
+        let presets = builtin_presets();
+        let mut seen = std::collections::HashSet::new();
+        for p in &presets {
+            assert!(seen.insert(p.id.clone()), "duplicate preset id: {}", p.id);
+        }
+    }
 }
