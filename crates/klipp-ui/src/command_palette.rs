@@ -740,6 +740,28 @@ pub fn build(state: &AppState) -> Vec<PaletteEntry> {
             }),
             enabled: true,
         });
+        // PiP corner presets — one entry per corner. Drops a 30 %-
+        // scale Transform onto the selected clip with the clip
+        // anchored to the named corner of the frame, with offsets
+        // computed from the project resolution (so 720p / 1080p /
+        // 4K all land cornered correctly). Same AppCommand the
+        // timeline + toolbar Motion Presets submenus dispatch.
+        for (label, preset) in [
+            ("PiP: Top Left", "pip_top_left"),
+            ("PiP: Top Right", "pip_top_right"),
+            ("PiP: Bottom Left", "pip_bottom_left"),
+            ("PiP: Bottom Right", "pip_bottom_right"),
+        ] {
+            e.push(PaletteEntry {
+                label: Cow::Borrowed(label),
+                shortcut: Cow::Borrowed(""),
+                action: PaletteAction::Cmd(AppCommand::ApplyMotionPreset {
+                    clip_id: cid,
+                    preset: preset.into(),
+                }),
+                enabled: true,
+            });
+        }
         // Auto-link follow-up: ramp window matches the hyperzoom
         // default (0.5 s); 'fly with parent' canonical mode (Absolute,
         // all flags on). Inspector exposes per-clip refinement.
@@ -827,6 +849,23 @@ pub fn build(state: &AppState) -> Vec<PaletteEntry> {
             action: PaletteAction::Cmd(AppCommand::Undo),
             enabled: false,
         });
+        // Greyed PiP placeholders so the anchors-test substring
+        // search still finds the labels at default state, and the
+        // user discovers the feature exists even before selecting
+        // a clip.
+        for label in [
+            "PiP: Top Left",
+            "PiP: Top Right",
+            "PiP: Bottom Left",
+            "PiP: Bottom Right",
+        ] {
+            e.push(PaletteEntry {
+                label: Cow::Borrowed(label),
+                shortcut: Cow::Borrowed(""),
+                action: PaletteAction::Cmd(AppCommand::Undo),
+                enabled: false,
+            });
+        }
         // Cut templates — greyed twins so the labels are reachable
         // from search even with no selection (anchors test runs
         // against default state). Same MENU_ROWS table as the
@@ -995,6 +1034,13 @@ mod tests {
         // in the default state. Pin so a refactor can't quietly
         // remove the discovery surface.
         "Export Selected Clip",
+        // PiP corner presets — only render when a clip is selected
+        // (the four entries live inside the `if let Some(cid)`
+        // block). Pin so a refactor can't quietly delete them.
+        "PiP: Top Left",
+        "PiP: Top Right",
+        "PiP: Bottom Left",
+        "PiP: Bottom Right",
     ];
 
     #[test]

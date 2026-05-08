@@ -2091,6 +2091,25 @@ fn show_multi_context_menu(
             }
         }
     });
+    // Batch colour label — mirrors the single-item "Label colour"
+    // submenu but fans the per-item SetMediaColorLabel out across
+    // every selected media id. ColorLabel::ALL keeps the swatch
+    // list canonical with the single-item path so an added/removed
+    // colour propagates to both surfaces in one place.
+    ui.menu_button("Set Color Label", |ui| {
+        for label in klipp_media::ColorLabel::ALL {
+            let mut text = egui::RichText::new(label.label()).size(11.0);
+            if let Some((r, g, b)) = label.rgb() {
+                text = text.color(egui::Color32::from_rgb(r, g, b));
+            }
+            if ui.button(text).clicked() {
+                for &id in selected_ids {
+                    cmds.push(AppCommand::SetMediaColorLabel { media_id: id, label: label.to_u8() });
+                }
+                ui.close_menu();
+            }
+        }
+    });
     ui.separator();
     if ui.button(format!("Generate Proxies ({count})")).clicked() {
         for &id in selected_ids {

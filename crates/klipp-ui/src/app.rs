@@ -4134,6 +4134,10 @@ impl KlippApp {
                 AppCommand::ApplyMotionPreset { clip_id, preset } => {
                     let cid = *clip_id;
                     let preset = preset.clone();
+                    // Capture sequence resolution before the mutable
+                    // borrow of `seq` so the PiP helpers can read it
+                    // without borrow conflicts.
+                    let res = self.state.sequences[self.state.active_sequence_idx].resolution;
                     let seq = &mut self.state.sequences[self.state.active_sequence_idx];
                     if let Some(clip) = seq.all_clips_mut().find(|c| c.id == cid) {
                         let dur = clip.duration().to_secs_f64();
@@ -4160,26 +4164,32 @@ impl KlippApp {
                                     klipp_core::Keyframe { time_secs: dur, value: -100.0, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) },
                                 ];
                             }
-                            "pip_top_right" => {
+                            // PiP corners. Resolution-aware so the
+                            // clip lands roughly the same distance
+                            // from the frame edge regardless of
+                            // 720p / 1080p / 4K. Magnitudes:
+                            //   scale  = 0.30  (clip is 30 % of frame)
+                            //   margin = 0.04  (4 % from frame edge)
+                            //   offset = frame_dim * (0.5 - 0.15 - 0.04)
+                            //          = frame_dim * 0.31
+                            // For 1080p that's (595, 335) — close to
+                            // the original eyeballed (600, 300) so
+                            // existing 1080p projects barely shift.
+                            // Sign-per-corner is encoded in
+                            // `pip_offsets_for_corner`.
+                            "pip_top_left"
+                            | "pip_top_right"
+                            | "pip_bottom_left"
+                            | "pip_bottom_right" => {
+                                let (px, py) = pip_offsets_for_corner(res, preset.as_str());
                                 clip.transform_scale_keyframes = vec![
                                     klipp_core::Keyframe { time_secs: 0.0, value: 0.3, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) },
                                 ];
                                 clip.transform_pos_x_keyframes = vec![
-                                    klipp_core::Keyframe { time_secs: 0.0, value: 600.0, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) },
+                                    klipp_core::Keyframe { time_secs: 0.0, value: px, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) },
                                 ];
                                 clip.transform_pos_y_keyframes = vec![
-                                    klipp_core::Keyframe { time_secs: 0.0, value: -300.0, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) },
-                                ];
-                            }
-                            "pip_bottom_left" => {
-                                clip.transform_scale_keyframes = vec![
-                                    klipp_core::Keyframe { time_secs: 0.0, value: 0.3, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) },
-                                ];
-                                clip.transform_pos_x_keyframes = vec![
-                                    klipp_core::Keyframe { time_secs: 0.0, value: -600.0, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) },
-                                ];
-                                clip.transform_pos_y_keyframes = vec![
-                                    klipp_core::Keyframe { time_secs: 0.0, value: 300.0, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) },
+                                    klipp_core::Keyframe { time_secs: 0.0, value: py, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) },
                                 ];
                             }
                             _ => {}
@@ -23746,6 +23756,41 @@ fn recalc_timeline_out_from_speed(clip: &mut klipp_timeline::Clip) {
     );
     let new_duration = klipp_core::RationalTime::from_secs_f64(new_dur_secs, rate);
     clip.timeline_out = clip.timeline_in + new_duration;
+}
+
+/// Compute the pixel offsets (in the project's working coordinate
+/// space, where 0,0 is the frame centre) that place a 30 %-scaled
+/// PiP clip in the named corner of the frame, with a 4 % margin.
+/// Returns `(pos_x, pos_y)` ready to assign to a clip's transform
+/// keyframes. Unknown corner strings fall through to (0, 0).
+///
+/// **Why resolution-aware**: the original PiP presets used hard-
+/// coded offsets (±600, ±300) tuned for 1080p; on 720p the clip
+/// pushed off-screen and on 4K it landed near the frame centre.
+/// This formula keeps the visual result corner-anchored across
+/// every project resolution.
+///
+/// **Y-sign convention**: Klipp's `transform.position_y` is
+/// negative-up, positive-down (matches the existing `pip_top_right`
+/// using `-300` for top and `pip_bottom_left` using `+300` for
+/// bottom).
+fn pip_offsets_for_corner(
+    res: klipp_core::Resolution,
+    corner: &str,
+) -> (f32, f32) {
+    // Clip is 30 % scale; 4 % margin from frame edge:
+    //   offset = frame_dim/2 - clip_dim/2 - margin
+    //          = frame_dim * (0.5 - 0.15 - 0.04)
+    //          = frame_dim * 0.31
+    let offset_x = res.width as f32 * 0.31;
+    let offset_y = res.height as f32 * 0.31;
+    match corner {
+        "pip_top_left"     => (-offset_x, -offset_y),
+        "pip_top_right"    => ( offset_x, -offset_y),
+        "pip_bottom_left"  => (-offset_x,  offset_y),
+        "pip_bottom_right" => ( offset_x,  offset_y),
+        _ => (0.0, 0.0),
+    }
 }
 
 fn selected_clips_frame_range(

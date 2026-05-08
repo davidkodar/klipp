@@ -584,8 +584,17 @@ impl ToolbarPanel {
                     ("Ken Burns: Zoom In", "ken_burns_zoom_in"),
                     ("Ken Burns: Zoom Out", "ken_burns_zoom_out"),
                     ("Ken Burns: Pan Left", "ken_burns_pan_left"),
+                ] {
+                    if let Some(cid) = state.selected_clip {
+                        if ui.button(label).clicked() { cmds.push(AppCommand::ApplyMotionPreset { clip_id: cid, preset: preset.into() }); ui.close_menu(); }
+                    }
+                }
+                ui.separator();
+                for (label, preset) in [
+                    ("PiP: Top Left", "pip_top_left"),
                     ("PiP: Top Right", "pip_top_right"),
                     ("PiP: Bottom Left", "pip_bottom_left"),
+                    ("PiP: Bottom Right", "pip_bottom_right"),
                 ] {
                     if let Some(cid) = state.selected_clip {
                         if ui.button(label).clicked() { cmds.push(AppCommand::ApplyMotionPreset { clip_id: cid, preset: preset.into() }); ui.close_menu(); }
