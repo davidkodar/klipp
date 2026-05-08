@@ -531,6 +531,27 @@ impl NodeGraphV2Panel {
                 egui::pos2(rect.min.x, rect.min.y + header_h),
                 rect.max,
             );
+            // Drop shadow — two stops of premultiplied black,
+            // offset down + slightly grown so the node feels like
+            // it's sitting above the canvas rather than printed on
+            // it. Offsets are in screen pixels (not multiplied by
+            // zoom) — that matches how a real drop shadow scales
+            // and keeps the depth cue legible at extreme zoom-out.
+            // Painted before the Compound stack ghosts so a single
+            // shadow sits under the whole stack rather than each
+            // ghost casting its own competing shadow.
+            {
+                let shadow_far = egui::Color32::from_rgba_premultiplied(0, 0, 0, 22);
+                let shadow_near = egui::Color32::from_rgba_premultiplied(0, 0, 0, 36);
+                painter.rect_filled(
+                    rect.translate(egui::vec2(0.0, 4.0)).expand(3.0),
+                    5.5, shadow_far,
+                );
+                painter.rect_filled(
+                    rect.translate(egui::vec2(0.0, 2.0)).expand(1.5),
+                    4.5, shadow_near,
+                );
+            }
             // Compound "stacked cards" preview: paint two offset
             // ghosts behind the real node body so the shape reads as
             // "multiple nodes packed into one" at a glance. Only
@@ -564,6 +585,24 @@ impl NodeGraphV2Panel {
             let body_fill = if node_on { lift(fill, 14) } else { theme.bg_panel_alt };
             painter.rect_filled(body_rect, 4.0, body_fill);
 
+            // Internal top-edge highlight — a 1-px line just below
+            // the rect's top edge that picks up "light from above".
+            // Uses theme.overlay() so polarity flips on light themes
+            // (becomes a soft dark line on white instead of an
+            // invisible white-on-white). Inset 4 px from each side
+            // so it doesn't poke out past the rounded corners.
+            {
+                let y = rect.min.y + 1.0;
+                let highlight = theme.overlay(if is_selected { 80 } else { 50 });
+                painter.line_segment(
+                    [
+                        egui::pos2(rect.min.x + 4.0, y),
+                        egui::pos2(rect.max.x - 4.0, y),
+                    ],
+                    egui::Stroke::new(1.0, highlight),
+                );
+            }
+
             // Selection state: subtle amber halo + accent border.
             // The halo is two outer concentric strokes at decreasing
             // alpha so the selected node "lights up" without feeling
@@ -589,7 +628,13 @@ impl NodeGraphV2Panel {
                 );
             }
             let border = if is_selected { theme.accent } else { theme.border };
-            let border_w = if is_selected { 2.0_f32 } else { 0.5_f32 };
+            // Idle border bumped 0.5 → 0.9 px so the card edge has
+            // some bite against the dimmed canvas grid; the new
+            // shadow + top-highlight tier the depth, the border
+            // crisps the silhouette so the eye lands on the node
+            // before the canvas. Selected border keeps 2.0 px so
+            // the focus state still dominates.
+            let border_w = if is_selected { 2.0_f32 } else { 0.9_f32 };
             painter.rect_stroke(rect, 4.0, egui::Stroke::new(border_w, border));
 
             // Label (header)
