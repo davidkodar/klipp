@@ -97,7 +97,7 @@ pub fn show(
     ui: &mut egui::Ui,
     state: &mut AppState,
     theme: &KlippTheme,
-    search_query: &str,
+    search_query: &mut String,
     active_category: &mut EffectCategory,
     favorite_effects: &mut Vec<String>,
     recent_effects: &mut Vec<String>,
@@ -262,6 +262,15 @@ pub fn show(
     // ── Thumbnail grid pane ──
     ui.allocate_new_ui(egui::UiBuilder::new().max_rect(grid_rect), |ui| {
         ui.set_min_size(grid_rect.size());
+
+        // ── Search bar (shared style, see browser::browser_search_field) ──
+        ui.add_space(6.0);
+        egui::Frame::none()
+            .inner_margin(egui::Margin::symmetric(8.0, 0.0))
+            .show(ui, |ui| {
+                super::browser_search_field(ui, theme, search_query, "Search effects\u{2026}", state);
+            });
+        ui.add_space(6.0);
 
         // ── Filter row: segmented source filter (All / Built-in / OFX) ──
         ui.add_space(6.0);

@@ -20,8 +20,11 @@ use std::path::PathBuf;
 pub enum PanelKind {
     NodeGraph,
     NodeInspector,
-    MediaBrowser,
-    FileBrowser,
+    /// The whole browser dock — Files, Media, and Library tabs are
+    /// the same widget so they share one panel kind. The browser's
+    /// internal active_browser_tab + library_category state picks
+    /// which TextEdit a Ctrl+F focus request lands on.
+    Browser,
     Timeline,
     Viewer,
     Inspector,
@@ -4229,14 +4232,14 @@ mod focus_search_request_tests {
     #[test]
     fn round_trip_set_then_clear() {
         let mut s = super::AppState::default();
-        s.active_panel = Some(PanelKind::MediaBrowser);
+        s.active_panel = Some(PanelKind::Browser);
 
         // Dispatcher path
         s.focus_search_request = s.active_panel;
-        assert_eq!(s.focus_search_request, Some(PanelKind::MediaBrowser));
+        assert_eq!(s.focus_search_request, Some(PanelKind::Browser));
 
         // Consumer path (matches the panel — clears)
-        if s.focus_search_request == Some(PanelKind::MediaBrowser) {
+        if s.focus_search_request == Some(PanelKind::Browser) {
             s.focus_search_request = None;
         }
         assert!(s.focus_search_request.is_none());
@@ -4251,7 +4254,7 @@ mod focus_search_request_tests {
 
         // Browser's MediaBrowser consumer runs but the request is
         // for Markers — must leave the flag intact.
-        if s.focus_search_request == Some(PanelKind::MediaBrowser) {
+        if s.focus_search_request == Some(PanelKind::Browser) {
             s.focus_search_request = None;
         }
         assert_eq!(s.focus_search_request, Some(PanelKind::Markers));

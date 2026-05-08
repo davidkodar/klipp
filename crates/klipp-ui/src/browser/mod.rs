@@ -16,6 +16,58 @@ use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
+/// Unified search input used by every browser tab + library sub-tab so
+/// every search bar in the dock looks and behaves identically: the
+/// raised-bg rounded frame, the slim frameless TextEdit, the accent
+/// glow ring on focus, and the same Ctrl+F focus consumer (matched
+/// against `PanelKind::Browser`). Library sub-tabs previously rendered
+/// a 32px-tall bespoke version with a magnifier icon; that diverged
+/// from the Files/Media bar and is now consolidated here.
+pub fn browser_search_field(
+    ui: &mut egui::Ui,
+    theme: &KlippTheme,
+    query: &mut String,
+    placeholder: &str,
+    state: &mut AppState,
+) {
+    egui::Frame::none()
+        .fill(theme.bg_raised)
+        .stroke(egui::Stroke::new(1.0_f32, theme.border))
+        .rounding(5.0)
+        .inner_margin(egui::Margin::symmetric(9.0, 5.0))
+        .show(ui, |ui| {
+            let search = egui::TextEdit::singleline(query)
+                .hint_text(placeholder)
+                .desired_width(ui.available_width() - 4.0)
+                .font(egui::FontId::proportional(12.0))
+                .text_color(theme.text_primary)
+                .frame(false);
+            let resp = ui.add(search);
+            // Ctrl+F focus consumer — single shared check so every
+            // search field grabs focus the same way.
+            if state.focus_search_request == Some(crate::state::PanelKind::Browser) {
+                resp.request_focus();
+                state.focus_search_request = None;
+            }
+            // Accent border + soft glow ring on focus. Matches the
+            // Files/Media bar's emphasis state — gives users a single
+            // visual cue across all search fields.
+            if resp.has_focus() {
+                let frame_rect = resp.rect.expand2(egui::vec2(9.0, 5.0));
+                ui.painter().rect_stroke(
+                    frame_rect.expand(2.0),
+                    7.0,
+                    egui::Stroke::new(3.0_f32, theme.accent_subtle),
+                );
+                ui.painter().rect_stroke(
+                    frame_rect,
+                    5.0,
+                    egui::Stroke::new(1.0_f32, theme.accent),
+                );
+            }
+        });
+}
+
 /// One pending file-browser selection action, captured during the row loop
 /// and applied after the ScrollArea closure releases its borrow on
 /// `self.files_entries`.
@@ -1346,58 +1398,12 @@ impl BrowserPanel {
             // search inputs.
             let library_owns_search = *active_tab == BrowserTab::Library;
             if !show_split && !library_owns_search {
-                egui::Frame::none()
-                    .fill(theme.bg_raised)
-                    .stroke(egui::Stroke::new(1.0_f32, theme.border))
-                    .rounding(5.0)
-                    .inner_margin(egui::Margin::symmetric(9.0, 5.0))
-                    .show(ui, |ui| {
-                        let query_buf: &mut String = if *active_tab == BrowserTab::Files {
-                            &mut self.files_search_query
-                        } else {
-                            &mut self.search_query
-                        };
-                        let search = egui::TextEdit::singleline(query_buf)
-                            .hint_text(search_placeholder)
-                            .desired_width(ui.available_width() - 4.0)
-                            .font(egui::FontId::proportional(12.0))
-                            .text_color(theme.text_primary)
-                            .frame(false);
-                        let resp = ui.add(search);
-                        // Ctrl+F focus consumer. Match against the
-                        // PanelKind that this tab registered with the
-                        // dispatcher (Files → FileBrowser, others →
-                        // MediaBrowser) so a focus request fired while
-                        // the user was on Media doesn't accidentally
-                        // grab the field after they switched to Files.
-                        let want_kind = if *active_tab == BrowserTab::Files {
-                            crate::state::PanelKind::FileBrowser
-                        } else {
-                            crate::state::PanelKind::MediaBrowser
-                        };
-                        if state.focus_search_request == Some(want_kind) {
-                            resp.request_focus();
-                            state.focus_search_request = None;
-                        }
-                        if resp.has_focus() {
-                            // Accent border + soft glow ring. The glow
-                            // sits OUTSIDE the border so the rectangle
-                            // reads as "this input is the keyboard
-                            // target" without competing with the input's
-                            // own outline.
-                            let frame_rect = resp.rect.expand2(egui::vec2(9.0, 5.0));
-                            ui.painter().rect_stroke(
-                                frame_rect.expand(2.0),
-                                7.0,
-                                egui::Stroke::new(3.0_f32, theme.accent_subtle),
-                            );
-                            ui.painter().rect_stroke(
-                                frame_rect,
-                                5.0,
-                                egui::Stroke::new(1.0_f32, theme.accent),
-                            );
-                        }
-                    });
+                let query_buf: &mut String = if *active_tab == BrowserTab::Files {
+                    &mut self.files_search_query
+                } else {
+                    &mut self.search_query
+                };
+                browser_search_field(ui, theme, query_buf, search_placeholder, state);
             }
         });
         ui.add_space(4.0);
@@ -1469,46 +1475,8 @@ impl BrowserPanel {
                 // search bar so we don't stack two of them.
                 let library_owns_search = *active_tab == BrowserTab::Library;
                 ui.add_space(2.0);
-                if !library_owns_search { egui::Frame::none()
-                    .fill(theme.bg_raised)
-                    .stroke(egui::Stroke::new(1.0_f32, theme.border))
-                    .rounding(5.0)
-                    .inner_margin(egui::Margin::symmetric(9.0, 5.0))
-                    .show(ui, |ui| {
-                        let search = egui::TextEdit::singleline(&mut self.search_query)
-                            .hint_text(search_placeholder)
-                            .desired_width(ui.available_width() - 4.0)
-                            .font(egui::FontId::proportional(12.0))
-                            .text_color(theme.text_primary)
-                            .frame(false);
-                        let resp = ui.add(search);
-                        // Ctrl+F focus consumer (split-view right pane,
-                        // always Media-side here — the left pane is
-                        // Files with its own search inside
-                        // show_files_tab).
-                        if state.focus_search_request == Some(crate::state::PanelKind::MediaBrowser) {
-                            resp.request_focus();
-                            state.focus_search_request = None;
-                        }
-                        if resp.has_focus() {
-                            // Accent border + soft glow ring. The glow
-                            // sits OUTSIDE the border so the rectangle
-                            // reads as "this input is the keyboard
-                            // target" without competing with the input's
-                            // own outline.
-                            let frame_rect = resp.rect.expand2(egui::vec2(9.0, 5.0));
-                            ui.painter().rect_stroke(
-                                frame_rect.expand(2.0),
-                                7.0,
-                                egui::Stroke::new(3.0_f32, theme.accent_subtle),
-                            );
-                            ui.painter().rect_stroke(
-                                frame_rect,
-                                5.0,
-                                egui::Stroke::new(1.0_f32, theme.accent),
-                            );
-                        }
-                    });
+                if !library_owns_search {
+                    browser_search_field(ui, theme, &mut self.search_query, search_placeholder, state);
                 }
                 ui.add_space(4.0);
 
@@ -4437,7 +4405,7 @@ impl BrowserPanel {
                     ui,
                     state,
                     theme,
-                    &self.search_query,
+                    &mut self.search_query,
                     &mut self.effects_category,
                     &mut self.favorite_effects,
                     &mut self.recent_effects,

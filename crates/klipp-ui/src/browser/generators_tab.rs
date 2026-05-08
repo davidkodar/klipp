@@ -196,7 +196,7 @@ pub fn show(
         egui::Frame::none()
             .inner_margin(egui::Margin::symmetric(8.0, 0.0))
             .show(ui, |ui| {
-                gen_search_field(ui, theme, search_query);
+                super::browser_search_field(ui, theme, search_query, "Search generators\u{2026}", state);
             });
         ui.add_space(6.0);
 
@@ -874,40 +874,6 @@ fn category_icon(cat: &str) -> Icon {
         "Countdown" => Icon::ArrowCounterClockwise,
         _ => Icon::Star,
     }
-}
-
-fn gen_search_field(ui: &mut egui::Ui, theme: &KlippTheme, query: &mut String) {
-    let h = 32.0;
-    let avail_w = ui.available_width();
-    let (rect, _) = ui.allocate_exact_size(egui::vec2(avail_w, h), egui::Sense::hover());
-    let rounding = egui::Rounding::same(6.0);
-    ui.painter().rect_filled(rect, rounding, theme.bg_panel);
-    ui.painter().rect_stroke(rect, rounding, egui::Stroke::new(1.0_f32, theme.border));
-
-    let icon_size = 13.0;
-    let icon_rect = egui::Rect::from_min_size(
-        egui::pos2(rect.min.x + 10.0, rect.center().y - icon_size * 0.5),
-        egui::vec2(icon_size, icon_size),
-    );
-    let img = Icon::MagnifyingGlass.image(icon_size).tint(theme.text_dim);
-    ui.allocate_new_ui(egui::UiBuilder::new().max_rect(icon_rect), |ui| { ui.add(img); });
-
-    let edit_left = rect.min.x + 10.0 + icon_size + 8.0;
-    let edit_right = rect.max.x - 8.0;
-    let edit_rect = egui::Rect::from_min_max(
-        egui::pos2(edit_left, rect.min.y),
-        egui::pos2(edit_right, rect.max.y),
-    );
-    ui.allocate_new_ui(egui::UiBuilder::new().max_rect(edit_rect), |ui| {
-        ui.set_clip_rect(edit_rect);
-        let edit = egui::TextEdit::singleline(query)
-            .hint_text(egui::RichText::new("Search generators\u{2026}").color(theme.text_dim))
-            .desired_width(edit_rect.width())
-            .font(egui::FontId::proportional(11.5))
-            .text_color(theme.text_primary)
-            .frame(false);
-        ui.add_sized(edit_rect.size(), edit);
-    });
 }
 
 fn gen_segmented_filter(

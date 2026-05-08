@@ -29536,16 +29536,17 @@ impl KlippApp {
             self.browser.favorite_effects = self.prefs.effects_browser.favorite_effects.clone();
         }
 
-        // Mark which kind of "panel" the browser registers as for the
-        // active_panel / Ctrl+F dispatcher. Files tab → FileBrowser,
-        // every other tab → MediaBrowser. Both PanelKinds are routed
-        // to the same widget; the consumer picks the right query
-        // buffer (search_query vs files_search_query) on its own.
-        let browser_panel_kind = match self.layout.active_browser_tab {
-            crate::layout_state::BrowserTab::Files => crate::state::PanelKind::FileBrowser,
-            _ => crate::state::PanelKind::MediaBrowser,
-        };
-        crate::state::note_active_panel(&mut self.state, browser_panel_kind, ui.ctx(), browser_rect);
+        // Mark the browser as the active panel when the user presses
+        // anywhere inside it this frame. Single PanelKind for the
+        // whole widget — the browser's internal active_browser_tab
+        // and library_category resolve which specific search
+        // TextEdit a Ctrl+F focus request lands on.
+        crate::state::note_active_panel(
+            &mut self.state,
+            crate::state::PanelKind::Browser,
+            ui.ctx(),
+            browser_rect,
+        );
 
         let bg_panel = self.theme.bg_panel;
         crate::ui_util::allocate_clipped_ui(ui, browser_rect, |ui| {
