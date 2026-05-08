@@ -21,7 +21,7 @@
 
 use crate::theme::KlippTheme;
 use klipp_core::{AppCommand, ClipId};
-use klipp_nodes::{NodeGraph, NodeId, NodeKind, NodePos};
+use klipp_nodes::{NodeFrameId, NodeGraph, NodeId, NodeKind, NodePos};
 
 const NODE_W: f32 = 120.0;
 const NODE_H: f32 = 60.0;
@@ -33,6 +33,26 @@ const GRID_SPACING: f32 = 32.0;
 /// "dot on the wire" rather than a node card, big enough that the
 /// input + output ports don't overlap each other.
 const REROUTE_SIZE: f32 = 20.0;
+
+/// Six muted swatches offered in the frame recolour menu. Format
+/// matches `NodeFrame::color_rgba` — packed RGBA u32 (little-endian
+/// byte order: r,g,b,a). Chosen for legibility on both light and
+/// dark themes; alpha defaults to 255 (the paint pass scales down
+/// the fill alpha to 30 anyway, but the chip + border honour the
+/// stored value).
+const FRAME_COLOR_PALETTE: &[(&str, u32)] = &[
+    ("Slate",  u32::from_le_bytes([0x6a, 0x82, 0xa8, 0xff])),
+    ("Teal",   u32::from_le_bytes([0x4a, 0xa8, 0x9a, 0xff])),
+    ("Green",  u32::from_le_bytes([0x68, 0xb0, 0x5a, 0xff])),
+    ("Amber",  u32::from_le_bytes([0xd0, 0xa8, 0x4a, 0xff])),
+    ("Red",    u32::from_le_bytes([0xc8, 0x6a, 0x6a, 0xff])),
+    ("Purple", u32::from_le_bytes([0x9a, 0x6a, 0xc8, 0xff])),
+];
+
+/// Default colour assigned to freshly-created frames — the first
+/// palette entry (Slate). Users change via the frame's right-click
+/// menu.
+const DEFAULT_FRAME_COLOR_RGBA: u32 = u32::from_le_bytes([0x6a, 0x82, 0xa8, 0xff]);
 
 fn node_color(kind: &NodeKind, theme: &KlippTheme) -> egui::Color32 {
     match kind {
@@ -92,6 +112,19 @@ struct DragWire {
     from_port: u8,
 }
 
+/// Frame-drag state — when the user grabs a frame's empty body,
+/// every member node moves in lockstep until release. Tracks the
+/// same per-frame emitted-delta pattern `DragNode` uses so per-
+/// frame MoveNode emissions don't drift from cursor motion.
+#[derive(Clone)]
+struct DragFrame {
+    member_ids: Vec<NodeId>,
+    emitted_dx: f32,
+    emitted_dy: f32,
+    start_cursor_x: f32,
+    start_cursor_y: f32,
+}
+
 /// A saved view position. Bookmarks live on the panel, not on the
 /// graph or project — they're a navigation aid for "where am I
 /// looking", not a property of the grade. In-memory only; the full
@@ -108,6 +141,18 @@ pub struct NodeGraphV2Panel {
     zoom: f32,
     drag_node: Option<DragNode>,
     drag_wire: Option<DragWire>,
+    /// Active frame drag — set on primary-press in a frame's empty
+    /// body, cleared on release. While set, the live-drag loop
+    /// emits one MoveNode per member per tick so the whole group
+    /// follows the cursor.
+    drag_frame: Option<DragFrame>,
+    /// Per-frame context menu — `(frame_id, screen_pos)`. Mirrors
+    /// the per-node `node_menu` field so the right-click branch
+    /// can pop the rename/recolour/delete chrome at the click point.
+    frame_menu: Option<(NodeFrameId, egui::Pos2)>,
+    /// Frame currently being renamed via the inline label editor.
+    /// `(frame_id, screen_pos, buf)` — None when idle.
+    frame_rename_editor: Option<(NodeFrameId, egui::Pos2, String)>,
     add_menu_open: bool,
     add_menu_screen_pos: egui::Pos2,
     add_menu_graph_pos: egui::Pos2,
@@ -215,6 +260,9 @@ impl Default for NodeGraphV2Panel {
             zoom: 1.0,
             drag_node: None,
             drag_wire: None,
+            drag_frame: None,
+            frame_menu: None,
+            frame_rename_editor: None,
             box_select: None,
             last_primary_press: None,
             add_menu_open: false,
@@ -541,6 +589,8 @@ impl NodeGraphV2Panel {
         // both the menu and the canvas react.
         let any_menu_open = self.add_menu_open
             || self.node_menu.is_some()
+            || self.frame_menu.is_some()
+            || self.frame_rename_editor.is_some()
             || self.wireless_label_editor.is_some();
         if !any_menu_open {
             self.handle_pan_zoom(ui, &canvas_rect, &canvas_resp);
@@ -587,6 +637,68 @@ impl NodeGraphV2Panel {
             let rect = egui::Rect::from_center_size(center, size);
             let in_count = node.dynamic_input_port_count();
             node_rects.push((node.id, rect, node_color(&node.kind, theme), node.kind, in_count));
+        }
+
+        // ── Frames ────────────────────────────────────────────────
+        // Painted before wires so wires cross over the frame's
+        // translucent fill (read as "wire passes through frame")
+        // rather than disappearing under it. Each frame's screen
+        // rect is the union of member node screen rects + padding;
+        // empty frames (every member id is stale) silently skip.
+        const FRAME_PAD: f32 = 18.0;
+        let mut frame_rects: Vec<(NodeFrameId, egui::Rect, egui::Color32)> =
+            Vec::with_capacity(graph.frames.len());
+        for frame in &graph.frames {
+            let mut min = egui::pos2(f32::INFINITY, f32::INFINITY);
+            let mut max = egui::pos2(f32::NEG_INFINITY, f32::NEG_INFINITY);
+            for (nid, rect, _, _, _) in &node_rects {
+                if frame.contained_node_ids.contains(nid) {
+                    min.x = min.x.min(rect.min.x);
+                    min.y = min.y.min(rect.min.y);
+                    max.x = max.x.max(rect.max.x);
+                    max.y = max.y.max(rect.max.y);
+                }
+            }
+            if !min.x.is_finite() { continue; }
+            let pad = FRAME_PAD * zoom;
+            let frame_rect = egui::Rect::from_min_max(
+                egui::pos2(min.x - pad, min.y - pad),
+                egui::pos2(max.x + pad, max.y + pad),
+            );
+            let bytes = frame.color_rgba.to_le_bytes();
+            let color = egui::Color32::from_rgba_unmultiplied(
+                bytes[0], bytes[1], bytes[2], bytes[3],
+            );
+            // Tint fill (alpha 30) + border (alpha 180).
+            painter.rect_filled(
+                frame_rect, 4.0,
+                egui::Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), 30),
+            );
+            painter.rect_stroke(
+                frame_rect, 4.0,
+                egui::Stroke::new(1.5, egui::Color32::from_rgba_unmultiplied(
+                    color.r(), color.g(), color.b(), 180,
+                )),
+            );
+            // Label chip on the top edge — coloured bg + dark text
+            // for legible contrast on light tints.
+            let label_text = if frame.label.is_empty() { "—".to_string() } else { frame.label.clone() };
+            let chip_font = egui::FontId::proportional(11.0 * zoom.max(0.5));
+            let galley = painter.layout_no_wrap(label_text, chip_font, theme.bg_deep);
+            let chip_pad = egui::vec2(8.0 * zoom, 3.0 * zoom);
+            let chip_size = galley.size() + chip_pad * 2.0;
+            let chip_pos = egui::pos2(
+                frame_rect.min.x + 6.0 * zoom,
+                frame_rect.min.y - chip_size.y * 0.5,
+            );
+            let chip_rect = egui::Rect::from_min_size(chip_pos, chip_size);
+            painter.rect_filled(
+                chip_rect, 3.0,
+                egui::Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), 220),
+            );
+            painter.galley(chip_rect.min + chip_pad, galley, theme.bg_deep);
+
+            frame_rects.push((frame.id, frame_rect, color));
         }
 
         // ── Wires ─────────────────────────────────────────────────
@@ -1338,7 +1450,7 @@ impl NodeGraphV2Panel {
         // already been wiped, Group-into-Compound saw `inside.len() <
         // 2` and silently returned. Gating here lets the menu's own
         // `clicked_elsewhere` close-detection handle outside-clicks.
-        let menu_open = self.node_menu.is_some() || self.add_menu_open;
+        let menu_open = self.node_menu.is_some() || self.add_menu_open || self.frame_menu.is_some();
         if primary_pressed && !menu_open {
             if let Some(p) = pointer_pos {
                 if canvas_rect.contains(p) {
@@ -1427,17 +1539,50 @@ impl NodeGraphV2Panel {
                                 break;
                             }
                         }
-                        // Click on empty canvas (not on a node body)
-                        // clears the selection — matches every
-                        // canvas-style editor (Photoshop, Figma, etc.).
-                        // Excludes shift-click so the user can build
-                        // up a selection without losing it on a near-
-                        // miss between nodes. The press also seeds a
-                        // box-select marquee; if the user releases
-                        // without moving it stays a click, otherwise
-                        // the released-frame branch adds intersected
+                        // Frame body hit (between members)? Click
+                        // selects all frame members + starts a
+                        // frame drag (every member moves in lockstep
+                        // with the cursor). Walks frame_rects in
+                        // reverse so frames painted later (visually
+                        // on top) win on overlap. Skipped on shift
+                        // to keep shift-build-up selections intact.
+                        let mut frame_hit = false;
+                        if !node_hit && !shift {
+                            for (frame_id, fr_rect, _) in frame_rects.iter().rev() {
+                                if !fr_rect.contains(p) { continue; }
+                                let frame = match graph.frames.iter().find(|f| f.id == *frame_id) {
+                                    Some(f) => f,
+                                    None => continue,
+                                };
+                                let members: Vec<NodeId> =
+                                    frame.contained_node_ids.iter().copied().collect();
+                                selected_set.clear();
+                                for id in &members { selected_set.insert(*id); }
+                                *selected_node = members.first().copied();
+                                let g = to_graph(p);
+                                self.drag_frame = Some(DragFrame {
+                                    member_ids: members,
+                                    emitted_dx: 0.0,
+                                    emitted_dy: 0.0,
+                                    start_cursor_x: g.x,
+                                    start_cursor_y: g.y,
+                                });
+                                frame_hit = true;
+                                break;
+                            }
+                        }
+                        // Click on empty canvas (not on a node body
+                        // or a frame body) clears the selection —
+                        // matches every canvas-style editor
+                        // (Photoshop, Figma, etc.). Excludes shift-
+                        // click so the user can build up a selection
+                        // without losing it on a near-miss between
+                        // nodes. The press also seeds a box-select
+                        // marquee; if the user releases without
+                        // moving it stays a click, otherwise the
+                        // released-frame branch adds intersected
                         // nodes to the set.
-                        if !node_hit {
+                        if !node_hit && !frame_hit {
                             if !shift {
                                 selected_set.clear();
                                 *selected_node = None;
@@ -1466,6 +1611,30 @@ impl NodeGraphV2Panel {
                     });
                     dn.emitted_dx = total_dx;
                     dn.emitted_dy = total_dy;
+                }
+            }
+        }
+        // Live frame drag — emit one MoveNode per member each tick.
+        // Same emitted-delta accounting as DragNode so the per-
+        // frame cursor delta doesn't drift across many frames.
+        if let Some(ref mut df) = self.drag_frame {
+            if let Some(p) = pointer_pos {
+                let g = to_graph(p);
+                let total_dx = g.x - df.start_cursor_x;
+                let total_dy = g.y - df.start_cursor_y;
+                let delta_x = total_dx - df.emitted_dx;
+                let delta_y = total_dy - df.emitted_dy;
+                if delta_x.abs() > 0.01 || delta_y.abs() > 0.01 {
+                    for nid in &df.member_ids {
+                        cmds.push(AppCommand::MoveNode {
+                            clip_id,
+                            node_id: *nid,
+                            delta_x,
+                            delta_y,
+                        });
+                    }
+                    df.emitted_dx = total_dx;
+                    df.emitted_dy = total_dy;
                 }
             }
         }
@@ -1535,6 +1704,7 @@ impl NodeGraphV2Panel {
             }
             // Node drop: nothing to commit; deltas were streamed live.
             self.drag_node = None;
+            self.drag_frame = None;
 
             // Box-select drop: any node whose body intersects the
             // marquee rect joins the selection set. The press-time
@@ -1672,16 +1842,31 @@ impl NodeGraphV2Panel {
                         // Suppress the node/add menu on this click —
                         // we consumed the right-click for the disconnect.
                     } else {
-                        // 2/3) Fall through to the node or add menu.
+                        // 2/3/4) Fall through to the node, frame,
+                        // or add menu — node wins, then frame body,
+                        // then empty canvas.
                         let mut on_node = None;
                         for (node_id, rect, _, _, _) in &node_rects {
                             if rect.contains(p) { on_node = Some(*node_id); break; }
+                        }
+                        let mut on_frame: Option<NodeFrameId> = None;
+                        if on_node.is_none() {
+                            // Reverse so a smaller frame painted on
+                            // top of a larger one wins on overlap.
+                            for (fid, fr_rect, _) in frame_rects.iter().rev() {
+                                if fr_rect.contains(p) { on_frame = Some(*fid); break; }
+                            }
                         }
                         let frame_nr = ui.ctx().cumulative_pass_nr();
                         if let Some(nid) = on_node {
                             self.node_menu = Some((nid, p));
                             self.node_menu_opened_frame = frame_nr;
                             self.add_menu_open = false;
+                            self.frame_menu = None;
+                        } else if let Some(fid) = on_frame {
+                            self.frame_menu = Some((fid, p));
+                            self.add_menu_open = false;
+                            self.node_menu = None;
                         } else {
                             self.add_menu_open = true;
                             self.add_menu_screen_pos = p;
@@ -1690,6 +1875,7 @@ impl NodeGraphV2Panel {
                             self.add_menu_search.clear();
                             self.add_menu_opened_frame = frame_nr;
                             self.node_menu = None;
+                            self.frame_menu = None;
                         }
                     }
                 }
@@ -1712,6 +1898,18 @@ impl NodeGraphV2Panel {
         // Wireless-label editor popup. Rendered after the node menu
         // so opening it from the menu works in the same frame.
         self.draw_wireless_label_editor(ui, clip_id, &mut cmds);
+
+        // Frame context menu. Rendered after the node menu so they
+        // can never overlap visually (they're mutually exclusive at
+        // the dispatcher anyway, but defence in depth).
+        if self.frame_menu.is_some() {
+            self.draw_frame_menu(ui, clip_id, graph, &mut cmds);
+        }
+        // Frame rename editor — small floating popup with a text
+        // input. Triggered from the frame menu's "Rename".
+        if self.frame_rename_editor.is_some() {
+            self.draw_frame_rename_editor(ui, clip_id, &mut cmds);
+        }
 
         // Tell the engine which nodes want thumbnails. Diff against
         // the previous set so we don't resend the same list every
@@ -2317,6 +2515,122 @@ impl NodeGraphV2Panel {
         if close { self.wireless_label_editor = None; }
     }
 
+    /// Right-click menu for frames. Rename / Recolour swatches /
+    /// Delete frame (members keep their positions).
+    fn draw_frame_menu(
+        &mut self,
+        ui: &mut egui::Ui,
+        clip_id: ClipId,
+        graph: &NodeGraph,
+        cmds: &mut Vec<AppCommand>,
+    ) {
+        let Some((frame_id, pos)) = self.frame_menu else { return; };
+        // Resolve current colour for the swatch row's "selected"
+        // marker. None if the frame was deleted between the right-
+        // click and the next paint pass.
+        let current_color = graph.frames.iter()
+            .find(|f| f.id == frame_id)
+            .map(|f| f.color_rgba);
+        let mut close = false;
+        let area_id = ui.id().with(("ngv2_frame_menu", frame_id));
+        let area_resp = egui::Area::new(area_id)
+            .fixed_pos(pos)
+            .order(egui::Order::Foreground)
+            .show(ui.ctx(), |ui| {
+                egui::Frame::popup(ui.style()).show(ui, |ui| {
+                    if ui.button("Rename…").clicked() {
+                        let initial = graph.frames.iter()
+                            .find(|f| f.id == frame_id)
+                            .map(|f| f.label.clone())
+                            .unwrap_or_default();
+                        self.frame_rename_editor = Some((frame_id, pos, initial));
+                        close = true;
+                    }
+                    ui.separator();
+                    ui.label(egui::RichText::new("Colour").small().weak());
+                    ui.horizontal(|ui| {
+                        for &(label, rgba) in FRAME_COLOR_PALETTE.iter() {
+                            let bytes = rgba.to_le_bytes();
+                            let swatch_color = egui::Color32::from_rgba_unmultiplied(
+                                bytes[0], bytes[1], bytes[2], 255,
+                            );
+                            let selected = current_color == Some(rgba);
+                            let glyph = if selected { "\u{25C9}" } else { "\u{25CB}" };
+                            let resp = ui.add(
+                                egui::Label::new(
+                                    egui::RichText::new(glyph).size(14.0).color(swatch_color),
+                                ).sense(egui::Sense::click()),
+                            ).on_hover_text(label);
+                            if resp.clicked() {
+                                cmds.push(AppCommand::RecolorNodeFrame {
+                                    clip_id, frame_id, color_rgba: rgba,
+                                });
+                                close = true;
+                            }
+                        }
+                    });
+                    ui.separator();
+                    if ui.button("Delete frame").clicked() {
+                        cmds.push(AppCommand::DeleteNodeFrame { clip_id, frame_id });
+                        close = true;
+                    }
+                    if ui.input(|i| i.key_pressed(egui::Key::Escape)) { close = true; }
+                });
+            });
+        if area_resp.response.clicked_elsewhere() { close = true; }
+        if close { self.frame_menu = None; }
+    }
+
+    /// Inline rename popup for a frame's label. Triggered from the
+    /// frame menu's "Rename…" entry.
+    fn draw_frame_rename_editor(
+        &mut self,
+        ui: &mut egui::Ui,
+        clip_id: ClipId,
+        cmds: &mut Vec<AppCommand>,
+    ) {
+        let Some((frame_id, pos, _)) = self.frame_rename_editor.as_ref().map(
+            |(f, p, b)| (*f, *p, b.clone())
+        ) else { return; };
+        let mut close = false;
+        let mut save = false;
+        let area_id = ui.id().with(("ngv2_frame_rename", frame_id));
+        let area_resp = egui::Area::new(area_id)
+            .fixed_pos(pos)
+            .order(egui::Order::Foreground)
+            .show(ui.ctx(), |ui| {
+                egui::Frame::popup(ui.style()).show(ui, |ui| {
+                    ui.label(egui::RichText::new("Frame label").small().weak());
+                    if let Some((_, _, buf)) = self.frame_rename_editor.as_mut() {
+                        let resp = ui.add(
+                            egui::TextEdit::singleline(buf)
+                                .hint_text("e.g. Sky / Skin / Roto")
+                                .desired_width(180.0),
+                        );
+                        resp.request_focus();
+                        if resp.lost_focus()
+                            && ui.input(|i| i.key_pressed(egui::Key::Enter))
+                        {
+                            save = true;
+                        }
+                    }
+                    ui.horizontal(|ui| {
+                        if ui.button("Save").clicked() { save = true; }
+                        if ui.button("Cancel").clicked() { close = true; }
+                    });
+                    if ui.input(|i| i.key_pressed(egui::Key::Escape)) { close = true; }
+                });
+            });
+        if area_resp.response.clicked_elsewhere() { close = true; }
+        if save {
+            let label = self.frame_rename_editor.as_ref()
+                .map(|(_, _, b)| b.clone()).unwrap_or_default();
+            cmds.push(AppCommand::RenameNodeFrame { clip_id, frame_id, label });
+            close = true;
+        }
+        if close { self.frame_rename_editor = None; }
+    }
+
     fn draw_node_menu(
         &mut self,
         ui: &mut egui::Ui,
@@ -2387,6 +2701,25 @@ impl NodeGraphV2Panel {
                             cmds.push(AppCommand::GroupIntoCompound {
                                 clip_id,
                                 node_ids: selected_set.iter().copied().collect(),
+                            });
+                            close = true;
+                        }
+                        // Lightweight frame — purely visual grouping.
+                        // Distinct from Compound (which collapses into
+                        // a sub-graph). Users get both options on a
+                        // multi-select; Compound for "I want to hide
+                        // this complexity", Frame for "I want to label
+                        // this region".
+                        let frame_label = format!(
+                            "Frame {} (visual group)",
+                            selected_set.len(),
+                        );
+                        if ui.button(frame_label).clicked() {
+                            cmds.push(AppCommand::CreateNodeFrame {
+                                clip_id,
+                                node_ids: selected_set.iter().copied().collect(),
+                                label: String::new(),
+                                color_rgba: DEFAULT_FRAME_COLOR_RGBA,
                             });
                             close = true;
                         }

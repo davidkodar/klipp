@@ -38,7 +38,50 @@ pub struct NodeGraph {
     /// pre-Phase-E-S7b behaviour.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub working_space_override: Option<klipp_core::WorkingColorspace>,
+    /// Lightweight visual groupings — labelled rectangles painted
+    /// behind a set of nodes for organisation. Distinct from the
+    /// `Compound` NodeKind, which is a *collapsible sub-graph* with
+    /// executor recursion. Frames are pure UI: the frame's visible
+    /// rectangle each frame is computed from `union(member_rects)`
+    /// + padding, so dragging a frame moves its members and the
+    /// frame stretches/shrinks to follow them. Save/load round-trips
+    /// via the existing NodeGraph serde derive — no format work.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub frames: Vec<NodeFrame>,
 }
+
+/// A lightweight labelled rectangle drawn behind a set of nodes.
+/// See `NodeGraph::frames` for the semantics. The frame's visible
+/// rect is recomputed each render from member positions; the data
+/// model stores membership (`contained_node_ids`) plus user-edited
+/// metadata (label, colour). Empty `contained_node_ids` is illegal
+/// at rest — frames left with no members get pruned by the
+/// AppCommand layer's cleanup pass on `RemoveNode`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NodeFrame {
+    /// Stable id used by AppCommands targeting this specific frame
+    /// (rename / recolour / delete / member ops). Re-mapped alongside
+    /// node ids on copy/paste.
+    pub id: NodeFrameId,
+    /// User-editable label. Empty string is rendered as a "—"
+    /// placeholder so the frame chip still shows a hit target.
+    #[serde(default)]
+    pub label: String,
+    /// Frame tint, picked from a small palette in the right-click
+    /// menu. Stored as packed RGBA u32 (`Color32::to_array`-style
+    /// bytes in NCBA order is what egui uses; we use plain RGBA u32
+    /// here for serde simplicity — the UI converts to Color32
+    /// per-frame).
+    pub color_rgba: u32,
+    /// Members. Iteration order is unstable and irrelevant; the
+    /// HashSet shape rejects accidental duplicates and gives O(1)
+    /// `contains` for hit-tests. Cleanup invariant: when a node is
+    /// removed from the graph, its id is dropped from every frame's
+    /// set; frames that end up empty are pruned.
+    pub contained_node_ids: std::collections::HashSet<NodeId>,
+}
+
+pub type NodeFrameId = uuid::Uuid;
 
 impl Default for NodeGraph {
     fn default() -> Self {

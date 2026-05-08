@@ -37,7 +37,7 @@ pub mod params;
 pub mod defaults;
 pub mod executor;
 
-pub use graph::{Edge, Node, NodeGraph, NodeId, NodePos, PHANTOM_CORRECTOR_ID, effective_signal_role_at};
+pub use graph::{Edge, Node, NodeFrame, NodeFrameId, NodeGraph, NodeId, NodePos, PHANTOM_CORRECTOR_ID, effective_signal_role_at};
 pub use kinds::{NodeKind, PortRole};
 pub use params::{
     LayerMixerParams, MatteChannel, NodeKeyframeTrack, NodeKeyframeTracks, NodeParams,

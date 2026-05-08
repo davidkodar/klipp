@@ -4103,6 +4103,7 @@ mod grade_node_clipboard_tests {
                 (wheels_id, NodePos { x: 100.0, y: 200.0 }),
             ].into_iter().collect(),
             working_space_override: None,
+            frames: Vec::new(),
         };
         (graph, source_id, corrector_id, output_id)
     }

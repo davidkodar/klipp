@@ -1118,6 +1118,23 @@ pub enum AppCommand {
     SetNodeInputLink { clip_id: ClipId, node_id: uuid::Uuid, port: u8, label: Option<String> },
     MoveNode { clip_id: ClipId, node_id: uuid::Uuid, delta_x: f32, delta_y: f32 },
     ToggleNodeEnabled { clip_id: ClipId, node_id: uuid::Uuid },
+    /// Create a new lightweight frame around the given node ids.
+    /// Frame id is allocated by the handler. Members must already
+    /// exist in the clip's graph; missing ids are silently dropped.
+    /// A frame with zero members after filtering is not created.
+    CreateNodeFrame { clip_id: ClipId, node_ids: Vec<uuid::Uuid>, label: String, color_rgba: u32 },
+    /// Rename a frame. No-op if the id doesn't exist.
+    RenameNodeFrame { clip_id: ClipId, frame_id: uuid::Uuid, label: String },
+    /// Recolour a frame.
+    RecolorNodeFrame { clip_id: ClipId, frame_id: uuid::Uuid, color_rgba: u32 },
+    /// Drop the frame. Member nodes stay where they are; only the
+    /// visual rectangle goes away.
+    DeleteNodeFrame { clip_id: ClipId, frame_id: uuid::Uuid },
+    /// Add a single node to an existing frame's membership set.
+    AddToNodeFrame { clip_id: ClipId, frame_id: uuid::Uuid, node_id: uuid::Uuid },
+    /// Remove a single node from an existing frame's membership.
+    /// Frame is pruned if this leaves it with zero members.
+    RemoveFromNodeFrame { clip_id: ClipId, frame_id: uuid::Uuid, node_id: uuid::Uuid },
     /// Set the node-graph "solo" target — the engine renders the
     /// graph normally but returns the soloed node's output as the
     /// final image, so the user can preview any mid-chain node as

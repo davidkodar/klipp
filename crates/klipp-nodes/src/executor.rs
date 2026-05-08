@@ -3792,6 +3792,7 @@ mod tests {
             output_node_id: out_id,
             node_positions: Default::default(),
             working_space_override: None,
+            frames: Vec::new(),
         };
         let order = graph.topo_sort().unwrap();
         let src_idx = order.iter().position(|id| *id == src_id).unwrap();
@@ -3833,6 +3834,7 @@ mod tests {
             output_node_id: out_id,
             node_positions: Default::default(),
             working_space_override: None,
+            frames: Vec::new(),
         };
         let mut executor = GraphExecutor::new_cpu_only();
         let frame = vec![100, 100, 100, 255];
@@ -3891,6 +3893,7 @@ mod tests {
             output_node_id: output_id,
             node_positions: Default::default(),
             working_space_override: None,
+            frames: Vec::new(),
         };
 
         let mut executor = GraphExecutor::new_cpu_only();
@@ -4163,6 +4166,7 @@ mod tests {
             output_node_id: output_id,
             node_positions: Default::default(),
             working_space_override: None,
+            frames: Vec::new(),
         };
 
         let mut executor = GraphExecutor::new_cpu_only();
@@ -4206,6 +4210,7 @@ mod tests {
             output_node_id: output_id,
             node_positions: Default::default(),
             working_space_override: None,
+            frames: Vec::new(),
         };
 
         let mut executor = GraphExecutor::new_cpu_only();
@@ -4247,6 +4252,7 @@ mod tests {
             output_node_id: output_id,
             node_positions: Default::default(),
             working_space_override: None,
+            frames: Vec::new(),
         };
 
         let mut executor = GraphExecutor::new_cpu_only();
@@ -5008,6 +5014,7 @@ mod tests {
             output_node_id: out,
             node_positions: Default::default(),
             working_space_override: None,
+            frames: Vec::new(),
         };
         let mut exec = GraphExecutor::new_cpu_only();
         let frame: Vec<f32> = input.to_vec();
@@ -5111,6 +5118,7 @@ mod tests {
             output_node_id: out,
             node_positions: Default::default(),
             working_space_override: None,
+            frames: Vec::new(),
         };
         let mut exec = GraphExecutor::new_cpu_only();
         let original: Vec<f32> = vec![0.7, 0.2, 0.1, 1.0];
@@ -5153,6 +5161,7 @@ mod tests {
             output_node_id: out,
             node_positions: Default::default(),
             working_space_override: Some(klipp_core::WorkingColorspace::Rec709Linear),
+            frames: Vec::new(),
         };
         let mut exec = GraphExecutor::new_cpu_only();
         exec.set_working_colorspace(klipp_core::WorkingColorspace::AcesCG);
@@ -5204,6 +5213,7 @@ mod tests {
                 output_node_id: out,
                 node_positions: Default::default(),
                 working_space_override: override_ws,
+                frames: Vec::new(),
             }
         };
         let mut exec = GraphExecutor::new_cpu_only();
@@ -5265,6 +5275,7 @@ mod tests {
                 output_node_id: out,
                 node_positions: Default::default(),
                 working_space_override: None,
+            frames: Vec::new(),
             }
         };
         // Wrapped: AcesCG project, but the saturation chain stays
@@ -5311,6 +5322,7 @@ mod tests {
                 output_node_id: out,
                 node_positions: Default::default(),
                 working_space_override: Some(klipp_core::WorkingColorspace::Rec709Linear),
+                frames: Vec::new(),
             }
         };
 

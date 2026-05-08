@@ -11481,6 +11481,7 @@ impl KlippApp {
                 output_node_id: sub_output_id,
                 node_positions: std::collections::HashMap::new(),
                 working_space_override: None,
+                frames: Vec::new(),
             };
             subgraph.nodes.push(Node {
                 id: sub_source_id,
@@ -11615,12 +11616,27 @@ impl KlippApp {
             }
             new_positions.insert(compound_id, centroid);
 
+            // Carry frames over from the old parent graph, dropping
+            // any member id that's no longer in the parent (those
+            // nodes are now packed into the new Compound). Frames
+            // left with zero members get pruned.
+            let surviving_ids: std::collections::HashSet<klipp_nodes::NodeId> =
+                new_nodes.iter().map(|n| n.id).collect();
+            let new_frames: Vec<klipp_nodes::NodeFrame> = old_graph.frames.iter()
+                .map(|f| {
+                    let mut f2 = f.clone();
+                    f2.contained_node_ids.retain(|id| surviving_ids.contains(id));
+                    f2
+                })
+                .filter(|f| !f.contained_node_ids.is_empty())
+                .collect();
             let new_graph = NodeGraph {
                 nodes: new_nodes,
                 edges: new_edges,
                 output_node_id: old_graph.output_node_id,
                 node_positions: new_positions,
                 working_space_override: old_graph.working_space_override,
+                frames: new_frames,
             };
 
             if new_graph.topo_sort().is_err() {
@@ -11822,6 +11838,12 @@ impl KlippApp {
                 output_node_id: parent.output_node_id,
                 node_positions: new_positions,
                 working_space_override: parent.working_space_override,
+                // Ungroup just unpacks a Compound — the parent's
+                // frames cover existing parent nodes, none of which
+                // were removed, so frames pass through unchanged.
+                // Inner-graph frames are dropped on the floor (the
+                // sub-graph is gone).
+                frames: parent.frames.clone(),
             };
             if new_parent.topo_sort().is_err() {
                 self.state.toast.show("Ungroup: parent would cycle — aborted");
@@ -11885,6 +11907,82 @@ impl KlippApp {
                     graph.nodes.retain(|n| n.id != node_id);
                     graph.edges.retain(|e| e.from_node != node_id && e.to_node != node_id);
                     graph.node_positions.remove(&node_id);
+                    // Frame cleanup invariant — drop the deleted id
+                    // from every frame's membership set, then prune
+                    // any frame left with zero members (a frame
+                    // wrapping nothing is a visual ghost).
+                    for frame in &mut graph.frames {
+                        frame.contained_node_ids.remove(&node_id);
+                    }
+                    graph.frames.retain(|f| !f.contained_node_ids.is_empty());
+                });
+                true
+            }
+            AppCommand::CreateNodeFrame { clip_id, node_ids, label, color_rgba } => {
+                let label = label.clone();
+                let color_rgba = *color_rgba;
+                let ids = node_ids.clone();
+                self.with_current_clip_graph_mut(*clip_id, needs_refresh, |graph| {
+                    let valid_ids: std::collections::HashSet<klipp_nodes::NodeId> = ids
+                        .into_iter()
+                        .filter(|id| graph.nodes.iter().any(|n| n.id == *id))
+                        .collect();
+                    if valid_ids.is_empty() { return; }
+                    graph.frames.push(klipp_nodes::NodeFrame {
+                        id: klipp_nodes::NodeFrameId::new_v4(),
+                        label,
+                        color_rgba,
+                        contained_node_ids: valid_ids,
+                    });
+                });
+                true
+            }
+            AppCommand::RenameNodeFrame { clip_id, frame_id, label } => {
+                let frame_id = *frame_id;
+                let label = label.clone();
+                self.with_current_clip_graph_mut(*clip_id, needs_refresh, |graph| {
+                    if let Some(f) = graph.frames.iter_mut().find(|f| f.id == frame_id) {
+                        f.label = label;
+                    }
+                });
+                true
+            }
+            AppCommand::RecolorNodeFrame { clip_id, frame_id, color_rgba } => {
+                let frame_id = *frame_id;
+                let color_rgba = *color_rgba;
+                self.with_current_clip_graph_mut(*clip_id, needs_refresh, |graph| {
+                    if let Some(f) = graph.frames.iter_mut().find(|f| f.id == frame_id) {
+                        f.color_rgba = color_rgba;
+                    }
+                });
+                true
+            }
+            AppCommand::DeleteNodeFrame { clip_id, frame_id } => {
+                let frame_id = *frame_id;
+                self.with_current_clip_graph_mut(*clip_id, needs_refresh, |graph| {
+                    graph.frames.retain(|f| f.id != frame_id);
+                });
+                true
+            }
+            AppCommand::AddToNodeFrame { clip_id, frame_id, node_id } => {
+                let frame_id = *frame_id;
+                let node_id = *node_id;
+                self.with_current_clip_graph_mut(*clip_id, needs_refresh, |graph| {
+                    if !graph.nodes.iter().any(|n| n.id == node_id) { return; }
+                    if let Some(f) = graph.frames.iter_mut().find(|f| f.id == frame_id) {
+                        f.contained_node_ids.insert(node_id);
+                    }
+                });
+                true
+            }
+            AppCommand::RemoveFromNodeFrame { clip_id, frame_id, node_id } => {
+                let frame_id = *frame_id;
+                let node_id = *node_id;
+                self.with_current_clip_graph_mut(*clip_id, needs_refresh, |graph| {
+                    if let Some(f) = graph.frames.iter_mut().find(|f| f.id == frame_id) {
+                        f.contained_node_ids.remove(&node_id);
+                    }
+                    graph.frames.retain(|f| !f.contained_node_ids.is_empty());
                 });
                 true
             }

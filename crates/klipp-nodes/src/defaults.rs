@@ -37,6 +37,7 @@ pub fn default_graph() -> NodeGraph {
         output_node_id: output_id,
         node_positions,
         working_space_override: None,
+        frames: Vec::new(),
     }
 }
 
@@ -126,6 +127,7 @@ pub fn default_full_chain_graph() -> NodeGraph {
         output_node_id: output_id,
         node_positions,
         working_space_override: None,
+        frames: Vec::new(),
     }
 }
 
