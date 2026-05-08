@@ -1118,6 +1118,16 @@ pub enum AppCommand {
     SetNodeInputLink { clip_id: ClipId, node_id: uuid::Uuid, port: u8, label: Option<String> },
     MoveNode { clip_id: ClipId, node_id: uuid::Uuid, delta_x: f32, delta_y: f32 },
     ToggleNodeEnabled { clip_id: ClipId, node_id: uuid::Uuid },
+    /// Set node-graph view bookmark slot `slot` (0..8 corresponding
+    /// to hotkeys 1..9) to the panel's current pan + zoom. Routed to
+    /// the panel directly in the dispatcher because the bookmark
+    /// state lives on the panel, not on the project / engine /
+    /// clip — it's a navigation aid, not a property of the grade.
+    SetNodeViewBookmark { slot: u8 },
+    /// Jump the node-graph canvas to view bookmark slot `slot`. No-op
+    /// when the slot is empty (the panel emits its in-canvas toast in
+    /// that case so the user knows the binding registered).
+    JumpNodeViewBookmark { slot: u8 },
     /// Copy the currently-selected color nodes (from `selected_node_ids`)
     /// into AppState's grade-node clipboard. Emits a toast with the count;
     /// no-op + toast when the selection is empty. Edges between copied

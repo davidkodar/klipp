@@ -12042,6 +12042,14 @@ impl KlippApp {
                 });
                 true
             }
+            AppCommand::SetNodeViewBookmark { slot } => {
+                self.node_graph_v2_panel.set_bookmark(*slot as usize);
+                true
+            }
+            AppCommand::JumpNodeViewBookmark { slot } => {
+                self.node_graph_v2_panel.jump_bookmark(*slot as usize);
+                true
+            }
             AppCommand::CopyColorNodes { clip_id } => {
                 // Build the selection set: prefer the multi-select if
                 // populated, otherwise fall back to the primary selected

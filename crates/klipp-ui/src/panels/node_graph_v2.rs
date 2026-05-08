@@ -83,6 +83,17 @@ struct DragWire {
     from_port: u8,
 }
 
+/// A saved view position. Bookmarks live on the panel, not on the
+/// graph or project — they're a navigation aid for "where am I
+/// looking", not a property of the grade. In-memory only; the full
+/// canvas state (pan + zoom) is captured at set-time and re-applied
+/// verbatim on jump.
+#[derive(Clone, Copy)]
+struct ViewBookmark {
+    pan: egui::Vec2,
+    zoom: f32,
+}
+
 pub struct NodeGraphV2Panel {
     pan: egui::Vec2,
     zoom: f32,
@@ -168,6 +179,17 @@ pub struct NodeGraphV2Panel {
     /// rendered as a small floating popup with a text input + Save /
     /// Clear / Cancel. None otherwise.
     wireless_label_editor: Option<(NodeId, egui::Pos2, String)>,
+    /// View bookmarks 1..9 — Shift+N sets slot N to the current
+    /// pan + zoom, plain N jumps to slot N if set. In-memory only;
+    /// resets on app restart. Empty slots show a "set me first"
+    /// toast on attempted jump rather than silently doing nothing.
+    view_bookmarks: [Option<ViewBookmark>; 9],
+    /// Transient toast painted in the canvas's top-right corner when
+    /// a bookmark is set / jumped / found-empty. Fades over ~1.5 s.
+    /// Stays panel-local (the global `state.toast` would require
+    /// plumbing AppState into the panel for what is purely a node-
+    /// graph navigation cue).
+    bookmark_toast: Option<(String, std::time::Instant)>,
 }
 
 impl Default for NodeGraphV2Panel {
@@ -194,11 +216,46 @@ impl Default for NodeGraphV2Panel {
             output_thumbs: std::collections::HashMap::new(),
             last_visible_thumb_nodes: Vec::new(),
             wireless_label_editor: None,
+            view_bookmarks: [None; 9],
+            bookmark_toast: None,
         }
     }
 }
 
 impl NodeGraphV2Panel {
+    /// Capture the current pan + zoom into bookmark slot `slot`
+    /// (0..8 → hotkeys 1..9). Out-of-range slots are silently
+    /// ignored. Used by the command palette / toolbar entries to
+    /// share the same code path as the keyboard handler.
+    pub fn set_bookmark(&mut self, slot: usize) {
+        if let Some(s) = self.view_bookmarks.get_mut(slot) {
+            *s = Some(ViewBookmark { pan: self.pan, zoom: self.zoom });
+            self.bookmark_toast = Some((
+                format!("Bookmark {} set", slot + 1),
+                std::time::Instant::now(),
+            ));
+        }
+    }
+
+    /// Restore pan + zoom from bookmark slot `slot`. Empty slots
+    /// emit the same "set me first" toast the keyboard path does.
+    pub fn jump_bookmark(&mut self, slot: usize) {
+        let Some(s) = self.view_bookmarks.get(slot) else { return; };
+        if let Some(b) = *s {
+            self.pan = b.pan;
+            self.zoom = b.zoom;
+            self.bookmark_toast = Some((
+                format!("Jumped to bookmark {}", slot + 1),
+                std::time::Instant::now(),
+            ));
+        } else {
+            self.bookmark_toast = Some((
+                format!("Bookmark {} empty (Shift+{} to set)", slot + 1, slot + 1),
+                std::time::Instant::now(),
+            ));
+        }
+    }
+
     pub fn show(
         &mut self,
         ui: &mut egui::Ui,
@@ -350,6 +407,28 @@ impl NodeGraphV2Panel {
                 }
             }
         });
+        toolbar_ui.add_space(8.0);
+        // Bookmarks hint — purely a discovery surface for the
+        // Shift+1..9 / 1..9 hotkeys. Static label, no menu, hover
+        // for the keybinding reminder + a one-line summary of which
+        // slots are currently in use.
+        let used: Vec<u8> = self.view_bookmarks.iter().enumerate()
+            .filter_map(|(i, b)| b.is_some().then(|| (i + 1) as u8))
+            .collect();
+        let hint = if used.is_empty() {
+            "Bookmarks  ·  no slots set yet".to_string()
+        } else {
+            let used_str = used.iter().map(|n| n.to_string())
+                .collect::<Vec<_>>().join(", ");
+            format!("Bookmarks  ·  set: {used_str}")
+        };
+        toolbar_ui.label(egui::RichText::new("\u{2605}").small().color(theme.text_dim))
+            .on_hover_text(format!(
+                "View bookmarks\n\n\
+                Shift + 1…9   save the current pan + zoom\n\
+                1…9                 jump back\n\n\
+                {hint}"
+            ));
         toolbar_ui.add_space(8.0);
         toolbar_ui.label(
             egui::RichText::new(format!("zoom {:.0} %", self.zoom * 100.0))
@@ -1331,6 +1410,27 @@ impl NodeGraphV2Panel {
             }
         }
 
+        // View bookmarks (1..9 jump, Shift+1..9 set). Same gate as
+        // Delete: no popup menu open, no text-input focus. Ctrl /
+        // Alt / Cmd modifiers skip the binding so this won't collide
+        // with any global Ctrl+N or Alt+N shortcut. Empty slots emit
+        // a "set me first" toast instead of silently doing nothing —
+        // confirms the binding registered even when no jump
+        // happened.
+        if !any_menu_open && !ui.ctx().wants_keyboard_input() {
+            const NUM_KEYS: [egui::Key; 9] = [
+                egui::Key::Num1, egui::Key::Num2, egui::Key::Num3,
+                egui::Key::Num4, egui::Key::Num5, egui::Key::Num6,
+                egui::Key::Num7, egui::Key::Num8, egui::Key::Num9,
+            ];
+            for (i, key) in NUM_KEYS.iter().enumerate() {
+                if !ui.input(|inp| inp.key_pressed(*key)) { continue; }
+                let mods = ui.input(|inp| inp.modifiers);
+                if mods.ctrl || mods.alt || mods.command { continue; }
+                if mods.shift { self.set_bookmark(i); } else { self.jump_bookmark(i); }
+            }
+        }
+
         // Right-click handling. Three cases, in priority order:
         //   1. Near an input port that has an edge → disconnect it.
         //      Fastest way to clear a wire without going through a menu.
@@ -1427,6 +1527,46 @@ impl NodeGraphV2Panel {
                 node_ids: current_visible.clone(),
             });
             self.last_visible_thumb_nodes = current_visible;
+        }
+
+        // Bookmark toast — transient feedback for set/jump/empty.
+        // Self-fading; ~1.5 s lifetime, painted in the canvas's top-
+        // right corner. Polarity-aware via theme tokens so it stays
+        // legible on light themes too.
+        if let Some((msg, set_at)) = self.bookmark_toast.clone() {
+            let age = set_at.elapsed().as_secs_f32();
+            const LIFETIME: f32 = 1.5;
+            if age < LIFETIME {
+                let fade = 1.0 - age / LIFETIME;
+                let alpha = (fade * 255.0).clamp(0.0, 255.0) as u8;
+                let bg_alpha = (fade * 200.0).clamp(0.0, 200.0) as u8;
+                let bg = egui::Color32::from_rgba_unmultiplied(
+                    theme.bg_raised.r(), theme.bg_raised.g(), theme.bg_raised.b(), bg_alpha,
+                );
+                let fg = egui::Color32::from_rgba_unmultiplied(
+                    theme.text_primary.r(), theme.text_primary.g(), theme.text_primary.b(), alpha,
+                );
+                let pad = egui::vec2(10.0, 6.0);
+                let font = egui::FontId::proportional(11.0);
+                let galley = painter.layout_no_wrap(msg, font, fg);
+                let size = galley.size() + pad * 2.0;
+                let pos = egui::pos2(
+                    canvas_rect.max.x - size.x - 12.0,
+                    canvas_rect.min.y + 12.0,
+                );
+                let toast_rect = egui::Rect::from_min_size(pos, size);
+                painter.rect_filled(toast_rect, 4.0, bg);
+                painter.rect_stroke(
+                    toast_rect, 4.0,
+                    egui::Stroke::new(0.5, egui::Color32::from_rgba_unmultiplied(
+                        theme.border.r(), theme.border.g(), theme.border.b(), alpha,
+                    )),
+                );
+                painter.galley(toast_rect.min + pad, galley, fg);
+                ui.ctx().request_repaint();
+            } else {
+                self.bookmark_toast = None;
+            }
         }
 
         cmds

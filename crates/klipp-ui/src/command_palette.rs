@@ -382,6 +382,28 @@ pub fn build(state: &AppState) -> Vec<PaletteEntry> {
         action: PaletteAction::Cmd(AppCommand::ToggleAudioSkim), enabled: true });
     e.push(PaletteEntry { label: Cow::Borrowed("Toggle Color Panel"), shortcut: Cow::Borrowed("C"),
         action: PaletteAction::Cmd(AppCommand::ToggleColorPanel), enabled: true });
+    // Node-graph view bookmarks. 9 jump entries + 9 set entries; the
+    // hotkeys 1..9 / Shift+1..9 only fire when the node-graph canvas
+    // is focused, so the palette is the cross-context discovery
+    // surface for users who don't know the keys yet.
+    for n in 1..=9_u8 {
+        let jump_label = Cow::Owned(format!("Node graph: Jump to bookmark {n}"));
+        let jump_shortcut = Cow::Owned(format!("{n}"));
+        e.push(PaletteEntry {
+            label: jump_label,
+            shortcut: jump_shortcut,
+            action: PaletteAction::Cmd(AppCommand::JumpNodeViewBookmark { slot: n - 1 }),
+            enabled: true,
+        });
+        let set_label = Cow::Owned(format!("Node graph: Set bookmark {n} to current view"));
+        let set_shortcut = Cow::Owned(format!("Shift+{n}"));
+        e.push(PaletteEntry {
+            label: set_label,
+            shortcut: set_shortcut,
+            action: PaletteAction::Cmd(AppCommand::SetNodeViewBookmark { slot: n - 1 }),
+            enabled: true,
+        });
+    }
     // Copy / paste color nodes between clips. Both gated on having a
     // selected clip — Copy needs a source, Paste needs a target.
     e.push(PaletteEntry { label: Cow::Borrowed("Copy Color Nodes"), shortcut: Cow::Borrowed(""),
