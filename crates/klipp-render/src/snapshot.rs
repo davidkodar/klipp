@@ -286,11 +286,16 @@ impl SequenceSnapshot {
             }
         }
 
-        // Chapter snapshot — sequence markers frozen as (start_ms, end_ms, title)
-        // pairs. Chapter N ends at chapter N+1's start; the last chapter ends at
-        // the export duration. When a zone export is active, timestamps are
-        // shifted relative to the zone start and markers outside the zone are
-        // skipped.
+        // Chapter snapshot — only markers explicitly tagged
+        // `MarkerKind::Chapter` are baked into the container. Mixing
+        // workflow markers (ToDo, Comment, BestTake) into chapter
+        // atoms would clutter player-side chapter menus, so we
+        // require the explicit kind.
+        //
+        // Chapter N ends at chapter N+1's start; the last chapter
+        // ends at the export duration. When a zone export is
+        // active, timestamps are shifted relative to the zone start
+        // and markers outside the zone are skipped.
         let chapters = if settings.embed_chapters {
             let total_duration_secs = total_duration.to_secs_f64();
             let total_duration_ms = (total_duration_secs * 1000.0) as u64;
@@ -303,10 +308,12 @@ impl SequenceSnapshot {
             };
             let export_duration_ms = export_end_ms.saturating_sub(export_start_ms);
 
-            // Step 1: collect in-range markers as (shifted_ms, title).
+            // Step 1: collect in-range Chapter-kind markers as
+            // (shifted_ms, title).
             let in_range: Vec<(u64, String)> = seq
                 .markers
                 .iter()
+                .filter(|m| m.kind == klipp_core::MarkerKind::Chapter)
                 .filter_map(|m| {
                     let ms = (m.position.to_secs_f64() * 1000.0) as u64;
                     if ms < export_start_ms || ms >= export_end_ms {
@@ -1057,6 +1064,10 @@ mod tests {
     // ── Chapter snapshot tests (#44) ──────────────────────────────────
 
     fn make_marker_at_secs(secs: f64, label: &str) -> klipp_timeline::Marker {
+        // These tests cover chapter-snapshot behaviour, so the default
+        // helper produces Chapter-kind markers (the only kind that
+        // gets baked into chapter atoms). The non-Chapter exclusion
+        // test below uses an inline construction with a different kind.
         klipp_timeline::Marker {
             id: klipp_core::MarkerId::new(),
             position: klipp_core::Timecode {
@@ -1067,7 +1078,7 @@ mod tests {
             color: klipp_core::MarkerColor::Blue,
             duration: None,
             comment: String::new(),
-            kind: klipp_core::MarkerKind::None,
+            kind: klipp_core::MarkerKind::Chapter,
         }
     }
 
@@ -1160,6 +1171,58 @@ mod tests {
         let snap = SequenceSnapshot::from_sequence(&seq, &pool, &settings, None, false).unwrap();
 
         assert!(snap.chapters.is_empty());
+    }
+
+    #[test]
+    fn chapter_filter_excludes_non_chapter_kinds() {
+        // Mix of marker kinds. Only Chapter-kind markers should land
+        // in the chapter snapshot — the others are workflow markers
+        // (ToDo / Comment / BestTake / Section / None) that don't
+        // belong in player-side chapter menus.
+        let mut seq = make_sequence_with_length_secs(60.0);
+        // Default helper produces Chapter-kind markers.
+        seq.markers.push(make_marker_at_secs(0.0, "Real chapter A"));
+        seq.markers.push(make_marker_at_secs(30.0, "Real chapter B"));
+        // Inline non-Chapter markers — must be filtered out.
+        for (secs, label, kind) in [
+            (5.0_f64, "todo note", klipp_core::MarkerKind::ToDo),
+            (10.0, "comment note", klipp_core::MarkerKind::Comment),
+            (15.0, "best take", klipp_core::MarkerKind::BestTake),
+            (20.0, "section break", klipp_core::MarkerKind::Section),
+            (25.0, "untyped", klipp_core::MarkerKind::None),
+        ] {
+            seq.markers.push(klipp_timeline::Marker {
+                id: klipp_core::MarkerId::new(),
+                position: klipp_core::Timecode {
+                    value: (secs * 24.0).round() as i64,
+                    rate: 24,
+                },
+                label: label.to_string(),
+                color: klipp_core::MarkerColor::Yellow,
+                duration: None,
+                comment: String::new(),
+                kind,
+            });
+        }
+
+        let mut settings = make_settings();
+        settings.embed_chapters = true;
+
+        let pool = MediaPool::new();
+        let snap = SequenceSnapshot::from_sequence(&seq, &pool, &settings, None, false).unwrap();
+
+        assert_eq!(
+            snap.chapters.len(),
+            2,
+            "only the two Chapter-kind markers survive the filter"
+        );
+        assert_eq!(snap.chapters[0].title, "Real chapter A");
+        assert_eq!(snap.chapters[1].title, "Real chapter B");
+        // Chapter B should end at the export end (60s) since no
+        // Chapter-kind marker follows it — the workflow markers
+        // between A and B don't pin its end time.
+        assert_eq!(snap.chapters[0].end_ms, 30_000);
+        assert_eq!(snap.chapters[1].end_ms, 60_000);
     }
 
     #[test]

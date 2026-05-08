@@ -814,9 +814,6 @@ pub enum AppCommand {
     /// ("H:MM:SS Label" per line, with a synthetic "Intro" at 0:00 when
     /// the first marker is after the start).
     ExportYouTubeChapters { path: PathBuf },
-    /// Export sequence markers as a DVDStyler / dvdauthor chapter list
-    /// (one `HH:MM:SS.mmm` per line, labels dropped).
-    ExportDvdChapters { path: PathBuf },
     /// Generate a headless bash render script that calls ffmpeg to render
     /// the current sequence. Cuts only — effects/grades/transitions are NOT
     /// serialized. The script includes a prominent WARNING comment advising
