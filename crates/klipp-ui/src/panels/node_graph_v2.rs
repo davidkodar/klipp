@@ -406,7 +406,48 @@ impl NodeGraphV2Panel {
         // wires read magenta, references read orange, etc. — so the
         // user can see at a glance "that's a matte feeding here"
         // without having to chase the source node.
-        for edge in &graph.edges {
+        //
+        // Edge hover: if the cursor is within ~8 px of an edge's
+        // bezier polyline AND no gesture is in flight (no drag wire,
+        // no box-select, not over a node body), the closest edge
+        // gets a thicker, brighter stroke. Cheap — N edges × 24 line-
+        // segments × one squared-distance check per segment per
+        // frame; redraw triggers from cursor-move are already handled
+        // by egui, so this adds zero continuous-repaint cost.
+        let cursor = ui.input(|i| i.pointer.hover_pos());
+        let mut hovered_edge: Option<usize> = None;
+        let cursor_in_canvas = cursor.is_some_and(|c| canvas_rect.contains(c));
+        let cursor_in_node = cursor.is_some_and(|c| {
+            node_rects.iter().any(|(_, r, _, _, _)| r.contains(c))
+        });
+        let edge_hover_eligible = self.drag_wire.is_none()
+            && self.box_select.is_none()
+            && cursor_in_canvas
+            && !cursor_in_node;
+        if edge_hover_eligible {
+            if let Some(c) = cursor {
+                let threshold_sq = (8.0 * zoom).powi(2);
+                let mut best_sq = threshold_sq;
+                for (idx, edge) in graph.edges.iter().enumerate() {
+                    let Some((_, from_rect, _, from_kind, _)) =
+                        node_rects.iter().find(|(id, _, _, _, _)| *id == edge.from_node).copied()
+                    else { continue; };
+                    let Some((_, to_rect, _, _, to_in_count)) =
+                        node_rects.iter().find(|(id, _, _, _, _)| *id == edge.to_node).copied()
+                    else { continue; };
+                    let from = output_port_pos(&from_rect, edge.from_port, &from_kind);
+                    let to = input_port_pos(&to_rect, edge.to_port, to_in_count);
+                    let pts = bezier_polyline(from, to);
+                    let d = distance_to_polyline_sq(&pts, c);
+                    if d < best_sq {
+                        best_sq = d;
+                        hovered_edge = Some(idx);
+                    }
+                }
+            }
+        }
+
+        for (idx, edge) in graph.edges.iter().enumerate() {
             let Some((_, from_rect, _, from_kind, _)) =
                 node_rects.iter().find(|(id, _, _, _, _)| *id == edge.from_node).copied()
             else { continue; };
@@ -419,9 +460,13 @@ impl NodeGraphV2Panel {
             let (r, g, b) = role.editor_color();
             // Idle existing edges get a translucent stroke so they
             // don't shout over the foreground; the role colour is
-            // still visible.
-            let color = egui::Color32::from_rgba_unmultiplied(r, g, b, 180);
-            draw_wire(&painter, from, to, color, 1.5 * zoom);
+            // still visible. Hovered edge: full alpha + ~1.6× width
+            // so it pops without redrawing the rest of the graph.
+            let is_hover = hovered_edge == Some(idx);
+            let alpha = if is_hover { 255 } else { 180 };
+            let width = if is_hover { 2.5 } else { 1.5 } * zoom;
+            let color = egui::Color32::from_rgba_unmultiplied(r, g, b, alpha);
+            draw_wire(&painter, from, to, color, width);
         }
 
         if let Some(dw) = self.drag_wire {
@@ -433,10 +478,12 @@ impl NodeGraphV2Panel {
                 // Drag wire takes its colour from the SOURCE output
                 // port's role (we don't know the destination yet) —
                 // gives early visual feedback about what kind of
-                // signal is being routed.
+                // signal is being routed. Painted DASHED so the user
+                // can tell at a glance the connection isn't committed
+                // yet (committed edges always paint solid above).
                 let (r, g, b) = from_kind.output_port_role(dw.from_port).editor_color();
                 let color = egui::Color32::from_rgb(r, g, b);
-                draw_wire(&painter, from, to, color, 2.0 * zoom);
+                draw_wire_dashed(&painter, from, to, color, 2.0 * zoom);
             }
         }
 
@@ -1702,28 +1749,77 @@ fn port_pos_on_edge(rect: &egui::Rect, port: u8, count: u8, output: bool) -> egu
     egui::pos2(x, y)
 }
 
-fn draw_wire(painter: &egui::Painter, from: egui::Pos2, to: egui::Pos2, color: egui::Color32, width: f32) {
-    // Cubic bezier with horizontal handles whose length scales with
-    // the X distance — gives the classic "S" curve when nodes are
-    // side-by-side and a clean "U" when wired backwards.
+const WIRE_STEPS: usize = 24;
+
+/// Sample the wire's cubic bezier as a polyline. Shared by drawing
+/// (`draw_wire` / `draw_wire_dashed`) AND hit-testing
+/// (`distance_to_polyline_sq`) so the cursor-proximity check
+/// matches the pixels actually painted.
+///
+/// Cubic bezier with horizontal handles whose length scales with
+/// the X distance — gives the classic "S" curve when nodes are
+/// side-by-side and a clean "U" when wired backwards.
+fn bezier_polyline(from: egui::Pos2, to: egui::Pos2) -> [egui::Pos2; WIRE_STEPS + 1] {
     let dx = (to.x - from.x).abs().max(40.0);
     let h = dx * 0.5;
     let c1 = egui::pos2(from.x + h, from.y);
     let c2 = egui::pos2(to.x - h, to.y);
-    let stroke = egui::Stroke::new(width.max(1.0), color);
-
-    // Approximate cubic with a polyline (egui has no native bezier
-    // primitive at this stroke level).
-    const STEPS: usize = 24;
-    let mut prev = from;
-    for i in 1..=STEPS {
-        let t = i as f32 / STEPS as f32;
+    let mut pts = [from; WIRE_STEPS + 1];
+    for i in 1..=WIRE_STEPS {
+        let t = i as f32 / WIRE_STEPS as f32;
         let mt = 1.0 - t;
-        let p = egui::pos2(
+        pts[i] = egui::pos2(
             mt * mt * mt * from.x + 3.0 * mt * mt * t * c1.x + 3.0 * mt * t * t * c2.x + t * t * t * to.x,
             mt * mt * mt * from.y + 3.0 * mt * mt * t * c1.y + 3.0 * mt * t * t * c2.y + t * t * t * to.y,
         );
-        painter.line_segment([prev, p], stroke);
-        prev = p;
     }
+    pts
+}
+
+fn draw_wire(painter: &egui::Painter, from: egui::Pos2, to: egui::Pos2, color: egui::Color32, width: f32) {
+    let pts = bezier_polyline(from, to);
+    let stroke = egui::Stroke::new(width.max(1.0), color);
+    for i in 1..pts.len() {
+        painter.line_segment([pts[i - 1], pts[i]], stroke);
+    }
+}
+
+/// Same bezier as `draw_wire`, but only every other segment paints
+/// — i.e. 12 dashes spread evenly along the curve. Used for the in-
+/// flight drag wire so the user can tell at a glance "this isn't
+/// committed yet". Dash density follows the curve length naturally
+/// because the polyline has a fixed step count.
+fn draw_wire_dashed(painter: &egui::Painter, from: egui::Pos2, to: egui::Pos2, color: egui::Color32, width: f32) {
+    let pts = bezier_polyline(from, to);
+    let stroke = egui::Stroke::new(width.max(1.0), color);
+    let mut i = 1;
+    while i < pts.len() {
+        painter.line_segment([pts[i - 1], pts[i]], stroke);
+        i += 2;
+    }
+}
+
+fn point_to_segment_dist_sq(a: egui::Pos2, b: egui::Pos2, p: egui::Pos2) -> f32 {
+    let ab = b - a;
+    let ap = p - a;
+    let len_sq = ab.length_sq();
+    if len_sq < 1e-6 {
+        return ap.length_sq();
+    }
+    let t = (ap.dot(ab) / len_sq).clamp(0.0, 1.0);
+    let proj = a + ab * t;
+    (p - proj).length_sq()
+}
+
+/// Min squared distance from `p` to the polyline. Used for edge
+/// hover hit-testing — N segments per edge × M edges per frame; at
+/// 24 segments and typical grade graphs (< 30 edges) this is
+/// trivial CPU.
+fn distance_to_polyline_sq(pts: &[egui::Pos2], p: egui::Pos2) -> f32 {
+    let mut best = f32::MAX;
+    for i in 1..pts.len() {
+        let d = point_to_segment_dist_sq(pts[i - 1], pts[i], p);
+        if d < best { best = d; }
+    }
+    best
 }
