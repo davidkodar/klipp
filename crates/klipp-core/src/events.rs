@@ -1118,6 +1118,14 @@ pub enum AppCommand {
     SetNodeInputLink { clip_id: ClipId, node_id: uuid::Uuid, port: u8, label: Option<String> },
     MoveNode { clip_id: ClipId, node_id: uuid::Uuid, delta_x: f32, delta_y: f32 },
     ToggleNodeEnabled { clip_id: ClipId, node_id: uuid::Uuid },
+    /// Set the node-graph "solo" target — the engine renders the
+    /// graph normally but returns the soloed node's output as the
+    /// final image, so the user can preview any mid-chain node as
+    /// if it were the Output. `None` clears solo and restores the
+    /// normal Output-node-input result. Single global slot (one
+    /// active clip at a time); auto-inactive when the soloed id
+    /// doesn't exist in the current clip's graph.
+    SetNodeSolo { node_id: Option<uuid::Uuid> },
     /// Set node-graph view bookmark slot `slot` (0..8 corresponding
     /// to hotkeys 1..9) to the panel's current pan + zoom. Routed to
     /// the panel directly in the dispatcher because the bookmark

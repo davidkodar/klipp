@@ -12043,6 +12043,18 @@ impl KlippApp {
                 });
                 true
             }
+            AppCommand::SetNodeSolo { node_id } => {
+                // Mirror into AppState for UI feedback (halo / badge /
+                // toolbar indicator) AND let the dispatcher propagate
+                // it to the engine via the normal forward path so the
+                // executor's setter gets called on the next render.
+                // needs_refresh = true so the paused viewer re-renders
+                // the new soloed output immediately rather than waiting
+                // for the next frame to arrive on its own.
+                self.state.solo_node = *node_id;
+                *needs_refresh = true;
+                false
+            }
             AppCommand::SetNodeViewBookmark { slot } => {
                 self.node_graph_v2_panel.set_bookmark(*slot as usize);
                 true
@@ -30826,6 +30838,7 @@ impl KlippApp {
                             clip_time_secs,
                             self.prefs.color.port_snap_enabled,
                             self.prefs.color.port_snap_radius_px,
+                            self.state.solo_node,
                         );
                         // Tag the node-graph panel as the active panel
                         // when the user clicks anywhere inside its rect

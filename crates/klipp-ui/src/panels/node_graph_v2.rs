@@ -283,6 +283,7 @@ impl NodeGraphV2Panel {
         clip_time_secs: f64,
         port_snap_enabled: bool,
         port_snap_radius_px: f32,
+        solo_node: Option<NodeId>,
     ) -> Vec<AppCommand> {
         let mut cmds = Vec::new();
 
@@ -439,6 +440,41 @@ impl NodeGraphV2Panel {
                 {hint}"
             ));
         toolbar_ui.add_space(8.0);
+        // Solo indicator — only visible when a node is currently
+        // soloed. Shows the soloed node's label (so the user knows
+        // which node they're previewing without scanning the canvas
+        // for the yellow halo) plus an inline × button to clear.
+        // Background uses the same yellow as the on-canvas halo so
+        // the link reads visually.
+        if let Some(solo_id) = solo_node {
+            let label = graph.nodes.iter()
+                .find(|n| n.id == solo_id)
+                .map(|n| n.label.clone())
+                .unwrap_or_else(|| "?".to_string());
+            let solo_color = egui::Color32::from_rgb(0xff, 0xd5, 0x3a);
+            let bg = egui::Color32::from_rgba_unmultiplied(
+                solo_color.r(), solo_color.g(), solo_color.b(), 40,
+            );
+            egui::Frame::none()
+                .fill(bg)
+                .stroke(egui::Stroke::new(0.5, solo_color))
+                .rounding(3.0)
+                .inner_margin(egui::Margin::symmetric(4.0, 1.0))
+                .show(&mut toolbar_ui, |ui| {
+                    ui.label(
+                        egui::RichText::new(format!("\u{1F3AF} SOLO: {label}"))
+                            .small()
+                            .color(theme.text_primary),
+                    );
+                    if ui.small_button("\u{2715}")
+                        .on_hover_text("Clear solo")
+                        .clicked()
+                    {
+                        cmds.push(AppCommand::SetNodeSolo { node_id: None });
+                    }
+                });
+            toolbar_ui.add_space(8.0);
+        }
         toolbar_ui.label(
             egui::RichText::new(format!("zoom {:.0} %", self.zoom * 100.0))
                 .small().color(theme.text_dim)
@@ -850,6 +886,8 @@ impl NodeGraphV2Panel {
                 );
             }
 
+            let is_soloed = solo_node == Some(node_id);
+
             // Selection state: subtle amber halo + accent border.
             // The halo is two outer concentric strokes at decreasing
             // alpha so the selected node "lights up" without feeling
@@ -874,6 +912,29 @@ impl NodeGraphV2Panel {
                     egui::Stroke::new(1.5, halo_a2),
                 );
             }
+            // Solo halo — yellow rings around the soloed node so the
+            // user sees at a glance "this is what I'm previewing".
+            // Distinct hue from the amber selection halo so a node
+            // that's BOTH selected AND soloed shows two stacked rings
+            // (amber + yellow) rather than one ambiguously-coloured
+            // glow.
+            if is_soloed {
+                let solo_color = egui::Color32::from_rgb(0xff, 0xd5, 0x3a);
+                painter.rect_stroke(
+                    rect.expand(2.0),
+                    5.0,
+                    egui::Stroke::new(1.8, egui::Color32::from_rgba_unmultiplied(
+                        solo_color.r(), solo_color.g(), solo_color.b(), 200,
+                    )),
+                );
+                painter.rect_stroke(
+                    rect.expand(4.0),
+                    6.0,
+                    egui::Stroke::new(1.5, egui::Color32::from_rgba_unmultiplied(
+                        solo_color.r(), solo_color.g(), solo_color.b(), 70,
+                    )),
+                );
+            }
             let border = if is_selected { theme.accent } else { theme.border };
             // Idle border bumped 0.5 → 0.9 px so the card edge has
             // some bite against the dimmed canvas grid; the new
@@ -893,6 +954,30 @@ impl NodeGraphV2Panel {
                 egui::FontId::proportional(10.0 * zoom),
                 label_color,
             );
+
+            // Solo "S" badge — small yellow chip in the top-left
+            // corner so the solo state still reads even when the
+            // halo is occluded by overlapping nodes. Sits above
+            // the wireless-link chip's top-right slot so the two
+            // never collide.
+            if is_soloed {
+                let chip_size = egui::vec2(14.0 * zoom, 14.0 * zoom);
+                let chip_pos = egui::pos2(
+                    rect.min.x - chip_size.x * 0.35,
+                    rect.min.y - chip_size.y * 0.35,
+                );
+                let chip_rect = egui::Rect::from_min_size(chip_pos, chip_size);
+                let solo_color = egui::Color32::from_rgb(0xff, 0xd5, 0x3a);
+                painter.rect_filled(chip_rect, 3.0, solo_color);
+                painter.rect_stroke(chip_rect, 3.0, egui::Stroke::new(0.5, theme.bg_deep));
+                painter.text(
+                    chip_rect.center(),
+                    egui::Align2::CENTER_CENTER,
+                    "S",
+                    egui::FontId::proportional(10.0 * zoom),
+                    theme.bg_deep,
+                );
+            }
 
             // Compound body: overlay "N nodes" + a hint that double-
             // click descends. No thumbnail for compounds yet (the
@@ -1592,7 +1677,7 @@ impl NodeGraphV2Panel {
             // Snapshot kind+enabled so we can borrow out of `graph` cleanly
             let info = graph.nodes.iter().find(|n| n.id == nid).map(|n| (n.kind, n.enabled));
             if let Some((kind, enabled)) = info {
-                self.draw_node_menu(ui, clip_id, nid, kind, enabled, &mut cmds, selected_node, selected_set, graph);
+                self.draw_node_menu(ui, clip_id, nid, kind, enabled, &mut cmds, selected_node, selected_set, graph, solo_node);
             } else {
                 self.node_menu = None;
             }
@@ -2099,6 +2184,7 @@ impl NodeGraphV2Panel {
         selected_node: &mut Option<NodeId>,
         selected_set: &mut std::collections::HashSet<NodeId>,
         graph: &NodeGraph,
+        solo_node: Option<NodeId>,
     ) {
         let pos = self.node_menu.map(|(_, p)| p).unwrap_or_default();
         let menu_id = ui.id().with(("ngv2_node_menu", node_id));
@@ -2121,6 +2207,23 @@ impl NodeGraphV2Panel {
                         let toggle = if enabled { "Bypass" } else { "Enable" };
                         if ui.button(toggle).clicked() {
                             cmds.push(AppCommand::ToggleNodeEnabled { clip_id, node_id });
+                            close = true;
+                        }
+                    }
+                    // Solo — gated to the same set as Bypass (skip
+                    // structural Source/Output, skip Reroute since
+                    // soloing a passthrough just shows what's
+                    // upstream of it, which is what the user already
+                    // sees by soloing that upstream node directly).
+                    // Toggle label flips when the right-clicked node
+                    // is the current solo so the user has a one-
+                    // click clear from the same menu they set it in.
+                    if !is_structural && !is_passthrough_kind {
+                        let is_soloed = solo_node == Some(node_id);
+                        let label = if is_soloed { "Clear solo" } else { "Solo this node" };
+                        if ui.button(label).clicked() {
+                            let new_target = if is_soloed { None } else { Some(node_id) };
+                            cmds.push(AppCommand::SetNodeSolo { node_id: new_target });
                             close = true;
                         }
                     }

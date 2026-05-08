@@ -151,6 +151,14 @@ pub struct GraphExecutor {
     /// no-op and masks render with their persistent / keyframed
     /// centres exactly as before.
     current_clip_track_points: Vec<klipp_core::TrackPoint>,
+    /// Solo target. When Some(id), the result of `execute_linear_*`
+    /// becomes that node's output rather than the Output-node-input.
+    /// All other nodes still execute (so thumbnails update normally
+    /// for canvas previews); only the final-pick changes. When the
+    /// id doesn't exist in the active graph (e.g. user just switched
+    /// clips), the executor silently falls back to the normal Output
+    /// pick — no error, no toast spam.
+    solo_node: Option<NodeId>,
 }
 
 /// Maximum recursion depth for nested `Compound` nodes before the
@@ -280,6 +288,7 @@ impl GraphExecutor {
             compound_depth: 0,
             working_colorspace: klipp_core::WorkingColorspace::Rec709Linear,
             current_clip_track_points: Vec::new(),
+            solo_node: None,
         }
     }
 
@@ -323,6 +332,7 @@ impl GraphExecutor {
             compound_depth: 0,
             working_colorspace: klipp_core::WorkingColorspace::Rec709Linear,
             current_clip_track_points: Vec::new(),
+            solo_node: None,
         }
     }
 
@@ -350,6 +360,16 @@ impl GraphExecutor {
     /// per-frame uniform — so engines can call it once per frame
     /// without measurable overhead if they prefer that to tracking
     /// changes.
+    /// Set the node-graph solo target. Cheap setter; the next
+    /// `execute_linear_*` call returns this node's output instead of
+    /// the Output-node-input. None clears the solo. The executor
+    /// silently ignores ids that don't exist in the active graph
+    /// (e.g. after a clip switch) — no error, no toast.
+    #[inline]
+    pub fn set_solo_node(&mut self, node_id: Option<NodeId>) {
+        self.solo_node = node_id;
+    }
+
     #[inline]
     pub fn set_working_colorspace(&mut self, ws: klipp_core::WorkingColorspace) {
         self.working_colorspace = ws;
@@ -1082,14 +1102,23 @@ impl GraphExecutor {
             }
         }
 
-        // 5. Return the output node's input. Unwrap the Arc when we hold the
-        //    sole reference to avoid a clone — falls back to clone only if
-        //    another holder (e.g. a downstream passthrough) still has it.
-        let output_input_id = graph
+        // 5. Return the output node's input — UNLESS solo is active
+        //    AND the soloed id is in node_outputs, in which case we
+        //    return that node's output as the final image. All other
+        //    nodes still ran (so thumbnails update for canvas
+        //    previews), just the picker at the end differs. A solo
+        //    id that doesn't exist in this graph (e.g. user switched
+        //    clips and the previous solo target is gone) silently
+        //    falls back to the normal Output pick.
+        let normal_output_id = graph
             .input_of(graph.output_node_id, 0)
             .ok_or(ExecutorError::NoOutputConnection)?;
+        let result_node_id = match self.solo_node {
+            Some(id) if node_outputs.contains_key(&id) => id,
+            _ => normal_output_id,
+        };
         let result_arc = node_outputs
-            .remove(&output_input_id)
+            .remove(&result_node_id)
             .ok_or(ExecutorError::MissingNodeOutput)?;
         let result = Arc::try_unwrap(result_arc).unwrap_or_else(|a| (*a).clone());
 

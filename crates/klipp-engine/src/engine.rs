@@ -1346,6 +1346,11 @@ pub struct PlaybackEngine {
     inspector_matte_preview_target: Option<klipp_core::ClipId>,
     // Scope tap — which node's output to capture for scope display
     scope_tap_node: Option<klipp_nodes::NodeId>,
+    /// Solo target — when set, the engine returns this node's output
+    /// as the final image instead of the Output-node-input. Single
+    /// global slot; auto-inactive when the id doesn't exist in the
+    /// active clip's graph (so switching clips silently un-solos).
+    solo_node: Option<klipp_nodes::NodeId>,
     /// V2 canvas "nodes visible right now" set — the executor
     /// captures downsampled thumbnails for each of these on the
     /// paused / post-seek re-grade so the canvas can paint per-node
@@ -1798,6 +1803,7 @@ impl PlaybackEngine {
             matte_preview: false,
             inspector_matte_preview_target: None,
             scope_tap_node: None,
+            solo_node: None,
             visible_node_thumbs: std::collections::HashSet::new(),
             thumb_capture_suspended: false,
             pending_paused_refresh: false,
@@ -2745,6 +2751,10 @@ impl PlaybackEngine {
             AppCommand::SetScopeTapNode { node_id, .. } => {
                 self.scope_tap_node = node_id.clone();
                 debug!("Scope tap node: {:?}", self.scope_tap_node);
+            }
+            AppCommand::SetNodeSolo { node_id } => {
+                self.solo_node = node_id.clone();
+                debug!("Solo node: {:?}", self.solo_node);
             }
             AppCommand::SetVisibleNodeThumbs { node_ids, .. } => {
                 self.visible_node_thumbs = node_ids.iter().copied().collect();
@@ -9384,6 +9394,12 @@ impl PlaybackEngine {
                     crate::video_decoder::working_colorspace(),
                 );
                 self.graph_executor.set_current_clip_track_points(&clip_track_points);
+                // Push the panel-set solo target into the executor —
+                // None clears it. Cheap setter; the executor handles
+                // unknown ids gracefully (silent fallback to Output)
+                // so a stale solo id from a different clip doesn't
+                // need explicit clearing on clip switches.
+                self.graph_executor.set_solo_node(self.solo_node);
                 match self.graph_executor.execute_linear_with_thumbs(
                     &rgba,
                     graph,

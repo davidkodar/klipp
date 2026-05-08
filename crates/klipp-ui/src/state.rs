@@ -1650,6 +1650,13 @@ pub struct AppState {
     pub qualifier_sample_request: Option<(f32, f32)>, // normalized 0-1
     /// Matte preview — show B&W qualifier/mask matte in viewer
     pub matte_preview_active: bool,
+    /// Node-graph solo target — when set, the engine returns this
+    /// node's output as the final image so the user can preview any
+    /// mid-chain node as if it were the Output. Mirrors the same
+    /// field on the engine; UI uses it to paint the yellow halo +
+    /// "S" badge on the soloed node and the toolbar's "SOLO: …"
+    /// indicator. Cleared by AppCommand::SetNodeSolo { node_id: None }.
+    pub solo_node: Option<klipp_nodes::NodeId>,
 
     // Before/After split view
     pub before_after_active: bool,
@@ -3180,6 +3187,7 @@ impl Default for AppState {
             wb_sample_request: None,
             qualifier_sample_request: None,
             matte_preview_active: false,
+            solo_node: None,
             before_after_active: false,
             stabilization_compare_active: false,
             split_compare_effect: None,
