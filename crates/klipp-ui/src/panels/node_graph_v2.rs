@@ -51,6 +51,17 @@ fn node_color(kind: &NodeKind, theme: &KlippTheme) -> egui::Color32 {
     }
 }
 
+/// Add `n` to each channel (saturating). Used to lift "active" node
+/// fills slightly above their idle palette so an enabled node reads
+/// as live without the colour drifting off the kind-palette hue.
+fn lift(c: egui::Color32, n: u8) -> egui::Color32 {
+    egui::Color32::from_rgb(
+        c.r().saturating_add(n),
+        c.g().saturating_add(n),
+        c.b().saturating_add(n),
+    )
+}
+
 #[derive(Clone, Copy)]
 struct DragNode {
     node_id: NodeId,
@@ -497,11 +508,39 @@ impl NodeGraphV2Panel {
                 painter.rect_stroke(ghost1, 4.0, egui::Stroke::new(0.5, theme.border));
             }
             painter.rect_filled(rect, 4.0, theme.bg_panel);
-            painter.rect_filled(body_rect, 4.0, if node_on { fill } else { theme.bg_panel_alt });
+            // Active nodes get a small lift on the kind-palette fill so
+            // they read as live; bypassed nodes fall back to bg_panel_alt
+            // (no fill colour at all). The lift is intentionally
+            // conservative — too much washes out the kind-hue and
+            // makes Compound/Layer/Qualifier rows harder to scan at a
+            // glance.
+            let body_fill = if node_on { lift(fill, 14) } else { theme.bg_panel_alt };
+            painter.rect_filled(body_rect, 4.0, body_fill);
 
-            // Selection / border — amber-coloured ~2 px border when
-            // selected, thin neutral border otherwise. Simple and
-            // visible at a glance; no glow halos.
+            // Selection state: subtle amber halo + accent border.
+            // The halo is two outer concentric strokes at decreasing
+            // alpha so the selected node "lights up" without feeling
+            // neon. Painted before the crisp 2 px border so the border
+            // sits on top and the focus state stays unambiguous.
+            if is_selected {
+                let halo = theme.accent;
+                let halo_a1 = egui::Color32::from_rgba_unmultiplied(
+                    halo.r(), halo.g(), halo.b(), 70,
+                );
+                let halo_a2 = egui::Color32::from_rgba_unmultiplied(
+                    halo.r(), halo.g(), halo.b(), 32,
+                );
+                painter.rect_stroke(
+                    rect.expand(2.0),
+                    5.0,
+                    egui::Stroke::new(1.5, halo_a1),
+                );
+                painter.rect_stroke(
+                    rect.expand(4.0),
+                    6.0,
+                    egui::Stroke::new(1.5, halo_a2),
+                );
+            }
             let border = if is_selected { theme.accent } else { theme.border };
             let border_w = if is_selected { 2.0_f32 } else { 0.5_f32 };
             painter.rect_stroke(rect, 4.0, egui::Stroke::new(border_w, border));
@@ -1237,8 +1276,11 @@ impl NodeGraphV2Panel {
         if zoom < 0.4 { return; }
         let spacing = GRID_SPACING * zoom;
         let origin = rect.center() + self.pan * zoom;
+        // Grid alpha was 30; dropped to 16 so the canvas chrome stays
+        // present (pan/zoom is still readable) without competing with
+        // the node bodies for visual weight.
         let stroke = egui::Stroke::new(0.5_f32, egui::Color32::from_rgba_unmultiplied(
-            theme.accent_dim.r(), theme.accent_dim.g(), theme.accent_dim.b(), 30,
+            theme.accent_dim.r(), theme.accent_dim.g(), theme.accent_dim.b(), 16,
         ));
         // Vertical
         let mut x = origin.x;
