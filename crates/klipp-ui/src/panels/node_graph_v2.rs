@@ -194,6 +194,8 @@ impl NodeGraphV2Panel {
         grade_version_names: &[String],
         active_grade_version: Option<usize>,
         clip_time_secs: f64,
+        port_snap_enabled: bool,
+        port_snap_radius_px: f32,
     ) -> Vec<AppCommand> {
         let mut cmds = Vec::new();
 
@@ -469,12 +471,56 @@ impl NodeGraphV2Panel {
             draw_wire(&painter, from, to, color, width);
         }
 
+        // Snap target: while a drag wire is in flight, find the
+        // closest input port within the configured snap radius. The
+        // visible drag wire endpoint locks to it AND a soft ring is
+        // painted around the port so the user sees exactly where the
+        // connection will land. Computed once here and reused by the
+        // drop hit-test below so the highlight and the actual drop
+        // can never disagree (no "snapped visually but landed
+        // somewhere else" surprises).
+        //
+        // Tuple is `(node_id, port_index, port_pos)`. None when:
+        //   - no drag in flight
+        //   - cursor unavailable
+        //   - snap is disabled in prefs
+        //   - no input port within the radius
+        let snap_target: Option<(NodeId, u8, egui::Pos2)> = if let (Some(dw), Some(p), true) =
+            (self.drag_wire, ui.input(|i| i.pointer.hover_pos()), port_snap_enabled)
+        {
+            let radius = port_snap_radius_px * zoom.max(0.5);
+            let radius_sq = radius * radius;
+            let mut best_d_sq = radius_sq;
+            let mut best: Option<(NodeId, u8, egui::Pos2)> = None;
+            for (node_id, rect, _, _, in_count) in &node_rects {
+                if *node_id == dw.from_node { continue; }
+                for port in 0..*in_count {
+                    let port_pos = input_port_pos(rect, port, *in_count);
+                    let d_sq = (p - port_pos).length_sq();
+                    if d_sq < best_d_sq {
+                        best_d_sq = d_sq;
+                        best = Some((*node_id, port, port_pos));
+                    }
+                }
+            }
+            best
+        } else {
+            None
+        };
+
         if let Some(dw) = self.drag_wire {
             if let Some((_, from_rect, _, from_kind, _)) =
                 node_rects.iter().find(|(id, _, _, _, _)| *id == dw.from_node).copied()
             {
                 let from = output_port_pos(&from_rect, dw.from_port, &from_kind);
-                let to = ui.input(|i| i.pointer.hover_pos().unwrap_or(from));
+                // Endpoint snaps to the nearest input port if one is
+                // within range; otherwise tracks the cursor. Falling
+                // back to `from` on no-cursor keeps the wire degenerate-
+                // but-not-stale on rare missing-pointer frames.
+                let to = snap_target
+                    .map(|(_, _, pos)| pos)
+                    .or_else(|| ui.input(|i| i.pointer.hover_pos()))
+                    .unwrap_or(from);
                 // Drag wire takes its colour from the SOURCE output
                 // port's role (we don't know the destination yet) —
                 // gives early visual feedback about what kind of
@@ -484,6 +530,25 @@ impl NodeGraphV2Panel {
                 let (r, g, b) = from_kind.output_port_role(dw.from_port).editor_color();
                 let color = egui::Color32::from_rgb(r, g, b);
                 draw_wire_dashed(&painter, from, to, color, 2.0 * zoom);
+
+                // Snap highlight: a soft outer ring around the target
+                // port in the source role's colour, plus a small dot
+                // at the centre so the eye lands on the lock point.
+                // Painted on top of the wire so the snap cue is the
+                // brightest thing on the canvas.
+                if let Some((_, _, pos)) = snap_target {
+                    let ring_color = egui::Color32::from_rgba_unmultiplied(r, g, b, 140);
+                    painter.circle_stroke(
+                        pos,
+                        PORT_RADIUS * zoom * 1.7,
+                        egui::Stroke::new(2.0, ring_color),
+                    );
+                    painter.circle_filled(
+                        pos,
+                        PORT_RADIUS * zoom * 0.55,
+                        egui::Color32::from_rgb(r, g, b),
+                    );
+                }
             }
         }
 
@@ -1105,7 +1170,19 @@ impl NodeGraphV2Panel {
             // left edge — that allocates a new port at index `in_count`
             // and the engine grows the params Vec to match.
             if let Some(dw) = self.drag_wire.take() {
-                if let Some(p) = pointer_pos {
+                // Snap-target wins over per-port hit-test if it's set
+                // — the user saw the wire visually lock onto that port,
+                // dropping anywhere within the snap radius MUST land
+                // there or the visual feedback would be a lie.
+                if let Some((to_node, to_port, _)) = snap_target {
+                    cmds.push(AppCommand::ConnectNodes {
+                        clip_id,
+                        from: dw.from_node,
+                        from_port: dw.from_port,
+                        to: to_node,
+                        to_port,
+                    });
+                } else if let Some(p) = pointer_pos {
                     'drop: for (node_id, rect, _, kind, in_count) in &node_rects {
                         if *node_id == dw.from_node { continue; }
                         let in_count = *in_count;

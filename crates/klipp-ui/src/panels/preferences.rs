@@ -3202,6 +3202,49 @@ impl PreferencesPanel {
                 prefs.color.vectorscope_skin_angle = v; *dirty = true;
             }
         });
+
+        // ── NODE GRAPH section ──
+        // The node graph is the editor surface for the colour pipeline,
+        // so its prefs live in this page. Snap-on-connect makes wiring
+        // forgiving on a trackpad / high-DPI display where a 9 px port
+        // hit-zone can feel small; can be disabled for users who want
+        // click-precise drops.
+        Self::section_header(ui, "NODE GRAPH", theme);
+
+        Self::setting_row_with_subtitle(
+            ui,
+            "Snap to ports while connecting",
+            "Highlight + lock the drag wire to the nearest input port",
+            theme,
+            |ui| {
+                if ui.checkbox(&mut prefs.color.port_snap_enabled, "").changed() {
+                    *dirty = true;
+                }
+            },
+        );
+
+        Self::setting_row_with_subtitle(
+            ui,
+            "Snap radius",
+            "How close the cursor must get before the wire snaps (screen pixels)",
+            theme,
+            |ui| {
+                let enabled = prefs.color.port_snap_enabled;
+                ui.add_enabled_ui(enabled, |ui| {
+                    let mut v = prefs.color.port_snap_radius_px;
+                    if ui.add(
+                        egui::DragValue::new(&mut v)
+                            .range(4.0..=32.0)
+                            .speed(0.5)
+                            .suffix(" px")
+                            .fixed_decimals(0),
+                    ).changed() {
+                        prefs.color.port_snap_radius_px = v;
+                        *dirty = true;
+                    }
+                });
+            },
+        );
     }
 
     fn show_title(&mut self, ui: &mut egui::Ui, prefs: &mut Preferences, dirty: &mut bool, theme: &KlippTheme) {

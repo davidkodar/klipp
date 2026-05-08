@@ -30815,6 +30815,8 @@ impl KlippApp {
                             &grade_version_names,
                             active_grade_version,
                             clip_time_secs,
+                            self.prefs.color.port_snap_enabled,
+                            self.prefs.color.port_snap_radius_px,
                         );
                         // Tag the node-graph panel as the active panel
                         // when the user clicks anywhere inside its rect

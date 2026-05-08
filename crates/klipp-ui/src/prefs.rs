@@ -1390,6 +1390,16 @@ pub struct ColorPrefs {
     /// Vectorscope skin-tone line angle in degrees.
     #[serde(default = "default_skin_angle")]
     pub vectorscope_skin_angle: f32,
+    /// Node-graph: highlight + snap the in-flight drag wire to the
+    /// nearest input port within `port_snap_radius_px`. Toggleable
+    /// for users who prefer click-precise drops with no magnetism.
+    #[serde(default = "default_port_snap_enabled")]
+    pub port_snap_enabled: bool,
+    /// Node-graph: snap radius in screen pixels. Bigger = easier
+    /// to land a connection but harder to release in empty space
+    /// (the wire snaps to the nearest port instead of dropping).
+    #[serde(default = "default_port_snap_radius")]
+    pub port_snap_radius_px: f32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -1401,6 +1411,8 @@ pub enum LutInterpolation {
 
 fn default_scope_ms() -> u32 { 32 }
 fn default_skin_angle() -> f32 { 123.0 }
+fn default_port_snap_enabled() -> bool { true }
+fn default_port_snap_radius() -> f32 { 18.0 }
 impl Default for ColorPrefs {
     fn default() -> Self {
         Self {
@@ -1409,6 +1421,8 @@ impl Default for ColorPrefs {
             scope_quality: Default::default(),
             scope_update_interval_ms: default_scope_ms(),
             vectorscope_skin_angle: default_skin_angle(),
+            port_snap_enabled: default_port_snap_enabled(),
+            port_snap_radius_px: default_port_snap_radius(),
         }
     }
 }
