@@ -19,6 +19,12 @@ use klipp_core::{
     ParamChange, Timecode, Tool, ViewerMode, builtin_presets,
 };
 use klipp_engine::{PlaybackState, SharedFrameBuffer};
+
+/// Default colour for freshly-created sticky notes — warm beige
+/// `#d4c89a`. Single value in v1; a future right-click recolour
+/// menu would route through SetStickyNoteColor (not yet shipped).
+/// Stored packed RGBA u32 (little-endian: r, g, b, a).
+const STICKY_DEFAULT_COLOR_RGBA: u32 = u32::from_le_bytes([0xd4, 0xc8, 0x9a, 0xff]);
 use crossbeam_queue::ArrayQueue;
 use klipp_media::{MediaItem, ThumbnailEntry};
 use klipp_timeline::{Marker, Sequence};
@@ -11519,6 +11525,7 @@ impl KlippApp {
                 node_positions: std::collections::HashMap::new(),
                 working_space_override: None,
                 frames: Vec::new(),
+                sticky_notes: Vec::new(),
             };
             subgraph.nodes.push(Node {
                 id: sub_source_id,
@@ -11674,6 +11681,10 @@ impl KlippApp {
                 node_positions: new_positions,
                 working_space_override: old_graph.working_space_override,
                 frames: new_frames,
+                // Sticky notes are free-floating annotations — they
+                // don't reference node ids, so they pass through
+                // any structural mutation untouched.
+                sticky_notes: old_graph.sticky_notes.clone(),
             };
 
             if new_graph.topo_sort().is_err() {
@@ -11879,8 +11890,10 @@ impl KlippApp {
                 // frames cover existing parent nodes, none of which
                 // were removed, so frames pass through unchanged.
                 // Inner-graph frames are dropped on the floor (the
-                // sub-graph is gone).
+                // sub-graph is gone). Sticky notes are detached
+                // annotations so they pass through too.
                 frames: parent.frames.clone(),
+                sticky_notes: parent.sticky_notes.clone(),
             };
             if new_parent.topo_sort().is_err() {
                 self.state.toast.show("Ungroup: parent would cycle — aborted");
@@ -11968,6 +11981,7 @@ impl KlippApp {
                     graph.frames.push(klipp_nodes::NodeFrame {
                         id: klipp_nodes::NodeFrameId::new_v4(),
                         label,
+                        description: String::new(),
                         color_rgba,
                         contained_node_ids: valid_ids,
                     });
@@ -11981,6 +11995,59 @@ impl KlippApp {
                     if let Some(f) = graph.frames.iter_mut().find(|f| f.id == frame_id) {
                         f.label = label;
                     }
+                });
+                true
+            }
+            AppCommand::SetNodeFrameDescription { clip_id, frame_id, description } => {
+                let frame_id = *frame_id;
+                let description = description.clone();
+                self.with_current_clip_graph_mut(*clip_id, needs_refresh, |graph| {
+                    if let Some(f) = graph.frames.iter_mut().find(|f| f.id == frame_id) {
+                        f.description = description;
+                    }
+                });
+                true
+            }
+            AppCommand::CreateStickyNote { clip_id, x, y } => {
+                let x = *x;
+                let y = *y;
+                self.with_current_clip_graph_mut(*clip_id, needs_refresh, |graph| {
+                    graph.sticky_notes.push(klipp_nodes::NodeStickyNote {
+                        id: klipp_nodes::NodeStickyNoteId::new_v4(),
+                        pos: klipp_nodes::NodePos { x, y },
+                        width: 200.0,
+                        text: String::new(),
+                        color_rgba: STICKY_DEFAULT_COLOR_RGBA,
+                    });
+                });
+                true
+            }
+            AppCommand::SetStickyNoteText { clip_id, sticky_id, text } => {
+                let sticky_id = *sticky_id;
+                let text = text.clone();
+                self.with_current_clip_graph_mut(*clip_id, needs_refresh, |graph| {
+                    if let Some(s) = graph.sticky_notes.iter_mut().find(|s| s.id == sticky_id) {
+                        s.text = text;
+                    }
+                });
+                true
+            }
+            AppCommand::MoveStickyNote { clip_id, sticky_id, delta_x, delta_y } => {
+                let sticky_id = *sticky_id;
+                let delta_x = *delta_x;
+                let delta_y = *delta_y;
+                self.with_current_clip_graph_mut(*clip_id, needs_refresh, |graph| {
+                    if let Some(s) = graph.sticky_notes.iter_mut().find(|s| s.id == sticky_id) {
+                        s.pos.x += delta_x;
+                        s.pos.y += delta_y;
+                    }
+                });
+                true
+            }
+            AppCommand::DeleteStickyNote { clip_id, sticky_id } => {
+                let sticky_id = *sticky_id;
+                self.with_current_clip_graph_mut(*clip_id, needs_refresh, |graph| {
+                    graph.sticky_notes.retain(|s| s.id != sticky_id);
                 });
                 true
             }

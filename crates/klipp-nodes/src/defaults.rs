@@ -38,6 +38,7 @@ pub fn default_graph() -> NodeGraph {
         node_positions,
         working_space_override: None,
         frames: Vec::new(),
+        sticky_notes: Vec::new(),
     }
 }
 
@@ -128,6 +129,7 @@ pub fn default_full_chain_graph() -> NodeGraph {
         node_positions,
         working_space_override: None,
         frames: Vec::new(),
+        sticky_notes: Vec::new(),
     }
 }
 

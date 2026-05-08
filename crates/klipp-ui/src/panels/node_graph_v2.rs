@@ -21,7 +21,7 @@
 
 use crate::theme::KlippTheme;
 use klipp_core::{AppCommand, ClipId};
-use klipp_nodes::{NodeFrameId, NodeGraph, NodeId, NodeKind, NodePos};
+use klipp_nodes::{NodeFrameId, NodeGraph, NodeId, NodeKind, NodePos, NodeStickyNoteId};
 
 const NODE_W: f32 = 120.0;
 const NODE_H: f32 = 60.0;
@@ -53,6 +53,18 @@ const FRAME_COLOR_PALETTE: &[(&str, u32)] = &[
 /// palette entry (Slate). Users change via the frame's right-click
 /// menu.
 const DEFAULT_FRAME_COLOR_RGBA: u32 = u32::from_le_bytes([0x6a, 0x82, 0xa8, 0xff]);
+
+/// Cyan tint used by the in-graph search match-glow — distinct
+/// from amber selection / yellow solo / magenta matte so a node
+/// that's matching can still be told apart from one that's
+/// selected, soloed, or sitting on a matte chain.
+const SEARCH_MATCH_COLOR: egui::Color32 = egui::Color32::from_rgb(0x3a, 0xd0, 0xff);
+
+/// Default sticky-note tint — warm beige `#d4c89a`. Single colour
+/// in v1 (palette deferred); the bytes are also used as the
+/// "Add note here" button's background so it visually previews
+/// what the new sticky will look like.
+const STICKY_TINT_RGBA: [u8; 4] = [0xd4, 0xc8, 0x9a, 0xff];
 
 fn node_color(kind: &NodeKind, theme: &KlippTheme) -> egui::Color32 {
     match kind {
@@ -125,6 +137,18 @@ struct DragFrame {
     start_cursor_y: f32,
 }
 
+/// Sticky-note drag state. Same emitted-delta pattern as DragNode
+/// + DragFrame so streaming MoveStickyNote per tick doesn't drift
+/// from cursor motion across many frames.
+#[derive(Clone, Copy)]
+struct DragSticky {
+    sticky_id: NodeStickyNoteId,
+    emitted_dx: f32,
+    emitted_dy: f32,
+    start_cursor_x: f32,
+    start_cursor_y: f32,
+}
+
 /// A saved view position. Bookmarks live on the panel, not on the
 /// graph or project — they're a navigation aid for "where am I
 /// looking", not a property of the grade. In-memory only; the full
@@ -153,6 +177,25 @@ pub struct NodeGraphV2Panel {
     /// Frame currently being renamed via the inline label editor.
     /// `(frame_id, screen_pos, buf)` — None when idle.
     frame_rename_editor: Option<(NodeFrameId, egui::Pos2, String)>,
+    /// Frame currently editing its multi-line description in a
+    /// floating popup. `(frame_id, screen_pos, buf)` — same shape
+    /// as the rename editor; only one of the two can be open at a
+    /// time (frame menu closes itself before opening either).
+    frame_description_editor: Option<(NodeFrameId, egui::Pos2, String)>,
+    /// Active sticky-note drag — set on primary-press inside a
+    /// note's body. Tracks emitted-delta so streaming MoveStickyNote
+    /// per tick doesn't drift from cursor motion.
+    drag_sticky: Option<DragSticky>,
+    /// Per-sticky right-click menu — `(sticky_id, screen_pos)`.
+    sticky_menu: Option<(NodeStickyNoteId, egui::Pos2)>,
+    /// Inline multi-line text editor for a sticky note —
+    /// `(sticky_id, screen_pos, buf)`.
+    sticky_text_editor: Option<(NodeStickyNoteId, egui::Pos2, String)>,
+    /// Selected sticky note id. Independent of node selection so
+    /// a sticky can be highlighted without dragging an inspector
+    /// onto the canvas. Cleared when a node is clicked or the
+    /// canvas background is clicked.
+    selected_sticky: Option<NodeStickyNoteId>,
     add_menu_open: bool,
     add_menu_screen_pos: egui::Pos2,
     add_menu_graph_pos: egui::Pos2,
@@ -251,6 +294,17 @@ pub struct NodeGraphV2Panel {
     /// fit, plus a viewport-rect overlay showing what's currently
     /// on-screen. Click + drag to pan.
     minimap_visible: bool,
+    /// In-graph search overlay — Ctrl+F toggles. While open, every
+    /// node whose label or kind display-name contains the query
+    /// (case-insensitive substring) glows cyan; Tab / Shift+Tab
+    /// cycle through matches and pan the canvas to centre on each.
+    /// Also matches frame labels + descriptions so a renamed Sky
+    /// frame is one Ctrl+F-and-type away.
+    search_open: bool,
+    search_query: String,
+    /// Which match index Tab is currently on. Wraps modulo the
+    /// number of matches; reset to 0 whenever the query changes.
+    search_active_idx: usize,
 }
 
 impl Default for NodeGraphV2Panel {
@@ -263,6 +317,11 @@ impl Default for NodeGraphV2Panel {
             drag_frame: None,
             frame_menu: None,
             frame_rename_editor: None,
+            frame_description_editor: None,
+            drag_sticky: None,
+            sticky_menu: None,
+            sticky_text_editor: None,
+            selected_sticky: None,
             box_select: None,
             last_primary_press: None,
             add_menu_open: false,
@@ -283,6 +342,9 @@ impl Default for NodeGraphV2Panel {
             view_bookmarks: [None; 9],
             bookmark_toast: None,
             minimap_visible: true,
+            search_open: false,
+            search_query: String::new(),
+            search_active_idx: 0,
         }
     }
 }
@@ -429,6 +491,28 @@ impl NodeGraphV2Panel {
             Undoable with Ctrl+Z."
         ).clicked() {
             cmds.push(AppCommand::AutoLayoutNodeGraph { clip_id });
+        }
+        // Find — proper button (not selectable_label) so the click
+        // target reads as "tool" rather than "tag". `selected`-style
+        // tinting communicates the open/closed state visually
+        // alongside the canvas overlay.
+        let find_button = if self.search_open {
+            egui::Button::new(egui::RichText::new("\u{1F50D} Find").color(theme.accent))
+                .fill(egui::Color32::from_rgba_unmultiplied(
+                    theme.accent.r(), theme.accent.g(), theme.accent.b(), 30,
+                ))
+        } else {
+            egui::Button::new(egui::RichText::new("\u{1F50D} Find"))
+        };
+        if toolbar_ui.add(find_button)
+            .on_hover_text("Find nodes (Ctrl+F)\nTab cycles matches, Esc closes")
+            .clicked()
+        {
+            self.search_open = !self.search_open;
+            if !self.search_open {
+                self.search_query.clear();
+                self.search_active_idx = 0;
+            }
         }
         toolbar_ui.add_space(8.0);
         // Grade-version picker. Shows "V: none" when no versions
@@ -597,7 +681,11 @@ impl NodeGraphV2Panel {
             || self.node_menu.is_some()
             || self.frame_menu.is_some()
             || self.frame_rename_editor.is_some()
-            || self.wireless_label_editor.is_some();
+            || self.frame_description_editor.is_some()
+            || self.wireless_label_editor.is_some()
+            || self.sticky_menu.is_some()
+            || self.sticky_text_editor.is_some()
+            || self.search_open;
         if !any_menu_open {
             self.handle_pan_zoom(ui, &canvas_rect, &canvas_resp);
         }
@@ -644,6 +732,27 @@ impl NodeGraphV2Panel {
             let in_count = node.dynamic_input_port_count();
             node_rects.push((node.id, rect, node_color(&node.kind, theme), node.kind, in_count));
         }
+
+        // ── Search matches ────────────────────────────────────────
+        // Pre-compute the set of match-node-ids so the per-node
+        // paint loop and the Tab handler agree on what's matching
+        // this frame. Empty query → empty set (no glow). Matches
+        // against label + kind.display_name() so a renamed
+        // "Sky Glow" node hits both as the user types either.
+        let search_matches: Vec<NodeId> = if self.search_open && !self.search_query.is_empty() {
+            let q = self.search_query.to_lowercase();
+            graph.nodes.iter()
+                .filter(|n| {
+                    n.label.to_lowercase().contains(&q)
+                        || n.kind.display_name().to_lowercase().contains(&q)
+                })
+                .map(|n| n.id)
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let search_match_set: std::collections::HashSet<NodeId> =
+            search_matches.iter().copied().collect();
 
         // ── Frames ────────────────────────────────────────────────
         // Painted before wires so wires cross over the frame's
@@ -704,7 +813,80 @@ impl NodeGraphV2Panel {
             );
             painter.galley(chip_rect.min + chip_pad, galley, theme.bg_deep);
 
+            // Description text — multi-line annotation painted just
+            // below the title chip, inset from the frame's left
+            // edge. Skipped at extreme zoom-out (text would be
+            // unreadable and just clutter the wash) and when empty
+            // (the frame's interior stays clean for member nodes).
+            // Wrapped to the frame's interior width so long lines
+            // soft-break instead of overflowing past the frame's
+            // right border.
+            if !frame.description.is_empty() && zoom >= 0.6 {
+                let descr_color = egui::Color32::from_rgba_unmultiplied(
+                    theme.text_primary.r(),
+                    theme.text_primary.g(),
+                    theme.text_primary.b(),
+                    150,
+                );
+                let descr_font = egui::FontId::proportional(10.5 * zoom);
+                let max_w = (frame_rect.width() - 12.0 * zoom).max(40.0);
+                let descr_pos = egui::pos2(
+                    frame_rect.min.x + 6.0 * zoom,
+                    frame_rect.min.y + chip_size.y * 0.5 + 6.0 * zoom,
+                );
+                let galley = painter.layout(
+                    frame.description.clone(),
+                    descr_font,
+                    descr_color,
+                    max_w,
+                );
+                painter.galley(descr_pos, galley, descr_color);
+            }
+
             frame_rects.push((frame.id, frame_rect, color));
+        }
+
+        // ── Sticky-note screen rects ──────────────────────────────
+        // Compute once here so the hit-test path (press handler
+        // below) and the paint pass (after wires) agree on
+        // geometry. Height = wrapped-text height + 12 px padding,
+        // bounded to a sensible minimum so an empty sticky still
+        // renders at a hittable size.
+        let mut sticky_rects: Vec<(
+            NodeStickyNoteId,
+            egui::Rect,
+            egui::Color32,
+            std::sync::Arc<egui::epaint::text::Galley>,
+            bool,
+        )> = Vec::with_capacity(graph.sticky_notes.len());
+        for note in &graph.sticky_notes {
+            let bytes = note.color_rgba.to_le_bytes();
+            let color = egui::Color32::from_rgba_unmultiplied(
+                bytes[0], bytes[1], bytes[2], bytes[3],
+            );
+            let width_screen = note.width * zoom;
+            let inner_pad_x = 8.0 * zoom;
+            let inner_pad_y = 6.0 * zoom;
+            let max_text_w = (width_screen - inner_pad_x * 2.0).max(40.0);
+            let is_placeholder = note.text.is_empty();
+            let display_text = if is_placeholder {
+                "Click to edit…".to_string()
+            } else {
+                note.text.clone()
+            };
+            let font = egui::FontId::proportional(11.0 * zoom.max(0.5));
+            let galley = painter.layout(
+                display_text,
+                font,
+                theme.bg_deep,
+                max_text_w,
+            );
+            let height_screen = (galley.size().y + inner_pad_y * 2.0).max(28.0 * zoom.max(0.5));
+            let top_left = to_screen(egui::pos2(note.pos.x, note.pos.y));
+            let rect = egui::Rect::from_min_size(
+                top_left, egui::vec2(width_screen, height_screen),
+            );
+            sticky_rects.push((note.id, rect, color, galley, is_placeholder));
         }
 
         // ── Wires ─────────────────────────────────────────────────
@@ -928,6 +1110,51 @@ impl NodeGraphV2Panel {
             );
         }
 
+        // ── Sticky notes ──────────────────────────────────────────
+        // Painted above wires so the annotation stays visible, but
+        // before nodes so functional cards always pop on top. Light
+        // 2-stop drop shadow matches the node card depth so they
+        // feel like sibling artefacts rather than floating overlays.
+        for (sticky_id, rect, color, galley, is_placeholder) in sticky_rects.iter() {
+            // Drop shadow (single stop — stickies are smaller and
+            // don't need the 3-stop ambience the cards use).
+            painter.rect_filled(
+                rect.translate(egui::vec2(0.0, 2.0)).expand(1.0),
+                4.5,
+                egui::Color32::from_rgba_premultiplied(0, 0, 0, 30),
+            );
+            // Body — full opaque sticky tint so text contrast is
+            // honest. Rounded corners + 1 px border for definition.
+            painter.rect_filled(*rect, 4.0, *color);
+            let border = if self.selected_sticky == Some(*sticky_id) {
+                theme.accent
+            } else {
+                egui::Color32::from_rgba_unmultiplied(
+                    color.r().saturating_sub(40),
+                    color.g().saturating_sub(40),
+                    color.b().saturating_sub(40),
+                    255,
+                )
+            };
+            let border_w = if self.selected_sticky == Some(*sticky_id) { 1.6 } else { 0.8 };
+            painter.rect_stroke(*rect, 4.0, egui::Stroke::new(border_w, border));
+            // Text — placeholder gets dimmed so it reads as a hint
+            // rather than committed content.
+            let inner_pad = egui::vec2(8.0 * zoom, 6.0 * zoom);
+            let text_pos = rect.min + inner_pad;
+            if *is_placeholder {
+                let dim = egui::Color32::from_rgba_unmultiplied(
+                    theme.bg_deep.r(),
+                    theme.bg_deep.g(),
+                    theme.bg_deep.b(),
+                    140,
+                );
+                painter.galley(text_pos, galley.clone(), dim);
+            } else {
+                painter.galley(text_pos, galley.clone(), theme.bg_deep);
+            }
+        }
+
         // ── Nodes ─────────────────────────────────────────────────
         // Hoist the pointer position so we can gate per-port tooltip
         // registration on "cursor is actually near this node". Without
@@ -971,6 +1198,21 @@ impl NodeGraphV2Panel {
             let glow = ui.ctx().animate_value_with_time(glow_id, glow_target, glow_duration);
             let glow_alpha = (32.0 * glow) as u8;
 
+            // Search match — distinct cyan ring, animated through
+            // its own channel so it can stack with hover glow + the
+            // amber selection halo without colour confusion. Brighter
+            // when this is the Tab-active match so the user can tell
+            // at a glance "this is the one you'd jump to next".
+            let is_match = search_match_set.contains(&node_id);
+            let is_active_match = is_match
+                && !search_matches.is_empty()
+                && search_matches.get(self.search_active_idx % search_matches.len().max(1))
+                    .copied() == Some(node_id);
+            let match_id = ui.id().with(("ngv2_node_search_match", node_id));
+            let match_target = if is_match { 1.0_f32 } else { 0.0_f32 };
+            let match_glow = ui.ctx().animate_value_with_time(match_id, match_target, 0.15);
+            let match_alpha = ((if is_active_match { 200.0 } else { 110.0 }) * match_glow) as u8;
+
             // Reroute is rendered as a dot, not a card — fully
             // self-contained branch so we don't pay for shadow /
             // highlight / header / body / chip / thumbnail logic
@@ -988,6 +1230,16 @@ impl NodeGraphV2Panel {
                         radius + 3.0,
                         egui::Stroke::new(1.5, egui::Color32::from_rgba_unmultiplied(
                             accent.r(), accent.g(), accent.b(), glow_alpha,
+                        )),
+                    );
+                }
+                if match_alpha > 0 {
+                    let cyan = SEARCH_MATCH_COLOR;
+                    painter.circle_stroke(
+                        centre,
+                        radius + 5.0,
+                        egui::Stroke::new(1.8, egui::Color32::from_rgba_unmultiplied(
+                            cyan.r(), cyan.g(), cyan.b(), match_alpha,
                         )),
                     );
                 }
@@ -1082,6 +1334,19 @@ impl NodeGraphV2Panel {
                     5.0,
                     egui::Stroke::new(1.5, egui::Color32::from_rgba_unmultiplied(
                         accent.r(), accent.g(), accent.b(), glow_alpha,
+                    )),
+                );
+            }
+            // Search match — cyan ring, distinct from amber hover/
+            // selection so a node that's BOTH selected AND matching
+            // shows two independent rings.
+            if match_alpha > 0 {
+                let cyan = SEARCH_MATCH_COLOR;
+                painter.rect_stroke(
+                    rect.expand(4.0),
+                    6.0,
+                    egui::Stroke::new(1.8, egui::Color32::from_rgba_unmultiplied(
+                        cyan.r(), cyan.g(), cyan.b(), match_alpha,
                     )),
                 );
             }
@@ -1572,7 +1837,7 @@ impl NodeGraphV2Panel {
         // already been wiped, Group-into-Compound saw `inside.len() <
         // 2` and silently returned. Gating here lets the menu's own
         // `clicked_elsewhere` close-detection handle outside-clicks.
-        let menu_open = self.node_menu.is_some() || self.add_menu_open || self.frame_menu.is_some();
+        let menu_open = self.node_menu.is_some() || self.add_menu_open || self.frame_menu.is_some() || self.sticky_menu.is_some();
         if primary_pressed && !menu_open {
             if let Some(p) = pointer_pos {
                 if canvas_rect.contains(p) {
@@ -1668,8 +1933,41 @@ impl NodeGraphV2Panel {
                         // reverse so frames painted later (visually
                         // on top) win on overlap. Skipped on shift
                         // to keep shift-build-up selections intact.
+                        // Sticky-note hit — between node and frame
+                        // priority. Reverse so stickies painted later
+                        // (visually on top) win on overlap. Single-
+                        // click selects + starts drag; double-click
+                        // opens the inline text editor.
+                        let mut sticky_hit = false;
+                        if !node_hit {
+                            for (sticky_id, sr_rect, _, _, _) in sticky_rects.iter().rev() {
+                                if !sr_rect.contains(p) { continue; }
+                                if primary_double_clicked {
+                                    let initial = graph.sticky_notes.iter()
+                                        .find(|s| s.id == *sticky_id)
+                                        .map(|s| s.text.clone())
+                                        .unwrap_or_default();
+                                    self.sticky_text_editor = Some((*sticky_id, p, initial));
+                                } else {
+                                    self.selected_sticky = Some(*sticky_id);
+                                    selected_set.clear();
+                                    *selected_node = None;
+                                    let g = to_graph(p);
+                                    self.drag_sticky = Some(DragSticky {
+                                        sticky_id: *sticky_id,
+                                        emitted_dx: 0.0,
+                                        emitted_dy: 0.0,
+                                        start_cursor_x: g.x,
+                                        start_cursor_y: g.y,
+                                    });
+                                }
+                                sticky_hit = true;
+                                break;
+                            }
+                        }
+                        if node_hit { self.selected_sticky = None; }
                         let mut frame_hit = false;
-                        if !node_hit && !shift {
+                        if !node_hit && !sticky_hit && !shift {
                             for (frame_id, fr_rect, _) in frame_rects.iter().rev() {
                                 if !fr_rect.contains(p) { continue; }
                                 let frame = match graph.frames.iter().find(|f| f.id == *frame_id) {
@@ -1704,10 +2002,11 @@ impl NodeGraphV2Panel {
                         // moving it stays a click, otherwise the
                         // released-frame branch adds intersected
                         // nodes to the set.
-                        if !node_hit && !frame_hit {
+                        if !node_hit && !frame_hit && !sticky_hit {
                             if !shift {
                                 selected_set.clear();
                                 *selected_node = None;
+                                self.selected_sticky = None;
                             }
                             self.box_select = Some((p, p));
                         }
@@ -1757,6 +2056,26 @@ impl NodeGraphV2Panel {
                     }
                     df.emitted_dx = total_dx;
                     df.emitted_dy = total_dy;
+                }
+            }
+        }
+        // Live sticky-note drag.
+        if let Some(ref mut ds) = self.drag_sticky {
+            if let Some(p) = pointer_pos {
+                let g = to_graph(p);
+                let total_dx = g.x - ds.start_cursor_x;
+                let total_dy = g.y - ds.start_cursor_y;
+                let delta_x = total_dx - ds.emitted_dx;
+                let delta_y = total_dy - ds.emitted_dy;
+                if delta_x.abs() > 0.01 || delta_y.abs() > 0.01 {
+                    cmds.push(AppCommand::MoveStickyNote {
+                        clip_id,
+                        sticky_id: ds.sticky_id,
+                        delta_x,
+                        delta_y,
+                    });
+                    ds.emitted_dx = total_dx;
+                    ds.emitted_dy = total_dy;
                 }
             }
         }
@@ -1827,6 +2146,7 @@ impl NodeGraphV2Panel {
             // Node drop: nothing to commit; deltas were streamed live.
             self.drag_node = None;
             self.drag_frame = None;
+            self.drag_sticky = None;
 
             // Box-select drop: any node whose body intersects the
             // marquee rect joins the selection set. The press-time
@@ -1935,6 +2255,26 @@ impl NodeGraphV2Panel {
             }
         }
 
+        // Ctrl+F (or Cmd+F) toggles the search overlay. Fires
+        // even when the search overlay itself is already open so
+        // a re-press closes it — matches the find-bar toggle
+        // semantics in most editors. Skipped when other text
+        // inputs are focused (rename popup, description editor)
+        // so typing Ctrl+F into a TextEdit doesn't yank focus.
+        let f_with_mod = ui.input(|i| {
+            i.key_pressed(egui::Key::F) && (i.modifiers.ctrl || i.modifiers.command)
+        });
+        if f_with_mod && !self.frame_rename_editor.is_some()
+            && !self.frame_description_editor.is_some()
+            && !self.wireless_label_editor.is_some()
+        {
+            self.search_open = !self.search_open;
+            if !self.search_open {
+                self.search_query.clear();
+                self.search_active_idx = 0;
+            }
+        }
+
         // Right-click handling. Three cases, in priority order:
         //   1. Near an input port that has an edge → disconnect it.
         //      Fastest way to clear a wire without going through a menu.
@@ -1973,15 +2313,22 @@ impl NodeGraphV2Panel {
                         // Suppress the node/add menu on this click —
                         // we consumed the right-click for the disconnect.
                     } else {
-                        // 2/3/4) Fall through to the node, frame,
-                        // or add menu — node wins, then frame body,
+                        // 2/3/4/5) Fall through to the node, sticky,
+                        // frame, or add menu — node first, then
+                        // sticky (above frames), then frame body,
                         // then empty canvas.
                         let mut on_node = None;
                         for (node_id, rect, _, _, _) in &node_rects {
                             if rect.contains(p) { on_node = Some(*node_id); break; }
                         }
-                        let mut on_frame: Option<NodeFrameId> = None;
+                        let mut on_sticky: Option<NodeStickyNoteId> = None;
                         if on_node.is_none() {
+                            for (sid, sr_rect, _, _, _) in sticky_rects.iter().rev() {
+                                if sr_rect.contains(p) { on_sticky = Some(*sid); break; }
+                            }
+                        }
+                        let mut on_frame: Option<NodeFrameId> = None;
+                        if on_node.is_none() && on_sticky.is_none() {
                             // Reverse so a smaller frame painted on
                             // top of a larger one wins on overlap.
                             for (fid, fr_rect, _) in frame_rects.iter().rev() {
@@ -1994,10 +2341,17 @@ impl NodeGraphV2Panel {
                             self.node_menu_opened_frame = frame_nr;
                             self.add_menu_open = false;
                             self.frame_menu = None;
+                            self.sticky_menu = None;
+                        } else if let Some(sid) = on_sticky {
+                            self.sticky_menu = Some((sid, p));
+                            self.add_menu_open = false;
+                            self.node_menu = None;
+                            self.frame_menu = None;
                         } else if let Some(fid) = on_frame {
                             self.frame_menu = Some((fid, p));
                             self.add_menu_open = false;
                             self.node_menu = None;
+                            self.sticky_menu = None;
                         } else {
                             self.add_menu_open = true;
                             self.add_menu_screen_pos = p;
@@ -2007,6 +2361,7 @@ impl NodeGraphV2Panel {
                             self.add_menu_opened_frame = frame_nr;
                             self.node_menu = None;
                             self.frame_menu = None;
+                            self.sticky_menu = None;
                         }
                     }
                 }
@@ -2040,6 +2395,15 @@ impl NodeGraphV2Panel {
         // input. Triggered from the frame menu's "Rename".
         if self.frame_rename_editor.is_some() {
             self.draw_frame_rename_editor(ui, clip_id, &mut cmds);
+        }
+        if self.frame_description_editor.is_some() {
+            self.draw_frame_description_editor(ui, clip_id, &mut cmds);
+        }
+        if self.sticky_menu.is_some() {
+            self.draw_sticky_menu(ui, clip_id, graph, &mut cmds);
+        }
+        if self.sticky_text_editor.is_some() {
+            self.draw_sticky_text_editor(ui, clip_id, &mut cmds);
         }
 
         // Tell the engine which nodes want thumbnails. Diff against
@@ -2192,6 +2556,106 @@ impl NodeGraphV2Panel {
                         }
                     }
                 }
+            }
+        }
+
+        // ── In-graph search overlay ───────────────────────────────
+        // Floating text input near the canvas top-left while
+        // search_open is true. Tab / Shift+Tab cycle the active
+        // match and pan the canvas to centre on it. Esc closes
+        // and clears. Match counter ("3 of 12") on the right side
+        // of the input gives instant feedback that the query is
+        // matching.
+        if self.search_open {
+            let area_id = ui.id().with("ngv2_search_overlay");
+            let pos = egui::pos2(canvas_rect.min.x + 12.0, canvas_rect.min.y + 12.0);
+            let prev_query = self.search_query.clone();
+            let mut close = false;
+            let mut tab_forward = false;
+            let mut tab_back = false;
+            egui::Area::new(area_id)
+                .fixed_pos(pos)
+                .order(egui::Order::Foreground)
+                .show(ui.ctx(), |ui| {
+                    egui::Frame::popup(ui.style()).show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.label(egui::RichText::new("\u{1F50D}").size(13.0));
+                            let resp = ui.add(
+                                egui::TextEdit::singleline(&mut self.search_query)
+                                    .hint_text("Find node by label or kind…")
+                                    .desired_width(200.0),
+                            );
+                            // Auto-focus on every paint while open
+                            // — re-focuses if the user clicks
+                            // elsewhere accidentally. Cheap because
+                            // request_focus is idempotent.
+                            resp.request_focus();
+                            // Tab while focused = cycle. egui's
+                            // default Tab behaviour moves focus to
+                            // the next widget; we want it as a hot
+                            // gesture instead.
+                            if resp.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Tab)) {
+                                let shift = ui.input(|i| i.modifiers.shift);
+                                if shift { tab_back = true; } else { tab_forward = true; }
+                            }
+                            if resp.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                                close = true;
+                            }
+                            // Match counter — current/total when
+                            // there are matches, "no matches" when
+                            // there's a query but nothing hit, blank
+                            // when the query is empty.
+                            let total = search_matches.len();
+                            let active = if total == 0 { 0 } else {
+                                (self.search_active_idx % total) + 1
+                            };
+                            let counter = if self.search_query.is_empty() {
+                                String::new()
+                            } else if total == 0 {
+                                "no matches".to_string()
+                            } else {
+                                format!("{active} of {total}")
+                            };
+                            if !counter.is_empty() {
+                                ui.label(
+                                    egui::RichText::new(counter)
+                                        .small()
+                                        .color(egui::Color32::from_rgba_unmultiplied(
+                                            theme.text_primary.r(),
+                                            theme.text_primary.g(),
+                                            theme.text_primary.b(),
+                                            180,
+                                        )),
+                                );
+                            }
+                            if ui.small_button("\u{2715}").on_hover_text("Close (Esc)").clicked() {
+                                close = true;
+                            }
+                        });
+                    });
+                });
+            // Reset Tab cursor whenever the query mutates so the
+            // first match is always "1 of N" for a fresh query.
+            if self.search_query != prev_query {
+                self.search_active_idx = 0;
+            }
+            // Apply Tab cycling + pan.
+            if (tab_forward || tab_back) && !search_matches.is_empty() {
+                let n = search_matches.len();
+                if tab_forward {
+                    self.search_active_idx = (self.search_active_idx + 1) % n;
+                } else {
+                    self.search_active_idx = (self.search_active_idx + n - 1) % n;
+                }
+                let target_id = search_matches[self.search_active_idx % n];
+                if let Some(pos) = graph.node_positions.get(&target_id).copied() {
+                    self.pan = egui::vec2(-pos.x, -pos.y);
+                }
+            }
+            if close {
+                self.search_open = false;
+                self.search_query.clear();
+                self.search_active_idx = 0;
             }
         }
 
@@ -2431,6 +2895,30 @@ impl NodeGraphV2Panel {
                     // resolves a frame late and looks janky.
                     ui.set_min_width(260.0);
                     ui.set_max_width(260.0);
+
+                    // "Add note here" — sticky-note creation at the
+                    // right-click point's graph coords. Sits at the
+                    // very top above the search field so it's not
+                    // confused with the kind picker (sticky notes
+                    // aren't a NodeKind). Closes the menu on click.
+                    let note_pos = self.add_menu_graph_pos;
+                    if ui.add(
+                        egui::Button::new(
+                            egui::RichText::new("\u{1F4DD}  Add note here").color(theme.text_primary),
+                        )
+                        .fill(egui::Color32::from_rgba_unmultiplied(
+                            STICKY_TINT_RGBA[0], STICKY_TINT_RGBA[1],
+                            STICKY_TINT_RGBA[2], 60,
+                        ))
+                    ).clicked() {
+                        cmds.push(AppCommand::CreateStickyNote {
+                            clip_id,
+                            x: note_pos.x,
+                            y: note_pos.y,
+                        });
+                        close = true;
+                    }
+                    ui.add_space(4.0);
 
                     // ── Search field ─────────────────────────────
                     let search_resp = ui.add(
@@ -2706,6 +3194,14 @@ impl NodeGraphV2Panel {
                         self.frame_rename_editor = Some((frame_id, pos, initial));
                         close = true;
                     }
+                    if ui.button("Edit description…").clicked() {
+                        let initial = graph.frames.iter()
+                            .find(|f| f.id == frame_id)
+                            .map(|f| f.description.clone())
+                            .unwrap_or_default();
+                        self.frame_description_editor = Some((frame_id, pos, initial));
+                        close = true;
+                    }
                     ui.separator();
                     ui.label(egui::RichText::new("Colour").small().weak());
                     ui.horizontal(|ui| {
@@ -2789,6 +3285,168 @@ impl NodeGraphV2Panel {
             close = true;
         }
         if close { self.frame_rename_editor = None; }
+    }
+
+    /// Right-click menu for a sticky note: Edit text… / Delete.
+    fn draw_sticky_menu(
+        &mut self,
+        ui: &mut egui::Ui,
+        clip_id: ClipId,
+        graph: &NodeGraph,
+        cmds: &mut Vec<AppCommand>,
+    ) {
+        let Some((sticky_id, pos)) = self.sticky_menu else { return; };
+        let mut close = false;
+        let area_id = ui.id().with(("ngv2_sticky_menu", sticky_id));
+        let area_resp = egui::Area::new(area_id)
+            .fixed_pos(pos)
+            .order(egui::Order::Foreground)
+            .show(ui.ctx(), |ui| {
+                egui::Frame::popup(ui.style()).show(ui, |ui| {
+                    if ui.button("Edit text…").clicked() {
+                        let initial = graph.sticky_notes.iter()
+                            .find(|s| s.id == sticky_id)
+                            .map(|s| s.text.clone())
+                            .unwrap_or_default();
+                        self.sticky_text_editor = Some((sticky_id, pos, initial));
+                        close = true;
+                    }
+                    if ui.button("Delete note").clicked() {
+                        cmds.push(AppCommand::DeleteStickyNote { clip_id, sticky_id });
+                        close = true;
+                    }
+                    if ui.input(|i| i.key_pressed(egui::Key::Escape)) { close = true; }
+                });
+            });
+        if area_resp.response.clicked_elsewhere() { close = true; }
+        if close { self.sticky_menu = None; }
+    }
+
+    /// Multi-line text editor for a sticky note. Auto-focused on
+    /// open; Ctrl+Enter saves; Esc cancels; click-elsewhere also
+    /// saves (sticky notes are throwaway annotation, so accidental
+    /// dismissals shouldn't lose what the user typed — this is the
+    /// opposite of the frame description editor's "discard on
+    /// click-out" behaviour, which gates on stricter intent).
+    fn draw_sticky_text_editor(
+        &mut self,
+        ui: &mut egui::Ui,
+        clip_id: ClipId,
+        cmds: &mut Vec<AppCommand>,
+    ) {
+        let Some((sticky_id, pos, _)) = self.sticky_text_editor.as_ref().map(
+            |(s, p, b)| (*s, *p, b.clone())
+        ) else { return; };
+        let mut close = false;
+        let mut save_and_close = false;
+        let area_id = ui.id().with(("ngv2_sticky_edit", sticky_id));
+        let area_resp = egui::Area::new(area_id)
+            .fixed_pos(pos)
+            .order(egui::Order::Foreground)
+            .show(ui.ctx(), |ui| {
+                egui::Frame::popup(ui.style()).show(ui, |ui| {
+                    ui.label(egui::RichText::new("Sticky note").small().weak());
+                    if let Some((_, _, buf)) = self.sticky_text_editor.as_mut() {
+                        let resp = ui.add(
+                            egui::TextEdit::multiline(buf)
+                                .hint_text("Notes…")
+                                .desired_rows(4)
+                                .desired_width(240.0),
+                        );
+                        resp.request_focus();
+                        let mods = ui.input(|i| i.modifiers);
+                        if resp.has_focus()
+                            && (mods.ctrl || mods.command)
+                            && ui.input(|i| i.key_pressed(egui::Key::Enter))
+                        {
+                            save_and_close = true;
+                        }
+                    }
+                    ui.horizontal(|ui| {
+                        if ui.button("Save").clicked() { save_and_close = true; }
+                        if ui.button("Cancel").clicked() { close = true; }
+                        ui.label(egui::RichText::new("Ctrl+Enter to save").small().weak());
+                    });
+                    if ui.input(|i| i.key_pressed(egui::Key::Escape)) { close = true; }
+                });
+            });
+        // Click-elsewhere → save (sticky-note semantics: throwaway
+        // notes shouldn't lose what the user typed).
+        if area_resp.response.clicked_elsewhere() { save_and_close = true; }
+        if save_and_close {
+            let text = self.sticky_text_editor.as_ref()
+                .map(|(_, _, b)| b.clone()).unwrap_or_default();
+            cmds.push(AppCommand::SetStickyNoteText { clip_id, sticky_id, text });
+            close = true;
+        }
+        if close { self.sticky_text_editor = None; }
+    }
+
+    /// Multi-line description editor for a frame. Triggered from
+    /// the frame menu's "Edit description…" entry. Ctrl+Enter
+    /// saves; Esc cancels; click-elsewhere also closes (the buffer
+    /// is dropped without saving — matches the rename-editor
+    /// pattern's behaviour for accidental dismissals).
+    fn draw_frame_description_editor(
+        &mut self,
+        ui: &mut egui::Ui,
+        clip_id: ClipId,
+        cmds: &mut Vec<AppCommand>,
+    ) {
+        let Some((frame_id, pos, _)) = self.frame_description_editor.as_ref().map(
+            |(f, p, b)| (*f, *p, b.clone())
+        ) else { return; };
+        let mut close = false;
+        let mut save = false;
+        let area_id = ui.id().with(("ngv2_frame_descr", frame_id));
+        let area_resp = egui::Area::new(area_id)
+            .fixed_pos(pos)
+            .order(egui::Order::Foreground)
+            .show(ui.ctx(), |ui| {
+                egui::Frame::popup(ui.style()).show(ui, |ui| {
+                    ui.label(egui::RichText::new("Frame description").small().weak());
+                    if let Some((_, _, buf)) = self.frame_description_editor.as_mut() {
+                        let resp = ui.add(
+                            egui::TextEdit::multiline(buf)
+                                .hint_text("Notes about this group of nodes…")
+                                .desired_rows(4)
+                                .desired_width(280.0),
+                        );
+                        // Auto-focus the editor on first paint so
+                        // the user can start typing immediately.
+                        if resp.gained_focus() || ui.ctx().memory(|m| m.focused().is_none()) {
+                            resp.request_focus();
+                        }
+                        // Ctrl+Enter or Cmd+Enter saves — plain
+                        // Enter inserts a newline (multiline
+                        // semantics are what makes this distinct
+                        // from the rename popup).
+                        let mods = ui.input(|i| i.modifiers);
+                        if resp.has_focus()
+                            && (mods.ctrl || mods.command)
+                            && ui.input(|i| i.key_pressed(egui::Key::Enter))
+                        {
+                            save = true;
+                        }
+                    }
+                    ui.horizontal(|ui| {
+                        if ui.button("Save").clicked() { save = true; }
+                        if ui.button("Cancel").clicked() { close = true; }
+                        ui.label(egui::RichText::new("Ctrl+Enter to save").small().weak());
+                    });
+                    if ui.input(|i| i.key_pressed(egui::Key::Escape)) { close = true; }
+                });
+            });
+        if area_resp.response.clicked_elsewhere() { close = true; }
+        if save {
+            let description = self.frame_description_editor.as_ref()
+                .map(|(_, _, b)| b.clone()).unwrap_or_default();
+            cmds.push(AppCommand::SetNodeFrameDescription {
+                clip_id, frame_id, description,
+            });
+            close = true;
+        }
+        if close { self.frame_description_editor = None; }
     }
 
     fn draw_node_menu(

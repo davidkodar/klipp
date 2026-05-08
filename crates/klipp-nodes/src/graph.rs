@@ -48,7 +48,44 @@ pub struct NodeGraph {
     /// via the existing NodeGraph serde derive — no format work.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub frames: Vec<NodeFrame>,
+    /// Free-floating annotation notes — distinct from frames in
+    /// that they DON'T enclose nodes. Sit above wires but below
+    /// nodes in the paint order, so they're visible without
+    /// hiding the functional graph. Auto-fit height from wrapped
+    /// text; width is user-set in v1 (200 graph-px default).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sticky_notes: Vec<NodeStickyNote>,
 }
+
+/// Free-floating annotation card. Stores position + width + text +
+/// colour; height is computed each render from the wrapped text so
+/// the user doesn't have to manage it. v1 keeps width fixed via
+/// `width` (no resize handle); a future v2 could add a corner-
+/// drag resize gesture without a serde format change.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NodeStickyNote {
+    /// Stable id for AppCommands targeting this specific note.
+    pub id: NodeStickyNoteId,
+    /// Top-left in graph coordinates.
+    pub pos: NodePos,
+    /// Width in graph-pixel units. Default 200 (set by the
+    /// AppCommand handler for `CreateStickyNote`); the data model
+    /// stores it explicitly so future width-resize gestures can
+    /// persist.
+    #[serde(default = "default_sticky_width")]
+    pub width: f32,
+    /// User-editable multi-line text. Plain text in v1.
+    #[serde(default)]
+    pub text: String,
+    /// Packed RGBA u32 (little-endian: r, g, b, a). v1 stores a
+    /// single warm beige default; a future recolour menu would
+    /// route through the existing colour-update pattern.
+    pub color_rgba: u32,
+}
+
+pub type NodeStickyNoteId = uuid::Uuid;
+
+fn default_sticky_width() -> f32 { 200.0 }
 
 /// A lightweight labelled rectangle drawn behind a set of nodes.
 /// See `NodeGraph::frames` for the semantics. The frame's visible
@@ -67,6 +104,14 @@ pub struct NodeFrame {
     /// placeholder so the frame chip still shows a hit target.
     #[serde(default)]
     pub label: String,
+    /// Multi-line annotation painted inside the frame's interior.
+    /// Empty by default (rendered as nothing — the frame's interior
+    /// stays empty and the contained nodes have full breathing
+    /// room). Edited via the frame's right-click "Edit description…"
+    /// entry. Plain text in v1; could grow to markdown later
+    /// without a serde format change since it's just a String.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub description: String,
     /// Frame tint, picked from a small palette in the right-click
     /// menu. Stored as packed RGBA u32 (`Color32::to_array`-style
     /// bytes in NCBA order is what egui uses; we use plain RGBA u32

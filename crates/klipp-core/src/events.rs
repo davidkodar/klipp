@@ -1130,6 +1130,24 @@ pub enum AppCommand {
     CreateNodeFrame { clip_id: ClipId, node_ids: Vec<uuid::Uuid>, label: String, color_rgba: u32 },
     /// Rename a frame. No-op if the id doesn't exist.
     RenameNodeFrame { clip_id: ClipId, frame_id: uuid::Uuid, label: String },
+    /// Set a frame's multi-line description. Empty string clears.
+    SetNodeFrameDescription { clip_id: ClipId, frame_id: uuid::Uuid, description: String },
+    /// Create a free-floating sticky note at the given graph
+    /// position. The handler allocates the id; width defaults to
+    /// 200 graph-px; text starts empty (the user double-clicks to
+    /// edit). Single source of truth for sticky-note creation
+    /// across the right-click "Add note here" entry and any
+    /// future palette / shortcut surfaces.
+    CreateStickyNote { clip_id: ClipId, x: f32, y: f32 },
+    /// Replace the multi-line text of the named sticky note.
+    /// No-op if the id doesn't exist.
+    SetStickyNoteText { clip_id: ClipId, sticky_id: uuid::Uuid, text: String },
+    /// Move a sticky note by (delta_x, delta_y) in graph pixels.
+    /// Mirrors MoveNode's incremental-delta shape so live drags
+    /// can stream tick deltas without total-position drift.
+    MoveStickyNote { clip_id: ClipId, sticky_id: uuid::Uuid, delta_x: f32, delta_y: f32 },
+    /// Delete a sticky note. No-op if the id doesn't exist.
+    DeleteStickyNote { clip_id: ClipId, sticky_id: uuid::Uuid },
     /// Recolour a frame.
     RecolorNodeFrame { clip_id: ClipId, frame_id: uuid::Uuid, color_rgba: u32 },
     /// Drop the frame. Member nodes stay where they are; only the

@@ -4104,6 +4104,7 @@ mod grade_node_clipboard_tests {
             ].into_iter().collect(),
             working_space_override: None,
             frames: Vec::new(),
+            sticky_notes: Vec::new(),
         };
         (graph, source_id, corrector_id, output_id)
     }
