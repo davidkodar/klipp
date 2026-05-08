@@ -3628,6 +3628,10 @@ impl TimelinePanel {
                         egui::Color32::from_rgba_unmultiplied(40, 40, 40, 220),
                     klipp_core::GeneratorData::StillFrame { .. } =>
                         egui::Color32::from_rgba_unmultiplied(80, 140, 200, 220),
+                    klipp_core::GeneratorData::Polygon { color, .. } =>
+                        egui::Color32::from_rgba_premultiplied(color[0], color[1], color[2], 220),
+                    klipp_core::GeneratorData::Star { color, .. } =>
+                        egui::Color32::from_rgba_premultiplied(color[0], color[1], color[2], 220),
                 };
                 let lum = 0.299 * pill_color.r() as f32 + 0.587 * pill_color.g() as f32 + 0.114 * pill_color.b() as f32;
                 let text_color = if lum > 140.0 { egui::Color32::BLACK } else { egui::Color32::WHITE };

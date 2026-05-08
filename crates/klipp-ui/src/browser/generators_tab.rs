@@ -80,7 +80,36 @@ fn gradient_4pt_warm_cool() -> GeneratorData {
 fn color_bars() -> GeneratorData { GeneratorData::ColorBars }
 fn countdown() -> GeneratorData { GeneratorData::Countdown }
 
-const CATEGORIES: &[&str] = &["Solid Color", "Gradient", "Test Pattern", "Countdown"];
+// Vector shape factories. Defaults are mid-spec — 6-sided polygon
+// (hexagon) and 5-pointed star with 0.4 inner-ratio (the classic
+// pentagram look). Users tune via the inspector once on the timeline.
+fn shape_triangle() -> GeneratorData {
+    GeneratorData::Polygon { sides: 3, color: [255, 255, 255, 255], outline_width_px: 0.0, fill: true }
+}
+fn shape_square() -> GeneratorData {
+    GeneratorData::Polygon { sides: 4, color: [255, 255, 255, 255], outline_width_px: 0.0, fill: true }
+}
+fn shape_pentagon() -> GeneratorData {
+    GeneratorData::Polygon { sides: 5, color: [255, 255, 255, 255], outline_width_px: 0.0, fill: true }
+}
+fn shape_hexagon() -> GeneratorData {
+    GeneratorData::Polygon { sides: 6, color: [255, 255, 255, 255], outline_width_px: 0.0, fill: true }
+}
+fn shape_octagon() -> GeneratorData {
+    GeneratorData::Polygon { sides: 8, color: [255, 255, 255, 255], outline_width_px: 0.0, fill: true }
+}
+fn shape_circle_approx() -> GeneratorData {
+    // 24-sided polygon reads as a circle at typical viewer sizes.
+    GeneratorData::Polygon { sides: 24, color: [255, 255, 255, 255], outline_width_px: 0.0, fill: true }
+}
+fn shape_star_5() -> GeneratorData {
+    GeneratorData::Star { points: 5, inner_radius_pct: 0.40, color: [255, 220, 60, 255], outline_width_px: 0.0, fill: true }
+}
+fn shape_star_6() -> GeneratorData {
+    GeneratorData::Star { points: 6, inner_radius_pct: 0.50, color: [255, 220, 60, 255], outline_width_px: 0.0, fill: true }
+}
+
+const CATEGORIES: &[&str] = &["Solid Color", "Gradient", "Test Pattern", "Countdown", "Shape"];
 
 const GENERATORS: &[GeneratorTemplate] = &[
     // Solid Color
@@ -107,6 +136,15 @@ const GENERATORS: &[GeneratorTemplate] = &[
     GeneratorTemplate { name: "SMPTE 75% Bars", category: "Test Pattern", create_data: color_bars, animated: false },
     // Countdown
     GeneratorTemplate { name: "Countdown",      category: "Countdown",    create_data: countdown,  animated: true },
+    // Shape
+    GeneratorTemplate { name: "Triangle",       category: "Shape", create_data: shape_triangle,        animated: false },
+    GeneratorTemplate { name: "Square",         category: "Shape", create_data: shape_square,          animated: false },
+    GeneratorTemplate { name: "Pentagon",       category: "Shape", create_data: shape_pentagon,        animated: false },
+    GeneratorTemplate { name: "Hexagon",        category: "Shape", create_data: shape_hexagon,         animated: false },
+    GeneratorTemplate { name: "Octagon",        category: "Shape", create_data: shape_octagon,         animated: false },
+    GeneratorTemplate { name: "Circle (24-gon)", category: "Shape", create_data: shape_circle_approx,  animated: false },
+    GeneratorTemplate { name: "Star (5-pt)",    category: "Shape", create_data: shape_star_5,          animated: false },
+    GeneratorTemplate { name: "Star (6-pt)",    category: "Shape", create_data: shape_star_6,          animated: false },
 ];
 
 const GENERATORS_SIDEBAR_W: f32 = 180.0;
@@ -627,6 +665,56 @@ fn paint_generator_preview(
                 egui::FontId::proportional(rect.height() * 0.5),
                 egui::Color32::WHITE,
             );
+        }
+
+        GeneratorData::Polygon { sides, color, .. } => {
+            // Card preview: dark backdrop + the filled n-gon at 70 %
+            // of the card's shorter side. egui's convex_polygon
+            // takes the same vertex layout as the production
+            // rasteriser (clockwise from 12 o'clock).
+            painter.rect_filled(rect, rounding, egui::Color32::from_gray(28));
+            let n = (*sides).max(3) as usize;
+            let cx = rect.center().x;
+            let cy = rect.center().y;
+            let radius = rect.height().min(rect.width()) * 0.35;
+            let verts: Vec<egui::Pos2> = (0..n).map(|i| {
+                let theta = -std::f32::consts::FRAC_PI_2
+                    + (i as f32) * std::f32::consts::TAU / (n as f32);
+                egui::pos2(cx + radius * theta.cos(), cy + radius * theta.sin())
+            }).collect();
+            let c = egui::Color32::from_rgba_premultiplied(color[0], color[1], color[2], color[3]);
+            painter.add(egui::Shape::convex_polygon(verts, c, egui::Stroke::NONE));
+        }
+
+        GeneratorData::Star { points, inner_radius_pct, color, .. } => {
+            // Star is non-convex so we use a Path shape instead of
+            // convex_polygon (which would fill the convex hull and
+            // mask the points). Outer radius matches the polygon
+            // preview's 35 % of the shorter side.
+            painter.rect_filled(rect, rounding, egui::Color32::from_gray(28));
+            let n_points = (*points).max(3) as usize;
+            let cx = rect.center().x;
+            let cy = rect.center().y;
+            let outer = rect.height().min(rect.width()) * 0.35;
+            let inner = outer * inner_radius_pct.clamp(0.05, 0.95);
+            let total = n_points * 2;
+            let mut verts: Vec<egui::Pos2> = Vec::with_capacity(total);
+            for i in 0..total {
+                let r = if i % 2 == 0 { outer } else { inner };
+                let theta = -std::f32::consts::FRAC_PI_2
+                    + (i as f32) * std::f32::consts::TAU / (total as f32);
+                verts.push(egui::pos2(cx + r * theta.cos(), cy + r * theta.sin()));
+            }
+            let c = egui::Color32::from_rgba_premultiplied(color[0], color[1], color[2], color[3]);
+            // Closed path filled with the chosen colour. egui's
+            // tessellator handles concave fans correctly even for
+            // 5-pointed stars.
+            painter.add(egui::Shape::Path(egui::epaint::PathShape {
+                points: verts,
+                closed: true,
+                fill: c,
+                stroke: egui::epaint::PathStroke::NONE,
+            }));
         }
     }
 }

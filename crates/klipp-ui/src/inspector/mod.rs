@@ -7885,5 +7885,139 @@ fn show_generator_editor(
                 .color(theme.text_dim),
             );
         }
+
+        klipp_core::GeneratorData::Polygon { sides, color, outline_width_px, fill } => {
+            ui.label(egui::RichText::new("Polygon").size(11.0).color(theme.text_secondary));
+            ui.add_space(4.0);
+
+            let mut sides_val = sides as i32;
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("Sides").strong().size(11.0));
+                if ui.add(egui::Slider::new(&mut sides_val, 3..=24)).changed() {
+                    cmds.push(AppCommand::UpdateGeneratorData {
+                        clip_id,
+                        data: klipp_core::GeneratorData::Polygon {
+                            sides: sides_val.max(3) as u32,
+                            color, outline_width_px, fill,
+                        },
+                    });
+                }
+            });
+
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("Color").strong().size(11.0));
+                let mut c = egui::Color32::from_rgba_premultiplied(
+                    color[0], color[1], color[2], color[3],
+                );
+                if ui.color_edit_button_srgba(&mut c).changed() {
+                    cmds.push(AppCommand::UpdateGeneratorData {
+                        clip_id,
+                        data: klipp_core::GeneratorData::Polygon {
+                            sides, color: [c.r(), c.g(), c.b(), c.a()],
+                            outline_width_px, fill,
+                        },
+                    });
+                }
+            });
+
+            let mut fill_val = fill;
+            if ui.checkbox(&mut fill_val, "Fill").changed() {
+                cmds.push(AppCommand::UpdateGeneratorData {
+                    clip_id,
+                    data: klipp_core::GeneratorData::Polygon {
+                        sides, color, outline_width_px,
+                        fill: fill_val,
+                    },
+                });
+            }
+
+            let mut stroke_val = outline_width_px;
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("Outline").strong().size(11.0));
+                if ui.add(egui::Slider::new(&mut stroke_val, 0.0..=20.0).suffix(" px")).changed() {
+                    cmds.push(AppCommand::UpdateGeneratorData {
+                        clip_id,
+                        data: klipp_core::GeneratorData::Polygon {
+                            sides, color, outline_width_px: stroke_val, fill,
+                        },
+                    });
+                }
+            });
+        }
+
+        klipp_core::GeneratorData::Star { points, inner_radius_pct, color, outline_width_px, fill } => {
+            ui.label(egui::RichText::new("Star").size(11.0).color(theme.text_secondary));
+            ui.add_space(4.0);
+
+            let mut pts_val = points as i32;
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("Points").strong().size(11.0));
+                if ui.add(egui::Slider::new(&mut pts_val, 3..=16)).changed() {
+                    cmds.push(AppCommand::UpdateGeneratorData {
+                        clip_id,
+                        data: klipp_core::GeneratorData::Star {
+                            points: pts_val.max(3) as u32,
+                            inner_radius_pct, color, outline_width_px, fill,
+                        },
+                    });
+                }
+            });
+
+            let mut inner_val = inner_radius_pct;
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("Inner radius").strong().size(11.0));
+                if ui.add(egui::Slider::new(&mut inner_val, 0.05..=0.95).step_by(0.01)).changed() {
+                    cmds.push(AppCommand::UpdateGeneratorData {
+                        clip_id,
+                        data: klipp_core::GeneratorData::Star {
+                            points, inner_radius_pct: inner_val,
+                            color, outline_width_px, fill,
+                        },
+                    });
+                }
+            });
+
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("Color").strong().size(11.0));
+                let mut c = egui::Color32::from_rgba_premultiplied(
+                    color[0], color[1], color[2], color[3],
+                );
+                if ui.color_edit_button_srgba(&mut c).changed() {
+                    cmds.push(AppCommand::UpdateGeneratorData {
+                        clip_id,
+                        data: klipp_core::GeneratorData::Star {
+                            points, inner_radius_pct,
+                            color: [c.r(), c.g(), c.b(), c.a()],
+                            outline_width_px, fill,
+                        },
+                    });
+                }
+            });
+
+            let mut fill_val = fill;
+            if ui.checkbox(&mut fill_val, "Fill").changed() {
+                cmds.push(AppCommand::UpdateGeneratorData {
+                    clip_id,
+                    data: klipp_core::GeneratorData::Star {
+                        points, inner_radius_pct, color, outline_width_px,
+                        fill: fill_val,
+                    },
+                });
+            }
+
+            let mut stroke_val = outline_width_px;
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("Outline").strong().size(11.0));
+                if ui.add(egui::Slider::new(&mut stroke_val, 0.0..=20.0).suffix(" px")).changed() {
+                    cmds.push(AppCommand::UpdateGeneratorData {
+                        clip_id,
+                        data: klipp_core::GeneratorData::Star {
+                            points, inner_radius_pct, color,
+                            outline_width_px: stroke_val, fill,
+                        },
+                    });
+                }
+            });
+        }
     }
 }

@@ -23,7 +23,202 @@ pub fn render_generator(
         GeneratorData::ColorBars => render_color_bars(width, height),
         GeneratorData::Countdown => render_countdown(width, height, elapsed_secs, total_secs),
         GeneratorData::StillFrame { png_path, .. } => render_still_frame(png_path, width, height),
+        GeneratorData::Polygon { sides, color, outline_width_px, fill } => {
+            render_polygon(*sides, *color, *outline_width_px, *fill, width, height)
+        }
+        GeneratorData::Star { points, inner_radius_pct, color, outline_width_px, fill } => {
+            render_star(*points, *inner_radius_pct, *color, *outline_width_px, *fill, width, height)
+        }
     }
+}
+
+/// Build the vertex list for a regular n-gon centred in the frame,
+/// inscribed in a circle of radius `radius_px`. Vertices are ordered
+/// clockwise starting at the top (12 o'clock). Pulled out so the
+/// star renderer can reuse it on a 2N-vertex alternating path.
+fn polygon_vertices(
+    n: usize,
+    cx: f32,
+    cy: f32,
+    radius_px: f32,
+) -> Vec<(f32, f32)> {
+    let mut verts = Vec::with_capacity(n);
+    for i in 0..n {
+        // -π/2 puts vertex 0 at the top; positive angle goes clockwise
+        // because our y-axis is inverted (image coordinates).
+        let theta = -std::f32::consts::FRAC_PI_2
+            + (i as f32) * std::f32::consts::TAU / (n as f32);
+        verts.push((cx + radius_px * theta.cos(), cy + radius_px * theta.sin()));
+    }
+    verts
+}
+
+/// Same shape but alternating between an outer and an inner radius —
+/// produces a 2N-vertex star polygon.
+fn star_vertices(
+    points: usize,
+    cx: f32,
+    cy: f32,
+    outer: f32,
+    inner: f32,
+) -> Vec<(f32, f32)> {
+    let total = points * 2;
+    let mut verts = Vec::with_capacity(total);
+    for i in 0..total {
+        let r = if i % 2 == 0 { outer } else { inner };
+        let theta = -std::f32::consts::FRAC_PI_2
+            + (i as f32) * std::f32::consts::TAU / (total as f32);
+        verts.push((cx + r * theta.cos(), cy + r * theta.sin()));
+    }
+    verts
+}
+
+/// Even-odd point-in-polygon test. Robust against vertex order and
+/// concavity (which is what makes it work for stars). Edge cases
+/// (point exactly on an edge) round consistently — egui's pixel
+/// grid centres each pixel at integer coordinates so we don't see
+/// half-pixel ambiguity in practice.
+fn point_in_polygon(verts: &[(f32, f32)], px: f32, py: f32) -> bool {
+    let mut inside = false;
+    let n = verts.len();
+    if n < 3 { return false; }
+    let mut j = n - 1;
+    for i in 0..n {
+        let (xi, yi) = verts[i];
+        let (xj, yj) = verts[j];
+        let crosses = (yi > py) != (yj > py);
+        if crosses {
+            // Slope-test x-coordinate at this y.
+            let x_at = (xj - xi) * (py - yi) / (yj - yi) + xi;
+            if px < x_at {
+                inside = !inside;
+            }
+        }
+        j = i;
+    }
+    inside
+}
+
+/// Squared distance from a point to a line segment, in pixels.
+/// Used for outline-only rendering: a pixel is "on" the stroke
+/// when its minimum distance to any polygon edge is ≤ half the
+/// stroke width.
+fn point_to_segment_dist2(px: f32, py: f32, ax: f32, ay: f32, bx: f32, by: f32) -> f32 {
+    let dx = bx - ax;
+    let dy = by - ay;
+    let len2 = dx * dx + dy * dy;
+    if len2 < 1e-6 {
+        let dx0 = px - ax;
+        let dy0 = py - ay;
+        return dx0 * dx0 + dy0 * dy0;
+    }
+    let t = (((px - ax) * dx + (py - ay) * dy) / len2).clamp(0.0, 1.0);
+    let qx = ax + t * dx;
+    let qy = ay + t * dy;
+    let ex = px - qx;
+    let ey = py - qy;
+    ex * ex + ey * ey
+}
+
+/// Generic polygon rasteriser used by both the regular-polygon and
+/// star renderers. Background is transparent (alpha 0); pixels
+/// inside the polygon get `color` (or the outline if `fill` is
+/// false); pixels within `outline_width_px / 2` of any edge are
+/// also drawn in `color` regardless of fill mode.
+fn rasterise_polygon(
+    verts: &[(f32, f32)],
+    color: [u8; 4],
+    outline_width_px: f32,
+    fill: bool,
+    width: u32,
+    height: u32,
+) -> Vec<u8> {
+    let pixel_count = (width as usize) * (height as usize);
+    let mut buf = vec![0u8; pixel_count * 4];
+    let n = verts.len();
+    if n < 3 { return buf; }
+    let stroke_half = outline_width_px.max(0.0) * 0.5;
+    let stroke_thresh2 = stroke_half * stroke_half;
+    let needs_stroke = stroke_half > 0.0;
+
+    for y in 0..height {
+        for x in 0..width {
+            let px = x as f32 + 0.5;
+            let py = y as f32 + 0.5;
+            let mut hit = false;
+            if fill && point_in_polygon(verts, px, py) {
+                hit = true;
+            }
+            if !hit && needs_stroke {
+                // Distance to any edge ≤ stroke_half → on the line.
+                let mut min_d2 = f32::INFINITY;
+                let mut j = n - 1;
+                for i in 0..n {
+                    let d2 = point_to_segment_dist2(
+                        px, py,
+                        verts[j].0, verts[j].1,
+                        verts[i].0, verts[i].1,
+                    );
+                    if d2 < min_d2 { min_d2 = d2; }
+                    j = i;
+                }
+                if min_d2 <= stroke_thresh2 {
+                    hit = true;
+                }
+            }
+            if hit {
+                let i = ((y as usize) * (width as usize) + (x as usize)) * 4;
+                buf[i] = color[0];
+                buf[i + 1] = color[1];
+                buf[i + 2] = color[2];
+                buf[i + 3] = color[3];
+            }
+        }
+    }
+    buf
+}
+
+/// Regular polygon centred in the frame. `sides < 3` falls back to 3
+/// (triangle) — a straight-line "polygon" makes no visible sense
+/// and we'd rather show *something* than a blank frame. Inscribed
+/// in a circle of radius 40 % of the frame's shorter side so the
+/// shape stays comfortably inside the visible area at any aspect.
+pub fn render_polygon(
+    sides: u32,
+    color: [u8; 4],
+    outline_width_px: f32,
+    fill: bool,
+    width: u32,
+    height: u32,
+) -> Vec<u8> {
+    let n = sides.max(3) as usize;
+    let cx = width as f32 * 0.5;
+    let cy = height as f32 * 0.5;
+    let radius = (width.min(height) as f32) * 0.40;
+    let verts = polygon_vertices(n, cx, cy, radius);
+    rasterise_polygon(&verts, color, outline_width_px, fill, width, height)
+}
+
+/// N-pointed star centred in the frame. `points < 3` falls back to 3
+/// (a degenerate triangle-with-pinch — visually unusual but still
+/// a star). `inner_radius_pct` is clamped to (0.05, 0.95) so we
+/// never emit a degenerate zero-width or all-but-collapsed shape.
+pub fn render_star(
+    points: u32,
+    inner_radius_pct: f32,
+    color: [u8; 4],
+    outline_width_px: f32,
+    fill: bool,
+    width: u32,
+    height: u32,
+) -> Vec<u8> {
+    let n = points.max(3) as usize;
+    let cx = width as f32 * 0.5;
+    let cy = height as f32 * 0.5;
+    let outer = (width.min(height) as f32) * 0.40;
+    let inner = outer * inner_radius_pct.clamp(0.05, 0.95);
+    let verts = star_vertices(n, cx, cy, outer, inner);
+    rasterise_polygon(&verts, color, outline_width_px, fill, width, height)
 }
 
 /// Decode the sidecar PNG at `png_path` and resize to `(width, height)`.
@@ -413,6 +608,73 @@ mod tests {
         );
         assert_eq!(render_color_bars(640, 480).len(), expected);
         assert_eq!(render_countdown(640, 480, 2.0, 10.0).len(), expected);
+        assert_eq!(render_polygon(6, [255, 0, 0, 255], 0.0, true, 640, 480).len(), expected);
+        assert_eq!(render_star(5, 0.4, [255, 255, 0, 255], 0.0, true, 640, 480).len(), expected);
+    }
+
+    #[test]
+    fn polygon_centre_pixel_is_filled() {
+        // Triangle at the frame centre — the centre pixel must be
+        // inside the polygon for any sides ≥ 3.
+        for sides in [3u32, 4, 5, 6, 8, 12] {
+            let buf = render_polygon(sides, [255, 255, 255, 255], 0.0, true, 64, 64);
+            let centre_idx = (32 * 64 + 32) * 4;
+            assert_eq!(
+                &buf[centre_idx..centre_idx + 4],
+                &[255, 255, 255, 255],
+                "centre pixel missing for {sides}-gon",
+            );
+        }
+    }
+
+    #[test]
+    fn polygon_corner_pixel_is_transparent() {
+        // 40 % radius means the polygon never touches the frame
+        // corners — they must stay alpha=0 (background).
+        let buf = render_polygon(6, [255, 0, 0, 255], 0.0, true, 64, 64);
+        let corner_idx = 0;
+        assert_eq!(buf[corner_idx + 3], 0, "(0,0) should be transparent");
+    }
+
+    #[test]
+    fn polygon_outline_only_leaves_interior_transparent() {
+        // fill = false + non-zero outline → only the stroke is
+        // drawn; the centre stays transparent.
+        let buf = render_polygon(6, [255, 0, 0, 255], 2.0, false, 64, 64);
+        let centre_idx = (32 * 64 + 32) * 4;
+        assert_eq!(buf[centre_idx + 3], 0, "centre should be transparent in outline-only mode");
+    }
+
+    #[test]
+    fn star_centre_pixel_is_filled() {
+        let buf = render_star(5, 0.4, [255, 255, 0, 255], 0.0, true, 64, 64);
+        let centre_idx = (32 * 64 + 32) * 4;
+        assert_eq!(&buf[centre_idx..centre_idx + 4], &[255, 255, 0, 255]);
+    }
+
+    #[test]
+    fn star_inner_radius_clamped() {
+        // inner_radius_pct = 0 should clamp to 0.05 internally
+        // (a degenerate zero-inner star would collapse to a circle
+        // and produce visual artefacts). Test via rendered byte
+        // count + non-empty fill — implementation detail of the
+        // clamp, but the contract is "no crash + visible shape".
+        let buf = render_star(5, 0.0, [255, 255, 255, 255], 0.0, true, 64, 64);
+        let centre_idx = (32 * 64 + 32) * 4;
+        assert_eq!(buf[centre_idx + 3], 255);
+    }
+
+    #[test]
+    fn polygon_sides_below_3_falls_back() {
+        // sides=0 / sides=1 / sides=2 should not crash; render
+        // SOMETHING (treated as a triangle).
+        for bad in [0u32, 1, 2] {
+            let buf = render_polygon(bad, [255, 255, 255, 255], 0.0, true, 32, 32);
+            assert_eq!(buf.len(), 32 * 32 * 4);
+            // Centre pixel filled (means a triangle was drawn).
+            let centre_idx = (16 * 32 + 16) * 4;
+            assert_eq!(buf[centre_idx + 3], 255, "sides={bad} should fall back to a triangle");
+        }
     }
 
     #[test]

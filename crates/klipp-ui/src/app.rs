@@ -3907,6 +3907,8 @@ impl KlippApp {
                         klipp_core::GeneratorData::ColorBars => "Color Bars",
                         klipp_core::GeneratorData::Countdown => "Countdown",
                         klipp_core::GeneratorData::StillFrame { .. } => "Freeze Frame",
+                        klipp_core::GeneratorData::Polygon { .. } => "Polygon",
+                        klipp_core::GeneratorData::Star { .. } => "Star",
                     };
                     let seq = &mut self.state.sequences[self.state.active_sequence_idx];
                     let track_idx = track_index.unwrap_or_else(|| {

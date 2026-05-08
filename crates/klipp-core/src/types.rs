@@ -313,7 +313,36 @@ pub enum GeneratorData {
         width: u32,
         height: u32,
     },
+    /// Regular polygon centred in the frame. `sides ≥ 3` (clamped on
+    /// render). Inscribed in a circle with radius = 40 % of the
+    /// frame's shorter side. `outline_width_px > 0` adds a stroke;
+    /// `fill = false` renders outline only (transparent interior).
+    Polygon {
+        sides: u32,
+        color: [u8; 4],
+        #[serde(default)]
+        outline_width_px: f32,
+        #[serde(default = "default_fill")]
+        fill: bool,
+    },
+    /// N-pointed star centred in the frame. Even-vertex polygon
+    /// alternating between an outer radius (40 % of the frame's
+    /// shorter side) and an inner radius
+    /// (`outer * inner_radius_pct`). `points ≥ 3`,
+    /// `inner_radius_pct ∈ (0, 1]`. Outline + fill semantics match
+    /// `Polygon`.
+    Star {
+        points: u32,
+        inner_radius_pct: f32,
+        color: [u8; 4],
+        #[serde(default)]
+        outline_width_px: f32,
+        #[serde(default = "default_fill")]
+        fill: bool,
+    },
 }
+
+fn default_fill() -> bool { true }
 
 impl Default for GeneratorData {
     fn default() -> Self {
