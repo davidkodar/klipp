@@ -29,6 +29,10 @@ const NODE_HEADER_H: f32 = 16.0;
 const PORT_RADIUS: f32 = 5.0;
 const PORT_HIT_RADIUS: f32 = 9.0;
 const GRID_SPACING: f32 = 32.0;
+/// Square side for `NodeKind::Reroute` — small enough to read as a
+/// "dot on the wire" rather than a node card, big enough that the
+/// input + output ports don't overlap each other.
+const REROUTE_SIZE: f32 = 20.0;
 
 fn node_color(kind: &NodeKind, theme: &KlippTheme) -> egui::Color32 {
     match kind {
@@ -47,6 +51,11 @@ fn node_color(kind: &NodeKind, theme: &KlippTheme) -> egui::Color32 {
         // grade-node palette) — reinforced by the stacked-card
         // shadow painted behind it in the render loop.
         NodeKind::Compound => egui::Color32::from_rgb(0x2f, 0x5e, 0x60),
+        // Reroute is a routing aid, not a grade — neutral grey so
+        // it sits below the kind-coloured cards visually. The dot/
+        // diamond render path doesn't paint a body anyway, but the
+        // colour shows up on the wire-tail dot if we ever surface it.
+        NodeKind::Reroute => egui::Color32::from_rgb(0x4a, 0x4a, 0x4a),
         _ => egui::Color32::from_rgb(0x3a, 0x4a, 0x5c),
     }
 }
@@ -507,7 +516,18 @@ impl NodeGraphV2Panel {
                 .copied()
                 .unwrap_or(NodePos { x: 0.0, y: 0.0 });
             let center = to_screen(egui::pos2(pos.x, pos.y));
-            let size = egui::vec2(NODE_W * zoom, NODE_H * zoom);
+            // Reroute is a wire-routing aid, not a grade — render
+            // it as a 20×20 px dot rather than a full 120×60 card so
+            // it doesn't compete visually with real nodes. The
+            // smaller rect feeds back into port-position math via a
+            // height threshold in `port_pos_on_edge` so input/output
+            // ports land on the dot's edges, not in empty space
+            // beside it.
+            let size = if matches!(node.kind, NodeKind::Reroute) {
+                egui::vec2(REROUTE_SIZE * zoom, REROUTE_SIZE * zoom)
+            } else {
+                egui::vec2(NODE_W * zoom, NODE_H * zoom)
+            };
             let rect = egui::Rect::from_center_size(center, size);
             let in_count = node.dynamic_input_port_count();
             node_rects.push((node.id, rect, node_color(&node.kind, theme), node.kind, in_count));
@@ -569,7 +589,19 @@ impl NodeGraphV2Panel {
             else { continue; };
             let from = output_port_pos(&from_rect, edge.from_port, &from_kind);
             let to = input_port_pos(&to_rect, edge.to_port, to_in_count);
-            let role = to_kind.input_port_role(edge.to_port);
+            // Wire colour follows the destination's expected input
+            // role (matte ports magenta, etc.) UNLESS the destination
+            // is generic — Reroute or any other kind whose port-role
+            // resolves to Primary. In that case fall through to the
+            // signal's actual role at the source, walking back through
+            // any Reroute chain so a magenta matte stays magenta even
+            // after several reroute hops.
+            let dest_role = to_kind.input_port_role(edge.to_port);
+            let role = if matches!(to_kind, NodeKind::Reroute) || dest_role == klipp_nodes::PortRole::Primary {
+                klipp_nodes::effective_signal_role_at(graph, edge.from_node, edge.from_port)
+            } else {
+                dest_role
+            };
             let (r, g, b) = role.editor_color();
             // Idle existing edges get a translucent stroke so they
             // don't shout over the foreground; the role colour is
@@ -638,7 +670,15 @@ impl NodeGraphV2Panel {
                 // signal is being routed. Painted DASHED so the user
                 // can tell at a glance the connection isn't committed
                 // yet (committed edges always paint solid above).
-                let (r, g, b) = from_kind.output_port_role(dw.from_port).editor_color();
+                // Walking back through any Reroute chain at the source
+                // so dragging from a Reroute output keeps the upstream
+                // signal's colour rather than defaulting to amber.
+                let role = if matches!(from_kind, NodeKind::Reroute) {
+                    klipp_nodes::effective_signal_role_at(graph, dw.from_node, dw.from_port)
+                } else {
+                    from_kind.output_port_role(dw.from_port)
+                };
+                let (r, g, b) = role.editor_color();
                 let color = egui::Color32::from_rgb(r, g, b);
                 draw_wire_dashed(&painter, from, to, color, 2.0 * zoom);
 
@@ -700,6 +740,37 @@ impl NodeGraphV2Panel {
             // confusing during a Group / Delete-all gesture.
             let is_selected =
                 *selected_node == Some(node_id) || selected_set.contains(&node_id);
+
+            // Reroute is rendered as a dot, not a card — fully
+            // self-contained branch so we don't pay for shadow /
+            // highlight / header / body / chip / thumbnail logic
+            // that doesn't apply. Selection halo is a single
+            // amber ring, port hit-test continues to use the rect
+            // edges which `port_pos_on_edge` translates correctly
+            // for the small rect.
+            if matches!(kind, NodeKind::Reroute) {
+                let centre = rect.center();
+                let radius = rect.width() * 0.40;
+                if is_selected {
+                    let halo = theme.accent;
+                    painter.circle_stroke(
+                        centre,
+                        radius + 4.0,
+                        egui::Stroke::new(1.5, egui::Color32::from_rgba_unmultiplied(
+                            halo.r(), halo.g(), halo.b(), 70,
+                        )),
+                    );
+                }
+                painter.circle_filled(centre, radius, theme.bg_panel);
+                let border = if is_selected { theme.accent } else { theme.border };
+                let border_w = if is_selected { 1.6_f32 } else { 0.9_f32 };
+                painter.circle_stroke(centre, radius, egui::Stroke::new(border_w, border));
+                // Tiny inner dot in the kind colour so the routing
+                // node still has a visual identity even at extreme
+                // zoom-out where the outline disappears.
+                painter.circle_filled(centre, radius * 0.4, fill);
+                continue;
+            }
 
             // Body
             let header_h = NODE_HEADER_H * zoom;
@@ -1051,10 +1122,23 @@ impl NodeGraphV2Panel {
 
             // Input ports (left edge) — role-coloured stroke +
             // hover tooltip naming the port. Use the dynamic count so
-            // a LayerMixer with 5 wires shows 5 ports.
+            // a LayerMixer with 5 wires shows 5 ports. For Reroute,
+            // the static input role is Primary; reach back through
+            // the upstream chain so the port matches the wire colour
+            // we just painted into it.
             for p in 0..in_count {
                 let pos = input_port_pos(&rect, p, in_count);
-                let role = kind.input_port_role(p);
+                let role = if matches!(kind, NodeKind::Reroute) {
+                    // Find the edge feeding this port and take the
+                    // upstream's effective signal role; fall back to
+                    // Primary when disconnected.
+                    graph.edges.iter()
+                        .find(|e| e.to_node == node_id && e.to_port == p)
+                        .map(|e| klipp_nodes::effective_signal_role_at(graph, e.from_node, e.from_port))
+                        .unwrap_or(klipp_nodes::PortRole::Primary)
+                } else {
+                    kind.input_port_role(p)
+                };
                 let (rr, gg, bb) = role.editor_color();
                 painter.circle_filled(pos, PORT_RADIUS * zoom, theme.bg_deep);
                 painter.circle_stroke(
@@ -1105,9 +1189,16 @@ impl NodeGraphV2Panel {
             }
 
             // Output ports (right edge) — same proximity gate as inputs.
+            // Reroute's output reflects whatever's flowing through it,
+            // so use the chain-walking helper to pick a role consistent
+            // with the wire we'll paint downstream.
             for p in 0..kind.output_port_count() {
                 let pos = output_port_pos(&rect, p, &kind);
-                let role = kind.output_port_role(p);
+                let role = if matches!(kind, NodeKind::Reroute) {
+                    klipp_nodes::effective_signal_role_at(graph, node_id, p)
+                } else {
+                    kind.output_port_role(p)
+                };
                 let (rr, gg, bb) = role.editor_color();
                 painter.circle_filled(pos, PORT_RADIUS * zoom, theme.bg_deep);
                 painter.circle_stroke(
@@ -1748,6 +1839,7 @@ impl NodeGraphV2Panel {
                 ("Noise Reduction", "Denoise"),
                 ("RGB Splitter", "RGBSplitter"),
                 ("RGB Combiner", "RGBCombiner"),
+                ("Reroute", "Reroute"),
             ]),
             ("Structural", &[
                 ("Compound", "Compound"),
@@ -2020,7 +2112,12 @@ impl NodeGraphV2Panel {
                     // below — bypass / delete / group don't apply to
                     // them, so skip those entries entirely.
                     let is_structural = matches!(kind, NodeKind::Source | NodeKind::Output);
-                    if !is_structural {
+                    // Reroute is already a passthrough — Bypass
+                    // would be a no-op-on-no-op; suppress to avoid
+                    // user confusion (Delete / Disconnect still
+                    // appear).
+                    let is_passthrough_kind = matches!(kind, NodeKind::Reroute);
+                    if !is_structural && !is_passthrough_kind {
                         let toggle = if enabled { "Bypass" } else { "Enable" };
                         if ui.button(toggle).clicked() {
                             cmds.push(AppCommand::ToggleNodeEnabled { clip_id, node_id });
@@ -2205,10 +2302,19 @@ fn output_port_pos(rect: &egui::Rect, port: u8, kind: &NodeKind) -> egui::Pos2 {
 }
 
 fn port_pos_on_edge(rect: &egui::Rect, port: u8, count: u8, output: bool) -> egui::Pos2 {
-    let body_top = rect.min.y + NODE_HEADER_H * (rect.height() / NODE_H);
-    let body_h = rect.max.y - body_top;
+    // Small-rect fast path: rects under 40 px tall are dot-style
+    // nodes (Reroute today; future routing kinds in the same family).
+    // They have no header strip, so ports land on the centre of the
+    // rect's left/right edge directly.
+    let small = rect.height() < 40.0;
+    let (top, h) = if small {
+        (rect.min.y, rect.height())
+    } else {
+        let body_top = rect.min.y + NODE_HEADER_H * (rect.height() / NODE_H);
+        (body_top, rect.max.y - body_top)
+    };
     let frac = (port as f32 + 0.5) / count as f32;
-    let y = body_top + body_h * frac;
+    let y = top + h * frac;
     let x = if output { rect.max.x } else { rect.min.x };
     egui::pos2(x, y)
 }

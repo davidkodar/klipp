@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::kinds::NodeKind;
+use crate::kinds::{NodeKind, PortRole};
 use crate::params::{NodeKeyframeTracks, NodeParams};
 
 pub type NodeId = Uuid;
@@ -588,11 +588,48 @@ impl NodeGraph {
     }
 }
 
+/// Walk back through any chain of `NodeKind::Reroute` to find the
+/// actual signal-producing source — i.e. what kind of signal is
+/// flowing OUT of `(node_id, port)`. For non-Reroute nodes this is
+/// just `node.kind.output_port_role(port)`. For Reroute, the role
+/// is whatever feeds the Reroute's input port 0; chained Reroutes
+/// follow the chain transitively.
+///
+/// Used by the V2 editor's wire/port colour-coding so a Reroute
+/// dropped into a matte chain doesn't visually break the magenta
+/// run with an amber stub. Returns `PortRole::Primary` when the
+/// chain hits a disconnected Reroute, an unknown node, or the hop
+/// cap (cycle protection — the engine's chain-builder rejects
+/// cycles upstream, but the cap keeps this fn safe to call from
+/// any UI context).
+pub fn effective_signal_role_at(graph: &NodeGraph, node_id: NodeId, port: u8) -> PortRole {
+    const MAX_HOPS: usize = 32;
+    let mut current_node = node_id;
+    let mut current_port = port;
+    for _ in 0..MAX_HOPS {
+        let Some(n) = graph.nodes.iter().find(|n| n.id == current_node) else {
+            return PortRole::Primary;
+        };
+        if n.kind != NodeKind::Reroute {
+            return n.kind.output_port_role(current_port);
+        }
+        // Reroute — walk back to the upstream source via input port 0.
+        let Some(upstream) = graph.edges.iter()
+            .find(|e| e.to_node == current_node && e.to_port == 0)
+        else {
+            return PortRole::Primary; // disconnected reroute
+        };
+        current_node = upstream.from_node;
+        current_port = upstream.from_port;
+    }
+    PortRole::Primary
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::defaults::default_graph;
-    use crate::kinds::NodeKind;
+    use crate::kinds::{NodeKind, PortRole};
     use klipp_core::WorkingColorspace;
 
     fn count_kind(g: &NodeGraph, kind: NodeKind) -> usize {
@@ -669,5 +706,85 @@ mod tests {
         assert_eq!(tail_node.kind, NodeKind::PrimariesMatrix);
         assert_eq!(tail_node.params.primaries_from, Some(WorkingColorspace::Rec709Linear));
         assert_eq!(tail_node.params.primaries_to, Some(WorkingColorspace::AcesCG));
+    }
+
+    fn make_node(kind: NodeKind) -> Node {
+        Node {
+            id: NodeId::new_v4(),
+            kind,
+            label: kind.display_name().to_string(),
+            enabled: true,
+            params: Default::default(),
+            keyframes: Default::default(),
+            output_link: None,
+            input_links: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn reroute_inherits_upstream_matte_role() {
+        // Qualifier (matte producer) → Reroute → Reroute → ApplyMatte
+        // The two intermediate Reroute outputs should both report
+        // PortRole::Matte rather than the static Primary fallback.
+        let mut g = NodeGraph::default();
+        let qual = make_node(NodeKind::Qualifier);
+        let r1 = make_node(NodeKind::Reroute);
+        let r2 = make_node(NodeKind::Reroute);
+        let qual_id = qual.id;
+        let r1_id = r1.id;
+        let r2_id = r2.id;
+        g.nodes = vec![qual, r1, r2];
+        g.edges = vec![
+            Edge { from_node: qual_id, from_port: 0, to_node: r1_id,  to_port: 0 },
+            Edge { from_node: r1_id,   from_port: 0, to_node: r2_id,  to_port: 0 },
+        ];
+
+        // Direct from Qualifier — static role wins (Matte).
+        assert_eq!(
+            effective_signal_role_at(&g, qual_id, 0),
+            PortRole::Matte,
+        );
+        // Reroute output — walks back through the chain, lands on Matte.
+        assert_eq!(
+            effective_signal_role_at(&g, r1_id, 0),
+            PortRole::Matte,
+        );
+        assert_eq!(
+            effective_signal_role_at(&g, r2_id, 0),
+            PortRole::Matte,
+        );
+    }
+
+    #[test]
+    fn reroute_disconnected_falls_back_to_primary() {
+        let mut g = NodeGraph::default();
+        let r = make_node(NodeKind::Reroute);
+        let r_id = r.id;
+        g.nodes = vec![r];
+        // No edges — Reroute has nothing feeding it.
+        assert_eq!(
+            effective_signal_role_at(&g, r_id, 0),
+            PortRole::Primary,
+        );
+    }
+
+    #[test]
+    fn reroute_chain_cycle_capped() {
+        // Pathological: R1 → R2 → R1 (the engine validator rejects
+        // this on the executor side, but the role-walker must still
+        // terminate). We just verify the function returns without
+        // hanging — the actual role result on a cycle is unspecified
+        // (Primary is what we've documented).
+        let mut g = NodeGraph::default();
+        let r1 = make_node(NodeKind::Reroute);
+        let r2 = make_node(NodeKind::Reroute);
+        let r1_id = r1.id;
+        let r2_id = r2.id;
+        g.nodes = vec![r1, r2];
+        g.edges = vec![
+            Edge { from_node: r1_id, from_port: 0, to_node: r2_id, to_port: 0 },
+            Edge { from_node: r2_id, from_port: 0, to_node: r1_id, to_port: 0 },
+        ];
+        let _ = effective_signal_role_at(&g, r1_id, 0); // must not loop
     }
 }

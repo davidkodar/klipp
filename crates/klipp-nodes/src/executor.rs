@@ -1884,6 +1884,11 @@ impl GraphExecutor {
         match kind {
             NodeKind::Source => source_frame.to_vec(),
 
+            // Reroute — pure wire-routing aid, no work. Mirrors the
+            // bypass path's primary-input copy so a Reroute slipped
+            // into any chain is a no-op on the pixels.
+            NodeKind::Reroute => primary_input.to_vec(),
+
             NodeKind::InputTransform => {
                 if let Some(fmt) = params.log_format {
                     use klipp_core::LogFormat;

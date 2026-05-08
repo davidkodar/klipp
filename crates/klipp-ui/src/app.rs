@@ -11152,6 +11152,7 @@ impl KlippApp {
             "RGBSplitter" => klipp_nodes::NodeKind::RGBSplitter,
             "RGBCombiner" => klipp_nodes::NodeKind::RGBCombiner,
             "MaskCutout" => klipp_nodes::NodeKind::MaskCutout,
+            "Reroute" => klipp_nodes::NodeKind::Reroute,
             _ => { return; }
         };
         self.with_current_clip_graph_mut(clip_id, needs_refresh, |graph| {

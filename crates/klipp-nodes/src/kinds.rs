@@ -141,6 +141,16 @@ pub enum NodeKind {
     /// Feathered edges just fall out of the multiply.
     MaskCutout,
 
+    /// Reroute — 1 input, 1 output, no params, no work. The output
+    /// is byte-for-byte the input; the executor's bypass path
+    /// already does this so the CPU/GPU dispatchers just call
+    /// `primary_input.to_vec()`. Sole purpose is wire-routing
+    /// hygiene in dense graphs: insert one to bend a long wire
+    /// around a cluster of nodes, or to merge a labelled split.
+    /// Renders as a tiny dot/diamond rather than a full card so
+    /// it doesn't compete with real nodes for visual weight.
+    Reroute,
+
     // ── Future ──────────────────────────────────────────────────
     #[serde(other)]
     Unknown,
@@ -315,6 +325,7 @@ impl NodeKind {
             NodeKind::RGBCombiner => "RGB Combiner",
             NodeKind::MaskCutout => "Mask Cutout",
             NodeKind::PrimariesMatrix => "Primaries Matrix",
+            NodeKind::Reroute => "Reroute",
             NodeKind::Unknown => "Unknown",
         }
     }
