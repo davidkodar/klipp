@@ -777,15 +777,49 @@ impl NodeGraphV2Panel {
                 dest_role
             };
             let (r, g, b) = role.editor_color();
-            // Idle existing edges get a translucent stroke so they
-            // don't shout over the foreground; the role colour is
-            // still visible. Hovered edge: full alpha + ~1.6× width
-            // so it pops without redrawing the rest of the graph.
+            // Two-pass paint per wire: a wider, dimmer "signal
+            // glow" underlay first, then the crisp role-coloured
+            // stroke on top. The glow gives every committed wire a
+            // subtle halo so it reads as a carrying signal rather
+            // than a pen line, without any animation cost. Hover
+            // boosts both the underlay alpha + width AND the main
+            // stroke width so the focus state pops further.
             let is_hover = hovered_edge == Some(idx);
-            let alpha = if is_hover { 255 } else { 180 };
-            let width = if is_hover { 2.5 } else { 1.5 } * zoom;
-            let color = egui::Color32::from_rgba_unmultiplied(r, g, b, alpha);
-            draw_wire(&painter, from, to, color, width);
+            let main_width = if is_hover { 3.0 } else { 1.5 } * zoom;
+            let glow_width = if is_hover { 5.0 } else { 3.5 } * zoom;
+            let glow_alpha = if is_hover { 90 } else { 40 };
+            let main_alpha = if is_hover { 255 } else { 180 };
+            let glow = egui::Color32::from_rgba_unmultiplied(r, g, b, glow_alpha);
+            draw_wire(&painter, from, to, glow, glow_width);
+            let main = egui::Color32::from_rgba_unmultiplied(r, g, b, main_alpha);
+            draw_wire(&painter, from, to, main, main_width);
+            // Animated traversal pulse on the hovered wire only —
+            // small bright bead travels source → destination at
+            // ~1.5 s/cycle. Direction matches data flow so it
+            // doubles as a visual cue for "this is feeding that".
+            // Continuous repaint is gated to is_hover so idle
+            // canvases stay quiet (only one wire animates at a
+            // time; the existing 100 % CPU bug from over-eager
+            // hover gates is the constraint we're respecting).
+            if is_hover {
+                let time = ui.input(|i| i.time) as f32;
+                let cycle = 1.5_f32;
+                let phase = (time / cycle).fract();
+                let p = bezier_at_phase(from, to, phase);
+                let bead_r = (3.5 * zoom).max(2.0);
+                painter.circle_filled(
+                    p, bead_r,
+                    egui::Color32::from_rgb(r, g, b),
+                );
+                painter.circle_stroke(
+                    p, bead_r,
+                    egui::Stroke::new(
+                        1.0,
+                        egui::Color32::from_rgba_unmultiplied(r, g, b, 80),
+                    ),
+                );
+                ui.ctx().request_repaint();
+            }
         }
 
         // Snap target: while a drag wire is in flight, find the
@@ -1981,7 +2015,7 @@ impl NodeGraphV2Panel {
 
         // ── Floating menus (egui::Area) ──────────────────────────
         if self.add_menu_open {
-            self.draw_add_menu(ui, clip_id, &mut cmds);
+            self.draw_add_menu(ui, clip_id, &mut cmds, theme);
         }
         if let Some((nid, _pos)) = self.node_menu {
             // Snapshot kind+enabled so we can borrow out of `graph` cleanly
@@ -2301,6 +2335,7 @@ impl NodeGraphV2Panel {
         ui: &mut egui::Ui,
         clip_id: ClipId,
         cmds: &mut Vec<AppCommand>,
+        theme: &KlippTheme,
     ) {
         // Salt the menu id with `add_menu_opened_frame` so each open
         // is a fresh egui::Area / ScrollArea layer with no cached
@@ -2435,6 +2470,14 @@ impl NodeGraphV2Panel {
                         .auto_shrink([true, false])
                         .max_height(max_h)
                         .show(ui, |ui| {
+                            // Caption colour: full text_primary at
+                            // small size. Brighter than .weak()
+                            // (which is text_dim) so labels are
+                            // legible at a glance; size still
+                            // subordinates them visually so they
+                            // read as captions rather than entries.
+                            let caption_color = theme.text_primary;
+
                             // ── Recent (only when not searching) ──
                             // Surfaces the user's last few picks at
                             // the top so the common case ("add the
@@ -2442,18 +2485,27 @@ impl NodeGraphV2Panel {
                             // node") is one click away. Hidden when
                             // empty so first-open is uncluttered.
                             if !in_search && !self.add_menu_recents.is_empty() {
-                                ui.label(egui::RichText::new("RECENT").small().weak());
+                                ui.label(
+                                    egui::RichText::new("RECENT")
+                                        .small()
+                                        .color(caption_color),
+                                );
                                 for kind in self.add_menu_recents.clone() {
                                     if let Some(label) = label_for_kind(kind) {
-                                        if ui.button(label).clicked() {
+                                        if add_menu_entry(ui, label, theme) {
                                             chosen_kind = Some(kind);
                                         }
                                     }
                                 }
-                                ui.separator();
+                                ui.add_space(8.0);
                             }
 
                             // ── Categories ───────────────────────
+                            // Inter-category spacing for a calmer
+                            // scan rhythm. Padding lives here so the
+                            // last category doesn't trail dead
+                            // whitespace at the bottom of the menu.
+                            let mut first_cat = true;
                             for (cat_name, entries) in CATEGORIES {
                                 // Pre-filter so we know whether the
                                 // category has any visible entries
@@ -2464,17 +2516,22 @@ impl NodeGraphV2Panel {
                                     .filter(|(label, _)| matches(label))
                                     .collect();
                                 if visible.is_empty() { continue; }
+                                if !first_cat { ui.add_space(8.0); }
+                                first_cat = false;
 
                                 if in_search {
                                     // Search mode: skip collapse UI;
                                     // show every match flat under a
-                                    // weak category caption so the
-                                    // user can still tell which
-                                    // bucket each entry came from.
-                                    ui.label(egui::RichText::new(cat_name.to_uppercase())
-                                        .small().weak());
+                                    // category caption so the user
+                                    // can still tell which bucket
+                                    // each entry came from.
+                                    ui.label(
+                                        egui::RichText::new(cat_name.to_uppercase())
+                                            .small()
+                                            .color(caption_color),
+                                    );
                                     for (label, kind_str) in visible {
-                                        if ui.button(*label).clicked() {
+                                        if add_menu_entry(ui, label, theme) {
                                             chosen_kind = Some(*kind_str);
                                         }
                                     }
@@ -2488,8 +2545,11 @@ impl NodeGraphV2Panel {
                                     let header_label = format!("{arrow}  {cat_name}");
                                     let header_resp = ui.add(
                                         egui::Label::new(
-                                            egui::RichText::new(header_label).strong()
-                                        ).sense(egui::Sense::click()),
+                                            egui::RichText::new(header_label)
+                                                .strong()
+                                                .color(theme.text_primary),
+                                        )
+                                        .sense(egui::Sense::click()),
                                     );
                                     if header_resp.clicked() {
                                         if collapsed {
@@ -2501,7 +2561,7 @@ impl NodeGraphV2Panel {
                                     if !collapsed {
                                         ui.indent(("ngv2_add_cat", *cat_name), |ui| {
                                             for (label, kind_str) in visible {
-                                                if ui.button(*label).clicked() {
+                                                if add_menu_entry(ui, label, theme) {
                                                     chosen_kind = Some(*kind_str);
                                                 }
                                             }
@@ -2517,7 +2577,10 @@ impl NodeGraphV2Panel {
                                 });
                                 if !any {
                                     ui.add_space(6.0);
-                                    ui.label(egui::RichText::new("No matches").weak());
+                                    ui.label(
+                                        egui::RichText::new("No matches")
+                                            .color(theme.text_primary),
+                                    );
                                 }
                             }
                         });
@@ -2999,6 +3062,40 @@ pub(super) fn graph_bounds(graph: &NodeGraph) -> Option<egui::Rect> {
     ))
 }
 
+/// Custom add-menu entry row — full-width 22 px clickable strip
+/// with stronger hover feedback than egui's default button. Text
+/// in theme.text_primary at alpha 230 idle, alpha 255 + accent-
+/// tinted bg fill on hover so the hovered choice pops without
+/// shouting. Returns true on click.
+fn add_menu_entry(ui: &mut egui::Ui, label: &str, theme: &KlippTheme) -> bool {
+    let size = egui::vec2(ui.available_width(), 22.0);
+    let resp = ui.allocate_response(size, egui::Sense::click());
+    let painter = ui.painter();
+    if resp.hovered() {
+        let a = theme.accent;
+        let bg = egui::Color32::from_rgba_unmultiplied(a.r(), a.g(), a.b(), 32);
+        painter.rect_filled(resp.rect, 3.0, bg);
+    }
+    let text_color = if resp.hovered() {
+        theme.text_primary
+    } else {
+        egui::Color32::from_rgba_unmultiplied(
+            theme.text_primary.r(),
+            theme.text_primary.g(),
+            theme.text_primary.b(),
+            230,
+        )
+    };
+    painter.text(
+        egui::pos2(resp.rect.min.x + 8.0, resp.rect.center().y),
+        egui::Align2::LEFT_CENTER,
+        label,
+        egui::FontId::proportional(12.0),
+        text_color,
+    );
+    resp.clicked()
+}
+
 /// Largest sub-rect of `container` that preserves `image_aspect`
 /// (width/height), centred. Result either pillar-boxes (container
 /// wider than image) or letter-boxes (container taller). Used to
@@ -3210,4 +3307,23 @@ fn distance_to_polyline_sq(pts: &[egui::Pos2], p: egui::Pos2) -> f32 {
         if d < best { best = d; }
     }
     best
+}
+
+/// Position along the bezier at fractional `phase` in [0, 1].
+/// Indexes into the 25-point sampled polyline rather than re-
+/// solving the bezier — the polyline is already accurate enough
+/// for a moving pulse (each segment is ~1/24 of the total length).
+fn bezier_at_phase(from: egui::Pos2, to: egui::Pos2, phase: f32) -> egui::Pos2 {
+    let pts = bezier_polyline(from, to);
+    let phase = phase.clamp(0.0, 1.0);
+    let idx_f = phase * (pts.len() - 1) as f32;
+    let idx = idx_f.floor() as usize;
+    if idx >= pts.len() - 1 {
+        return pts[pts.len() - 1];
+    }
+    let frac = idx_f - idx as f32;
+    egui::pos2(
+        pts[idx].x + (pts[idx + 1].x - pts[idx].x) * frac,
+        pts[idx].y + (pts[idx + 1].y - pts[idx].y) * frac,
+    )
 }
