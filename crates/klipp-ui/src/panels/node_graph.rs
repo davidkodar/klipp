@@ -224,36 +224,46 @@ impl NodeGraphPanel {
         // Add node menu
         if self.add_menu_open {
             let menu_id = ui.id().with("strip_add_node");
+            // 70 % of screen height cap (240 px floor) so the 14
+            // entries stay reachable on tiny windows / dense
+            // dock layouts. Same pattern as the V2 add-node menu
+            // and the Add Transition submenu.
+            let max_h = (ui.ctx().screen_rect().height() * 0.70).max(240.0);
             egui::Area::new(menu_id)
                 .fixed_pos(ui.input(|i| i.pointer.hover_pos().unwrap_or_default()))
                 .show(ui.ctx(), |ui| {
                     egui::Frame::popup(ui.style()).show(ui, |ui| {
-                        for (label, kind_str) in [
-                            ("Exposure", "Exposure"),
-                            ("Contrast", "Contrast"),
-                            ("Saturation", "Saturation"),
-                            ("Tone Controls", "ToneControls"),
-                            ("Color Wheels", "ColorWheels"),
-                            ("Curves", "RGBCurves"),
-                            ("Hue/Sat", "HueSatCurves"),
-                            ("Color Balance", "ColorBalance"),
-                            ("Color Match", "ColorMatch"),
-                            ("Qualifier", "Qualifier"),
-                            ("Film Grain", "FilmGrain"),
-                            ("Color Warper", "ColorWarper"),
-                            ("Noise Reduction", "Denoise"),
-                            ("3D LUT", "Lut3D"),
-                        ] {
-                            if ui.button(label).clicked() {
-                                cmds.push(AppCommand::AddNode {
-                                    clip_id,
-                                    kind: kind_str.to_string(),
-                                    position: (0.0, 0.0),
-                                });
-                                self.add_menu_open = false;
-                                ui.close_menu();
-                            }
-                        }
+                        egui::ScrollArea::vertical()
+                            .id_salt("strip_add_node_scroll")
+                            .max_height(max_h)
+                            .show(ui, |ui| {
+                                for (label, kind_str) in [
+                                    ("Exposure", "Exposure"),
+                                    ("Contrast", "Contrast"),
+                                    ("Saturation", "Saturation"),
+                                    ("Tone Controls", "ToneControls"),
+                                    ("Color Wheels", "ColorWheels"),
+                                    ("Curves", "RGBCurves"),
+                                    ("Hue/Sat", "HueSatCurves"),
+                                    ("Color Balance", "ColorBalance"),
+                                    ("Color Match", "ColorMatch"),
+                                    ("Qualifier", "Qualifier"),
+                                    ("Film Grain", "FilmGrain"),
+                                    ("Color Warper", "ColorWarper"),
+                                    ("Noise Reduction", "Denoise"),
+                                    ("3D LUT", "Lut3D"),
+                                ] {
+                                    if ui.button(label).clicked() {
+                                        cmds.push(AppCommand::AddNode {
+                                            clip_id,
+                                            kind: kind_str.to_string(),
+                                            position: (0.0, 0.0),
+                                        });
+                                        self.add_menu_open = false;
+                                        ui.close_menu();
+                                    }
+                                }
+                            });
                         if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
                             self.add_menu_open = false;
                         }

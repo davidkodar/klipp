@@ -49,6 +49,11 @@ pub enum NodeKind {
     /// pixels whose Rec.709 luma falls inside `[low, high]` with a
     /// soft falloff. Simpler than `Qualifier`; matte-only output.
     LumaKey,
+    /// Standalone soft-clip / hard-clip transform — rolls highlights
+    /// off below 1.0 with a Reinhard-style asymptotic curve per
+    /// channel. Knee=0 = hard clip at threshold; knee&gt;0 = smooth
+    /// rolloff. Value transform (not a matte producer).
+    SoftClip,
     /// Spatial masks (circle, rectangle, gradient) — generates a matte.
     Mask,
     /// Multiply two matte inputs (port 0 × port 1) for matte intersection.
@@ -292,6 +297,7 @@ impl NodeKind {
             NodeKind::ColorBalance => "Color Balance",
             NodeKind::Qualifier => "Qualifier",
             NodeKind::LumaKey => "Luma Key",
+            NodeKind::SoftClip => "Soft Clip",
             NodeKind::Mask => "Mask",
             NodeKind::CombineMattes => "Combine Mattes",
             NodeKind::ExternalMatte => "External Matte",

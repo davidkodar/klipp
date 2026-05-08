@@ -142,6 +142,50 @@ impl Default for LumaKeySettings {
     }
 }
 
+/// Standalone soft-clip / hard-clip transform. Rolls off highlights
+/// above `threshold` so they asymptotically approach 1.0 instead of
+/// clipping abruptly. Common in delivery prep — broadcast targets
+/// often want highlights compressed below 100 % so they don't trip
+/// downstream limiters or cause banding at the cap.
+///
+/// **Curve**: Reinhard-style exponential rolloff per RGB channel:
+///
+/// ```text
+/// y = x                                              if x <= threshold
+/// y = threshold                                      if knee == 0   (hard clip)
+/// y = threshold + (1 - threshold) * (1 - e^(-excess / knee))   otherwise
+/// ```
+///
+/// where `excess = x - threshold`. The curve is monotonic,
+/// asymptotic to 1.0, and tangent to passthrough at the threshold
+/// point — no kink at the rolloff start.
+///
+/// **Per-channel application** is intentional: slight desaturation
+/// at extreme highlights is the filmic look. A hue-preserving
+/// variant (scale the entire RGB vector) is a possible follow-up
+/// but not v1.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SoftClipSettings {
+    pub enabled: bool,
+    /// Point at which rolloff starts (0..1). Values below this pass
+    /// through untouched. Typical broadcast: 0.90–0.95.
+    pub threshold: f32,
+    /// Width of the rolloff curve (0..0.5). `0` = hard clip at
+    /// threshold; larger values = smoother / more compressed
+    /// highlights. Typical broadcast: 0.05.
+    pub knee: f32,
+}
+
+impl Default for SoftClipSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            threshold: 0.95,
+            knee: 0.05,
+        }
+    }
+}
+
 /// Shape-based mask for regional color grading (power windows).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum MaskShape {

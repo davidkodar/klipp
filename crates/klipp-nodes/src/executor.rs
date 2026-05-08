@@ -2244,6 +2244,29 @@ impl GraphExecutor {
                 }
             }
 
+            NodeKind::SoftClip => {
+                // Value transform — primary signal in, primary signal
+                // out. Disabled or absent settings → passthrough so
+                // a freshly-added node doesn't distort the viewer.
+                if let Some(sc) = &params.soft_clip {
+                    if !sc.enabled {
+                        primary_input.to_vec()
+                    } else if let Some(gpu) = &mut self.gpu {
+                        gpu.apply_soft_clip_gpu(
+                            primary_input.to_vec(),
+                            width, height,
+                            sc.threshold, sc.knee,
+                        )
+                    } else {
+                        klipp_color::soft_clip::apply_soft_clip(
+                            primary_input, width, height, sc,
+                        )
+                    }
+                } else {
+                    primary_input.to_vec()
+                }
+            }
+
             NodeKind::LumaKey => {
                 // Output is a matte (greyscale RGBA: R=G=B=matte
                 // value, A=1.0). When the user hasn't enabled the

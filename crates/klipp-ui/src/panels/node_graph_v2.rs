@@ -1309,50 +1309,63 @@ impl NodeGraphV2Panel {
         // logic THIS way instead of a global `primary_clicked()`
         // check avoids the bug where the same right-click that just
         // opened the menu (this frame) also tripped the close.
+        // Cap at 70 % of screen height (floor 240 px) so the 29
+        // entries stay reachable on small viewports / scaled
+        // displays / dock layouts that leave the node-graph panel
+        // less than the full window height. ScrollArea handles
+        // wheel scroll for free; same pattern the Add Transition
+        // submenu uses on the timeline side.
+        let max_h = (ui.ctx().screen_rect().height() * 0.70).max(240.0);
         let area_resp = egui::Area::new(menu_id)
             .fixed_pos(self.add_menu_screen_pos)
             .order(egui::Order::Foreground)
             .show(ui.ctx(), |ui| {
                 egui::Frame::popup(ui.style()).show(ui, |ui| {
-                    for (label, kind_str) in [
-                        ("Corrector (all-in-one)", "Corrector"),
-                        ("Exposure", "Exposure"),
-                        ("Contrast", "Contrast"),
-                        ("Saturation", "Saturation"),
-                        ("Tone Controls", "ToneControls"),
-                        ("Color Wheels", "ColorWheels"),
-                        ("Wheel Sat/Bri", "WheelSatBri"),
-                        ("Curves", "RGBCurves"),
-                        ("Hue/Sat", "HueSatCurves"),
-                        ("Color Balance", "ColorBalance"),
-                        ("Color Match", "ColorMatch"),
-                        ("Qualifier", "Qualifier"),
-                        ("Luma Key", "LumaKey"),
-                        ("Mask", "Mask"),
-                        ("External Matte", "ExternalMatte"),
-                        ("Combine Mattes", "CombineMattes"),
-                        ("Layer", "Layer"),
-                        ("Layer Mixer", "LayerMixer"),
-                        ("Blend", "Blend"),
-                        ("Apply Matte", "ApplyMatte"),
-                        ("Film Grain", "FilmGrain"),
-                        ("Color Warper", "ColorWarper"),
-                        ("Noise Reduction", "Denoise"),
-                        ("3D LUT", "Lut3D"),
-                        ("Compound", "Compound"),
-                        ("RGB Splitter", "RGBSplitter"),
-                        ("RGB Combiner", "RGBCombiner"),
-                        ("Mask Cutout", "MaskCutout"),
-                    ] {
-                        if ui.button(label).clicked() {
-                            cmds.push(AppCommand::AddNode {
-                                clip_id,
-                                kind: kind_str.to_string(),
-                                position: (self.add_menu_graph_pos.x, self.add_menu_graph_pos.y),
-                            });
-                            close = true;
-                        }
-                    }
+                    egui::ScrollArea::vertical()
+                        .id_salt("ngv2_add_node_scroll")
+                        .max_height(max_h)
+                        .show(ui, |ui| {
+                            for (label, kind_str) in [
+                                ("Corrector (all-in-one)", "Corrector"),
+                                ("Exposure", "Exposure"),
+                                ("Contrast", "Contrast"),
+                                ("Saturation", "Saturation"),
+                                ("Tone Controls", "ToneControls"),
+                                ("Color Wheels", "ColorWheels"),
+                                ("Wheel Sat/Bri", "WheelSatBri"),
+                                ("Curves", "RGBCurves"),
+                                ("Hue/Sat", "HueSatCurves"),
+                                ("Color Balance", "ColorBalance"),
+                                ("Color Match", "ColorMatch"),
+                                ("Qualifier", "Qualifier"),
+                                ("Luma Key", "LumaKey"),
+                                ("Soft Clip", "SoftClip"),
+                                ("Mask", "Mask"),
+                                ("External Matte", "ExternalMatte"),
+                                ("Combine Mattes", "CombineMattes"),
+                                ("Layer", "Layer"),
+                                ("Layer Mixer", "LayerMixer"),
+                                ("Blend", "Blend"),
+                                ("Apply Matte", "ApplyMatte"),
+                                ("Film Grain", "FilmGrain"),
+                                ("Color Warper", "ColorWarper"),
+                                ("Noise Reduction", "Denoise"),
+                                ("3D LUT", "Lut3D"),
+                                ("Compound", "Compound"),
+                                ("RGB Splitter", "RGBSplitter"),
+                                ("RGB Combiner", "RGBCombiner"),
+                                ("Mask Cutout", "MaskCutout"),
+                            ] {
+                                if ui.button(label).clicked() {
+                                    cmds.push(AppCommand::AddNode {
+                                        clip_id,
+                                        kind: kind_str.to_string(),
+                                        position: (self.add_menu_graph_pos.x, self.add_menu_graph_pos.y),
+                                    });
+                                    close = true;
+                                }
+                            }
+                        });
                     if ui.input(|i| i.key_pressed(egui::Key::Escape)) { close = true; }
                 });
             });

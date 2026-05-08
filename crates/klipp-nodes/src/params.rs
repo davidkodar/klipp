@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use klipp_core::{
     BlendMode, ColorWarperParams, CurveSet, FilmGrainSettings, HueSatCurves, LayerMixerInput,
-    LogFormat, LumaKeySettings, MaskStack, QualifierSettings,
+    LogFormat, LumaKeySettings, MaskStack, QualifierSettings, SoftClipSettings,
 };
 
 /// All possible parameter values a node can have.
@@ -142,6 +142,12 @@ pub struct NodeParams {
     // Simpler than Qualifier (no HSL); see `LumaKeySettings`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub luma_key: Option<LumaKeySettings>,
+
+    // Standalone soft-clip / hard-clip — rolls highlights off below
+    // 1.0 with a Reinhard-style asymptotic curve. Value transform,
+    // not a matte. See `SoftClipSettings`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub soft_clip: Option<SoftClipSettings>,
 
     // Mask
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -348,6 +354,7 @@ impl NodeParams {
             && self.log_format.is_none()
             && self.qualifier.is_none()
             && self.luma_key.is_none()
+            && self.soft_clip.is_none()
             && self.masks.is_none()
             && self.lut_path.is_none()
             && z(&self.lut_opacity)

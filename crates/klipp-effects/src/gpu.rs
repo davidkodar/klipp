@@ -228,6 +228,10 @@ pub struct GpuEffectsPipeline {
     // Compute pipeline — standalone luminance-threshold key (matte
     // producer, simpler than qualifier — luma in, matte out).
     luma_key_pipeline: wgpu::ComputePipeline,
+    // Compute pipeline — standalone soft-clip / hard-clip transform
+    // (per-channel Reinhard rolloff above threshold). Value
+    // transform, not a matte producer.
+    soft_clip_pipeline: wgpu::ComputePipeline,
     // Compute pipeline — film grain overlay
     grain_pipeline: wgpu::ComputePipeline,
     // Compute pipelines — alpha mask operations (for title renderer)
@@ -878,6 +882,7 @@ impl GpuEffectsPipeline {
         let rgb_curves_pipeline = create_pipeline(&device, &huesat_pl, "rgb_curves", SHADER_RGB_CURVES);
         let qualifier_pipeline = create_pipeline(&device, &pipeline_layout, "qualifier", SHADER_QUALIFIER);
         let luma_key_pipeline = create_pipeline(&device, &pipeline_layout, "luma_key", SHADER_LUMA_KEY);
+        let soft_clip_pipeline = create_pipeline(&device, &pipeline_layout, "soft_clip", SHADER_SOFT_CLIP);
         let grain_pipeline = create_pipeline(&device, &pipeline_layout, "grain", SHADER_GRAIN);
         let alpha_blur_h_pipeline = create_pipeline(&device, &pipeline_layout, "alpha_blur_h", SHADER_ALPHA_BLUR_H);
         let alpha_blur_v_pipeline = create_pipeline(&device, &pipeline_layout, "alpha_blur_v", SHADER_ALPHA_BLUR_V);
@@ -1055,6 +1060,7 @@ impl GpuEffectsPipeline {
             rgb_curves_lut_buf,
             qualifier_pipeline,
             luma_key_pipeline,
+            soft_clip_pipeline,
             grain_pipeline,
             alpha_blur_h_pipeline,
             alpha_blur_v_pipeline,
@@ -3101,6 +3107,47 @@ impl GpuEffectsPipeline {
 
         let workgroups = (width * height).div_ceil(WORKGROUP_SIZE);
         self.dispatch(&self.luma_key_pipeline, buf_a, buf_b, workgroups);
+        self.download_linear_rgba_f32(buf_b, (width * height) as usize)
+    }
+
+    /// Apply standalone soft-clip / hard-clip transform on GPU.
+    /// Per-channel Reinhard-style rolloff above `threshold`. With
+    /// `knee == 0` this becomes a hard clip at `threshold`; larger
+    /// `knee` gives smoother highlights asymptotic to 1.0. Value
+    /// transform — alpha is passed through; same pixel format and
+    /// buffer layout as the input.
+    pub fn apply_soft_clip_gpu(
+        &mut self,
+        linear_rgba: Vec<f32>,
+        width: u32,
+        height: u32,
+        threshold: f32,
+        knee: f32,
+    ) -> Vec<f32> {
+        if self.is_device_lost() {
+            return linear_rgba;
+        }
+        let byte_size = (width * height * 16) as u64;
+        self.ensure_buffers(byte_size);
+
+        let buf_a = self.buf_a.as_ref().unwrap();
+        let buf_b = self.buf_b.as_ref().unwrap();
+
+        self.queue.write_buffer(buf_a, 0, bytemuck::cast_slice(&linear_rgba));
+
+        self.write_params(&GpuSoftClipParams {
+            width,
+            height,
+            threshold,
+            knee,
+            _pad0: 0,
+            _pad1: 0,
+            _pad2: 0,
+            _pad3: 0,
+        });
+
+        let workgroups = (width * height).div_ceil(WORKGROUP_SIZE);
+        self.dispatch(&self.soft_clip_pipeline, buf_a, buf_b, workgroups);
         self.download_linear_rgba_f32(buf_b, (width * height) as usize)
     }
 
@@ -5595,6 +5642,20 @@ struct GpuLumaKeyParams {
 
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct GpuSoftClipParams {
+    width: u32,
+    height: u32,
+    threshold: f32,
+    knee: f32,
+    _pad0: u32,
+    _pad1: u32,
+    _pad2: u32,
+    _pad3: u32,
+}
+// 8 fields × 4 bytes = 32 bytes
+
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct GpuGrainParams {
     width: u32,
     height: u32,
@@ -8050,6 +8111,57 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     if params.invert != 0u { matte = 1.0 - matte; }
 
     output[idx] = pack(vec4<f32>(matte, matte, matte, orig.w));
+}
+"
+);
+
+// ─── Soft Clip GPU Shader ───────────────────────────────────────────────────
+//
+// Per-channel Reinhard-style highlight rolloff. Mirrors the CPU
+// curve in klipp-color/soft_clip.rs::soft_clip_value: passthrough
+// below `threshold`, hard clip when `knee == 0`, asymptotic-to-1.0
+// rolloff when `knee > 0`. Value transform — alpha is preserved.
+const SHADER_SOFT_CLIP: &str = concat!(
+    "
+struct Params {
+    width: u32,
+    height: u32,
+    threshold: f32,
+    knee: f32,
+    _pad0: u32,
+    _pad1: u32,
+    _pad2: u32,
+    _pad3: u32,
+}
+
+@group(0) @binding(0) var<storage, read> input: array<vec4<f32>>;
+@group(0) @binding(1) var<storage, read_write> output: array<vec4<f32>>;
+@group(0) @binding(2) var<uniform> params: Params;
+",
+    shader_linear_helpers_wgsl!(),
+    "
+
+fn soft_clip_value(x: f32, threshold: f32, knee: f32) -> f32 {
+    if x <= threshold { return x; }
+    if knee <= 0.000001 { return threshold; }
+    let max_remaining = 1.0 - threshold;
+    if max_remaining <= 0.0 { return min(x, threshold); }
+    let excess = x - threshold;
+    let rolloff = max_remaining * (1.0 - exp(-excess / knee));
+    return min(threshold + rolloff, 1.0);
+}
+
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let idx = gid.x;
+    if idx >= params.width * params.height { return; }
+
+    let orig = unpack(input[idx]);
+    let r = soft_clip_value(orig.x, params.threshold, params.knee);
+    let g = soft_clip_value(orig.y, params.threshold, params.knee);
+    let b = soft_clip_value(orig.z, params.threshold, params.knee);
+
+    output[idx] = pack(vec4<f32>(r, g, b, orig.w));
 }
 "
 );

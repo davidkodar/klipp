@@ -2021,6 +2021,17 @@ impl NodeInspectorPanel {
                     cmds.push(AppCommand::SetNodeLumaKey { clip_id, node_id, luma_key: lk.clone() });
                 }
             }
+            NodeKind::SoftClip => {
+                let sc = params.soft_clip.get_or_insert_with(Default::default);
+                ui.checkbox(&mut sc.enabled, "Enabled");
+                if sc.enabled {
+                    let mut threshold = sc.threshold;
+                    if grade_slider(ui, "Threshold", &mut threshold, 0.0..=1.0, "", cmds, clip_id, theme) { sc.threshold = threshold; }
+                    let mut knee = sc.knee;
+                    if grade_slider(ui, "Knee", &mut knee, 0.0..=0.5, "", cmds, clip_id, theme) { sc.knee = knee; }
+                    cmds.push(AppCommand::SetNodeSoftClip { clip_id, node_id, soft_clip: sc.clone() });
+                }
+            }
             NodeKind::Mask => {
                 let masks = params.masks.get_or_insert_with(Default::default);
                 Self::render_masks_body(ui, masks, node_id, clip_id, cmds, theme, clip_time_secs, &[]);

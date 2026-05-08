@@ -51,7 +51,7 @@ pub mod transition_registry;
 pub mod types;
 pub mod working_colorspace;
 
-pub use color_grade::{ColorMatchSettings, ColorWarperParams, CurveSet, FilmGrainSettings, HueSatCurves, LayerMixerInput, LumaKeySettings, Mask, MaskKeyframes, MaskShape, MaskStack, QualifierSettings};
+pub use color_grade::{ColorMatchSettings, ColorWarperParams, CurveSet, FilmGrainSettings, HueSatCurves, LayerMixerInput, LumaKeySettings, Mask, MaskKeyframes, MaskShape, MaskStack, QualifierSettings, SoftClipSettings};
 pub use colorspace::{ColorMatrix, ColorPrimaries, ColorRange, ColorTransfer, SourceColorspace};
 pub use keyframe::{Interpolation, Keyframe, TitlePositionAxis};
 pub use events::{AppCommand, AppEvent, AudioParam, ChapterSnapshot, EncoderPreset, ExportAudioCodec, ExportFormat, ExportSettings, ExportVideoCodec, HdrMode, MarkerColor, MarkerKind, MediaLoadedPayload, OdtChoice, ParamChange, RateControl, ToneMapOp, Tool, TrackTarget, VideoParam, ViewerMode};

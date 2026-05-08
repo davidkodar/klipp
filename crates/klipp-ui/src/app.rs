@@ -11125,6 +11125,7 @@ impl KlippApp {
             "InputTransform" => klipp_nodes::NodeKind::InputTransform,
             "Qualifier" => klipp_nodes::NodeKind::Qualifier,
             "LumaKey" => klipp_nodes::NodeKind::LumaKey,
+            "SoftClip" => klipp_nodes::NodeKind::SoftClip,
             "Mask" => klipp_nodes::NodeKind::Mask,
             "CombineMattes" => klipp_nodes::NodeKind::CombineMattes,
             "ExternalMatte" => klipp_nodes::NodeKind::ExternalMatte,
@@ -12293,6 +12294,17 @@ impl KlippApp {
                 self.with_current_clip_graph_mut(*clip_id, needs_refresh, |graph| {
                     if let Some(node) = graph.nodes.iter_mut().find(|n| n.id == node_id) {
                         node.params.luma_key = Some(luma_key);
+                        node.enabled = true;
+                    }
+                });
+                true
+            }
+            AppCommand::SetNodeSoftClip { clip_id, node_id, soft_clip } => {
+                let node_id = *node_id;
+                let soft_clip = soft_clip.clone();
+                self.with_current_clip_graph_mut(*clip_id, needs_refresh, |graph| {
+                    if let Some(node) = graph.nodes.iter_mut().find(|n| n.id == node_id) {
+                        node.params.soft_clip = Some(soft_clip);
                         node.enabled = true;
                     }
                 });
@@ -29724,6 +29736,7 @@ impl KlippApp {
                             klipp_nodes::NodeKind::Mask
                             | klipp_nodes::NodeKind::Qualifier
                             | klipp_nodes::NodeKind::LumaKey
+                            | klipp_nodes::NodeKind::SoftClip
                             | klipp_nodes::NodeKind::FilmGrain
                             | klipp_nodes::NodeKind::Lut3D
                             | klipp_nodes::NodeKind::ColorMatch

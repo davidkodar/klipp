@@ -54,6 +54,7 @@ pub mod lut;
 pub mod masks;
 pub mod primaries;
 pub mod qualifier;
+pub mod soft_clip;
 pub mod pipeline;
 pub mod scopes;
 pub mod transfer;
