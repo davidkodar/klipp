@@ -657,6 +657,10 @@ fn build_clip(
             time_secs,
             name: rm.name.unwrap_or_default(),
             color: otio_color_to_klipp(rm.color.as_deref()),
+            // OTIO carries marker comments in metadata extensions
+            // (variable per writer); skip for now and let users edit
+            // post-import.
+            comment: String::new(),
         });
     }
 
@@ -754,6 +758,8 @@ pub fn load_otio(path: &Path) -> Result<ImportResult, OtioImportError> {
             label: rm.name.unwrap_or_default(),
             color: otio_color_to_klipp(rm.color.as_deref()),
             duration,
+            comment: String::new(),
+            kind: klipp_core::MarkerKind::None,
         });
     }
 

@@ -1684,6 +1684,8 @@ pub enum AppCommand {
     RemoveMarker { marker_id: MarkerId },
     UpdateMarkerLabel { marker_id: MarkerId, label: String },
     UpdateMarkerColor { marker_id: MarkerId, color: MarkerColor },
+    UpdateMarkerComment { marker_id: MarkerId, comment: String },
+    UpdateMarkerKind { marker_id: MarkerId, kind: MarkerKind },
     /// Set a sequence marker's range duration. `None` converts the marker
     /// back to a point marker; `Some(dur)` promotes it to a range spanning
     /// `position..position + dur`.
@@ -2655,6 +2657,67 @@ impl MarkerColor {
             MarkerColor::Blue => "Blue",
             MarkerColor::Purple => "Purple",
         }
+    }
+}
+
+/// Marker kind / type-flag. Decouples a marker's *role* from its
+/// colour: a Chapter and a ToDo can share the same colour without
+/// losing their distinct workflow meaning. The set is intentionally
+/// small — six built-ins covering the common cross-NLE roles. User-
+/// defined categories with custom names are tracked separately under
+/// GAP-KDE-015 and would replace this enum with a project-defined id
+/// when they ship.
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize, PartialEq, Eq, Default)]
+pub enum MarkerKind {
+    /// Untyped marker — the existing default behaviour.
+    #[default]
+    None,
+    /// Chapter / DVD / YouTube chapter point.
+    Chapter,
+    /// To-do / fix-this-later note.
+    ToDo,
+    /// General comment / annotation.
+    Comment,
+    /// Best take / pick from a multi-take session.
+    BestTake,
+    /// Section / act / scene boundary.
+    Section,
+}
+
+impl MarkerKind {
+    pub fn label(self) -> &'static str {
+        match self {
+            MarkerKind::None => "None",
+            MarkerKind::Chapter => "Chapter",
+            MarkerKind::ToDo => "To Do",
+            MarkerKind::Comment => "Comment",
+            MarkerKind::BestTake => "Best Take",
+            MarkerKind::Section => "Section",
+        }
+    }
+
+    /// Single-letter badge rendered next to a marker row in the
+    /// panel — keeps the row compact without forcing the full label.
+    pub fn badge(self) -> &'static str {
+        match self {
+            MarkerKind::None => "",
+            MarkerKind::Chapter => "C",
+            MarkerKind::ToDo => "T",
+            MarkerKind::Comment => "✱",
+            MarkerKind::BestTake => "★",
+            MarkerKind::Section => "§",
+        }
+    }
+
+    pub fn all() -> &'static [MarkerKind] {
+        &[
+            MarkerKind::None,
+            MarkerKind::Chapter,
+            MarkerKind::ToDo,
+            MarkerKind::Comment,
+            MarkerKind::BestTake,
+            MarkerKind::Section,
+        ]
     }
 }
 

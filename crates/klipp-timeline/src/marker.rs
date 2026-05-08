@@ -1,4 +1,4 @@
-use klipp_core::{MarkerColor, MarkerId, Timecode};
+use klipp_core::{MarkerColor, MarkerId, MarkerKind, Timecode};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -13,6 +13,15 @@ pub struct Marker {
     /// files without this field deserialize to `None` via the serde default.
     #[serde(default)]
     pub duration: Option<Timecode>,
+    /// Free-text comment / note. Empty by default — legacy projects
+    /// without this field deserialise to "" via the serde default.
+    #[serde(default)]
+    pub comment: String,
+    /// Marker role (Chapter / ToDo / Comment / BestTake / Section /
+    /// None). Decouples role from colour so users can mix them. Legacy
+    /// projects deserialise to `MarkerKind::None`.
+    #[serde(default)]
+    pub kind: MarkerKind,
 }
 
 fn default_marker_color() -> MarkerColor {
@@ -39,6 +48,21 @@ mod tests {
     }
 
     #[test]
+    fn legacy_marker_without_comment_or_kind_deserializes() {
+        // Legacy shape (pre-GAP-EDIT-011) must still load — comment
+        // defaults to "" and kind to None via serde defaults.
+        let legacy = r#"{
+            "id": "00000000-0000-0000-0000-000000000001",
+            "position": { "value": 0, "rate": 24 },
+            "label": "old",
+            "color": "Blue"
+        }"#;
+        let m: Marker = serde_json::from_str(legacy).expect("legacy marker parses");
+        assert_eq!(m.comment, "");
+        assert_eq!(m.kind, MarkerKind::None);
+    }
+
+    #[test]
     fn range_marker_serializes_round_trip() {
         let m = Marker {
             id: MarkerId::new(),
@@ -46,6 +70,8 @@ mod tests {
             label: "Act 1".into(),
             color: MarkerColor::Red,
             duration: Some(Timecode { value: 120, rate: 24 }), // 5s @24fps
+            comment: String::new(),
+            kind: MarkerKind::Section,
         };
         let json = serde_json::to_string(&m).expect("serialize");
         let back: Marker = serde_json::from_str(&json).expect("deserialize");
@@ -55,5 +81,23 @@ mod tests {
         let dur = back.duration.expect("duration preserved");
         assert_eq!(dur.value, 120);
         assert_eq!(dur.rate, 24);
+        assert_eq!(back.kind, MarkerKind::Section);
+    }
+
+    #[test]
+    fn marker_with_comment_and_kind_round_trips() {
+        let m = Marker {
+            id: MarkerId::new(),
+            position: Timecode { value: 24, rate: 24 },
+            label: "Cut on action".into(),
+            color: MarkerColor::Yellow,
+            duration: None,
+            comment: "Maybe trim 2 frames off the head?".into(),
+            kind: MarkerKind::ToDo,
+        };
+        let json = serde_json::to_string(&m).expect("serialize");
+        let back: Marker = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back.comment, "Maybe trim 2 frames off the head?");
+        assert_eq!(back.kind, MarkerKind::ToDo);
     }
 }

@@ -3119,12 +3119,7 @@ impl TimelinePanel {
                             let hit_id = ui.id().with(("range_marker", marker.id.0));
                             let hit = ui.interact(fill_rect, hit_id, egui::Sense::hover());
                             if hit.hovered() {
-                                let lbl = if marker.label.is_empty() {
-                                    "(no label)"
-                                } else {
-                                    marker.label.as_str()
-                                };
-                                hit.on_hover_text(format!("{lbl} — {:.2}s", dur.to_secs_f64()));
+                                hit.on_hover_text(marker_tooltip_text(marker, Some(dur.to_secs_f64())));
                             }
                         }
                     }
@@ -3140,6 +3135,17 @@ impl TimelinePanel {
                         color,
                         egui::Stroke::NONE,
                     ));
+                    // Hover hit-test on the triangle so point markers
+                    // also expose kind + label + comment in a tooltip.
+                    let tri_rect = egui::Rect::from_min_max(
+                        egui::pos2(x - half_w - 1.0, top - 1.0),
+                        egui::pos2(x + half_w + 1.0, bot + 1.0),
+                    );
+                    let hit_id = ui.id().with(("point_marker", marker.id.0));
+                    let hit = ui.interact(tri_rect, hit_id, egui::Sense::hover());
+                    if hit.hovered() {
+                        hit.on_hover_text(marker_tooltip_text(marker, None));
+                    }
                 }
             }
 
@@ -4088,10 +4094,19 @@ impl TimelinePanel {
                     let pos = marker.position.to_secs_f64();
                     let end = marker.duration.map(|d| pos + d.to_secs_f64()).unwrap_or(pos);
                     if (pos - snap_secs).abs() < one_frame || (end - snap_secs).abs() < one_frame {
+                        // Compact snap-legend form: prepend the kind
+                        // badge if the marker has a non-default kind,
+                        // so users can tell a Chapter snap from a
+                        // ToDo snap during a drag.
+                        let prefix = if marker.kind == klipp_core::MarkerKind::None {
+                            "Marker".to_string()
+                        } else {
+                            format!("Marker {}", marker.kind.badge())
+                        };
                         if !marker.label.is_empty() {
-                            return format!("Marker: {}", marker.label);
+                            return format!("{prefix}: {}", marker.label);
                         }
-                        return "Marker".to_string();
+                        return prefix;
                     }
                 }
                 "Marker".to_string()
@@ -15045,6 +15060,41 @@ fn format_shortfall_tooltip(
     lines.join("\n")
 }
 
+/// Build the hover-tooltip text for a sequence marker. Used by both
+/// the range-marker shaded-band tooltip and the point-marker
+/// triangle tooltip on the ruler. Format:
+///
+/// ```text
+/// Chapter — Scene 2
+/// duration 2.5 s
+/// Cut here on action; remember to trim 2 frames
+/// ```
+///
+/// Lines are conditionally added (kind line only when not None,
+/// duration only when range, comment only when non-empty), so a
+/// minimal point marker still tooltips as just `(no label)` or its
+/// label.
+fn marker_tooltip_text(marker: &klipp_timeline::Marker, duration_secs: Option<f64>) -> String {
+    let mut lines: Vec<String> = Vec::new();
+    let label = if marker.label.is_empty() {
+        "(no label)".to_string()
+    } else {
+        marker.label.clone()
+    };
+    if marker.kind != klipp_core::MarkerKind::None {
+        lines.push(format!("{} \u{2014} {label}", marker.kind.label()));
+    } else {
+        lines.push(label);
+    }
+    if let Some(d) = duration_secs {
+        lines.push(format!("duration {:.2} s", d));
+    }
+    if !marker.comment.is_empty() {
+        lines.push(marker.comment.clone());
+    }
+    lines.join("\n")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -17116,6 +17166,8 @@ mod snap_tests {
             label: "Hero shot".to_string(),
             color: klipp_core::MarkerColor::Yellow,
             duration: None,
+            comment: String::new(),
+            kind: klipp_core::MarkerKind::None,
         });
         let label = TimelinePanel::snap_legend_label_for_kind(
             klipp_core::SnapTargetKind::Marker,

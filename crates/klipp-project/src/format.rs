@@ -378,6 +378,11 @@ pub struct ClipMarkerJson {
     #[serde(default)]
     pub name: String,
     pub color: String,
+    /// Optional free-text comment. Skipped on serialise when empty so
+    /// legacy projects don't pick up a noisy field; legacy files
+    /// without this field deserialise to "".
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub comment: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -700,6 +705,25 @@ pub struct MarkerJson {
     /// files without the field deserialize to `None` via the serde default.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub duration: Option<TimecodeJson>,
+    /// Free-text comment / note. Empty by default. Skipped on
+    /// serialise when empty so legacy projects don't pick up a noisy
+    /// field; legacy files without this field deserialise to "".
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub comment: String,
+    /// Marker kind / role tag. Stored as an enum-name string
+    /// ("Chapter" / "ToDo" / "Comment" / "BestTake" / "Section") for
+    /// stability across versions. Default "None" is skipped on
+    /// serialise; legacy files without this field deserialise to "None".
+    #[serde(default = "default_marker_kind_str", skip_serializing_if = "is_none_kind")]
+    pub kind: String,
+}
+
+fn default_marker_kind_str() -> String {
+    "None".to_string()
+}
+
+fn is_none_kind(s: &String) -> bool {
+    s == "None"
 }
 
 fn default_marker_color_str() -> String {

@@ -417,10 +417,19 @@ fn parse_clip_markers(
             .attribute("value")
             .map(|s| s.to_string())
             .unwrap_or_default();
+        // FCPXML comment lives on a child <note> element. Best-
+        // effort: capture text content if present.
+        let comment = m
+            .children()
+            .find(|c| c.is_element() && c.tag_name().name() == "note")
+            .and_then(|c| c.text())
+            .unwrap_or("")
+            .to_string();
         out.push(ClipMarker {
             time_secs: clip_local_secs,
             name,
             color: MarkerColor::Blue,
+            comment,
         });
     }
     out
@@ -667,12 +676,21 @@ fn collect_sequence_markers(
             .attribute("value")
             .map(|s| s.to_string())
             .unwrap_or_default();
+        // FCPXML stores marker comments in a child <note> element.
+        let comment = m
+            .children()
+            .find(|c| c.is_element() && c.tag_name().name() == "note")
+            .and_then(|c| c.text())
+            .unwrap_or("")
+            .to_string();
         out.push(Marker {
             id: MarkerId::new(),
             position,
             label,
             color: MarkerColor::Blue,
             duration,
+            comment,
+            kind: klipp_core::MarkerKind::None,
         });
     }
     out
@@ -906,5 +924,40 @@ mod tests {
         // duration = 30030/30000 seconds = 30030 * 30000 / (30000 * 1001) frames
         // = 900900000 / 30030000 = 30 frames at rate=30000.
         assert_eq!(clip.timeline_out.value - clip.timeline_in.value, 30);
+    }
+
+    #[test]
+    fn parse_fcpxml_marker_with_note_recovers_comment() {
+        // FCPXML wraps marker comments in a child <note> element.
+        // Round-trip: a <marker><note>…</note></marker> shape must
+        // come back as Marker.comment.
+        const FCPXML_WITH_NOTED_MARKER: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+<fcpxml version="1.9">
+  <resources>
+    <format id="r0" frameDuration="1/25s" width="1920" height="1080"/>
+    <asset id="r1" name="clip.mp4" src="file:///tmp/clip.mp4"
+           duration="100/25s" format="r0"/>
+  </resources>
+  <library>
+    <event name="Event">
+      <project name="Project">
+        <sequence duration="100/25s" format="r0">
+          <spine>
+            <asset-clip name="clip.mp4" ref="r1"
+                        offset="0/25s" duration="100/25s" start="0/25s"/>
+          </spine>
+          <marker start="25/25s" duration="1/25s" value="Cut on action">
+            <note>Trim two frames off the head</note>
+          </marker>
+        </sequence>
+      </project>
+    </event>
+  </library>
+</fcpxml>"#;
+        let result = parse_fcpxml(FCPXML_WITH_NOTED_MARKER).expect("parse ok");
+        assert_eq!(result.sequence.markers.len(), 1);
+        let m = &result.sequence.markers[0];
+        assert_eq!(m.label, "Cut on action");
+        assert_eq!(m.comment, "Trim two frames off the head");
     }
 }

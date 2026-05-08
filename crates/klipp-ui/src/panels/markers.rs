@@ -1,27 +1,41 @@
 use crate::icons::Icon;
 use crate::state::{AppState, PanelKind};
-use klipp_core::{AppCommand, MarkerColor, MarkerId, RationalTime};
+use klipp_core::{AppCommand, MarkerColor, MarkerId, MarkerKind, RationalTime};
 
 #[derive(Default)]
 pub struct MarkersPanel {
     editing_label: Option<MarkerId>,
     label_buf: String,
-    /// Case-insensitive substring filter on marker labels. When
-    /// non-empty, the rendered list is narrowed to matches; pressing
-    /// Enter while focused jumps the playhead to the first match.
-    /// Marker comments don't exist as a field today (GAP-EDIT-011);
-    /// when they do, extend `marker_matches` to also search them.
+    /// Which marker (if any) currently has its comment field
+    /// expanded for editing. Mirrors `editing_label` for the
+    /// new comment surface.
+    editing_comment: Option<MarkerId>,
+    comment_buf: String,
+    /// Case-insensitive substring filter on marker label, comment,
+    /// and kind label. When non-empty, the rendered list is narrowed
+    /// to matches; pressing Enter while focused jumps the playhead
+    /// to the first match.
     search_query: String,
 }
 
-/// Case-insensitive substring match between marker label and query.
-/// Empty query matches everything. Pulled out of show() so unit tests
-/// can exercise the predicate without the egui surface.
-pub fn marker_matches(label: &str, query: &str) -> bool {
+/// Case-insensitive substring match against a marker's label, comment,
+/// and kind. Any one matching is enough. Empty query matches
+/// everything. The kind is matched against both its display label
+/// ("To Do", "Best Take") and its space-free form ("todo",
+/// "besttake") so users can find a kind either way they type it.
+/// Pulled out of show() so unit tests can exercise the predicate
+/// without the egui surface.
+pub fn marker_matches(label: &str, comment: &str, kind: MarkerKind, query: &str) -> bool {
     if query.is_empty() {
         return true;
     }
-    label.to_lowercase().contains(&query.to_lowercase())
+    let q = query.to_lowercase();
+    let kind_label = kind.label().to_lowercase();
+    let kind_compact: String = kind_label.chars().filter(|c| !c.is_whitespace()).collect();
+    label.to_lowercase().contains(&q)
+        || comment.to_lowercase().contains(&q)
+        || kind_label.contains(&q)
+        || kind_compact.contains(&q)
 }
 
 impl MarkersPanel {
@@ -57,7 +71,7 @@ impl MarkersPanel {
                             .sequence()
                             .markers
                             .iter()
-                            .find(|m| marker_matches(&m.label, &q))
+                            .find(|m| marker_matches(&m.label, &m.comment, m.kind, &q))
                         {
                             cmds.push(AppCommand::JumpToMarker { marker_id: first.id });
                         }
@@ -118,11 +132,15 @@ impl MarkersPanel {
                     let fps_rate = state.sequence().fps.rate();
                     let query = self.search_query.clone();
                     let markers: Vec<_> = state.sequence().markers.iter()
-                        .filter(|m| marker_matches(&m.label, &query))
-                        .map(|m| (m.id, m.position, m.label.clone(), m.color, m.duration))
+                        .filter(|m| marker_matches(&m.label, &m.comment, m.kind, &query))
+                        .map(|m| (m.id, m.position, m.label.clone(), m.color, m.duration, m.comment.clone(), m.kind))
                         .collect();
 
-                    for (id, position, label, color, duration) in &markers {
+                    for (id, position, label, color, duration, comment, kind) in &markers {
+                        // Outer vertical group so the optional comment
+                        // sub-row stacks under the main row for the
+                        // same marker without competing with siblings.
+                        ui.vertical(|ui| {
                         ui.horizontal(|ui| {
                             // Color button
                             let (r, g, b) = color.to_rgb();
@@ -147,6 +165,36 @@ impl MarkersPanel {
                                     color: next,
                                 });
                             }
+
+                            // Kind dropdown — compact, single-letter
+                            // badge button for the current kind. The
+                            // popup lists every kind with its full
+                            // label so users learn what each badge means.
+                            let kind_badge = if kind.badge().is_empty() { "·" } else { kind.badge() };
+                            egui::ComboBox::from_id_salt(("marker_kind", *id))
+                                .selected_text(
+                                    egui::RichText::new(kind_badge)
+                                        .size(11.0)
+                                        .monospace()
+                                )
+                                .width(28.0)
+                                .show_ui(ui, |ui| {
+                                    for k in MarkerKind::all() {
+                                        let label = if k.badge().is_empty() {
+                                            k.label().to_string()
+                                        } else {
+                                            format!("{}  {}", k.badge(), k.label())
+                                        };
+                                        if ui.selectable_label(*kind == *k, label).clicked() {
+                                            cmds.push(AppCommand::UpdateMarkerKind {
+                                                marker_id: *id,
+                                                kind: *k,
+                                            });
+                                        }
+                                    }
+                                })
+                                .response
+                                .on_hover_text(format!("Marker kind: {}", kind.label()));
 
                             // Timecode
                             let tc_str = format_timecode_short(position.to_secs_f64());
@@ -223,6 +271,68 @@ impl MarkersPanel {
                                 }
                             });
                         });
+
+                        // Comment sub-row — expanded text-edit when
+                        // the user clicks "+ Add comment" or has an
+                        // existing comment to edit; collapsed
+                        // single-button row otherwise. Indented to
+                        // visually subordinate it to the main row.
+                        ui.horizontal(|ui| {
+                            ui.add_space(28.0); // align under the colour cycler
+                            if self.editing_comment == Some(*id) {
+                                let resp = ui.add(
+                                    egui::TextEdit::multiline(&mut self.comment_buf)
+                                        .desired_rows(2)
+                                        .desired_width(f32::INFINITY)
+                                        .hint_text("Comment / note\u{2026}")
+                                        .font(egui::FontId::proportional(11.0)),
+                                );
+                                // Commit on lost focus. Multi-line
+                                // TextEdit consumes Enter for newlines
+                                // (intended), so we don't gate on
+                                // Enter the way the label edit does.
+                                if resp.lost_focus() {
+                                    cmds.push(AppCommand::UpdateMarkerComment {
+                                        marker_id: *id,
+                                        comment: self.comment_buf.clone(),
+                                    });
+                                    self.editing_comment = None;
+                                }
+                            } else if comment.is_empty() {
+                                if ui
+                                    .small_button("\u{271A} Comment")
+                                    .on_hover_text("Add a comment / note for this marker")
+                                    .clicked()
+                                {
+                                    self.editing_comment = Some(*id);
+                                    self.comment_buf = String::new();
+                                }
+                            } else {
+                                // Existing comment — show preview;
+                                // double-click to edit. Truncate to
+                                // ~60 chars in the row so long notes
+                                // don't bloat the panel.
+                                let preview: String = if comment.chars().count() > 60 {
+                                    let head: String = comment.chars().take(57).collect();
+                                    format!("{head}\u{2026}")
+                                } else {
+                                    comment.clone()
+                                };
+                                let resp = ui.label(
+                                    egui::RichText::new(preview)
+                                        .size(10.5)
+                                        .italics()
+                                        .color(egui::Color32::from_rgb(140, 150, 170)),
+                                )
+                                .on_hover_text(comment.as_str());
+                                if resp.double_clicked() {
+                                    self.editing_comment = Some(*id);
+                                    self.comment_buf = comment.clone();
+                                }
+                            }
+                        });
+                        }); // end vertical
+                        ui.add_space(2.0);
                     }
 
                     if let Some(id) = remove_id {
@@ -266,25 +376,56 @@ fn format_timecode_short(secs: f64) -> String {
 mod tests {
     use super::*;
 
+    fn none() -> MarkerKind { MarkerKind::None }
+
     #[test]
     fn empty_query_matches_everything() {
-        assert!(marker_matches("", ""));
-        assert!(marker_matches("anything", ""));
-        assert!(marker_matches("Cut on action", ""));
+        assert!(marker_matches("", "", none(), ""));
+        assert!(marker_matches("anything", "", none(), ""));
+        assert!(marker_matches("Cut on action", "", none(), ""));
     }
 
     #[test]
-    fn query_is_case_insensitive_substring() {
-        assert!(marker_matches("Cut on action", "cut"));
-        assert!(marker_matches("Cut on action", "CUT"));
-        assert!(marker_matches("Cut on action", "ACTION"));
-        assert!(marker_matches("Cut on action", "n a"));
+    fn query_is_case_insensitive_substring_on_label() {
+        assert!(marker_matches("Cut on action", "", none(), "cut"));
+        assert!(marker_matches("Cut on action", "", none(), "CUT"));
+        assert!(marker_matches("Cut on action", "", none(), "ACTION"));
+        assert!(marker_matches("Cut on action", "", none(), "n a"));
     }
 
     #[test]
     fn non_matching_query_filters_out() {
-        assert!(!marker_matches("Cut on action", "music"));
-        assert!(!marker_matches("Best take", "cut"));
-        assert!(!marker_matches("", "anything"));
+        assert!(!marker_matches("Cut on action", "", none(), "music"));
+        assert!(!marker_matches("Best take", "", none(), "cut"));
+        assert!(!marker_matches("", "", none(), "anything"));
+    }
+
+    #[test]
+    fn query_matches_comment() {
+        // Label doesn't match — comment carries the search hit.
+        assert!(marker_matches("M3", "trim two frames off", none(), "trim"));
+        assert!(marker_matches("M3", "Trim two frames off", none(), "TRIM"));
+        assert!(!marker_matches("M3", "trim two frames off", none(), "music"));
+    }
+
+    #[test]
+    fn query_matches_kind_label() {
+        // Searching "chapter" finds any marker whose kind is Chapter,
+        // even if its label and comment don't mention it.
+        assert!(marker_matches("M1", "", MarkerKind::Chapter, "chapter"));
+        assert!(marker_matches("M2", "", MarkerKind::ToDo, "todo"));
+        assert!(marker_matches("M3", "", MarkerKind::BestTake, "BEST"));
+        // None has the literal label "None" — also searchable, which
+        // is fine and explicit (lets users find "untyped" markers).
+        assert!(marker_matches("M4", "", MarkerKind::None, "none"));
+    }
+
+    #[test]
+    fn query_can_match_any_of_three_fields() {
+        // Same query "scene" can hit label, comment, or kind label —
+        // pick whichever field has the substring.
+        assert!(marker_matches("Scene 2", "no notes", MarkerKind::Chapter, "scene"));
+        assert!(marker_matches("Untitled", "remember scene 4", MarkerKind::None, "scene"));
+        assert!(marker_matches("Untitled", "no notes", MarkerKind::Section, "section"));
     }
 }

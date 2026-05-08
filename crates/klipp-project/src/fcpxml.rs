@@ -174,16 +174,31 @@ pub fn generate_fcpxml(seq: &Sequence, media_pool: &MediaPool) -> String {
 
     // Sequence markers. Range markers emit their real duration; point
     // markers fall back to the synthetic 1-frame value FCP expects.
+    // Comments round-trip via a child <note> element when non-empty
+    // (matches FCPXML's marker-comment shape). Marker kind doesn't
+    // have a 1:1 FCPXML mapping so it's lost on export today.
     for marker in &seq.markers {
         let pos = tc_str(marker.position, fps);
         let dur_str = match marker.duration {
             Some(d) if d.value > 0 => format!("{}/{}s", d.value, d.rate),
             _ => format!("1/{}s", fps.num),
         };
-        xml.push_str(&format!(
-            "          <marker start=\"{}\" duration=\"{}\" value=\"{}\"/>\n",
-            pos, dur_str, escape_xml(&marker.label)
-        ));
+        if marker.comment.is_empty() {
+            xml.push_str(&format!(
+                "          <marker start=\"{}\" duration=\"{}\" value=\"{}\"/>\n",
+                pos, dur_str, escape_xml(&marker.label)
+            ));
+        } else {
+            xml.push_str(&format!(
+                "          <marker start=\"{}\" duration=\"{}\" value=\"{}\">\n",
+                pos, dur_str, escape_xml(&marker.label)
+            ));
+            xml.push_str(&format!(
+                "            <note>{}</note>\n",
+                escape_xml(&marker.comment)
+            ));
+            xml.push_str("          </marker>\n");
+        }
     }
 
     xml.push_str("        </sequence>\n");
@@ -626,6 +641,8 @@ mod tests {
             label: "Scene 2".into(),
             color: MarkerColor::Green,
             duration: None,
+            comment: String::new(),
+            kind: klipp_core::MarkerKind::None,
         });
         seq.markers.push(Marker {
             id: MarkerId::new(),
@@ -633,6 +650,8 @@ mod tests {
             label: "End".into(),
             color: MarkerColor::Red,
             duration: None,
+            comment: String::new(),
+            kind: klipp_core::MarkerKind::None,
         });
 
         let xml = generate_fcpxml(&seq, &pool);
@@ -662,11 +681,13 @@ mod tests {
             time_secs: 1.0,
             name: "Beat Drop".into(),
             color: MarkerColor::Blue,
+            comment: String::new(),
         });
         clip.clip_markers.push(ClipMarker {
             time_secs: 2.5,
             name: "Cut Here".into(),
             color: MarkerColor::Orange,
+            comment: String::new(),
         });
         seq.tracks[0].clips.push(clip);
 
@@ -818,5 +839,43 @@ mod tests {
             .expect("should have event line");
         assert!(!event_line.contains("very_long_clip_name"));
         assert!(event_line.contains("very_lon"));
+    }
+
+    #[test]
+    fn fcpxml_marker_comment_writes_note_child() {
+        // A marker with a non-empty comment should expand to the
+        // open/close <marker>...<note>...</note></marker> shape so
+        // round-trip readers (FCP, Klipp's own importer) can recover
+        // the note. Legacy comment-less markers stay self-closing.
+        let fps = Fps::film_24();
+        let mut seq = empty_sequence(fps);
+        let pool = MediaPool::new();
+
+        seq.markers.push(Marker {
+            id: MarkerId::new(),
+            position: RationalTime { value: 24, rate: 24 },
+            label: "Cut on action".into(),
+            color: MarkerColor::Yellow,
+            duration: None,
+            comment: "Trim two frames off the head".into(),
+            kind: klipp_core::MarkerKind::ToDo,
+        });
+        seq.markers.push(Marker {
+            id: MarkerId::new(),
+            position: RationalTime { value: 48, rate: 24 },
+            label: "Plain".into(),
+            color: MarkerColor::Blue,
+            duration: None,
+            comment: String::new(),
+            kind: klipp_core::MarkerKind::None,
+        });
+
+        let xml = generate_fcpxml(&seq, &pool);
+
+        // Comment-bearing marker has the open/close form + the note child.
+        assert!(xml.contains("<marker start=\"24/24s\" duration=\"1/24s\" value=\"Cut on action\">"));
+        assert!(xml.contains("<note>Trim two frames off the head</note>"));
+        // Plain marker stays self-closing.
+        assert!(xml.contains("<marker start=\"48/24s\" duration=\"1/24s\" value=\"Plain\"/>"));
     }
 }

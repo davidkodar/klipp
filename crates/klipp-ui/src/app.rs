@@ -19972,6 +19972,8 @@ impl KlippApp {
                     label: label.clone(),
                     color: *color,
                     duration: None,
+                    comment: String::new(),
+                    kind: klipp_core::MarkerKind::None,
                 });
                 self.state.sequences[self.state.active_sequence_idx].markers.sort_by(|a, b| {
                     a.position.to_secs_f64().partial_cmp(&b.position.to_secs_f64()).unwrap_or(std::cmp::Ordering::Equal)
@@ -19994,6 +19996,20 @@ impl KlippApp {
             AppCommand::UpdateMarkerColor { marker_id, color } => {
                 if let Some(m) = self.state.sequences[self.state.active_sequence_idx].markers.iter_mut().find(|m| m.id == *marker_id) {
                     m.color = *color;
+                }
+                self.state.dirty = true;
+                true
+            }
+            AppCommand::UpdateMarkerComment { marker_id, comment } => {
+                if let Some(m) = self.state.sequences[self.state.active_sequence_idx].markers.iter_mut().find(|m| m.id == *marker_id) {
+                    m.comment = comment.clone();
+                }
+                self.state.dirty = true;
+                true
+            }
+            AppCommand::UpdateMarkerKind { marker_id, kind } => {
+                if let Some(m) = self.state.sequences[self.state.active_sequence_idx].markers.iter_mut().find(|m| m.id == *marker_id) {
+                    m.kind = *kind;
                 }
                 self.state.dirty = true;
                 true
@@ -20021,6 +20037,7 @@ impl KlippApp {
                             time_secs: *time_secs,
                             name: name.clone(),
                             color: *color,
+                            comment: String::new(),
                         });
                         clip.clip_markers.sort_by(|a, b| a.time_secs.partial_cmp(&b.time_secs).unwrap_or(std::cmp::Ordering::Equal));
                         break;
@@ -26854,6 +26871,7 @@ impl KlippApp {
                                         time_secs: rel,
                                         name: format!("Scene {}", i + 1),
                                         color,
+                                        comment: String::new(),
                                     });
                                     added += 1;
                                 }
@@ -34462,6 +34480,8 @@ mod range_marker_segment_tests {
             label: label.into(),
             color: MarkerColor::Blue,
             duration: dur_secs.map(|s| RationalTime::from_secs_f64(s, 24)),
+            comment: String::new(),
+            kind: klipp_core::MarkerKind::None,
         }
     }
 

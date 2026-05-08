@@ -2737,6 +2737,8 @@ mod tests {
             label: "Mark".to_string(),
             color: MarkerColor::Blue,
             duration: None,
+            comment: String::new(),
+            kind: klipp_core::MarkerKind::None,
         });
 
         let snapped = MagneticEditor::snap_to_boundary(&seq, tc(33), None, None, None);

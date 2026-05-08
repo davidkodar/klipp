@@ -856,6 +856,13 @@ pub struct ClipMarker {
     pub name: String,
     /// Color.
     pub color: MarkerColor,
+    /// Free-text comment / note. Empty by default — legacy projects
+    /// without this field deserialise to "" via the serde default.
+    /// Mirrors `Marker.comment` for sequence markers; kind is omitted
+    /// here intentionally (clip markers stay simple — promote to a
+    /// sequence marker if you need a kind).
+    #[serde(default)]
+    pub comment: String,
 }
 
 /// Composition rule for a clip whose `transform_link` points at

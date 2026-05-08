@@ -1066,6 +1066,8 @@ mod tests {
             label: label.to_string(),
             color: klipp_core::MarkerColor::Blue,
             duration: None,
+            comment: String::new(),
+            kind: klipp_core::MarkerKind::None,
         }
     }
 

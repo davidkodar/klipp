@@ -195,6 +195,8 @@ fn sequence_to_json(seq: &Sequence, color: &ColorSettings, project_dir: &Path) -
                 label: m.label.clone(),
                 color: format!("{:?}", m.color),
                 duration: m.duration.as_ref().map(timecode_to_json),
+                comment: m.comment.clone(),
+                kind: format!("{:?}", m.kind),
             }
         }).collect(),
         tracks: seq.tracks.iter().map(|t| {
@@ -274,6 +276,7 @@ fn sequence_to_json(seq: &Sequence, color: &ColorSettings, project_dir: &Path) -
                                 time_secs: m.time_secs,
                                 name: m.name.clone(),
                                 color: format!("{:?}", m.color),
+                                comment: m.comment.clone(),
                             }).collect())
                         },
                         effect_keyframes: if c.effect_keyframes.is_empty() { None } else { Some(c.effect_keyframes.clone()) },

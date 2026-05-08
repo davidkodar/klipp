@@ -454,6 +454,7 @@ fn load_sequence_from_json(seq_json: &SequenceJson, project_dir: &Path) -> Resul
                                 "Purple" => klipp_core::MarkerColor::Purple,
                                 _ => klipp_core::MarkerColor::Blue,
                             },
+                            comment: m.comment.clone(),
                         }).collect()
                     }).unwrap_or_default(),
                     effect_keyframes: c.effect_keyframes.clone().unwrap_or_default(),
@@ -546,16 +547,34 @@ fn load_sequence_from_json(seq_json: &SequenceJson, project_dir: &Path) -> Resul
                 "Purple" => klipp_core::MarkerColor::Purple,
                 _ => klipp_core::MarkerColor::Blue,
             };
+            let kind = parse_marker_kind(&m.kind);
             Some(klipp_timeline::Marker {
                 id,
                 position: RationalTime { value: m.position.value, rate: m.position.rate },
                 label: m.label.clone(),
                 color,
                 duration: m.duration.as_ref().map(|d| RationalTime { value: d.value, rate: d.rate }),
+                comment: m.comment.clone(),
+                kind,
             })
         }).collect(),
         last_playhead: seq_json.last_playhead.as_ref().map(|tc| RationalTime { value: tc.value, rate: tc.rate }),
     })
+}
+
+/// Parse the JSON-side marker-kind tag back into the enum. Unknown
+/// values fall through to `None` so a project with a value from a
+/// future build (e.g. a new variant we haven't added yet) loads
+/// gracefully without losing the rest of the marker.
+fn parse_marker_kind(s: &str) -> klipp_core::MarkerKind {
+    match s {
+        "Chapter" => klipp_core::MarkerKind::Chapter,
+        "ToDo" => klipp_core::MarkerKind::ToDo,
+        "Comment" => klipp_core::MarkerKind::Comment,
+        "BestTake" => klipp_core::MarkerKind::BestTake,
+        "Section" => klipp_core::MarkerKind::Section,
+        _ => klipp_core::MarkerKind::None,
+    }
 }
 
 /// Load ClipKind from JSON — backward-compatible with old `media_id`-only format.
