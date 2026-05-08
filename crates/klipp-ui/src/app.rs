@@ -5858,6 +5858,14 @@ impl KlippApp {
                     }
                     return true;
                 }
+                AppCommand::ReplaceClipMedia { clip_id, new_media_id } => {
+                    if self.try_replace_clip_media(*clip_id, *new_media_id) {
+                        self.sync_sequence_to_engine();
+                        let _ = self.cmd_tx.send(AppCommand::SeekTo(self.state.playhead));
+                        self.state.dirty = true;
+                    }
+                    return true;
+                }
                 AppCommand::TrimClip {
                     clip_id,
                     old_source_in,
@@ -20297,6 +20305,23 @@ impl KlippApp {
                     }
                 }
             }
+            EditCommand::LegacyReplaceClipMedia {
+                clip_id,
+                old_media_id,
+                old_source_out,
+                old_timeline_out,
+                ..
+            } => {
+                if let Some(track) = self.state.sequences[self.state.active_sequence_idx].tracks.iter_mut()
+                    .find(|t| t.clips.iter().any(|c| c.id == *clip_id))
+                {
+                    if let Some(clip) = track.find_clip_mut(*clip_id) {
+                        clip.kind = klipp_timeline::ClipKind::Media { media_id: *old_media_id };
+                        clip.source_out = *old_source_out;
+                        clip.timeline_out = *old_timeline_out;
+                    }
+                }
+            }
             EditCommand::LegacyTrimClip {
                 clip_id,
                 old_source_in, old_source_out,
@@ -20794,6 +20819,23 @@ impl KlippApp {
                         l_left_id,
                         l_right_id,
                     );
+                }
+            }
+            EditCommand::LegacyReplaceClipMedia {
+                clip_id,
+                new_media_id,
+                new_source_out,
+                new_timeline_out,
+                ..
+            } => {
+                if let Some(track) = self.state.sequences[self.state.active_sequence_idx].tracks.iter_mut()
+                    .find(|t| t.clips.iter().any(|c| c.id == *clip_id))
+                {
+                    if let Some(clip) = track.find_clip_mut(*clip_id) {
+                        clip.kind = klipp_timeline::ClipKind::Media { media_id: *new_media_id };
+                        clip.source_out = *new_source_out;
+                        clip.timeline_out = *new_timeline_out;
+                    }
                 }
             }
             EditCommand::LegacyTrimClip {
@@ -26048,6 +26090,92 @@ impl KlippApp {
         self.state.sequences[self.state.active_sequence_idx].tracks.iter()
             .find(|t| t.clips.iter().any(|c| c.id == *clip_id))
             .is_some_and(|t| t.locked)
+    }
+
+    /// Swap a clip's backing media while preserving timeline_in/out,
+    /// source_in/out, effects, transitions, and linked partner.
+    /// Auto-clamps source_out + timeline_out by the same delta when
+    /// the new media is shorter than the existing trim window.
+    /// Returns true on success; toasts + returns false on validation
+    /// failure (locked track, unknown clip / media, identical media,
+    /// non-Media kind).
+    fn try_replace_clip_media(
+        &mut self,
+        clip_id: ClipId,
+        new_media_id: MediaId,
+    ) -> bool {
+        if self.clip_track_is_locked(&clip_id) {
+            self.state.toast.show("Replace: track is locked");
+            return false;
+        }
+        // Resolve the new media's source duration so we know whether
+        // to clamp. None → media isn't in the pool.
+        let new_media_dur = match self.state.media_pool.get(&new_media_id) {
+            Some(item) => item.duration,
+            None => {
+                self.state.toast.show("Replace: target media not found in pool");
+                return false;
+            }
+        };
+        let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+        let Some(clip) = seq.all_clips_mut().find(|c| c.id == clip_id) else {
+            self.state.toast.show("Replace: clip not found");
+            return false;
+        };
+        // Only Media-kind clips can have their media swapped — Title /
+        // Generator / Sequence clips have a different backing model
+        // and the gesture doesn't apply.
+        let old_media_id = match clip.kind {
+            klipp_timeline::ClipKind::Media { media_id } => media_id,
+            _ => {
+                self.state.toast.show("Replace: only media clips can be swapped");
+                return false;
+            }
+        };
+        if old_media_id == new_media_id {
+            return false; // no-op, no toast
+        }
+
+        // Clamp source_out (and timeline_out by the same delta) when
+        // the new media is shorter than the existing trim window.
+        // Source_in stays untouched — if user trimmed in by 5s on
+        // the old clip and the new media is at least source_in long,
+        // we keep the head trim. Both clamps are applied to the same
+        // timing reference (`clip.source_out`), so the visible clip
+        // length never grows; it only shortens to fit.
+        let old_source_out = clip.source_out;
+        let old_timeline_out = clip.timeline_out;
+        let new_source_out = if old_source_out > new_media_dur {
+            new_media_dur
+        } else {
+            old_source_out
+        };
+        let dt_secs = old_source_out.to_secs_f64() - new_source_out.to_secs_f64();
+        let new_timeline_out = if dt_secs > 0.0 {
+            // Convert delta to the timeline_out's rate to subtract.
+            let dt_at_timeline_rate = klipp_core::RationalTime::from_secs_f64(
+                dt_secs.max(0.0),
+                old_timeline_out.rate,
+            );
+            old_timeline_out - dt_at_timeline_rate
+        } else {
+            old_timeline_out
+        };
+
+        clip.kind = klipp_timeline::ClipKind::Media { media_id: new_media_id };
+        clip.source_out = new_source_out;
+        clip.timeline_out = new_timeline_out;
+
+        self.state.push_history(EditCommand::LegacyReplaceClipMedia {
+            clip_id,
+            old_media_id,
+            new_media_id,
+            old_source_out,
+            new_source_out,
+            old_timeline_out,
+            new_timeline_out,
+        });
+        true
     }
 
     /// Wrapper around [`klipp_timeline::Sequence::try_swap_adjacent_clips`]

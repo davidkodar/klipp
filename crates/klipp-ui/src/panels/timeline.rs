@@ -7314,6 +7314,51 @@ impl TimelinePanel {
                     cmds.push(AppCommand::OpenExportDialogForSelectedClips);
                     ui.close_menu();
                 }
+
+                // ── Replace From Bin ──
+                // Submenu lists every media-pool item except the
+                // clip's current backing media. Filename labels;
+                // scrollable per the long-menu pattern. Picking an
+                // entry dispatches ReplaceClipMedia which preserves
+                // trim + effects + transitions and auto-clamps the
+                // tail when the new media is shorter.
+                let cur_media_id = state.sequence().tracks.iter()
+                    .flat_map(|t| t.clips.iter())
+                    .find(|c| c.id == clip_id)
+                    .and_then(|c| c.media_id());
+                let is_media_clip = cur_media_id.is_some();
+                ui.add_enabled_ui(is_media_clip, |ui| {
+                    ui.menu_button("\u{21BB} Replace From Bin", |ui| {
+                        let max_h = (ui.ctx().screen_rect().height() * 0.70).max(240.0);
+                        egui::ScrollArea::vertical()
+                            .id_salt(("replace_from_bin", clip_id.0))
+                            .max_height(max_h)
+                            .show(ui, |ui| {
+                                // Snapshot media-pool entries up front
+                                // so we don't borrow the pool while
+                                // pushing AppCommands inside the loop.
+                                let entries: Vec<(klipp_core::MediaId, String)> = state
+                                    .media_pool
+                                    .all()
+                                    .filter(|m| Some(m.id) != cur_media_id)
+                                    .map(|m| (m.id, m.filename.clone()))
+                                    .collect();
+                                if entries.is_empty() {
+                                    ui.label(egui::RichText::new("(no other media in bin)")
+                                        .small().italics());
+                                }
+                                for (mid, name) in entries {
+                                    if ui.button(name).clicked() {
+                                        cmds.push(AppCommand::ReplaceClipMedia {
+                                            clip_id,
+                                            new_media_id: mid,
+                                        });
+                                        ui.close_menu();
+                                    }
+                                }
+                            });
+                    });
+                });
                 ui.separator();
 
                 // ── Title/Text clip actions ──

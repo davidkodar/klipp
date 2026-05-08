@@ -168,6 +168,21 @@ pub enum EditCommand {
         /// by group propagation (avoids double-moving in undo/redo).
         linked_partner: Option<LinkedMovePartner>,
     },
+    /// Swap a clip's backing media (FCPX-style "Replace From Bin").
+    /// Captures the old `media_id`, plus `source_out` + `timeline_out`
+    /// in case the swap auto-clamped them — undo restores all three
+    /// even if the new media's duration was shorter than the old
+    /// trim. Other clip props (effects, keyframes, transitions, link)
+    /// are preserved by the forward path so they don't need capture.
+    LegacyReplaceClipMedia {
+        clip_id: ClipId,
+        old_media_id: klipp_core::MediaId,
+        new_media_id: klipp_core::MediaId,
+        old_source_out: RationalTime,
+        new_source_out: RationalTime,
+        old_timeline_out: RationalTime,
+        new_timeline_out: RationalTime,
+    },
     /// Exchange two adjacent clips on the same track. Both clips' old
     /// `timeline_in`/`timeline_out` are captured so undo restores
     /// exact positions even after subsequent rounding. When the
@@ -547,6 +562,7 @@ impl EditCommand {
             EditCommand::LegacyRemoveClip { .. } | EditCommand::LegacyRippleRemove { .. } => "Remove Clip",
             EditCommand::LegacyMoveClip { .. } | EditCommand::LegacyMoveClipToTrack { .. } => "Move Clip",
             EditCommand::LegacySwapClips { .. } => "Swap Clips",
+            EditCommand::LegacyReplaceClipMedia { .. } => "Replace Clip Media",
             EditCommand::LegacyTrimClip { .. } | EditCommand::LegacyRippleTrimClip { .. } => "Trim Clip",
             EditCommand::LegacyRollTrimClip { .. } => "Roll Trim",
             EditCommand::LegacySlipClip { .. } => "Slip Clip",

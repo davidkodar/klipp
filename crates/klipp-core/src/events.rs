@@ -866,6 +866,14 @@ pub enum AppCommand {
     /// radio (`selected_clips_frame_range`), so behaviour stays in
     /// sync with the existing in-dialog flow.
     OpenExportDialogForSelectedClips,
+    /// Swap the media backing a timeline clip while keeping every
+    /// other property — `timeline_in/out`, `source_in/out`, effects,
+    /// transitions, linked partner, keyframes. When the new media
+    /// is shorter than the existing trim window, both `source_out`
+    /// and `timeline_out` clamp by the same delta so no orphan
+    /// timeline space appears. No-op when `new_media_id` already
+    /// backs the clip.
+    ReplaceClipMedia { clip_id: ClipId, new_media_id: MediaId },
     /// Generate a headless bash render script that calls ffmpeg to render
     /// the current sequence. Cuts only — effects/grades/transitions are NOT
     /// serialized. The script includes a prominent WARNING comment advising
