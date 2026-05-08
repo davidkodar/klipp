@@ -915,6 +915,28 @@ impl NodeGraphV2Panel {
             let is_selected =
                 *selected_node == Some(node_id) || selected_set.contains(&node_id);
 
+            // Hover glow — animated soft accent ring around the
+            // node when the cursor is on it AND no other state
+            // (selection, drag, popup) is taking visual priority.
+            // egui's animate_value_with_time keeps the fade smooth
+            // and auto-requests repaint while transitioning;
+            // settled animations short-circuit to a HashMap lookup
+            // with no side effects so calling it for every node
+            // every frame is cheap.
+            let hover_eligible = !is_selected
+                && self.drag_node.is_none()
+                && self.drag_frame.is_none()
+                && self.drag_wire.is_none()
+                && self.box_select.is_none()
+                && !any_menu_open;
+            let is_hovered = hover_eligible
+                && hover_pointer.map(|p| rect.contains(p)).unwrap_or(false);
+            let glow_id = ui.id().with(("ngv2_node_hover_glow", node_id));
+            let glow_target = if is_hovered { 1.0_f32 } else { 0.0_f32 };
+            let glow_duration = if is_hovered { 0.12 } else { 0.20 };
+            let glow = ui.ctx().animate_value_with_time(glow_id, glow_target, glow_duration);
+            let glow_alpha = (32.0 * glow) as u8;
+
             // Reroute is rendered as a dot, not a card — fully
             // self-contained branch so we don't pay for shadow /
             // highlight / header / body / chip / thumbnail logic
@@ -925,6 +947,16 @@ impl NodeGraphV2Panel {
             if matches!(kind, NodeKind::Reroute) {
                 let centre = rect.center();
                 let radius = rect.width() * 0.40;
+                if glow_alpha > 0 {
+                    let accent = theme.accent;
+                    painter.circle_stroke(
+                        centre,
+                        radius + 3.0,
+                        egui::Stroke::new(1.5, egui::Color32::from_rgba_unmultiplied(
+                            accent.r(), accent.g(), accent.b(), glow_alpha,
+                        )),
+                    );
+                }
                 if is_selected {
                     let halo = theme.accent;
                     painter.circle_stroke(
@@ -952,18 +984,25 @@ impl NodeGraphV2Panel {
                 egui::pos2(rect.min.x, rect.min.y + header_h),
                 rect.max,
             );
-            // Drop shadow — two stops of premultiplied black,
-            // offset down + slightly grown so the node feels like
-            // it's sitting above the canvas rather than printed on
-            // it. Offsets are in screen pixels (not multiplied by
-            // zoom) — that matches how a real drop shadow scales
-            // and keeps the depth cue legible at extreme zoom-out.
-            // Painted before the Compound stack ghosts so a single
-            // shadow sits under the whole stack rather than each
-            // ghost casting its own competing shadow.
+            // Drop shadow — three stops of premultiplied black,
+            // each progressively further out and dimmer to fake an
+            // ambient soft-shadow falloff. The far stop adds the
+            // "feathered halo" that makes the card feel lifted
+            // even when the contact stops are subtle. Offsets are
+            // in screen pixels (not multiplied by zoom) — that
+            // matches how a real drop shadow scales and keeps the
+            // depth cue legible at extreme zoom-out. Painted before
+            // the Compound stack ghosts so a single shadow sits
+            // under the whole stack rather than each ghost casting
+            // its own competing shadow.
             {
+                let shadow_ambient = egui::Color32::from_rgba_premultiplied(0, 0, 0, 12);
                 let shadow_far = egui::Color32::from_rgba_premultiplied(0, 0, 0, 22);
                 let shadow_near = egui::Color32::from_rgba_premultiplied(0, 0, 0, 36);
+                painter.rect_filled(
+                    rect.translate(egui::vec2(0.0, 7.0)).expand(6.5),
+                    7.5, shadow_ambient,
+                );
                 painter.rect_filled(
                     rect.translate(egui::vec2(0.0, 4.0)).expand(3.0),
                     5.5, shadow_far,
@@ -996,7 +1035,33 @@ impl NodeGraphV2Panel {
                 painter.rect_filled(ghost1, 4.0, shade(fill, 35));
                 painter.rect_stroke(ghost1, 4.0, egui::Stroke::new(0.5, theme.border));
             }
+            // Hover glow — soft accent ring around the rect, alpha
+            // tracking the smoothed `glow` value. Painted before
+            // the card body so it sits behind the rect's fill and
+            // doesn't tint the body itself. Selection halos take
+            // priority later in the paint order; the gate above
+            // already disables the glow for selected nodes.
+            if glow_alpha > 0 {
+                let accent = theme.accent;
+                painter.rect_stroke(
+                    rect.expand(2.5),
+                    5.0,
+                    egui::Stroke::new(1.5, egui::Color32::from_rgba_unmultiplied(
+                        accent.r(), accent.g(), accent.b(), glow_alpha,
+                    )),
+                );
+            }
             painter.rect_filled(rect, 4.0, theme.bg_panel);
+            // Header sits ~6 % brighter than the body so the card
+            // reads as "headed strip + body" rather than a uniform
+            // slab. Polarity-aware: theme.overlay flips dark on
+            // light themes so this stays a brightening cue both
+            // ways.
+            let header_rect = egui::Rect::from_min_max(
+                rect.min,
+                egui::pos2(rect.max.x, rect.min.y + header_h),
+            );
+            painter.rect_filled(header_rect, 4.0, theme.overlay(14));
             // Active nodes get a small lift on the kind-palette fill so
             // they read as live; bypassed nodes fall back to bg_panel_alt
             // (no fill colour at all). The lift is intentionally
@@ -1006,22 +1071,31 @@ impl NodeGraphV2Panel {
             let body_fill = if node_on { lift(fill, 14) } else { theme.bg_panel_alt };
             painter.rect_filled(body_rect, 4.0, body_fill);
 
-            // Internal top-edge highlight — a 1-px line just below
-            // the rect's top edge that picks up "light from above".
-            // Uses theme.overlay() so polarity flips on light themes
-            // (becomes a soft dark line on white instead of an
-            // invisible white-on-white). Inset 4 px from each side
-            // so it doesn't poke out past the rounded corners.
+            // Internal top-edge gradient — five stacked horizontal
+            // lines fading from a bright top toward invisible over
+            // ~5 px so the rect's top edge picks up "light from
+            // above" as a soft glow rather than a hard pinstripe.
+            // egui has no native vertical-gradient primitive at
+            // this stroke level so we fake it with stacked alpha.
+            // Polarity-aware via theme.overlay; selected state
+            // brightens the top stop so the focus halo + gradient
+            // reinforce each other.
             {
-                let y = rect.min.y + 1.0;
-                let highlight = theme.overlay(if is_selected { 80 } else { 50 });
-                painter.line_segment(
-                    [
-                        egui::pos2(rect.min.x + 4.0, y),
-                        egui::pos2(rect.max.x - 4.0, y),
-                    ],
-                    egui::Stroke::new(1.0, highlight),
-                );
+                let max_alpha: u8 = if is_selected { 110 } else { 70 };
+                for i in 0..5 {
+                    let y = rect.min.y + i as f32 + 0.5;
+                    // Linear falloff: alpha = max * (1 - i/5).
+                    let a = (max_alpha as f32 * (1.0 - i as f32 / 5.0)) as u8;
+                    if a == 0 { break; }
+                    let highlight = theme.overlay(a);
+                    painter.line_segment(
+                        [
+                            egui::pos2(rect.min.x + 4.0, y),
+                            egui::pos2(rect.max.x - 4.0, y),
+                        ],
+                        egui::Stroke::new(1.0, highlight),
+                    );
+                }
             }
 
             let is_soloed = solo_node == Some(node_id);
@@ -1244,14 +1318,20 @@ impl NodeGraphV2Panel {
                     if let Some((_, tex)) = self.matte_thumbs.get(&node_id) {
                         // Inset the thumb inside the node body with a
                         // small margin so the magenta body rim still
-                        // reads as "this is a matte node".
+                        // reads as "this is a matte node". Aspect-fit
+                        // (16:9) so the matte source isn't squished
+                        // into the wider-than-tall body cell, and
+                        // round the corners 3 px to match the card
+                        // chrome. Category glyph in the bottom-right
+                        // tells the user "this thumb is a matte" at
+                        // a glance.
                         let inset = 4.0 * zoom;
-                        let thumb_rect = body_rect.shrink(inset);
-                        painter.image(
-                            tex.id(),
-                            thumb_rect,
-                            egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-                            egui::Color32::WHITE,
+                        let cell = body_rect.shrink(inset);
+                        let thumb_rect = aspect_fit_rect(cell, 16.0 / 9.0);
+                        paint_thumb_rounded(&painter, thumb_rect, tex.id(), 3.0);
+                        paint_thumb_badge(
+                            &painter, thumb_rect,
+                            kind_category_glyph(&kind), theme, zoom,
                         );
                     }
                 } else {
@@ -1310,16 +1390,18 @@ impl NodeGraphV2Panel {
                             }
                         }
                         if let Some((_, tex)) = self.output_thumbs.get(&node_id) {
+                            // Aspect-fit the 16:9 thumb into the wider-
+                            // than-tall body cell with rounded corners
+                            // and a category glyph in the bottom-right.
+                            // See the matte-thumb path above for the
+                            // shared helpers.
                             let inset = 4.0 * zoom;
-                            let thumb_rect = body_rect.shrink(inset);
-                            painter.image(
-                                tex.id(),
-                                thumb_rect,
-                                egui::Rect::from_min_max(
-                                    egui::pos2(0.0, 0.0),
-                                    egui::pos2(1.0, 1.0),
-                                ),
-                                egui::Color32::WHITE,
+                            let cell = body_rect.shrink(inset);
+                            let thumb_rect = aspect_fit_rect(cell, 16.0 / 9.0);
+                            paint_thumb_rounded(&painter, thumb_rect, tex.id(), 3.0);
+                            paint_thumb_badge(
+                                &painter, thumb_rect,
+                                kind_category_glyph(&kind), theme, zoom,
                             );
                         }
                     }
@@ -2915,6 +2997,117 @@ pub(super) fn graph_bounds(graph: &NodeGraph) -> Option<egui::Rect> {
         egui::pos2(min_x, min_y),
         egui::pos2(max_x, max_y),
     ))
+}
+
+/// Largest sub-rect of `container` that preserves `image_aspect`
+/// (width/height), centred. Result either pillar-boxes (container
+/// wider than image) or letter-boxes (container taller). Used to
+/// stop the per-node thumbnail looking vertically cramped when
+/// the body cell's aspect doesn't match the 16:9 thumb.
+fn aspect_fit_rect(container: egui::Rect, image_aspect: f32) -> egui::Rect {
+    let cw = container.width().max(0.001);
+    let ch = container.height().max(0.001);
+    let c_aspect = cw / ch;
+    if c_aspect > image_aspect {
+        // Container wider than image — pillarbox.
+        let h = ch;
+        let w = h * image_aspect;
+        let x = container.center().x - w * 0.5;
+        egui::Rect::from_min_size(egui::pos2(x, container.min.y), egui::vec2(w, h))
+    } else {
+        // Container taller than image — letterbox.
+        let w = cw;
+        let h = w / image_aspect;
+        let y = container.center().y - h * 0.5;
+        egui::Rect::from_min_size(egui::pos2(container.min.x, y), egui::vec2(w, h))
+    }
+}
+
+/// Paint a textured rect with rounded corners. egui's `painter.image`
+/// is unrounded; this routes through the lower-level `Shape::Rect`
+/// with `fill_texture_id` + a 0..1 UV so the same texture renders
+/// with a corner radius. Used for per-node thumbnail previews so
+/// they read as "framed previews" rather than slabs.
+fn paint_thumb_rounded(
+    painter: &egui::Painter,
+    rect: egui::Rect,
+    tex_id: egui::TextureId,
+    rounding_px: f32,
+) {
+    painter.add(egui::Shape::Rect(egui::epaint::RectShape {
+        rect,
+        rounding: egui::Rounding::same(rounding_px),
+        fill: egui::Color32::WHITE,
+        stroke: egui::Stroke::NONE,
+        blur_width: 0.0,
+        fill_texture_id: tex_id,
+        uv: egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+    }));
+}
+
+/// One-letter category badge for the per-node thumbnail's corner
+/// chip. 5 buckets — corrections / matte / compositing / looks /
+/// routing — plus a couple of structural one-offs so the badge
+/// stays distinct rather than always reading "C".
+fn kind_category_glyph(kind: &NodeKind) -> &'static str {
+    match kind {
+        NodeKind::Source | NodeKind::Output => "\u{25CB}", // ○
+        NodeKind::Compound => "\u{229E}",                  // ⊞
+        NodeKind::Reroute
+        | NodeKind::RGBSplitter
+        | NodeKind::RGBCombiner
+        | NodeKind::PrimariesMatrix => "\u{21B9}",         // ↹
+        NodeKind::Qualifier
+        | NodeKind::LumaKey
+        | NodeKind::Mask
+        | NodeKind::CombineMattes
+        | NodeKind::ExternalMatte
+        | NodeKind::MaskCutout => "M",
+        NodeKind::Layer
+        | NodeKind::Blend
+        | NodeKind::ApplyMatte
+        | NodeKind::LayerMixer => "L",
+        NodeKind::Lut3D
+        | NodeKind::FilmGrain
+        | NodeKind::ColorMatch
+        | NodeKind::ColorWarper
+        | NodeKind::Denoise => "F",
+        // Everything else is the primary-correction family.
+        _ => "C",
+    }
+}
+
+/// Paint the bottom-right category badge over a thumbnail. Small
+/// rounded chip with theme.bg_deep at alpha 200 + the category
+/// glyph; inset from the thumb's corner so it sits inside the
+/// rounded edge.
+fn paint_thumb_badge(
+    painter: &egui::Painter,
+    thumb_rect: egui::Rect,
+    glyph: &'static str,
+    theme: &KlippTheme,
+    zoom: f32,
+) {
+    let chip_size = (12.0 * zoom).max(9.0);
+    let inset = 3.0 * zoom.max(0.5);
+    let chip_rect = egui::Rect::from_min_size(
+        egui::pos2(
+            thumb_rect.max.x - chip_size - inset,
+            thumb_rect.max.y - chip_size - inset,
+        ),
+        egui::vec2(chip_size, chip_size),
+    );
+    let bg = egui::Color32::from_rgba_unmultiplied(
+        theme.bg_deep.r(), theme.bg_deep.g(), theme.bg_deep.b(), 200,
+    );
+    painter.rect_filled(chip_rect, 2.5, bg);
+    painter.text(
+        chip_rect.center(),
+        egui::Align2::CENTER_CENTER,
+        glyph,
+        egui::FontId::proportional((chip_size * 0.65).max(7.0)),
+        theme.text_primary,
+    );
 }
 
 fn input_port_pos(rect: &egui::Rect, port: u8, count: u8) -> egui::Pos2 {
