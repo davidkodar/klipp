@@ -98,6 +98,24 @@ pub struct NodeGraphV2Panel {
     /// outside the interact_rect). Skipping the close check on the
     /// open frame is the simplest fix.
     add_menu_opened_frame: u64,
+    /// Live search query for the add-node menu. Cleared every time
+    /// the menu re-opens (each invocation is a fresh search). Match
+    /// is case-insensitive substring against the entry's display
+    /// label — predictable enough that "sat" hits Saturation /
+    /// Wheel Sat/Bri / Hue/Sat without surprising matches the way
+    /// subsequence-style fuzzy can.
+    add_menu_search: String,
+    /// Recently-added node kinds (kind_str values), most-recent
+    /// first, capped at 6 entries. Surfaced as a "Recent" row at
+    /// the top of the add-node menu so the user's last few picks
+    /// are one click away. In-memory only; resets on app restart.
+    add_menu_recents: Vec<&'static str>,
+    /// Set of category names whose disclosure triangle is
+    /// collapsed. In-memory; defaults to all-expanded so first-time
+    /// users see every entry. When the search field is non-empty
+    /// this state is ignored (matches across all categories paint
+    /// inline).
+    add_menu_collapsed: std::collections::HashSet<&'static str>,
     /// Per-node context menu — opened on right-click on a node.
     /// `(node_id, screen_pos)`; cleared on close.
     node_menu: Option<(NodeId, egui::Pos2)>,
@@ -165,6 +183,9 @@ impl Default for NodeGraphV2Panel {
             add_menu_screen_pos: egui::Pos2::ZERO,
             add_menu_graph_pos: egui::Pos2::ZERO,
             add_menu_opened_frame: 0,
+            add_menu_search: String::new(),
+            add_menu_recents: Vec::new(),
+            add_menu_collapsed: std::collections::HashSet::new(),
             node_menu: None,
             node_menu_opened_frame: 0,
             last_fit_clip: None,
@@ -1351,6 +1372,8 @@ impl NodeGraphV2Panel {
                             self.add_menu_open = true;
                             self.add_menu_screen_pos = p;
                             self.add_menu_graph_pos = to_graph(p);
+                            // Each menu invocation is a fresh search.
+                            self.add_menu_search.clear();
                             self.add_menu_opened_frame = frame_nr;
                             self.node_menu = None;
                         }
@@ -1514,66 +1537,197 @@ impl NodeGraphV2Panel {
         cmds: &mut Vec<AppCommand>,
     ) {
         let menu_id = ui.id().with("ngv2_add_menu");
+        let search_id = menu_id.with("search");
         let mut close = false;
+        let mut chosen_kind: Option<&'static str> = None;
         // egui::Area returns a response we can use to detect
         // outside-clicks via `clicked_elsewhere`. Doing the close
         // logic THIS way instead of a global `primary_clicked()`
         // check avoids the bug where the same right-click that just
         // opened the menu (this frame) also tripped the close.
-        // Cap at 70 % of screen height (floor 240 px) so the 29
+        // Cap at 70 % of screen height (floor 240 px) so the
         // entries stay reachable on small viewports / scaled
         // displays / dock layouts that leave the node-graph panel
         // less than the full window height. ScrollArea handles
         // wheel scroll for free; same pattern the Add Transition
         // submenu uses on the timeline side.
         let max_h = (ui.ctx().screen_rect().height() * 0.70).max(240.0);
+        // Categories — display order top-to-bottom in the menu when
+        // search is empty. Source of truth for both the flat-search
+        // path AND the categorised path; entries the user can pick
+        // are exactly these.
+        const CATEGORIES: &[(&str, &[(&str, &str)])] = &[
+            ("Primary Grade", &[
+                ("Corrector (all-in-one)", "Corrector"),
+                ("Exposure", "Exposure"),
+                ("Contrast", "Contrast"),
+                ("Saturation", "Saturation"),
+                ("Tone Controls", "ToneControls"),
+                ("Color Wheels", "ColorWheels"),
+                ("Wheel Sat/Bri", "WheelSatBri"),
+                ("Curves", "RGBCurves"),
+                ("Hue/Sat", "HueSatCurves"),
+                ("Color Balance", "ColorBalance"),
+                ("Color Match", "ColorMatch"),
+            ]),
+            ("Secondary", &[
+                ("Qualifier", "Qualifier"),
+                ("Luma Key", "LumaKey"),
+                ("Soft Clip", "SoftClip"),
+                ("Mask", "Mask"),
+                ("External Matte", "ExternalMatte"),
+                ("Combine Mattes", "CombineMattes"),
+                ("Mask Cutout", "MaskCutout"),
+            ]),
+            ("Compositing", &[
+                ("Layer", "Layer"),
+                ("Layer Mixer", "LayerMixer"),
+                ("Blend", "Blend"),
+                ("Apply Matte", "ApplyMatte"),
+            ]),
+            ("Utilities", &[
+                ("3D LUT", "Lut3D"),
+                ("Film Grain", "FilmGrain"),
+                ("Color Warper", "ColorWarper"),
+                ("Noise Reduction", "Denoise"),
+                ("RGB Splitter", "RGBSplitter"),
+                ("RGB Combiner", "RGBCombiner"),
+            ]),
+            ("Structural", &[
+                ("Compound", "Compound"),
+            ]),
+        ];
+
+        // Lookup helper — recents store kind_str; we want to render
+        // them with their display label, so we walk CATEGORIES once.
+        let label_for_kind = |kind: &str| -> Option<&'static str> {
+            for (_, entries) in CATEGORIES {
+                for (label, k) in *entries {
+                    if *k == kind { return Some(*label); }
+                }
+            }
+            None
+        };
+
         let area_resp = egui::Area::new(menu_id)
             .fixed_pos(self.add_menu_screen_pos)
             .order(egui::Order::Foreground)
             .show(ui.ctx(), |ui| {
                 egui::Frame::popup(ui.style()).show(ui, |ui| {
+                    ui.set_min_width(220.0);
+
+                    // ── Search field ─────────────────────────────
+                    let search_resp = ui.add(
+                        egui::TextEdit::singleline(&mut self.add_menu_search)
+                            .id(search_id)
+                            .hint_text("Search nodes…")
+                            .desired_width(200.0),
+                    );
+                    // Auto-focus on first frame the menu is shown so
+                    // the user can start typing immediately. egui
+                    // grabs focus exactly once per request_focus()
+                    // call; calling it on the open-frame only is the
+                    // minimum to land focus without stealing it back
+                    // from any subsequent interaction inside the menu.
+                    if ui.ctx().cumulative_pass_nr() == self.add_menu_opened_frame {
+                        search_resp.request_focus();
+                    }
+                    ui.separator();
+
+                    let q = self.add_menu_search.trim().to_lowercase();
+                    let in_search = !q.is_empty();
+                    let matches = |label: &str| -> bool {
+                        if !in_search { return true; }
+                        label.to_lowercase().contains(&q)
+                    };
+
                     egui::ScrollArea::vertical()
                         .id_salt("ngv2_add_node_scroll")
                         .max_height(max_h)
                         .show(ui, |ui| {
-                            for (label, kind_str) in [
-                                ("Corrector (all-in-one)", "Corrector"),
-                                ("Exposure", "Exposure"),
-                                ("Contrast", "Contrast"),
-                                ("Saturation", "Saturation"),
-                                ("Tone Controls", "ToneControls"),
-                                ("Color Wheels", "ColorWheels"),
-                                ("Wheel Sat/Bri", "WheelSatBri"),
-                                ("Curves", "RGBCurves"),
-                                ("Hue/Sat", "HueSatCurves"),
-                                ("Color Balance", "ColorBalance"),
-                                ("Color Match", "ColorMatch"),
-                                ("Qualifier", "Qualifier"),
-                                ("Luma Key", "LumaKey"),
-                                ("Soft Clip", "SoftClip"),
-                                ("Mask", "Mask"),
-                                ("External Matte", "ExternalMatte"),
-                                ("Combine Mattes", "CombineMattes"),
-                                ("Layer", "Layer"),
-                                ("Layer Mixer", "LayerMixer"),
-                                ("Blend", "Blend"),
-                                ("Apply Matte", "ApplyMatte"),
-                                ("Film Grain", "FilmGrain"),
-                                ("Color Warper", "ColorWarper"),
-                                ("Noise Reduction", "Denoise"),
-                                ("3D LUT", "Lut3D"),
-                                ("Compound", "Compound"),
-                                ("RGB Splitter", "RGBSplitter"),
-                                ("RGB Combiner", "RGBCombiner"),
-                                ("Mask Cutout", "MaskCutout"),
-                            ] {
-                                if ui.button(label).clicked() {
-                                    cmds.push(AppCommand::AddNode {
-                                        clip_id,
-                                        kind: kind_str.to_string(),
-                                        position: (self.add_menu_graph_pos.x, self.add_menu_graph_pos.y),
-                                    });
-                                    close = true;
+                            // ── Recent (only when not searching) ──
+                            // Surfaces the user's last few picks at
+                            // the top so the common case ("add the
+                            // same kind I just added on the previous
+                            // node") is one click away. Hidden when
+                            // empty so first-open is uncluttered.
+                            if !in_search && !self.add_menu_recents.is_empty() {
+                                ui.label(egui::RichText::new("RECENT").small().weak());
+                                for kind in self.add_menu_recents.clone() {
+                                    if let Some(label) = label_for_kind(kind) {
+                                        if ui.button(label).clicked() {
+                                            chosen_kind = Some(kind);
+                                        }
+                                    }
+                                }
+                                ui.separator();
+                            }
+
+                            // ── Categories ───────────────────────
+                            for (cat_name, entries) in CATEGORIES {
+                                // Pre-filter so we know whether the
+                                // category has any visible entries
+                                // before painting its header — empty
+                                // categories during search would
+                                // otherwise leave naked headers.
+                                let visible: Vec<_> = entries.iter()
+                                    .filter(|(label, _)| matches(label))
+                                    .collect();
+                                if visible.is_empty() { continue; }
+
+                                if in_search {
+                                    // Search mode: skip collapse UI;
+                                    // show every match flat under a
+                                    // weak category caption so the
+                                    // user can still tell which
+                                    // bucket each entry came from.
+                                    ui.label(egui::RichText::new(cat_name.to_uppercase())
+                                        .small().weak());
+                                    for (label, kind_str) in visible {
+                                        if ui.button(*label).clicked() {
+                                            chosen_kind = Some(*kind_str);
+                                        }
+                                    }
+                                } else {
+                                    // Idle mode: collapsible header.
+                                    // Tracking by name (not by index)
+                                    // means re-orderings won't flip
+                                    // a user's collapsed sections.
+                                    let collapsed = self.add_menu_collapsed.contains(*cat_name);
+                                    let arrow = if collapsed { "\u{25B8}" } else { "\u{25BE}" };
+                                    let header_label = format!("{arrow}  {cat_name}");
+                                    let header_resp = ui.add(
+                                        egui::Label::new(
+                                            egui::RichText::new(header_label).strong()
+                                        ).sense(egui::Sense::click()),
+                                    );
+                                    if header_resp.clicked() {
+                                        if collapsed {
+                                            self.add_menu_collapsed.remove(*cat_name);
+                                        } else {
+                                            self.add_menu_collapsed.insert(*cat_name);
+                                        }
+                                    }
+                                    if !collapsed {
+                                        ui.indent(("ngv2_add_cat", *cat_name), |ui| {
+                                            for (label, kind_str) in visible {
+                                                if ui.button(*label).clicked() {
+                                                    chosen_kind = Some(*kind_str);
+                                                }
+                                            }
+                                        });
+                                    }
+                                }
+                            }
+
+                            // Empty-state for search-with-no-hits.
+                            if in_search {
+                                let any = CATEGORIES.iter().any(|(_, entries)| {
+                                    entries.iter().any(|(label, _)| matches(label))
+                                });
+                                if !any {
+                                    ui.add_space(6.0);
+                                    ui.label(egui::RichText::new("No matches").weak());
                                 }
                             }
                         });
@@ -1587,6 +1741,20 @@ impl NodeGraphV2Panel {
         if ui.ctx().cumulative_pass_nr() != self.add_menu_opened_frame
             && area_resp.response.clicked_elsewhere()
         {
+            close = true;
+        }
+        if let Some(kind_str) = chosen_kind {
+            cmds.push(AppCommand::AddNode {
+                clip_id,
+                kind: kind_str.to_string(),
+                position: (self.add_menu_graph_pos.x, self.add_menu_graph_pos.y),
+            });
+            // Bump kind to the front of recents (dedupe + cap 6).
+            // Storing the &'static str (not the display label) means
+            // a future label rename doesn't poison the recents list.
+            self.add_menu_recents.retain(|k| *k != kind_str);
+            self.add_menu_recents.insert(0, kind_str);
+            self.add_menu_recents.truncate(6);
             close = true;
         }
         if close { self.add_menu_open = false; }
