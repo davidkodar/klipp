@@ -587,6 +587,14 @@ pub enum AppCommand {
     RemoveClip { clip_id: ClipId },
     MoveClip { clip_id: ClipId, new_timeline_in: Timecode },
     MoveClipToTrack { clip_id: ClipId, new_timeline_in: Timecode, from_track: usize, to_track: usize },
+    /// Exchange two adjacent clips on the same track, preserving the
+    /// total span. Validation rejects: cross-track pairs, non-adjacent
+    /// clips (>1 frame gap), pairs sharing the same group, and
+    /// asymmetric linked-partner pairs (one has an A/V partner, the
+    /// other doesn't). When both clips have linked partners that are
+    /// themselves adjacent on the partner track, those partners swap
+    /// in lock-step. Single ctrl+z reverses everything.
+    SwapAdjacentClips { clip_a: ClipId, clip_b: ClipId },
     TrimClip {
         clip_id: ClipId,
         old_source_in: Timecode,

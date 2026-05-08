@@ -168,6 +168,24 @@ pub enum EditCommand {
         /// by group propagation (avoids double-moving in undo/redo).
         linked_partner: Option<LinkedMovePartner>,
     },
+    /// Exchange two adjacent clips on the same track. Both clips' old
+    /// `timeline_in`/`timeline_out` are captured so undo restores
+    /// exact positions even after subsequent rounding. When the
+    /// clips' linked A/V partners also swapped (matched-pair only),
+    /// their old positions are captured separately.
+    LegacySwapClips {
+        clip_a_id: ClipId,
+        a_old_in: RationalTime,
+        a_old_out: RationalTime,
+        clip_b_id: ClipId,
+        b_old_in: RationalTime,
+        b_old_out: RationalTime,
+        /// Linked partner of `clip_a`, with its old `timeline_in`,
+        /// when both clips had a linked partner and the swap
+        /// propagated to those partners on their track.
+        linked_a_partner: Option<(ClipId, RationalTime, RationalTime)>,
+        linked_b_partner: Option<(ClipId, RationalTime, RationalTime)>,
+    },
     LegacyTrimClip {
         clip_id: ClipId,
         old_source_in: RationalTime,
@@ -528,6 +546,7 @@ impl EditCommand {
             EditCommand::LinkedImport { .. } => "Add to Timeline",
             EditCommand::LegacyRemoveClip { .. } | EditCommand::LegacyRippleRemove { .. } => "Remove Clip",
             EditCommand::LegacyMoveClip { .. } | EditCommand::LegacyMoveClipToTrack { .. } => "Move Clip",
+            EditCommand::LegacySwapClips { .. } => "Swap Clips",
             EditCommand::LegacyTrimClip { .. } | EditCommand::LegacyRippleTrimClip { .. } => "Trim Clip",
             EditCommand::LegacyRollTrimClip { .. } => "Roll Trim",
             EditCommand::LegacySlipClip { .. } => "Slip Clip",

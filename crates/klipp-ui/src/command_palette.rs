@@ -190,6 +190,33 @@ pub fn build(state: &AppState) -> Vec<PaletteEntry> {
         e.push(PaletteEntry { label: Cow::Borrowed("Delete Clip"), shortcut: Cow::Borrowed("Del"),
             action: PaletteAction::Cmd(AppCommand::Undo), enabled: false });
     }
+    // Swap Selected Clips — exchange two adjacent clips on the same
+    // track. Gates purely on selected_clips.len() == 2; the AppCommand
+    // handler runs the full validation (same-track / adjacency /
+    // group / linked-partner symmetry) and surfaces failures as
+    // toasts. Lives outside the single-selection block because it
+    // depends on the multi-select list, not the primary selection.
+    let swap_pair: Option<(klipp_core::ClipId, klipp_core::ClipId)> =
+        if state.selected_clips.len() == 2 {
+            Some((state.selected_clips[0], state.selected_clips[1]))
+        } else {
+            None
+        };
+    if let Some((a, b)) = swap_pair {
+        e.push(PaletteEntry {
+            label: Cow::Borrowed("Swap Selected Clips"),
+            shortcut: Cow::Borrowed(""),
+            action: PaletteAction::Cmd(AppCommand::SwapAdjacentClips { clip_a: a, clip_b: b }),
+            enabled: true,
+        });
+    } else {
+        e.push(PaletteEntry {
+            label: Cow::Borrowed("Swap Selected Clips"),
+            shortcut: Cow::Borrowed(""),
+            action: PaletteAction::Cmd(AppCommand::Undo), // dummy, gated off
+            enabled: false,
+        });
+    }
     e.push(PaletteEntry { label: Cow::Borrowed("Paste"), shortcut: Cow::Borrowed("Ctrl+V"),
         action: PaletteAction::Cmd(AppCommand::PasteClip), enabled: has_clipboard });
     // Paste Attributes opens the attribute-picker dialog rather
@@ -940,6 +967,10 @@ mod tests {
         // Per-panel search hotkey discovery anchor. Pinned so the
         // Ctrl+F entry can't disappear into a refactor.
         "Focus Search in Current Panel",
+        // Swap-clips discovery anchor — entry is rendered greyed
+        // when the multi-select isn't a 2-clip pair, so the substring
+        // is reachable in the no-selection default state.
+        "Swap Selected Clips",
     ];
 
     #[test]

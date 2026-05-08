@@ -284,6 +284,257 @@ impl Sequence {
         }
     }
 
+    /// Attempt to swap two adjacent clips on the same track. Returns
+    /// `Ok(SwapResult)` with the captured pre-swap state when the
+    /// swap succeeds, or `Err(reason)` listing the validation
+    /// failure. The caller is responsible for toast display, history
+    /// push, and engine re-sync.
+    ///
+    /// Validation rules:
+    /// 1. Both clips exist; aren't the same id.
+    /// 2. Both clips are on the same track; the track isn't locked.
+    /// 3. The clips are adjacent within `1/fps_rate` seconds.
+    /// 4. Neither shares a group with the other.
+    /// 5. Linked-partner symmetry: either both have a linked partner
+    ///    or neither does. Asymmetric → reject (would orphan the lone
+    ///    partner).
+    /// 6. When both have partners, those partners are themselves
+    ///    adjacent on the same track in matching left/right order.
+    ///
+    /// On success, both primaries' positions exchange (preserve-span
+    /// semantics: right takes left's start, left starts at
+    /// `left.start + right.duration`), and the linked-partner pair
+    /// is swapped on its track too. Returns the pre-swap positions
+    /// for history capture, including partner positions when those
+    /// were also swapped.
+    pub fn try_swap_adjacent_clips(
+        &mut self,
+        clip_a: ClipId,
+        clip_b: ClipId,
+    ) -> Result<SwapResult, &'static str> {
+        if clip_a == clip_b {
+            return Err("Swap: clips must be distinct");
+        }
+
+        let fps_rate = self.fps.rate();
+        let epsilon_secs = 1.0 / fps_rate as f64;
+
+        // Snapshot the inputs.
+        let mut a_track = None;
+        let mut b_track = None;
+        let mut a_in = RationalTime { value: 0, rate: 1 };
+        let mut a_out = a_in;
+        let mut b_in = a_in;
+        let mut b_out = a_in;
+        let mut a_group = None;
+        let mut b_group = None;
+        let mut a_linked = None;
+        let mut b_linked = None;
+
+        for (idx, track) in self.tracks.iter().enumerate() {
+            for clip in &track.clips {
+                if clip.id == clip_a {
+                    a_track = Some(idx);
+                    a_in = clip.timeline_in;
+                    a_out = clip.timeline_out;
+                    a_group = clip.group_id;
+                    a_linked = clip.linked_clip_id;
+                } else if clip.id == clip_b {
+                    b_track = Some(idx);
+                    b_in = clip.timeline_in;
+                    b_out = clip.timeline_out;
+                    b_group = clip.group_id;
+                    b_linked = clip.linked_clip_id;
+                }
+            }
+        }
+
+        let (a_idx, b_idx) = match (a_track, b_track) {
+            (Some(a), Some(b)) => (a, b),
+            _ => return Err("Swap: one or both clips not found"),
+        };
+        if a_idx != b_idx {
+            return Err("Swap: both clips must be on the same track");
+        }
+        if self.tracks[a_idx].locked {
+            return Err("Swap: track is locked");
+        }
+
+        let (left_id, left_in, left_out, right_id, right_in, right_out) =
+            if a_in.to_secs_f64() <= b_in.to_secs_f64() {
+                (clip_a, a_in, a_out, clip_b, b_in, b_out)
+            } else {
+                (clip_b, b_in, b_out, clip_a, a_in, a_out)
+            };
+        let gap = right_in.to_secs_f64() - left_out.to_secs_f64();
+        if gap.abs() > epsilon_secs {
+            return Err("Swap: clips must be adjacent (no gap, no overlap)");
+        }
+
+        if let (Some(ga), Some(gb)) = (a_group, b_group) {
+            if ga == gb {
+                return Err("Swap: clips share a group — ungroup them first");
+            }
+        }
+
+        if a_linked.is_some() != b_linked.is_some() {
+            return Err("Swap: linked clips must come in matched pairs");
+        }
+
+        // Validate + capture partner state when both have partners.
+        let mut partners_info: Option<(ClipId, RationalTime, RationalTime, ClipId, RationalTime, RationalTime, usize)> = None;
+        if let (Some(la_id), Some(lb_id)) = (a_linked, b_linked) {
+            let mut la = None;
+            let mut lb = None;
+            let mut la_track = None;
+            let mut lb_track = None;
+            for (idx, track) in self.tracks.iter().enumerate() {
+                for clip in &track.clips {
+                    if clip.id == la_id {
+                        la = Some((clip.timeline_in, clip.timeline_out));
+                        la_track = Some(idx);
+                    } else if clip.id == lb_id {
+                        lb = Some((clip.timeline_in, clip.timeline_out));
+                        lb_track = Some(idx);
+                    }
+                }
+            }
+            match (la, lb, la_track, lb_track) {
+                (Some((la_in, la_out)), Some((lb_in, lb_out)), Some(lat), Some(lbt)) if lat == lbt => {
+                    if self.tracks[lat].locked {
+                        return Err("Swap: linked-partner track is locked");
+                    }
+                    let (l_left_in, l_left_out, l_right_in, _l_right_out) =
+                        if la_in.to_secs_f64() <= lb_in.to_secs_f64() {
+                            (la_in, la_out, lb_in, lb_out)
+                        } else {
+                            (lb_in, lb_out, la_in, la_out)
+                        };
+                    let _ = l_left_in;
+                    let l_gap = l_right_in.to_secs_f64() - l_left_out.to_secs_f64();
+                    if l_gap.abs() > epsilon_secs {
+                        return Err("Swap: linked partners must also be adjacent");
+                    }
+                    let left_primary_partner = if left_id == clip_a { la_id } else { lb_id };
+                    let l_left_id = if la_in.to_secs_f64() <= lb_in.to_secs_f64() { la_id } else { lb_id };
+                    if left_primary_partner != l_left_id {
+                        return Err("Swap: linked partners must be in the same order as the primaries");
+                    }
+                    partners_info = Some((la_id, la_in, la_out, lb_id, lb_in, lb_out, lat));
+                }
+                _ => {
+                    return Err("Swap: linked partners must both exist on the same track");
+                }
+            }
+        }
+
+        let _ = right_out;
+        // Apply primary swap.
+        let track = &mut self.tracks[a_idx];
+        let mut a_orig_in = RationalTime { value: 0, rate: 1 };
+        let mut a_orig_out = a_orig_in;
+        let mut b_orig_in = a_orig_in;
+        let mut b_orig_out = a_orig_in;
+        let mut left_dur = a_orig_in;
+        let mut right_dur = a_orig_in;
+        for clip in &track.clips {
+            if clip.id == left_id {
+                left_dur = clip.timeline_out - clip.timeline_in;
+            } else if clip.id == right_id {
+                right_dur = clip.timeline_out - clip.timeline_in;
+            }
+        }
+        let new_right_in = left_in;
+        let new_right_out = left_in + right_dur;
+        let new_left_in = new_right_out;
+        let new_left_out = new_left_in + left_dur;
+        for clip in track.clips.iter_mut() {
+            if clip.id == left_id {
+                a_orig_in = clip.timeline_in;
+                a_orig_out = clip.timeline_out;
+                clip.timeline_in = new_left_in;
+                clip.timeline_out = new_left_out;
+            } else if clip.id == right_id {
+                b_orig_in = clip.timeline_in;
+                b_orig_out = clip.timeline_out;
+                clip.timeline_in = new_right_in;
+                clip.timeline_out = new_right_out;
+            }
+        }
+        track.sort_clips();
+
+        // Apply linked-partner swap.
+        let linked_partners = if let Some((la_id, la_in_old, la_out_old, lb_id, lb_in_old, lb_out_old, lat)) = partners_info {
+            let (l_left_id, l_left_in, l_left_out, l_right_id, _l_right_in, l_right_out) =
+                if la_in_old.to_secs_f64() <= lb_in_old.to_secs_f64() {
+                    (la_id, la_in_old, la_out_old, lb_id, lb_in_old, lb_out_old)
+                } else {
+                    (lb_id, lb_in_old, lb_out_old, la_id, la_in_old, la_out_old)
+                };
+            let l_left_dur = l_left_out - l_left_in;
+            let l_right_dur = l_right_out - l_left_out;
+            let new_l_right_in = l_left_in;
+            let new_l_right_out = l_left_in + l_right_dur;
+            let new_l_left_in = new_l_right_out;
+            let new_l_left_out = new_l_left_in + l_left_dur;
+            let partner_track = &mut self.tracks[lat];
+            for clip in partner_track.clips.iter_mut() {
+                if clip.id == l_left_id {
+                    clip.timeline_in = new_l_left_in;
+                    clip.timeline_out = new_l_left_out;
+                } else if clip.id == l_right_id {
+                    clip.timeline_in = new_l_right_in;
+                    clip.timeline_out = new_l_right_out;
+                }
+            }
+            partner_track.sort_clips();
+            Some(SwappedPartners {
+                a_partner: (la_id, la_in_old, la_out_old),
+                b_partner: (lb_id, lb_in_old, lb_out_old),
+            })
+        } else {
+            None
+        };
+
+        // Map captured originals back to the user's clip_a / clip_b
+        // identity, regardless of which one ended up "left".
+        let (a_old_in_final, a_old_out_final, b_old_in_final, b_old_out_final) =
+            if left_id == clip_a {
+                (a_orig_in, a_orig_out, b_orig_in, b_orig_out)
+            } else {
+                (b_orig_in, b_orig_out, a_orig_in, a_orig_out)
+            };
+
+        Ok(SwapResult {
+            a_old_in: a_old_in_final,
+            a_old_out: a_old_out_final,
+            b_old_in: b_old_in_final,
+            b_old_out: b_old_out_final,
+            partners: linked_partners,
+        })
+    }
+}
+
+/// Pre-swap positions captured for history. Returned by
+/// [`Sequence::try_swap_adjacent_clips`] so the caller can push a
+/// history entry that exactly restores the pre-swap state on undo.
+#[derive(Debug, Clone)]
+pub struct SwapResult {
+    pub a_old_in: RationalTime,
+    pub a_old_out: RationalTime,
+    pub b_old_in: RationalTime,
+    pub b_old_out: RationalTime,
+    pub partners: Option<SwappedPartners>,
+}
+
+#[derive(Debug, Clone)]
+pub struct SwappedPartners {
+    pub a_partner: (ClipId, RationalTime, RationalTime),
+    pub b_partner: (ClipId, RationalTime, RationalTime),
+}
+
+impl Sequence {
+
     /// Iterator over all clips in all tracks.
     pub fn all_clips(&self) -> impl Iterator<Item = &Clip> {
         self.tracks.iter().flat_map(|t| t.clips.iter())
@@ -2692,5 +2943,216 @@ mod tests {
         clip.speed = 1.5;
         let src = clip.source_time_for_sequence_time(tc(120), 24.0).unwrap();
         assert_eq!(tc_to_frames(src), 36, "first seq frame must hit source_in");
+    }
+
+    // ═════════════════════════════════════════════════════════════════
+    // Swap-adjacent-clips (GAP-EDIT-012)
+    // ═════════════════════════════════════════════════════════════════
+
+    fn make_swap_seq() -> Sequence {
+        Sequence {
+            id: SequenceId::new(),
+            name: "test".to_string(),
+            fps: Fps::new(24, 1),
+            resolution: Resolution::hd_1080(),
+            tracks: vec![make_track(vec![])],
+            in_point: None,
+            out_point: None,
+            markers: Vec::new(),
+            last_playhead: None,
+        }
+    }
+
+    fn frames_of(c: &Clip) -> (i64, i64) {
+        (c.timeline_in.value, c.timeline_out.value)
+    }
+
+    #[test]
+    fn swap_two_adjacent_clips_exchanges_positions() {
+        // A: [0..48], B: [48..96] adjacent on V1.
+        // After swap: B should land at [0..48], A at [48..96] —
+        // identical durations, so swap is also a no-op visually,
+        // but the IDs prove the exchange.
+        let mut seq = make_swap_seq();
+        let a = make_clip(0, 48, 0, 48);
+        let b = make_clip(48, 96, 0, 48);
+        let a_id = a.id;
+        let b_id = b.id;
+        seq.tracks[0].clips.push(a);
+        seq.tracks[0].clips.push(b);
+
+        let result = seq.try_swap_adjacent_clips(a_id, b_id);
+        assert!(result.is_ok());
+
+        // After swap, B is the leftmost clip.
+        let leftmost = &seq.tracks[0].clips[0];
+        assert_eq!(leftmost.id, b_id);
+        assert_eq!(frames_of(leftmost), (0, 48));
+        let rightmost = &seq.tracks[0].clips[1];
+        assert_eq!(rightmost.id, a_id);
+        assert_eq!(frames_of(rightmost), (48, 96));
+    }
+
+    #[test]
+    fn swap_preserves_total_span_with_unequal_durations() {
+        // A: [0..24] (1s), B: [24..96] (3s). Combined span 0..96.
+        // After swap: B at [0..72], A at [72..96]. Total preserved.
+        let mut seq = make_swap_seq();
+        let a = make_clip(0, 24, 0, 24);
+        let b = make_clip(24, 96, 0, 72);
+        let a_id = a.id;
+        let b_id = b.id;
+        seq.tracks[0].clips.push(a);
+        seq.tracks[0].clips.push(b);
+
+        seq.try_swap_adjacent_clips(a_id, b_id).expect("swap ok");
+
+        // B is now leftmost with B's duration.
+        let new_b = seq.tracks[0].clips.iter().find(|c| c.id == b_id).unwrap();
+        assert_eq!(frames_of(new_b), (0, 72));
+        let new_a = seq.tracks[0].clips.iter().find(|c| c.id == a_id).unwrap();
+        assert_eq!(frames_of(new_a), (72, 96));
+        // Span unchanged: leftmost.in == 0, rightmost.out == 96.
+        assert_eq!(seq.tracks[0].clips.first().unwrap().timeline_in.value, 0);
+        assert_eq!(seq.tracks[0].clips.last().unwrap().timeline_out.value, 96);
+    }
+
+    #[test]
+    fn swap_rejects_non_adjacent_clips() {
+        // A: [0..24], B: [48..72] — gap of 24 frames between them.
+        let mut seq = make_swap_seq();
+        let a = make_clip(0, 24, 0, 24);
+        let b = make_clip(48, 72, 0, 24);
+        let a_id = a.id;
+        let b_id = b.id;
+        seq.tracks[0].clips.push(a);
+        seq.tracks[0].clips.push(b);
+
+        let err = seq.try_swap_adjacent_clips(a_id, b_id);
+        assert!(err.is_err());
+        // Positions unchanged.
+        let a_after = seq.tracks[0].clips.iter().find(|c| c.id == a_id).unwrap();
+        let b_after = seq.tracks[0].clips.iter().find(|c| c.id == b_id).unwrap();
+        assert_eq!(frames_of(a_after), (0, 24));
+        assert_eq!(frames_of(b_after), (48, 72));
+    }
+
+    #[test]
+    fn swap_rejects_clips_on_different_tracks() {
+        let mut seq = make_swap_seq();
+        seq.tracks.push(Track::new("V2", TrackKind::Video));
+        let a = make_clip(0, 24, 0, 24);
+        let b = make_clip(0, 24, 0, 24);
+        let a_id = a.id;
+        let b_id = b.id;
+        seq.tracks[0].clips.push(a);
+        seq.tracks[1].clips.push(b);
+
+        let err = seq.try_swap_adjacent_clips(a_id, b_id);
+        assert!(err.is_err());
+    }
+
+    #[test]
+    fn swap_rejects_clips_in_same_group() {
+        let mut seq = make_swap_seq();
+        let mut a = make_clip(0, 24, 0, 24);
+        let mut b = make_clip(24, 48, 0, 24);
+        let gid = klipp_core::GroupId::new();
+        a.group_id = Some(gid);
+        b.group_id = Some(gid);
+        let a_id = a.id;
+        let b_id = b.id;
+        seq.tracks[0].clips.push(a);
+        seq.tracks[0].clips.push(b);
+
+        let err = seq.try_swap_adjacent_clips(a_id, b_id);
+        assert!(err.is_err());
+    }
+
+    #[test]
+    fn swap_rejects_asymmetric_linked_partners() {
+        // A has a partner, B doesn't — should refuse.
+        let mut seq = make_swap_seq();
+        seq.tracks.push(Track::new("A1", TrackKind::Audio));
+        let mut a = make_clip(0, 24, 0, 24);
+        let b = make_clip(24, 48, 0, 24);
+        let partner = make_clip(0, 24, 0, 24);
+        a.linked_clip_id = Some(partner.id);
+        let a_id = a.id;
+        let b_id = b.id;
+        seq.tracks[0].clips.push(a);
+        seq.tracks[0].clips.push(b);
+        seq.tracks[1].clips.push(partner);
+
+        let err = seq.try_swap_adjacent_clips(a_id, b_id);
+        assert!(err.is_err());
+    }
+
+    #[test]
+    fn swap_handles_linked_partner_pair() {
+        // A and B both have linked partners pa, pb on track 1.
+        // Both pairs should swap together so the A/V phase lock
+        // is preserved.
+        let mut seq = make_swap_seq();
+        seq.tracks.push(Track::new("A1", TrackKind::Audio));
+        let mut a = make_clip(0, 24, 0, 24);
+        let mut b = make_clip(24, 48, 0, 24);
+        let mut pa = make_clip(0, 24, 0, 24);
+        let mut pb = make_clip(24, 48, 0, 24);
+        a.linked_clip_id = Some(pa.id);
+        b.linked_clip_id = Some(pb.id);
+        pa.linked_clip_id = Some(a.id);
+        pb.linked_clip_id = Some(b.id);
+        let a_id = a.id;
+        let b_id = b.id;
+        let pa_id = pa.id;
+        let pb_id = pb.id;
+        seq.tracks[0].clips.push(a);
+        seq.tracks[0].clips.push(b);
+        seq.tracks[1].clips.push(pa);
+        seq.tracks[1].clips.push(pb);
+
+        let result = seq.try_swap_adjacent_clips(a_id, b_id).expect("swap ok");
+        assert!(result.partners.is_some());
+
+        // Primaries swapped on V1.
+        let v1 = &seq.tracks[0];
+        assert_eq!(v1.clips[0].id, b_id);
+        assert_eq!(v1.clips[1].id, a_id);
+        // Partners swapped on A1.
+        let a1 = &seq.tracks[1];
+        assert_eq!(a1.clips[0].id, pb_id);
+        assert_eq!(a1.clips[1].id, pa_id);
+    }
+
+    #[test]
+    fn swap_returns_pre_swap_positions_for_history() {
+        // The SwapResult must preserve original positions keyed by
+        // the user's clip_a / clip_b identity (regardless of which
+        // ended up "left").
+        let mut seq = make_swap_seq();
+        let a = make_clip(0, 24, 0, 24);
+        let b = make_clip(24, 96, 0, 72);
+        let a_id = a.id;
+        let b_id = b.id;
+        seq.tracks[0].clips.push(a);
+        seq.tracks[0].clips.push(b);
+
+        let result = seq.try_swap_adjacent_clips(a_id, b_id).expect("swap ok");
+        // a was [0..24] before swap.
+        assert_eq!(result.a_old_in.value, 0);
+        assert_eq!(result.a_old_out.value, 24);
+        // b was [24..96] before swap.
+        assert_eq!(result.b_old_in.value, 24);
+        assert_eq!(result.b_old_out.value, 96);
+
+        // Caller can now reverse the swap by writing these back —
+        // proves the snapshot is sufficient for undo.
+        seq.set_clip_position(a_id, result.a_old_in, result.a_old_out);
+        seq.set_clip_position(b_id, result.b_old_in, result.b_old_out);
+        let a_after = seq.tracks[0].clips.iter().find(|c| c.id == a_id).unwrap();
+        let b_after = seq.tracks[0].clips.iter().find(|c| c.id == b_id).unwrap();
+        assert_eq!(frames_of(a_after), (0, 24));
+        assert_eq!(frames_of(b_after), (24, 96));
     }
 }

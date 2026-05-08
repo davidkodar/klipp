@@ -5840,6 +5840,14 @@ impl KlippApp {
                     }
                     return true;
                 }
+                AppCommand::SwapAdjacentClips { clip_a, clip_b } => {
+                    if self.try_swap_adjacent_clips(*clip_a, *clip_b) {
+                        self.sync_sequence_to_engine();
+                        let _ = self.cmd_tx.send(AppCommand::SeekTo(self.state.playhead));
+                        self.state.dirty = true;
+                    }
+                    return true;
+                }
                 AppCommand::TrimClip {
                     clip_id,
                     old_source_in,
@@ -20197,6 +20205,40 @@ impl KlippApp {
                     }
                 }
             }
+            EditCommand::LegacySwapClips {
+                clip_a_id, a_old_in, a_old_out,
+                clip_b_id, b_old_in, b_old_out,
+                linked_a_partner, linked_b_partner,
+            } => {
+                // Restore both primaries to their pre-swap positions.
+                for (id, t_in, t_out) in [
+                    (*clip_a_id, *a_old_in, *a_old_out),
+                    (*clip_b_id, *b_old_in, *b_old_out),
+                ] {
+                    if let Some(track) = self.state.sequences[self.state.active_sequence_idx].tracks.iter_mut()
+                        .find(|t| t.clips.iter().any(|c| c.id == id))
+                    {
+                        if let Some(clip) = track.find_clip_mut(id) {
+                            clip.timeline_in = t_in;
+                            clip.timeline_out = t_out;
+                        }
+                        track.sort_clips();
+                    }
+                }
+                // Restore linked partners if the swap propagated to them.
+                for partner in [linked_a_partner, linked_b_partner].iter().filter_map(|p| p.as_ref()) {
+                    let (pid, p_in, p_out) = partner;
+                    if let Some(track) = self.state.sequences[self.state.active_sequence_idx].tracks.iter_mut()
+                        .find(|t| t.clips.iter().any(|c| c.id == *pid))
+                    {
+                        if let Some(clip) = track.find_clip_mut(*pid) {
+                            clip.timeline_in = *p_in;
+                            clip.timeline_out = *p_out;
+                        }
+                        track.sort_clips();
+                    }
+                }
+            }
             EditCommand::LegacyTrimClip {
                 clip_id,
                 old_source_in, old_source_out,
@@ -20657,6 +20699,43 @@ impl KlippApp {
                         }
                         track.sort_clips();
                     }
+                }
+            }
+            EditCommand::LegacySwapClips {
+                clip_a_id, clip_b_id,
+                a_old_in, b_old_in,
+                linked_a_partner, linked_b_partner, ..
+            } => {
+                // Re-apply the swap. Use stored old positions to
+                // identify which clip was "left" (smaller start) and
+                // recompute the new positions deterministically — the
+                // forward path's "preserve span" semantics.
+                let (left_id, right_id) = if a_old_in.to_secs_f64() <= b_old_in.to_secs_f64() {
+                    (*clip_a_id, *clip_b_id)
+                } else {
+                    (*clip_b_id, *clip_a_id)
+                };
+                Self::reapply_swap_on_track(
+                    &mut self.state.sequences[self.state.active_sequence_idx],
+                    left_id,
+                    right_id,
+                );
+                // Re-apply on linked partners using their stored old
+                // positions to determine left/right order at the
+                // original swap time.
+                if let (Some((la_id, la_in_old, _)), Some((lb_id, lb_in_old, _)))
+                    = (linked_a_partner, linked_b_partner)
+                {
+                    let (l_left_id, l_right_id) = if la_in_old.to_secs_f64() <= lb_in_old.to_secs_f64() {
+                        (*la_id, *lb_id)
+                    } else {
+                        (*lb_id, *la_id)
+                    };
+                    Self::reapply_swap_on_track(
+                        &mut self.state.sequences[self.state.active_sequence_idx],
+                        l_left_id,
+                        l_right_id,
+                    );
                 }
             }
             EditCommand::LegacyTrimClip {
@@ -25830,12 +25909,87 @@ impl eframe::App for KlippApp {
 }
 
 impl KlippApp {
+    /// Re-apply the "preserve span" swap to two clips (already
+    /// validated as adjacent on the same track) given their pre-swap
+    /// left/right identity. Used by the redo path for
+    /// `EditCommand::LegacySwapClips`. Caller pre-computes which clip
+    /// was "left" (smaller start) at the original swap time.
+    fn reapply_swap_on_track(
+        seq: &mut klipp_timeline::Sequence,
+        left_id: ClipId,
+        right_id: ClipId,
+    ) {
+        if let Some(track) = seq.tracks.iter_mut()
+            .find(|t| t.clips.iter().any(|c| c.id == left_id))
+        {
+            let mut left_in = klipp_core::RationalTime { value: 0, rate: 1 };
+            let mut left_dur = left_in;
+            let mut right_dur = left_in;
+            for clip in &track.clips {
+                if clip.id == left_id {
+                    left_in = clip.timeline_in;
+                    left_dur = clip.timeline_out - clip.timeline_in;
+                } else if clip.id == right_id {
+                    right_dur = clip.timeline_out - clip.timeline_in;
+                }
+            }
+            let new_right_in = left_in;
+            let new_right_out = left_in + right_dur;
+            let new_left_in = new_right_out;
+            let new_left_out = new_left_in + left_dur;
+            for clip in track.clips.iter_mut() {
+                if clip.id == left_id {
+                    clip.timeline_in = new_left_in;
+                    clip.timeline_out = new_left_out;
+                } else if clip.id == right_id {
+                    clip.timeline_in = new_right_in;
+                    clip.timeline_out = new_right_out;
+                }
+            }
+            track.sort_clips();
+        }
+    }
+
     /// Check if the track containing a given clip is locked.
     fn clip_track_is_locked(&self, clip_id: &ClipId) -> bool {
         self.state.sequences[self.state.active_sequence_idx].tracks.iter()
             .find(|t| t.clips.iter().any(|c| c.id == *clip_id))
             .is_some_and(|t| t.locked)
     }
+
+    /// Wrapper around [`klipp_timeline::Sequence::try_swap_adjacent_clips`]
+    /// that surfaces failure reasons as toasts and pushes a history
+    /// entry on success. The actual validation + mutation logic lives
+    /// in the timeline crate so it's testable without app scaffolding.
+    fn try_swap_adjacent_clips(
+        &mut self,
+        clip_a: ClipId,
+        clip_b: ClipId,
+    ) -> bool {
+        let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+        match seq.try_swap_adjacent_clips(clip_a, clip_b) {
+            Ok(result) => {
+                let linked_a_partner = result.partners.as_ref().map(|p| p.a_partner);
+                let linked_b_partner = result.partners.as_ref().map(|p| p.b_partner);
+                self.state.push_history(EditCommand::LegacySwapClips {
+                    clip_a_id: clip_a,
+                    a_old_in: result.a_old_in,
+                    a_old_out: result.a_old_out,
+                    clip_b_id: clip_b,
+                    b_old_in: result.b_old_in,
+                    b_old_out: result.b_old_out,
+                    linked_a_partner,
+                    linked_b_partner,
+                });
+                true
+            }
+            Err(reason) => {
+                self.state.toast.show(reason);
+                false
+            }
+        }
+    }
+
 
     /// Check if a track uses magnetic editing (Primary, Connected, or ConnectedStoryline).
     /// Returns false when the magnetic timeline pref is disabled.
