@@ -14,7 +14,7 @@ const WIRE_Y_OFFSET: f32 = STRIP_LABEL_H + (STRIP_NODE_H - STRIP_LABEL_H) * 0.5;
 fn node_color(kind: &NodeKind, theme: &KlippTheme) -> egui::Color32 {
     match kind {
         NodeKind::Source | NodeKind::Output => theme.bg_raised,
-        NodeKind::Qualifier | NodeKind::Mask | NodeKind::CombineMattes => {
+        NodeKind::Qualifier | NodeKind::LumaKey | NodeKind::Mask | NodeKind::CombineMattes => {
             egui::Color32::from_rgb(0x5c, 0x3a, 0x6e)
         }
         NodeKind::Layer | NodeKind::Blend | NodeKind::ApplyMatte => {

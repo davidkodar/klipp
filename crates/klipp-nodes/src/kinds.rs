@@ -45,6 +45,10 @@ pub enum NodeKind {
     // ── Secondary Correction ────────────────────────────────────
     /// HSL qualifier — generates a matte from the input frame (matte only).
     Qualifier,
+    /// Standalone luminance threshold key — generates a matte selecting
+    /// pixels whose Rec.709 luma falls inside `[low, high]` with a
+    /// soft falloff. Simpler than `Qualifier`; matte-only output.
+    LumaKey,
     /// Spatial masks (circle, rectangle, gradient) — generates a matte.
     Mask,
     /// Multiply two matte inputs (port 0 × port 1) for matte intersection.
@@ -216,6 +220,7 @@ impl NodeKind {
     pub fn output_port_role(&self, port: u8) -> PortRole {
         match (self, port) {
             (NodeKind::Qualifier, _)
+            | (NodeKind::LumaKey, _)
             | (NodeKind::Mask, _)
             | (NodeKind::CombineMattes, _)
             | (NodeKind::ExternalMatte, _) => PortRole::Matte,
@@ -258,6 +263,7 @@ impl NodeKind {
     pub fn output_port_label(&self, port: u8) -> &'static str {
         match (self, port) {
             (NodeKind::Qualifier, _)
+            | (NodeKind::LumaKey, _)
             | (NodeKind::Mask, _)
             | (NodeKind::CombineMattes, _)
             | (NodeKind::ExternalMatte, _) => "Matte",
@@ -285,6 +291,7 @@ impl NodeKind {
             NodeKind::HueSatCurves => "Hue/Sat Curves",
             NodeKind::ColorBalance => "Color Balance",
             NodeKind::Qualifier => "Qualifier",
+            NodeKind::LumaKey => "Luma Key",
             NodeKind::Mask => "Mask",
             NodeKind::CombineMattes => "Combine Mattes",
             NodeKind::ExternalMatte => "External Matte",

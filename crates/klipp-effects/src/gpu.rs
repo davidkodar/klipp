@@ -225,6 +225,9 @@ pub struct GpuEffectsPipeline {
     mask_cutout_pipeline: wgpu::ComputePipeline,
     // Compute pipeline — qualifier (secondary color correction)
     qualifier_pipeline: wgpu::ComputePipeline,
+    // Compute pipeline — standalone luminance-threshold key (matte
+    // producer, simpler than qualifier — luma in, matte out).
+    luma_key_pipeline: wgpu::ComputePipeline,
     // Compute pipeline — film grain overlay
     grain_pipeline: wgpu::ComputePipeline,
     // Compute pipelines — alpha mask operations (for title renderer)
@@ -874,6 +877,7 @@ impl GpuEffectsPipeline {
         let wheel_sat_bri_pipeline = create_pipeline(&device, &pipeline_layout, "wheel_sat_bri", SHADER_WHEEL_SAT_BRI);
         let rgb_curves_pipeline = create_pipeline(&device, &huesat_pl, "rgb_curves", SHADER_RGB_CURVES);
         let qualifier_pipeline = create_pipeline(&device, &pipeline_layout, "qualifier", SHADER_QUALIFIER);
+        let luma_key_pipeline = create_pipeline(&device, &pipeline_layout, "luma_key", SHADER_LUMA_KEY);
         let grain_pipeline = create_pipeline(&device, &pipeline_layout, "grain", SHADER_GRAIN);
         let alpha_blur_h_pipeline = create_pipeline(&device, &pipeline_layout, "alpha_blur_h", SHADER_ALPHA_BLUR_H);
         let alpha_blur_v_pipeline = create_pipeline(&device, &pipeline_layout, "alpha_blur_v", SHADER_ALPHA_BLUR_V);
@@ -1050,6 +1054,7 @@ impl GpuEffectsPipeline {
             rgb_curves_pipeline,
             rgb_curves_lut_buf,
             qualifier_pipeline,
+            luma_key_pipeline,
             grain_pipeline,
             alpha_blur_h_pipeline,
             alpha_blur_v_pipeline,
@@ -3053,6 +3058,49 @@ impl GpuEffectsPipeline {
         let workgroups = pixel_count.div_ceil(WORKGROUP_SIZE);
 
         self.dispatch(&self.qualifier_pipeline, buf_a, buf_b, workgroups);
+        self.download_linear_rgba_f32(buf_b, (width * height) as usize)
+    }
+
+    /// Apply standalone luminance-threshold key on GPU. Mirrors
+    /// [`Self::apply_qualifier_gpu`] but evaluates Rec.709 luma
+    /// alone — no HSL, no secondary grade. Output is a greyscale
+    /// matte (R=G=B=matte, A copied from input alpha) ready for
+    /// downstream `MaskCutout` / `CombineMattes` / `ApplyMatte`
+    /// consumption.
+    pub fn apply_luma_key_gpu(
+        &mut self,
+        linear_rgba: Vec<f32>,
+        width: u32,
+        height: u32,
+        low: f32,
+        high: f32,
+        soft: f32,
+        invert: bool,
+    ) -> Vec<f32> {
+        if self.is_device_lost() {
+            return linear_rgba;
+        }
+        let byte_size = (width * height * 16) as u64;
+        self.ensure_buffers(byte_size);
+
+        let buf_a = self.buf_a.as_ref().unwrap();
+        let buf_b = self.buf_b.as_ref().unwrap();
+
+        self.queue.write_buffer(buf_a, 0, bytemuck::cast_slice(&linear_rgba));
+
+        self.write_params(&GpuLumaKeyParams {
+            width,
+            height,
+            low,
+            high,
+            soft,
+            invert: if invert { 1 } else { 0 },
+            _pad0: 0,
+            _pad1: 0,
+        });
+
+        let workgroups = (width * height).div_ceil(WORKGROUP_SIZE);
+        self.dispatch(&self.luma_key_pipeline, buf_a, buf_b, workgroups);
         self.download_linear_rgba_f32(buf_b, (width * height) as usize)
     }
 
@@ -5533,6 +5581,20 @@ struct GpuQualifierParams {
 
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct GpuLumaKeyParams {
+    width: u32,
+    height: u32,
+    low: f32,
+    high: f32,
+    soft: f32,
+    invert: u32,
+    _pad0: u32,
+    _pad1: u32,
+}
+// 8 fields × 4 bytes = 32 bytes (well under 256-byte PARAMS_SIZE)
+
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct GpuGrainParams {
     width: u32,
     height: u32,
@@ -7932,6 +7994,62 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         b * (1.0 - matte) + gb * matte,
     );
     output[idx] = pack(vec4<f32>(out, orig.w));
+}
+"
+);
+
+// ─── Luma Key GPU Shader ────────────────────────────────────────────────────
+//
+// Standalone luminance-threshold key. Mirrors `SHADER_QUALIFIER`'s
+// matte-producer contract (greyscale RGBA output) but evaluates
+// Rec.709 luma alone — no HSL machinery, no secondary grade. Used
+// by the `NodeKind::LumaKey` graph node when GPU is available.
+//
+// **Colorspace note:** Rec.709 luma weights are technically wrong
+// for AP1 (ACEScg working colorspace) — should be ~0.272/0.674/0.054
+// there. Matches Qualifier's behaviour; both will be re-tuned
+// post-Phase-E.
+const SHADER_LUMA_KEY: &str = concat!(
+    "
+struct Params {
+    width: u32,
+    height: u32,
+    low: f32,
+    high: f32,
+    soft: f32,
+    invert: u32,
+    _pad0: u32,
+    _pad1: u32,
+}
+
+@group(0) @binding(0) var<storage, read> input: array<vec4<f32>>;
+@group(0) @binding(1) var<storage, read_write> output: array<vec4<f32>>;
+@group(0) @binding(2) var<uniform> params: Params;
+",
+    shader_linear_helpers_wgsl!(),
+    "
+
+fn soft_range(val: f32, lo: f32, hi: f32, soft: f32) -> f32 {
+    if val >= lo && val <= hi { return 1.0; }
+    if soft <= 0.0001 { return 0.0; }
+    if val < lo {
+        return clamp(1.0 - (lo - val) / soft, 0.0, 1.0);
+    }
+    return clamp(1.0 - (val - hi) / soft, 0.0, 1.0);
+}
+
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let idx = gid.x;
+    if idx >= params.width * params.height { return; }
+
+    let orig = unpack(input[idx]);
+    let y = 0.2126 * orig.x + 0.7152 * orig.y + 0.0722 * orig.z;
+
+    var matte = soft_range(y, params.low, params.high, params.soft);
+    if params.invert != 0u { matte = 1.0 - matte; }
+
+    output[idx] = pack(vec4<f32>(matte, matte, matte, orig.w));
 }
 "
 );

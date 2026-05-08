@@ -1140,6 +1140,7 @@ pub enum AppCommand {
     SetNodeCurves { clip_id: ClipId, node_id: uuid::Uuid, curves: crate::color_grade::CurveSet },
     SetNodeHueSatCurves { clip_id: ClipId, node_id: uuid::Uuid, huesat: crate::color_grade::HueSatCurves },
     SetNodeQualifier { clip_id: ClipId, node_id: uuid::Uuid, qualifier: crate::color_grade::QualifierSettings },
+    SetNodeLumaKey { clip_id: ClipId, node_id: uuid::Uuid, luma_key: crate::color_grade::LumaKeySettings },
     SetNodeMasks { clip_id: ClipId, node_id: uuid::Uuid, masks: crate::color_grade::MaskStack },
     /// Store a computed colour-match result on a ColorMatch node. The
     /// UI runs `klipp_color::match_colors(source, reference)` against

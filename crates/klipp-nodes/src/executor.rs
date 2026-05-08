@@ -2244,6 +2244,39 @@ impl GraphExecutor {
                 }
             }
 
+            NodeKind::LumaKey => {
+                // Output is a matte (greyscale RGBA: R=G=B=matte
+                // value, A=1.0). When the user hasn't enabled the
+                // node yet (default LumaKeySettings::enabled = false),
+                // pass the input through as a full-on matte so a
+                // freshly-added node doesn't black out the viewer.
+                if let Some(lk) = &params.luma_key {
+                    if !lk.enabled {
+                        vec![1.0f32; (width * height * 4) as usize]
+                    } else if let Some(gpu) = &mut self.gpu {
+                        gpu.apply_luma_key_gpu(
+                            primary_input.to_vec(),
+                            width, height,
+                            lk.low, lk.high, lk.soft, lk.invert,
+                        )
+                    } else {
+                        // CPU fallback: generate_luma_key_matte still
+                        // speaks u8, so quantise the linear input
+                        // (consistent with Qualifier's CPU path).
+                        let primary_u8 = linear_rgba_to_u8(primary_input);
+                        let matte = klipp_color::luma_key::generate_luma_key_matte(
+                            &primary_u8, width, height, lk,
+                        );
+                        let matte_u8: Vec<u8> = matte.iter()
+                            .flat_map(|&v| { let b = (v * 255.0) as u8; [b, b, b, 255] })
+                            .collect();
+                        u8_rgba_to_linear(&matte_u8)
+                    }
+                } else {
+                    vec![1.0f32; (width * height * 4) as usize]
+                }
+            }
+
             NodeKind::Mask => {
                 // Empty mask stack — or all masks disabled — must
                 // behave like "entire frame selected" so the
@@ -3205,7 +3238,7 @@ pub fn bake_graph_to_lut(
     for node in &mut bake_graph.nodes {
         if matches!(
             node.kind,
-            NodeKind::Qualifier | NodeKind::Mask | NodeKind::CombineMattes | NodeKind::ApplyMatte
+            NodeKind::Qualifier | NodeKind::LumaKey | NodeKind::Mask | NodeKind::CombineMattes | NodeKind::ApplyMatte
         ) {
             node.enabled = false;
         }

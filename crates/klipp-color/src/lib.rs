@@ -49,6 +49,7 @@ pub mod display;
 pub mod hdr;
 pub mod huesat;
 pub mod linear;
+pub mod luma_key;
 pub mod lut;
 pub mod masks;
 pub mod primaries;

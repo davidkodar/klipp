@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use klipp_core::{
     BlendMode, ColorWarperParams, CurveSet, FilmGrainSettings, HueSatCurves, LayerMixerInput,
-    LogFormat, MaskStack, QualifierSettings,
+    LogFormat, LumaKeySettings, MaskStack, QualifierSettings,
 };
 
 /// All possible parameter values a node can have.
@@ -137,6 +137,11 @@ pub struct NodeParams {
     // Qualifier
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub qualifier: Option<QualifierSettings>,
+
+    // Standalone luma key — luminance threshold matte producer.
+    // Simpler than Qualifier (no HSL); see `LumaKeySettings`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub luma_key: Option<LumaKeySettings>,
 
     // Mask
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -342,6 +347,7 @@ impl NodeParams {
             && z(&self.huesat_mix)
             && self.log_format.is_none()
             && self.qualifier.is_none()
+            && self.luma_key.is_none()
             && self.masks.is_none()
             && self.lut_path.is_none()
             && z(&self.lut_opacity)

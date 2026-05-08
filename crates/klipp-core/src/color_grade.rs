@@ -100,6 +100,48 @@ impl Default for QualifierSettings {
     }
 }
 
+/// Standalone luminance-threshold key. Produces a matte (0–1 per
+/// pixel) selecting pixels whose Rec.709 luma falls within
+/// `[low, high]`, with a `soft` falloff outside the range. Simpler
+/// than [`QualifierSettings`], which evaluates HSL jointly — this
+/// exists for the common "key on brightness alone" workflow
+/// (windowing skies, crushing blacks, isolating a bright element).
+///
+/// **Colorspace note:** the Rec.709 weights baked into the matte
+/// generator are technically wrong for AP1 (ACEScg working
+/// colorspace) — they should be approximately `0.272/0.674/0.054`
+/// there. Matches [`QualifierSettings`]'s behaviour today; both will
+/// be re-tuned per working_colorspace in a post-Phase-E follow-up.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LumaKeySettings {
+    pub enabled: bool,
+    /// Lower luminance bound (0–1). Pixels brighter than `low` enter
+    /// the matte at full strength.
+    pub low: f32,
+    /// Upper luminance bound (0–1). Pixels darker than `high` enter
+    /// the matte at full strength.
+    pub high: f32,
+    /// Soft falloff distance in luminance (0–0.5 typical). Outside
+    /// the `[low, high]` range, matte ramps from 1 to 0 across this
+    /// width.
+    pub soft: f32,
+    /// Invert the matte. When true, pixels OUTSIDE the luma range
+    /// become the matte instead.
+    pub invert: bool,
+}
+
+impl Default for LumaKeySettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            low: 0.0,
+            high: 1.0,
+            soft: 0.05,
+            invert: false,
+        }
+    }
+}
+
 /// Shape-based mask for regional color grading (power windows).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum MaskShape {

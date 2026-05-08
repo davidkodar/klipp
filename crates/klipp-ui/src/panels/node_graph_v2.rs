@@ -33,7 +33,7 @@ const GRID_SPACING: f32 = 32.0;
 fn node_color(kind: &NodeKind, theme: &KlippTheme) -> egui::Color32 {
     match kind {
         NodeKind::Source | NodeKind::Output => theme.bg_raised,
-        NodeKind::Qualifier | NodeKind::Mask | NodeKind::CombineMattes | NodeKind::ExternalMatte => {
+        NodeKind::Qualifier | NodeKind::LumaKey | NodeKind::Mask | NodeKind::CombineMattes | NodeKind::ExternalMatte => {
             egui::Color32::from_rgb(0x5c, 0x3a, 0x6e)
         }
         NodeKind::Layer | NodeKind::Blend | NodeKind::ApplyMatte | NodeKind::LayerMixer => {
@@ -1327,6 +1327,7 @@ impl NodeGraphV2Panel {
                         ("Color Balance", "ColorBalance"),
                         ("Color Match", "ColorMatch"),
                         ("Qualifier", "Qualifier"),
+                        ("Luma Key", "LumaKey"),
                         ("Mask", "Mask"),
                         ("External Matte", "ExternalMatte"),
                         ("Combine Mattes", "CombineMattes"),
