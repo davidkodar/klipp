@@ -1118,6 +1118,11 @@ pub enum AppCommand {
     SetNodeInputLink { clip_id: ClipId, node_id: uuid::Uuid, port: u8, label: Option<String> },
     MoveNode { clip_id: ClipId, node_id: uuid::Uuid, delta_x: f32, delta_y: f32 },
     ToggleNodeEnabled { clip_id: ClipId, node_id: uuid::Uuid },
+    /// Auto-layout the clip's node graph — recompute every node's
+    /// position using a hierarchical layered layout. Pushed as a
+    /// single undoable batch (one entry on the history stack
+    /// reverts every position with one Ctrl+Z).
+    AutoLayoutNodeGraph { clip_id: ClipId },
     /// Create a new lightweight frame around the given node ids.
     /// Frame id is allocated by the handler. Members must already
     /// exist in the clip's graph; missing ids are silently dropped.

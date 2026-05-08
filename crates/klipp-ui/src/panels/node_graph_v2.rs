@@ -424,6 +424,12 @@ impl NodeGraphV2Panel {
         let reset_clicked = toolbar_ui.button("1:1").on_hover_text(
             "Reset zoom to 100 % and centre on the graph origin"
         ).clicked();
+        if toolbar_ui.button("Auto-layout").on_hover_text(
+            "Recompute every node's position via hierarchical layered layout (shortcut: L)\n\
+            Undoable with Ctrl+Z."
+        ).clicked() {
+            cmds.push(AppCommand::AutoLayoutNodeGraph { clip_id });
+        }
         toolbar_ui.add_space(8.0);
         // Grade-version picker. Shows "V: none" when no versions
         // exist, "V: V1 ▾" when one is active, with a menu listing
@@ -1800,6 +1806,15 @@ impl NodeGraphV2Panel {
                 let mods = ui.input(|inp| inp.modifiers);
                 if !mods.ctrl && !mods.alt && !mods.command && !mods.shift {
                     self.minimap_visible = !self.minimap_visible;
+                }
+            }
+            // L — auto-layout. Same modifier discipline as the
+            // other panel hotkeys; emits the AppCommand so the
+            // mutation is undoable like a toolbar click.
+            if ui.input(|inp| inp.key_pressed(egui::Key::L)) {
+                let mods = ui.input(|inp| inp.modifiers);
+                if !mods.ctrl && !mods.alt && !mods.command && !mods.shift {
+                    cmds.push(AppCommand::AutoLayoutNodeGraph { clip_id });
                 }
             }
         }

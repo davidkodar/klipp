@@ -11391,6 +11391,43 @@ impl KlippApp {
 
     /// Single-input / single-output topology only for v1; refuses
     /// gracefully (toast + no-op) on multi-port selections.
+    /// Run hierarchical auto-layout on the clip's currently-visible
+    /// node graph (root or descended sub-graph). Captures the whole
+    /// root graph before + after into a single SetNodeGraph history
+    /// entry so Ctrl+Z reverts every position in one step.
+    fn auto_layout_node_graph(
+        &mut self,
+        clip_id: klipp_core::ClipId,
+        needs_refresh: &mut bool,
+    ) {
+        let path = self.state.graph_descent_path.clone();
+        for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+            let Some(clip) = track.find_clip_mut(clip_id) else { continue };
+            let old_root_graph = clip.node_graph.clone();
+            let Ok(target_graph) = Self::resolve_graph_at_path_mut(clip, &path) else {
+                self.state.toast.show("Auto-layout: invalid descent path");
+                return;
+            };
+            let new_positions = klipp_nodes::auto_layout(target_graph);
+            if new_positions.is_empty() {
+                // Empty graph or cycle bail-out — nothing to do.
+                return;
+            }
+            target_graph.node_positions = new_positions;
+            let new_root_graph = clip.node_graph.clone();
+            self.state.active_history_mut().push(crate::history::HistoryEntry {
+                command: crate::history::EditCommand::SetNodeGraph {
+                    clip_id,
+                    old_graph: old_root_graph,
+                    new_graph: new_root_graph,
+                },
+            });
+            *needs_refresh = true;
+            self.state.toast.show("Auto-layout applied (Ctrl+Z to revert)");
+            return;
+        }
+    }
+
     fn group_into_compound(
         &mut self,
         clip_id: klipp_core::ClipId,
@@ -11988,6 +12025,10 @@ impl KlippApp {
             }
             AppCommand::GroupIntoCompound { clip_id, node_ids } => {
                 self.group_into_compound(*clip_id, node_ids, needs_refresh);
+                true
+            }
+            AppCommand::AutoLayoutNodeGraph { clip_id } => {
+                self.auto_layout_node_graph(*clip_id, needs_refresh);
                 true
             }
             AppCommand::UngroupCompound { clip_id, node_id } => {

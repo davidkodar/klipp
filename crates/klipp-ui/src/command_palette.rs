@@ -382,6 +382,18 @@ pub fn build(state: &AppState) -> Vec<PaletteEntry> {
         action: PaletteAction::Cmd(AppCommand::ToggleAudioSkim), enabled: true });
     e.push(PaletteEntry { label: Cow::Borrowed("Toggle Color Panel"), shortcut: Cow::Borrowed("C"),
         action: PaletteAction::Cmd(AppCommand::ToggleColorPanel), enabled: true });
+    // Node-graph auto-layout — gated on a selected clip so the
+    // entry doesn't fire silently against an empty workspace.
+    e.push(PaletteEntry {
+        label: Cow::Borrowed("Node graph: Auto-layout"),
+        shortcut: Cow::Borrowed("L"),
+        action: PaletteAction::Custom(|state, cmds| {
+            if let Some(clip_id) = state.selected_clip {
+                cmds.push(AppCommand::AutoLayoutNodeGraph { clip_id });
+            }
+        }),
+        enabled: state.selected_clip.is_some(),
+    });
     // Node-graph view bookmarks. 9 jump entries + 9 set entries; the
     // hotkeys 1..9 / Shift+1..9 only fire when the node-graph canvas
     // is focused, so the palette is the cross-context discovery
