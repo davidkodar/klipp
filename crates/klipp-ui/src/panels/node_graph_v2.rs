@@ -2057,8 +2057,17 @@ impl NodeGraphV2Panel {
                     let port_rect = egui::Rect::from_center_size(
                         pos, egui::vec2(PORT_HIT_RADIUS * 2.0, PORT_HIT_RADIUS * 2.0),
                     );
-                    ui.allocate_rect(port_rect, egui::Sense::hover())
-                        .on_hover_text(format!("{} (in)", kind.input_port_label(p)));
+                    let resp = ui.allocate_rect(port_rect, egui::Sense::hover());
+                    if resp.hovered() {
+                        paint_port_label(
+                            &painter,
+                            pos,
+                            kind.input_port_label(p),
+                            PortLabelSide::Left,
+                            zoom,
+                            theme,
+                        );
+                    }
                 }
             }
             // LayerMixer "+" affordance — a small ghost port just
@@ -2128,8 +2137,17 @@ impl NodeGraphV2Panel {
                     let port_rect = egui::Rect::from_center_size(
                         pos, egui::vec2(PORT_HIT_RADIUS * 2.0, PORT_HIT_RADIUS * 2.0),
                     );
-                    ui.allocate_rect(port_rect, egui::Sense::hover())
-                        .on_hover_text(format!("{} (out)", kind.output_port_label(p)));
+                    let resp = ui.allocate_rect(port_rect, egui::Sense::hover());
+                    if resp.hovered() {
+                        paint_port_label(
+                            &painter,
+                            pos,
+                            kind.output_port_label(p),
+                            PortLabelSide::Right,
+                            zoom,
+                            theme,
+                        );
+                    }
                 }
             }
         }
@@ -4134,6 +4152,57 @@ pub(super) fn graph_bounds(graph: &NodeGraph) -> Option<egui::Rect> {
         egui::pos2(min_x, min_y),
         egui::pos2(max_x, max_y),
     ))
+}
+
+/// Which side of a port the hover label sits on. Inputs sit on
+/// the LEFT (outside the node body, beyond the port circle); outputs
+/// sit on the RIGHT. Keeps the chip from overlapping the node body.
+#[derive(Clone, Copy)]
+enum PortLabelSide { Left, Right }
+
+/// Paint an inline port-label chip right next to a hovered port.
+/// Replaces the egui tooltip path because the latter has a ~0.5 s
+/// delay and the popup lands at the cursor (often far from the
+/// port itself). This appears immediately and is anchored to the
+/// port for an unambiguous "this is what THIS port is" cue.
+fn paint_port_label(
+    painter: &egui::Painter,
+    port_pos: egui::Pos2,
+    text: &str,
+    side: PortLabelSide,
+    zoom: f32,
+    theme: &KlippTheme,
+) {
+    let z = zoom.max(0.6);
+    let font = egui::FontId::proportional(10.0 * z);
+    let galley = painter.layout_no_wrap(text.to_string(), font, theme.text_primary);
+    let pad = egui::vec2(8.0 * z, 3.0 * z);
+    let chip_size = galley.size() + pad * 2.0;
+    let port_gap = PORT_RADIUS * zoom * 1.4 + 6.0;
+    let chip_min = match side {
+        PortLabelSide::Left => egui::pos2(
+            port_pos.x - port_gap - chip_size.x,
+            port_pos.y - chip_size.y * 0.5,
+        ),
+        PortLabelSide::Right => egui::pos2(
+            port_pos.x + port_gap,
+            port_pos.y - chip_size.y * 0.5,
+        ),
+    };
+    let chip_rect = egui::Rect::from_min_size(chip_min, chip_size);
+    // Translucent dark backdrop + thin border so the label reads
+    // on top of any canvas content (wires, frames, other nodes).
+    painter.rect_filled(
+        chip_rect, 3.0,
+        egui::Color32::from_rgba_unmultiplied(
+            theme.bg_deep.r(), theme.bg_deep.g(), theme.bg_deep.b(), 230,
+        ),
+    );
+    painter.rect_stroke(
+        chip_rect, 3.0,
+        egui::Stroke::new(0.5, theme.border),
+    );
+    painter.galley(chip_min + pad, galley, theme.text_primary);
 }
 
 /// Custom add-menu entry row — full-width 22 px clickable strip
