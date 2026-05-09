@@ -774,6 +774,64 @@ pub fn build(state: &AppState) -> Vec<PaletteEntry> {
             }),
             enabled: true,
         });
+        // Hum-removal presets — drop the `hum_removal` AudioEffect
+        // onto the selected clip with the fundamental pre-tuned for
+        // the user's region. Each variant pushes AddAudioEffect plus
+        // a follow-up UpdateAudioEffectParam at the post-add index
+        // (current audio_effects.len() — AddAudioEffect appends, so
+        // the new slot lands at the previous len). Both palette
+        // entries route through AppCommand so undo can reverse them.
+        // Two explicit entries (rather than a loop) because
+        // PaletteAction::Custom takes a `fn` pointer that can't
+        // capture the per-row fundamental_hz.
+        e.push(PaletteEntry {
+            label: Cow::Borrowed("Hum Removal — 50 Hz (Europe/Asia)"),
+            shortcut: Cow::Borrowed(""),
+            action: PaletteAction::Custom(|state, cmds| {
+                let Some(cid) = state.selected_clip else { return };
+                let new_index = state
+                    .sequence()
+                    .all_clips()
+                    .find(|c| c.id == cid)
+                    .map(|c| c.audio_effects.len())
+                    .unwrap_or(0);
+                cmds.push(AppCommand::AddAudioEffect {
+                    clip_id: cid,
+                    effect_type: "hum_removal".into(),
+                });
+                cmds.push(AppCommand::UpdateAudioEffectParam {
+                    clip_id: cid,
+                    effect_index: new_index,
+                    param_name: "fundamental_hz".into(),
+                    value: 50.0,
+                });
+            }),
+            enabled: true,
+        });
+        e.push(PaletteEntry {
+            label: Cow::Borrowed("Hum Removal — 60 Hz (Americas)"),
+            shortcut: Cow::Borrowed(""),
+            action: PaletteAction::Custom(|state, cmds| {
+                let Some(cid) = state.selected_clip else { return };
+                let new_index = state
+                    .sequence()
+                    .all_clips()
+                    .find(|c| c.id == cid)
+                    .map(|c| c.audio_effects.len())
+                    .unwrap_or(0);
+                cmds.push(AppCommand::AddAudioEffect {
+                    clip_id: cid,
+                    effect_type: "hum_removal".into(),
+                });
+                cmds.push(AppCommand::UpdateAudioEffectParam {
+                    clip_id: cid,
+                    effect_index: new_index,
+                    param_name: "fundamental_hz".into(),
+                    value: 60.0,
+                });
+            }),
+            enabled: true,
+        });
         // PiP corner presets — one entry per corner. Drops a 30 %-
         // scale Transform onto the selected clip with the clip
         // anchored to the named corner of the frame, with offsets
@@ -883,6 +941,19 @@ pub fn build(state: &AppState) -> Vec<PaletteEntry> {
             action: PaletteAction::Cmd(AppCommand::Undo),
             enabled: false,
         });
+        // Greyed hum-removal placeholders — same anchors-test
+        // substring discipline as the PiP twins below.
+        for label in [
+            "Hum Removal — 50 Hz (Europe/Asia)",
+            "Hum Removal — 60 Hz (Americas)",
+        ] {
+            e.push(PaletteEntry {
+                label: Cow::Borrowed(label),
+                shortcut: Cow::Borrowed(""),
+                action: PaletteAction::Cmd(AppCommand::Undo),
+                enabled: false,
+            });
+        }
         // Greyed PiP placeholders so the anchors-test substring
         // search still finds the labels at default state, and the
         // user discovers the feature exists even before selecting
@@ -1075,6 +1146,11 @@ mod tests {
         "PiP: Top Right",
         "PiP: Bottom Left",
         "PiP: Bottom Right",
+        // Hum-removal preset entries — clip-gated with greyed
+        // twins in the no-selection branch so the substrings are
+        // reachable in the anchors test default state.
+        "Hum Removal — 50 Hz",
+        "Hum Removal — 60 Hz",
     ];
 
     #[test]

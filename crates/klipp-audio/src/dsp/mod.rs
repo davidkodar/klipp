@@ -10,6 +10,7 @@ pub mod deesser;
 pub mod delay;
 pub mod eq;
 pub mod gate;
+pub mod hum_removal;
 pub mod limiter;
 pub mod noise_reduction;
 pub mod normalize;
@@ -440,6 +441,7 @@ pub fn create_effect(type_id: &str, sample_rate: u32) -> Option<Box<dyn AudioEff
         "reverb" => Some(Box::new(reverb::Reverb::new(sample_rate))),
         "delay" => Some(Box::new(delay::Delay::new(sample_rate))),
         "deesser" => Some(Box::new(deesser::DeEsser::new(sample_rate))),
+        "hum_removal" => Some(Box::new(hum_removal::HumRemoval::new(sample_rate))),
         "noise_reduction" => Some(Box::new(noise_reduction::NoiseReduction::new(sample_rate))),
         "declick" => Some(Box::new(declick::DeClick::new(sample_rate))),
         "normalize" => Some(Box::new(normalize::Normalize::new(sample_rate))),
@@ -460,6 +462,7 @@ pub fn available_effects() -> Vec<(&'static str, &'static str)> {
         ("reverb", "Reverb"),
         ("delay", "Delay"),
         ("deesser", "De-Esser"),
+        ("hum_removal", "Hum Removal"),
         ("noise_reduction", "Multi-band Gate"),
         ("declick", "De-click"),
         ("normalize", "Normalize"),
