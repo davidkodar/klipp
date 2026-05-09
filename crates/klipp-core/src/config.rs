@@ -71,29 +71,31 @@ impl ScopeQuality {
     }
 
     /// Splat-kernel dimensions (width × height) for trace deposition.
-    /// **Anisotropic — height > width** by design: real CRT phosphor
-    /// energy stretches vertically along the electron-beam motion,
-    /// not in a circle. Low is a single-pixel point-write (matches
-    /// the legacy "graph-paper" look); Medium and High deposit a
-    /// vertically-elongated Gaussian footprint per data point so
-    /// traces feel like phosphor filaments rather than round blobs.
+    /// **Width is always 1** — single-column deposition. Real CRT
+    /// phosphor energy follows the electron beam vertically; horizontal
+    /// spread comes from many independent samples landing in the same
+    /// column over many frames, not from one splat bleeding sideways
+    /// into its neighbours. The previous 3-px-wide footprint filled
+    /// the gaps BETWEEN columns and made dense regions read as a
+    /// continuous luminous mass instead of as accumulated filaments.
+    /// Height controls the vertical streak length (the beam's drift
+    /// during the sample window).
     pub fn splat_kernel_size(&self) -> (usize, usize) {
         match self {
             Self::Low => (1, 1),
-            Self::Medium => (3, 5),
-            Self::High => (3, 7),
+            Self::Medium => (1, 5),
+            Self::High => (1, 7),
         }
     }
 
-    /// Per-axis Gaussian standard deviations (σx, σy). Paired with
-    /// `splat_kernel_size`. `σy > σx` produces the vertical-streak
-    /// shape that reads as phosphor accumulation. `Low` returns
-    /// zero (no Gaussian; single-pixel splat skips the divide-by-σ).
+    /// Per-axis Gaussian standard deviations (σx, σy). σx is always 0
+    /// — width=1 has no horizontal axis to blur. σy controls how
+    /// gradually the vertical streak falls off from the centre row.
     pub fn splat_kernel_sigma(&self) -> (f32, f32) {
         match self {
             Self::Low => (0.0, 0.0),
-            Self::Medium => (0.6, 1.8),
-            Self::High => (0.7, 2.4),
+            Self::Medium => (0.0, 1.4),
+            Self::High => (0.0, 1.8),
         }
     }
 }

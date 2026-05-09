@@ -409,17 +409,30 @@ pub fn show_scopes(
         if state.bloom {
             let w = image.size[0];
             let h = image.size[1];
-            // Threshold pushed back up from the Phase 1 0.10 → 0.20 per
-            // the OLED-vs-CRT feedback: 0.10 was over-energising mid-
-            // density regions on top of the new soft splat + scanline
-            // texture, contributing to the "reaches pure white too
-            // cleanly" feel. 0.20 only catches genuine highlight
-            // regions, leaves the soft body of the trace alone.
-            let threshold = 0.20_f32;
-            // Strength pulled back from 0.85 → 0.65 for the same reason
-            // — bloom no longer piles on top of already-bright traces.
-            let bloom_strength = 0.65_f32;
-            let radius = 18usize;
+            // Tightened to a thin inner-glow pass (was a broad
+            // front-lit halo). Three changes from the previous
+            // 0.20 / 0.65 / 18 tuning, all driven by the same
+            // perceptual goal: bloom should look EMITTED FROM
+            // INSIDE the densest filament cores, not painted on
+            // top of the trace.
+            //
+            //   * Threshold 0.20 → 0.55 — only fires on the very
+            //     brightest pixels (sparse hot intersections).
+            //     Below that, the trace's own intensity ramp is
+            //     doing the work; bloom would just smudge it.
+            //   * Strength 0.65 → 0.18 — even where bloom fires,
+            //     the contribution is a quiet additive glow, not
+            //     a wash. Combined with the smaller radius this
+            //     reads as core-light leaking 2-3 px outward,
+            //     not as a halo painted around the trace.
+            //   * Radius 18 → 5 — keeps glow LOCAL to the hot
+            //     cores. The previous 18-px radius was the main
+            //     contributor to the "broadly luminous" feel —
+            //     it spread bright-pixel energy 36 px across the
+            //     scope, painting whole regions with light.
+            let threshold = 0.55_f32;
+            let bloom_strength = 0.18_f32;
+            let radius = 5usize;
 
             // 1. Extract bright pass
             let mut bright: Vec<[f32; 3]> = image.pixels.iter().map(|p| {
@@ -664,6 +677,77 @@ impl SplatKernel {
     }
 }
 
+// ── Stochastic deposition support ────────────────────────────────────
+//
+// Real CRT phosphor traces are NOT a smooth deterministic raster of
+// every source pixel: they're a chaotic accumulation of unstable
+// electron-beam events that vary in intensity, position, and density
+// frame-to-frame. Reproducing that perceptually means the splat loop
+// has to inject controlled noise per sample — three mechanisms,
+// applied at deposition time:
+//
+//   1. **Stochastic dropout** — silently skip a fixed share of source
+//      samples per render. Even when many source pixels project to
+//      the same scope column, only a fraction get deposited; the
+//      others leave gaps. This is THE mechanism that produces
+//      DaVinci's signature "even dense regions still contain visible
+//      black pockets" character. Without it, every source pixel
+//      lights its destination column and the scope reads as a
+//      continuous luminous slab.
+//
+//   2. **Per-sample weight jitter** — the surviving samples deposit
+//      with a randomly-scaled weight (uniform in `[0.30, 1.70]`
+//      around the kernel's normalised mass). Most land light; a few
+//      land heavy. That's the source of bright filament cores —
+//      sparse hot intersections rather than broadly-luminous regions.
+//
+//   3. **Per-render reseed** — a process-global atomic counter
+//      bumps once per render call, so the dropout/weight pattern
+//      shifts every frame. That's the per-frame instability that
+//      reads as "energised electronic flicker" rather than as a
+//      static stippled pattern.
+//
+// LCG (linear congruential generator) is good enough here — we don't
+// need cryptographic randomness, just visually-uncorrelated noise at
+// ~50M draws per render. The Numerical-Recipes LCG (mul=1664525,
+// add=1013904223) is the standard choice.
+
+use std::sync::atomic::{AtomicU32, Ordering};
+
+static SCOPE_RENDER_SEED: AtomicU32 = AtomicU32::new(0x9E37_79B9);
+
+/// One PRNG state per render call. Bumps the global counter so each
+/// render gets a fresh seed — that's what gives the per-frame
+/// instability character.
+#[inline]
+pub(crate) fn next_render_seed() -> u32 {
+    SCOPE_RENDER_SEED
+        .fetch_add(0x9E37_79B9, Ordering::Relaxed)
+        .wrapping_add(1)
+}
+
+#[inline]
+pub(crate) fn lcg_next(state: &mut u32) -> u32 {
+    *state = state.wrapping_mul(1664525).wrapping_add(1013904223);
+    *state
+}
+
+/// Returns a uniform `f32` in `[0, 1)`. Uses the upper 24 bits of
+/// the LCG state so the lowest bits (which have weak entropy in
+/// LCGs) are discarded.
+#[inline]
+pub(crate) fn lcg_unit(state: &mut u32) -> f32 {
+    (lcg_next(state) >> 8) as f32 / 16_777_216.0
+}
+
+/// Tunables for the breakup pass — calibrated to DaVinci-style
+/// "filament accumulation, not luminous volume". Keep all three
+/// here so they're tweaked together: lowering DROPOUT without also
+/// raising WEIGHT_HI quickly fills the buffer back up.
+pub(crate) const SPLAT_DROPOUT_PROB: f32 = 0.55;
+pub(crate) const SPLAT_WEIGHT_LO: f32 = 0.30;
+pub(crate) const SPLAT_WEIGHT_HI: f32 = 1.70;
+
 /// Accumulation buffer for colorised scopes (waveform colorised mode,
 /// vectorscope, histogram, CIE chromaticity). Each pixel stores
 /// `[R, G, B, density]` where:
@@ -703,10 +787,27 @@ impl AccumBuffer {
     /// Each kernel cell contributes `weight × (r, g, b)` to RGB and
     /// `weight` to density. Out-of-bounds cells are silently skipped.
     /// The kernel is pre-normalised so one splat integrates to one
-    /// unit of density (away from edges). Anisotropic shape (typically
-    /// taller than wide) gives traces phosphor-filament character.
+    /// unit of density (away from edges). Production code uses
+    /// `splat_weighted` (per-sample weight scalar for the stochastic
+    /// breakup pass); this unweighted shim is kept for tests that
+    /// need deterministic mass-conservation properties.
     #[inline]
+    #[allow(dead_code)]
     fn splat(&mut self, cx: i32, cy: i32, r: f32, g: f32, b: f32, kernel: &SplatKernel) {
+        self.splat_weighted(cx, cy, r, g, b, kernel, 1.0);
+    }
+
+    /// Splat with a per-sample scalar applied to the kernel weights.
+    /// Used by the stochastic deposition path so each surviving
+    /// sample lands with a randomised intensity (most light, a few
+    /// heavy) — that's the mechanism behind the bright-filament-core
+    /// vs faint-trace-dust contrast that DaVinci's scopes show.
+    #[inline]
+    fn splat_weighted(
+        &mut self, cx: i32, cy: i32,
+        r: f32, g: f32, b: f32,
+        kernel: &SplatKernel, scale: f32,
+    ) {
         let half_w = (kernel.width / 2) as i32;
         let half_h = (kernel.height / 2) as i32;
         for ky in 0..kernel.height {
@@ -715,7 +816,7 @@ impl AccumBuffer {
             for kx in 0..kernel.width {
                 let px = cx + (kx as i32) - half_w;
                 if px < 0 || px >= self.w as i32 { continue; }
-                let w = kernel.weight_at(kx, ky);
+                let w = kernel.weight_at(kx, ky) * scale;
                 let idx = (py as usize) * self.w + (px as usize);
                 self.data[idx][0] += r * w;
                 self.data[idx][1] += g * w;
@@ -875,8 +976,17 @@ impl DensityBuffer {
 
     /// Splat a Gaussian footprint centred at (cx, cy). Same anisotropic
     /// shape as `AccumBuffer::splat` minus the colour channels.
+    /// Production code uses `splat_weighted`; this unweighted shim
+    /// is kept for tests.
     #[inline]
+    #[allow(dead_code)]
     fn splat(&mut self, cx: i32, cy: i32, kernel: &SplatKernel) {
+        self.splat_weighted(cx, cy, kernel, 1.0);
+    }
+
+    /// Splat with a per-sample scalar — see `AccumBuffer::splat_weighted`.
+    #[inline]
+    fn splat_weighted(&mut self, cx: i32, cy: i32, kernel: &SplatKernel, scale: f32) {
         let half_w = (kernel.width / 2) as i32;
         let half_h = (kernel.height / 2) as i32;
         for ky in 0..kernel.height {
@@ -885,7 +995,7 @@ impl DensityBuffer {
             for kx in 0..kernel.width {
                 let px = cx + (kx as i32) - half_w;
                 if px < 0 || px >= self.w as i32 { continue; }
-                let w = kernel.weight_at(kx, ky);
+                let w = kernel.weight_at(kx, ky) * scale;
                 let idx = (py as usize) * self.w + (px as usize);
                 self.data[idx] += w;
             }
@@ -906,6 +1016,7 @@ pub(crate) fn render_waveform_direct(
     splat_kernel: &SplatKernel,
 ) -> egui::ColorImage {
     let mut density = DensityBuffer::new(scope_w, scope_h);
+    let mut rng = next_render_seed();
 
     for y in 0..video_h {
         for x in 0..video_w {
@@ -916,17 +1027,31 @@ pub(crate) fn render_waveform_direct(
             let b = rgba[idx + 2] as f32 / 255.0;
             let luma = (0.2126 * r + 0.7152 * g + 0.0722 * b).clamp(0.0, 0.999);
 
+            // Stochastic dropout — see header docs. Single biggest
+            // perceptual fix: dense regions naturally develop holes
+            // because not every projected source pixel survives the
+            // splat phase.
+            if lcg_unit(&mut rng) < SPLAT_DROPOUT_PROB { continue; }
+
             let sx = ((x as usize * scope_w) / video_w as usize) as i32;
             let sy = (scope_h - 1).saturating_sub((luma * scope_h as f32) as usize) as i32;
-            density.splat(sx, sy, splat_kernel);
+            // Per-sample weight jitter — surviving samples land with
+            // randomised intensity. Most light, a few heavy → sparse
+            // hot filament cores instead of uniform brushstrokes.
+            let scale = SPLAT_WEIGHT_LO
+                + lcg_unit(&mut rng) * (SPLAT_WEIGHT_HI - SPLAT_WEIGHT_LO);
+            density.splat_weighted(sx, sy, splat_kernel, scale);
         }
     }
 
     // Phosphor resolve: density → soft-knee brightness, mix base
     // colour toward white as intensity climbs. The white-mix curve
     // is the key chroma-preservation knob — see phosphor_white_mix
-    // doc for the rationale.
-    let knee = 1.3_f32;
+    // doc for the rationale. Knee bumped 1.3 → 1.8 so the curve
+    // stays sub-linear deeper into accumulation — that pushes mid-
+    // density pixels toward black (less haze, deeper blacks) and
+    // reserves the bright end of the curve for genuine peaks.
+    let knee = 1.8_f32;
     let base_r = 0.0_f32;
     let base_g = 0.9_f32;
     let base_b = 0.0_f32;
@@ -982,9 +1107,26 @@ pub(crate) fn render_waveform_direct(
 /// preserving by construction.
 #[inline]
 fn phosphor_white_mix(intensity: f32) -> f32 {
-    let t = ((intensity - 0.8) / 0.2).max(0.0);
-    let q = t * t * t * t;
-    q.min(0.75)
+    // Sparser hot-core behaviour — DaVinci's bright peaks live as
+    // tiny concentrated cores, not broad luminous regions. Two
+    // changes from the previous t³⋅cap-0.75 curve:
+    //
+    //   * Breakpoint pushed 0.80 → 0.92 — only the very densest
+    //     pixels (the converged-column tips) start whitening at all.
+    //     Below 0.92 the trace stays pure coloured, no matter how
+    //     dense.
+    //   * Cap dropped 0.75 → 0.40 — even infinite density never
+    //     washes the trace beyond ~ "punchy coloured highlight".
+    //     Most of the brightness comes from the intensity ramp
+    //     in the resolve step; the white-mix is a thin sparkle on
+    //     top of the densest cores, not a wash that paints whole
+    //     regions toward grey.
+    //   * Exponent 4 → 6 — the climb from "still coloured" to
+    //     "sparkly" happens over a narrow density band. That
+    //     produces sparse hot dots rather than a smooth gradient.
+    let t = ((intensity - 0.92) / 0.08).max(0.0);
+    let q = t * t * t * t * t * t;
+    q.min(0.40)
 }
 
 /// Render waveform for a specific channel (Y=luma, R, G, B).
@@ -1004,6 +1146,7 @@ pub(crate) fn render_waveform_channel(
         // accumulation, so dense regions stay coloured rather than
         // washing out to flat white.
         let mut buf = AccumBuffer::new(scope_w, scope_h);
+        let mut rng = next_render_seed();
         for y in 0..video_h {
             for x in 0..video_w {
                 let idx = ((y * video_w + x) * 4) as usize;
@@ -1011,6 +1154,7 @@ pub(crate) fn render_waveform_channel(
                 let r = rgba[idx] as f32 / 255.0;
                 let g = rgba[idx + 1] as f32 / 255.0;
                 let b = rgba[idx + 2] as f32 / 255.0;
+                if lcg_unit(&mut rng) < SPLAT_DROPOUT_PROB { continue; }
                 let val = match channel {
                     WaveformChannel::Y => (0.2126 * r + 0.7152 * g + 0.0722 * b).clamp(0.0, 0.999),
                     WaveformChannel::R => r.clamp(0.0, 0.999),
@@ -1019,14 +1163,17 @@ pub(crate) fn render_waveform_channel(
                 };
                 let sx = ((x as usize * scope_w) / video_w as usize) as i32;
                 let sy = (scope_h - 1).saturating_sub((val * scope_h as f32) as usize) as i32;
-                buf.splat(sx, sy, r, g, b, splat_kernel);
+                let scale = SPLAT_WEIGHT_LO
+                    + lcg_unit(&mut rng) * (SPLAT_WEIGHT_HI - SPLAT_WEIGHT_LO);
+                buf.splat_weighted(sx, sy, r, g, b, splat_kernel, scale);
             }
         }
-        return buf.to_image_phosphor([0.0, 0.0, 0.0], 1.8, 1.3);
+        return buf.to_image_phosphor([0.0, 0.0, 0.0], 1.8, 1.8);
     }
 
     // Monochrome mode: density splat + phosphor ramp.
     let mut density = DensityBuffer::new(scope_w, scope_h);
+    let mut rng = next_render_seed();
 
     for y in 0..video_h {
         for x in 0..video_w {
@@ -1043,13 +1190,17 @@ pub(crate) fn render_waveform_channel(
                 WaveformChannel::B => b.clamp(0.0, 0.999),
             };
 
+            if lcg_unit(&mut rng) < SPLAT_DROPOUT_PROB { continue; }
+
             let sx = ((x as usize * scope_w) / video_w as usize) as i32;
             let sy = (scope_h - 1).saturating_sub((val * scope_h as f32) as usize) as i32;
-            density.splat(sx, sy, splat_kernel);
+            let scale = SPLAT_WEIGHT_LO
+                + lcg_unit(&mut rng) * (SPLAT_WEIGHT_HI - SPLAT_WEIGHT_LO);
+            density.splat_weighted(sx, sy, splat_kernel, scale);
         }
     }
 
-    let knee = 1.3_f32;
+    let knee = 1.8_f32;
     // Paint-mode base colour: overrides the per-channel palette except in
     // Classic mode, which keeps the legacy per-channel R/G/B tint on Y and
     // falls through to the channel-matched colour on R/G/B channels.
@@ -1159,6 +1310,7 @@ pub(crate) fn render_parade_direct(
     let mut den_r = DensityBuffer::new(section_w, scope_h);
     let mut den_g = DensityBuffer::new(section_w, scope_h);
     let mut den_b = DensityBuffer::new(section_w, scope_h);
+    let mut rng = next_render_seed();
 
     for y in 0..video_h {
         for x in 0..video_w {
@@ -1168,6 +1320,13 @@ pub(crate) fn render_parade_direct(
             let gv = rgba[idx + 1] as f32 / 255.0;
             let bv = rgba[idx + 2] as f32 / 255.0;
 
+            // One dropout decision per source pixel — applies to all
+            // three channel deposits together. Per-channel independent
+            // dropout would create R/G/B columns that don't co-vary,
+            // which reads as colour fringing rather than as the
+            // signal's own breakup pattern.
+            if lcg_unit(&mut rng) < SPLAT_DROPOUT_PROB { continue; }
+
             let sx = ((x as usize * section_w) / video_w as usize) as i32;
             if sx >= section_w as i32 { continue; }
 
@@ -1175,13 +1334,19 @@ pub(crate) fn render_parade_direct(
             let gy = (scope_h - 1).saturating_sub((gv.clamp(0.0, 0.999) * scope_h as f32) as usize) as i32;
             let by = (scope_h - 1).saturating_sub((bv.clamp(0.0, 0.999) * scope_h as f32) as usize) as i32;
 
-            den_r.splat(sx, ry, splat_kernel);
-            den_g.splat(sx, gy, splat_kernel);
-            den_b.splat(sx, by, splat_kernel);
+            // Independent per-channel weight jitter — keeps R/G/B
+            // density patterns from looking suspiciously identical
+            // even though they share the dropout decision.
+            let sr = SPLAT_WEIGHT_LO + lcg_unit(&mut rng) * (SPLAT_WEIGHT_HI - SPLAT_WEIGHT_LO);
+            let sg = SPLAT_WEIGHT_LO + lcg_unit(&mut rng) * (SPLAT_WEIGHT_HI - SPLAT_WEIGHT_LO);
+            let sb = SPLAT_WEIGHT_LO + lcg_unit(&mut rng) * (SPLAT_WEIGHT_HI - SPLAT_WEIGHT_LO);
+            den_r.splat_weighted(sx, ry, splat_kernel, sr);
+            den_g.splat_weighted(sx, gy, splat_kernel, sg);
+            den_b.splat_weighted(sx, by, splat_kernel, sb);
         }
     }
 
-    let knee = 1.3_f32;
+    let knee = 1.8_f32;
     let bg = egui::Color32::BLACK;
     let gap_color = egui::Color32::from_rgb(0x06, 0x06, 0x06);
 
@@ -1423,7 +1588,12 @@ pub(crate) fn render_vectorscope(rgba: &[u8], width: u32, height: u32, step: u32
     // 4. Plot data points with ACTUAL pixel color + saturation-weighted brightness
     // Pixels with more color (higher saturation) plot brighter — low-saturation pixels
     // near center are dimmed to prevent the white blob from drowning everything out.
+    // Stochastic dropout + per-sample weight jitter (same as waveform/parade)
+    // give the chroma cloud DaVinci-style filament/sparkle character —
+    // sparse hot points clustered around saturated regions instead of a
+    // continuous luminous blob filling each axis.
     let sample_step = (step * 3).max(3) as usize;
+    let mut rng = next_render_seed();
     for y in (0..height).step_by(sample_step) {
         for x in (0..width).step_by(sample_step) {
             let idx = ((y * width + x) * 4) as usize;
@@ -1431,21 +1601,23 @@ pub(crate) fn render_vectorscope(rgba: &[u8], width: u32, height: u32, step: u32
             let r = rgba[idx] as f32 / 255.0;
             let g = rgba[idx + 1] as f32 / 255.0;
             let b = rgba[idx + 2] as f32 / 255.0;
+
+            if lcg_unit(&mut rng) < SPLAT_DROPOUT_PROB { continue; }
+
             let cb = -0.1146 * r - 0.3854 * g + 0.5000 * b;
             let cr = 0.5000 * r - 0.4542 * g - 0.0458 * b;
 
             let px = (center + cb * radius * 2.0) as i32;
             let py = (center - cr * radius * 2.0) as i32;
-            // Soft Gaussian splat — vectorscope clusters benefit
-            // most from this; chroma vector clouds get the
-            // "energy cloud" look instead of dotted point clouds.
             let sat = (cb * cb + cr * cr).sqrt() * 2.0;
             let boost = 0.1 + sat * 1.5;
-            buf.splat(px, py, r * boost, g * boost, b * boost, splat_kernel);
+            let scale = SPLAT_WEIGHT_LO
+                + lcg_unit(&mut rng) * (SPLAT_WEIGHT_HI - SPLAT_WEIGHT_LO);
+            buf.splat_weighted(px, py, r * boost, g * boost, b * boost, splat_kernel, scale);
         }
     }
 
-    buf.to_image_phosphor([4.0, 4.0, 7.0], 2.2, 1.3)
+    buf.to_image_phosphor([4.0, 4.0, 7.0], 2.2, 1.8)
 }
 
 /// Render CIE 1931 xy chromaticity diagram.
@@ -2116,16 +2288,17 @@ mod tests {
         assert_eq!(any.b(), 12);
     }
 
-    /// Pin: ScopeQuality kernel dimensions are anisotropic (height >
-    /// width) at Medium and High — that's the load-bearing property
-    /// for the "phosphor filament" trace look. A regression that
-    /// flipped the dimensions back to square would erase the
-    /// vertical-streak character.
+    /// Pin: ScopeQuality kernels are width-1 (single-column
+    /// deposition) with height controlling vertical streak length.
+    /// A regression that widened the kernel would let one splat
+    /// bleed into neighbouring columns, filling the gaps between
+    /// columns and erasing the "filament accumulation" look — the
+    /// scope would read as a continuous luminous slab again.
     #[test]
     fn quality_kernel_sizes_pinned() {
         assert_eq!(klipp_core::ScopeQuality::Low.splat_kernel_size(), (1, 1));
-        assert_eq!(klipp_core::ScopeQuality::Medium.splat_kernel_size(), (3, 5));
-        assert_eq!(klipp_core::ScopeQuality::High.splat_kernel_size(), (3, 7));
+        assert_eq!(klipp_core::ScopeQuality::Medium.splat_kernel_size(), (1, 5));
+        assert_eq!(klipp_core::ScopeQuality::High.splat_kernel_size(), (1, 7));
     }
 
     /// Pin: at non-Low quality the kernel is taller than wide. The
@@ -2254,18 +2427,20 @@ mod tests {
         }
     }
 
-    /// Pin: white-mix never exceeds 0.75 — even at infinite density,
+    /// Pin: white-mix never exceeds 0.40 — even at infinite density,
     /// traces never reach pure-white emission. THIS is the property
-    /// that turns "OLED-style additive white" into "phosphor
-    /// excitation that intensifies but stays coloured".
+    /// that keeps DaVinci-style "punchy coloured highlight" rather
+    /// than "broad luminous white wash" at the brightest peaks.
+    /// Cap dropped 0.75 → 0.40 in the filament-rewrite pass; before
+    /// that, even the capped value washed peaks too far toward white.
     #[test]
-    fn phosphor_white_mix_caps_at_0_75() {
+    fn phosphor_white_mix_caps_at_0_40() {
         for intensity in [0.95, 0.99, 1.0, 1.5, 100.0, f32::MAX] {
             let w = phosphor_white_mix(intensity);
-            assert!(w <= 0.75 + 1e-6,
-                "intensity {intensity} produced white_mix={w}, exceeds 0.75 cap");
+            assert!(w <= 0.40 + 1e-6,
+                "intensity {intensity} produced white_mix={w}, exceeds 0.40 cap");
         }
-        assert!((phosphor_white_mix(1.0) - 0.75).abs() < 1e-6,
+        assert!((phosphor_white_mix(1.0) - 0.40).abs() < 1e-6,
             "at intensity=1.0 should reach the cap exactly");
     }
 
