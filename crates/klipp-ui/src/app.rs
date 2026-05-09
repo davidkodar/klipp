@@ -30945,7 +30945,16 @@ impl KlippApp {
         );
         crate::ui_util::allocate_clipped_ui(ui, live_scopes_rect, |ui| {
             ui.set_min_size(live_scopes_rect.size());
-            ui.painter().rect_filled(live_scopes_rect, 0.0, theme.bg_deep);
+            // Use `bg_void` (the same colour the inner `show_scopes`
+            // fills its `full_rect` with) instead of `bg_deep`. They
+            // differ by ~7 % luminance, and any 1–2 px egui-spacing
+            // inset between the dock rect and `full_rect` would leak
+            // the lighter `bg_deep` as a visible ring around the
+            // axis-label column and the trace. Matching the layers
+            // makes the dock read as a single seamless black surface
+            // — DaVinci-style flush black, no "panel" chrome around
+            // the instrument glass.
+            ui.painter().rect_filled(live_scopes_rect, 0.0, theme.bg_void);
             if self.state.scope_state.scale != self.state.scope_scale
                 || self.state.scope_state.low_pass != self.state.scope_low_pass
                 || self.state.scope_state.bloom != self.state.scope_bloom
