@@ -133,6 +133,13 @@ impl ThumbnailRenderer {
                         // LADSPA plugins are audio-only — no visual preview.
                         continue;
                     }
+                    EffectSource::Frei0r(_) => {
+                        // Frei0r plugins ship without a static thumbnail
+                        // primitive; the browser falls back to a generic
+                        // "frei0r" tile. v2 follow-up: dlopen + render
+                        // a real preview at thumbnail resolution.
+                        continue;
+                    }
                 };
                 let _ = tx.send(ThumbnailResult {
                     effect_name: name.clone(),
@@ -454,6 +461,13 @@ fn builtin_preview_params(effect: &klipp_effects::BuiltinEffect) -> klipp_effect
             effect.clone()
         }
         klipp_effects::BuiltinEffect::Vibrance { .. } => {
+            effect.clone()
+        }
+        klipp_effects::BuiltinEffect::Frei0r { .. } => {
+            // Frei0r thumbnail rendering would require dlopen + per-plugin
+            // construct against the static reference frame. Out of scope
+            // for the static built-in thumbnail path; the browser shows
+            // a generic "frei0r" tile thumbnail instead.
             effect.clone()
         }
     }

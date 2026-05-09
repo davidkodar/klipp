@@ -123,7 +123,7 @@ pub fn show(
     let badge_gray = theme.text_dim;
 
     for (i, effect) in clip.builtin_effects.iter().enumerate() {
-        let name = builtin_effect_name(effect);
+        let name = builtin_effect_name(effect).into_owned();
         let header_id = ui.make_persistent_id(format!("bfx_{clip_id:?}_{i}"));
         let mut col_state = egui::collapsing_header::CollapsingState::load_with_default_open(
             ui.ctx(), header_id, true,
@@ -163,7 +163,7 @@ pub fn show(
         ui.painter().text(
             egui::pos2(name_x, header_rect.center().y),
             egui::Align2::LEFT_CENTER,
-            name,
+            &name,
             egui::FontId::proportional(13.0),
             theme.text_primary,
         );
@@ -1112,49 +1112,58 @@ fn show_ofx_param(
     });
 }
 
-fn builtin_effect_name(effect: &klipp_effects::BuiltinEffect) -> &'static str {
+fn builtin_effect_name(effect: &klipp_effects::BuiltinEffect) -> std::borrow::Cow<'static, str> {
+    use std::borrow::Cow;
     match effect {
-        klipp_effects::BuiltinEffect::ColorFade { .. } => "Color Fade",
-        klipp_effects::BuiltinEffect::Opacity { .. } => "Opacity",
-        klipp_effects::BuiltinEffect::GaussianBlur { .. } => "Gaussian Blur",
-        klipp_effects::BuiltinEffect::Sharpen { .. } => "Sharpen",
-        klipp_effects::BuiltinEffect::Crop { .. } => "Crop",
-        klipp_effects::BuiltinEffect::Transform { .. } => "Transform",
-        klipp_effects::BuiltinEffect::ChromaKey { .. } => "Chroma Key",
-        klipp_effects::BuiltinEffect::Bloom { .. } => "Bloom",
-        klipp_effects::BuiltinEffect::Glow { .. } => "Glow",
-        klipp_effects::BuiltinEffect::LightRays { .. } => "Light Rays",
-        klipp_effects::BuiltinEffect::Vignette { .. } => "Vignette",
-        klipp_effects::BuiltinEffect::Diffusion { .. } => "Diffusion",
-        klipp_effects::BuiltinEffect::LensFlare { .. } => "Lens Flare",
-        klipp_effects::BuiltinEffect::LightWrap { .. } => "Light Wrap",
-        klipp_effects::BuiltinEffect::AnamorphicStreak { .. } => "Anamorphic Streak",
-        klipp_effects::BuiltinEffect::FilmHalation { .. } => "Film Halation",
-        klipp_effects::BuiltinEffect::Invert { .. } => "Invert",
-        klipp_effects::BuiltinEffect::Posterize { .. } => "Posterize",
-        klipp_effects::BuiltinEffect::Mosaic { .. } => "Mosaic",
-        klipp_effects::BuiltinEffect::EdgeDetect { .. } => "Edge Detect",
-        klipp_effects::BuiltinEffect::ChannelMixer { .. } => "Channel Mixer",
-        klipp_effects::BuiltinEffect::DirectionalBlur { .. } => "Directional Blur",
-        klipp_effects::BuiltinEffect::Emboss { .. } => "Emboss",
-        klipp_effects::BuiltinEffect::Mirror { .. } => "Mirror",
-        klipp_effects::BuiltinEffect::LensDistortion { .. } => "Lens Distortion",
-        klipp_effects::BuiltinEffect::Dilate { .. } => "Dilate",
-        klipp_effects::BuiltinEffect::Erode { .. } => "Erode",
-        klipp_effects::BuiltinEffect::Denoise { .. } => "Denoise",
-        klipp_effects::BuiltinEffect::Gamma { .. } => "Gamma",
-        klipp_effects::BuiltinEffect::HSVAdjust { .. } => "HSV Adjust",
-        klipp_effects::BuiltinEffect::NoiseGenerator { .. } => "Noise Generator",
-        klipp_effects::BuiltinEffect::MedianFilter { .. } => "Median Filter",
-        klipp_effects::BuiltinEffect::RadialBlur { .. } => "Radial Blur",
-        klipp_effects::BuiltinEffect::Levels { .. } => "Levels",
-        klipp_effects::BuiltinEffect::Equalize { .. } => "Equalize",
-        klipp_effects::BuiltinEffect::Letterbox { .. } => "Letterbox",
-        klipp_effects::BuiltinEffect::ChromaticAberration { .. } => "Chromatic Aberration",
-        klipp_effects::BuiltinEffect::RollingShutterCorrection { .. } => "Rolling Shutter Correction",
-        klipp_effects::BuiltinEffect::VideoStabilization { .. } => "Video Stabilization",
-        klipp_effects::BuiltinEffect::SpeedRamp { .. } => "Speed Ramp",
-        klipp_effects::BuiltinEffect::Vibrance { .. } => "Vibrance",
+        klipp_effects::BuiltinEffect::ColorFade { .. } => Cow::Borrowed("Color Fade"),
+        klipp_effects::BuiltinEffect::Opacity { .. } => Cow::Borrowed("Opacity"),
+        klipp_effects::BuiltinEffect::GaussianBlur { .. } => Cow::Borrowed("Gaussian Blur"),
+        klipp_effects::BuiltinEffect::Sharpen { .. } => Cow::Borrowed("Sharpen"),
+        klipp_effects::BuiltinEffect::Crop { .. } => Cow::Borrowed("Crop"),
+        klipp_effects::BuiltinEffect::Transform { .. } => Cow::Borrowed("Transform"),
+        klipp_effects::BuiltinEffect::ChromaKey { .. } => Cow::Borrowed("Chroma Key"),
+        klipp_effects::BuiltinEffect::Bloom { .. } => Cow::Borrowed("Bloom"),
+        klipp_effects::BuiltinEffect::Glow { .. } => Cow::Borrowed("Glow"),
+        klipp_effects::BuiltinEffect::LightRays { .. } => Cow::Borrowed("Light Rays"),
+        klipp_effects::BuiltinEffect::Vignette { .. } => Cow::Borrowed("Vignette"),
+        klipp_effects::BuiltinEffect::Diffusion { .. } => Cow::Borrowed("Diffusion"),
+        klipp_effects::BuiltinEffect::LensFlare { .. } => Cow::Borrowed("Lens Flare"),
+        klipp_effects::BuiltinEffect::LightWrap { .. } => Cow::Borrowed("Light Wrap"),
+        klipp_effects::BuiltinEffect::AnamorphicStreak { .. } => Cow::Borrowed("Anamorphic Streak"),
+        klipp_effects::BuiltinEffect::FilmHalation { .. } => Cow::Borrowed("Film Halation"),
+        klipp_effects::BuiltinEffect::Invert { .. } => Cow::Borrowed("Invert"),
+        klipp_effects::BuiltinEffect::Posterize { .. } => Cow::Borrowed("Posterize"),
+        klipp_effects::BuiltinEffect::Mosaic { .. } => Cow::Borrowed("Mosaic"),
+        klipp_effects::BuiltinEffect::EdgeDetect { .. } => Cow::Borrowed("Edge Detect"),
+        klipp_effects::BuiltinEffect::ChannelMixer { .. } => Cow::Borrowed("Channel Mixer"),
+        klipp_effects::BuiltinEffect::DirectionalBlur { .. } => Cow::Borrowed("Directional Blur"),
+        klipp_effects::BuiltinEffect::Emboss { .. } => Cow::Borrowed("Emboss"),
+        klipp_effects::BuiltinEffect::Mirror { .. } => Cow::Borrowed("Mirror"),
+        klipp_effects::BuiltinEffect::LensDistortion { .. } => Cow::Borrowed("Lens Distortion"),
+        klipp_effects::BuiltinEffect::Dilate { .. } => Cow::Borrowed("Dilate"),
+        klipp_effects::BuiltinEffect::Erode { .. } => Cow::Borrowed("Erode"),
+        klipp_effects::BuiltinEffect::Denoise { .. } => Cow::Borrowed("Denoise"),
+        klipp_effects::BuiltinEffect::Gamma { .. } => Cow::Borrowed("Gamma"),
+        klipp_effects::BuiltinEffect::HSVAdjust { .. } => Cow::Borrowed("HSV Adjust"),
+        klipp_effects::BuiltinEffect::NoiseGenerator { .. } => Cow::Borrowed("Noise Generator"),
+        klipp_effects::BuiltinEffect::MedianFilter { .. } => Cow::Borrowed("Median Filter"),
+        klipp_effects::BuiltinEffect::RadialBlur { .. } => Cow::Borrowed("Radial Blur"),
+        klipp_effects::BuiltinEffect::Levels { .. } => Cow::Borrowed("Levels"),
+        klipp_effects::BuiltinEffect::Equalize { .. } => Cow::Borrowed("Equalize"),
+        klipp_effects::BuiltinEffect::Letterbox { .. } => Cow::Borrowed("Letterbox"),
+        klipp_effects::BuiltinEffect::ChromaticAberration { .. } => Cow::Borrowed("Chromatic Aberration"),
+        klipp_effects::BuiltinEffect::RollingShutterCorrection { .. } => Cow::Borrowed("Rolling Shutter Correction"),
+        klipp_effects::BuiltinEffect::VideoStabilization { .. } => Cow::Borrowed("Video Stabilization"),
+        klipp_effects::BuiltinEffect::SpeedRamp { .. } => Cow::Borrowed("Speed Ramp"),
+        klipp_effects::BuiltinEffect::Vibrance { .. } => Cow::Borrowed("Vibrance"),
+        klipp_effects::BuiltinEffect::Frei0r { type_id, .. } => {
+            // Resolve the plugin's actual display name from the runtime
+            // registry; fall back to "frei0r" if the plugin isn't
+            // installed (covers project-doctor "missing plugin" listings).
+            klipp_effects::frei0r_effect::lookup(type_id)
+                .map(|info| Cow::Owned(info.name))
+                .unwrap_or(Cow::Borrowed("frei0r"))
+        }
     }
 }
 
@@ -1268,6 +1277,18 @@ fn builtin_effect_default(effect: &klipp_effects::BuiltinEffect) -> klipp_effect
         },
         klipp_effects::BuiltinEffect::Vibrance { .. } => {
             klipp_effects::BuiltinEffect::Vibrance { amount: 0.0 }
+        },
+        klipp_effects::BuiltinEffect::Frei0r { type_id, .. } => {
+            // "Default" for a frei0r effect = same plugin, fresh
+            // default param values from the registry. If the plugin
+            // disappeared since the project was saved, fall through to
+            // an empty params list (the lookup-failure path in
+            // `frei0r_effect::apply` will passthrough).
+            klipp_effects::BuiltinEffect::Frei0r {
+                type_id: type_id.clone(),
+                params: klipp_effects::frei0r_effect::default_params(type_id)
+                    .unwrap_or_default(),
+            }
         },
     }
 }
@@ -2374,6 +2395,134 @@ fn show_builtin_effect_params(
             track_scrubby!("center_x", r_cx, *center_x);
             let r_cy = scrubby_param_row(ui, "Center Y", center_y, 0.0..=1.0, 0.5, 0.005, 3, "", ks_cy);
             track_scrubby!("center_y", r_cy, *center_y);
+        }
+        klipp_effects::BuiltinEffect::Frei0r { type_id, params } => {
+            // Resolution-warning banner: surfaces above the params when
+            // the project frame size doesn't fit frei0r's spec
+            // constraints for THIS plugin (8-aligned, ≤2048 unless
+            // tilable). Temporal plugins (delay0r, baltan) refuse 4K
+            // even with tiling on. Pulled from the live registry so a
+            // missing-plugin clip falls through quietly.
+            let plugin_info = klipp_effects::frei0r_effect::lookup(type_id);
+            let resolution = state.sequence().resolution;
+            let project_w = resolution.width;
+            let project_h = resolution.height;
+            if let Some(ref info) = plugin_info {
+                if !klipp_effects::frei0r_effect::supports_resolution(
+                    &info.name,
+                    project_w,
+                    project_h,
+                ) {
+                    let why = if project_w % 8 != 0 || project_h % 8 != 0 {
+                        format!(
+                            "frei0r requires 8-aligned dimensions; project is {}×{}",
+                            project_w, project_h
+                        )
+                    } else {
+                        format!(
+                            "{} doesn't support {}×{} (frei0r {} can't tile temporal effects above 2048)",
+                            info.name, project_w, project_h, info.name
+                        )
+                    };
+                    ui.colored_label(theme.marker_warning, format!("⚠ {why}"));
+                    ui.add_space(4.0);
+                }
+            } else {
+                ui.colored_label(
+                    theme.marker_warning,
+                    format!("⚠ Plugin not installed: {}", type_id),
+                );
+                ui.add_space(4.0);
+            }
+
+            // Per-param widgets — typed by the plugin's declared kind.
+            // We read declared param info from the registry; if the
+            // plugin disappeared, fall through to passthrough (no
+            // widgets).
+            let Some(plugin_info) = plugin_info else {
+                return if changed { Some(updated) } else { None };
+            };
+
+            for (i, param_info) in plugin_info.params.iter().enumerate() {
+                // Lazily extend params Vec if a plugin grew between
+                // saves (defensive — plugins shouldn't change shape
+                // across versions, but covers the case cleanly).
+                while params.len() <= i {
+                    params.push(klipp_frei0r::Frei0rValue::default_for(
+                        plugin_info.params[params.len()].kind,
+                    ));
+                    changed = true;
+                }
+                let value = &mut params[i];
+                ui.horizontal(|ui| {
+                    ui.label(&param_info.name);
+                    match (param_info.kind, value) {
+                        (klipp_frei0r::ParamKind::Bool, klipp_frei0r::Frei0rValue::Bool(b)) => {
+                            if ui.checkbox(b, "").changed() {
+                                changed = true;
+                            }
+                        }
+                        (
+                            klipp_frei0r::ParamKind::Double,
+                            klipp_frei0r::Frei0rValue::Double(d),
+                        ) => {
+                            // Spec: f0r_param_double range is [0, 1].
+                            if ui.add(egui::Slider::new(d, 0.0..=1.0)).changed() {
+                                changed = true;
+                            }
+                        }
+                        (
+                            klipp_frei0r::ParamKind::Color,
+                            klipp_frei0r::Frei0rValue::Color(rgb),
+                        ) => {
+                            let mut color = [
+                                (rgb[0].clamp(0.0, 1.0) * 255.0) as u8,
+                                (rgb[1].clamp(0.0, 1.0) * 255.0) as u8,
+                                (rgb[2].clamp(0.0, 1.0) * 255.0) as u8,
+                            ];
+                            if ui.color_edit_button_srgb(&mut color).changed() {
+                                rgb[0] = color[0] as f32 / 255.0;
+                                rgb[1] = color[1] as f32 / 255.0;
+                                rgb[2] = color[2] as f32 / 255.0;
+                                changed = true;
+                            }
+                        }
+                        (
+                            klipp_frei0r::ParamKind::Position,
+                            klipp_frei0r::Frei0rValue::Position(xy),
+                        ) => {
+                            ui.label("X");
+                            if ui
+                                .add(egui::Slider::new(&mut xy[0], 0.0..=1.0))
+                                .changed()
+                            {
+                                changed = true;
+                            }
+                            ui.label("Y");
+                            if ui
+                                .add(egui::Slider::new(&mut xy[1], 0.0..=1.0))
+                                .changed()
+                            {
+                                changed = true;
+                            }
+                        }
+                        (
+                            klipp_frei0r::ParamKind::String,
+                            klipp_frei0r::Frei0rValue::String(s),
+                        ) => {
+                            if ui.text_edit_singleline(s).changed() {
+                                changed = true;
+                            }
+                        }
+                        _ => {
+                            // Type/value mismatch — render a clear
+                            // disabled hint instead of silently
+                            // ignoring the row.
+                            ui.colored_label(theme.text_dim, "(unsupported param type)");
+                        }
+                    }
+                });
+            }
         }
     }
 

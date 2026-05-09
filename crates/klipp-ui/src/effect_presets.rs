@@ -487,6 +487,10 @@ pub fn builtin_effect_key(effect: &klipp_effects::BuiltinEffect) -> &'static str
         klipp_effects::BuiltinEffect::VideoStabilization { .. } => "video_stabilization",
         klipp_effects::BuiltinEffect::SpeedRamp { .. } => "speed_ramp",
         klipp_effects::BuiltinEffect::Vibrance { .. } => "vibrance",
+        // Third-party plugin — preset key folded under a single bucket
+        // (presets across distinct frei0r plugins don't make sense to
+        // share). The actual plugin identity lives in `type_id`.
+        klipp_effects::BuiltinEffect::Frei0r { .. } => "frei0r",
     }
 }
 

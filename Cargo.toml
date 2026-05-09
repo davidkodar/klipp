@@ -8,6 +8,7 @@ members = [
     "crates/klipp-color",
     "crates/klipp-engine",
     "crates/klipp-plugin",
+    "crates/klipp-frei0r",
     "crates/klipp-effects",
     "crates/klipp-nodes",
     "crates/klipp-title",
@@ -142,6 +143,7 @@ klipp-audio   = { path = "crates/klipp-audio" }
 klipp-color   = { path = "crates/klipp-color" }
 klipp-engine  = { path = "crates/klipp-engine" }
 klipp-plugin  = { path = "crates/klipp-plugin" }
+klipp-frei0r = { path = "crates/klipp-frei0r" }
 klipp-effects = { path = "crates/klipp-effects" }
 klipp-nodes   = { path = "crates/klipp-nodes" }
 klipp-title  = { path = "crates/klipp-title" }

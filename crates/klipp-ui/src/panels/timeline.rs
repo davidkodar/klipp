@@ -2364,10 +2364,37 @@ impl TimelinePanel {
                                     cmds.push(AppCommand::SelectClip(Some(clip_id)));
                                 }
                                 if is_builtin {
-                                    let effect = state.effect_registry.effects.iter()
+                                    // Two paths: pure built-in effects clone
+                                    // out of the registry's prototype; frei0r
+                                    // plugins (also marked is_builtin so they
+                                    // land in `clip.builtin_effects`) need a
+                                    // fresh `BuiltinEffect::Frei0r { type_id,
+                                    // params }` constructed against the
+                                    // plugin's default param values. The drag
+                                    // payload's `plugin_id` carries the
+                                    // type_id for the frei0r case.
+                                    let effect = state
+                                        .effect_registry
+                                        .effects
+                                        .iter()
                                         .find(|e| e.name == name)
                                         .and_then(|e| match &e.source {
-                                            crate::browser::effect_registry::EffectSource::Builtin(eff) => Some(eff.clone()),
+                                            crate::browser::effect_registry::EffectSource::Builtin(eff) => {
+                                                Some(eff.clone())
+                                            }
+                                            crate::browser::effect_registry::EffectSource::Frei0r(plugin) => {
+                                                let params: Vec<klipp_frei0r::Frei0rValue> = plugin
+                                                    .params
+                                                    .iter()
+                                                    .map(|p| {
+                                                        klipp_frei0r::Frei0rValue::default_for(p.kind)
+                                                    })
+                                                    .collect();
+                                                Some(klipp_effects::BuiltinEffect::Frei0r {
+                                                    type_id: plugin.type_id(),
+                                                    params,
+                                                })
+                                            }
                                             _ => None,
                                         });
                                     if let Some(effect) = effect {

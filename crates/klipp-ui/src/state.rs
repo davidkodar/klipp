@@ -1740,6 +1740,18 @@ pub struct AppState {
     // disabled plugins on toggle and on startup.
     pub ladspa_plugins: Vec<klipp_audio::ladspa::LadspaPluginInfo>,
 
+    /// All frei0r 1.x video plugins discovered at startup (and on
+    /// Rescan). Mirrors the `ladspa_plugins` shape but for video FX
+    /// — populates the runtime cache in
+    /// `klipp_effects::frei0r_effect` so that
+    /// `BuiltinEffect::Frei0r { type_id, .. }` lookups can resolve
+    /// the dlopened plugin without going through disk discovery
+    /// each render. `klipp-frei0r` discovery walks
+    /// `/usr/lib/frei0r-1`, `/usr/local/lib/frei0r-1`, and
+    /// `~/.frei0r-1/lib` (plus `FREI0R_PATH` override), 1+2-deep
+    /// for vendor subdirs.
+    pub frei0r_plugins: Vec<klipp_frei0r::Frei0rPluginInfo>,
+
     /// Plugins the user has explicitly disabled, keyed on the
     /// stable LADSPA `unique_id`. Persisted to
     /// `~/.config/klipp/audio_plugins.toml` on every toggle and
@@ -3207,6 +3219,7 @@ impl Default for AppState {
             pending_false_color_palette: None,
             available_plugins: Vec::new(),
             ladspa_plugins: Vec::new(),
+            frei0r_plugins: Vec::new(),
             disabled_audio_plugins: std::collections::HashSet::new(),
             effect_registry: crate::browser::effect_registry::EffectRegistry::new(),
             effect_source_filter: crate::browser::effects_tab::SourceFilter::default(),

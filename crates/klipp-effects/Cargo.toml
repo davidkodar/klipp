@@ -22,6 +22,12 @@ uuid = { workspace = true }
 # Instead `BlendMode` is defined here and re-exported from klipp-core
 # for backward compatibility with existing call-site paths.
 rayon = { workspace = true }
+# frei0r 1.x video-plugin host. Lives in its own crate so the
+# dlopen + unsafe FFI surface is isolated from the rest of klipp-effects
+# (mirrors how klipp-plugin isolates the OFX FFI). `BuiltinEffect::Frei0r`
+# carries the type_id + Frei0rValue param list; the runtime cache here
+# resolves type_id → Arc<Frei0rPlugin> on first use.
+klipp-frei0r = { workspace = true }
 # `image` powers the u8 RGBA bilinear resize used by the legacy u8
 # composite path (`composite::scale_rgba`). Same crate version as
 # klipp-engine, png-only feature set since PNG is the only format

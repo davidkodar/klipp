@@ -70,6 +70,14 @@ pub enum FixAction {
         clip_id: ClipId,
         effect_index: usize,
     },
+    /// Strip a single `BuiltinEffect` entry from a clip's video chain.
+    /// Used by the missing-frei0r-plugin finding to give users a
+    /// one-click way to remove the dangling reference without
+    /// reaching for the inspector.
+    RemoveBuiltinEffectFromClip {
+        clip_id: ClipId,
+        effect_index: usize,
+    },
     ReEnableLadspaPlugin {
         unique_id: u64,
     },
@@ -335,6 +343,15 @@ fn apply_fix(action: &FixAction, cmds: &mut Vec<AppCommand>) {
                 effect_index: *effect_index,
             });
         }
+        FixAction::RemoveBuiltinEffectFromClip {
+            clip_id,
+            effect_index,
+        } => {
+            cmds.push(AppCommand::RemoveBuiltinEffect {
+                clip_id: *clip_id,
+                index: *effect_index,
+            });
+        }
         FixAction::ReEnableLadspaPlugin { unique_id } => {
             cmds.push(AppCommand::ToggleAudioPluginDisabled {
                 unique_id: *unique_id,
@@ -462,6 +479,52 @@ fn scan_project(state: &AppState) -> Vec<Finding> {
                                 }],
                             });
                         }
+                    }
+                }
+            }
+        }
+    }
+
+    // 2b. Frei0r plugin findings — walk every clip's builtin_effects
+    //     list and flag `BuiltinEffect::Frei0r { type_id, .. }`
+    //     entries whose plugin isn't currently installed. We use the
+    //     runtime registry (klipp_effects::frei0r_effect::registry_snapshot)
+    //     rather than the on-disk cache so the result reflects what
+    //     the user can actually run right now, including changes
+    //     since the last Rescan.
+    let installed_frei0r: std::collections::HashSet<String> =
+        klipp_effects::frei0r_effect::registry_snapshot()
+            .into_iter()
+            .map(|info| info.type_id())
+            .collect();
+
+    if let Some(seq) = active {
+        for track in &seq.tracks {
+            for clip in &track.clips {
+                for (effect_index, fx) in clip.builtin_effects.iter().enumerate() {
+                    if let klipp_effects::BuiltinEffect::Frei0r { type_id, .. } = fx {
+                        if installed_frei0r.contains(type_id) {
+                            continue;
+                        }
+                        findings.push(Finding {
+                            severity: Severity::Error,
+                            category: "MISSING FREI0R PLUGIN".into(),
+                            summary: format!("Plugin not installed: {type_id}"),
+                            detail: "The clip has a video effect referencing a \
+                                     frei0r plugin that's no longer on disk. \
+                                     Install the plugin into /usr/lib/frei0r-1 \
+                                     (or ~/.frei0r-1/lib) and use Tools \u{2192} \
+                                     Plugins \u{2192} Rescan, or remove the \
+                                     effect from the clip."
+                                .into(),
+                            fixes: vec![Fix {
+                                label: "Remove from clip".into(),
+                                action: FixAction::RemoveBuiltinEffectFromClip {
+                                    clip_id: clip.id,
+                                    effect_index,
+                                },
+                            }],
+                        });
                     }
                 }
             }

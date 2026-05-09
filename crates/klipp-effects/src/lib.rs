@@ -39,6 +39,7 @@ pub mod color_fade;
 pub mod color_wgsl;
 pub mod composite;
 mod crop;
+pub mod frei0r_effect;
 pub mod gpu;
 pub mod gpu_context;
 pub mod gpu_scopes;
@@ -624,6 +625,31 @@ pub enum BuiltinEffect {
         /// Enable freeze frame mode
         freeze: bool,
     },
+    /// Third-party frei0r 1.x video plugin. The plugin universe is
+    /// open-ended (Kdenlive / Shotcut / OBS / MLT all share frei0r),
+    /// so the variant carries the plugin's stable type_id rather than
+    /// modelling each plugin as its own enum case.
+    ///
+    /// Resolution behaviour:
+    ///   - ≤ 2048 × 2048 with 8-aligned dims → straight render.
+    ///   - > 2048 with NON-temporal plugin → tiled render (1024×1024
+    ///     tiles, 64-px overlap; spatial-filter seams may show for
+    ///     wide kernels).
+    ///   - > 2048 with TEMPORAL plugin (delay0r, baltan, …) → input
+    ///     is passed through unchanged. The inspector blocks this
+    ///     case at apply time with a toast.
+    ///
+    /// CPU-only; `chain_supports_gpu` returns false on any chain
+    /// containing a Frei0r entry.
+    Frei0r {
+        /// `frei0r:{path}:{name}` — see `klipp_frei0r::Frei0rPluginInfo::type_id`.
+        type_id: String,
+        /// One value per declared plugin parameter, in plugin order.
+        /// `Frei0rValue` exhaustively covers all 5 ABI types (Bool /
+        /// Double / Color / Position / String) so saved projects
+        /// don't drop fields when v2 source/mixer support lands.
+        params: Vec<klipp_frei0r::Frei0rValue>,
+    },
 }
 
 /// sRGB → linear-light (IEC 61966-2-1). Scalar helper mirroring
@@ -683,12 +709,27 @@ pub fn linear_f32_rgba_to_srgb_u8(linear: &[f32]) -> Vec<u8> {
 /// Empty chains skip the bridge entirely so a linear-f32 passthrough
 /// costs nothing.
 pub fn apply_effects(effects: &[BuiltinEffect], linear_rgba: Vec<f32>, width: u32, height: u32) -> Vec<f32> {
+    apply_effects_with_time(effects, linear_rgba, width, height, 0.0)
+}
+
+/// Time-aware sibling of [`apply_effects`]. `clip_time_secs` is forwarded
+/// to effects whose render shape is animated by clip time — today only
+/// `BuiltinEffect::Frei0r` reads it (frei0r's `f0r_update` takes a
+/// time argument). Other variants ignore the parameter, so callers
+/// without time context can stick with [`apply_effects`].
+pub fn apply_effects_with_time(
+    effects: &[BuiltinEffect],
+    linear_rgba: Vec<f32>,
+    width: u32,
+    height: u32,
+    clip_time_secs: f64,
+) -> Vec<f32> {
     if effects.is_empty() {
         return linear_rgba;
     }
     let mut rgba = linear_f32_rgba_to_srgb_u8(&linear_rgba);
     for effect in effects {
-        rgba = apply_one(effect, rgba, width, height);
+        rgba = apply_one_with_time(effect, rgba, width, height, clip_time_secs);
     }
     srgb_u8_to_linear_f32_rgba(&rgba)
 }
@@ -700,7 +741,12 @@ pub fn apply_effects(effects: &[BuiltinEffect], linear_rgba: Vec<f32>, width: u3
 /// so the perf cost of CPU-pathing them is acceptable until a WGSL
 /// shader lands.
 pub fn chain_supports_gpu(effects: &[BuiltinEffect]) -> bool {
-    !effects.iter().any(|e| matches!(e, BuiltinEffect::ColorFade { .. }))
+    !effects.iter().any(|e| {
+        matches!(
+            e,
+            BuiltinEffect::ColorFade { .. } | BuiltinEffect::Frei0r { .. }
+        )
+    })
 }
 
 /// Returns true when the effect is at its default / identity values
@@ -744,7 +790,24 @@ pub fn is_identity_effect(effect: &BuiltinEffect) -> bool {
     }
 }
 
-fn apply_one(effect: &BuiltinEffect, rgba: Vec<u8>, width: u32, height: u32) -> Vec<u8> {
+/// Time-aware single-effect dispatcher. Today only the `Frei0r` arm
+/// reads `clip_time_secs`; every other arm ignores it. Kept private
+/// because the chain entry point [`apply_effects_with_time`] is the
+/// stable surface for callers that have time context.
+fn apply_one_with_time(
+    effect: &BuiltinEffect,
+    rgba: Vec<u8>,
+    width: u32,
+    height: u32,
+    clip_time_secs: f64,
+) -> Vec<u8> {
+    if let BuiltinEffect::Frei0r { type_id, params } = effect {
+        return frei0r_effect::apply(type_id, params, rgba, width, height, clip_time_secs);
+    }
+    apply_one_dispatch(effect, rgba, width, height)
+}
+
+fn apply_one_dispatch(effect: &BuiltinEffect, rgba: Vec<u8>, width: u32, height: u32) -> Vec<u8> {
     match effect {
         BuiltinEffect::Opacity { value } => opacity::apply(rgba, *value),
         BuiltinEffect::ColorFade { color, progress, .. } => {
@@ -881,6 +944,14 @@ fn apply_one(effect: &BuiltinEffect, rgba: Vec<u8>, width: u32, height: u32) -> 
         BuiltinEffect::SpeedRamp { .. } => {
             // SpeedRamp is handled at the engine level (frame queue + GPU blend),
             // not in the per-frame effects chain. If it reaches here, pass through.
+            rgba
+        }
+        BuiltinEffect::Frei0r { .. } => {
+            // Time-dependent — handled by `apply_one_with_time` before
+            // it falls through to this dispatcher. Defensive passthrough
+            // covers the legacy `apply_one` / time-less `apply_effects`
+            // entry points (where time is unavailable, frei0r animations
+            // freeze at t=0 but the render still produces valid output).
             rgba
         }
     }

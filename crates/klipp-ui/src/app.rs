@@ -749,6 +749,27 @@ impl KlippApp {
                 app.state.disabled_audio_plugins.len()
             );
         }
+        // frei0r 1.x video-plugin discovery — same disk-cached pattern
+        // as LADSPA. Populates the runtime cache in
+        // `klipp_effects::frei0r_effect` so any saved-project clip
+        // referencing a `BuiltinEffect::Frei0r { type_id, .. }`
+        // resolves on first render.
+        {
+            let _t = LogTimer::new("ui: frei0r discovery");
+            let cache_dir = dirs::cache_dir().map(|p| p.join("klipp"));
+            app.state.frei0r_plugins =
+                klipp_frei0r::discover_frei0r_plugins_cached(cache_dir.as_deref());
+            klipp_effects::frei0r_effect::set_plugin_registry(
+                app.state.frei0r_plugins.clone(),
+            );
+            app.state
+                .effect_registry
+                .merge_frei0r_plugins(&app.state.frei0r_plugins);
+            tracing::info!(
+                "frei0r: discovered {} plugin(s)",
+                app.state.frei0r_plugins.len()
+            );
+        }
         klipp_core::startup_timer::mark("KlippApp::new returning");
         app
     }

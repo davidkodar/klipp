@@ -604,6 +604,34 @@ pub fn show(
                                                 fx.name
                                             ));
                                         }
+                                        EffectSource::Frei0r(plugin) => {
+                                            let type_id = plugin.type_id();
+                                            // Hydrate default param values from the
+                                            // plugin's declared kinds so the inspector
+                                            // has something sensible to show
+                                            // immediately.
+                                            let params: Vec<klipp_frei0r::Frei0rValue> =
+                                                plugin
+                                                    .params
+                                                    .iter()
+                                                    .map(|p| {
+                                                        klipp_frei0r::Frei0rValue::default_for(
+                                                            p.kind,
+                                                        )
+                                                    })
+                                                    .collect();
+                                            cmds.push(AppCommand::AddBuiltinEffect {
+                                                clip_id,
+                                                effect: klipp_effects::BuiltinEffect::Frei0r {
+                                                    type_id,
+                                                    params,
+                                                },
+                                            });
+                                            state.toast.show(format!(
+                                                "\"{}\" applied",
+                                                fx.name
+                                            ));
+                                        }
                                     }
                                 } else {
                                     state.toast.show("Select a clip first".to_string());
@@ -634,6 +662,15 @@ pub fn show(
                                         let (is_builtin, plugin_id) = match &fx.source {
                                             EffectSource::Builtin(_) => (true, String::new()),
                                             EffectSource::Ofx(id) => (false, id.clone()),
+                                            // frei0r is a "builtin" effect from the
+                                            // drop-target's POV (lands in
+                                            // clip.builtin_effects), but plugin_id
+                                            // carries the type_id so the drop handler
+                                            // can construct the Frei0r variant with
+                                            // proper params.
+                                            EffectSource::Frei0r(plugin) => {
+                                                (true, plugin.type_id())
+                                            }
                                             EffectSource::Audio(_) | EffectSource::Ladspa(_) => {
                                                 unreachable!()
                                             }
@@ -784,6 +821,7 @@ fn effect_card(
         EffectSource::Ofx(_) => "OFX",
         EffectSource::Builtin(_) | EffectSource::Audio(_) => "Built-in",
         EffectSource::Ladspa(_) => "LADSPA",
+        EffectSource::Frei0r(_) => "frei0r",
     };
     let perf_label = if supports_gpu { "GPU" } else { "CPU" };
     let src_rect = paint_thumb_badge(
@@ -947,6 +985,7 @@ fn effect_list_row(
         EffectSource::Ofx(_) => "OFX",
         EffectSource::Builtin(_) | EffectSource::Audio(_) => "Built-in",
         EffectSource::Ladspa(_) => "LADSPA",
+        EffectSource::Frei0r(_) => "frei0r",
     };
     let star_reserve = 30.0;
     let badge_y = rect.center().y - 8.0;

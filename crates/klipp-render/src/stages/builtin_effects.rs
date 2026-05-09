@@ -411,7 +411,16 @@ impl ProcessingStage for BuiltinEffectsStage {
         let out_linear = if let Some(ref mut gpu) = self.gpu {
             gpu.apply_effects(&fx, linear, width, height)
         } else {
-            klipp_effects::apply_effects(&fx, linear, width, height)
+            // Use the time-aware entry so any `BuiltinEffect::Frei0r`
+            // in the chain receives the live clip time. All other
+            // arms ignore the parameter.
+            klipp_effects::apply_effects_with_time(
+                &fx,
+                linear,
+                width,
+                height,
+                ctx.clip_time_secs,
+            )
         };
         klipp_effects::linear_f32_rgba_to_srgb_u8(&out_linear)
     }

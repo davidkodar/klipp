@@ -4748,6 +4748,13 @@ impl GpuEffectsPipeline {
                     // dispatcher decided to run it anyway, so silently pass through
                     // rather than corrupt downstream effects.
                 }
+                BuiltinEffect::Frei0r { .. } => {
+                    // Frei0r 1.x has no GPU surface; chain_supports_gpu returns
+                    // false on any chain containing a Frei0r entry, so the engine
+                    // falls back to apply_effects_with_time on CPU. Reaching this
+                    // arm means dispatcher policy was bypassed — passthrough
+                    // rather than producing visually-broken output.
+                }
             }
         }
 

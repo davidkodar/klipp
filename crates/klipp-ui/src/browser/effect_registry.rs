@@ -11,6 +11,10 @@ pub enum EffectSource {
     /// External LADSPA plugin. Holds the full discovered metadata so the
     /// inspector can render parameter sliders without a second lookup.
     Ladspa(klipp_audio::ladspa::LadspaPluginInfo),
+    /// Third-party frei0r 1.x video plugin. Holds the full discovered
+    /// metadata so the inspector can render typed parameter widgets
+    /// without a second registry lookup.
+    Frei0r(klipp_frei0r::Frei0rPluginInfo),
 }
 
 /// A single entry in the effects browser.
@@ -46,6 +50,9 @@ impl EffectEntry {
                 .map(|p| p.supports_opengl)
                 .unwrap_or(false),
             EffectSource::Audio(_) | EffectSource::Ladspa(_) => false,
+            // frei0r 1.x has no GPU surface; chain_supports_gpu in
+            // klipp-effects flips to CPU when any frei0r entry is present.
+            EffectSource::Frei0r(_) => false,
         }
     }
 }
@@ -594,6 +601,43 @@ impl EffectRegistry {
         }
     }
 
+    /// Merge discovered frei0r plugins into the registry. Filter-only —
+    /// SOURCE / MIXER2 / MIXER3 plugins are kept in the runtime cache
+    /// (so v2 doesn't need to rescan) but skipped here.
+    ///
+    /// `grouping` is set to "frei0r" rather than the plugin author so
+    /// the browser buckets the entire ecosystem together — matches the
+    /// LADSPA precedent, which uses the maker only when present (most
+    /// frei0r authors leave it blank).
+    pub fn merge_frei0r_plugins(&mut self, plugins: &[klipp_frei0r::Frei0rPluginInfo]) {
+        for plugin in plugins {
+            if !matches!(plugin.plugin_type, klipp_frei0r::PluginType::Filter) {
+                // SOURCE / MIXER2 / MIXER3 — out of v1 scope, skipped
+                // silently. Filed as FREI0R-NEXT-SOURCES /
+                // FREI0R-NEXT-MIXERS in CODE_AUDIT.html.
+                continue;
+            }
+            let grouping = if plugin.author.is_empty() {
+                "frei0r".to_string()
+            } else {
+                plugin.author.clone()
+            };
+            let description = if plugin.explanation.is_empty() {
+                format!("frei0r plugin: {}", plugin.name)
+            } else {
+                format!("{}: {}", plugin.name, plugin.explanation)
+            };
+            self.effects.push(EffectEntry {
+                category: frei0r_category_from_name(&plugin.name),
+                name: plugin.name.clone(),
+                source: EffectSource::Frei0r(plugin.clone()),
+                source_label: "frei0r",
+                description,
+                grouping,
+            });
+        }
+    }
+
     /// Merge discovered OFX plugins into the registry, skipping duplicates.
     /// OFX bundles often ship multiple versions of the same plugin — keep only the latest.
     pub fn merge_ofx_plugins(&mut self, plugins: &[klipp_plugin::OfxPluginInfo]) {
@@ -792,6 +836,58 @@ fn category_from_grouping(grouping: &str) -> EffectCategory {
 /// default: it isn't claiming the plugin IS an EQ, it's saying "no clear
 /// category match — show in the EQ sub-tab" (the AudioAll sub-tab still
 /// shows everything).
+/// Heuristic category mapping for frei0r plugins, based on the
+/// plugin name (no formal taxonomy in the spec). Conservative —
+/// unknown names land under [`EffectCategory::Color`] since most
+/// frei0r filters are color/level adjustments and that's the
+/// least-surprising default.
+fn frei0r_category_from_name(name: &str) -> EffectCategory {
+    let n = name.to_lowercase();
+    if n.contains("blur")
+        || n.contains("sharp")
+        || n.contains("edge")
+        || n.contains("emboss")
+    {
+        return EffectCategory::Blur;
+    }
+    if n.contains("key")
+        || n.contains("alpha")
+        || n.contains("matte")
+        || n.contains("chroma")
+        || n.contains("luma")
+    {
+        return EffectCategory::Keying;
+    }
+    if n.contains("distort")
+        || n.contains("warp")
+        || n.contains("defish")
+        || n.contains("lens")
+        || n.contains("perspective")
+        || n.contains("3dflippo")
+    {
+        return EffectCategory::Distort;
+    }
+    if n.contains("light")
+        || n.contains("glow")
+        || n.contains("flare")
+        || n.contains("vignette")
+        || n.contains("bloom")
+    {
+        return EffectCategory::Light;
+    }
+    if n.contains("cartoon")
+        || n.contains("sketch")
+        || n.contains("posterize")
+        || n.contains("baltan")
+        || n.contains("nervous")
+        || n.contains("invert")
+        || n.contains("solar")
+    {
+        return EffectCategory::Stylize;
+    }
+    EffectCategory::Color
+}
+
 fn ladspa_category_from_name(name: &str, label: &str) -> EffectCategory {
     let s = format!("{} {}", name.to_lowercase(), label.to_lowercase());
 
