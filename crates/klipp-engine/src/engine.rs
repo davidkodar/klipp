@@ -7582,7 +7582,12 @@ impl PlaybackEngine {
             return;
         };
         let channel = matte_channel_to_effects(binding.channel);
-        let mut mask = klipp_effects::track_matte::extract_mask_linear(source, channel, binding.invert);
+        // Source comes from the post-grade `graded_layers` buffer, which
+        // is the compositor's premultiplied internal form (any opacity
+        // effect on the source has already darkened RGB by alpha).
+        // Un-premult so a soft-edged title luma matte reads as logical
+        // brightness, not alpha-darkened brightness.
+        let mut mask = klipp_effects::track_matte::extract_mask_linear(source, channel, binding.invert, true);
         klipp_effects::track_matte::apply_choke_mask(&mut mask, width, height, binding.choke_px);
         klipp_effects::track_matte::feather_mask(&mut mask, width, height, binding.feather_px);
         if mask.len() != (width as usize) * (height as usize) {
@@ -7646,8 +7651,11 @@ impl PlaybackEngine {
         let no_feather = binding.feather_px < 0.25;
         if no_choke && no_feather {
             let t_fused = std::time::Instant::now();
+            // Source is the post-grade premultiplied buffer (see comment
+            // in generate_matte_mask_preview); un-premult so the matte
+            // reflects logical brightness for soft-edged sources.
             klipp_effects::track_matte::apply_matte_fused_linear(
-                consumer_linear, source, channel, binding.invert,
+                consumer_linear, source, channel, binding.invert, true,
             );
             let fused_us = t_fused.elapsed().as_micros();
             tracing::trace!(
@@ -7664,9 +7672,10 @@ impl PlaybackEngine {
         }
 
         // Slow path: choke and/or feather are non-zero, so we need
-        // the intermediate mask buffer for the kernels.
+        // the intermediate mask buffer for the kernels. Same premult
+        // assumption as the fast path — source is post-grade.
         let t_extract = std::time::Instant::now();
-        let mut mask = klipp_effects::track_matte::extract_mask_linear(source, channel, binding.invert);
+        let mut mask = klipp_effects::track_matte::extract_mask_linear(source, channel, binding.invert, true);
         let extract_us = t_extract.elapsed().as_micros();
 
         // Choke before feather so the soft edge of feather sits on top of

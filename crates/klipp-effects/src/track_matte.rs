@@ -40,29 +40,35 @@ impl Default for MatteChannel {
     }
 }
 
+/// Threshold below which we don't divide RGB by alpha — un-premultiply
+/// at near-zero alpha amplifies quantisation noise and produces wild
+/// values (a 1/255 alpha pixel divided by alpha = 255× the encoded
+/// RGB). At this threshold the pixel is essentially invisible anyway,
+/// so the matte read for it doesn't matter.
+const PREMULT_ALPHA_EPSILON: f32 = 1e-4;
+
 /// Extract a single-channel mask from a linear-f32 RGBA buffer.
 ///
 /// Output is one f32 per pixel, clamped to `[0.0, 1.0]`. `invert` flips
 /// the signal (mask = 1 − mask) after channel extraction so an inverted
 /// luma key gives the silhouette of the bright source as the mask.
 ///
+/// `source_premultiplied`: if true, RGB is divided by alpha before
+/// reading R / G / B / Luminance channels, undoing the alpha-darkening
+/// of premultiplied encodings (the compositor's internal convention
+/// after `opacity::apply` and the typical encoding of ProRes 4444 /
+/// PSD sources from AE). Alpha-channel extraction is unaffected by
+/// this flag — alpha is alpha regardless of encoding. Pixels with
+/// alpha ≤ `PREMULT_ALPHA_EPSILON` skip the divide (they're invisible).
+///
 /// Panics: never. Input length is checked: a buffer that isn't a
 /// multiple of 4 returns an empty vec, matching the defensive shape of
 /// the rest of the compositor.
-//
-// TODO: un-premultiply before luma extraction for premult-encoded
-// sources. Pinned by `linear_luma_does_not_un_premultiply` (and its
-// srgb_u8 sibling): a "white at 50% alpha" pixel encoded premult
-// (RGB pre-darkened to 0.5) yields luma 0.5 instead of 1.0. Common
-// for ProRes 4444 / PSD exports from AE. The fix is gated on the
-// decoder reporting alpha mode; both pin tests must flip from
-// `does_not_un_premultiply` to `correctly_un_premultiplies` when
-// the fix lands. See memory note `reference_track_matte_followups.md`
-// section 4 for the verification recipe.
 pub fn extract_mask_linear(
     rgba: &[f32],
     channel: MatteChannel,
     invert: bool,
+    source_premultiplied: bool,
 ) -> Vec<f32> {
     if rgba.len() % 4 != 0 {
         return Vec::new();
@@ -70,10 +76,16 @@ pub fn extract_mask_linear(
     let pixels = rgba.len() / 4;
     let mut mask = Vec::with_capacity(pixels);
     for i in 0..pixels {
-        let r = rgba[i * 4];
-        let g = rgba[i * 4 + 1];
-        let b = rgba[i * 4 + 2];
+        let mut r = rgba[i * 4];
+        let mut g = rgba[i * 4 + 1];
+        let mut b = rgba[i * 4 + 2];
         let a = rgba[i * 4 + 3];
+        if source_premultiplied && !matches!(channel, MatteChannel::Alpha) && a > PREMULT_ALPHA_EPSILON {
+            let inv = 1.0 / a;
+            r = (r * inv).clamp(0.0, 1.0);
+            g = (g * inv).clamp(0.0, 1.0);
+            b = (b * inv).clamp(0.0, 1.0);
+        }
         let raw = match channel {
             MatteChannel::Alpha => a,
             // BT.709 luminance weights — applied to linear values.
@@ -91,10 +103,15 @@ pub fn extract_mask_linear(
 /// Extract a single-channel mask from an sRGB-u8 RGBA buffer. Output is
 /// f32 in `[0.0, 1.0]`, normalised by `1/255`. Used by the export
 /// compositor while it still operates in u8 sRGB.
+///
+/// `source_premultiplied`: see [`extract_mask_linear`] — same
+/// semantics, applied on the normalised f32 values before luma
+/// weighting / channel pickoff.
 pub fn extract_mask_srgb_u8(
     rgba: &[u8],
     channel: MatteChannel,
     invert: bool,
+    source_premultiplied: bool,
 ) -> Vec<f32> {
     if rgba.len() % 4 != 0 {
         return Vec::new();
@@ -102,10 +119,16 @@ pub fn extract_mask_srgb_u8(
     let pixels = rgba.len() / 4;
     let mut mask = Vec::with_capacity(pixels);
     for i in 0..pixels {
-        let r = rgba[i * 4] as f32 / 255.0;
-        let g = rgba[i * 4 + 1] as f32 / 255.0;
-        let b = rgba[i * 4 + 2] as f32 / 255.0;
+        let mut r = rgba[i * 4] as f32 / 255.0;
+        let mut g = rgba[i * 4 + 1] as f32 / 255.0;
+        let mut b = rgba[i * 4 + 2] as f32 / 255.0;
         let a = rgba[i * 4 + 3] as f32 / 255.0;
+        if source_premultiplied && !matches!(channel, MatteChannel::Alpha) && a > PREMULT_ALPHA_EPSILON {
+            let inv = 1.0 / a;
+            r = (r * inv).clamp(0.0, 1.0);
+            g = (g * inv).clamp(0.0, 1.0);
+            b = (b * inv).clamp(0.0, 1.0);
+        }
         let raw = match channel {
             MatteChannel::Alpha => a,
             // BT.709 weights on sRGB byte values — gives Y' (perceptual
@@ -131,6 +154,10 @@ pub fn extract_mask_srgb_u8(
 /// hot logs flag as the dominant matte cost when choke/feather are
 /// zero — i.e. the default user case.
 ///
+/// `source_premultiplied`: see [`extract_mask_linear`]. Branches
+/// at the channel-match level so the un-premult path costs nothing
+/// for callers that pass `false`.
+///
 /// Caller must guarantee the buffers are the same length and a
 /// multiple of 4 (RGBA) — the slow path's defensive checks live in
 /// `apply_track_matte_linear`'s caller.
@@ -139,6 +166,7 @@ pub fn apply_matte_fused_linear(
     source_rgba: &[f32],
     channel: MatteChannel,
     invert: bool,
+    source_premultiplied: bool,
 ) {
     debug_assert_eq!(consumer_rgba.len(), source_rgba.len());
     debug_assert!(consumer_rgba.len() % 4 == 0);
@@ -148,59 +176,140 @@ pub fn apply_matte_fused_linear(
     // auto-vectorisation gives up — the original implementation hit
     // ~5 ms at 1080p in production logs even for the trivial Alpha
     // case. Chunked iteration also drops the per-pixel bounds checks.
+    //
+    // Alpha channel never un-premultiplies; the (Alpha, *) arms stay
+    // shared regardless of `source_premultiplied`.
     let con = consumer_rgba.chunks_exact_mut(4);
     let src = source_rgba.chunks_exact(4);
-    match (channel, invert) {
-        (MatteChannel::Alpha, false) => {
+    match (channel, invert, source_premultiplied) {
+        (MatteChannel::Alpha, false, _) => {
             for (c, s) in con.zip(src) {
                 c[3] *= s[3].clamp(0.0, 1.0);
             }
         }
-        (MatteChannel::Alpha, true) => {
+        (MatteChannel::Alpha, true, _) => {
             for (c, s) in con.zip(src) {
                 c[3] *= 1.0 - s[3].clamp(0.0, 1.0);
             }
         }
-        (MatteChannel::Luminance, false) => {
+
+        // Straight-alpha branches (no un-premultiply).
+        (MatteChannel::Luminance, false, false) => {
             for (c, s) in con.zip(src) {
                 let l = 0.2126 * s[0] + 0.7152 * s[1] + 0.0722 * s[2];
                 c[3] *= l.clamp(0.0, 1.0);
             }
         }
-        (MatteChannel::Luminance, true) => {
+        (MatteChannel::Luminance, true, false) => {
             for (c, s) in con.zip(src) {
                 let l = 0.2126 * s[0] + 0.7152 * s[1] + 0.0722 * s[2];
                 c[3] *= 1.0 - l.clamp(0.0, 1.0);
             }
         }
-        (MatteChannel::Red, false) => {
+        (MatteChannel::Red, false, false) => {
             for (c, s) in con.zip(src) {
                 c[3] *= s[0].clamp(0.0, 1.0);
             }
         }
-        (MatteChannel::Red, true) => {
+        (MatteChannel::Red, true, false) => {
             for (c, s) in con.zip(src) {
                 c[3] *= 1.0 - s[0].clamp(0.0, 1.0);
             }
         }
-        (MatteChannel::Green, false) => {
+        (MatteChannel::Green, false, false) => {
             for (c, s) in con.zip(src) {
                 c[3] *= s[1].clamp(0.0, 1.0);
             }
         }
-        (MatteChannel::Green, true) => {
+        (MatteChannel::Green, true, false) => {
             for (c, s) in con.zip(src) {
                 c[3] *= 1.0 - s[1].clamp(0.0, 1.0);
             }
         }
-        (MatteChannel::Blue, false) => {
+        (MatteChannel::Blue, false, false) => {
             for (c, s) in con.zip(src) {
                 c[3] *= s[2].clamp(0.0, 1.0);
             }
         }
-        (MatteChannel::Blue, true) => {
+        (MatteChannel::Blue, true, false) => {
             for (c, s) in con.zip(src) {
                 c[3] *= 1.0 - s[2].clamp(0.0, 1.0);
+            }
+        }
+
+        // Premult-alpha branches: un-premultiply RGB before reading
+        // the channel so a "white at 50% alpha" stored as (0.5, 0.5,
+        // 0.5, 0.5) reads as the logical 1.0, not the darkened 0.5.
+        (MatteChannel::Luminance, false, true) => {
+            for (c, s) in con.zip(src) {
+                let a = s[3];
+                let l = if a > PREMULT_ALPHA_EPSILON {
+                    let inv = 1.0 / a;
+                    let r = (s[0] * inv).clamp(0.0, 1.0);
+                    let g = (s[1] * inv).clamp(0.0, 1.0);
+                    let b = (s[2] * inv).clamp(0.0, 1.0);
+                    0.2126 * r + 0.7152 * g + 0.0722 * b
+                } else {
+                    0.0
+                };
+                c[3] *= l.clamp(0.0, 1.0);
+            }
+        }
+        (MatteChannel::Luminance, true, true) => {
+            for (c, s) in con.zip(src) {
+                let a = s[3];
+                let l = if a > PREMULT_ALPHA_EPSILON {
+                    let inv = 1.0 / a;
+                    let r = (s[0] * inv).clamp(0.0, 1.0);
+                    let g = (s[1] * inv).clamp(0.0, 1.0);
+                    let b = (s[2] * inv).clamp(0.0, 1.0);
+                    0.2126 * r + 0.7152 * g + 0.0722 * b
+                } else {
+                    0.0
+                };
+                c[3] *= 1.0 - l.clamp(0.0, 1.0);
+            }
+        }
+        (MatteChannel::Red, false, true) => {
+            for (c, s) in con.zip(src) {
+                let a = s[3];
+                let v = if a > PREMULT_ALPHA_EPSILON { (s[0] / a).clamp(0.0, 1.0) } else { 0.0 };
+                c[3] *= v;
+            }
+        }
+        (MatteChannel::Red, true, true) => {
+            for (c, s) in con.zip(src) {
+                let a = s[3];
+                let v = if a > PREMULT_ALPHA_EPSILON { (s[0] / a).clamp(0.0, 1.0) } else { 0.0 };
+                c[3] *= 1.0 - v;
+            }
+        }
+        (MatteChannel::Green, false, true) => {
+            for (c, s) in con.zip(src) {
+                let a = s[3];
+                let v = if a > PREMULT_ALPHA_EPSILON { (s[1] / a).clamp(0.0, 1.0) } else { 0.0 };
+                c[3] *= v;
+            }
+        }
+        (MatteChannel::Green, true, true) => {
+            for (c, s) in con.zip(src) {
+                let a = s[3];
+                let v = if a > PREMULT_ALPHA_EPSILON { (s[1] / a).clamp(0.0, 1.0) } else { 0.0 };
+                c[3] *= 1.0 - v;
+            }
+        }
+        (MatteChannel::Blue, false, true) => {
+            for (c, s) in con.zip(src) {
+                let a = s[3];
+                let v = if a > PREMULT_ALPHA_EPSILON { (s[2] / a).clamp(0.0, 1.0) } else { 0.0 };
+                c[3] *= v;
+            }
+        }
+        (MatteChannel::Blue, true, true) => {
+            for (c, s) in con.zip(src) {
+                let a = s[3];
+                let v = if a > PREMULT_ALPHA_EPSILON { (s[2] / a).clamp(0.0, 1.0) } else { 0.0 };
+                c[3] *= 1.0 - v;
             }
         }
     }
@@ -483,7 +592,7 @@ mod tests {
     fn linear_alpha_passthrough() {
         // Two pixels: alpha 0.0, alpha 1.0 → mask [0.0, 1.0]
         let rgba = vec![1.0, 0.0, 0.0, 0.0,  0.0, 1.0, 0.0, 1.0];
-        let m = extract_mask_linear(&rgba, MatteChannel::Alpha, false);
+        let m = extract_mask_linear(&rgba, MatteChannel::Alpha, false, false);
         assert_eq!(m.len(), 2);
         assert!(approx(m[0], 0.0));
         assert!(approx(m[1], 1.0));
@@ -492,7 +601,7 @@ mod tests {
     #[test]
     fn linear_alpha_inverted() {
         let rgba = vec![1.0, 0.0, 0.0, 0.25,  0.0, 1.0, 0.0, 0.75];
-        let m = extract_mask_linear(&rgba, MatteChannel::Alpha, true);
+        let m = extract_mask_linear(&rgba, MatteChannel::Alpha, true, false);
         assert!(approx(m[0], 0.75));
         assert!(approx(m[1], 0.25));
     }
@@ -501,15 +610,15 @@ mod tests {
     fn linear_luma_uses_bt709() {
         // Pure red linear 1.0 → 0.2126
         let red = vec![1.0, 0.0, 0.0, 1.0];
-        let m = extract_mask_linear(&red, MatteChannel::Luminance, false);
+        let m = extract_mask_linear(&red, MatteChannel::Luminance, false, false);
         assert!(approx(m[0], 0.2126), "got {}", m[0]);
         // Pure green 1.0 → 0.7152
         let green = vec![0.0, 1.0, 0.0, 1.0];
-        let m = extract_mask_linear(&green, MatteChannel::Luminance, false);
+        let m = extract_mask_linear(&green, MatteChannel::Luminance, false, false);
         assert!(approx(m[0], 0.7152));
         // Pure blue 1.0 → 0.0722
         let blue = vec![0.0, 0.0, 1.0, 1.0];
-        let m = extract_mask_linear(&blue, MatteChannel::Luminance, false);
+        let m = extract_mask_linear(&blue, MatteChannel::Luminance, false, false);
         assert!(approx(m[0], 0.0722));
     }
 
@@ -522,7 +631,7 @@ mod tests {
             (MatteChannel::Blue, 0.8),
             (MatteChannel::Alpha, 1.0),
         ] {
-            let m = extract_mask_linear(&rgba, ch, false);
+            let m = extract_mask_linear(&rgba, ch, false, false);
             assert!(approx(m[0], expected), "channel {ch:?} got {}", m[0]);
         }
     }
@@ -531,16 +640,16 @@ mod tests {
     fn linear_clamps_negative_and_oversaturated() {
         // HDR / out-of-gamut input shouldn't poison the mask.
         let rgba = vec![-0.5, 1.5, 2.0, 1.0];
-        let m = extract_mask_linear(&rgba, MatteChannel::Red, false);
+        let m = extract_mask_linear(&rgba, MatteChannel::Red, false, false);
         assert!(approx(m[0], 0.0));
-        let m = extract_mask_linear(&rgba, MatteChannel::Green, false);
+        let m = extract_mask_linear(&rgba, MatteChannel::Green, false, false);
         assert!(approx(m[0], 1.0));
     }
 
     #[test]
     fn linear_rejects_non_multiple_of_four_length() {
         let bad = vec![1.0, 0.0, 0.0]; // only 3 floats
-        let m = extract_mask_linear(&bad, MatteChannel::Alpha, false);
+        let m = extract_mask_linear(&bad, MatteChannel::Alpha, false, false);
         assert!(m.is_empty());
     }
 
@@ -549,7 +658,7 @@ mod tests {
     #[test]
     fn srgb_alpha_normalises_to_unit() {
         let rgba = vec![255, 0, 0, 0,  0, 255, 0, 255];
-        let m = extract_mask_srgb_u8(&rgba, MatteChannel::Alpha, false);
+        let m = extract_mask_srgb_u8(&rgba, MatteChannel::Alpha, false, false);
         assert!(approx(m[0], 0.0));
         assert!(approx(m[1], 1.0));
     }
@@ -557,66 +666,100 @@ mod tests {
     #[test]
     fn srgb_luma_pure_white_is_one() {
         let rgba = vec![255, 255, 255, 255];
-        let m = extract_mask_srgb_u8(&rgba, MatteChannel::Luminance, false);
+        let m = extract_mask_srgb_u8(&rgba, MatteChannel::Luminance, false, false);
         assert!(approx(m[0], 1.0));
     }
 
-    /// Pin the contract: luma extraction reads RGB as-given, with no
-    /// un-premultiply step. A "white-at-50%-alpha" pixel encoded
-    /// premultiplied (RGB pre-darkened to 0.5) yields luma = 0.5.
-    /// Encoded straight (RGB = 1.0, alpha = 0.5) yields luma = 1.0.
-    ///
-    /// The implication is real: clips coming through `opacity::apply`
-    /// (which premultiplies) or premult-encoded sources (typical
-    /// ProRes 4444 from AE) feed dim luma into the matte extractor.
-    /// Out-of-band, this means a luma-keyed matte over a title with
-    /// antialiased semi-transparent edges renders softer than the
-    /// user expects. Documented here so a future un-premultiply pass
-    /// (or a decoder-side mode flag) doesn't regress this behaviour
-    /// without us noticing.
+    /// With `source_premultiplied=false`, the extractor reads RGB
+    /// as-given — a "white at 50% alpha" stored premultiplied as
+    /// (0.5, 0.5, 0.5, 0.5) yields luma = 0.5. With `=true`, the
+    /// same pixel un-premultiplies to (1, 1, 1) and yields luma = 1.0.
+    /// Pin both polarities so the convention can't drift.
     #[test]
-    fn linear_luma_does_not_un_premultiply() {
+    fn linear_luma_un_premultiplies_when_flagged() {
         // Same logical pixel, two encodings.
-        let straight: Vec<f32>   = vec![1.0, 1.0, 1.0, 0.5];
-        let premult:  Vec<f32>   = vec![0.5, 0.5, 0.5, 0.5];
+        let straight: Vec<f32> = vec![1.0, 1.0, 1.0, 0.5];
+        let premult:  Vec<f32> = vec![0.5, 0.5, 0.5, 0.5];
 
-        let m_straight = extract_mask_linear(&straight, MatteChannel::Luminance, false);
-        let m_premult  = extract_mask_linear(&premult,  MatteChannel::Luminance, false);
+        // Without the flag: each encoding reports its raw luma.
+        let m_straight_off = extract_mask_linear(&straight, MatteChannel::Luminance, false, false);
+        let m_premult_off  = extract_mask_linear(&premult,  MatteChannel::Luminance, false, false);
+        assert!(approx(m_straight_off[0], 1.0), "straight off: got {}", m_straight_off[0]);
+        assert!(approx(m_premult_off[0],  0.5), "premult off: got {}", m_premult_off[0]);
 
-        // Straight: BT.709 weights on (1,1,1) sum to 1.0.
-        assert!(approx(m_straight[0], 1.0),
-            "straight-alpha luma should be 1.0 for (1,1,1,0.5), got {}", m_straight[0]);
-        // Premult: RGB is already alpha-darkened, so luma = 0.5.
-        assert!(approx(m_premult[0], 0.5),
-            "premult luma reflects the darkened RGB — got {} (expected 0.5 to confirm \
-             current behaviour; if a fix lands this should become 1.0 and the test \
-             should be updated alongside the fix)", m_premult[0]);
+        // With the flag: premult un-darkens to match straight.
+        let m_premult_on = extract_mask_linear(&premult, MatteChannel::Luminance, false, true);
+        assert!(approx(m_premult_on[0], 1.0),
+            "premult-on should un-premult to luma 1.0, got {}", m_premult_on[0]);
     }
 
     #[test]
-    fn srgb_luma_does_not_un_premultiply() {
-        // Same logical pixel as above, encoded as 8-bit sRGB.
-        // 128/255 ≈ 0.502; the BT.709 sum lands at ~0.502.
+    fn srgb_luma_un_premultiplies_when_flagged() {
+        // Same logical pixel, sRGB-u8 encoding.
         let straight: Vec<u8> = vec![255, 255, 255, 128];
         let premult:  Vec<u8> = vec![128, 128, 128, 128];
 
-        let m_straight = extract_mask_srgb_u8(&straight, MatteChannel::Luminance, false);
-        let m_premult  = extract_mask_srgb_u8(&premult,  MatteChannel::Luminance, false);
-
-        assert!(approx(m_straight[0], 1.0),
-            "straight-alpha luma = 1.0, got {}", m_straight[0]);
+        let m_straight_off = extract_mask_srgb_u8(&straight, MatteChannel::Luminance, false, false);
+        let m_premult_off  = extract_mask_srgb_u8(&premult,  MatteChannel::Luminance, false, false);
+        assert!(approx(m_straight_off[0], 1.0), "straight off: got {}", m_straight_off[0]);
         // 128/255 = 0.5019…; the BT.709 sum on (0.5019, 0.5019, 0.5019)
-        // is the same 0.5019. Tolerance must allow ~0.002 slack vs 0.5
-        // — the existing `approx` helper uses 1e-3 which is too tight.
-        assert!((m_premult[0] - 0.5019).abs() < 0.002,
-            "premult luma reflects the darkened RGB — got {}", m_premult[0]);
+        // is the same 0.5019.
+        assert!((m_premult_off[0] - 0.5019).abs() < 0.002,
+            "premult off: got {}", m_premult_off[0]);
+
+        // With the flag: 128/0.5019 ≈ 254/255 → luma ≈ 1.0 (within
+        // 8-bit quantisation: 128/255 ÷ 128/255 = 1.0 exactly in math,
+        // but the divide → clamp → reweight introduces ~ 1/255 noise).
+        let m_premult_on = extract_mask_srgb_u8(&premult, MatteChannel::Luminance, false, true);
+        assert!((m_premult_on[0] - 1.0).abs() < 0.01,
+            "premult-on should un-premult to luma ~1.0, got {}", m_premult_on[0]);
+    }
+
+    /// Per-channel extraction is also affected by un-premultiply: a
+    /// premult-encoded green pixel at 50% alpha stores (0, 0.5, 0, 0.5).
+    /// Reading the Green channel raw gives 0.5; reading with un-premult
+    /// gives 1.0 (the logical "fully green").
+    #[test]
+    fn linear_per_channel_un_premultiplies_when_flagged() {
+        let premult_green: Vec<f32> = vec![0.0, 0.5, 0.0, 0.5];
+
+        let m_off = extract_mask_linear(&premult_green, MatteChannel::Green, false, false);
+        assert!(approx(m_off[0], 0.5), "off: got {}", m_off[0]);
+
+        let m_on = extract_mask_linear(&premult_green, MatteChannel::Green, false, true);
+        assert!(approx(m_on[0], 1.0), "on: should un-premult to 1.0, got {}", m_on[0]);
+    }
+
+    /// Alpha-channel extraction is independent of `source_premultiplied`
+    /// — alpha is alpha regardless of encoding. Pin so a future
+    /// refactor doesn't accidentally divide alpha by alpha.
+    #[test]
+    fn linear_alpha_unaffected_by_premult_flag() {
+        let pixel: Vec<f32> = vec![0.5, 0.5, 0.5, 0.5];
+        let m_off = extract_mask_linear(&pixel, MatteChannel::Alpha, false, false);
+        let m_on  = extract_mask_linear(&pixel, MatteChannel::Alpha, false, true);
+        assert!(approx(m_off[0], 0.5));
+        assert!(approx(m_on[0], 0.5));
+    }
+
+    /// Below the epsilon, the divide is skipped — protects against
+    /// 1/255 alpha pixels ballooning to 255× the encoded RGB.
+    #[test]
+    fn premult_skips_divide_below_epsilon() {
+        // Alpha = 1e-5, RGB = small premult value. With un-premult on,
+        // the divide must be skipped (otherwise 0.001/0.00001 = 100,
+        // which would clamp to 1.0 = bogus mask hit for an invisible pixel).
+        let near_zero_alpha: Vec<f32> = vec![0.001, 0.001, 0.001, 1e-5];
+        let m = extract_mask_linear(&near_zero_alpha, MatteChannel::Luminance, false, true);
+        // Without divide, raw RGB ≈ 0.001 → luma ≈ 0.001 (clamps to itself).
+        assert!(m[0] < 0.01, "near-zero alpha must skip divide, got {}", m[0]);
     }
 
     #[test]
     fn srgb_invert_flips_signal() {
         let rgba = vec![128, 128, 128, 255];
-        let m_normal = extract_mask_srgb_u8(&rgba, MatteChannel::Red, false);
-        let m_inv = extract_mask_srgb_u8(&rgba, MatteChannel::Red, true);
+        let m_normal = extract_mask_srgb_u8(&rgba, MatteChannel::Red, false, false);
+        let m_inv = extract_mask_srgb_u8(&rgba, MatteChannel::Red, true, false);
         assert!(approx(m_normal[0] + m_inv[0], 1.0));
     }
 
@@ -772,10 +915,10 @@ mod tests {
             let v = if (4..=6).contains(&i) { 1.0 } else { 0.0 };
             [v, v, v, 1.0_f32]
         }).collect();
-        let mut a = extract_mask_linear(&rgba, MatteChannel::Red, false);
+        let mut a = extract_mask_linear(&rgba, MatteChannel::Red, false, false);
         apply_choke_mask(&mut a, 16, 1, 1.0);
         let inverted: Vec<f32> = a.iter().map(|v| 1.0 - v).collect();
-        let mut b = extract_mask_linear(&rgba, MatteChannel::Red, true);
+        let mut b = extract_mask_linear(&rgba, MatteChannel::Red, true, false);
         apply_choke_mask(&mut b, 16, 1, 1.0);
         // `b` choked the inverted signal — that's ERODING zeros, i.e.
         // dilating the bright-area, the opposite of `inverted`. They
@@ -824,16 +967,18 @@ mod tests {
             MatteChannel::Blue,
         ] {
             for invert in [false, true] {
-                consumer_fused.fill(0.5);
-                consumer_kernel.fill(0.5);
-                apply_matte_fused_linear(&mut consumer_fused, &source, ch, invert);
-                let mask = extract_mask_linear(&source, ch, invert);
-                apply_mask_to_alpha_linear(&mut consumer_kernel, &mask);
-                for i in 0..pixels * 4 {
-                    let f = consumer_fused[i];
-                    let k = consumer_kernel[i];
-                    assert!((f - k).abs() < 1e-6,
-                        "fused vs kernel divergence at i={i} ch={ch:?} invert={invert}: {f} vs {k}");
+                for premult in [false, true] {
+                    consumer_fused.fill(0.5);
+                    consumer_kernel.fill(0.5);
+                    apply_matte_fused_linear(&mut consumer_fused, &source, ch, invert, premult);
+                    let mask = extract_mask_linear(&source, ch, invert, premult);
+                    apply_mask_to_alpha_linear(&mut consumer_kernel, &mask);
+                    for i in 0..pixels * 4 {
+                        let f = consumer_fused[i];
+                        let k = consumer_kernel[i];
+                        assert!((f - k).abs() < 1e-6,
+                            "fused vs kernel divergence at i={i} ch={ch:?} invert={invert} premult={premult}: {f} vs {k}");
+                    }
                 }
             }
         }
@@ -853,13 +998,13 @@ mod tests {
         let source = vec![0.5f32; pixels * 4];
         let mut consumer = vec![0.5f32; pixels * 4];
         // Warmup
-        apply_matte_fused_linear(&mut consumer, &source, MatteChannel::Luminance, false);
+        apply_matte_fused_linear(&mut consumer, &source, MatteChannel::Luminance, false, false);
         // Measure best-of-3 to dampen noise.
         let mut best_ms = f64::INFINITY;
         for _ in 0..3 {
             consumer.fill(0.5);
             let t = std::time::Instant::now();
-            apply_matte_fused_linear(&mut consumer, &source, MatteChannel::Luminance, false);
+            apply_matte_fused_linear(&mut consumer, &source, MatteChannel::Luminance, false, false);
             let ms = t.elapsed().as_secs_f64() * 1000.0;
             if ms < best_ms { best_ms = ms; }
         }

@@ -519,7 +519,10 @@ fn apply_track_matte_srgb_u8(
         return;
     }
     let channel = matte_channel_to_effects(binding.channel);
-    let mut mask = klipp_effects::track_matte::extract_mask_srgb_u8(source, channel, binding.invert);
+    // Source is the post-grade buffer from the export compositor — same
+    // premultiplied convention as the playback engine. Un-premult so a
+    // soft-edged title luma matte doesn't dim its own edges.
+    let mut mask = klipp_effects::track_matte::extract_mask_srgb_u8(source, channel, binding.invert, true);
     klipp_effects::track_matte::apply_choke_mask(&mut mask, width, height, binding.choke_px);
     klipp_effects::track_matte::feather_mask(&mut mask, width, height, binding.feather_px);
     klipp_effects::track_matte::apply_mask_to_alpha_srgb_u8(consumer_rgba, &mask);
