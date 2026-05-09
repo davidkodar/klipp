@@ -1771,10 +1771,19 @@ impl PlaybackEngine {
 
         // Create audio output eagerly so skim audio works without playing a clip first.
         let mixer = std::sync::Arc::new(std::sync::Mutex::new(klipp_audio::AudioMixer::new(0)));
+        // MasterClock is created up-front so the mix thread can write
+        // PDC offset into it whenever AudioMixer's global max chain
+        // latency changes.
+        let master_clock = Arc::new(MasterClock::new());
         // True-peak oversampling defaults on (BS.1770-4 Annex 2 compliant).
         // No live toggle from UI prefs yet — change requires next playback
         // session. Matches `prefs.audio.tp_oversample` default in klipp-ui.
-        let (mix_thread, main_consumer) = MixThread::new(cpal_sample_rate, mixer.clone(), true);
+        let (mix_thread, main_consumer) = MixThread::new(
+            cpal_sample_rate,
+            mixer.clone(),
+            master_clock.clone(),
+            true,
+        );
         let lufs_readings = Some(mix_thread.lufs_readings());
         let lufs_reset = Some(mix_thread.lufs_reset_flag());
         let spectrum_buf = Some(mix_thread.spectrum_buf());
@@ -1851,7 +1860,7 @@ impl PlaybackEngine {
             spectrum_sample_rate,
             cpal_sample_rate,
             last_audio_fingerprint: 0,
-            master_clock: Arc::new(MasterClock::new()),
+            master_clock,
             clip_source_start: 0.0,
             clip_timeline_start: Timecode::zero(),
             clip_speed: 1.0,
@@ -3831,8 +3840,12 @@ impl PlaybackEngine {
     ) {
         // Create mix thread + audio output on first use
         if self.mix_thread.is_none() {
-            let (mt, main_consumer) =
-                MixThread::new(self.cpal_sample_rate, self.mixer.clone(), true);
+            let (mt, main_consumer) = MixThread::new(
+                self.cpal_sample_rate,
+                self.mixer.clone(),
+                self.master_clock.clone(),
+                true,
+            );
             self.lufs_readings = Some(mt.lufs_readings());
             self.lufs_reset = Some(mt.lufs_reset_flag());
             self.spectrum_buf = Some(mt.spectrum_buf());
@@ -4099,8 +4112,13 @@ impl PlaybackEngine {
             }
         }
 
-        // Master clock is the single source of truth.
-        let current_source_secs = self.master_clock.current_secs();
+        // Master clock is the single source of truth. Video frame
+        // picking uses the PDC-compensated PTS — current_display_secs
+        // subtracts the global max chain latency from the playhead
+        // so the rendered frame matches what's currently being heard
+        // out of the audio bus. With no plugins reporting latency,
+        // this is identical to current_secs() (offset = 0).
+        let current_source_secs = self.master_clock.current_display_secs();
         // Frame presentation tolerance: half a frame duration (scales with FPS)
         let frame_tolerance = self.fps.frame_duration_secs() * 0.5;
         let _clock_running = self.master_clock.is_running();

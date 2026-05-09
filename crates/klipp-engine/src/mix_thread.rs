@@ -4,6 +4,7 @@ use klipp_audio::{AudioMixer, LufsMeter, LufsReadings};
 use ringbuf::traits::{Consumer, Observer, Producer, Split};
 use ringbuf::HeapRb;
 use std::collections::VecDeque;
+use crate::sync::MasterClock;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
@@ -53,6 +54,7 @@ impl MixThread {
     pub fn new(
         sample_rate: u32,
         mixer: Arc<Mutex<AudioMixer>>,
+        master_clock: Arc<MasterClock>,
         tp_oversample: bool,
     ) -> (Self, AudioConsumer) {
         // Main ring buffer: ~200ms stereo f32 at device sample rate
@@ -76,7 +78,7 @@ impl MixThread {
             .name("klipp-mix".into())
             .spawn(move || {
                 crate::thread_guard::catch_panic("klipp-mix", || {
-                    mix_loop(producer, cmd_rx, mixer, sr, lufs_readings_writer, lufs_reset_reader, spectrum_writer, main_buffered_writer, tp_oversample);
+                    mix_loop(producer, cmd_rx, mixer, master_clock, sr, lufs_readings_writer, lufs_reset_reader, spectrum_writer, main_buffered_writer, tp_oversample);
                 });
             })
             .expect("failed to spawn mix thread");
@@ -178,10 +180,12 @@ impl Drop for MixThread {
 }
 
 /// The mix thread loop — reads staging consumers, mixes, pushes to main.
+#[allow(clippy::too_many_arguments)]
 fn mix_loop(
     mut producer: AudioProducer,
     cmd_rx: Receiver<MixCommand>,
     mixer: Arc<Mutex<AudioMixer>>,
+    master_clock: Arc<MasterClock>,
     sample_rate: u32,
     lufs_readings: Arc<Mutex<LufsReadings>>,
     lufs_reset: Arc<AtomicBool>,
@@ -358,6 +362,7 @@ fn mix_loop(
                 // AudioMixer's PDC state. set_track_latency_samples
                 // only resizes delay lines when the global max
                 // changes, so this is cheap when nothing changed.
+                let mut any_change = false;
                 for staging in stagings.iter_mut() {
                     let advertised = staging.latency_advertise.load(Ordering::Acquire);
                     if advertised != staging.latency_last_seen {
@@ -367,7 +372,22 @@ fn mix_loop(
                             chunk_samples / 2, // chunk_samples is interleaved L+R
                         );
                         staging.latency_last_seen = advertised;
+                        any_change = true;
                     }
+                }
+
+                // When per-track latencies change, the global max
+                // may have changed too. Push it into MasterClock
+                // so the engine subtracts it at video frame pick;
+                // video stays aligned with audio. Cheap atomic
+                // store; no contention with audio-thread reads.
+                if any_change {
+                    let global_max = m.pdc_global_max_latency();
+                    let offset_us = MasterClock::pdc_offset_us_from_samples(
+                        global_max,
+                        sample_rate,
+                    );
+                    master_clock.set_pdc_offset_us(offset_us);
                 }
 
                 // Apply per-track PDC delay BEFORE mix. The delay

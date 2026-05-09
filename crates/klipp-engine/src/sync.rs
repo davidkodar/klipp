@@ -65,7 +65,7 @@
 //! See [`crate::engine`] for the scrub-begin / scrub-end handoff
 //! that re-syncs to the final position on release.
 
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::time::Instant;
 
@@ -84,6 +84,17 @@ pub struct MasterClock {
     running: AtomicBool,
     /// Incremented on every seek — used to detect stale frames/samples.
     generation: AtomicU64,
+    /// Plugin-delay-compensation offset in microseconds. The audio
+    /// mix path delays each track by `(global_max_chain_latency -
+    /// own_track_latency)` so all tracks reach the bus in alignment.
+    /// The whole mix then sits `global_max_chain_latency` behind the
+    /// playhead's logical position; video must shift backwards by
+    /// the same amount to stay synced. AudioMixer pushes the latest
+    /// global-max value here whenever a track's chain latency
+    /// changes; the engine subtracts this from the displayed PTS at
+    /// video frame pick. 0 means no compensation needed (no plugins
+    /// reporting latency).
+    pdc_offset_us: AtomicU32,
 }
 
 impl Default for MasterClock {
@@ -100,6 +111,7 @@ impl MasterClock {
             speed: AtomicU64::new(1.0_f64.to_bits()),
             running: AtomicBool::new(false),
             generation: AtomicU64::new(0),
+            pdc_offset_us: AtomicU32::new(0),
         }
     }
 
@@ -150,6 +162,53 @@ impl MasterClock {
         self.running.load(Ordering::Acquire)
     }
 
+    /// Plugin-delay-compensation offset in microseconds. Subtract
+    /// from displayed PTS at video frame pick so the rendered video
+    /// frame matches what's currently being heard out of the audio
+    /// chain. See [`Self::pdc_offset_us`] field doc for rationale.
+    /// Returns 0 when no plugins are reporting latency.
+    pub fn pdc_offset_us(&self) -> u32 {
+        self.pdc_offset_us.load(Ordering::Acquire)
+    }
+
+    /// Set the PDC offset in microseconds. Called by the engine
+    /// (mix-thread side) whenever the AudioMixer's global max chain
+    /// latency changes. Atomic / lock-free; safe to call from any
+    /// thread.
+    pub fn set_pdc_offset_us(&self, offset_us: u32) {
+        self.pdc_offset_us.store(offset_us, Ordering::Release);
+    }
+
+    /// Convert a samples-at-sample-rate latency into microseconds
+    /// for `set_pdc_offset_us`. Saturating math so a pathologically
+    /// large sample count can't overflow u32 microseconds.
+    pub fn pdc_offset_us_from_samples(samples: u32, sample_rate: u32) -> u32 {
+        if sample_rate == 0 {
+            return 0;
+        }
+        // 1_000_000 * samples / sample_rate, saturating.
+        let scaled = (samples as u64).saturating_mul(1_000_000);
+        let us = scaled / (sample_rate as u64);
+        us.min(u32::MAX as u64) as u32
+    }
+
+    /// Current playback position in microseconds, with PDC offset
+    /// applied. This is the PTS the video frame pick should use so
+    /// the rendered frame matches what's currently being heard.
+    /// `current_pts_us` (without compensation) is still available
+    /// for callers that explicitly want the un-compensated value
+    /// (audio decoder driving its own seek, scrub UI, etc.).
+    pub fn current_display_pts_us(&self) -> u64 {
+        self.current_pts_us()
+            .saturating_sub(self.pdc_offset_us() as u64)
+    }
+
+    /// Current playback position in seconds (f64), with PDC offset
+    /// applied. Companion to [`Self::current_display_pts_us`].
+    pub fn current_display_secs(&self) -> f64 {
+        self.current_display_pts_us() as f64 / 1_000_000.0
+    }
+
     /// Set playback speed (1.0 = normal).
     pub fn set_speed(&self, speed: f64) {
         // Freeze at current position first, then change speed
@@ -157,5 +216,73 @@ impl MasterClock {
         self.anchor_pts_us.store(current, Ordering::Release);
         *self.anchor_wall.lock().unwrap_or_else(|e| e.into_inner()) = Instant::now();
         self.speed.store(speed.to_bits(), Ordering::Release);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pdc_offset_default_is_zero() {
+        let clock = MasterClock::new();
+        assert_eq!(clock.pdc_offset_us(), 0);
+    }
+
+    #[test]
+    fn pdc_offset_round_trips() {
+        let clock = MasterClock::new();
+        clock.set_pdc_offset_us(12_345);
+        assert_eq!(clock.pdc_offset_us(), 12_345);
+    }
+
+    #[test]
+    fn pdc_offset_us_from_samples_at_48k() {
+        // 1024 samples at 48 kHz ≈ 21.3 ms ≈ 21333 μs.
+        let us = MasterClock::pdc_offset_us_from_samples(1024, 48_000);
+        assert_eq!(us, 21_333);
+    }
+
+    #[test]
+    fn pdc_offset_us_from_samples_zero_sr_returns_zero() {
+        assert_eq!(MasterClock::pdc_offset_us_from_samples(1024, 0), 0);
+    }
+
+    #[test]
+    fn pdc_offset_us_from_samples_saturates() {
+        // u32::MAX samples at 1 Hz would overflow naively; saturating math caps.
+        let us = MasterClock::pdc_offset_us_from_samples(u32::MAX, 1);
+        assert_eq!(us, u32::MAX, "saturates instead of overflowing");
+    }
+
+    #[test]
+    fn current_display_pts_subtracts_offset() {
+        let clock = MasterClock::new();
+        // Anchor at 100ms, paused (so current_pts_us is exactly the anchor).
+        clock.seek(100_000);
+        // PDC offset = 21ms. Display PTS = 100ms - 21ms = 79ms.
+        clock.set_pdc_offset_us(21_000);
+        assert_eq!(clock.current_pts_us(), 100_000);
+        assert_eq!(clock.current_display_pts_us(), 79_000);
+    }
+
+    #[test]
+    fn current_display_pts_saturates_at_zero() {
+        let clock = MasterClock::new();
+        // Tiny anchor + huge PDC → display PTS would go negative;
+        // saturating_sub clamps to 0 instead of wrapping.
+        clock.seek(5_000);
+        clock.set_pdc_offset_us(50_000);
+        assert_eq!(clock.current_display_pts_us(), 0);
+    }
+
+    #[test]
+    fn pdc_offset_unaffected_by_seek() {
+        let clock = MasterClock::new();
+        clock.set_pdc_offset_us(15_000);
+        clock.seek(500_000);
+        // Seek must not reset the PDC offset — the chain latency
+        // hasn't changed just because the user dragged the playhead.
+        assert_eq!(clock.pdc_offset_us(), 15_000);
     }
 }
