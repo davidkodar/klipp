@@ -173,20 +173,40 @@ pub(crate) fn draw_scale(ui: &egui::Ui, rect: egui::Rect, scale: ScopeScale, is_
         egui::Stroke::new(1.0_f32, egui::Color32::from_rgba_unmultiplied(255, 255, 255, 20)),
     );
 
-    // Bottom ticks — major every 25% (6px, brightened to alpha 175);
-    // minor between (3px, kept subtle at alpha 28). Same widened
-    // major/minor ratio as the horizontal grid above.
-    let trace_w = rect.width() - AXIS_W - PAD_RIGHT;
-    for i in 0..=20 {
-        let frac = i as f32 / 20.0;
-        let x = rect.min.x + AXIS_W + frac * trace_w;
-        let is_major = i % 5 == 0;
-        let tick_h = if is_major { 6.0 } else { 3.0 };
-        let color = if is_major { warm_amber(175) } else { warm_amber(28) };
-        painter.line_segment(
-            [egui::pos2(x, bottom_y), egui::pos2(x, bottom_y + tick_h)],
-            egui::Stroke::new(0.5_f32, color),
-        );
+    // Bottom ticks — DaVinci-style row sitting INSIDE the trace
+    // area, drawn upward from the bottom baseline so they read as
+    // graticule marks etched into the instrument glass rather than
+    // as ruler marks below the trace. For parade, tick within each
+    // of the 3 sections separately so the section-divider gaps stay
+    // clean (no ticks crossing the inter-section gap).
+    //
+    // Bumped alpha from the legacy 175/28 (read as invisible against
+    // the warm-amber graticule even at major) to 200/85 + thicker
+    // 1.0 px stroke so the bottom edge is visibly ticked at typical
+    // dock sizes. Major every 25 % of section width, minor every 5 %.
+    let trace_x0 = rect.min.x + AXIS_W;
+    let trace_x1 = rect.max.x - PAD_RIGHT;
+    let trace_w = trace_x1 - trace_x0;
+    let n_sections: usize = if is_parade { section_count.max(1) } else { 1 };
+    let gap = if is_parade { 2.0_f32 } else { 0.0_f32 };
+    let section_w = (trace_w - gap * (n_sections.saturating_sub(1)) as f32)
+        / n_sections.max(1) as f32;
+    for s in 0..n_sections {
+        let sx0 = trace_x0 + s as f32 * (section_w + gap);
+        for i in 0..=20 {
+            let frac = i as f32 / 20.0;
+            let x = sx0 + frac * section_w;
+            let is_major = i % 5 == 0;
+            let tick_h = if is_major { 6.0 } else { 3.0 };
+            let color = if is_major { warm_amber(200) } else { warm_amber(85) };
+            // Draw upward from `bottom_y` into the trace area —
+            // ticks read as part of the instrument graticule, not
+            // as a ruler dangling below the trace.
+            painter.line_segment(
+                [egui::pos2(x, bottom_y), egui::pos2(x, bottom_y - tick_h)],
+                egui::Stroke::new(1.0_f32, color),
+            );
+        }
     }
 
     // Parade section separators — rgba(255,255,255,0.05) within trace area
