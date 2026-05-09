@@ -67,6 +67,16 @@ pub struct AudioDecoder {
     /// Incremented by the decode thread after each seek completes (first frame produced).
     /// Engine compares against its own counter to know when audio is ready.
     pub seek_generation: Arc<AtomicU64>,
+    /// Total chain latency in stereo frames advertised by the decode
+    /// thread after constructing the AudioEffectChain. Mix-thread
+    /// reads this each block via the StagingEntry's matching Arc and
+    /// pushes the value into AudioMixer's per-track PDC state.
+    /// Initial value 0 — for chains with no plugins, no compensation
+    /// is needed and the mixer's delay-line stays None. v1 sets the
+    /// value once at thread start (chain shape is static for the
+    /// thread's lifetime); variable latency is filed as
+    /// PDC-NEXT-VARIABLE-LATENCY.
+    pub latency_advertise: Arc<AtomicU32>,
 }
 
 impl AudioDecoder {
@@ -105,18 +115,20 @@ impl AudioDecoder {
         let muted = Arc::new(AtomicBool::new(false));
         let post_seek_pts_us = Arc::new(AtomicU64::new(0));
         let seek_generation = Arc::new(AtomicU64::new(0));
+        let latency_advertise = Arc::new(AtomicU32::new(0));
 
         let vol = volume.clone();
         let mute = muted.clone();
         let pts_clone = post_seek_pts_us.clone();
         let gen_clone = seek_generation.clone();
+        let latency_clone = latency_advertise.clone();
         let path_owned = path.to_path_buf();
 
         let thread = std::thread::Builder::new()
             .name("klipp-adec".into())
             .spawn(move || {
                 crate::thread_guard::catch_panic("klipp-adec", || {
-                    audio_decode_thread(path_owned, output_rate, producer, cmd_rx, vol, mute, pts_clone, gen_clone, audio_effects, audio_effect_keyframes, clip_source_in_secs);
+                    audio_decode_thread(path_owned, output_rate, producer, cmd_rx, vol, mute, pts_clone, gen_clone, latency_clone, audio_effects, audio_effect_keyframes, clip_source_in_secs);
                 });
             })
             .map_err(|e| AudioDecoderError::Open(format!("spawn thread: {e}")))?;
@@ -131,6 +143,7 @@ impl AudioDecoder {
                 muted,
                 post_seek_pts_us,
                 seek_generation,
+                latency_advertise,
             },
             consumer,
         ))
@@ -183,6 +196,7 @@ impl std::fmt::Display for AudioDecoderError {
 }
 
 #[allow(clippy::too_many_arguments, clippy::drop_non_drop)]
+#[allow(clippy::too_many_arguments)]
 fn audio_decode_thread(
     path: PathBuf,
     output_rate: u32,
@@ -192,6 +206,7 @@ fn audio_decode_thread(
     muted: Arc<AtomicBool>,
     post_seek_pts_us: Arc<AtomicU64>,
     seek_generation: Arc<AtomicU64>,
+    latency_advertise: Arc<AtomicU32>,
     audio_effects: Vec<AudioEffectInstance>,
     audio_effect_keyframes: std::collections::HashMap<String, Vec<klipp_core::Keyframe>>,
     clip_source_in_secs: f64,
@@ -282,8 +297,18 @@ fn audio_decode_thread(
             chain.slot_count(),
             audio_effect_keyframes.len(),
         );
+        // Advertise the chain's total latency so the mix-thread can
+        // configure per-track PDC delay-line compensation.
+        // klipp_audio::AudioMixer reads this atomic, sums against
+        // other tracks' reports, and sizes each track's delay line
+        // to (max - own) for forward PDC alignment.
+        latency_advertise.store(chain.total_latency_samples(output_rate), Ordering::Release);
         Some(chain)
     } else {
+        // No plugins → no latency. (The atomic was initialised to 0
+        // at AudioDecoder::open; this store is defensive in case a
+        // future reuse path ever leaves stale state.)
+        latency_advertise.store(0, Ordering::Release);
         None
     };
 

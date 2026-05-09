@@ -788,6 +788,12 @@ struct PreSeekAudioSource {
     audio_chain_fingerprint: u64,
     source: AudioSource,
     consumer: crate::audio_decoder::AudioConsumer,
+    /// Same chain-latency atomic the live decoder advertises;
+    /// captured at pre-seek time so the mix thread can configure
+    /// PDC the moment the pre-seeked source swaps in. PCM-feeder
+    /// pre-seeks pass a freshly-allocated zero atomic until
+    /// PDC-NEXT-PCM-FEEDER-WIRING ships.
+    latency_advertise: std::sync::Arc<std::sync::atomic::AtomicU32>,
 }
 
 /// Result from the pre-seek background thread.
@@ -3759,7 +3765,18 @@ impl PlaybackEngine {
                         }
                         // Source starts paused — caller resumes when ready
 
-                        self.ensure_mix_pipeline(consumer, track_index);
+                        // PCM feeder chain latency isn't advertised
+                        // yet (PDC-NEXT-PCM-FEEDER-WIRING). For now
+                        // PCM-cached audio reports 0 — heavy plugins
+                        // on PCM-cached clips will misalign by their
+                        // chain latency until that follow-up ships.
+                        // Pre-existing behaviour pre-PDC was also no
+                        // compensation, so this is parity, not a
+                        // regression.
+                        let zero_latency = std::sync::Arc::new(
+                            std::sync::atomic::AtomicU32::new(0),
+                        );
+                        self.ensure_mix_pipeline(consumer, track_index, zero_latency);
                         self.audio_sources.push(ActiveAudioSource {
                             track_index,
                             media_id,
@@ -3783,7 +3800,8 @@ impl PlaybackEngine {
                 }
                 // Source starts paused — caller resumes when ready
 
-                self.ensure_mix_pipeline(consumer, track_index);
+                let latency_advertise = adec.latency_advertise.clone();
+                self.ensure_mix_pipeline(consumer, track_index, latency_advertise);
                 self.audio_sources.push(ActiveAudioSource {
                     track_index,
                     media_id,
@@ -3798,11 +3816,18 @@ impl PlaybackEngine {
     }
 
     /// Ensure the mix thread and audio output exist, then register
-    /// the given staging consumer for a track.
+    /// the given staging consumer for a track. `latency_advertise`
+    /// is the producing source's chain-latency atomic — AudioDecoder
+    /// shares its own; PCM cache paths (no decoder, no chain) pass
+    /// a freshly-allocated atomic at 0. The mix thread polls this
+    /// each block to drive AudioMixer's PDC state. PCM feeder
+    /// chains do exist and would benefit from real latency
+    /// advertisement; that's tracked as PDC-NEXT-PCM-FEEDER-WIRING.
     fn ensure_mix_pipeline(
         &mut self,
         staging_consumer: crate::audio_decoder::AudioConsumer,
         track_index: usize,
+        latency_advertise: std::sync::Arc<std::sync::atomic::AtomicU32>,
     ) {
         // Create mix thread + audio output on first use
         if self.mix_thread.is_none() {
@@ -3823,9 +3848,8 @@ impl PlaybackEngine {
             self.mix_thread = Some(mt);
         }
 
-        // Register this source's consumer with the mix thread
         if let Some(ref mt) = self.mix_thread {
-            mt.add_staging(track_index, staging_consumer);
+            mt.add_staging(track_index, staging_consumer, latency_advertise);
         }
     }
 
@@ -6034,12 +6058,16 @@ impl PlaybackEngine {
                     if source_secs > 0.01 {
                         feeder.seek(source_secs);
                     }
+                    let zero_latency = std::sync::Arc::new(
+                        std::sync::atomic::AtomicU32::new(0),
+                    );
                     sources.push(PreSeekAudioSource {
                         track_index: track_idx,
                         media_id,
                         audio_chain_fingerprint: chain_fp,
                         source: AudioSource::PcmFeeder(feeder),
                         consumer,
+                        latency_advertise: zero_latency,
                     });
                     continue;
                 }
@@ -6048,12 +6076,14 @@ impl PlaybackEngine {
                     if source_secs > 0.01 {
                         adec.seek(source_secs);
                     }
+                    let latency_advertise = adec.latency_advertise.clone();
                     sources.push(PreSeekAudioSource {
                         track_index: track_idx,
                         media_id,
                         audio_chain_fingerprint: chain_fp,
                         source: AudioSource::Decoder(adec),
                         consumer,
+                        latency_advertise,
                     });
                 }
             }
@@ -6113,7 +6143,8 @@ impl PlaybackEngine {
                 // 2. Stop old audio sources, swap in pre-seeked ones
                 self.stop_all_audio();
                 for ps_source in ps.sources {
-                    self.ensure_mix_pipeline(ps_source.consumer, ps_source.track_index);
+                    let latency = ps_source.latency_advertise.clone();
+                    self.ensure_mix_pipeline(ps_source.consumer, ps_source.track_index, latency);
                     self.audio_sources.push(ActiveAudioSource {
                         track_index: ps_source.track_index,
                         media_id: ps_source.media_id,
@@ -10830,7 +10861,8 @@ impl PlaybackEngine {
                 if source_secs > 0.01 {
                     adec.seek(source_secs);
                 }
-                self.ensure_mix_pipeline(consumer, track);
+                let latency_advertise = adec.latency_advertise.clone();
+                self.ensure_mix_pipeline(consumer, track, latency_advertise);
                 // Mark the new track muted by default — Play takes care
                 // of unmuting on the actual handoff.
                 if let Ok(mut m) = self.mixer.lock() {

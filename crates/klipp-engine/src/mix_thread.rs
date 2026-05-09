@@ -4,17 +4,21 @@ use klipp_audio::{AudioMixer, LufsMeter, LufsReadings};
 use ringbuf::traits::{Consumer, Observer, Producer, Split};
 use ringbuf::HeapRb;
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::Duration;
 use tracing::{debug, warn};
 
 enum MixCommand {
-    /// Add a staging consumer for a track.
+    /// Add a staging consumer for a track. `latency_advertise` is
+    /// the source decoder's [`AudioDecoder::latency_advertise`] —
+    /// the mix loop polls it each block and pushes the value into
+    /// AudioMixer's per-track PDC state for delay-line compensation.
     AddStaging {
         track_index: usize,
         consumer: AudioConsumer,
+        latency_advertise: Arc<AtomicU32>,
     },
     /// Clear all staging consumers (called on stop/clip change).
     ClearAll,
@@ -120,10 +124,20 @@ impl MixThread {
     }
 
     /// Register a staging consumer for a given track.
-    pub fn add_staging(&self, track_index: usize, consumer: AudioConsumer) {
+    /// `latency_advertise` is the producing decoder's
+    /// [`crate::audio_decoder::AudioDecoder::latency_advertise`]
+    /// atomic — polled per mix block to push real chain latency
+    /// into AudioMixer's PDC state.
+    pub fn add_staging(
+        &self,
+        track_index: usize,
+        consumer: AudioConsumer,
+        latency_advertise: Arc<AtomicU32>,
+    ) {
         let _ = self.cmd_tx.send(MixCommand::AddStaging {
             track_index,
             consumer,
+            latency_advertise,
         });
     }
 
@@ -213,9 +227,16 @@ fn mix_loop(
     }
 
     struct StagingEntry {
-        #[allow(dead_code)]
         track_index: usize,
         consumer: AudioConsumer,
+        /// Per-track chain latency polled each block; pushed into
+        /// AudioMixer's PDC state when changed. Last-seen value is
+        /// tracked separately so we only call into the locked
+        /// mixer's set_track_latency_samples on actual change (the
+        /// common no-plugins-on-this-track case is one atomic load
+        /// + one == comparison per block).
+        latency_advertise: Arc<AtomicU32>,
+        latency_last_seen: u32,
     }
 
     let mut lufs_meter = LufsMeter::new(sample_rate as f32, tp_oversample);
@@ -241,11 +262,14 @@ fn mix_loop(
                 MixCommand::AddStaging {
                     track_index,
                     consumer,
+                    latency_advertise,
                 } => {
                     debug!("Mix thread: added staging for track {track_index}");
                     stagings.push(StagingEntry {
                         track_index,
                         consumer,
+                        latency_advertise,
+                        latency_last_seen: u32::MAX, // sentinel — first poll will always count as a "change"
                     });
                 }
                 MixCommand::ClearAll => {
@@ -266,6 +290,11 @@ fn mix_loop(
                     // We can't drain a producer directly, but we can fill it with
                     // zeros that cpal will silently consume. Instead, just signal
                     // that we're done — AudioOutput::notify_seek() will drain main.
+                    // Also reset PDC delay lines so stale samples from before the
+                    // seek don't bleed across the boundary.
+                    if let Ok(mut m) = mixer.lock() {
+                        m.reset_pdc_delay_lines();
+                    }
                     ack.store(true, Ordering::Release);
                     debug!("Mix thread: flushed all staging buffers");
                 }
@@ -316,14 +345,44 @@ fn mix_loop(
             continue;
         }
 
-        // Mix via AudioMixer — pass (sequence_track_index, samples) pairs
-        let refs: Vec<(usize, &[f32])> = stagings.iter().zip(track_buffers.iter())
-            .map(|(s, b)| (s.track_index, b.as_slice()))
-            .collect();
+        // Mix via AudioMixer. Single critical section folds PDC
+        // updates + per-track delay application + the existing mix
+        // routine. Holding the lock once across all three avoids
+        // double-locking on the audio thread.
         let max_track_idx = stagings.iter().map(|s| s.track_index).max().unwrap_or(0);
         let mixed = match mixer.lock() {
             Ok(mut m) => {
                 m.ensure_tracks(max_track_idx + 1);
+
+                // Push any newly-advertised per-track latencies into
+                // AudioMixer's PDC state. set_track_latency_samples
+                // only resizes delay lines when the global max
+                // changes, so this is cheap when nothing changed.
+                for staging in stagings.iter_mut() {
+                    let advertised = staging.latency_advertise.load(Ordering::Acquire);
+                    if advertised != staging.latency_last_seen {
+                        m.set_track_latency_samples(
+                            staging.track_index,
+                            advertised,
+                            chunk_samples / 2, // chunk_samples is interleaved L+R
+                        );
+                        staging.latency_last_seen = advertised;
+                    }
+                }
+
+                // Apply per-track PDC delay BEFORE mix. The delay
+                // lines are a no-op when the track has zero
+                // compensation needed (slot is None), so the common
+                // no-plugins case has zero per-block work.
+                for (i, staging) in stagings.iter().enumerate() {
+                    m.apply_per_track_pdc_delay(staging.track_index, &mut track_buffers[i]);
+                }
+
+                let refs: Vec<(usize, &[f32])> = stagings
+                    .iter()
+                    .zip(track_buffers.iter())
+                    .map(|(s, b)| (s.track_index, b.as_slice()))
+                    .collect();
                 m.mix(&refs)
             }
             Err(e) => {
