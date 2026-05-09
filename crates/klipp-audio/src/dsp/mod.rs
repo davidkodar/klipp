@@ -362,6 +362,32 @@ impl AudioEffectChain {
     pub fn slot_count(&self) -> usize {
         self.slots.len()
     }
+
+    /// Sum of latency reported by every enabled slot in the chain.
+    ///
+    /// Used by `klipp_audio::AudioMixer`'s plugin-delay-compensation
+    /// machinery: tracks with shorter chain latency get delay lines
+    /// at their bus input so all tracks reach the mixer aligned.
+    /// Disabled slots contribute 0 — bypassing a heavy plugin
+    /// effectively removes its latency from the chain.
+    ///
+    /// Defensively clamped against absurdly-large values that would
+    /// crater a transport: any single effect reporting more than
+    /// `sample_rate` samples (1 second) is capped — legitimate
+    /// convolution reverbs with long IRs fit comfortably under that
+    /// bound, but a buggy plugin returning u32::MAX cannot mis-size
+    /// a delay line by gigabytes.
+    pub fn total_latency_samples(&self, sample_rate: u32) -> u32 {
+        let per_effect_cap = sample_rate.max(1);
+        self.slots
+            .iter()
+            .filter(|s| s.enabled)
+            .map(|s| s.effect.latency_samples().min(per_effect_cap))
+            .sum::<u32>()
+            // Sum-of-effects also clamps at sample_rate so even a long
+            // chain can't overshoot 1 second of accumulated delay.
+            .min(per_effect_cap)
+    }
 }
 
 impl Default for AudioEffectChain {

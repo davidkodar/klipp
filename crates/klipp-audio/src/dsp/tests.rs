@@ -1257,3 +1257,72 @@ fn sub_chunk_buffer_smaller_than_one_chunk() {
     });
     assert_eq!(times.lock().unwrap().len(), 1);
 }
+
+// ─── Chain total-latency-samples tests ─────────────────────────────────────
+//
+// Pin the contract `AudioMixer` consumes via
+// `track_latency_samples`: chain reports the SUM of every enabled
+// slot's reported latency, capped against per-effect and total
+// pathological values so a buggy plugin can't mis-size delay lines.
+
+/// Test-only AudioEffect that returns a fixed latency_samples()
+/// value. Process is a no-op so we can compose chains without
+/// needing real signal.
+struct LatencyStub(u32);
+impl AudioEffect for LatencyStub {
+    fn type_id(&self) -> &'static str { "test_latency_stub" }
+    fn name(&self) -> &'static str { "Latency Stub" }
+    fn param_descriptors(&self) -> &[AudioParamDescriptor] { &[] }
+    fn get_param(&self, _: &str) -> Option<f32> { None }
+    fn set_param(&mut self, _: &str, _: f32) {}
+    fn process(&mut self, _: &mut [f32], _: &AudioProcessContext) {}
+    fn reset(&mut self) {}
+    fn latency_samples(&self) -> u32 { self.0 }
+    fn serialize_params(&self) -> Vec<(String, f32)> { vec![] }
+    fn deserialize_params(&mut self, _: &[(String, f32)]) {}
+}
+
+#[test]
+fn chain_total_latency_zero_on_empty_chain() {
+    let chain = AudioEffectChain::new();
+    assert_eq!(chain.total_latency_samples(SR), 0);
+}
+
+#[test]
+fn chain_total_latency_sums_across_enabled_slots() {
+    let mut chain = AudioEffectChain::new();
+    chain.push_test_slot(Box::new(LatencyStub(64)), true, 1.0);
+    chain.push_test_slot(Box::new(LatencyStub(128)), true, 1.0);
+    chain.push_test_slot(Box::new(LatencyStub(256)), true, 1.0);
+    assert_eq!(chain.total_latency_samples(SR), 448);
+}
+
+#[test]
+fn chain_total_latency_skips_disabled_slots() {
+    let mut chain = AudioEffectChain::new();
+    chain.push_test_slot(Box::new(LatencyStub(64)), true, 1.0);
+    chain.push_test_slot(Box::new(LatencyStub(1024)), false, 1.0); // bypassed
+    chain.push_test_slot(Box::new(LatencyStub(256)), true, 1.0);
+    assert_eq!(chain.total_latency_samples(SR), 320, "disabled slot's 1024 samples don't count");
+}
+
+#[test]
+fn chain_total_latency_caps_per_effect_at_one_second() {
+    let mut chain = AudioEffectChain::new();
+    chain.push_test_slot(Box::new(LatencyStub(u32::MAX)), true, 1.0);
+    // Per-effect cap = sample_rate (1 second). A single buggy plugin
+    // returning u32::MAX should not crater the transport.
+    assert_eq!(chain.total_latency_samples(SR), SR);
+}
+
+#[test]
+fn chain_total_latency_total_caps_at_one_second() {
+    let mut chain = AudioEffectChain::new();
+    // Three plugins each at half a second; sum would be 1.5 seconds.
+    // Total cap clamps it to 1 second.
+    let half = SR / 2;
+    chain.push_test_slot(Box::new(LatencyStub(half)), true, 1.0);
+    chain.push_test_slot(Box::new(LatencyStub(half)), true, 1.0);
+    chain.push_test_slot(Box::new(LatencyStub(half)), true, 1.0);
+    assert_eq!(chain.total_latency_samples(SR), SR);
+}

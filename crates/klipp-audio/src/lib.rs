@@ -43,6 +43,7 @@ pub mod clap;
 pub mod ladspa;
 pub mod lv2;
 pub mod lufs;
+pub mod pdc;
 pub mod mixer;
 pub mod spectrum;
 pub mod synth;

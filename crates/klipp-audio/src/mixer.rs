@@ -63,6 +63,19 @@ pub struct AudioMixer {
     pub buses: Vec<AudioBus>,
     pub master_volume: f32,
     pub pan_law: klipp_core::PanLaw,
+    /// Per-track total chain latency in stereo frames, advertised
+    /// by the audio decoder when chains are built. The mixer uses
+    /// these to size each track's [`crate::pdc::TrackDelayLine`] so
+    /// fast tracks delay enough to align with the slowest. Length
+    /// always tracks `tracks.len()`. v1: caller manages the values
+    /// via [`Self::set_track_latency_samples`]; mix-thread wiring
+    /// to feed real chain latencies is `PDC-NEXT-MIX-THREAD-WIRING`.
+    pub track_latency_samples: Vec<u32>,
+    /// Per-track delay lines applied by
+    /// [`Self::apply_per_track_pdc_delay`] before the existing mix
+    /// path runs. Sized lazily — a track without latency
+    /// compensation never allocates a ring buffer.
+    pub track_delay_lines: Vec<Option<crate::pdc::TrackDelayLine>>,
 }
 
 impl AudioMixer {
@@ -72,6 +85,92 @@ impl AudioMixer {
             buses: Vec::new(),
             master_volume: 1.0,
             pan_law: klipp_core::PanLaw::default(),
+            track_latency_samples: vec![0; track_count],
+            track_delay_lines: (0..track_count).map(|_| None).collect(),
+        }
+    }
+
+    /// Maximum latency (in stereo frames) reported across all tracks.
+    /// Drives both the per-track delay-line sizing and the eventual
+    /// `MasterClock::pdc_offset_us` (`PDC-NEXT-AV-OFFSET` follow-up).
+    pub fn pdc_global_max_latency(&self) -> u32 {
+        crate::pdc::max_latency_across_tracks(&self.track_latency_samples)
+    }
+
+    /// Per-track delay each track needs in order to align with the
+    /// slowest. Length matches `tracks.len()`.
+    pub fn pdc_compensation_per_track(&self) -> Vec<u32> {
+        crate::pdc::compensation_per_track(&self.track_latency_samples)
+    }
+
+    /// Update one track's reported chain latency. Resizes the per-
+    /// track delay-line whenever the global max latency changes —
+    /// every track's required delay is `max - own`, so adding latency
+    /// to one track grows every other track's delay line.
+    ///
+    /// Called from the audio decoder thread when a chain is rebuilt
+    /// (effect added / removed / reordered, or initial chain
+    /// construction). v1 assumes static-after-build latency; mid-
+    /// session variable latency is `PDC-NEXT-VARIABLE-LATENCY`.
+    pub fn set_track_latency_samples(
+        &mut self,
+        track_idx: usize,
+        latency_samples: u32,
+        max_block_samples: usize,
+    ) {
+        // Grow track-state Vecs if a track index appears that wasn't
+        // there before (mirror `ensure_tracks` shape).
+        while self.track_latency_samples.len() <= track_idx {
+            self.track_latency_samples.push(0);
+            self.track_delay_lines.push(None);
+        }
+        self.track_latency_samples[track_idx] = latency_samples;
+
+        // Recompute every track's required delay, resize lines
+        // accordingly. A track with 0 required delay has its line
+        // dropped (no per-block work); a track that needs a delay
+        // gets its line either created or resized.
+        let comp = self.pdc_compensation_per_track();
+        for (i, &needed) in comp.iter().enumerate() {
+            if needed == 0 {
+                self.track_delay_lines[i] = None;
+            } else {
+                match &mut self.track_delay_lines[i] {
+                    Some(line) => line.set_delay_samples(needed as usize, max_block_samples),
+                    slot @ None => {
+                        *slot = Some(crate::pdc::TrackDelayLine::new(
+                            needed as usize,
+                            max_block_samples,
+                        ));
+                    }
+                }
+            }
+        }
+    }
+
+    /// Apply per-track PDC delay to one track's interleaved-stereo
+    /// block in place. Called by the mix-thread integration
+    /// (`PDC-NEXT-MIX-THREAD-WIRING`) for each track *before* the
+    /// existing mix routing runs. No-op when the track has no delay
+    /// line configured.
+    pub fn apply_per_track_pdc_delay(&mut self, track_idx: usize, samples: &mut [f32]) {
+        if let Some(line) = self
+            .track_delay_lines
+            .get_mut(track_idx)
+            .and_then(|s| s.as_mut())
+        {
+            line.process_in_place(samples);
+        }
+    }
+
+    /// Reset every PDC delay line to silence. Called on transport
+    /// seek so stale samples from before the seek don't bleed
+    /// across the boundary.
+    pub fn reset_pdc_delay_lines(&mut self) {
+        for slot in &mut self.track_delay_lines {
+            if let Some(line) = slot.as_mut() {
+                line.reset();
+            }
         }
     }
 
@@ -115,10 +214,18 @@ impl AudioMixer {
         idx
     }
 
-    /// Ensure at least `count` track settings exist.
+    /// Ensure at least `count` track settings exist. Keeps the PDC
+    /// per-track state in sync so a freshly-grown track gets its
+    /// (zero-latency) entry instead of indexing past the end.
     pub fn ensure_tracks(&mut self, count: usize) {
         while self.tracks.len() < count {
             self.tracks.push(AudioTrackSettings::default());
+        }
+        while self.track_latency_samples.len() < count {
+            self.track_latency_samples.push(0);
+        }
+        while self.track_delay_lines.len() < count {
+            self.track_delay_lines.push(None);
         }
     }
 
@@ -962,5 +1069,107 @@ mod tests {
         // Track index 5 has no settings, should be skipped
         let out = mixer.mix(&[(5, &buf)]);
         assert!(out[0].abs() < EPS, "Unknown track should not contribute");
+    }
+
+    // ─── PDC integration tests ─────────────────────────────────────────────
+
+    #[test]
+    fn pdc_global_max_zero_with_no_latencies() {
+        let mixer = AudioMixer::new(3);
+        assert_eq!(mixer.pdc_global_max_latency(), 0);
+        assert_eq!(mixer.pdc_compensation_per_track(), vec![0, 0, 0]);
+    }
+
+    #[test]
+    fn pdc_set_track_latency_grows_global_max() {
+        let mut mixer = AudioMixer::new(3);
+        mixer.set_track_latency_samples(0, 64, 1024);
+        mixer.set_track_latency_samples(1, 256, 1024);
+        mixer.set_track_latency_samples(2, 0, 1024);
+        assert_eq!(mixer.pdc_global_max_latency(), 256);
+        // Compensation = max - own.
+        assert_eq!(mixer.pdc_compensation_per_track(), vec![192, 0, 256]);
+    }
+
+    #[test]
+    fn pdc_zero_latency_track_has_no_delay_line() {
+        let mut mixer = AudioMixer::new(2);
+        mixer.set_track_latency_samples(0, 0, 1024);
+        mixer.set_track_latency_samples(1, 0, 1024);
+        assert!(mixer.track_delay_lines[0].is_none());
+        assert!(mixer.track_delay_lines[1].is_none());
+    }
+
+    #[test]
+    fn pdc_recomputes_delays_when_max_changes() {
+        let mut mixer = AudioMixer::new(2);
+        mixer.set_track_latency_samples(0, 0, 1024);
+        mixer.set_track_latency_samples(1, 64, 1024);
+        // Max is 64; track 0 needs 64 samples of compensation.
+        assert!(mixer.track_delay_lines[0].is_some());
+        assert_eq!(
+            mixer.track_delay_lines[0].as_ref().unwrap().delay_samples(),
+            64
+        );
+        // Now bump track 1's latency higher; track 0's compensation grows.
+        mixer.set_track_latency_samples(1, 256, 1024);
+        assert_eq!(
+            mixer.track_delay_lines[0].as_ref().unwrap().delay_samples(),
+            256
+        );
+    }
+
+    #[test]
+    fn pdc_drops_delay_line_when_track_becomes_slowest() {
+        let mut mixer = AudioMixer::new(2);
+        mixer.set_track_latency_samples(0, 0, 1024);
+        mixer.set_track_latency_samples(1, 64, 1024);
+        // Initially track 0 has a delay line.
+        assert!(mixer.track_delay_lines[0].is_some());
+        // Drop track 1's latency to 0 → no compensation needed → no delay line.
+        mixer.set_track_latency_samples(1, 0, 1024);
+        assert!(mixer.track_delay_lines[0].is_none());
+        assert!(mixer.track_delay_lines[1].is_none());
+    }
+
+    #[test]
+    fn apply_per_track_pdc_delay_aligns_streams() {
+        // Three tracks, latencies [0, 8, 16] frames. Synthesise an
+        // impulse at frame `latency[i]` per track (the "post-chain"
+        // shape the chain would produce). Apply PDC. All impulses
+        // must end up at frame `max = 16`.
+        let mut mixer = AudioMixer::new(3);
+        let latencies = [0u32, 8, 16];
+        for (i, &l) in latencies.iter().enumerate() {
+            mixer.set_track_latency_samples(i, l, 64);
+        }
+
+        let frames = 64;
+        let mut signals: Vec<Vec<f32>> = (0..3)
+            .map(|i| {
+                let mut buf = vec![0.0_f32; frames * 2];
+                let pos = latencies[i] as usize;
+                buf[pos * 2] = 1.0;
+                buf
+            })
+            .collect();
+        for i in 0..3 {
+            mixer.apply_per_track_pdc_delay(i, &mut signals[i]);
+        }
+        // Every track's L impulse should now be at frame 16.
+        for (i, sig) in signals.iter().enumerate() {
+            assert_eq!(sig[16 * 2], 1.0, "track {i} aligned to max latency");
+        }
+    }
+
+    #[test]
+    fn ensure_tracks_grows_pdc_state_in_sync() {
+        // Regression pin — earlier shape forgot to grow the PDC vecs
+        // alongside `tracks`, which would index past the end.
+        let mut mixer = AudioMixer::new(2);
+        mixer.ensure_tracks(5);
+        assert_eq!(mixer.tracks.len(), 5);
+        assert_eq!(mixer.track_latency_samples.len(), 5);
+        assert_eq!(mixer.track_delay_lines.len(), 5);
     }
 }
