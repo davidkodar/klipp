@@ -2013,12 +2013,14 @@ impl NodeGraphV2Panel {
                 .map(|p| node_hover_band.contains(p))
                 .unwrap_or(false);
 
-            // Input ports (left edge) — role-coloured stroke +
-            // hover tooltip naming the port. Use the dynamic count so
-            // a LayerMixer with 5 wires shows 5 ports. For Reroute,
-            // the static input role is Primary; reach back through
-            // the upstream chain so the port matches the wire colour
-            // we just painted into it.
+            // Input ports (left edge) — circle. Connected ports
+            // paint filled with the role colour + a tiny dark inner
+            // dot ("plugged in" — signal flows into the body); un-
+            // connected ports paint hollow ("waiting for input").
+            // Distinct from output ports by SHAPE (output is a
+            // rounded square below) so the user can tell at a
+            // glance which side of a port pair is the source vs
+            // the sink, without relying on x-position alone.
             for p in 0..in_count {
                 let pos = input_port_pos(&rect, p, in_count);
                 let role = if matches!(kind, NodeKind::Reroute) {
@@ -2033,11 +2035,24 @@ impl NodeGraphV2Panel {
                     kind.input_port_role(p)
                 };
                 let (rr, gg, bb) = role.editor_color();
-                painter.circle_filled(pos, PORT_RADIUS * zoom, theme.bg_deep);
-                painter.circle_stroke(
-                    pos, PORT_RADIUS * zoom,
-                    egui::Stroke::new(1.5_f32, egui::Color32::from_rgb(rr, gg, bb)),
-                );
+                let role_color = egui::Color32::from_rgb(rr, gg, bb);
+                let is_connected = graph.edges.iter()
+                    .any(|e| e.to_node == node_id && e.to_port == p);
+                let r = PORT_RADIUS * zoom;
+                if is_connected {
+                    painter.circle_filled(pos, r, role_color);
+                    // Inner dark dot — keeps the port readable as a
+                    // socket rather than a flat colour blob, and
+                    // mirrors the output port's "pinhole" so the
+                    // two share the same socket-anatomy idiom.
+                    painter.circle_filled(pos, r * 0.38, theme.bg_deep);
+                } else {
+                    painter.circle_filled(pos, r, theme.bg_deep);
+                    painter.circle_stroke(
+                        pos, r,
+                        egui::Stroke::new(1.5_f32, role_color),
+                    );
+                }
                 if cursor_near_node {
                     let port_rect = egui::Rect::from_center_size(
                         pos, egui::vec2(PORT_HIT_RADIUS * 2.0, PORT_HIT_RADIUS * 2.0),
@@ -2081,10 +2096,14 @@ impl NodeGraphV2Panel {
                 );
             }
 
-            // Output ports (right edge) — same proximity gate as inputs.
-            // Reroute's output reflects whatever's flowing through it,
-            // so use the chain-walking helper to pick a role consistent
-            // with the wire we'll paint downstream.
+            // Output ports (right edge) — rounded square. Always
+            // filled with the role colour because outputs are
+            // signal sources by definition (a node always has
+            // something to emit, even if nothing is wired to it).
+            // The square shape is the canonical "this is a source"
+            // cue (Fusion / Nuke convention) and pairs with the
+            // input-side circle so a wire's source vs destination
+            // is unambiguous on inspection.
             for p in 0..kind.output_port_count() {
                 let pos = output_port_pos(&rect, p, &kind);
                 let role = if matches!(kind, NodeKind::Reroute) {
@@ -2093,11 +2112,18 @@ impl NodeGraphV2Panel {
                     kind.output_port_role(p)
                 };
                 let (rr, gg, bb) = role.editor_color();
-                painter.circle_filled(pos, PORT_RADIUS * zoom, theme.bg_deep);
-                painter.circle_stroke(
-                    pos, PORT_RADIUS * zoom,
-                    egui::Stroke::new(1.5_f32, egui::Color32::from_rgb(rr, gg, bb)),
+                let role_color = egui::Color32::from_rgb(rr, gg, bb);
+                let half = PORT_RADIUS * zoom;
+                let port_rect = egui::Rect::from_center_size(
+                    pos, egui::vec2(half * 2.0, half * 2.0),
                 );
+                painter.rect_filled(port_rect, half * 0.32, role_color);
+                // Inner dark dot — same pinhole the input side
+                // gets when connected, so a connected input port
+                // and an output port look like sockets of the
+                // same anatomy with shape + colour conveying
+                // direction.
+                painter.circle_filled(pos, half * 0.38, theme.bg_deep);
                 if cursor_near_node {
                     let port_rect = egui::Rect::from_center_size(
                         pos, egui::vec2(PORT_HIT_RADIUS * 2.0, PORT_HIT_RADIUS * 2.0),
