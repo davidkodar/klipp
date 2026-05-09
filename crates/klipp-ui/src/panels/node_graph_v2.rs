@@ -1631,6 +1631,64 @@ impl NodeGraphV2Panel {
                 label_color,
             );
 
+            // Header state indicators — tiny glyphs at the right
+            // edge of the header strip so the user can read a
+            // node's state at a glance without expanding the
+            // inspector. Three slots:
+            //   - keyframe dot (cyan): node has at least one
+            //     animation track with keyframes
+            //   - bypass slash (red): node is disabled OR is being
+            //     keyframe-bypassed at the current clip time
+            //   - matte key (magenta): node's output is a matte
+            //     signal (Qualifier / LumaKey / Mask / CombineMattes
+            //     / ExternalMatte) — useful as a "this drives masks
+            //     downstream" cue
+            // Skipped at extreme zoom-out where they'd render as
+            // unreadable specks. Painted in reverse so the right-
+            // most indicator (keyframe) sits closest to the edge.
+            if zoom >= 0.55 {
+                let cy = rect.min.y + header_h * 0.5;
+                let dot_r = (3.0 * zoom).max(2.0);
+                let pitch = 9.0 * zoom;
+                let mut x = rect.max.x - 6.0 * zoom;
+
+                // Slot 1 — keyframe dot.
+                if !node.keyframes.is_empty() {
+                    let cyan = egui::Color32::from_rgb(0x6a, 0xc8, 0xe0);
+                    painter.circle_filled(egui::pos2(x, cy), dot_r, cyan);
+                    x -= pitch;
+                }
+                // Slot 2 — bypass slash. effective_enabled already
+                // accounts for the ENABLED_TRACK keyframe state, so
+                // a node that's been keyframe-bypassed at the
+                // current time also lights up.
+                if !node_on {
+                    let red = egui::Color32::from_rgb(0xd0, 0x6a, 0x6a);
+                    painter.text(
+                        egui::pos2(x, cy),
+                        egui::Align2::CENTER_CENTER,
+                        "\u{00F8}", // ø
+                        egui::FontId::proportional(10.0 * zoom),
+                        red,
+                    );
+                    x -= pitch;
+                }
+                // Slot 3 — matte producer.
+                if matches!(
+                    kind.output_port_role(0),
+                    klipp_nodes::PortRole::Matte,
+                ) {
+                    let magenta = egui::Color32::from_rgb(0xc8, 0x4a, 0xa8);
+                    painter.text(
+                        egui::pos2(x, cy),
+                        egui::Align2::CENTER_CENTER,
+                        "\u{25C7}", // ◇ — diamond (matte symbol family)
+                        egui::FontId::proportional(10.0 * zoom),
+                        magenta,
+                    );
+                }
+            }
+
             // Solo "S" badge — small yellow chip in the top-left
             // corner so the solo state still reads even when the
             // halo is occluded by overlapping nodes. Sits above
