@@ -385,9 +385,17 @@ pub fn show_scopes(
         if state.bloom {
             let w = image.size[0];
             let h = image.size[1];
-            let threshold = 0.10_f32;       // was 0.25 — catch mid-density too
-            let bloom_strength = 0.85_f32;  // was 0.40 — visible glow
-            let radius = 18usize;           // was 8 — soft phosphor halo
+            // Threshold pushed back up from the Phase 1 0.10 → 0.20 per
+            // the OLED-vs-CRT feedback: 0.10 was over-energising mid-
+            // density regions on top of the new soft splat + scanline
+            // texture, contributing to the "reaches pure white too
+            // cleanly" feel. 0.20 only catches genuine highlight
+            // regions, leaves the soft body of the trace alone.
+            let threshold = 0.20_f32;
+            // Strength pulled back from 0.85 → 0.65 for the same reason
+            // — bloom no longer piles on top of already-bright traces.
+            let bloom_strength = 0.65_f32;
+            let radius = 18usize;
 
             // 1. Extract bright pass
             let mut bright: Vec<[f32; 3]> = image.pixels.iter().map(|p| {
@@ -747,10 +755,9 @@ impl AccumBuffer {
     ///
     /// `knee` controls how aggressively the brightness curve
     /// saturates. Lower = traces stay coloured deeper into density
-    /// accumulation (the "professional scope feel"). 1.6 is a good
-    /// default; the legacy 3.0 saturated traces to flat white too
-    /// quickly which is what produced the "white-chalk" look on
-    /// dense regions.
+    /// accumulation (the "professional scope feel"). 1.3 is the
+    /// current default — a notch lower than the post-Phase-1 1.6
+    /// per the "scopes look OLED-clean" feedback.
     fn to_image_phosphor(&self, bg: [f32; 3], gamma: f32, knee: f32) -> egui::ColorImage {
         // Pre-compute gamma LUT (256 entries) — avoids powf() per pixel per channel
         let inv_gamma = 1.0 / gamma;
@@ -799,10 +806,10 @@ impl AccumBuffer {
     }
 
     /// Back-compat wrapper for callers that haven't been migrated to
-    /// the density-aware path yet. Picks a reasonable phosphor knee
-    /// (1.6) so the look matches the new tonemap.
+    /// the density-aware path yet. Picks the current phosphor knee
+    /// (1.3) so the look matches the new tonemap.
     fn to_image(&self, bg: [f32; 3], gamma: f32) -> egui::ColorImage {
-        self.to_image_phosphor(bg, gamma, 1.6)
+        self.to_image_phosphor(bg, gamma, 1.3)
     }
 }
 
@@ -869,8 +876,10 @@ pub(crate) fn render_waveform_direct(
     }
 
     // Phosphor resolve: density → soft-knee brightness, mix base
-    // colour toward white as intensity climbs.
-    let knee = 1.6_f32;
+    // colour toward white as intensity climbs. The white-mix curve
+    // is the key chroma-preservation knob — see phosphor_white_mix
+    // doc for the rationale.
+    let knee = 1.3_f32;
     let base_r = 0.0_f32;
     let base_g = 0.9_f32;
     let base_b = 0.0_f32;
@@ -880,7 +889,7 @@ pub(crate) fn render_waveform_direct(
             return egui::Color32::BLACK;
         }
         let intensity = (d / (d + knee)).sqrt().clamp(0.0, 1.0);
-        let white_mix = intensity * intensity * intensity; // cubic — stays coloured longer
+        let white_mix = phosphor_white_mix(intensity);
         let r = (base_r + (1.0 - base_r) * white_mix) * intensity;
         let g = (base_g + (1.0 - base_g) * white_mix) * intensity;
         let b = (base_b + (1.0 - base_b) * white_mix) * intensity;
@@ -893,6 +902,42 @@ pub(crate) fn render_waveform_direct(
     }).collect();
 
     egui::ColorImage { size: [scope_w, scope_h], pixels }
+}
+
+/// Phosphor white-mix curve. Maps `intensity` (the asymptotic
+/// soft-knee density curve from the resolve step) to the fraction
+/// of base-colour that should be blended toward white.
+///
+/// The curve is shaped to match real CRT phosphor saturation
+/// behaviour: traces stay PURE coloured until intensity passes
+/// ~0.8 (i.e. very high density), then ramp toward white through a
+/// quartic, capping at 0.75 so even infinite density never produces
+/// pure-white emission. The legacy `intensity³` curve climbed
+/// linearly in the cube of the raw intensity which produced
+/// "OLED-style emissive white" at moderate density (intensity=0.85
+/// → 0.61 white-washed); the new curve gives ~0.004 at the same
+/// intensity, ~0.32 at intensity=0.95 (vs 0.86 in the legacy
+/// curve), and asymptotes to the 0.75 cap.
+///
+/// Two load-bearing pieces:
+///   - The 0.8 BREAKPOINT — below this the trace is pure coloured.
+///     This stops the "moderate density goes white" behaviour
+///     that read as OLED emission.
+///   - The 0.75 CAP — even infinite density never produces pure
+///     white. Real phosphor doesn't change colour to white, it
+///     just intensifies; the energy that makes a phosphor brighter
+///     is the same wavelength.
+///
+/// Used by the monochrome resolve paths (waveform_direct,
+/// waveform_channel monochrome, parade_direct). The colorised
+/// AccumBuffer path uses density-weighted hue recovery in
+/// to_image_phosphor instead — that path is naturally chroma-
+/// preserving by construction.
+#[inline]
+fn phosphor_white_mix(intensity: f32) -> f32 {
+    let t = ((intensity - 0.8) / 0.2).max(0.0);
+    let q = t * t * t * t;
+    q.min(0.75)
 }
 
 /// Render waveform for a specific channel (Y=luma, R, G, B).
@@ -930,7 +975,7 @@ pub(crate) fn render_waveform_channel(
                 buf.splat(sx, sy, r, g, b, splat_kernel);
             }
         }
-        return buf.to_image_phosphor([0.0, 0.0, 0.0], 1.8, 1.6);
+        return buf.to_image_phosphor([0.0, 0.0, 0.0], 1.8, 1.3);
     }
 
     // Monochrome mode: density splat + phosphor ramp.
@@ -957,7 +1002,7 @@ pub(crate) fn render_waveform_channel(
         }
     }
 
-    let knee = 1.6_f32;
+    let knee = 1.3_f32;
     // Paint-mode base colour: overrides the per-channel palette except in
     // Classic mode, which keeps the legacy per-channel R/G/B tint on Y and
     // falls through to the channel-matched colour on R/G/B channels.
@@ -976,7 +1021,7 @@ pub(crate) fn render_waveform_channel(
     let pixels: Vec<egui::Color32> = density.data.iter().map(|&d| {
         if d < 1e-6 { return egui::Color32::BLACK; }
         let intensity = (d / (d + knee)).sqrt().clamp(0.0, 1.0);
-        let white_mix = intensity * intensity * intensity;
+        let white_mix = phosphor_white_mix(intensity);
         let r = (base_r + (1.0 - base_r) * white_mix) * intensity;
         let g = (base_g + (1.0 - base_g) * white_mix) * intensity;
         let b = (base_b + (1.0 - base_b) * white_mix) * intensity;
@@ -1089,7 +1134,7 @@ pub(crate) fn render_parade_direct(
         }
     }
 
-    let knee = 1.6_f32;
+    let knee = 1.3_f32;
     let bg = egui::Color32::BLACK;
     let gap_color = egui::Color32::from_rgb(0x06, 0x06, 0x06);
 
@@ -1102,7 +1147,7 @@ pub(crate) fn render_parade_direct(
 
     let resolve = |density: f32, base: &[f32; 3]| -> (u8, u8, u8) {
         let intensity = (density / (density + knee)).sqrt().clamp(0.0, 1.0);
-        let white_mix = intensity * intensity * intensity;
+        let white_mix = phosphor_white_mix(intensity);
         let r = (base[0] + (1.0 - base[0]) * white_mix) * intensity;
         let g = (base[1] + (1.0 - base[1]) * white_mix) * intensity;
         let b = (base[2] + (1.0 - base[2]) * white_mix) * intensity;
@@ -1353,7 +1398,7 @@ pub(crate) fn render_vectorscope(rgba: &[u8], width: u32, height: u32, step: u32
         }
     }
 
-    buf.to_image_phosphor([4.0, 4.0, 7.0], 2.2, 1.6)
+    buf.to_image_phosphor([4.0, 4.0, 7.0], 2.2, 1.3)
 }
 
 /// Render CIE 1931 xy chromaticity diagram.
@@ -2108,6 +2153,64 @@ mod tests {
         assert_eq!(image.pixels[8].r(), 100);     // y=2
         assert_eq!(image.pixels[12].r(), expected_dark);  // y=3
         assert_eq!(image.pixels[16].r(), 100);    // y=4
+    }
+
+    // ── Phosphor white-mix curve (Phase 2.5: chroma preservation) ────
+
+    /// Pin: white-mix is ZERO until intensity passes 0.8 — traces
+    /// stay PURE coloured throughout the meaningful density band.
+    /// The legacy `intensity³` curve reached 0.34 at intensity 0.7
+    /// (a third washed at moderate density), which was the OLED-look
+    /// root cause.
+    #[test]
+    fn phosphor_white_mix_zero_below_knee() {
+        for intensity in [0.0, 0.3, 0.5, 0.7, 0.79, 0.8] {
+            let w = phosphor_white_mix(intensity);
+            assert!(w < 1e-6,
+                "intensity {intensity} should produce zero white_mix, got {w}");
+        }
+    }
+
+    /// Pin: white-mix never exceeds 0.75 — even at infinite density,
+    /// traces never reach pure-white emission. THIS is the property
+    /// that turns "OLED-style additive white" into "phosphor
+    /// excitation that intensifies but stays coloured".
+    #[test]
+    fn phosphor_white_mix_caps_at_0_75() {
+        for intensity in [0.95, 0.99, 1.0, 1.5, 100.0, f32::MAX] {
+            let w = phosphor_white_mix(intensity);
+            assert!(w <= 0.75 + 1e-6,
+                "intensity {intensity} produced white_mix={w}, exceeds 0.75 cap");
+        }
+        assert!((phosphor_white_mix(1.0) - 0.75).abs() < 1e-6,
+            "at intensity=1.0 should reach the cap exactly");
+    }
+
+    /// Pin: white-mix is monotonic — higher density never produces
+    /// LESS white than lower density. A regression that flipped the
+    /// curve direction would hit this.
+    #[test]
+    fn phosphor_white_mix_monotonic() {
+        let mut prev = 0.0_f32;
+        for i in 0..=100 {
+            let intensity = i as f32 / 100.0;
+            let w = phosphor_white_mix(intensity);
+            assert!(w + 1e-6 >= prev,
+                "white_mix decreased at intensity={intensity}: {prev} → {w}");
+            prev = w;
+        }
+    }
+
+    /// Pin: at intensity=0.95 (very dense region), the trace is
+    /// still distinctly coloured — well below the 0.75 cap. The
+    /// legacy cubic curve gave 0.857 at this intensity, washing the
+    /// trace to nearly-pure white. This pins the actual chroma
+    /// preservation that makes scopes feel like CRT not OLED.
+    #[test]
+    fn phosphor_white_mix_chroma_preserved_at_high_density() {
+        let w = phosphor_white_mix(0.95);
+        assert!(w < 0.40,
+            "at intensity=0.95, trace should still be more coloured than washed, got white_mix={w}");
     }
 }
 
