@@ -528,6 +528,47 @@ fn scan_project(state: &AppState) -> Vec<Finding> {
         }
     }
 
+    // 2d. CLAP plugin findings — same shape as LV2 but keyed on
+    //     CLAP plugin ID.
+    let installed_clap_ids: std::collections::HashSet<String> =
+        klipp_audio::clap::registry_snapshot()
+            .into_iter()
+            .map(|info| info.id)
+            .collect();
+
+    if let Some(seq) = active {
+        for track in &seq.tracks {
+            for clip in &track.clips {
+                for (effect_index, fx) in clip.audio_effects.iter().enumerate() {
+                    let Some(plugin_id) = fx.effect_type.strip_prefix("clap:") else {
+                        continue;
+                    };
+                    if installed_clap_ids.contains(plugin_id) {
+                        continue;
+                    }
+                    findings.push(Finding {
+                        severity: Severity::Error,
+                        category: "MISSING CLAP PLUGIN".into(),
+                        summary: format!("CLAP plugin not installed: {plugin_id}"),
+                        detail: "The clip has an audio effect referencing \
+                                 a CLAP plugin that's no longer on disk. \
+                                 Install the plugin into ~/.clap or \
+                                 /usr/lib/clap and rescan, or remove the \
+                                 effect from the clip."
+                            .into(),
+                        fixes: vec![Fix {
+                            label: "Remove from clip".into(),
+                            action: FixAction::RemoveAudioEffectFromClip {
+                                clip_id: clip.id,
+                                effect_index,
+                            },
+                        }],
+                    });
+                }
+            }
+        }
+    }
+
     // 2b. Frei0r plugin findings — walk every clip's builtin_effects
     //     list and flag `BuiltinEffect::Frei0r { type_id, .. }`
     //     entries whose plugin isn't currently installed. We use the

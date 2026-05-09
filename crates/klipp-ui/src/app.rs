@@ -789,6 +789,27 @@ impl KlippApp {
                 app.state.lv2_plugins.len()
             );
         }
+        // CLAP audio-plugin discovery — disk-cached. Populates the
+        // browser registry so the Audio FX tab shows the CLAP source
+        // pill; create_effect("clap:{id}", sr) resolves through the
+        // klipp_audio::clap process-global registry. v1 stub runtime
+        // — chain loads, params save/restore via ParamID, but
+        // process() passes audio through unchanged until
+        // CLAP-NEXT-RUNTIME-WIRING ships.
+        {
+            let _t = LogTimer::new("ui: CLAP discovery");
+            let cache_dir = dirs::cache_dir().map(|p| p.join("klipp"));
+            app.state.clap_plugins =
+                klipp_audio::clap::discover_clap_plugins_cached(cache_dir.as_deref());
+            klipp_audio::clap::set_plugin_registry(app.state.clap_plugins.clone());
+            app.state
+                .effect_registry
+                .merge_clap_plugins(&app.state.clap_plugins);
+            tracing::info!(
+                "CLAP: discovered {} plugin(s)",
+                app.state.clap_plugins.len()
+            );
+        }
         klipp_core::startup_timer::mark("KlippApp::new returning");
         app
     }

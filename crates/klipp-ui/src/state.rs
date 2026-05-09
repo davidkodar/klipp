@@ -1761,6 +1761,14 @@ pub struct AppState {
     /// MIDI / native UI deferred to LV2-NEXT-* queue items.
     pub lv2_plugins: Vec<klipp_audio::lv2::Lv2PluginInfo>,
 
+    /// All CLAP audio plugins discovered at startup (and on Rescan).
+    /// Populates the runtime cache in `klipp_audio::clap` so any
+    /// `AudioEffectInstance.effect_type = "clap:{plugin_id}"` can
+    /// resolve without re-walking the system search paths each
+    /// render. v1 stub runtime — discovery + UI pipe ready, full
+    /// process() lands with CLAP-NEXT-RUNTIME-WIRING.
+    pub clap_plugins: Vec<klipp_audio::clap::ClapPluginInfo>,
+
     /// Plugins the user has explicitly disabled, keyed on the
     /// stable LADSPA `unique_id`. Persisted to
     /// `~/.config/klipp/audio_plugins.toml` on every toggle and
@@ -3230,6 +3238,7 @@ impl Default for AppState {
             ladspa_plugins: Vec::new(),
             frei0r_plugins: Vec::new(),
             lv2_plugins: Vec::new(),
+            clap_plugins: Vec::new(),
             disabled_audio_plugins: std::collections::HashSet::new(),
             effect_registry: crate::browser::effect_registry::EffectRegistry::new(),
             effect_source_filter: crate::browser::effects_tab::SourceFilter::default(),

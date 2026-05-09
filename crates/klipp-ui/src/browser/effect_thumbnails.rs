@@ -144,6 +144,10 @@ impl ThumbnailRenderer {
                         // LV2 plugins are audio-only — no visual preview.
                         continue;
                     }
+                    EffectSource::Clap(_) => {
+                        // CLAP plugins are audio-only — no visual preview.
+                        continue;
+                    }
                 };
                 let _ = tx.send(ThumbnailResult {
                     effect_name: name.clone(),

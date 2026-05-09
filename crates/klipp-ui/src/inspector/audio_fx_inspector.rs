@@ -349,7 +349,44 @@ fn add_effect_picker(
                 }
             }
 
-            if builtins.is_empty() && visible_ladspa.is_empty() && visible_lv2.is_empty() {
+            // ── CLAP section ──
+            let clap_plugins_all = klipp_audio::clap::registry_snapshot();
+            let mut visible_clap: Vec<&klipp_audio::clap::ClapPluginInfo> = clap_plugins_all
+                .iter()
+                .filter(|p| {
+                    if search_lower.is_empty() {
+                        return true;
+                    }
+                    p.name.to_lowercase().contains(&search_lower)
+                        || p.id.to_lowercase().contains(&search_lower)
+                        || p.vendor.to_lowercase().contains(&search_lower)
+                })
+                .collect();
+            visible_clap.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+
+            if !visible_clap.is_empty() {
+                if !builtins.is_empty() || !visible_ladspa.is_empty() || !visible_lv2.is_empty() {
+                    ui.add_space(8.0);
+                }
+                ui.label(
+                    egui::RichText::new("CLAP")
+                        .size(9.0)
+                        .strong()
+                        .color(theme.text_dim),
+                );
+                ui.add_space(2.0);
+                for plugin in &visible_clap {
+                    if ui.button(&plugin.name).clicked() {
+                        on_select(plugin.type_id());
+                    }
+                }
+            }
+
+            if builtins.is_empty()
+                && visible_ladspa.is_empty()
+                && visible_lv2.is_empty()
+                && visible_clap.is_empty()
+            {
                 ui.add_space(8.0);
                 ui.vertical_centered(|ui| {
                     ui.label(
@@ -371,10 +408,11 @@ fn add_effect_picker(
     ui.add_space(2.0);
     ui.label(
         egui::RichText::new(format!(
-            "{} built-in   |   {} LADSPA   |   {} LV2",
+            "{} built-in   |   {} LADSPA   |   {} LV2   |   {} CLAP",
             klipp_audio::dsp::available_effects().len(),
             ladspa_plugins.len(),
             klipp_audio::lv2::registry_snapshot().len(),
+            klipp_audio::clap::registry_snapshot().len(),
         ))
         .size(9.0)
         .color(theme.text_dim),
@@ -515,6 +553,13 @@ pub fn show_content(
             .strip_prefix("lv2:")
             .and_then(klipp_audio::lv2::lookup_by_uri);
 
+        // CLAP lookup uses the reverse-DNS plugin ID as the stable
+        // identifier (clap:{plugin_id}). Same registry pattern.
+        let clap_info: Option<klipp_audio::clap::ClapPluginInfo> = inst
+            .effect_type
+            .strip_prefix("clap:")
+            .and_then(klipp_audio::clap::lookup_by_id);
+
         let effect_name = if let Some(info) = ladspa_info {
             if info.name.is_empty() { info.label.clone() } else { info.name.clone() }
         } else if inst.effect_type.starts_with("ladspa:") {
@@ -524,6 +569,10 @@ pub fn show_content(
         } else if let Some(ref info) = lv2_info {
             info.name.clone()
         } else if inst.effect_type.starts_with("lv2:") {
+            inst.effect_type.clone()
+        } else if let Some(ref info) = clap_info {
+            info.name.clone()
+        } else if inst.effect_type.starts_with("clap:") {
             inst.effect_type.clone()
         } else {
             klipp_audio::dsp::create_effect(&inst.effect_type, 48000)
@@ -686,6 +735,21 @@ pub fn show_content(
                             egui::RichText::new(format!(
                                 "LV2 plugin not found: {}",
                                 inst.effect_type.strip_prefix("lv2:").unwrap_or("")
+                            ))
+                            .size(10.0)
+                            .color(egui::Color32::from_rgb(200, 140, 60)),
+                        );
+                    } else if let Some(ref info) = clap_info {
+                        render_clap_params(
+                            ui, theme, clip_id, idx, inst, info,
+                            audio_effect_keyframes, clip_time_secs,
+                            clip_timeline_in_secs, clip_rate, cmds,
+                        );
+                    } else if inst.effect_type.starts_with("clap:") {
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "CLAP plugin not found: {}",
+                                inst.effect_type.strip_prefix("clap:").unwrap_or("")
                             ))
                             .size(10.0)
                             .color(egui::Color32::from_rgb(200, 140, 60)),
@@ -1042,6 +1106,103 @@ fn render_lv2_params(
         dispatch_audio_kf_response(
             &resp, val, audio_effect_keyframes,
             clip_id, effect_index, &port.symbol,
+            clip_time_secs, clip_timeline_in_secs, clip_rate, cmds,
+        );
+    }
+}
+
+/// Render CLAP control parameters as keyframable scrubby_param rows.
+/// Values are addressed in `inst.params` by stable u32 ParamID
+/// (hex-formatted). v1 stub runtime — these sliders update the
+/// saved param values, but the audio process pass-throughs until
+/// CLAP-NEXT-RUNTIME-WIRING ships.
+#[allow(clippy::too_many_arguments)]
+fn render_clap_params(
+    ui: &mut egui::Ui,
+    theme: &KlippTheme,
+    clip_id: ClipId,
+    effect_index: usize,
+    inst: &AudioEffectInstance,
+    info: &klipp_audio::clap::ClapPluginInfo,
+    audio_effect_keyframes: &HashMap<String, Vec<Keyframe>>,
+    clip_time_secs: f64,
+    clip_timeline_in_secs: f64,
+    clip_rate: u32,
+    cmds: &mut Vec<AppCommand>,
+) {
+    if info.params.is_empty() {
+        ui.label(
+            egui::RichText::new(
+                "(CLAP runtime not yet wired — discovery + UI ready, audio passthrough until \
+                 CLAP-NEXT-RUNTIME-WIRING ships)",
+            )
+            .size(10.0)
+            .color(theme.text_dim),
+        );
+        return;
+    }
+
+    for port in &info.params {
+        let key = port.key();
+        let static_value = inst
+            .params
+            .iter()
+            .find(|(k, _)| k == &key)
+            .map(|(_, v)| *v)
+            .unwrap_or(port.default);
+
+        let label = if port.name.is_empty() {
+            key.clone()
+        } else {
+            port.name.clone()
+        };
+        let mut val = audio_kf_eval(
+            audio_effect_keyframes,
+            effect_index,
+            &key,
+            clip_time_secs,
+            static_value,
+        );
+        let range = (port.max - port.min).max(f32::EPSILON);
+        let speed = (range * 0.003).max(0.0001) as f64;
+        let decimals = if range > 100.0 {
+            1
+        } else if range > 10.0 {
+            2
+        } else {
+            3
+        };
+        let kf_state = Some(audio_kf_state(
+            audio_effect_keyframes,
+            effect_index,
+            &key,
+            clip_time_secs,
+        ));
+
+        let resp = scrubby_param_row(
+            ui,
+            &label,
+            &mut val,
+            port.min..=port.max,
+            port.default,
+            speed,
+            decimals,
+            "",
+            kf_state,
+        );
+
+        if resp.changed && !has_audio_kfs(audio_effect_keyframes, effect_index, &key) {
+            cmds.push(AppCommand::UpdateAudioEffectParam {
+                clip_id,
+                effect_index,
+                param_name: key.clone(),
+                value: val,
+            });
+        }
+        dispatch_audio_chain_drag(&resp, clip_id, effect_index, &key, cmds);
+        dispatch_audio_kf_response(
+            &resp, val, audio_effect_keyframes,
+            clip_id, effect_index, &key,
             clip_time_secs, clip_timeline_in_secs, clip_rate, cmds,
         );
     }

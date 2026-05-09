@@ -15,6 +15,7 @@ pub enum AudioSourceFilter {
     Builtin,
     Ladspa,
     Lv2,
+    Clap,
 }
 
 impl Default for AudioSourceFilter {
@@ -75,7 +76,7 @@ pub fn audio_effect_color_for_type(type_id: &str, theme: &KlippTheme) -> egui::C
 fn tile_color(entry: &EffectEntry, theme: &KlippTheme) -> egui::Color32 {
     match &entry.source {
         EffectSource::Audio(type_id) => audio_effect_color_for_type(type_id, theme),
-        EffectSource::Ladspa(_) | EffectSource::Lv2(_) => {
+        EffectSource::Ladspa(_) | EffectSource::Lv2(_) | EffectSource::Clap(_) => {
             audio_category_color(entry.category, theme)
         }
         _ => egui::Color32::from_rgb(0x50, 0x50, 0x60),
@@ -115,6 +116,7 @@ fn effect_type_for_dispatch(entry: &EffectEntry) -> Option<String> {
             plugin.label
         )),
         EffectSource::Lv2(plugin) => Some(plugin.type_id()),
+        EffectSource::Clap(plugin) => Some(plugin.type_id()),
         _ => None,
     }
 }
@@ -270,7 +272,7 @@ pub fn show(
                     .filter(|e| {
                         matches!(
                             e.source,
-                            EffectSource::Audio(_) | EffectSource::Ladspa(_) | EffectSource::Lv2(_)
+                            EffectSource::Audio(_) | EffectSource::Ladspa(_) | EffectSource::Lv2(_) | EffectSource::Clap(_)
                         )
                     })
                     .count();
@@ -281,7 +283,7 @@ pub fn show(
                             &e.name == *n
                                 && matches!(
                                     e.source,
-                                    EffectSource::Audio(_) | EffectSource::Ladspa(_) | EffectSource::Lv2(_)
+                                    EffectSource::Audio(_) | EffectSource::Ladspa(_) | EffectSource::Lv2(_) | EffectSource::Clap(_)
                                 )
                         })
                     })
@@ -293,7 +295,7 @@ pub fn show(
                             &e.name == *n
                                 && matches!(
                                     e.source,
-                                    EffectSource::Audio(_) | EffectSource::Ladspa(_) | EffectSource::Lv2(_)
+                                    EffectSource::Audio(_) | EffectSource::Ladspa(_) | EffectSource::Lv2(_) | EffectSource::Clap(_)
                                 )
                         })
                     })
@@ -400,7 +402,7 @@ pub fn show(
             .filter(|e| {
                 matches!(
                     e.source,
-                    EffectSource::Audio(_) | EffectSource::Ladspa(_) | EffectSource::Lv2(_)
+                    EffectSource::Audio(_) | EffectSource::Ladspa(_) | EffectSource::Lv2(_) | EffectSource::Clap(_)
                 )
             })
             .collect();
@@ -417,6 +419,10 @@ pub fn show(
             .iter()
             .filter(|e| matches!(e.source, EffectSource::Lv2(_)))
             .count();
+        let clap_count = scoped
+            .iter()
+            .filter(|e| matches!(e.source, EffectSource::Clap(_)))
+            .count();
 
         egui::Frame::none()
             .inner_margin(egui::Margin::symmetric(8.0, 0.0))
@@ -430,6 +436,7 @@ pub fn show(
                         builtin_count,
                         ladspa_count,
                         lv2_count,
+                        clap_count,
                     );
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         eye_toggle_button(ui, theme, hide_unsupported);
@@ -447,6 +454,7 @@ pub fn show(
                 AudioSourceFilter::Builtin => matches!(e.source, EffectSource::Audio(_)),
                 AudioSourceFilter::Ladspa => matches!(e.source, EffectSource::Ladspa(_)),
                 AudioSourceFilter::Lv2 => matches!(e.source, EffectSource::Lv2(_)),
+                AudioSourceFilter::Clap => matches!(e.source, EffectSource::Clap(_)),
             })
             .cloned()
             .collect();
@@ -612,7 +620,7 @@ fn audio_count_in_registry(state: &AppState, cat: EffectCategory) -> usize {
         .filter(|e| {
             let is_audio = matches!(
                 e.source,
-                EffectSource::Audio(_) | EffectSource::Ladspa(_) | EffectSource::Lv2(_)
+                EffectSource::Audio(_) | EffectSource::Ladspa(_) | EffectSource::Lv2(_) | EffectSource::Clap(_)
             );
             if !is_audio {
                 return false;
@@ -1329,6 +1337,7 @@ fn segmented_audio_source_filter(
     builtin_count: usize,
     ladspa_count: usize,
     lv2_count: usize,
+    clap_count: usize,
 ) {
     let outer_h = 26.0;
     let pad = 2.0;
@@ -1337,9 +1346,10 @@ fn segmented_audio_source_filter(
         (AudioSourceFilter::Builtin, "Built-in", builtin_count),
         (AudioSourceFilter::Ladspa, "LADSPA", ladspa_count),
         (AudioSourceFilter::Lv2, "LV2", lv2_count),
+        (AudioSourceFilter::Clap, "CLAP", clap_count),
     ];
 
-    let mut seg_widths = [0.0f32; 4];
+    let mut seg_widths = [0.0f32; 5];
     let mut total_w = pad * 2.0;
     for (i, (_, label, count)) in segments.iter().enumerate() {
         let label_galley = ui.painter().layout_no_wrap(
@@ -1873,6 +1883,16 @@ fn audio_fx_row(
         ),
         EffectSource::Lv2(_) => (
             "LV2",
+            theme.text_secondary,
+            egui::Color32::from_rgba_premultiplied(
+                theme.bg_panel.r(),
+                theme.bg_panel.g(),
+                theme.bg_panel.b(),
+                255,
+            ),
+        ),
+        EffectSource::Clap(_) => (
+            "CLAP",
             theme.text_secondary,
             egui::Color32::from_rgba_premultiplied(
                 theme.bg_panel.r(),

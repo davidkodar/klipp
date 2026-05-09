@@ -17,5 +17,20 @@ libloading = { workspace = true }
 # back to passthrough on any plugin that doesn't load — same shape
 # the LADSPA host uses for missing / disabled plugins.
 livi = "0.7"
+# CLAP plugin host. `clack-host` is the canonical Rust CLAP host
+# wrapper (built on `clap-sys`); maintained by prokopyl since 2021,
+# published 2026-05-03. Sibling of the LV2 host inside klipp-audio
+# (clack-host is safe Rust — no isolated-unsafe-crate argument like
+# klipp-frei0r's). Per-extension feature flags pick up just what v1
+# uses: audio-ports / params / latency / state / log.
+clack-host = "0.1"
+clack-extensions = { version = "0.1", features = [
+    "clack-host",
+    "audio-ports",
+    "latency",
+    "log",
+    "params",
+    "state",
+] }
 tracing = { workspace = true }
 dirs = { workspace = true }

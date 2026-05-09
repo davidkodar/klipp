@@ -420,6 +420,13 @@ pub fn create_effect(type_id: &str, sample_rate: u32) -> Option<Box<dyn AudioEff
     if type_id.starts_with("lv2:") {
         return crate::lv2::instantiate_from_type_id(type_id, sample_rate, &[]);
     }
+    // CLAP plugins resolve via reverse-DNS plugin ID
+    // (`"clap:{plugin_id}"`). Param values are addressed by stable
+    // u32 ParamID (hex-encoded in the params Vec) so plugin updates
+    // that reorder ports don't corrupt saves.
+    if type_id.starts_with("clap:") {
+        return crate::clap::instantiate_from_type_id(type_id, sample_rate, &[]);
+    }
     if let Some(rest) = type_id.strip_prefix("ladspa:") {
         if let Some(last_colon) = rest.rfind(':') {
             let path_str = &rest[..last_colon];

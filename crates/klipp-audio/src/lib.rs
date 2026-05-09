@@ -39,6 +39,7 @@
 
 pub mod denormal;
 pub mod dsp;
+pub mod clap;
 pub mod ladspa;
 pub mod lv2;
 pub mod lufs;

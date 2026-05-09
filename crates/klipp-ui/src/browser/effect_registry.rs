@@ -22,6 +22,14 @@ pub enum EffectSource {
     /// audio I/O; surround / native-UI / state-extension deferred
     /// to LV2-NEXT-* queue items.
     Lv2(klipp_audio::lv2::Lv2PluginInfo),
+    /// Third-party CLAP audio plugin. Holds the full discovered
+    /// metadata (plugin ID, vendor, version, params keyed by stable
+    /// u32 ParamID) so the inspector can render hex-id-keyed sliders
+    /// without a second registry lookup. v1 stub runtime — chain
+    /// loads + params round-trip cleanly via ParamID, but the
+    /// per-block process() pass-throughs until CLAP-NEXT-RUNTIME-
+    /// WIRING ships.
+    Clap(klipp_audio::clap::ClapPluginInfo),
 }
 
 /// A single entry in the effects browser.
@@ -62,6 +70,8 @@ impl EffectEntry {
             EffectSource::Frei0r(_) => false,
             // LV2 hosting runs on the CPU mix thread (audio effect).
             EffectSource::Lv2(_) => false,
+            // CLAP — same story, audio-thread CPU.
+            EffectSource::Clap(_) => false,
         }
     }
 }
@@ -661,6 +671,35 @@ impl EffectRegistry {
                 source_label: "LV2",
                 description: format!("LV2 plugin: {}", plugin.uri),
                 grouping: "LV2".to_string(),
+            });
+        }
+    }
+
+    /// Merge discovered CLAP plugins into the registry. One entry
+    /// per plugin; grouping is the vendor when present, "CLAP"
+    /// otherwise. Category heuristic substring-matches on the name.
+    pub fn merge_clap_plugins(&mut self, plugins: &[klipp_audio::clap::ClapPluginInfo]) {
+        for plugin in plugins {
+            let grouping = if plugin.vendor.is_empty() {
+                "CLAP".to_string()
+            } else {
+                plugin.vendor.clone()
+            };
+            let description = if plugin.vendor.is_empty() {
+                format!("CLAP plugin: {}", plugin.id)
+            } else {
+                format!("by {}", plugin.vendor)
+            };
+            self.effects.push(EffectEntry {
+                // Reuses the LV2 category heuristic — substring match
+                // on the name covers most cases (Reverb / Compressor /
+                // EQ / Delay / Modulation / Pitch).
+                category: lv2_category_from_name(&plugin.name),
+                name: plugin.name.clone(),
+                source: EffectSource::Clap(plugin.clone()),
+                source_label: "CLAP",
+                description,
+                grouping,
             });
         }
     }

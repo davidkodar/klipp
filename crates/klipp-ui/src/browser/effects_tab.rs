@@ -648,6 +648,21 @@ pub fn show(
                                                 fx.name
                                             ));
                                         }
+                                        EffectSource::Clap(plugin) => {
+                                            // CLAP audio plugins ride the same
+                                            // pipeline. type_id = "clap:{plugin_id}",
+                                            // params keyed by stable u32 ParamID
+                                            // (hex-encoded).
+                                            let type_id = plugin.type_id();
+                                            cmds.push(AppCommand::AddAudioEffect {
+                                                clip_id,
+                                                effect_type: type_id,
+                                            });
+                                            state.toast.show(format!(
+                                                "\"{}\" applied",
+                                                fx.name
+                                            ));
+                                        }
                                     }
                                 } else {
                                     state.toast.show("Select a clip first".to_string());
@@ -683,6 +698,14 @@ pub fn show(
                                             type_id: plugin.type_id(),
                                         });
                                     }
+                                    EffectSource::Clap(plugin) => {
+                                        // CLAP also rides the audio-effect
+                                        // drop target. type_id = "clap:{plugin_id}".
+                                        state.drag_drop.begin(DragPayload::AudioEffect {
+                                            name: fx.name.clone(),
+                                            type_id: plugin.type_id(),
+                                        });
+                                    }
                                     _ => {
                                         let (is_builtin, plugin_id) = match &fx.source {
                                             EffectSource::Builtin(_) => (true, String::new()),
@@ -698,7 +721,8 @@ pub fn show(
                                             }
                                             EffectSource::Audio(_)
                                             | EffectSource::Ladspa(_)
-                                            | EffectSource::Lv2(_) => {
+                                            | EffectSource::Lv2(_)
+                                            | EffectSource::Clap(_) => {
                                                 unreachable!()
                                             }
                                         };
@@ -850,6 +874,7 @@ fn effect_card(
         EffectSource::Ladspa(_) => "LADSPA",
         EffectSource::Frei0r(_) => "frei0r",
         EffectSource::Lv2(_) => "LV2",
+        EffectSource::Clap(_) => "CLAP",
     };
     let perf_label = if supports_gpu { "GPU" } else { "CPU" };
     let src_rect = paint_thumb_badge(
@@ -1015,6 +1040,7 @@ fn effect_list_row(
         EffectSource::Ladspa(_) => "LADSPA",
         EffectSource::Frei0r(_) => "frei0r",
         EffectSource::Lv2(_) => "LV2",
+        EffectSource::Clap(_) => "CLAP",
     };
     let star_reserve = 30.0;
     let badge_y = rect.center().y - 8.0;
