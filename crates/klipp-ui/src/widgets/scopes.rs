@@ -94,22 +94,23 @@ fn major_ticks(scale: ScopeScale) -> Vec<u32> {
 
 pub(crate) fn draw_scale(ui: &egui::Ui, rect: egui::Rect, scale: ScopeScale, is_parade: bool, section_count: usize, theme: &KlippTheme) {
     let painter = ui.painter_at(rect);
-    // Amber graticule colour. The theme's `scope_grid` carries the
-    // base RGB; we shift it 30% toward classic CRT-graticule amber
-    // (#c89060) so cooler / greyer themes still read as warm
-    // instrument glass — and modulate alpha per-call so minor /
-    // major lines and ticks read at clearly distinct intensities.
-    // The major / minor ratio was deliberately widened in 2026-05-09:
-    // pre-Phase-2 alphas were 51 / 10 (5× ratio); now 110 / 8 (~14×)
-    // so eyes parse the IRE / 10-bit / dB ladder hierarchy at a glance
-    // instead of counting cells.
+    // Graticule colour. The theme's `scope_grid` is blended 50%
+    // toward classic CRT-graticule gold (#e8a820) so guides land
+    // squarely in the saturated yellow-amber family DaVinci /
+    // Resolve / FCP X all use, regardless of the theme's polarity.
+    // Bumped from the post-Phase-2 30% / #c89060 (which still read
+    // too brown / not gold enough against dense traces) to 50% /
+    // #e8a820 per the 2026-05-09 user reference. Alpha + stroke are
+    // also bumped (see major/minor sites below) so the lines are
+    // visibly the right colour rather than the right colour but
+    // too faint to perceive.
     let grid = theme.scope_grid;
     let label_color = theme.scope_label;
     let warm_amber = |a: u8| -> egui::Color32 {
-        let t = 0.30_f32;
-        let r = ((grid.r() as f32) * (1.0 - t) + 200.0 * t) as u8;
-        let g = ((grid.g() as f32) * (1.0 - t) + 144.0 * t) as u8;
-        let b = ((grid.b() as f32) * (1.0 - t) + 60.0 * t) as u8;
+        let t = 0.50_f32;
+        let r = ((grid.r() as f32) * (1.0 - t) + 232.0 * t) as u8;
+        let g = ((grid.g() as f32) * (1.0 - t) + 168.0 * t) as u8;
+        let b = ((grid.b() as f32) * (1.0 - t) + 32.0 * t) as u8;
         egui::Color32::from_rgba_unmultiplied(r, g, b, a)
     };
     let font = egui::FontId::monospace(9.0);
@@ -140,19 +141,21 @@ pub(crate) fn draw_scale(ui: &egui::Ui, rect: egui::Rect, scale: ScopeScale, is_
         v += minor_step;
     }
 
-    // Major grid lines + labels — pushed brighter (alpha 51 → 110,
-    // tick 153 → 215) so the IRE 0/50/100 / 10-bit 256/512/768 / dB
-    // anchors read at a glance even through dense traces.
+    // Major grid lines + labels — pushed thicker (stroke 0.5 → 1.5)
+    // and brighter (alpha 110 → 170, tick 215 → 235) per the
+    // 2026-05-09 user reference so the IRE 0/50/100 / 10-bit
+    // 256/512/768 / dB anchors read at a glance even through dense
+    // traces, in the saturated gold colour real CRT graticules use.
     for &val in &major_vals {
         let y = val_to_y(val, &rect, scale);
         painter.line_segment(
             [egui::pos2(rect.min.x + AXIS_W, y), egui::pos2(rect.max.x, y)],
-            egui::Stroke::new(0.5_f32, warm_amber(110)),
+            egui::Stroke::new(1.5_f32, warm_amber(170)),
         );
         // 6px tick on axis
         painter.line_segment(
             [egui::pos2(rect.min.x + AXIS_W - 6.0, y), egui::pos2(rect.min.x + AXIS_W, y)],
-            egui::Stroke::new(0.5_f32, warm_amber(215)),
+            egui::Stroke::new(1.5_f32, warm_amber(235)),
         );
         // Label — right-aligned to axis, 0 sits BELOW (TOP baseline), others sit ABOVE (BOTTOM baseline)
         let label = format!("{}", val as u32);
@@ -173,17 +176,19 @@ pub(crate) fn draw_scale(ui: &egui::Ui, rect: egui::Rect, scale: ScopeScale, is_
         egui::Stroke::new(1.0_f32, egui::Color32::from_rgba_unmultiplied(255, 255, 255, 20)),
     );
 
-    // Bottom ticks — DaVinci-style row sitting INSIDE the trace
-    // area, drawn upward from the bottom baseline so they read as
-    // graticule marks etched into the instrument glass rather than
-    // as ruler marks below the trace. For parade, tick within each
-    // of the 3 sections separately so the section-divider gaps stay
-    // clean (no ticks crossing the inter-section gap).
+    // Bottom ticks — DaVinci-style dense ruler row sitting INSIDE
+    // the trace area, drawn upward from the bottom baseline so they
+    // read as graticule marks etched into the instrument glass
+    // rather than as marks dangling below the trace. For parade,
+    // tick within each of the 3 sections separately so the
+    // section-divider gaps stay clean.
     //
-    // Bumped alpha from the legacy 175/28 (read as invisible against
-    // the warm-amber graticule even at major) to 200/85 + thicker
-    // 1.0 px stroke so the bottom edge is visibly ticked at typical
-    // dock sizes. Major every 25 % of section width, minor every 5 %.
+    // Density bumped 2.5× per the 2026-05-09 user reference: 20
+    // ticks/section → 50 ticks/section (every 2 % of section width
+    // instead of every 5 %). Major every 10 % (every 5th tick),
+    // minor between. Brightness bumped to alpha 230/110 — the
+    // ruler row should be clearly visible at typical dock sizes,
+    // matching DaVinci's bottom-edge tick density.
     let trace_x0 = rect.min.x + AXIS_W;
     let trace_x1 = rect.max.x - PAD_RIGHT;
     let trace_w = trace_x1 - trace_x0;
@@ -191,17 +196,15 @@ pub(crate) fn draw_scale(ui: &egui::Ui, rect: egui::Rect, scale: ScopeScale, is_
     let gap = if is_parade { 2.0_f32 } else { 0.0_f32 };
     let section_w = (trace_w - gap * (n_sections.saturating_sub(1)) as f32)
         / n_sections.max(1) as f32;
+    let ticks_per_section: usize = 50;
     for s in 0..n_sections {
         let sx0 = trace_x0 + s as f32 * (section_w + gap);
-        for i in 0..=20 {
-            let frac = i as f32 / 20.0;
+        for i in 0..=ticks_per_section {
+            let frac = i as f32 / ticks_per_section as f32;
             let x = sx0 + frac * section_w;
             let is_major = i % 5 == 0;
             let tick_h = if is_major { 6.0 } else { 3.0 };
-            let color = if is_major { warm_amber(200) } else { warm_amber(85) };
-            // Draw upward from `bottom_y` into the trace area —
-            // ticks read as part of the instrument graticule, not
-            // as a ruler dangling below the trace.
+            let color = if is_major { warm_amber(230) } else { warm_amber(110) };
             painter.line_segment(
                 [egui::pos2(x, bottom_y), egui::pos2(x, bottom_y - tick_h)],
                 egui::Stroke::new(1.0_f32, color),
