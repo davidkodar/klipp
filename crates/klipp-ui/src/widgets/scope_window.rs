@@ -578,9 +578,13 @@ fn render_pane_scope(
         }
     };
 
-    if let Some((image, gen)) = scope_image {
+    if let Some((mut image, gen)) = scope_image {
         runtime.frame_gens[pane_idx] = gen;
         runtime.last_render[pane_idx] = Some(Instant::now());
+
+        // Apply CRT scanline overlay so floating-window scopes get the
+        // same analog character as the main scope panel.
+        super::scopes::apply_scanline_texture(&mut image);
 
         let new_size = egui::vec2(image.size[0] as f32, image.size[1] as f32);
         match runtime.textures[pane_idx] {

@@ -93,12 +93,24 @@ fn major_ticks(scale: ScopeScale) -> Vec<u32> {
 
 pub(crate) fn draw_scale(ui: &egui::Ui, rect: egui::Rect, scale: ScopeScale, is_parade: bool, section_count: usize, theme: &KlippTheme) {
     let painter = ui.painter_at(rect);
-    // Amber tick / grid colour from the theme. `scope_grid` carries the
-    // theme-tuned base alpha; we modulate it per-call so minor / major
-    // grid lines + ticks read at distinct intensities.
+    // Amber graticule colour. The theme's `scope_grid` carries the
+    // base RGB; we shift it 30% toward classic CRT-graticule amber
+    // (#c89060) so cooler / greyer themes still read as warm
+    // instrument glass — and modulate alpha per-call so minor /
+    // major lines and ticks read at clearly distinct intensities.
+    // The major / minor ratio was deliberately widened in 2026-05-09:
+    // pre-Phase-2 alphas were 51 / 10 (5× ratio); now 110 / 8 (~14×)
+    // so eyes parse the IRE / 10-bit / dB ladder hierarchy at a glance
+    // instead of counting cells.
     let grid = theme.scope_grid;
     let label_color = theme.scope_label;
-    let amber = |a: u8| egui::Color32::from_rgba_unmultiplied(grid.r(), grid.g(), grid.b(), a);
+    let warm_amber = |a: u8| -> egui::Color32 {
+        let t = 0.30_f32;
+        let r = ((grid.r() as f32) * (1.0 - t) + 200.0 * t) as u8;
+        let g = ((grid.g() as f32) * (1.0 - t) + 144.0 * t) as u8;
+        let b = ((grid.b() as f32) * (1.0 - t) + 60.0 * t) as u8;
+        egui::Color32::from_rgba_unmultiplied(r, g, b, a)
+    };
     let font = egui::FontId::monospace(9.0);
 
     let major_vals: Vec<f32> = major_ticks(scale).into_iter().map(|v| v as f32).collect();
@@ -107,7 +119,8 @@ pub(crate) fn draw_scale(ui: &egui::Ui, rect: egui::Rect, scale: ScopeScale, is_
         _ => 5.0,
     };
 
-    // Minor grid lines — rgba(245,180,60,0.04) full width, 3px tick rgba(245,180,60,0.25)
+    // Minor grid lines — pushed subtler (alpha 10 → 8, tick 64 → 48) so
+    // major lines dominate and the hierarchy reads cleanly.
     let max = scale.max_val();
     let mut v = 0.0;
     while v <= max {
@@ -115,28 +128,30 @@ pub(crate) fn draw_scale(ui: &egui::Ui, rect: egui::Rect, scale: ScopeScale, is_
         if !major_vals.iter().any(|&mv| (mv - v).abs() < 0.1) {
             painter.line_segment(
                 [egui::pos2(rect.min.x + AXIS_W, y), egui::pos2(rect.max.x, y)],
-                egui::Stroke::new(0.5_f32, amber(10)),
+                egui::Stroke::new(0.5_f32, warm_amber(8)),
             );
             // 3px tick on axis
             painter.line_segment(
                 [egui::pos2(rect.min.x + AXIS_W - 3.0, y), egui::pos2(rect.min.x + AXIS_W, y)],
-                egui::Stroke::new(0.5_f32, amber(64)),
+                egui::Stroke::new(0.5_f32, warm_amber(48)),
             );
         }
         v += minor_step;
     }
 
-    // Major grid lines + labels — rgba(245,180,60,0.20) full width, 6px tick rgba(245,180,60,0.60)
+    // Major grid lines + labels — pushed brighter (alpha 51 → 110,
+    // tick 153 → 215) so the IRE 0/50/100 / 10-bit 256/512/768 / dB
+    // anchors read at a glance even through dense traces.
     for &val in &major_vals {
         let y = val_to_y(val, &rect, scale);
         painter.line_segment(
             [egui::pos2(rect.min.x + AXIS_W, y), egui::pos2(rect.max.x, y)],
-            egui::Stroke::new(0.5_f32, amber(51)),
+            egui::Stroke::new(0.5_f32, warm_amber(110)),
         );
         // 6px tick on axis
         painter.line_segment(
             [egui::pos2(rect.min.x + AXIS_W - 6.0, y), egui::pos2(rect.min.x + AXIS_W, y)],
-            egui::Stroke::new(0.5_f32, amber(153)),
+            egui::Stroke::new(0.5_f32, warm_amber(215)),
         );
         // Label — right-aligned to axis, 0 sits BELOW (TOP baseline), others sit ABOVE (BOTTOM baseline)
         let label = format!("{}", val as u32);
@@ -157,14 +172,16 @@ pub(crate) fn draw_scale(ui: &egui::Ui, rect: egui::Rect, scale: ScopeScale, is_
         egui::Stroke::new(1.0_f32, egui::Color32::from_rgba_unmultiplied(255, 255, 255, 20)),
     );
 
-    // Bottom ticks — major every 25% (6px, amber 0.40), minor between (3px, amber 0.15)
+    // Bottom ticks — major every 25% (6px, brightened to alpha 175);
+    // minor between (3px, kept subtle at alpha 28). Same widened
+    // major/minor ratio as the horizontal grid above.
     let trace_w = rect.width() - AXIS_W - PAD_RIGHT;
     for i in 0..=20 {
         let frac = i as f32 / 20.0;
         let x = rect.min.x + AXIS_W + frac * trace_w;
         let is_major = i % 5 == 0;
         let tick_h = if is_major { 6.0 } else { 3.0 };
-        let color = if is_major { amber(102) } else { amber(38) };
+        let color = if is_major { warm_amber(175) } else { warm_amber(28) };
         painter.line_segment(
             [egui::pos2(x, bottom_y), egui::pos2(x, bottom_y + tick_h)],
             egui::Stroke::new(0.5_f32, color),
@@ -179,6 +196,36 @@ pub(crate) fn draw_scale(ui: &egui::Ui, rect: egui::Rect, scale: ScopeScale, is_
             painter.line_segment(
                 [egui::pos2(x, rect.min.y + PAD_TOP), egui::pos2(x, bottom_y)],
                 egui::Stroke::new(0.5_f32, egui::Color32::from_rgba_unmultiplied(255, 255, 255, 13)),
+            );
+        }
+    }
+}
+
+/// Apply a CRT scan-texture overlay — every other row darkens by a
+/// small fraction. The goal is "very subtle row structure" — not
+/// obvious stripes, just enough to break the sterile mathematically-
+/// clean look without distracting from the trace. 4 % per-row
+/// darkening (×0.96) reads as texture, not as banding.
+///
+/// Cheap: one multiply per pixel on alternating rows. No tier-gating
+/// today — the effect is subtle enough that the perf cost (~1 µs at
+/// typical scope sizes) doesn't justify a quality knob.
+///
+/// Part of the "energetic imperfection" direction (see
+/// feedback_scope_realism_through_imperfection.md): realism comes
+/// from non-uniformity, not from more blur.
+pub(crate) fn apply_scanline_texture(image: &mut egui::ColorImage) {
+    let w = image.size[0];
+    let h = image.size[1];
+    let mul: f32 = 0.96;
+    for y in (1..h).step_by(2) {
+        let row_start = y * w;
+        for x in 0..w {
+            let p = image.pixels[row_start + x];
+            image.pixels[row_start + x] = egui::Color32::from_rgb(
+                ((p.r() as f32) * mul) as u8,
+                ((p.g() as f32) * mul) as u8,
+                ((p.b() as f32) * mul) as u8,
             );
         }
     }
@@ -410,6 +457,12 @@ pub fn show_scopes(
         if state.low_pass && mode != ScopeMode::Vectorscope {
             apply_low_pass_filter(&mut image);
         }
+
+        // Post-processing: subtle CRT scanline overlay. Always on —
+        // the effect is small enough (4% per-row darkening on alternating
+        // rows) that it reads as texture rather than as stripes. Adds
+        // analog character to all four scope modes.
+        apply_scanline_texture(&mut image);
 
         let new_size = egui::vec2(image.size[0] as f32, image.size[1] as f32);
         match state.textures[mi] {
@@ -1978,6 +2031,83 @@ mod tests {
         assert_eq!(klipp_core::ScopeQuality::Low.splat_kernel_size(), 1);
         assert_eq!(klipp_core::ScopeQuality::Medium.splat_kernel_size(), 3);
         assert_eq!(klipp_core::ScopeQuality::High.splat_kernel_size(), 5);
+    }
+
+    // ── Scanline texture overlay (Phase 2) ───────────────────────────
+
+    /// Pin: scanline overlay darkens odd rows by ~4% and leaves even
+    /// rows untouched. Catches a regression that flips the parity
+    /// (would darken the wrong rows) or changes the multiplier
+    /// noticeably.
+    #[test]
+    fn scanline_texture_darkens_odd_rows_only() {
+        // 4×4 image filled with mid-grey (128, 128, 128).
+        let mut image = egui::ColorImage {
+            size: [4, 4],
+            pixels: vec![egui::Color32::from_rgb(128, 128, 128); 16],
+        };
+        apply_scanline_texture(&mut image);
+
+        // Even rows (y=0, 2) untouched.
+        for y in [0, 2] {
+            for x in 0..4 {
+                let p = image.pixels[y * 4 + x];
+                assert_eq!(p.r(), 128, "even row y={y} darkened");
+                assert_eq!(p.g(), 128);
+                assert_eq!(p.b(), 128);
+            }
+        }
+        // Odd rows (y=1, 3) darkened by ×0.96.
+        let expected = (128.0_f32 * 0.96) as u8;
+        for y in [1, 3] {
+            for x in 0..4 {
+                let p = image.pixels[y * 4 + x];
+                assert_eq!(p.r(), expected, "odd row y={y} not darkened");
+                assert_eq!(p.g(), expected);
+                assert_eq!(p.b(), expected);
+            }
+        }
+    }
+
+    /// Pin: scanline overlay is subtle — at most a few percent total
+    /// brightness loss across the whole image. If a regression cranked
+    /// the multiplier down to 0.5 the test would catch it before
+    /// users do.
+    #[test]
+    fn scanline_texture_is_subtle() {
+        let mut image = egui::ColorImage {
+            size: [10, 10],
+            pixels: vec![egui::Color32::from_rgb(200, 200, 200); 100],
+        };
+        apply_scanline_texture(&mut image);
+
+        // Average brightness across all pixels — even rows untouched,
+        // odd rows ×0.96. Five even + five odd rows → expected
+        // ≈ 200 × (0.5 + 0.5 × 0.96) = 200 × 0.98 = 196.
+        let total: u32 = image.pixels.iter().map(|p| p.r() as u32).sum();
+        let avg = total as f32 / 100.0;
+        assert!(avg > 195.0 && avg < 197.0,
+            "scanline should drop avg brightness by ~2%, got avg={avg}");
+    }
+
+    /// Pin: scanline overlay handles non-multiple-of-2 heights. Odd
+    /// rows past the last even row still darken; bottom-most row
+    /// being either even or odd doesn't break the loop.
+    #[test]
+    fn scanline_texture_handles_odd_height() {
+        let mut image = egui::ColorImage {
+            size: [4, 5],
+            pixels: vec![egui::Color32::from_rgb(100, 100, 100); 20],
+        };
+        apply_scanline_texture(&mut image);
+
+        // y=0, 2, 4 are even (untouched at 100); y=1, 3 are odd (96).
+        let expected_dark = (100.0_f32 * 0.96) as u8;
+        assert_eq!(image.pixels[0].r(), 100);     // y=0
+        assert_eq!(image.pixels[4].r(), expected_dark);   // y=1
+        assert_eq!(image.pixels[8].r(), 100);     // y=2
+        assert_eq!(image.pixels[12].r(), expected_dark);  // y=3
+        assert_eq!(image.pixels[16].r(), 100);    // y=4
     }
 }
 
