@@ -2334,6 +2334,82 @@ impl GraphExecutor {
                 }
             }
 
+            NodeKind::DifferenceKey => {
+                // Two-input matte producer: the live frame comes
+                // through `primary_input` (linear f32 RGBA); the
+                // clean plate is loaded off disk via the same
+                // `matte_image_cache` ExternalMatte uses, then
+                // resized to live-frame dimensions via
+                // nearest-neighbour. Disabled or missing-plate
+                // ships an empty matte (selects nothing) — same
+                // safe-default shape as ExternalMatte.
+                let pixel_count = (width as usize) * (height as usize);
+                let Some(dk) = &params.difference_key else {
+                    return vec![0.0f32; pixel_count * 4];
+                };
+                if !dk.enabled {
+                    return vec![0.0f32; pixel_count * 4];
+                }
+                let Some(path) = dk.plate_path.as_ref() else {
+                    return vec![0.0f32; pixel_count * 4];
+                };
+
+                let cached = match self.matte_image_cache.get(path).cloned() {
+                    Some(c) => c,
+                    None => match image::open(path) {
+                        Ok(img) => {
+                            let rgba = img.to_rgba8();
+                            let (iw, ih) = (rgba.width(), rgba.height());
+                            let mut linear = vec![0.0f32; (iw * ih * 4) as usize];
+                            for (i, px) in rgba.pixels().enumerate() {
+                                let o = i * 4;
+                                linear[o]     = klipp_color::transfer::srgb_to_linear(px[0] as f32 / 255.0);
+                                linear[o + 1] = klipp_color::transfer::srgb_to_linear(px[1] as f32 / 255.0);
+                                linear[o + 2] = klipp_color::transfer::srgb_to_linear(px[2] as f32 / 255.0);
+                                linear[o + 3] = px[3] as f32 / 255.0;
+                            }
+                            let arc = Arc::new((linear, iw, ih));
+                            self.matte_image_cache.insert(path.clone(), Arc::clone(&arc));
+                            arc
+                        }
+                        Err(e) => {
+                            tracing::warn!("DifferenceKey: failed to load {:?}: {e}", path);
+                            return vec![0.0f32; pixel_count * 4];
+                        }
+                    },
+                };
+                let (src, sw, sh) = (&cached.0, cached.1, cached.2);
+
+                // Nearest-neighbour resize plate → live-frame dims.
+                let mut plate_resized = vec![0.0f32; pixel_count * 4];
+                for y in 0..height {
+                    let sy = ((y as u64 * sh as u64) / height as u64).min(sh as u64 - 1) as u32;
+                    for x in 0..width {
+                        let sx = ((x as u64 * sw as u64) / width as u64).min(sw as u64 - 1) as u32;
+                        let si = ((sy * sw + sx) as usize) * 4;
+                        let oi = ((y * width + x) as usize) * 4;
+                        plate_resized[oi]     = src[si];
+                        plate_resized[oi + 1] = src[si + 1];
+                        plate_resized[oi + 2] = src[si + 2];
+                        plate_resized[oi + 3] = src[si + 3];
+                    }
+                }
+
+                let matte = klipp_color::difference_key::generate_difference_key_matte(
+                    primary_input, &plate_resized, width, height, dk,
+                );
+                // Expand matte → RGBA (R=G=B=matte, A=1) in linear.
+                let mut out = vec![0.0f32; pixel_count * 4];
+                for (i, &m) in matte.iter().enumerate() {
+                    let o = i * 4;
+                    out[o]     = m;
+                    out[o + 1] = m;
+                    out[o + 2] = m;
+                    out[o + 3] = 1.0;
+                }
+                out
+            }
+
             NodeKind::Mask => {
                 // Empty mask stack — or all masks disabled — must
                 // behave like "entire frame selected" so the
@@ -3295,7 +3371,7 @@ pub fn bake_graph_to_lut(
     for node in &mut bake_graph.nodes {
         if matches!(
             node.kind,
-            NodeKind::Qualifier | NodeKind::LumaKey | NodeKind::Mask | NodeKind::CombineMattes | NodeKind::ApplyMatte
+            NodeKind::Qualifier | NodeKind::LumaKey | NodeKind::Mask | NodeKind::CombineMattes | NodeKind::ApplyMatte | NodeKind::DifferenceKey
         ) {
             node.enabled = false;
         }

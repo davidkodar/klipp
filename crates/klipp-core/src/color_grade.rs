@@ -142,6 +142,79 @@ impl Default for LumaKeySettings {
     }
 }
 
+/// Which colour metric the difference-key uses to compare a live
+/// pixel against the clean plate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DifferenceKeyMatchSpace {
+    /// Per-pixel `d = max(|R_live − R_plate|, |G_live − G_plate|,
+    /// |B_live − B_plate|)` (Chebyshev / L∞ norm). Catches subjects
+    /// that share luminance with the plate but differ in colour
+    /// (red shirt against grey wall). More discriminating; default.
+    Rgb,
+    /// Per-pixel `d = |Y_live − Y_plate|` with Rec.709 weights.
+    /// Faster, more forgiving of plate-noise chroma drift; suits
+    /// fixed-camera shots where the subject is meaningfully
+    /// brighter or darker than the background.
+    Luminance,
+}
+
+impl Default for DifferenceKeyMatchSpace {
+    fn default() -> Self {
+        Self::Rgb
+    }
+}
+
+/// Standalone difference-key matte producer. Compares each live-frame
+/// pixel against a clean-plate reference image loaded from disk;
+/// pixels that differ from the plate by more than `tolerance` enter
+/// the matte. Useful for fixed-camera composites where you have a
+/// "background only" take available.
+///
+/// **Colorspace note:** the Rec.709 weights baked into the luminance
+/// match-space are technically wrong for AP1 (ACEScg working
+/// colorspace) — they should be approximately `0.272/0.674/0.054`
+/// there. Matches [`LumaKeySettings`]'s and [`QualifierSettings`]'s
+/// behaviour today; both will be re-tuned per working_colorspace in a
+/// post-Phase-E follow-up.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DifferenceKeySettings {
+    pub enabled: bool,
+    /// Path to the clean-plate image on disk. `None` → matte is empty
+    /// (passthrough), so a freshly-added node doesn't black out the
+    /// viewer before the user picks a plate. Same fallback shape as
+    /// `ExternalMatte` with no path set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plate_path: Option<std::path::PathBuf>,
+    /// Distance threshold in normalised colour space (0–1). Pixels
+    /// whose match-space distance from the plate is >= `tolerance`
+    /// enter the matte at full strength; pixels with distance 0
+    /// (perfect match) are excluded.
+    pub tolerance: f32,
+    /// Soft falloff width (0–0.5 typical). Distances in
+    /// `[tolerance, tolerance + soft]` ramp from 0 → 1 for a clean
+    /// edge instead of a hard binary cut.
+    pub soft: f32,
+    /// Invert the matte. When true, pixels matching the plate
+    /// (distance below `tolerance`) become the matte instead.
+    pub invert: bool,
+    /// Which distance metric to compare against the plate.
+    #[serde(default)]
+    pub match_space: DifferenceKeyMatchSpace,
+}
+
+impl Default for DifferenceKeySettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            plate_path: None,
+            tolerance: 0.05,
+            soft: 0.02,
+            invert: false,
+            match_space: DifferenceKeyMatchSpace::Rgb,
+        }
+    }
+}
+
 /// Standalone soft-clip / hard-clip transform. Rolls off highlights
 /// above `threshold` so they asymptotically approach 1.0 instead of
 /// clipping abruptly. Common in delivery prep — broadcast targets

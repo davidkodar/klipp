@@ -3,8 +3,8 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 
 use klipp_core::{
-    BlendMode, ColorWarperParams, CurveSet, FilmGrainSettings, HueSatCurves, LayerMixerInput,
-    LogFormat, LumaKeySettings, MaskStack, QualifierSettings, SoftClipSettings,
+    BlendMode, ColorWarperParams, CurveSet, DifferenceKeySettings, FilmGrainSettings, HueSatCurves,
+    LayerMixerInput, LogFormat, LumaKeySettings, MaskStack, QualifierSettings, SoftClipSettings,
 };
 
 /// All possible parameter values a node can have.
@@ -142,6 +142,15 @@ pub struct NodeParams {
     // Simpler than Qualifier (no HSL); see `LumaKeySettings`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub luma_key: Option<LumaKeySettings>,
+
+    // Standalone difference key — frame-subtraction matte from a
+    // clean-plate reference loaded from disk. The plate path lives
+    // INSIDE this struct (not on the shared `matte_image_path` slot
+    // ExternalMatte uses) so a future scenario where both nodes sit
+    // on the same clip can't have the paths collide. See
+    // `DifferenceKeySettings`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub difference_key: Option<DifferenceKeySettings>,
 
     // Standalone soft-clip / hard-clip — rolls highlights off below
     // 1.0 with a Reinhard-style asymptotic curve. Value transform,

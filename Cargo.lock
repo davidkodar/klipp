@@ -2594,6 +2594,7 @@ dependencies = [
  "klipp-core",
  "klipp-testing",
  "rayon",
+ "serde_json",
  "tracing",
 ]
 

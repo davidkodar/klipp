@@ -11145,6 +11145,7 @@ impl KlippApp {
             "Mask" => klipp_nodes::NodeKind::Mask,
             "CombineMattes" => klipp_nodes::NodeKind::CombineMattes,
             "ExternalMatte" => klipp_nodes::NodeKind::ExternalMatte,
+            "DifferenceKey" => klipp_nodes::NodeKind::DifferenceKey,
             "ApplyMatte" => klipp_nodes::NodeKind::ApplyMatte,
             "Blend" => klipp_nodes::NodeKind::Blend,
             "Layer" => klipp_nodes::NodeKind::Layer,
@@ -12531,6 +12532,29 @@ impl KlippApp {
                 self.with_current_clip_graph_mut(*clip_id, needs_refresh, |graph| {
                     if let Some(node) = graph.nodes.iter_mut().find(|n| n.id == node_id) {
                         node.params.luma_key = Some(luma_key);
+                        node.enabled = true;
+                    }
+                });
+                true
+            }
+            AppCommand::SetNodeDifferenceKey { clip_id, node_id, difference_key } => {
+                let node_id = *node_id;
+                let dk = difference_key.clone();
+                self.with_current_clip_graph_mut(*clip_id, needs_refresh, |graph| {
+                    if let Some(node) = graph.nodes.iter_mut().find(|n| n.id == node_id) {
+                        node.params.difference_key = Some(dk);
+                        node.enabled = true;
+                    }
+                });
+                true
+            }
+            AppCommand::SetNodeDifferenceKeyPlate { clip_id, node_id, plate_path } => {
+                let node_id = *node_id;
+                let plate_path = plate_path.clone();
+                self.with_current_clip_graph_mut(*clip_id, needs_refresh, |graph| {
+                    if let Some(node) = graph.nodes.iter_mut().find(|n| n.id == node_id) {
+                        let dk = node.params.difference_key.get_or_insert_with(Default::default);
+                        dk.plate_path = plate_path;
                         node.enabled = true;
                     }
                 });
@@ -30099,6 +30123,7 @@ impl KlippApp {
                             | klipp_nodes::NodeKind::ColorMatch
                             | klipp_nodes::NodeKind::LayerMixer
                             | klipp_nodes::NodeKind::ExternalMatte
+                            | klipp_nodes::NodeKind::DifferenceKey
                             | klipp_nodes::NodeKind::Denoise
                             | klipp_nodes::NodeKind::ColorWarper
                             // Source / Output / composite-only nodes:

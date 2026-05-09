@@ -112,6 +112,7 @@ fn node_color(kind: &NodeKind, theme: &KlippTheme) -> egui::Color32 {
         | NodeKind::Mask
         | NodeKind::CombineMattes
         | NodeKind::ExternalMatte
+        | NodeKind::DifferenceKey
         | NodeKind::MaskCutout => FAMILY_SECONDARY_MATTE,
 
         // Composite family.
@@ -3467,6 +3468,7 @@ impl NodeGraphV2Panel {
                 ("Soft Clip", "SoftClip"),
                 ("Mask", "Mask"),
                 ("External Matte", "ExternalMatte"),
+                ("Difference Key", "DifferenceKey"),
                 ("Combine Mattes", "CombineMattes"),
                 ("Mask Cutout", "MaskCutout"),
             ]),
@@ -4470,6 +4472,7 @@ fn kind_category_glyph(kind: &NodeKind) -> &'static str {
         | NodeKind::Mask
         | NodeKind::CombineMattes
         | NodeKind::ExternalMatte
+        | NodeKind::DifferenceKey
         | NodeKind::MaskCutout => "M",
         NodeKind::Layer
         | NodeKind::Blend

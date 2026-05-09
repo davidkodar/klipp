@@ -1217,6 +1217,19 @@ pub enum AppCommand {
     SetNodeHueSatCurves { clip_id: ClipId, node_id: uuid::Uuid, huesat: crate::color_grade::HueSatCurves },
     SetNodeQualifier { clip_id: ClipId, node_id: uuid::Uuid, qualifier: crate::color_grade::QualifierSettings },
     SetNodeLumaKey { clip_id: ClipId, node_id: uuid::Uuid, luma_key: crate::color_grade::LumaKeySettings },
+    /// Replace the full `DifferenceKeySettings` on a DifferenceKey
+    /// node — used by inspector slider drags + checkbox toggles.
+    /// The plate-only file-picker path goes through
+    /// `SetNodeDifferenceKeyPlate` instead so its delta is small
+    /// enough to ride a single undo step without bundling the
+    /// whole grade.
+    SetNodeDifferenceKey { clip_id: ClipId, node_id: uuid::Uuid, difference_key: crate::color_grade::DifferenceKeySettings },
+    /// Point a DifferenceKey node at a new clean-plate image (or
+    /// clear it). Mirrors `SetExternalMattePath`'s shape — separate
+    /// command so the file picker dispatches a small delta and the
+    /// "Clear" button doesn't have to round-trip the entire
+    /// settings struct.
+    SetNodeDifferenceKeyPlate { clip_id: ClipId, node_id: uuid::Uuid, plate_path: Option<std::path::PathBuf> },
     SetNodeSoftClip { clip_id: ClipId, node_id: uuid::Uuid, soft_clip: crate::color_grade::SoftClipSettings },
     SetNodeMasks { clip_id: ClipId, node_id: uuid::Uuid, masks: crate::color_grade::MaskStack },
     /// Store a computed colour-match result on a ColorMatch node. The

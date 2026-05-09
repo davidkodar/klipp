@@ -2113,6 +2113,9 @@ impl NodeInspectorPanel {
             NodeKind::ExternalMatte => {
                 self.show_external_matte_widget(ui, node_id, params, clip_id, cmds, theme);
             }
+            NodeKind::DifferenceKey => {
+                self.show_difference_key_widget(ui, node_id, params, clip_id, cmds, theme);
+            }
             NodeKind::ColorMatch => {
                 self.show_color_match_widget(ui, node_id, params, clip_id, cmds, theme);
             }
@@ -2276,6 +2279,132 @@ impl NodeInspectorPanel {
                     clip_id, node_id,
                     channel: current_channel as u8,
                     invert: inv,
+                });
+            }
+        });
+    }
+
+    /// Inspector for `DifferenceKey`: clean-plate file picker + match
+    /// space (RGB / Luminance) + tolerance + soft + invert. Mirrors
+    /// the ExternalMatte file-picker shape; the threshold sliders use
+    /// the standard `grade_slider` helper so they sit visually with
+    /// the other matte-producer inspectors.
+    fn show_difference_key_widget(
+        &mut self,
+        ui: &mut egui::Ui,
+        node_id: klipp_nodes::NodeId,
+        params: &mut klipp_nodes::NodeParams,
+        clip_id: klipp_core::ClipId,
+        cmds: &mut Vec<AppCommand>,
+        theme: &crate::theme::KlippTheme,
+    ) {
+        let dk = params.difference_key.get_or_insert_with(Default::default);
+
+        // Enable / disable the whole node.
+        let mut enabled = dk.enabled;
+        if ui.checkbox(&mut enabled, "Enabled").changed() {
+            dk.enabled = enabled;
+            cmds.push(AppCommand::SetNodeDifferenceKey {
+                clip_id, node_id, difference_key: dk.clone(),
+            });
+        }
+        if !dk.enabled {
+            ui.label(
+                egui::RichText::new("Pick a clean-plate image and tune tolerance to enable.")
+                    .size(10.0).color(theme.text_dim),
+            );
+            return;
+        }
+
+        ui.add_space(4.0);
+
+        // Clean-plate file picker.
+        ui.horizontal(|ui| {
+            ui.add_space(8.0);
+            let label = match &dk.plate_path {
+                Some(p) => p.file_name().map(|f| f.to_string_lossy().to_string())
+                    .unwrap_or_else(|| p.to_string_lossy().to_string()),
+                None => "(no plate selected)".to_string(),
+            };
+            ui.label(egui::RichText::new(label).small().color(theme.text_dim));
+        });
+        ui.horizontal(|ui| {
+            ui.add_space(8.0);
+            if ui.button("Choose plate…").clicked() {
+                if let Some(path) = rfd::FileDialog::new()
+                    .add_filter("Image", &["png", "jpg", "jpeg", "PNG", "JPG", "JPEG"])
+                    .pick_file()
+                {
+                    dk.plate_path = Some(path.clone());
+                    cmds.push(AppCommand::SetNodeDifferenceKeyPlate {
+                        clip_id, node_id, plate_path: Some(path),
+                    });
+                }
+            }
+            if dk.plate_path.is_some() && ui.button("Clear").clicked() {
+                dk.plate_path = None;
+                cmds.push(AppCommand::SetNodeDifferenceKeyPlate {
+                    clip_id, node_id, plate_path: None,
+                });
+            }
+        });
+
+        ui.add_space(4.0);
+
+        // Match-space dropdown (RGB / Luminance).
+        let current_space = dk.match_space;
+        ui.horizontal(|ui| {
+            ui.add_space(8.0);
+            ui.label(egui::RichText::new("Match").small().color(theme.text_dim));
+            let mut new_space = current_space;
+            egui::ComboBox::from_id_salt(("diff_key_match_space", node_id))
+                .selected_text(match new_space {
+                    klipp_core::DifferenceKeyMatchSpace::Rgb => "RGB",
+                    klipp_core::DifferenceKeyMatchSpace::Luminance => "Luminance",
+                })
+                .show_ui(ui, |ui| {
+                    if ui.selectable_label(
+                        new_space == klipp_core::DifferenceKeyMatchSpace::Rgb, "RGB",
+                    ).clicked() {
+                        new_space = klipp_core::DifferenceKeyMatchSpace::Rgb;
+                    }
+                    if ui.selectable_label(
+                        new_space == klipp_core::DifferenceKeyMatchSpace::Luminance, "Luminance",
+                    ).clicked() {
+                        new_space = klipp_core::DifferenceKeyMatchSpace::Luminance;
+                    }
+                });
+            if new_space != current_space {
+                dk.match_space = new_space;
+                cmds.push(AppCommand::SetNodeDifferenceKey {
+                    clip_id, node_id, difference_key: dk.clone(),
+                });
+            }
+        });
+
+        // Tolerance + soft sliders.
+        let mut tolerance = dk.tolerance;
+        if grade_slider(ui, "Tolerance", &mut tolerance, 0.0..=1.0, "", cmds, clip_id, theme) {
+            dk.tolerance = tolerance;
+            cmds.push(AppCommand::SetNodeDifferenceKey {
+                clip_id, node_id, difference_key: dk.clone(),
+            });
+        }
+        let mut soft = dk.soft;
+        if grade_slider(ui, "Soft", &mut soft, 0.0..=0.5, "", cmds, clip_id, theme) {
+            dk.soft = soft;
+            cmds.push(AppCommand::SetNodeDifferenceKey {
+                clip_id, node_id, difference_key: dk.clone(),
+            });
+        }
+
+        ui.horizontal(|ui| {
+            ui.add_space(8.0);
+            let mut invert = dk.invert;
+            if ui.checkbox(&mut invert, "Invert").changed() {
+                dk.invert = invert;
+                cmds.push(AppCommand::SetNodeDifferenceKey {
+                    clip_id, node_id, difference_key: dk.clone(),
                 });
             }
         });

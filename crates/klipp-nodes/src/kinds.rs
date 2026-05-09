@@ -63,6 +63,13 @@ pub enum NodeKind {
     /// signal that feeds ApplyMatte / CombineMattes. Useful for
     /// scene-specific masks painted in an external tool.
     ExternalMatte,
+    /// Difference key — generates a matte by comparing the live frame
+    /// to a clean-plate reference loaded from disk. Pixels that
+    /// differ from the plate by more than `tolerance` enter the matte.
+    /// One input (the live frame); the plate is loaded by the
+    /// executor and resized to live-frame dimensions on the fly.
+    /// Output is matte-only (R=G=B=matte, A=1).
+    DifferenceKey,
 
     // ── Compositing ─────────────────────────────────────────────
     /// Alpha composite two inputs (A over B). Ports: 0=foreground, 1=background.
@@ -238,7 +245,8 @@ impl NodeKind {
             | (NodeKind::LumaKey, _)
             | (NodeKind::Mask, _)
             | (NodeKind::CombineMattes, _)
-            | (NodeKind::ExternalMatte, _) => PortRole::Matte,
+            | (NodeKind::ExternalMatte, _)
+            | (NodeKind::DifferenceKey, _) => PortRole::Matte,
             (NodeKind::RGBSplitter, 0) => PortRole::ChannelRed,
             (NodeKind::RGBSplitter, 1) => PortRole::ChannelGreen,
             (NodeKind::RGBSplitter, 2) => PortRole::ChannelBlue,
@@ -281,7 +289,8 @@ impl NodeKind {
             | (NodeKind::LumaKey, _)
             | (NodeKind::Mask, _)
             | (NodeKind::CombineMattes, _)
-            | (NodeKind::ExternalMatte, _) => "Matte",
+            | (NodeKind::ExternalMatte, _)
+            | (NodeKind::DifferenceKey, _) => "Matte",
             (NodeKind::RGBSplitter, 0) => "R",
             (NodeKind::RGBSplitter, 1) => "G",
             (NodeKind::RGBSplitter, 2) => "B",
@@ -311,6 +320,7 @@ impl NodeKind {
             NodeKind::Mask => "Mask",
             NodeKind::CombineMattes => "Combine Mattes",
             NodeKind::ExternalMatte => "External Matte",
+            NodeKind::DifferenceKey => "Difference Key",
             NodeKind::Layer => "Layer",
             NodeKind::LayerMixer => "Layer Mixer",
             NodeKind::Blend => "Blend",
