@@ -38,6 +38,7 @@ use std::sync::{Mutex, OnceLock};
 use serde::{Deserialize, Serialize};
 
 use clack_extensions::audio_ports::{AudioPortInfoBuffer, PluginAudioPorts};
+use clack_extensions::latency::PluginLatency;
 use clack_extensions::log::{HostLog, HostLogImpl, LogSeverity};
 use clack_extensions::params::{ParamInfoBuffer, PluginParams};
 use clack_host::events::event_types::ParamValueEvent;
@@ -543,6 +544,14 @@ pub struct ClapEffect {
     slots: Vec<InstanceSlot>,
     param_values: std::collections::HashMap<u32, f32>,
     sample_rate: u32,
+    /// Latency in samples reported by `clap.latency` at instance
+    /// build time. CLAP `PluginLatency::get` is a main-thread call;
+    /// the AudioEffect trait's `latency_samples()` is `&self`, so we
+    /// snapshot once during build_slot when we hold the
+    /// PluginMainThreadHandle. v1 = static latency; mid-session
+    /// changes via `clap_host_latency.changed` callback land with
+    /// `PDC-NEXT-VARIABLE-LATENCY`.
+    latency_samples_cached: u32,
     type_id_static: &'static str,
     name_static: &'static str,
     empty_descs: [AudioParamDescriptor; 0],
@@ -571,8 +580,14 @@ impl ClapEffect {
             ChannelLayout::DualMono => 2,
         };
         let mut slots = Vec::with_capacity(slot_count);
+        let mut latency_samples_cached = 0u32;
         for _ in 0..slot_count {
-            slots.push(build_slot(&info, layout, sample_rate)?);
+            let (slot, latency) = build_slot(&info, layout, sample_rate)?;
+            slots.push(slot);
+            // Matched slots run identical plugin code so they should
+            // report identical latency; take the max defensively in
+            // case a plugin ever returns inconsistent values.
+            latency_samples_cached = latency_samples_cached.max(latency);
         }
 
         let param_values: std::collections::HashMap<u32, f32> =
@@ -587,6 +602,7 @@ impl ClapEffect {
             slots,
             param_values,
             sample_rate,
+            latency_samples_cached,
             type_id_static: Box::leak(type_id.into_boxed_str()),
             name_static: Box::leak(name.into_boxed_str()),
             empty_descs: [],
@@ -632,7 +648,7 @@ fn build_slot(
     info: &ClapPluginInfo,
     layout: ChannelLayout,
     sample_rate: u32,
-) -> Result<InstanceSlot, String> {
+) -> Result<(InstanceSlot, u32), String> {
     let plugin_id_cstr =
         CString::new(info.id.as_str()).map_err(|_| "CLAP plugin id contains NUL".to_string())?;
     let entry = unsafe { PluginEntry::load(&info.bundle_path) }
@@ -665,6 +681,19 @@ fn build_slot(
         .start_processing()
         .map_err(|e| format!("start_processing: {e}"))?;
 
+    // Read clap.latency once at instance build time. PluginLatency::get
+    // is a main-thread call; the AudioEffect trait's latency_samples()
+    // is &self with no main-thread access, so we cache the value here.
+    // Mid-session latency changes via clap_host_latency.changed are
+    // ignored in v1 — handled by PDC-NEXT-VARIABLE-LATENCY.
+    let latency = {
+        let mut handle = instance.plugin_handle();
+        match handle.get_extension::<PluginLatency>() {
+            Some(ext) => ext.get(&mut handle),
+            None => 0,
+        }
+    };
+
     // CLAP plugins typically declare ONE main audio port containing
     // 1 or 2 channels — we model exactly one port whose channel
     // count tracks the layout.
@@ -675,15 +704,18 @@ fn build_slot(
     let in_ports = AudioPorts::with_capacity(channels_per_port, 1);
     let out_ports = AudioPorts::with_capacity(channels_per_port, 1);
 
-    Ok(InstanceSlot {
-        processor: Some(processor),
-        in_ports,
-        out_ports,
-        in_buf: Vec::new(),
-        out_buf: Vec::new(),
-        event_in: EventBuffer::new(),
-        steady_counter: 0,
-    })
+    Ok((
+        InstanceSlot {
+            processor: Some(processor),
+            in_ports,
+            out_ports,
+            in_buf: Vec::new(),
+            out_buf: Vec::new(),
+            event_in: EventBuffer::new(),
+            steady_counter: 0,
+        },
+        latency,
+    ))
 }
 
 /// Refill `slot.event_in` with the current parameter snapshot. Each
@@ -759,14 +791,21 @@ impl AudioEffect for ClapEffect {
 
     fn reset(&mut self) {
         // Drop and rebuild slots — same shape as LV2 reset.
+        // Re-reads latency from the fresh slots since some plugins
+        // recompute latency at instantiation time (e.g. when a buffer
+        // size constraint shifts).
         let info = self.info.clone();
         let layout = self.layout;
         let sr = self.sample_rate;
         let n = self.slots.len();
         let mut fresh = Vec::with_capacity(n);
+        let mut max_latency = 0u32;
         for _ in 0..n {
             match build_slot(&info, layout, sr) {
-                Ok(s) => fresh.push(s),
+                Ok((slot, latency)) => {
+                    fresh.push(slot);
+                    max_latency = max_latency.max(latency);
+                }
                 Err(e) => {
                     tracing::warn!("CLAP '{}' reset failed: {e}", info.name);
                     return;
@@ -774,12 +813,14 @@ impl AudioEffect for ClapEffect {
             }
         }
         self.slots = fresh;
+        self.latency_samples_cached = max_latency;
     }
 
     fn latency_samples(&self) -> u32 {
-        // Reading via PluginLatency.get(main_thread) requires a
-        // main-thread call. v1 returns 0 until PLUGIN-NEXT-PDC ships.
-        0
+        // Snapshotted at instance build time via clap.latency.
+        // Variable latency mid-session is filed as
+        // PDC-NEXT-VARIABLE-LATENCY.
+        self.latency_samples_cached
     }
 
     fn serialize_params(&self) -> Vec<(String, f32)> {
