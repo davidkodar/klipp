@@ -552,62 +552,67 @@ impl NodeGraphV2Panel {
                 .layout(egui::Layout::left_to_right(egui::Align::Center)),
         );
         toolbar_ui.add_space(6.0);
+        // ── Group 1: view controls ──
+        // Cheap-to-undo navigation + zoom indicator. No mutation
+        // happens here, so plain buttons are fine — these set how
+        // you LOOK at the graph, not what's in it.
         let fit_clicked = toolbar_ui.button("Fit").on_hover_text(
             "Frame all nodes in the canvas (shortcut: F)"
         ).clicked();
         let reset_clicked = toolbar_ui.button("1:1").on_hover_text(
             "Reset zoom to 100 % and centre on the graph origin"
         ).clicked();
-        if toolbar_ui.button("Auto-layout").on_hover_text(
-            "Recompute every node's position via hierarchical layered layout (shortcut: L)\n\
-            Undoable with Ctrl+Z."
-        ).clicked() {
+        toolbar_ui.label(
+            egui::RichText::new(format!("zoom {:.0} %", self.zoom * 100.0))
+                .small().color(theme.text_dim)
+        );
+
+        toolbar_ui.add_space(6.0);
+        toolbar_ui.separator();
+        toolbar_ui.add_space(6.0);
+
+        // ── Group 2: layout (mutating actions) ──
+        // Auto-layout rewrites every node's position; Note adds a
+        // sticky to the graph data. Both leave a visible artefact
+        // and can be undone but aren't free. Distinct accent-coloured
+        // stroke + slight tinted fill so they read as "tools that
+        // change something" against the plain view buttons.
+        let mutating_button = |label: egui::RichText| -> egui::Button<'static> {
+            egui::Button::new(label)
+                .stroke(egui::Stroke::new(
+                    1.0,
+                    egui::Color32::from_rgba_unmultiplied(
+                        theme.accent.r(), theme.accent.g(), theme.accent.b(), 110,
+                    ),
+                ))
+        };
+        if toolbar_ui.add(mutating_button(egui::RichText::new("Auto-layout")))
+            .on_hover_text(
+                "Recompute every node's position via hierarchical layered \
+                 layout (shortcut: L)\nUndoable with Ctrl+Z."
+            )
+            .clicked()
+        {
             cmds.push(AppCommand::AutoLayoutNodeGraph { clip_id });
         }
-        // Sticky-note creation. Drops a fresh note at the centre of
-        // the current viewport in graph coords so the user always
-        // sees it appear regardless of where they're panned. Drag-
-        // body to reposition; double-click to edit text.
-        if toolbar_ui.button(egui::RichText::new("\u{1F4DD} Note"))
+        if toolbar_ui.add(mutating_button(egui::RichText::new("\u{1F4DD} Note")))
             .on_hover_text("Add a sticky note at the canvas centre")
             .clicked()
         {
-            // We don't have the to_graph closure built yet at this
-            // point in the toolbar block; reconstruct the canvas-
-            // centre → graph mapping inline. screen = origin +
-            // (graph + pan) * zoom, so graph = (screen − origin)/zoom
-            // − pan. The canvas-centre ↔ origin term collapses to
-            // zero, leaving graph = -pan.
+            // canvas-centre → graph: screen = origin + (graph + pan)
+            // * zoom. canvas-centre maps to origin, so graph = -pan.
             cmds.push(AppCommand::CreateStickyNote {
                 clip_id,
                 x: -self.pan.x,
                 y: -self.pan.y,
             });
         }
-        // Per-thumbnail diagnostic toggles. Off by default so users
-        // who don't grade in this canvas don't pay paint cost. The
-        // toolbar pair makes them flickable mid-grade rather than
-        // buried in prefs — same UX shape as the bookmarks ★ and
-        // minimap ▦ toggles.
-        if toolbar_ui.selectable_label(
-            self.show_thumb_clipping,
-            egui::RichText::new("\u{26A0}").small(),
-        ).on_hover_text("Exposure clipping overlay on node thumbs\n\
-            Red: any RGB channel ≥ 248\n\
-            Blue: all channels ≤ 8")
-            .clicked()
-        {
-            self.show_thumb_clipping = !self.show_thumb_clipping;
-        }
-        if toolbar_ui.selectable_label(
-            self.show_thumb_histogram,
-            egui::RichText::new("\u{1F4CA}").small(),
-        ).on_hover_text("Mini luma histogram on node thumbs\n\
-            64-bucket Rec.709 luma distribution at the bottom of each preview")
-            .clicked()
-        {
-            self.show_thumb_histogram = !self.show_thumb_histogram;
-        }
+
+        toolbar_ui.add_space(6.0);
+        toolbar_ui.separator();
+        toolbar_ui.add_space(6.0);
+
+        // ── Group 3: search ──
         // Find — proper button (not selectable_label) so the click
         // target reads as "tool" rather than "tag". `selected`-style
         // tinting communicates the open/closed state visually
@@ -630,7 +635,60 @@ impl NodeGraphV2Panel {
                 self.search_active_idx = 0;
             }
         }
-        toolbar_ui.add_space(8.0);
+
+        toolbar_ui.add_space(6.0);
+        toolbar_ui.separator();
+        toolbar_ui.add_space(6.0);
+
+        // ── Group 4: overlays ──
+        // Toggleable display layers — minimap, bookmarks discovery,
+        // per-thumb diagnostics. None of these mutate the graph;
+        // they only change how it's drawn.
+        if toolbar_ui.selectable_label(
+            self.minimap_visible,
+            egui::RichText::new("\u{25A6} Map").small(),
+        ).on_hover_text("Toggle minimap (M)\nClick + drag the minimap to pan").clicked() {
+            self.minimap_visible = !self.minimap_visible;
+        }
+        let used: Vec<u8> = self.view_bookmarks.iter().enumerate()
+            .filter_map(|(i, b)| b.is_some().then(|| (i + 1) as u8))
+            .collect();
+        let hint = if used.is_empty() {
+            "Bookmarks  ·  no slots set yet".to_string()
+        } else {
+            let used_str = used.iter().map(|n| n.to_string())
+                .collect::<Vec<_>>().join(", ");
+            format!("Bookmarks  ·  set: {used_str}")
+        };
+        toolbar_ui.label(egui::RichText::new("\u{2605}").small().color(theme.text_dim))
+            .on_hover_text(format!(
+                "View bookmarks\n\n\
+                Shift + 1…9   save the current pan + zoom\n\
+                1…9                 jump back\n\n\
+                {hint}"
+            ));
+        if toolbar_ui.selectable_label(
+            self.show_thumb_clipping,
+            egui::RichText::new("\u{26A0}").small(),
+        ).on_hover_text("Exposure clipping overlay on node thumbs\n\
+            Red: any RGB channel ≥ 248\n\
+            Blue: all channels ≤ 8")
+            .clicked()
+        {
+            self.show_thumb_clipping = !self.show_thumb_clipping;
+        }
+        if toolbar_ui.selectable_label(
+            self.show_thumb_histogram,
+            egui::RichText::new("\u{1F4CA}").small(),
+        ).on_hover_text("Mini luma histogram on node thumbs\n\
+            64-bucket Rec.709 luma distribution at the bottom of each preview")
+            .clicked()
+        {
+            self.show_thumb_histogram = !self.show_thumb_histogram;
+        }
+        toolbar_ui.add_space(6.0);
+        toolbar_ui.separator();
+        toolbar_ui.add_space(6.0);
         // Grade-version picker. Shows "V: none" when no versions
         // exist, "V: V1 ▾" when one is active, with a menu listing
         // every saved version plus save / update / rename / delete
@@ -639,12 +697,34 @@ impl NodeGraphV2Panel {
         // ...). Rename / delete act on the currently-active version.
         let active_name = active_grade_version
             .and_then(|i| grade_version_names.get(i).map(|s| s.as_str()));
-        let menu_label = match active_name {
-            Some(n) => format!("V: {n}"),
-            None if grade_version_names.is_empty() => "V: +".to_string(),
-            None => "V: —".to_string(),
+        // Plain-language labels — the previous "V: +" / "V: —" /
+        // "V: V1 ▾" was opaque to anyone who didn't already know
+        // it was a version picker. Now: the verb tells you what
+        // clicking does (save / browse / switch).
+        let (menu_label, menu_tooltip) = match active_name {
+            Some(n) => (
+                format!("Version: {n}  \u{25BE}"),
+                format!(
+                    "Currently viewing version {n}.\nClick to switch, \
+                     save, update, or delete versions."
+                ),
+            ),
+            None if grade_version_names.is_empty() => (
+                "+ Save version  \u{25BE}".to_string(),
+                "Save a snapshot of the current grade so you can come \
+                 back to it later or A/B against future edits."
+                    .to_string(),
+            ),
+            None => (
+                "Versions  \u{25BE}".to_string(),
+                format!(
+                    "{} saved version(s) — none active. Click to pick \
+                     one or save a new snapshot.",
+                    grade_version_names.len(),
+                ),
+            ),
         };
-        toolbar_ui.menu_button(menu_label, |mb_ui| {
+        let menu_resp = toolbar_ui.menu_button(menu_label, |mb_ui| {
             // Existing versions — click to switch.
             for (i, name) in grade_version_names.iter().enumerate() {
                 let marker = if Some(i) == active_grade_version { "●" } else { "○" };
@@ -679,6 +759,7 @@ impl NodeGraphV2Panel {
                 }
             }
         });
+        menu_resp.response.on_hover_text(menu_tooltip);
         toolbar_ui.add_space(8.0);
         // Bookmarks hint — purely a discovery surface for the
         // Shift+1..9 / 1..9 hotkeys. Static label, no menu, hover
@@ -749,10 +830,9 @@ impl NodeGraphV2Panel {
                 });
             toolbar_ui.add_space(8.0);
         }
-        toolbar_ui.label(
-            egui::RichText::new(format!("zoom {:.0} %", self.zoom * 100.0))
-                .small().color(theme.text_dim)
-        );
+        // (zoom % moved to the view-controls group at the start
+        // of the toolbar; the reset_clicked branch below still
+        // needs to mutate state.)
         if reset_clicked {
             self.zoom = 1.0;
             self.pan = egui::Vec2::ZERO;
@@ -2039,6 +2119,53 @@ impl NodeGraphV2Panel {
                 let is_connected = graph.edges.iter()
                     .any(|e| e.to_node == node_id && e.to_port == p);
                 let r = PORT_RADIUS * zoom;
+
+                // Drag-time compatible-port highlight — when a wire
+                // is in flight, every input on every OTHER node
+                // paints a faint pulsing ring so the user sees at
+                // a glance where the wire could land. The
+                // snap-target gets its own brighter ring (handled
+                // separately above) so the cursor's current
+                // candidate stays unambiguous.
+                let drag_eligible_target = self.drag_wire
+                    .map(|dw| dw.from_node != node_id)
+                    .unwrap_or(false);
+                if drag_eligible_target {
+                    let t = ui.input(|i| i.time) as f32;
+                    let pulse = (t * 2.5).sin() * 0.5 + 0.5;
+                    let alpha = (50.0 + 50.0 * pulse) as u8;
+                    painter.circle_stroke(
+                        pos, r * 1.9,
+                        egui::Stroke::new(
+                            1.2,
+                            egui::Color32::from_rgba_unmultiplied(rr, gg, bb, alpha),
+                        ),
+                    );
+                    // Continuous repaint while dragging — the wire
+                    // already redraws every frame anyway, so the
+                    // pulse is free.
+                    ui.ctx().request_repaint();
+                }
+
+                // Direct-hover affordance (only when no drag in
+                // flight) — soft outer ring around the port the
+                // cursor is currently near. Communicates "this is
+                // grabbable" without waiting for the inline label
+                // tooltip's hover-band gating.
+                let port_hovered = !drag_eligible_target
+                    && hover_pointer
+                        .map(|hp| (hp - pos).length() <= PORT_HIT_RADIUS * zoom.max(0.5))
+                        .unwrap_or(false);
+                if port_hovered {
+                    painter.circle_stroke(
+                        pos, r * 1.7,
+                        egui::Stroke::new(
+                            1.4,
+                            egui::Color32::from_rgba_unmultiplied(rr, gg, bb, 160),
+                        ),
+                    );
+                }
+
                 if is_connected {
                     painter.circle_filled(pos, r, role_color);
                     // Inner dark dot — keeps the port readable as a
@@ -2123,6 +2250,24 @@ impl NodeGraphV2Panel {
                 let (rr, gg, bb) = role.editor_color();
                 let role_color = egui::Color32::from_rgb(rr, gg, bb);
                 let half = PORT_RADIUS * zoom;
+                // Hover affordance — soft ring around the output
+                // port the cursor is near. Tells the user "you can
+                // grab this to start a wire" without waiting on the
+                // inline label tooltip. Skipped while a drag is
+                // already in flight (drop targets are inputs only).
+                let port_hovered = self.drag_wire.is_none()
+                    && hover_pointer
+                        .map(|hp| (hp - pos).length() <= PORT_HIT_RADIUS * zoom.max(0.5))
+                        .unwrap_or(false);
+                if port_hovered {
+                    painter.circle_stroke(
+                        pos, half * 1.7,
+                        egui::Stroke::new(
+                            1.4,
+                            egui::Color32::from_rgba_unmultiplied(rr, gg, bb, 160),
+                        ),
+                    );
+                }
                 let port_rect = egui::Rect::from_center_size(
                     pos, egui::vec2(half * 2.0, half * 2.0),
                 );
