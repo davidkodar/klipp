@@ -4110,7 +4110,9 @@ impl GpuEffectsPipeline {
                 BuiltinEffect::ChromaKey {
                     key_color,
                     tolerance,
-                    spill_suppression,
+                    soft_edge,
+                    spill_method,
+                    spill_strength,
                 } => {
                     // Convert key color to CbCr
                     let rf = key_color[0] as f32;
@@ -4119,14 +4121,33 @@ impl GpuEffectsPipeline {
                     let key_cb = 128.0 + (-0.168736 * rf - 0.331264 * gf + 0.5 * bf);
                     let key_cr = 128.0 + (0.5 * rf - 0.418688 * gf - 0.081312 * bf);
 
+                    // Dominant key channel — same logic as the CPU
+                    // path's `dominant_channel`. Inlined here to keep
+                    // the GPU encoder self-contained.
+                    let key_idx: u32 = if key_color[1] >= key_color[0] && key_color[1] >= key_color[2] {
+                        1
+                    } else if key_color[2] > key_color[0] {
+                        2
+                    } else {
+                        0
+                    };
+                    let method_code: u32 = match spill_method {
+                        crate::SpillMethod::None => 0,
+                        crate::SpillMethod::ChannelClamp => 1,
+                        crate::SpillMethod::Hawk => 2,
+                    };
+
                     self.write_params(&ChromaKeyParams {
                         width,
                         height,
                         key_cb,
                         key_cr,
                         tolerance: *tolerance,
-                        spill_suppression: *spill_suppression,
-                        _pad: [0; 2],
+                        soft_edge: *soft_edge,
+                        spill_method: method_code,
+                        spill_strength: *spill_strength,
+                        spill_key_idx: key_idx,
+                        _pad: [0; 3],
                     });
                     self.dispatch(&self.chroma_key_pipeline, input, output, workgroups);
                     current_in_a = !current_in_a;
@@ -5308,8 +5329,17 @@ struct ChromaKeyParams {
     key_cb: f32,
     key_cr: f32,
     tolerance: f32,
-    spill_suppression: f32,
-    _pad: [u32; 2],
+    soft_edge: f32,
+    /// Spill method as `u32` (0 = None, 1 = ChannelClamp, 2 = Hawk).
+    /// WGSL uniforms can't carry Rust enums directly so we encode here.
+    spill_method: u32,
+    spill_strength: f32,
+    /// Index of the dominant key channel (0 = R, 1 = G, 2 = B).
+    /// Pre-computed CPU-side from `key_color` so the shader avoids a
+    /// per-pixel argmax. Tied to `dominant_channel` in chroma_key.rs.
+    spill_key_idx: u32,
+    /// Round to 16-byte alignment — WGSL uniforms require it.
+    _pad: [u32; 3],
 }
 
 #[repr(C)]
@@ -6329,9 +6359,13 @@ struct Params {
     key_cb: f32,
     key_cr: f32,
     tolerance: f32,
-    spill_suppression: f32,
+    soft_edge: f32,
+    spill_method: u32,
+    spill_strength: f32,
+    spill_key_idx: u32,
     _pad0: u32,
     _pad1: u32,
+    _pad2: u32,
 }
 
 @group(0) @binding(0) var<storage, read> input: array<vec4<f32>>;
@@ -6343,6 +6377,14 @@ fn linear_to_srgb_component(c: f32) -> f32 {
         return c * 12.92;
     } else {
         return 1.055 * pow(c, 1.0/2.4) - 0.055;
+    }
+}
+
+fn srgb_to_linear_component(c: f32) -> f32 {
+    if (c <= 0.04045) {
+        return c / 12.92;
+    } else {
+        return pow((c + 0.055) / 1.055, 2.4);
     }
 }
 
@@ -6369,10 +6411,39 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let dist = sqrt(dcb * dcb + dcr * dcr);
 
     if dist < params.tolerance {
-        pixel = vec4<f32>(0.0);
-    } else if dist < params.tolerance + params.spill_suppression {
-        let factor = (dist - params.tolerance) / params.spill_suppression;
+        // Fully keyed out — no spill stage needed.
+        output[idx] = vec4<f32>(0.0);
+        return;
+    } else if dist < params.tolerance + params.soft_edge {
+        let factor = (dist - params.tolerance) / params.soft_edge;
         pixel.w = pixel.w * factor;
+    }
+
+    // Spill suppression on whatever's still visible. Mirrors the CPU
+    // `apply_spill` shape: pick a target value the key channel drops
+    // toward when it exceeds that target, blend by spill_strength.
+    if params.spill_method != 0u && params.spill_strength > 0.0 && pixel.w > 0.0 {
+        // Work in sRGB 0-255 to match the CPU oracle byte-for-byte.
+        var srgb = vec3<f32>(srgb_r, srgb_g, srgb_b);
+        let key = srgb[params.spill_key_idx];
+        let other_a_idx = (params.spill_key_idx + 1u) % 3u;
+        let other_b_idx = (params.spill_key_idx + 2u) % 3u;
+        let other_a = srgb[other_a_idx];
+        let other_b = srgb[other_b_idx];
+        var target: f32 = key;
+        if params.spill_method == 1u {
+            target = max(other_a, other_b);
+        } else if params.spill_method == 2u {
+            target = 0.5 * (other_a + other_b);
+        }
+        if key > target {
+            let new_key = key + params.spill_strength * (target - key);
+            srgb[params.spill_key_idx] = clamp(new_key, 0.0, 255.0);
+            // Re-encode the mutated sRGB triplet back to linear for output.
+            pixel.x = srgb_to_linear_component(srgb.x / 255.0);
+            pixel.y = srgb_to_linear_component(srgb.y / 255.0);
+            pixel.z = srgb_to_linear_component(srgb.z / 255.0);
+        }
     }
 
     output[idx] = pixel;

@@ -126,7 +126,9 @@ impl EffectRegistry {
                 source: EffectSource::Builtin(klipp_effects::BuiltinEffect::ChromaKey {
                     key_color: [0, 255, 0],
                     tolerance: 0.2,
-                    spill_suppression: 0.1,
+                    soft_edge: 0.1,
+                    spill_method: klipp_effects::SpillMethod::ChannelClamp,
+                    spill_strength: 0.6,
                 }),
                 source_label: "Built-in",
                 description: String::new(),

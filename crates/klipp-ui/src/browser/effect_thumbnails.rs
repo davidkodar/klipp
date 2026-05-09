@@ -318,7 +318,9 @@ fn builtin_preview_params(effect: &klipp_effects::BuiltinEffect) -> klipp_effect
             klipp_effects::BuiltinEffect::ChromaKey {
                 key_color: [0, 255, 0],
                 tolerance: 0.3,
-                spill_suppression: 0.2,
+                soft_edge: 0.2,
+                spill_method: klipp_effects::SpillMethod::ChannelClamp,
+                spill_strength: 0.6,
             }
         }
         klipp_effects::BuiltinEffect::Bloom { .. } => {

@@ -7890,8 +7890,12 @@ impl PlaybackEngine {
                                 }
                             }
                         }
-                        klipp_effects::BuiltinEffect::ChromaKey { tolerance, spill_suppression, .. } => {
-                            for (name, val) in [("tolerance", tolerance as &mut f32), ("spill", spill_suppression)] {
+                        klipp_effects::BuiltinEffect::ChromaKey { tolerance, soft_edge, spill_strength, .. } => {
+                            // Keyframe key "spill" continues to address the soft-edge
+                            // field — that's what the slider was always wired to, even
+                            // back when it was misnamed `spill_suppression`. New
+                            // "spill_strength" key drives the real spill knob.
+                            for (name, val) in [("tolerance", tolerance as &mut f32), ("spill", soft_edge), ("spill_strength", spill_strength)] {
                                 let key = format!("{}:{}", i, name);
                                 if let Some(kfs) = clip.effect_keyframes.get(&key) {
                                     if !kfs.is_empty() {
@@ -9191,8 +9195,12 @@ impl PlaybackEngine {
                                 *val = eval_effect_with_modifiers(kfs, &c.param_modifiers, i, name, clip_relative_secs, *val, ectx);
                             }
                         }
-                        klipp_effects::BuiltinEffect::ChromaKey { tolerance, spill_suppression, .. } => {
-                            for (name, val) in [("tolerance", tolerance as &mut f32), ("spill", spill_suppression)] {
+                        klipp_effects::BuiltinEffect::ChromaKey { tolerance, soft_edge, spill_strength, .. } => {
+                            // Keyframe key "spill" continues to address the soft-edge
+                            // field — that's what the slider was always wired to, even
+                            // back when it was misnamed `spill_suppression`. New
+                            // "spill_strength" key drives the real spill knob.
+                            for (name, val) in [("tolerance", tolerance as &mut f32), ("spill", soft_edge), ("spill_strength", spill_strength)] {
                                 let key = format!("{}:{}", i, name);
                                 let kfs = c.effect_keyframes.get(&key).map(|v| v.as_slice()).unwrap_or(&[]);
                                 *val = eval_effect_with_modifiers(kfs, &c.param_modifiers, i, name, clip_relative_secs, *val, ectx);
@@ -9273,8 +9281,8 @@ impl PlaybackEngine {
                                         *val = eval_effect_with_modifiers(kfs, &c.param_modifiers, i, name, clip_relative_secs, *val, ectx);
                                     }
                                 }
-                                klipp_effects::BuiltinEffect::ChromaKey { tolerance, spill_suppression, .. } => {
-                                    for (name, val) in [("tolerance", tolerance as &mut f32), ("spill", spill_suppression)] {
+                                klipp_effects::BuiltinEffect::ChromaKey { tolerance, soft_edge, spill_strength, .. } => {
+                                    for (name, val) in [("tolerance", tolerance as &mut f32), ("spill", soft_edge), ("spill_strength", spill_strength)] {
                                         let key = format!("{}:{}", i, name);
                                         let kfs = c.effect_keyframes.get(&key).map(|v| v.as_slice()).unwrap_or(&[]);
                                         *val = eval_effect_with_modifiers(kfs, &c.param_modifiers, i, name, clip_relative_secs, *val, ectx);

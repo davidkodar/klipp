@@ -718,7 +718,9 @@ fn show_preset_selectors(
             ("Chroma Key", klipp_effects::BuiltinEffect::ChromaKey {
                 key_color: [0, 255, 0],
                 tolerance: 0.2,
-                spill_suppression: 0.1,
+                soft_edge: 0.1,
+                spill_method: klipp_effects::SpillMethod::ChannelClamp,
+                spill_strength: 0.6,
             }),
         ];
         for (label, effect) in &effects {
@@ -1174,7 +1176,8 @@ fn builtin_effect_default(effect: &klipp_effects::BuiltinEffect) -> klipp_effect
             rotation: 0.0, anchor_x: 0.5, anchor_y: 0.5, rotation_x: 0.0, rotation_y: 0.0, perspective: 0.0,
             focal_ref: None },
         BuiltinEffect::ChromaKey { .. } => BuiltinEffect::ChromaKey {
-            key_color: [0, 255, 0], tolerance: 0.2, spill_suppression: 0.1,
+            key_color: [0, 255, 0], tolerance: 0.2, soft_edge: 0.1,
+            spill_method: klipp_effects::SpillMethod::ChannelClamp, spill_strength: 0.6,
         },
         BuiltinEffect::Bloom { .. } => BuiltinEffect::Bloom {
             threshold: 0.7, radius: 20.0, intensity: 0.5,
@@ -1604,7 +1607,7 @@ fn show_builtin_effect_params(
             let r = scrubby_param_row(ui, "Anchor Y", anchor_y, 0.0..=1.0, 0.5, 0.005, 3, "", None);
             track_scrubby!("", r, *anchor_y);
         }
-        klipp_effects::BuiltinEffect::ChromaKey { key_color, tolerance, spill_suppression } => {
+        klipp_effects::BuiltinEffect::ChromaKey { key_color, tolerance, soft_edge, spill_method, spill_strength } => {
             // Color picker stays as-is (not a scrubby candidate)
             ui.horizontal(|ui| {
                 ui.label(egui::RichText::new("Key Color").size(10.0));
@@ -1617,15 +1620,49 @@ fn show_builtin_effect_params(
                 }
             });
             *tolerance = eval_effect_kf(clip, effect_index, "tolerance", clip_time_secs, *tolerance);
-            *spill_suppression = eval_effect_kf(clip, effect_index, "spill", clip_time_secs, *spill_suppression);
+            // Keyframe key "spill" continues to address the soft-edge field
+            // (it's what existing user automations are saved against, even
+            // though the field was renamed). New "spill_strength" key drives
+            // the real spill knob.
+            *soft_edge = eval_effect_kf(clip, effect_index, "spill", clip_time_secs, *soft_edge);
+            *spill_strength = eval_effect_kf(clip, effect_index, "spill_strength", clip_time_secs, *spill_strength);
 
             let ks_t = Some(effect_keyframe_state(clip, effect_index, "tolerance", clip_time_secs));
-            let ks_s = Some(effect_keyframe_state(clip, effect_index, "spill", clip_time_secs));
+            let ks_se = Some(effect_keyframe_state(clip, effect_index, "spill", clip_time_secs));
+            let ks_ss = Some(effect_keyframe_state(clip, effect_index, "spill_strength", clip_time_secs));
 
             let r_t = scrubby_param_row(ui, "Tolerance", tolerance, 0.0..=1.0, 0.2, 0.005, 3, "", ks_t);
             track_scrubby!("tolerance", r_t, *tolerance);
-            let r_s = scrubby_param_row(ui, "Spill", spill_suppression, 0.0..=1.0, 0.1, 0.005, 3, "", ks_s);
-            track_scrubby!("spill", r_s, *spill_suppression);
+            let r_se = scrubby_param_row(ui, "Soft Edge", soft_edge, 0.0..=1.0, 0.1, 0.005, 3, "", ks_se);
+            track_scrubby!("spill", r_se, *soft_edge);
+
+            // Spill suppression — Method dropdown + Strength slider.
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("Spill Method").size(10.0));
+                let prev = *spill_method;
+                egui::ComboBox::from_id_salt(("chroma_key_spill_method", effect_index))
+                    .selected_text(match spill_method {
+                        klipp_effects::SpillMethod::None => "None",
+                        klipp_effects::SpillMethod::ChannelClamp => "Channel Clamp",
+                        klipp_effects::SpillMethod::Hawk => "Hawk",
+                    })
+                    .show_ui(ui, |ui| {
+                        if ui.selectable_label(matches!(spill_method, klipp_effects::SpillMethod::None), "None").clicked() {
+                            *spill_method = klipp_effects::SpillMethod::None;
+                        }
+                        if ui.selectable_label(matches!(spill_method, klipp_effects::SpillMethod::ChannelClamp), "Channel Clamp").clicked() {
+                            *spill_method = klipp_effects::SpillMethod::ChannelClamp;
+                        }
+                        if ui.selectable_label(matches!(spill_method, klipp_effects::SpillMethod::Hawk), "Hawk").clicked() {
+                            *spill_method = klipp_effects::SpillMethod::Hawk;
+                        }
+                    });
+                if *spill_method != prev {
+                    changed = true;
+                }
+            });
+            let r_ss = scrubby_param_row(ui, "Spill Strength", spill_strength, 0.0..=1.0, 0.6, 0.005, 3, "", ks_ss);
+            track_scrubby!("spill_strength", r_ss, *spill_strength);
         }
         klipp_effects::BuiltinEffect::Bloom { threshold, radius, intensity } => {
             *threshold = eval_effect_kf(clip, effect_index, "threshold", clip_time_secs, *threshold);

@@ -263,12 +263,24 @@ impl PresetManager {
             klipp_effects::BuiltinEffect::SpeedRamp { speed: 1.0, blend_mode: 0, ramp_curve: 0, ramp_start: 0.0, ramp_end: 1.0, reverse: false, freeze_at: 0.5, freeze: true });
 
         // ── Chroma Key ─────────────────────────────────────────
+        // New presets ship with ChannelClamp + 0.6 strength so users
+        // see real spill suppression on day one. Existing projects
+        // load with `None` / 0.0 via serde defaults, preserving look.
         self.bi("chroma_key", "Green Screen", "Standard green screen key",
-            klipp_effects::BuiltinEffect::ChromaKey { key_color: [0, 177, 64], tolerance: 0.25, spill_suppression: 0.15 });
+            klipp_effects::BuiltinEffect::ChromaKey {
+                key_color: [0, 177, 64], tolerance: 0.25, soft_edge: 0.15,
+                spill_method: klipp_effects::SpillMethod::ChannelClamp, spill_strength: 0.6,
+            });
         self.bi("chroma_key", "Blue Screen", "Standard blue screen key",
-            klipp_effects::BuiltinEffect::ChromaKey { key_color: [0, 71, 187], tolerance: 0.25, spill_suppression: 0.15 });
+            klipp_effects::BuiltinEffect::ChromaKey {
+                key_color: [0, 71, 187], tolerance: 0.25, soft_edge: 0.15,
+                spill_method: klipp_effects::SpillMethod::ChannelClamp, spill_strength: 0.6,
+            });
         self.bi("chroma_key", "Green Screen (Tight)", "Clean green screen with tight key",
-            klipp_effects::BuiltinEffect::ChromaKey { key_color: [0, 177, 64], tolerance: 0.15, spill_suppression: 0.25 });
+            klipp_effects::BuiltinEffect::ChromaKey {
+                key_color: [0, 177, 64], tolerance: 0.15, soft_edge: 0.25,
+                spill_method: klipp_effects::SpillMethod::ChannelClamp, spill_strength: 0.6,
+            });
 
         // ── Posterize ─────────────────────────────────────────
         self.bi("posterize", "Pop Art", "Bold 4-level poster look",

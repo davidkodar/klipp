@@ -175,6 +175,31 @@ impl Default for ColorFadeMode {
     fn default() -> Self { Self::In }
 }
 
+/// Spill-suppression algorithm used by `BuiltinEffect::ChromaKey` to
+/// reduce the key colour cast on the foreground RGB after the alpha
+/// matte is computed. Runs only on visible (non-keyed-out) pixels.
+///
+/// All non-`None` methods identify the "key channel" as the dominant
+/// channel of the user's `key_color` (`argmax`) — for a green key
+/// that's R=0, G=255, B=0 → key channel = G. Each method then drops
+/// the key channel toward a different target by `spill_strength`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SpillMethod {
+    /// No spill suppression — foreground RGB is left untouched.
+    /// Default for back-compat with pre-spill saves.
+    #[default]
+    None,
+    /// Channel clamp (Primatte-style, conservative): the key channel
+    /// is clamped toward `max(other_a, other_b)`. Preserves
+    /// natural-looking foreground; recommended default for new keys.
+    ChannelClamp,
+    /// Hawk method (aggressive): the key channel is clamped toward
+    /// `(other_a + other_b) / 2`. Kills more spill but can dull
+    /// foreground subjects whose true colour shares the key hue.
+    Hawk,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum BuiltinEffect {
@@ -263,10 +288,31 @@ pub enum BuiltinEffect {
     ChromaKey {
         /// RGB of the key colour
         key_color: [u8; 3],
-        /// Tolerance (0.0–1.0)
+        /// Tolerance (0.0–1.0) — CbCr distance from `key_color` below
+        /// which a pixel is fully keyed out.
         tolerance: f32,
-        /// Spill suppression (0.0–1.0)
-        spill_suppression: f32,
+        /// Soft-edge falloff width (0.0–1.0). Inside the band
+        /// `[tolerance, tolerance + soft_edge]` the pixel's alpha
+        /// scales linearly from 0 → 1, smoothing the matte edge.
+        ///
+        /// Renamed from `spill_suppression` (the old name was
+        /// misleading — this knob has only ever modulated alpha,
+        /// it never suppressed spill on the foreground RGB). Serde
+        /// alias preserves back-compat with all existing saves.
+        #[serde(alias = "spill_suppression")]
+        soft_edge: f32,
+        /// Algorithm used to suppress key-colour spill on the
+        /// foreground RGB (the *real* spill suppression). Runs after
+        /// the alpha matte. Defaults to `None` for back-compat with
+        /// pre-spill saves; new effects added from the picker get
+        /// `ChannelClamp` so users see spill removed out of the box.
+        #[serde(default)]
+        spill_method: SpillMethod,
+        /// Strength of the spill-suppression algorithm (0.0–1.0).
+        /// 0 is passthrough; 1 fully suppresses. Defaults to 0 for
+        /// back-compat with pre-spill saves; new effects start at 0.6.
+        #[serde(default)]
+        spill_strength: f32,
     },
     /// Bloom: extract bright areas, blur, and add back for a cinematic glow.
     Bloom {
@@ -722,8 +768,8 @@ fn apply_one(effect: &BuiltinEffect, rgba: Vec<u8>, width: u32, height: u32) -> 
                 *rotation_x, *rotation_y, *perspective,
             )
         }
-        BuiltinEffect::ChromaKey { key_color, tolerance, spill_suppression } => {
-            chroma_key::apply(rgba, *key_color, *tolerance, *spill_suppression)
+        BuiltinEffect::ChromaKey { key_color, tolerance, soft_edge, spill_method, spill_strength } => {
+            chroma_key::apply(rgba, *key_color, *tolerance, *soft_edge, *spill_method, *spill_strength)
         }
         BuiltinEffect::Bloom { threshold, radius, intensity } => {
             light::apply_bloom(rgba, width, height, *threshold, *radius, *intensity)
@@ -2090,7 +2136,9 @@ mod tests {
             &[BuiltinEffect::ChromaKey {
                 key_color: [0, 255, 0],
                 tolerance: 0.3,
-                spill_suppression: 0.2,
+                soft_edge: 0.2,
+                spill_method: SpillMethod::None,
+                spill_strength: 0.0,
             }],
             rgba, 1, 1,
         );
@@ -2108,7 +2156,9 @@ mod tests {
             &[BuiltinEffect::ChromaKey {
                 key_color: [0, 255, 0],
                 tolerance: 0.3,
-                spill_suppression: 0.2,
+                soft_edge: 0.2,
+                spill_method: SpillMethod::None,
+                spill_strength: 0.0,
             }],
             rgba.clone(), 1, 1,
         );

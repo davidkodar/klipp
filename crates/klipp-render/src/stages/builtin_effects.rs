@@ -360,8 +360,8 @@ impl ProcessingStage for BuiltinEffectsStage {
                         }
                     }
                 }
-                BuiltinEffect::ChromaKey { tolerance, spill_suppression, .. } => {
-                    for (name, val) in [("tolerance", tolerance as &mut f32), ("spill", spill_suppression)] {
+                BuiltinEffect::ChromaKey { tolerance, soft_edge, spill_strength, .. } => {
+                    for (name, val) in [("tolerance", tolerance as &mut f32), ("spill", soft_edge), ("spill_strength", spill_strength)] {
                         let key = format!("{}:{}", i, name);
                         if let Some(kfs) = clip.effect_keyframes.get(&key) {
                             if !kfs.is_empty() {
