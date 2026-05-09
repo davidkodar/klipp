@@ -574,51 +574,70 @@ pub fn show_scopes(
 // 4. Apply gamma correction for perceptual brightness
 // 5. Convert to u8 ColorImage
 
-/// Pre-computed Gaussian splat kernel. `weights` is row-major and
-/// already normalised so the kernel sums to 1.0 — splatting one data
-/// point deposits exactly one "unit of density" spread across the
-/// kernel footprint. `size` is the side length (1, 3, or 5); a 1-sized
-/// kernel is the legacy single-pixel point-write.
+/// Pre-computed anisotropic Gaussian splat kernel. `weights` is
+/// row-major over `width × height`, already normalised so the
+/// kernel integrates to 1.0 — one input event always deposits one
+/// unit of density spread across the kernel footprint.
+///
+/// **Why anisotropic.** Real CRT phosphor traces stretch vertically
+/// along the electron-beam path, not in a circle. A horizontally-
+/// short, vertically-tall Gaussian (e.g. width=3 height=5 with
+/// σx=0.6 σy=1.8) makes traces feel like accumulating phosphor
+/// filaments rather than soft round blobs. A 1×1 kernel collapses
+/// to the legacy single-pixel point-write.
 pub(crate) struct SplatKernel {
     weights: Vec<f32>,
-    size: usize,
+    width: usize,
+    height: usize,
 }
 
 impl SplatKernel {
-    /// Build a normalised Gaussian kernel of the given odd size with
-    /// standard deviation σ. `size = 1` collapses to a point write
-    /// (one weight = 1.0, sigma is ignored).
-    pub fn gaussian(size: usize, sigma: f32) -> Self {
-        if size <= 1 {
-            return Self { weights: vec![1.0], size: 1 };
+    /// Build a normalised anisotropic Gaussian kernel.
+    /// `width × height` cells; per-axis σx / σy. A 1×1 kernel collapses
+    /// to a point write (one weight = 1.0, sigmas ignored).
+    pub fn gaussian_aniso(width: usize, height: usize, sigma_x: f32, sigma_y: f32) -> Self {
+        if width <= 1 && height <= 1 {
+            return Self { weights: vec![1.0], width: 1, height: 1 };
         }
-        let radius = (size / 2) as i32;
-        let two_sigma_sq = 2.0 * sigma * sigma;
-        let mut weights = Vec::with_capacity(size * size);
+        let half_w = (width / 2) as i32;
+        let half_h = (height / 2) as i32;
+        let two_sx_sq = (2.0 * sigma_x * sigma_x).max(1e-6);
+        let two_sy_sq = (2.0 * sigma_y * sigma_y).max(1e-6);
+        let mut weights = Vec::with_capacity(width * height);
         let mut total = 0.0_f32;
-        for ky in -radius..=radius {
-            for kx in -radius..=radius {
-                let d2 = (kx * kx + ky * ky) as f32;
-                let w = (-d2 / two_sigma_sq).exp();
+        for ky in -half_h..=half_h {
+            for kx in -half_w..=half_w {
+                let dx = kx as f32;
+                let dy = ky as f32;
+                let exponent = -(dx * dx / two_sx_sq + dy * dy / two_sy_sq);
+                let w = exponent.exp();
                 weights.push(w);
                 total += w;
             }
         }
-        // Normalise so kernel integrates to 1.0 — preserves "one input
-        // event = one unit of density" downstream.
         let inv_total = 1.0 / total;
         for w in &mut weights { *w *= inv_total; }
-        Self { weights, size }
+        Self { weights, width, height }
+    }
+
+    /// Isotropic Gaussian — convenience wrapper for tests / callers
+    /// that don't need the anisotropic shape.
+    pub fn gaussian(size: usize, sigma: f32) -> Self {
+        Self::gaussian_aniso(size, size, sigma, sigma)
     }
 
     /// Build the kernel implied by a `ScopeQuality` setting.
+    /// Uses the anisotropic per-axis dimensions + sigmas.
     pub fn for_quality(quality: klipp_core::ScopeQuality) -> Self {
-        Self::gaussian(quality.splat_kernel_size(), quality.splat_kernel_sigma())
+        let (w, h) = quality.splat_kernel_size();
+        let (sx, sy) = quality.splat_kernel_sigma();
+        Self::gaussian_aniso(w, h, sx, sy)
     }
 
-    pub fn size(&self) -> usize { self.size }
+    pub fn width(&self) -> usize { self.width }
+    pub fn height(&self) -> usize { self.height }
     pub fn weight_at(&self, kx: usize, ky: usize) -> f32 {
-        self.weights[ky * self.size + kx]
+        self.weights[ky * self.width + kx]
     }
 }
 
@@ -657,20 +676,21 @@ impl AccumBuffer {
         }
     }
 
-    /// Splat a Gaussian kernel centred at (cx, cy). Each kernel cell
-    /// contributes `weight × (r, g, b)` to RGB and `weight` to density.
-    /// Out-of-bounds cells are silently skipped — the kernel near edges
-    /// just deposits less total energy. The kernel is pre-normalised
-    /// so a single splat over the whole footprint integrates to one
-    /// unit of density (away from the edges).
+    /// Splat an anisotropic Gaussian kernel centred at (cx, cy).
+    /// Each kernel cell contributes `weight × (r, g, b)` to RGB and
+    /// `weight` to density. Out-of-bounds cells are silently skipped.
+    /// The kernel is pre-normalised so one splat integrates to one
+    /// unit of density (away from edges). Anisotropic shape (typically
+    /// taller than wide) gives traces phosphor-filament character.
     #[inline]
     fn splat(&mut self, cx: i32, cy: i32, r: f32, g: f32, b: f32, kernel: &SplatKernel) {
-        let half = (kernel.size / 2) as i32;
-        for ky in 0..kernel.size {
-            let py = cy + (ky as i32) - half;
+        let half_w = (kernel.width / 2) as i32;
+        let half_h = (kernel.height / 2) as i32;
+        for ky in 0..kernel.height {
+            let py = cy + (ky as i32) - half_h;
             if py < 0 || py >= self.h as i32 { continue; }
-            for kx in 0..kernel.size {
-                let px = cx + (kx as i32) - half;
+            for kx in 0..kernel.width {
+                let px = cx + (kx as i32) - half_w;
                 if px < 0 || px >= self.w as i32 { continue; }
                 let w = kernel.weight_at(kx, ky);
                 let idx = (py as usize) * self.w + (px as usize);
@@ -830,16 +850,17 @@ impl DensityBuffer {
         Self { data: vec![0.0; w * h], w, h }
     }
 
-    /// Splat a Gaussian footprint centred at (cx, cy). Same shape as
-    /// `AccumBuffer::splat` minus the colour channels.
+    /// Splat a Gaussian footprint centred at (cx, cy). Same anisotropic
+    /// shape as `AccumBuffer::splat` minus the colour channels.
     #[inline]
     fn splat(&mut self, cx: i32, cy: i32, kernel: &SplatKernel) {
-        let half = (kernel.size / 2) as i32;
-        for ky in 0..kernel.size {
-            let py = cy + (ky as i32) - half;
+        let half_w = (kernel.width / 2) as i32;
+        let half_h = (kernel.height / 2) as i32;
+        for ky in 0..kernel.height {
+            let py = cy + (ky as i32) - half_h;
             if py < 0 || py >= self.h as i32 { continue; }
-            for kx in 0..kernel.size {
-                let px = cx + (kx as i32) - half;
+            for kx in 0..kernel.width {
+                let px = cx + (kx as i32) - half_w;
                 if px < 0 || px >= self.w as i32 { continue; }
                 let w = kernel.weight_at(kx, ky);
                 let idx = (py as usize) * self.w + (px as usize);
@@ -2072,13 +2093,49 @@ mod tests {
         assert_eq!(any.b(), 12);
     }
 
-    /// Pin: ScopeQuality::splat_kernel_size matches the documented
-    /// quality tier expectations. Drift would surprise users.
+    /// Pin: ScopeQuality kernel dimensions are anisotropic (height >
+    /// width) at Medium and High — that's the load-bearing property
+    /// for the "phosphor filament" trace look. A regression that
+    /// flipped the dimensions back to square would erase the
+    /// vertical-streak character.
     #[test]
     fn quality_kernel_sizes_pinned() {
-        assert_eq!(klipp_core::ScopeQuality::Low.splat_kernel_size(), 1);
-        assert_eq!(klipp_core::ScopeQuality::Medium.splat_kernel_size(), 3);
-        assert_eq!(klipp_core::ScopeQuality::High.splat_kernel_size(), 5);
+        assert_eq!(klipp_core::ScopeQuality::Low.splat_kernel_size(), (1, 1));
+        assert_eq!(klipp_core::ScopeQuality::Medium.splat_kernel_size(), (3, 5));
+        assert_eq!(klipp_core::ScopeQuality::High.splat_kernel_size(), (3, 7));
+    }
+
+    /// Pin: at non-Low quality the kernel is taller than wide. The
+    /// number can drift; the relationship can't.
+    #[test]
+    fn quality_kernel_anisotropic_at_medium_and_high() {
+        for q in [klipp_core::ScopeQuality::Medium, klipp_core::ScopeQuality::High] {
+            let (w, h) = q.splat_kernel_size();
+            assert!(h > w, "quality {q:?} should produce taller-than-wide kernel: {w}×{h}");
+            let (sx, sy) = q.splat_kernel_sigma();
+            assert!(sy > sx, "quality {q:?} should produce σy > σx for vertical streak: σx={sx} σy={sy}");
+        }
+    }
+
+    /// Pin: anisotropic kernel produces stronger vertical extent than
+    /// horizontal extent (when measured by FWHM of the centre row vs
+    /// centre column). This is THE perceptual property that turns
+    /// scope traces from "round blobs" into "phosphor filaments".
+    #[test]
+    fn anisotropic_kernel_has_vertical_emphasis() {
+        let k = SplatKernel::gaussian_aniso(3, 5, 0.6, 1.8);
+        // Centre row weight at the centre.
+        let centre_kx = k.width() / 2;
+        let centre_ky = k.height() / 2;
+        let centre = k.weight_at(centre_kx, centre_ky);
+        // One step horizontally vs one step vertically — vertical step
+        // should fall off LESS (kernel is taller).
+        let h_step = k.weight_at(centre_kx + 1, centre_ky);
+        let v_step = k.weight_at(centre_kx, centre_ky + 1);
+        let h_ratio = h_step / centre;
+        let v_ratio = v_step / centre;
+        assert!(v_ratio > h_ratio,
+            "vertical falloff should be SLOWER than horizontal (taller kernel): h_ratio={h_ratio:.4} v_ratio={v_ratio:.4}");
     }
 
     // ── Scanline texture overlay (Phase 2) ───────────────────────────

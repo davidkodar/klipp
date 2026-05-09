@@ -70,28 +70,30 @@ impl ScopeQuality {
         }
     }
 
-    /// Side length of the Gaussian splat kernel used to soften trace
-    /// deposition in the scope renderers. `Low` is a single-pixel
-    /// point-write (matches the legacy "graph-paper" look); `Medium`
-    /// and `High` deposit a Gaussian footprint per data point so
-    /// traces accumulate as soft energy clouds rather than as
-    /// individual rasterised pixels.
-    pub fn splat_kernel_size(&self) -> usize {
+    /// Splat-kernel dimensions (width × height) for trace deposition.
+    /// **Anisotropic — height > width** by design: real CRT phosphor
+    /// energy stretches vertically along the electron-beam motion,
+    /// not in a circle. Low is a single-pixel point-write (matches
+    /// the legacy "graph-paper" look); Medium and High deposit a
+    /// vertically-elongated Gaussian footprint per data point so
+    /// traces feel like phosphor filaments rather than round blobs.
+    pub fn splat_kernel_size(&self) -> (usize, usize) {
         match self {
-            Self::Low => 1,
-            Self::Medium => 3,
-            Self::High => 5,
+            Self::Low => (1, 1),
+            Self::Medium => (3, 5),
+            Self::High => (3, 7),
         }
     }
 
-    /// Standard deviation (σ) of the Gaussian splat kernel. Paired
-    /// with `splat_kernel_size`. `Low` returns 0 (no Gaussian shape;
-    /// single-pixel splat skips the divide-by-σ math).
-    pub fn splat_kernel_sigma(&self) -> f32 {
+    /// Per-axis Gaussian standard deviations (σx, σy). Paired with
+    /// `splat_kernel_size`. `σy > σx` produces the vertical-streak
+    /// shape that reads as phosphor accumulation. `Low` returns
+    /// zero (no Gaussian; single-pixel splat skips the divide-by-σ).
+    pub fn splat_kernel_sigma(&self) -> (f32, f32) {
         match self {
-            Self::Low => 0.0,
-            Self::Medium => 1.0,
-            Self::High => 1.6,
+            Self::Low => (0.0, 0.0),
+            Self::Medium => (0.6, 1.8),
+            Self::High => (0.7, 2.4),
         }
     }
 }

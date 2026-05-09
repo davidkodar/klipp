@@ -2817,8 +2817,10 @@ impl PlaybackEngine {
                 // existing GPU scope path. Used by media-browser hover-skim
                 // and timeline scrub so scope quality matches playback.
                 if let Some(gpu) = &mut self.gpu_effects {
-                    let scope_w = 720u32;
-                    let scope_h = 256u32;
+                    // 1024×512 since 2026-05-09 (was 720×256). Sharper
+                    // traces before the panel-size stretch.
+                    let scope_w = 1024u32;
+                    let scope_h = 512u32;
                     let mode = self.scope_render_mode;
                     let tex = gpu_scope_kind_for_mode(mode).map(|kind| match kind {
                         GpuScopeKind::Waveform => gpu.render_scope_waveform(&rgba, width, height, scope_w, scope_h),
@@ -8672,8 +8674,10 @@ impl PlaybackEngine {
                 let t_hit_insert_ms = t_hit_insert.elapsed().as_secs_f64() * 1000.0;
                 if self.should_render_scope() {
                   if let Some(gpu) = &mut self.gpu_effects {
-                    let scope_w = 720u32;
-                    let scope_h = 256u32;
+                    // 1024×512 since 2026-05-09 (was 720×256). Sharper
+                    // traces before the panel-size stretch.
+                    let scope_w = 1024u32;
+                    let scope_h = 512u32;
                     let mode = self.scope_render_mode;
                     let tex = gpu_scope_kind_for_mode(mode).map(|kind| match kind {
                         GpuScopeKind::Waveform => gpu.render_scope_waveform(&cached, width, height, scope_w, scope_h),
@@ -8782,8 +8786,9 @@ impl PlaybackEngine {
         let mut scope_fb_lock_us: u64 = 0;
         if self.should_render_scope() {
           if let Some(gpu) = &mut self.gpu_effects {
-            let scope_w = 720u32;
-            let scope_h = 256u32;
+            // 1024×512 since 2026-05-09 (was 720×256).
+            let scope_w = 1024u32;
+            let scope_h = 512u32;
             let mode = self.scope_render_mode;
             let t_gpu = std::time::Instant::now();
             let tex = gpu_scope_kind_for_mode(mode).map(|kind| match kind {
@@ -8956,8 +8961,10 @@ impl PlaybackEngine {
             let scope_tex = if should_render {
                 if let Some(gpu) = &mut self.gpu_effects {
                     tracing::debug!("Engine: GPU scope render mode={} frame={}x{}", self.scope_render_mode, w, h);
-                    let scope_w = 720u32;
-                    let scope_h = 256u32;
+                    // 1024×512 since 2026-05-09 (was 720×256). Sharper
+                    // traces before the panel-size stretch.
+                    let scope_w = 1024u32;
+                    let scope_h = 512u32;
                     let mode = self.scope_render_mode;
                     let tex_opt = gpu_scope_kind_for_mode(mode).map(|kind| match kind {
                         GpuScopeKind::Waveform => gpu.render_scope_waveform(&out_u8, w, h, scope_w, scope_h),
