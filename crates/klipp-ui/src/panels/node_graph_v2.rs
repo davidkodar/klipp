@@ -60,15 +60,15 @@ const DEFAULT_FRAME_COLOR_RGBA: u32 = u32::from_le_bytes([0x6a, 0x82, 0xa8, 0xff
 /// selected, soloed, or sitting on a matte chain.
 const SEARCH_MATCH_COLOR: egui::Color32 = egui::Color32::from_rgb(0x3a, 0xd0, 0xff);
 
-/// Default sticky-note tint — warm beige `#d4c89a`. Single colour
-/// in v1 (palette deferred); the bytes are also used as the
-/// "Add note here" button's background so it visually previews
-/// what the new sticky will look like.
-const STICKY_TINT_RGBA: [u8; 4] = [0xd4, 0xc8, 0x9a, 0xff];
 
 fn node_color(kind: &NodeKind, theme: &KlippTheme) -> egui::Color32 {
+    let _ = theme;
     match kind {
-        NodeKind::Source | NodeKind::Output => theme.bg_raised,
+        // Source = input terminal (warm green); Output = sink
+        // (cool blue). Distinct hues so the two terminals don't
+        // read as identical placeholders.
+        NodeKind::Source => egui::Color32::from_rgb(0x3a, 0x5e, 0x4a),
+        NodeKind::Output => egui::Color32::from_rgb(0x3a, 0x4a, 0x6e),
         NodeKind::Qualifier | NodeKind::LumaKey | NodeKind::Mask | NodeKind::CombineMattes | NodeKind::ExternalMatte => {
             egui::Color32::from_rgb(0x5c, 0x3a, 0x6e)
         }
@@ -305,6 +305,24 @@ pub struct NodeGraphV2Panel {
     /// Which match index Tab is currently on. Wraps modulo the
     /// number of matches; reset to 0 whenever the query changes.
     search_active_idx: usize,
+    /// Toggle for the per-thumb exposure-clipping overlay — red
+    /// where any RGB channel is at the upper sentinel, blue where
+    /// all channels are at the lower sentinel. Off by default;
+    /// toolbar button flips it.
+    show_thumb_clipping: bool,
+    /// Toggle for the per-thumb mini-histogram strip painted at
+    /// the bottom of each output thumbnail. Off by default;
+    /// toolbar button flips it.
+    show_thumb_histogram: bool,
+    /// Cached clipping-overlay textures, one per node. Keyed by
+    /// `engine_node_thumbs_gen` so the cache invalidates when the
+    /// engine pushes a new thumb. Defer-dropped through the same
+    /// `deferred_texture_drops` queue the output-thumb cache uses.
+    thumb_clipping_overlays: std::collections::HashMap<NodeId, (u64, egui::TextureHandle)>,
+    /// Cached 64-bucket luma histograms keyed by thumb generation.
+    /// Cheap to recompute (~20 K samples per node) but caching
+    /// avoids the work for nodes we paint every frame anyway.
+    thumb_histograms: std::collections::HashMap<NodeId, (u64, [u32; 64])>,
 }
 
 impl Default for NodeGraphV2Panel {
@@ -345,6 +363,10 @@ impl Default for NodeGraphV2Panel {
             search_open: false,
             search_query: String::new(),
             search_active_idx: 0,
+            show_thumb_clipping: false,
+            show_thumb_histogram: false,
+            thumb_clipping_overlays: std::collections::HashMap::new(),
+            thumb_histograms: std::collections::HashMap::new(),
         }
     }
 }
@@ -491,6 +513,50 @@ impl NodeGraphV2Panel {
             Undoable with Ctrl+Z."
         ).clicked() {
             cmds.push(AppCommand::AutoLayoutNodeGraph { clip_id });
+        }
+        // Sticky-note creation. Drops a fresh note at the centre of
+        // the current viewport in graph coords so the user always
+        // sees it appear regardless of where they're panned. Drag-
+        // body to reposition; double-click to edit text.
+        if toolbar_ui.button(egui::RichText::new("\u{1F4DD} Note"))
+            .on_hover_text("Add a sticky note at the canvas centre")
+            .clicked()
+        {
+            // We don't have the to_graph closure built yet at this
+            // point in the toolbar block; reconstruct the canvas-
+            // centre → graph mapping inline. screen = origin +
+            // (graph + pan) * zoom, so graph = (screen − origin)/zoom
+            // − pan. The canvas-centre ↔ origin term collapses to
+            // zero, leaving graph = -pan.
+            cmds.push(AppCommand::CreateStickyNote {
+                clip_id,
+                x: -self.pan.x,
+                y: -self.pan.y,
+            });
+        }
+        // Per-thumbnail diagnostic toggles. Off by default so users
+        // who don't grade in this canvas don't pay paint cost. The
+        // toolbar pair makes them flickable mid-grade rather than
+        // buried in prefs — same UX shape as the bookmarks ★ and
+        // minimap ▦ toggles.
+        if toolbar_ui.selectable_label(
+            self.show_thumb_clipping,
+            egui::RichText::new("\u{26A0}").small(),
+        ).on_hover_text("Exposure clipping overlay on node thumbs\n\
+            Red: any RGB channel ≥ 248\n\
+            Blue: all channels ≤ 8")
+            .clicked()
+        {
+            self.show_thumb_clipping = !self.show_thumb_clipping;
+        }
+        if toolbar_ui.selectable_label(
+            self.show_thumb_histogram,
+            egui::RichText::new("\u{1F4CA}").small(),
+        ).on_hover_text("Mini luma histogram on node thumbs\n\
+            64-bucket Rec.709 luma distribution at the bottom of each preview")
+            .clicked()
+        {
+            self.show_thumb_histogram = !self.show_thumb_histogram;
         }
         // Find — proper button (not selectable_label) so the click
         // target reads as "tool" rather than "tag". `selected`-style
@@ -1270,32 +1336,34 @@ impl NodeGraphV2Panel {
                 egui::pos2(rect.min.x, rect.min.y + header_h),
                 rect.max,
             );
-            // Drop shadow — three stops of premultiplied black,
-            // each progressively further out and dimmer to fake an
-            // ambient soft-shadow falloff. The far stop adds the
-            // "feathered halo" that makes the card feel lifted
-            // even when the contact stops are subtle. Offsets are
-            // in screen pixels (not multiplied by zoom) — that
-            // matches how a real drop shadow scales and keeps the
-            // depth cue legible at extreme zoom-out. Painted before
-            // the Compound stack ghosts so a single shadow sits
-            // under the whole stack rather than each ghost casting
-            // its own competing shadow.
+            // Drop shadow — one native-blurred rect (Gaussian
+            // falloff) for the ambient halo + one tighter stop for
+            // contact darkness. Replaces the older 3-stop alpha-
+            // stack which gave stair-step feathering. egui's
+            // `epaint::RectShape::blur_width` runs the blur on the
+            // GPU as a single quad, so this is also less paint work
+            // than 3 stacked rects. Offsets are in screen pixels
+            // (not multiplied by zoom) — that matches how a real
+            // drop shadow scales and keeps the depth cue legible at
+            // extreme zoom-out. Painted before the Compound stack
+            // ghosts so a single shadow sits under the whole stack
+            // rather than each ghost casting its own competing one.
             {
-                let shadow_ambient = egui::Color32::from_rgba_premultiplied(0, 0, 0, 12);
-                let shadow_far = egui::Color32::from_rgba_premultiplied(0, 0, 0, 22);
-                let shadow_near = egui::Color32::from_rgba_premultiplied(0, 0, 0, 36);
+                painter.add(egui::Shape::Rect(egui::epaint::RectShape {
+                    rect: rect.translate(egui::vec2(0.0, 5.0)).expand(2.0),
+                    rounding: egui::Rounding::same(6.0),
+                    fill: egui::Color32::from_rgba_premultiplied(0, 0, 0, 50),
+                    stroke: egui::Stroke::NONE,
+                    blur_width: 8.0,
+                    fill_texture_id: egui::TextureId::default(),
+                    uv: egui::Rect::ZERO,
+                }));
+                // Tighter contact stop for the dark edge directly
+                // under the card — keeps the shadow from feeling
+                // floaty.
                 painter.rect_filled(
-                    rect.translate(egui::vec2(0.0, 7.0)).expand(6.5),
-                    7.5, shadow_ambient,
-                );
-                painter.rect_filled(
-                    rect.translate(egui::vec2(0.0, 4.0)).expand(3.0),
-                    5.5, shadow_far,
-                );
-                painter.rect_filled(
-                    rect.translate(egui::vec2(0.0, 2.0)).expand(1.5),
-                    4.5, shadow_near,
+                    rect.translate(egui::vec2(0.0, 1.5)).expand(0.5),
+                    4.5, egui::Color32::from_rgba_premultiplied(0, 0, 0, 40),
                 );
             }
             // Compound "stacked cards" preview: paint two offset
@@ -1369,6 +1437,59 @@ impl NodeGraphV2Panel {
             // glance.
             let body_fill = if node_on { lift(fill, 14) } else { theme.bg_panel_alt };
             painter.rect_filled(body_rect, 4.0, body_fill);
+            // Header/body hairline divider — 1 px shadow line at
+            // the bottom of the header strip. Polarity-aware: a
+            // dark hairline on dark themes (theme.overlay flips to
+            // dark in that case via its inverse path), light hair-
+            // line on light themes. Reinforces that the header and
+            // body are two separate material planes with negligible
+            // paint cost.
+            {
+                let divider_y = rect.min.y + header_h - 0.5;
+                let dark_overlay = if theme.bg_panel.r() as u32
+                    + theme.bg_panel.g() as u32
+                    + theme.bg_panel.b() as u32 > 384
+                {
+                    // Light theme — overlay() returns dark; that's
+                    // already what we want for the divider.
+                    theme.overlay(40)
+                } else {
+                    // Dark theme — overlay() returns light, but we
+                    // want the divider DARKER than the body. Mix
+                    // black in directly.
+                    egui::Color32::from_rgba_unmultiplied(0, 0, 0, 90)
+                };
+                painter.line_segment(
+                    [
+                        egui::pos2(rect.min.x + 1.0, divider_y),
+                        egui::pos2(rect.max.x - 1.0, divider_y),
+                    ],
+                    egui::Stroke::new(1.0, dark_overlay),
+                );
+            }
+            // Body inner-bottom shadow — 4 stacked horizontal lines
+            // at the bottom of the body fading from invisible to
+            // dim over 4 px. Mirror of the top-edge highlight; the
+            // pair gives the body volume — light catches the top
+            // edge and the bottom curves into shadow. Alpha capped
+            // at 35 so it stays a hint, not a halftone.
+            {
+                let max_alpha: u8 = 35;
+                for i in 0..4 {
+                    let y = body_rect.max.y - i as f32 - 0.5;
+                    if y <= body_rect.min.y { break; }
+                    let a = (max_alpha as f32 * (1.0 - i as f32 / 4.0)) as u8;
+                    if a == 0 { break; }
+                    let shadow = egui::Color32::from_rgba_unmultiplied(0, 0, 0, a);
+                    painter.line_segment(
+                        [
+                            egui::pos2(body_rect.min.x + 4.0, y),
+                            egui::pos2(body_rect.max.x - 4.0, y),
+                        ],
+                        egui::Stroke::new(1.0, shadow),
+                    );
+                }
+            }
 
             // Internal top-edge gradient — five stacked horizontal
             // lines fading from a bright top toward invisible over
@@ -1650,7 +1771,20 @@ impl NodeGraphV2Panel {
             // nodes already painted their own source-image thumb
             // above; let that one win.
             if kind != NodeKind::ExternalMatte {
-                if let Some(thumb_bytes) = engine_node_thumbs.get(&node_id) {
+                // Output is a no-op in the executor (no entry in
+                // node_outputs), so engine_node_thumbs.get(output_id)
+                // is always None. Look up the feeder node instead so
+                // Output paints the same thumbnail as the node
+                // currently feeding it — i.e. the final composite.
+                let thumb_lookup_id = if matches!(kind, NodeKind::Output) {
+                    graph.edges.iter()
+                        .find(|e| e.to_node == node_id && e.to_port == 0)
+                        .map(|e| e.from_node)
+                        .unwrap_or(node_id)
+                } else {
+                    node_id
+                };
+                if let Some(thumb_bytes) = engine_node_thumbs.get(&thumb_lookup_id) {
                     if !thumb_bytes.is_empty() {
                         let needs_upload = match self.output_thumbs.get(&node_id) {
                             Some((gen, _)) => *gen != engine_node_thumbs_gen,
@@ -1698,6 +1832,53 @@ impl NodeGraphV2Panel {
                             let cell = body_rect.shrink(inset);
                             let thumb_rect = aspect_fit_rect(cell, 16.0 / 9.0);
                             paint_thumb_rounded(&painter, thumb_rect, tex.id(), 3.0);
+
+                            // Exposure-clipping overlay — lazy build
+                            // a 192×108 RGBA texture marking
+                            // clipped/crushed pixels and paint it on
+                            // top of the thumb. Cached by gen so we
+                            // only rebuild when the engine pushes a
+                            // new thumb. Defer-drop the old texture
+                            // through the same queue the output-thumb
+                            // cache uses.
+                            if self.show_thumb_clipping {
+                                let cached_gen = self.thumb_clipping_overlays
+                                    .get(&node_id).map(|(g, _)| *g);
+                                if cached_gen != Some(engine_node_thumbs_gen) {
+                                    let img = build_clipping_overlay_image(thumb_bytes);
+                                    let name = format!("node_clip_overlay_{}", node_id.as_simple());
+                                    let overlay_tex = ui.ctx().load_texture(
+                                        name, img, egui::TextureOptions::NEAREST,
+                                    );
+                                    if let Some((_, old)) = self.thumb_clipping_overlays.remove(&node_id) {
+                                        deferred_drops.push(old);
+                                    }
+                                    self.thumb_clipping_overlays.insert(
+                                        node_id, (engine_node_thumbs_gen, overlay_tex),
+                                    );
+                                }
+                                if let Some((_, ov_tex)) = self.thumb_clipping_overlays.get(&node_id) {
+                                    paint_thumb_rounded(&painter, thumb_rect, ov_tex.id(), 3.0);
+                                }
+                            }
+
+                            // Mini histogram strip — 64-bucket luma
+                            // histogram painted on the bottom 18 %
+                            // of the thumb. Cached the same way.
+                            if self.show_thumb_histogram {
+                                let cached_gen = self.thumb_histograms
+                                    .get(&node_id).map(|(g, _)| *g);
+                                if cached_gen != Some(engine_node_thumbs_gen) {
+                                    let bins = compute_thumb_histogram(thumb_bytes);
+                                    self.thumb_histograms.insert(
+                                        node_id, (engine_node_thumbs_gen, bins),
+                                    );
+                                }
+                                if let Some((_, bins)) = self.thumb_histograms.get(&node_id) {
+                                    paint_thumb_histogram(&painter, thumb_rect, bins, theme);
+                                }
+                            }
+
                             paint_thumb_badge(
                                 &painter, thumb_rect,
                                 kind_category_glyph(&kind), theme, zoom,
@@ -2408,12 +2589,16 @@ impl NodeGraphV2Panel {
 
         // Tell the engine which nodes want thumbnails. Diff against
         // the previous set so we don't resend the same list every
-        // frame — the engine only needs to know when the visible set
-        // changes. We ask for thumbs of every grade-pipeline node on
-        // screen (Source/Output are structural — no value showing
-        // their source pixels; skip).
+        // frame — the engine only needs to know when the visible
+        // set changes. Source IS included now (it's a passthrough
+        // of the source frame, so its thumb shows the raw input —
+        // genuinely useful as a "this is what's coming in" cue).
+        // Output is excluded because it's a no-op in the executor
+        // — node_outputs has no entry for it; the UI paints
+        // Output's preview by looking up its FEEDER node's thumb
+        // instead (see the Output-thumb branch in the paint loop).
         let mut current_visible: Vec<NodeId> = node_rects.iter()
-            .filter(|(_, _, _, kind, _)| !matches!(kind, NodeKind::Source | NodeKind::Output))
+            .filter(|(_, _, _, kind, _)| !matches!(kind, NodeKind::Output))
             .map(|(id, _, _, _, _)| *id)
             .collect();
         current_visible.sort();
@@ -2424,6 +2609,14 @@ impl NodeGraphV2Panel {
             });
             self.last_visible_thumb_nodes = current_visible;
         }
+
+        // ── Vignette ──────────────────────────────────────────────
+        // Painted after all canvas content so it sits on top of
+        // nodes at the perimeter (gives the editor area a subtle
+        // chamber-depth feel), but before the minimap / toolbar /
+        // search-overlay layers which have their own backgrounds
+        // and shouldn't be darkened.
+        self.draw_vignette(&painter, canvas_rect);
 
         // ── Minimap ──────────────────────────────────────────────
         // 140 × 100 px overview anchored bottom-right of the canvas
@@ -2728,16 +2921,68 @@ impl NodeGraphV2Panel {
 
     fn draw_grid(&self, painter: &egui::Painter, rect: egui::Rect, theme: &KlippTheme) {
         let zoom = self.zoom;
-        // Skip the grid when fully zoomed out — lines fuse into a wash.
+        // Skip the grid entirely when fully zoomed out — lines fuse
+        // into a wash and hurt readability.
         if zoom < 0.4 { return; }
-        let spacing = GRID_SPACING * zoom;
         let origin = rect.center() + self.pan * zoom;
-        // Grid alpha was 30; dropped to 16 so the canvas chrome stays
-        // present (pan/zoom is still readable) without competing with
-        // the node bodies for visual weight.
-        let stroke = egui::Stroke::new(0.5_f32, egui::Color32::from_rgba_unmultiplied(
-            theme.accent_dim.r(), theme.accent_dim.g(), theme.accent_dim.b(), 16,
-        ));
+
+        // Adaptive zoom curves — each tier fades in over a small
+        // band so the grid never pops on/off, it gradates as the
+        // user zooms.
+        //   minor:     fades 0 → 1 over zoom 0.4..0.7
+        //   major:     1.0 across the full visible range
+        //   sub-minor: fades 0 → 1 over zoom 1.2..1.8 so close-up
+        //              work has a finer reference without
+        //              cluttering at typical zoom.
+        let minor_alpha = ((zoom - 0.4) / 0.3).clamp(0.0, 1.0);
+        let sub_minor_alpha = ((zoom - 1.2) / 0.6).clamp(0.0, 1.0);
+
+        let mk = |alpha: u8, w: f32| {
+            egui::Stroke::new(
+                w,
+                egui::Color32::from_rgba_unmultiplied(
+                    theme.accent_dim.r(),
+                    theme.accent_dim.g(),
+                    theme.accent_dim.b(),
+                    alpha,
+                ),
+            )
+        };
+
+        // Sub-minor — every 8 graph-px. Only paints once we're
+        // zoomed in enough that 8-px-spacing in graph coords
+        // translates to a visually discernible spacing.
+        if sub_minor_alpha > 0.001 {
+            let sub_spacing = (GRID_SPACING * 0.25) * zoom;
+            let stroke = mk((10.0 * sub_minor_alpha) as u8, 0.5);
+            self.draw_grid_lines(painter, rect, origin, sub_spacing, stroke);
+        }
+
+        // Minor — every 32 graph-px. The "default" grid most users
+        // navigate by.
+        if minor_alpha > 0.001 {
+            let stroke = mk((18.0 * minor_alpha) as u8, 0.5);
+            self.draw_grid_lines(painter, rect, origin, GRID_SPACING * zoom, stroke);
+        }
+
+        // Major — every 4 × 32 = 128 graph-px. ~2× the minor alpha
+        // and a 1.0 px stroke so the structural divisions read at
+        // a glance without dominating the canvas. Always at full
+        // alpha as long as the grid is showing at all (no zoom
+        // fade) — they're the visual ruler.
+        let stroke = mk(38, 1.0);
+        self.draw_grid_lines(painter, rect, origin, GRID_SPACING * 4.0 * zoom, stroke);
+    }
+
+    fn draw_grid_lines(
+        &self,
+        painter: &egui::Painter,
+        rect: egui::Rect,
+        origin: egui::Pos2,
+        spacing: f32,
+        stroke: egui::Stroke,
+    ) {
+        if spacing <= 0.5 { return; }
         // Vertical
         let mut x = origin.x;
         while x > rect.min.x { x -= spacing; }
@@ -2751,6 +2996,25 @@ impl NodeGraphV2Panel {
         while y < rect.max.y {
             painter.line_segment([egui::pos2(rect.min.x, y), egui::pos2(rect.max.x, y)], stroke);
             y += spacing;
+        }
+    }
+
+    /// Edge vignette — feathered dark band around the canvas
+    /// perimeter that gives the editor area a subtle "in a
+    /// chamber" depth instead of a flat slab. Pure black with
+    /// linear-falloff alpha; works on both light and dark themes
+    /// because darker corners read as "depth" universally.
+    fn draw_vignette(&self, painter: &egui::Painter, rect: egui::Rect) {
+        const FEATHER_PX: i32 = 14;
+        const PEAK_ALPHA: f32 = 60.0;
+        for i in 0..FEATHER_PX {
+            let a = (PEAK_ALPHA * (1.0 - i as f32 / FEATHER_PX as f32)) as u8;
+            if a == 0 { break; }
+            let inset_rect = rect.shrink(i as f32);
+            painter.rect_stroke(
+                inset_rect, 0.0,
+                egui::Stroke::new(1.0, egui::Color32::from_rgba_unmultiplied(0, 0, 0, a)),
+            );
         }
     }
 
@@ -2895,30 +3159,6 @@ impl NodeGraphV2Panel {
                     // resolves a frame late and looks janky.
                     ui.set_min_width(260.0);
                     ui.set_max_width(260.0);
-
-                    // "Add note here" — sticky-note creation at the
-                    // right-click point's graph coords. Sits at the
-                    // very top above the search field so it's not
-                    // confused with the kind picker (sticky notes
-                    // aren't a NodeKind). Closes the menu on click.
-                    let note_pos = self.add_menu_graph_pos;
-                    if ui.add(
-                        egui::Button::new(
-                            egui::RichText::new("\u{1F4DD}  Add note here").color(theme.text_primary),
-                        )
-                        .fill(egui::Color32::from_rgba_unmultiplied(
-                            STICKY_TINT_RGBA[0], STICKY_TINT_RGBA[1],
-                            STICKY_TINT_RGBA[2], 60,
-                        ))
-                    ).clicked() {
-                        cmds.push(AppCommand::CreateStickyNote {
-                            clip_id,
-                            x: note_pos.x,
-                            y: note_pos.y,
-                        });
-                        close = true;
-                    }
-                    ui.add_space(4.0);
 
                     // ── Search field ─────────────────────────────
                     let search_resp = ui.add(
@@ -3806,7 +4046,12 @@ fn paint_thumb_rounded(
 /// stays distinct rather than always reading "C".
 fn kind_category_glyph(kind: &NodeKind) -> &'static str {
     match kind {
-        NodeKind::Source | NodeKind::Output => "\u{25CB}", // ○
+        // Source = play (input flowing IN); Output = eject (the
+        // final composite leaving the graph). Distinct so the two
+        // terminals are visually unambiguous on the thumbnail
+        // badge.
+        NodeKind::Source => "\u{25B6}",   // ▶
+        NodeKind::Output => "\u{23CF}",   // ⏏
         NodeKind::Compound => "\u{229E}",                  // ⊞
         NodeKind::Reroute
         | NodeKind::RGBSplitter
@@ -3829,6 +4074,102 @@ fn kind_category_glyph(kind: &NodeKind) -> &'static str {
         | NodeKind::Denoise => "F",
         // Everything else is the primary-correction family.
         _ => "C",
+    }
+}
+
+/// Build a 192×108 RGBA overlay image marking exposure-clipped
+/// pixels — red where any channel is at the upper sentinel
+/// (>= 248) and blue where all channels are at the lower sentinel
+/// (<= 8). Transparent everywhere else so the overlay paints
+/// cleanly on top of the thumb without hiding the underlying
+/// image. Sentinel asymmetry (any-vs-all) matches the standard
+/// scope-side convention: even one clipped channel is a problem
+/// for highlights, but a "crushed" pixel typically needs every
+/// channel pinned at the bottom.
+fn build_clipping_overlay_image(thumb_bytes: &[u8]) -> egui::ColorImage {
+    const TW: usize = 192;
+    const TH: usize = 108;
+    let mut out = vec![0u8; TW * TH * 4];
+    if thumb_bytes.len() < TW * TH * 4 {
+        return egui::ColorImage::from_rgba_unmultiplied([TW, TH], &out);
+    }
+    for i in 0..(TW * TH) {
+        let r = thumb_bytes[i * 4];
+        let g = thumb_bytes[i * 4 + 1];
+        let b = thumb_bytes[i * 4 + 2];
+        if r >= 248 || g >= 248 || b >= 248 {
+            out[i * 4] = 0xff;
+            out[i * 4 + 1] = 0x55;
+            out[i * 4 + 2] = 0x55;
+            out[i * 4 + 3] = 0xb4;
+        } else if r <= 8 && g <= 8 && b <= 8 {
+            out[i * 4] = 0x55;
+            out[i * 4 + 1] = 0x88;
+            out[i * 4 + 2] = 0xff;
+            out[i * 4 + 3] = 0xb4;
+        }
+    }
+    egui::ColorImage::from_rgba_unmultiplied([TW, TH], &out)
+}
+
+/// Compute a 64-bucket luma histogram from a 192×108 RGBA u8 thumb.
+/// Luma weights match Rec.709 (the playback default; the histogram
+/// is a quick visual aid not a calibrated scope, so a fixed
+/// weighting is fine). Returns the bin counts; the caller
+/// normalises against the max bin when painting.
+fn compute_thumb_histogram(thumb_bytes: &[u8]) -> [u32; 64] {
+    let mut bins = [0u32; 64];
+    if thumb_bytes.len() < 4 { return bins; }
+    let pixels = thumb_bytes.len() / 4;
+    for i in 0..pixels {
+        let r = thumb_bytes[i * 4] as f32;
+        let g = thumb_bytes[i * 4 + 1] as f32;
+        let b = thumb_bytes[i * 4 + 2] as f32;
+        let luma = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+        let bucket = ((luma / 256.0) * 64.0).clamp(0.0, 63.0) as usize;
+        bins[bucket] += 1;
+    }
+    bins
+}
+
+/// Paint a tiny histogram strip across the bottom 18 % of the
+/// thumb. Translucent dark backdrop + light bars; bars are
+/// normalised against the bin max so the shape always reads
+/// regardless of total pixel count.
+fn paint_thumb_histogram(
+    painter: &egui::Painter,
+    thumb_rect: egui::Rect,
+    bins: &[u32; 64],
+    theme: &KlippTheme,
+) {
+    let strip_h = thumb_rect.height() * 0.18;
+    let strip_rect = egui::Rect::from_min_max(
+        egui::pos2(thumb_rect.min.x, thumb_rect.max.y - strip_h),
+        thumb_rect.max,
+    );
+    // Backdrop — translucent dark band so the bars read on
+    // bright thumbs (e.g. blown-out skies) too.
+    painter.rect_filled(
+        strip_rect, 0.0,
+        egui::Color32::from_rgba_unmultiplied(0, 0, 0, 110),
+    );
+    let max_bin = bins.iter().copied().max().unwrap_or(1).max(1) as f32;
+    let bar_w = strip_rect.width() / bins.len() as f32;
+    for (i, count) in bins.iter().enumerate() {
+        let normalised = (*count as f32 / max_bin).clamp(0.0, 1.0);
+        let bar_h = strip_rect.height() * normalised;
+        let x0 = strip_rect.min.x + bar_w * i as f32;
+        let bar_rect = egui::Rect::from_min_max(
+            egui::pos2(x0, strip_rect.max.y - bar_h),
+            egui::pos2(x0 + bar_w, strip_rect.max.y),
+        );
+        let bar_color = egui::Color32::from_rgba_unmultiplied(
+            theme.text_primary.r(),
+            theme.text_primary.g(),
+            theme.text_primary.b(),
+            210,
+        );
+        painter.rect_filled(bar_rect, 0.0, bar_color);
     }
 }
 
