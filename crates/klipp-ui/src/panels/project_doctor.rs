@@ -485,6 +485,49 @@ fn scan_project(state: &AppState) -> Vec<Finding> {
         }
     }
 
+    // 2c. LV2 plugin findings — walk every clip's audio_effects list
+    //     and flag entries that reference an `"lv2:{uri}"` plugin not
+    //     present in the runtime registry. Mirrors the LADSPA shape
+    //     except keyed on URI rather than path:label.
+    let installed_lv2_uris: std::collections::HashSet<String> =
+        klipp_audio::lv2::registry_snapshot()
+            .into_iter()
+            .map(|info| info.uri)
+            .collect();
+
+    if let Some(seq) = active {
+        for track in &seq.tracks {
+            for clip in &track.clips {
+                for (effect_index, fx) in clip.audio_effects.iter().enumerate() {
+                    let Some(uri) = fx.effect_type.strip_prefix("lv2:") else {
+                        continue;
+                    };
+                    if installed_lv2_uris.contains(uri) {
+                        continue;
+                    }
+                    findings.push(Finding {
+                        severity: Severity::Error,
+                        category: "MISSING LV2 PLUGIN".into(),
+                        summary: format!("LV2 plugin not installed: {uri}"),
+                        detail: "The clip has an audio effect referencing \
+                                 an LV2 plugin that's no longer on disk. \
+                                 Install the plugin into ~/.lv2 or \
+                                 /usr/lib/lv2 and rescan, or remove the \
+                                 effect from the clip."
+                            .into(),
+                        fixes: vec![Fix {
+                            label: "Remove from clip".into(),
+                            action: FixAction::RemoveAudioEffectFromClip {
+                                clip_id: clip.id,
+                                effect_index,
+                            },
+                        }],
+                    });
+                }
+            }
+        }
+    }
+
     // 2b. Frei0r plugin findings — walk every clip's builtin_effects
     //     list and flag `BuiltinEffect::Frei0r { type_id, .. }`
     //     entries whose plugin isn't currently installed. We use the

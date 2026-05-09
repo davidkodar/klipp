@@ -1752,6 +1752,15 @@ pub struct AppState {
     /// for vendor subdirs.
     pub frei0r_plugins: Vec<klipp_frei0r::Frei0rPluginInfo>,
 
+    /// All LV2 audio plugins discovered at startup (and on Rescan).
+    /// Populates the runtime cache in `klipp_audio::lv2` so that any
+    /// `AudioEffectInstance.effect_type = "lv2:{uri}"` can be
+    /// resolved without re-reading the system search paths each
+    /// render. v1 supports plugins with ≤ 2 audio channels in/out
+    /// and the control-port subset of LV2; surround / state-ext /
+    /// MIDI / native UI deferred to LV2-NEXT-* queue items.
+    pub lv2_plugins: Vec<klipp_audio::lv2::Lv2PluginInfo>,
+
     /// Plugins the user has explicitly disabled, keyed on the
     /// stable LADSPA `unique_id`. Persisted to
     /// `~/.config/klipp/audio_plugins.toml` on every toggle and
@@ -3220,6 +3229,7 @@ impl Default for AppState {
             available_plugins: Vec::new(),
             ladspa_plugins: Vec::new(),
             frei0r_plugins: Vec::new(),
+            lv2_plugins: Vec::new(),
             disabled_audio_plugins: std::collections::HashSet::new(),
             effect_registry: crate::browser::effect_registry::EffectRegistry::new(),
             effect_source_filter: crate::browser::effects_tab::SourceFilter::default(),

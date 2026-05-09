@@ -770,6 +770,25 @@ impl KlippApp {
                 app.state.frei0r_plugins.len()
             );
         }
+        // LV2 audio plugin discovery — disk-cached (livi reads every
+        // bundle's manifest, expensive cold). Populates the browser
+        // registry so the Audio FX tab shows the LV2 source pill;
+        // create_effect("lv2:{uri}", sr) resolves through the
+        // klipp_audio::lv2 World singleton.
+        {
+            let _t = LogTimer::new("ui: LV2 discovery");
+            let cache_dir = dirs::cache_dir().map(|p| p.join("klipp"));
+            app.state.lv2_plugins =
+                klipp_audio::lv2::discover_lv2_plugins_cached(cache_dir.as_deref());
+            klipp_audio::lv2::set_plugin_registry(app.state.lv2_plugins.clone());
+            app.state
+                .effect_registry
+                .merge_lv2_plugins(&app.state.lv2_plugins);
+            tracing::info!(
+                "LV2: discovered {} plugin(s)",
+                app.state.lv2_plugins.len()
+            );
+        }
         klipp_core::startup_timer::mark("KlippApp::new returning");
         app
     }

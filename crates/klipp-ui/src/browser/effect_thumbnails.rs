@@ -140,6 +140,10 @@ impl ThumbnailRenderer {
                         // a real preview at thumbnail resolution.
                         continue;
                     }
+                    EffectSource::Lv2(_) => {
+                        // LV2 plugins are audio-only — no visual preview.
+                        continue;
+                    }
                 };
                 let _ = tx.send(ThumbnailResult {
                     effect_name: name.clone(),

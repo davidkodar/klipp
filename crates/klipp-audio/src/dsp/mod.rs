@@ -413,6 +413,13 @@ impl AudioEffectChain {
 /// path component may itself contain a `:` (e.g. Windows drive letters), so
 /// we split on the LAST `:` to separate the label.
 pub fn create_effect(type_id: &str, sample_rate: u32) -> Option<Box<dyn AudioEffect>> {
+    // LV2 plugins resolve via URI (`"lv2:{plugin_uri}"`). Stable
+    // across distro layouts; control values are addressed by
+    // `lv2:symbol` so port reorders in plugin updates don't break
+    // saved projects.
+    if type_id.starts_with("lv2:") {
+        return crate::lv2::instantiate_from_type_id(type_id, sample_rate, &[]);
+    }
     if let Some(rest) = type_id.strip_prefix("ladspa:") {
         if let Some(last_colon) = rest.rfind(':') {
             let path_str = &rest[..last_colon];

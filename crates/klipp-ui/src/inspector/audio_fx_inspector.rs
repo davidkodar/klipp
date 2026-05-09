@@ -313,7 +313,43 @@ fn add_effect_picker(
                 }
             }
 
-            if builtins.is_empty() && visible_ladspa.is_empty() {
+            // ── LV2 section ──
+            // Pulled from the process-global registry populated at
+            // startup so we don't need a `lv2_plugins` parameter on
+            // every caller path. Symbol-keyed so future port reorders
+            // don't break saved selections.
+            let lv2_plugins_all = klipp_audio::lv2::registry_snapshot();
+            let mut visible_lv2: Vec<&klipp_audio::lv2::Lv2PluginInfo> = lv2_plugins_all
+                .iter()
+                .filter(|p| {
+                    if search_lower.is_empty() {
+                        return true;
+                    }
+                    p.name.to_lowercase().contains(&search_lower)
+                        || p.uri.to_lowercase().contains(&search_lower)
+                })
+                .collect();
+            visible_lv2.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+
+            if !visible_lv2.is_empty() {
+                if !builtins.is_empty() || !visible_ladspa.is_empty() {
+                    ui.add_space(8.0);
+                }
+                ui.label(
+                    egui::RichText::new("LV2")
+                        .size(9.0)
+                        .strong()
+                        .color(theme.text_dim),
+                );
+                ui.add_space(2.0);
+                for plugin in &visible_lv2 {
+                    if ui.button(&plugin.name).clicked() {
+                        on_select(plugin.type_id());
+                    }
+                }
+            }
+
+            if builtins.is_empty() && visible_ladspa.is_empty() && visible_lv2.is_empty() {
                 ui.add_space(8.0);
                 ui.vertical_centered(|ui| {
                     ui.label(
@@ -335,9 +371,10 @@ fn add_effect_picker(
     ui.add_space(2.0);
     ui.label(
         egui::RichText::new(format!(
-            "{} built-in   |   {} LADSPA",
+            "{} built-in   |   {} LADSPA   |   {} LV2",
             klipp_audio::dsp::available_effects().len(),
             ladspa_plugins.len(),
+            klipp_audio::lv2::registry_snapshot().len(),
         ))
         .size(9.0)
         .color(theme.text_dim),
@@ -469,11 +506,24 @@ pub fn show_content(
                 })
             });
 
+        // LV2 lookup mirrors the LADSPA shape but uses URI as the
+        // stable identifier (lv2:{uri}). Resolved against the
+        // process-global registry populated at startup so we don't
+        // need to thread state through.
+        let lv2_info: Option<klipp_audio::lv2::Lv2PluginInfo> = inst
+            .effect_type
+            .strip_prefix("lv2:")
+            .and_then(klipp_audio::lv2::lookup_by_uri);
+
         let effect_name = if let Some(info) = ladspa_info {
             if info.name.is_empty() { info.label.clone() } else { info.name.clone() }
         } else if inst.effect_type.starts_with("ladspa:") {
             // Plugin uninstalled — show the raw effect_type so the user knows
             // what's missing.
+            inst.effect_type.clone()
+        } else if let Some(ref info) = lv2_info {
+            info.name.clone()
+        } else if inst.effect_type.starts_with("lv2:") {
             inst.effect_type.clone()
         } else {
             klipp_audio::dsp::create_effect(&inst.effect_type, 48000)
@@ -621,6 +671,21 @@ pub fn show_content(
                             egui::RichText::new(format!(
                                 "LADSPA plugin not found: {}",
                                 inst.effect_type.strip_prefix("ladspa:").unwrap_or("")
+                            ))
+                            .size(10.0)
+                            .color(egui::Color32::from_rgb(200, 140, 60)),
+                        );
+                    } else if let Some(ref info) = lv2_info {
+                        render_lv2_params(
+                            ui, theme, clip_id, idx, inst, info,
+                            audio_effect_keyframes, clip_time_secs,
+                            clip_timeline_in_secs, clip_rate, cmds,
+                        );
+                    } else if inst.effect_type.starts_with("lv2:") {
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "LV2 plugin not found: {}",
+                                inst.effect_type.strip_prefix("lv2:").unwrap_or("")
                             ))
                             .size(10.0)
                             .color(egui::Color32::from_rgb(200, 140, 60)),
@@ -877,6 +942,106 @@ fn render_ladspa_params(
         dispatch_audio_kf_response(
             &resp, val, audio_effect_keyframes,
             clip_id, effect_index, &port.name,
+            clip_time_secs, clip_timeline_in_secs, clip_rate, cmds,
+        );
+    }
+}
+
+/// Render LV2 control-input ports as keyframable scrubby_param rows.
+/// Values are addressed in `inst.params` by stable `lv2:symbol`
+/// (NEVER by index) so a future plugin version that reorders ports
+/// doesn't break saved projects.
+#[allow(clippy::too_many_arguments)]
+fn render_lv2_params(
+    ui: &mut egui::Ui,
+    theme: &KlippTheme,
+    clip_id: ClipId,
+    effect_index: usize,
+    inst: &AudioEffectInstance,
+    info: &klipp_audio::lv2::Lv2PluginInfo,
+    audio_effect_keyframes: &HashMap<String, Vec<Keyframe>>,
+    clip_time_secs: f64,
+    clip_timeline_in_secs: f64,
+    clip_rate: u32,
+    cmds: &mut Vec<AppCommand>,
+) {
+    if info.control_inputs.is_empty() {
+        ui.label(
+            egui::RichText::new("(no parameters)")
+                .size(10.0)
+                .color(theme.text_dim),
+        );
+        return;
+    }
+
+    for port in &info.control_inputs {
+        // KEY by symbol — NOT by name. The symbol is the stable
+        // contract across plugin versions.
+        let static_value = inst
+            .params
+            .iter()
+            .find(|(k, _)| k == &port.symbol)
+            .map(|(_, v)| *v)
+            .unwrap_or(port.default);
+
+        let label = if port.name.is_empty() {
+            port.symbol.clone()
+        } else {
+            port.name.clone()
+        };
+
+        // LV2 ports use Option for min/max — fall back to a neutral
+        // [0, 1] window when absent (uncommon but legal per spec).
+        let min = port.min.unwrap_or(0.0);
+        let max = port.max.unwrap_or(1.0).max(min + f32::EPSILON);
+
+        let mut val = audio_kf_eval(
+            audio_effect_keyframes,
+            effect_index,
+            &port.symbol,
+            clip_time_secs,
+            static_value,
+        );
+        let range = max - min;
+        let speed = (range * 0.003).max(0.0001) as f64;
+        let decimals = if range > 100.0 {
+            1
+        } else if range > 10.0 {
+            2
+        } else {
+            3
+        };
+        let kf_state = Some(audio_kf_state(
+            audio_effect_keyframes,
+            effect_index,
+            &port.symbol,
+            clip_time_secs,
+        ));
+
+        let resp = scrubby_param_row(
+            ui,
+            &label,
+            &mut val,
+            min..=max,
+            port.default,
+            speed,
+            decimals,
+            "",
+            kf_state,
+        );
+
+        if resp.changed && !has_audio_kfs(audio_effect_keyframes, effect_index, &port.symbol) {
+            cmds.push(AppCommand::UpdateAudioEffectParam {
+                clip_id,
+                effect_index,
+                param_name: port.symbol.clone(),
+                value: val,
+            });
+        }
+        dispatch_audio_chain_drag(&resp, clip_id, effect_index, &port.symbol, cmds);
+        dispatch_audio_kf_response(
+            &resp, val, audio_effect_keyframes,
+            clip_id, effect_index, &port.symbol,
             clip_time_secs, clip_timeline_in_secs, clip_rate, cmds,
         );
     }

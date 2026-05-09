@@ -14,6 +14,7 @@ pub enum AudioSourceFilter {
     All,
     Builtin,
     Ladspa,
+    Lv2,
 }
 
 impl Default for AudioSourceFilter {
@@ -74,7 +75,9 @@ pub fn audio_effect_color_for_type(type_id: &str, theme: &KlippTheme) -> egui::C
 fn tile_color(entry: &EffectEntry, theme: &KlippTheme) -> egui::Color32 {
     match &entry.source {
         EffectSource::Audio(type_id) => audio_effect_color_for_type(type_id, theme),
-        EffectSource::Ladspa(_) => audio_category_color(entry.category, theme),
+        EffectSource::Ladspa(_) | EffectSource::Lv2(_) => {
+            audio_category_color(entry.category, theme)
+        }
         _ => egui::Color32::from_rgb(0x50, 0x50, 0x60),
     }
 }
@@ -111,6 +114,7 @@ fn effect_type_for_dispatch(entry: &EffectEntry) -> Option<String> {
             plugin.path.to_string_lossy(),
             plugin.label
         )),
+        EffectSource::Lv2(plugin) => Some(plugin.type_id()),
         _ => None,
     }
 }
@@ -266,7 +270,7 @@ pub fn show(
                     .filter(|e| {
                         matches!(
                             e.source,
-                            EffectSource::Audio(_) | EffectSource::Ladspa(_)
+                            EffectSource::Audio(_) | EffectSource::Ladspa(_) | EffectSource::Lv2(_)
                         )
                     })
                     .count();
@@ -277,7 +281,7 @@ pub fn show(
                             &e.name == *n
                                 && matches!(
                                     e.source,
-                                    EffectSource::Audio(_) | EffectSource::Ladspa(_)
+                                    EffectSource::Audio(_) | EffectSource::Ladspa(_) | EffectSource::Lv2(_)
                                 )
                         })
                     })
@@ -289,7 +293,7 @@ pub fn show(
                             &e.name == *n
                                 && matches!(
                                     e.source,
-                                    EffectSource::Audio(_) | EffectSource::Ladspa(_)
+                                    EffectSource::Audio(_) | EffectSource::Ladspa(_) | EffectSource::Lv2(_)
                                 )
                         })
                     })
@@ -396,7 +400,7 @@ pub fn show(
             .filter(|e| {
                 matches!(
                     e.source,
-                    EffectSource::Audio(_) | EffectSource::Ladspa(_)
+                    EffectSource::Audio(_) | EffectSource::Ladspa(_) | EffectSource::Lv2(_)
                 )
             })
             .collect();
@@ -408,6 +412,10 @@ pub fn show(
         let ladspa_count = scoped
             .iter()
             .filter(|e| matches!(e.source, EffectSource::Ladspa(_)))
+            .count();
+        let lv2_count = scoped
+            .iter()
+            .filter(|e| matches!(e.source, EffectSource::Lv2(_)))
             .count();
 
         egui::Frame::none()
@@ -421,6 +429,7 @@ pub fn show(
                         all_count,
                         builtin_count,
                         ladspa_count,
+                        lv2_count,
                     );
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         eye_toggle_button(ui, theme, hide_unsupported);
@@ -437,6 +446,7 @@ pub fn show(
                 AudioSourceFilter::All => true,
                 AudioSourceFilter::Builtin => matches!(e.source, EffectSource::Audio(_)),
                 AudioSourceFilter::Ladspa => matches!(e.source, EffectSource::Ladspa(_)),
+                AudioSourceFilter::Lv2 => matches!(e.source, EffectSource::Lv2(_)),
             })
             .cloned()
             .collect();
@@ -602,7 +612,7 @@ fn audio_count_in_registry(state: &AppState, cat: EffectCategory) -> usize {
         .filter(|e| {
             let is_audio = matches!(
                 e.source,
-                EffectSource::Audio(_) | EffectSource::Ladspa(_)
+                EffectSource::Audio(_) | EffectSource::Ladspa(_) | EffectSource::Lv2(_)
             );
             if !is_audio {
                 return false;
@@ -1318,6 +1328,7 @@ fn segmented_audio_source_filter(
     all_count: usize,
     builtin_count: usize,
     ladspa_count: usize,
+    lv2_count: usize,
 ) {
     let outer_h = 26.0;
     let pad = 2.0;
@@ -1325,9 +1336,10 @@ fn segmented_audio_source_filter(
         (AudioSourceFilter::All, "All", all_count),
         (AudioSourceFilter::Builtin, "Built-in", builtin_count),
         (AudioSourceFilter::Ladspa, "LADSPA", ladspa_count),
+        (AudioSourceFilter::Lv2, "LV2", lv2_count),
     ];
 
-    let mut seg_widths = [0.0f32; 3];
+    let mut seg_widths = [0.0f32; 4];
     let mut total_w = pad * 2.0;
     for (i, (_, label, count)) in segments.iter().enumerate() {
         let label_galley = ui.painter().layout_no_wrap(
@@ -1852,6 +1864,16 @@ fn audio_fx_row(
         EffectSource::Ladspa(_) => (
             "LADSPA",
             theme.accent,
+            egui::Color32::from_rgba_premultiplied(
+                theme.bg_panel.r(),
+                theme.bg_panel.g(),
+                theme.bg_panel.b(),
+                255,
+            ),
+        ),
+        EffectSource::Lv2(_) => (
+            "LV2",
+            theme.text_secondary,
             egui::Color32::from_rgba_premultiplied(
                 theme.bg_panel.r(),
                 theme.bg_panel.g(),

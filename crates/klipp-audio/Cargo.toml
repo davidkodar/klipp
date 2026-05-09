@@ -9,5 +9,13 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 realfft = "3"
 libloading = { workspace = true }
+# LV2 plugin host. `livi` is a turnkey wrapper over `liblilv-0` (LV2
+# introspection) — handles URID mapping, atom forge, bounded
+# block-size, and basic worker scheduling out of the box. Plugins
+# requiring fixed block sizes are filtered at scan time; the host
+# uses bounded block lengths declared via FeaturesBuilder. Falls
+# back to passthrough on any plugin that doesn't load — same shape
+# the LADSPA host uses for missing / disabled plugins.
+livi = "0.7"
 tracing = { workspace = true }
 dirs = { workspace = true }

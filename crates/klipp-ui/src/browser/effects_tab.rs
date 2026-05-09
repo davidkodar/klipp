@@ -632,6 +632,22 @@ pub fn show(
                                                 fx.name
                                             ));
                                         }
+                                        EffectSource::Lv2(plugin) => {
+                                            // LV2 audio plugins ride the same
+                                            // AudioEffectInstance pipeline as
+                                            // LADSPA. type_id = "lv2:{uri}",
+                                            // params filled with plugin defaults
+                                            // keyed by stable lv2:symbol.
+                                            let type_id = plugin.type_id();
+                                            cmds.push(AppCommand::AddAudioEffect {
+                                                clip_id,
+                                                effect_type: type_id,
+                                            });
+                                            state.toast.show(format!(
+                                                "\"{}\" applied",
+                                                fx.name
+                                            ));
+                                        }
                                     }
                                 } else {
                                     state.toast.show("Select a clip first".to_string());
@@ -658,6 +674,15 @@ pub fn show(
                                             type_id,
                                         });
                                     }
+                                    EffectSource::Lv2(plugin) => {
+                                        // LV2 rides the audio-effect drop
+                                        // target the same way LADSPA does;
+                                        // type_id = "lv2:{uri}".
+                                        state.drag_drop.begin(DragPayload::AudioEffect {
+                                            name: fx.name.clone(),
+                                            type_id: plugin.type_id(),
+                                        });
+                                    }
                                     _ => {
                                         let (is_builtin, plugin_id) = match &fx.source {
                                             EffectSource::Builtin(_) => (true, String::new()),
@@ -671,7 +696,9 @@ pub fn show(
                                             EffectSource::Frei0r(plugin) => {
                                                 (true, plugin.type_id())
                                             }
-                                            EffectSource::Audio(_) | EffectSource::Ladspa(_) => {
+                                            EffectSource::Audio(_)
+                                            | EffectSource::Ladspa(_)
+                                            | EffectSource::Lv2(_) => {
                                                 unreachable!()
                                             }
                                         };
@@ -822,6 +849,7 @@ fn effect_card(
         EffectSource::Builtin(_) | EffectSource::Audio(_) => "Built-in",
         EffectSource::Ladspa(_) => "LADSPA",
         EffectSource::Frei0r(_) => "frei0r",
+        EffectSource::Lv2(_) => "LV2",
     };
     let perf_label = if supports_gpu { "GPU" } else { "CPU" };
     let src_rect = paint_thumb_badge(
@@ -986,6 +1014,7 @@ fn effect_list_row(
         EffectSource::Builtin(_) | EffectSource::Audio(_) => "Built-in",
         EffectSource::Ladspa(_) => "LADSPA",
         EffectSource::Frei0r(_) => "frei0r",
+        EffectSource::Lv2(_) => "LV2",
     };
     let star_reserve = 30.0;
     let badge_y = rect.center().y - 8.0;

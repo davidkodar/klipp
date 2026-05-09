@@ -40,6 +40,7 @@
 pub mod denormal;
 pub mod dsp;
 pub mod ladspa;
+pub mod lv2;
 pub mod lufs;
 pub mod mixer;
 pub mod spectrum;

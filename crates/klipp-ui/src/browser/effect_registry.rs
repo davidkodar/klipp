@@ -15,6 +15,13 @@ pub enum EffectSource {
     /// metadata so the inspector can render typed parameter widgets
     /// without a second registry lookup.
     Frei0r(klipp_frei0r::Frei0rPluginInfo),
+    /// Third-party LV2 audio plugin. Holds the full discovered
+    /// metadata (URI, port list with stable lv2:symbols) so the
+    /// inspector can render symbol-keyed sliders without a second
+    /// registry lookup. v1 supports control-input + ≤ 2-channel
+    /// audio I/O; surround / native-UI / state-extension deferred
+    /// to LV2-NEXT-* queue items.
+    Lv2(klipp_audio::lv2::Lv2PluginInfo),
 }
 
 /// A single entry in the effects browser.
@@ -53,6 +60,8 @@ impl EffectEntry {
             // frei0r 1.x has no GPU surface; chain_supports_gpu in
             // klipp-effects flips to CPU when any frei0r entry is present.
             EffectSource::Frei0r(_) => false,
+            // LV2 hosting runs on the CPU mix thread (audio effect).
+            EffectSource::Lv2(_) => false,
         }
     }
 }
@@ -638,6 +647,24 @@ impl EffectRegistry {
         }
     }
 
+    /// Merge discovered LV2 audio plugins into the registry. One
+    /// entry per plugin; grouping defaults to "LV2" since most
+    /// plugins don't expose a maker field at the LV2 introspection
+    /// level. The category heuristic looks at the plugin name +
+    /// classes for common substrings (Reverb / Compressor / etc.).
+    pub fn merge_lv2_plugins(&mut self, plugins: &[klipp_audio::lv2::Lv2PluginInfo]) {
+        for plugin in plugins {
+            self.effects.push(EffectEntry {
+                category: lv2_category_from_name(&plugin.name),
+                name: plugin.name.clone(),
+                source: EffectSource::Lv2(plugin.clone()),
+                source_label: "LV2",
+                description: format!("LV2 plugin: {}", plugin.uri),
+                grouping: "LV2".to_string(),
+            });
+        }
+    }
+
     /// Merge discovered OFX plugins into the registry, skipping duplicates.
     /// OFX bundles often ship multiple versions of the same plugin — keep only the latest.
     pub fn merge_ofx_plugins(&mut self, plugins: &[klipp_plugin::OfxPluginInfo]) {
@@ -886,6 +913,70 @@ fn frei0r_category_from_name(name: &str) -> EffectCategory {
         return EffectCategory::Stylize;
     }
     EffectCategory::Color
+}
+
+/// Heuristic category mapping for LV2 plugins. Same shape as the
+/// LADSPA helper — most LV2 plugins don't declare a formal
+/// taxonomy beyond the lv2:Plugin class hierarchy, so we substring-
+/// match on the plugin name. Conservative — unknown names fall
+/// through to AudioUtility.
+fn lv2_category_from_name(name: &str) -> EffectCategory {
+    let n = name.to_lowercase();
+    if n.contains("denois")
+        || n.contains("declick")
+        || n.contains("dehum")
+        || n.contains("dehiss")
+        || n.contains("hum remov")
+        || n.contains("repair")
+    {
+        return EffectCategory::AudioRestoration;
+    }
+    if n.contains("pitch")
+        || n.contains("autotune")
+        || n.contains("auto-tune")
+        || n.contains("harmoni")
+        || n.contains("octaver")
+    {
+        return EffectCategory::AudioPitch;
+    }
+    if n.contains("reverb") || n.contains("hall") || n.contains("room") || n.contains("plate")
+    {
+        return EffectCategory::AudioReverb;
+    }
+    if n.contains("delay")
+        || n.contains("echo")
+        || n.contains("tape")
+        || n.contains("baltan")
+    {
+        return EffectCategory::AudioDelay;
+    }
+    if n.contains("eq")
+        || n.contains("equaliz")
+        || n.contains("filter")
+        || n.contains("lowpass")
+        || n.contains("highpass")
+        || n.contains("bandpass")
+        || n.contains("notch")
+    {
+        return EffectCategory::AudioEQ;
+    }
+    if n.contains("compress")
+        || n.contains("limit")
+        || n.contains("gate")
+        || n.contains("expand")
+        || n.contains("dynam")
+    {
+        return EffectCategory::AudioDynamics;
+    }
+    if n.contains("chorus")
+        || n.contains("flang")
+        || n.contains("phaser")
+        || n.contains("trem")
+        || n.contains("vibrato")
+    {
+        return EffectCategory::AudioModulation;
+    }
+    EffectCategory::AudioUtility
 }
 
 fn ladspa_category_from_name(name: &str, label: &str) -> EffectCategory {
