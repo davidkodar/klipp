@@ -2281,27 +2281,15 @@ impl NodeGraphV2Panel {
                 let port_rect = egui::Rect::from_center_size(
                     pos, egui::vec2(half * 2.0, half * 2.0),
                 );
-                // Matte outputs paint as a hollow rounded square so
-                // they're visually distinct from RGB outputs even
-                // before the user reads the role colour. RGB-side
-                // outputs still paint as filled squares (the
-                // canonical "signal source" treatment).
-                let is_matte_out = matches!(role, klipp_nodes::PortRole::Matte);
-                if is_matte_out {
-                    // Faint inner role-tint so the matte port reads
-                    // as more than just a frame — keeps it visible
-                    // against the body fill at all zoom levels.
-                    painter.rect_filled(
-                        port_rect, half * 0.32,
-                        egui::Color32::from_rgba_unmultiplied(rr, gg, bb, 70),
-                    );
-                    painter.rect_stroke(
-                        port_rect, half * 0.32,
-                        egui::Stroke::new(1.6, role_color),
-                    );
-                } else {
-                    painter.rect_filled(port_rect, half * 0.32, role_color);
-                }
+                // All output ports paint as filled rounded squares
+                // in the role colour — matte sockets render solid
+                // magenta to match the magenta wire they emit, RGB
+                // sockets stay solid amber, channel sockets paint
+                // R/G/B. Type differentiation lives in the role
+                // colour itself, paired with the wire it carries,
+                // rather than in shape — which we tried as hollow
+                // squares for matte and the user found too subtle.
+                painter.rect_filled(port_rect, half * 0.32, role_color);
                 // Inner dark dot — same pinhole the input side
                 // gets when connected, so a connected input port
                 // and an output port look like sockets of the
