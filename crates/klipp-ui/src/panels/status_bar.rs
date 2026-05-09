@@ -72,19 +72,27 @@ pub fn show(ui: &mut egui::Ui, state: &AppState, theme: &KlippTheme) {
             status_label_value(ui, theme, "Media:", &format_size(total_bytes));
         }
 
-        // Edit mode indicator
+        // Edit mode indicator. The badge is small + cryptic on its
+        // own ("INSERT" / "OVERWRITE" with no context), so the
+        // hover tooltip explains what each mode does. The badge
+        // is read-only here — the matching toolbar button at the
+        // top of the canvas is the click affordance for toggling.
         {
-            let (mode_label, mode_color) = match state.edit_mode {
+            let (mode_label, mode_color, tooltip) = match state.edit_mode {
                 klipp_timeline::magnetic::EditMode::Insert => (
                     "INSERT",
                     theme.accent,
+                    "Insert mode — dropping a clip pushes existing clips later \
+                     in time to make room. Toggle from the toolbar's INS button.",
                 ),
                 klipp_timeline::magnetic::EditMode::Overwrite => (
                     "OVERWRITE",
                     theme.marker_info,
+                    "Overwrite mode — dropping a clip replaces whatever sits \
+                     under the playhead. Toggle from the toolbar's OVR button.",
                 ),
             };
-            let (badge_rect, _) =
+            let (badge_rect, badge_resp) =
                 ui.allocate_exact_size(egui::vec2(56.0, 14.0), egui::Sense::hover());
             ui.painter().rect_filled(
                 badge_rect,
@@ -103,9 +111,14 @@ pub fn show(ui: &mut egui::Ui, state: &AppState, theme: &KlippTheme) {
                 egui::FontId::monospace(8.5),
                 mode_color,
             );
+            badge_resp.on_hover_text(tooltip);
         }
 
-        // Link indicator for selected clip
+        // Link indicator for selected clip — green chain when the
+        // selected clip has a linked partner (e.g. video paired
+        // with audio), dim chain when it's standalone. Hover
+        // tooltip names what the icon means; without it the green
+        // chain reads as decorative.
         if let Some(cid) = state.selected_clip {
             let is_linked = state.sequence().tracks.iter()
                 .flat_map(|t| t.clips.iter())
@@ -118,8 +131,15 @@ pub fn show(ui: &mut egui::Ui, state: &AppState, theme: &KlippTheme) {
             } else {
                 theme.text_dim
             };
+            let tooltip = if is_linked {
+                "Linked clip — selected clip is paired with another track \
+                 (e.g. video + audio). Edits affect both."
+            } else {
+                "Standalone clip — no linked partner."
+            };
             ui.add_space(6.0);
-            ui.colored_label(link_color, egui::RichText::new(link_label).size(11.0));
+            ui.colored_label(link_color, egui::RichText::new(link_label).size(11.0))
+                .on_hover_text(tooltip);
         }
 
         // Right group

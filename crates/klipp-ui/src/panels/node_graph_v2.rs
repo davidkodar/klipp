@@ -82,9 +82,16 @@ const SEARCH_MATCH_COLOR: egui::Color32 = egui::Color32::from_rgb(0x3a, 0xd0, 0x
 ///   PrimariesMatrix, InputTransform). Neutral gray.
 const FAMILY_PRIMARY_GRADE: egui::Color32 = egui::Color32::from_rgb(0x40, 0x4a, 0x55);
 const FAMILY_SECONDARY_MATTE: egui::Color32 = egui::Color32::from_rgb(0x4f, 0x3d, 0x55);
-const FAMILY_COMPOSITE: egui::Color32 = egui::Color32::from_rgb(0x3f, 0x50, 0x42);
+// Composite shifted from moss-green (#3f5042) to muted teal so
+// it occupies a clearly different hue family from look/finishing
+// (warm ochre) and sits cleanly between the cool primary-grade
+// slate and the matte plum. Same low chroma.
+const FAMILY_COMPOSITE: egui::Color32 = egui::Color32::from_rgb(0x3a, 0x50, 0x55);
 const FAMILY_LOOK: egui::Color32 = egui::Color32::from_rgb(0x52, 0x4e, 0x3e);
-const FAMILY_STRUCTURAL: egui::Color32 = egui::Color32::from_rgb(0x45, 0x45, 0x48);
+// Structural shifted from neutral grey (#454548) to a warm-tinted
+// grey so utility/routing kinds don't read as the same hue family
+// as the cool primary-grade slate.
+const FAMILY_STRUCTURAL: egui::Color32 = egui::Color32::from_rgb(0x4a, 0x47, 0x44);
 /// Source = structural with a faint green tint (input flowing in);
 /// Output = structural with a faint blue tint (sink). Both are
 /// otherwise the structural-gray family — distinct enough to read
@@ -571,12 +578,10 @@ impl NodeGraphV2Panel {
         toolbar_ui.separator();
         toolbar_ui.add_space(6.0);
 
-        // ── Group 2: layout (mutating actions) ──
-        // Auto-layout rewrites every node's position; Note adds a
-        // sticky to the graph data. Both leave a visible artefact
-        // and can be undone but aren't free. Distinct accent-coloured
-        // stroke + slight tinted fill so they read as "tools that
-        // change something" against the plain view buttons.
+        // ── Group 2: layout ──
+        // Auto-layout rewrites every node's position. Distinct
+        // accent-coloured stroke so it reads as "tool that changes
+        // the graph" against the plain view buttons.
         let mutating_button = |label: egui::RichText| -> egui::Button<'static> {
             egui::Button::new(label)
                 .stroke(egui::Stroke::new(
@@ -595,6 +600,13 @@ impl NodeGraphV2Panel {
         {
             cmds.push(AppCommand::AutoLayoutNodeGraph { clip_id });
         }
+
+        toolbar_ui.add_space(6.0);
+        toolbar_ui.separator();
+        toolbar_ui.add_space(6.0);
+
+        // ── Group 3: annotate ──
+        // Sticky-note creation at the canvas viewport centre.
         if toolbar_ui.add(mutating_button(egui::RichText::new("\u{1F4DD} Note")))
             .on_hover_text("Add a sticky note at the canvas centre")
             .clicked()
@@ -612,7 +624,7 @@ impl NodeGraphV2Panel {
         toolbar_ui.separator();
         toolbar_ui.add_space(6.0);
 
-        // ── Group 3: search ──
+        // ── Group 4: search ──
         // Find — proper button (not selectable_label) so the click
         // target reads as "tool" rather than "tag". `selected`-style
         // tinting communicates the open/closed state visually
@@ -640,7 +652,7 @@ impl NodeGraphV2Panel {
         toolbar_ui.separator();
         toolbar_ui.add_space(6.0);
 
-        // ── Group 4: overlays ──
+        // ── Group 5: overlays ──
         // Toggleable display layers — minimap, bookmarks discovery,
         // per-thumb diagnostics. None of these mutate the graph;
         // they only change how it's drawn.
@@ -689,6 +701,11 @@ impl NodeGraphV2Panel {
         toolbar_ui.add_space(6.0);
         toolbar_ui.separator();
         toolbar_ui.add_space(6.0);
+
+        // ── Group 6: versions / state ──
+        // The version menu sits closest to where you'd save a snap-
+        // shot of "the grade I just dialled in"; the SOLO chip
+        // appears next to it only when active.
         // Grade-version picker. Shows "V: none" when no versions
         // exist, "V: V1 ▾" when one is active, with a menu listing
         // every saved version plus save / update / rename / delete
@@ -760,40 +777,6 @@ impl NodeGraphV2Panel {
             }
         });
         menu_resp.response.on_hover_text(menu_tooltip);
-        toolbar_ui.add_space(8.0);
-        // Bookmarks hint — purely a discovery surface for the
-        // Shift+1..9 / 1..9 hotkeys. Static label, no menu, hover
-        // for the keybinding reminder + a one-line summary of which
-        // slots are currently in use.
-        let used: Vec<u8> = self.view_bookmarks.iter().enumerate()
-            .filter_map(|(i, b)| b.is_some().then(|| (i + 1) as u8))
-            .collect();
-        let hint = if used.is_empty() {
-            "Bookmarks  ·  no slots set yet".to_string()
-        } else {
-            let used_str = used.iter().map(|n| n.to_string())
-                .collect::<Vec<_>>().join(", ");
-            format!("Bookmarks  ·  set: {used_str}")
-        };
-        toolbar_ui.label(egui::RichText::new("\u{2605}").small().color(theme.text_dim))
-            .on_hover_text(format!(
-                "View bookmarks\n\n\
-                Shift + 1…9   save the current pan + zoom\n\
-                1…9                 jump back\n\n\
-                {hint}"
-            ));
-        toolbar_ui.add_space(8.0);
-        // Minimap toggle — proper selectable button so the on/off
-        // state is unambiguous (selected = highlighted in accent).
-        // Same M shortcut shown on hover. The glyph + label combo
-        // ("▦ Map") reads as a labelled chip rather than a tiny
-        // unmarked icon, which earlier reviewers couldn't find.
-        if toolbar_ui.selectable_label(
-            self.minimap_visible,
-            egui::RichText::new("\u{25A6} Map").small(),
-        ).on_hover_text("Toggle minimap (M)\nClick + drag the minimap to pan").clicked() {
-            self.minimap_visible = !self.minimap_visible;
-        }
         toolbar_ui.add_space(8.0);
         // Solo indicator — only visible when a node is currently
         // soloed. Shows the soloed node's label (so the user knows
@@ -1729,22 +1712,49 @@ impl NodeGraphV2Panel {
             //     signal (Qualifier / LumaKey / Mask / CombineMattes
             //     / ExternalMatte) — useful as a "this drives masks
             //     downstream" cue
-            // Skipped at extreme zoom-out where they'd render as
-            // unreadable specks. Painted in reverse so the right-
-            // most indicator (keyframe) sits closest to the edge.
-            if zoom >= 0.55 {
+            // Skipped only at extreme zoom-out where they'd be
+            // unreadable specks; the gate is at 0.35 so they show
+            // on most graphs. Painted right-to-left so the right-
+            // most indicator (modified) sits closest to the edge —
+            // it's the most common state for a working colorist
+            // graph and benefits from being the first thing you
+            // see when scanning the header.
+            if zoom >= 0.35 {
                 let cy = rect.min.y + header_h * 0.5;
-                let dot_r = (3.0 * zoom).max(2.0);
-                let pitch = 9.0 * zoom;
-                let mut x = rect.max.x - 6.0 * zoom;
+                let dot_r = (3.5 * zoom).max(4.0);
+                let glyph_size = (11.0 * zoom).max(12.0);
+                let pitch = 11.0 * zoom.max(0.6);
+                let mut x = rect.max.x - 7.0 * zoom.max(0.6);
 
-                // Slot 1 — keyframe dot.
+                // Slot 1 (rightmost) — modified state. Lights up
+                // for any node that's been edited away from its
+                // default identity values. Without this, a default
+                // Corrector (or Exposure / Saturation / etc.)
+                // shows nothing — and a working colorist's graph
+                // is mostly modified nodes, so the most useful
+                // single state indicator is "this node is doing
+                // something." Skipped for kinds where "default" is
+                // structural (Source / Output / Reroute / Compound)
+                // since those don't have grade params to begin with.
+                let is_grade_kind = !matches!(
+                    kind,
+                    NodeKind::Source
+                        | NodeKind::Output
+                        | NodeKind::Reroute
+                        | NodeKind::Compound
+                );
+                if is_grade_kind && !node.params.is_default() {
+                    let green = egui::Color32::from_rgb(0x68, 0xc8, 0x6a);
+                    painter.circle_filled(egui::pos2(x, cy), dot_r, green);
+                    x -= pitch;
+                }
+                // Slot 2 — keyframe dot.
                 if !node.keyframes.is_empty() {
                     let cyan = egui::Color32::from_rgb(0x6a, 0xc8, 0xe0);
                     painter.circle_filled(egui::pos2(x, cy), dot_r, cyan);
                     x -= pitch;
                 }
-                // Slot 2 — bypass slash. effective_enabled already
+                // Slot 3 — bypass slash. effective_enabled already
                 // accounts for the ENABLED_TRACK keyframe state, so
                 // a node that's been keyframe-bypassed at the
                 // current time also lights up.
@@ -1754,12 +1764,12 @@ impl NodeGraphV2Panel {
                         egui::pos2(x, cy),
                         egui::Align2::CENTER_CENTER,
                         "\u{00F8}", // ø
-                        egui::FontId::proportional(10.0 * zoom),
+                        egui::FontId::proportional(glyph_size),
                         red,
                     );
                     x -= pitch;
                 }
-                // Slot 3 — matte producer.
+                // Slot 4 — matte producer.
                 if matches!(
                     kind.output_port_role(0),
                     klipp_nodes::PortRole::Matte,
@@ -1769,7 +1779,7 @@ impl NodeGraphV2Panel {
                         egui::pos2(x, cy),
                         egui::Align2::CENTER_CENTER,
                         "\u{25C7}", // ◇ — diamond (matte symbol family)
-                        egui::FontId::proportional(10.0 * zoom),
+                        egui::FontId::proportional(glyph_size),
                         magenta,
                     );
                 }
@@ -2271,7 +2281,27 @@ impl NodeGraphV2Panel {
                 let port_rect = egui::Rect::from_center_size(
                     pos, egui::vec2(half * 2.0, half * 2.0),
                 );
-                painter.rect_filled(port_rect, half * 0.32, role_color);
+                // Matte outputs paint as a hollow rounded square so
+                // they're visually distinct from RGB outputs even
+                // before the user reads the role colour. RGB-side
+                // outputs still paint as filled squares (the
+                // canonical "signal source" treatment).
+                let is_matte_out = matches!(role, klipp_nodes::PortRole::Matte);
+                if is_matte_out {
+                    // Faint inner role-tint so the matte port reads
+                    // as more than just a frame — keeps it visible
+                    // against the body fill at all zoom levels.
+                    painter.rect_filled(
+                        port_rect, half * 0.32,
+                        egui::Color32::from_rgba_unmultiplied(rr, gg, bb, 70),
+                    );
+                    painter.rect_stroke(
+                        port_rect, half * 0.32,
+                        egui::Stroke::new(1.6, role_color),
+                    );
+                } else {
+                    painter.rect_filled(port_rect, half * 0.32, role_color);
+                }
                 // Inner dark dot — same pinhole the input side
                 // gets when connected, so a connected input port
                 // and an output port look like sockets of the

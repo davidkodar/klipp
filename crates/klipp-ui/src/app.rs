@@ -30622,10 +30622,23 @@ impl KlippApp {
                 {
                     use crate::state::ColorToolsPosition;
                     let is_bottom = self.state.color_tools_position == ColorToolsPosition::Bottom;
-                    let label = if is_bottom { "Tools: Bottom" } else { "Tools: Right" };
-                    let color = if is_bottom { theme.text_accent } else { theme.text_dim };
-                    if ui.add(egui::Button::new(egui::RichText::new(label).size(9.0).color(color))
-                        .frame(false)).on_hover_text("Toggle color tools position").clicked()
+                    // Read as a button (frame:true) and label what
+                    // CLICKING DOES rather than the current state —
+                    // "Dock right →" makes the toggle's outcome
+                    // obvious; "Tools: Right" just reads as a state
+                    // tag and previously confused users into not
+                    // realising it was interactive.
+                    let label = if is_bottom { "Dock right \u{2192}" } else { "Dock bottom \u{2193}" };
+                    let tooltip = if is_bottom {
+                        "Move the color tools panel to the right side of the canvas (currently at the bottom)"
+                    } else {
+                        "Move the color tools panel to the bottom of the canvas (currently on the right)"
+                    };
+                    if ui.add(
+                        egui::Button::new(
+                            egui::RichText::new(label).size(9.0).color(theme.text_secondary),
+                        ),
+                    ).on_hover_text(tooltip).clicked()
                     {
                         self.state.color_tools_position = if is_bottom {
                             ColorToolsPosition::Right
