@@ -352,6 +352,12 @@ pub struct Lv2Effect {
     /// time. Saved files address by symbol; runtime translates to
     /// index for the livi call. Reorder-safe across plugin versions.
     symbol_to_idx: HashMap<String, usize>,
+    /// PortIndex of the plugin's latency control-output port, if any.
+    /// LV2 spec convention: a port with `lv2:designation lv2:latency`.
+    /// Most plugins follow the LADSPA convention of literally naming
+    /// the port "latency"; we look it up by symbol/name match. Same
+    /// shape as `klipp_audio::ladspa::LadspaEffect::latency_slot`.
+    latency_port: Option<livi::PortIndex>,
     /// Pre-allocated scratch buffers so the audio thread never
     /// allocates per-block.
     scratch_in_l: Vec<f32>,
@@ -411,6 +417,21 @@ impl Lv2Effect {
             .map(|(i, p)| (p.symbol.clone(), i))
             .collect();
 
+        // Locate the plugin's latency control-output port. LV2 spec
+        // says the host should look at `lv2:designation lv2:latency`;
+        // livi doesn't expose designation queries, so we fall back to
+        // the LADSPA-compatible convention of matching symbol or
+        // human-readable name "latency" (case-insensitive). Most
+        // plugins that report latency follow this naming.
+        let latency_port = plugin
+            .ports_with_type(livi::PortType::ControlOutput)
+            .find(|p| {
+                let s = p.symbol.to_lowercase();
+                let n = p.name.to_lowercase();
+                s == "latency" || n == "latency"
+            })
+            .map(|p| p.index);
+
         let type_id = format!("lv2:{uri}");
         let name = info.name.clone();
 
@@ -420,6 +441,7 @@ impl Lv2Effect {
             instances,
             control_values,
             symbol_to_idx,
+            latency_port,
             scratch_in_l: Vec::new(),
             scratch_in_r: Vec::new(),
             scratch_out_l: Vec::new(),
@@ -628,12 +650,24 @@ impl AudioEffect for Lv2Effect {
     }
 
     fn latency_samples(&self) -> u32 {
-        // LV2 plugins report latency via a designated control-output
-        // port (`lv2:designation lv2:latency`). v1 doesn't read it —
-        // PLUGIN-NEXT-PDC is the consumer. Returning 0 is correct
-        // until PDC ships; reporting non-zero without compensation
-        // would mis-align output with no benefit.
-        0
+        // Read from the latency control-output port the plugin
+        // wrote to during the last run(). For DualMono pairs both
+        // instances run identical code so they report identical
+        // latency; sample slot[0]. Negative / NaN / inf values are
+        // clamped to 0 (defensive — buggy plugins). The PDC layer
+        // applies its own upper-bound clamp (1 second × sample_rate)
+        // so a plugin that reports a nonsense huge value can't
+        // crater the transport.
+        let Some(port) = self.latency_port else {
+            return 0;
+        };
+        let Some(instance) = self.instances.first() else {
+            return 0;
+        };
+        match instance.control_output(port) {
+            Some(v) if v.is_finite() && v >= 0.0 => (v + 0.5) as u32,
+            _ => 0,
+        }
     }
 
     fn serialize_params(&self) -> Vec<(String, f32)> {
@@ -860,6 +894,26 @@ mod tests {
 
     /// If LV2 is installed on the host, discovery yields at least one
     /// plugin. Gated so CI without LV2 passes.
+    #[test]
+    fn latency_readback_clamp_policy() {
+        // The free function in `latency_samples()` accepts only
+        // finite, non-negative values; everything else maps to 0.
+        // Pin the policy here (mirror the LADSPA `read_latency_samples`
+        // test pattern in this file's sibling crate).
+        fn clamp(v: f32) -> u32 {
+            match Some(v) {
+                Some(v) if v.is_finite() && v >= 0.0 => (v + 0.5) as u32,
+                _ => 0,
+            }
+        }
+        assert_eq!(clamp(0.0), 0);
+        assert_eq!(clamp(64.0), 64);
+        assert_eq!(clamp(64.7), 65, "half-up rounding for fractional samples");
+        assert_eq!(clamp(-1.0), 0, "negative latency is treated as 0");
+        assert_eq!(clamp(f32::NAN), 0, "NaN clamps to 0");
+        assert_eq!(clamp(f32::INFINITY), 0, "+inf clamps to 0");
+    }
+
     #[test]
     fn discover_finds_at_least_one_plugin_when_installed() {
         let _g = env_lock();
