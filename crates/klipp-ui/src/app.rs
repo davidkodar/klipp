@@ -29585,7 +29585,15 @@ impl KlippApp {
                     let main_top = toolbar_rect.max.y;
                     let main_bottom = statusbar_rect.min.y;
                     let center_left = left_resizer_rect.max.x;
-                    let center_w = viewer_rect.width();
+                    // Bottom-dock width = the FULL center column (between
+                    // the two resizers), not the program-viewer width.
+                    // The viewer row is split 50/50 source + program in
+                    // layout.rs, so `viewer_rect.width()` is only half
+                    // the center column — using it here would (and did,
+                    // pre-fix) constrain the scope dock + toggle bar +
+                    // bottom tools to half their available area, leaving
+                    // the source-viewer half empty below the viewer row.
+                    let center_w = right_resizer_rect.min.x - left_resizer_rect.max.x;
                     let in_color_ws = self.state.show_color_panel;
                     let show_scopes_bar = self.state.show_scopes;
                     let show_nodes_bar = in_color_ws && self.state.show_node_strip;

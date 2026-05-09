@@ -77,6 +77,7 @@ pub(crate) const PAD_TOP: f32 = 14.0;
 pub(crate) const PAD_BOTTOM: f32 = 16.0;
 pub(crate) const PAD_RIGHT: f32 = 8.0;
 
+
 fn val_to_y(val: f32, rect: &egui::Rect, scale: ScopeScale) -> f32 {
     let max = scale.max_val();
     let draw_h = rect.height() - PAD_TOP - PAD_BOTTOM;
@@ -531,6 +532,7 @@ pub fn show_scopes(
                 let ty = cy - cr * r * 2.0 - 6.0;
                 ui.painter().text(egui::pos2(tx, ty), egui::Align2::CENTER_BOTTOM, name, label_font.clone(), label_color);
             }
+
         } else {
             // Waveform/Parade/Histogram: scope image + scale overlay
             let img_rect = egui::Rect::from_min_max(
@@ -546,6 +548,7 @@ pub fn show_scopes(
             let scale = state.scale;
             let is_parade = mode == ScopeMode::Parade;
             draw_scale(ui, full_rect, scale, is_parade, 3, theme);
+
         }
 
         // ── Scope cursor indicator ──
