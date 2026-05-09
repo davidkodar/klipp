@@ -1,9 +1,10 @@
 //! Generator frame rendering — produces RGBA8 pixel buffers for each GeneratorData variant.
 
-use crate::{FourPointGradient, GeneratorData};
+use crate::{FourPointGradient, GeneratorData, TimerFormat, TimerMode};
 
 /// Render a generator frame at the given resolution.
-/// `elapsed_secs` and `total_secs` are only used by Countdown.
+/// `elapsed_secs` is the clip-relative time (used by Countdown + Timer);
+/// `total_secs` is the clip's full duration (used by Countdown).
 pub fn render_generator(
     data: &GeneratorData,
     width: u32,
@@ -21,7 +22,19 @@ pub fn render_generator(
             }
         }
         GeneratorData::ColorBars => render_color_bars(width, height),
+        GeneratorData::ColorBars100 => render_color_bars_100(width, height),
         GeneratorData::Countdown => render_countdown(width, height, elapsed_secs, total_secs),
+        GeneratorData::Timer { mode, initial_seconds, format, text_color, background_color } => {
+            render_timer(width, height, elapsed_secs, *mode, *initial_seconds, *format, *text_color, *background_color)
+        }
+        GeneratorData::Slate { background_color, .. } => {
+            // klipp-core can't render text. The engine intercepts Slate
+            // before this dispatch and routes through klipp-title's
+            // TitleRenderer; this fallback is only hit when render_generator
+            // is called directly (tests / preview thumbnails) and yields a
+            // plain background-coloured frame instead of an error magenta.
+            render_solid_color(*background_color, width, height)
+        }
         GeneratorData::StillFrame { png_path, .. } => render_still_frame(png_path, width, height),
         GeneratorData::Polygon { sides, color, outline_width_px, fill } => {
             render_polygon(*sides, *color, *outline_width_px, *fill, width, height)
@@ -358,23 +371,36 @@ fn lerp_u8(a: u8, b: u8, t: f32) -> u8 {
 
 /// Render SMPTE 75% color bars (seven vertical bars of equal width).
 pub fn render_color_bars(width: u32, height: u32) -> Vec<u8> {
-    // SMPTE 75% bar colors in RGBA8 order: white, yellow, cyan, green, magenta, red, blue.
-    const BARS: [[u8; 4]; 7] = [
-        [191, 191, 191, 255], // white
-        [191, 191, 0, 255],   // yellow
-        [0, 191, 191, 255],   // cyan
-        [0, 191, 0, 255],     // green
-        [191, 0, 191, 255],   // magenta
-        [191, 0, 0, 255],     // red
-        [0, 0, 191, 255],     // blue
+    render_color_bars_at_intensity(width, height, 191)
+}
+
+/// Render SMPTE 100% color bars — same seven bars at full intensity.
+/// Used for hardware calibration and broadcast peak-luminance checks.
+pub fn render_color_bars_100(width: u32, height: u32) -> Vec<u8> {
+    render_color_bars_at_intensity(width, height, 255)
+}
+
+/// Shared SMPTE-bar rasteriser. `intensity` picks between 75 % (191)
+/// and 100 % (255) per the spec. Bar order from left to right is
+/// white, yellow, cyan, green, magenta, red, blue.
+fn render_color_bars_at_intensity(width: u32, height: u32, intensity: u8) -> Vec<u8> {
+    let v = intensity;
+    let bars: [[u8; 4]; 7] = [
+        [v, v, v, 255], // white
+        [v, v, 0, 255], // yellow
+        [0, v, v, 255], // cyan
+        [0, v, 0, 255], // green
+        [v, 0, v, 255], // magenta
+        [v, 0, 0, 255], // red
+        [0, 0, v, 255], // blue
     ];
     let pixel_count = (width as usize) * (height as usize);
     let mut buf = Vec::with_capacity(pixel_count * 4);
     for _y in 0..height {
         for x in 0..width {
             let bar_idx =
-                ((x as u64 * BARS.len() as u64) / width.max(1) as u64) as usize;
-            let color = BARS[bar_idx.min(BARS.len() - 1)];
+                ((x as u64 * bars.len() as u64) / width.max(1) as u64) as usize;
+            let color = bars[bar_idx.min(bars.len() - 1)];
             buf.extend_from_slice(&color);
         }
     }
@@ -428,7 +454,8 @@ fn digit_segments(ch: char) -> [bool; 7] {
     }
 }
 
-/// Draw a seven-segment digit into an RGBA buffer.
+/// Draw a seven-segment digit into an RGBA buffer in solid white.
+/// Thin wrapper kept for back-compat with `render_countdown`.
 fn draw_seven_segment(
     buf: &mut [u8],
     buf_width: u32,
@@ -438,9 +465,23 @@ fn draw_seven_segment(
     h: u32,
     segments: [bool; 7],
 ) {
+    draw_seven_segment_color(buf, buf_width, x, y, w, h, segments, [255, 255, 255, 255]);
+}
+
+/// Draw a seven-segment digit in `color`. Used by `render_timer` to
+/// honour the user's text colour.
+fn draw_seven_segment_color(
+    buf: &mut [u8],
+    buf_width: u32,
+    x: u32,
+    y: u32,
+    w: u32,
+    h: u32,
+    segments: [bool; 7],
+    color: [u8; 4],
+) {
     let thickness = (h / 8).max(2);
     let half_h = h / 2;
-    let white = [255u8, 255, 255, 255];
 
     // Segment rectangles: [top, top-right, bottom-right, bottom, bottom-left, top-left, middle]
     let rects: [(u32, u32, u32, u32); 7] = [
@@ -464,8 +505,130 @@ fn draw_seven_segment(
                 if px < buf_width {
                     let offset = row_start + (px as usize) * 4;
                     if offset + 3 < buf.len() {
-                        buf[offset..offset + 4].copy_from_slice(&white);
+                        buf[offset..offset + 4].copy_from_slice(&color);
                     }
+                }
+            }
+        }
+    }
+}
+
+/// Format a timer value (in seconds) per the requested precision.
+/// Negative values clamp to zero. The MmSs format does NOT cap at
+/// 99:59 — runaway minutes print at full width (e.g. `127:30`); users
+/// who need >100 min should pick HhMmSs.
+pub(crate) fn format_timer_value(value: f64, format: TimerFormat) -> String {
+    let value = value.max(0.0);
+    let total_ms = (value * 1000.0) as u64;
+    let total_secs = total_ms / 1000;
+    let h = total_secs / 3600;
+    let m = (total_secs / 60) % 60;
+    let s = total_secs % 60;
+    let ms = total_ms % 1000;
+    match format {
+        TimerFormat::Seconds => format!("{}", total_secs),
+        TimerFormat::MmSs => format!("{:02}:{:02}", total_secs / 60, s),
+        TimerFormat::HhMmSs => format!("{:02}:{:02}:{:02}", h, m, s),
+        TimerFormat::HhMmSsMs => format!("{:02}:{:02}:{:02}.{:03}", h, m, s, ms),
+    }
+}
+
+/// Render a timer frame: 7-segment digit string with colon separators
+/// over a coloured background. Reuses `digit_segments` +
+/// `draw_seven_segment_color` from the countdown renderer; adds
+/// stacked-dot colon and decimal-dot glyphs for separators.
+#[allow(clippy::too_many_arguments)]
+pub fn render_timer(
+    width: u32,
+    height: u32,
+    elapsed_secs: f64,
+    mode: TimerMode,
+    initial_seconds: f32,
+    format: TimerFormat,
+    text_color: [u8; 4],
+    background_color: [u8; 4],
+) -> Vec<u8> {
+    let value = match mode {
+        TimerMode::CountUp => initial_seconds as f64 + elapsed_secs,
+        TimerMode::CountDown => (initial_seconds as f64 - elapsed_secs).max(0.0),
+    };
+    let text = format_timer_value(value, format);
+
+    // Background fill.
+    let pixel_count = (width as usize) * (height as usize);
+    let mut buf = Vec::with_capacity(pixel_count * 4);
+    for _ in 0..pixel_count {
+        buf.extend_from_slice(&background_color);
+    }
+
+    // Layout: digit 7-segment glyphs + colon dots + decimal dot.
+    let digit_h = (height / 3).max(10);
+    let digit_w = (digit_h * 3 / 5).max(1);
+    let separator_w = (digit_w / 4).max(2); // colon and dot share a width
+    let spacing = (digit_w / 4).max(1);
+
+    // Two-pass: measure total width, then render.
+    let total_w: u32 = text
+        .chars()
+        .map(|c| match c {
+            ':' | '.' => separator_w + spacing,
+            _ => digit_w + spacing,
+        })
+        .sum::<u32>()
+        .saturating_sub(spacing);
+    let start_x = width.saturating_sub(total_w) / 2;
+    let start_y = height.saturating_sub(digit_h) / 2;
+
+    let dot_size = separator_w;
+    let mut cx = start_x;
+    for ch in text.chars() {
+        match ch {
+            ':' => {
+                // Two square dots, vertically stacked at 1/3 and 2/3 of digit_h.
+                let dot_y_top = start_y + digit_h / 3 - dot_size / 2;
+                let dot_y_bot = start_y + (digit_h * 2) / 3 - dot_size / 2;
+                draw_solid_rect(&mut buf, width, cx, dot_y_top, dot_size, dot_size, text_color);
+                draw_solid_rect(&mut buf, width, cx, dot_y_bot, dot_size, dot_size, text_color);
+                cx += separator_w + spacing;
+            }
+            '.' => {
+                // Single bottom-aligned square dot for decimal separator.
+                let dot_y = start_y + digit_h - dot_size;
+                draw_solid_rect(&mut buf, width, cx, dot_y, dot_size, dot_size, text_color);
+                cx += separator_w + spacing;
+            }
+            d if d.is_ascii_digit() => {
+                let segments = digit_segments(d);
+                draw_seven_segment_color(&mut buf, width, cx, start_y, digit_w, digit_h, segments, text_color);
+                cx += digit_w + spacing;
+            }
+            _ => {
+                // Unknown char (shouldn't happen with format_timer_value's output)
+                cx += digit_w + spacing;
+            }
+        }
+    }
+    buf
+}
+
+/// Fill an axis-aligned rectangle in `color`. Bounds-checked per row
+/// and per pixel — same defensive shape as `draw_seven_segment_color`.
+fn draw_solid_rect(
+    buf: &mut [u8],
+    buf_width: u32,
+    x: u32,
+    y: u32,
+    w: u32,
+    h: u32,
+    color: [u8; 4],
+) {
+    for py in y..(y + h) {
+        let row_start = (py as usize) * (buf_width as usize) * 4;
+        for px in x..(x + w) {
+            if px < buf_width {
+                let offset = row_start + (px as usize) * 4;
+                if offset + 3 < buf.len() {
+                    buf[offset..offset + 4].copy_from_slice(&color);
                 }
             }
         }
@@ -607,7 +770,12 @@ mod tests {
             expected,
         );
         assert_eq!(render_color_bars(640, 480).len(), expected);
+        assert_eq!(render_color_bars_100(640, 480).len(), expected);
         assert_eq!(render_countdown(640, 480, 2.0, 10.0).len(), expected);
+        assert_eq!(
+            render_timer(640, 480, 0.0, TimerMode::CountUp, 0.0, TimerFormat::MmSs, [255; 4], [0; 4]).len(),
+            expected,
+        );
         assert_eq!(render_polygon(6, [255, 0, 0, 255], 0.0, true, 640, 480).len(), expected);
         assert_eq!(render_star(5, 0.4, [255, 255, 0, 255], 0.0, true, 640, 480).len(), expected);
     }
@@ -695,5 +863,123 @@ mod tests {
         for pixel in result.chunks_exact(4) {
             assert_eq!(pixel, &[255u8, 0, 255, 255]);
         }
+    }
+
+    // ── ColorBars100 ────────────────────────────────────────────────
+
+    #[test]
+    fn color_bars_100_first_bar_is_full_white() {
+        let buf = render_color_bars_100(700, 100);
+        assert_eq!(buf.len(), 700 * 100 * 4);
+        // First bar (x=0..99) should be full-intensity white.
+        assert_eq!(&buf[0..4], &[255, 255, 255, 255]);
+    }
+
+    #[test]
+    fn color_bars_100_last_bar_is_full_blue() {
+        let buf = render_color_bars_100(700, 100);
+        let last_pixel = 650 * 4;
+        assert_eq!(&buf[last_pixel..last_pixel + 4], &[0, 0, 255, 255]);
+    }
+
+    #[test]
+    fn color_bars_75_and_100_differ_in_intensity() {
+        let buf75 = render_color_bars(700, 1);
+        let buf100 = render_color_bars_100(700, 1);
+        // Both seven-bar layouts; first pixel is white in both, but
+        // 75 % is dimmer (191) than 100 % (255).
+        assert_eq!(buf75[0], 191);
+        assert_eq!(buf100[0], 255);
+    }
+
+    // ── Timer ───────────────────────────────────────────────────────
+
+    #[test]
+    fn timer_format_seconds_basic() {
+        assert_eq!(format_timer_value(0.0, TimerFormat::Seconds), "0");
+        assert_eq!(format_timer_value(45.7, TimerFormat::Seconds), "45");
+        assert_eq!(format_timer_value(3661.0, TimerFormat::Seconds), "3661");
+    }
+
+    #[test]
+    fn timer_format_mm_ss_pads_to_two_digits() {
+        assert_eq!(format_timer_value(0.0, TimerFormat::MmSs), "00:00");
+        assert_eq!(format_timer_value(7.0, TimerFormat::MmSs), "00:07");
+        assert_eq!(format_timer_value(125.0, TimerFormat::MmSs), "02:05");
+        // Over 100 minutes — minutes overflow the 2-digit pad cleanly.
+        assert_eq!(format_timer_value(7200.0, TimerFormat::MmSs), "120:00");
+    }
+
+    #[test]
+    fn timer_format_hh_mm_ss_pads_all_groups() {
+        assert_eq!(format_timer_value(0.0, TimerFormat::HhMmSs), "00:00:00");
+        assert_eq!(format_timer_value(3661.0, TimerFormat::HhMmSs), "01:01:01");
+        assert_eq!(format_timer_value(86399.0, TimerFormat::HhMmSs), "23:59:59");
+    }
+
+    #[test]
+    fn timer_format_with_milliseconds() {
+        let s = format_timer_value(1.234, TimerFormat::HhMmSsMs);
+        assert_eq!(s, "00:00:01.234");
+    }
+
+    #[test]
+    fn timer_clamps_negative_to_zero() {
+        // Negative input (e.g. count-down past zero before the call
+        // site clamps it) yields all-zeros, not a panic or weird wraparound.
+        assert_eq!(format_timer_value(-100.0, TimerFormat::MmSs), "00:00");
+    }
+
+    #[test]
+    fn timer_count_up_advances_with_elapsed() {
+        // Count-up at 5 s elapsed with initial=10 → display = 15 s.
+        let buf = render_timer(
+            640, 480, 5.0,
+            TimerMode::CountUp, 10.0,
+            TimerFormat::Seconds,
+            [255; 4], [0; 4],
+        );
+        assert_eq!(buf.len(), 640 * 480 * 4);
+        // Just confirm it didn't panic + produced the expected size.
+        // Per-pixel correctness on rendered text is fragile to test;
+        // format_timer_value tests cover the value math.
+    }
+
+    #[test]
+    fn timer_count_down_clamps_at_zero() {
+        // Count-down with initial=10 elapsed=20 → display would be -10 s,
+        // clamps to 0. Render must not panic.
+        let buf = render_timer(
+            640, 480, 20.0,
+            TimerMode::CountDown, 10.0,
+            TimerFormat::MmSs,
+            [255; 4], [0; 4],
+        );
+        assert_eq!(buf.len(), 640 * 480 * 4);
+    }
+
+    #[test]
+    fn timer_paints_background_color() {
+        // A pixel far from the digit-render area should match the
+        // background colour. Use a distinctive dark blue.
+        let bg = [10u8, 20, 80, 255];
+        let buf = render_timer(
+            64, 48, 0.0,
+            TimerMode::CountUp, 0.0,
+            TimerFormat::MmSs,
+            [255; 4], bg,
+        );
+        // Top-left corner — well outside the centred digit glyph area.
+        assert_eq!(&buf[0..4], &bg);
+    }
+
+    #[test]
+    fn timer_default_mode_is_count_up() {
+        assert_eq!(TimerMode::default(), TimerMode::CountUp);
+    }
+
+    #[test]
+    fn timer_default_format_is_mm_ss() {
+        assert_eq!(TimerFormat::default(), TimerFormat::MmSs);
     }
 }

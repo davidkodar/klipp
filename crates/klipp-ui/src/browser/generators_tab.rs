@@ -108,8 +108,41 @@ fn shape_star_5() -> GeneratorData {
 fn shape_star_6() -> GeneratorData {
     GeneratorData::Star { points: 6, inner_radius_pct: 0.50, color: [255, 220, 60, 255], outline_width_px: 0.0, fill: true }
 }
+fn color_bars_100() -> GeneratorData { GeneratorData::ColorBars100 }
+fn timer_count_up() -> GeneratorData {
+    GeneratorData::Timer {
+        mode: klipp_core::TimerMode::CountUp,
+        initial_seconds: 0.0,
+        format: klipp_core::TimerFormat::MmSs,
+        text_color: [255, 255, 255, 255],
+        background_color: [0, 0, 0, 255],
+    }
+}
+fn timer_count_down() -> GeneratorData {
+    GeneratorData::Timer {
+        mode: klipp_core::TimerMode::CountDown,
+        initial_seconds: 60.0,
+        format: klipp_core::TimerFormat::MmSs,
+        text_color: [255, 255, 255, 255],
+        background_color: [0, 0, 0, 255],
+    }
+}
+fn slate() -> GeneratorData {
+    GeneratorData::Slate {
+        project: String::from("Project Name"),
+        scene: String::new(),
+        take: String::new(),
+        director: String::new(),
+        camera: String::new(),
+        date: String::new(),
+        framerate: String::new(),
+        notes: String::new(),
+        text_color: [255, 255, 255, 255],
+        background_color: [0, 0, 0, 255],
+    }
+}
 
-const CATEGORIES: &[&str] = &["Solid Color", "Gradient", "Test Pattern", "Countdown", "Shape"];
+const CATEGORIES: &[&str] = &["Solid Color", "Gradient", "Test Pattern", "Countdown", "Slate", "Shape"];
 
 const GENERATORS: &[GeneratorTemplate] = &[
     // Solid Color
@@ -133,9 +166,14 @@ const GENERATORS: &[GeneratorTemplate] = &[
     GeneratorTemplate { name: "Neon Diagonal",        category: "Gradient", create_data: gradient_diagonal_neon, animated: false },
     GeneratorTemplate { name: "4-Corner Wash",        category: "Gradient", create_data: gradient_4pt_warm_cool, animated: false },
     // Test Pattern
-    GeneratorTemplate { name: "SMPTE 75% Bars", category: "Test Pattern", create_data: color_bars, animated: false },
+    GeneratorTemplate { name: "SMPTE 75% Bars",  category: "Test Pattern", create_data: color_bars,     animated: false },
+    GeneratorTemplate { name: "SMPTE 100% Bars", category: "Test Pattern", create_data: color_bars_100, animated: false },
     // Countdown
-    GeneratorTemplate { name: "Countdown",      category: "Countdown",    create_data: countdown,  animated: true },
+    GeneratorTemplate { name: "Countdown",         category: "Countdown",    create_data: countdown,         animated: true },
+    GeneratorTemplate { name: "Timer (Count Up)",  category: "Countdown",    create_data: timer_count_up,    animated: true },
+    GeneratorTemplate { name: "Timer (Count Down)", category: "Countdown",   create_data: timer_count_down,  animated: true },
+    // Slate
+    GeneratorTemplate { name: "Slate",             category: "Slate",        create_data: slate,             animated: false },
     // Shape
     GeneratorTemplate { name: "Triangle",       category: "Shape", create_data: shape_triangle,        animated: false },
     GeneratorTemplate { name: "Square",         category: "Shape", create_data: shape_square,          animated: false },
@@ -629,6 +667,32 @@ fn paint_generator_preview(
             }
         }
 
+        GeneratorData::ColorBars100 => {
+            // SMPTE 100% bars — same layout as ColorBars at full intensity.
+            const BARS: [[u8; 4]; 7] = [
+                [255, 255, 255, 255],
+                [255, 255, 0, 255],
+                [0, 255, 255, 255],
+                [0, 255, 0, 255],
+                [255, 0, 255, 255],
+                [255, 0, 0, 255],
+                [0, 0, 255, 255],
+            ];
+            painter.rect_filled(rect, rounding, egui::Color32::BLACK);
+            let bar_w = rect.width() / 7.0;
+            for (i, bar) in BARS.iter().enumerate() {
+                let bar_rect = egui::Rect::from_min_size(
+                    egui::pos2(rect.min.x + i as f32 * bar_w, rect.min.y),
+                    egui::vec2(bar_w + 0.5, rect.height()),
+                );
+                painter.rect_filled(
+                    bar_rect.intersect(rect),
+                    egui::Rounding::ZERO,
+                    egui::Color32::from_rgba_premultiplied(bar[0], bar[1], bar[2], bar[3]),
+                );
+            }
+        }
+
         GeneratorData::Countdown => {
             painter.rect_filled(rect, rounding, egui::Color32::BLACK);
             // Reserve a top strip for the corner badges (BUILT-IN /
@@ -651,6 +715,44 @@ fn paint_generator_preview(
                 "5",
                 egui::FontId::proportional(inner_rect.height() * 0.55),
                 egui::Color32::WHITE,
+            );
+        }
+
+        GeneratorData::Timer { background_color, text_color, .. } => {
+            // Card preview: the timer's own colours + a "00:00" sample.
+            let bg = egui::Color32::from_rgba_premultiplied(
+                background_color[0], background_color[1], background_color[2], background_color[3],
+            );
+            let fg = egui::Color32::from_rgba_premultiplied(
+                text_color[0], text_color[1], text_color[2], text_color[3],
+            );
+            painter.rect_filled(rect, rounding, bg);
+            painter.text(
+                rect.center(),
+                egui::Align2::CENTER_CENTER,
+                "00:00",
+                egui::FontId::monospace(rect.height() * 0.40),
+                fg,
+            );
+        }
+
+        GeneratorData::Slate { background_color, text_color, .. } => {
+            // Card preview: the slate's own colours + the literal word
+            // "SLATE" so the card is recognisable independent of the
+            // user's specific field values.
+            let bg = egui::Color32::from_rgba_premultiplied(
+                background_color[0], background_color[1], background_color[2], background_color[3],
+            );
+            let fg = egui::Color32::from_rgba_premultiplied(
+                text_color[0], text_color[1], text_color[2], text_color[3],
+            );
+            painter.rect_filled(rect, rounding, bg);
+            painter.text(
+                rect.center(),
+                egui::Align2::CENTER_CENTER,
+                "SLATE",
+                egui::FontId::proportional(rect.height() * 0.30),
+                fg,
             );
         }
 

@@ -7867,10 +7867,176 @@ fn show_generator_editor(
             ui.label(egui::RichText::new("No editable parameters.").size(10.0).color(theme.text_dim));
         }
 
+        klipp_core::GeneratorData::ColorBars100 => {
+            ui.label(egui::RichText::new("SMPTE 100% Color Bars").size(11.0).color(theme.text_secondary));
+            ui.add_space(2.0);
+            ui.label(egui::RichText::new("Full-intensity broadcast bars. No editable parameters.").size(10.0).color(theme.text_dim));
+        }
+
         klipp_core::GeneratorData::Countdown => {
             ui.label(egui::RichText::new("Countdown Timer").size(11.0).color(theme.text_secondary));
             ui.add_space(2.0);
             ui.label(egui::RichText::new("Duration determined by clip length.").size(10.0).color(theme.text_dim));
+        }
+
+        klipp_core::GeneratorData::Timer { mode, initial_seconds, format, text_color, background_color } => {
+            ui.label(egui::RichText::new("Timer").size(11.0).color(theme.text_secondary));
+            ui.add_space(4.0);
+
+            let mut new_mode = mode;
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("Mode").strong().size(11.0));
+                egui::ComboBox::from_id_salt(("timer_mode", clip_id))
+                    .selected_text(match new_mode {
+                        klipp_core::TimerMode::CountUp => "Count Up",
+                        klipp_core::TimerMode::CountDown => "Count Down",
+                    })
+                    .show_ui(ui, |ui| {
+                        if ui.selectable_label(matches!(new_mode, klipp_core::TimerMode::CountUp), "Count Up").clicked() {
+                            new_mode = klipp_core::TimerMode::CountUp;
+                        }
+                        if ui.selectable_label(matches!(new_mode, klipp_core::TimerMode::CountDown), "Count Down").clicked() {
+                            new_mode = klipp_core::TimerMode::CountDown;
+                        }
+                    });
+            });
+
+            let mut new_format = format;
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("Format").strong().size(11.0));
+                egui::ComboBox::from_id_salt(("timer_format", clip_id))
+                    .selected_text(match new_format {
+                        klipp_core::TimerFormat::Seconds => "Seconds (SS)",
+                        klipp_core::TimerFormat::MmSs => "MM:SS",
+                        klipp_core::TimerFormat::HhMmSs => "HH:MM:SS",
+                        klipp_core::TimerFormat::HhMmSsMs => "HH:MM:SS.mmm",
+                    })
+                    .show_ui(ui, |ui| {
+                        for (label, val) in [
+                            ("Seconds (SS)", klipp_core::TimerFormat::Seconds),
+                            ("MM:SS", klipp_core::TimerFormat::MmSs),
+                            ("HH:MM:SS", klipp_core::TimerFormat::HhMmSs),
+                            ("HH:MM:SS.mmm", klipp_core::TimerFormat::HhMmSsMs),
+                        ] {
+                            if ui.selectable_label(new_format == val, label).clicked() {
+                                new_format = val;
+                            }
+                        }
+                    });
+            });
+
+            let mut new_initial = initial_seconds;
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("Initial").strong().size(11.0));
+                ui.add(egui::Slider::new(&mut new_initial, 0.0..=3600.0).suffix(" s"));
+            });
+
+            let mut new_text = text_color;
+            let mut new_bg = background_color;
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("Text").strong().size(11.0));
+                let mut c = egui::Color32::from_rgba_premultiplied(new_text[0], new_text[1], new_text[2], new_text[3]);
+                if ui.color_edit_button_srgba(&mut c).changed() {
+                    new_text = [c.r(), c.g(), c.b(), c.a()];
+                }
+            });
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("Background").strong().size(11.0));
+                let mut c = egui::Color32::from_rgba_premultiplied(new_bg[0], new_bg[1], new_bg[2], new_bg[3]);
+                if ui.color_edit_button_srgba(&mut c).changed() {
+                    new_bg = [c.r(), c.g(), c.b(), c.a()];
+                }
+            });
+
+            if new_mode != mode || new_format != format
+                || (new_initial - initial_seconds).abs() > 1e-4
+                || new_text != text_color || new_bg != background_color
+            {
+                cmds.push(AppCommand::UpdateGeneratorData {
+                    clip_id,
+                    data: klipp_core::GeneratorData::Timer {
+                        mode: new_mode,
+                        initial_seconds: new_initial,
+                        format: new_format,
+                        text_color: new_text,
+                        background_color: new_bg,
+                    },
+                });
+            }
+        }
+
+        klipp_core::GeneratorData::Slate {
+            project, scene, take, director, camera, date, framerate, notes,
+            text_color, background_color,
+        } => {
+            ui.label(egui::RichText::new("Slate").size(11.0).color(theme.text_secondary));
+            ui.add_space(4.0);
+
+            // Each field gets a labelled single-line text input. A
+            // change in any one rebuilds the full GeneratorData::Slate.
+            let mut p = project;
+            let mut sc = scene;
+            let mut tk = take;
+            let mut dr = director;
+            let mut cm = camera;
+            let mut dt = date;
+            let mut fr = framerate;
+            let mut nt = notes;
+            let mut new_text = text_color;
+            let mut new_bg = background_color;
+            let mut changed = false;
+
+            for (label, value) in [
+                ("Project",   &mut p),
+                ("Scene",     &mut sc),
+                ("Take",      &mut tk),
+                ("Director",  &mut dr),
+                ("Camera",    &mut cm),
+                ("Date",      &mut dt),
+                ("Framerate", &mut fr),
+                ("Notes",     &mut nt),
+            ] {
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new(label).strong().size(11.0).color(theme.text_dim));
+                    if ui.add(egui::TextEdit::singleline(value).desired_width(f32::INFINITY)).changed() {
+                        changed = true;
+                    }
+                });
+            }
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("Text").strong().size(11.0));
+                let mut c = egui::Color32::from_rgba_premultiplied(new_text[0], new_text[1], new_text[2], new_text[3]);
+                if ui.color_edit_button_srgba(&mut c).changed() {
+                    new_text = [c.r(), c.g(), c.b(), c.a()];
+                    changed = true;
+                }
+            });
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("Background").strong().size(11.0));
+                let mut c = egui::Color32::from_rgba_premultiplied(new_bg[0], new_bg[1], new_bg[2], new_bg[3]);
+                if ui.color_edit_button_srgba(&mut c).changed() {
+                    new_bg = [c.r(), c.g(), c.b(), c.a()];
+                    changed = true;
+                }
+            });
+
+            if changed {
+                cmds.push(AppCommand::UpdateGeneratorData {
+                    clip_id,
+                    data: klipp_core::GeneratorData::Slate {
+                        project: p,
+                        scene: sc,
+                        take: tk,
+                        director: dr,
+                        camera: cm,
+                        date: dt,
+                        framerate: fr,
+                        notes: nt,
+                        text_color: new_text,
+                        background_color: new_bg,
+                    },
+                });
+            }
         }
 
         klipp_core::GeneratorData::StillFrame { png_path, width, height } => {

@@ -277,6 +277,33 @@ pub struct FourPointGradient {
     pub bottom_right: [u8; 4],
 }
 
+/// Direction of `GeneratorData::Timer`. CountUp is the default
+/// "screen-recording timer" workflow; CountDown is for deadline-style
+/// segments that complement the existing `Countdown` 7-segment-only
+/// generator.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub enum TimerMode {
+    #[default]
+    CountUp,
+    CountDown,
+}
+
+/// Display precision for `GeneratorData::Timer`. Picks how many digit
+/// groups the 7-segment renderer draws; the rest of the time value is
+/// truncated.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub enum TimerFormat {
+    /// `SS` — bare seconds.
+    Seconds,
+    /// `MM:SS` — default for short demos / screen recordings.
+    #[default]
+    MmSs,
+    /// `HH:MM:SS` — for long-form content.
+    HhMmSs,
+    /// `HH:MM:SS.mmm` — milliseconds for precision timing.
+    HhMmSsMs,
+}
+
 /// Data for a generator clip (solid color, gradient, bars, countdown, still).
 /// Lives in klipp-core so AppCommand can carry it directly.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -299,10 +326,49 @@ pub enum GeneratorData {
         #[serde(default)]
         four_point: Option<FourPointGradient>,
     },
-    /// SMPTE color bars (broadcast test pattern).
+    /// SMPTE 75 % color bars (broadcast test pattern). The historical
+    /// default — kept as a unit variant for byte-identical back-compat
+    /// with every saved project. SMPTE 100 % is `ColorBars100` instead
+    /// of an `intensity` field on this variant so older saves don't
+    /// need a custom serde alias.
     ColorBars,
+    /// SMPTE 100 % color bars — same seven vertical bars as
+    /// `ColorBars` but at full intensity (255 vs 191). Used for
+    /// hardware calibration and broadcast peak-luminance verification.
+    ColorBars100,
     /// Countdown timer (seconds remaining overlaid on black).
     Countdown,
+    /// On-screen timer counting up from clip start (`CountUp`) or down
+    /// from `initial_seconds` (`CountDown`). Reuses `Countdown`'s
+    /// 7-segment digit renderer; adds a colon segment between hours /
+    /// minutes / seconds. `format` picks the displayed precision.
+    Timer {
+        mode: TimerMode,
+        /// CountUp: display starts at `initial_seconds` and grows.
+        /// CountDown: display starts at `initial_seconds` and shrinks
+        /// to zero (then clamps).
+        initial_seconds: f32,
+        format: TimerFormat,
+        text_color: [u8; 4],
+        background_color: [u8; 4],
+    },
+    /// Production slate — text fields commonly burned into camera
+    /// reports / dailies. Rendered via `klipp-title` so the typography
+    /// matches Klipp's title system; the engine intercepts this variant
+    /// before calling `render_generator` (which would only produce a
+    /// magenta error frame from inside klipp-core).
+    Slate {
+        project: String,
+        scene: String,
+        take: String,
+        director: String,
+        camera: String,
+        date: String,
+        framerate: String,
+        notes: String,
+        text_color: [u8; 4],
+        background_color: [u8; 4],
+    },
     /// Freeze frame: a still RGBA image persisted to a sidecar PNG on disk.
     /// The renderer re-decodes the PNG on demand. `png_path` is absolute at
     /// runtime; project save/load should translate to/from a relative path

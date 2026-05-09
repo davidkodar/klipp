@@ -3624,8 +3624,14 @@ impl TimelinePanel {
                         egui::Color32::from_rgba_premultiplied(top[0], top[1], top[2], 220),
                     klipp_core::GeneratorData::ColorBars =>
                         egui::Color32::from_rgba_unmultiplied(128, 128, 128, 220),
+                    klipp_core::GeneratorData::ColorBars100 =>
+                        egui::Color32::from_rgba_unmultiplied(180, 180, 180, 220),
                     klipp_core::GeneratorData::Countdown =>
                         egui::Color32::from_rgba_unmultiplied(40, 40, 40, 220),
+                    klipp_core::GeneratorData::Timer { background_color, .. } =>
+                        egui::Color32::from_rgba_premultiplied(background_color[0], background_color[1], background_color[2], 220),
+                    klipp_core::GeneratorData::Slate { background_color, .. } =>
+                        egui::Color32::from_rgba_premultiplied(background_color[0], background_color[1], background_color[2], 220),
                     klipp_core::GeneratorData::StillFrame { .. } =>
                         egui::Color32::from_rgba_unmultiplied(80, 140, 200, 220),
                     klipp_core::GeneratorData::Polygon { color, .. } =>
