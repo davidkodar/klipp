@@ -524,6 +524,13 @@ fn render_pane_scope(
                 let (src, w, h) = (&fb.data[..], fb.width, fb.height);
                 let render_w = (w as usize).min(960); // Cap render width for perf
                 let step: u32 = if w > 1280 { 4 } else if w > 640 { 3 } else { 2 };
+                // Floating scope window doesn't carry its own quality
+                // setting — default to Medium so the soft-splat phosphor
+                // look is on by default. Per-pane quality knob is a
+                // future polish item.
+                let splat_kernel = super::scopes::SplatKernel::for_quality(
+                    klipp_core::ScopeQuality::Medium,
+                );
 
                 let image = match pane.scope_type {
                     ScopeType::Waveform => {
@@ -532,10 +539,11 @@ fn render_pane_scope(
                             pane.settings.waveform_channel,
                             pane.settings.colorize,
                             pane.settings.waveform_paint_mode,
+                            &splat_kernel,
                         )
                     }
                     ScopeType::Parade => {
-                        super::scopes::render_parade_direct(src, w, h, render_w, render_h)
+                        super::scopes::render_parade_direct(src, w, h, render_w, render_h, &splat_kernel)
                     }
                     ScopeType::Histogram => {
                         let hist = klipp_color::scopes::compute_histogram_sampled(src, w, h, step);
@@ -550,6 +558,7 @@ fn render_pane_scope(
                             src, w, h, step, render_w, render_h,
                             skin_tone_angle,
                             pane.settings.show_iq_lines,
+                            &splat_kernel,
                         )
                     }
                     ScopeType::CIEChromaticity => {

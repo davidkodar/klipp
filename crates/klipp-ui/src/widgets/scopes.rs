@@ -213,7 +213,7 @@ pub fn show_scopes(
     state: &mut ScopeState,
     mode: ScopeMode,
     frame_buffer: &SharedFrameBuffer,
-    _quality: klipp_core::ScopeQuality,
+    quality: klipp_core::ScopeQuality,
     skin_tone_angle: f32,
     is_playing: bool,
     scope_cursor: Option<crate::state::ScopeCursorData>,
@@ -292,14 +292,23 @@ pub fn show_scopes(
                 // pixel cost actually matters.
                 let step: u32 = if w > 2560 { 3 } else if w > 1920 { 2 } else { 1 };
                 let render_w = w as usize;
+                // Build the Gaussian splat kernel once per render. Quality
+                // tier picks the kernel size + σ — Low is single-pixel
+                // (legacy "graph paper" look), Medium/High deposit a
+                // soft Gaussian footprint per data point so traces
+                // accumulate as energy clouds rather than rasterised pixels.
+                let splat_kernel = SplatKernel::for_quality(quality);
                 let image = match mode {
-                    ScopeMode::Waveform => render_waveform_direct(&src, w, h, render_w, render_h),
-                    ScopeMode::Parade => render_parade_direct(&src, w, h, render_w, render_h),
+                    ScopeMode::Waveform => render_waveform_direct(&src, w, h, render_w, render_h, &splat_kernel),
+                    ScopeMode::Parade => render_parade_direct(&src, w, h, render_w, render_h, &splat_kernel),
                     ScopeMode::Histogram => {
                         let hist = klipp_color::scopes::compute_histogram_sampled(&src, w, h, step);
+                        // Histogram bars are pixel-aligned solid rects, not
+                        // point clouds — splatting wouldn't help, the
+                        // existing add() path is correct here.
                         render_histogram_from_bins(&hist.r, &hist.g, &hist.b, &hist.luma, render_w, render_h)
                     }
-                    ScopeMode::Vectorscope => render_vectorscope(&src, w, h, step, render_w, render_h, skin_tone_angle, false),
+                    ScopeMode::Vectorscope => render_vectorscope(&src, w, h, step, render_w, render_h, skin_tone_angle, false, &splat_kernel),
                 };
                 Some((ScopeImage::Ready(image), gen))
             }
@@ -319,13 +328,19 @@ pub fn show_scopes(
         };
         state.render_sizes[mi] = (image.size[0], image.size[1]);
 
-        // Post-processing: threshold bloom (extract bright → gaussian blur → additive blend)
-        if state.bloom && mode != ScopeMode::Vectorscope {
+        // Post-processing: threshold bloom (extract bright → gaussian blur → additive blend).
+        // Now applied to vectorscope as well — chroma vector clouds
+        // gain MORE from bloom than waveforms do (per the phosphor
+        // audit). Tuning is more aggressive than the legacy values:
+        // lower threshold catches mid-density energy, larger radius
+        // softens it across more pixels, higher strength makes the
+        // glow visible without needing to crank monitor brightness.
+        if state.bloom {
             let w = image.size[0];
             let h = image.size[1];
-            let threshold = 0.25_f32;
-            let bloom_strength = 0.4_f32;
-            let radius = 8usize;
+            let threshold = 0.10_f32;       // was 0.25 — catch mid-density too
+            let bloom_strength = 0.85_f32;  // was 0.40 — visible glow
+            let radius = 18usize;           // was 8 — soft phosphor halo
 
             // 1. Extract bright pass
             let mut bright: Vec<[f32; 3]> = image.pixels.iter().map(|p| {
@@ -495,18 +510,78 @@ pub fn show_scopes(
 // 4. Apply gamma correction for perceptual brightness
 // 5. Convert to u8 ColorImage
 
-/// Accumulation buffer — f32 per channel, allows HDR values > 1.0
+/// Pre-computed Gaussian splat kernel. `weights` is row-major and
+/// already normalised so the kernel sums to 1.0 — splatting one data
+/// point deposits exactly one "unit of density" spread across the
+/// kernel footprint. `size` is the side length (1, 3, or 5); a 1-sized
+/// kernel is the legacy single-pixel point-write.
+pub(crate) struct SplatKernel {
+    weights: Vec<f32>,
+    size: usize,
+}
+
+impl SplatKernel {
+    /// Build a normalised Gaussian kernel of the given odd size with
+    /// standard deviation σ. `size = 1` collapses to a point write
+    /// (one weight = 1.0, sigma is ignored).
+    pub fn gaussian(size: usize, sigma: f32) -> Self {
+        if size <= 1 {
+            return Self { weights: vec![1.0], size: 1 };
+        }
+        let radius = (size / 2) as i32;
+        let two_sigma_sq = 2.0 * sigma * sigma;
+        let mut weights = Vec::with_capacity(size * size);
+        let mut total = 0.0_f32;
+        for ky in -radius..=radius {
+            for kx in -radius..=radius {
+                let d2 = (kx * kx + ky * ky) as f32;
+                let w = (-d2 / two_sigma_sq).exp();
+                weights.push(w);
+                total += w;
+            }
+        }
+        // Normalise so kernel integrates to 1.0 — preserves "one input
+        // event = one unit of density" downstream.
+        let inv_total = 1.0 / total;
+        for w in &mut weights { *w *= inv_total; }
+        Self { weights, size }
+    }
+
+    /// Build the kernel implied by a `ScopeQuality` setting.
+    pub fn for_quality(quality: klipp_core::ScopeQuality) -> Self {
+        Self::gaussian(quality.splat_kernel_size(), quality.splat_kernel_sigma())
+    }
+
+    pub fn size(&self) -> usize { self.size }
+    pub fn weight_at(&self, kx: usize, ky: usize) -> f32 {
+        self.weights[ky * self.size + kx]
+    }
+}
+
+/// Accumulation buffer for colorised scopes (waveform colorised mode,
+/// vectorscope, histogram, CIE chromaticity). Each pixel stores
+/// `[R, G, B, density]` where:
+///   - R/G/B is the kernel-weighted colour energy summed across all
+///     splats that touched the pixel
+///   - density is the kernel-weighted count of splats (un-coloured)
+///
+/// Storing density separately lets `to_image` recover the per-pixel
+/// hue at high accumulation (`hue = RGB / density`) instead of having
+/// the trace colour drift to flat white as additive RGB saturates.
+/// That hue-preservation under density is the "phosphor look".
 struct AccumBuffer {
-    data: Vec<[f32; 3]>,
+    data: Vec<[f32; 4]>,
     w: usize,
     h: usize,
 }
 
 impl AccumBuffer {
     fn new(w: usize, h: usize) -> Self {
-        Self { data: vec![[0.0; 3]; w * h], w, h }
+        Self { data: vec![[0.0; 4]; w * h], w, h }
     }
 
+    /// Single-pixel point write — back-compat with the legacy `add()`
+    /// shape. Density increments by 1.0 per call.
     #[inline]
     fn add(&mut self, x: usize, y: usize, r: f32, g: f32, b: f32) {
         if x < self.w && y < self.h {
@@ -514,6 +589,32 @@ impl AccumBuffer {
             self.data[idx][0] += r;
             self.data[idx][1] += g;
             self.data[idx][2] += b;
+            self.data[idx][3] += 1.0;
+        }
+    }
+
+    /// Splat a Gaussian kernel centred at (cx, cy). Each kernel cell
+    /// contributes `weight × (r, g, b)` to RGB and `weight` to density.
+    /// Out-of-bounds cells are silently skipped — the kernel near edges
+    /// just deposits less total energy. The kernel is pre-normalised
+    /// so a single splat over the whole footprint integrates to one
+    /// unit of density (away from the edges).
+    #[inline]
+    fn splat(&mut self, cx: i32, cy: i32, r: f32, g: f32, b: f32, kernel: &SplatKernel) {
+        let half = (kernel.size / 2) as i32;
+        for ky in 0..kernel.size {
+            let py = cy + (ky as i32) - half;
+            if py < 0 || py >= self.h as i32 { continue; }
+            for kx in 0..kernel.size {
+                let px = cx + (kx as i32) - half;
+                if px < 0 || px >= self.w as i32 { continue; }
+                let w = kernel.weight_at(kx, ky);
+                let idx = (py as usize) * self.w + (px as usize);
+                self.data[idx][0] += r * w;
+                self.data[idx][1] += g * w;
+                self.data[idx][2] += b * w;
+                self.data[idx][3] += w;
+            }
         }
     }
 
@@ -582,8 +683,22 @@ impl AccumBuffer {
         }
     }
 
-    /// Convert to ColorImage with tone mapping + fast gamma approximation.
-    fn to_image(&self, bg: [f32; 3], gamma: f32) -> egui::ColorImage {
+    /// Convert to ColorImage with density-aware tone mapping.
+    ///
+    /// For each pixel, hue is recovered from `RGB / density` (so a
+    /// pixel hit by 100 red splats reads as red, not flat white as
+    /// additive RGB saturates). Brightness comes from a phosphor-curve
+    /// of density: `brightness = density / (density + knee)` (the
+    /// classic "soft-knee" curve used by hardware scope phosphors —
+    /// linear at low density, asymptotic to 1.0 at high density).
+    ///
+    /// `knee` controls how aggressively the brightness curve
+    /// saturates. Lower = traces stay coloured deeper into density
+    /// accumulation (the "professional scope feel"). 1.6 is a good
+    /// default; the legacy 3.0 saturated traces to flat white too
+    /// quickly which is what produced the "white-chalk" look on
+    /// dense regions.
+    fn to_image_phosphor(&self, bg: [f32; 3], gamma: f32, knee: f32) -> egui::ColorImage {
         // Pre-compute gamma LUT (256 entries) — avoids powf() per pixel per channel
         let inv_gamma = 1.0 / gamma;
         let gamma_lut: [u8; 256] = {
@@ -596,19 +711,31 @@ impl AccumBuffer {
         };
 
         let pixels = self.data.iter().map(|p| {
-            // Fast filmic tone mapping (no powf, just rational approximation)
-            let tone = |x: f32| -> f32 {
-                let x = x.max(0.0);
-                let a = x * (x * 0.6 + 0.4);
-                let b = x * (x * 0.6 + 0.85) + 0.15;
-                (a / b).min(1.0)
-            };
+            let density = p[3];
+            if density < 1e-6 {
+                // Empty pixel — just background.
+                return egui::Color32::from_rgb(bg[0] as u8, bg[1] as u8, bg[2] as u8);
+            }
+            // Recover hue: RGB / density. Splats that wrote a red colour
+            // (1, 0, 0) at weight 0.5 contribute (0.5, 0, 0) RGB and 0.5
+            // density — recovered hue is (1, 0, 0). Hue stays red even
+            // at high density.
+            let inv_density = 1.0 / density;
+            let hue_r = (p[0] * inv_density).clamp(0.0, 1.0);
+            let hue_g = (p[1] * inv_density).clamp(0.0, 1.0);
+            let hue_b = (p[2] * inv_density).clamp(0.0, 1.0);
 
-            let r = (tone(p[0]) * 255.0).min(255.0) as u8;
-            let g = (tone(p[1]) * 255.0).min(255.0) as u8;
-            let b = (tone(p[2]) * 255.0).min(255.0) as u8;
+            // Phosphor brightness curve: soft-knee saturation in density.
+            // Linear at low density (`d/knee` for d ≪ knee), asymptotic
+            // to 1.0 at high density.
+            let brightness = density / (density + knee);
 
-            // Gamma via LUT + background add
+            let r = (hue_r * brightness * 255.0).min(255.0) as u8;
+            let g = (hue_g * brightness * 255.0).min(255.0) as u8;
+            let b = (hue_b * brightness * 255.0).min(255.0) as u8;
+
+            // Gamma LUT + background add (background represents the
+            // scope's idle dark glow — kept low so the trace dominates).
             let r = gamma_lut[r as usize].saturating_add(bg[0] as u8);
             let g = gamma_lut[g as usize].saturating_add(bg[1] as u8);
             let b = gamma_lut[b as usize].saturating_add(bg[2] as u8);
@@ -617,13 +744,61 @@ impl AccumBuffer {
 
         egui::ColorImage { size: [self.w, self.h], pixels }
     }
+
+    /// Back-compat wrapper for callers that haven't been migrated to
+    /// the density-aware path yet. Picks a reasonable phosphor knee
+    /// (1.6) so the look matches the new tonemap.
+    fn to_image(&self, bg: [f32; 3], gamma: f32) -> egui::ColorImage {
+        self.to_image_phosphor(bg, gamma, 1.6)
+    }
 }
 
-/// Render waveform using DaVinci's additive accumulation technique.
-/// Each video pixel maps to a point in scope space. Additive blending + log tone mapping = natural glow.
-pub(crate) fn render_waveform_direct(rgba: &[u8], video_w: u32, video_h: u32, scope_w: usize, scope_h: usize) -> egui::ColorImage {
-    // 1. Accumulate: each video pixel adds 1 at (scope_x, luma * scope_h)
-    let mut accum = vec![0u32; scope_w * scope_h];
+/// Monochrome density buffer for waveform / parade trace deposition.
+/// Mirrors the AccumBuffer's splat semantics for single-channel data —
+/// no per-pixel hue, just the kernel-weighted density count.
+struct DensityBuffer {
+    data: Vec<f32>,
+    w: usize,
+    h: usize,
+}
+
+impl DensityBuffer {
+    fn new(w: usize, h: usize) -> Self {
+        Self { data: vec![0.0; w * h], w, h }
+    }
+
+    /// Splat a Gaussian footprint centred at (cx, cy). Same shape as
+    /// `AccumBuffer::splat` minus the colour channels.
+    #[inline]
+    fn splat(&mut self, cx: i32, cy: i32, kernel: &SplatKernel) {
+        let half = (kernel.size / 2) as i32;
+        for ky in 0..kernel.size {
+            let py = cy + (ky as i32) - half;
+            if py < 0 || py >= self.h as i32 { continue; }
+            for kx in 0..kernel.size {
+                let px = cx + (kx as i32) - half;
+                if px < 0 || px >= self.w as i32 { continue; }
+                let w = kernel.weight_at(kx, ky);
+                let idx = (py as usize) * self.w + (px as usize);
+                self.data[idx] += w;
+            }
+        }
+    }
+}
+
+/// Render waveform via Gaussian splat deposition. Each video pixel
+/// deposits a soft kernel footprint into a density buffer; the
+/// resolve step turns density into a phosphor-coloured trace via a
+/// soft-knee saturation curve. With a single-pixel kernel this
+/// matches the legacy "graph paper" look; with the Medium/High
+/// kernel the trace reads as accumulated energy rather than
+/// rasterised pixels.
+pub(crate) fn render_waveform_direct(
+    rgba: &[u8], video_w: u32, video_h: u32,
+    scope_w: usize, scope_h: usize,
+    splat_kernel: &SplatKernel,
+) -> egui::ColorImage {
+    let mut density = DensityBuffer::new(scope_w, scope_h);
 
     for y in 0..video_h {
         for x in 0..video_w {
@@ -634,29 +809,25 @@ pub(crate) fn render_waveform_direct(rgba: &[u8], video_w: u32, video_h: u32, sc
             let b = rgba[idx + 2] as f32 / 255.0;
             let luma = (0.2126 * r + 0.7152 * g + 0.0722 * b).clamp(0.0, 0.999);
 
-            let sx = (x as usize * scope_w) / video_w as usize;
-            let sy = scope_h - 1 - (luma * scope_h as f32) as usize;
-            if sx < scope_w && sy < scope_h {
-                accum[sy * scope_w + sx] += 1;
-            }
+            let sx = ((x as usize * scope_w) / video_w as usize) as i32;
+            let sy = (scope_h - 1).saturating_sub((luma * scope_h as f32) as usize) as i32;
+            density.splat(sx, sy, splat_kernel);
         }
     }
 
-    // 2. Resolve: phosphor color ramp (mix base_color → white based on intensity)
-    let knee = 3.0_f32;
+    // Phosphor resolve: density → soft-knee brightness, mix base
+    // colour toward white as intensity climbs.
+    let knee = 1.6_f32;
     let base_r = 0.0_f32;
     let base_g = 0.9_f32;
     let base_b = 0.0_f32;
 
-    let pixels: Vec<egui::Color32> = accum.iter().map(|&count| {
-        if count == 0 {
+    let pixels: Vec<egui::Color32> = density.data.iter().map(|&d| {
+        if d < 1e-6 {
             return egui::Color32::BLACK;
         }
-        let c = count as f32;
-        let intensity = (c / (c + knee)).sqrt().clamp(0.0, 1.0);
-
-        // Phosphor ramp: mix(base_color, white, intensity³)
-        let white_mix = intensity * intensity * intensity; // cubic — stays colored longer
+        let intensity = (d / (d + knee)).sqrt().clamp(0.0, 1.0);
+        let white_mix = intensity * intensity * intensity; // cubic — stays coloured longer
         let r = (base_r + (1.0 - base_r) * white_mix) * intensity;
         let g = (base_g + (1.0 - base_g) * white_mix) * intensity;
         let b = (base_b + (1.0 - base_b) * white_mix) * intensity;
@@ -678,11 +849,15 @@ pub(crate) fn render_waveform_channel(
     rgba: &[u8], video_w: u32, video_h: u32, scope_w: usize, scope_h: usize,
     channel: crate::state::WaveformChannel, colorize: bool,
     paint_mode: crate::state::WaveformPaintMode,
+    splat_kernel: &SplatKernel,
 ) -> egui::ColorImage {
     use crate::state::{WaveformChannel, WaveformPaintMode};
 
     if colorize {
-        // Colorized mode: accumulate actual RGB colors
+        // Colorized mode: splat actual RGB colours into the density-aware
+        // AccumBuffer. The density-aware to_image preserves hue at
+        // accumulation, so dense regions stay coloured rather than
+        // washing out to flat white.
         let mut buf = AccumBuffer::new(scope_w, scope_h);
         for y in 0..video_h {
             for x in 0..video_w {
@@ -697,18 +872,16 @@ pub(crate) fn render_waveform_channel(
                     WaveformChannel::G => g.clamp(0.0, 0.999),
                     WaveformChannel::B => b.clamp(0.0, 0.999),
                 };
-                let sx = (x as usize * scope_w) / video_w as usize;
-                let sy = scope_h - 1 - (val * scope_h as f32) as usize;
-                if sx < scope_w && sy < scope_h {
-                    buf.add(sx, sy, r * 0.5, g * 0.5, b * 0.5);
-                }
+                let sx = ((x as usize * scope_w) / video_w as usize) as i32;
+                let sy = (scope_h - 1).saturating_sub((val * scope_h as f32) as usize) as i32;
+                buf.splat(sx, sy, r, g, b, splat_kernel);
             }
         }
-        return buf.to_image([0.0, 0.0, 0.0], 1.8);
+        return buf.to_image_phosphor([0.0, 0.0, 0.0], 1.8, 1.6);
     }
 
-    // Monochrome mode: simple count accumulation with phosphor ramp
-    let mut accum = vec![0u32; scope_w * scope_h];
+    // Monochrome mode: density splat + phosphor ramp.
+    let mut density = DensityBuffer::new(scope_w, scope_h);
 
     for y in 0..video_h {
         for x in 0..video_w {
@@ -725,15 +898,13 @@ pub(crate) fn render_waveform_channel(
                 WaveformChannel::B => b.clamp(0.0, 0.999),
             };
 
-            let sx = (x as usize * scope_w) / video_w as usize;
-            let sy = scope_h - 1 - (val * scope_h as f32) as usize;
-            if sx < scope_w && sy < scope_h {
-                accum[sy * scope_w + sx] += 1;
-            }
+            let sx = ((x as usize * scope_w) / video_w as usize) as i32;
+            let sy = (scope_h - 1).saturating_sub((val * scope_h as f32) as usize) as i32;
+            density.splat(sx, sy, splat_kernel);
         }
     }
 
-    let knee = 3.0_f32;
+    let knee = 1.6_f32;
     // Paint-mode base colour: overrides the per-channel palette except in
     // Classic mode, which keeps the legacy per-channel R/G/B tint on Y and
     // falls through to the channel-matched colour on R/G/B channels.
@@ -749,10 +920,9 @@ pub(crate) fn render_waveform_channel(
         },
     };
 
-    let pixels: Vec<egui::Color32> = accum.iter().map(|&count| {
-        if count == 0 { return egui::Color32::BLACK; }
-        let c = count as f32;
-        let intensity = (c / (c + knee)).sqrt().clamp(0.0, 1.0);
+    let pixels: Vec<egui::Color32> = density.data.iter().map(|&d| {
+        if d < 1e-6 { return egui::Color32::BLACK; }
+        let intensity = (d / (d + knee)).sqrt().clamp(0.0, 1.0);
         let white_mix = intensity * intensity * intensity;
         let r = (base_r + (1.0 - base_r) * white_mix) * intensity;
         let g = (base_g + (1.0 - base_g) * white_mix) * intensity;
@@ -830,16 +1000,20 @@ pub(crate) fn render_histogram_stacked(
     egui::ColorImage { size: [rw, rh], pixels }
 }
 
-/// Render parade using DaVinci's additive accumulation technique.
-/// Three separate accumulation buffers for R, G, B displayed side by side.
-pub(crate) fn render_parade_direct(rgba: &[u8], video_w: u32, video_h: u32, scope_w: usize, scope_h: usize) -> egui::ColorImage {
+/// Render parade via three Gaussian-splat density buffers (one per
+/// channel) displayed side by side. Splat deposition + soft-knee
+/// phosphor curve gives the same "energy cloud" look as the waveform.
+pub(crate) fn render_parade_direct(
+    rgba: &[u8], video_w: u32, video_h: u32,
+    scope_w: usize, scope_h: usize,
+    splat_kernel: &SplatKernel,
+) -> egui::ColorImage {
     let gap = 2usize;
     let section_w = (scope_w - gap * 2) / 3;
 
-    // 1. Accumulate into three separate buffers
-    let mut accum_r = vec![0u32; section_w * scope_h];
-    let mut accum_g = vec![0u32; section_w * scope_h];
-    let mut accum_b = vec![0u32; section_w * scope_h];
+    let mut den_r = DensityBuffer::new(section_w, scope_h);
+    let mut den_g = DensityBuffer::new(section_w, scope_h);
+    let mut den_b = DensityBuffer::new(section_w, scope_h);
 
     for y in 0..video_h {
         for x in 0..video_w {
@@ -849,21 +1023,20 @@ pub(crate) fn render_parade_direct(rgba: &[u8], video_w: u32, video_h: u32, scop
             let gv = rgba[idx + 1] as f32 / 255.0;
             let bv = rgba[idx + 2] as f32 / 255.0;
 
-            let sx = (x as usize * section_w) / video_w as usize;
-            if sx >= section_w { continue; }
+            let sx = ((x as usize * section_w) / video_w as usize) as i32;
+            if sx >= section_w as i32 { continue; }
 
-            let ry = scope_h - 1 - (rv.clamp(0.0, 0.999) * scope_h as f32) as usize;
-            let gy = scope_h - 1 - (gv.clamp(0.0, 0.999) * scope_h as f32) as usize;
-            let by = scope_h - 1 - (bv.clamp(0.0, 0.999) * scope_h as f32) as usize;
+            let ry = (scope_h - 1).saturating_sub((rv.clamp(0.0, 0.999) * scope_h as f32) as usize) as i32;
+            let gy = (scope_h - 1).saturating_sub((gv.clamp(0.0, 0.999) * scope_h as f32) as usize) as i32;
+            let by = (scope_h - 1).saturating_sub((bv.clamp(0.0, 0.999) * scope_h as f32) as usize) as i32;
 
-            if ry < scope_h { accum_r[ry * section_w + sx] += 1; }
-            if gy < scope_h { accum_g[gy * section_w + sx] += 1; }
-            if by < scope_h { accum_b[by * section_w + sx] += 1; }
+            den_r.splat(sx, ry, splat_kernel);
+            den_g.splat(sx, gy, splat_kernel);
+            den_b.splat(sx, by, splat_kernel);
         }
     }
 
-    // 2. Resolve: phosphor color ramp per channel (mix base → white)
-    let knee = 3.0_f32;
+    let knee = 1.6_f32;
     let bg = egui::Color32::BLACK;
     let gap_color = egui::Color32::from_rgb(0x06, 0x06, 0x06);
 
@@ -874,9 +1047,9 @@ pub(crate) fn render_parade_direct(rgba: &[u8], video_w: u32, video_h: u32, scop
         [0.0, 0.0, 0.9],  // blue
     ];
 
-    let resolve = |count: f32, base: &[f32; 3]| -> (u8, u8, u8) {
-        let intensity = (count / (count + knee)).sqrt().clamp(0.0, 1.0);
-        let white_mix = intensity * intensity * intensity; // cubic — stays colored longer
+    let resolve = |density: f32, base: &[f32; 3]| -> (u8, u8, u8) {
+        let intensity = (density / (density + knee)).sqrt().clamp(0.0, 1.0);
+        let white_mix = intensity * intensity * intensity;
         let r = (base[0] + (1.0 - base[0]) * white_mix) * intensity;
         let g = (base[1] + (1.0 - base[1]) * white_mix) * intensity;
         let b = (base[2] + (1.0 - base[2]) * white_mix) * intensity;
@@ -886,28 +1059,28 @@ pub(crate) fn render_parade_direct(rgba: &[u8], video_w: u32, video_h: u32, scop
     let mut pixels = vec![bg; scope_w * scope_h];
 
     for i in 0..section_w * scope_h {
-        let r_count = accum_r[i] as f32;
-        let g_count = accum_g[i] as f32;
-        let b_count = accum_b[i] as f32;
-        if r_count == 0.0 && g_count == 0.0 && b_count == 0.0 { continue; }
+        let r_d = den_r.data[i];
+        let g_d = den_g.data[i];
+        let b_d = den_b.data[i];
+        if r_d < 1e-6 && g_d < 1e-6 && b_d < 1e-6 { continue; }
 
         let py = i / section_w;
         let local_x = i % section_w;
 
-        if r_count > 0.0 {
+        if r_d >= 1e-6 {
             let px = local_x;
-            let (ro, go, bo) = resolve(r_count, &bases[0]);
+            let (ro, go, bo) = resolve(r_d, &bases[0]);
             pixels[py * scope_w + px] = egui::Color32::from_rgb(ro, go, bo);
         }
-        if g_count > 0.0 {
+        if g_d >= 1e-6 {
             let px = section_w + gap + local_x;
-            let (ro, go, bo) = resolve(g_count, &bases[1]);
+            let (ro, go, bo) = resolve(g_d, &bases[1]);
             pixels[py * scope_w + px] = egui::Color32::from_rgb(ro, go, bo);
         }
-        if b_count > 0.0 {
+        if b_d >= 1e-6 {
             let px = (section_w + gap) * 2 + local_x;
             if px < scope_w {
-                let (ro, go, bo) = resolve(b_count, &bases[2]);
+                let (ro, go, bo) = resolve(b_d, &bases[2]);
                 pixels[py * scope_w + px] = egui::Color32::from_rgb(ro, go, bo);
             }
         }
@@ -959,7 +1132,7 @@ pub(crate) fn render_histogram_from_bins(r_bins: &[u32; 256], g_bins: &[u32; 256
 }
 
 #[inline(never)]
-pub(crate) fn render_vectorscope(rgba: &[u8], width: u32, height: u32, step: u32, rw: usize, rh: usize, skin_tone_angle: f32, show_iq_lines: bool) -> egui::ColorImage {
+pub(crate) fn render_vectorscope(rgba: &[u8], width: u32, height: u32, step: u32, rw: usize, rh: usize, skin_tone_angle: f32, show_iq_lines: bool, splat_kernel: &SplatKernel) -> egui::ColorImage {
     let size = rw.min(rh);
     let mut buf = AccumBuffer::new(size, size);
     let center = size as f32 / 2.0;
@@ -1116,21 +1289,18 @@ pub(crate) fn render_vectorscope(rgba: &[u8], width: u32, height: u32, step: u32
             let cb = -0.1146 * r - 0.3854 * g + 0.5000 * b;
             let cr = 0.5000 * r - 0.4542 * g - 0.0458 * b;
 
-            let px = (center + cb * radius * 2.0) as usize;
-            let py = (center - cr * radius * 2.0) as usize;
-            if px < size && py < size {
-                // Distance from center = saturation level
-                let sat = (cb * cb + cr * cr).sqrt() * 2.0; // 0..~1
-                // Boost colored pixels, dim neutral ones
-                // This prevents the neutral white blob from drowning out colors
-                let boost = 0.1 + sat * 1.5; // neutral=0.1, saturated=1.6
-                // Use the actual pixel color, boosted by saturation
-                buf.add(px, py, r * boost, g * boost, b * boost);
-            }
+            let px = (center + cb * radius * 2.0) as i32;
+            let py = (center - cr * radius * 2.0) as i32;
+            // Soft Gaussian splat — vectorscope clusters benefit
+            // most from this; chroma vector clouds get the
+            // "energy cloud" look instead of dotted point clouds.
+            let sat = (cb * cb + cr * cr).sqrt() * 2.0;
+            let boost = 0.1 + sat * 1.5;
+            buf.splat(px, py, r * boost, g * boost, b * boost, splat_kernel);
         }
     }
 
-    buf.to_image([4.0, 4.0, 7.0], 2.2)
+    buf.to_image_phosphor([4.0, 4.0, 7.0], 2.2, 1.6)
 }
 
 /// Render CIE 1931 xy chromaticity diagram.
@@ -1686,6 +1856,128 @@ mod tests {
         assert!(!settings.show_iq_lines);
         assert_eq!(settings.histogram_scale, crate::state::HistogramScale::Sqrt);
         assert_eq!(settings.waveform_paint_mode, crate::state::WaveformPaintMode::Green);
+    }
+
+    // ── Splat kernel + density-aware tonemap tests ─────────────────────
+
+    /// Pin: a normalised Gaussian kernel sums to 1.0 — splatting one
+    /// data point deposits exactly one unit of density (away from
+    /// edges). Catches a regression in the normaliser.
+    #[test]
+    fn splat_kernel_sums_to_one() {
+        for (size, sigma) in &[(1, 0.0), (3, 1.0), (5, 1.6)] {
+            let k = SplatKernel::gaussian(*size, *sigma);
+            let total: f32 = k.weights.iter().sum();
+            assert!((total - 1.0).abs() < 1e-5,
+                "kernel size={size} sigma={sigma} should sum to 1.0, got {total}");
+        }
+    }
+
+    /// Pin: kernel weights are symmetric around the centre. A user-
+    /// visible asymmetric splat would skew traces in one direction.
+    #[test]
+    fn splat_kernel_is_symmetric() {
+        let k = SplatKernel::gaussian(5, 1.6);
+        for ky in 0..5 {
+            for kx in 0..5 {
+                let here = k.weight_at(kx, ky);
+                let mirror_x = k.weight_at(4 - kx, ky);
+                let mirror_y = k.weight_at(kx, 4 - ky);
+                assert!((here - mirror_x).abs() < 1e-6,
+                    "kernel asymmetric in x at ({kx},{ky}): {here} vs {mirror_x}");
+                assert!((here - mirror_y).abs() < 1e-6,
+                    "kernel asymmetric in y at ({kx},{ky}): {here} vs {mirror_y}");
+            }
+        }
+    }
+
+    /// Pin: the centre of a Gaussian kernel is the brightest cell.
+    /// A regression that swapped the kernel orientation would hit this.
+    #[test]
+    fn splat_kernel_center_is_max() {
+        let k = SplatKernel::gaussian(5, 1.6);
+        let center = k.weight_at(2, 2);
+        for ky in 0..5 {
+            for kx in 0..5 {
+                if kx == 2 && ky == 2 { continue; }
+                assert!(k.weight_at(kx, ky) <= center,
+                    "off-centre cell ({kx},{ky}) brighter than centre");
+            }
+        }
+    }
+
+    /// Pin: an in-bounds 3×3 splat to a fresh AccumBuffer deposits
+    /// exactly 1.0 total density across the 9 cells (kernel is
+    /// pre-normalised). Catches an off-by-one in the splat loop.
+    #[test]
+    fn splat_in_bounds_conserves_unit_density() {
+        let k = SplatKernel::gaussian(3, 1.0);
+        let mut buf = AccumBuffer::new(8, 8);
+        // Splat at (4, 4) — well inside the 8×8 buffer, kernel fits.
+        buf.splat(4, 4, 0.0, 0.0, 0.0, &k);
+        let total_density: f32 = buf.data.iter().map(|p| p[3]).sum();
+        assert!((total_density - 1.0).abs() < 1e-5,
+            "total density should be 1.0, got {total_density}");
+    }
+
+    /// Pin: a splat at the corner deposits LESS than 1.0 (kernel cells
+    /// outside the buffer are silently skipped). The exact remaining
+    /// mass is the sum of kernel weights inside the buffer's quadrant.
+    #[test]
+    fn splat_at_edge_truncates_density() {
+        let k = SplatKernel::gaussian(3, 1.0);
+        let mut buf = AccumBuffer::new(8, 8);
+        // Splat at (0, 0) — corners and top-left edge of kernel are off-buffer.
+        buf.splat(0, 0, 0.0, 0.0, 0.0, &k);
+        let total: f32 = buf.data.iter().map(|p| p[3]).sum();
+        // Only the bottom-right 2×2 of the 3×3 kernel lands in-buffer.
+        // Sum of those four cells = w(1,1) + w(2,1) + w(1,2) + w(2,2).
+        let expected = k.weight_at(1, 1) + k.weight_at(2, 1)
+                     + k.weight_at(1, 2) + k.weight_at(2, 2);
+        assert!((total - expected).abs() < 1e-5,
+            "edge splat should deposit {expected}, got {total}");
+    }
+
+    /// Pin: density-aware tonemap recovers HUE at high accumulation.
+    /// 100 splats of pure green (0,1,0) hit the same pixel; the
+    /// rendered colour should be GREEN (not white as additive RGB
+    /// would saturate). This is THE phosphor-look property.
+    #[test]
+    fn density_tonemap_preserves_hue_under_accumulation() {
+        let k = SplatKernel::gaussian(1, 0.0); // single-pixel for cleanest test
+        let mut buf = AccumBuffer::new(4, 4);
+        for _ in 0..100 {
+            buf.splat(2, 2, 0.0, 1.0, 0.0, &k);
+        }
+        let img = buf.to_image_phosphor([0.0, 0.0, 0.0], 1.0, 1.6);
+        let centre = img.pixels[2 * 4 + 2];
+        // R should be 0 (or near-zero), G should be high (saturated to ~max),
+        // B should be 0. If the tonemap dropped hue preservation, all three
+        // would creep toward equal high values (white).
+        assert_eq!(centre.r(), 0, "R leaked into a green-only splat");
+        assert_eq!(centre.b(), 0, "B leaked into a green-only splat");
+        assert!(centre.g() > 200, "G should saturate at high density, got {}", centre.g());
+    }
+
+    /// Pin: empty-pixel branch in the tonemap returns pure background.
+    /// Catches a regression where empty pixels picked up trace colour.
+    #[test]
+    fn density_tonemap_empty_pixel_is_background() {
+        let buf = AccumBuffer::new(4, 4);
+        let img = buf.to_image_phosphor([7.0, 8.0, 12.0], 1.0, 1.6);
+        let any = img.pixels[0];
+        assert_eq!(any.r(), 7);
+        assert_eq!(any.g(), 8);
+        assert_eq!(any.b(), 12);
+    }
+
+    /// Pin: ScopeQuality::splat_kernel_size matches the documented
+    /// quality tier expectations. Drift would surprise users.
+    #[test]
+    fn quality_kernel_sizes_pinned() {
+        assert_eq!(klipp_core::ScopeQuality::Low.splat_kernel_size(), 1);
+        assert_eq!(klipp_core::ScopeQuality::Medium.splat_kernel_size(), 3);
+        assert_eq!(klipp_core::ScopeQuality::High.splat_kernel_size(), 5);
     }
 }
 
