@@ -147,12 +147,18 @@ fn lift(c: egui::Color32, n: u8) -> egui::Color32 {
     )
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct DragNode {
-    node_id: NodeId,
+    /// Every node id that should follow the cursor — a single id
+    /// for the simple click-and-drag case, the entire multi-
+    /// selection when the user grabs a member of a marqueed set.
+    /// Live drag emits one MoveNode per id per tick (same shape
+    /// as DragFrame).
+    node_ids: Vec<NodeId>,
     /// Cumulative delta we've already emitted to the engine since
     /// the drag started, in graph coordinates. Used to compute the
-    /// next per-frame delta without rounding drift.
+    /// next per-frame delta without rounding drift. Shared across
+    /// every node_id since they all move in lockstep.
     emitted_dx: f32,
     emitted_dy: f32,
     /// Cursor position in graph coordinates at the start of the
@@ -2190,16 +2196,43 @@ impl NodeGraphV2Panel {
                                         selected_set.insert(*node_id);
                                         *selected_node = Some(*node_id);
                                     }
+                                } else if selected_set.contains(node_id)
+                                    && selected_set.len() >= 2
+                                {
+                                    // Plain click on a node that's
+                                    // already part of a multi-selection
+                                    // — preserve the selection so the
+                                    // following drag moves every member
+                                    // in lockstep. Without this, every
+                                    // attempt to drag a marqueed group
+                                    // collapsed the selection back to
+                                    // the one node under the cursor.
+                                    *selected_node = Some(*node_id);
                                 } else {
-                                    // Plain click replaces the
-                                    // selection with this single node.
+                                    // Plain click on a non-selected node
+                                    // (or a single-selected one) replaces
+                                    // the selection with just this node.
                                     selected_set.clear();
                                     selected_set.insert(*node_id);
                                     *selected_node = Some(*node_id);
                                 }
                                 let g = to_graph(p);
+                                // Drag set: every selected node when
+                                // there's a multi-selection that
+                                // includes this one, else just the
+                                // single clicked node. Stable id order
+                                // doesn't matter for the per-tick
+                                // MoveNode emission since each id
+                                // gets the same delta.
+                                let drag_ids: Vec<NodeId> = if selected_set.contains(node_id)
+                                    && selected_set.len() >= 2
+                                {
+                                    selected_set.iter().copied().collect()
+                                } else {
+                                    vec![*node_id]
+                                };
                                 self.drag_node = Some(DragNode {
-                                    node_id: *node_id,
+                                    node_ids: drag_ids,
                                     emitted_dx: 0.0,
                                     emitted_dy: 0.0,
                                     start_cursor_x: g.x,
@@ -2298,7 +2331,11 @@ impl NodeGraphV2Panel {
             }
         }
 
-        // Live drag — emit MoveNode delta as the cursor moves.
+        // Live drag — emit a MoveNode per id in the drag set per
+        // tick. Same emitted-delta accounting whether the set has
+        // one node or N: the cursor-derived delta is shared across
+        // every member so they all translate in lockstep without
+        // drift across many frames.
         if let Some(ref mut dn) = self.drag_node {
             if let Some(p) = pointer_pos {
                 let g = to_graph(p);
@@ -2307,12 +2344,14 @@ impl NodeGraphV2Panel {
                 let delta_x = total_dx - dn.emitted_dx;
                 let delta_y = total_dy - dn.emitted_dy;
                 if delta_x.abs() > 0.01 || delta_y.abs() > 0.01 {
-                    cmds.push(AppCommand::MoveNode {
-                        clip_id,
-                        node_id: dn.node_id,
-                        delta_x,
-                        delta_y,
-                    });
+                    for nid in &dn.node_ids {
+                        cmds.push(AppCommand::MoveNode {
+                            clip_id,
+                            node_id: *nid,
+                            delta_x,
+                            delta_y,
+                        });
+                    }
                     dn.emitted_dx = total_dx;
                     dn.emitted_dy = total_dy;
                 }
@@ -3039,13 +3078,22 @@ impl NodeGraphV2Panel {
         let minor_alpha = ((zoom - 0.4) / 0.3).clamp(0.0, 1.0);
         let sub_minor_alpha = ((zoom - 1.2) / 0.6).clamp(0.0, 1.0);
 
+        // Cool blue-gray grid lines — was theme.accent_dim, but that
+        // sat in the same warm amber family as the brand gold and
+        // made the whole canvas read monochromatic. Pulling the
+        // grid into a neutral cool tone (#9aa8b8 base, alpha-modulated
+        // per tier) lets the gold of the accent / matched roles /
+        // selection halo pop hard against an unambiguously different
+        // hue family.
+        const GRID_COOL: egui::Color32 = egui::Color32::from_rgb(0x9a, 0xa8, 0xb8);
+        let _ = theme;
         let mk = |alpha: u8, w: f32| {
             egui::Stroke::new(
                 w,
                 egui::Color32::from_rgba_unmultiplied(
-                    theme.accent_dim.r(),
-                    theme.accent_dim.g(),
-                    theme.accent_dim.b(),
+                    GRID_COOL.r(),
+                    GRID_COOL.g(),
+                    GRID_COOL.b(),
                     alpha,
                 ),
             )
