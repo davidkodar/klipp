@@ -61,34 +61,78 @@ const DEFAULT_FRAME_COLOR_RGBA: u32 = u32::from_le_bytes([0x6a, 0x82, 0xa8, 0xff
 const SEARCH_MATCH_COLOR: egui::Color32 = egui::Color32::from_rgb(0x3a, 0xd0, 0xff);
 
 
+/// Fusion-style family palette — five buckets at low saturation
+/// (~25 % chroma) so the brand gold stays the only loud thing in
+/// the canvas. Each family is a different hue so node kinds read
+/// as their role at a glance, but no single body fights with the
+/// wires (which carry the role colour at full saturation).
+///
+/// - `PRIMARY_GRADE`  — colour-pipeline kinds (Corrector through
+///   Curves, Hue/Sat, ColorBalance, ColorMatch, ColorWarper).
+///   Cool slate-blue.
+/// - `SECONDARY_MATTE` — selection / matte producers + consumers
+///   (Qualifier, LumaKey, Mask, CombineMattes, ExternalMatte,
+///   MaskCutout). Muted plum.
+/// - `COMPOSITE` — multi-input compositors (Layer, Blend,
+///   ApplyMatte, LayerMixer). Muted moss green.
+/// - `LOOK` — finishing / look kinds that aren't a grade per-se
+///   (3D LUT, Film Grain, Denoise, SoftClip). Muted ochre.
+/// - `STRUCTURAL` — routing + container kinds that don't process
+///   pixels (Reroute, Compound, RGBSplitter, RGBCombiner,
+///   PrimariesMatrix, InputTransform). Neutral gray.
+const FAMILY_PRIMARY_GRADE: egui::Color32 = egui::Color32::from_rgb(0x40, 0x4a, 0x55);
+const FAMILY_SECONDARY_MATTE: egui::Color32 = egui::Color32::from_rgb(0x4f, 0x3d, 0x55);
+const FAMILY_COMPOSITE: egui::Color32 = egui::Color32::from_rgb(0x3f, 0x50, 0x42);
+const FAMILY_LOOK: egui::Color32 = egui::Color32::from_rgb(0x52, 0x4e, 0x3e);
+const FAMILY_STRUCTURAL: egui::Color32 = egui::Color32::from_rgb(0x45, 0x45, 0x48);
+/// Source = structural with a faint green tint (input flowing in);
+/// Output = structural with a faint blue tint (sink). Both are
+/// otherwise the structural-gray family — distinct enough to read
+/// as separate terminals, neutral enough to sit alongside the
+/// other structural kinds without claiming a unique family slot.
+const FAMILY_SOURCE: egui::Color32 = egui::Color32::from_rgb(0x3e, 0x4d, 0x44);
+const FAMILY_OUTPUT: egui::Color32 = egui::Color32::from_rgb(0x3e, 0x44, 0x4d);
+
 fn node_color(kind: &NodeKind, theme: &KlippTheme) -> egui::Color32 {
     let _ = theme;
     match kind {
-        // Source = input terminal (warm green); Output = sink
-        // (cool blue). Distinct hues so the two terminals don't
-        // read as identical placeholders.
-        NodeKind::Source => egui::Color32::from_rgb(0x3a, 0x5e, 0x4a),
-        NodeKind::Output => egui::Color32::from_rgb(0x3a, 0x4a, 0x6e),
-        NodeKind::Qualifier | NodeKind::LumaKey | NodeKind::Mask | NodeKind::CombineMattes | NodeKind::ExternalMatte => {
-            egui::Color32::from_rgb(0x5c, 0x3a, 0x6e)
-        }
-        NodeKind::Layer | NodeKind::Blend | NodeKind::ApplyMatte | NodeKind::LayerMixer => {
-            egui::Color32::from_rgb(0x3a, 0x5c, 0x6e)
-        }
-        NodeKind::Lut3D | NodeKind::FilmGrain | NodeKind::ColorMatch => {
-            egui::Color32::from_rgb(0x5c, 0x5a, 0x3a)
-        }
-        // Compound gets a distinctive teal so it reads as
-        // "structural" at a glance (different from the orange/red
-        // grade-node palette) — reinforced by the stacked-card
-        // shadow painted behind it in the render loop.
-        NodeKind::Compound => egui::Color32::from_rgb(0x2f, 0x5e, 0x60),
-        // Reroute is a routing aid, not a grade — neutral grey so
-        // it sits below the kind-coloured cards visually. The dot/
-        // diamond render path doesn't paint a body anyway, but the
-        // colour shows up on the wire-tail dot if we ever surface it.
-        NodeKind::Reroute => egui::Color32::from_rgb(0x4a, 0x4a, 0x4a),
-        _ => egui::Color32::from_rgb(0x3a, 0x4a, 0x5c),
+        NodeKind::Source => FAMILY_SOURCE,
+        NodeKind::Output => FAMILY_OUTPUT,
+
+        // Secondary / matte family.
+        NodeKind::Qualifier
+        | NodeKind::LumaKey
+        | NodeKind::Mask
+        | NodeKind::CombineMattes
+        | NodeKind::ExternalMatte
+        | NodeKind::MaskCutout => FAMILY_SECONDARY_MATTE,
+
+        // Composite family.
+        NodeKind::Layer
+        | NodeKind::Blend
+        | NodeKind::ApplyMatte
+        | NodeKind::LayerMixer => FAMILY_COMPOSITE,
+
+        // Look / finishing family.
+        NodeKind::Lut3D
+        | NodeKind::FilmGrain
+        | NodeKind::Denoise
+        | NodeKind::SoftClip => FAMILY_LOOK,
+
+        // Structural family — routing + containers.
+        NodeKind::Reroute
+        | NodeKind::Compound
+        | NodeKind::RGBSplitter
+        | NodeKind::RGBCombiner
+        | NodeKind::PrimariesMatrix
+        | NodeKind::InputTransform => FAMILY_STRUCTURAL,
+
+        // Everything else falls into the primary-grade family —
+        // Corrector, Exposure, Contrast, Saturation, ToneControls,
+        // ColorWheels, WheelSatBri, RGBCurves, HueSatCurves,
+        // ColorBalance, ColorMatch, ColorWarper, plus future
+        // colour-pipeline kinds.
+        _ => FAMILY_PRIMARY_GRADE,
     }
 }
 
