@@ -20490,6 +20490,25 @@ impl KlippApp {
         self.state.filmstrip_in_progress.clear();
         self.state.filmstrip_queue.clear();
 
+        // 6b. Drop program-viewer textures so the viewer doesn't
+        //     keep rendering the OLD project's last frame while the
+        //     engine resets and the user starts importing into the
+        //     new project. Without this, the texture handle survives
+        //     the project switch and the viewer paints stale pixels
+        //     from the previous project until a fresh decode lands —
+        //     which never happens for an audio-only or empty new
+        //     project, leaving the OLD video frozen on screen while
+        //     the NEW audio plays. Defer-drop (not raw drop) per
+        //     `feedback_defer_drop_texture` — wgpu panics on next
+        //     submit if a TextureHandle is removed mid-frame outside
+        //     the deferred-drop ring.
+        if let Some(old) = self.viewer.video_texture.take() {
+            self.defer_drop_texture(old);
+        }
+        if let Some(old) = self.viewer.title_overlay_texture.take() {
+            self.defer_drop_texture(old);
+        }
+
         // 7. Invalidate media usage cache (clip-counts per media item)
         self.state.media_usage_cache.clear();
         self.state.media_usage_cache_dirty = true;

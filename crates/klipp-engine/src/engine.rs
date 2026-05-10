@@ -3620,10 +3620,28 @@ impl PlaybackEngine {
         self.frames_consumed = 0;
         self.dropped_frames = 0;
 
-        // Blank the shared frame buffer so the viewer no longer shows old pixels
+        // Blank the shared frame buffer so the viewer no longer shows old pixels.
+        //
+        // CRITICAL: width/height MUST be zeroed alongside the data
+        // clears. The UI's `upload_frame_to_egui` does
+        // `mem::take(&mut fb.data)` after every successful upload, so
+        // in steady state `fb.data` is an empty Vec while
+        // `fb.width`/`fb.height` still describe the last-uploaded
+        // frame. `FrameBuffer::clear()` only does `data.fill(0)`,
+        // which is a no-op on an empty Vec — so without zeroing
+        // width/height here, the next `upload_frame_to_egui` finds
+        // `data.len()=0 != w*h*4`, returns early, and the viewer
+        // keeps rendering the previous project's frame from the
+        // already-allocated `viewer.video_texture` handle until a
+        // fresh decode lands. With width/height also zeroed, the
+        // upload guard stays consistent: empty data → zero
+        // dimensions → no stale pixels.
         {
             let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
             fb.clear();
+            fb.data.clear();
+            fb.width = 0;
+            fb.height = 0;
             fb.pregrade_data = Arc::new(Vec::new());
             fb.original_data.clear();
             fb.unstab_data.clear();
