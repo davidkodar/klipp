@@ -1107,25 +1107,27 @@ pub(crate) fn render_waveform_direct(
 /// preserving by construction.
 #[inline]
 fn phosphor_white_mix(intensity: f32) -> f32 {
-    // Sparser hot-core behaviour — DaVinci's bright peaks live as
-    // tiny concentrated cores, not broad luminous regions. Two
-    // changes from the previous t³⋅cap-0.75 curve:
+    // Sparse hot-core sparkle — DaVinci's brightest peaks DO show
+    // a small amount of white at the converged-column tips, but
+    // only there. Two-stage tuning history:
     //
-    //   * Breakpoint pushed 0.80 → 0.92 — only the very densest
-    //     pixels (the converged-column tips) start whitening at all.
-    //     Below 0.92 the trace stays pure coloured, no matter how
-    //     dense.
-    //   * Cap dropped 0.75 → 0.40 — even infinite density never
-    //     washes the trace beyond ~ "punchy coloured highlight".
-    //     Most of the brightness comes from the intensity ramp
-    //     in the resolve step; the white-mix is a thin sparkle on
-    //     top of the densest cores, not a wash that paints whole
-    //     regions toward grey.
-    //   * Exponent 4 → 6 — the climb from "still coloured" to
-    //     "sparkly" happens over a narrow density band. That
-    //     produces sparse hot dots rather than a smooth gradient.
-    let t = ((intensity - 0.92) / 0.08).max(0.0);
-    let q = t * t * t * t * t * t;
+    //   v1 (legacy): breakpoint 0.80, exp 4, cap 0.75 → washed
+    //       broad regions toward white; reads as OLED.
+    //   v2 (filament-rewrite): breakpoint 0.92, exp 6, cap 0.40 →
+    //       overcorrected; with the new dropout+weight-jitter
+    //       splat, intensity at typical bright regions hovers
+    //       0.92–0.94, which is exactly where the curve says
+    //       zero. Result: NO white anywhere, even at peaks.
+    //   v3 (current): breakpoint 0.86, exp 5, cap 0.40 → sparse
+    //       small white sparkle on the densest peaks. Matches
+    //       DaVinci's "tiny bit of white at the column tips"
+    //       character without leaking into mid-density regions.
+    //
+    // At intensity 0.90 white_mix ≈ 0.005 (invisible). At 0.95
+    // ≈ 0.083 (visible tint). At 0.98 ≈ 0.281. At 1.0 hits the
+    // 0.40 cap. Below 0.86 the trace is pure coloured, full stop.
+    let t = ((intensity - 0.86) / 0.14).max(0.0);
+    let q = t * t * t * t * t;
     q.min(0.40)
 }
 
