@@ -6437,14 +6437,14 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         let other_b_idx = (params.spill_key_idx + 2u) % 3u;
         let other_a = srgb[other_a_idx];
         let other_b = srgb[other_b_idx];
-        var target: f32 = key;
+        var spill_target: f32 = key;
         if params.spill_method == 1u {
-            target = max(other_a, other_b);
+            spill_target = max(other_a, other_b);
         } else if params.spill_method == 2u {
-            target = 0.5 * (other_a + other_b);
+            spill_target = 0.5 * (other_a + other_b);
         }
-        if key > target {
-            let new_key = key + params.spill_strength * (target - key);
+        if key > spill_target {
+            let new_key = key + params.spill_strength * (spill_target - key);
             srgb[params.spill_key_idx] = clamp(new_key, 0.0, 255.0);
             // Re-encode the mutated sRGB triplet back to linear for output.
             pixel.x = srgb_to_linear_component(srgb.x / 255.0);
@@ -10740,7 +10740,9 @@ struct Params {
 // phosphor-green while dense clumps climb toward white-hot.
 fn phosphor(count: f32, base: vec3<f32>) -> vec3<f32> {
     let intensity = sqrt(count / (count + 3.0));
-    let white_mix = intensity * intensity * intensity;
+    // Scaled 0.35 from the previous unattenuated cube so peaks stay
+    // visibly white-hot without flooding the mid-tones with white.
+    let white_mix = intensity * intensity * intensity * 0.35;
     let r = (base.x + (1.0 - base.x) * white_mix) * intensity;
     let g = (base.y + (1.0 - base.y) * white_mix) * intensity;
     let b = (base.z + (1.0 - base.z) * white_mix) * intensity;
@@ -10823,7 +10825,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     else { base = vec3<f32>(0.05, 0.15, 0.95); }
 
     let intensity = sqrt(count / (count + 3.0));
-    let white_mix = intensity * intensity * intensity;
+    // Scaled 0.35 from the previous unattenuated cube so peaks stay
+    // visibly white-hot without flooding the mid-tones with white.
+    let white_mix = intensity * intensity * intensity * 0.35;
     let r = (base.x + (1.0 - base.x) * white_mix) * intensity;
     let g = (base.y + (1.0 - base.y) * white_mix) * intensity;
     let b = (base.z + (1.0 - base.z) * white_mix) * intensity;

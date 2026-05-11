@@ -30778,6 +30778,7 @@ impl KlippApp {
                         let text = egui::RichText::new(label).size(9.0);
                         let text = if active { text.color(theme.text_accent) } else { text.color(theme.text_dim) };
                         if ui.selectable_label(active, text).clicked() {
+                            tracing::info!("UI: scope mode button clicked: {:?} (was {:?})", mode, self.state.scope_mode);
                             self.state.scope_mode = mode;
                             let mode_byte = match mode {
                                 ScopeMode::Waveform => 0u8,
@@ -30787,6 +30788,11 @@ impl KlippApp {
                             };
                             let _ = self.cmd_tx.send(AppCommand::SetScopeRenderMode { mode: mode_byte });
                             let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
+                            // Force the per-mode staleness check to invalidate
+                            // immediately so the scope dock re-renders this
+                            // mode on the next frame instead of displaying
+                            // its (possibly stale) cached texture.
+                            self.state.scope_state.increment_settings_generation();
                             ui.ctx().request_repaint();
                         }
                     }

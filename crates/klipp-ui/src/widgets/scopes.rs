@@ -658,6 +658,7 @@ impl SplatKernel {
 
     /// Isotropic Gaussian — convenience wrapper for tests / callers
     /// that don't need the anisotropic shape.
+    #[allow(dead_code)]
     pub fn gaussian(size: usize, sigma: f32) -> Self {
         Self::gaussian_aniso(size, size, sigma, sigma)
     }
@@ -670,7 +671,9 @@ impl SplatKernel {
         Self::gaussian_aniso(w, h, sx, sy)
     }
 
+    #[allow(dead_code)]
     pub fn width(&self) -> usize { self.width }
+    #[allow(dead_code)]
     pub fn height(&self) -> usize { self.height }
     pub fn weight_at(&self, kx: usize, ky: usize) -> f32 {
         self.weights[ky * self.width + kx]
