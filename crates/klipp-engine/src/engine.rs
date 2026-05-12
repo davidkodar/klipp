@@ -1054,27 +1054,6 @@ fn should_publish_gpu_viewer() -> bool {
 /// Overlay tracks beyond this cap still render correctly in export.
 const MAX_OVERLAY_DECODERS: usize = 4;
 
-/// Which GPU scope kernel (if any) to dispatch for a given scope
-/// render mode. Mode 2 (vectorscope) has no GPU implementation —
-/// the engine returns `None` and clears `fb.scope_texture` so the
-/// UI falls back to the CPU vectorscope renderer in
-/// `klipp-ui/widgets/scopes.rs`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum GpuScopeKind { Waveform, Parade, Histogram }
-
-/// Resolve a UI-facing scope mode code to the GPU scope kernel it
-/// should drive, or `None` when no GPU kernel applies (vectorscope,
-/// plus any future modes not yet ported to GPU).
-fn gpu_scope_kind_for_mode(mode: u8) -> Option<GpuScopeKind> {
-    match mode {
-        0 => Some(GpuScopeKind::Waveform),
-        1 => Some(GpuScopeKind::Parade),
-        // 2 = vectorscope — CPU only.
-        3 => Some(GpuScopeKind::Histogram),
-        _ => None,
-    }
-}
-
 /// Common write of a freshly-rendered scope texture into the shared
 /// `FrameBuffer`. `Some(t)` populates the texture and mode tag; `None`
 /// (mode has no renderer at this path) clears the texture so the UI's
@@ -1122,31 +1101,6 @@ fn write_scope_tex_to_fb(
             // matching the prior skim semantics.
         }
     }
-}
-
-/// Flag: route the scope dock through libavfilter (`waveform` /
-/// `vectorscope` / `histogram` filters) instead of the in-tree GPU
-/// shader path. Cached on first read so per-frame helper calls don't
-/// re-parse env.
-///
-/// **Default ON.** Set `KLIPP_SCOPE_FFMPEG=0` (or `false`) to opt back
-/// into the legacy in-tree GPU/CPU scope renderer — emergency rollback
-/// while the FFmpeg path is the production default.
-fn scope_ffmpeg_enabled() -> bool {
-    use std::sync::OnceLock;
-    static FLAG: OnceLock<bool> = OnceLock::new();
-    *FLAG.get_or_init(|| {
-        let enabled = std::env::var("KLIPP_SCOPE_FFMPEG")
-            .map(|v| !(v == "0" || v.eq_ignore_ascii_case("false")))
-            .unwrap_or(true);
-        if !enabled {
-            tracing::info!(
-                "KLIPP_SCOPE_FFMPEG=0 — falling back to legacy in-tree GPU \
-                 scope renderer (libavfilter path disabled by env)"
-            );
-        }
-        enabled
-    })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2953,22 +2907,12 @@ impl PlaybackEngine {
                 // and timeline scrub so scope quality matches playback.
                 let scope_w = 1024u32;
                 let scope_h = 512u32;
-                let mode = self.scope_render_mode;
-                if scope_ffmpeg_enabled() {
-                    // UI hands us an sRGB u8 frame (skim / scrub snapshot);
-                    // re-linearise via the LUT (~5 ms at 1080p, runs at
-                    // ≤10 Hz) so the scope sees 10-bit precision end-to-end.
-                    let linear = u8_rgba_to_linear(&rgba);
-                    self.render_active_scopes_via_ffmpeg_linear(&linear, width, height, scope_w, scope_h);
-                } else if let Some(gpu) = &mut self.gpu_effects {
-                    let tex = gpu_scope_kind_for_mode(mode).map(|kind| match kind {
-                        GpuScopeKind::Waveform => gpu.render_scope_waveform(&rgba, width, height, scope_w, scope_h),
-                        GpuScopeKind::Parade => gpu.render_scope_parade(&rgba, width, height, scope_w, scope_h),
-                        GpuScopeKind::Histogram => gpu.render_scope_histogram(&rgba, width, height, scope_w, scope_h),
-                    });
-                    let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
-                    write_scope_tex_to_fb(&mut fb, tex, scope_w, scope_h, mode);
-                }
+                let _ = self.scope_render_mode;
+                // UI hands us an sRGB u8 frame (skim / scrub snapshot);
+                // re-linearise via the LUT (~5 ms at 1080p, runs at
+                // ≤10 Hz) so the scope sees 10-bit precision end-to-end.
+                let linear = u8_rgba_to_linear(&rgba);
+                self.render_active_scopes_via_ffmpeg_linear(&linear, width, height, scope_w, scope_h);
             }
             AppCommand::SetScopeTapNode { node_id, .. } => {
                 self.scope_tap_node = node_id.clone();
@@ -8823,20 +8767,10 @@ impl PlaybackEngine {
                 if self.should_render_scope() {
                   let scope_w = 1024u32;
                   let scope_h = 512u32;
-                  let mode = self.scope_render_mode;
-                  if scope_ffmpeg_enabled() {
-                    self.render_active_scopes_via_ffmpeg_linear(&linear_out, width, height, scope_w, scope_h);
-                    self.last_scope_render = std::time::Instant::now();
-                  } else if let Some(gpu) = &mut self.gpu_effects {
-                    let tex = gpu_scope_kind_for_mode(mode).map(|kind| match kind {
-                        GpuScopeKind::Waveform => gpu.render_scope_waveform(&cached, width, height, scope_w, scope_h),
-                        GpuScopeKind::Parade => gpu.render_scope_parade(&cached, width, height, scope_w, scope_h),
-                        GpuScopeKind::Histogram => gpu.render_scope_histogram(&cached, width, height, scope_w, scope_h),
-                    });
-                    self.last_scope_render = std::time::Instant::now();
-                    let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
-                    write_scope_tex_to_fb(&mut fb, tex, scope_w, scope_h, mode);
-                  }
+                  let _ = self.scope_render_mode;
+                  let _ = &cached; // u8 cached frame no longer needed for scope render
+                  self.render_active_scopes_via_ffmpeg_linear(&linear_out, width, height, scope_w, scope_h);
+                  self.last_scope_render = std::time::Instant::now();
                 }
                 let hit_total_ms = t_wrap_start.elapsed().as_secs_f64() * 1000.0;
                 if hit_total_ms > 5.0 {
@@ -8875,9 +8809,10 @@ impl PlaybackEngine {
         // wrap. Compute it lazily so the common playback frame pays
         // zero CPU u8 conversion.
         let cache_put_active = cache_key.is_some() && self.state != PlaybackState::Playing;
-        let scope_active = self.should_render_scope() && self.gpu_effects.is_some()
-            && gpu_scope_kind_for_mode(self.scope_render_mode).is_some();
-        let need_result_u8 = cache_put_active || scope_active;
+        // Scope rendering no longer consumes `result_u8` — the FFmpeg
+        // path taps `result_linear` directly. Only the render cache
+        // still needs the u8 encode.
+        let need_result_u8 = cache_put_active;
 
         mark_stage(EngineStage::PostProcessReencode);
         let t_reencode = std::time::Instant::now();
@@ -8920,38 +8855,18 @@ impl PlaybackEngine {
         if self.should_render_scope() {
           let scope_w = 1024u32;
           let scope_h = 512u32;
-          let mode = self.scope_render_mode;
-          if scope_ffmpeg_enabled() {
-            // `result_linear` (line ~8780) is the post-grade, pre-display-encode
-            // linear-BT.709 f32 frame. Feeding it directly hands FFmpeg 10-bit
-            // code-value precision — no u8 round-trip. The multi-mode helper
-            // renders every active mode (dock + floating-window panes) and
-            // takes the FB lock internally.
-            let t_filter = std::time::Instant::now();
-            self.render_active_scopes_via_ffmpeg_linear(&result_linear, width, height, scope_w, scope_h);
-            scope_gpu_ms = t_filter.elapsed().as_secs_f64() * 1000.0;
-            self.last_scope_render = std::time::Instant::now();
-            // No separate lock window — `render_active_scopes_via_ffmpeg_linear`
-            // already wrote to the framebuffer above.
-            scope_fb_lock_us = 0;
-            // `mode` is unused on this branch but is referenced by the
-            // legacy GPU path below; keep the binding alive to avoid a
-            // warning in the legacy arm.
-            let _ = mode;
-          } else if let Some(gpu) = &mut self.gpu_effects {
-            let t_gpu = std::time::Instant::now();
-            let tex = gpu_scope_kind_for_mode(mode).map(|kind| match kind {
-                GpuScopeKind::Waveform => gpu.render_scope_waveform(&result_u8, width, height, scope_w, scope_h),
-                GpuScopeKind::Parade => gpu.render_scope_parade(&result_u8, width, height, scope_w, scope_h),
-                GpuScopeKind::Histogram => gpu.render_scope_histogram(&result_u8, width, height, scope_w, scope_h),
-            });
-            scope_gpu_ms = t_gpu.elapsed().as_secs_f64() * 1000.0;
-            self.last_scope_render = std::time::Instant::now();
-            let t_lock = std::time::Instant::now();
-            let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
-            scope_fb_lock_us = t_lock.elapsed().as_micros() as u64;
-            write_scope_tex_to_fb(&mut fb, tex, scope_w, scope_h, mode);
-          }
+          let _ = self.scope_render_mode;
+          // `result_linear` (above) is the post-grade, pre-display-encode
+          // linear-BT.709 f32 frame. Feeding it directly hands FFmpeg
+          // 10-bit code-value precision — no u8 round-trip. The multi-
+          // mode helper renders every active mode (dock + floating-
+          // window panes) and takes the FB lock internally.
+          let t_filter = std::time::Instant::now();
+          self.render_active_scopes_via_ffmpeg_linear(&result_linear, width, height, scope_w, scope_h);
+          scope_gpu_ms = t_filter.elapsed().as_secs_f64() * 1000.0;
+          self.last_scope_render = std::time::Instant::now();
+          scope_fb_lock_us = 0;
+          let _ = &result_u8; // u8 result kept for cache write, not scope
         }
         let t_scope_ms = t_scope.elapsed();
 
@@ -9094,39 +9009,19 @@ impl PlaybackEngine {
             // path on every parameter change, which would otherwise
             // pay the scope-render cost dozens of times per second.
             //
-            // The FFmpeg branch produces multi-mode results (one per
-            // active scope mode); the legacy GPU branch produces one.
-            // Either way the results land under the same FB lock as
+            // FFmpeg path produces multi-mode results (one per active
+            // scope mode). Results land under the same FB lock as
             // `write_frame` below so a single critical section covers
             // both writes (preserves the prior single-lock optimisation).
-            enum ScopeRenders {
-                Multi(Vec<(u8, Option<Vec<u8>>)>),
-                Single(u8, Option<Vec<u8>>),
-                None,
-            }
             let should_render = self.should_render_scope();
             let scope_w = 1024u32;
             let scope_h = 512u32;
-            let scope_renders = if should_render {
-                let mode = self.scope_render_mode;
-                if scope_ffmpeg_enabled() {
-                    let renders = self.render_active_scopes_pending(&final_linear, w, h);
-                    self.last_scope_render = std::time::Instant::now();
-                    ScopeRenders::Multi(renders)
-                } else if let Some(gpu) = &mut self.gpu_effects {
-                    tracing::debug!("Engine: GPU scope render mode={} frame={}x{}", self.scope_render_mode, w, h);
-                    let tex_opt = gpu_scope_kind_for_mode(mode).map(|kind| match kind {
-                        GpuScopeKind::Waveform => gpu.render_scope_waveform(&out_u8, w, h, scope_w, scope_h),
-                        GpuScopeKind::Parade => gpu.render_scope_parade(&out_u8, w, h, scope_w, scope_h),
-                        GpuScopeKind::Histogram => gpu.render_scope_histogram(&out_u8, w, h, scope_w, scope_h),
-                    });
-                    self.last_scope_render = std::time::Instant::now();
-                    ScopeRenders::Single(mode, tex_opt)
-                } else {
-                    ScopeRenders::None
-                }
+            let scope_renders: Option<Vec<(u8, Option<Vec<u8>>)>> = if should_render {
+                let renders = self.render_active_scopes_pending(&final_linear, w, h);
+                self.last_scope_render = std::time::Instant::now();
+                Some(renders)
             } else {
-                ScopeRenders::None
+                None
             };
 
             // Recycle the final linear buffer back into the composite scratch
@@ -9141,14 +9036,8 @@ impl PlaybackEngine {
             let dock_mode = self.scope_render_mode;
             let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
             fb.write_frame(out_u8, w, h);
-            match scope_renders {
-                ScopeRenders::Multi(renders) => {
-                    Self::apply_scope_renders(&mut fb, dock_mode, renders, scope_w, scope_h);
-                }
-                ScopeRenders::Single(mode, tex_opt) => {
-                    write_scope_tex_to_fb(&mut fb, tex_opt, scope_w, scope_h, mode);
-                }
-                ScopeRenders::None => {}
+            if let Some(renders) = scope_renders {
+                Self::apply_scope_renders(&mut fb, dock_mode, renders, scope_w, scope_h);
             }
             drop(fb);
             let _ = self.event_tx.send(AppEvent::FrameReady);
@@ -13275,54 +13164,11 @@ mod tracker_resolution_tests {
     }
 }
 
-#[cfg(test)]
-mod scope_dispatch_tests {
-    //! These tests pin the UI-mode → GPU-kernel mapping for scope
-    //! rendering. Commit cc32c3d's linear-storage flip silently broke
-    //! the waveform domain, but a separate latent bug was that the
-    //! engine fell through to `render_scope_waveform` on *every*
-    //! non-parade, non-histogram mode — including vectorscope (mode
-    //! 2) — which produced a waveform image tagged as a vectorscope
-    //! texture. These tests would have caught that in isolation.
-    use super::{gpu_scope_kind_for_mode, GpuScopeKind};
-
-    #[test]
-    fn mode_0_is_waveform() {
-        assert_eq!(gpu_scope_kind_for_mode(0), Some(GpuScopeKind::Waveform));
-    }
-
-    #[test]
-    fn mode_1_is_parade() {
-        assert_eq!(gpu_scope_kind_for_mode(1), Some(GpuScopeKind::Parade));
-    }
-
-    #[test]
-    fn mode_2_vectorscope_is_cpu_only() {
-        // The whole point: mode 2 must *not* resolve to a GPU kernel.
-        // Returning `Some(Waveform)` here — the pre-fix behaviour —
-        // is what painted a waveform into the vectorscope tab.
-        assert_eq!(gpu_scope_kind_for_mode(2), None);
-    }
-
-    #[test]
-    fn mode_3_is_histogram() {
-        assert_eq!(gpu_scope_kind_for_mode(3), Some(GpuScopeKind::Histogram));
-    }
-
-    #[test]
-    fn unknown_modes_fall_back_to_cpu() {
-        // Any code not in {0,1,3} must return None so the engine
-        // clears `fb.scope_texture` and the UI uses the CPU path.
-        // Belt-and-braces against a future mode being added to the
-        // UI enum without the engine being taught about it.
-        for m in [4u8, 5, 10, 42, 200, 255] {
-            assert_eq!(
-                gpu_scope_kind_for_mode(m), None,
-                "unknown mode {m} should resolve to None",
-            );
-        }
-    }
-}
+// Legacy `scope_dispatch_tests` module removed during the in-tree
+// scope renderer deletion (Phase 8). The FFmpeg path renders all four
+// modes through a single dispatch — there's no per-mode kernel
+// selection to test any more. End-to-end coverage of the FFmpeg path
+// lives in `crates/klipp-engine/tests/ffmpeg_scope_smoke.rs`.
 
 #[cfg(test)]
 mod codec_fix_tests {
