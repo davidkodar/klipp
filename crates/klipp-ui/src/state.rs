@@ -1367,6 +1367,13 @@ pub struct AppState {
     pub skim_queued_request: Option<(MediaId, f64, klipp_core::ViewerMode)>,
     /// Set to true each frame if hover skim is active (used to clear texture when mouse leaves)
     pub browser_skim_active_this_frame: bool,
+    /// Sticky flag: `true` once a skim with `target = Program` has
+    /// written its frame into the engine's frame_buffer, cleared in the
+    /// end-of-frame skim cleanup. Used to detect timeline-skim end and
+    /// fire a `SeekTo(playhead)` refresh so the Program viewer reverts
+    /// from the last-skimmed frame back to the committed playhead —
+    /// pro-NLE skim is transient: mouse-leave = back to playhead.
+    pub program_skim_active: bool,
     /// Media IDs that need skim transcode started (queued during drain_events)
     pub pending_skim_transcodes: Vec<MediaId>,
 
@@ -3200,6 +3207,7 @@ impl Default for AppState {
             skim_decode_started_at: None,
             skim_queued_request: None,
             browser_skim_active_this_frame: false,
+            program_skim_active: false,
             pending_skim_transcodes: Vec::new(),
             audio_skimming_enabled: true,
             skim_speed_px_per_sec: 0.0,

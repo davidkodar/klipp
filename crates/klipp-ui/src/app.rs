@@ -25592,6 +25592,11 @@ impl eframe::App for KlippApp {
                         let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
                         fb.write_skim_frame(rgba.clone(), width, height);
                     }
+                    // Mark the Program viewer as currently showing a
+                    // skim frame so the end-of-frame cleanup knows to
+                    // refresh back to the committed playhead when the
+                    // mouse leaves the timeline / filmstrip.
+                    self.state.program_skim_active = true;
                     let _ = self.cmd_tx.send(AppCommand::RenderScopesForFrame {
                         rgba,
                         width,
@@ -26181,15 +26186,22 @@ impl eframe::App for KlippApp {
         }
 
         // 11a. Skim cleanup: if no panel set the skim flag this frame, tear
-        // down whatever skim state is still alive. The trigger now includes
-        // the audio session because timeline-side skim (target=Program)
-        // writes the frame into the engine's `frame_buffer` and never
-        // touches `browser_skim_media_id` — without the audio-session
-        // clause, ending a timeline scrub or filmstrip hover would leave
-        // the audio skim playing forever.
+        // down whatever skim state is still alive. Three independent skim
+        // surfaces:
+        //   * `browser_skim_media_id` — Source-viewer media-pool hover
+        //     (texture overlay).
+        //   * `skim_audio_session`    — audio skim sidecar (cpal).
+        //   * `program_skim_active`   — Program-viewer timeline /
+        //     filmstrip hover (frame written into the engine's
+        //     frame_buffer; refreshing it requires a re-seek to the
+        //     committed playhead because the skim path overwrote what
+        //     the engine last decoded for playback).
+        // All three need to wind down together so pro-NLE "mouse-leave
+        // = back to the committed playhead" semantics hold uniformly.
         let lost_focus = !ctx.input(|i| i.viewport().focused.unwrap_or(true));
         let any_skim_state_alive = self.state.browser_skim_media_id.is_some()
-            || self.state.skim_audio_session.is_some();
+            || self.state.skim_audio_session.is_some()
+            || self.state.program_skim_active;
         if (!self.state.browser_skim_active_this_frame && any_skim_state_alive) || lost_focus {
             if self.state.browser_skim_media_id.is_some() {
                 // Route the cleared handle through the deferred-drop ring —
@@ -26209,6 +26221,27 @@ impl eframe::App for KlippApp {
             // End audio skim session when mouse leaves or app loses focus
             if self.state.skim_audio_session.is_some() {
                 self.send_commands(vec![AppCommand::BrowserSkimAudioEnd]);
+            }
+            // Program-viewer skim ended: reset the flag, and when not
+            // actively playing back, re-decode at the committed playhead
+            // so the viewer reverts from the last-skimmed frame to the
+            // actual current frame.
+            //
+            // CRITICAL: `state.playhead` is only authoritative when not
+            // playing. During playback `PlayheadMoved` updates the
+            // *anchor* and leaves `state.playhead` pinned at the
+            // pre-play position (see the PlayheadMoved handler). If we
+            // emitted `SeekTo(state.playhead)` mid-playback we'd snap
+            // back to wherever playback started — exactly the bug we
+            // saw. Skip the seek when playing; the engine overwrites
+            // `frame_buffer` with its next real frame within ~one frame
+            // anyway, so the skim leftover disappears on its own.
+            if self.state.program_skim_active {
+                self.state.program_skim_active = false;
+                if self.state.playback != PlaybackState::Playing {
+                    let cur = self.state.playhead;
+                    let _ = self.cmd_tx.send(AppCommand::SeekTo(cur));
+                }
             }
         }
 
