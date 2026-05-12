@@ -66,7 +66,8 @@ pub use transition_registry::{TransitionKind, TransitionSpec, TRANSITION_SPECS, 
 pub use config::{
     ChannelMask, GpuPreference, HistogramDisplayMode, HistogramLevels, HistogramSettings,
     LoudnessStandard, MeteringBallistics, PanLaw, PlaybackQuality, ScopeFfmpegSettings,
-    ScopeQuality, VectorscopeMode, VectorscopeSettings, WaveformFilter, WaveformParadeSettings,
+    ScopeQuality, VectorscopeGraticule, VectorscopeMode, VectorscopeSettings, WaveformEnvelope,
+    WaveformFilter, WaveformParadeSettings,
 };
 pub use gpu_vendor::GpuVendor;
 pub use working_colorspace::WorkingColorspace;

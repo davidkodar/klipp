@@ -1126,21 +1126,23 @@ fn write_scope_tex_to_fb(
 
 /// Flag: route the scope dock through libavfilter (`waveform` /
 /// `vectorscope` / `histogram` filters) instead of the in-tree GPU
-/// shader path. Enabled by `KLIPP_SCOPE_FFMPEG=1`. Cached on first
-/// read so per-frame helper calls don't re-parse env.
+/// shader path. Cached on first read so per-frame helper calls don't
+/// re-parse env.
 ///
-/// Off by default. v1 (GPU shader) path is unchanged when this is off.
+/// **Default ON.** Set `KLIPP_SCOPE_FFMPEG=0` (or `false`) to opt back
+/// into the legacy in-tree GPU/CPU scope renderer — emergency rollback
+/// while the FFmpeg path is the production default.
 fn scope_ffmpeg_enabled() -> bool {
     use std::sync::OnceLock;
     static FLAG: OnceLock<bool> = OnceLock::new();
     *FLAG.get_or_init(|| {
         let enabled = std::env::var("KLIPP_SCOPE_FFMPEG")
-            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-            .unwrap_or(false);
-        if enabled {
+            .map(|v| !(v == "0" || v.eq_ignore_ascii_case("false")))
+            .unwrap_or(true);
+        if !enabled {
             tracing::info!(
-                "KLIPP_SCOPE_FFMPEG=1 — scope dock routes through libavfilter \
-                 (waveform / parade / vectorscope / histogram)"
+                "KLIPP_SCOPE_FFMPEG=0 — falling back to legacy in-tree GPU \
+                 scope renderer (libavfilter path disabled by env)"
             );
         }
         enabled
@@ -2923,12 +2925,22 @@ impl PlaybackEngine {
                     fb.scope_textures.retain(|m, _| modes.contains(m));
                 }
                 self.active_scope_modes = modes;
+                // Force a fresh render on the next tick so newly-added
+                // panes don't sit blank on a paused viewer.
+                self.current_grade_hash = 0;
             }
             AppCommand::SetScopeFfmpegSettings { settings } => {
                 self.scope_ffmpeg_settings = settings;
+                // Invalidate the grade hash so the next tick re-renders
+                // the paused frame. Without this, scope-settings changes
+                // (R/G/B pills, filter, intensity, opacities, …) only
+                // take visible effect when playback or a grade edit
+                // already triggers a re-grade.
+                self.current_grade_hash = 0;
             }
             AppCommand::SetScopeBloom { enabled } => {
                 self.scope_bloom_enabled = enabled;
+                self.current_grade_hash = 0;
             }
             AppCommand::SetScopesVisible(visible) => {
                 self.scopes_visible = visible;

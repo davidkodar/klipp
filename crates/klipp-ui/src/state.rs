@@ -1615,11 +1615,33 @@ pub struct AppState {
     pub scope_show_g: bool,
     pub scope_show_b: bool,
     pub scope_low_pass: bool,
+    /// FFmpeg waveform filter algorithm for both Wave and Parade modes.
+    /// Lowpass (default) is the smooth gradient look; other modes give
+    /// distinct visual styles (Flat = raw dot density, Color = per-pixel
+    /// painting, etc.). UI: dropdown in scope-settings popover.
+    pub scope_waveform_filter: klipp_core::WaveformFilter,
+    /// Waveform / parade envelope overlay (FFmpeg `envelope=`). Draws
+    /// min/max peak markers on top of the trace — useful for spotting
+    /// clipping. Default off.
+    pub scope_waveform_envelope: klipp_core::WaveformEnvelope,
+    /// Manual override for the FFmpeg waveform `intensity=`. Default 0
+    /// means use the Quality-tier default; non-zero overrides it.
+    /// UI: slider in scope-settings popover.
+    pub scope_waveform_intensity: f32,
+    /// When true, Wave and Parade render as a single white Y (luma)
+    /// trace (B&W luma waveform) instead of three colored R/G/B traces.
+    /// UI: checkbox in scope-settings popover.
+    pub scope_waveform_luma_only: bool,
     /// FFmpeg vectorscope `mode=` choice. Gray / Color / Color2..5.
     /// Color3 is the in-tree default; pros may prefer Color2 / Color4
     /// for different gamut visualisation. UI: dropdown in scope-settings
     /// popover.
     pub scope_vectorscope_mode: klipp_core::VectorscopeMode,
+    /// FFmpeg vectorscope `graticule=` choice. Controls the saturation
+    /// ring + R/Mg/B/Cy/G/Yl target dots + skin-tone (I) line overlay.
+    /// `None` removes the overlay entirely. UI: dropdown in scope-settings
+    /// popover.
+    pub scope_vectorscope_graticule: klipp_core::VectorscopeGraticule,
     /// FFmpeg histogram `display_mode=`. Parade is the default (per-channel
     /// columns); Stack overlays them vertically; Overlay alphas them on
     /// top of each other.
@@ -1627,6 +1649,19 @@ pub struct AppState {
     /// FFmpeg histogram `levels_mode=`. Linear is the default; Logarithmic
     /// reveals shadow detail at the cost of highlight resolution.
     pub scope_histogram_levels: klipp_core::HistogramLevels,
+    /// FFmpeg vectorscope `bgopacity=` (background opacity). 0 = trans,
+    /// 1 = opaque. Default 0.3.
+    pub scope_vectorscope_bgopacity: f32,
+    /// FFmpeg vectorscope `lthreshold=` (low luma cutoff). Pixels below
+    /// this luma are dropped from the scatter. Default 0.0.
+    pub scope_vectorscope_lthreshold: f32,
+    /// FFmpeg vectorscope `hthreshold=` (high luma cutoff). Pixels above
+    /// this luma are dropped. Default 1.0.
+    pub scope_vectorscope_hthreshold: f32,
+    /// FFmpeg histogram `fgopacity=` (bar opacity). Default 0.7.
+    pub scope_histogram_fgopacity: f32,
+    /// FFmpeg histogram `bgopacity=` (background opacity). Default 0.5.
+    pub scope_histogram_bgopacity: f32,
     pub scope_bloom: bool,
     pub scope_settings_open: bool,
     /// Floating scope window state.
@@ -3212,10 +3247,20 @@ impl Default for AppState {
             scope_show_r: true,
             scope_show_g: true,
             scope_show_b: true,
-            scope_low_pass: false,
+            scope_low_pass: true,
+            scope_waveform_filter: klipp_core::WaveformFilter::Lowpass,
+            scope_waveform_envelope: klipp_core::WaveformEnvelope::None,
+            scope_waveform_intensity: 0.0, // 0 = use Quality-tier default
+            scope_waveform_luma_only: false,
             scope_vectorscope_mode: klipp_core::VectorscopeMode::Color3,
+            scope_vectorscope_graticule: klipp_core::VectorscopeGraticule::None,
+            scope_vectorscope_bgopacity: 0.3,
+            scope_vectorscope_lthreshold: 0.0,
+            scope_vectorscope_hthreshold: 1.0,
             scope_histogram_display: klipp_core::HistogramDisplayMode::Parade,
             scope_histogram_levels: klipp_core::HistogramLevels::Linear,
+            scope_histogram_fgopacity: 0.7,
+            scope_histogram_bgopacity: 0.5,
             scope_bloom: true,
             scope_settings_open: false,
             scope_window: ScopeWindowState::default(),

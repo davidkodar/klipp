@@ -25159,35 +25159,50 @@ impl eframe::App for KlippApp {
             // global AppState toggles (legacy popover) until Phase 5
             // adds dedicated per-mode UI. Same filter / channel / intensity
             // applies to BOTH waveform and parade in this back-compat
-            // shape so flipping low-pass continues to feel global. Once
-            // Phase 5 lands the popover, per-mode fields move to
-            // AppState and this fallback construction drops.
-            let legacy_filter = if self.state.scope_low_pass {
-                klipp_core::WaveformFilter::Lowpass
-            } else {
-                klipp_core::WaveformFilter::Flat
-            };
+            // shape.
+            //
+            // FFmpeg waveform filter is read from AppState. Lowpass is the
+            // 10-bit-clean default; other filter modes fall back to 8-bit
+            // before the waveform filter to dodge a libavfilter 9.x SIGSEGV
+            // on gbrp10le input (see SCOPE-NEXT-LIBAV-10BIT). The popover
+            // dropdown lets the user pick per visual style.
             let legacy_channels = klipp_core::ChannelMask {
                 r: self.state.scope_show_r,
                 g: self.state.scope_show_g,
                 b: self.state.scope_show_b,
             };
+            // Manual intensity is sent as a direct override; 0 keeps the
+            // quality-tier default (we encode 0 → -1 for the spec
+            // builder's "use tier" sentinel).
+            let intensity_override = if self.state.scope_waveform_intensity > 0.0 {
+                self.state.scope_waveform_intensity
+            } else {
+                -1.0
+            };
             let wp = klipp_core::WaveformParadeSettings {
-                filter: legacy_filter,
-                intensity_override: -1.0, // quality-tier default
+                filter: self.state.scope_waveform_filter,
+                intensity_override,
                 channels: legacy_channels,
+                envelope: self.state.scope_waveform_envelope,
             };
             let ffmpeg_settings = klipp_core::ScopeFfmpegSettings {
                 waveform: wp,
                 parade: wp,
                 vectorscope: klipp_core::VectorscopeSettings {
                     mode: self.state.scope_vectorscope_mode,
+                    graticule: self.state.scope_vectorscope_graticule,
+                    bgopacity: self.state.scope_vectorscope_bgopacity,
+                    lthreshold: self.state.scope_vectorscope_lthreshold,
+                    hthreshold: self.state.scope_vectorscope_hthreshold,
                 },
                 histogram: klipp_core::HistogramSettings {
                     display_mode: self.state.scope_histogram_display,
                     levels: self.state.scope_histogram_levels,
+                    fgopacity: self.state.scope_histogram_fgopacity,
+                    bgopacity: self.state.scope_histogram_bgopacity,
                 },
                 quality: self.state.scope_quality,
+                luma_only: self.state.scope_waveform_luma_only,
             };
             if self.last_sent_scope_ffmpeg_settings != Some(ffmpeg_settings) {
                 let _ = self.cmd_tx.send(AppCommand::SetScopeFfmpegSettings {
@@ -31123,13 +31138,38 @@ impl KlippApp {
     ) {
         use crate::state::ScopeScale;
         let dropdown_id = egui::Id::new("scope_settings_dropdown");
-        egui::Area::new(dropdown_id)
+        // Cap the visible height so the popover doesn't push past the
+        // window bottom on small viewers; ScrollArea handles overflow.
+        let max_content_h = (ui.ctx().screen_rect().height() - toggle_bar_rect.max.y - 32.0)
+            .clamp(240.0, 720.0);
+        let area_response = egui::Area::new(dropdown_id)
             .order(egui::Order::Foreground)
-            .fixed_pos(egui::pos2(toggle_bar_rect.max.x - 210.0, toggle_bar_rect.max.y + 2.0))
+            .fixed_pos(egui::pos2(toggle_bar_rect.max.x - 240.0, toggle_bar_rect.max.y + 2.0))
             .show(ctx, |ui| {
                 egui::Frame::popup(ui.style()).show(ui, |ui| {
-                    ui.set_min_width(200.0);
+                    ui.set_min_width(244.0);
+                    ui.set_max_width(280.0);
                     ui.spacing_mut().item_spacing = egui::vec2(6.0, 3.0);
+                    // egui's default scrollbar is "floating" (overlays
+                    // content). Switching to a fixed bar makes it
+                    // reserve real horizontal space, so the bar_*_margin
+                    // values produce visible gaps instead of an
+                    // overlay-on-content look.
+                    ui.spacing_mut().scroll.floating = false;
+                    ui.spacing_mut().scroll.bar_width = 8.0;
+                    ui.spacing_mut().scroll.bar_inner_margin = 12.0;
+                    ui.spacing_mut().scroll.bar_outer_margin = 4.0;
+
+                    egui::ScrollArea::vertical()
+                        .max_height(max_content_h)
+                        .show(ui, |ui| {
+                            // Belt-and-braces: cap the inner content
+                            // width so even widgets that ignore
+                            // scroll margins (egui sliders sometimes
+                            // grab `available_width` early) stay clear
+                            // of the bar.
+                            let target = (ui.available_width() - 12.0).max(180.0);
+                            ui.set_max_width(target);
 
                     ui.label(egui::RichText::new("DISPLAY").size(9.0).color(theme.text_dim).strong());
                     ui.checkbox(&mut self.state.scope_low_pass, "Low Pass Filter");
@@ -31154,6 +31194,62 @@ impl KlippApp {
                     // persist across path swaps and we don't want them to
                     // jump around when the user toggles the env flag.
                     ui.add_space(4.0);
+                    ui.label(egui::RichText::new("WAVEFORM / PARADE").size(9.0).color(theme.text_dim).strong());
+                    ui.checkbox(&mut self.state.scope_waveform_luma_only, "Luma (B&W) only")
+                        .on_hover_text("Render Wave and Parade as a single white Y (luma) trace instead of R/G/B. Broadcast luma scope view.");
+                    ui.add_space(2.0);
+                    egui::ComboBox::from_id_salt("scope_waveform_filter")
+                        .selected_text(match self.state.scope_waveform_filter {
+                            klipp_core::WaveformFilter::Lowpass => "Filter: Lowpass",
+                            klipp_core::WaveformFilter::Flat => "Filter: Flat",
+                            klipp_core::WaveformFilter::Aflat => "Filter: Aflat",
+                            klipp_core::WaveformFilter::Chroma => "Filter: Chroma",
+                            klipp_core::WaveformFilter::Color => "Filter: Color",
+                            klipp_core::WaveformFilter::Acolor => "Filter: Acolor",
+                        })
+                        .width(170.0)
+                        .show_ui(ui, |ui| {
+                            for (f, label) in [
+                                (klipp_core::WaveformFilter::Lowpass, "Lowpass (smooth, default)"),
+                                (klipp_core::WaveformFilter::Flat, "Flat (raw dot density)"),
+                                (klipp_core::WaveformFilter::Aflat, "Aflat (anti-aliased flat)"),
+                                (klipp_core::WaveformFilter::Chroma, "Chroma (color planes only)"),
+                                (klipp_core::WaveformFilter::Color, "Color (per-pixel)"),
+                                (klipp_core::WaveformFilter::Acolor, "Acolor (anti-aliased color)"),
+                            ] {
+                                ui.selectable_value(&mut self.state.scope_waveform_filter, f, label);
+                            }
+                        });
+                    ui.add_space(2.0);
+                    egui::ComboBox::from_id_salt("scope_waveform_envelope")
+                        .selected_text(match self.state.scope_waveform_envelope {
+                            klipp_core::WaveformEnvelope::None => "Envelope: None",
+                            klipp_core::WaveformEnvelope::Instant => "Envelope: Instant",
+                            klipp_core::WaveformEnvelope::Peak => "Envelope: Peak",
+                            klipp_core::WaveformEnvelope::PeakInstant => "Envelope: Peak + Instant",
+                        })
+                        .width(170.0)
+                        .show_ui(ui, |ui| {
+                            for (e, label) in [
+                                (klipp_core::WaveformEnvelope::None, "None"),
+                                (klipp_core::WaveformEnvelope::Instant, "Instant (this frame)"),
+                                (klipp_core::WaveformEnvelope::Peak, "Peak (rolling max)"),
+                                (klipp_core::WaveformEnvelope::PeakInstant, "Peak + Instant"),
+                            ] {
+                                ui.selectable_value(&mut self.state.scope_waveform_envelope, e, label);
+                            }
+                        });
+                    ui.add_space(2.0);
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new("Intensity").size(9.0).color(theme.text_dim));
+                        ui.add(
+                            egui::Slider::new(&mut self.state.scope_waveform_intensity, 0.0..=1.0)
+                                .show_value(true)
+                                .step_by(0.01),
+                        ).on_hover_text("Manual override of the FFmpeg waveform intensity. 0 = use Quality-tier default (0.04 / 0.08 / 0.16); higher = denser trace.");
+                    });
+
+                    ui.add_space(4.0);
                     ui.label(egui::RichText::new("VECTORSCOPE").size(9.0).color(theme.text_dim).strong());
                     egui::ComboBox::from_id_salt("scope_vectorscope_mode")
                         .selected_text(match self.state.scope_vectorscope_mode {
@@ -31177,6 +31273,50 @@ impl KlippApp {
                                 ui.selectable_value(&mut self.state.scope_vectorscope_mode, mode, label);
                             }
                         });
+                    ui.add_space(2.0);
+                    egui::ComboBox::from_id_salt("scope_vectorscope_graticule")
+                        .selected_text(match self.state.scope_vectorscope_graticule {
+                            klipp_core::VectorscopeGraticule::None => "Graticule: None",
+                            klipp_core::VectorscopeGraticule::Green => "Graticule: Green",
+                            klipp_core::VectorscopeGraticule::Color => "Graticule: Color",
+                            klipp_core::VectorscopeGraticule::Invert => "Graticule: Invert",
+                        })
+                        .width(170.0)
+                        .show_ui(ui, |ui| {
+                            for (g, label) in [
+                                (klipp_core::VectorscopeGraticule::None, "None (Klipp draws overlay)"),
+                                (klipp_core::VectorscopeGraticule::Green, "Green (FFmpeg overlay)"),
+                                (klipp_core::VectorscopeGraticule::Color, "Color (FFmpeg overlay)"),
+                                (klipp_core::VectorscopeGraticule::Invert, "Invert (FFmpeg overlay)"),
+                            ] {
+                                ui.selectable_value(&mut self.state.scope_vectorscope_graticule, g, label);
+                            }
+                        });
+                    ui.add_space(2.0);
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new("Bg opacity").size(9.0).color(theme.text_dim));
+                        ui.add(
+                            egui::Slider::new(&mut self.state.scope_vectorscope_bgopacity, 0.0..=1.0)
+                                .show_value(true)
+                                .step_by(0.01),
+                        ).on_hover_text("Vectorscope background opacity (FFmpeg `bgopacity=`).");
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new("Luma low").size(9.0).color(theme.text_dim));
+                        ui.add(
+                            egui::Slider::new(&mut self.state.scope_vectorscope_lthreshold, 0.0..=1.0)
+                                .show_value(true)
+                                .step_by(0.01),
+                        ).on_hover_text("Drop pixels below this luma from the scatter (FFmpeg `lthreshold=`). Focus on highlight chroma.");
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new("Luma high").size(9.0).color(theme.text_dim));
+                        ui.add(
+                            egui::Slider::new(&mut self.state.scope_vectorscope_hthreshold, 0.0..=1.0)
+                                .show_value(true)
+                                .step_by(0.01),
+                        ).on_hover_text("Drop pixels above this luma from the scatter (FFmpeg `hthreshold=`). Focus on shadow chroma.");
+                    });
 
                     ui.add_space(4.0);
                     ui.label(egui::RichText::new("HISTOGRAM").size(9.0).color(theme.text_dim).strong());
@@ -31186,16 +31326,42 @@ impl KlippApp {
                     ui.add_space(2.0);
                     ui.radio_value(&mut self.state.scope_histogram_levels, klipp_core::HistogramLevels::Linear, "Linear levels");
                     ui.radio_value(&mut self.state.scope_histogram_levels, klipp_core::HistogramLevels::Logarithmic, "Logarithmic levels");
+                    ui.add_space(2.0);
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new("Fg opacity").size(9.0).color(theme.text_dim));
+                        ui.add(
+                            egui::Slider::new(&mut self.state.scope_histogram_fgopacity, 0.0..=1.0)
+                                .show_value(true)
+                                .step_by(0.01),
+                        ).on_hover_text("Histogram bar opacity (FFmpeg `fgopacity=`).");
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new("Bg opacity").size(9.0).color(theme.text_dim));
+                        ui.add(
+                            egui::Slider::new(&mut self.state.scope_histogram_bgopacity, 0.0..=1.0)
+                                .show_value(true)
+                                .step_by(0.01),
+                        ).on_hover_text("Histogram background opacity (FFmpeg `bgopacity=`).");
+                    });
+
+                    }); // end ScrollArea
                 });
             });
 
-        if ui.input(|i| i.pointer.primary_clicked()) {
-            let dropdown_rect = egui::Rect::from_min_size(
-                egui::pos2(toggle_bar_rect.max.x - 210.0, toggle_bar_rect.max.y + 2.0),
-                egui::vec2(210.0, 250.0),
-            );
+        // Close on click-outside, using the ACTUAL rendered Area rect
+        // (the old hardcoded 210×250 box was too small once envelope /
+        // intensity / opacity / threshold controls landed, and made the
+        // ComboBox arrow look like it "closed the window" because its
+        // popup spawned outside that rect and triggered the close).
+        //
+        // Also skip the close while any egui popup (combobox dropdown,
+        // tooltip with state) is open — those popups render in separate
+        // Areas and their click events would otherwise dismiss us.
+        let area_rect = area_response.response.rect;
+        let any_popup_open = ctx.memory(|m| m.any_popup_open());
+        if !any_popup_open && ui.input(|i| i.pointer.primary_clicked()) {
             if let Some(pos) = ui.input(|i| i.pointer.interact_pos()) {
-                if !dropdown_rect.contains(pos) && !toggle_bar_rect.contains(pos) {
+                if !area_rect.contains(pos) && !toggle_bar_rect.contains(pos) {
                     self.state.scope_settings_open = false;
                 }
             }

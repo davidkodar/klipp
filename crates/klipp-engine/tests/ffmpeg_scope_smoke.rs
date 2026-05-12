@@ -55,6 +55,7 @@ fn default_settings() -> ScopeFfmpegSettings {
         vectorscope: VectorscopeSettings::default(),
         histogram: HistogramSettings::default(),
         quality: ScopeQuality::Medium,
+        luma_only: false,
     }
 }
 
@@ -304,13 +305,18 @@ fn components_mask_drops_red_channel() {
         .expect("render ok")
         .expect("filter produced output");
 
-    let third = SCOPE_OUT_W / 3;
-    let (r_all, _, _) = channel_sums_in_region(&all, SCOPE_OUT_W, SCOPE_OUT_H, 0, third);
+    // Total red energy across the whole image — dropping R from
+    // `components=` should reduce the red channel signal regardless of
+    // which parade section R lands in (the section order is libavfilter
+    // implementation-defined and depends on plane storage vs component
+    // index — robust to either by summing across all sections).
+    let (r_all, _, _) =
+        channel_sums_in_region(&all, SCOPE_OUT_W, SCOPE_OUT_H, 0, SCOPE_OUT_W);
     let (r_no_red, _, _) =
-        channel_sums_in_region(&no_red, SCOPE_OUT_W, SCOPE_OUT_H, 0, third);
+        channel_sums_in_region(&no_red, SCOPE_OUT_W, SCOPE_OUT_H, 0, SCOPE_OUT_W);
     assert!(
         r_no_red < r_all,
-        "dropping R from components should reduce red energy in the R section; got all={r_all}, no_red={r_no_red}",
+        "dropping R from `components=` should reduce total red energy across the parade; got all={r_all}, no_red={r_no_red}",
     );
 }
 

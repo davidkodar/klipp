@@ -163,40 +163,26 @@ impl FfmpegScope {
         let scope_spec = scope_spec_for_mode(mode, &settings)
             .ok_or_else(|| format!("FfmpegScope: no spec for mode {mode}"))?;
 
-        // U8 path: prepend `format=gbrp,` so FFmpeg converts RGBA → 8-bit
-        // planar G/B/R BEFORE the waveform filter (otherwise the optimiser
-        // can pick a YUV intermediate and per-channel colouring breaks).
+        // Prepend `format=gbrp,` for BOTH input formats so FFmpeg
+        // converts to 8-bit planar G/B/R BEFORE the waveform filter
+        // runs. Two reasons:
         //
-        // F32 path: input is gbrp10le. `filter=lowpass` (the default)
-        // accepts this directly and the 10-bit precision rides through
-        // the filter to the output — confirmed in tests.
+        // 1. U8 path: catches the original "all-green parade" regression
+        //    where the libavfilter optimiser could pick a YUV intermediate
+        //    between the buffer source and the waveform filter,
+        //    collapsing per-channel colouring.
         //
-        // `filter=flat`/`aflat`/`color`/`acolor`/`chroma` SIGSEGV on
-        // gbrp10le input in current libavfilter (9.x). Forcing
-        // `format=gbrp,` downgrades to 8-bit before those filters run —
-        // we lose 2 bits of precision for those filter modes but avoid
-        // the crash. Tracked as a follow-up: a libavfilter patch (or
-        // gbrp16le routing if those filters add 16-bit support) would
-        // restore full precision.
-        let format_prefix = match format {
-            InputFormat::U8Srgb => "format=gbrp,",
-            InputFormat::F32Linear10 => {
-                let active_filter = match mode {
-                    0 => Some(settings.waveform.filter),
-                    1 => Some(settings.parade.filter),
-                    _ => None,
-                };
-                let needs_8bit_fallback = matches!(
-                    active_filter,
-                    Some(klipp_core::WaveformFilter::Flat)
-                        | Some(klipp_core::WaveformFilter::Aflat)
-                        | Some(klipp_core::WaveformFilter::Color)
-                        | Some(klipp_core::WaveformFilter::Acolor)
-                        | Some(klipp_core::WaveformFilter::Chroma)
-                );
-                if needs_8bit_fallback { "format=gbrp," } else { "" }
-            }
-        };
+        // 2. F32 path: feeding `gbrp10le` directly to waveform produces
+        //    wrong per-section parade colours in libavfilter 9.x —
+        //    sections appear in shifted/rotated channel order
+        //    (B,R,G or G,B,R instead of R,G,B) and the FLAT/ACOLOR/etc.
+        //    filter modes SIGSEGV outright. Downgrading to gbrp before
+        //    the filter restores the prototype's correct R,G,B parade.
+        //    We lose 2 bits of precision through this conversion vs the
+        //    pre-quantised 10-bit code-value pack — acceptable trade for
+        //    correct visuals while a 10-bit-clean libavfilter path is
+        //    investigated as a follow-up.
+        let format_prefix = "format=gbrp,";
         // Quality preset drives an input downsample. Inserting it as
         // the FIRST filter (before the format conversion for U8 — yes
         // that means scale operates on RGBA u8 there, which FFmpeg
@@ -496,37 +482,82 @@ fn scope_spec_for_mode(mode: u8, settings: &ScopeFfmpegSettings) -> Option<Strin
         if override_val >= 0.0 { override_val } else { quality.ffmpeg_intensity() }
     }
     match mode {
-        // 0 = Waveform (R/G/B stacked overlay)
+        // 0 = Waveform (R/G/B stacked overlay, or single Y in luma mode)
         0 => {
             let s = &settings.waveform;
             let filter = s.filter.keyword();
             let intensity = intensity_for(s.intensity_override, settings.quality);
-            let components = s.channels.to_components();
-            Some(format!(
-                "waveform=mode=column:filter={filter}:intensity={intensity:.3}:display=stack:components={components}:graticule=none"
-            ))
+            let envelope = s.envelope.ffmpeg_value();
+            if settings.luma_only {
+                // Switch input to YUV and ask for the Y plane only.
+                // `format=yuv444p,` rides on top of whatever format
+                // prefix the [`rebuild`] caller prepended, so the
+                // libavfilter optimiser still has a deterministic
+                // path into the waveform filter.
+                Some(format!(
+                    "format=yuv444p,waveform=mode=column:filter={filter}:intensity={intensity:.3}:display=stack:components=1:envelope={envelope}:graticule=none"
+                ))
+            } else {
+                let components = s.channels.to_components();
+                Some(format!(
+                    "waveform=mode=column:filter={filter}:intensity={intensity:.3}:display=stack:components={components}:envelope={envelope}:graticule=none"
+                ))
+            }
         }
-        // 1 = Parade (R/G/B side by side)
+        // 1 = Parade (R/G/B side by side, or single Y in luma mode)
         1 => {
             let s = &settings.parade;
             let filter = s.filter.keyword();
             let intensity = intensity_for(s.intensity_override, settings.quality);
-            let components = s.channels.to_components();
+            let envelope = s.envelope.ffmpeg_value();
+            if settings.luma_only {
+                Some(format!(
+                    "format=yuv444p,waveform=mode=column:filter={filter}:intensity={intensity:.3}:display=parade:components=1:envelope={envelope}:graticule=none"
+                ))
+            } else {
+                let components = s.channels.to_components();
+                Some(format!(
+                    "waveform=mode=column:filter={filter}:intensity={intensity:.3}:display=parade:components={components}:envelope={envelope}:graticule=none"
+                ))
+            }
+        }
+        // 2 = Vectorscope — plots U vs V chroma. Explicit `format=yuv444p,`
+        // forces the gbrp → YUV conversion to happen via libswscale (Rec.601
+        // by default) BEFORE the vectorscope filter sees the frame, instead
+        // of relying on libavfilter's internal auto-negotiation. The
+        // auto-path picked a degenerate format on some inputs and made
+        // every pixel land on the U=V diagonal.
+        //
+        // Klipp's main-dock vectorscope overlay (in widgets/scopes.rs)
+        // draws the saturation ring + R/Mg/B/Cy/G/Yl target dots + the
+        // skin-tone I-line + the text labels, so we ask FFmpeg for the
+        // raw chroma scatter only (`graticule=none`). The dropdown in the
+        // popover still lets the user re-enable FFmpeg's graticule for
+        // diagnostic comparison.
+        2 => {
+            let v = &settings.vectorscope;
+            let m = v.mode.keyword();
+            let g = v.graticule.keyword();
+            let bg = v.bgopacity.clamp(0.0, 1.0);
+            let lo = v.lthreshold.clamp(0.0, 1.0);
+            let hi = v.hthreshold.clamp(0.0, 1.0);
             Some(format!(
-                "waveform=mode=column:filter={filter}:intensity={intensity:.3}:display=parade:components={components}:graticule=none"
+                "format=yuv444p,vectorscope=mode={m}:graticule={g}:bgopacity={bg:.3}:lthreshold={lo:.3}:hthreshold={hi:.3}"
             ))
         }
-        // 2 = Vectorscope — operates in YUV natively; FFmpeg auto-converts
-        // from gbrp/gbrp10le.
-        2 => {
-            let m = settings.vectorscope.mode.keyword();
-            Some(format!("vectorscope=mode={m}:graticule=none"))
-        }
-        // 3 = Histogram (R/G/B configurable display + levels mode)
+        // 3 = Histogram (R/G/B configurable display + levels mode).
+        // `colors_mode=coloronblack` paints each pane's bars in the
+        // channel's natural colour (R=red, G=green, B=blue) — FFmpeg's
+        // default `whiteonblack` left bars white regardless of channel.
         3 => {
-            let display = settings.histogram.display_mode.keyword();
-            let levels = settings.histogram.levels.keyword();
-            Some(format!("histogram=display_mode={display}:levels_mode={levels}"))
+            let h = &settings.histogram;
+            let display = h.display_mode.keyword();
+            let levels = h.levels.keyword();
+            let fg = h.fgopacity.clamp(0.0, 1.0);
+            let bg = h.bgopacity.clamp(0.0, 1.0);
+            Some(format!(
+                "histogram=display_mode={display}:levels_mode={levels}:fgopacity={fg:.3}:bgopacity={bg:.3}:colors_mode=coloronblack"
+            ))
         }
         _ => None,
     }

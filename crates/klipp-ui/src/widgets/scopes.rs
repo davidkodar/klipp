@@ -3,6 +3,21 @@ use crate::theme::KlippTheme;
 use klipp_engine::SharedFrameBuffer;
 use std::time::Instant;
 
+/// Mirror of `klipp_engine::scope_ffmpeg_enabled` for this dock — reads
+/// `KLIPP_SCOPE_FFMPEG` once and caches. Used to gate the in-tree CPU
+/// fallback when the FFmpeg path is the source of truth (otherwise
+/// every mode-switch click flashes a brief CPU-rendered frame in the
+/// old visual style before the engine catches up).
+fn scope_ffmpeg_enabled() -> bool {
+    use std::sync::OnceLock;
+    static FLAG: OnceLock<bool> = OnceLock::new();
+    *FLAG.get_or_init(|| {
+        std::env::var("KLIPP_SCOPE_FFMPEG")
+            .map(|v| !(v == "0" || v.eq_ignore_ascii_case("false")))
+            .unwrap_or(true)
+    })
+}
+
 /// Scope render result — either from GPU engine or CPU direct rendering.
 enum ScopeImage {
     Ready(egui::ColorImage),
@@ -358,6 +373,16 @@ pub fn show_scopes(
                             pixels,
                         };
                         ScopeAction::GpuReady(image, gen)
+                    } else if scope_ffmpeg_enabled() {
+                        // FFmpeg path is the source of truth — falling back
+                        // to the in-tree CPU renderer would paint a brief
+                        // flash of the old visual style on every mode-switch
+                        // click (engine takes one tick to publish the new
+                        // mode's texture into `fb.scope_textures`). Showing
+                        // the previously cached UI texture (or nothing on
+                        // first view) until the engine catches up is the
+                        // less jarring behaviour.
+                        ScopeAction::None
                     } else {
                         // Snapshot frame data — drop lock before CPU render
                         let (data, w, h) = if !fb.scope_preview.is_empty() && fb.scope_preview_w > 0 {
@@ -585,17 +610,137 @@ pub fn show_scopes(
                 egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
                 egui::Color32::WHITE);
 
-            // Vectorscope labels
+            // Vectorscope graticule — rainbow hue ring + range circles +
+            // crosshair + skin-tone I-line + target boxes + labels.
+            // Drawn entirely on the UI side so the same broadcast-style
+            // look works regardless of whether the underlying scope
+            // texture came from the in-tree GPU/CPU renderer or
+            // libavfilter (which paints `graticule=none` here).
+            //
+            // Match the in-tree CPU `render_vectorscope` baked graticule:
+            // hue gradient at 100% radius, subtle inner rings, center
+            // crosshair, amber skin-tone line with end label, and target
+            // boxes at the six broadcast chroma positions.
+            let painter = ui.painter();
             let label_font = egui::FontId::monospace(8.0);
             let label_color = theme.scope_label;
             let cx = img_rect.center().x;
             let cy = img_rect.center().y;
             let r = side / 2.0 - 4.0;
-            for (name, cb, cr) in &[("R", 0.17_f32, 0.29_f32), ("Mg", 0.28, -0.05), ("B", 0.12, -0.34),
-                                     ("Cy", -0.17, -0.29), ("G", -0.28, 0.05), ("Yl", -0.12, 0.34)] {
+
+            // 1. Inner range rings at 25 / 50 / 75 % — subtle so they
+            // don't compete with the trace.
+            let inner_ring_color = egui::Color32::from_rgba_unmultiplied(
+                label_color.r(), label_color.g(), label_color.b(), 40,
+            );
+            for frac in [0.25_f32, 0.50, 0.75] {
+                painter.circle_stroke(
+                    egui::pos2(cx, cy),
+                    r * frac,
+                    egui::Stroke::new(0.6, inner_ring_color),
+                );
+            }
+
+            // 2. Rainbow hue ring at 100% — paints the outer circle as
+            // 120 short arc segments, each tinted by its angular hue.
+            // This is the signature broadcast/Resolve look that's
+            // missing when libavfilter doesn't paint a graticule.
+            let segments = 120;
+            for i in 0..segments {
+                let a0 = (i as f32) / (segments as f32) * std::f32::consts::TAU;
+                let a1 = ((i + 1) as f32) / (segments as f32) * std::f32::consts::TAU;
+                // Hue at angle 0 = red, increasing counter-clockwise.
+                let hue = (a0 / std::f32::consts::TAU).fract();
+                let (rh, gh, bh) = hue_to_rgb(hue);
+                let seg_color = egui::Color32::from_rgba_unmultiplied(
+                    (rh * 255.0) as u8,
+                    (gh * 255.0) as u8,
+                    (bh * 255.0) as u8,
+                    140,
+                );
+                let p0 = egui::pos2(cx + a0.cos() * r, cy + a0.sin() * r);
+                let p1 = egui::pos2(cx + a1.cos() * r, cy + a1.sin() * r);
+                painter.line_segment([p0, p1], egui::Stroke::new(1.4, seg_color));
+            }
+
+            // 3. Center crosshair — very subtle reference axes across
+            // the full diameter so the eye can find chroma null.
+            let cross_color = egui::Color32::from_rgba_unmultiplied(
+                label_color.r(), label_color.g(), label_color.b(), 30,
+            );
+            painter.line_segment(
+                [egui::pos2(cx - r, cy), egui::pos2(cx + r, cy)],
+                egui::Stroke::new(0.5, cross_color),
+            );
+            painter.line_segment(
+                [egui::pos2(cx, cy - r), egui::pos2(cx, cy + r)],
+                egui::Stroke::new(0.5, cross_color),
+            );
+
+            // 4. Skin-tone I-line — amber tinted, from centre at the
+            // broadcast-standard 123° angle (centre → upper-left between
+            // Yl and R). Stops short of the hue ring so the "I" label
+            // sits inside the ring.
+            let skin_angle_deg = 123.0_f32;
+            let skin_rad = (skin_angle_deg - 90.0).to_radians();
+            let dx = skin_rad.sin();
+            let dy = -skin_rad.cos();
+            let i_line_len = r * 0.92;
+            let i_color = egui::Color32::from_rgb(220, 170, 80);
+            painter.line_segment(
+                [
+                    egui::pos2(cx, cy),
+                    egui::pos2(cx + dx * i_line_len, cy + dy * i_line_len),
+                ],
+                egui::Stroke::new(1.0, i_color),
+            );
+            painter.text(
+                egui::pos2(cx + dx * (i_line_len + 8.0), cy + dy * (i_line_len + 8.0)),
+                egui::Align2::CENTER_CENTER,
+                "I",
+                label_font.clone(),
+                i_color,
+            );
+
+            // 5. Target boxes at the six broadcast chroma positions.
+            // Small unfilled squares — same shape colorists see on
+            // hardware vectorscopes and in DaVinci / FCPX.
+            let target_color = egui::Color32::from_rgba_unmultiplied(
+                label_color.r(), label_color.g(), label_color.b(), 180,
+            );
+            let box_half = 4.0;
+            for (name, cb, cr) in &[
+                ("R", 0.17_f32, 0.29_f32),
+                ("Mg", 0.28, -0.05),
+                ("B", 0.12, -0.34),
+                ("Cy", -0.17, -0.29),
+                ("G", -0.28, 0.05),
+                ("Yl", -0.12, 0.34),
+            ] {
                 let tx = cx + cb * r * 2.0;
-                let ty = cy - cr * r * 2.0 - 6.0;
-                ui.painter().text(egui::pos2(tx, ty), egui::Align2::CENTER_BOTTOM, name, label_font.clone(), label_color);
+                let ty = cy - cr * r * 2.0;
+                let rect = egui::Rect::from_center_size(
+                    egui::pos2(tx, ty),
+                    egui::vec2(box_half * 2.0, box_half * 2.0),
+                );
+                painter.rect_stroke(
+                    rect,
+                    0.0,
+                    egui::Stroke::new(1.0, target_color),
+                );
+                // Label offset radially outward — never overlaps the
+                // target square or the scatter cluster.
+                let mag = (cb * cb + cr * cr).sqrt().max(0.001);
+                let ux = cb / mag;
+                let uy = -cr / mag;
+                let label_offset = 10.0;
+                painter.text(
+                    egui::pos2(tx + ux * label_offset, ty + uy * label_offset),
+                    egui::Align2::CENTER_CENTER,
+                    name,
+                    label_font.clone(),
+                    label_color,
+                );
             }
 
         } else {

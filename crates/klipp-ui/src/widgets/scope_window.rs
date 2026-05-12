@@ -12,13 +12,16 @@ use std::time::Instant;
 /// scope window to decide whether to lift per-pane textures out of
 /// `fb.scope_textures` (engine-rendered via libavfilter) or fall
 /// through to the legacy in-thread CPU scope renderers.
+///
+/// **Default ON.** Set `KLIPP_SCOPE_FFMPEG=0` (or `false`) to opt back
+/// into the legacy CPU renderer.
 fn scope_ffmpeg_enabled() -> bool {
     use std::sync::OnceLock;
     static FLAG: OnceLock<bool> = OnceLock::new();
     *FLAG.get_or_init(|| {
         std::env::var("KLIPP_SCOPE_FFMPEG")
-            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-            .unwrap_or(false)
+            .map(|v| !(v == "0" || v.eq_ignore_ascii_case("false")))
+            .unwrap_or(true)
     })
 }
 
