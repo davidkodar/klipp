@@ -122,16 +122,6 @@ impl GpuMaskDef {
     }
 }
 
-/// One slot in the two-slot deferred scope readback ring. Holds the
-/// staging buffer used for map_async and, while a readback is in
-/// flight, a receiver that fires when the mapping callback runs.
-#[derive(Default)]
-struct ScopeReadSlot {
-    staging: Option<wgpu::Buffer>,
-    size: u64,
-    pending_rx: Option<std::sync::mpsc::Receiver<Result<(), wgpu::BufferAsyncError>>>,
-    pending_bytes: u64,
-}
 
 /// GPU effects pipeline — holds device, queue, compute pipelines, and reusable buffers.
 pub struct GpuEffectsPipeline {
@@ -258,46 +248,6 @@ pub struct GpuEffectsPipeline {
     // slot. Enables phase 4d's GPU-resident decode → grade path —
     // without this bridge the grade chain can only consume CPU data.
     bridge_u8_to_linear_pipeline: wgpu::ComputePipeline,
-    scope_bins_buf: Option<wgpu::Buffer>,
-    scope_bins_size: u64,
-    // Dedicated scope input buffer: holds u8 sRGB RGBA packed as u32
-    // words (4 bytes/pixel). Replaces the per-frame u8→linear_f32 CPU
-    // expansion that cost 25-40 ms/frame for 1080p — the linear form
-    // was immediately re-encoded to sRGB inside the scope accumulate
-    // shaders anyway, so the round-trip was pure waste. Keeps buf_a
-    // free for the main effects pipeline.
-    scope_input_buf: Option<wgpu::Buffer>,
-    scope_input_size: u64,
-    scope_img_buf: Option<wgpu::Buffer>,
-    scope_img_size: u64,
-    scope_staging_buf: Option<wgpu::Buffer>,
-    scope_staging_size: u64,
-    scope_params_buf: wgpu::Buffer,
-    // Cached `max_count` values used to normalise scope output. The
-    // readback that computes them is a full device.poll(Wait) sync
-    // fence (~15-20 ms on NVIDIA Vulkan); doing it every frame makes
-    // scope rendering alone cost half a 24fps frame budget. Caching
-    // across ~30 scope calls and refreshing occasionally is visually
-    // indistinguishable — max_count only drifts slowly on real
-    // footage — and drops the amortised cost by ~30×.
-    scope_wf_max_count: Option<u32>,
-    scope_pd_max_count: Option<u32>,
-    scope_hi_max_count: Option<u32>,
-    scope_wf_refresh: u32,
-    scope_pd_refresh: u32,
-    scope_hi_refresh: u32,
-    // Deferred image readback: eliminates the per-frame
-    // `device.poll(Wait)` sync fence that previously cost ~25-35 ms per
-    // frame on a 720×256 scope at 24 fps. Two staging buffers ping-pong
-    // so the still-mapped previous frame's readback never blocks this
-    // frame's submit. On first call (or when out dimensions change) we
-    // fall back to one sync readback so the user never sees a blank
-    // scope. Deferred mode is exactly one frame stale — invisible at
-    // the 10 Hz scope refresh cadence.
-    scope_img_slots: [ScopeReadSlot; 2],
-    scope_img_slot: usize,
-    scope_last_img: Option<Vec<u8>>,
-    scope_last_img_pixels: u64,
     // Bind group layouts
     bind_group_layout: wgpu::BindGroupLayout,         // effects: input, output, params
     transition_bgl: wgpu::BindGroupLayout,             // transitions: from, to, output, params
@@ -442,22 +392,11 @@ pub enum GpuStage {
     /// blocking readback. Called at the end of post_process_rgba
     /// for cache writes and scope input.
     LinearRgbaToU8 = 3,
-    /// Scope waveform's max-count refresh: runs ~once every 30
-    /// scope frames, does a synchronous readback of the waveform
-    /// bins histogram. Single staging buffer, no ring — a hang
-    /// here means the next max refresh cycle can't proceed.
-    ScopeWfMaxRefresh = 4,
-    /// Scope image ring-buffered readback drain — the hot-frame
-    /// path for waveform/parade image output. Blocking drain when
-    /// the slot we want to reuse still has a pending map_async.
-    ScopeImgDrain = 5,
-    /// `compute_histogram` in gpu_scopes.rs — blocking readback
-    /// of histogram bins for the color panel.
-    ScopeHistogram = 6,
-    /// `compute_waveform` in gpu_scopes.rs.
-    ScopeWaveform = 7,
-    /// `compute_parade` in gpu_scopes.rs.
-    ScopeParade = 8,
+    // Discriminants 4–8 were the legacy in-tree scope-render stage
+    // labels (ScopeWfMaxRefresh / ScopeImgDrain / ScopeHistogram /
+    // ScopeWaveform / ScopeParade). Removed in Phase 8 — the FFmpeg
+    // path does its own timing. The numeric gap is intentional so
+    // any persisted instrumentation logs still resolve.
     /// `Frame::into_cpu` in klipp-engine — reads back a
     /// decode-thread-produced GpuFrame to CPU.
     FrameIntoCpu = 9,
@@ -475,11 +414,6 @@ pub fn gpu_stage_name(v: u64) -> &'static str {
         1 => "BridgeU8",
         2 => "FlushChain",
         3 => "LinearRgbaToU8",
-        4 => "ScopeWfMaxRefresh",
-        5 => "ScopeImgDrain",
-        6 => "ScopeHistogram",
-        7 => "ScopeWaveform",
-        8 => "ScopeParade",
         9 => "FrameIntoCpu",
         10 => "P010Convert",
         11 => "Nv12Convert",
@@ -916,14 +850,6 @@ impl GpuEffectsPipeline {
             &device, &pipeline_layout, "bridge_u8_to_linear", SHADER_U8_TO_LINEAR,
         );
 
-        // ── Scope rendering pipelines ──
-        // Scope accumulation: input(read), bins(read_write atomic), params(uniform)
-
-        let scope_params_buf = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("scope_params"), size: PARAMS_SIZE,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false,
-        });
-
         let pipeline_count = 61;
         info!(
             "GPU effects: compiled {} pipelines in {:.0}ms",
@@ -1039,25 +965,6 @@ impl GpuEffectsPipeline {
             bridge_u8_out_size: 0,
             bridge_u8_staging_buf: None,
             bridge_u8_staging_size: 0,
-            scope_bins_buf: None,
-            scope_bins_size: 0,
-            scope_input_buf: None,
-            scope_input_size: 0,
-            scope_img_buf: None,
-            scope_img_size: 0,
-            scope_staging_buf: None,
-            scope_staging_size: 0,
-            scope_params_buf,
-            scope_wf_max_count: None,
-            scope_pd_max_count: None,
-            scope_hi_max_count: None,
-            scope_wf_refresh: 0,
-            scope_pd_refresh: 0,
-            scope_hi_refresh: 0,
-            scope_img_slots: [ScopeReadSlot::default(), ScopeReadSlot::default()],
-            scope_img_slot: 0,
-            scope_last_img: None,
-            scope_last_img_pixels: 0,
             bind_group_layout,
             transition_bgl,
             buf_a: None,
@@ -1538,247 +1445,6 @@ impl GpuEffectsPipeline {
         self.download_linear_rgba_f32(buf_b, (width * height) as usize)
     }
 
-    // ══════════════════════════════════════════════════════════════════════════
-    // GPU Scope Rendering — produces ready-to-display RGBA scope textures
-    // ══════════════════════════════════════════════════════════════════════════
-
-    fn ensure_scope_bufs(&mut self, bins_count: u64, img_pixels: u64) {
-        let bins_bytes = bins_count * 4;
-        let img_bytes = img_pixels * 4;
-        if self.scope_bins_size < bins_bytes {
-            self.scope_bins_buf = Some(self.device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("scope_bins"), size: bins_bytes,
-                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            }));
-            self.scope_bins_size = bins_bytes;
-        }
-        if self.scope_img_size < img_bytes {
-            self.scope_img_buf = Some(self.device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("scope_img"), size: img_bytes,
-                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            }));
-            self.scope_img_size = img_bytes;
-        }
-        if self.scope_staging_size < img_bytes {
-            self.scope_staging_buf = Some(self.device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("scope_staging"), size: img_bytes,
-                usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            }));
-            self.scope_staging_size = img_bytes;
-        }
-    }
-
-    fn ensure_scope_input_buf(&mut self, byte_size: u64) {
-        if self.scope_input_size < byte_size {
-            self.scope_input_buf = Some(self.device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("scope_input_u8"), size: byte_size,
-                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            }));
-            self.scope_input_size = byte_size;
-        }
-    }
-
-    fn scope_download(&self, pixels: u64) -> Vec<u8> {
-        let byte_size = pixels * 4;
-        if self.is_device_lost() {
-            return vec![0u8; byte_size as usize];
-        }
-        let img_buf = self.scope_img_buf.as_ref().unwrap();
-        let staging = self.scope_staging_buf.as_ref().unwrap();
-        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
-        encoder.copy_buffer_to_buffer(img_buf, 0, staging, 0, byte_size);
-        self.queue.submit(std::iter::once(encoder.finish()));
-        let slice = staging.slice(..byte_size);
-        let (tx, rx) = std::sync::mpsc::channel();
-        slice.map_async(wgpu::MapMode::Read, move |r| { let _ = tx.send(r); });
-        mark_gpu_stage(GpuStage::ScopeImgDrain);
-        let result = match poll_until_mapped(&self.device, &rx) {
-            Ok(Ok(())) => {
-                let data = slice.get_mapped_range();
-                let result = data.to_vec();
-                drop(data);
-                staging.unmap();
-                result
-            }
-            other => {
-                self.mark_device_lost(&format!("scope_download map_async failed: {other:?}"));
-                vec![0u8; byte_size as usize]
-            }
-        };
-        mark_gpu_stage(GpuStage::Idle);
-        result
-    }
-
-    /// Deferred image readback: submits this frame's copy async and
-    /// returns the previous frame's data. Eliminates the per-frame
-    /// `device.poll(Wait)` fence that cost ~25-35 ms per scope render.
-    /// Falls back to sync on first call and on dimension change so the
-    /// user never sees a blank scope.
-    fn scope_download_deferred(&mut self, pixels: u64) -> Vec<u8> {
-        let byte_size = pixels * 4;
-        if self.is_device_lost() {
-            return vec![0u8; byte_size as usize];
-        }
-
-        // Dim change or first call: flush any in-flight pendings and
-        // do one sync readback so this frame is correct. Subsequent
-        // frames at the same dims run fully deferred.
-        if self.scope_last_img_pixels != pixels || self.scope_last_img.is_none() {
-            self.flush_scope_slots();
-            let data = self.scope_download(pixels);
-            self.scope_last_img = Some(data.clone());
-            self.scope_last_img_pixels = pixels;
-            return data;
-        }
-
-        let slot_idx = self.scope_img_slot;
-        let other_idx = 1 - slot_idx;
-
-        // Try to consume the other slot's pending readback (submitted
-        // on the previous frame). A non-blocking device poll advances
-        // the map_async callback if the GPU has finished.
-        self.device.poll(wgpu::Maintain::Poll);
-        Self::try_consume_slot(&mut self.scope_img_slots[other_idx], &mut self.scope_last_img);
-
-        // Edge case: the slot we're about to resubmit on may still be
-        // mapped from an older frame (skipped consume). Drain it,
-        // polling the device so the callback can fire and
-        // `try_consume_slot` can pick it up. Bounded spin — this is
-        // the hot frame path, not a one-off cleanup.
-        if self.scope_img_slots[slot_idx].pending_rx.is_some() {
-            let start = std::time::Instant::now();
-            let timeout = std::time::Duration::from_millis(50);
-            while self.scope_img_slots[slot_idx].pending_rx.is_some() {
-                self.device.poll(wgpu::Maintain::Poll);
-                Self::try_consume_slot(
-                    &mut self.scope_img_slots[slot_idx],
-                    &mut self.scope_last_img,
-                );
-                if start.elapsed() >= timeout { break; }
-                std::thread::sleep(std::time::Duration::from_millis(1));
-            }
-        }
-
-        // Ensure staging buffer in current slot is sized for this
-        // frame. Realloc also when `pending_rx` is still Some after
-        // the drain — that means a prior readback's callback fired
-        // (buffer is in mapped state on wgpu's side) but we never
-        // got to consume it, and submitting work to a still-mapped
-        // buffer is a wgpu validation panic. Dropping the Option
-        // releases the old buffer (wgpu unmaps on drop), and we
-        // allocate a fresh one so the submit can't collide.
-        {
-            let slot = &mut self.scope_img_slots[slot_idx];
-            let stuck = slot.pending_rx.is_some();
-            if stuck {
-                tracing::warn!(
-                    "SCOPE_STAGING_STUCK slot={} pending readback did not drain in 50ms — \
-                     reallocating staging to avoid still-mapped submit",
-                    slot_idx,
-                );
-                slot.pending_rx = None;
-                slot.staging = None;
-                slot.size = 0;
-            }
-            if slot.size < byte_size || slot.staging.is_none() {
-                slot.staging = Some(self.device.create_buffer(&wgpu::BufferDescriptor {
-                    label: Some("scope_img_staging_slot"),
-                    size: byte_size,
-                    usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
-                    mapped_at_creation: false,
-                }));
-                slot.size = byte_size;
-            }
-        }
-
-        // Submit copy + map_async without waiting.
-        let img_buf = self.scope_img_buf.as_ref().unwrap();
-        let staging = self.scope_img_slots[slot_idx].staging.as_ref().unwrap();
-        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
-        encoder.copy_buffer_to_buffer(img_buf, 0, staging, 0, byte_size);
-        self.queue.submit(std::iter::once(encoder.finish()));
-        let slice = staging.slice(..byte_size);
-        let (tx, rx) = std::sync::mpsc::channel();
-        slice.map_async(wgpu::MapMode::Read, move |r| { let _ = tx.send(r); });
-        // Nudge the driver so the callback can fire during later polls
-        // without a blocking wait.
-        self.device.poll(wgpu::Maintain::Poll);
-        self.scope_img_slots[slot_idx].pending_rx = Some(rx);
-        self.scope_img_slots[slot_idx].pending_bytes = byte_size;
-
-        // Advance ring.
-        self.scope_img_slot = other_idx;
-
-        // Return the most recently completed frame (from the consume
-        // above, or the stashed last_img if not yet ready).
-        self.scope_last_img
-            .clone()
-            .unwrap_or_else(|| vec![0u8; byte_size as usize])
-    }
-
-    /// Drain and unmap any in-flight scope readbacks. Called when
-    /// output dimensions change so we don't try to resubmit on a still-
-    /// mapped buffer.
-    fn flush_scope_slots(&mut self) {
-        for i in 0..2 {
-            if self.scope_img_slots[i].pending_rx.is_none() { continue; }
-            let start = std::time::Instant::now();
-            let timeout = std::time::Duration::from_millis(500);
-            while self.scope_img_slots[i].pending_rx.is_some() {
-                self.device.poll(wgpu::Maintain::Poll);
-                Self::try_consume_slot(
-                    &mut self.scope_img_slots[i],
-                    &mut self.scope_last_img,
-                );
-                if start.elapsed() >= timeout { break; }
-                std::thread::sleep(std::time::Duration::from_millis(1));
-            }
-            // If the callback still hasn't delivered after 500ms,
-            // drop the pending rx + buffer so the next render can't
-            // trip the still-mapped-buffer validation panic.
-            if self.scope_img_slots[i].pending_rx.is_some() {
-                tracing::warn!(
-                    "SCOPE_FLUSH_TIMEOUT slot={} pending readback gave up after 500ms — dropping staging",
-                    i,
-                );
-                self.scope_img_slots[i].pending_rx = None;
-                self.scope_img_slots[i].staging = None;
-                self.scope_img_slots[i].size = 0;
-            }
-        }
-    }
-
-    /// Consume a slot's pending readback if the callback has fired.
-    /// Non-blocking — returns without action if the map isn't ready.
-    /// Static method so callers can mutably borrow individual fields.
-    fn try_consume_slot(slot: &mut ScopeReadSlot, last_img: &mut Option<Vec<u8>>) {
-        let Some(rx) = slot.pending_rx.as_ref() else { return };
-        match rx.try_recv() {
-            Ok(Ok(())) => {
-                let staging = slot.staging.as_ref().expect("staging must exist with pending");
-                let slice = staging.slice(..slot.pending_bytes);
-                let data = slice.get_mapped_range();
-                *last_img = Some(data.to_vec());
-                drop(data);
-                staging.unmap();
-                slot.pending_rx = None;
-            }
-            Ok(Err(_)) => {
-                // Mapping failed — discard pending, leave last_img intact.
-                slot.pending_rx = None;
-            }
-            Err(std::sync::mpsc::TryRecvError::Empty) => {
-                // Not yet ready — keep pending for next frame.
-            }
-            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                slot.pending_rx = None;
-            }
-        }
-    }
     pub fn linear_rgba_to_u8_gpu(&mut self, linear_rgba: &[f32], width: u32, height: u32) -> Option<Vec<u8>> {
         if self.is_device_lost() { return None; }
         let pixel_count = (width as u64) * (height as u64);

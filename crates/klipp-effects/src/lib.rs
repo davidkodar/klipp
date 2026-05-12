@@ -13,8 +13,9 @@
 //! device holding one storage buffer per intermediate + one
 //! `apply_effects` dispatcher that chains effect passes via ping-pong
 //! buffers. See [`nv12_gpu`] for the HW-decode output fast-path (NV12 →
-//! RGBA on GPU) and [`gpu_scopes`] for histogram / vectorscope / RGB
-//! parade compute kernels.
+//! RGBA on GPU). Scope rendering has moved to libavfilter — the
+//! legacy in-tree `gpu_scopes` module was removed in Phase 8 (see
+//! RECOVERY_SCOPES_INHOUSE.md).
 //!
 //! # WGSL uniform rule
 //!
@@ -42,7 +43,6 @@ mod crop;
 pub mod frei0r_effect;
 pub mod gpu;
 pub mod gpu_context;
-pub mod gpu_scopes;
 pub mod light;
 pub mod nv12_gpu;
 pub mod p010_gpu;
