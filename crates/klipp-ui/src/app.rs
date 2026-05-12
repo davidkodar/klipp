@@ -25174,35 +25174,35 @@ impl eframe::App for KlippApp {
             // Manual intensity is sent as a direct override; 0 keeps the
             // quality-tier default (we encode 0 → -1 for the spec
             // builder's "use tier" sentinel).
-            let intensity_override = if self.state.scope_waveform_intensity > 0.0 {
-                self.state.scope_waveform_intensity
+            let intensity_override = if self.state.scope_ffmpeg.waveform_intensity > 0.0 {
+                self.state.scope_ffmpeg.waveform_intensity
             } else {
                 -1.0
             };
             let wp = klipp_core::WaveformParadeSettings {
-                filter: self.state.scope_waveform_filter,
+                filter: self.state.scope_ffmpeg.waveform_filter,
                 intensity_override,
                 channels: legacy_channels,
-                envelope: self.state.scope_waveform_envelope,
+                envelope: self.state.scope_ffmpeg.waveform_envelope,
             };
             let ffmpeg_settings = klipp_core::ScopeFfmpegSettings {
                 waveform: wp,
                 parade: wp,
                 vectorscope: klipp_core::VectorscopeSettings {
-                    mode: self.state.scope_vectorscope_mode,
-                    graticule: self.state.scope_vectorscope_graticule,
-                    bgopacity: self.state.scope_vectorscope_bgopacity,
-                    lthreshold: self.state.scope_vectorscope_lthreshold,
-                    hthreshold: self.state.scope_vectorscope_hthreshold,
+                    mode: self.state.scope_ffmpeg.vectorscope_mode,
+                    graticule: self.state.scope_ffmpeg.vectorscope_graticule,
+                    bgopacity: self.state.scope_ffmpeg.vectorscope_bgopacity,
+                    lthreshold: self.state.scope_ffmpeg.vectorscope_lthreshold,
+                    hthreshold: self.state.scope_ffmpeg.vectorscope_hthreshold,
                 },
                 histogram: klipp_core::HistogramSettings {
-                    display_mode: self.state.scope_histogram_display,
-                    levels: self.state.scope_histogram_levels,
-                    fgopacity: self.state.scope_histogram_fgopacity,
-                    bgopacity: self.state.scope_histogram_bgopacity,
+                    display_mode: self.state.scope_ffmpeg.histogram_display,
+                    levels: self.state.scope_ffmpeg.histogram_levels,
+                    fgopacity: self.state.scope_ffmpeg.histogram_fgopacity,
+                    bgopacity: self.state.scope_ffmpeg.histogram_bgopacity,
                 },
                 quality: self.state.scope_quality,
-                luma_only: self.state.scope_waveform_luma_only,
+                luma_only: self.state.scope_ffmpeg.waveform_luma_only,
             };
             if self.last_sent_scope_ffmpeg_settings != Some(ffmpeg_settings) {
                 let _ = self.cmd_tx.send(AppCommand::SetScopeFfmpegSettings {
@@ -26121,6 +26121,7 @@ impl eframe::App for KlippApp {
             crate::widgets::scope_window::show_scope_window(
                 ctx,
                 &mut self.state.scope_window,
+                &mut self.state.scope_ffmpeg,
                 &mut self.scope_window_runtime,
                 &self.frame_buffer,
                 self.prefs.color.vectorscope_skin_angle,
@@ -30764,13 +30765,36 @@ impl KlippApp {
         } = p;
         let theme = self.theme.clone();
 
+        // Fill the entire bottom region with pure black FIRST so any
+        // 1-2 px egui-spacing gaps between the toggle bar, scope
+        // content, resizer, and the parent panel show #000000 instead
+        // of leaking either the workspace's `bg_deep` (grey) or the
+        // theme's `bg_void` (`#0a0a0c`, a near-but-not-pure black that
+        // reads as a visible halo against the FFmpeg scope texture's
+        // true `#000000` interior).
+        if self.state.show_scopes && !color_tools_bottom {
+            let bottom_rect = egui::Rect::from_min_max(
+                egui::pos2(center_left, toggle_bar_rect.min.y - theme::RESIZER_THICKNESS),
+                egui::pos2(center_left + center_w, main_bottom),
+            );
+            ui.painter().rect_filled(bottom_rect, 0.0, egui::Color32::BLACK);
+        }
+
         // Resizer between viewer and bottom panels (draggable)
         if show_scopes_bar || show_nodes_bar {
             let resizer_rect = egui::Rect::from_min_size(
                 egui::pos2(center_left, toggle_bar_rect.min.y - theme::RESIZER_THICKNESS),
                 egui::vec2(center_w, theme::RESIZER_THICKNESS),
             );
-            let delta = resizer::horizontal_resizer(ui, resizer_rect, &theme);
+            // Idle line uses bg_void so the resizer sits flush against
+            // the scope dock's black background instead of showing a
+            // visible grey hairline directly above the toggle bar.
+            let delta = resizer::horizontal_resizer_with_idle_color(
+                ui,
+                resizer_rect,
+                &theme,
+                theme.bg_void,
+            );
             if delta != 0.0 {
                 let new_ratio = self.layout.color_viewer_height_ratio + delta / flexible_h;
                 self.layout.color_viewer_height_ratio = new_ratio.clamp(0.15, 0.90);
@@ -30816,10 +30840,13 @@ impl KlippApp {
         crate::ui_util::allocate_clipped_ui(ui, toggle_bar_rect, |ui| {
             ui.set_min_size(toggle_bar_rect.size());
             ui.painter().rect_filled(toggle_bar_rect, 0.0, theme.bg_panel);
+            // Border between toggle bar and the scope content uses the
+            // scope's own black background so there's no grey halo
+            // between the bar and the trace area.
             ui.painter().hline(
                 toggle_bar_rect.x_range(),
                 toggle_bar_rect.min.y,
-                egui::Stroke::new(0.5_f32, theme.border),
+                egui::Stroke::new(0.5_f32, theme.bg_void),
             );
             ui.horizontal_centered(|ui| {
                 ui.add_space(8.0);
@@ -31090,7 +31117,7 @@ impl KlippApp {
             // makes the dock read as a single seamless black surface
             // — DaVinci-style flush black, no "panel" chrome around
             // the instrument glass.
-            ui.painter().rect_filled(live_scopes_rect, 0.0, theme.bg_void);
+            ui.painter().rect_filled(live_scopes_rect, 0.0, egui::Color32::BLACK);
             if self.state.scope_state.scale != self.state.scope_scale
                 || self.state.scope_state.low_pass != self.state.scope_low_pass
                 || self.state.scope_state.bloom != self.state.scope_bloom
@@ -31191,158 +31218,16 @@ impl KlippApp {
                     // Per-mode FFmpeg options — only meaningful when the
                     // FFmpeg path is the active renderer (KLIPP_SCOPE_FFMPEG=1).
                     // Section appears unconditionally because the values
-                    // persist across path swaps and we don't want them to
-                    // jump around when the user toggles the env flag.
+                    // persist across path swaps. Shared helper so the
+                    // same UI block also renders inside the floating
+                    // scope window's per-pane settings (single source
+                    // of truth — both surfaces mutate `state.scope_ffmpeg`).
                     ui.add_space(4.0);
-                    ui.label(egui::RichText::new("WAVEFORM / PARADE").size(9.0).color(theme.text_dim).strong());
-                    ui.checkbox(&mut self.state.scope_waveform_luma_only, "Luma (B&W) only")
-                        .on_hover_text("Render Wave and Parade as a single white Y (luma) trace instead of R/G/B. Broadcast luma scope view.");
-                    ui.add_space(2.0);
-                    egui::ComboBox::from_id_salt("scope_waveform_filter")
-                        .selected_text(match self.state.scope_waveform_filter {
-                            klipp_core::WaveformFilter::Lowpass => "Filter: Lowpass",
-                            klipp_core::WaveformFilter::Flat => "Filter: Flat",
-                            klipp_core::WaveformFilter::Aflat => "Filter: Aflat",
-                            klipp_core::WaveformFilter::Chroma => "Filter: Chroma",
-                            klipp_core::WaveformFilter::Color => "Filter: Color",
-                            klipp_core::WaveformFilter::Acolor => "Filter: Acolor",
-                        })
-                        .width(170.0)
-                        .show_ui(ui, |ui| {
-                            for (f, label) in [
-                                (klipp_core::WaveformFilter::Lowpass, "Lowpass (smooth, default)"),
-                                (klipp_core::WaveformFilter::Flat, "Flat (raw dot density)"),
-                                (klipp_core::WaveformFilter::Aflat, "Aflat (anti-aliased flat)"),
-                                (klipp_core::WaveformFilter::Chroma, "Chroma (color planes only)"),
-                                (klipp_core::WaveformFilter::Color, "Color (per-pixel)"),
-                                (klipp_core::WaveformFilter::Acolor, "Acolor (anti-aliased color)"),
-                            ] {
-                                ui.selectable_value(&mut self.state.scope_waveform_filter, f, label);
-                            }
-                        });
-                    ui.add_space(2.0);
-                    egui::ComboBox::from_id_salt("scope_waveform_envelope")
-                        .selected_text(match self.state.scope_waveform_envelope {
-                            klipp_core::WaveformEnvelope::None => "Envelope: None",
-                            klipp_core::WaveformEnvelope::Instant => "Envelope: Instant",
-                            klipp_core::WaveformEnvelope::Peak => "Envelope: Peak",
-                            klipp_core::WaveformEnvelope::PeakInstant => "Envelope: Peak + Instant",
-                        })
-                        .width(170.0)
-                        .show_ui(ui, |ui| {
-                            for (e, label) in [
-                                (klipp_core::WaveformEnvelope::None, "None"),
-                                (klipp_core::WaveformEnvelope::Instant, "Instant (this frame)"),
-                                (klipp_core::WaveformEnvelope::Peak, "Peak (rolling max)"),
-                                (klipp_core::WaveformEnvelope::PeakInstant, "Peak + Instant"),
-                            ] {
-                                ui.selectable_value(&mut self.state.scope_waveform_envelope, e, label);
-                            }
-                        });
-                    ui.add_space(2.0);
-                    ui.horizontal(|ui| {
-                        ui.label(egui::RichText::new("Intensity").size(9.0).color(theme.text_dim));
-                        ui.add(
-                            egui::Slider::new(&mut self.state.scope_waveform_intensity, 0.0..=1.0)
-                                .show_value(true)
-                                .step_by(0.01),
-                        ).on_hover_text("Manual override of the FFmpeg waveform intensity. 0 = use Quality-tier default (0.04 / 0.08 / 0.16); higher = denser trace.");
-                    });
-
-                    ui.add_space(4.0);
-                    ui.label(egui::RichText::new("VECTORSCOPE").size(9.0).color(theme.text_dim).strong());
-                    egui::ComboBox::from_id_salt("scope_vectorscope_mode")
-                        .selected_text(match self.state.scope_vectorscope_mode {
-                            klipp_core::VectorscopeMode::Gray => "Gray",
-                            klipp_core::VectorscopeMode::Color => "Color",
-                            klipp_core::VectorscopeMode::Color2 => "Color 2",
-                            klipp_core::VectorscopeMode::Color3 => "Color 3 (default)",
-                            klipp_core::VectorscopeMode::Color4 => "Color 4",
-                            klipp_core::VectorscopeMode::Color5 => "Color 5",
-                        })
-                        .width(170.0)
-                        .show_ui(ui, |ui| {
-                            for (mode, label) in [
-                                (klipp_core::VectorscopeMode::Gray, "Gray"),
-                                (klipp_core::VectorscopeMode::Color, "Color"),
-                                (klipp_core::VectorscopeMode::Color2, "Color 2"),
-                                (klipp_core::VectorscopeMode::Color3, "Color 3 (default)"),
-                                (klipp_core::VectorscopeMode::Color4, "Color 4"),
-                                (klipp_core::VectorscopeMode::Color5, "Color 5"),
-                            ] {
-                                ui.selectable_value(&mut self.state.scope_vectorscope_mode, mode, label);
-                            }
-                        });
-                    ui.add_space(2.0);
-                    egui::ComboBox::from_id_salt("scope_vectorscope_graticule")
-                        .selected_text(match self.state.scope_vectorscope_graticule {
-                            klipp_core::VectorscopeGraticule::None => "Graticule: None",
-                            klipp_core::VectorscopeGraticule::Green => "Graticule: Green",
-                            klipp_core::VectorscopeGraticule::Color => "Graticule: Color",
-                            klipp_core::VectorscopeGraticule::Invert => "Graticule: Invert",
-                        })
-                        .width(170.0)
-                        .show_ui(ui, |ui| {
-                            for (g, label) in [
-                                (klipp_core::VectorscopeGraticule::None, "None (Klipp draws overlay)"),
-                                (klipp_core::VectorscopeGraticule::Green, "Green (FFmpeg overlay)"),
-                                (klipp_core::VectorscopeGraticule::Color, "Color (FFmpeg overlay)"),
-                                (klipp_core::VectorscopeGraticule::Invert, "Invert (FFmpeg overlay)"),
-                            ] {
-                                ui.selectable_value(&mut self.state.scope_vectorscope_graticule, g, label);
-                            }
-                        });
-                    ui.add_space(2.0);
-                    ui.horizontal(|ui| {
-                        ui.label(egui::RichText::new("Bg opacity").size(9.0).color(theme.text_dim));
-                        ui.add(
-                            egui::Slider::new(&mut self.state.scope_vectorscope_bgopacity, 0.0..=1.0)
-                                .show_value(true)
-                                .step_by(0.01),
-                        ).on_hover_text("Vectorscope background opacity (FFmpeg `bgopacity=`).");
-                    });
-                    ui.horizontal(|ui| {
-                        ui.label(egui::RichText::new("Luma low").size(9.0).color(theme.text_dim));
-                        ui.add(
-                            egui::Slider::new(&mut self.state.scope_vectorscope_lthreshold, 0.0..=1.0)
-                                .show_value(true)
-                                .step_by(0.01),
-                        ).on_hover_text("Drop pixels below this luma from the scatter (FFmpeg `lthreshold=`). Focus on highlight chroma.");
-                    });
-                    ui.horizontal(|ui| {
-                        ui.label(egui::RichText::new("Luma high").size(9.0).color(theme.text_dim));
-                        ui.add(
-                            egui::Slider::new(&mut self.state.scope_vectorscope_hthreshold, 0.0..=1.0)
-                                .show_value(true)
-                                .step_by(0.01),
-                        ).on_hover_text("Drop pixels above this luma from the scatter (FFmpeg `hthreshold=`). Focus on shadow chroma.");
-                    });
-
-                    ui.add_space(4.0);
-                    ui.label(egui::RichText::new("HISTOGRAM").size(9.0).color(theme.text_dim).strong());
-                    ui.radio_value(&mut self.state.scope_histogram_display, klipp_core::HistogramDisplayMode::Parade, "Parade");
-                    ui.radio_value(&mut self.state.scope_histogram_display, klipp_core::HistogramDisplayMode::Stack, "Stack");
-                    ui.radio_value(&mut self.state.scope_histogram_display, klipp_core::HistogramDisplayMode::Overlay, "Overlay");
-                    ui.add_space(2.0);
-                    ui.radio_value(&mut self.state.scope_histogram_levels, klipp_core::HistogramLevels::Linear, "Linear levels");
-                    ui.radio_value(&mut self.state.scope_histogram_levels, klipp_core::HistogramLevels::Logarithmic, "Logarithmic levels");
-                    ui.add_space(2.0);
-                    ui.horizontal(|ui| {
-                        ui.label(egui::RichText::new("Fg opacity").size(9.0).color(theme.text_dim));
-                        ui.add(
-                            egui::Slider::new(&mut self.state.scope_histogram_fgopacity, 0.0..=1.0)
-                                .show_value(true)
-                                .step_by(0.01),
-                        ).on_hover_text("Histogram bar opacity (FFmpeg `fgopacity=`).");
-                    });
-                    ui.horizontal(|ui| {
-                        ui.label(egui::RichText::new("Bg opacity").size(9.0).color(theme.text_dim));
-                        ui.add(
-                            egui::Slider::new(&mut self.state.scope_histogram_bgopacity, 0.0..=1.0)
-                                .show_value(true)
-                                .step_by(0.01),
-                        ).on_hover_text("Histogram background opacity (FFmpeg `bgopacity=`).");
-                    });
+                    crate::widgets::scope_window::draw_ffmpeg_scope_options(
+                        ui,
+                        &mut self.state.scope_ffmpeg,
+                        theme,
+                    );
 
                     }); // end ScrollArea
                 });

@@ -1,6 +1,6 @@
 use crate::state::{
-    HistogramScale, PaneConfig, PaneScopeSettings, ScopeLayout, ScopeScale, ScopeType,
-    ScopeWindowState, VectorscopeScaleStyle, WaveformChannel, WaveformPaintMode,
+    HistogramScale, PaneConfig, PaneScopeSettings, ScopeFfmpegState, ScopeLayout, ScopeScale,
+    ScopeType, ScopeWindowState, VectorscopeScaleStyle, WaveformChannel, WaveformPaintMode,
     WaveformScaleStyle,
 };
 use crate::theme::KlippTheme;
@@ -108,6 +108,7 @@ pub fn sample_viewer_pixel(
 pub fn show_scope_window(
     ctx: &egui::Context,
     state: &mut ScopeWindowState,
+    scope_ffmpeg: &mut ScopeFfmpegState,
     runtime: &mut ScopeWindowRuntime,
     frame_buffer: &SharedFrameBuffer,
     skin_tone_angle: f32,
@@ -234,10 +235,14 @@ pub fn show_scope_window(
                                 let x = cursor.x + col as f32 * (pane_w + gap);
                                 let y = cursor.y + row as f32 * (pane_h + gap);
                                 let pane_rect = egui::Rect::from_min_size(egui::pos2(x, y), egui::vec2(pane_w, pane_h));
+                                // Per-pane border in pure #000000 so it
+                                // blends into the pane's own true-black
+                                // interior (matching the FFmpeg texture
+                                // and the main-dock paint path).
                                 ui.painter().rect_stroke(pane_rect, 0.0,
-                                    egui::Stroke::new(0.5_f32, theme.border));
+                                    egui::Stroke::new(0.5_f32, egui::Color32::BLACK));
                                 let mut child = ui.new_child(egui::UiBuilder::new().max_rect(pane_rect));
-                                draw_pane(&mut child, pane_idx, state, runtime, frame_buffer, skin_tone_angle, is_playing, scope_cursor, spectrum_bins, correlation_samples, lufs_history, lufs_target, spectrum_history, theme);
+                                draw_pane(&mut child, pane_idx, state, scope_ffmpeg, runtime, frame_buffer, skin_tone_angle, is_playing, scope_cursor, spectrum_bins, correlation_samples, lufs_history, lufs_target, spectrum_history, theme);
                             }
                         }
 
@@ -264,6 +269,7 @@ fn draw_pane(
     ui: &mut egui::Ui,
     pane_idx: usize,
     state: &mut ScopeWindowState,
+    scope_ffmpeg: &mut ScopeFfmpegState,
     runtime: &mut ScopeWindowRuntime,
     frame_buffer: &SharedFrameBuffer,
     skin_tone_angle: f32,
@@ -434,7 +440,7 @@ fn draw_pane(
                         });
                     });
                     ui.separator();
-                    draw_pane_settings(ui, pane_idx, state, theme);
+                    draw_pane_settings(ui, pane_idx, state, scope_ffmpeg, theme);
                 });
             });
         // Close on click outside the settings panel
@@ -652,6 +658,14 @@ fn render_pane_scope(
     let r = content_rect;
     let painter = ui.painter_at(r);
 
+    // Pure #000000 background for the pane interior — matches the
+    // FFmpeg scope texture's own true-black interior so the areas
+    // around the texture (vectorscope centred-square margins, axis
+    // padding, pane-to-pane gutters) don't read as a grey halo
+    // against the trace. Mirrors the same fix used by the main-dock
+    // scope path in `show_scopes`.
+    painter.rect_filled(r, 0.0, egui::Color32::BLACK);
+
     if let Some(tex) = &runtime.textures[pane_idx] {
         let is_vector = pane.scope_type == ScopeType::Vectorscope
             || pane.scope_type == ScopeType::CIEChromaticity;
@@ -672,30 +686,131 @@ fn render_pane_scope(
             );
             painter.image(tex.id(), img_rect, uv, tint);
 
-            // Saturation rings
-            let rings = crate::state::compute_saturation_rings(&pane.settings, side);
-            let ring_alpha = crate::state::graticule_alpha(pane.settings.vectorscope_graticule_brightness);
-            let ring_color = egui::Color32::from_rgba_unmultiplied(
-                theme.accent.r(), theme.accent.g(), theme.accent.b(), (ring_alpha * 80.0) as u8,
-            );
-            for ring in &rings {
-                painter.circle_stroke(img_rect.center(), ring.radius, egui::Stroke::new(0.5_f32, ring_color));
-            }
-
-            // Vectorscope color target labels (R, Mg, B, Cy, G, Yl)
+            // Rich broadcast vectorscope graticule — mirrors the main-
+            // dock overlay in `widgets/scopes.rs`: rainbow hue ring at
+            // 100%, three inner range rings (25 / 50 / 75 %), centre
+            // crosshair, skin-tone I-line, target boxes + labels.
+            // Only for proper vectorscope panes; CIE chromaticity still
+            // relies on its baked-in colour gamut.
             if pane.scope_type == ScopeType::Vectorscope {
                 let label_font = egui::FontId::monospace(8.0);
                 let label_color = theme.scope_label;
                 let cx = img_rect.center().x;
                 let cy = img_rect.center().y;
                 let rad = side / 2.0 - 4.0;
+
+                // 1. Inner range rings at 25 / 50 / 75 %.
+                let inner_ring_color = egui::Color32::from_rgba_unmultiplied(
+                    label_color.r(), label_color.g(), label_color.b(), 40,
+                );
+                for frac in [0.25_f32, 0.50, 0.75] {
+                    painter.circle_stroke(
+                        egui::pos2(cx, cy),
+                        rad * frac,
+                        egui::Stroke::new(0.6, inner_ring_color),
+                    );
+                }
+
+                // 2. Rainbow hue ring at 100% — 120 tinted segments.
+                let segments = 120;
+                for i in 0..segments {
+                    let a0 = (i as f32) / (segments as f32) * std::f32::consts::TAU;
+                    let a1 = ((i + 1) as f32) / (segments as f32) * std::f32::consts::TAU;
+                    let hue = (a0 / std::f32::consts::TAU).fract();
+                    let (rh, gh, bh) = super::scopes::hue_to_rgb(hue);
+                    let seg_color = egui::Color32::from_rgba_unmultiplied(
+                        (rh * 255.0) as u8,
+                        (gh * 255.0) as u8,
+                        (bh * 255.0) as u8,
+                        140,
+                    );
+                    let p0 = egui::pos2(cx + a0.cos() * rad, cy + a0.sin() * rad);
+                    let p1 = egui::pos2(cx + a1.cos() * rad, cy + a1.sin() * rad);
+                    painter.line_segment([p0, p1], egui::Stroke::new(1.4, seg_color));
+                }
+
+                // 3. Centre crosshair.
+                let cross_color = egui::Color32::from_rgba_unmultiplied(
+                    label_color.r(), label_color.g(), label_color.b(), 30,
+                );
+                painter.line_segment(
+                    [egui::pos2(cx - rad, cy), egui::pos2(cx + rad, cy)],
+                    egui::Stroke::new(0.5, cross_color),
+                );
+                painter.line_segment(
+                    [egui::pos2(cx, cy - rad), egui::pos2(cx, cy + rad)],
+                    egui::Stroke::new(0.5, cross_color),
+                );
+
+                // 4. Skin-tone I-line at 123° + "I" label.
+                let skin_angle_deg = 123.0_f32;
+                let skin_rad_angle = (skin_angle_deg - 90.0).to_radians();
+                let dx = skin_rad_angle.sin();
+                let dy = -skin_rad_angle.cos();
+                let i_line_len = rad * 0.92;
+                let i_color = egui::Color32::from_rgb(220, 170, 80);
+                painter.line_segment(
+                    [
+                        egui::pos2(cx, cy),
+                        egui::pos2(cx + dx * i_line_len, cy + dy * i_line_len),
+                    ],
+                    egui::Stroke::new(1.0, i_color),
+                );
+                painter.text(
+                    egui::pos2(cx + dx * (i_line_len + 8.0), cy + dy * (i_line_len + 8.0)),
+                    egui::Align2::CENTER_CENTER,
+                    "I",
+                    label_font.clone(),
+                    i_color,
+                );
+
+                // 5. Target boxes + labels at the six chroma points.
+                let target_color = egui::Color32::from_rgba_unmultiplied(
+                    label_color.r(), label_color.g(), label_color.b(), 180,
+                );
+                let box_half = 4.0;
                 for (name, cb, cr) in &[
-                    ("R",  0.17_f32,  0.29_f32), ("Mg",  0.28, -0.05), ("B",  0.12, -0.34),
-                    ("Cy", -0.17,    -0.29),     ("G",  -0.28,  0.05), ("Yl", -0.12,  0.34),
+                    ("R",  0.17_f32,  0.29_f32),
+                    ("Mg",  0.28, -0.05),
+                    ("B",  0.12, -0.34),
+                    ("Cy", -0.17, -0.29),
+                    ("G",  -0.28,  0.05),
+                    ("Yl", -0.12,  0.34),
                 ] {
                     let tx = cx + cb * rad * 2.0;
-                    let ty = cy - cr * rad * 2.0 - 6.0;
-                    painter.text(egui::pos2(tx, ty), egui::Align2::CENTER_BOTTOM, *name, label_font.clone(), label_color);
+                    let ty = cy - cr * rad * 2.0;
+                    let rect = egui::Rect::from_center_size(
+                        egui::pos2(tx, ty),
+                        egui::vec2(box_half * 2.0, box_half * 2.0),
+                    );
+                    painter.rect_stroke(
+                        rect,
+                        0.0,
+                        egui::Stroke::new(1.0, target_color),
+                    );
+                    let mag = (cb * cb + cr * cr).sqrt().max(0.001);
+                    let ux = cb / mag;
+                    let uy = -cr / mag;
+                    let label_offset = 10.0;
+                    painter.text(
+                        egui::pos2(tx + ux * label_offset, ty + uy * label_offset),
+                        egui::Align2::CENTER_CENTER,
+                        *name,
+                        label_font.clone(),
+                        label_color,
+                    );
+                }
+            } else {
+                // CIE chromaticity — preserve the legacy ring overlay
+                // (no I-line / target diamonds; the gamut shape itself
+                // is baked into the source texture).
+                let rings = crate::state::compute_saturation_rings(&pane.settings, side);
+                let ring_alpha = crate::state::graticule_alpha(pane.settings.vectorscope_graticule_brightness);
+                let ring_color = egui::Color32::from_rgba_unmultiplied(
+                    theme.accent.r(), theme.accent.g(), theme.accent.b(), (ring_alpha * 80.0) as u8,
+                );
+                for ring in &rings {
+                    painter.circle_stroke(img_rect.center(), ring.radius, egui::Stroke::new(0.5_f32, ring_color));
                 }
             }
         } else if pane.scope_type == ScopeType::Histogram {
@@ -775,10 +890,22 @@ fn render_pane_scope(
                 egui::pos2(r.max.x - super::scopes::PAD_RIGHT, r.max.y - super::scopes::PAD_BOTTOM),
             );
             let bri = pane.settings.waveform_brightness;
-            let tint_val = (bri * 2.0).min(1.0);
-            let tint = egui::Color32::from_rgb(
-                (tint_val * 255.0) as u8, (tint_val * 255.0) as u8, (tint_val * 255.0) as u8,
-            );
+            let tint_val = (bri * 2.0).min(1.0).clamp(0.0, 1.0);
+            let g = (tint_val * 255.0) as u8;
+            // Per-pane Y / R / G / B channel filter — applied as an egui
+            // image tint. The FFmpeg waveform texture paints each channel
+            // in its own colour (R = red, G = green, B = blue), so
+            // multiplying the texture by a channel-coloured tint keeps
+            // only that channel's trace and masks the other two to zero.
+            // Y maps to a white tint (no channel mask — all traces shown,
+            // approximating combined luma without a separate luma render).
+            let (tr, tg, tb) = match pane.settings.waveform_channel {
+                crate::state::WaveformChannel::Y => (g, g, g),
+                crate::state::WaveformChannel::R => (g, 0, 0),
+                crate::state::WaveformChannel::G => (0, g, 0),
+                crate::state::WaveformChannel::B => (0, 0, g),
+            };
+            let tint = egui::Color32::from_rgb(tr, tg, tb);
             painter.image(tex.id(), img_rect, uv, tint);
 
             let is_parade = pane.scope_type == ScopeType::Parade;
@@ -917,7 +1044,13 @@ pub fn draw_scope_cursor_indicator(
 
 // ── Per-pane settings panels ─────────────────────────────────────────────
 
-fn draw_pane_settings(ui: &mut egui::Ui, pane_idx: usize, state: &mut ScopeWindowState, theme: &KlippTheme) {
+fn draw_pane_settings(
+    ui: &mut egui::Ui,
+    pane_idx: usize,
+    state: &mut ScopeWindowState,
+    scope_ffmpeg: &mut ScopeFfmpegState,
+    theme: &KlippTheme,
+) {
     let scope_type = state.panes[pane_idx].scope_type;
     match scope_type {
         ScopeType::Waveform => draw_waveform_settings(ui, pane_idx, state, theme),
@@ -990,6 +1123,23 @@ fn draw_pane_settings(ui: &mut egui::Ui, pane_idx: usize, state: &mut ScopeWindo
     ui.add_space(6.0);
     if ui.add(egui::Button::new("Reset View").min_size(egui::vec2(170.0, 22.0))).clicked() {
         state.panes[pane_idx].settings = PaneScopeSettings::default();
+    }
+
+    // Mirror the main-dock FFmpeg-scope-settings block here for video
+    // scope types so the floating window has full parity. Audio scopes
+    // (Spectrum / Correlation / LoudnessHistory / Spectrogram) and CIE
+    // chromaticity don't go through the FFmpeg path, so skip the block
+    // entirely for them.
+    let is_video_scope = matches!(
+        state.panes[pane_idx].scope_type,
+        ScopeType::Waveform | ScopeType::Parade | ScopeType::Vectorscope | ScopeType::Histogram
+    );
+    if is_video_scope {
+        ui.separator();
+        ui.label(egui::RichText::new("FFMPEG OPTIONS").size(9.0).color(theme.text_dim).strong());
+        ui.small("Global — also editable from the main-dock gear.");
+        ui.add_space(2.0);
+        draw_ffmpeg_scope_options(ui, scope_ffmpeg, theme);
     }
 }
 
@@ -1265,4 +1415,165 @@ fn draw_dot_menu(
     if ui.input(|i| i.pointer.primary_clicked()) && !runtime.dot_menu_open {
         runtime.dot_menu_open = false;
     }
+}
+
+/// Shared FFmpeg-scope-settings UI block — used by both the main-dock
+/// scope-settings popover (in `app.rs`) and the floating scope window's
+/// per-pane settings popover (in `draw_pane_settings` below). All
+/// surfaces mutate the same `ScopeFfmpegState` on `AppState`, so values
+/// stay consistent across UI entry points.
+pub fn draw_ffmpeg_scope_options(
+    ui: &mut egui::Ui,
+    state: &mut ScopeFfmpegState,
+    theme: &crate::theme::KlippTheme,
+) {
+    ui.label(egui::RichText::new("WAVEFORM / PARADE").size(9.0).color(theme.text_dim).strong());
+    ui.checkbox(&mut state.waveform_luma_only, "Luma (B&W) only")
+        .on_hover_text("Render Wave and Parade as a single white Y (luma) trace instead of R/G/B. Broadcast luma scope view.");
+    ui.add_space(2.0);
+    egui::ComboBox::from_id_salt(ui.next_auto_id().with("waveform_filter"))
+        .selected_text(match state.waveform_filter {
+            klipp_core::WaveformFilter::Lowpass => "Filter: Lowpass",
+            klipp_core::WaveformFilter::Flat => "Filter: Flat",
+            klipp_core::WaveformFilter::Aflat => "Filter: Aflat",
+            klipp_core::WaveformFilter::Chroma => "Filter: Chroma",
+            klipp_core::WaveformFilter::Color => "Filter: Color",
+            klipp_core::WaveformFilter::Acolor => "Filter: Acolor",
+        })
+        .width(170.0)
+        .show_ui(ui, |ui| {
+            for (f, label) in [
+                (klipp_core::WaveformFilter::Lowpass, "Lowpass (smooth, default)"),
+                (klipp_core::WaveformFilter::Flat, "Flat (raw dot density)"),
+                (klipp_core::WaveformFilter::Aflat, "Aflat (anti-aliased flat)"),
+                (klipp_core::WaveformFilter::Chroma, "Chroma (color planes only)"),
+                (klipp_core::WaveformFilter::Color, "Color (per-pixel)"),
+                (klipp_core::WaveformFilter::Acolor, "Acolor (anti-aliased color)"),
+            ] {
+                ui.selectable_value(&mut state.waveform_filter, f, label);
+            }
+        });
+    ui.add_space(2.0);
+    egui::ComboBox::from_id_salt(ui.next_auto_id().with("waveform_envelope"))
+        .selected_text(match state.waveform_envelope {
+            klipp_core::WaveformEnvelope::None => "Envelope: None",
+            klipp_core::WaveformEnvelope::Instant => "Envelope: Instant",
+            klipp_core::WaveformEnvelope::Peak => "Envelope: Peak",
+            klipp_core::WaveformEnvelope::PeakInstant => "Envelope: Peak + Instant",
+        })
+        .width(170.0)
+        .show_ui(ui, |ui| {
+            for (e, label) in [
+                (klipp_core::WaveformEnvelope::None, "None"),
+                (klipp_core::WaveformEnvelope::Instant, "Instant (this frame)"),
+                (klipp_core::WaveformEnvelope::Peak, "Peak (rolling max)"),
+                (klipp_core::WaveformEnvelope::PeakInstant, "Peak + Instant"),
+            ] {
+                ui.selectable_value(&mut state.waveform_envelope, e, label);
+            }
+        });
+    ui.add_space(2.0);
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new("Intensity").size(9.0).color(theme.text_dim));
+        ui.add(
+            egui::Slider::new(&mut state.waveform_intensity, 0.0..=1.0)
+                .show_value(true)
+                .step_by(0.01),
+        ).on_hover_text("Manual override of the FFmpeg waveform intensity. 0 = use Quality-tier default (0.04 / 0.08 / 0.16); higher = denser trace.");
+    });
+
+    ui.add_space(4.0);
+    ui.label(egui::RichText::new("VECTORSCOPE").size(9.0).color(theme.text_dim).strong());
+    egui::ComboBox::from_id_salt(ui.next_auto_id().with("vectorscope_mode"))
+        .selected_text(match state.vectorscope_mode {
+            klipp_core::VectorscopeMode::Gray => "Gray",
+            klipp_core::VectorscopeMode::Color => "Color",
+            klipp_core::VectorscopeMode::Color2 => "Color 2",
+            klipp_core::VectorscopeMode::Color3 => "Color 3 (default)",
+            klipp_core::VectorscopeMode::Color4 => "Color 4",
+            klipp_core::VectorscopeMode::Color5 => "Color 5",
+        })
+        .width(170.0)
+        .show_ui(ui, |ui| {
+            for (mode, label) in [
+                (klipp_core::VectorscopeMode::Gray, "Gray"),
+                (klipp_core::VectorscopeMode::Color, "Color"),
+                (klipp_core::VectorscopeMode::Color2, "Color 2"),
+                (klipp_core::VectorscopeMode::Color3, "Color 3 (default)"),
+                (klipp_core::VectorscopeMode::Color4, "Color 4"),
+                (klipp_core::VectorscopeMode::Color5, "Color 5"),
+            ] {
+                ui.selectable_value(&mut state.vectorscope_mode, mode, label);
+            }
+        });
+    ui.add_space(2.0);
+    egui::ComboBox::from_id_salt(ui.next_auto_id().with("vectorscope_graticule"))
+        .selected_text(match state.vectorscope_graticule {
+            klipp_core::VectorscopeGraticule::None => "Graticule: None",
+            klipp_core::VectorscopeGraticule::Green => "Graticule: Green",
+            klipp_core::VectorscopeGraticule::Color => "Graticule: Color",
+            klipp_core::VectorscopeGraticule::Invert => "Graticule: Invert",
+        })
+        .width(170.0)
+        .show_ui(ui, |ui| {
+            for (g, label) in [
+                (klipp_core::VectorscopeGraticule::None, "None (Klipp draws overlay)"),
+                (klipp_core::VectorscopeGraticule::Green, "Green (FFmpeg overlay)"),
+                (klipp_core::VectorscopeGraticule::Color, "Color (FFmpeg overlay)"),
+                (klipp_core::VectorscopeGraticule::Invert, "Invert (FFmpeg overlay)"),
+            ] {
+                ui.selectable_value(&mut state.vectorscope_graticule, g, label);
+            }
+        });
+    ui.add_space(2.0);
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new("Bg opacity").size(9.0).color(theme.text_dim));
+        ui.add(
+            egui::Slider::new(&mut state.vectorscope_bgopacity, 0.0..=1.0)
+                .show_value(true)
+                .step_by(0.01),
+        ).on_hover_text("Vectorscope background opacity (FFmpeg `bgopacity=`).");
+    });
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new("Luma low").size(9.0).color(theme.text_dim));
+        ui.add(
+            egui::Slider::new(&mut state.vectorscope_lthreshold, 0.0..=1.0)
+                .show_value(true)
+                .step_by(0.01),
+        ).on_hover_text("Drop pixels below this luma from the scatter (FFmpeg `lthreshold=`). Focus on highlight chroma.");
+    });
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new("Luma high").size(9.0).color(theme.text_dim));
+        ui.add(
+            egui::Slider::new(&mut state.vectorscope_hthreshold, 0.0..=1.0)
+                .show_value(true)
+                .step_by(0.01),
+        ).on_hover_text("Drop pixels above this luma from the scatter (FFmpeg `hthreshold=`). Focus on shadow chroma.");
+    });
+
+    ui.add_space(4.0);
+    ui.label(egui::RichText::new("HISTOGRAM").size(9.0).color(theme.text_dim).strong());
+    ui.radio_value(&mut state.histogram_display, klipp_core::HistogramDisplayMode::Parade, "Parade");
+    ui.radio_value(&mut state.histogram_display, klipp_core::HistogramDisplayMode::Stack, "Stack");
+    ui.radio_value(&mut state.histogram_display, klipp_core::HistogramDisplayMode::Overlay, "Overlay");
+    ui.add_space(2.0);
+    ui.radio_value(&mut state.histogram_levels, klipp_core::HistogramLevels::Linear, "Linear levels");
+    ui.radio_value(&mut state.histogram_levels, klipp_core::HistogramLevels::Logarithmic, "Logarithmic levels");
+    ui.add_space(2.0);
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new("Fg opacity").size(9.0).color(theme.text_dim));
+        ui.add(
+            egui::Slider::new(&mut state.histogram_fgopacity, 0.0..=1.0)
+                .show_value(true)
+                .step_by(0.01),
+        ).on_hover_text("Histogram bar opacity (FFmpeg `fgopacity=`).");
+    });
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new("Bg opacity").size(9.0).color(theme.text_dim));
+        ui.add(
+            egui::Slider::new(&mut state.histogram_bgopacity, 0.0..=1.0)
+                .show_value(true)
+                .step_by(0.01),
+        ).on_hover_text("Histogram background opacity (FFmpeg `bgopacity=`).");
+    });
 }

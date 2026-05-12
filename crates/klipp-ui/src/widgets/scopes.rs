@@ -594,8 +594,13 @@ pub fn show_scopes(
         let is_vector = mode == ScopeMode::Vectorscope;
         let (full_rect, _) = ui.allocate_exact_size(available, egui::Sense::hover());
 
-        // Dark background
-        ui.painter().rect_filled(full_rect, 0.0, theme.bg_void);
+        // Pure #000000 (NOT `theme.bg_void` which is `#0a0a0c`). The
+        // FFmpeg scope texture renders its interior in pure black, and
+        // a near-black-but-not-quite-black surround reads as a visible
+        // grey halo against the texture's true black — the axis-label
+        // column, the trace padding, and the strip above/below all
+        // pop out as "grey border" otherwise.
+        ui.painter().rect_filled(full_rect, 0.0, egui::Color32::BLACK);
 
         if is_vector {
             // Vectorscope: centered square, no scale

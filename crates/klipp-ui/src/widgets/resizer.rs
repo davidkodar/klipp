@@ -31,6 +31,19 @@ pub fn vertical_resizer(ui: &mut Ui, rect: Rect, theme: &KlippTheme) -> f32 {
 
 /// Draw a horizontal resizer strip and return the vertical drag delta.
 pub fn horizontal_resizer(ui: &mut Ui, rect: Rect, theme: &KlippTheme) -> f32 {
+    horizontal_resizer_with_idle_color(ui, rect, theme, theme.border)
+}
+
+/// Like [`horizontal_resizer`] but the idle 1 px line is painted in the
+/// given colour instead of the default `theme.border`. Callers adjacent
+/// to a black scope dock pass `theme.bg_void` so the resizer line
+/// blends into the scope's own background and reads as a flush edge.
+pub fn horizontal_resizer_with_idle_color(
+    ui: &mut Ui,
+    rect: Rect,
+    theme: &KlippTheme,
+    idle_color: egui::Color32,
+) -> f32 {
     let response = ui.allocate_rect(rect, Sense::drag());
     let painter = ui.painter();
 
@@ -42,7 +55,7 @@ pub fn horizontal_resizer(ui: &mut Ui, rect: Rect, theme: &KlippTheme) -> f32 {
         let center_y = rect.center().y.round();
         painter.line_segment(
             [egui::pos2(rect.left(), center_y), egui::pos2(rect.right(), center_y)],
-            egui::Stroke::new(1.0_f32, theme.border),
+            egui::Stroke::new(1.0_f32, idle_color),
         );
     }
 
