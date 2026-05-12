@@ -3,20 +3,9 @@ use crate::theme::KlippTheme;
 use klipp_engine::SharedFrameBuffer;
 use std::time::Instant;
 
-/// Mirror of `klipp_engine::scope_ffmpeg_enabled` for this dock — reads
-/// `KLIPP_SCOPE_FFMPEG` once and caches. Used to gate the in-tree CPU
-/// fallback when the FFmpeg path is the source of truth (otherwise
-/// every mode-switch click flashes a brief CPU-rendered frame in the
-/// old visual style before the engine catches up).
-fn scope_ffmpeg_enabled() -> bool {
-    use std::sync::OnceLock;
-    static FLAG: OnceLock<bool> = OnceLock::new();
-    *FLAG.get_or_init(|| {
-        std::env::var("KLIPP_SCOPE_FFMPEG")
-            .map(|v| !(v == "0" || v.eq_ignore_ascii_case("false")))
-            .unwrap_or(true)
-    })
-}
+// `scope_ffmpeg_enabled` removed during Phase 8 — the engine always
+// renders via libavfilter now and the legacy in-tree CPU fallback is
+// gone. See RECOVERY_SCOPES_INHOUSE.md for the legacy recovery path.
 
 /// Scope render result — either from GPU engine or CPU direct rendering.
 enum ScopeImage {
@@ -313,129 +302,57 @@ pub fn show_scopes(
     // ── Check for GPU-rendered scope texture from engine ──────────────────
     // Minimize mutex hold time: snapshot data, drop lock, then render CPU scopes outside lock
     let scope_result = {
-        // Phase 1: under lock — check staleness, grab GPU tex or snapshot frame data
-        enum ScopeAction {
-            None,
-            GpuReady(egui::ColorImage, u64),
-            CpuRender(Vec<u8>, u32, u32, u64),
-        }
-        let action = {
-            let fb = frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
-            if fb.width == 0 || fb.height == 0 || fb.data.is_empty() {
-                tracing::debug!("show_scopes mode={:?} mi={} → empty fb, skipping", mode, mi);
-                ScopeAction::None
-            } else {
-                let gen = fb.generation;
-                let tex_none = state.textures[mi].is_none();
-                let gen_diff = state.frame_generations[mi] != gen;
-                let size_diff = state.render_sizes[mi] != (fb.width as usize, render_h);
-                let settings_diff = state.last_settings_generation != state.settings_generation;
-                let stale = tex_none || gen_diff || size_diff || settings_diff;
-                tracing::debug!(
-                    "show_scopes mode={:?} mi={} stale={} tex_none={} gen_diff={} size_diff={} settings_diff={} sg={}/{} fb_tex_mode={}",
-                    mode, mi, stale, tex_none, gen_diff, size_diff, settings_diff,
-                    state.last_settings_generation, state.settings_generation,
-                    fb.scope_texture_mode
-                );
-
-                let throttled = is_playing && state.last_render_time
-                    .map_or(false, |t| t.elapsed().as_millis() < 80);
-                if stale && !throttled {
-                    // Look up the per-mode entry first — this avoids the
-                    // click-twice mode-switch race where `scope_texture_mode`
-                    // (singular) still held the OLD mode because the engine
-                    // hadn't yet processed `SetScopeRenderMode`. The map
-                    // is keyed by mode byte, so the entry for the requested
-                    // `mi` is either fresh (engine already rendered it) or
-                    // absent (fall through to legacy singular fields, then
-                    // CPU). Each mode keeps its own slot — no comparison race.
-                    let map_entry = fb.scope_textures.get(&(mi as u8));
-                    let mode_tex = map_entry.filter(|e| !e.data.is_empty() && e.w > 0);
-                    let has_gpu_tex_singular = mode_tex.is_none()
-                        && !fb.scope_texture.is_empty()
-                        && fb.scope_texture_w > 0
-                        && fb.scope_texture_mode == mi as u8;
-                    if let Some(entry) = mode_tex {
-                        let pixels: Vec<egui::Color32> = entry.data.chunks_exact(4)
-                            .map(|c| egui::Color32::from_rgba_premultiplied(c[0], c[1], c[2], c[3]))
-                            .collect();
-                        let image = egui::ColorImage {
-                            size: [entry.w as usize, entry.h as usize],
-                            pixels,
-                        };
-                        ScopeAction::GpuReady(image, gen)
-                    } else if has_gpu_tex_singular {
-                        let pixels: Vec<egui::Color32> = fb.scope_texture.chunks_exact(4)
-                            .map(|c| egui::Color32::from_rgba_premultiplied(c[0], c[1], c[2], c[3]))
-                            .collect();
-                        let image = egui::ColorImage {
-                            size: [fb.scope_texture_w as usize, fb.scope_texture_h as usize],
-                            pixels,
-                        };
-                        ScopeAction::GpuReady(image, gen)
-                    } else if scope_ffmpeg_enabled() {
-                        // FFmpeg path is the source of truth — falling back
-                        // to the in-tree CPU renderer would paint a brief
-                        // flash of the old visual style on every mode-switch
-                        // click (engine takes one tick to publish the new
-                        // mode's texture into `fb.scope_textures`). Showing
-                        // the previously cached UI texture (or nothing on
-                        // first view) until the engine catches up is the
-                        // less jarring behaviour.
-                        ScopeAction::None
-                    } else {
-                        // Snapshot frame data — drop lock before CPU render
-                        let (data, w, h) = if !fb.scope_preview.is_empty() && fb.scope_preview_w > 0 {
-                            (fb.scope_preview.clone(), fb.scope_preview_w, fb.scope_preview_h)
-                        } else {
-                            (fb.data.clone(), fb.width, fb.height)
-                        };
-                        ScopeAction::CpuRender(data, w, h, gen)
-                    }
+        // Read the engine-published per-mode scope texture from the
+        // frame buffer. The legacy CPU fallback (ScopeAction::CpuRender)
+        // was removed in Phase 8 — the FFmpeg path is the sole renderer.
+        // On a never-rendered-yet mode (first tab visit) we return None
+        // so the dock displays its previously cached texture (or nothing)
+        // until the engine catches up on its next tick.
+        let _ = (skin_tone_angle, quality); // legacy CPU params; kept on the signature for API stability
+        let fb = frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
+        if fb.width == 0 || fb.height == 0 || fb.data.is_empty() {
+            None
+        } else {
+            let gen = fb.generation;
+            let tex_none = state.textures[mi].is_none();
+            let gen_diff = state.frame_generations[mi] != gen;
+            let size_diff = state.render_sizes[mi] != (fb.width as usize, render_h);
+            let settings_diff = state.last_settings_generation != state.settings_generation;
+            let stale = tex_none || gen_diff || size_diff || settings_diff;
+            let throttled = is_playing && state.last_render_time
+                .map_or(false, |t| t.elapsed().as_millis() < 80);
+            if stale && !throttled {
+                let map_entry = fb.scope_textures.get(&(mi as u8));
+                let mode_tex = map_entry.filter(|e| !e.data.is_empty() && e.w > 0);
+                if let Some(entry) = mode_tex {
+                    let pixels: Vec<egui::Color32> = entry.data.chunks_exact(4)
+                        .map(|c| egui::Color32::from_rgba_premultiplied(c[0], c[1], c[2], c[3]))
+                        .collect();
+                    let image = egui::ColorImage {
+                        size: [entry.w as usize, entry.h as usize],
+                        pixels,
+                    };
+                    Some((ScopeImage::Ready(image), gen))
+                } else if !fb.scope_texture.is_empty()
+                    && fb.scope_texture_w > 0
+                    && fb.scope_texture_mode == mi as u8
+                {
+                    // Back-compat singular fields (still populated by
+                    // `write_scope_tex_to_fb` for the main-dock back-
+                    // compat path during the multi-mode rollout).
+                    let pixels: Vec<egui::Color32> = fb.scope_texture.chunks_exact(4)
+                        .map(|c| egui::Color32::from_rgba_premultiplied(c[0], c[1], c[2], c[3]))
+                        .collect();
+                    let image = egui::ColorImage {
+                        size: [fb.scope_texture_w as usize, fb.scope_texture_h as usize],
+                        pixels,
+                    };
+                    Some((ScopeImage::Ready(image), gen))
                 } else {
-                    ScopeAction::None
+                    None
                 }
-            }
-        }; // lock dropped here
-
-        // Phase 2: outside lock — CPU scope rendering (no mutex contention)
-        match action {
-            ScopeAction::None => None,
-            ScopeAction::GpuReady(image, gen) => Some((ScopeImage::Ready(image), gen)),
-            ScopeAction::CpuRender(src, w, h, gen) => {
-                // CPU scope path runs when the engine's GPU scope texture
-                // isn't available — notably during media-browser hover skim
-                // and timeline scrub (write_skim_frame clears the GPU scope
-                // texture so stale playback scopes don't linger).
-                //
-                // The step decimates pixels in histogram + vectorscope to
-                // keep CPU cost bounded. Previous values (step=2/3/4) made
-                // skim scopes look noticeably sparser than the full-res GPU
-                // playback scopes. Use step=1 for HD-and-smaller frames
-                // (typical skim resolution) — vectorscope and histogram are
-                // cheap enough at 1080p; only step up at 4K+ where the per-
-                // pixel cost actually matters.
-                let step: u32 = if w > 2560 { 3 } else if w > 1920 { 2 } else { 1 };
-                let render_w = w as usize;
-                // Build the Gaussian splat kernel once per render. Quality
-                // tier picks the kernel size + σ — Low is single-pixel
-                // (legacy "graph paper" look), Medium/High deposit a
-                // soft Gaussian footprint per data point so traces
-                // accumulate as energy clouds rather than rasterised pixels.
-                let splat_kernel = SplatKernel::for_quality(quality);
-                let image = match mode {
-                    ScopeMode::Waveform => render_waveform_direct(&src, w, h, render_w, render_h, &splat_kernel),
-                    ScopeMode::Parade => render_parade_direct(&src, w, h, render_w, render_h, &splat_kernel),
-                    ScopeMode::Histogram => {
-                        let hist = klipp_color::scopes::compute_histogram_sampled(&src, w, h, step);
-                        // Histogram bars are pixel-aligned solid rects, not
-                        // point clouds — splatting wouldn't help, the
-                        // existing add() path is correct here.
-                        render_histogram_from_bins(&hist.r, &hist.g, &hist.b, &hist.luma, render_w, render_h)
-                    }
-                    ScopeMode::Vectorscope => render_vectorscope(&src, w, h, step, render_w, render_h, skin_tone_angle, false, &splat_kernel),
-                };
-                Some((ScopeImage::Ready(image), gen))
+            } else {
+                None
             }
         }
     };

@@ -7,23 +7,9 @@ use crate::theme::KlippTheme;
 use klipp_engine::SharedFrameBuffer;
 use std::time::Instant;
 
-/// Mirror of `klipp_engine::scope_ffmpeg_enabled` for the UI side —
-/// reads `KLIPP_SCOPE_FFMPEG` once and caches. Used by the floating
-/// scope window to decide whether to lift per-pane textures out of
-/// `fb.scope_textures` (engine-rendered via libavfilter) or fall
-/// through to the legacy in-thread CPU scope renderers.
-///
-/// **Default ON.** Set `KLIPP_SCOPE_FFMPEG=0` (or `false`) to opt back
-/// into the legacy CPU renderer.
-fn scope_ffmpeg_enabled() -> bool {
-    use std::sync::OnceLock;
-    static FLAG: OnceLock<bool> = OnceLock::new();
-    *FLAG.get_or_init(|| {
-        std::env::var("KLIPP_SCOPE_FFMPEG")
-            .map(|v| !(v == "0" || v.eq_ignore_ascii_case("false")))
-            .unwrap_or(true)
-    })
-}
+// `scope_ffmpeg_enabled` removed during Phase 8 — the engine always
+// renders via libavfilter now; see RECOVERY_SCOPES_INHOUSE.md for the
+// legacy recovery path.
 
 /// Runtime state for the floating scope window (not serialized).
 pub struct ScopeWindowRuntime {
@@ -545,16 +531,14 @@ fn render_pane_scope(
                 .map_or(false, |t| t.elapsed().as_millis() < 80);
 
             if stale && !throttled {
-                // FFmpeg path: when `KLIPP_SCOPE_FFMPEG=1` is on AND
-                // the engine has published a rendered texture for this
-                // pane's mode in the per-mode map, lift it straight
-                // into an `egui::ColorImage` — skip the CPU scope
-                // renderer entirely. Falls through to the legacy CPU
-                // path for CIEChromaticity (no FFmpeg equivalent) and
-                // when the engine hasn't yet rendered this mode in
-                // the current tick.
-                let ffmpeg_image: Option<egui::ColorImage> = if scope_ffmpeg_enabled() {
-                    pane.scope_type.to_scope_mode().and_then(|sm| {
+                // FFmpeg path is the only video-scope renderer now. Lift
+                // the engine-published texture from `fb.scope_textures`
+                // keyed on the pane's mode. CIE chromaticity is the one
+                // mode that still uses a CPU renderer — libavfilter has
+                // no equivalent gamut scope.
+                let ffmpeg_image: Option<egui::ColorImage> = pane.scope_type
+                    .to_scope_mode()
+                    .and_then(|sm| {
                         let mode_byte = match sm {
                             crate::state::ScopeMode::Waveform => 0u8,
                             crate::state::ScopeMode::Parade => 1,
@@ -567,66 +551,24 @@ fn render_pane_scope(
                                 &entry.data,
                             )
                         })
-                    })
+                    });
+
+                if let Some(image) = ffmpeg_image {
+                    Some((image, gen))
+                } else if pane.scope_type == ScopeType::CIEChromaticity {
+                    let (src, w, h) = (&fb.data[..], fb.width, fb.height);
+                    let render_w = (w as usize).min(960);
+                    let step: u32 = if w > 1280 { 4 } else if w > 640 { 3 } else { 2 };
+                    let image = super::scopes::render_cie_chromaticity(src, w, h, step, render_w, render_h);
+                    Some((image, gen))
                 } else {
+                    // Engine hasn't published this mode's FFmpeg texture
+                    // yet (first frame on a fresh pane, mode-switch).
+                    // Skip — the engine catches up on its next ~10 Hz
+                    // scope tick.
+                    let _ = (skin_tone_angle,); // formerly fed render_vectorscope
                     None
-                };
-
-                let (src, w, h) = (&fb.data[..], fb.width, fb.height);
-                let render_w = (w as usize).min(960); // Cap render width for perf
-                let step: u32 = if w > 1280 { 4 } else if w > 640 { 3 } else { 2 };
-                // Floating scope window doesn't carry its own quality
-                // setting — default to Medium so the soft-splat phosphor
-                // look is on by default. Per-pane quality knob is a
-                // future polish item.
-                let splat_kernel = super::scopes::SplatKernel::for_quality(
-                    klipp_core::ScopeQuality::Medium,
-                );
-
-                let image = if let Some(img) = ffmpeg_image { img } else { match pane.scope_type {
-                    ScopeType::Waveform => {
-                        super::scopes::render_waveform_channel(
-                            src, w, h, render_w, render_h,
-                            pane.settings.waveform_channel,
-                            pane.settings.colorize,
-                            pane.settings.waveform_paint_mode,
-                            &splat_kernel,
-                        )
-                    }
-                    ScopeType::Parade => {
-                        super::scopes::render_parade_direct(src, w, h, render_w, render_h, &splat_kernel)
-                    }
-                    ScopeType::Histogram => {
-                        let hist = klipp_color::scopes::compute_histogram_sampled(src, w, h, step);
-                        super::scopes::render_histogram_stacked(
-                            &hist.r, &hist.g, &hist.b,
-                            render_w, render_h,
-                            pane.settings.histogram_scale,
-                        )
-                    }
-                    ScopeType::Vectorscope => {
-                        super::scopes::render_vectorscope(
-                            src, w, h, step, render_w, render_h,
-                            skin_tone_angle,
-                            pane.settings.show_iq_lines,
-                            &splat_kernel,
-                        )
-                    }
-                    ScopeType::CIEChromaticity => {
-                        super::scopes::render_cie_chromaticity(src, w, h, step, render_w, render_h)
-                    }
-                    ScopeType::AudioSpectrum
-                    | ScopeType::AudioCorrelation
-                    | ScopeType::LoudnessHistory
-                    | ScopeType::Spectrogram => unreachable!(
-                        "audio-only scopes are rendered before the frame-buffer match"
-                    ),
-                } };
-                // Silence "unused" warnings for the CPU helpers when the
-                // FFmpeg path supplies the image and the match block is
-                // skipped — Rust still type-checks the bindings.
-                let _ = (src, w, h, render_w, step, &splat_kernel);
-                Some((image, gen))
+                }
             } else {
                 None
             }
