@@ -307,20 +307,49 @@ pub fn show_scopes(
         let action = {
             let fb = frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
             if fb.width == 0 || fb.height == 0 || fb.data.is_empty() {
+                tracing::debug!("show_scopes mode={:?} mi={} → empty fb, skipping", mode, mi);
                 ScopeAction::None
             } else {
                 let gen = fb.generation;
-                let stale = state.textures[mi].is_none()
-                    || state.frame_generations[mi] != gen
-                    || state.render_sizes[mi] != (fb.width as usize, render_h)
-                    || state.last_settings_generation != state.settings_generation;
+                let tex_none = state.textures[mi].is_none();
+                let gen_diff = state.frame_generations[mi] != gen;
+                let size_diff = state.render_sizes[mi] != (fb.width as usize, render_h);
+                let settings_diff = state.last_settings_generation != state.settings_generation;
+                let stale = tex_none || gen_diff || size_diff || settings_diff;
+                tracing::debug!(
+                    "show_scopes mode={:?} mi={} stale={} tex_none={} gen_diff={} size_diff={} settings_diff={} sg={}/{} fb_tex_mode={}",
+                    mode, mi, stale, tex_none, gen_diff, size_diff, settings_diff,
+                    state.last_settings_generation, state.settings_generation,
+                    fb.scope_texture_mode
+                );
 
                 let throttled = is_playing && state.last_render_time
                     .map_or(false, |t| t.elapsed().as_millis() < 80);
                 if stale && !throttled {
-                    let has_gpu_tex = !fb.scope_texture.is_empty() && fb.scope_texture_w > 0
+                    // Look up the per-mode entry first — this avoids the
+                    // click-twice mode-switch race where `scope_texture_mode`
+                    // (singular) still held the OLD mode because the engine
+                    // hadn't yet processed `SetScopeRenderMode`. The map
+                    // is keyed by mode byte, so the entry for the requested
+                    // `mi` is either fresh (engine already rendered it) or
+                    // absent (fall through to legacy singular fields, then
+                    // CPU). Each mode keeps its own slot — no comparison race.
+                    let map_entry = fb.scope_textures.get(&(mi as u8));
+                    let mode_tex = map_entry.filter(|e| !e.data.is_empty() && e.w > 0);
+                    let has_gpu_tex_singular = mode_tex.is_none()
+                        && !fb.scope_texture.is_empty()
+                        && fb.scope_texture_w > 0
                         && fb.scope_texture_mode == mi as u8;
-                    if has_gpu_tex {
+                    if let Some(entry) = mode_tex {
+                        let pixels: Vec<egui::Color32> = entry.data.chunks_exact(4)
+                            .map(|c| egui::Color32::from_rgba_premultiplied(c[0], c[1], c[2], c[3]))
+                            .collect();
+                        let image = egui::ColorImage {
+                            size: [entry.w as usize, entry.h as usize],
+                            pixels,
+                        };
+                        ScopeAction::GpuReady(image, gen)
+                    } else if has_gpu_tex_singular {
                         let pixels: Vec<egui::Color32> = fb.scope_texture.chunks_exact(4)
                             .map(|c| egui::Color32::from_rgba_premultiplied(c[0], c[1], c[2], c[3]))
                             .collect();

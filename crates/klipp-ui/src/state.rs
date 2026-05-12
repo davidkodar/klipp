@@ -1615,6 +1615,18 @@ pub struct AppState {
     pub scope_show_g: bool,
     pub scope_show_b: bool,
     pub scope_low_pass: bool,
+    /// FFmpeg vectorscope `mode=` choice. Gray / Color / Color2..5.
+    /// Color3 is the in-tree default; pros may prefer Color2 / Color4
+    /// for different gamut visualisation. UI: dropdown in scope-settings
+    /// popover.
+    pub scope_vectorscope_mode: klipp_core::VectorscopeMode,
+    /// FFmpeg histogram `display_mode=`. Parade is the default (per-channel
+    /// columns); Stack overlays them vertically; Overlay alphas them on
+    /// top of each other.
+    pub scope_histogram_display: klipp_core::HistogramDisplayMode,
+    /// FFmpeg histogram `levels_mode=`. Linear is the default; Logarithmic
+    /// reveals shadow detail at the cost of highlight resolution.
+    pub scope_histogram_levels: klipp_core::HistogramLevels,
     pub scope_bloom: bool,
     pub scope_settings_open: bool,
     /// Floating scope window state.
@@ -3201,6 +3213,9 @@ impl Default for AppState {
             scope_show_g: true,
             scope_show_b: true,
             scope_low_pass: false,
+            scope_vectorscope_mode: klipp_core::VectorscopeMode::Color3,
+            scope_histogram_display: klipp_core::HistogramDisplayMode::Parade,
+            scope_histogram_levels: klipp_core::HistogramLevels::Linear,
             scope_bloom: true,
             scope_settings_open: false,
             scope_window: ScopeWindowState::default(),

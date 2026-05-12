@@ -225,6 +225,18 @@ pub struct KlippApp {
     /// engine command channel at UI fps rate — ~120 commands/sec of
     /// no-op work).
     last_sent_scope_mode: Option<u8>,
+    /// Last `SetActiveScopeModes` payload sent to the engine. Tracks the
+    /// union of (main dock active mode) ∪ (each floating-window pane's
+    /// video scope mode). Re-sent only when the union changes —
+    /// floating-window open/close, layout swap, or per-pane mode picks.
+    last_sent_active_scope_modes: Option<std::collections::BTreeSet<u8>>,
+    /// Last `SetScopeFfmpegSettings` payload sent to the engine. Tracks
+    /// the union of low-pass / quality / R-G-B toggles. Re-sent only on
+    /// change so settings-popover idle traffic doesn't churn the engine.
+    last_sent_scope_ffmpeg_settings: Option<klipp_core::ScopeFfmpegSettings>,
+    /// Last `SetScopeBloom` value sent to the engine. Tracks the scope
+    /// bloom toggle so the publish fires only on change.
+    last_sent_scope_bloom: Option<bool>,
     /// Same change-tracking pattern as `last_sent_scope_mode` for the
     /// scope-panel visibility flag. The engine uses this to skip the
     /// per-frame `linear_rgba_to_u8` re-encode and the GPU scope
@@ -457,6 +469,9 @@ impl KlippApp {
             last_scope_preview_refresh: std::time::Instant::now()
                 - std::time::Duration::from_secs(1),
             last_sent_scope_mode: None,
+            last_sent_active_scope_modes: None,
+            last_sent_scope_ffmpeg_settings: None,
+            last_sent_scope_bloom: None,
             last_sent_scopes_visible: None,
             theme,
             theme_registry,
@@ -25109,6 +25124,87 @@ impl eframe::App for KlippApp {
                 let _ = self.cmd_tx.send(AppCommand::SetScopeRenderMode { mode: mode_byte });
                 self.last_sent_scope_mode = Some(mode_byte);
             }
+
+            // Publish the union of all video scope modes the UI needs
+            // rendered per tick: dock mode + every floating-window pane
+            // whose `ScopeType` maps to a video scope. Audio scopes and
+            // CIE chromaticity don't go through the engine FFmpeg path
+            // (they're rendered in the UI thread directly), so they're
+            // excluded from the set. Re-sent only on change so the engine
+            // command channel doesn't churn.
+            let mut active: std::collections::BTreeSet<u8> =
+                std::collections::BTreeSet::new();
+            active.insert(mode_byte);
+            if self.state.scope_window.open {
+                for pane in &self.state.scope_window.panes {
+                    if let Some(sm) = pane.scope_type.to_scope_mode() {
+                        let pane_byte = match sm {
+                            crate::state::ScopeMode::Waveform => 0u8,
+                            crate::state::ScopeMode::Parade => 1,
+                            crate::state::ScopeMode::Vectorscope => 2,
+                            crate::state::ScopeMode::Histogram => 3,
+                        };
+                        active.insert(pane_byte);
+                    }
+                }
+            }
+            if self.last_sent_active_scope_modes.as_ref() != Some(&active) {
+                let _ = self.cmd_tx.send(AppCommand::SetActiveScopeModes {
+                    modes: active.clone(),
+                });
+                self.last_sent_active_scope_modes = Some(active);
+            }
+
+            // Publish FFmpeg-scope settings. Built from the existing
+            // global AppState toggles (legacy popover) until Phase 5
+            // adds dedicated per-mode UI. Same filter / channel / intensity
+            // applies to BOTH waveform and parade in this back-compat
+            // shape so flipping low-pass continues to feel global. Once
+            // Phase 5 lands the popover, per-mode fields move to
+            // AppState and this fallback construction drops.
+            let legacy_filter = if self.state.scope_low_pass {
+                klipp_core::WaveformFilter::Lowpass
+            } else {
+                klipp_core::WaveformFilter::Flat
+            };
+            let legacy_channels = klipp_core::ChannelMask {
+                r: self.state.scope_show_r,
+                g: self.state.scope_show_g,
+                b: self.state.scope_show_b,
+            };
+            let wp = klipp_core::WaveformParadeSettings {
+                filter: legacy_filter,
+                intensity_override: -1.0, // quality-tier default
+                channels: legacy_channels,
+            };
+            let ffmpeg_settings = klipp_core::ScopeFfmpegSettings {
+                waveform: wp,
+                parade: wp,
+                vectorscope: klipp_core::VectorscopeSettings {
+                    mode: self.state.scope_vectorscope_mode,
+                },
+                histogram: klipp_core::HistogramSettings {
+                    display_mode: self.state.scope_histogram_display,
+                    levels: self.state.scope_histogram_levels,
+                },
+                quality: self.state.scope_quality,
+            };
+            if self.last_sent_scope_ffmpeg_settings != Some(ffmpeg_settings) {
+                let _ = self.cmd_tx.send(AppCommand::SetScopeFfmpegSettings {
+                    settings: ffmpeg_settings,
+                });
+                self.last_sent_scope_ffmpeg_settings = Some(ffmpeg_settings);
+            }
+
+            // Bloom toggle — separate post-pass concern (not an FFmpeg
+            // spec knob), so a separate command + sentinel pair.
+            let bloom_enabled = self.state.scope_bloom;
+            if self.last_sent_scope_bloom != Some(bloom_enabled) {
+                let _ = self.cmd_tx.send(AppCommand::SetScopeBloom {
+                    enabled: bloom_enabled,
+                });
+                self.last_sent_scope_bloom = Some(bloom_enabled);
+            }
         }
 
         // Sync scope-panel visibility to the engine — same change-
@@ -31051,6 +31147,45 @@ impl KlippApp {
                     ui.radio_value(&mut self.state.scope_scale, ScopeScale::TenBit, "0 \u{2013} 1023 (10-bit)");
                     ui.radio_value(&mut self.state.scope_scale, ScopeScale::Ire, "0 \u{2013} 100 IRE");
                     ui.radio_value(&mut self.state.scope_scale, ScopeScale::Percent, "0 \u{2013} 100%");
+
+                    // Per-mode FFmpeg options — only meaningful when the
+                    // FFmpeg path is the active renderer (KLIPP_SCOPE_FFMPEG=1).
+                    // Section appears unconditionally because the values
+                    // persist across path swaps and we don't want them to
+                    // jump around when the user toggles the env flag.
+                    ui.add_space(4.0);
+                    ui.label(egui::RichText::new("VECTORSCOPE").size(9.0).color(theme.text_dim).strong());
+                    egui::ComboBox::from_id_salt("scope_vectorscope_mode")
+                        .selected_text(match self.state.scope_vectorscope_mode {
+                            klipp_core::VectorscopeMode::Gray => "Gray",
+                            klipp_core::VectorscopeMode::Color => "Color",
+                            klipp_core::VectorscopeMode::Color2 => "Color 2",
+                            klipp_core::VectorscopeMode::Color3 => "Color 3 (default)",
+                            klipp_core::VectorscopeMode::Color4 => "Color 4",
+                            klipp_core::VectorscopeMode::Color5 => "Color 5",
+                        })
+                        .width(170.0)
+                        .show_ui(ui, |ui| {
+                            for (mode, label) in [
+                                (klipp_core::VectorscopeMode::Gray, "Gray"),
+                                (klipp_core::VectorscopeMode::Color, "Color"),
+                                (klipp_core::VectorscopeMode::Color2, "Color 2"),
+                                (klipp_core::VectorscopeMode::Color3, "Color 3 (default)"),
+                                (klipp_core::VectorscopeMode::Color4, "Color 4"),
+                                (klipp_core::VectorscopeMode::Color5, "Color 5"),
+                            ] {
+                                ui.selectable_value(&mut self.state.scope_vectorscope_mode, mode, label);
+                            }
+                        });
+
+                    ui.add_space(4.0);
+                    ui.label(egui::RichText::new("HISTOGRAM").size(9.0).color(theme.text_dim).strong());
+                    ui.radio_value(&mut self.state.scope_histogram_display, klipp_core::HistogramDisplayMode::Parade, "Parade");
+                    ui.radio_value(&mut self.state.scope_histogram_display, klipp_core::HistogramDisplayMode::Stack, "Stack");
+                    ui.radio_value(&mut self.state.scope_histogram_display, klipp_core::HistogramDisplayMode::Overlay, "Overlay");
+                    ui.add_space(2.0);
+                    ui.radio_value(&mut self.state.scope_histogram_levels, klipp_core::HistogramLevels::Linear, "Linear levels");
+                    ui.radio_value(&mut self.state.scope_histogram_levels, klipp_core::HistogramLevels::Logarithmic, "Logarithmic levels");
                 });
             });
 

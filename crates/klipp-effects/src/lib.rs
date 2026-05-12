@@ -43,7 +43,7 @@ pub mod frei0r_effect;
 pub mod gpu;
 pub mod gpu_context;
 pub mod gpu_scopes;
-mod light;
+pub mod light;
 pub mod nv12_gpu;
 pub mod p010_gpu;
 mod opacity;

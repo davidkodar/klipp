@@ -1,4 +1,20 @@
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+
+/// One rendered scope texture, keyed by mode in [`FrameBuffer::scope_textures`].
+///
+/// The map lets the engine publish multiple scope outputs in parallel
+/// per tick — required for the floating multi-scope window where each
+/// pane shows a different mode. `generation` bumps whenever the entry
+/// is rewritten so the UI can short-circuit re-upload of unchanged
+/// textures (same shape as `FrameBuffer::generation`).
+#[derive(Clone)]
+pub struct ScopeTextureEntry {
+    pub data: Vec<u8>,
+    pub w: u32,
+    pub h: u32,
+    pub generation: u64,
+}
 
 pub struct FrameBuffer {
     pub data: Vec<u8>,
@@ -23,11 +39,20 @@ pub struct FrameBuffer {
     pub scope_preview_w: u32,
     pub scope_preview_h: u32,
     /// GPU-rendered scope texture (RGBA) — ready for display.
+    /// Legacy singular-scope path: holds whichever mode the main dock
+    /// most recently requested. Kept for back-compat with the in-tree
+    /// GPU/CPU path readers; new code should prefer `scope_textures`.
     pub scope_texture: Vec<u8>,
     pub scope_texture_w: u32,
     pub scope_texture_h: u32,
     /// Which scope mode was rendered (0=waveform, 1=parade, 2=vectorscope, 3=histogram).
     pub scope_texture_mode: u8,
+    /// Per-mode rendered scope textures, keyed by mode byte. Engine
+    /// populates one entry per mode in `active_scope_modes` each tick.
+    /// Main dock reads its single active mode; floating multi-scope
+    /// window panes each read their own mode. Replaces the per-pane
+    /// in-UI-thread scope rendering that bypassed the engine entirely.
+    pub scope_textures: HashMap<u8, ScopeTextureEntry>,
     pub width: u32,
     pub height: u32,
     pub dirty: bool,
@@ -94,6 +119,7 @@ impl FrameBuffer {
             scope_texture_w: 0,
             scope_texture_h: 0,
             scope_texture_mode: 255, // invalid = no texture
+            scope_textures: HashMap::new(),
             width,
             height,
             dirty: false,

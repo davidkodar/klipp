@@ -98,7 +98,206 @@ impl ScopeQuality {
             Self::High => (0.0, 1.8),
         }
     }
+
+    /// FFmpeg scope input downsample dimensions for this quality tier.
+    /// Lower quality feeds a smaller frame to the filter graph so the
+    /// internal histogram cost scales with the user's perf budget.
+    pub fn ffmpeg_downsample(&self) -> (u32, u32) {
+        match self {
+            Self::Low => (320, 180),
+            Self::Medium => (640, 360),
+            Self::High => (960, 540),
+        }
+    }
+
+    /// FFmpeg waveform `intensity` parameter for this quality tier.
+    /// Higher quality compensates the denser sampling so bright peaks
+    /// don't oversaturate at higher resolutions.
+    pub fn ffmpeg_intensity(&self) -> f32 {
+        match self {
+            Self::Low => 0.04,
+            Self::Medium => 0.08,
+            Self::High => 0.16,
+        }
+    }
 }
+
+/// Filter algorithm for the libavfilter `waveform` filter (waveform +
+/// parade modes share this knob). Each value names exactly the
+/// FFmpeg `filter=` keyword so the spec builder is a 1:1 translation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum WaveformFilter {
+    /// `filter=lowpass` — soft column blur, gradient look. Default.
+    #[default]
+    Lowpass,
+    /// `filter=flat` — raw column-density dot histogram, sparse look.
+    Flat,
+    /// `filter=aflat` — anti-aliased flat, smoother trace edges.
+    Aflat,
+    /// `filter=chroma` — only the chroma planes, luma muted.
+    Chroma,
+    /// `filter=color` — per-pixel colour painting modulated by source.
+    Color,
+    /// `filter=acolor` — anti-aliased colour painting.
+    Acolor,
+}
+
+impl WaveformFilter {
+    pub fn keyword(&self) -> &'static str {
+        match self {
+            Self::Lowpass => "lowpass",
+            Self::Flat => "flat",
+            Self::Aflat => "aflat",
+            Self::Chroma => "chroma",
+            Self::Color => "color",
+            Self::Acolor => "acolor",
+        }
+    }
+}
+
+/// Per-channel visibility for waveform & parade. Translates to FFmpeg's
+/// `components=` bitmask (R=4, G=2, B=1). At least one channel is
+/// forced on so the filter graph parses cleanly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChannelMask {
+    pub r: bool,
+    pub g: bool,
+    pub b: bool,
+}
+
+impl Default for ChannelMask {
+    fn default() -> Self { Self { r: true, g: true, b: true } }
+}
+
+impl ChannelMask {
+    pub fn to_components(&self) -> u8 {
+        let mut m = 0u8;
+        if self.r { m |= 4; }
+        if self.g { m |= 2; }
+        if self.b { m |= 1; }
+        if m == 0 { 1 } else { m }
+    }
+}
+
+/// Settings for waveform & parade modes (same shape — both are
+/// libavfilter `waveform` filter invocations with different `display=`
+/// values which the spec builder injects automatically). `intensity`
+/// floors at the quality-tier value so a Draft preset with intensity 0.4
+/// can't out-blow a Full preset's 0.16 by accident.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct WaveformParadeSettings {
+    pub filter: WaveformFilter,
+    /// Per-mode override of the quality-tier intensity. Negative ⇒ use
+    /// the tier default. Positive ⇒ direct override.
+    pub intensity_override: f32,
+    pub channels: ChannelMask,
+}
+
+impl Default for WaveformParadeSettings {
+    fn default() -> Self {
+        Self {
+            filter: WaveformFilter::Lowpass,
+            intensity_override: -1.0,
+            channels: ChannelMask::default(),
+        }
+    }
+}
+
+// f32 fields prevent the derive — implement Eq manually so the type can
+// live in HashMap/BTreeSet keys if ever needed.
+impl Eq for WaveformParadeSettings {}
+
+/// libavfilter `vectorscope` `mode=` choice. The "color" variants paint
+/// the trace in per-pixel input colour; higher numbers are saturation-
+/// boosted blends. `gray` is luma-only (rarely useful for grading).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum VectorscopeMode {
+    Gray,
+    Color,
+    Color2,
+    #[default]
+    Color3,
+    Color4,
+    Color5,
+}
+
+impl VectorscopeMode {
+    pub fn keyword(&self) -> &'static str {
+        match self {
+            Self::Gray => "gray",
+            Self::Color => "color",
+            Self::Color2 => "color2",
+            Self::Color3 => "color3",
+            Self::Color4 => "color4",
+            Self::Color5 => "color5",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct VectorscopeSettings {
+    pub mode: VectorscopeMode,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum HistogramDisplayMode {
+    #[default]
+    Parade,
+    Stack,
+    Overlay,
+}
+
+impl HistogramDisplayMode {
+    pub fn keyword(&self) -> &'static str {
+        match self {
+            Self::Parade => "parade",
+            Self::Stack => "stack",
+            Self::Overlay => "overlay",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum HistogramLevels {
+    #[default]
+    Linear,
+    Logarithmic,
+}
+
+impl HistogramLevels {
+    pub fn keyword(&self) -> &'static str {
+        match self {
+            Self::Linear => "linear",
+            Self::Logarithmic => "logarithmic",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct HistogramSettings {
+    pub display_mode: HistogramDisplayMode,
+    pub levels: HistogramLevels,
+}
+
+/// Per-mode runtime settings for the FFmpeg scope pipeline. Replaces
+/// the global Phase-3 toggles: each scope mode can now run a different
+/// filter, intensity, and (for waveform/parade) channel mask. Quality
+/// stays global because it's a perf-budget knob, not a per-mode visual
+/// choice. Plumbed engine → bank → spec builder; a change triggers a
+/// per-mode filter-graph rebuild on the next render.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Default)]
+pub struct ScopeFfmpegSettings {
+    pub waveform: WaveformParadeSettings,
+    pub parade: WaveformParadeSettings,
+    pub vectorscope: VectorscopeSettings,
+    pub histogram: HistogramSettings,
+    /// Global perf preset — drives input downsample + the
+    /// fallback intensity used when a per-mode `intensity_override`
+    /// is negative.
+    pub quality: ScopeQuality,
+}
+
+impl Eq for ScopeFfmpegSettings {}
 
 /// GPU device preference for wgpu adapter selection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]

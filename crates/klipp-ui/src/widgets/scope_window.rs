@@ -7,6 +7,21 @@ use crate::theme::KlippTheme;
 use klipp_engine::SharedFrameBuffer;
 use std::time::Instant;
 
+/// Mirror of `klipp_engine::scope_ffmpeg_enabled` for the UI side —
+/// reads `KLIPP_SCOPE_FFMPEG` once and caches. Used by the floating
+/// scope window to decide whether to lift per-pane textures out of
+/// `fb.scope_textures` (engine-rendered via libavfilter) or fall
+/// through to the legacy in-thread CPU scope renderers.
+fn scope_ffmpeg_enabled() -> bool {
+    use std::sync::OnceLock;
+    static FLAG: OnceLock<bool> = OnceLock::new();
+    *FLAG.get_or_init(|| {
+        std::env::var("KLIPP_SCOPE_FFMPEG")
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false)
+    })
+}
+
 /// Runtime state for the floating scope window (not serialized).
 pub struct ScopeWindowRuntime {
     /// One texture per pane slot (max 9 panes).
@@ -521,6 +536,33 @@ fn render_pane_scope(
                 .map_or(false, |t| t.elapsed().as_millis() < 80);
 
             if stale && !throttled {
+                // FFmpeg path: when `KLIPP_SCOPE_FFMPEG=1` is on AND
+                // the engine has published a rendered texture for this
+                // pane's mode in the per-mode map, lift it straight
+                // into an `egui::ColorImage` — skip the CPU scope
+                // renderer entirely. Falls through to the legacy CPU
+                // path for CIEChromaticity (no FFmpeg equivalent) and
+                // when the engine hasn't yet rendered this mode in
+                // the current tick.
+                let ffmpeg_image: Option<egui::ColorImage> = if scope_ffmpeg_enabled() {
+                    pane.scope_type.to_scope_mode().and_then(|sm| {
+                        let mode_byte = match sm {
+                            crate::state::ScopeMode::Waveform => 0u8,
+                            crate::state::ScopeMode::Parade => 1,
+                            crate::state::ScopeMode::Vectorscope => 2,
+                            crate::state::ScopeMode::Histogram => 3,
+                        };
+                        fb.scope_textures.get(&mode_byte).map(|entry| {
+                            egui::ColorImage::from_rgba_unmultiplied(
+                                [entry.w as usize, entry.h as usize],
+                                &entry.data,
+                            )
+                        })
+                    })
+                } else {
+                    None
+                };
+
                 let (src, w, h) = (&fb.data[..], fb.width, fb.height);
                 let render_w = (w as usize).min(960); // Cap render width for perf
                 let step: u32 = if w > 1280 { 4 } else if w > 640 { 3 } else { 2 };
@@ -532,7 +574,7 @@ fn render_pane_scope(
                     klipp_core::ScopeQuality::Medium,
                 );
 
-                let image = match pane.scope_type {
+                let image = if let Some(img) = ffmpeg_image { img } else { match pane.scope_type {
                     ScopeType::Waveform => {
                         super::scopes::render_waveform_channel(
                             src, w, h, render_w, render_h,
@@ -570,7 +612,11 @@ fn render_pane_scope(
                     | ScopeType::Spectrogram => unreachable!(
                         "audio-only scopes are rendered before the frame-buffer match"
                     ),
-                };
+                } };
+                // Silence "unused" warnings for the CPU helpers when the
+                // FFmpeg path supplies the image and the match block is
+                // skipped — Rust still type-checks the bindings.
+                let _ = (src, w, h, render_w, step, &splat_kernel);
                 Some((image, gen))
             } else {
                 None

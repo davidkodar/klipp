@@ -63,6 +63,10 @@ pub use snap::{GridInterval, SnapConfig, SnapTargetKind};
 pub use ofx_value::OfxValue;
 pub use types::{AudioEffectInstance, BlendMode, ChannelConfig, ClipRole, ColorSpace, FadeCurve, FocalRef, FourPointGradient, GeneratorData, LogFormat, PixelFormat, Resolution, TimerFormat, TimerMode, TrackPoint, TransitionAlignment, TransitionUserParams};
 pub use transition_registry::{TransitionKind, TransitionSpec, TRANSITION_SPECS, spec_for_kind, spec_for_kind_id, spec_for_string_key};
-pub use config::{GpuPreference, LoudnessStandard, MeteringBallistics, PanLaw, PlaybackQuality, ScopeQuality};
+pub use config::{
+    ChannelMask, GpuPreference, HistogramDisplayMode, HistogramLevels, HistogramSettings,
+    LoudnessStandard, MeteringBallistics, PanLaw, PlaybackQuality, ScopeFfmpegSettings,
+    ScopeQuality, VectorscopeMode, VectorscopeSettings, WaveformFilter, WaveformParadeSettings,
+};
 pub use gpu_vendor::GpuVendor;
 pub use working_colorspace::WorkingColorspace;

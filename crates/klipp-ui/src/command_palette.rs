@@ -518,6 +518,20 @@ pub fn build(state: &AppState) -> Vec<PaletteEntry> {
         enabled: state.selected_clip.is_some() });
     e.push(PaletteEntry { label: Cow::Borrowed("Toggle Scopes"), shortcut: Cow::Borrowed("V"),
         action: PaletteAction::ToggleState(|s| s.show_scopes = !s.show_scopes), enabled: true });
+    e.push(PaletteEntry { label: Cow::Borrowed("Scope: Toggle Low-Pass Filter"), shortcut: Cow::Borrowed(""),
+        action: PaletteAction::ToggleState(|s| s.scope_low_pass = !s.scope_low_pass), enabled: true });
+    e.push(PaletteEntry { label: Cow::Borrowed("Scope: Toggle Bloom"), shortcut: Cow::Borrowed(""),
+        action: PaletteAction::ToggleState(|s| s.scope_bloom = !s.scope_bloom), enabled: true });
+    e.push(PaletteEntry { label: Cow::Borrowed("Scope: Histogram Linear Levels"), shortcut: Cow::Borrowed(""),
+        action: PaletteAction::ToggleState(|s| s.scope_histogram_levels = klipp_core::HistogramLevels::Linear), enabled: true });
+    e.push(PaletteEntry { label: Cow::Borrowed("Scope: Histogram Logarithmic Levels"), shortcut: Cow::Borrowed(""),
+        action: PaletteAction::ToggleState(|s| s.scope_histogram_levels = klipp_core::HistogramLevels::Logarithmic), enabled: true });
+    e.push(PaletteEntry { label: Cow::Borrowed("Scope: Reset FFmpeg Options"), shortcut: Cow::Borrowed(""),
+        action: PaletteAction::ToggleState(|s| {
+            s.scope_vectorscope_mode = klipp_core::VectorscopeMode::Color3;
+            s.scope_histogram_display = klipp_core::HistogramDisplayMode::Parade;
+            s.scope_histogram_levels = klipp_core::HistogramLevels::Linear;
+        }), enabled: true });
     e.push(PaletteEntry { label: Cow::Borrowed("Toggle Inspector Panel"), shortcut: Cow::Borrowed("Ctrl+Shift+I"),
         action: PaletteAction::ToggleState(|s| s.show_inspector_panel = !s.show_inspector_panel), enabled: true });
     e.push(PaletteEntry { label: Cow::Borrowed("Toggle Effects Browser"), shortcut: Cow::Borrowed("Ctrl+Shift+E"),

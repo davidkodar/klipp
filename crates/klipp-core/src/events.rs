@@ -1190,6 +1190,23 @@ pub enum AppCommand {
     SetScopeTapNode { clip_id: ClipId, node_id: Option<uuid::Uuid> },
     /// Set which scope mode the engine should render (0=waveform, 1=parade, 3=histogram).
     SetScopeRenderMode { mode: u8 },
+    /// Set the union of scope modes the UI currently needs rendered per tick.
+    /// Sum of (main dock active mode) + (every floating-window pane mode).
+    /// The engine renders every mode in this set on each scope tick and writes
+    /// the results into `FrameBuffer::scope_textures` keyed by mode.
+    /// Sent on UI-side change only (e.g. opening the floating window, adding a
+    /// pane, switching a pane's mode) — not every frame.
+    SetActiveScopeModes { modes: std::collections::BTreeSet<u8> },
+    /// Push current FFmpeg-scope settings (low-pass / quality / R-G-B mask)
+    /// to the engine. A settings change triggers a per-mode filter-graph
+    /// rebuild on the next scope tick. Sent on UI-side change only (button
+    /// click in the scope settings popover) — not every frame.
+    SetScopeFfmpegSettings { settings: crate::config::ScopeFfmpegSettings },
+    /// Push the scope bloom toggle to the engine. When enabled the engine
+    /// runs a threshold + Gaussian + additive composite on the rendered
+    /// waveform/parade scope textures so dense traces glow. Sent on
+    /// UI-side change only.
+    SetScopeBloom { enabled: bool },
     /// Tell the engine whether the scope panel is actually visible
     /// in the UI. The engine uses this to skip the per-frame
     /// `linear_rgba_to_u8` re-encode and the GPU scope shader pass —
