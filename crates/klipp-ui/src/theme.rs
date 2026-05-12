@@ -521,6 +521,11 @@ pub const INSPECTOR_DEFAULT_W: f32 = 230.0;
 pub const INSPECTOR_MIN_W: f32 = 120.0;
 pub const INSPECTOR_MAX_W: f32 = 800.0;
 pub const RESIZER_THICKNESS: f32 = 5.0;
+/// Height of the transport chrome below each viewer's video area
+/// (16-px scrub bar + 40-px playbar). Used by `layout.rs` so the
+/// video portion of the viewer can be sized to project aspect with
+/// the chrome reserved below it.
+pub const VIEWER_CHROME_HEIGHT: f32 = 56.0;
 pub const TRACK_VIDEO_H: f32 = 50.0;
 pub const TRACK_AUDIO_H: f32 = 48.0;
 pub const TRACK_TEXT_H: f32 = 32.0;

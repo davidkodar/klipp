@@ -161,6 +161,37 @@ impl ViewerPanel {
         // here.
         self.show_program_viewer(ui, state, theme, viewer_rect, &mut cmds);
 
+        // Scroll-zoom + middle-drag-pan over the video area. Allocated
+        // AFTER `show_program_viewer` so transform handles / on-canvas
+        // gizmos painted inside the viewer keep priority on LMB events.
+        let tex_size = self.video_texture.as_ref()
+            .map(|t| t.size_vec2())
+            .unwrap_or_else(|| {
+                state.media_pool.all().next()
+                    .map(|m| egui::vec2(m.resolution.width as f32, m.resolution.height as f32))
+                    .unwrap_or(egui::vec2(1920.0, 1080.0))
+            });
+        self.handle_viewer_zoom_pan_input(
+            ui,
+            state,
+            viewer_rect,
+            tex_size,
+            ViewerMode::Program,
+        );
+
+        // Floating "..." overflow menu in the video area's top-right
+        // corner — mirrors the Source side. Holds whatever the responsive
+        // playbar dropped at the current width plus zoom presets and the
+        // viewer overlay toggles.
+        self.draw_viewer_overflow_menu(
+            ui,
+            state,
+            theme,
+            viewer_rect,
+            ViewerMode::Program,
+            &mut cmds,
+        );
+
         // ── Scrub bar + Play bar (shared transport chrome) ──
         let chrome_rect = egui::Rect::from_min_size(
             egui::pos2(panel_rect.min.x, viewer_rect.max.y),
@@ -618,14 +649,26 @@ impl ViewerPanel {
         let video_aspect = video_w / video_h;
         let panel_aspect = viewer_rect.width() / viewer_rect.height();
 
-        let (display_w, display_h) = if video_aspect > panel_aspect {
-            (viewer_rect.width(), viewer_rect.width() / video_aspect)
+        // Honor the user's per-viewer zoom selection. `zoom == 0.0`
+        // means "fit to viewer" (the default and pro-NLE letterbox
+        // behavior). Any other value is a multiplier on the source's
+        // native pixel dimensions. Pan only applies in zoom-in mode;
+        // Fit always centers. The painter is clipped to `viewer_rect`
+        // below so high-zoom output doesn't bleed into chrome.
+        let view = state.program_view;
+        let (display_w, display_h) = if view.zoom <= 0.0 {
+            if video_aspect > panel_aspect {
+                (viewer_rect.width(), viewer_rect.width() / video_aspect)
+            } else {
+                (viewer_rect.height() * video_aspect, viewer_rect.height())
+            }
         } else {
-            (viewer_rect.height() * video_aspect, viewer_rect.height())
+            (video_w * view.zoom, video_h * view.zoom)
         };
 
+        let pan = if view.zoom <= 0.0 { egui::Vec2::ZERO } else { view.pan };
         let image_rect = egui::Rect::from_center_size(
-            viewer_rect.center(),
+            viewer_rect.center() + pan,
             egui::vec2(display_w, display_h),
         );
 
@@ -1523,7 +1566,10 @@ impl ViewerPanel {
             let image_id = self.gpu_texture_id
                 .or_else(|| self.video_texture.as_ref().map(|t| t.id()));
             if let Some(id) = image_id {
-                ui.painter().image(
+                // `painter_at(viewer_rect)` clips to the viewer's panel
+                // so high-zoom output stays inside it instead of spilling
+                // into the chrome row / neighbouring panels.
+                ui.painter_at(viewer_rect).image(
                     id,
                     image_rect,
                     egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
@@ -1536,7 +1582,7 @@ impl ViewerPanel {
         // Show it even during text edit mode so style changes are visible in real-time
         {
             if let Some(tex) = &self.title_overlay_texture {
-                ui.painter().image(
+                ui.painter_at(viewer_rect).image(
                     tex.id(),
                     image_rect,
                     egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
@@ -1957,30 +2003,74 @@ impl ViewerPanel {
             self.playbar_nav_btn(ui, Icon::SkipForward, x, cy, btn_size, enabled, nav_fg, nav_bg, nav_hover, disabled_fg, "Go to end (End)", cmds, Some(route(AppCommand::SeekTo(dur))));
         }
 
-        // ── Right side controls ──
-        // Layout from right edge:
-        //   [Vol% slot 36] gap(6) [Slider 60] gap(6) [Mute 20] gap(8) [Transform 20]
-        // Each element gets a fixed-width slot so neighbors can't overlap when
-        // the value text changes (e.g. "0%" vs "130%").
-        // Note: viewer zoom % was removed from here — it lives in the View menu
-        // (Window > Viewer Zoom) and the timeline ruler has its own Fit/+/-.
-        let rx = rect.max.x - 12.0;
+        // ── Right side controls ── (responsive)
+        //
+        // Layout right-to-left from `rect.max.x - 12`. Each control consumes
+        // its slot width plus a 6-px gap before the next leftward control.
+        // When the chrome rect is narrow (e.g. portrait-project viewers,
+        // ~470 px wide on a 1080p monitor) we'd otherwise march straight
+        // into the center transport group and overlap. So we keep controls
+        // in this priority order (most-essential first; the rest drop when
+        // the budget runs out):
+        //   1. Mute toggle               — audio is global, always reachable
+        //   2. Match-frame button        — pro NLE workflow control, kept
+        //                                  on both Source and Program sides
+        //   3. Volume slider             — fine adjust
+        //   4. Volume percentage         — cosmetic readout
+        //   5. Transform toggle (Program)
+        //   6. Camera/extract (Program)
+        let center_half_w = total_w / 2.0;
+        let center_pad = 8.0; // breathing room between center group + side group
+        let right_margin = 12.0;
+        let budget_right = (rect.width() / 2.0 - center_half_w - center_pad - right_margin).max(0.0);
+
+        let btn_w = 20.0;
+        let gap = 6.0;
+        let mute_slot = btn_w + gap;
+        let mf_slot = btn_w + gap;
+        let slider_slot = 60.0 + gap;
+        let vol_pct_slot = 36.0 + gap;
+        let xform_slot = btn_w + gap;
+        let cam_slot = btn_w + gap;
+
+        let mut remaining = budget_right;
+        let mut show_mute = false;
+        let mut show_mf = false;
+        let mut show_slider = false;
+        let mut show_vol_pct = false;
+        let mut show_xform = false;
+        let mut show_camera = false;
+        if remaining >= mute_slot { remaining -= mute_slot; show_mute = true; }
+        if remaining >= mf_slot { remaining -= mf_slot; show_mf = true; }
+        if remaining >= slider_slot { remaining -= slider_slot; show_slider = true; }
+        if remaining >= vol_pct_slot { remaining -= vol_pct_slot; show_vol_pct = true; }
+        if viewer_kind == ViewerMode::Program {
+            if remaining >= xform_slot { remaining -= xform_slot; show_xform = true; }
+            if remaining >= cam_slot { remaining -= cam_slot; show_camera = true; }
+        }
+        let _ = remaining; // suppress unused warning past the last conditional
+
+        // Walking cursor: the right edge of the next control we'll place
+        // (each placement also consumes a 6-px gap before the one to its
+        // left). Starts at the panel's right margin.
+        let mut cursor_right = rect.max.x - right_margin;
 
         // Volume percentage — fixed 36px slot at the far right.
-        let vol_pct = (state.master_volume * 100.0) as u32;
-        let vol_text = format!("{}%", vol_pct);
-        let vol_text_slot_w = 36.0_f32;
-        let vol_text_right = rx;
-        let vol_text_left = vol_text_right - vol_text_slot_w;
-        ui.painter().text(
-            egui::pos2(vol_text_right, cy),
-            egui::Align2::RIGHT_CENTER,
-            &vol_text,
-            egui::FontId::monospace(10.0),
-            theme.text_dim,
-        );
+        if show_vol_pct {
+            let vol_pct = (state.master_volume * 100.0) as u32;
+            let vol_text = format!("{}%", vol_pct);
+            ui.painter().text(
+                egui::pos2(cursor_right, cy),
+                egui::Align2::RIGHT_CENTER,
+                &vol_text,
+                egui::FontId::monospace(10.0),
+                theme.text_dim,
+            );
+            cursor_right -= 36.0 + gap;
+        }
 
-        // Volume slider — right edge sits 6px LEFT of the volume %'s left edge.
+        // Volume slider — 60px wide. When vol_pct is hidden, the slider
+        // shifts right to meet the panel edge.
         //
         // CRITICAL: egui::Slider's track width is governed by `spacing.slider_width`,
         // NOT by the parent UI's max_rect or by `add_sized`. The slider widget
@@ -1988,40 +2078,45 @@ impl ViewerPanel {
         // which ignores both the child UI's bounds and any size hint passed to
         // add_sized. The ONLY way to make the slider narrower is to mutate
         // `spacing_mut().slider_width` on the UI before adding the slider.
-        let slider_w = 60.0_f32;
-        let slider_h = 16.0_f32;
-        let slider_right = vol_text_left - 6.0;
-        let slider_rect = egui::Rect::from_min_size(
-            egui::pos2(slider_right - slider_w, cy - slider_h * 0.5),
-            egui::vec2(slider_w, slider_h),
-        );
-        let mut vol = state.master_volume;
-        let mut slider_ui = ui.new_child(egui::UiBuilder::new().max_rect(slider_rect));
-        slider_ui.spacing_mut().slider_width = slider_w;
-        let slider = egui::Slider::new(&mut vol, 0.0..=1.3).show_value(false);
-        if slider_ui.add(slider).changed() {
-            cmds.push(AppCommand::SetMasterVolume(vol));
+        if show_slider {
+            let slider_w = 60.0_f32;
+            let slider_h = 16.0_f32;
+            let slider_rect = egui::Rect::from_min_size(
+                egui::pos2(cursor_right - slider_w, cy - slider_h * 0.5),
+                egui::vec2(slider_w, slider_h),
+            );
+            let mut vol = state.master_volume;
+            let mut slider_ui = ui.new_child(egui::UiBuilder::new().max_rect(slider_rect));
+            slider_ui.spacing_mut().slider_width = slider_w;
+            let slider = egui::Slider::new(&mut vol, 0.0..=1.3).show_value(false);
+            if slider_ui.add(slider).changed() {
+                cmds.push(AppCommand::SetMasterVolume(vol));
+            }
+            cursor_right -= slider_w + gap;
         }
 
-        // Mute button
-        let mute_x = slider_rect.min.x - 22.0;
-        let mute_rect = egui::Rect::from_center_size(
-            egui::pos2(mute_x, cy),
-            egui::vec2(20.0, 20.0),
-        );
-        let mute_resp = ui.allocate_rect(mute_rect, egui::Sense::click())
-            .on_hover_text(if state.master_muted { "Unmute master output" } else { "Mute master output" });
-        let mute_icon = if state.master_muted { Icon::SpeakerSlash } else { Icon::SpeakerHigh };
-        let mute_color = if state.master_muted {
-            theme.marker_error
-        } else {
-            theme.text_secondary
-        };
-        let mute_icon_rect = egui::Rect::from_center_size(mute_rect.center(), egui::vec2(14.0, 14.0));
-        mute_icon.image(14.0).tint(mute_color).paint_at(ui, mute_icon_rect);
-        if mute_resp.clicked() {
-            let old = state.master_muted;
-            cmds.push(AppCommand::SetMasterMute(!old));
+        // Mute button — always shown when any right-side chrome fits.
+        if show_mute {
+            let mute_x = cursor_right - btn_w / 2.0;
+            let mute_rect = egui::Rect::from_center_size(
+                egui::pos2(mute_x, cy),
+                egui::vec2(btn_w, btn_w),
+            );
+            let mute_resp = ui.allocate_rect(mute_rect, egui::Sense::click())
+                .on_hover_text(if state.master_muted { "Unmute master output" } else { "Mute master output" });
+            let mute_icon = if state.master_muted { Icon::SpeakerSlash } else { Icon::SpeakerHigh };
+            let mute_color = if state.master_muted {
+                theme.marker_error
+            } else {
+                theme.text_secondary
+            };
+            let mute_icon_rect = egui::Rect::from_center_size(mute_rect.center(), egui::vec2(14.0, 14.0));
+            mute_icon.image(14.0).tint(mute_color).paint_at(ui, mute_icon_rect);
+            if mute_resp.clicked() {
+                let old = state.master_muted;
+                cmds.push(AppCommand::SetMasterMute(!old));
+            }
+            cursor_right -= btn_w + gap;
         }
 
         // Match Frame — appears on both viewers in the same slot;
@@ -2031,40 +2126,43 @@ impl ViewerPanel {
         // playhead and loads it in the source viewer. The Source
         // viewer's button jumps the program playhead to the next
         // timeline occurrence of the source frame.
-        let mf_x = mute_x - 26.0;
-        let (mf_cmd, mf_enabled, mf_tooltip) = match viewer_kind {
-            ViewerMode::Program => (
-                AppCommand::MatchFrameProgramToSource,
-                true, // playhead-resolution happens at handler time; toast on miss
-                "Match Frame — load source for program frame (F)",
-            ),
-            ViewerMode::Source => (
-                AppCommand::MatchFrameSourceToProgram,
-                state.source_media_id.is_some(),
-                "Match Frame — jump timeline to source frame (Shift+F)",
-            ),
-        };
-        let mf_rect = egui::Rect::from_center_size(
-            egui::pos2(mf_x, cy),
-            egui::vec2(20.0, 20.0),
-        );
-        let mf_resp = ui.allocate_rect(
-            mf_rect,
-            if mf_enabled { egui::Sense::click() } else { egui::Sense::hover() },
-        );
-        let mf_color = if !mf_enabled {
-            theme.text_dim
-        } else if mf_resp.hovered() {
-            theme.accent
-        } else {
-            theme.text_secondary
-        };
-        let mf_icon_rect = egui::Rect::from_center_size(mf_rect.center(), egui::vec2(14.0, 14.0));
-        Icon::FrameCorners.image(14.0).tint(mf_color).paint_at(ui, mf_icon_rect);
-        let mf_clicked = mf_resp.clicked();
-        mf_resp.on_hover_text(mf_tooltip);
-        if mf_clicked && mf_enabled {
-            cmds.push(mf_cmd);
+        if show_mf {
+            let mf_x = cursor_right - btn_w / 2.0;
+            let (mf_cmd, mf_enabled, mf_tooltip) = match viewer_kind {
+                ViewerMode::Program => (
+                    AppCommand::MatchFrameProgramToSource,
+                    true, // playhead-resolution happens at handler time; toast on miss
+                    "Match Frame — load source for program frame (F)",
+                ),
+                ViewerMode::Source => (
+                    AppCommand::MatchFrameSourceToProgram,
+                    state.source_media_id.is_some(),
+                    "Match Frame — jump timeline to source frame (Shift+F)",
+                ),
+            };
+            let mf_rect = egui::Rect::from_center_size(
+                egui::pos2(mf_x, cy),
+                egui::vec2(btn_w, btn_w),
+            );
+            let mf_resp = ui.allocate_rect(
+                mf_rect,
+                if mf_enabled { egui::Sense::click() } else { egui::Sense::hover() },
+            );
+            let mf_color = if !mf_enabled {
+                theme.text_dim
+            } else if mf_resp.hovered() {
+                theme.accent
+            } else {
+                theme.text_secondary
+            };
+            let mf_icon_rect = egui::Rect::from_center_size(mf_rect.center(), egui::vec2(14.0, 14.0));
+            Icon::FrameCorners.image(14.0).tint(mf_color).paint_at(ui, mf_icon_rect);
+            let mf_clicked = mf_resp.clicked();
+            mf_resp.on_hover_text(mf_tooltip);
+            if mf_clicked && mf_enabled {
+                cmds.push(mf_cmd);
+            }
+            cursor_right -= btn_w + gap;
         }
 
         // Transform-controls toggle and camera/extract-frame button are
@@ -2088,67 +2186,76 @@ impl ViewerPanel {
                         .find(|c| c.id == cid)
                 })
                 .is_some_and(|c| !matches!(c.kind, klipp_timeline::ClipKind::Gap));
-            let xform_x = mf_x - 26.0;
-            let xform_rect = egui::Rect::from_center_size(
-                egui::pos2(xform_x, cy),
-                egui::vec2(20.0, 20.0),
-            );
-            let xform_resp = ui.allocate_rect(xform_rect, egui::Sense::click());
-            let xform_color = if !xform_enabled {
-                theme.text_dim
-            } else if state.show_transform_controls {
-                theme.accent
-            } else {
-                theme.text_secondary
-            };
-            let stroke_w = if xform_enabled { 1.5 } else { 1.2 };
-            let ir = xform_rect.shrink(4.0);
-            ui.painter().rect_stroke(ir, 0.0, egui::Stroke::new(stroke_w, xform_color));
-            let cs = 2.0;
-            for corner in [ir.left_top(), ir.right_top(), ir.left_bottom(), ir.right_bottom()] {
-                ui.painter().rect_filled(
-                    egui::Rect::from_center_size(corner, egui::vec2(cs * 2.0, cs * 2.0)),
-                    0.0,
-                    xform_color,
+            if show_xform {
+                let xform_x = cursor_right - btn_w / 2.0;
+                let xform_rect = egui::Rect::from_center_size(
+                    egui::pos2(xform_x, cy),
+                    egui::vec2(btn_w, btn_w),
                 );
-            }
-            if xform_resp.clicked() {
-                if xform_enabled {
-                    state.show_transform_controls = !state.show_transform_controls;
+                let xform_resp = ui.allocate_rect(xform_rect, egui::Sense::click());
+                let xform_color = if !xform_enabled {
+                    theme.text_dim
+                } else if state.show_transform_controls {
+                    theme.accent
                 } else {
-                    state.toast.show("Select a video clip to use transform controls");
+                    theme.text_secondary
+                };
+                let stroke_w = if xform_enabled { 1.5 } else { 1.2 };
+                let ir = xform_rect.shrink(4.0);
+                ui.painter().rect_stroke(ir, 0.0, egui::Stroke::new(stroke_w, xform_color));
+                let cs = 2.0;
+                for corner in [ir.left_top(), ir.right_top(), ir.left_bottom(), ir.right_bottom()] {
+                    ui.painter().rect_filled(
+                        egui::Rect::from_center_size(corner, egui::vec2(cs * 2.0, cs * 2.0)),
+                        0.0,
+                        xform_color,
+                    );
                 }
-            }
-            xform_resp.on_hover_text(if xform_enabled {
-                "Toggle transform controls"
+                if xform_resp.clicked() {
+                    if xform_enabled {
+                        state.show_transform_controls = !state.show_transform_controls;
+                    } else {
+                        state.toast.show("Select a video clip to use transform controls");
+                    }
+                }
+                xform_resp.on_hover_text(if xform_enabled {
+                    "Toggle transform controls"
+                } else {
+                    "Select a clip to enable transform"
+                });
+                cursor_right -= btn_w + gap;
             } else {
-                "Select a clip to enable transform"
-            });
+                let _ = xform_enabled;
+            }
 
-            let cam_x = xform_x - 26.0;
-            let cam_rect = egui::Rect::from_center_size(
-                egui::pos2(cam_x, cy),
-                egui::vec2(20.0, 20.0),
-            );
-            let cam_resp = ui.allocate_rect(cam_rect, egui::Sense::click());
-            let cam_color = if cam_resp.hovered() {
-                theme.accent
-            } else {
-                theme.text_secondary
-            };
-            let body = cam_rect.shrink2(egui::vec2(3.0, 5.0));
-            ui.painter().rect_stroke(body, 2.0, egui::Stroke::new(1.2_f32, cam_color));
-            let bump = egui::Rect::from_center_size(
-                egui::pos2(cam_rect.center().x - 3.0, body.min.y - 1.5),
-                egui::vec2(5.0, 3.0),
-            );
-            ui.painter().rect_stroke(bump, 1.0, egui::Stroke::new(1.2_f32, cam_color));
-            ui.painter().circle_stroke(body.center(), 3.2, egui::Stroke::new(1.2_f32, cam_color));
-            if cam_resp.clicked() {
-                cmds.push(AppCommand::ExtractFrameToBin);
+            if show_camera {
+                let cam_x = cursor_right - btn_w / 2.0;
+                let cam_rect = egui::Rect::from_center_size(
+                    egui::pos2(cam_x, cy),
+                    egui::vec2(btn_w, btn_w),
+                );
+                let cam_resp = ui.allocate_rect(cam_rect, egui::Sense::click());
+                let cam_color = if cam_resp.hovered() {
+                    theme.accent
+                } else {
+                    theme.text_secondary
+                };
+                let body = cam_rect.shrink2(egui::vec2(3.0, 5.0));
+                ui.painter().rect_stroke(body, 2.0, egui::Stroke::new(1.2_f32, cam_color));
+                let bump = egui::Rect::from_center_size(
+                    egui::pos2(cam_rect.center().x - 3.0, body.min.y - 1.5),
+                    egui::vec2(5.0, 3.0),
+                );
+                ui.painter().rect_stroke(bump, 1.0, egui::Stroke::new(1.2_f32, cam_color));
+                ui.painter().circle_stroke(body.center(), 3.2, egui::Stroke::new(1.2_f32, cam_color));
+                if cam_resp.clicked() {
+                    cmds.push(AppCommand::ExtractFrameToBin);
+                }
+                cam_resp.on_hover_text("Extract frame to bin (Ctrl+Alt+B)");
+                cursor_right -= btn_w + gap;
             }
-            cam_resp.on_hover_text("Extract frame to bin (Ctrl+Alt+B)");
         }
+        let _ = cursor_right;
     }
 
     /// Helper for playbar navigation buttons. Returns advance width (btn_size + spacing).
@@ -3865,6 +3972,339 @@ impl ViewerPanel {
         }
     }
 
+    /// Mouse-driven zoom + pan input for a viewer's video area.
+    ///
+    /// * **Scroll wheel** zooms in/out by a 1.1× step per "tick",
+    ///   anchored at the cursor so the image pixel under the cursor
+    ///   stays under the cursor. Scrolling out past the fit zoom
+    ///   snaps back to Fit and resets the pan so the user can return
+    ///   to the default view without manual recentering.
+    /// * **Middle-mouse drag** pans when the viewer is zoomed in.
+    ///   Disabled in Fit mode (there's nothing to pan).
+    ///
+    /// Call this once per frame for each viewer's video rect, BEFORE
+    /// any other interactive widgets allocate inside the same rect —
+    /// it senses only middle-button drag and scroll, so click-to-focus
+    /// / transform handles / etc. that consume the left button keep
+    /// working unchanged.
+    pub fn handle_viewer_zoom_pan_input(
+        &self,
+        ui: &mut egui::Ui,
+        state: &mut AppState,
+        video_rect: egui::Rect,
+        tex_size: egui::Vec2,
+        viewer_kind: ViewerMode,
+    ) {
+        if tex_size.x <= 0.0 || tex_size.y <= 0.0 { return; }
+        if video_rect.width() <= 0.0 || video_rect.height() <= 0.0 { return; }
+
+        const ZOOM_MIN: f32 = 0.05;
+        const ZOOM_MAX: f32 = 16.0;
+        const SCROLL_FACTOR_PER_LINE: f32 = 1.10;
+
+        // `Sense::hover()` claims hover priority for scroll routing
+        // without consuming LMB clicks — that way the click-to-focus
+        // helper allocated earlier, on-canvas transform handles, the
+        // title-object editor, etc. all keep their normal LMB behavior.
+        // Middle-mouse pan is driven from raw input state below since
+        // `Sense::drag()` would also block LMB-drag gestures on widgets
+        // painted into the same rect.
+        let id = ui.id().with(match viewer_kind {
+            ViewerMode::Source => "source_viewer_zoom_pan",
+            ViewerMode::Program => "program_viewer_zoom_pan",
+        });
+        let resp = ui.interact(video_rect, id, egui::Sense::hover());
+        if !resp.hovered() { return; }
+
+        let (cursor_opt, middle_held, middle_delta, scroll_y) = ui.input(|i| {
+            (
+                i.pointer.hover_pos(),
+                i.pointer.button_down(egui::PointerButton::Middle),
+                i.pointer.delta(),
+                i.smooth_scroll_delta.y,
+            )
+        });
+
+        let view = state.view_for_mut(viewer_kind);
+
+        // Middle-mouse drag → pan. Only meaningful when zoomed in.
+        if view.zoom > 0.0 && middle_held && middle_delta != egui::Vec2::ZERO {
+            view.pan += middle_delta;
+        }
+
+        if scroll_y.abs() < f32::EPSILON { return; }
+        let cursor = match cursor_opt {
+            Some(p) => p,
+            None => return,
+        };
+
+        // The "fit" zoom is the effective scale of the image when in
+        // Fit mode. Computed once so scroll-out-to-Fit can snap cleanly.
+        let fit_zoom = (video_rect.width() / tex_size.x)
+            .min(video_rect.height() / tex_size.y);
+
+        let old_zoom_effective = if view.zoom <= 0.0 { fit_zoom } else { view.zoom };
+        // Smooth scrolling reports a continuous delta — we map it onto
+        // 1.1× per ~50 px of wheel travel so a single notch on a mouse
+        // wheel matches the Resolve / Premiere zoom-step intuition.
+        let factor = SCROLL_FACTOR_PER_LINE.powf(scroll_y / 50.0);
+        let new_zoom_raw = (old_zoom_effective * factor).clamp(ZOOM_MIN, ZOOM_MAX);
+
+        // Snap-to-Fit: scrolling out below the fit threshold collapses
+        // to Fit mode with pan reset. The 0.5 % slop avoids float churn
+        // where we'd otherwise tip in and out of Fit on rounding noise.
+        if new_zoom_raw <= fit_zoom * 1.005 {
+            view.zoom = 0.0;
+            view.pan = egui::Vec2::ZERO;
+            return;
+        }
+
+        // Cursor-anchored zoom: the image pixel under the cursor stays
+        // under the cursor. Derived from
+        //     pixel_norm = (cursor - image.center)/image.size + 0.5
+        //     image.center = viewer.center + pan
+        //   ⇒ pan_new = c - (c - pan_old) * (new/old)   where c = cursor - viewer.center
+        let c = cursor - video_rect.center();
+        let pan_old = if view.zoom <= 0.0 { egui::Vec2::ZERO } else { view.pan };
+        let scale = new_zoom_raw / old_zoom_effective;
+        let pan_new = c - (c - pan_old) * scale;
+
+        view.zoom = new_zoom_raw;
+        view.pan = pan_new;
+    }
+
+    /// Floating "viewer options" button anchored over the top-right
+    /// corner of the video area, with a popup menu containing the
+    /// controls that don't fit in the responsive playbar (volume slider,
+    /// volume %, etc.) plus viewer-wide power-user toggles (zoom presets,
+    /// safe-area / grid / zebra / false-color / focus-peaking overlays,
+    /// match-frame, and — on the Program side — extract-frame and
+    /// transform-controls).
+    ///
+    /// The trigger fades in only when the pointer is inside `video_rect`
+    /// or the popup is already open, so it doesn't obscure the picture
+    /// during normal viewing. Resolve and Kdenlive use the same pattern.
+    pub fn draw_viewer_overflow_menu(
+        &mut self,
+        ui: &mut egui::Ui,
+        state: &mut AppState,
+        theme: &KlippTheme,
+        video_rect: egui::Rect,
+        viewer_kind: ViewerMode,
+        cmds: &mut Vec<AppCommand>,
+    ) {
+        const BTN_SIZE: f32 = 24.0;
+        const INSET: f32 = 10.0;
+
+        let trigger_rect = egui::Rect::from_min_size(
+            egui::pos2(
+                video_rect.max.x - INSET - BTN_SIZE,
+                video_rect.min.y + INSET,
+            ),
+            egui::vec2(BTN_SIZE, BTN_SIZE),
+        );
+
+        let popup_id = ui.make_persistent_id(match viewer_kind {
+            ViewerMode::Source => "viewer_overflow_menu_source",
+            ViewerMode::Program => "viewer_overflow_menu_program",
+        });
+
+        let popup_open = ui.memory(|m| m.is_popup_open(popup_id));
+        let trigger_visible = popup_open || ui.rect_contains_pointer(video_rect);
+
+        let resp = ui.allocate_rect(trigger_rect, egui::Sense::click());
+
+        if trigger_visible {
+            let hovered = resp.hovered();
+            let bg_alpha = if hovered { 230 } else { 160 };
+            let bg = egui::Color32::from_rgba_unmultiplied(
+                theme.bg_panel.r(),
+                theme.bg_panel.g(),
+                theme.bg_panel.b(),
+                bg_alpha,
+            );
+            let painter = ui.painter();
+            painter.rect_filled(trigger_rect, BTN_SIZE * 0.25, bg);
+            let stroke_alpha = if hovered { 200 } else { 90 };
+            let stroke_col = egui::Color32::from_rgba_unmultiplied(
+                theme.text_secondary.r(),
+                theme.text_secondary.g(),
+                theme.text_secondary.b(),
+                stroke_alpha,
+            );
+            painter.rect_stroke(
+                trigger_rect,
+                BTN_SIZE * 0.25,
+                egui::Stroke::new(1.0, stroke_col),
+            );
+
+            // Three vertical dots (kebab).
+            let cx = trigger_rect.center().x;
+            let cy = trigger_rect.center().y;
+            let dot_color = if hovered { theme.text_primary } else { theme.text_secondary };
+            let dot_r = 1.6;
+            let dot_gap = 4.5;
+            painter.circle_filled(egui::pos2(cx, cy - dot_gap), dot_r, dot_color);
+            painter.circle_filled(egui::pos2(cx, cy), dot_r, dot_color);
+            painter.circle_filled(egui::pos2(cx, cy + dot_gap), dot_r, dot_color);
+        }
+
+        let resp = resp.on_hover_text("Viewer options");
+        if resp.clicked() {
+            ui.memory_mut(|m| m.toggle_popup(popup_id));
+        }
+
+        egui::popup::popup_below_widget(
+            ui,
+            popup_id,
+            &resp,
+            egui::PopupCloseBehavior::CloseOnClickOutside,
+            |ui| {
+                ui.set_min_width(220.0);
+                Self::draw_viewer_overflow_menu_content(ui, state, theme, viewer_kind, cmds);
+            },
+        );
+    }
+
+    fn draw_viewer_overflow_menu_content(
+        ui: &mut egui::Ui,
+        state: &mut AppState,
+        theme: &KlippTheme,
+        viewer_kind: ViewerMode,
+        cmds: &mut Vec<AppCommand>,
+    ) {
+        let section_label = |ui: &mut egui::Ui, text: &str| {
+            ui.add_space(2.0);
+            ui.label(
+                egui::RichText::new(text)
+                    .size(10.0)
+                    .color(theme.text_dim),
+            );
+        };
+
+        // ── Zoom ──
+        //
+        // Continuous + / − stepping (× 1.25 per click, clamped to a
+        // sensible 5 % – 1600 % range), with a "Fit" toggle next to it
+        // for the letterbox-to-viewer default. Zoom of `0.0` is the
+        // sentinel for fit mode — anything else is a native-pixel
+        // multiplier consumed by the source / program render path.
+        const ZOOM_MIN: f32 = 0.05;
+        const ZOOM_MAX: f32 = 16.0;
+        const ZOOM_STEP: f32 = 1.25;
+        section_label(ui, "ZOOM");
+        ui.horizontal(|ui| {
+            let view = state.view_for(viewer_kind);
+            let in_fit = view.zoom <= 0.0;
+            let mut fit_btn = egui::Button::new(
+                egui::RichText::new("Fit").size(11.0),
+            )
+            .min_size(egui::vec2(40.0, 22.0));
+            if in_fit {
+                fit_btn = fit_btn.fill(theme.accent_dim);
+            }
+            if ui.add(fit_btn).clicked() {
+                let v = state.view_for_mut(viewer_kind);
+                v.zoom = 0.0;
+                v.pan = egui::Vec2::ZERO;
+            }
+
+            let minus = egui::Button::new(egui::RichText::new("−").size(13.0))
+                .min_size(egui::vec2(22.0, 22.0));
+            if ui.add(minus).on_hover_text("Zoom out").clicked() {
+                let current = if view.zoom <= 0.0 { 1.0 } else { view.zoom };
+                state.view_for_mut(viewer_kind).zoom = (current / ZOOM_STEP).max(ZOOM_MIN);
+            }
+
+            let pct_label = if in_fit {
+                "Fit".to_string()
+            } else {
+                format!("{}%", (view.zoom * 100.0).round() as i32)
+            };
+            ui.add_sized(
+                egui::vec2(56.0, 22.0),
+                egui::Label::new(
+                    egui::RichText::new(pct_label)
+                        .monospace()
+                        .size(12.0)
+                        .color(theme.text_primary),
+                ),
+            );
+
+            let plus = egui::Button::new(egui::RichText::new("+").size(13.0))
+                .min_size(egui::vec2(22.0, 22.0));
+            if ui.add(plus).on_hover_text("Zoom in").clicked() {
+                let current = if view.zoom <= 0.0 { 1.0 } else { view.zoom };
+                state.view_for_mut(viewer_kind).zoom = (current * ZOOM_STEP).min(ZOOM_MAX);
+            }
+        });
+
+        ui.separator();
+
+        // ── Volume ── (always reachable here so power-users have a
+        // home for the slider even when the chrome row drops it.)
+        section_label(ui, "VOLUME");
+        let mut vol = state.master_volume;
+        let vol_label = format!("{}%", (vol * 100.0) as i32);
+        let slider = egui::Slider::new(&mut vol, 0.0..=1.3).text(vol_label);
+        if ui.add(slider).changed() {
+            cmds.push(AppCommand::SetMasterVolume(vol));
+        }
+        let mute_label = if state.master_muted { "✓ Muted" } else { "  Mute master output" };
+        if ui.button(mute_label).clicked() {
+            cmds.push(AppCommand::SetMasterMute(!state.master_muted));
+        }
+
+        ui.separator();
+
+        // ── Overlays ──
+        section_label(ui, "OVERLAYS");
+        ui.checkbox(&mut state.viewer_overlays.safe_areas, "Safe areas (Alt+S)");
+        ui.checkbox(&mut state.viewer_overlays.grid, "Grid (Alt+G)");
+        ui.checkbox(&mut state.viewer_overlays.zebras, "Zebras (Z)");
+        ui.checkbox(&mut state.viewer_overlays.false_color, "False color (Alt+F)");
+        ui.checkbox(&mut state.viewer_overlays.focus_peaking, "Focus peaking (Ctrl+P)");
+        ui.checkbox(&mut state.viewer_overlays.checkerboard, "Checkerboard");
+
+        ui.separator();
+
+        // ── Actions ──
+        section_label(ui, "ACTIONS");
+        match viewer_kind {
+            ViewerMode::Source => {
+                let enabled = state.source_media_id.is_some();
+                if ui
+                    .add_enabled(
+                        enabled,
+                        egui::Button::new("Match frame → timeline (Shift+F)"),
+                    )
+                    .clicked()
+                {
+                    cmds.push(AppCommand::MatchFrameSourceToProgram);
+                }
+            }
+            ViewerMode::Program => {
+                if ui.button("Match frame ← source (F)").clicked() {
+                    cmds.push(AppCommand::MatchFrameProgramToSource);
+                }
+                if ui.button("Extract frame to bin (Ctrl+Alt+B)").clicked() {
+                    cmds.push(AppCommand::ExtractFrameToBin);
+                }
+                if ui.button("Extract frame to file… (Ctrl+Alt+S)").clicked() {
+                    cmds.push(AppCommand::FrameGrab);
+                }
+                let xform_label = if state.show_transform_controls {
+                    "✓ Transform controls"
+                } else {
+                    "  Transform controls"
+                };
+                if ui.button(xform_label).clicked() {
+                    state.show_transform_controls = !state.show_transform_controls;
+                }
+            }
+        }
+    }
+
     pub fn show_source_viewer(
         &mut self,
         ui: &mut egui::Ui,
@@ -3908,16 +4348,26 @@ impl ViewerPanel {
             if tex_size.x > 0.0 && tex_size.y > 0.0 {
                 let video_aspect = tex_size.x / tex_size.y;
                 let panel_aspect = viewer_rect.width() / viewer_rect.height();
-                let (dw, dh) = if video_aspect > panel_aspect {
-                    (viewer_rect.width(), viewer_rect.width() / video_aspect)
+                // Same zoom semantics as the Program viewer: 0.0 = fit,
+                // any other value is a multiplier on native source pixels.
+                let view = state.source_view;
+                let (dw, dh) = if view.zoom <= 0.0 {
+                    if video_aspect > panel_aspect {
+                        (viewer_rect.width(), viewer_rect.width() / video_aspect)
+                    } else {
+                        (viewer_rect.height() * video_aspect, viewer_rect.height())
+                    }
                 } else {
-                    (viewer_rect.height() * video_aspect, viewer_rect.height())
+                    (tex_size.x * view.zoom, tex_size.y * view.zoom)
                 };
+                let pan = if view.zoom <= 0.0 { egui::Vec2::ZERO } else { view.pan };
                 let image_rect = egui::Rect::from_center_size(
-                    viewer_rect.center(),
+                    viewer_rect.center() + pan,
                     egui::vec2(dw, dh),
                 );
-                ui.painter().image(
+                // Clip to `viewer_rect` so high-zoom overflow stays inside
+                // the source-viewer panel.
+                ui.painter_at(viewer_rect).image(
                     tex.id(),
                     image_rect,
                     egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),

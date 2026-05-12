@@ -187,6 +187,14 @@ pub(crate) fn compute_layout(
     // into Source (left) and Program (right) with a thin gutter between —
     // standard Premiere/Avid/Resolve-Edit convention. Equal sizes make
     // three-point-edit frame comparison visually balanced.
+    //
+    // The panel rect itself stays the FULL half-slot regardless of project
+    // aspect — chrome row (transport controls) is always the full panel
+    // width so the buttons live in predictable positions, the video area
+    // above it is always `panel.h - chrome_h`, and project-aspect fitting
+    // is done by `compute_video_layout` / `show_source_viewer` inside the
+    // video area (black letterbox / pillarbox bars as needed). This is
+    // how Resolve, Premiere, FCPX, and Avid all do it.
     let viewer_row_top = main_top;
     let viewer_row_bottom = h_resizer_rect.min.y;
     let viewer_gutter = theme::RESIZER_THICKNESS;
@@ -289,6 +297,33 @@ mod tests {
             "source viewer must sit to the left of the program viewer");
         assert!(rects.source_viewer_rect.max.x < rects.viewer_rect.min.x,
             "source and program viewers must have a gutter between them");
+    }
+
+    #[test]
+    fn test_viewer_panels_are_project_aspect_independent() {
+        // Pro-NLE convention: viewer panel shape doesn't depend on
+        // project aspect — chrome row stays the full panel width and
+        // the video content is letterboxed inside the video area.
+        // Same input window across very different project aspects
+        // should give identical panel rects.
+        let layout = LayoutState::default();
+        let mut portrait = AppState::default();
+        portrait.sequence_mut().resolution = klipp_core::Resolution { width: 2160, height: 3840 };
+        let mut landscape = AppState::default();
+        landscape.sequence_mut().resolution = klipp_core::Resolution { width: 3840, height: 2160 };
+        let mut square = AppState::default();
+        square.sequence_mut().resolution = klipp_core::Resolution { width: 1080, height: 1080 };
+
+        let rp = compute_layout(test_full_rect(), &layout, &portrait);
+        let rl = compute_layout(test_full_rect(), &layout, &landscape);
+        let rs = compute_layout(test_full_rect(), &layout, &square);
+
+        for other in [&rl, &rs] {
+            let dw = (rp.viewer_rect.width() - other.viewer_rect.width()).abs();
+            let dh = (rp.viewer_rect.height() - other.viewer_rect.height()).abs();
+            assert!(dw < 0.01 && dh < 0.01,
+                "viewer panel size must not depend on project aspect");
+        }
     }
 
     #[test]

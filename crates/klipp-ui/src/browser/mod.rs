@@ -128,7 +128,7 @@ const FILE_AUDIO_PEAKS_BUCKETS: usize = 144;
 const FILE_THUMB_MAX_INFLIGHT: usize = 4;
 /// Max width to decode thumbs at. Matches the media-pool cache so the
 /// disk file is reusable across both views.
-const FILE_THUMB_MAX_WIDTH: u32 = 480;
+pub(crate) const FILE_THUMB_MAX_WIDTH: u32 = 480;
 
 // Re-exports from the canonical module so the rest of this file (and other
 // files in this crate that import via `super::`) can keep using the old
@@ -234,8 +234,8 @@ fn generate_file_thumb(path: &std::path::Path) -> Result<(Vec<u8>, u32, u32), St
     // use the same cache because the embedded JPEG preview is what we
     // ultimately store, not the bayer data.
     if let Some(ref key) = cache_key {
-        if klipp_media::disk_cache::thumbnail_cache_exists(key) {
-            if let Ok((rgba, w, h)) = klipp_media::disk_cache::load_thumbnail_cache(key) {
+        if klipp_media::disk_cache::thumbnail_cache_exists(key, FILE_THUMB_MAX_WIDTH) {
+            if let Ok((rgba, w, h)) = klipp_media::disk_cache::load_thumbnail_cache(key, FILE_THUMB_MAX_WIDTH) {
                 return Ok((rgba, w, h));
             }
         }
@@ -256,7 +256,7 @@ fn generate_file_thumb(path: &std::path::Path) -> Result<(Vec<u8>, u32, u32), St
     };
 
     if let Some(ref key) = cache_key {
-        let _ = klipp_media::disk_cache::write_thumbnail_cache(key, &rgba, w, h);
+        let _ = klipp_media::disk_cache::write_thumbnail_cache(key, FILE_THUMB_MAX_WIDTH, &rgba, w, h);
     }
 
     Ok((rgba, w, h))
@@ -5913,7 +5913,7 @@ mod tests {
         let cache_key = klipp_media::disk_cache::compute_cache_key(&jpg_path)
             .expect("cache key for real file");
         assert!(
-            klipp_media::disk_cache::thumbnail_cache_exists(&cache_key),
+            klipp_media::disk_cache::thumbnail_cache_exists(&cache_key, super::FILE_THUMB_MAX_WIDTH),
             "first call should have populated the disk cache",
         );
 

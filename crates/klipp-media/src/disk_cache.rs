@@ -211,21 +211,27 @@ pub fn load_filmstrip_cache(cache_key: &str, height: u32) -> std::io::Result<Vec
 // ── Thumbnail cache ──
 //
 // Format: width (u32) + height (u32) + raw RGBA data.
+//
+// The target max-edge width lives in the filename (mirroring the filmstrip
+// cache) so thumbnails at different resolutions coexist. Without that, the
+// media-pool and files-browser used to clobber each other's caches and the
+// first caller-wins resolution would silently apply to the other view.
 
 fn thumbnail_dir() -> PathBuf {
     cache_base_dir().join("thumbnails")
 }
 
-fn thumbnail_path(cache_key: &str) -> PathBuf {
-    thumbnail_dir().join(format!("{cache_key}.thumb"))
+fn thumbnail_path(cache_key: &str, max_width: u32) -> PathBuf {
+    thumbnail_dir().join(format!("{cache_key}.{max_width}.thumb"))
 }
 
-pub fn thumbnail_cache_exists(cache_key: &str) -> bool {
-    thumbnail_path(cache_key).exists()
+pub fn thumbnail_cache_exists(cache_key: &str, max_width: u32) -> bool {
+    thumbnail_path(cache_key, max_width).exists()
 }
 
 pub fn write_thumbnail_cache(
     cache_key: &str,
+    max_width: u32,
     rgba: &[u8],
     width: u32,
     height: u32,
@@ -233,8 +239,8 @@ pub fn write_thumbnail_cache(
     let dir = thumbnail_dir();
     ensure_dir(&dir)?;
 
-    let final_path = thumbnail_path(cache_key);
-    let tmp_path = dir.join(format!("{cache_key}.thumb.tmp"));
+    let final_path = thumbnail_path(cache_key, max_width);
+    let tmp_path = dir.join(format!("{cache_key}.{max_width}.thumb.tmp"));
 
     let file = std::fs::File::create(&tmp_path)?;
     let mut w = BufWriter::new(file);
@@ -247,8 +253,8 @@ pub fn write_thumbnail_cache(
     Ok(())
 }
 
-pub fn load_thumbnail_cache(cache_key: &str) -> std::io::Result<(Vec<u8>, u32, u32)> {
-    let path = thumbnail_path(cache_key);
+pub fn load_thumbnail_cache(cache_key: &str, max_width: u32) -> std::io::Result<(Vec<u8>, u32, u32)> {
+    let path = thumbnail_path(cache_key, max_width);
     let file = std::fs::File::open(&path)?;
     let mut r = BufReader::new(file);
 

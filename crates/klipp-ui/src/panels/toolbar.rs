@@ -781,19 +781,38 @@ impl ToolbarPanel {
 
     fn view_menu(ui: &mut egui::Ui, cmds: &mut Vec<AppCommand>, state: &mut AppState) {
         ui.menu_button(egui::RichText::new("View").size(11.0), |ui| {
+            // Zoom targets the currently-focused viewer (state.viewer_mode).
+            // Source and Program have independent zoom + pan so clicking on
+            // one viewer and Ctrl-+/-ing zooms only that one.
+            let focused = state.viewer_mode;
             if ui.add(egui::Button::new("Zoom In").shortcut_text("Ctrl++")).clicked() {
-                state.viewer_zoom = (state.viewer_zoom * 1.25).min(4.0).max(0.25);
-                if state.viewer_zoom < 0.2 { state.viewer_zoom = 0.25; }
+                let v = state.view_for_mut(focused);
+                let current = if v.zoom <= 0.0 { 1.0 } else { v.zoom };
+                v.zoom = (current * 1.25).clamp(0.05, 16.0);
                 ui.close_menu();
             }
             if ui.add(egui::Button::new("Zoom Out").shortcut_text("Ctrl+-")).clicked() {
-                state.viewer_zoom = if state.viewer_zoom <= 0.25 { 0.0 } else { (state.viewer_zoom / 1.25).max(0.0) };
+                let v = state.view_for_mut(focused);
+                let current = if v.zoom <= 0.0 { 1.0 } else { v.zoom };
+                let next = current / 1.25;
+                if next < 0.1 {
+                    v.zoom = 0.0;
+                    v.pan = egui::Vec2::ZERO;
+                } else {
+                    v.zoom = next;
+                }
                 ui.close_menu();
             }
             ui.menu_button("Viewer Zoom", |ui| {
+                let current_zoom = state.view_for(focused).zoom;
                 for (label, zoom) in [("Fit", 0.0f32), ("25%", 0.25), ("50%", 0.5), ("100%", 1.0), ("200%", 2.0)] {
-                    let check = if (state.viewer_zoom - zoom).abs() < 0.01 { "\u{2714} " } else { "  " };
-                    if ui.button(format!("{check}{label}")).clicked() { state.viewer_zoom = zoom; ui.close_menu(); }
+                    let check = if (current_zoom - zoom).abs() < 0.01 { "\u{2714} " } else { "  " };
+                    if ui.button(format!("{check}{label}")).clicked() {
+                        let v = state.view_for_mut(focused);
+                        v.zoom = zoom;
+                        if zoom == 0.0 { v.pan = egui::Vec2::ZERO; }
+                        ui.close_menu();
+                    }
                 }
             });
             ui.separator();

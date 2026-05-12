@@ -824,18 +824,26 @@ pub fn register_custom_model(
 ) {
     use crate::ai_tools::persistence::CustomAdapter;
 
-    let cache = match klipp_ml::ModelCache::open() {
-        Ok(c) => c,
-        Err(e) => {
-            tracing::warn!(
-                target: "klipp_ui",
-                "custom model: skipping {} (cache open failed: {e})",
-                entry.id
-            );
-            return;
-        }
+    // The disk cache is only consulted by feature-gated factory branches
+    // (ai-ort / ai-candle). In a no-AI build every adapter ends up with
+    // the "feature missing" error factory, so we skip the cache open
+    // entirely — both to avoid a dead `weights_path` and to skip pointless
+    // disk work when no backend can use the weights anyway.
+    #[cfg(any(feature = "ai-ort", feature = "ai-candle"))]
+    let weights_path = {
+        let cache = match klipp_ml::ModelCache::open() {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::warn!(
+                    target: "klipp_ui",
+                    "custom model: skipping {} (cache open failed: {e})",
+                    entry.id
+                );
+                return;
+            }
+        };
+        cache.path_for_id(&entry.id)
     };
-    let weights_path = cache.path_for_id(&entry.id);
     let id = entry.id.clone();
     let display_name = entry.display_name.clone();
     let adapter = entry.adapter;
@@ -1066,8 +1074,12 @@ pub struct AppState {
     pub timeline_track_pre_collapse: std::collections::HashMap<usize, f32>,
     pub playhead_follow: PlayheadFollow,
     pub track_header_width: f32,
-    /// Viewer zoom level (1.0 = fit, 0.25/0.5/2.0/4.0 for pixel-level zoom).
-    pub viewer_zoom: f32,
+    /// Independent zoom + pan for the Source viewer. Source and Program
+    /// are kept fully separate — scrolling over one viewer zooms only
+    /// that one. Matches Resolve / Premiere behaviour.
+    pub source_view: ViewerView,
+    /// Independent zoom + pan for the Program viewer.
+    pub program_view: ViewerView,
     pub last_timeline_content_width: f32,
     pub show_overview_bar: bool,
 
@@ -2367,6 +2379,24 @@ pub struct SubtitleEditorState {
     pub track_name_buf: String,
 }
 
+/// Per-viewer zoom + pan state. `zoom == 0.0` is the "Fit" sentinel
+/// (letterbox / pillarbox to the viewer's video area); any other value
+/// is a multiplier on source-native pixels (`1.0` = 1:1). `pan` is
+/// the offset in screen pixels from the viewer's geometric center,
+/// applied only when zoomed in. Scroll-wheel zoom maintains the
+/// cursor-anchor invariant; middle-mouse drag updates `pan` directly.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ViewerView {
+    pub zoom: f32,
+    pub pan: egui::Vec2,
+}
+
+impl Default for ViewerView {
+    fn default() -> Self {
+        Self { zoom: 0.0, pan: egui::Vec2::ZERO }
+    }
+}
+
 /// Independent viewer overlay toggles — multiple can be active simultaneously.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct ViewerOverlays {
@@ -3073,7 +3103,8 @@ impl Default for AppState {
             timeline_track_pre_collapse: std::collections::HashMap::new(),
             playhead_follow: PlayheadFollow::default(),
             track_header_width: 180.0,
-            viewer_zoom: 0.0, // 0.0 = fit-to-window mode
+            source_view: ViewerView::default(),
+            program_view: ViewerView::default(),
             last_timeline_content_width: 800.0,
             show_overview_bar: true,
             selected_clip: None,
@@ -3523,6 +3554,21 @@ impl AppState {
     }
     pub fn sequence_duration(&self) -> Timecode {
         self.sequence().total_duration()
+    }
+
+    /// Read-only access to the Source / Program viewer's zoom + pan.
+    pub fn view_for(&self, kind: klipp_core::ViewerMode) -> ViewerView {
+        match kind {
+            klipp_core::ViewerMode::Source => self.source_view,
+            klipp_core::ViewerMode::Program => self.program_view,
+        }
+    }
+    /// Mutable access to the Source / Program viewer's zoom + pan.
+    pub fn view_for_mut(&mut self, kind: klipp_core::ViewerMode) -> &mut ViewerView {
+        match kind {
+            klipp_core::ViewerMode::Source => &mut self.source_view,
+            klipp_core::ViewerMode::Program => &mut self.program_view,
+        }
     }
 
     /// Read-only access to the active sequence's undo/redo stack. Falls

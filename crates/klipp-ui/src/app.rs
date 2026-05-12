@@ -1364,12 +1364,17 @@ impl KlippApp {
         let duration_secs = duration.to_secs_f64();
         let seek_secs = duration_secs * 0.1;
         let cache_key = klipp_media::disk_cache::compute_cache_key(&path);
+        // Decode the media-pool poster at the same resolution the Files
+        // browser already uses. The previous default (160 px on the long
+        // edge) gave 50×90 thumbs for 4K portrait clips, which then
+        // bilinear-upscaled to ~300×500 in the UI — visibly blurry.
+        let max_width = crate::browser::FILE_THUMB_MAX_WIDTH;
         std::thread::spawn(move || {
             // Try loading from disk cache first (skip if file has rotation — regenerate to apply it)
             let has_rotation = klipp_engine::detect_rotation_from_path(&path) != 0;
             if let Some(ref key) = cache_key {
-                if !has_rotation && klipp_media::disk_cache::thumbnail_cache_exists(key) {
-                    match klipp_media::disk_cache::load_thumbnail_cache(key) {
+                if !has_rotation && klipp_media::disk_cache::thumbnail_cache_exists(key, max_width) {
+                    match klipp_media::disk_cache::load_thumbnail_cache(key, max_width) {
                         Ok((rgba, w, h)) => {
                             tracing::info!("Thumbnail loaded from cache for {:?}", path);
                             let _ = tx.send(ThumbnailResult {
@@ -1388,11 +1393,11 @@ impl KlippApp {
             }
 
             // Generate from source
-            match klipp_engine::generate_thumbnail_non_black(&path, seek_secs, duration_secs) {
+            match klipp_engine::generate_thumbnail_at_size_non_black(&path, seek_secs, duration_secs, max_width) {
                 Ok((rgba, w, h)) => {
                     // Write to cache
                     if let Some(ref key) = cache_key {
-                        if let Err(e) = klipp_media::disk_cache::write_thumbnail_cache(key, &rgba, w, h) {
+                        if let Err(e) = klipp_media::disk_cache::write_thumbnail_cache(key, max_width, &rgba, w, h) {
                             tracing::warn!("Failed to write thumbnail cache: {e}");
                         }
                     }
@@ -29544,7 +29549,7 @@ impl KlippApp {
             // this file in the browser, the cache hit is instant.
             if self.state.file_info_thumb.is_none() {
                 if let Some(key) = klipp_media::disk_cache::compute_cache_key(&path) {
-                    if let Ok((rgba, w, h)) = klipp_media::disk_cache::load_thumbnail_cache(&key) {
+                    if let Ok((rgba, w, h)) = klipp_media::disk_cache::load_thumbnail_cache(&key, crate::browser::FILE_THUMB_MAX_WIDTH) {
                         let pixels: Vec<egui::Color32> = rgba
                             .chunks_exact(4)
                             .map(|c| egui::Color32::from_rgba_unmultiplied(c[0], c[1], c[2], c[3]))
@@ -29950,7 +29955,9 @@ impl KlippApp {
         all_cmds: &mut Vec<AppCommand>,
     ) {
         // Must match the transport-chrome heights inside `draw_transport_chrome`.
-        const BOTTOM_H: f32 = 16.0 + 40.0;
+        // Shared with layout.rs via `theme::VIEWER_CHROME_HEIGHT` so the viewer
+        // rect reserves exactly enough room for the scrub + playbar rows.
+        const BOTTOM_H: f32 = theme::VIEWER_CHROME_HEIGHT;
 
         // Click-to-focus. Allocated FIRST so its z-order sits below
         // every interactive widget rendered later in this function
@@ -29983,6 +29990,45 @@ impl KlippApp {
         // markers, same edit buttons users already saw when clicking the
         // old "Source" toggle. No duplicated logic.
         self.viewer.show_source_viewer(ui, &self.state, &self.theme, video_rect, all_cmds);
+
+        // Scroll-zoom + middle-drag-pan input for the source video area.
+        // Texture size = the source viewer's live frame when present, or
+        // the committed source clip's first-frame, or the source media's
+        // declared resolution. Falling back to the timeline size keeps
+        // the math finite even when nothing is loaded.
+        let source_tex_size = self
+            .state
+            .source_live_texture
+            .as_ref()
+            .map(|t| t.size_vec2())
+            .or_else(|| {
+                self.state.source_video_texture.as_ref().map(|(_, t)| t.size_vec2())
+            })
+            .or_else(|| {
+                self.state.source_media_id
+                    .and_then(|mid| self.state.media_pool.get(&mid))
+                    .map(|m| egui::vec2(m.resolution.width as f32, m.resolution.height as f32))
+            })
+            .unwrap_or(egui::vec2(1920.0, 1080.0));
+        self.viewer.handle_viewer_zoom_pan_input(
+            ui,
+            &mut self.state,
+            video_rect,
+            source_tex_size,
+            klipp_core::ViewerMode::Source,
+        );
+
+        // Floating "..." overflow menu in the video area's top-right
+        // corner — holds the controls that don't fit in the responsive
+        // playbar plus zoom presets and the viewer overlay toggles.
+        self.viewer.draw_viewer_overflow_menu(
+            ui,
+            &mut self.state,
+            &self.theme,
+            video_rect,
+            klipp_core::ViewerMode::Source,
+            all_cmds,
+        );
 
         // Reuse the same scrub bar + play bar the Program Viewer renders,
         // routing scrub-bar drags and the timecode display to the source
@@ -30816,7 +30862,7 @@ impl KlippApp {
         } else if self.state.show_scopes {
             self.render_color_ws_bottom_scopes(
                 ui, center_left, center_w, scopes_h, main_top, main_bottom,
-                toggle_bar_h, show_nodes_bar, toggle_bar_rect, bottom_scope_cursor, &theme,
+                toggle_bar_h, show_nodes_bar, toggle_bar_rect, bottom_scope_cursor,
             );
         }
 
@@ -31094,7 +31140,6 @@ impl KlippApp {
         show_nodes_bar: bool,
         toggle_bar_rect: egui::Rect,
         bottom_scope_cursor: Option<crate::state::ScopeCursorData>,
-        theme: &KlippTheme,
     ) {
         let live_scopes_h = if scopes_h > 0.0 { scopes_h } else {
             let ratio = self.layout.color_viewer_height_ratio.clamp(0.15, 0.90);
