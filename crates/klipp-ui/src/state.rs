@@ -1374,6 +1374,13 @@ pub struct AppState {
     /// from the last-skimmed frame back to the committed playhead —
     /// pro-NLE skim is transient: mouse-leave = back to playhead.
     pub program_skim_active: bool,
+    /// Deadline for the debounced skim-end revert seek. Armed when
+    /// `program_skim_active` clears, disarmed when a new Program skim
+    /// frame arrives before it fires. Debouncing matters: continuous
+    /// skimming flaps the active flag for a frame at clip boundaries,
+    /// and firing the revert on every flap both flickers the viewer
+    /// and queues a seek per flap into the engine.
+    pub program_skim_revert_deadline: Option<std::time::Instant>,
     /// Media IDs that need skim transcode started (queued during drain_events)
     pub pending_skim_transcodes: Vec<MediaId>,
 
@@ -3217,6 +3224,7 @@ impl Default for AppState {
             skim_queued_request: None,
             browser_skim_active_this_frame: false,
             program_skim_active: false,
+            program_skim_revert_deadline: None,
             pending_skim_transcodes: Vec::new(),
             audio_skimming_enabled: true,
             skim_speed_px_per_sec: 0.0,

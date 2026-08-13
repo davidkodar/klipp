@@ -26167,6 +26167,18 @@ impl eframe::App for KlippApp {
         klipp_engine::ui_stage::mark(klipp_engine::ui_stage::PROCESS_QUIT);
         let has_quit = all_cmds.iter().any(|c| matches!(c, AppCommand::Quit));
 
+        // When unsaved changes are about to raise the Save dialog, the
+        // Quit command must NOT reach the engine — the engine treats it
+        // as "shut down now" and would kill itself behind whatever is
+        // queued while the user is still deciding. Cancel would then
+        // leave a dead engine, and the engine thread's teardown while
+        // the app keeps running races eframe's wgpu state (shutdown
+        // SIGSEGV). The dialog's Don't Save / Save buttons hard-exit
+        // the process themselves, so the engine never needs this Quit.
+        if has_quit && self.state.dirty && self.state.project_path.is_some() {
+            all_cmds.retain(|c| !matches!(c, AppCommand::Quit));
+        }
+
         // Save layout state on quit
         if has_quit {
             self.layout.save();
@@ -26254,9 +26266,37 @@ impl eframe::App for KlippApp {
             if self.state.program_skim_active {
                 self.state.program_skim_active = false;
                 if self.state.playback != PlaybackState::Playing {
-                    let cur = self.state.playhead;
-                    let _ = self.cmd_tx.send(AppCommand::SeekTo(cur));
+                    // Debounced: arm a deadline instead of seeking now.
+                    // Continuous skimming flaps this flag for a frame at
+                    // clip boundaries; an immediate revert per flap
+                    // flickers the viewer and queues a seek per flap
+                    // (the engine pays a full seek for each — a hover
+                    // session once stalled it 8+ s draining them). A
+                    // new skim frame before the deadline disarms it.
+                    let deadline = std::time::Instant::now()
+                        + std::time::Duration::from_millis(150);
+                    self.state.program_skim_revert_deadline = Some(deadline);
+                    ctx.request_repaint_after(std::time::Duration::from_millis(160));
                 }
+            }
+        }
+
+        // Fire the debounced skim-end revert once the skim has stayed
+        // quiet past the deadline: one SeekTo(committed playhead) to
+        // repaint the Program viewer over the last skim frame.
+        if let Some(deadline) = self.state.program_skim_revert_deadline {
+            if self.state.program_skim_active || self.state.playback == PlaybackState::Playing {
+                // Skim resumed (flag flap) or playback took over —
+                // the engine repaints on its own; no revert needed.
+                self.state.program_skim_revert_deadline = None;
+            } else if std::time::Instant::now() >= deadline {
+                self.state.program_skim_revert_deadline = None;
+                let cur = self.state.playhead;
+                let _ = self.cmd_tx.send(AppCommand::SeekTo(cur));
+            } else {
+                // Not due yet — make sure a repaint arrives to fire it
+                // even if the mouse goes still.
+                ctx.request_repaint_after(std::time::Duration::from_millis(50));
             }
         }
 

@@ -2582,6 +2582,22 @@ impl PlaybackEngine {
             }
 
             AppCommand::SeekTo(tc) => {
+                // Identity seek while paused: seeking to the position we're
+                // already parked at (the skim-end revert does this — it only
+                // needs the committed frame repainted over the skim frame).
+                // A full seek pays start_all_audio's teardown + PCM reopen +
+                // cpal open (~300 ms); a queue of these from hover flapping
+                // stalled the engine for 8+ s. The cached pregrade frame is
+                // untouched by skim writes, so regrading it restores the
+                // viewer with zero decoder/audio work. Cache empty or any
+                // state other than Paused falls through to the real seek.
+                if self.state == PlaybackState::Paused
+                    && tc == self.playhead
+                    && self.cached_pregrade_frame.is_some()
+                {
+                    self.regrade_cached_frame();
+                    return false;
+                }
                 // Lift the Idle / Stopped gates. After project load
                 // the engine sits in Idle or Stopped depending on
                 // path — but scrubbing the ruler / clicking on the
