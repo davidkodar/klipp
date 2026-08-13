@@ -82,12 +82,8 @@ fn main() {
     }
     println!("Transition 0.5: {:?}", out_u8);
 
-    // Scope accumulation (just make sure it doesn't crash).
-    let scope = gpu.render_scope_histogram(&frame_u8, w, h, 64, 64);
-    if scope.len() != 64 * 64 * 4 {
-        panic!("Scope histogram wrong size");
-    }
-    println!("Scope histogram: ran OK ({} bytes)", scope.len());
+    // Scope rendering moved to libavfilter (klipp-engine) — the GPU
+    // scope kernels no longer exist here, so nothing to smoke-test.
 
     println!("\nGPU smoke test passed — all shaders compile and dispatch.");
 }

@@ -30,6 +30,13 @@ use tracing::info;
 pub struct GpuContext {
     pub device: std::sync::Arc<wgpu::Device>,
     pub queue: std::sync::Arc<wgpu::Queue>,
+    /// Flipped by the device's uncaptured-error / device-lost
+    /// callbacks. Owned here — NOT per consumer — because wgpu keeps
+    /// exactly one callback slot per device and replacing it from two
+    /// threads races inside wgpu-core (the loser's closure is dropped
+    /// unconsumed → panic in `DeviceLostClosureRust::drop`). Register
+    /// once per device, share the flag.
+    device_lost: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl GpuContext {
@@ -76,18 +83,7 @@ impl GpuContext {
         ))
         .ok()?;
 
-        // Diagnostic: route uncaptured wgpu errors (validation,
-        // out-of-memory, lost device) into tracing instead of letting
-        // them surface as opaque storage-lookup panics inside
-        // wgpu-core. Without this the GPU-COMPOUND-PANIC class shows
-        // up as a bare `TextureView[Id(N,vk)] does not exist` panic
-        // with no upstream context; with it, the original wgpu
-        // validation message that names the offending resource
-        // appears in klipp-debug.log immediately before the abort.
-        device.on_uncaptured_error(Box::new(|err| {
-            tracing::error!("WGPU_UNCAPTURED on engine device: {err}");
-            tracing::error!("WGPU_UNCAPTURED debug:\n{err:#?}");
-        }));
+        let device_lost = register_device_callbacks(&device);
 
         // `instance` is dropped at scope exit — wgpu's device /
         // queue keep the underlying driver resources alive via their
@@ -96,6 +92,7 @@ impl GpuContext {
         Some(Self {
             device: std::sync::Arc::new(device),
             queue: std::sync::Arc::new(queue),
+            device_lost,
         })
     }
 
@@ -107,7 +104,8 @@ impl GpuContext {
         device: std::sync::Arc<wgpu::Device>,
         queue: std::sync::Arc<wgpu::Queue>,
     ) -> Self {
-        Self { device, queue }
+        let device_lost = register_device_callbacks(&device);
+        Self { device, queue, device_lost }
     }
 
     /// Cheap clone of the Arc-wrapped device.
@@ -118,6 +116,13 @@ impl GpuContext {
     /// Cheap clone of the Arc-wrapped queue.
     pub fn queue(&self) -> std::sync::Arc<wgpu::Queue> {
         std::sync::Arc::clone(&self.queue)
+    }
+
+    /// Shared "this device errored / was lost" flag. Consumers (the
+    /// effects pipeline) read it to short-circuit GPU work; they may
+    /// reset it when rebuilding after a transient error.
+    pub fn device_lost_flag(&self) -> std::sync::Arc<std::sync::atomic::AtomicBool> {
+        std::sync::Arc::clone(&self.device_lost)
     }
 
     /// Return the process-wide shared context, lazily initialised on
@@ -162,3 +167,48 @@ impl GpuContext {
 // slot. `None` in the `Some(...)` position means init was attempted
 // and failed — `shared()` returns None until end of process.
 static SHARED: std::sync::OnceLock<Option<GpuContext>> = std::sync::OnceLock::new();
+
+/// Register the device's single uncaptured-error + device-lost
+/// callback pair, routing both into tracing and a shared flag.
+///
+/// Called exactly once per `wgpu::Device`, from the `GpuContext`
+/// constructors. Nothing else in the codebase may call
+/// `on_uncaptured_error` / `set_device_lost_callback` — wgpu holds
+/// one callback slot per device, and concurrent replacement races
+/// inside wgpu-core 22 (`device_set_device_lost_closure` drops the
+/// life-tracker lock mid-swap; the losing thread's closure is dropped
+/// unconsumed and panics). This was the source of flaky
+/// `DeviceLostClosureRust must be consumed` panics under parallel
+/// `cargo test`.
+///
+/// Routing errors into tracing (rather than wgpu's default panicking
+/// handler) also keeps the GPU-COMPOUND-PANIC class diagnosable: the
+/// original validation message that names the offending resource
+/// lands in klipp-debug.log immediately before any downstream abort.
+fn register_device_callbacks(
+    device: &wgpu::Device,
+) -> std::sync::Arc<std::sync::atomic::AtomicBool> {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let device_lost = std::sync::Arc::new(AtomicBool::new(false));
+    {
+        let flag = device_lost.clone();
+        device.on_uncaptured_error(Box::new(move |err| {
+            tracing::error!("WGPU_UNCAPTURED: {err} — disabling GPU effects");
+            tracing::error!("WGPU_UNCAPTURED debug:\n{err:#?}");
+            flag.store(true, Ordering::SeqCst);
+        }));
+    }
+    {
+        let flag = device_lost.clone();
+        device.set_device_lost_callback(Box::new(move |reason, msg| {
+            // `ReplacedCallback` fires if a newer callback ever takes
+            // over this slot — the device itself is fine.
+            if matches!(reason, wgpu::DeviceLostReason::ReplacedCallback) {
+                return;
+            }
+            tracing::error!("WGPU device lost ({reason:?}): {msg} — disabling GPU effects");
+            flag.store(true, Ordering::SeqCst);
+        }));
+    }
+    device_lost
+}

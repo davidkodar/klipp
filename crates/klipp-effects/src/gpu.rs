@@ -490,43 +490,22 @@ impl GpuEffectsPipeline {
     /// `GpuContext`. Enables device-local handoff from the decoder
     /// converters into the grade chain without a CPU round-trip.
     pub fn with_context(ctx: &crate::gpu_context::GpuContext) -> Option<Self> {
-        Self::build_from_device_queue(ctx.device(), ctx.queue())
+        // The context owns the device's error/loss callbacks and the
+        // flag they flip (one callback slot per device in wgpu —
+        // registering per-pipeline raced under concurrency, see
+        // `gpu_context::register_device_callbacks`). Reset it here so
+        // a pipeline rebuilt after a transient error gets a fresh
+        // start; a genuinely dead device re-flags on the next error.
+        let device_lost = ctx.device_lost_flag();
+        device_lost.store(false, Ordering::SeqCst);
+        Self::build_from_device_queue(ctx.device(), ctx.queue(), device_lost)
     }
 
     fn build_from_device_queue(
         device: std::sync::Arc<wgpu::Device>,
         queue: std::sync::Arc<wgpu::Queue>,
+        device_lost: Arc<AtomicBool>,
     ) -> Option<Self> {
-        // Route uncaptured validation errors and device loss to our own
-        // flag so a flaky driver doesn't abort the process. wgpu's default
-        // `on_uncaptured_error` panics; we log + mark the pipeline dead
-        // and let every subsequent apply_* pass the frame through
-        // unchanged (see `short_circuit_rgba`).
-        let device_lost = Arc::new(AtomicBool::new(false));
-        {
-            let flag = device_lost.clone();
-            device.on_uncaptured_error(Box::new(move |err| {
-                error!("GPU effects: uncaptured error: {err} — disabling GPU effects");
-                flag.store(true, Ordering::SeqCst);
-            }));
-        }
-        {
-            let flag = device_lost.clone();
-            device.set_device_lost_callback(Box::new(move |reason, msg| {
-                // `ReplacedCallback` fires when a newer
-                // `set_device_lost_callback` takes over this slot —
-                // the device itself is fine. Treating it as a real
-                // loss triggered spurious pipeline rebuilds (see
-                // `compiled 61 pipelines` bursts after normal use).
-                // Only flag on genuine loss reasons.
-                if matches!(reason, wgpu::DeviceLostReason::ReplacedCallback) {
-                    return;
-                }
-                error!("GPU effects: device lost ({reason:?}): {msg} — disabling GPU effects");
-                flag.store(true, Ordering::SeqCst);
-            }));
-        }
-
         let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("effects_bgl"),
             entries: &[
