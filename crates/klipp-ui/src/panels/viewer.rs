@@ -2319,6 +2319,9 @@ impl ViewerPanel {
         // `klipp_engine::perf::PerfRing` snapshotted in
         // `update_perf_stats`.
         let avg = &state.perf_averages;
+        // Decode and post-process run on separate threads (pipelined),
+        // so frame pacing is bound by the slowest stage, not the sum.
+        let actual_ms = avg.total_ms.max(avg.decode_ms);
         let (res_line, fps_line, budget_line) = match state.perf_latest_sample {
             Some(ref s) => (
                 format!("Frame:  {}x{}", s.width, s.height),
@@ -2327,10 +2330,10 @@ impl ViewerPanel {
                     Some(budget) => {
                         format!(
                             "Budget: {:.1} ms  actual {:.1} ms",
-                            budget, avg.total_ms,
+                            budget, actual_ms,
                         )
                     }
-                    None => format!("Budget: — ms  actual {:.1} ms", avg.total_ms),
+                    None => format!("Budget: — ms  actual {:.1} ms", actual_ms),
                 },
             ),
             None => (
@@ -2356,7 +2359,11 @@ impl ViewerPanel {
             fps_line,
             budget_line,
             format!(
-                "  decode/seq  {:.2} ms",
+                "  decode      {:.2} ms",
+                avg.decode_ms,
+            ),
+            format!(
+                "  seq read    {:.2} ms",
                 avg.seq_read_ms,
             ),
             format!(
@@ -2375,10 +2382,11 @@ impl ViewerPanel {
                 "  lut         {:.2} ms",
                 avg.lut_ms,
             ),
-            // Wrap-stage timings — populated by `update_wrap_stages`
-            // even when no grade is applied. Always non-zero on a
-            // playing clip; surfaces "where did the frame budget
-            // actually go" without requiring a grade chain.
+            // Wrap-stage timings — populated by `update_wrap_stages`.
+            // bridge u8 / reencode only run when paused, scrubbing, or
+            // comparing (the pregrade encode is skipped during forward
+            // playback), and scope only when a scope is open — so 0.00
+            // during plain playback is expected, not a bug.
             format!(
                 "  bridge u8   {:.2} ms",
                 avg.bridge_u8_ms,
@@ -2396,7 +2404,20 @@ impl ViewerPanel {
                 state.perf_drops_last_sec, state.perf_dropped_frames,
             ),
             format!("Frames: {}", state.perf_frame_count),
-            format!("CPU:    {:.0}%", state.perf_cpu_percent),
+            {
+                // top-style convention: 100% = one core fully busy.
+                // Spell it out so 858% doesn't read as nonsense.
+                static CORES: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+                let cores = *CORES.get_or_init(|| {
+                    std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1)
+                });
+                format!(
+                    "CPU:    {:.0}% ({:.1} of {} cores)",
+                    state.perf_cpu_percent,
+                    state.perf_cpu_percent / 100.0,
+                    cores,
+                )
+            },
             format!("Mem:    {:.0} MB", state.perf_memory_mb),
         ]);
 
@@ -2426,7 +2447,7 @@ impl ViewerPanel {
             .perf_latest_sample
             .as_ref()
             .and_then(|s| s.frame_budget_ms())
-            .map(|b| avg.total_ms > b)
+            .map(|b| actual_ms > b)
             .unwrap_or(false);
         for (i, line) in lines.iter().enumerate() {
             let _ = i;

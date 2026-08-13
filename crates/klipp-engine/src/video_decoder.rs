@@ -311,6 +311,10 @@ pub struct VideoDecoder {
     pub hw_active: Arc<std::sync::atomic::AtomicBool>,
     /// Set to true on stop — checked by decode thread to exit quickly
     stop_flag: Arc<std::sync::atomic::AtomicBool>,
+    /// Decode + GPU-download/swscale wall time of the most recently
+    /// queued frame, in microseconds. Written by the decode thread,
+    /// read by the engine when building perf-overlay samples.
+    last_decode_us: Arc<std::sync::atomic::AtomicU32>,
 }
 
 impl VideoDecoder {
@@ -336,12 +340,14 @@ impl VideoDecoder {
         let hw_flag = hw_active.clone();
         let stop_flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let stop_flag_clone = stop_flag.clone();
+        let last_decode_us = Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let last_decode_us_clone = last_decode_us.clone();
 
         let thread = std::thread::Builder::new()
             .name("klipp-vdec".into())
             .spawn(move || {
                 crate::thread_guard::catch_panic("klipp-vdec", || {
-                    decode_thread_main(path_owned, queue_clone, cmd_rx, hw_flag, stop_flag_clone, source_rotation);
+                    decode_thread_main(path_owned, queue_clone, cmd_rx, hw_flag, stop_flag_clone, source_rotation, last_decode_us_clone);
                 });
             })
             .map_err(|e| DecoderError::Open(format!("spawn thread: {e}")))?;
@@ -352,11 +358,18 @@ impl VideoDecoder {
             decode_cmd_tx: cmd_tx,
             hw_active,
             stop_flag,
+            last_decode_us,
         })
     }
 
     pub fn frame_queue(&self) -> &SharedFrameQueue {
         &self.frame_queue
+    }
+
+    /// Decode + transfer wall time of the most recently queued frame,
+    /// in milliseconds. 0.0 until the first frame is produced.
+    pub fn last_decode_ms(&self) -> f32 {
+        self.last_decode_us.load(std::sync::atomic::Ordering::Relaxed) as f32 / 1000.0
     }
 
     pub fn seek(&self, secs: f64) {
@@ -1717,6 +1730,7 @@ fn decode_thread_main(
     hw_active_flag: Arc<std::sync::atomic::AtomicBool>,
     stop_flag: Arc<std::sync::atomic::AtomicBool>,
     source_rotation: i32,
+    last_decode_us: Arc<std::sync::atomic::AtomicU32>,
 ) {
     let mut format_ctx = match ffmpeg_next::format::input(&path) {
         Ok(ctx) => ctx,
@@ -2009,7 +2023,8 @@ fn decode_thread_main(
 
             let t_decode = std::time::Instant::now();
             let got_frame = decoder.receive_frame(&mut received_frame).is_ok();
-            perf_decode_us += t_decode.elapsed().as_micros() as u64;
+            let this_decode_us = t_decode.elapsed().as_micros() as u64;
+            perf_decode_us += this_decode_us;
 
             if !got_frame {
                 // No more buffered frames — need to feed more packets
@@ -2072,12 +2087,15 @@ fn decode_thread_main(
                 }
             };
 
-            if is_hw_frame {
-                perf_transfer_us += t_transfer.elapsed().as_micros() as u64;
-            } else {
-                // For SW path, transfer time is the scaler time minus copy time
-                perf_transfer_us += t_transfer.elapsed().as_micros() as u64;
-            }
+            let this_transfer_us = t_transfer.elapsed().as_micros() as u64;
+            perf_transfer_us += this_transfer_us;
+            // Publish this frame's decode + transfer cost for the perf
+            // overlay. receive_frame alone under-reports on async HW
+            // decoders, so include the download/scale step too.
+            last_decode_us.store(
+                (this_decode_us + this_transfer_us).min(u32::MAX as u64) as u32,
+                std::sync::atomic::Ordering::Relaxed,
+            );
 
             // Stamp pts on the decoder-produced linear frame, then push
             // it straight into the queue — the queue is linear-typed

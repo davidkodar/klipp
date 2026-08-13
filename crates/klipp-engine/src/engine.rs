@@ -10075,8 +10075,11 @@ impl PlaybackEngine {
         // framerate (falls back to 0.0 when nothing is playing).
         // Drop heuristic: `total_ms` exceeded the frame budget.
         let target_fps = self.target_fps_for_overlay();
+        // Decode runs on its own thread, pipelined with this one — the
+        // budget is blown when the *slowest* stage exceeds it, not the sum.
+        let decode_ms = self.v1_decoder.as_ref().map(|d| d.last_decode_ms()).unwrap_or(0.0);
         let dropped = match target_fps {
-            Some(fps) if fps > 0.0 => total_ms as f32 > (1000.0 / fps),
+            Some(fps) if fps > 0.0 => (total_ms as f32).max(decode_ms) > (1000.0 / fps),
             _ => false,
         };
         let sample = crate::perf::PerfSample {
@@ -10084,6 +10087,7 @@ impl PlaybackEngine {
             width,
             height,
             target_fps: target_fps.unwrap_or(0.0),
+            decode_ms,
             seq_read_ms: seq_ms as f32,
             grade_ms: grade_ms as f32,
             ofx_ms: ofx_ms as f32,

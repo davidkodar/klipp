@@ -39,6 +39,11 @@ pub struct PerfSample {
     /// `0.0` when nothing is playing.
     pub target_fps: f32,
 
+    /// Decode-thread cost of the most recently queued frame:
+    /// `receive_frame` + HW download / swscale. Measured on the
+    /// decode thread (pipelined with post-processing, so not
+    /// additive with `total_ms` — compare each against the budget).
+    pub decode_ms: f32,
     /// Sequence-read stage: reading the effect stack and pre-effect
     /// frame setup. Usually small.
     pub seq_read_ms: f32,
@@ -236,6 +241,7 @@ impl PerfRing {
         }
         for s in &recent {
             avg.total_ms += s.total_ms;
+            avg.decode_ms += s.decode_ms;
             avg.seq_read_ms += s.seq_read_ms;
             avg.grade_ms += s.grade_ms;
             avg.ofx_ms += s.ofx_ms;
@@ -249,6 +255,7 @@ impl PerfRing {
             }
         }
         avg.total_ms /= n;
+        avg.decode_ms /= n;
         avg.seq_read_ms /= n;
         avg.grade_ms /= n;
         avg.ofx_ms /= n;
@@ -315,6 +322,7 @@ impl Default for PerfRing {
 #[derive(Debug, Clone, Copy, Default)]
 pub struct PerfAverages {
     pub total_ms: f32,
+    pub decode_ms: f32,
     pub seq_read_ms: f32,
     pub grade_ms: f32,
     pub ofx_ms: f32,
@@ -352,8 +360,8 @@ pub fn samples_to_json(samples: &[PerfSample]) -> String {
         };
         let _ = write!(
             out,
-            "    {{\"t_ms\":{:.3},\"w\":{},\"h\":{},\"fps\":{:.2},\"seq_ms\":{:.3},\"grade_ms\":{:.3},\"ofx_ms\":{:.3},\"builtin_ms\":{:.3},\"lut_ms\":{:.3},\"total_ms\":{:.3},\"dropped\":{}}}",
-            t_ms, s.width, s.height, s.target_fps, s.seq_read_ms, s.grade_ms,
+            "    {{\"t_ms\":{:.3},\"w\":{},\"h\":{},\"fps\":{:.2},\"decode_ms\":{:.3},\"seq_ms\":{:.3},\"grade_ms\":{:.3},\"ofx_ms\":{:.3},\"builtin_ms\":{:.3},\"lut_ms\":{:.3},\"total_ms\":{:.3},\"dropped\":{}}}",
+            t_ms, s.width, s.height, s.target_fps, s.decode_ms, s.seq_read_ms, s.grade_ms,
             s.ofx_ms, s.builtin_ms, s.lut_ms, s.total_ms, s.dropped,
         );
         if i + 1 < samples.len() {
@@ -377,6 +385,7 @@ mod tests {
             width: 1920,
             height: 1080,
             target_fps: 24.0,
+            decode_ms: 0.0,
             seq_read_ms: 0.5,
             grade_ms: 1.0,
             ofx_ms: 0.0,
