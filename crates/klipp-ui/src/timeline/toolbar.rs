@@ -129,6 +129,13 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState, theme: &KlippTheme, cmds: &
         ui.painter().rect_filled(rect, 5.0, bg);
         draw_tl_marker_icon(ui.painter(), rect, theme.text_dim);
         styled_tooltip(&resp, theme, "Add Marker", Some("M"));
+        if resp.clicked() {
+            cmds.push(AppCommand::AddMarker {
+                position: state.playhead,
+                label: String::new(),
+                color: klipp_core::MarkerColor::Blue,
+            });
+        }
 
         separator(ui, theme);
 

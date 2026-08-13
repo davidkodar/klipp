@@ -548,6 +548,20 @@ pub fn build(state: &AppState) -> Vec<PaletteEntry> {
     // grabs focus and clears the request.
     e.push(PaletteEntry { label: Cow::Borrowed("Focus Search in Current Panel"), shortcut: Cow::Borrowed("Ctrl+F"),
         action: PaletteAction::ToggleState(|s| { s.focus_search_request = s.active_panel; }), enabled: true });
+    // Timeline-specific find entries. "Find in Timeline" opens the
+    // search bar (Ctrl+F when the timeline is the active panel does
+    // the same — this is the discoverability anchor for users who
+    // haven't clicked the timeline yet). "Find Next" / "Find Previous"
+    // cycle through hits when the bar is already open; they noop
+    // otherwise per the timeline_search_next/_prev contract.
+    e.push(PaletteEntry { label: Cow::Borrowed("Find in Timeline"), shortcut: Cow::Borrowed(""),
+        action: PaletteAction::ToggleState(|s| {
+            s.focus_search_request = Some(crate::state::PanelKind::Timeline);
+        }), enabled: true });
+    e.push(PaletteEntry { label: Cow::Borrowed("Find Next"), shortcut: Cow::Borrowed("Enter"),
+        action: PaletteAction::ToggleState(|s| { s.timeline_search_next = true; }), enabled: true });
+    e.push(PaletteEntry { label: Cow::Borrowed("Find Previous"), shortcut: Cow::Borrowed("Shift+Enter"),
+        action: PaletteAction::ToggleState(|s| { s.timeline_search_prev = true; }), enabled: true });
     e.push(PaletteEntry { label: Cow::Borrowed("Toggle History Panel"), shortcut: Cow::Borrowed(""),
         action: PaletteAction::ToggleState(|s| s.show_history_panel = !s.show_history_panel), enabled: true });
     e.push(PaletteEntry { label: Cow::Borrowed("Toggle Subtitle Editor"), shortcut: Cow::Borrowed("Ctrl+Shift+T"),
@@ -1143,6 +1157,12 @@ mod tests {
         // Per-panel search hotkey discovery anchor. Pinned so the
         // Ctrl+F entry can't disappear into a refactor.
         "Focus Search in Current Panel",
+        // Timeline find-bar anchors. Three substrings so each variant
+        // (open, next, previous) stays reachable for keyboard-shy
+        // users typing into the palette.
+        "Find in Timeline",
+        "Find Next",
+        "Find Previous",
         // Swap-clips discovery anchor — entry is rendered greyed
         // when the multi-select isn't a 2-clip pair, so the substring
         // is reachable in the no-selection default state.

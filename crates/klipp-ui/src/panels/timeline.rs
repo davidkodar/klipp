@@ -49,6 +49,11 @@ fn theme() -> KlippTheme {
 const TRACK_HEADER_MIN_WIDTH: f32 = 80.0;
 const TRACK_HEADER_MAX_WIDTH: f32 = 320.0;
 const RULER_HEIGHT: f32 = 24.0;
+/// Height reserved for the find/search bar above the ruler when
+/// `TimelinePanel.search_visible == true`. Zero when hidden, so the
+/// ruler floats back up to where it was. Matches the overview-bar
+/// pattern of conditional vertical chrome.
+const SEARCH_BAR_HEIGHT: f32 = 30.0;
 
 /// Human-readable display name for an audio effect type id. Matches
 /// the FX library's display labels so a user sees the same string in
@@ -772,6 +777,25 @@ pub struct TimelinePanel {
     /// (Clip edge → Grid). ClipEdge → ClipEdge across different clips
     /// does NOT reset the timer — kind change, not instance change.
     pub(crate) legend_state: SnapLegendState,
+    /// Find-bar visibility. Toggled by Ctrl+F (per-panel focus
+    /// request) or the palette "Find in Timeline" entry. Esc inside
+    /// the search field closes it.
+    pub(crate) search_visible: bool,
+    /// Current search query (case-folded per `search_case_sensitive`).
+    pub(crate) search_query: String,
+    /// Aa toggle. False = case-insensitive (default — Resolve / FCP
+    /// behaviour); true = exact case match.
+    pub(crate) search_case_sensitive: bool,
+    /// Active match index in the per-frame hit list (clamped each
+    /// frame against the current list length). Wraps on Enter /
+    /// Shift+Enter. When the query is empty or no hits exist, the
+    /// cursor is ignored.
+    pub(crate) search_match_cursor: usize,
+    /// Hit list rebuilt every frame inside `show()` for highlight
+    /// rendering. Persists across the show() call so the clip /
+    /// marker paint passes can look up "is this clip a match?"
+    /// without rerunning the predicates.
+    pub(crate) search_hits: Vec<crate::panels::timeline_search::SearchHit>,
 }
 
 /// Tracks the most-recent on-snap legend kind + when it changed, so
@@ -1082,6 +1106,41 @@ impl TimelinePanel {
             egui::pos2(full_rect.right(), status_rect.top()),
         );
 
+        // Mark Timeline as the active panel when any pointer press
+        // lands inside its rect this frame. Scopes Ctrl+F (and any
+        // future panel-keyed shortcut) to the timeline when the user
+        // has clicked it. Mirrors markers.rs:347 / app.rs:30501.
+        crate::state::note_active_panel(state, crate::state::PanelKind::Timeline, ui.ctx(), panel_rect);
+
+        // Honour a one-shot Ctrl+F focus request for the Timeline panel.
+        // When set, open the search bar — the focus is grabbed by the
+        // TextEdit when `draw_search_bar` mounts it below. The request
+        // is cleared inside `draw_search_bar` (it owns the TextEdit
+        // response and can call `request_focus` directly).
+        if state.focus_search_request == Some(crate::state::PanelKind::Timeline) {
+            self.search_visible = true;
+        }
+        // Honour the palette's "Find Next" / "Find Previous" one-shot
+        // flags. When there's no active query or no hits the request
+        // is silently dropped (the entries are power-user convenience,
+        // not force-open). Cleared unconditionally so a stale flag
+        // can't carry over.
+        let want_next = std::mem::take(&mut state.timeline_search_next);
+        let want_prev = std::mem::take(&mut state.timeline_search_prev);
+        if (want_next || want_prev) && self.search_visible && !self.search_hits.is_empty() {
+            let n = self.search_hits.len();
+            if want_next {
+                self.search_match_cursor = (self.search_match_cursor + 1) % n;
+            } else {
+                self.search_match_cursor = (self.search_match_cursor + n - 1) % n;
+            }
+            let hit = &self.search_hits[self.search_match_cursor];
+            cmds.push(AppCommand::SeekTo(hit.position));
+            if let Some(track_idx) = hit.track_idx {
+                self.scroll_track_into_view(state, track_idx);
+            }
+        }
+
         // Clip the entire timeline panel — nothing should render outside panel_rect
         let effective_clip = panel_rect.intersect(ui.clip_rect());
         ui.set_clip_rect(effective_clip);
@@ -1148,14 +1207,19 @@ impl TimelinePanel {
             self.draw_overview_bar(&painter, &overview_rect, state);
         }
 
+        // Find/search bar (between overview and ruler). Only renders
+        // when `search_visible` and not embedded — the embedded shell
+        // can host its own search surface in a follow-up.
+        let search_bar_height = if self.search_visible && !self.embedded { SEARCH_BAR_HEIGHT } else { 0.0 };
+
         // ── Hoisted layout construction (ruler_rect computed here, drawing deferred below) ──
         let ruler_height_used = if self.embedded { 0.0 } else { RULER_HEIGHT };
         let ruler_rect = egui::Rect::from_min_size(
-            egui::pos2(content_rect.left(), content_rect.top() + overview_height),
+            egui::pos2(content_rect.left(), content_rect.top() + overview_height + search_bar_height),
             egui::vec2(content_rect.width(), ruler_height_used),
         );
         let pool_h = if self.embedded { 0.0 } else { MEDIA_POOL_HEIGHT };
-        let tracks_start_y = content_rect.top() + overview_height + ruler_height_used + pool_h;
+        let tracks_start_y = content_rect.top() + overview_height + search_bar_height + ruler_height_used + pool_h;
         let track_count = state.sequence().tracks.len();
         // Total Y footprint must include the per-track automation lane
         // when visible. `track_row_height` folds it in.
@@ -1204,14 +1268,38 @@ impl TimelinePanel {
 
         // Media pool, zoom buttons, toggle buttons — skip when embedded
         if !self.embedded {
+            // Anchor pool/toggle below the ruler so they stay
+            // immediately under it regardless of which optional bars
+            // (overview, search) are visible above. Using ruler_rect
+            // (instead of `content_rect.top() + RULER_HEIGHT`) means
+            // the pool no longer overlaps the ruler when stacked chrome
+            // is enabled.
+            let pool_top = ruler_rect.bottom();
             let pool_rect = egui::Rect::from_min_size(
-                egui::pos2(content_rect.left(), content_rect.top() + RULER_HEIGHT),
+                egui::pos2(content_rect.left(), pool_top),
                 egui::vec2(content_rect.width(), MEDIA_POOL_HEIGHT),
             );
             painter.rect_filled(pool_rect, 0.0, tt.bg_deep);
             self.draw_media_pool(ui, &painter, &pool_rect, state, &mut cmds);
             self.draw_zoom_buttons(ui, &header_rect, &ruler_rect, state, &mut cmds);
-            self.draw_toggle_buttons(ui, &header_rect, content_rect.top() + RULER_HEIGHT, state, &mut cmds);
+            self.draw_toggle_buttons(ui, &header_rect, pool_top, state, &mut cmds);
+        }
+
+        // Find/search bar — drawn after the ruler/pool because the
+        // search bar's rect sits ABOVE the ruler (so painting order
+        // doesn't matter visually) but the TextEdit + match cursor
+        // dispatch produce `cmds` we want appended after the ruler
+        // interaction. When hidden, this is a cheap noop.
+        if self.search_visible && !self.embedded {
+            let search_bar_rect = egui::Rect::from_min_size(
+                egui::pos2(content_rect.left(), content_rect.top() + overview_height),
+                egui::vec2(content_rect.width(), SEARCH_BAR_HEIGHT),
+            );
+            self.draw_search_bar(ui, state, &mut cmds, search_bar_rect, &bg_painter);
+        } else {
+            // Search bar hidden — clear the cached hit list so the
+            // highlight pass below paints nothing.
+            self.search_hits.clear();
         }
 
         // Draw tracks: Video 2, Video 1, Audio 1
@@ -1431,11 +1519,391 @@ impl TimelinePanel {
         // ── Automation lane param picker popup ─────────────────────────────
         self.show_automation_lane_param_menu(ui, state, &mut cmds);
 
+        // Find/search highlight overlay — drawn after all clip /
+        // marker paint passes so the per-match border + active-cursor
+        // pulse sit on top. Cheap noop when there are no hits.
+        if !self.search_hits.is_empty() {
+            self.draw_search_highlights(ui, state, &layout);
+        }
+
         // --- Status bar --- (skip when embedded)
         if self.embedded { return cmds; }
         self.draw_status_bar(ui, state, &layout);
 
         cmds
+    }
+
+    /// Build the per-frame hit list against the live sequence. Walks
+    /// every track / clip / clip-marker / sequence-marker once,
+    /// applies the pure predicates from `timeline_search`, and sorts
+    /// by timeline position so Enter / Shift+Enter cycle through hits
+    /// in time order. Clamps `search_match_cursor` to the new length.
+    /// Cheap when the query is empty — bails out before any walk.
+    fn build_search_hits(&mut self, state: &AppState) {
+        use crate::panels::timeline_search::{
+            clip_filename_matches, clip_marker_matches, sequence_marker_matches,
+            SearchHit, SearchHitKind,
+        };
+
+        self.search_hits.clear();
+        if self.search_query.is_empty() {
+            self.search_match_cursor = 0;
+            return;
+        }
+        let q = &self.search_query;
+        let cs = self.search_case_sensitive;
+        let seq = state.sequence();
+
+        for m in &seq.markers {
+            if sequence_marker_matches(&m.label, &m.comment, m.kind, q, cs) {
+                self.search_hits.push(SearchHit {
+                    kind: SearchHitKind::SequenceMarker,
+                    position: m.position,
+                    track_idx: None,
+                    clip_id: None,
+                });
+            }
+        }
+
+        for (track_idx, track) in seq.tracks.iter().enumerate() {
+            for clip in &track.clips {
+                let filename = clip
+                    .media_id()
+                    .and_then(|mid| state.media_pool.get(&mid))
+                    .map(|m| m.filename.clone());
+                if clip_filename_matches(filename.as_deref(), q, cs) {
+                    self.search_hits.push(SearchHit {
+                        kind: SearchHitKind::Clip,
+                        position: clip.timeline_in,
+                        track_idx: Some(track_idx),
+                        clip_id: Some(clip.id),
+                    });
+                }
+                for cm in &clip.clip_markers {
+                    if clip_marker_matches(&cm.name, &cm.comment, q, cs) {
+                        let rate = clip.timeline_in.rate;
+                        let offset = klipp_core::RationalTime::from_secs_f64(cm.time_secs, rate);
+                        let position = clip.timeline_in + offset;
+                        self.search_hits.push(SearchHit {
+                            kind: SearchHitKind::ClipMarker,
+                            position,
+                            track_idx: Some(track_idx),
+                            clip_id: Some(clip.id),
+                        });
+                    }
+                }
+            }
+        }
+
+        self.search_hits.sort_by(|a, b| {
+            a.position
+                .to_secs_f64()
+                .partial_cmp(&b.position.to_secs_f64())
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+
+        if self.search_hits.is_empty() {
+            self.search_match_cursor = 0;
+        } else {
+            self.search_match_cursor = self
+                .search_match_cursor
+                .min(self.search_hits.len() - 1);
+        }
+    }
+
+    /// Render the find/search bar inside `bar_rect`. Hosts the
+    /// TextEdit + Aa toggle + counter + close (✕). Handles
+    /// Enter / Shift+Enter / Esc inside the field. Rebuilds the hit
+    /// list every frame so a clip rename / marker edit reflects
+    /// immediately. Dispatches `SeekTo` (and scrolls the matched
+    /// track into view) when the user activates a match.
+    fn draw_search_bar(
+        &mut self,
+        ui: &mut egui::Ui,
+        state: &mut AppState,
+        cmds: &mut Vec<AppCommand>,
+        bar_rect: egui::Rect,
+        bg_painter: &egui::Painter,
+    ) {
+        let tt = theme();
+        // Solid background distinct from ruler/panel so the bar reads
+        // as a dedicated surface. bg_raised tracks light/dark theme
+        // polarity correctly (per popup_bg_polarity feedback).
+        bg_painter.rect_filled(bar_rect, 0.0, tt.bg_raised);
+        bg_painter.line_segment(
+            [bar_rect.left_bottom(), bar_rect.right_bottom()],
+            egui::Stroke::new(1.0_f32, tt.border),
+        );
+
+        // Build the hit list against the current query before
+        // rendering, so the counter and Enter/Shift+Enter handlers see
+        // the right N.
+        self.build_search_hits(state);
+
+        // Allocate the inner UI inside the bar rect.
+        let mut child = ui.new_child(
+            egui::UiBuilder::new()
+                .max_rect(bar_rect.shrink2(egui::vec2(8.0, 4.0)))
+                .layout(egui::Layout::left_to_right(egui::Align::Center)),
+        );
+
+        // Magnifier prefix label.
+        child.label(egui::RichText::new("\u{1F50D}").size(13.0));
+
+        // Counter — "3 of 17" or "No matches" / nothing on empty query.
+        let counter = if self.search_query.is_empty() {
+            String::new()
+        } else if self.search_hits.is_empty() {
+            "No matches".to_string()
+        } else {
+            format!("{} of {}", self.search_match_cursor + 1, self.search_hits.len())
+        };
+
+        // Trailing controls (right-to-left).
+        let mut close_clicked = false;
+        let mut next_clicked = false;
+        let mut prev_clicked = false;
+        let mut aa_clicked = false;
+
+        // Reserve trailing buttons + counter on the right; TextEdit
+        // fills the remaining width.
+        let trailing_width = 200.0_f32;
+        let avail = child.available_width();
+        let text_width = (avail - trailing_width).max(80.0);
+
+        let text_id = egui::Id::new("timeline_search_query_edit");
+        let text_resp = child.add_sized(
+            [text_width, 22.0],
+            egui::TextEdit::singleline(&mut self.search_query)
+                .id(text_id)
+                .hint_text("Find clip / marker\u{2026}"),
+        );
+
+        // One-shot focus grab from the Ctrl+F dispatcher.
+        if state.focus_search_request == Some(crate::state::PanelKind::Timeline) {
+            text_resp.request_focus();
+            state.focus_search_request = None;
+        }
+
+        let has_focus = text_resp.has_focus();
+        if text_resp.changed() {
+            // Query changed — reset the cursor so the next Enter goes
+            // to the first match in the new list.
+            self.search_match_cursor = 0;
+        }
+
+        if has_focus {
+            let (enter, shift_enter, escape) = child.input(|i| {
+                (
+                    i.key_pressed(egui::Key::Enter) && !i.modifiers.shift,
+                    i.key_pressed(egui::Key::Enter) && i.modifiers.shift,
+                    i.key_pressed(egui::Key::Escape),
+                )
+            });
+            if escape {
+                self.search_visible = false;
+                self.search_query.clear();
+                self.search_hits.clear();
+                return;
+            }
+            if shift_enter {
+                prev_clicked = true;
+            } else if enter {
+                next_clicked = true;
+            }
+        }
+
+        // Right-aligned controls.
+        child.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if ui
+                .small_button("\u{2715}")
+                .on_hover_text("Close (Esc)")
+                .clicked()
+            {
+                close_clicked = true;
+            }
+            if ui
+                .small_button("\u{25B6}")
+                .on_hover_text("Next match (Enter)")
+                .clicked()
+            {
+                next_clicked = true;
+            }
+            if ui
+                .small_button("\u{25C0}")
+                .on_hover_text("Previous match (Shift+Enter)")
+                .clicked()
+            {
+                prev_clicked = true;
+            }
+            let aa_label = if self.search_case_sensitive { "Aa" } else { "aa" };
+            if ui
+                .small_button(aa_label)
+                .on_hover_text(if self.search_case_sensitive {
+                    "Case-sensitive — click to disable"
+                } else {
+                    "Case-insensitive — click to enable case match"
+                })
+                .clicked()
+            {
+                aa_clicked = true;
+            }
+            if !counter.is_empty() {
+                let counter_color = if self.search_hits.is_empty()
+                    && !self.search_query.is_empty()
+                {
+                    // No-match state — amber tint. Use accent (theme's
+                    // warm amber/gold token) directly; text colour
+                    // chosen via contrast_pair_for to honour
+                    // amber-text-contrast rule.
+                    tt.accent
+                } else {
+                    tt.text_secondary
+                };
+                ui.label(
+                    egui::RichText::new(counter)
+                        .size(11.0)
+                        .color(counter_color),
+                );
+            }
+        });
+
+        if aa_clicked {
+            self.search_case_sensitive = !self.search_case_sensitive;
+            // Rebuild hits next frame with the new policy.
+        }
+        if close_clicked {
+            self.search_visible = false;
+            self.search_query.clear();
+            self.search_hits.clear();
+            return;
+        }
+        if (next_clicked || prev_clicked) && !self.search_hits.is_empty() {
+            let n = self.search_hits.len();
+            if next_clicked {
+                self.search_match_cursor = (self.search_match_cursor + 1) % n;
+            } else {
+                self.search_match_cursor = (self.search_match_cursor + n - 1) % n;
+            }
+            let hit = &self.search_hits[self.search_match_cursor];
+            cmds.push(AppCommand::SeekTo(hit.position));
+            if let Some(track_idx) = hit.track_idx {
+                self.scroll_track_into_view(state, track_idx);
+            }
+        }
+    }
+
+    /// Snap `state.timeline_scroll_y` so `track_idx` sits at the top
+    /// of the viewport. Show()'s existing clamp at the top of the
+    /// next frame handles bounding to `max_scroll_y`, so we don't
+    /// need viewport-height awareness here — under-shoots are clamped
+    /// to zero, over-shoots to the last valid scroll.
+    fn scroll_track_into_view(&self, state: &mut AppState, track_idx: usize) {
+        let seq = state.sequence();
+        if track_idx >= seq.tracks.len() {
+            return;
+        }
+        let mut row_top: f32 = 0.0;
+        for ti in 0..track_idx {
+            row_top += track_row_height(&seq.tracks[ti]);
+        }
+        state.timeline_scroll_y = row_top;
+    }
+
+    /// Paint match highlights on top of the regular clip / marker
+    /// passes. Persistent thin border on every hit; pulse on the
+    /// active cursor's hit. Reads `self.search_hits` (built by
+    /// `build_search_hits` during `draw_search_bar`).
+    fn draw_search_highlights(
+        &self,
+        ui: &egui::Ui,
+        state: &AppState,
+        layout: &TimelineLayout,
+    ) {
+        use crate::panels::timeline_search::SearchHitKind;
+        if self.search_hits.is_empty() {
+            return;
+        }
+        let painter = ui.painter_at(layout.tracks_clip.union(layout.ruler_rect));
+        let accent = theme().accent;
+        let now_secs = ui.input(|i| i.time);
+        let pulse = ((now_secs * 2.5).sin() * 0.5 + 0.5) as f32;
+        let cursor_alpha = (140.0 + 80.0 * pulse) as u8;
+        let cursor_stroke = egui::Stroke::new(
+            2.0,
+            egui::Color32::from_rgba_unmultiplied(accent.r(), accent.g(), accent.b(), cursor_alpha),
+        );
+        let persistent_stroke = egui::Stroke::new(
+            1.5,
+            egui::Color32::from_rgba_unmultiplied(accent.r(), accent.g(), accent.b(), 120),
+        );
+
+        for (i, hit) in self.search_hits.iter().enumerate() {
+            let is_cursor = i == self.search_match_cursor;
+            let stroke = if is_cursor { cursor_stroke } else { persistent_stroke };
+            match hit.kind {
+                SearchHitKind::Clip => {
+                    if let Some(cid) = hit.clip_id {
+                        if let Some(rect) = self.frame_cache.clip_screen_rects.get(&cid) {
+                            painter.rect_stroke(rect.expand(1.0), 3.0, stroke);
+                        }
+                    }
+                }
+                SearchHitKind::ClipMarker => {
+                    // Vertical bar inside the host clip at the marker
+                    // position. We don't have the per-clip-marker
+                    // pixel position cached, so recompute from
+                    // clip_rect + (time_secs / clip_dur).
+                    if let Some(cid) = hit.clip_id {
+                        if let Some(clip_rect) = self.frame_cache.clip_screen_rects.get(&cid).copied() {
+                            // Locate the clip to find its duration and
+                            // map the marker's hit position to a frac.
+                            if let Some(clip) = state.sequence().all_clips().find(|c| c.id == cid) {
+                                let clip_dur = clip.duration().to_secs_f64();
+                                if clip_dur > 0.0 {
+                                    // hit.position is timeline_in + offset; back out the offset.
+                                    let off_secs = (hit.position.to_secs_f64()
+                                        - clip.timeline_in.to_secs_f64())
+                                    .max(0.0);
+                                    let frac = (off_secs / clip_dur) as f32;
+                                    if (0.0..=1.0).contains(&frac) {
+                                        let x = clip_rect.left() + frac * clip_rect.width();
+                                        let bar = egui::Rect::from_min_max(
+                                            egui::pos2(x - 2.0, clip_rect.top() - 2.0),
+                                            egui::pos2(x + 2.0, clip_rect.bottom() + 2.0),
+                                        );
+                                        painter.rect_stroke(bar, 1.0, stroke);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                SearchHitKind::SequenceMarker => {
+                    // Ruler triangle highlight — match math from
+                    // draw_ruler_markers at line ~3114.
+                    let zoom = state.timeline_zoom;
+                    let scroll = state.timeline_scroll_x;
+                    let x = layout.content_rect.left()
+                        + hit.position.to_secs_f64() as f32 * zoom
+                        - scroll;
+                    let ruler = layout.ruler_rect;
+                    if x >= ruler.left() - 6.0 && x <= ruler.right() + 6.0 {
+                        let top = ruler.bottom() - 12.0;
+                        let bot = ruler.bottom() + 1.0;
+                        let half_w = 6.0;
+                        let ring = egui::Rect::from_min_max(
+                            egui::pos2(x - half_w, top),
+                            egui::pos2(x + half_w, bot),
+                        );
+                        painter.rect_stroke(ring, 2.0, stroke);
+                    }
+                }
+            }
+        }
+
+        // Repaint while the cursor pulse is animating.
+        ui.ctx().request_repaint();
     }
 
     fn show_keyframe_context_menu(

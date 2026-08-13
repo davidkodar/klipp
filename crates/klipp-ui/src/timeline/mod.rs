@@ -196,7 +196,26 @@ impl NewTimelinePanel {
                         original_out: state.sequence().out_point,
                     });
                 } else {
-                    // Record press origin for 4px threshold
+                    // Empty ruler press — seek the playhead IMMEDIATELY at
+                    // press time. Without this, egui's click_and_drag
+                    // categorises taps with any small mouse drift as
+                    // a drag (not a click), and `.clicked()` never fires,
+                    // so single-tap-to-seek silently drops. Seeking on
+                    // press gives instant feedback; if the user then
+                    // moves > 4px the dragged branch promotes this to a
+                    // range create. Mirrors the OLD timeline's
+                    // scrub-on-press behaviour (panels/timeline.rs:3654).
+                    let tc = mouse_to_time(pos.x);
+                    let prev_playhead = state.playhead;
+                    state.playhead = tc;
+                    state.playhead_smooth_secs = tc.to_secs_f64();
+                    state.playhead_anchor = tc;
+                    state.playhead_anchor_wall = std::time::Instant::now();
+                    cmds.push(AppCommand::SeekTo(tc));
+                    tracing::info!(
+                        "PLAYHEAD_DIAG event=ruler_press pos_x={:.1} ruler_left={:.1} prev={:.3}s new={:.3}s",
+                        pos.x, ruler_rect.left(), prev_playhead.to_secs_f64(), tc.to_secs_f64(),
+                    );
                     state.ruler_press_origin = Some(pos);
                 }
             }
@@ -347,13 +366,25 @@ impl NewTimelinePanel {
         // jump. Playback is already stopped at click-time because a
         // clicked ruler implies a paused seek, not live playback.
         if ruler_resp.clicked() && state.range_drag.is_none() {
-            if let Some(pos) = ui.input(|i| i.pointer.latest_pos()) {
+            // Use the response's own press position (interact_pointer_pos)
+            // — it's only Some when this widget actually owns the press,
+            // so a release that drifted onto the ruler from a drag
+            // elsewhere can't fire here. See feedback_egui_drag_phantom.
+            // Previous attempt used Pointer::interact_pos() (input-level)
+            // which returns None after release, dropping legitimate
+            // clicks.
+            if let Some(pos) = ruler_resp.interact_pointer_pos() {
                 let tc = mouse_to_time(pos.x);
+                let prev_playhead = state.playhead;
                 state.playhead = tc;
                 state.playhead_smooth_secs = tc.to_secs_f64();
                 state.playhead_anchor = tc;
                 state.playhead_anchor_wall = std::time::Instant::now();
                 cmds.push(AppCommand::SeekTo(tc));
+                tracing::info!(
+                    "PLAYHEAD_DIAG event=ruler_click pos_x={:.1} ruler_left={:.1} prev={:.3}s new={:.3}s",
+                    pos.x, ruler_rect.left(), prev_playhead.to_secs_f64(), tc.to_secs_f64(),
+                );
             }
         }
 

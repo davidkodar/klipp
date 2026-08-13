@@ -1585,6 +1585,15 @@ pub struct AppState {
     /// surface today), app.rs clears it at end-of-update as a
     /// watchdog so a stale request can't get stuck.
     pub focus_search_request: Option<PanelKind>,
+    /// One-shot "advance to next timeline search match" request. Set
+    /// by the palette's "Find Next" entry; consumed by the timeline
+    /// panel on its next show(). Noop when the search bar is hidden
+    /// or there are no current hits — that's intended (the entry is
+    /// a power-user convenience, not a force-open).
+    pub timeline_search_next: bool,
+    /// Mirror of [`timeline_search_next`] for the previous-match
+    /// direction. Set by the palette's "Find Previous" entry.
+    pub timeline_search_prev: bool,
     /// In-memory clipboard for grade-node copy/paste between clips.
     /// Holds nodes plus edges induced by the copy selection, so a
     /// multi-node copy round-trips internal wiring; the paste handler
@@ -3275,6 +3284,8 @@ impl Default for AppState {
             selected_node_ids: std::collections::HashSet::new(),
             active_panel: None,
             focus_search_request: None,
+            timeline_search_next: false,
+            timeline_search_prev: false,
             grade_node_clipboard: None,
             graph_descent_path: Vec::new(),
             show_node_strip: false,

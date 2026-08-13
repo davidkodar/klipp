@@ -29,6 +29,7 @@ pub mod sequence_settings_dialog;
 pub mod status_bar;
 pub mod subtitle_editor;
 pub mod timeline;
+pub mod timeline_search;
 pub mod toolbar;
 pub mod transport;
 pub mod viewer;

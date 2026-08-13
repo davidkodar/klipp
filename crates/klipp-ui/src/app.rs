@@ -991,6 +991,7 @@ impl KlippApp {
                     // The PlayheadMoved handler will set the final anchor.
                 }
                 AppEvent::PlayheadMoved(tc) => {
+                    let prev = self.state.playhead;
                     if self.state.playback == PlaybackState::Playing {
                         // During playback: only update anchor, don't touch playhead
                         self.state.playhead_anchor = tc;
@@ -1001,6 +1002,13 @@ impl KlippApp {
                         self.state.playhead_smooth_secs = tc.to_secs_f64();
                         self.state.playhead_anchor = tc;
                         self.state.playhead_anchor_wall = std::time::Instant::now();
+                    }
+                    let delta_ms = (tc.to_secs_f64() - prev.to_secs_f64()).abs() * 1000.0;
+                    if delta_ms > 50.0 {
+                        tracing::info!(
+                            "PLAYHEAD_DIAG event=PlayheadMoved prev={:.3}s new={:.3}s delta={:.1}ms state={:?}",
+                            prev.to_secs_f64(), tc.to_secs_f64(), delta_ms, self.state.playback,
+                        );
                     }
                 }
                 AppEvent::MediaLoaded(payload) => {
@@ -2280,10 +2288,17 @@ impl KlippApp {
             match self.filmstrip_rx.try_recv() {
                 Ok(FilmstripResult::Frame { media_id, frame }) => {
                     self.state.thumbnail_cache.push_filmstrip_frame(media_id, frame);
-                    // Clear cached textures so they get rebuilt with the new frame
-                    if let Some(old) = self.state.filmstrip_textures.remove(&media_id) {
-                        self.defer_drop_textures(old.into_iter().map(|(_, t)| t));
-                    }
+                    // NOTE: previously this branch also did
+                    //   `state.filmstrip_textures.remove(&media_id)`
+                    // and defer-dropped every existing texture so the
+                    // texture vec would get fully rebuilt by the upload
+                    // pass. That made the upload path O(N²) — for a
+                    // ~417-frame clip, ~19k texture allocations and
+                    // 2-3s UI stalls under wgpu's command-buffer pressure.
+                    // The upload pass at the bottom of update() now
+                    // diffs against the existing vec by time_secs and
+                    // only allocates the newly-arrived frame, so this
+                    // remove() became actively harmful and was deleted.
                     // Bump per-job progress (frames_done, frames_expected).
                     // The expected count was set at spawn time from the
                     // duration / interval calculation; here we just
@@ -28704,41 +28719,71 @@ impl KlippApp {
                 }
             }
 
-            // Upload filmstrip textures — rebuild when new frames arrive from background thread
+            // Upload filmstrip textures — reuse cached textures by time_secs
+            // so that each new background frame only allocates its own texture,
+            // not the entire filmstrip. Previously this path was O(N²) per clip
+            // (every incoming frame triggered a full re-upload of N existing
+            // frames + 1 new), churning ~19k texture allocations for a ~417-frame
+            // clip and stalling the UI thread under wgpu's command-buffer pressure.
+            //
+            // Identity is `time_secs` quantised to microseconds so refinement
+            // (which inserts new times BETWEEN existing ones, shifting indices)
+            // still reuses correctly. Per `feedback_defer_drop_texture`, any
+            // texture whose Arc-clone we relinquish mid-frame goes through
+            // `deferred_texture_drops` rather than dropping inline — wgpu would
+            // panic on the next submit otherwise.
             let existing_count = self.state.filmstrip_textures.get(&media_id).map(|t| t.len()).unwrap_or(0);
             let cache_count = self.state.thumbnail_cache.filmstrip(&media_id).map(|f| f.len()).unwrap_or(0);
-            if cache_count > existing_count {
+            if cache_count != existing_count {
                 if let Some(frames) = self.state.thumbnail_cache.filmstrip(&media_id) {
                     if !frames.is_empty() {
-                        let textures: Vec<(f64, egui::TextureHandle)> = frames
-                            .iter()
-                            .enumerate()
-                            .filter_map(|(i, frame)| {
-                                let w = frame.width as usize;
-                                let h = frame.height as usize;
-                                if frame.rgba.len() != w * h * 4 {
-                                    return None;
-                                }
-                                let pixels: Vec<egui::Color32> = frame
-                                    .rgba
-                                    .chunks_exact(4)
-                                    .map(|p| {
-                                        egui::Color32::from_rgba_unmultiplied(p[0], p[1], p[2], p[3])
-                                    })
-                                    .collect();
-                                let image = egui::ColorImage {
-                                    size: [w, h],
-                                    pixels,
-                                };
-                                let tex_name = format!("filmstrip-{}-{}", media_id, i);
-                                let tex = alloc_texture_logged(ctx, &tex_name, image, egui::TextureOptions::LINEAR);
-                                Some((frame.time_secs, tex))
-                            })
-                            .collect();
-                        if let Some(old_vec) = self.state.filmstrip_textures.insert(media_id, textures) {
-                            let slot = self.state.deferred_texture_drops_slot;
-                            self.state.deferred_texture_drops[slot].extend(old_vec.into_iter().map(|(_, h)| h));
+                        // Build a lookup table from the existing vec keyed by
+                        // microsecond-quantised time. Each texture gets used at
+                        // most once below (removed on hit), so leftovers at the
+                        // end of the loop are stale entries to defer-drop.
+                        let existing_vec = self.state.filmstrip_textures.remove(&media_id).unwrap_or_default();
+                        let mut reuse: std::collections::HashMap<i64, egui::TextureHandle> =
+                            std::collections::HashMap::with_capacity(existing_vec.len());
+                        for (t, h) in existing_vec.into_iter() {
+                            let key = (t * 1_000_000.0).round() as i64;
+                            reuse.insert(key, h);
                         }
+                        let mut new_vec: Vec<(f64, egui::TextureHandle)> = Vec::with_capacity(frames.len());
+                        for (i, frame) in frames.iter().enumerate() {
+                            let key = (frame.time_secs * 1_000_000.0).round() as i64;
+                            if let Some(h) = reuse.remove(&key) {
+                                new_vec.push((frame.time_secs, h));
+                                continue;
+                            }
+                            let w = frame.width as usize;
+                            let h_p = frame.height as usize;
+                            if frame.rgba.len() != w * h_p * 4 {
+                                continue;
+                            }
+                            let pixels: Vec<egui::Color32> = frame
+                                .rgba
+                                .chunks_exact(4)
+                                .map(|p| {
+                                    egui::Color32::from_rgba_unmultiplied(p[0], p[1], p[2], p[3])
+                                })
+                                .collect();
+                            let image = egui::ColorImage {
+                                size: [w, h_p],
+                                pixels,
+                            };
+                            let tex_name = format!("filmstrip-{}-{}", media_id, i);
+                            let tex = alloc_texture_logged(ctx, &tex_name, image, egui::TextureOptions::LINEAR);
+                            new_vec.push((frame.time_secs, tex));
+                        }
+                        // Defer-drop any textures whose time_secs no longer
+                        // appears in the cache (e.g. refinement replaced them).
+                        // In the common "frames append" case `reuse` is empty
+                        // and this is a no-op.
+                        if !reuse.is_empty() {
+                            let slot = self.state.deferred_texture_drops_slot;
+                            self.state.deferred_texture_drops[slot].extend(reuse.into_values());
+                        }
+                        self.state.filmstrip_textures.insert(media_id, new_vec);
                     }
                 }
             }
