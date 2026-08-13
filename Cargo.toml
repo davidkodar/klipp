@@ -75,7 +75,7 @@ dasp = { version = "0.11", features = ["all"] }
 symphonia = { version = "0.5", features = ["all"] }
 
 # FFmpeg (decode + export)
-ffmpeg-next = "8.1"
+ffmpeg-next = "9.0"
 
 # Audio resampling
 rubato = "0.15"

@@ -492,16 +492,14 @@ impl Encoder {
             audio_ctx.set_rate(snapshot.sample_rate as i32);
             audio_ctx.set_channel_layout(ffmpeg_next::ChannelLayout::STEREO);
             // Use the codec's preferred sample format (not always f32)
-            let sample_fmt = unsafe {
-                let codec_ptr = audio_codec.as_ptr();
-                let fmts = (*codec_ptr).sample_fmts;
-                if fmts.is_null() {
-                    ffmpeg_next::format::Sample::F32(ffmpeg_next::format::sample::Type::Packed)
-                } else {
-                    // Use first supported format
-                    ffmpeg_next::format::Sample::from(*fmts)
-                }
-            };
+            let sample_fmt = audio_codec
+                .audio()
+                .ok()
+                .and_then(|a| a.formats())
+                .and_then(|mut fmts| fmts.next())
+                .unwrap_or(ffmpeg_next::format::Sample::F32(
+                    ffmpeg_next::format::sample::Type::Packed,
+                ));
             audio_ctx.set_format(sample_fmt);
             audio_ctx.set_time_base(ffmpeg_next::Rational::new(1, snapshot.sample_rate as i32));
 
