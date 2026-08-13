@@ -1525,7 +1525,8 @@ pub struct AppState {
     pub perf_dropped_frames: u64,
     pub perf_memory_mb: f64,
     pub perf_cpu_percent: f64,
-    pub perf_hw_decode: bool,
+    /// None = no video decoder currently open (overlay shows "—").
+    pub perf_hw_decode: Option<bool>,
     pub perf_last_update: std::time::Instant,
     pub perf_frame_times: Vec<f64>,
     pub perf_prev_cpu_ticks: u64,
@@ -3277,7 +3278,7 @@ impl Default for AppState {
             perf_dropped_frames: 0,
             perf_memory_mb: 0.0,
             perf_cpu_percent: 0.0,
-            perf_hw_decode: false,
+            perf_hw_decode: None,
             perf_last_update: std::time::Instant::now(),
             perf_frame_times: Vec::with_capacity(120),
             perf_prev_cpu_ticks: 0,

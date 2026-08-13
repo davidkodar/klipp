@@ -1491,6 +1491,19 @@ pub struct PlaybackEngine {
     /// pre-seek frame until the user pressed an arrow key — that path
     /// pops from the now-filled queue immediately.
     pending_paused_refresh: bool,
+    /// Full-quality parked refresh: when optimised playback runs on
+    /// the skim substitute, a parked playhead re-decodes ONE frame
+    /// from the original media (background decoder, polled per tick)
+    /// so the paused viewer shows source quality instead of the skim
+    /// transcode's compression artifacts. Mirrors Resolve / FCP proxy
+    /// behaviour: proxy while playing, full quality when parked.
+    /// (decoder, playhead it targets, start time)
+    parked_refresh: Option<(VideoDecoder, Timecode, std::time::Instant)>,
+    /// Playhead the last parked refresh completed — or gave up — for.
+    /// Prevents re-triggering while parked on the same frame.
+    parked_refresh_done_for: Option<Timecode>,
+    /// Parked position and when it was reached; None while not paused.
+    parked_since: Option<(Timecode, std::time::Instant)>,
     /// Set of overlay track indexes whose source-vs-final dimension
     /// log line has already fired this session. Keeps the diagnostic
     /// log to one line per overlay rather than spamming per-frame.
@@ -1963,6 +1976,9 @@ impl PlaybackEngine {
             visible_node_thumbs: std::collections::HashSet::new(),
             thumb_capture_suspended: false,
             pending_paused_refresh: false,
+            parked_refresh: None,
+            parked_refresh_done_for: None,
+            parked_since: None,
             overlay_dim_logged: std::collections::HashSet::new(),
             title_cache_diag_logged: std::collections::HashSet::new(),
             source_decoder: None,
@@ -2245,6 +2261,12 @@ impl PlaybackEngine {
                     let _ = self.event_tx.send(AppEvent::PlaybackPaused);
                 }
             }
+            // Full-quality refresh of the parked frame when playback ran
+            // on the skim substitute (optimised playback). Runs every
+            // tick: paused it debounces/polls/paints, any other state it
+            // just tears down leftover refresh state and returns.
+            self.tick_parked_refresh();
+
             if self.state == PlaybackState::Playing {
                 // Playback already produces fresh frames at full res
                 // every tick; the drag-recovery flag isn't needed here.
@@ -2309,16 +2331,17 @@ impl PlaybackEngine {
             // Emit perf stats periodically
             if self.last_stats_time.elapsed() >= Duration::from_millis(2000) {
                 let elapsed = self.last_stats_time.elapsed().as_secs_f64().max(0.001);
-                // Check actual HW decode status from decoder
+                // Actual HW decode status from the open decoder; None
+                // when no decoder is active (overlay shows "—" rather
+                // than a stale SW/NVDEC claim).
                 let hw = self.v1_decoder.as_ref()
-                    .map(|d| d.hw_active.load(Ordering::Relaxed))
-                    .unwrap_or(self.use_hw_decode);
+                    .map(|d| d.hw_active.load(Ordering::Relaxed));
                 let _ = self.event_tx.send(AppEvent::EngineStats {
                     dropped_frames: self.dropped_frames,
                     hw_decode: hw,
                 });
                 tracing::info!(
-                    "ENGINE_HEARTBEAT state={:?} updates={} regrades={} param_changes={} cmds={} elapsed={:.2}s rate={:.1}/s drops_total={} hw_decode={} has_v1={} overlays={}",
+                    "ENGINE_HEARTBEAT state={:?} updates={} regrades={} param_changes={} cmds={} elapsed={:.2}s rate={:.1}/s drops_total={} hw_decode={:?} has_v1={} overlays={}",
                     self.state,
                     self.dbg_update_playback_count,
                     self.dbg_regrade_count,
@@ -7396,6 +7419,169 @@ impl PlaybackEngine {
         }
         (self.repaint_cb)();
         true
+    }
+
+    /// Full-quality parked refresh (see the `parked_refresh` field).
+    /// Called once per tick while paused. Three responsibilities:
+    /// arm/reset the park timer when the parked position changes,
+    /// poll an in-flight refresh decoder, and — after the debounce —
+    /// kick off a refresh when the visible frame came from the skim
+    /// substitute rather than the original media.
+    fn tick_parked_refresh(&mut self) {
+        const PARK_DEBOUNCE: Duration = Duration::from_millis(400);
+        const REFRESH_TIMEOUT: Duration = Duration::from_secs(5);
+
+        if self.state != PlaybackState::Paused {
+            self.parked_since = None;
+            if let Some((mut dec, _, _)) = self.parked_refresh.take() {
+                dec.stop_detached();
+            }
+            return;
+        }
+
+        let ph = self.playhead;
+        match self.parked_since {
+            Some((p, _)) if p == ph => {}
+            _ => {
+                // Parked position changed — restart the debounce and
+                // abandon any refresh aimed at the old position.
+                self.parked_since = Some((ph, std::time::Instant::now()));
+                if let Some((mut dec, _, _)) = self.parked_refresh.take() {
+                    dec.stop_detached();
+                }
+            }
+        }
+
+        // Poll the in-flight refresh decoder.
+        if self.parked_refresh.is_some() {
+            let (frame, timed_out) = {
+                let (dec, target, started) = self.parked_refresh.as_ref().unwrap();
+                if *target != ph {
+                    // Stale target (shouldn't happen given the reset
+                    // above, but belt-and-braces).
+                    (None, true)
+                } else {
+                    let f = {
+                        let mut q = dec.frame_queue().lock().unwrap_or_else(|e| e.into_inner());
+                        // First frame at/after the seek target — the
+                        // decode thread already skipped pre-seek frames.
+                        let mut first = None;
+                        if let Some(f) = q.pop() {
+                            if !f.is_eof {
+                                first = Some(f);
+                            }
+                        }
+                        first
+                    };
+                    let out_of_time = f.is_none() && started.elapsed() > REFRESH_TIMEOUT;
+                    (f, out_of_time)
+                }
+            };
+            if let Some(mut frame) = frame {
+                if let Some((mut dec, _, _)) = self.parked_refresh.take() {
+                    dec.stop_detached();
+                }
+                let (w, h) = (frame.width, frame.height);
+                frame.ensure_cpu_data();
+                let gpu_source = frame.gpu_source.clone();
+                let graded = self.post_process_rgba_with_gpu_source(
+                    frame.data, w, h, gpu_source.as_ref(),
+                );
+                self.pop_overlay_frames(ph);
+                let final_linear = if self.overlay_frames.is_empty() {
+                    graded
+                } else {
+                    let composited = self.compose_with_overlays_and_matte(graded, w, h);
+                    let to_encode = composited.clone();
+                    self.composite_scratch_linear = composited;
+                    to_encode
+                };
+                let final_rgba = self.display_encode(&final_linear);
+                {
+                    let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
+                    fb.write_frame(final_rgba, w, h);
+                }
+                self.parked_refresh_done_for = Some(ph);
+                let _ = self.event_tx.send(AppEvent::FrameReady);
+                (self.repaint_cb)();
+                debug!(
+                    "parked refresh: original-quality frame painted at {:.3}s ({w}x{h})",
+                    ph.to_secs_f64(),
+                );
+            } else if timed_out {
+                if let Some((mut dec, _, _)) = self.parked_refresh.take() {
+                    dec.stop_detached();
+                }
+                // Give up for this position — the skim frame stays.
+                // Retrying every tick would loop the failure.
+                self.parked_refresh_done_for = Some(ph);
+                debug!("parked refresh: timed out, keeping skim frame");
+            }
+            return;
+        }
+
+        // Maybe start a refresh.
+        if self.parked_refresh_done_for == Some(ph)
+            || self.pending_paused_refresh
+            || self.in_node_param_edit
+        {
+            return;
+        }
+        let Some((_, since)) = self.parked_since else { return };
+        if since.elapsed() < PARK_DEBOUNCE {
+            return;
+        }
+        // Only when the active decode source is the skim substitute.
+        let Some(current) = self.current_file.clone() else { return };
+        let clip_info = {
+            let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
+            seq.tracks.iter().rev()
+                .filter(|t| t.kind == klipp_timeline::TrackKind::Video)
+                .find_map(|track| {
+                    track.clip_at_timecode(ph).and_then(|(_, clip)| {
+                        let media_id = clip.media_id()?;
+                        let source_secs = clip.source_in.to_secs_f64()
+                            + (ph - clip.timeline_in).to_secs_f64() * clip.speed;
+                        Some((media_id, source_secs))
+                    })
+                })
+        };
+        let Some((media_id, source_secs)) = clip_info else {
+            self.parked_refresh_done_for = Some(ph);
+            return;
+        };
+        let original = {
+            let pool = self.media_pool.read().unwrap_or_else(|e| e.into_inner());
+            pool.get(&media_id).and_then(|item| {
+                let substituted = item
+                    .skim_file
+                    .as_deref()
+                    .is_some_and(|p| p == current.as_path())
+                    && item.path != current;
+                substituted.then(|| {
+                    (item.path.clone(), item.effective_rotation_for(&item.path))
+                })
+            })
+        };
+        let Some((orig_path, rotation)) = original else {
+            self.parked_refresh_done_for = Some(ph);
+            return;
+        };
+        match VideoDecoder::open(&orig_path, rotation) {
+            Ok(dec) => {
+                dec.seek(source_secs);
+                dec.resume();
+                debug!(
+                    "parked refresh: decoding original {:?} at {source_secs:.3}s",
+                    orig_path.file_name(),
+                );
+                self.parked_refresh = Some((dec, ph, std::time::Instant::now()));
+            }
+            Err(e) => {
+                debug!("parked refresh: open failed ({e}), keeping skim frame");
+                self.parked_refresh_done_for = Some(ph);
+            }
+        }
     }
 
     /// Run the clip's node graph on a caller-supplied pre-grade source

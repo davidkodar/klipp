@@ -2990,7 +2990,9 @@ pub enum AppEvent {
     LufsReadings { momentary: f32, short_term: f32, integrated: f32, loudness_range: f32, true_peak_dbfs: f32 },
 
     // Performance stats
-    EngineStats { dropped_frames: u64, hw_decode: bool },
+    /// `hw_decode` is `None` when no video decoder is currently open —
+    /// the overlay shows "—" instead of guessing SW/NVDEC.
+    EngineStats { dropped_frames: u64, hw_decode: Option<bool> },
 
     // Skim transcode
     SkimTranscodeProgress { media_id: MediaId, progress: f32 },

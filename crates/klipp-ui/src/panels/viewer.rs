@@ -2304,7 +2304,11 @@ impl ViewerPanel {
         let line_h = 15.0;
         let pad = 6.0;
 
-        let hw_label = if state.perf_hw_decode { "NVDEC" } else { "SW" };
+        let hw_label = match state.perf_hw_decode {
+            Some(true) => "NVDEC",
+            Some(false) => "SW",
+            None => "—", // no decoder open right now
+        };
         let playback_label = match state.playback {
             PlaybackState::Playing => "PLAY",
             PlaybackState::Paused => "PAUSE",
@@ -2453,7 +2457,7 @@ impl ViewerPanel {
             let _ = i;
             let color = if line.starts_with("● REC") {
                 theme.marker_error
-            } else if line.starts_with("Decode:") && state.perf_hw_decode {
+            } else if line.starts_with("Decode:") && state.perf_hw_decode == Some(true) {
                 theme.marker_success
             } else if line.starts_with("Drops:") && state.perf_drops_last_sec > 0 {
                 theme.marker_error
