@@ -142,6 +142,8 @@ fn finalise(nodes: Vec<Node>, edges: Vec<Edge>, output_id: NodeId) -> NodeGraph 
         output_node_id: output_id,
         node_positions: positions,
         working_space_override: None,
+        frames: Vec::new(),
+        sticky_notes: Vec::new(),
     }
 }
 
