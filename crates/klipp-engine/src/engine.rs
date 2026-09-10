@@ -1080,6 +1080,17 @@ fn should_publish_gpu_viewer() -> bool {
     })
 }
 
+/// Kill switch for the direct-present fast path (see
+/// `PlaybackEngine::direct_present_blocker`). On by default; set
+/// `KLIPP_DIRECT_PRESENT=0` to force every frame through the full
+/// grade + composite pipeline, which is the way to check whether a
+/// suspected display problem comes from the fast path.
+fn direct_present_enabled() -> bool {
+    use std::sync::OnceLock;
+    static GATE: OnceLock<bool> = OnceLock::new();
+    *GATE.get_or_init(|| std::env::var("KLIPP_DIRECT_PRESENT").ok().as_deref() != Some("0"))
+}
+
 /// Maximum number of live overlay decoders during playback.
 /// Prevents runaway decoder spawning on projects with many video tracks.
 /// Overlay tracks beyond this cap still render correctly in export.
@@ -1668,6 +1679,10 @@ pub struct PlaybackEngine {
     /// Read only when the executor reports `CpuSourceRequired`, to realise
     /// the pixels the speculative path chose not to fetch.
     grade_gpu_source: Option<std::sync::Arc<crate::frame::GpuFrame>>,
+    /// Last reason the direct-present fast path declined a frame, so the
+    /// reason can be logged when it *changes* rather than once per frame.
+    /// `None` means the last frame took the fast path.
+    last_direct_present_blocker: Option<&'static str>,
     // Bidirectional frame cache — keeps last N decoded pre-grade frames for instant
     // backward stepping without FFmpeg seeks.
     frame_cache: FrameCache,
@@ -2056,6 +2071,7 @@ impl PlaybackEngine {
             matte_preview_node: None,
             cached_pregrade_frame: None,
             grade_gpu_source: None,
+            last_direct_present_blocker: None,
             frame_cache: FrameCache::new(120), // ~5s at 24fps (backward history + forward prefetch)
             render_cache_hot: crate::render_cache::HotCache::new(30),
             render_cache_disk,
@@ -4695,6 +4711,37 @@ impl PlaybackEngine {
         // No-op regardless when `data` is already populated (software
         // decode, or KLIPP_GPU_FRAMES unset).
         let gpu_source = frame.gpu_source.clone();
+
+        // Direct present: the decoder's frame is already the frame the
+        // viewer wants. When nothing grades or composites it, the whole
+        // linear excursion below reproduces its own input, so hand the
+        // decoded bytes straight to the viewer instead. See
+        // `direct_present_blocker` for the conditions and why this is
+        // byte-identical.
+        if let Some(ref gpu) = gpu_source {
+            let blocker = self.direct_present_blocker();
+            // Log only on change: per-frame this would be 60 lines a
+            // second, but the transition is exactly what you want to see
+            // when asking why playback is slower than it should be.
+            if blocker != self.last_direct_present_blocker {
+                match blocker {
+                    Some(reason) => tracing::debug!(
+                        "direct present OFF: {reason} — grading and compositing this frame"
+                    ),
+                    None => tracing::debug!(
+                        "direct present ON: publishing decoded frames straight to the viewer"
+                    ),
+                }
+                self.last_direct_present_blocker = blocker;
+            }
+            if blocker.is_none() {
+                self.present_decoded_frame_directly(
+                    gpu, final_w, final_h, current_source_secs, q_len,
+                );
+                return;
+            }
+        }
+
         if gpu_source.is_none() || self.pregrade_encode_needed() {
             frame.ensure_cpu_data();
         }
@@ -8920,6 +8967,227 @@ impl PlaybackEngine {
             self.tone_map_op,
             crate::video_decoder::working_colorspace(),
         )
+    }
+
+    /// Why this frame cannot be handed to the viewer straight off the
+    /// decoder's GPU buffer, or `None` when it can.
+    ///
+    /// The decoder already leaves the frame as display-ready sRGB-u8
+    /// RGBA. When the graph is an identity and nothing composites over
+    /// it, the entire CPU excursion the engine performs — expand to
+    /// linear f32, grade, blend, tone-map, re-encode to u8 — is the
+    /// round trip `u8 -> linear -> u8`, which lands back on the bytes it
+    /// started from. At 4K that round trip measures ~19 ms of readback
+    /// plus ~17 ms of composite and encode, to reproduce its own input.
+    ///
+    /// So the fast path reads the decoder's bytes back and publishes
+    /// them. Its correctness rests on two conditions checked below —
+    /// `ToneMapOp::None` and a non-ACES working space — under which
+    /// `display_transform_ws` reduces to exactly the sRGB encode that
+    /// inverts the decode. `direct_present_is_byte_identical` in
+    /// tests/direct_present_identity.rs pins that for all 256 levels.
+    ///
+    /// Everything else here is a consumer that wants pixels this path
+    /// does not produce (linear light, ungraded input, a real composite),
+    /// so each one sends the frame down the full pipeline instead. The
+    /// reasons are `&'static str` rather than a bool so the trace log can
+    /// say which consumer opted out — the first question to ask when the
+    /// fast path is not engaging.
+    fn direct_present_blocker(&self) -> Option<&'static str> {
+        if !direct_present_enabled() {
+            return Some("KLIPP_DIRECT_PRESENT=0");
+        }
+        // Steady-state playback only. Paused frames go through
+        // `regrade_cached_frame`, which needs the graded linear buffer.
+        if self.state != PlaybackState::Playing {
+            return Some("not playing");
+        }
+        // Compare modes, paused scrubbing and param drags all read the
+        // ungraded CPU frame.
+        if self.pregrade_encode_needed() {
+            return Some("pre-grade CPU encode needed");
+        }
+        if self.in_node_param_edit {
+            return Some("node param edit in progress");
+        }
+        // The two conditions the byte-identity rests on.
+        if !matches!(self.tone_map_op, klipp_color::display::ToneMapOp::None) {
+            return Some("tone-map operator active");
+        }
+        if !matches!(
+            crate::video_decoder::working_colorspace(),
+            klipp_core::WorkingColorspace::Rec709Linear
+                | klipp_core::WorkingColorspace::Bt2020Linear
+        ) {
+            return Some("ACES working space needs the ODT");
+        }
+        // Consumers of the graded linear frame.
+        if !self.active_scope_modes.is_empty() {
+            return Some("scopes active");
+        }
+        if self.scope_tap_node.is_some() {
+            return Some("scope tap node set");
+        }
+        if self.matte_preview_node.is_some() {
+            return Some("matte preview active");
+        }
+        if !self.visible_node_thumbs.is_empty() {
+            return Some("node thumbnails requested");
+        }
+        if self.compare_stabilization || self.compare_effect_active {
+            return Some("compare mode active");
+        }
+        if !self.overlay_frames.is_empty() {
+            return Some("overlay frames present");
+        }
+
+        let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
+        // Any track above this one can contribute an overlay, a title or
+        // an adjustment layer, all of which composite over V1.
+        if !seq.overlay_video_tracks(self.current_track_index).is_empty() {
+            return Some("overlay video tracks present");
+        }
+        if crate::transition::find_active_transition(&seq, self.playhead).is_some() {
+            return Some("transition active");
+        }
+        let Some(track) = seq.tracks.get(self.current_track_index) else {
+            return Some("no current track");
+        };
+        if (track.opacity - 1.0).abs() > 1e-6 {
+            return Some("track opacity below 1.0");
+        }
+        let Some((_, clip)) = track.clip_at_timecode(self.playhead) else {
+            return Some("no clip at playhead");
+        };
+        if !clip.node_graph.is_identity() {
+            return Some("grade graph is not an identity");
+        }
+        if !clip.effects.is_empty() {
+            return Some("plugin effects on clip");
+        }
+        if !clip.builtin_effects.is_empty() {
+            return Some("builtin effects on clip");
+        }
+        if !clip.param_modifiers.is_empty() {
+            return Some("param modifiers on clip");
+        }
+        if !clip.opacity_keyframes.is_empty()
+            || !clip.transform_pos_x_keyframes.is_empty()
+            || !clip.transform_pos_y_keyframes.is_empty()
+            || !clip.transform_scale_keyframes.is_empty()
+            || !clip.transform_rotation_keyframes.is_empty()
+        {
+            return Some("render keyframes on clip");
+        }
+        if !matches!(clip.blend_mode, klipp_core::BlendMode::Normal) {
+            return Some("clip blend mode is not Normal");
+        }
+        if clip.matte_source.is_some() || clip.matte_stencil.is_some() {
+            return Some("clip has a matte");
+        }
+        if clip.source_rotation != 0 {
+            return Some("clip has a source rotation");
+        }
+        if !clip.kind.needs_decoder() {
+            return Some("clip is synthetic");
+        }
+        None
+    }
+
+    /// Publish the decoder's frame to the viewer without grading or
+    /// compositing it. Only called when `direct_present_blocker` returned
+    /// `None`; see there for why this is byte-identical to the full path.
+    fn present_decoded_frame_directly(
+        &mut self,
+        gpu: &std::sync::Arc<crate::frame::GpuFrame>,
+        width: u32,
+        height: u32,
+        current_source_secs: f64,
+        q_len: usize,
+    ) {
+        let t_frame = std::time::Instant::now();
+        mark_stage(EngineStage::PostProcessEntry);
+        let mut bytes = crate::types::realise_srgb_u8_from_gpu(gpu);
+        let readback_ms = t_frame.elapsed().as_secs_f64() * 1000.0;
+
+        if bytes.len() != (width as usize) * (height as usize) * 4 {
+            // The decoder's buffer disagrees with the frame's declared
+            // size. Better to drop this frame than publish a torn one;
+            // the next frame re-evaluates from scratch.
+            tracing::error!(
+                "direct present: readback {} bytes != {width}x{height}x4 — frame skipped",
+                bytes.len(),
+            );
+            return;
+        }
+
+        let t_fb = std::time::Instant::now();
+        {
+            let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
+            fb.write_frame_swap(&mut bytes, width, height);
+        }
+        // `write_frame_swap` handed back the previous buffer — keep it as
+        // the u8 scratch so the next frame reuses the allocation.
+        self.composite_scratch_u8 = bytes;
+        let fb_write_ms = t_fb.elapsed().as_secs_f64() * 1000.0;
+
+        let total_ms = t_frame.elapsed().as_secs_f64() * 1000.0;
+        // The overlay reads the ring, so a fast-path frame has to push a
+        // sample too or the display freezes on the last graded frame and
+        // reports numbers this frame never paid.
+        let target_fps = self.target_fps_for_overlay();
+        let decode_ms = self.v1_decoder.as_ref().map(|d| d.last_decode_ms()).unwrap_or(0.0);
+        let dropped = match target_fps {
+            Some(fps) if fps > 0.0 => (total_ms as f32).max(decode_ms) > (1000.0 / fps),
+            _ => false,
+        };
+        if let Ok(mut ring) = self.perf_ring.lock() {
+            ring.push(crate::perf::PerfSample {
+                timestamp: std::time::Instant::now(),
+                width,
+                height,
+                target_fps: target_fps.unwrap_or(0.0),
+                decode_ms,
+                seq_read_ms: 0.0,
+                // No grade ran. Attributing the readback to `grade_ms`
+                // would misreport where the time went; it is a readback
+                // and shows up as one.
+                grade_ms: 0.0,
+                ofx_ms: 0.0,
+                builtin_ms: 0.0,
+                lut_ms: 0.0,
+                total_ms: total_ms as f32,
+                dropped,
+                bridge_u8_ms: 0.0,
+                reencode_ms: 0.0,
+                scope_ms: 0.0,
+                composite_ms: 0.0,
+                update_playback_ms: total_ms as f32,
+            });
+        }
+
+        self.frames_consumed += 1;
+        if total_ms > 5.0 {
+            tracing::debug!(
+                "PERF direct_present: {total_ms:.1}ms for {width}x{height} | \
+                 readback={readback_ms:.1} fb_write={fb_write_ms:.1}",
+            );
+        }
+        if self.last_playback_log.elapsed().as_secs() >= 2 {
+            let elapsed = self.last_playback_log.elapsed().as_secs_f64();
+            let fps = self.frames_consumed as f64 / elapsed.max(0.001);
+            tracing::debug!(
+                "PLAYBACK direct: clock={current_source_secs:.3}s consumed={} \
+                 ({fps:.1}fps) drops={} q_len={q_len}",
+                self.frames_consumed, self.dropped_frames,
+            );
+            self.frames_consumed = 0;
+            self.last_playback_log = std::time::Instant::now();
+        }
+
+        let _ = self.event_tx.send(AppEvent::PlayheadMoved(self.playhead));
+        let _ = self.event_tx.send(AppEvent::FrameReady);
+        (self.repaint_cb)();
     }
 
     /// Whether this frame needs the pre-grade CPU encode.

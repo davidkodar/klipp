@@ -267,6 +267,30 @@ pub fn realise_linear_from_gpu(gpu: &crate::frame::GpuFrame) -> Vec<f32> {
     out
 }
 
+/// Realise a GPU-resident frame as display-ready sRGB-u8 RGBA bytes.
+///
+/// The decoder's conversion shaders already leave the frame as sRGB-u8
+/// RGBA, so this is the readback with nothing added: 4 bytes per pixel
+/// instead of the 16 that [`realise_linear_from_gpu`] produces, and no
+/// linear expansion. At 4K that is 33 MB over PCIe rather than 132 MB
+/// plus a per-pixel transfer-function evaluation.
+///
+/// Only correct for consumers that want *display* pixels. Anything that
+/// grades, composites or blends needs linear light — use
+/// [`realise_linear_from_gpu`] for those.
+///
+/// Counts into the same [`CPU_READBACK_COUNT`] / [`CPU_READBACK_US`]
+/// totals so the perf overlay reports every readback, whatever its shape.
+pub fn realise_srgb_u8_from_gpu(gpu: &crate::frame::GpuFrame) -> Vec<u8> {
+    let t0 = std::time::Instant::now();
+    let bytes = readback_gpu_frame_to_u8(gpu);
+    let us = t0.elapsed().as_micros() as u64;
+    use std::sync::atomic::Ordering::Relaxed;
+    CPU_READBACK_COUNT.fetch_add(1, Relaxed);
+    CPU_READBACK_US.fetch_add(us, Relaxed);
+    bytes
+}
+
 fn readback_gpu_frame_to_u8(gpu: &crate::frame::GpuFrame) -> Vec<u8> {
     let byte_size = (gpu.width as u64) * (gpu.height as u64) * 4;
     let staging = gpu.device.create_buffer(&wgpu::BufferDescriptor {
