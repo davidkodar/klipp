@@ -2325,11 +2325,28 @@ impl ViewerPanel {
         let avg = &state.perf_averages;
         // Decode and post-process run on separate threads (pipelined),
         // so frame pacing is bound by the slowest stage, not the sum.
-        let actual_ms = avg.total_ms.max(avg.decode_ms);
+        // Decode and post-process run on separate threads (pipelined), so
+        // pacing is bound by the slowest stage. The readback is engine-side
+        // work that the post-process stage table does not cover, so it adds
+        // to that side rather than being max'd against it — leaving it out
+        // is what let this line report 5.2 ms while frames took 35 ms.
+        let engine_ms = avg.total_ms + state.perf_readback_ms as f32;
+        let actual_ms = engine_ms.max(avg.decode_ms);
         let (res_line, fps_line, budget_line) = match state.perf_latest_sample {
             Some(ref s) => (
                 format!("Frame:  {}x{}", s.width, s.height),
-                format!("Target: {:.1} fps", s.target_fps),
+                {
+                    // The number that was missing. A target with no
+                    // achieved figure beside it reads as a promise.
+                    let got = state.perf_video_fps as f32;
+                    let short = s.target_fps > 0.0 && got > 0.0 && got < s.target_fps * 0.9;
+                    format!(
+                        "Target: {:.1} fps   actual {:.1} fps{}",
+                        s.target_fps,
+                        got,
+                        if short { "  ⚠ BELOW TARGET" } else { "" },
+                    )
+                },
                 match s.frame_budget_ms() {
                     Some(budget) => {
                         format!(
@@ -2365,6 +2382,10 @@ impl ViewerPanel {
             format!(
                 "  decode      {:.2} ms",
                 avg.decode_ms,
+            ),
+            format!(
+                "  readback    {:.2} ms",
+                state.perf_readback_ms,
             ),
             format!(
                 "  seq read    {:.2} ms",
@@ -2404,7 +2425,7 @@ impl ViewerPanel {
                 avg.scope_ms,
             ),
             format!(
-                "Drops:  {} in last 1s · {} total",
+                "Drops:  {} in last 1s · {} total (frames never produced are not drops)",
                 state.perf_drops_last_sec, state.perf_dropped_frames,
             ),
             format!("Frames: {}", state.perf_frame_count),

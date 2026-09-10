@@ -848,7 +848,38 @@ impl KlippApp {
         // Update stats every 250ms
         let now = std::time::Instant::now();
         if now.duration_since(self.state.perf_last_update).as_millis() >= self.prefs.advanced.perf_overlay_interval_ms as u128 {
+            let interval_s = now.duration_since(self.state.perf_last_update).as_secs_f64();
             self.state.perf_last_update = now;
+
+            // Delivered video throughput, measured from FrameReady
+            // deliveries rather than inferred from stage timings. The
+            // stage table only sums what it tracks, so it read 5.2 ms
+            // against a 16.7 ms budget while playback was managing
+            // 22 fps of a 59.94 fps target.
+            if interval_s > 0.0 {
+                let delivered = self
+                    .state
+                    .perf_frame_count
+                    .saturating_sub(self.state.perf_last_frame_count);
+                self.state.perf_video_fps = delivered as f64 / interval_s;
+            }
+            self.state.perf_last_frame_count = self.state.perf_frame_count;
+
+            // Readback cost per frame, straight from the engine counters.
+            {
+                use std::sync::atomic::Ordering::Relaxed;
+                let c = klipp_engine::CPU_READBACK_COUNT.load(Relaxed);
+                let us = klipp_engine::CPU_READBACK_US.load(Relaxed);
+                let dc = c.saturating_sub(self.state.perf_last_readback_count);
+                let dus = us.saturating_sub(self.state.perf_last_readback_us);
+                self.state.perf_readback_ms = if dc > 0 {
+                    (dus as f64 / dc as f64) / 1000.0
+                } else {
+                    0.0
+                };
+                self.state.perf_last_readback_count = c;
+                self.state.perf_last_readback_us = us;
+            }
 
             // FPS from average frame time
             if !self.state.perf_frame_times.is_empty() {

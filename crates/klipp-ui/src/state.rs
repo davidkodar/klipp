@@ -1522,6 +1522,21 @@ pub struct AppState {
     pub perf_drops_last_sec: u32,
     pub perf_fps: f64,
     pub perf_frame_count: u64,
+    /// Delivered video frames per second, as opposed to [`Self::perf_fps`]
+    /// which is the egui repaint rate.
+    ///
+    /// These are easy to confuse and were: the overlay showed "UI FPS 119"
+    /// and "Target 59.9 fps" while video actually ran at 22 fps, with no
+    /// field anywhere reporting the rate actually achieved.
+    pub perf_video_fps: f64,
+    /// Average GPU->CPU readback per delivered frame over the last
+    /// interval. Not part of the engine's post-process stage table, so it
+    /// was invisible on the overlay while being the dominant per-frame
+    /// cost at 4K.
+    pub perf_readback_ms: f64,
+    pub(crate) perf_last_frame_count: u64,
+    pub(crate) perf_last_readback_count: u64,
+    pub(crate) perf_last_readback_us: u64,
     pub perf_dropped_frames: u64,
     pub perf_memory_mb: f64,
     pub perf_cpu_percent: f64,
@@ -3274,6 +3289,11 @@ impl Default for AppState {
             perf_averages: klipp_engine::perf::PerfAverages::default(),
             perf_drops_last_sec: 0,
             perf_fps: 0.0,
+            perf_video_fps: 0.0,
+            perf_readback_ms: 0.0,
+            perf_last_frame_count: 0,
+            perf_last_readback_count: 0,
+            perf_last_readback_us: 0,
             perf_frame_count: 0,
             perf_dropped_frames: 0,
             perf_memory_mb: 0.0,
