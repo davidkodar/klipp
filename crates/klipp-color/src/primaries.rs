@@ -226,21 +226,29 @@ pub fn matrix3_mul(lhs: [[f32; 3]; 3], rhs: [[f32; 3]; 3]) -> [[f32; 3]; 3] {
 /// Linear-light AP1 (ACEScg) RGB → linear-light BT.2020 RGB.
 ///
 /// White-point conversion D60 → D65 baked in via Bradford CAT.
-/// Used by the Rec.2100 PQ ODT to deliver wide-gamut HDR content
-/// in BT.2020 primaries.
 ///
-/// Source: AMPAS aces-dev `AP1_2_REC2020_MAT` from
-/// `transforms/ctl/lib/ACESlib.Transform_Common.ctl`. AP1 and
-/// BT.2020 are close in chromaticity, so the matrix is close to
-/// identity (the diagonal is ~1 with small off-diagonals); a
-/// neutral input round-trips cleanly.
+/// Derived from the AMPAS chromaticities — AP1 and `REC2020_PRI` from
+/// `ACESlib.Utilities_Color.ctl` — through the standard `RGBtoXYZ`
+/// construction, i.e. `XYZ→Rec.2020 · D60→D65 CAT · AP1→XYZ`. Matches
+/// both OpenColorIO's `ACEScg → Linear Rec.2020` processor and the
+/// published AP1→Rec.2020 values to 4e-8.
+///
+/// AP1 and BT.2020 are close in chromaticity, so the matrix sits near
+/// identity: diagonal ≈ 1 with small off-diagonals.
+///
+/// The previous values here were wrong by up to 3.3e-2 and cited an
+/// `AP1_2_REC2020_MAT` constant that does not exist anywhere in
+/// aces-dev. They survived because their rows still summed to 1, so
+/// neutral round-tripped and nothing looked obviously broken — which is
+/// exactly why [`tests::bt2020_matrix_matches_published_values`] pins
+/// the off-diagonals and not just the neutral axis.
 #[inline]
 #[allow(clippy::excessive_precision)]
 pub fn acescg_to_bt2020() -> [[f32; 3]; 3] {
     [
-        [ 1.040036, -0.001154, -0.038881],
-        [-0.011311,  1.005945,  0.005367],
-        [ 0.000291, -0.001263,  1.000972],
+        [ 1.025824748000, -0.020053191000, -0.005771557000],
+        [-0.002234370000,  1.004586502000, -0.002352132000],
+        [-0.005013351000, -0.025290072000,  1.030303423000],
     ]
 }
 
@@ -254,9 +262,9 @@ pub fn acescg_to_bt2020() -> [[f32; 3]; 3] {
 #[allow(clippy::excessive_precision)]
 pub fn bt2020_to_acescg() -> [[f32; 3]; 3] {
     [
-        [ 0.961507236379,  0.001149905973,  0.037341894990],
-        [ 0.010812753529,  0.994096373481, -0.004910131918],
-        [-0.000265883659,  0.001253990219,  0.999011892452],
+        [ 0.974894977615,  0.019599108791,  0.005505913595],
+        [ 0.002179563260,  0.995535468784,  0.002284967956],
+        [ 0.004797239252,  0.024532016813,  0.970670743934],
     ]
 }
 
@@ -379,6 +387,57 @@ mod tests {
             approx_eq_vec(back, dark, 1e-5),
             "dark colour round-trip failed: {dark:?} → {in_709:?} → {back:?}",
         );
+    }
+
+    #[test]
+    fn bt2020_product_is_identity() {
+        let id = matrix3_mul(acescg_to_bt2020(), bt2020_to_acescg());
+        for i in 0..3 {
+            for j in 0..3 {
+                let expected = if i == j { 1.0 } else { 0.0 };
+                assert!(
+                    approx_eq(id[i][j], expected, 5e-6),
+                    "M_acescg→2020 × M_2020→acescg [{i}][{j}] = {} (expected {expected})",
+                    id[i][j],
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn bt2020_matrix_matches_published_values() {
+        // Pins the off-diagonals, not just the neutral axis. The values
+        // this replaced were wrong by up to 3.3e-2 yet still summed to 1
+        // per row, so every neutral-grey check passed and the error only
+        // showed on saturated colour.
+        let published: [[f32; 3]; 3] = [
+            [ 1.0258247, -0.0200531, -0.0057715],
+            [-0.0022343,  1.0045865, -0.0023521],
+            [-0.0050133, -0.0252900,  1.0303034],
+        ];
+        let got = acescg_to_bt2020();
+        for i in 0..3 {
+            for j in 0..3 {
+                assert!(
+                    approx_eq(got[i][j], published[i][j], 1e-6),
+                    "acescg_to_bt2020[{i}][{j}] = {} (published {})",
+                    got[i][j], published[i][j],
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn bt2020_neutral_stays_neutral_both_ways() {
+        for m in [acescg_to_bt2020(), bt2020_to_acescg()] {
+            let out = matrix3_mul_vec(m, [1.0, 1.0, 1.0]);
+            for c in out {
+                assert!(
+                    approx_eq(c, 1.0, 1e-5),
+                    "neutral must map to neutral, got {out:?}",
+                );
+            }
+        }
     }
 
     #[test]
