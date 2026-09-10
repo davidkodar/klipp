@@ -914,18 +914,45 @@ mod tests {
         assert_eq!(clamp(f32::INFINITY), 0, "+inf clamps to 0");
     }
 
+    /// True when `/usr/lib/lv2` holds at least one bundle containing a
+    /// plugin binary.
+    ///
+    /// The directory existing is not enough to conclude that plugins are
+    /// installed: the `lv2` package ships only the specification bundles
+    /// (`atom.lv2`, `core.lv2`, `buf-size.lv2`, …), which carry no `.so`
+    /// at all. A machine can therefore have the LV2 standard installed
+    /// and nothing whatsoever to discover.
+    fn system_has_lv2_plugin_binaries() -> bool {
+        let Ok(bundles) = std::fs::read_dir("/usr/lib/lv2") else {
+            return false;
+        };
+        for bundle in bundles.flatten() {
+            let Ok(files) = std::fs::read_dir(bundle.path()) else {
+                continue;
+            };
+            if files
+                .flatten()
+                .any(|f| f.path().extension().is_some_and(|e| e == "so"))
+            {
+                return true;
+            }
+        }
+        false
+    }
+
     #[test]
     fn discover_finds_at_least_one_plugin_when_installed() {
         let _g = env_lock();
-        if !std::path::Path::new("/usr/lib/lv2").is_dir() {
-            eprintln!("skipping: /usr/lib/lv2 not present");
+        if !system_has_lv2_plugin_binaries() {
+            eprintln!("skipping: no LV2 plugin binaries under /usr/lib/lv2");
             return;
         }
         std::env::remove_var("KLIPP_LV2_DISABLE");
         let plugins = discover_lv2_plugins();
         assert!(
             !plugins.is_empty(),
-            "system /usr/lib/lv2 is present but discovery yielded zero plugins"
+            "/usr/lib/lv2 holds plugin binaries but discovery yielded zero \
+             plugins"
         );
     }
 }
