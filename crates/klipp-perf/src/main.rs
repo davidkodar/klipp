@@ -52,11 +52,15 @@ fn main() -> std::io::Result<()> {
     let mut selected: Option<String> = None;
     let mut list_only = false;
     let mut cpu_only = false;
+    let mut in_process = false;
+    let mut no_header = false;
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
             "--list" => list_only = true,
             "--cpu-only" => cpu_only = true,
+            "--in-process" => in_process = true,
+            "--no-header" => no_header = true,
             "--scenario" => {
                 i += 1;
                 selected = args.get(i).cloned();
@@ -81,17 +85,55 @@ fn main() -> std::io::Result<()> {
         return Ok(());
     }
 
+    // ── Process isolation ───────────────────────────────────────
+    //
+    // Scenarios are NOT independent when run back-to-back in one
+    // process. Each builds its own `GraphExecutor`, and each executor
+    // allocates 1080p ping-pong chain buffers (~66 MB) plus pipelines on
+    // the shared device. wgpu frees those lazily, so a scenario running
+    // fourth measures a GPU carrying three predecessors' allocations.
+    //
+    // Measured: `s04` reads 4.09 / 4.13 ms run alone and 7.7-7.8 ms as
+    // the fourth scenario in a process — with priming succeeding on
+    // every frame, so it is not a silent fallback. `s01` is immune
+    // because its cost is dominated by an upload that is
+    // bandwidth-bound; `s04`'s is GPU-side work, which is not. A
+    // harness where the answer depends on position cannot be used to
+    // compare two paths, which is the one thing it is for.
+    //
+    // So each scenario gets a fresh process. `--in-process` opts out
+    // (and is what the children are invoked with).
+    if selected.is_none() && !in_process {
+        let exe = std::env::current_exe()?;
+        print_table_header();
+        let mut any_failed = false;
+        let mut any_unsettled = false;
+        for s in scenarios::ALL {
+            let mut cmd = std::process::Command::new(&exe);
+            cmd.arg("--scenario").arg(s.name).arg("--in-process").arg("--no-header");
+            if cpu_only {
+                cmd.arg("--cpu-only");
+            }
+            match cmd.status()?.code() {
+                Some(0) => {}
+                Some(2) => any_unsettled = true,
+                _ => any_failed = true,
+            }
+        }
+        print_run_summary(&PathBuf::from("target/perf-results"), any_failed, any_unsettled);
+        return Ok(());
+    }
+
     let results_dir = PathBuf::from("target/perf-results");
     fs::create_dir_all(&results_dir)?;
     let run_stamp = epoch_stamp();
 
-    println!(
-        "{:<40} {:<5}  p50         p99         max         mean        budget      res    n",
-        "scenario", "ok"
-    );
-    println!("{}", "─".repeat(120));
+    if !no_header {
+        print_table_header();
+    }
 
     let mut any_failed = false;
+    let mut any_unsettled = false;
     for s in scenarios::ALL {
         if let Some(ref filter) = selected {
             if s.name != filter {
@@ -100,7 +142,12 @@ fn main() -> std::io::Result<()> {
         }
         let result = (s.run)(cpu_only);
         stats::print_human(&result);
-        if !result.passed {
+        // An unsettled run is not a failure against the budget — it is
+        // the absence of a measurement. Conflating the two would report
+        // a regression that nobody can act on.
+        if !result.settled {
+            any_unsettled = true;
+        } else if !result.passed {
             any_failed = true;
         }
 
@@ -110,14 +157,42 @@ fn main() -> std::io::Result<()> {
         fs::write(&path, json)?;
     }
 
-    println!();
-    println!("JSON results: {}", results_dir.display());
+    if !no_header {
+        print_run_summary(&results_dir, any_failed, any_unsettled);
+    }
+    // Exit code carries the verdict so the isolating parent can aggregate
+    // without parsing stdout: 0 = pass, 1 = missed budget, 2 = unsettled.
+    if any_unsettled {
+        std::process::exit(2);
+    }
     if any_failed {
-        println!("Some scenarios missed their p99 budget (see FAIL above).");
-    } else {
-        println!("All run scenarios met their p99 budget.");
+        std::process::exit(1);
     }
     Ok(())
+}
+
+fn print_table_header() {
+    println!(
+        "{:<40} {:<5}  p50         p99         sd       drift    budget      res    n",
+        "scenario", "ok"
+    );
+    println!("{}", "─".repeat(120));
+}
+
+fn print_run_summary(results_dir: &std::path::Path, any_failed: bool, any_unsettled: bool) {
+    println!();
+    println!("JSON results: {}", results_dir.display());
+    if any_unsettled {
+        println!(
+            "Some scenarios never settled (UNSET above) — their samples were still \
+             trending, so they carry no verdict. Re-run with the GPU already warm."
+        );
+    }
+    if any_failed {
+        println!("Some scenarios missed their p99 budget (see FAIL above).");
+    } else if !any_unsettled {
+        println!("All run scenarios met their p99 budget.");
+    }
 }
 
 fn print_help() {
