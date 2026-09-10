@@ -222,6 +222,66 @@ pub fn find_libonnxruntime() -> Option<PathBuf> {
     None
 }
 
+/// Fail fast when the ONNX Runtime shared library cannot be loaded.
+///
+/// `ort` runs in `load-dynamic` mode, and when the library it is pointed
+/// at does not exist its lazy initialisation **deadlocks** instead of
+/// returning an error — the calling thread and the runtime's init thread
+/// both end up parked on a futex indefinitely. That turns a missing
+/// optional dependency into a hung process rather than the
+/// [`klipp_ml::MaskError::BackendInit`] the API promises, and it is not
+/// something we can repair inside a pinned release-candidate dependency.
+/// So the precondition gets checked before control reaches `ort`.
+///
+/// The check mirrors **`ort`'s** resolution order, not ours:
+/// `ort` trusts `ORT_DYLIB_PATH` verbatim, so when that variable is set
+/// it is the only file `ort` will attempt — even if a perfectly good
+/// library sits in one of the fallback locations
+/// [`find_libonnxruntime`] would have picked up. Validating our own
+/// search order here instead would report success and then hang.
+pub fn ensure_runtime_loadable() -> Result<(), String> {
+    let explicit = std::env::var("ORT_DYLIB_PATH").ok();
+    let explicit = explicit.as_deref().filter(|p| !p.is_empty());
+    let explicit_exists = explicit.is_some_and(|p| std::path::Path::new(p).exists());
+    runtime_loadable(explicit, explicit_exists, find_libonnxruntime().is_some())
+}
+
+/// Decision half of [`ensure_runtime_loadable`], split from the
+/// environment read so it can be tested directly.
+///
+/// Testing the whole thing would mean setting `ORT_DYLIB_PATH`, and the
+/// environment is process-wide: a test doing that would race every other
+/// test in this binary that builds a session, pointing them at whatever
+/// path it had installed. Taking the inputs as arguments keeps the logic
+/// under test and the hazard out of the suite.
+fn runtime_loadable(
+    explicit: Option<&str>,
+    explicit_exists: bool,
+    fallback_found: bool,
+) -> Result<(), String> {
+    // An explicit setting wins outright, including when it is wrong:
+    // `ort` will not fall back, so neither may we.
+    if let Some(path) = explicit {
+        return if explicit_exists {
+            Ok(())
+        } else {
+            Err(format!(
+                "ONNX Runtime library not found: ORT_DYLIB_PATH is set to \
+                 '{path}', which does not exist. Unset it to fall back to the \
+                 standard locations, or point it at a real libonnxruntime.so."
+            ))
+        };
+    }
+    if fallback_found {
+        Ok(())
+    } else {
+        Err("ONNX Runtime library not found. Install it (Arch: onnxruntime-cpu, \
+             or onnxruntime-cuda for the GPU execution provider) or set \
+             ORT_DYLIB_PATH to a libonnxruntime.so."
+            .to_string())
+    }
+}
+
 /// Replace a leading `~` with `$HOME`. Standalone helper because
 /// our candidate list mixes home-relative + absolute paths.
 fn expand_tilde(p: &str) -> PathBuf {
@@ -313,6 +373,35 @@ mod tests {
     use super::*;
 
     // ── classify_lspci_output ────────────────────────────────
+
+    #[test]
+    fn runtime_loadable_accepts_a_valid_explicit_path() {
+        assert!(runtime_loadable(Some("/some/real/libonnxruntime.so"), true, false).is_ok());
+    }
+
+    #[test]
+    fn runtime_loadable_rejects_a_missing_explicit_path() {
+        let err = runtime_loadable(Some("/nope/libonnxruntime.so"), false, false)
+            .expect_err("a missing explicit path must be rejected");
+        assert!(err.contains("/nope/libonnxruntime.so"), "error should name the path: {err}");
+    }
+
+    #[test]
+    fn a_missing_explicit_path_is_not_rescued_by_the_fallbacks() {
+        // The behaviour that matters. `ort` uses ORT_DYLIB_PATH verbatim
+        // and never falls back, so a bad explicit setting must fail even
+        // when a perfectly good library sits in a standard location —
+        // otherwise we report success and ort then deadlocks on load.
+        let err = runtime_loadable(Some("/nope/libonnxruntime.so"), false, true)
+            .expect_err("explicit setting must win over an available fallback");
+        assert!(err.contains("/nope/libonnxruntime.so"), "error should name the path: {err}");
+    }
+
+    #[test]
+    fn runtime_loadable_uses_fallbacks_when_unset() {
+        assert!(runtime_loadable(None, false, true).is_ok());
+        assert!(runtime_loadable(None, false, false).is_err());
+    }
 
     #[test]
     fn classifies_nvidia() {

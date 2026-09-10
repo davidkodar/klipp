@@ -68,6 +68,6 @@ pub use preprocess::{
     BIREFNET_INPUT_SIZE, IMAGENET_MEAN, IMAGENET_STD,
 };
 pub use runtime_resolve::{
-    detect_gpu_vendor, find_libonnxruntime, resolve_runtime_status, GpuVendor,
+    detect_gpu_vendor, ensure_runtime_loadable, find_libonnxruntime, resolve_runtime_status, GpuVendor,
     RuntimeStatus, StatusSeverity,
 };

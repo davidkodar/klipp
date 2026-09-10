@@ -260,6 +260,10 @@ fn build_session(
 ) -> Result<ort::session::Session, MaskError> {
     use ort::session::builder::GraphOptimizationLevel;
 
+    // Before touching ort at all: a missing dylib deadlocks its lazy
+    // init rather than erroring. See `ensure_runtime_loadable`.
+    crate::runtime_resolve::ensure_runtime_loadable().map_err(MaskError::BackendInit)?;
+
     let mut builder = ort::session::Session::builder()
         .map_err(|e| MaskError::BackendInit(format!("session builder: {e}")))?
         .with_optimization_level(GraphOptimizationLevel::Level3)
