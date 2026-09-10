@@ -559,8 +559,17 @@ mod readback_cost {
     /// deliberately:
     ///
     /// ```text
-    /// cargo test -p klipp-engine --lib readback_cost -- --ignored --nocapture
+    /// cargo test --release -p klipp-engine --lib readback_cost \
+    ///     -- --ignored --nocapture --test-threads=1
     /// ```
+    ///
+    /// Both flags are load-bearing. `--release` because the CPU half is a
+    /// LUT loop that measures 2.84 ms under the dev profile's opt-level 1
+    /// against 1.89 ms optimised. `--test-threads=1` because the two
+    /// resolutions contend for the GPU when run in parallel — that inflated
+    /// the 1080p reading from 3.87 ms to 7.88 ms, which is the same
+    /// cross-measurement contamination that made the perf harness
+    /// untrustworthy until b2094ef0.
     ///
     /// Why it exists: the GPU-residency plan assumes GPU→CPU round-trips
     /// dominate the per-frame cost, and `ensure_cpu_data` is the one on
@@ -570,8 +579,20 @@ mod readback_cost {
     #[test]
     #[ignore = "measurement, not an assertion — run with --ignored --nocapture"]
     fn ensure_cpu_data_cost_at_1080p() {
-        const W: u32 = 1920;
-        const H: u32 = 1080;
+        measure_readback(1920, 1080);
+    }
+
+    /// 4K is where the plan says the app is unusable today, so it is the
+    /// resolution the decision should be made at. Both halves scale with
+    /// pixel count, so this is ~4x the 1080p figures — and at 4K a single
+    /// readback is a whole 60 fps frame budget.
+    #[test]
+    #[ignore = "measurement, not an assertion — run with --ignored --nocapture"]
+    fn ensure_cpu_data_cost_at_4k() {
+        measure_readback(3840, 2160);
+    }
+
+    fn measure_readback(w: u32, h: u32) {
         const REPS: usize = 30;
 
         let Some(ctx) = klipp_effects::gpu_context::GpuContext::shared() else {
@@ -579,7 +600,7 @@ mod readback_cost {
             return;
         };
 
-        let byte_len = (W as usize) * (H as usize) * 4;
+        let byte_len = (w as usize) * (h as usize) * 4;
         let bytes: Vec<u8> = (0..byte_len).map(|i| (i % 251) as u8).collect();
 
         let buf = std::sync::Arc::new(ctx.device.create_buffer(&wgpu::BufferDescriptor {
@@ -595,8 +616,8 @@ mod readback_cost {
             ctx.device(),
             ctx.queue(),
             std::sync::Arc::clone(&buf),
-            W,
-            H,
+            w,
+            h,
         ));
 
         // Warm the driver so the first sample does not dominate.
@@ -626,7 +647,7 @@ mod readback_cost {
         };
         let rb = med(&mut readback_ms);
         let cv = med(&mut convert_ms);
-        eprintln!("ensure_cpu_data at {W}x{H}, median of {REPS}:");
+        eprintln!("ensure_cpu_data at {w}x{h}, median of {REPS}:");
         eprintln!("  GPU readback (PCIe + poll) : {rb:6.2} ms");
         eprintln!("  u8 -> linear f32 (CPU)     : {cv:6.2} ms");
         eprintln!("  total per frame            : {:6.2} ms", rb + cv);
@@ -636,8 +657,8 @@ mod readback_cost {
         let before = CPU_READBACK_COUNT.load(Relaxed);
         let mut frame = LinearFrame {
             pts: klipp_core::RationalTime::from_frames(0, 24),
-            width: W,
-            height: H,
+            width: w,
+            height: h,
             data: Vec::new(),
             is_eof: false,
             gpu_source: Some(std::sync::Arc::clone(&gpu)),
