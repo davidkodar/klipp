@@ -1655,6 +1655,19 @@ pub struct PlaybackEngine {
     // Cached pre-grade frame for instant parameter updates when paused.
     // Stored after decode, before color grading. Re-graded when sequence changes.
     cached_pregrade_frame: Option<(Arc<Vec<u8>>, u32, u32)>, // (rgba, width, height)
+    /// GPU-resident source for the frame currently in `post_process_rgba`,
+    /// if the decoder produced one.
+    ///
+    /// Scoped ambient state rather than a parameter: `post_process_rgba`
+    /// has a dozen call sites and only one of them can supply this, so
+    /// threading it through every signature would be noise. Set and
+    /// cleared around a single synchronous call in
+    /// `post_process_rgba_with_gpu_source`, the same single-shot shape the
+    /// executor's own `gpu_chain_preseeded` flag uses.
+    ///
+    /// Read only when the executor reports `CpuSourceRequired`, to realise
+    /// the pixels the speculative path chose not to fetch.
+    grade_gpu_source: Option<std::sync::Arc<crate::frame::GpuFrame>>,
     // Bidirectional frame cache — keeps last N decoded pre-grade frames for instant
     // backward stepping without FFmpeg seeks.
     frame_cache: FrameCache,
@@ -2042,6 +2055,7 @@ impl PlaybackEngine {
             last_scope_render: std::time::Instant::now() - std::time::Duration::from_secs(1),
             matte_preview_node: None,
             cached_pregrade_frame: None,
+            grade_gpu_source: None,
             frame_cache: FrameCache::new(120), // ~5s at 24fps (backward history + forward prefetch)
             render_cache_hot: crate::render_cache::HotCache::new(30),
             render_cache_disk,
@@ -4658,14 +4672,32 @@ impl PlaybackEngine {
         // trip via `frame.into_rgba().to_linear()`.
         let (final_w, final_h) = (frame.width, frame.height);
         let t_pp_full = std::time::Instant::now();
-        // Phase 4d.1: realise CPU `data` from `gpu_source` if the
-        // decoder deferred it. The grade chain consumes the GPU
-        // buffer directly via `prime_chain_from_gpu_u8_buffer`, but
-        // the CPU encode path inside `post_process_rgba` (pregrade
-        // cache, scope reencode) still wants linear-f32. No-op when
-        // `data` is already populated (SW decode, KLIPP_GPU_FRAMES=0).
-        frame.ensure_cpu_data();
+        // Realise CPU `data` from `gpu_source` only if something is
+        // actually going to read it.
+        //
+        // The grade chain consumes the decoder's GPU buffer directly via
+        // `prime_chain_from_gpu_u8_buffer`, and everything downstream of
+        // the grade works from the executor's output rather than this
+        // input. That leaves the pre-grade encode as the sole consumer of
+        // the *ungraded* CPU buffer — so when it is not needed and a
+        // gpu_source exists, this readback has no consumer at all.
+        //
+        // It is not a cheap thing to do speculatively: 19.2 ms per frame
+        // on a 4K 10-bit HDR source, more than a whole 59.94 fps budget,
+        // paid before anyone asked for it.
+        //
+        // Skipping it is a bet, not a proof — the graph might contain a
+        // node that breaks the chain and wants CPU pixels. That case is
+        // handled rather than predicted: the executor returns
+        // `CpuSourceRequired` and the grade realises the pixels then. A
+        // wrong bet costs the readback that would have happened anyway.
+        //
+        // No-op regardless when `data` is already populated (software
+        // decode, or KLIPP_GPU_FRAMES unset).
         let gpu_source = frame.gpu_source.clone();
+        if gpu_source.is_none() || self.pregrade_encode_needed() {
+            frame.ensure_cpu_data();
+        }
         let v1_graded_linear = self.post_process_rgba_with_gpu_source(
             frame.data, final_w, final_h, gpu_source.as_ref(),
         );
@@ -8863,7 +8895,12 @@ impl PlaybackEngine {
                 &gpu_src.rgba_buffer, width, height,
             );
         }
-        self.post_process_rgba(linear_rgba, width, height)
+        // Park the source for the duration of this call so the grade can
+        // realise CPU pixels on demand if it turns out to need them.
+        self.grade_gpu_source = gpu_source.cloned();
+        let out = self.post_process_rgba(linear_rgba, width, height);
+        self.grade_gpu_source = None;
+        out
     }
 
     /// Working-space-aware viewer display encode. Used at every site
@@ -8883,6 +8920,35 @@ impl PlaybackEngine {
             self.tone_map_op,
             crate::video_decoder::working_colorspace(),
         )
+    }
+
+    /// Whether this frame needs the pre-grade CPU encode.
+    ///
+    /// Extracted so the decision can be made *before* the GPU→CPU
+    /// readback rather than 4000 lines later, inside `post_process_rgba`,
+    /// by which point the pixels have already been fetched. It is the one
+    /// consumer of the *ungraded* CPU buffer — everything downstream of
+    /// the grade works from the executor's output — so when this is false
+    /// and the grade chain can be seeded from the decoder's GPU buffer,
+    /// the readback has no consumer at all.
+    ///
+    /// Compare modes and paused scrubbing still need it. The drag
+    /// exception is deliberate: during a Playing param-drag with no
+    /// compare mode active the encode runs at full resolution ~30 times a
+    /// second purely to refresh a scope preview the user is not looking
+    /// at, so a slightly stale preview buys back the frame budget.
+    fn pregrade_encode_needed(&self) -> bool {
+        let drag_skip = drag_downsample_enabled()
+            && self.in_node_param_edit
+            && self.state == PlaybackState::Playing
+            && !self.compare_stabilization
+            && !self.compare_effect_active
+            && !self.bypass_color_grade;
+        (self.state != PlaybackState::Playing
+            || self.compare_stabilization
+            || self.compare_effect_active
+            || self.in_node_param_edit)
+            && !drag_skip
     }
 
     fn post_process_rgba(&mut self, linear_rgba: Vec<f32>, width: u32, height: u32) -> Vec<f32> {
@@ -8912,17 +8978,7 @@ impl PlaybackEngine {
         // scope, so we accept a slightly stale scope preview to
         // recover the ~5 ms / frame and stay under the per-frame
         // budget. Compare-mode + paused-scrub still get fresh data.
-        let drag_skip_pregrade = drag_downsample_enabled()
-            && self.in_node_param_edit
-            && self.state == PlaybackState::Playing
-            && !self.compare_stabilization
-            && !self.compare_effect_active
-            && !self.bypass_color_grade;
-        let pregrade_needed = (self.state != PlaybackState::Playing
-            || self.compare_stabilization
-            || self.compare_effect_active
-            || self.in_node_param_edit)
-            && !drag_skip_pregrade;
+        let pregrade_needed = self.pregrade_encode_needed();
         let t_bridge = std::time::Instant::now();
         mark_stage(EngineStage::PostProcessPregradeEncode);
         let rgba_u8 = if pregrade_needed {
@@ -9862,8 +9918,16 @@ impl PlaybackEngine {
                 // so a stale solo id from a different clip doesn't
                 // need explicit clearing on clip switches.
                 self.graph_executor.set_solo_node(self.solo_node);
-                match self.graph_executor.execute_linear_with_thumbs(
-                    &rgba,
+                // `rgba` may be empty here: when the decoder handed over a
+                // GPU-resident frame and nothing else wanted CPU pixels,
+                // the readback was skipped and the chain seeded straight
+                // from the decoder's buffer. If any node in this graph
+                // turns out to need the pixels after all, the executor
+                // says so and we fetch them then — paying a readback we
+                // would have paid anyway, rather than one we might not.
+                let mut exec_source = rgba;
+                let mut attempt = self.graph_executor.execute_linear_with_thumbs(
+                    &exec_source,
                     graph,
                     width,
                     height,
@@ -9871,8 +9935,41 @@ impl PlaybackEngine {
                     frame_number,
                     self.scope_tap_node,
                     matte_pv_node,
-                    thumb_set,
+                    thumb_set.clone(),
+                );
+                if matches!(
+                    attempt,
+                    Err(klipp_nodes::executor::ExecutorError::CpuSourceRequired)
                 ) {
+                    match self.grade_gpu_source.clone() {
+                        Some(gpu) => {
+                            tracing::debug!(
+                                "grade needs CPU pixels — realising from gpu_source and retrying"
+                            );
+                            exec_source = crate::types::realise_linear_from_gpu(&gpu);
+                            attempt = self.graph_executor.execute_linear_with_thumbs(
+                                &exec_source,
+                                graph,
+                                width,
+                                height,
+                                clip_time_secs,
+                                frame_number,
+                                self.scope_tap_node,
+                                matte_pv_node,
+                                thumb_set,
+                            );
+                        }
+                        None => {
+                            // Cannot happen: an empty source is only ever
+                            // passed alongside a parked gpu_source. Log
+                            // loudly rather than render a black frame.
+                            tracing::error!(
+                                "grade reported CpuSourceRequired with no gpu_source parked"
+                            );
+                        }
+                    }
+                }
+                match attempt {
                     Ok((result, tapped, thumbs)) => {
                         // Store tapped output for scope display — scope
                         // consumers still speak u8, so encode at this
@@ -9894,7 +9991,17 @@ impl PlaybackEngine {
                     }
                     Err(e) => {
                         tracing::error!("Node graph execution failed: {:?}", e);
-                        rgba
+                        // Ungraded passthrough, except that `exec_source`
+                        // is empty when the readback was skipped and the
+                        // retry above could not recover. Downstream
+                        // (composite, into_rgba) indexes by width*height,
+                        // so hand back a black frame of the right size
+                        // rather than a zero-length buffer.
+                        if exec_source.is_empty() {
+                            vec![0.0; (width as usize) * (height as usize) * 4]
+                        } else {
+                            exec_source
+                        }
                     }
                 }
             } else {
