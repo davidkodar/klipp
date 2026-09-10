@@ -1679,10 +1679,10 @@ pub struct PlaybackEngine {
     /// Read only when the executor reports `CpuSourceRequired`, to realise
     /// the pixels the speculative path chose not to fetch.
     grade_gpu_source: Option<std::sync::Arc<crate::frame::GpuFrame>>,
-    /// Last reason the direct-present fast path declined a frame, so the
-    /// reason can be logged when it *changes* rather than once per frame.
-    /// `None` means the last frame took the fast path.
-    last_direct_present_blocker: Option<&'static str>,
+    /// Reasons the direct-present fast path declined the previous frame,
+    /// so they can be logged when the set *changes* rather than once per
+    /// frame. Empty means the last frame took the fast path.
+    last_direct_present_blockers: Vec<&'static str>,
     // Bidirectional frame cache — keeps last N decoded pre-grade frames for instant
     // backward stepping without FFmpeg seeks.
     frame_cache: FrameCache,
@@ -2071,7 +2071,7 @@ impl PlaybackEngine {
             matte_preview_node: None,
             cached_pregrade_frame: None,
             grade_gpu_source: None,
-            last_direct_present_blocker: None,
+            last_direct_present_blockers: Vec::new(),
             frame_cache: FrameCache::new(120), // ~5s at 24fps (backward history + forward prefetch)
             render_cache_hot: crate::render_cache::HotCache::new(30),
             render_cache_disk,
@@ -4719,22 +4719,31 @@ impl PlaybackEngine {
         // `direct_present_blocker` for the conditions and why this is
         // byte-identical.
         if let Some(ref gpu) = gpu_source {
-            let blocker = self.direct_present_blocker();
+            let blockers = self.direct_present_blockers();
             // Log only on change: per-frame this would be 60 lines a
             // second, but the transition is exactly what you want to see
-            // when asking why playback is slower than it should be.
-            if blocker != self.last_direct_present_blocker {
-                match blocker {
-                    Some(reason) => tracing::debug!(
-                        "direct present OFF: {reason} — grading and compositing this frame"
-                    ),
-                    None => tracing::debug!(
+            // when asking why playback is slower than it should be. The
+            // scope refresh flips this at 10 Hz, so that one reason is
+            // not worth announcing on its own.
+            let interesting: Vec<&'static str> = blockers
+                .iter()
+                .copied()
+                .filter(|r| *r != "scope refresh due this frame")
+                .collect();
+            if interesting != self.last_direct_present_blockers {
+                if interesting.is_empty() {
+                    tracing::debug!(
                         "direct present ON: publishing decoded frames straight to the viewer"
-                    ),
+                    );
+                } else {
+                    tracing::debug!(
+                        "direct present OFF: {} — grading and compositing these frames",
+                        interesting.join(", "),
+                    );
                 }
-                self.last_direct_present_blocker = blocker;
+                self.last_direct_present_blockers = interesting;
             }
-            if blocker.is_none() {
+            if blockers.is_empty() {
                 self.present_decoded_frame_directly(
                     gpu, final_w, final_h, current_source_secs, q_len,
                 );
@@ -8969,8 +8978,8 @@ impl PlaybackEngine {
         )
     }
 
-    /// Why this frame cannot be handed to the viewer straight off the
-    /// decoder's GPU buffer, or `None` when it can.
+    /// Every reason this frame cannot be handed to the viewer straight
+    /// off the decoder's GPU buffer. Empty means it can.
     ///
     /// The decoder already leaves the frame as display-ready sRGB-u8
     /// RGBA. When the graph is an identity and nothing composites over
@@ -8990,86 +8999,100 @@ impl PlaybackEngine {
     /// Everything else here is a consumer that wants pixels this path
     /// does not produce (linear light, ungraded input, a real composite),
     /// so each one sends the frame down the full pipeline instead. The
-    /// reasons are `&'static str` rather than a bool so the trace log can
-    /// say which consumer opted out — the first question to ask when the
+    /// reasons are `&'static str` rather than a bool so the log can name
+    /// the consumers that opted out — the first question to ask when the
     /// fast path is not engaging.
-    fn direct_present_blocker(&self) -> Option<&'static str> {
+    fn direct_present_blockers(&self) -> Vec<&'static str> {
         if !direct_present_enabled() {
-            return Some("KLIPP_DIRECT_PRESENT=0");
+            return vec!["KLIPP_DIRECT_PRESENT=0"];
         }
         // Steady-state playback only. Paused frames go through
         // `regrade_cached_frame`, which needs the graded linear buffer.
+        // Checked first and alone so the sequence lock below is not taken
+        // on every idle tick.
         if self.state != PlaybackState::Playing {
-            return Some("not playing");
+            return vec!["not playing"];
         }
-        // Compare modes, paused scrubbing and param drags all read the
+
+        // Every remaining reason is collected rather than returned at the
+        // first hit: finding out one run at a time which consumer opted
+        // out is the slow way to learn why playback is not accelerating.
+        let mut blockers: Vec<&'static str> = Vec::new();
+
+        // Compare modes, paused scrubbing and param drags read the
         // ungraded CPU frame.
         if self.pregrade_encode_needed() {
-            return Some("pre-grade CPU encode needed");
+            blockers.push("pre-grade CPU encode needed");
         }
         if self.in_node_param_edit {
-            return Some("node param edit in progress");
+            blockers.push("node param edit in progress");
         }
         // The two conditions the byte-identity rests on.
         if !matches!(self.tone_map_op, klipp_color::display::ToneMapOp::None) {
-            return Some("tone-map operator active");
+            blockers.push("tone-map operator active");
         }
         if !matches!(
             crate::video_decoder::working_colorspace(),
             klipp_core::WorkingColorspace::Rec709Linear
                 | klipp_core::WorkingColorspace::Bt2020Linear
         ) {
-            return Some("ACES working space needs the ODT");
+            blockers.push("ACES working space needs the ODT");
         }
-        // Consumers of the graded linear frame.
-        if !self.active_scope_modes.is_empty() {
-            return Some("scopes active");
+        // Scopes sample the post-grade linear frame, which this path
+        // never builds. But they refresh at 10 Hz, so only the frames
+        // that actually feed one need the full pipeline — at 59.94 fps
+        // that is one frame in six, and the other five accelerate. This
+        // is deliberately `should_render_scope()` and not "are scopes
+        // open": gating on the panel being visible turned the fast path
+        // off for the entire session, which is exactly the case colour
+        // work is done in.
+        if self.should_render_scope() {
+            blockers.push("scope refresh due this frame");
         }
-        if self.scope_tap_node.is_some() {
-            return Some("scope tap node set");
-        }
+        // Node thumbnails are only captured while paused (`thumb_set` is
+        // None whenever state is Playing), so they cannot block a path
+        // that runs only during playback — no check for them here.
         if self.matte_preview_node.is_some() {
-            return Some("matte preview active");
-        }
-        if !self.visible_node_thumbs.is_empty() {
-            return Some("node thumbnails requested");
+            blockers.push("matte preview active");
         }
         if self.compare_stabilization || self.compare_effect_active {
-            return Some("compare mode active");
+            blockers.push("compare mode active");
         }
         if !self.overlay_frames.is_empty() {
-            return Some("overlay frames present");
+            blockers.push("overlay frames present");
         }
 
         let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
         // Any track above this one can contribute an overlay, a title or
         // an adjustment layer, all of which composite over V1.
         if !seq.overlay_video_tracks(self.current_track_index).is_empty() {
-            return Some("overlay video tracks present");
+            blockers.push("overlay video tracks present");
         }
         if crate::transition::find_active_transition(&seq, self.playhead).is_some() {
-            return Some("transition active");
+            blockers.push("transition active");
         }
         let Some(track) = seq.tracks.get(self.current_track_index) else {
-            return Some("no current track");
+            blockers.push("no current track");
+            return blockers;
         };
         if (track.opacity - 1.0).abs() > 1e-6 {
-            return Some("track opacity below 1.0");
+            blockers.push("track opacity below 1.0");
         }
         let Some((_, clip)) = track.clip_at_timecode(self.playhead) else {
-            return Some("no clip at playhead");
+            blockers.push("no clip at playhead");
+            return blockers;
         };
         if !clip.node_graph.is_identity() {
-            return Some("grade graph is not an identity");
+            blockers.push("grade graph is not an identity");
         }
         if !clip.effects.is_empty() {
-            return Some("plugin effects on clip");
+            blockers.push("plugin effects on clip");
         }
         if !clip.builtin_effects.is_empty() {
-            return Some("builtin effects on clip");
+            blockers.push("builtin effects on clip");
         }
         if !clip.param_modifiers.is_empty() {
-            return Some("param modifiers on clip");
+            blockers.push("param modifiers on clip");
         }
         if !clip.opacity_keyframes.is_empty()
             || !clip.transform_pos_x_keyframes.is_empty()
@@ -9077,21 +9100,21 @@ impl PlaybackEngine {
             || !clip.transform_scale_keyframes.is_empty()
             || !clip.transform_rotation_keyframes.is_empty()
         {
-            return Some("render keyframes on clip");
+            blockers.push("render keyframes on clip");
         }
         if !matches!(clip.blend_mode, klipp_core::BlendMode::Normal) {
-            return Some("clip blend mode is not Normal");
+            blockers.push("clip blend mode is not Normal");
         }
         if clip.matte_source.is_some() || clip.matte_stencil.is_some() {
-            return Some("clip has a matte");
+            blockers.push("clip has a matte");
         }
         if clip.source_rotation != 0 {
-            return Some("clip has a source rotation");
+            blockers.push("clip has a source rotation");
         }
         if !clip.kind.needs_decoder() {
-            return Some("clip is synthetic");
+            blockers.push("clip is synthetic");
         }
-        None
+        blockers
     }
 
     /// Publish the decoder's frame to the viewer without grading or
