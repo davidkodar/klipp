@@ -91,14 +91,17 @@ fn prime_chain_from_u8_matches_cpu_upload_path() {
 
     // ─── Path A: classic CPU upload ──────────────────────────────
     // Source linear f32 → execute_linear → chain uploads CPU data.
+    // No `has_gpu()` gate before the first execute: the executor creates
+    // its GPU pipeline lazily, so asking beforehand always answers "no"
+    // and skips the test. This one had been silently skipping.
     let mut exec_a = GraphExecutor::new();
-    if !exec_a.has_gpu() {
-        eprintln!("skipping: no GPU executor");
-        return;
-    }
     let (out_a, _) = exec_a
         .execute_linear(&linear_cpu, &graph, W, H, 0.0, 0, None, None)
         .expect("CPU-upload path must succeed");
+    if !exec_a.has_gpu() {
+        eprintln!("skipping: no GPU executor on this machine");
+        return;
+    }
 
     // ─── Path B: prime from u8 on-GPU, then execute_linear ───────
     // A real decoder hands off a `wgpu::Buffer` (STORAGE | COPY_SRC)
@@ -143,4 +146,76 @@ fn prime_chain_from_u8_matches_cpu_upload_path() {
         );
     }
     eprintln!("prime_chain identity: max channel delta = {max_delta:.6}");
+}
+
+/// The engine now skips the GPU→CPU readback on the playback path and
+/// hands the executor an **empty** source, relying on the pre-seeded
+/// chain. This proves that produces the same pixels as the CPU-upload
+/// path — the whole change is worthless if it renders differently.
+///
+/// Also pins the safety contract: an empty source *without* a seed must
+/// be refused rather than graded into a black frame.
+#[test]
+fn empty_source_with_primed_chain_matches_the_cpu_upload_path() {
+    let Some(ctx) = GpuContext::shared() else {
+        eprintln!("skipping: no usable GpuContext");
+        return;
+    };
+    let bytes = pattern_u8(W, H);
+    let linear_cpu = srgb_u8_to_linear_f32_rgba(&bytes);
+    let graph = color_balance_graph();
+
+    // Reference: the ordinary path, CPU pixels uploaded by the executor.
+    let mut exec_ref = GraphExecutor::new();
+    let (out_ref, _) = exec_ref
+        .execute_linear(&linear_cpu, &graph, W, H, 0.0, 0, None, None)
+        .expect("CPU-upload path must succeed");
+    if !exec_ref.has_gpu() {
+        eprintln!("skipping: no GPU executor on this machine");
+        return;
+    }
+
+    let input_buf = Arc::new(ctx.device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("empty_source_prime_test_input"),
+        size: bytes.len() as u64,
+        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    }));
+    ctx.queue.write_buffer(&input_buf, 0, &bytes);
+    ctx.device.poll(wgpu::Maintain::Poll);
+
+    // What the engine now does: prime, then pass nothing.
+    let mut exec_empty = GraphExecutor::new();
+    assert!(
+        exec_empty.prime_chain_from_gpu_u8_buffer(&input_buf, W, H),
+        "prime must succeed",
+    );
+    let (out_empty, _) = exec_empty
+        .execute_linear(&[], &graph, W, H, 0.0, 0, None, None)
+        .expect("primed chain must run without any CPU source");
+
+    assert_eq!(out_ref.len(), out_empty.len(), "output size mismatch");
+    let eps = 0.005_f32;
+    let mut max_delta = 0.0_f32;
+    for (i, (a, b)) in out_ref.iter().zip(out_empty.iter()).enumerate() {
+        let d = (a - b).abs();
+        if d > max_delta {
+            max_delta = d;
+        }
+        assert!(
+            d < eps,
+            "channel {i}: cpu-upload={a:.6} empty-source={b:.6} delta={d:.6} > {eps}"
+        );
+    }
+    eprintln!("empty-source identity: max channel delta = {max_delta:.6}");
+
+    // And the contract: no seed, no pixels, no silent black frame.
+    let mut exec_unseeded = GraphExecutor::new();
+    let err = exec_unseeded
+        .execute_linear(&[], &graph, W, H, 0.0, 0, None, None)
+        .expect_err("an empty source without a primed chain must be refused");
+    assert!(
+        matches!(err, klipp_nodes::executor::ExecutorError::CpuSourceRequired),
+        "expected CpuSourceRequired, got {err:?}",
+    );
 }

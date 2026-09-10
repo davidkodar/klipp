@@ -607,7 +607,12 @@ impl GraphExecutor {
         // Nodes that fall back to `source_frame` mid-graph raise the same
         // error from their own sites; between them the executor never
         // reads pixels that are not there.
-        if source_frame.is_empty() && !self.gpu_chain_preseeded {
+        // Latch it: `start_chain` consumes `gpu_chain_preseeded` (it is
+        // single-shot so a second chain segment uploads normally), so
+        // once the first chain node dispatches, nothing downstream can
+        // re-derive that the pixels were ever GPU-resident.
+        let gpu_resident_source = source_frame.is_empty() && self.gpu_chain_preseeded;
+        if source_frame.is_empty() && !gpu_resident_source {
             return Err(ExecutorError::CpuSourceRequired);
         }
         self.ensure_gpu();
@@ -808,6 +813,30 @@ impl GraphExecutor {
                 };
                 node_outputs.insert(node.id, passthrough);
                 per_node_ms.push((format!("{node_kind_name}#bypass"), t_node.elapsed().as_secs_f64() * 1000.0));
+                continue;
+            }
+
+            // Source, pixels already on the GPU: publish the same
+            // sentinel-empty Arc the chain path uses. The downstream
+            // chain node starts from the pre-seeded `buf_a`, so there is
+            // nothing to hand it on the CPU side — and the ordinary
+            // `source_frame.to_vec()` in `execute_node` would be a
+            // 132 MB memcpy per 4K frame (RGBA f32) for a buffer no one
+            // reads. Taps and thumbnails are excluded: those consumers
+            // do want real CPU pixels, so they fall through to the
+            // unchained path, hit `CpuSourceRequired`, and the engine
+            // retries with a readback.
+            if node.kind == NodeKind::Source
+                && gpu_resident_source
+                && Some(node_id) != matte_tap
+                && Some(node_id) != matte_preview_node
+                && !node_is_visible_for_thumbs
+            {
+                node_outputs.insert(node.id, Arc::new(Vec::new()));
+                per_node_ms.push((
+                    format!("{node_kind_name}#gpu_resident"),
+                    t_node.elapsed().as_secs_f64() * 1000.0,
+                ));
                 continue;
             }
 
