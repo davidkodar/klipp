@@ -667,18 +667,35 @@ mod tests {
     /// Closes audit point §α — if frei0r is installed, scan it and assert
     /// at least one plugin was discovered. Gated on the canonical
     /// install path so CI without frei0r still passes.
+    /// True when `/usr/lib/frei0r-1` holds at least one plugin binary.
+    ///
+    /// The directory existing is not enough: a package can create it
+    /// while shipping no plugins, and then this test would assert that
+    /// discovery found something when there was never anything to find.
+    /// frei0r's layout is flat — plugins are `.so` files directly in the
+    /// directory — so one `read_dir` answers it.
+    fn system_has_frei0r_plugin_binaries() -> bool {
+        std::fs::read_dir("/usr/lib/frei0r-1")
+            .map(|entries| {
+                entries
+                    .flatten()
+                    .any(|e| e.path().extension().is_some_and(|x| x == "so"))
+            })
+            .unwrap_or(false)
+    }
+
     #[test]
     fn discover_finds_at_least_one_plugin_when_installed() {
         let _g = env_lock();
-        if !std::path::Path::new("/usr/lib/frei0r-1").is_dir() {
-            eprintln!("skipping: /usr/lib/frei0r-1 not present");
+        if !system_has_frei0r_plugin_binaries() {
+            eprintln!("skipping: no frei0r plugin binaries under /usr/lib/frei0r-1");
             return;
         }
         std::env::remove_var("KLIPP_FREI0R_DISABLE");
         let plugins = discover_frei0r_plugins();
         assert!(
             !plugins.is_empty(),
-            "system frei0r-1 dir is present but discovery yielded zero plugins"
+            "/usr/lib/frei0r-1 holds plugin binaries but discovery yielded zero plugins"
         );
     }
 }
