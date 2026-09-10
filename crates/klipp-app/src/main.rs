@@ -359,6 +359,8 @@ fn main() -> Result<()> {
                 }
 
                 let current_ui = klipp_engine::UI_TICK.load(Ordering::Relaxed);
+                let ui_wants_frames =
+                    klipp_engine::UI_WANTS_FRAMES.load(Ordering::Relaxed);
                 if current_ui != last_ui {
                     if ui_alerted {
                         tracing::error!(
@@ -369,6 +371,13 @@ fn main() -> Result<()> {
                         ui_alerted = false;
                     }
                     last_ui = current_ui;
+                    last_ui_change = std::time::Instant::now();
+                } else if !ui_wants_frames {
+                    // egui is reactive. With no repaint requested the UI
+                    // thread is parked waiting for input, and `update()`
+                    // not running is the correct outcome rather than a
+                    // hang. Keep the clock rolling so a genuine stall is
+                    // still timed from the moment frames were wanted.
                     last_ui_change = std::time::Instant::now();
                 } else if last_ui_change.elapsed() >= std::time::Duration::from_millis(2000) {
                     let ui_stage_id = klipp_engine::UI_STAGE.load(Ordering::Acquire);

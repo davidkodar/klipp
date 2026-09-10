@@ -25529,11 +25529,16 @@ impl eframe::App for KlippApp {
         // 8 ms budget under load, so asking the UI for 125 Hz just burns
         // CPU waiting for frames that aren't ready. 60 Hz matches the
         // engine's target and halves UI thread work under grade load.
-        if self.state.playback == PlaybackState::Playing
-            || self.state.source_playback == PlaybackState::Playing
-        {
+        let wants_continuous_frames = self.state.playback == PlaybackState::Playing
+            || self.state.source_playback == PlaybackState::Playing;
+        if wants_continuous_frames {
             ctx.request_repaint_after(std::time::Duration::from_millis(16));
         }
+        // Tell the watchdog whether a missing `update()` call is a hang
+        // or just egui being reactive with nothing to draw. See
+        // `klipp_engine::UI_WANTS_FRAMES`.
+        klipp_engine::UI_WANTS_FRAMES
+            .store(wants_continuous_frames, std::sync::atomic::Ordering::Relaxed);
 
         // Peak meter ballistics: exponential release (~1.7s to decay from 0dB to -60dB).
         // Factor 0.96/frame at 60fps → ~0.96^60 ≈ 0.085 after 1s → -21dB/s.

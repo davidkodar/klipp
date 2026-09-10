@@ -812,7 +812,7 @@ use klipp_media::MediaPool;
 use klipp_timeline::Sequence;
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 use tracing::{debug, error, info, warn};
@@ -831,6 +831,21 @@ pub static ENGINE_TICK: AtomicU64 = AtomicU64::new(0);
 /// Lets us tell "engine is stuck" from "UI is stuck from "both are
 /// stuck" when a hard freeze hits.
 pub static UI_TICK: AtomicU64 = AtomicU64::new(0);
+
+/// Whether the UI currently expects to render continuously.
+///
+/// egui is *reactive*: unless something calls `request_repaint`, the UI
+/// thread parks until the next input event and `update()` legitimately
+/// stops being called. Klipp only asks for continuous frames while
+/// playback is running, so an idle stopped editor can sit for minutes
+/// without a single `update()` — which is correct, not a hang.
+///
+/// The watchdog needs to tell those apart. The UI stores `true` here
+/// while it has a repaint pending and `false` when it has deliberately
+/// gone idle; the watchdog only reports a UI stall when this is `true`.
+/// Without it every idle moment produced a bogus `UI_WATCHDOG STALLED`,
+/// which buried the real hangs it exists to catch.
+pub static UI_WANTS_FRAMES: AtomicBool = AtomicBool::new(false);
 
 /// Fine-grained "last waypoint reached" marker for the watchdog. The
 /// engine thread updates this at each major stage of a tick; when the
