@@ -1453,6 +1453,9 @@ pub struct PlaybackEngine {
     dbg_update_playback_count: u64,
     dbg_regrade_count: u64,
     dbg_param_changes_drained: u64,
+    /// Last-seen cumulative readback counters, for per-interval deltas.
+    dbg_last_readback_count: u64,
+    dbg_last_readback_us: u64,
     dbg_commands_handled: u64,
     frames_consumed: u64,
     last_playback_log: std::time::Instant,
@@ -1980,6 +1983,8 @@ impl PlaybackEngine {
             dbg_update_playback_count: 0,
             dbg_regrade_count: 0,
             dbg_param_changes_drained: 0,
+            dbg_last_readback_count: 0,
+            dbg_last_readback_us: 0,
             dbg_commands_handled: 0,
             frames_consumed: 0,
             last_playback_log: std::time::Instant::now(),
@@ -2378,8 +2383,23 @@ impl PlaybackEngine {
                     dropped_frames: self.dropped_frames,
                     hw_decode: hw,
                 });
+                // GPU->CPU readback cost over this interval. The
+                // residency plan assumes these round-trips dominate;
+                // this is the line that will show whether removing them
+                // is worth restructuring the hot path for.
+                let rb_count_now = crate::types::CPU_READBACK_COUNT.load(Ordering::Relaxed);
+                let rb_us_now = crate::types::CPU_READBACK_US.load(Ordering::Relaxed);
+                let rb_count = rb_count_now.saturating_sub(self.dbg_last_readback_count);
+                let rb_us = rb_us_now.saturating_sub(self.dbg_last_readback_us);
+                self.dbg_last_readback_count = rb_count_now;
+                self.dbg_last_readback_us = rb_us_now;
+                let rb_avg_ms = if rb_count > 0 {
+                    (rb_us as f64 / rb_count as f64) / 1000.0
+                } else {
+                    0.0
+                };
                 tracing::info!(
-                    "ENGINE_HEARTBEAT state={:?} updates={} regrades={} param_changes={} cmds={} elapsed={:.2}s rate={:.1}/s drops_total={} hw_decode={:?} has_v1={} overlays={}",
+                    "ENGINE_HEARTBEAT state={:?} updates={} regrades={} param_changes={} cmds={} elapsed={:.2}s rate={:.1}/s drops_total={} hw_decode={:?} has_v1={} overlays={} cpu_readbacks={} readback_avg={:.2}ms readback_total={:.1}ms",
                     self.state,
                     self.dbg_update_playback_count,
                     self.dbg_regrade_count,
@@ -2391,6 +2411,9 @@ impl PlaybackEngine {
                     hw,
                     self.v1_decoder.is_some(),
                     self.overlay_decoders.len(),
+                    rb_count,
+                    rb_avg_ms,
+                    rb_us as f64 / 1000.0,
                 );
                 self.last_stats_time = std::time::Instant::now();
                 self.dbg_update_playback_count = 0;

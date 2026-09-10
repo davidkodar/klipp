@@ -178,8 +178,17 @@ impl LinearFrame {
             Some(g) => g,
             None => return,
         };
+        // Timed: this is the GPU->CPU round-trip the residency plan is
+        // trying to remove, and it does two expensive things — the
+        // buffer readback (blocking on a device poll) and a
+        // u8 -> linear-f32 expansion over width*height*4 floats.
+        let t0 = std::time::Instant::now();
         let bytes = readback_gpu_frame_to_u8(gpu);
         self.data = u8_rgba_to_linear_f32(&bytes);
+        let us = t0.elapsed().as_micros() as u64;
+        use std::sync::atomic::Ordering::Relaxed;
+        CPU_READBACK_COUNT.fetch_add(1, Relaxed);
+        CPU_READBACK_US.fetch_add(us, Relaxed);
     }
 
     /// sRGB-encode this frame to raw RGBA u8 bytes. Mirrors the
@@ -226,6 +235,22 @@ impl LinearFrame {
 /// by `LinearFrame::ensure_cpu_data` to realise the CPU mirror on
 /// demand without releasing the GPU buffer (the grade chain may
 /// still consume it via `prime_chain_from_gpu_u8_buffer`).
+/// How many times a GPU-resident frame has been read back to CPU, and
+/// the total wall-clock spent doing it.
+///
+/// The GPU-residency plan's whole premise is that these round-trips
+/// dominate the per-frame cost, but until now the readback was
+/// unmeasured — `ensure_cpu_data` carried no timing and is called from
+/// eight sites across the engine (playback, skim, cache pop, source
+/// viewer). Deciding whether to restructure the hot path around it
+/// needs the number first.
+///
+/// Cumulative for the process; the engine heartbeat logs deltas.
+pub static CPU_READBACK_COUNT: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+pub static CPU_READBACK_US: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
 fn readback_gpu_frame_to_u8(gpu: &crate::frame::GpuFrame) -> Vec<u8> {
     let byte_size = (gpu.width as u64) * (gpu.height as u64) * 4;
     let staging = gpu.device.create_buffer(&wgpu::BufferDescriptor {
@@ -519,3 +544,111 @@ pub type SharedFrameQueue = Arc<Mutex<FrameQueue>>;
 
 /// Audio sample ring buffer — f32 interleaved stereo.
 pub type AudioRingBuf = Arc<ringbuf::HeapRb<f32>>;
+
+#[cfg(test)]
+mod readback_cost {
+    use super::*;
+    use std::sync::atomic::Ordering::Relaxed;
+
+    /// Measure what `ensure_cpu_data` actually costs at 1080p, split
+    /// into its two halves.
+    ///
+    /// `#[ignore]` because it is a measurement, not an assertion — GPU
+    /// timings are machine-dependent and asserting on them would produce
+    /// a test that fails for reasons nobody can act on. Run it
+    /// deliberately:
+    ///
+    /// ```text
+    /// cargo test -p klipp-engine --lib readback_cost -- --ignored --nocapture
+    /// ```
+    ///
+    /// Why it exists: the GPU-residency plan assumes GPU→CPU round-trips
+    /// dominate the per-frame cost, and `ensure_cpu_data` is the one on
+    /// the playback path — called from eight sites in the engine — but it
+    /// carried no instrumentation at all. Restructuring a 962-line hot
+    /// path around an unmeasured cost is the wrong order of operations.
+    #[test]
+    #[ignore = "measurement, not an assertion — run with --ignored --nocapture"]
+    fn ensure_cpu_data_cost_at_1080p() {
+        const W: u32 = 1920;
+        const H: u32 = 1080;
+        const REPS: usize = 30;
+
+        let Some(ctx) = klipp_effects::gpu_context::GpuContext::shared() else {
+            eprintln!("skipping: no usable GpuContext");
+            return;
+        };
+
+        let byte_len = (W as usize) * (H as usize) * 4;
+        let bytes: Vec<u8> = (0..byte_len).map(|i| (i % 251) as u8).collect();
+
+        let buf = std::sync::Arc::new(ctx.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("readback_cost_input"),
+            size: byte_len as u64,
+            usage: wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        }));
+        ctx.queue.write_buffer(&buf, 0, &bytes);
+        ctx.device.poll(wgpu::Maintain::Wait);
+
+        let gpu = std::sync::Arc::new(crate::frame::GpuFrame::new(
+            ctx.device(),
+            ctx.queue(),
+            std::sync::Arc::clone(&buf),
+            W,
+            H,
+        ));
+
+        // Warm the driver so the first sample does not dominate.
+        for _ in 0..5 {
+            let b = readback_gpu_frame_to_u8(&gpu);
+            std::hint::black_box(b.len());
+        }
+
+        // Half 1: the PCIe readback + device poll.
+        let mut readback_ms = Vec::with_capacity(REPS);
+        let mut convert_ms = Vec::with_capacity(REPS);
+        for _ in 0..REPS {
+            let t = std::time::Instant::now();
+            let raw = readback_gpu_frame_to_u8(&gpu);
+            readback_ms.push(t.elapsed().as_secs_f64() * 1000.0);
+
+            // Half 2: the u8 -> linear-f32 expansion on CPU.
+            let t = std::time::Instant::now();
+            let lin = u8_rgba_to_linear_f32(&raw);
+            convert_ms.push(t.elapsed().as_secs_f64() * 1000.0);
+            std::hint::black_box(lin.len());
+        }
+
+        let med = |v: &mut Vec<f64>| {
+            v.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            v[v.len() / 2]
+        };
+        let rb = med(&mut readback_ms);
+        let cv = med(&mut convert_ms);
+        eprintln!("ensure_cpu_data at {W}x{H}, median of {REPS}:");
+        eprintln!("  GPU readback (PCIe + poll) : {rb:6.2} ms");
+        eprintln!("  u8 -> linear f32 (CPU)     : {cv:6.2} ms");
+        eprintln!("  total per frame            : {:6.2} ms", rb + cv);
+
+        // Also exercise the instrumented path so the counters are proven
+        // to move — that is an assertion worth making.
+        let before = CPU_READBACK_COUNT.load(Relaxed);
+        let mut frame = LinearFrame {
+            pts: klipp_core::RationalTime::from_frames(0, 24),
+            width: W,
+            height: H,
+            data: Vec::new(),
+            is_eof: false,
+            gpu_source: Some(std::sync::Arc::clone(&gpu)),
+            colorspace: klipp_core::SourceColorspace::default(),
+        };
+        frame.ensure_cpu_data();
+        assert_eq!(frame.data.len(), byte_len, "CPU mirror must be fully realised");
+        assert_eq!(
+            CPU_READBACK_COUNT.load(Relaxed),
+            before + 1,
+            "ensure_cpu_data must record the readback it performed",
+        );
+    }
+}
