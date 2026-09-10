@@ -8951,6 +8951,39 @@ impl PlaybackEngine {
             && !drag_skip
     }
 
+    /// Realise the grade's CPU source if the speculative skip left it
+    /// empty.
+    ///
+    /// The pre-grade readback is skipped when the chain can be seeded
+    /// from the decoder's GPU buffer, but not every path through the
+    /// grade consumes that seed: an identity graph never calls the
+    /// executor at all, and the drag path resamples on the CPU. Each
+    /// such consumer realises the pixels here instead of predicting the
+    /// need up front. This costs the readback that was deferred, never an
+    /// extra one — `gpu_source` holds the frame either way.
+    fn realise_grade_source_if_empty(
+        &mut self,
+        rgba: Vec<f32>,
+        width: u32,
+        height: u32,
+    ) -> Vec<f32> {
+        if !rgba.is_empty() {
+            return rgba;
+        }
+        match self.grade_gpu_source.clone() {
+            Some(gpu) => crate::types::realise_linear_from_gpu(&gpu),
+            None => {
+                // An empty source is only ever passed alongside a parked
+                // gpu_source. Say so loudly rather than let a
+                // zero-length buffer reach composite.
+                tracing::error!(
+                    "grade source empty with no gpu_source parked — rendering black"
+                );
+                vec![0.0; (width as usize) * (height as usize) * 4]
+            }
+        }
+    }
+
     fn post_process_rgba(&mut self, linear_rgba: Vec<f32>, width: u32, height: u32) -> Vec<f32> {
         mark_stage(EngineStage::PostProcessEntry);
         let t_wrap_start = std::time::Instant::now();
@@ -9442,6 +9475,13 @@ impl PlaybackEngine {
         if !downsample {
             return self.post_process_rgba_inner(linear_rgba, width, height);
         }
+
+        // The resample below is CPU work on the ungraded frame, so it
+        // needs real pixels even when the grade itself could have run
+        // from the GPU seed. The seed is unusable here anyway: it was
+        // made at full res and this grade runs at half, which the
+        // executor now checks and refuses.
+        let linear_rgba = self.realise_grade_source_if_empty(linear_rgba, width, height);
 
         let half_w = (width / 2).max(1);
         let half_h = (height / 2).max(1);
@@ -9997,18 +10037,17 @@ impl PlaybackEngine {
                         // (composite, into_rgba) indexes by width*height,
                         // so hand back a black frame of the right size
                         // rather than a zero-length buffer.
-                        if exec_source.is_empty() {
-                            vec![0.0; (width as usize) * (height as usize) * 4]
-                        } else {
-                            exec_source
-                        }
+                        self.realise_grade_source_if_empty(exec_source, width, height)
                     }
                 }
             } else {
-                rgba
+                // Identity graph: the executor is never called, so
+                // nothing consumes the seed and the pixels have to be
+                // realised here.
+                self.realise_grade_source_if_empty(rgba, width, height)
             }
         } else {
-            rgba
+            self.realise_grade_source_if_empty(rgba, width, height)
         };
         let t2 = std::time::Instant::now();
 

@@ -130,6 +130,18 @@ pub struct GraphExecutor {
     /// `start_chain` so a second chain segment within the same
     /// `execute_linear` call falls back to the normal upload path.
     gpu_chain_preseeded: bool,
+    /// Dimensions `buf_a` was seeded at. A seed is only valid for the
+    /// resolution it was made at: the drag-downsample path grades at
+    /// half res off a full-res seed, which would reinterpret the buffer
+    /// at the wrong stride and scramble the image.
+    gpu_chain_preseed_dims: Option<(u32, u32)>,
+    /// The seed, scoped to one `execute_linear*` run. Taken from
+    /// `gpu_chain_preseed_dims` at entry, which is cleared at the same
+    /// moment: a seed the run does not consume must not survive into the
+    /// next one. Otherwise a frame that decodes in software and supplies
+    /// real CPU pixels would skip its upload and grade the previous
+    /// frame's buffer.
+    run_seed_dims: Option<(u32, u32)>,
     /// After the most recent `execute_linear*` call, the slot
     /// (`buf_a` if `true`, `buf_b` if `false`) that holds the chain's
     /// final linear-RGBA output, if a chain ran at all. `None` when
@@ -296,6 +308,8 @@ impl GraphExecutor {
             matte_image_cache: HashMap::new(),
             matte_cache: HashMap::new(),
             gpu_chain_preseeded: false,
+            gpu_chain_preseed_dims: None,
+            run_seed_dims: None,
             last_chain_final_slot: None,
             compound_depth: 0,
             working_colorspace: klipp_core::WorkingColorspace::Rec709Linear,
@@ -340,6 +354,8 @@ impl GraphExecutor {
             matte_image_cache: HashMap::new(),
             matte_cache: HashMap::new(),
             gpu_chain_preseeded: false,
+            gpu_chain_preseed_dims: None,
+            run_seed_dims: None,
             last_chain_final_slot: None,
             compound_depth: 0,
             working_colorspace: klipp_core::WorkingColorspace::Rec709Linear,
@@ -429,6 +445,7 @@ impl GraphExecutor {
         let ok = gpu.bridge_u8_to_linear_into_chain(input_u8, width, height);
         if ok {
             self.gpu_chain_preseeded = true;
+            self.gpu_chain_preseed_dims = Some((width, height));
         }
         ok
     }
@@ -607,11 +624,19 @@ impl GraphExecutor {
         // Nodes that fall back to `source_frame` mid-graph raise the same
         // error from their own sites; between them the executor never
         // reads pixels that are not there.
-        // Latch it: `start_chain` consumes `gpu_chain_preseeded` (it is
-        // single-shot so a second chain segment uploads normally), so
-        // once the first chain node dispatches, nothing downstream can
-        // re-derive that the pixels were ever GPU-resident.
-        let gpu_resident_source = source_frame.is_empty() && self.gpu_chain_preseeded;
+        // Move the seed into run scope, clearing the incoming flag in the
+        // same breath. Two things fall out of this: the first
+        // `start_chain` still consumes it (single-shot, so a second chain
+        // segment uploads normally), and a seed this run never uses dies
+        // here rather than leaking into the next frame.
+        self.run_seed_dims = if self.gpu_chain_preseeded {
+            self.gpu_chain_preseed_dims
+        } else {
+            None
+        };
+        self.gpu_chain_preseeded = false;
+        self.gpu_chain_preseed_dims = None;
+        let gpu_resident_source = source_frame.is_empty() && self.run_seed_dims.is_some();
         if source_frame.is_empty() && !gpu_resident_source {
             return Err(ExecutorError::CpuSourceRequired);
         }
@@ -1331,9 +1356,24 @@ impl GraphExecutor {
         // it's a no-op at best, a stale overwrite at worst. The flag
         // is single-shot so a second chain segment within the same
         // `execute_linear` falls back to normal upload.
-        if self.gpu_chain_preseeded {
-            self.gpu_chain_preseeded = false;
+        // The seed is only usable at the resolution it was made at.
+        // `ensure_chain_buffers` will not shrink an existing allocation,
+        // so a full-res seed consumed by a half-res chain would be read
+        // at the wrong stride rather than failing outright.
+        let seed_usable = self.run_seed_dims == Some((width, height));
+        if seed_usable {
+            self.run_seed_dims = None;
         } else {
+            if primary_input.is_empty() {
+                // No usable seed and no CPU pixels: uploading an empty
+                // slice would dispatch the chain over whatever `buf_a`
+                // happens to hold. Refuse to start; the caller falls
+                // through to the unchained path, which raises
+                // `CpuSourceRequired` so the engine can retry with a
+                // readback.
+                self.run_seed_dims = None;
+                return None;
+            }
             gpu.upload_chain_input_linear(primary_input);
         }
         // Open the single-submit chain encoder. Every `*_chain` dispatch

@@ -219,3 +219,105 @@ fn empty_source_with_primed_chain_matches_the_cpu_upload_path() {
         "expected CpuSourceRequired, got {err:?}",
     );
 }
+
+/// A seed is only valid at the resolution it was made at.
+///
+/// `ensure_chain_buffers` never shrinks an existing allocation, so a
+/// full-res seed consumed by a half-res chain would be read at the wrong
+/// stride and scramble the image rather than fail. The drag-downsample
+/// path does exactly that: it primes at full res, then grades at half.
+/// The executor must refuse the seed instead of reinterpreting it.
+#[test]
+fn a_seed_made_at_another_resolution_is_refused_not_reinterpreted() {
+    let Some(ctx) = GpuContext::shared() else {
+        eprintln!("skipping: no usable GpuContext");
+        return;
+    };
+    let bytes = pattern_u8(W, H);
+    let graph = color_balance_graph();
+
+    let input_buf = ctx.device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("wrong_res_seed_test_input"),
+        size: bytes.len() as u64,
+        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    ctx.queue.write_buffer(&input_buf, 0, &bytes);
+    ctx.device.poll(wgpu::Maintain::Wait);
+
+    let mut exec = GraphExecutor::new();
+    if !exec.prime_chain_from_gpu_u8_buffer(&input_buf, W, H) {
+        eprintln!("skipping: prime refused (no GPU)");
+        return;
+    }
+    // Same executor, same seed, half the resolution and no CPU pixels.
+    let err = exec
+        .execute_linear(&[], &graph, W / 2, H / 2, 0.0, 0, None, None)
+        .expect_err("a seed at the wrong resolution must not be consumed");
+    assert!(
+        matches!(err, klipp_nodes::executor::ExecutorError::CpuSourceRequired),
+        "expected CpuSourceRequired, got {err:?}",
+    );
+}
+
+/// A seed the run does not consume must not survive into the next run.
+///
+/// Otherwise the next frame — decoded in software, supplying real CPU
+/// pixels — would skip its upload and grade the previous frame's buffer.
+#[test]
+fn an_unconsumed_seed_does_not_leak_into_the_next_run() {
+    let Some(ctx) = GpuContext::shared() else {
+        eprintln!("skipping: no usable GpuContext");
+        return;
+    };
+    let graph = color_balance_graph();
+
+    // Two visibly different frames. `stale` gets seeded onto the GPU and
+    // then abandoned; `fresh` arrives as ordinary CPU pixels.
+    let stale = pattern_u8(W, H);
+    let fresh: Vec<u8> = stale.iter().map(|b| 255u8 - b).collect();
+    let fresh_linear = srgb_u8_to_linear_f32_rgba(&fresh);
+
+    // Reference: `fresh` through the ordinary CPU-upload path.
+    let mut exec_ref = GraphExecutor::new();
+    let (out_ref, _) = exec_ref
+        .execute_linear(&fresh_linear, &graph, W, H, 0.0, 0, None, None)
+        .expect("CPU-upload path must succeed");
+    if !exec_ref.has_gpu() {
+        eprintln!("skipping: no GPU executor on this machine");
+        return;
+    }
+
+    let stale_buf = ctx.device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("stale_seed_test_input"),
+        size: stale.len() as u64,
+        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    ctx.queue.write_buffer(&stale_buf, 0, &stale);
+    ctx.device.poll(wgpu::Maintain::Wait);
+
+    let mut exec = GraphExecutor::new();
+    assert!(
+        exec.prime_chain_from_gpu_u8_buffer(&stale_buf, W, H),
+        "prime must succeed",
+    );
+    // Abandon the seed: wrong resolution, so this run cannot consume it.
+    let _ = exec.execute_linear(&[], &graph, W / 2, H / 2, 0.0, 0, None, None);
+
+    // Next run, real pixels, right resolution. Must grade `fresh`.
+    let (out_next, _) = exec
+        .execute_linear(&fresh_linear, &graph, W, H, 0.0, 1, None, None)
+        .expect("second run with CPU pixels must succeed");
+
+    let mut max_delta = 0.0_f32;
+    for (a, b) in out_ref.iter().zip(out_next.iter()) {
+        max_delta = max_delta.max((a - b).abs());
+    }
+    eprintln!("stale-seed check: max channel delta vs fresh reference = {max_delta:.6}");
+    assert!(
+        max_delta < 0.005,
+        "second run graded stale seeded pixels instead of the supplied frame \
+         (max delta {max_delta:.6})",
+    );
+}
