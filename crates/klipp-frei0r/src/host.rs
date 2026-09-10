@@ -524,6 +524,26 @@ mod cache {
 mod tests {
     use super::*;
 
+    /// Serialises every test that reads or writes `FREI0R_PATH` /
+    /// `KLIPP_FREI0R_DISABLE`.
+    ///
+    /// The environment is process-wide and Rust runs tests in parallel,
+    /// so without this a test that sets `FREI0R_PATH` corrupts any
+    /// sibling that happens to be resolving search paths at the same
+    /// moment. That raced intermittently — `search_paths_dedupe_symlinked_dirs`
+    /// failed in a full `cargo test --workspace` run while passing on
+    /// its own, because it was the victim rather than the mutator.
+    ///
+    /// Same guard `klipp_audio::lv2`'s tests use for the same reason.
+    /// Poison is recovered from: a panicking test must fail on its own
+    /// assertion, not poison every other test in the module.
+    fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+        LOCK.get_or_init(|| std::sync::Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+    }
+
     #[test]
     fn type_id_path_keyed() {
         let info = Frei0rPluginInfo {
@@ -543,6 +563,7 @@ mod tests {
 
     #[test]
     fn search_paths_default_includes_user_home_last() {
+        let _g = env_lock();
         // Keep FREI0R_PATH unset for this test — verify the default ordering.
         std::env::remove_var("FREI0R_PATH");
         let paths = search_paths();
@@ -553,6 +574,7 @@ mod tests {
 
     #[test]
     fn search_paths_env_override_replaces_defaults() {
+        let _g = env_lock();
         std::env::set_var("FREI0R_PATH", "/tmp/a:/tmp/b");
         let paths = search_paths();
         assert_eq!(paths, vec![PathBuf::from("/tmp/a"), PathBuf::from("/tmp/b")]);
@@ -561,6 +583,7 @@ mod tests {
 
     #[test]
     fn search_paths_env_skips_empty_segments() {
+        let _g = env_lock();
         std::env::set_var("FREI0R_PATH", "/tmp/a::/tmp/b:");
         let paths = search_paths();
         assert_eq!(paths, vec![PathBuf::from("/tmp/a"), PathBuf::from("/tmp/b")]);
@@ -569,6 +592,7 @@ mod tests {
 
     #[test]
     fn search_paths_dedupe_symlinked_dirs() {
+        let _g = env_lock();
         // Closes the 322-vs-162 bug observed at first run on CachyOS:
         // /usr/lib64 -> /usr/lib means default_search_paths() lists
         // both paths, but they resolve to the same physical dir and
@@ -600,6 +624,7 @@ mod tests {
 
     #[test]
     fn klipp_frei0r_disable_short_circuits_discovery() {
+        let _g = env_lock();
         std::env::set_var("KLIPP_FREI0R_DISABLE", "1");
         let plugins = discover_frei0r_plugins();
         assert!(plugins.is_empty(), "disable env must short-circuit");
@@ -644,6 +669,7 @@ mod tests {
     /// install path so CI without frei0r still passes.
     #[test]
     fn discover_finds_at_least_one_plugin_when_installed() {
+        let _g = env_lock();
         if !std::path::Path::new("/usr/lib/frei0r-1").is_dir() {
             eprintln!("skipping: /usr/lib/frei0r-1 not present");
             return;
