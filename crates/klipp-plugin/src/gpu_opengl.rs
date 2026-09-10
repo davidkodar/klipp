@@ -300,6 +300,7 @@ unsafe impl Sync for OpenGlRuntime {}
 impl OpenGlRuntime {
     /// Create a headless OpenGL context via EGL. Returns None if unavailable.
     pub fn new() -> Option<Self> {
+        let _egl_lifecycle = egl_lifecycle_guard();
         let egl = EglApi::load()?;
         let gl = GlApi::load()?;
 
@@ -589,21 +590,30 @@ impl OpenGlRuntime {
 
 impl Drop for OpenGlRuntime {
     fn drop(&mut self) {
+        let _egl_lifecycle = egl_lifecycle_guard();
         unsafe {
             (self.egl.egl_make_current)(self.display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
             (self.egl.egl_destroy_context)(self.display, self.context);
         }
         // Deliberately NOT calling eglTerminate.
         //
-        // `new()` takes its display from `eglGetDisplay(EGL_DEFAULT_DISPLAY)`,
+        // `new()` obtains its display with `eglGetDisplay(EGL_DEFAULT_DISPLAY)`,
         // which hands every caller in the process the *same* handle, and
         // `eglTerminate` tears down every resource on that display for the
-        // whole process rather than just ours. A second runtime — or any
-        // other EGL user in the process — has its context invalidated the
-        // moment one of us drops. Destroying our own context is both safe
-        // and sufficient; the display stays initialised, and `eglInitialize`
-        // on an already-initialised display is a successful no-op, so a
-        // later runtime still works.
+        // whole process — not just ours. So a second runtime, or anything
+        // else in the process using EGL, has its context invalidated the
+        // moment one of us drops. Destroying our own context is safe and
+        // sufficient; the display stays initialised, and `eglInitialize` on
+        // an already-initialised display is a successful no-op, so a later
+        // runtime still works.
+        //
+        // This was not theoretical: the three gpu_opengl tests each build a
+        // runtime and run in parallel, so whichever finished first killed
+        // the display under the others. It surfaced as heap corruption
+        // inside NVIDIA's EGL during thread teardown — SIGABRT
+        // ("double free or corruption") and SIGSEGV on alternate runs,
+        // roughly 1 run in 30, which is exactly the profile of a bug that
+        // reads as an unrelated flake in CI.
         debug!("OpenGL: context destroyed (display left initialised — shared process-wide)");
     }
 }
@@ -612,6 +622,31 @@ impl Drop for OpenGlRuntime {
 
 /// Global store for textures loaded via clipLoadTexture.
 /// Maps texture property set handle → (texture_id, is_output).
+/// Serialises EGL context creation and destruction across the process.
+///
+/// Concurrent EGL setup/teardown from multiple threads corrupts the heap
+/// inside NVIDIA's driver. Measured on 610.57.04: the three `gpu_opengl`
+/// tests each build a runtime and libtest runs them in parallel, which
+/// aborted roughly 1 run in 30 — alternating between SIGABRT
+/// ("double free or corruption") and SIGSEGV. The crashing thread's stack
+/// holds no Klipp frames at all: it is libc's thread-exit path calling
+/// into `libEGL_nvidia`, i.e. the driver's own per-thread cleanup
+/// handler. Forcing the same tests onto one thread gave 0 failures in 60
+/// runs, which is what identifies concurrency as the trigger rather than
+/// anything about our teardown order.
+///
+/// So this is a mitigation for a driver-side race, not a fix for a bug of
+/// ours — but it is ours to avoid, and the OFX host can legitimately
+/// build runtimes from plugin render threads, so the guard belongs in the
+/// library rather than in the tests.
+static EGL_LIFECYCLE: Mutex<()> = Mutex::new(());
+
+/// Take [`EGL_LIFECYCLE`], recovering from poisoning: a panic elsewhere
+/// must not turn every later GL call into a panic of its own.
+fn egl_lifecycle_guard() -> std::sync::MutexGuard<'static, ()> {
+    EGL_LIFECYCLE.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 static GL_TEXTURE_STORE: LazyLock<Mutex<HashMap<usize, GlTextureInfo>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
