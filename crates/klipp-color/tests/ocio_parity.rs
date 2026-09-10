@@ -14,15 +14,13 @@
 //!
 //! | ODT | Verdict |
 //! |---|---|
-//! | Rec.709 SDR | matches OCIO |
+//! | Rec.709 SDR | matches OCIO (max 5.0e-4) |
+//! | Rec.2100 PQ 1000 nit | matches OCIO (max 5.1e-5) |
+//! | Rec.2100 PQ 4000 nit | matches OCIO (max 5.0e-6) |
 //! | DCI-P3 D65 48-nit | neutral axis matches; gamut edges diverge |
-//! | Rec.2100 PQ 1000 / 4000 nit | does not match — known approximation |
 //!
-//! The three failing ODTs are `#[ignore]`d with the reason inline so
-//! the suite stays green; remove the attribute as each is fixed. See
-//! the module docs on `apply_odt_rec2100_pq_inner` in `src/aces.rs`,
-//! which already flags the HDR curve as a stand-in for the AMPAS HDR
-//! spline.
+//! The one failing ODT is `#[ignore]`d with the reason inline so the
+//! suite stays green; remove the attribute when it is fixed.
 
 use klipp_color::aces::{
     acescg_to_dcip3_d65_48nit, acescg_to_rec2100_pq_1000_nit,
@@ -139,21 +137,11 @@ fn dcip3_d65_48nit_matches_ocio() {
 }
 
 #[test]
-#[ignore = "known-wrong: apply_odt_rec2100_pq_inner reuses the 48-nit \
-            cinema C9 spline scaled by peak_nits/48 instead of the AMPAS \
-            HDR spline. Mid-grey lands at PQ 0.508 where ACES puts it at \
-            0.333 (~15 cd/m2), so HDR output is far too bright. Remove \
-            this attribute once the real HDR coefficients are in."]
 fn rec2100_pq_1000_matches_ocio() {
     check("rec2100_pq_1000", acescg_to_rec2100_pq_1000_nit, TOL);
 }
 
 #[test]
-#[ignore = "known-wrong: same peak_nits/48 scaling as the 1000-nit ODT, \
-            and worse — mid-grey lands at PQ 0.653 vs OCIO's 0.333. Note \
-            OCIO renders mid-grey to the SAME PQ code at 1000 and 4000 \
-            nits (PQ is absolute luminance; peak affects highlight \
-            rolloff, not mid-grey), which our peak-scaling cannot do."]
 fn rec2100_pq_4000_matches_ocio() {
     check("rec2100_pq_4000", acescg_to_rec2100_pq_4000_nit, TOL);
 }
@@ -165,8 +153,6 @@ fn rec2100_pq_4000_matches_ocio() {
 /// bug behind both ignored PQ tests above. This test states the
 /// invariant independently of any reference table.
 #[test]
-#[ignore = "fails until the AMPAS HDR spline replaces the peak_nits/48 \
-            scaling; see rec2100_pq_1000_matches_ocio"]
 fn pq_mid_grey_is_invariant_to_peak_nits() {
     let mid = [0.18, 0.18, 0.18];
     let a = acescg_to_rec2100_pq_1000_nit(mid);

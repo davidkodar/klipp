@@ -14,11 +14,19 @@
 //! 6. HDR overrange (5.0) — must not produce NaNs / negatives, must
 //!    saturate cleanly.
 //!
-//! The expected output values are pinned from the current pipeline
-//! at the time PHASE-E-S9 closed. They are NOT independently
-//! verified against Resolve ACES — that comparison requires an
-//! interactive session and is filed as a follow-up
-//! (`POST-E-RESOLVE-PARITY`). What these tests *do* guarantee:
+//! Provenance of the expected values, which differs per ODT:
+//!
+//! * **Rec.709 SDR** and **both Rec.2100 PQ** tables are OpenColorIO's
+//!   ACES 1.3 output-transform values — independently derived, not
+//!   self-pinned. `tests/ocio_parity.rs` verifies the same transforms
+//!   across a 190-value grid; these six patches are the readable
+//!   subset.
+//! * **DCI-P3 D65 48-nit** is still pinned from our own output. It is
+//!   known to diverge from OCIO at the gamut edges (see the ignored
+//!   `dcip3_d65_48nit_matches_ocio`), so treat this table as drift
+//!   detection only, not as a correctness claim.
+//!
+//! What these tests guarantee:
 //!
 //! - **No silent drift**: any future change to RRT or ODT code that
 //!   shifts representative output values will fail this test loudly,
@@ -105,12 +113,12 @@ fn rec2100_pq_1000_nit_pinned_outputs() {
     // ST 2084 OETF has aggressive gain near zero). That's why the
     // pinned values are uniformly higher than the SDR equivalents.
     let expected: [(&str, [f32; 3]); 6] = [
-        ("mid_grey_0_18",   [0.508_077_86,  0.508_077_86,  0.508_077_86]),
-        ("saturated_red",   [0.657_222_15,  0.366_587_64,  0.372_871_01]),
-        ("saturated_green", [0.427_371_50,  0.673_454_58,  0.427_272_02]),
-        ("saturated_blue",  [0.000_000_73,  0.349_285_13,  0.666_243_97]),
-        ("skin_tone",       [0.625_821_65,  0.574_132_44,  0.533_217_79]),
-        ("diffuse_white",   [0.696_820_56,  0.696_820_56,  0.696_820_56]),
+        ("mid_grey_0_18",   [0.332_589_42,  0.332_589_48,  0.332_589_42]),
+        ("saturated_red",   [0.462_499_41,  0.211_830_84,  0.196_236_61]),
+        ("saturated_green", [0.191_270_78,  0.479_600_49,  0.179_788_84]),
+        ("saturated_blue",  [0.184_957_22,  0.192_105_73,  0.479_622_63]),
+        ("skin_tone",       [0.429_233_85,  0.383_309_81,  0.345_313_04]),
+        ("diffuse_white",   [0.510_416_57,  0.510_416_63,  0.510_416_69]),
     ];
 
     for ((label, input), (_, exp)) in fixtures().iter().zip(expected.iter()) {
@@ -122,12 +130,12 @@ fn rec2100_pq_1000_nit_pinned_outputs() {
 #[test]
 fn rec2100_pq_4000_nit_pinned_outputs() {
     let expected: [(&str, [f32; 3]); 6] = [
-        ("mid_grey_0_18",   [0.652_580_80,  0.652_580_80,  0.652_577_70]),
-        ("saturated_red",   [0.807_818_23,  0.496_778_91,  0.503_916_44]),
-        ("saturated_green", [0.564_913_57,  0.824_258_21,  0.564_798_59]),
-        ("saturated_blue",  [0.000_000_73,  0.477_006_35,  0.816_966_77]),
-        ("skin_tone",       [0.775_771_80,  0.722_311_32,  0.679_313_12]),
-        ("diffuse_white",   [0.847_792_86,  0.847_792_86,  0.847_796_86]),
+        ("mid_grey_0_18",   [0.332_589_39,  0.332_589_42,  0.332_589_39]),
+        ("saturated_red",   [0.471_649_32,  0.210_203_96,  0.194_030_97]),
+        ("saturated_green", [0.183_622_79,  0.491_066_22,  0.168_912_84]),
+        ("saturated_blue",  [0.181_913_17,  0.190_218_91,  0.490_806_49]),
+        ("skin_tone",       [0.435_135_07,  0.385_742_57,  0.345_738_68]),
+        ("diffuse_white",   [0.526_451_77,  0.526_451_83,  0.526_451_89]),
     ];
 
     for ((label, input), (_, exp)) in fixtures().iter().zip(expected.iter()) {
@@ -302,20 +310,36 @@ fn black_input_clips_to_per_odt_black_floor() {
 
 // ─── Cross-ODT differentiation ─────────────────────────────────────
 
-/// HDR PQ encodes brighter than SDR Rec.709. On the same mid-grey
-/// input the PQ output value must sit measurably above the SDR
-/// output value — if it doesn't, the peak-nits scaling broke and
-/// HDR exports would look like dim SDR.
+/// HDR renders mid-grey brighter than SDR — but that has to be checked
+/// in *absolute luminance*, not in code values. PQ and BT.1886 are
+/// different encodings, so their code values are not comparable: PQ
+/// mid-grey (0.333) is numerically *below* SDR mid-grey (0.390) while
+/// representing three times the luminance.
 #[test]
-fn hdr_pq_brighter_than_sdr_rec709_on_mid_grey() {
+fn hdr_pq_renders_mid_grey_brighter_than_sdr_in_absolute_luminance() {
     let mid = [0.18, 0.18, 0.18];
-    let sdr = acescg_to_rec709_sdr(mid)[0];
-    let pq_1k = acescg_to_rec2100_pq_1000_nit(mid)[0];
-    let pq_4k = acescg_to_rec2100_pq_4000_nit(mid)[0];
-    assert!(pq_1k > sdr + 0.10,
-        "PQ 1000 ({pq_1k}) must be measurably brighter than SDR ({sdr})");
-    assert!(pq_4k > pq_1k + 0.05,
-        "PQ 4000 ({pq_4k}) must encode brighter than PQ 1000 ({pq_1k})");
+
+    // The Rec.709 ODT normalises against a 48 cd/m² cinema white and
+    // encodes with BT.1886 (gamma 2.4, L_W = 1, L_B = 0), so decoding
+    // is `code^2.4 * 48`.
+    let sdr_code = acescg_to_rec709_sdr(mid)[0];
+    let sdr_nits = sdr_code.powf(2.4) * 48.0;
+
+    // PQ carries absolute luminance, normalised against 10000 cd/m².
+    let pq_code = acescg_to_rec2100_pq_1000_nit(mid)[0];
+    let pq_nits = klipp_color::camera_log::pq_to_linear(pq_code) * 10_000.0;
+
+    // Both HDR deliverables anchor mid-grey at Y_MID = 15 cd/m².
+    assert!(
+        (pq_nits - 15.0).abs() < 0.5,
+        "HDR mid-grey should render at 15 cd/m², got {pq_nits} \
+         (PQ code {pq_code})",
+    );
+    assert!(
+        pq_nits > sdr_nits * 2.0,
+        "HDR mid-grey ({pq_nits} cd/m²) should be well above SDR \
+         ({sdr_nits} cd/m²)",
+    );
 }
 
 /// DCI-P3 cinema is a wider-gamut display than Rec.709. On a

@@ -68,6 +68,9 @@ const TINY: f32 = 1.0e-10;
 /// the reference — the RRT spline takes its log of `max(x, HALF_MIN)`
 /// to avoid `-inf` near zero.
 const HALF_MIN: f32 = 6.103_515_6e-5;
+/// Largest finite f16. The reference clamps AP1 to this after the
+/// AP0→AP1 matrix so a wild input cannot produce `inf` downstream.
+const HALF_MAX: f32 = 65_504.0;
 /// Quadratic-monomial coefficient matrix used by both
 /// `cubic_basis_shaper` (for the red modifier) and the segmented
 /// spline. Values from `Tonecurves.h` in aces-dev — a canonical
@@ -323,6 +326,31 @@ fn rrt_sat_matrix() -> [[f32; 3]; 3] {
 /// the next pipeline stage works in AP1. An end-to-end ODT chain
 /// will fold both conversions into the ODT's first step.
 pub fn apply_rrt(aces: [f32; 3]) -> [f32; 3] {
+    // ─── Sweeteners (glow, red modifier, AP1, desaturation) ────
+    let ap1_desat = rrt_sweeteners(aces);
+
+    // ─── Per-channel tone curve ────────────────────────────────
+    let rgb_post = [
+        segmented_spline_c5_fwd(ap1_desat[0]),
+        segmented_spline_c5_fwd(ap1_desat[1]),
+        segmented_spline_c5_fwd(ap1_desat[2]),
+    ];
+
+    // ─── AP1 → AP0 (OCES output) ───────────────────────────────
+    matrix3_mul_vec(ap1_to_ap0(), rgb_post)
+}
+
+/// AMPAS `rrt_sweeteners` — everything the RRT does *except* the
+/// per-channel tone curve, leaving the result in AP1.
+///
+/// Split out because the ACES 1.1 HDR output transforms are
+/// **single-stage**: they apply these same sweeteners and then run one
+/// combined tone scale (the SSTS) straight to display luminance,
+/// rather than the ACES 1.0 two-stage `RRT → OCES → ODT` path that
+/// [`apply_rrt`] plus a separate ODT tone curve implements. Both
+/// callers must share this code or the two paths drift.
+///
+fn rrt_sweeteners(aces: [f32; 3]) -> [f32; 3] {
     // ─── ACES Glow modulation ──────────────────────────────────
     // Saturation gates the glow gain through a sigmoid; ycIn (a
     // chroma-aware "shadow brightness") modulates it further via
@@ -347,27 +375,26 @@ pub fn apply_rrt(aces: [f32; 3]) -> [f32; 3] {
     a[0] += hue_weight * saturation * (RRT_RED_PIVOT - a[0]) * (1.0 - RRT_RED_SCALE);
 
     // ─── ACES → AP1 rendering space ────────────────────────────
+    // Clip AP0 negatives *before* the matrix, per the reference. A
+    // saturated source can land outside AP0, and letting a negative
+    // channel through the matrix redistributes it into the other two —
+    // which shows up as a green cast on pure reds.
+    let a = [a[0].max(0.0), a[1].max(0.0), a[2].max(0.0)];
     let mut ap1 = matrix3_mul_vec(ap0_to_ap1(), a);
 
-    // Clip negatives to zero before the tone curve. AP1 still has
-    // some out-of-gamut excursion from very saturated AP0 sources
-    // (notably very-pure spectral colours that AP1 can't represent
-    // without a negative channel); tone-mapping a negative through
-    // log10 explodes the math.
-    ap1 = [ap1[0].max(0.0), ap1[1].max(0.0), ap1[2].max(0.0)];
-
-    // ─── Global desaturation ───────────────────────────────────
-    let ap1_desat = matrix3_mul_vec(rrt_sat_matrix(), ap1);
-
-    // ─── Per-channel tone curve ────────────────────────────────
-    let rgb_post = [
-        segmented_spline_c5_fwd(ap1_desat[0]),
-        segmented_spline_c5_fwd(ap1_desat[1]),
-        segmented_spline_c5_fwd(ap1_desat[2]),
+    // Clip again after the matrix. AP1 still has some out-of-gamut
+    // excursion from very-pure spectral colours it can't represent
+    // without a negative channel, and tone-mapping a negative through
+    // log10 explodes the math. The HALF_MAX ceiling matches the
+    // reference's guard against a wild input reaching `inf`.
+    ap1 = [
+        ap1[0].clamp(0.0, HALF_MAX),
+        ap1[1].clamp(0.0, HALF_MAX),
+        ap1[2].clamp(0.0, HALF_MAX),
     ];
 
-    // ─── AP1 → AP0 (OCES output) ───────────────────────────────
-    matrix3_mul_vec(ap1_to_ap0(), rgb_post)
+    // ─── Global desaturation ───────────────────────────────────
+    matrix3_mul_vec(rrt_sat_matrix(), ap1)
 }
 
 // ─── ODT — Output Device Transform (display-encoded RGB) ────────────
@@ -644,126 +671,429 @@ pub fn acescg_to_rec709_sdr(acescg: [f32; 3]) -> [f32; 3] {
     apply_odt_rec709_100_nits_dim(oces)
 }
 
-// ─── ODT — Rec.2100 PQ HDR (1000 + 4000 nit variants) ───────────────
+// ─── ODT — Rec.2100 PQ HDR (ACES 1.1 single-stage output transform) ──
 //
-// Pipeline diverges from the Rec.709 SDR ODT at three points:
+// The HDR deliveries do NOT reuse the ACES 1.0 two-stage
+// `RRT → OCES → ODT` structure the SDR paths above use. ACES 1.1
+// replaced the HDR chain with a *single-stage* tone scale — the SSTS
+// (`ACESlib.SSTS.ctl`), parameterised by three luminance anchors
+// (black, mid-grey, peak) — composed in `outputTransform()`
+// (`ACESlib.OutputTransforms.ctl`) as:
 //
-//   * Different C9 tone-curve coefs, anchored on HDR-shaped pivots
-//     (mid-grey at 10 cd/m² for 1000-nit, 15 cd/m² for 4000-nit;
-//     peak at the deliverable's display luminance).
-//   * Output primaries are BT.2020 (D65), not Rec.709.
-//   * Final encode is PQ ST 2084 (linear cd/m² → perceptual
-//     codepoint), not BT.1886. NO Y_2_linCV step — PQ takes absolute
-//     luminance directly, normalised to `[0, 1]` against the 10000
-//     cd/m² PQ peak.
+//     rrt_sweeteners → ssts(per channel) → Y_2_linCV
+//         → AP1→XYZ → gamut limit → D60→D65 CAT → XYZ→display
+//         → clip → ST-2084 encode
 //
-// Both variants share the same surround / saturation handling as
-// the SDR ODT — `ODT_SAT_FACTOR = 0.93` applied to AP1 values
-// before the per-channel tone curve. Dim-surround compensation IS
-// dropped here: HDR viewing is conventionally darker (closer to
-// cinema), and the HDR Output Device Transform is designed without
-// the dim-surround γ exponent. **PARITY CAVEAT:** the C9 spline
-// coefficients used here come from the AMPAS ACES 1.x HDR ODT
-// reference but are tagged for Resolve-parity verification in the
-// soak / Macbeth-chart milestone (PHASE-E-S9). Visual sanity tests
-// (monotonicity, mid-grey neutrality, finite output) pass; exact
-// per-patch parity hasn't been measured yet.
+// The two deliverables Klipp exposes are the AMPAS transforms
+// `RRTODT.Academy.Rec2020_1000nits_15nits_ST2084` and its 4000-nit
+// sibling. They differ in exactly one parameter — `Y_MAX` — and both
+// carry `Y_MID = 15 cd/m²`. That is why PQ mid-grey lands on the same
+// code value for both: PQ encodes *absolute* luminance, so the peak
+// changes highlight rolloff, never mid-grey.
+//
+// Verified against OpenColorIO's ACES 1.3 HDR output transforms; see
+// `tests/ocio_parity.rs`.
 
-/// Generic Rec.2100 PQ ODT body. Drives both the 1000-nit and
-/// 4000-nit variants; only the `peak_nits` argument differs.
+// ─── SSTS constants, verbatim from ACESlib.SSTS.ctl ─────────────────
+
+const MIN_STOP_SDR: f32 = -6.5;
+const MAX_STOP_SDR: f32 = 6.5;
+const MIN_STOP_RRT: f32 = -15.0;
+const MAX_STOP_RRT: f32 = 18.0;
+
+const MIN_LUM_SDR: f32 = 0.02;
+const MAX_LUM_SDR: f32 = 48.0;
+const MIN_LUM_RRT: f32 = 0.0001;
+const MAX_LUM_RRT: f32 = 10_000.0;
+
+/// Black / mid-grey luminance shared by both PQ deliverables.
+const HDR_PQ_Y_MIN: f32 = 0.0001;
+const HDR_PQ_Y_MID: f32 = 15.0;
+
+/// AMPAS `interpolate1D` specialised to a two-entry table (every SSTS
+/// table has exactly two rows). Linear between the points, clamped to
+/// the endpoint values outside.
+fn interpolate1d_2(table: [[f32; 2]; 2], p: f32) -> f32 {
+    let (x0, y0) = (table[0][0], table[0][1]);
+    let (x1, y1) = (table[1][0], table[1][1]);
+    if p <= x0 {
+        y0
+    } else if p >= x1 {
+        y1
+    } else {
+        y0 + (y1 - y0) * (p - x0) / (x1 - x0)
+    }
+}
+
+/// AMPAS `lookup_ACESmin` — the ACES value the tone scale's black
+/// point sits at, for a given display black luminance.
+fn lookup_aces_min(min_lum: f32) -> f32 {
+    let table = [
+        [MIN_LUM_RRT.log10(), MIN_STOP_RRT],
+        [MIN_LUM_SDR.log10(), MIN_STOP_SDR],
+    ];
+    0.18 * 2.0_f32.powf(interpolate1d_2(table, min_lum.log10()))
+}
+
+/// AMPAS `lookup_ACESmax` — the ACES value the tone scale's peak sits
+/// at, for a given display peak luminance.
+fn lookup_aces_max(max_lum: f32) -> f32 {
+    let table = [
+        [MAX_LUM_SDR.log10(), MAX_STOP_SDR],
+        [MAX_LUM_RRT.log10(), MAX_STOP_RRT],
+    ];
+    0.18 * 2.0_f32.powf(interpolate1d_2(table, max_lum.log10()))
+}
+
+/// One anchor of the tone scale: an ACES value, the display luminance
+/// it maps to, and the curve's slope there.
+#[derive(Clone, Copy)]
+struct TsPoint {
+    x: f32,
+    y: f32,
+    slope: f32,
+}
+
+/// A fully-resolved SSTS. Cheap to copy but computed once per ODT
+/// configuration — see [`hdr_pq_params`].
+#[derive(Clone, Copy)]
+struct TsParams {
+    min: TsPoint,
+    mid: TsPoint,
+    max: TsPoint,
+    coefs_low: [f32; 6],
+    coefs_high: [f32; 6],
+}
+
+/// AMPAS `init_coefsLow`. Two outer coefficients straddle each anchor
+/// (linear extrapolation of the anchor's slope); the middle one sets
+/// how sharply the curve bends and is interpolated from a fixed table.
+fn init_coefs_low(low: TsPoint, mid: TsPoint) -> [f32; 5] {
+    let log_low_x = low.x.log10();
+    let log_mid_x = mid.x.log10();
+    let knot_inc = (log_mid_x - log_low_x) / 3.0;
+    let mut c = [0.0_f32; 5];
+
+    c[0] = low.slope * (log_low_x - 0.5 * knot_inc) + (low.y.log10() - low.slope * log_low_x);
+    c[1] = low.slope * (log_low_x + 0.5 * knot_inc) + (low.y.log10() - low.slope * log_low_x);
+    c[3] = mid.slope * (log_mid_x - 0.5 * knot_inc) + (mid.y.log10() - mid.slope * log_mid_x);
+    c[4] = mid.slope * (log_mid_x + 0.5 * knot_inc) + (mid.y.log10() - mid.slope * log_mid_x);
+
+    let bends = [[MIN_STOP_RRT, 0.18], [MIN_STOP_SDR, 0.35]];
+    let pct = interpolate1d_2(bends, (low.x / 0.18).log2());
+    c[2] = low.y.log10() + pct * (mid.y.log10() - low.y.log10());
+    c
+}
+
+/// AMPAS `init_coefsHigh`. Mirror of [`init_coefs_low`] across
+/// mid-grey, with its own bend table.
+fn init_coefs_high(mid: TsPoint, max: TsPoint) -> [f32; 5] {
+    let log_mid_x = mid.x.log10();
+    let log_max_x = max.x.log10();
+    let knot_inc = (log_max_x - log_mid_x) / 3.0;
+    let mut c = [0.0_f32; 5];
+
+    c[0] = mid.slope * (log_mid_x - 0.5 * knot_inc) + (mid.y.log10() - mid.slope * log_mid_x);
+    c[1] = mid.slope * (log_mid_x + 0.5 * knot_inc) + (mid.y.log10() - mid.slope * log_mid_x);
+    c[3] = max.slope * (log_max_x - 0.5 * knot_inc) + (max.y.log10() - max.slope * log_max_x);
+    c[4] = max.slope * (log_max_x + 0.5 * knot_inc) + (max.y.log10() - max.slope * log_max_x);
+
+    let bends = [[MAX_STOP_SDR, 0.89], [MAX_STOP_RRT, 0.90]];
+    let pct = interpolate1d_2(bends, (max.x / 0.18).log2());
+    c[2] = mid.y.log10() + pct * (max.y.log10() - mid.y.log10());
+    c
+}
+
+/// AMPAS `shift` — slide an ACES value by `exp_shift` stops.
+#[inline]
+fn ts_shift(x: f32, exp_shift: f32) -> f32 {
+    2.0_f32.powf(x.log2() - exp_shift)
+}
+
+/// AMPAS `init_TsParams`. Note the ordering the reference relies on:
+/// the spline coefficients are derived from the *unshifted* anchors,
+/// and only then are the anchor x-positions shifted. Reversing that
+/// changes the curve.
+fn init_ts_params(min_lum: f32, max_lum: f32, exp_shift: f32) -> TsParams {
+    let mut min_pt = TsPoint { x: lookup_aces_min(min_lum), y: min_lum, slope: 0.0 };
+    let mut mid_pt = TsPoint { x: 0.18, y: 4.8, slope: 1.55 };
+    let mut max_pt = TsPoint { x: lookup_aces_max(max_lum), y: max_lum, slope: 0.0 };
+
+    let c_low = init_coefs_low(min_pt, mid_pt);
+    let c_high = init_coefs_high(mid_pt, max_pt);
+
+    min_pt.x = ts_shift(lookup_aces_min(min_lum), exp_shift);
+    mid_pt.x = ts_shift(0.18, exp_shift);
+    max_pt.x = ts_shift(lookup_aces_max(max_lum), exp_shift);
+
+    TsParams {
+        min: min_pt,
+        mid: mid_pt,
+        max: max_pt,
+        // The final coefficient is a deliberate duplicate of the one
+        // before it — the slope=0 boundary condition, matching the
+        // reference's array layout.
+        coefs_low: [c_low[0], c_low[1], c_low[2], c_low[3], c_low[4], c_low[4]],
+        coefs_high: [c_high[0], c_high[1], c_high[2], c_high[3], c_high[4], c_high[4]],
+    }
+}
+
+/// AMPAS `ssts` — the single-stage tone scale. Maps an AP1 channel
+/// value to absolute display luminance in cd/m². Three quadratic
+/// segments per side in log-log space, linear extrapolation outside.
+fn ssts(x: f32, c: &TsParams) -> f32 {
+    // N_KNOTS_LOW = N_KNOTS_HIGH = 4, so the per-side multiplier is 3.
+    let knots_minus_one = 3.0_f32;
+
+    // Deviation from the CTL, deliberate: the reference floors at
+    // `HALF_MIN` (6.1e-5) purely to keep `log10` finite. But these HDR
+    // curves put their min anchor at x ~ 2.5e-6, *below* that floor —
+    // so under `HALF_MIN` the low-extrapolation branch below is
+    // unreachable and ACES 0.0 renders at 2.3e-4 cd/m² instead of
+    // `Y_MIN`, i.e. PQ code ~0.0019 (about two 10-bit code values of
+    // lifted black) i.e. exactly what `STRETCH_BLACK` exists to
+    // prevent. Flooring at `TINY` instead lets black reach `Y_MIN` and
+    // encode to PQ 0, which is what OpenColorIO produces and what the
+    // reference's own comment says the intent is. Values at or above
+    // `HALF_MIN` take the same branch either way, so nothing else in
+    // the curve moves.
+    let logx = x.max(TINY).log10();
+    let log_min_x = c.min.x.log10();
+    let log_mid_x = c.mid.x.log10();
+    let log_max_x = c.max.x.log10();
+
+    let logy = if logx <= log_min_x {
+        logx * c.min.slope + (c.min.y.log10() - c.min.slope * log_min_x)
+    } else if logx < log_mid_x {
+        let knot_coord = knots_minus_one * (logx - log_min_x) / (log_mid_x - log_min_x);
+        // Cap at the last segment: float rounding can push
+        // `knot_coord` to exactly 3.0 at the boundary, and segment 2
+        // evaluated at t = 1 is precisely the mid anchor.
+        let j = (knot_coord.floor() as usize).min(2);
+        let t = knot_coord - j as f32;
+        let cf = [c.coefs_low[j], c.coefs_low[j + 1], c.coefs_low[j + 2]];
+        eval_spline_segment(cf, [t * t, t, 1.0])
+    } else if logx < log_max_x {
+        let knot_coord = knots_minus_one * (logx - log_mid_x) / (log_max_x - log_mid_x);
+        let j = (knot_coord.floor() as usize).min(2);
+        let t = knot_coord - j as f32;
+        let cf = [c.coefs_high[j], c.coefs_high[j + 1], c.coefs_high[j + 2]];
+        eval_spline_segment(cf, [t * t, t, 1.0])
+    } else {
+        logx * c.max.slope + (c.max.y.log10() - c.max.slope * log_max_x)
+    };
+
+    10.0_f32.powf(logy)
+}
+
+/// Solve `ssts(x, c) == y` for `x`.
 ///
-/// **Input:** OCES (AP0, post-RRT scene-linear).
-/// **Output:** PQ-encoded RGB in `[0, 1]`. Each channel is the PQ
-/// ST 2084 codepoint for the rendered luminance (so 0.5 sits around
-/// 100 cd/m²; 1.0 is the 10000 cd/m² PQ peak — content rarely
-/// reaches there even on 4000-nit deliverables, since the post-
-/// spline clamp caps at `peak_nits`).
+/// The reference inverts the quadratic spline analytically
+/// (`inv_ssts`). We bisect instead: `ssts` is monotonically
+/// increasing, and this is called **once per ODT configuration**
+/// rather than per pixel (see [`hdr_pq_params`]), so the only thing
+/// an analytic inverse would buy is a second 70-line spline
+/// implementation with exactly one caller. Bisection runs in log2
+/// space so convergence is uniform across the curve's huge domain.
+fn inv_ssts_bisect(y: f32, c: &TsParams) -> f32 {
+    let mut lo = c.min.x.max(HALF_MIN).log2();
+    let mut hi = c.max.x.log2();
+    for _ in 0..64 {
+        let mid = 0.5 * (lo + hi);
+        if ssts(2.0_f32.powf(mid), c) < y {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    2.0_f32.powf(0.5 * (lo + hi))
+}
+
+/// Resolve the SSTS for one PQ deliverable.
 ///
-/// **Implementation note (parity caveat):** This ODT reuses the
-/// 48-nit cinema C9 tone curve from S4B and scales the post-spline
-/// luminance by `peak_nits / 48` to lift cinema-range output into
-/// the HDR target's range. The resulting curve is monotonic and
-/// produces visually plausible HDR output, but is *not* the AMPAS
-/// HDR-specific C9 spline coefficient set (which has different toe/
-/// shoulder behaviour for HDR mastering). Per-channel parity vs.
-/// Resolve's HDR ODT is part of the soak / Macbeth-chart milestone
-/// (PHASE-E-S9); when those values are pinned the simple linear
-/// scale here gets replaced by the proper HDR coef set.
-fn apply_odt_rec2100_pq_inner(oces: [f32; 3], peak_nits: f32) -> [f32; 3] {
-    // OCES → AP1.
-    let rgb_pre = matrix3_mul_vec(ap0_to_ap1(), oces);
+/// Reproduces the reference's two-pass `expShift` derivation: build
+/// the curve with no shift, ask where mid-grey luminance actually
+/// landed, then rebuild shifted so `Y_MID` sits on ACES 0.18. The
+/// reference calls this "a bit of a hack"; it is nonetheless what
+/// defines the shipped transforms.
+fn init_hdr_pq_params(y_max: f32) -> TsParams {
+    let unshifted = init_ts_params(HDR_PQ_Y_MIN, y_max, 0.0);
+    let exp_shift = inv_ssts_bisect(HDR_PQ_Y_MID, &unshifted).log2() - 0.18_f32.log2();
+    init_ts_params(HDR_PQ_Y_MIN, y_max, exp_shift)
+}
 
-    // Per-channel C9 tone scale (the SDR cinema 48-nit spline).
-    // Output is cinema-range cd/m² (mid ≈ 4.8, peak ≈ 48).
-    let rgb_cinema = [
-        segmented_spline_c9_fwd(rgb_pre[0]),
-        segmented_spline_c9_fwd(rgb_pre[1]),
-        segmented_spline_c9_fwd(rgb_pre[2]),
-    ];
+/// Cached parameters. Deriving them costs a bisection over the spline;
+/// doing that per pixel would be absurd, and they only depend on the
+/// deliverable.
+fn hdr_pq_params(y_max: f32) -> &'static TsParams {
+    static P1000: std::sync::OnceLock<TsParams> = std::sync::OnceLock::new();
+    static P4000: std::sync::OnceLock<TsParams> = std::sync::OnceLock::new();
+    if y_max >= 4000.0 {
+        P4000.get_or_init(|| init_hdr_pq_params(4000.0))
+    } else {
+        P1000.get_or_init(|| init_hdr_pq_params(1000.0))
+    }
+}
 
-    // Lift cinema-range output to the HDR target's luminance band
-    // by linear scaling. 1000-nit gets ×~21, 4000-nit gets ×~83.
-    // This produces HDR mid-grey at ~100 cd/m² (1000-nit) or ~400
-    // cd/m² (4000-nit) — both higher than the AMPAS HDR ODT spec
-    // (10 / 15 cd/m²); flagged as parity work for S9.
-    let scale = peak_nits / 48.0;
-    let rgb_hdr = [
-        rgb_cinema[0] * scale,
-        rgb_cinema[1] * scale,
-        rgb_cinema[2] * scale,
-    ];
+// ─── HDR ODT matrices ──────────────────────────────────────────────
+//
+// Derived from the AMPAS chromaticities (AP1 and `REC2020_PRI` from
+// `ACESlib.Utilities_Color.ctl`) via the standard `RGBtoXYZ`
+// construction, and cross-checked two ways: `ap1_to_xyz()`'s middle
+// row reproduces this crate's `AP1_RGB2Y` to 4e-9, and the composed
+// `xyz_to_rec2020 · d60_to_d65_cat · ap1_to_xyz` matches OCIO's
+// ACEScg → Linear Rec.2020 processor to 4e-8.
+//
+// Kept here rather than in `primaries` because the HDR ODT needs the
+// individual factors — the reference clips to the limiting primaries
+// in XYZ, *between* the two halves — so a pre-composed AP1→Rec.2020
+// matrix cannot express it.
 
-    // ODT saturation (same factor as SDR ODT). Applied on the
-    // post-spline AP1 values; the matrix is white-point preserving
-    // so it doesn't affect the cd/m² unit interpretation.
-    let rgb_desat = matrix3_mul_vec(odt_sat_matrix(), rgb_hdr);
-
-    // AP1 → BT.2020 (D65, with D60→D65 chromatic adaptation).
-    let bt2020 = matrix3_mul_vec(crate::primaries::acescg_to_bt2020(), rgb_desat);
-
-    // Clamp to display peak luminance — anything above the
-    // deliverable's peak isn't reproducible.
-    let clamped = [
-        bt2020[0].clamp(0.0, peak_nits),
-        bt2020[1].clamp(0.0, peak_nits),
-        bt2020[2].clamp(0.0, peak_nits),
-    ];
-
-    // Normalise to PQ unit (10000 cd/m²) and forward-PQ encode.
-    let inv_pq_peak = 1.0 / 10000.0;
+/// Linear AP1 (ACEScg) → CIE XYZ, ACES white (D60).
+#[inline]
+#[allow(clippy::excessive_precision)]
+fn ap1_to_xyz() -> [[f32; 3]; 3] {
     [
-        crate::camera_log::linear_to_pq(clamped[0] * inv_pq_peak),
-        crate::camera_log::linear_to_pq(clamped[1] * inv_pq_peak),
-        crate::camera_log::linear_to_pq(clamped[2] * inv_pq_peak),
+        [ 0.662454181109,  0.134004206456,  0.156187687005],
+        [ 0.272228716781,  0.674081765811,  0.053689517408],
+        [-0.005574649490,  0.004060733529,  1.010339100313],
     ]
 }
 
-/// Apply the Rec.2100 PQ HDR ODT for a 1000 cd/m² mastering
-/// display. Output is PQ-encoded BT.2020 RGB suitable for HDR10
-/// delivery into a 1000-nit mastered file or a 1000-nit reference
-/// monitor.
-pub fn apply_odt_rec2100_pq_1000_nit(oces: [f32; 3]) -> [f32; 3] {
-    apply_odt_rec2100_pq_inner(oces, 1000.0)
+/// CIE XYZ (D65) → linear BT.2020.
+#[inline]
+#[allow(clippy::excessive_precision)]
+fn xyz_to_rec2020() -> [[f32; 3]; 3] {
+    [
+        [ 1.716651187971, -0.355670783776, -0.253366281374],
+        [-0.666684351832,  1.616481236635,  0.015768545814],
+        [ 0.017639857445, -0.042770613258,  0.942103121235],
+    ]
 }
 
-/// Apply the Rec.2100 PQ HDR ODT for a 4000 cd/m² mastering
-/// display. Same pipeline as the 1000-nit variant; the post-spline
-/// luminance scales 4× higher to fill the wider HDR range.
-pub fn apply_odt_rec2100_pq_4000_nit(oces: [f32; 3]) -> [f32; 3] {
-    apply_odt_rec2100_pq_inner(oces, 4000.0)
+/// Linear BT.2020 → CIE XYZ (D65).
+#[inline]
+#[allow(clippy::excessive_precision)]
+fn rec2020_to_xyz() -> [[f32; 3]; 3] {
+    [
+        [ 0.636958048301,  0.144616903586,  0.168880975164],
+        [ 0.262700212011,  0.677998071519,  0.059301716470],
+        [ 0.000000000000,  0.028072693049,  1.060985057711],
+    ]
 }
 
-/// End-to-end ACEScg → Rec.2100 PQ HDR (1000-nit). Wraps RRT + ODT
-/// for the engine's display path.
+/// Bradford chromatic adaptation, ACES white (D60) → D65. Matches
+/// AMPAS `D60_2_D65_CAT` to 8 decimals.
+#[inline]
+#[allow(clippy::excessive_precision)]
+fn d60_to_d65_cat() -> [[f32; 3]; 3] {
+    [
+        [ 0.987224008703, -0.006113228607,  0.015953288336],
+        [-0.007598371812,  1.001861484740,  0.005330035791],
+        [ 0.003072577059, -0.005095961511,  1.081680603066],
+    ]
+}
+
+/// AMPAS `linCV_2_Y` — the inverse of [`y_to_lin_cv`].
+#[inline]
+fn lin_cv_to_y(lin_cv: f32, y_max: f32, y_min: f32) -> f32 {
+    lin_cv * (y_max - y_min) + y_min
+}
+
+/// AMPAS `Y_2_ST2084` — absolute luminance in cd/m² → PQ code value.
+#[inline]
+fn y_to_st2084(y: f32) -> f32 {
+    crate::camera_log::linear_to_pq(y / 10_000.0)
+}
+
+/// AMPAS `limit_to_primaries` for Rec.2020. Round-trips XYZ through
+/// the limiting primaries, clipping to `[0, 1]` on the way, which
+/// discards anything the deliverable's gamut cannot hold.
+fn limit_to_rec2020_primaries(xyz: [f32; 3]) -> [f32; 3] {
+    let rgb = matrix3_mul_vec(xyz_to_rec2020(), xyz);
+    let clipped = [
+        rgb[0].clamp(0.0, 1.0),
+        rgb[1].clamp(0.0, 1.0),
+        rgb[2].clamp(0.0, 1.0),
+    ];
+    matrix3_mul_vec(rec2020_to_xyz(), clipped)
+}
+
+/// AMPAS `outputTransform` specialised to the Rec.2020 / ST-2084
+/// deliverables: `EOTF = 0` (PQ), `SURROUND = 0` (dark),
+/// `STRETCH_BLACK = true`, `D60_SIM = false`, `LEGAL_RANGE = false`,
+/// limiting primaries == display primaries == Rec.2020.
+///
+/// **Input is ACES AP0 scene-linear, not OCES.** The single-stage
+/// design has no OCES intermediate — that is the whole point of it.
+fn output_transform_rec2100_pq(aces_ap0: [f32; 3], y_max: f32) -> [f32; 3] {
+    let params = hdr_pq_params(y_max);
+
+    // Glow / red modifier / AP1 / desaturation — shared with the SDR
+    // path so the two renderings cannot drift apart.
+    let rgb_pre = rrt_sweeteners(aces_ap0);
+
+    // The tone scale, per channel. Output is absolute display
+    // luminance in cd/m², still on AP1 primaries.
+    let rgb_post = [
+        ssts(rgb_pre[0], params),
+        ssts(rgb_pre[1], params),
+        ssts(rgb_pre[2], params),
+    ];
+
+    // Absolute luminance → linear code value.
+    let lin_cv = [
+        y_to_lin_cv(rgb_post[0], y_max, HDR_PQ_Y_MIN),
+        y_to_lin_cv(rgb_post[1], y_max, HDR_PQ_Y_MIN),
+        y_to_lin_cv(rgb_post[2], y_max, HDR_PQ_Y_MIN),
+    ];
+
+    // AP1 → CIE XYZ. Still D60-adapted at this point.
+    let mut xyz = matrix3_mul_vec(ap1_to_xyz(), lin_cv);
+
+    // SURROUND = 0 (dark): the tone scale is designed for a dark
+    // surround, so no gamma adjustment. The reference's dim-surround
+    // block is inactive for HDR regardless.
+
+    // Gamut-limit to the limiting primaries. The reference limits
+    // unconditionally, even when limiting == display.
+    //
+    // NOTE: this clips in a D65-primaries space applied to XYZ that is
+    // still D60-adapted — the CAT only runs afterwards. That
+    // white-point mismatch is what the reference does; "fixing" it
+    // breaks parity.
+    xyz = limit_to_rec2020_primaries(xyz);
+
+    // ACES white (D60) → display white (D65), since D60_SIM = false.
+    xyz = matrix3_mul_vec(d60_to_d65_cat(), xyz);
+
+    // XYZ → display encoding primaries, then clip values that project
+    // outside them.
+    let rgb = matrix3_mul_vec(xyz_to_rec2020(), xyz);
+    let rgb = [rgb[0].max(0.0), rgb[1].max(0.0), rgb[2].max(0.0)];
+
+    // ST-2084 encode. STRETCH_BLACK = true means the trip back to
+    // absolute luminance uses Ymin = 0, so the darkest values quantise
+    // to a PQ code value of 0 instead of floating above it.
+    [
+        y_to_st2084(lin_cv_to_y(rgb[0], y_max, 0.0).max(0.0)),
+        y_to_st2084(lin_cv_to_y(rgb[1], y_max, 0.0).max(0.0)),
+        y_to_st2084(lin_cv_to_y(rgb[2], y_max, 0.0).max(0.0)),
+    ]
+}
+
+/// End-to-end ACEScg → Rec.2100 PQ HDR, 1000 cd/m² mastering display.
+/// Equivalent to AMPAS
+/// `RRTODT.Academy.Rec2020_1000nits_15nits_ST2084`.
 pub fn acescg_to_rec2100_pq_1000_nit(acescg: [f32; 3]) -> [f32; 3] {
-    let oces = apply_rrt(matrix3_mul_vec(ap1_to_ap0(), acescg));
-    apply_odt_rec2100_pq_1000_nit(oces)
+    output_transform_rec2100_pq(matrix3_mul_vec(ap1_to_ap0(), acescg), 1000.0)
 }
 
-/// End-to-end ACEScg → Rec.2100 PQ HDR (4000-nit).
+/// End-to-end ACEScg → Rec.2100 PQ HDR, 4000 cd/m² mastering display.
+/// Equivalent to AMPAS
+/// `RRTODT.Academy.Rec2020_4000nits_15nits_ST2084`.
 pub fn acescg_to_rec2100_pq_4000_nit(acescg: [f32; 3]) -> [f32; 3] {
-    let oces = apply_rrt(matrix3_mul_vec(ap1_to_ap0(), acescg));
-    apply_odt_rec2100_pq_4000_nit(oces)
+    output_transform_rec2100_pq(matrix3_mul_vec(ap1_to_ap0(), acescg), 4000.0)
 }
 
 // ─── ODT — DCI-P3 D65 cinema (48 nit) ───────────────────────────────
@@ -1233,89 +1563,134 @@ mod tests {
         }
     }
 
-    // ─── Rec.2100 PQ HDR ODT tests ─────────────────────────────
+    // ─── Rec.2100 PQ HDR output-transform tests ────────────────
+    //
+    // These take ACEScg, not OCES: the ACES 1.1 HDR path is a single
+    // stage with no OCES intermediate.
 
     #[test]
-    fn apply_odt_pq_neutral_grey_produces_neutral_pq_output() {
-        // Neutral OCES grey passes through neutral all the way:
-        // AP0→AP1, sat matrix, AP1→BT.2020 — all preserve white.
-        // Per-channel C9 + PQ encode produces equal channels.
-        let oces = [4.8, 4.8, 4.8];
-        let pq_out = apply_odt_rec2100_pq_1000_nit(oces);
-        assert!(approx(pq_out[0], pq_out[1], 1e-3));
-        assert!(approx(pq_out[1], pq_out[2], 1e-3));
-        // Mid-grey at 10 cd/m² in PQ ≈ 0.34 codepoint (rough).
-        // Just make sure it lands clearly between black and peak.
-        assert!(pq_out[0] > 0.05 && pq_out[0] < 0.6,
-            "1000-nit mid-grey PQ codepoint should be mid-range, got {}", pq_out[0]);
+    fn pq_neutral_grey_produces_neutral_pq_output() {
+        // Neutral in stays neutral out: the sweeteners' sat matrix,
+        // AP1→XYZ, the CAT and XYZ→Rec.2020 all preserve white, and
+        // the tone scale is per-channel identical.
+        let pq_out = acescg_to_rec2100_pq_1000_nit([0.18, 0.18, 0.18]);
+        assert!(approx(pq_out[0], pq_out[1], 1e-4));
+        assert!(approx(pq_out[1], pq_out[2], 1e-4));
     }
 
     #[test]
-    fn apply_odt_pq_4000_nit_brighter_than_1000_nit_at_same_oces() {
-        // Same OCES input through both ODTs — the 4000-nit ODT lifts
-        // mid-grey from 10 → 15 cd/m². At any given input above mid,
-        // the 4000-nit output should be at least as bright as the
-        // 1000-nit at the same OCES.
-        let oces = [4.8, 4.8, 4.8];
-        let p1k = apply_odt_rec2100_pq_1000_nit(oces);
-        let p4k = apply_odt_rec2100_pq_4000_nit(oces);
+    fn pq_mid_grey_is_invariant_to_peak_luminance() {
+        // Both deliverables carry Y_MID = 15 cd/m², and PQ encodes
+        // absolute luminance — so mid-grey must land on the SAME code
+        // value regardless of the mastering peak. The peak changes
+        // highlight rolloff only.
+        //
+        // This is the invariant the previous implementation broke: it
+        // scaled the whole 48-nit cinema curve by peak_nits / 48, which
+        // dragged mid-grey up with the peak.
+        let mid = [0.18, 0.18, 0.18];
+        let p1k = acescg_to_rec2100_pq_1000_nit(mid);
+        let p4k = acescg_to_rec2100_pq_4000_nit(mid);
+        for k in 0..3 {
+            assert!(approx(p1k[k], p4k[k], 1e-4),
+                "mid-grey PQ code drifted with peak luminance: \
+                 1000-nit {p1k:?} vs 4000-nit {p4k:?}");
+        }
+    }
+
+    #[test]
+    fn pq_4000_nit_holds_more_highlight_than_1000_nit() {
+        // Where the peak *does* show up: a bright highlight well above
+        // diffuse white encodes higher on the 4000-nit deliverable,
+        // because that curve keeps mapping luminance where the
+        // 1000-nit one has already reached its peak.
+        let hot = [40.0, 40.0, 40.0];
+        let p1k = acescg_to_rec2100_pq_1000_nit(hot);
+        let p4k = acescg_to_rec2100_pq_4000_nit(hot);
         assert!(p4k[0] > p1k[0],
-            "4000-nit mid-grey PQ codepoint ({}) should exceed 1000-nit ({}) — \
-             higher absolute luminance maps to higher PQ codepoint",
+            "4000-nit highlight ({}) should exceed 1000-nit ({})",
             p4k[0], p1k[0]);
     }
 
     #[test]
-    fn apply_odt_pq_monotonic_along_grey_axis() {
-        let dim = apply_odt_rec2100_pq_1000_nit([0.1, 0.1, 0.1]);
-        let mid = apply_odt_rec2100_pq_1000_nit([4.8, 4.8, 4.8]);
-        let bright = apply_odt_rec2100_pq_1000_nit([100.0, 100.0, 100.0]);
-        assert!(dim[0] < mid[0],
-            "0.1 OCES ({}) should map to a dimmer codepoint than 4.8 ({})", dim[0], mid[0]);
-        assert!(mid[0] < bright[0],
-            "4.8 OCES ({}) should map to a dimmer codepoint than 100 ({})", mid[0], bright[0]);
+    fn pq_black_encodes_to_zero() {
+        // STRETCH_BLACK = true exists precisely so that black reaches a
+        // PQ code value of 0 rather than floating above it. The old
+        // implementation left black at ~0.178.
+        let black = acescg_to_rec2100_pq_1000_nit([0.0, 0.0, 0.0]);
+        for c in black {
+            assert!(c < 1e-3, "black should encode at PQ 0, got {black:?}");
+        }
     }
 
     #[test]
-    fn apply_odt_pq_output_stays_in_unit_range() {
+    fn pq_monotonic_along_grey_axis() {
+        let dim = acescg_to_rec2100_pq_1000_nit([0.02, 0.02, 0.02]);
+        let mid = acescg_to_rec2100_pq_1000_nit([0.18, 0.18, 0.18]);
+        let bright = acescg_to_rec2100_pq_1000_nit([4.0, 4.0, 4.0]);
+        assert!(dim[0] < mid[0],
+            "0.02 ACEScg ({}) should be dimmer than 0.18 ({})", dim[0], mid[0]);
+        assert!(mid[0] < bright[0],
+            "0.18 ACEScg ({}) should be dimmer than 4.0 ({})", mid[0], bright[0]);
+    }
+
+    #[test]
+    fn pq_output_stays_in_unit_range() {
         // The PQ codepoint is by construction in [0, 1]. Hostile
-        // inputs (very bright, saturated, slight negative) must
-        // never break this invariant — clamps + the well-defined PQ
-        // OETF guarantee it.
+        // inputs (very bright, saturated, slight negative) must never
+        // break this invariant.
         let cases = [
-            [4.8, 4.8, 4.8],
+            [0.18, 0.18, 0.18],
             [1000.0, 0.0, 0.0],
             [10000.0, 5000.0, 0.0],
-            [-0.05, 4.8, 4.8],
+            [-0.05, 0.18, 0.18],
             [0.0, 0.0, 0.0],
         ];
-        for oces in cases {
-            let pq_out = apply_odt_rec2100_pq_1000_nit(oces);
-            for c in pq_out {
-                assert!(c.is_finite(),
-                    "PQ ODT non-finite for OCES {oces:?} → {pq_out:?}");
-                assert!((0.0..=1.0).contains(&c),
-                    "PQ codepoint out-of-range for OCES {oces:?} → {pq_out:?}");
+        for acescg in cases {
+            for out in [
+                acescg_to_rec2100_pq_1000_nit(acescg),
+                acescg_to_rec2100_pq_4000_nit(acescg),
+            ] {
+                for c in out {
+                    assert!(c.is_finite(),
+                        "PQ output non-finite for ACEScg {acescg:?} → {out:?}");
+                    assert!((0.0..=1.0).contains(&c),
+                        "PQ codepoint out-of-range for ACEScg {acescg:?} → {out:?}");
+                }
             }
         }
     }
 
     #[test]
-    fn acescg_to_rec2100_pq_wrapper_composition() {
-        let acescg = [0.18, 0.18, 0.18];
-        let direct = acescg_to_rec2100_pq_1000_nit(acescg);
-        let oces = apply_rrt(matrix3_mul_vec(ap1_to_ap0(), acescg));
-        let manual = apply_odt_rec2100_pq_1000_nit(oces);
-        for k in 0..3 {
-            assert!(approx(direct[k], manual[k], 1e-6),
-                "PQ-1000 wrapper drifts: direct={direct:?}, manual={manual:?}");
+    fn ssts_anchors_hit_their_target_luminances() {
+        // The tone scale is defined by three anchors. After the
+        // expShift pass, ACES 0.18 must render at Y_MID = 15 cd/m²,
+        // and the curve must reach its peak at the top.
+        for y_max in [1000.0_f32, 4000.0] {
+            let p = hdr_pq_params(y_max);
+            let at_mid = ssts(0.18, p);
+            assert!((at_mid - HDR_PQ_Y_MID).abs() < 0.05,
+                "ACES 0.18 should render at {HDR_PQ_Y_MID} cd/m² on the \
+                 {y_max}-nit curve, got {at_mid}");
+            let at_peak = ssts(p.max.x, p);
+            assert!((at_peak - y_max).abs() < y_max * 0.01,
+                "curve peak should reach {y_max} cd/m², got {at_peak}");
         }
+    }
 
-        let direct4k = acescg_to_rec2100_pq_4000_nit(acescg);
-        let manual4k = apply_odt_rec2100_pq_4000_nit(oces);
-        for k in 0..3 {
-            assert!(approx(direct4k[k], manual4k[k], 1e-6),
-                "PQ-4000 wrapper drifts: direct={direct4k:?}, manual={manual4k:?}");
+    #[test]
+    fn ssts_is_monotonic_over_its_domain() {
+        let p = hdr_pq_params(1000.0);
+        let mut prev = 0.0_f32;
+        // Sweep 24 stops around mid-grey.
+        for i in 0..=240 {
+            let stops = -15.0 + (i as f32) * (33.0 / 240.0);
+            let x = 0.18 * 2.0_f32.powf(stops);
+            let y = ssts(x, p);
+            assert!(y.is_finite(), "ssts non-finite at x={x}");
+            assert!(y >= prev - 1e-4,
+                "ssts not monotonic at {stops} stops (x={x}): {y} < {prev}");
+            prev = y;
         }
     }
 

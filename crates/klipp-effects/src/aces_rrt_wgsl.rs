@@ -451,10 +451,30 @@ fn apply_odt_rec709_sdr(oces_in: vec3<f32>) -> vec3<f32> {
 ///      mastering)
 ///
 /// Output is PQ-encoded BT.2020 RGB in `[0, 1]` ready for an HDR10
-/// container or a PQ-aware display. Same parity caveat as the Rust
-/// oracle: the SDR cinema C9 spline is reused with a post-spline
-/// linear scale to lift into HDR luminance — exact AMPAS HDR coefs
-/// land in the soak/Macbeth-chart milestone.
+/// container or a PQ-aware display.
+///
+/// # DO NOT WIRE THIS UP — it no longer matches the CPU path
+///
+/// This fragment still implements the superseded HDR ODT: the 48-nit
+/// cinema C9 spline with a `peak_nits / 48` post-scale. That approach
+/// was verified wrong against OpenColorIO's ACES 1.3 output transforms
+/// (mid-grey landed at PQ 0.508 instead of 0.333, mid-grey moved with
+/// the mastering peak when PQ's absolute encoding requires it not to,
+/// and black floated at PQ 0.178 instead of 0).
+///
+/// `klipp_color::aces` was rewritten to the ACES 1.1 single-stage
+/// output transform (`rrt_sweeteners` → SSTS → display encode) and now
+/// matches OCIO to 5.1e-5; see `klipp-color/tests/ocio_parity.rs`.
+/// Nothing outside this module references these constants today, so the
+/// divergence is inert — but wiring this fragment into a pipeline would
+/// make the GPU viewer disagree with both the CPU viewer and export.
+///
+/// Porting it needs three things: a `rrt_sweeteners` WGSL fragment
+/// split out of `WGSL_RRT` (mirroring the Rust split), the SSTS
+/// evaluator, and the resolved `TsParams` for each deliverable emitted
+/// as shader constants — they depend only on `Y_MIN`/`Y_MID`/`Y_MAX`,
+/// so they should be generated from the Rust `hdr_pq_params()` rather
+/// than transcribed, or the two will drift again.
 pub const WGSL_ODT_REC2100_PQ: &str = r#"
 const ODT_PQ_PEAK_LUMINANCE: f32 = 10000.0;
 
