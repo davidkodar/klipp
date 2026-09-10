@@ -207,6 +207,12 @@ pub struct KlippApp {
     proxy_progress_rx: Receiver<(MediaId, f32)>,
     // Auto-save
     last_autosave: std::time::Instant,
+    /// Result channel for the in-flight background auto-save.
+    ///
+    /// `Some` from the moment a writer thread is spawned until the UI
+    /// reaps its result, so it doubles as the "only one at a time"
+    /// guard — a slow disk must not queue up a save per interval.
+    autosave_rx: Option<Receiver<Result<std::path::PathBuf, String>>>,
     // Main-thread liveness — written to klipp-debug.log every 30 s so an
     // idle freeze is visible as a gap in the log timeline. Paired with the
     // panic hook in klipp-app/src/main.rs, every freeze or crash now leaves
@@ -463,6 +469,7 @@ impl KlippApp {
             proxy_progress_tx,
             proxy_progress_rx,
             last_autosave: std::time::Instant::now(),
+            autosave_rx: None,
             last_heartbeat: std::time::Instant::now(),
             frame_count: 0,
             last_heartbeat_frame: 0,
@@ -25485,6 +25492,29 @@ impl eframe::App for KlippApp {
             self.prefs_last_save = std::time::Instant::now();
         }
 
+        // Auto-save. The write itself runs on a worker thread — see the
+        // spawn below for why — so first reap a finished one.
+        if let Some(rx) = &self.autosave_rx {
+            match rx.try_recv() {
+                Ok(Ok(path)) => {
+                    tracing::info!("Auto-saved to {:?}", path);
+                    self.state.toast.show("Auto-saved");
+                    self.autosave_rx = None;
+                }
+                Ok(Err(e)) => {
+                    tracing::warn!("Auto-save failed: {e}");
+                    self.autosave_rx = None;
+                }
+                Err(crossbeam_channel::TryRecvError::Empty) => {}
+                Err(crossbeam_channel::TryRecvError::Disconnected) => {
+                    // Writer thread died without sending — treat as done
+                    // so a panicking save can't wedge auto-save forever.
+                    tracing::warn!("Auto-save worker vanished without reporting a result");
+                    self.autosave_rx = None;
+                }
+            }
+        }
+
         // Auto-save: trigger on time interval OR op-count threshold (whichever hits first).
         let interval = self.prefs.general.auto_save_interval_secs;
         let op_threshold = self.prefs.general.auto_save_op_threshold;
@@ -25496,6 +25526,7 @@ impl eframe::App for KlippApp {
             && self.state.dirty
             && self.state.project_path.is_some()
             && !self.state.any_drag_in_progress()
+            && self.autosave_rx.is_none()
         {
             if let Some(ref project_path) = self.state.project_path.clone() {
                 let autosave_path = autosave_path_for(project_path);
@@ -25509,16 +25540,67 @@ impl eframe::App for KlippApp {
                     working_colorspace: self.state.project_working_colorspace,
                 };
                 let active_seq_id = self.state.sequences[self.state.active_sequence_idx].id.to_string();
-                match klipp_project::save_project_full(&autosave_path, &self.state.sequences, &self.state.media_pool, &color, Some(&active_seq_id), self.state.created_at.as_deref(), &self.state.project_notes, self.prefs.editing.backup_count, Some(self.state.timeline_zoom), Some(self.state.timeline_scroll_x), &self.state.title_assets) {
-                    Ok(()) => {
-                        if let Err(e) = klipp_project::save_looks(&autosave_path, &self.state.looks) {
-                            tracing::warn!("Auto-save: failed to persist Looks: {e}");
-                        }
-                        tracing::info!("Auto-saved to {:?}", autosave_path);
-                        self.state.toast.show("Auto-saved");
+
+                // Snapshot everything the writer needs. The clone is a
+                // handful of allocations; the serialise-plus-disk-write it
+                // moves off this thread took seconds on a large project and
+                // stalled the whole editor mid-edit, on a timer, with no way
+                // for the user to tell what had happened.
+                let sequences = self.state.sequences.clone();
+                let media_pool = self.state.media_pool.clone();
+                let created_at = self.state.created_at.clone();
+                let notes = self.state.project_notes.clone();
+                let title_assets = self.state.title_assets.clone();
+                let looks = self.state.looks.clone();
+                let backup_count = self.prefs.editing.backup_count;
+                let zoom = self.state.timeline_zoom;
+                let scroll_x = self.state.timeline_scroll_x;
+
+                let (tx, rx) = crossbeam_channel::bounded(1);
+                let repaint_ctx = ctx.clone();
+                let spawned = std::thread::Builder::new()
+                    .name("klipp-autosave".into())
+                    .spawn(move || {
+                        let result = klipp_project::save_project_full(
+                            &autosave_path,
+                            &sequences,
+                            &media_pool,
+                            &color,
+                            Some(&active_seq_id),
+                            created_at.as_deref(),
+                            &notes,
+                            backup_count,
+                            Some(zoom),
+                            Some(scroll_x),
+                            &title_assets,
+                        )
+                        .and_then(|()| {
+                            klipp_project::save_looks(&autosave_path, &looks)
+                                .map_err(|e| format!("failed to persist Looks: {e}"))
+                        })
+                        .map(|()| autosave_path);
+                        let _ = tx.send(result);
+                        // Wake the UI so the toast appears promptly even if
+                        // egui is idle (reactive) with nothing else pending.
+                        repaint_ctx.request_repaint();
+                    });
+
+                match spawned {
+                    Ok(_) => {
+                        self.autosave_rx = Some(rx);
+                        // The snapshot above *is* the saved state, so every
+                        // op up to this point is accounted for. Ops made
+                        // while the writer runs are not in it and correctly
+                        // start the counter climbing again from zero.
+                        //
+                        // Consequence worth knowing: on a write that then
+                        // fails, those ops are no longer counted toward the
+                        // op-threshold trigger, so recovery falls to the
+                        // time trigger. Preferable to double-counting and
+                        // re-saving the same state every frame.
                         self.state.reset_ops_since_save();
                     }
-                    Err(e) => tracing::warn!("Auto-save failed: {e}"),
+                    Err(e) => tracing::warn!("Auto-save: failed to spawn writer thread: {e}"),
                 }
             }
             self.last_autosave = std::time::Instant::now();
