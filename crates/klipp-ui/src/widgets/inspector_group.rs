@@ -51,7 +51,7 @@ pub fn inspector_group_header(
     ui.painter().hline(
         rect.min.x..=rect.max.x,
         rect.max.y - 0.5,
-        Stroke::new(1.0, theme.border),
+        Stroke::new(1.0_f32, theme.border),
     );
 
     // Hover background (subtle).
@@ -140,7 +140,7 @@ fn themed_toggle_ui(ui: &mut Ui, on: &mut bool, theme: &KlippTheme) -> Response 
     ui.painter().rect_stroke(
         rect,
         Rounding::same(rounding),
-        Stroke::new(1.0, theme.border),
+        Stroke::new(1.0_f32, theme.border),
     );
 
     // Knob.
@@ -182,7 +182,7 @@ pub fn inspector_subgroup_card<R>(
 ) -> Option<R> {
     let frame = Frame::none()
         .fill(theme.bg_panel_alt)
-        .stroke(Stroke::new(1.0, theme.border))
+        .stroke(Stroke::new(1.0_f32, theme.border))
         .rounding(Rounding::same(8.0))
         .inner_margin(Margin::same(0.0));
 
@@ -279,7 +279,7 @@ pub fn quick_preset_button(
         rect,
         Rounding::same(4.0),
         bg,
-        Stroke::new(1.0, stroke_color),
+        Stroke::new(1.0_f32, stroke_color),
     );
     ui.painter().text(
         rect.center(),

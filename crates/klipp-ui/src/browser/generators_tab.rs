@@ -483,7 +483,7 @@ fn generator_card(
         );
     }
 
-    ui.painter().rect_stroke(rect, 6.0, egui::Stroke::new(if is_selected { 2.0 } else { 1.0 }, border_color));
+    ui.painter().rect_stroke(rect, 6.0, egui::Stroke::new(if is_selected { 2.0_f32 } else { 1.0_f32 }, border_color));
 
     resp
 }
@@ -551,7 +551,7 @@ fn generator_list_row(
 
     if is_selected {
         ui.painter().rect_stroke(
-            rect, 4.0, egui::Stroke::new(1.0, theme.accent),
+            rect, 4.0, egui::Stroke::new(1.0_f32, theme.accent),
         );
     }
 

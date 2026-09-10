@@ -649,7 +649,7 @@ fn render_pane_scope(
                     painter.circle_stroke(
                         egui::pos2(cx, cy),
                         rad * frac,
-                        egui::Stroke::new(0.6, inner_ring_color),
+                        egui::Stroke::new(0.6_f32, inner_ring_color),
                     );
                 }
 
@@ -668,7 +668,7 @@ fn render_pane_scope(
                     );
                     let p0 = egui::pos2(cx + a0.cos() * rad, cy + a0.sin() * rad);
                     let p1 = egui::pos2(cx + a1.cos() * rad, cy + a1.sin() * rad);
-                    painter.line_segment([p0, p1], egui::Stroke::new(1.4, seg_color));
+                    painter.line_segment([p0, p1], egui::Stroke::new(1.4_f32, seg_color));
                 }
 
                 // 3. Centre crosshair.
@@ -677,11 +677,11 @@ fn render_pane_scope(
                 );
                 painter.line_segment(
                     [egui::pos2(cx - rad, cy), egui::pos2(cx + rad, cy)],
-                    egui::Stroke::new(0.5, cross_color),
+                    egui::Stroke::new(0.5_f32, cross_color),
                 );
                 painter.line_segment(
                     [egui::pos2(cx, cy - rad), egui::pos2(cx, cy + rad)],
-                    egui::Stroke::new(0.5, cross_color),
+                    egui::Stroke::new(0.5_f32, cross_color),
                 );
 
                 // 4. Skin-tone I-line at 123° + "I" label.
@@ -696,7 +696,7 @@ fn render_pane_scope(
                         egui::pos2(cx, cy),
                         egui::pos2(cx + dx * i_line_len, cy + dy * i_line_len),
                     ],
-                    egui::Stroke::new(1.0, i_color),
+                    egui::Stroke::new(1.0_f32, i_color),
                 );
                 painter.text(
                     egui::pos2(cx + dx * (i_line_len + 8.0), cy + dy * (i_line_len + 8.0)),
@@ -728,7 +728,7 @@ fn render_pane_scope(
                     painter.rect_stroke(
                         rect,
                         0.0,
-                        egui::Stroke::new(1.0, target_color),
+                        egui::Stroke::new(1.0_f32, target_color),
                     );
                     let mag = (cb * cb + cr * cr).sqrt().max(0.001);
                     let ux = cb / mag;

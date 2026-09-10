@@ -586,7 +586,7 @@ impl NodeGraphV2Panel {
         let mutating_button = |label: egui::RichText| -> egui::Button<'static> {
             egui::Button::new(label)
                 .stroke(egui::Stroke::new(
-                    1.0,
+                    1.0_f32,
                     egui::Color32::from_rgba_unmultiplied(
                         theme.accent.r(), theme.accent.g(), theme.accent.b(), 110,
                     ),
@@ -796,7 +796,7 @@ impl NodeGraphV2Panel {
             );
             egui::Frame::none()
                 .fill(bg)
-                .stroke(egui::Stroke::new(0.5, solo_color))
+                .stroke(egui::Stroke::new(0.5_f32, solo_color))
                 .rounding(3.0)
                 .inner_margin(egui::Margin::symmetric(4.0, 1.0))
                 .show(&mut toolbar_ui, |ui| {
@@ -971,7 +971,7 @@ impl NodeGraphV2Panel {
             );
             painter.rect_stroke(
                 frame_rect, 4.0,
-                egui::Stroke::new(1.5, egui::Color32::from_rgba_unmultiplied(
+                egui::Stroke::new(1.5_f32, egui::Color32::from_rgba_unmultiplied(
                     color.r(), color.g(), color.b(), 180,
                 )),
             );
@@ -1176,7 +1176,7 @@ impl NodeGraphV2Panel {
                 painter.circle_stroke(
                     p, bead_r,
                     egui::Stroke::new(
-                        1.0,
+                        1.0_f32,
                         egui::Color32::from_rgba_unmultiplied(r, g, b, 80),
                     ),
                 );
@@ -1262,7 +1262,7 @@ impl NodeGraphV2Panel {
                     painter.circle_stroke(
                         pos,
                         PORT_RADIUS * zoom * 1.7,
-                        egui::Stroke::new(2.0, ring_color),
+                        egui::Stroke::new(2.0_f32, ring_color),
                     );
                     painter.circle_filled(
                         pos,
@@ -1286,7 +1286,7 @@ impl NodeGraphV2Panel {
             painter.rect_filled(rect, 0.0, fill);
             painter.rect_stroke(
                 rect, 0.0,
-                egui::Stroke::new(1.0, theme.accent),
+                egui::Stroke::new(1.0_f32, theme.accent),
             );
         }
 
@@ -1316,7 +1316,7 @@ impl NodeGraphV2Panel {
                     255,
                 )
             };
-            let border_w = if self.selected_sticky == Some(*sticky_id) { 1.6 } else { 0.8 };
+            let border_w = if self.selected_sticky == Some(*sticky_id) { 1.6_f32 } else { 0.8_f32 };
             painter.rect_stroke(*rect, 4.0, egui::Stroke::new(border_w, border));
             // Text — placeholder gets dimmed so it reads as a hint
             // rather than committed content.
@@ -1408,7 +1408,7 @@ impl NodeGraphV2Panel {
                     painter.circle_stroke(
                         centre,
                         radius + 3.0,
-                        egui::Stroke::new(1.5, egui::Color32::from_rgba_unmultiplied(
+                        egui::Stroke::new(1.5_f32, egui::Color32::from_rgba_unmultiplied(
                             accent.r(), accent.g(), accent.b(), glow_alpha,
                         )),
                     );
@@ -1418,7 +1418,7 @@ impl NodeGraphV2Panel {
                     painter.circle_stroke(
                         centre,
                         radius + 5.0,
-                        egui::Stroke::new(1.8, egui::Color32::from_rgba_unmultiplied(
+                        egui::Stroke::new(1.8_f32, egui::Color32::from_rgba_unmultiplied(
                             cyan.r(), cyan.g(), cyan.b(), match_alpha,
                         )),
                     );
@@ -1428,7 +1428,7 @@ impl NodeGraphV2Panel {
                     painter.circle_stroke(
                         centre,
                         radius + 4.0,
-                        egui::Stroke::new(1.5, egui::Color32::from_rgba_unmultiplied(
+                        egui::Stroke::new(1.5_f32, egui::Color32::from_rgba_unmultiplied(
                             halo.r(), halo.g(), halo.b(), 70,
                         )),
                     );
@@ -1499,9 +1499,9 @@ impl NodeGraphV2Panel {
                 let ghost2 = rect.translate(egui::vec2(off * 2.0, off * 2.0));
                 let ghost1 = rect.translate(egui::vec2(off, off));
                 painter.rect_filled(ghost2, 4.0, shade(fill, 70));
-                painter.rect_stroke(ghost2, 4.0, egui::Stroke::new(0.5, theme.border));
+                painter.rect_stroke(ghost2, 4.0, egui::Stroke::new(0.5_f32, theme.border));
                 painter.rect_filled(ghost1, 4.0, shade(fill, 35));
-                painter.rect_stroke(ghost1, 4.0, egui::Stroke::new(0.5, theme.border));
+                painter.rect_stroke(ghost1, 4.0, egui::Stroke::new(0.5_f32, theme.border));
             }
             // Hover glow — soft accent ring around the rect, alpha
             // tracking the smoothed `glow` value. Painted before
@@ -1514,7 +1514,7 @@ impl NodeGraphV2Panel {
                 painter.rect_stroke(
                     rect.expand(2.5),
                     5.0,
-                    egui::Stroke::new(1.5, egui::Color32::from_rgba_unmultiplied(
+                    egui::Stroke::new(1.5_f32, egui::Color32::from_rgba_unmultiplied(
                         accent.r(), accent.g(), accent.b(), glow_alpha,
                     )),
                 );
@@ -1527,7 +1527,7 @@ impl NodeGraphV2Panel {
                 painter.rect_stroke(
                     rect.expand(4.0),
                     6.0,
-                    egui::Stroke::new(1.8, egui::Color32::from_rgba_unmultiplied(
+                    egui::Stroke::new(1.8_f32, egui::Color32::from_rgba_unmultiplied(
                         cyan.r(), cyan.g(), cyan.b(), match_alpha,
                     )),
                 );
@@ -1578,7 +1578,7 @@ impl NodeGraphV2Panel {
                         egui::pos2(rect.min.x + 1.0, divider_y),
                         egui::pos2(rect.max.x - 1.0, divider_y),
                     ],
-                    egui::Stroke::new(1.0, dark_overlay),
+                    egui::Stroke::new(1.0_f32, dark_overlay),
                 );
             }
             // Body inner-bottom shadow — 4 stacked horizontal lines
@@ -1600,7 +1600,7 @@ impl NodeGraphV2Panel {
                             egui::pos2(body_rect.min.x + 4.0, y),
                             egui::pos2(body_rect.max.x - 4.0, y),
                         ],
-                        egui::Stroke::new(1.0, shadow),
+                        egui::Stroke::new(1.0_f32, shadow),
                     );
                 }
             }
@@ -1627,7 +1627,7 @@ impl NodeGraphV2Panel {
                             egui::pos2(rect.min.x + 4.0, y),
                             egui::pos2(rect.max.x - 4.0, y),
                         ],
-                        egui::Stroke::new(1.0, highlight),
+                        egui::Stroke::new(1.0_f32, highlight),
                     );
                 }
             }
@@ -1650,12 +1650,12 @@ impl NodeGraphV2Panel {
                 painter.rect_stroke(
                     rect.expand(2.0),
                     5.0,
-                    egui::Stroke::new(1.5, halo_a1),
+                    egui::Stroke::new(1.5_f32, halo_a1),
                 );
                 painter.rect_stroke(
                     rect.expand(4.0),
                     6.0,
-                    egui::Stroke::new(1.5, halo_a2),
+                    egui::Stroke::new(1.5_f32, halo_a2),
                 );
             }
             // Solo halo — yellow rings around the soloed node so the
@@ -1669,14 +1669,14 @@ impl NodeGraphV2Panel {
                 painter.rect_stroke(
                     rect.expand(2.0),
                     5.0,
-                    egui::Stroke::new(1.8, egui::Color32::from_rgba_unmultiplied(
+                    egui::Stroke::new(1.8_f32, egui::Color32::from_rgba_unmultiplied(
                         solo_color.r(), solo_color.g(), solo_color.b(), 200,
                     )),
                 );
                 painter.rect_stroke(
                     rect.expand(4.0),
                     6.0,
-                    egui::Stroke::new(1.5, egui::Color32::from_rgba_unmultiplied(
+                    egui::Stroke::new(1.5_f32, egui::Color32::from_rgba_unmultiplied(
                         solo_color.r(), solo_color.g(), solo_color.b(), 70,
                     )),
                 );
@@ -1800,7 +1800,7 @@ impl NodeGraphV2Panel {
                 let chip_rect = egui::Rect::from_min_size(chip_pos, chip_size);
                 let solo_color = egui::Color32::from_rgb(0xff, 0xd5, 0x3a);
                 painter.rect_filled(chip_rect, 3.0, solo_color);
-                painter.rect_stroke(chip_rect, 3.0, egui::Stroke::new(0.5, theme.bg_deep));
+                painter.rect_stroke(chip_rect, 3.0, egui::Stroke::new(0.5_f32, theme.bg_deep));
                 painter.text(
                     chip_rect.center(),
                     egui::Align2::CENTER_CENTER,
@@ -1880,7 +1880,7 @@ impl NodeGraphV2Panel {
                     );
                     let chip_rect = egui::Rect::from_min_size(chip_pos, chip_size);
                     painter.rect_filled(chip_rect, 3.0, chip_bg);
-                    painter.rect_stroke(chip_rect, 3.0, egui::Stroke::new(0.5, chip_fg));
+                    painter.rect_stroke(chip_rect, 3.0, egui::Stroke::new(0.5_f32, chip_fg));
                     painter.galley(chip_rect.min + pad, galley, chip_fg);
                 }
                 for (port, slot) in node.input_links.iter().enumerate() {
@@ -1896,7 +1896,7 @@ impl NodeGraphV2Panel {
                         );
                         let chip_rect = egui::Rect::from_min_size(chip_pos, chip_size);
                         painter.rect_filled(chip_rect, 3.0, chip_bg);
-                        painter.rect_stroke(chip_rect, 3.0, egui::Stroke::new(0.5, chip_fg));
+                        painter.rect_stroke(chip_rect, 3.0, egui::Stroke::new(0.5_f32, chip_fg));
                         painter.galley(chip_rect.min + pad, galley, chip_fg);
                     }
                 }
@@ -2148,7 +2148,7 @@ impl NodeGraphV2Panel {
                     painter.circle_stroke(
                         pos, r * 1.9,
                         egui::Stroke::new(
-                            1.2,
+                            1.2_f32,
                             egui::Color32::from_rgba_unmultiplied(rr, gg, bb, alpha),
                         ),
                     );
@@ -2171,7 +2171,7 @@ impl NodeGraphV2Panel {
                     painter.circle_stroke(
                         pos, r * 1.7,
                         egui::Stroke::new(
-                            1.4,
+                            1.4_f32,
                             egui::Color32::from_rgba_unmultiplied(rr, gg, bb, 160),
                         ),
                     );
@@ -2274,7 +2274,7 @@ impl NodeGraphV2Panel {
                     painter.circle_stroke(
                         pos, half * 1.7,
                         egui::Stroke::new(
-                            1.4,
+                            1.4_f32,
                             egui::Color32::from_rgba_unmultiplied(rr, gg, bb, 160),
                         ),
                     );
@@ -3026,7 +3026,7 @@ impl NodeGraphV2Panel {
                         theme.bg_deep.r(), theme.bg_deep.g(), theme.bg_deep.b(), 200,
                     ),
                 );
-                painter.rect_stroke(map_rect, 4.0, egui::Stroke::new(1.0, theme.border));
+                painter.rect_stroke(map_rect, 4.0, egui::Stroke::new(1.0_f32, theme.border));
 
                 // Node rects.
                 for node in &graph.nodes {
@@ -3077,7 +3077,7 @@ impl NodeGraphV2Panel {
                 if v_rect.is_positive() {
                     painter.rect_stroke(
                         v_rect, 2.0,
-                        egui::Stroke::new(1.5, theme.accent),
+                        egui::Stroke::new(1.5_f32, theme.accent),
                     );
                 }
 
@@ -3230,7 +3230,7 @@ impl NodeGraphV2Panel {
                 painter.rect_filled(toast_rect, 4.0, bg);
                 painter.rect_stroke(
                     toast_rect, 4.0,
-                    egui::Stroke::new(0.5, egui::Color32::from_rgba_unmultiplied(
+                    egui::Stroke::new(0.5_f32, egui::Color32::from_rgba_unmultiplied(
                         theme.border.r(), theme.border.g(), theme.border.b(), alpha,
                     )),
                 );
@@ -3371,7 +3371,7 @@ impl NodeGraphV2Panel {
             let inset_rect = rect.shrink(i as f32);
             painter.rect_stroke(
                 inset_rect, 0.0,
-                egui::Stroke::new(1.0, egui::Color32::from_rgba_unmultiplied(0, 0, 0, a)),
+                egui::Stroke::new(1.0_f32, egui::Color32::from_rgba_unmultiplied(0, 0, 0, a)),
             );
         }
     }
@@ -4365,7 +4365,7 @@ fn paint_port_label(
     );
     painter.rect_stroke(
         chip_rect, 3.0,
-        egui::Stroke::new(0.5, theme.border),
+        egui::Stroke::new(0.5_f32, theme.border),
     );
     painter.galley(chip_min + pad, galley, theme.text_primary);
 }

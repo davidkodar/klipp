@@ -1415,7 +1415,6 @@ pub struct PlaybackEngine {
     // Audio seek synchronization — generation counter
     expected_audio_generation: u64,
     // Performance
-    use_hw_decode: bool,
     last_stats_time: std::time::Instant,
     /// Per-stats-interval counters (2-second window). Let us see at a
     /// glance how much work the engine is doing without grep-summing
@@ -1946,7 +1945,6 @@ impl PlaybackEngine {
             current_source_rotation: 0,
             last_synth_frame_rendered: None,
             expected_audio_generation: 0,
-            use_hw_decode: false,
             last_stats_time: std::time::Instant::now(),
             dbg_update_playback_count: 0,
             dbg_regrade_count: 0,

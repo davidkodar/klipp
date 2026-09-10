@@ -4669,7 +4669,7 @@ fn library_category_tab(
     ui.painter().rect_stroke(
         rect,
         rounding,
-        egui::Stroke::new(if is_active { 1.5 } else { 1.0 }, border),
+        egui::Stroke::new(if is_active { 1.5_f32 } else { 1.0_f32 }, border),
     );
 
     let label_x = if show_icon {

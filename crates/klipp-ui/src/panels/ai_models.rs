@@ -1643,7 +1643,7 @@ fn render_custom_row(
                         ui.add_space(8.0);
                         let badge = egui::Frame::none()
                             .fill(badge_color.gamma_multiply(0.18))
-                            .stroke(egui::Stroke::new(1.0, badge_color))
+                            .stroke(egui::Stroke::new(1.0_f32, badge_color))
                             .rounding(3.0)
                             .inner_margin(egui::Margin::symmetric(6.0, 2.0));
                         badge.show(ui, |ui| {
@@ -2588,7 +2588,7 @@ fn status_badge(
     let color = status.badge_color(theme);
     egui::Frame::none()
         .fill(color.gamma_multiply(0.18))
-        .stroke(egui::Stroke::new(1.0, color))
+        .stroke(egui::Stroke::new(1.0_f32, color))
         .rounding(3.0)
         .inner_margin(egui::Margin::symmetric(6.0, 2.0))
         .show(ui, |ui| {

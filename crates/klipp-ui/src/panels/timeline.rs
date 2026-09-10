@@ -478,7 +478,7 @@ fn paint_audio_curve_band(
         - ((unity_value - param_min) / param_range).clamp(0.0, 1.0) * rect.height();
     painter.line_segment(
         [egui::pos2(rect.left(), unity_y), egui::pos2(rect.right(), unity_y)],
-        egui::Stroke::new(1.0, palette.ref_color),
+        egui::Stroke::new(1.0_f32, palette.ref_color),
     );
 
     if keyframes.is_empty() {
@@ -1830,11 +1830,11 @@ impl TimelinePanel {
         let pulse = ((now_secs * 2.5).sin() * 0.5 + 0.5) as f32;
         let cursor_alpha = (140.0 + 80.0 * pulse) as u8;
         let cursor_stroke = egui::Stroke::new(
-            2.0,
+            2.0_f32,
             egui::Color32::from_rgba_unmultiplied(accent.r(), accent.g(), accent.b(), cursor_alpha),
         );
         let persistent_stroke = egui::Stroke::new(
-            1.5,
+            1.5_f32,
             egui::Color32::from_rgba_unmultiplied(accent.r(), accent.g(), accent.b(), 120),
         );
 
@@ -5497,7 +5497,7 @@ impl TimelinePanel {
                     (x + clip_rect.height()).min(clip_rect.right()),
                     clip_rect.bottom(),
                 );
-                painter.line_segment([p1, p2], egui::Stroke::new(2.0, stripe_color));
+                painter.line_segment([p1, p2], egui::Stroke::new(2.0_f32, stripe_color));
                 x += spacing;
             }
             // Tiny "matte source" tag bottom-left.
@@ -11915,12 +11915,12 @@ impl TimelinePanel {
         lane_painter.line_segment(
             [egui::pos2(lane_rect.left(), lane_rect.top()),
              egui::pos2(lane_rect.right(), lane_rect.top())],
-            egui::Stroke::new(1.0, divider_color),
+            egui::Stroke::new(1.0_f32, divider_color),
         );
         lane_painter.line_segment(
             [egui::pos2(lane_rect.left(), lane_rect.bottom() - 0.5),
              egui::pos2(lane_rect.right(), lane_rect.bottom() - 0.5)],
-            egui::Stroke::new(1.0, divider_color),
+            egui::Stroke::new(1.0_f32, divider_color),
         );
 
         // 3) Horizontal grid lines + value-scale labels on the left edge.
@@ -11968,9 +11968,9 @@ impl TimelinePanel {
             let normalized = ((value - param_min) / param_range).clamp(0.0, 1.0);
             let y = lane_rect.bottom() - normalized * lane_rect.height();
             let stroke = if is_unity {
-                egui::Stroke::new(1.0, unity_grid_color)
+                egui::Stroke::new(1.0_f32, unity_grid_color)
             } else {
-                egui::Stroke::new(1.0, grid_color)
+                egui::Stroke::new(1.0_f32, grid_color)
             };
             lane_painter.line_segment(
                 [egui::pos2(scale_inset_left, y), egui::pos2(lane_rect.right(), y)],
@@ -12095,7 +12095,7 @@ impl TimelinePanel {
                         egui::pos2(playhead_x, lane_rect.top() + 1.0),
                         egui::pos2(playhead_x, lane_rect.bottom() - 1.0),
                     ],
-                    egui::Stroke::new(1.5, ph_color),
+                    egui::Stroke::new(1.5_f32, ph_color),
                 );
                 // Small downward-pointing wedge at the lane's top edge so
                 // the "you are here" marker reads at a glance.
@@ -13417,7 +13417,7 @@ impl TimelinePanel {
                 clip_painter.add(egui::Shape::convex_polygon(
                     diamond,
                     line_color,
-                    egui::Stroke::new(1.0, egui::Color32::WHITE),
+                    egui::Stroke::new(1.0_f32, egui::Color32::WHITE),
                 ));
 
                 // Bezier tangent handles + connector lines, only on

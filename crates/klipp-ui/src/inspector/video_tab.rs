@@ -1956,7 +1956,7 @@ fn show_compositing_section(
                     // Subtle frame so the preview reads as a "tile"
                     // rather than free-floating pixels.
                     ui.painter().rect_filled(preview_rect, 4.0, theme.bg_deep);
-                    ui.painter().rect_stroke(preview_rect, 4.0, egui::Stroke::new(0.5, theme.border));
+                    ui.painter().rect_stroke(preview_rect, 4.0, egui::Stroke::new(0.5_f32, theme.border));
                     if state.matte_thumb_for == Some(clip_id) {
                         if let Some(tex) = state.matte_thumb_handle.as_ref() {
                             ui.painter().image(
@@ -2569,7 +2569,7 @@ fn show_hyperzoom_section(
                         // aesthetic in the COMPOSITING section.
                         ui.painter().rect_filled(preview_rect, 4.0, theme.bg_deep);
                         ui.painter().rect_stroke(preview_rect, 4.0,
-                            egui::Stroke::new(0.5, theme.border));
+                            egui::Stroke::new(0.5_f32, theme.border));
 
                         let frame_w = preview_w as u32;
                         let frame_h = preview_h as u32;
@@ -2727,13 +2727,13 @@ fn show_hyperzoom_section(
                             preview_rect.shrink(2.0), focal_x, focal_y,
                         );
                         ui.painter().circle_stroke(centre, 5.0,
-                            egui::Stroke::new(1.5, theme.accent));
+                            egui::Stroke::new(1.5_f32, theme.accent));
                         ui.painter().line_segment(
                             [egui::pos2(centre.x - 8.0, centre.y), egui::pos2(centre.x + 8.0, centre.y)],
-                            egui::Stroke::new(1.0, theme.accent));
+                            egui::Stroke::new(1.0_f32, theme.accent));
                         ui.painter().line_segment(
                             [egui::pos2(centre.x, centre.y - 8.0), egui::pos2(centre.x, centre.y + 8.0)],
-                            egui::Stroke::new(1.0, theme.accent));
+                            egui::Stroke::new(1.0_f32, theme.accent));
                     }
                 }
 

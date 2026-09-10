@@ -559,7 +559,7 @@ pub fn show_scopes(
                 painter.circle_stroke(
                     egui::pos2(cx, cy),
                     r * frac,
-                    egui::Stroke::new(0.6, inner_ring_color),
+                    egui::Stroke::new(0.6_f32, inner_ring_color),
                 );
             }
 
@@ -582,7 +582,7 @@ pub fn show_scopes(
                 );
                 let p0 = egui::pos2(cx + a0.cos() * r, cy + a0.sin() * r);
                 let p1 = egui::pos2(cx + a1.cos() * r, cy + a1.sin() * r);
-                painter.line_segment([p0, p1], egui::Stroke::new(1.4, seg_color));
+                painter.line_segment([p0, p1], egui::Stroke::new(1.4_f32, seg_color));
             }
 
             // 3. Center crosshair — very subtle reference axes across
@@ -592,11 +592,11 @@ pub fn show_scopes(
             );
             painter.line_segment(
                 [egui::pos2(cx - r, cy), egui::pos2(cx + r, cy)],
-                egui::Stroke::new(0.5, cross_color),
+                egui::Stroke::new(0.5_f32, cross_color),
             );
             painter.line_segment(
                 [egui::pos2(cx, cy - r), egui::pos2(cx, cy + r)],
-                egui::Stroke::new(0.5, cross_color),
+                egui::Stroke::new(0.5_f32, cross_color),
             );
 
             // 4. Skin-tone I-line — amber tinted, from centre at the
@@ -614,7 +614,7 @@ pub fn show_scopes(
                     egui::pos2(cx, cy),
                     egui::pos2(cx + dx * i_line_len, cy + dy * i_line_len),
                 ],
-                egui::Stroke::new(1.0, i_color),
+                egui::Stroke::new(1.0_f32, i_color),
             );
             painter.text(
                 egui::pos2(cx + dx * (i_line_len + 8.0), cy + dy * (i_line_len + 8.0)),
@@ -648,7 +648,7 @@ pub fn show_scopes(
                 painter.rect_stroke(
                     rect,
                     0.0,
-                    egui::Stroke::new(1.0, target_color),
+                    egui::Stroke::new(1.0_f32, target_color),
                 );
                 // Label offset radially outward — never overlaps the
                 // target square or the scatter cluster.

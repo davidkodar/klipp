@@ -442,7 +442,7 @@ impl ViewerPanel {
                 continue;
             };
             let bbox_color = crate::ai_tools::detection_color(idx);
-            let stroke = egui::Stroke::new(2.0, opaque_for_outline(bbox_color));
+            let stroke = egui::Stroke::new(2.0_f32, opaque_for_outline(bbox_color));
             let bx0 = image_rect.min.x + bbox.x * image_rect.width();
             let by0 = image_rect.min.y + bbox.y * image_rect.height();
             let bx1 = bx0 + bbox.w * image_rect.width();
@@ -498,7 +498,7 @@ impl ViewerPanel {
             painter.circle_stroke(
                 to_screen(click.x, click.y),
                 5.0,
-                egui::Stroke::new(1.5, egui::Color32::WHITE),
+                egui::Stroke::new(1.5_f32, egui::Color32::WHITE),
             );
         }
         for b in &state.ai_tools_state.prompts.boxes {
@@ -506,7 +506,7 @@ impl ViewerPanel {
             painter.rect_stroke(
                 r,
                 0.0,
-                egui::Stroke::new(2.0, egui::Color32::from_rgb(80, 200, 240)),
+                egui::Stroke::new(2.0_f32, egui::Color32::from_rgb(80, 200, 240)),
             );
         }
         for s in &state.ai_tools_state.prompts.finalized_scribbles {
@@ -514,7 +514,7 @@ impl ViewerPanel {
                 continue;
             }
             let stroke = egui::Stroke::new(
-                2.0,
+                2.0_f32,
                 if s.positive {
                     egui::Color32::from_rgb(80, 220, 100)
                 } else {
@@ -2200,7 +2200,7 @@ impl ViewerPanel {
                 } else {
                     theme.text_secondary
                 };
-                let stroke_w = if xform_enabled { 1.5 } else { 1.2 };
+                let stroke_w = if xform_enabled { 1.5_f32 } else { 1.2_f32 };
                 let ir = xform_rect.shrink(4.0);
                 ui.painter().rect_stroke(ir, 0.0, egui::Stroke::new(stroke_w, xform_color));
                 let cs = 2.0;
@@ -4160,7 +4160,7 @@ impl ViewerPanel {
             painter.rect_stroke(
                 trigger_rect,
                 BTN_SIZE * 0.25,
-                egui::Stroke::new(1.0, stroke_col),
+                egui::Stroke::new(1.0_f32, stroke_col),
             );
 
             // Three vertical dots (kebab).

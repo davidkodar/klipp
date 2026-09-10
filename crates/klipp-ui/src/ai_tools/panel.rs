@@ -315,10 +315,10 @@ fn task_tile(
     let (fill, stroke) = if active {
         (
             theme.marker_warning.gamma_multiply(0.10),
-            egui::Stroke::new(1.5, theme.marker_warning),
+            egui::Stroke::new(1.5_f32, theme.marker_warning),
         )
     } else if has_model && response.hovered() {
-        (theme.bg_raised, egui::Stroke::new(1.0, theme.text_dim.gamma_multiply(0.4)))
+        (theme.bg_raised, egui::Stroke::new(1.0_f32, theme.text_dim.gamma_multiply(0.4)))
     } else {
         (theme.bg_raised.gamma_multiply(0.6), egui::Stroke::NONE)
     };
@@ -951,7 +951,7 @@ fn prompt_tab(
 fn tag_chip(ui: &mut egui::Ui, accent: egui::Color32, label: &str) {
     egui::Frame::none()
         .fill(accent.gamma_multiply(0.18))
-        .stroke(egui::Stroke::new(1.0, accent))
+        .stroke(egui::Stroke::new(1.0_f32, accent))
         .rounding(10.0)
         .inner_margin(egui::Margin::symmetric(8.0, 1.5))
         .show(ui, |ui| {
@@ -1137,7 +1137,7 @@ fn running_progress_section(
     let bar_h = 36.0;
     egui::Frame::none()
         .fill(theme.bg_raised)
-        .stroke(egui::Stroke::new(1.0, theme.marker_warning))
+        .stroke(egui::Stroke::new(1.0_f32, theme.marker_warning))
         .rounding(4.0)
         .inner_margin(egui::Margin::same(0.0))
         .show(ui, |ui| {
@@ -1223,7 +1223,7 @@ fn scope_chip(
             }),
         )
         .stroke(if active {
-            egui::Stroke::new(1.0, theme.marker_warning)
+            egui::Stroke::new(1.0_f32, theme.marker_warning)
         } else {
             egui::Stroke::NONE
         })
@@ -1327,7 +1327,7 @@ fn done_preview(ui: &mut egui::Ui, state: &mut AiToolsState, theme: &KlippTheme)
     // Success banner.
     egui::Frame::none()
         .fill(theme.marker_success.gamma_multiply(0.18))
-        .stroke(egui::Stroke::new(1.0, theme.marker_success))
+        .stroke(egui::Stroke::new(1.0_f32, theme.marker_success))
         .rounding(4.0)
         .inner_margin(egui::Margin::symmetric(10.0, 6.0))
         .show(ui, |ui| {
@@ -1681,7 +1681,7 @@ fn running_output_overlay(
                     rect.min
                         + egui::vec2(b.x2 * rect.width(), b.y2 * rect.height()),
                 );
-                painter.rect_stroke(r, 0.0, egui::Stroke::new(1.5, theme.marker_warning));
+                painter.rect_stroke(r, 0.0, egui::Stroke::new(1.5_f32, theme.marker_warning));
             }
             // Draw point markers — green for keep, warning-red
             // for exclude. Cosmetically matches the keep/exclude
@@ -1698,7 +1698,7 @@ fn running_output_overlay(
                 painter.circle_stroke(
                     pos,
                     6.0,
-                    egui::Stroke::new(1.5, egui::Color32::WHITE),
+                    egui::Stroke::new(1.5_f32, egui::Color32::WHITE),
                 );
             }
             // Faint hint text when there are no prompts (e.g.
