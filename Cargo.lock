@@ -2827,11 +2827,13 @@ name = "klipp-perf"
 version = "0.1.0"
 dependencies = [
  "klipp-core",
+ "klipp-effects",
  "klipp-nodes",
  "serde",
  "serde_json",
  "tracing",
  "tracing-subscriber",
+ "wgpu",
 ]
 
 [[package]]

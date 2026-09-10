@@ -1238,23 +1238,65 @@ fn max_playback_width() -> u32 {
 
 /// Compute output dimensions that fit within MAX_PLAYBACK, preserving aspect ratio.
 /// For 90°/270° rotation, the effective display dimensions are swapped before scaling.
-/// HW-decode-specific playback dimensions. Caps at 1080p (1920×1080
-/// bounding box, aspect-preserving) regardless of user prefs, because
-/// PCIe transfer of full-res hwframes costs more than the realtime
-/// frame budget allows (~41 ms / frame at 4K). Source-resolution HW
-/// playback is reserved for export, not edit-time scrubbing — same
-/// convention as every pro NLE.
+/// NVDEC resize target for the hardware-decode path.
+///
+/// Honours the user's "Max playback resolution" preference, the same as
+/// the software path — [`playback_dimensions`] with no rotation, since
+/// the NVDEC resize happens before rotation is applied.
+///
+/// This used to hardcode a 1920×1080 bounding box "regardless of user
+/// prefs", justified by PCIe transfer of full-res hwframes costing
+/// ~41 ms/frame at 4K. Two things retired that reasoning. NVDEC now
+/// performs the downscale itself before the frame is transferred, so the
+/// 41 ms figure described a cost the current pipeline no longer pays at
+/// all. And the preference it overrode offers a 4K option in the UI,
+/// which meant selecting it silently did nothing for hardware-decoded
+/// media — i.e. for most media. A setting that cannot be observed to
+/// work is worse than no setting.
 fn hw_transfer_cap_dimensions(src_w: u32, src_h: u32) -> (u32, u32) {
-    const HW_MAX_W: u32 = 1920;
-    const HW_MAX_H: u32 = 1080;
-    if src_w <= HW_MAX_W && src_h <= HW_MAX_H {
-        return (src_w, src_h);
+    playback_dimensions(src_w, src_h, 0)
+}
+
+#[cfg(test)]
+mod hw_cap_tests {
+    use super::*;
+
+    /// The hardware path must honour "Max playback resolution".
+    ///
+    /// It previously hardcoded 1920×1080 and ignored the preference, so
+    /// selecting 4K in the UI did nothing for hardware-decoded media and
+    /// nothing caught it — there was no test on this function at all.
+    ///
+    /// Both directions are asserted in one test on purpose: the
+    /// preference is a process-global atomic, so splitting this across
+    /// two tests would have them race each other under the default
+    /// parallel runner.
+    #[test]
+    fn hw_resize_target_follows_the_playback_resolution_pref() {
+        let restore = max_playback_height();
+
+        // 4K selected: a 4K source must pass through untouched.
+        set_max_playback_height(2160);
+        assert_eq!(
+            hw_transfer_cap_dimensions(3840, 2160),
+            (3840, 2160),
+            "with the pref at 4K, a 4K source must not be downscaled",
+        );
+
+        // 1080p selected: the same source must come back halved,
+        // aspect-preserved.
+        set_max_playback_height(1080);
+        assert_eq!(
+            hw_transfer_cap_dimensions(3840, 2160),
+            (1920, 1080),
+            "with the pref at 1080p, a 4K source must be downscaled",
+        );
+
+        // Sub-cap sources are never touched either way.
+        assert_eq!(hw_transfer_cap_dimensions(1280, 720), (1280, 720));
+
+        set_max_playback_height(restore);
     }
-    let scale = (HW_MAX_W as f64 / src_w as f64)
-        .min(HW_MAX_H as f64 / src_h as f64);
-    let out_w = ((src_w as f64 * scale) as u32) & !1; // even width
-    let out_h = ((src_h as f64 * scale) as u32) & !1; // even height
-    (out_w.max(2), out_h.max(2))
 }
 
 fn playback_dimensions(src_w: u32, src_h: u32, rotation: i32) -> (u32, u32) {
