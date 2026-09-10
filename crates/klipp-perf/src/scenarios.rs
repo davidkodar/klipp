@@ -123,7 +123,12 @@ fn s04_colorbalance_1node_1080p_gpu_primed(cpu_only: bool) -> ScenarioResult {
     };
 
     let bytes = gradient_frame_u8(w, h);
-    let linear_cpu = klipp_effects::srgb_u8_to_linear_f32_rgba(&bytes);
+    // No CPU-side source: the engine hands the executor an empty slice
+    // when the decoder produced a GPU-resident frame, so this scenario
+    // does the same. Passing `linear_cpu` here would have the executor
+    // copy a frame it never reads (33 MB at 1080p, 132 MB at 4K, RGBA
+    // f32) and measure a memcpy the real primed path does not perform.
+    const NO_CPU_SOURCE: &[f32] = &[];
 
     let input_buf = ctx.device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("perf_s04_gpu_u8_input"),
@@ -156,7 +161,7 @@ fn s04_colorbalance_1node_1080p_gpu_primed(cpu_only: bool) -> ScenarioResult {
     {
         exec.prime_chain_from_gpu_u8_buffer(&input_buf, w, h);
         let r = exec
-            .execute_linear(&linear_cpu, &graph, w, h, 0.0, warm_frames as u64, None, None)
+            .execute_linear(NO_CPU_SOURCE, &graph, w, h, 0.0, warm_frames as u64, None, None)
             .expect("primed execute_linear failed during warmup");
         std::hint::black_box(r.0.len());
         warm_frames += 1;
@@ -167,15 +172,15 @@ fn s04_colorbalance_1node_1080p_gpu_primed(cpu_only: bool) -> ScenarioResult {
     for i in 0..FRAMES {
         let t = Instant::now();
         // Re-prime each frame: one decoded frame, one seed. The return
-        // value matters — on `false` the executor silently falls back to
-        // uploading `linear_cpu`, which is precisely the path this
-        // scenario exists to avoid measuring. Counting the failures is
-        // what stops a fallback being reported as a primed result.
+        // value matters — without a seed there is no source at all now,
+        // so a failure cannot be papered over by a CPU upload. Count it
+        // and stop; the verdict is refused below either way.
         if !exec.prime_chain_from_gpu_u8_buffer(&input_buf, w, h) {
             prime_failures += 1;
+            break;
         }
         let r = exec
-            .execute_linear(&linear_cpu, &graph, w, h, 0.0, i as u64, None, None)
+            .execute_linear(NO_CPU_SOURCE, &graph, w, h, 0.0, i as u64, None, None)
             .expect("primed execute_linear failed");
         samples.push(t.elapsed().as_secs_f64() * 1000.0);
         std::hint::black_box(r.0.len());
