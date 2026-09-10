@@ -17,10 +17,10 @@
 //! | Rec.709 SDR | matches OCIO (max 5.0e-4) |
 //! | Rec.2100 PQ 1000 nit | matches OCIO (max 5.1e-5) |
 //! | Rec.2100 PQ 4000 nit | matches OCIO (max 5.0e-6) |
-//! | DCI-P3 D65 48-nit | neutral axis matches; gamut edges diverge |
+//! | DCI-P3 D65 48-nit | matches OCIO (max 2.6e-4) |
 //!
-//! The one failing ODT is `#[ignore]`d with the reason inline so the
-//! suite stays green; remove the attribute when it is fixed.
+//! All four now agree with the reference. Keep it that way: if one of
+//! these starts failing, our maths moved, not OCIO's.
 
 use klipp_color::aces::{
     acescg_to_dcip3_d65_48nit, acescg_to_rec2100_pq_1000_nit,
@@ -128,10 +128,6 @@ fn rec709_sdr_matches_ocio() {
 }
 
 #[test]
-#[ignore = "known divergence: neutral axis matches OCIO to ~3e-6 but the \
-            AP1->P3-D65 gamut edge does not (saturated AP1 green renders \
-            blue=0.237 where OCIO clips to 0.0). Remove this attribute \
-            once the P3 matrix / clamp path is fixed."]
 fn dcip3_d65_48nit_matches_ocio() {
     check("dcip3_d65_48", acescg_to_dcip3_d65_48nit, TOL);
 }

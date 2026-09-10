@@ -1141,15 +1141,22 @@ pub fn apply_odt_dcip3_d65_48_nits(oces: [f32; 3]) -> [f32; 3] {
         y_to_lin_cv(rgb_post[2], CINEMA_WHITE, CINEMA_BLACK),
     ];
 
-    // ODT saturation (same factor as SDR / HDR ODTs).
-    let lin_cv_desat = matrix3_mul_vec(odt_sat_matrix(), lin_cv);
+    // No ODT saturation matrix here, and no dim-surround adjustment.
+    //
+    // Both belong to the *video* ODTs: `ODT_SAT_MAT` exists to
+    // compensate for the apparent saturation lift that
+    // `darkSurround_to_dimSurround` introduces, so the reference
+    // cinema ODT (`ODT.Academy.P3D65_48nits`) applies neither — a
+    // cinema is a dark surround, not a dim one. Applying the
+    // desaturation without its partner mixed channels toward luma and
+    // put positive blue into saturated reds and greens where the
+    // display gamut should have clipped them to zero (max error 0.237
+    // against OpenColorIO, on saturated AP1 green).
 
     // AP1 → DCI-P3 D65 (with D60→D65 chromatic adaptation).
-    let p3d65_lin = matrix3_mul_vec(crate::primaries::acescg_to_p3d65(), lin_cv_desat);
+    let p3d65_lin = matrix3_mul_vec(crate::primaries::acescg_to_p3d65(), lin_cv);
 
-    // Clamp to display gamut. Cinema viewing skips the dim-surround
-    // gamma adjustment that the Rec.709 SDR ODT applies — the
-    // viewing environment is dark, not dim.
+    // Clamp to display gamut.
     let clamped = [
         p3d65_lin[0].clamp(0.0, 1.0),
         p3d65_lin[1].clamp(0.0, 1.0),

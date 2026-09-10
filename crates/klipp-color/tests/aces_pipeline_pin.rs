@@ -16,15 +16,10 @@
 //!
 //! Provenance of the expected values, which differs per ODT:
 //!
-//! * **Rec.709 SDR** and **both Rec.2100 PQ** tables are OpenColorIO's
-//!   ACES 1.3 output-transform values — independently derived, not
-//!   self-pinned. `tests/ocio_parity.rs` verifies the same transforms
-//!   across a 190-value grid; these six patches are the readable
-//!   subset.
-//! * **DCI-P3 D65 48-nit** is still pinned from our own output. It is
-//!   known to diverge from OCIO at the gamut edges (see the ignored
-//!   `dcip3_d65_48nit_matches_ocio`), so treat this table as drift
-//!   detection only, not as a correctness claim.
+//! Every table below holds OpenColorIO's ACES 1.3 output-transform
+//! values — independently derived, not self-pinned.
+//! `tests/ocio_parity.rs` verifies the same four transforms across a
+//! 190-value grid; these six patches are the readable subset of that.
 //!
 //! What these tests guarantee:
 //!
@@ -149,16 +144,16 @@ fn rec2100_pq_4000_nit_pinned_outputs() {
 #[test]
 fn dcip3_d65_48nit_pinned_outputs() {
     let expected: [(&str, [f32; 3]); 6] = [
-        ("mid_grey_0_18",   [0.411_866_87,  0.411_866_78,  0.411_866_81]),
+        ("mid_grey_0_18",   [0.411_864_28,  0.411_864_52,  0.411_864_34]),
         // P3 is wider gamut than Rec.709, so saturated AP1 red lands
-        // in-gamut (R = 0.79, no zero clip) where Rec.709 had to
-        // crush green to zero. Saturated green / blue still clip one
-        // channel because AP1 green / blue extend beyond P3.
-        ("saturated_red",   [0.791_857_78,  0.033_569_33,  0.232_504_52]),
-        ("saturated_green", [0.000_000_00,  0.777_047_57,  0.237_319_44]),
-        ("saturated_blue",  [0.000_000_00,  0.169_083_52,  0.750_689_57]),
-        ("skin_tone",       [0.668_645_80,  0.522_532_70,  0.448_841_72]),
-        ("diffuse_white",   [0.823_079_35,  0.823_079_29,  0.823_079_29]),
+        // in-gamut (R = 0.81) where Rec.709 had to crush green to
+        // zero. Saturated green and blue still clip, because AP1 green
+        // and blue extend beyond P3.
+        ("saturated_red",   [0.809_080_48,  0.000_000_00,  0.196_556_81]),
+        ("saturated_green", [0.000_000_00,  0.784_749_87,  0.000_000_00]),
+        ("saturated_blue",  [0.000_000_00,  0.153_423_35,  0.770_222_31]),
+        ("skin_tone",       [0.675_869_46,  0.519_732_65,  0.438_812_97]),
+        ("diffuse_white",   [0.823_080_18,  0.823_080_18,  0.823_080_36]),
     ];
 
     for ((label, input), (_, exp)) in fixtures().iter().zip(expected.iter()) {
