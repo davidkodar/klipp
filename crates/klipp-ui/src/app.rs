@@ -22483,7 +22483,7 @@ impl KlippApp {
                                 );
                                 self.kill_children_for_exit();
                                 self.layout.save();
-                                std::process::exit(0);
+                                self.exit_after_engine_shutdown();
                             }
                             UnsavedAction::None => {}
                         }
@@ -22527,7 +22527,7 @@ impl KlippApp {
                                 // before we exit.
                                 let _ = self.cmd_tx.send(AppCommand::SaveProject);
                                 std::thread::sleep(std::time::Duration::from_millis(200));
-                                std::process::exit(0);
+                                self.exit_after_engine_shutdown();
                             }
                             UnsavedAction::None => {}
                         }
@@ -24632,6 +24632,59 @@ impl KlippApp {
     /// Idempotent — safe to call multiple times. After this runs,
     /// the viewer paints fall back to the CPU upload path until the
     /// app actually exits.
+    /// Stop the engine, wait for it to finish releasing its GPU
+    /// resources, then exit the process.
+    ///
+    /// Every close path used to call `process::exit(0)` directly. That
+    /// runs libc's atexit handlers and terminates *without waiting for
+    /// other threads*, and the NVIDIA GL driver registers teardown in
+    /// those handlers — so exiting while the engine thread was still
+    /// dropping its wgpu pipelines tore the device out from under it
+    /// mid-call. A core dump caught it exactly there: engine thread in
+    /// `destroy_pipeline` under `drop_glue<Option<GpuEffectsPipeline>>`,
+    /// main thread down inside `libGLX_nvidia`'s exit path. The comment
+    /// on the Don't-Save branch had already named this race; this is the
+    /// handshake it was missing.
+    ///
+    /// `process::exit` itself stays. It is a deliberate mitigation for
+    /// the separate eframe/wgpu drop-order SEGV (`BUG-SHUTDOWN-SEGV`)
+    /// that survived eight rounds of leak-plugging, and removing it here
+    /// would trade one crash for another.
+    ///
+    /// The wait is bounded: a wedged engine must not stop the user
+    /// closing the window, and exiting anyway is no worse than the
+    /// behaviour this replaces.
+    fn exit_after_engine_shutdown(&mut self) -> ! {
+        const BUDGET: std::time::Duration = std::time::Duration::from_millis(2000);
+        let t0 = std::time::Instant::now();
+
+        // Harmless if the engine is already shutting down or gone: a
+        // closed channel just errors, and the flag is already set.
+        let _ = self.cmd_tx.send(klipp_core::AppCommand::Quit);
+
+        let mut confirmed = false;
+        while t0.elapsed() < BUDGET {
+            if klipp_engine::ENGINE_SHUTDOWN_COMPLETE
+                .load(std::sync::atomic::Ordering::Acquire)
+            {
+                confirmed = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+
+        let ms = t0.elapsed().as_secs_f64() * 1000.0;
+        if confirmed {
+            tracing::info!("engine confirmed teardown in {ms:.1}ms — exiting");
+        } else {
+            tracing::warn!(
+                "engine did not confirm teardown within {}ms — exiting anyway",
+                BUDGET.as_millis(),
+            );
+        }
+        std::process::exit(0);
+    }
+
     /// Kill child processes (proxy ffmpeg, render queue) before
     /// `process::exit(0)` skips Drop. Idempotent — safe to call from
     /// any of the close paths.
@@ -24904,7 +24957,7 @@ impl eframe::App for KlippApp {
         // (autosave delete already runs on a detached thread, child
         // processes were killed above). This is a known mitigation
         // pattern for wgpu/eframe + Wayland teardown issues.
-        std::process::exit(0);
+        self.exit_after_engine_shutdown();
     }
 
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
@@ -26591,7 +26644,7 @@ impl eframe::App for KlippApp {
                 }
                 self.kill_children_for_exit();
                 self.layout.save();
-                std::process::exit(0);
+                self.exit_after_engine_shutdown();
             } else {
                 // Dialog is already up: dialog buttons drive the
                 // outcome. Send CancelClose once to reject this
@@ -26622,7 +26675,7 @@ impl eframe::App for KlippApp {
                 }
                 self.kill_children_for_exit();
                 self.layout.save();
-                std::process::exit(0);
+                self.exit_after_engine_shutdown();
             }
         }
 

@@ -847,6 +847,22 @@ pub static UI_TICK: AtomicU64 = AtomicU64::new(0);
 /// which buried the real hangs it exists to catch.
 pub static UI_WANTS_FRAMES: AtomicBool = AtomicBool::new(false);
 
+/// Set once the engine thread has finished tearing itself down.
+///
+/// The UI waits on this before calling `process::exit`. `process::exit`
+/// runs libc's atexit handlers and terminates without waiting for other
+/// threads, and the NVIDIA GL driver registers teardown there — so
+/// exiting while this thread is still dropping its wgpu pipelines pulls
+/// the device out from under it mid-call. That is a confirmed SIGSEGV,
+/// not a theoretical one: a core dump caught the engine thread inside
+/// `destroy_pipeline` while the main thread sat in `libGLX_nvidia`'s
+/// exit path.
+///
+/// Ordering matters: this is stored *after* `PlaybackEngine` has been
+/// dropped, so observing `true` means every GPU resource the engine
+/// owned has already been released.
+pub static ENGINE_SHUTDOWN_COMPLETE: AtomicBool = AtomicBool::new(false);
+
 /// Fine-grained "last waypoint reached" marker for the watchdog. The
 /// engine thread updates this at each major stage of a tick; when the
 /// watchdog detects a stall, it reads this value and logs WHICH
@@ -2165,7 +2181,16 @@ impl PlaybackEngine {
         }
     }
 
-    pub fn run(mut self) {
+    pub fn run(self) {
+        // `run_inner` consumes `self`, so by the time it returns every
+        // resource the engine owned — including its GPU pipelines — has
+        // been dropped. Only then is it safe to tell the UI it may exit.
+        self.run_inner();
+        ENGINE_SHUTDOWN_COMPLETE.store(true, Ordering::Release);
+        info!("Engine thread stopped — teardown complete");
+    }
+
+    fn run_inner(mut self) {
         info!("Engine thread starting");
 
         loop {
