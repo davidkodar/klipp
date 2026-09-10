@@ -57,6 +57,18 @@ pub enum ExecutorError {
     NoOutputConnection,
     #[error("missing output for node")]
     MissingNodeOutput,
+    /// The caller passed an empty `source_frame` — valid only when the
+    /// GPU chain was pre-seeded and covers the whole graph — but a node
+    /// needed the CPU pixels after all.
+    ///
+    /// This exists so the caller can *skip* the GPU→CPU readback
+    /// speculatively and be told, rather than having to predict whether
+    /// every node in an arbitrary graph will stay on the chain. Getting
+    /// that prediction wrong silently renders a wrong frame; getting
+    /// this error just costs the readback that would have happened
+    /// anyway. Callers realise the pixels and retry.
+    #[error("node graph needs CPU source pixels but none were supplied")]
+    CpuSourceRequired,
 }
 
 /// Executes a node graph on RGBA frames.
@@ -586,6 +598,18 @@ impl GraphExecutor {
         matte_preview_node: Option<NodeId>,
         visible_nodes: Option<&std::collections::HashSet<NodeId>>,
     ) -> Result<(Vec<f32>, Option<Vec<f32>>, std::collections::HashMap<NodeId, Vec<u8>>), ExecutorError> {
+        // An empty `source_frame` is only meaningful when the GPU chain
+        // has been pre-seeded — the caller skipped the GPU→CPU readback
+        // on the bet that the graph runs entirely on-chain. With no seed
+        // that bet was never placed and the pixels are simply missing,
+        // so say so rather than grading a zero buffer into a black frame.
+        //
+        // Nodes that fall back to `source_frame` mid-graph raise the same
+        // error from their own sites; between them the executor never
+        // reads pixels that are not there.
+        if source_frame.is_empty() && !self.gpu_chain_preseeded {
+            return Err(ExecutorError::CpuSourceRequired);
+        }
         self.ensure_gpu();
         // Reset chain-state metadata before this run; populated by
         // `flush_chain` if the graph engages the GPU chain.
@@ -773,10 +797,15 @@ impl GraphExecutor {
             }
 
             if bypass && node.kind != NodeKind::Source && node.kind != NodeKind::Output {
-                let passthrough = primary_input_id
-                    .and_then(|id| node_outputs.get(&id))
-                    .cloned()
-                    .unwrap_or_else(|| Arc::new(source_frame.to_vec()));
+                let passthrough = match primary_input_id.and_then(|id| node_outputs.get(&id)) {
+                    Some(v) => v.clone(),
+                    None => {
+                        if source_frame.is_empty() {
+                            return Err(ExecutorError::CpuSourceRequired);
+                        }
+                        Arc::new(source_frame.to_vec())
+                    }
+                };
                 node_outputs.insert(node.id, passthrough);
                 per_node_ms.push((format!("{node_kind_name}#bypass"), t_node.elapsed().as_secs_f64() * 1000.0));
                 continue;
@@ -972,6 +1001,9 @@ impl GraphExecutor {
                 }
                 let pixel_count = (width as usize) * (height as usize);
                 let output = if wired.is_empty() {
+                    if source_frame.is_empty() {
+                        return Err(ExecutorError::CpuSourceRequired);
+                    }
                     source_frame.to_vec()
                 } else {
                     let inputs_params = params
@@ -1005,6 +1037,9 @@ impl GraphExecutor {
                 .filter(|arc| !arc.is_empty())
                 .map(|v| v.as_slice())
                 .unwrap_or(source_frame);
+            if primary_slice.is_empty() {
+                return Err(ExecutorError::CpuSourceRequired);
+            }
             let secondary_slice = secondary
                 .filter(|arc| !arc.is_empty())
                 .map(|v| v.as_slice());
