@@ -592,9 +592,19 @@ impl Drop for OpenGlRuntime {
         unsafe {
             (self.egl.egl_make_current)(self.display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
             (self.egl.egl_destroy_context)(self.display, self.context);
-            (self.egl.egl_terminate)(self.display);
         }
-        debug!("OpenGL: runtime destroyed");
+        // Deliberately NOT calling eglTerminate.
+        //
+        // `new()` takes its display from `eglGetDisplay(EGL_DEFAULT_DISPLAY)`,
+        // which hands every caller in the process the *same* handle, and
+        // `eglTerminate` tears down every resource on that display for the
+        // whole process rather than just ours. A second runtime — or any
+        // other EGL user in the process — has its context invalidated the
+        // moment one of us drops. Destroying our own context is both safe
+        // and sufficient; the display stays initialised, and `eglInitialize`
+        // on an already-initialised display is a successful no-op, so a
+        // later runtime still works.
+        debug!("OpenGL: context destroyed (display left initialised — shared process-wide)");
     }
 }
 
