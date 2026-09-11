@@ -122,9 +122,13 @@ fn yuv_normalise(y_val: f32, u_val: f32, v_val: f32, range: u32, bit_depth_max: 
     }
     // Limited range. Spec gives explicit head/foot at each bit
     // depth: 8-bit Y in [16,235] / UV in [16,240]; 10-bit Y in
-    // [64,940] / UV in [64,960]; same ratios at 12 bits. Encode by
-    // scaling the 8-bit constants up.
-    let scale = bit_depth_max / 255.0;
+    // [64,940] / UV in [64,960]; same ratios at 12 bits. BT.709 and
+    // BT.2100 scale the 8-bit constants by 2^(n-8) — 4 at 10 bits —
+    // not by (2^n - 1) / 255 = 4.012. The latter put 10-bit chroma zero
+    // at 513.5 instead of 512, giving every neutral a faint cast, and
+    // stretched luma to 64.19..942.6 — while the CPU decode path
+    // (camera_log::yuv420p10le_to_linear) used the right 64/876/512/896.
+    let scale = (bit_depth_max + 1.0) / 256.0;
     let y_off = 16.0 * scale;
     let y_div = 219.0 * scale;
     let uv_off = 128.0 * scale;
