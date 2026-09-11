@@ -22,6 +22,15 @@ pub enum GpuSeed<'a> {
         transfer: HdrTransfer,
         source_to_working: [[f32; 3]; 3],
     },
+    /// The same codes in memory — a parked frame. Uploaded once and kept
+    /// by the executor while the same frame is regraded.
+    SceneCodes {
+        codes: &'a std::sync::Arc<Vec<u32>>,
+        transfer: HdrTransfer,
+        source_to_working: [[f32; 3]; 3],
+    },
+    /// Display-referred sRGB u8 RGBA in memory, likewise.
+    Srgb8Bytes(&'a std::sync::Arc<Vec<u8>>),
 }
 
 /// How the clip's graph runs for this frame — as `Renderer::grade` runs
@@ -69,6 +78,26 @@ pub fn grade_to_display_on_gpu(
                 return None;
             }
             Some(transfer)
+        }
+        GpuSeed::SceneCodes { codes, transfer, source_to_working } => {
+            let seeded = exec.prime_chain_from_hdr10_codes(
+                codes,
+                width,
+                height,
+                transfer.transfer_id(),
+                transfer.scene_scale(),
+                klipp_effects::color_wgsl::pack_primaries_matrix(source_to_working),
+            );
+            if !seeded {
+                return None;
+            }
+            Some(transfer)
+        }
+        GpuSeed::Srgb8Bytes(rgba) => {
+            if !exec.prime_chain_from_srgb8(rgba, width, height) {
+                return None;
+            }
+            None
         }
     };
     exec.prepare_clip(at.graph);

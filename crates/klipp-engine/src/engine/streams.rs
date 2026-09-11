@@ -112,6 +112,20 @@ impl HeldFrame {
         Self::new(pixels, width, height, None)
     }
 
+    /// Whether this frame is `p` itself — the same pixels, not an equal
+    /// copy: a regrade of the parked frame, whose pre-grade picture is
+    /// already made.
+    pub fn is_pregrade(&self, p: &super::PregradePixels) -> bool {
+        match (&self.pixels, p) {
+            (Held::Srgb8(a), super::PregradePixels::Srgb8(b)) => Arc::ptr_eq(a, b),
+            (Held::Hdr(a), super::PregradePixels::Hdr(b)) => match (&a.codes, &b.codes) {
+                (crate::types::HdrCodes::Cpu(a), crate::types::HdrCodes::Cpu(b)) => Arc::ptr_eq(a, b),
+                _ => false,
+            },
+            _ => false,
+        }
+    }
+
     /// What the pre-grade caches keep of this frame, and the picture the
     /// UI shows as "before": the same bytes for SDR; for scene-referred
     /// sources the codes, and their display tone map.

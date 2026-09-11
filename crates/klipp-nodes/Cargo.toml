@@ -9,6 +9,7 @@ klipp-core = { workspace = true }
 klipp-effects = { workspace = true }
 rayon = "1"
 wgpu = { workspace = true }
+bytemuck = { workspace = true }
 serde = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }

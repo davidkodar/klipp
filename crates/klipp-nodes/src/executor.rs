@@ -83,6 +83,38 @@ pub enum ExecutorError {
 /// The public [`GraphExecutor::execute`] entry point stays u8 in, u8 out for
 /// backward compatibility. Callers that already hold linear data should prefer
 /// [`GraphExecutor::execute_linear`], which skips the bracket at the boundary.
+/// A frame in memory uploaded for seeding, kept with the pixels
+/// themselves so the same frame is recognised and not re-sent.
+struct UploadedSeed {
+    buffer: wgpu::Buffer,
+    pixels: SeedPixels,
+}
+
+/// What an [`UploadedSeed`] holds: a scene-referred frame's packed codes,
+/// or display-referred sRGB bytes.
+enum SeedPixels {
+    Codes(Arc<Vec<u32>>),
+    Srgb8(Arc<Vec<u8>>),
+}
+
+impl SeedPixels {
+    fn bytes(&self) -> &[u8] {
+        match self {
+            SeedPixels::Codes(c) => bytemuck::cast_slice(c.as_slice()),
+            SeedPixels::Srgb8(b) => b.as_slice(),
+        }
+    }
+
+    /// The same pixels, not an equal copy.
+    fn is(&self, other: &SeedPixels) -> bool {
+        match (self, other) {
+            (SeedPixels::Codes(a), SeedPixels::Codes(b)) => Arc::ptr_eq(a, b),
+            (SeedPixels::Srgb8(a), SeedPixels::Srgb8(b)) => Arc::ptr_eq(a, b),
+            _ => false,
+        }
+    }
+}
+
 pub struct GraphExecutor {
     /// Optional GPU pipeline for accelerated node execution.
     /// Lazily populated by `ensure_gpu()` on first use so we don't
@@ -135,6 +167,9 @@ pub struct GraphExecutor {
     /// half res off a full-res seed, which would reinterpret the buffer
     /// at the wrong stride and scramble the image.
     gpu_chain_preseed_dims: Option<(u32, u32)>,
+    /// The frame the last `prime_chain_from_hdr10_codes` or
+    /// `prime_chain_from_srgb8` uploaded, still on the GPU.
+    uploaded_seed: Option<UploadedSeed>,
     /// Single-shot request, set by `request_output_on_gpu`: leave the next
     /// run's final result in the chain buffer instead of downloading it.
     keep_output_on_gpu: bool,
@@ -329,6 +364,7 @@ impl GraphExecutor {
             matte_cache: HashMap::new(),
             gpu_chain_preseeded: false,
             gpu_chain_preseed_dims: None,
+            uploaded_seed: None,
             keep_output_on_gpu: false,
             run_gpu_output_node: None,
             output_on_gpu: None,
@@ -378,6 +414,7 @@ impl GraphExecutor {
             matte_cache: HashMap::new(),
             gpu_chain_preseeded: false,
             gpu_chain_preseed_dims: None,
+            uploaded_seed: None,
             keep_output_on_gpu: false,
             run_gpu_output_node: None,
             output_on_gpu: None,
@@ -474,6 +511,71 @@ impl GraphExecutor {
             self.gpu_chain_preseed_dims = Some((width, height));
         }
         ok
+    }
+
+    /// [`Self::prime_chain_from_gpu_hdr10_buffer`] from codes in memory:
+    /// uploaded to a buffer the executor keeps, and not again while the
+    /// same codes (the same `Arc`) come back — a paused frame regraded at
+    /// every step of a slider drag uploads once. A quarter of the bytes
+    /// the linear frame would be, and no decode on the CPU.
+    #[allow(clippy::too_many_arguments)]
+    pub fn prime_chain_from_hdr10_codes(
+        &mut self,
+        codes: &Arc<Vec<u32>>,
+        width: u32,
+        height: u32,
+        transfer_id: u32,
+        scene_scale: f32,
+        source_to_working: [[f32; 4]; 3],
+    ) -> bool {
+        if codes.len() != (width as usize) * (height as usize) || !self.upload_seed(SeedPixels::Codes(Arc::clone(codes))) {
+            return false;
+        }
+        let (Some(gpu), Some(seed)) = (self.gpu.as_mut(), self.uploaded_seed.as_ref()) else { return false };
+        let ok = gpu.bridge_hdr10_to_linear_into_chain(&seed.buffer, width, height, transfer_id, scene_scale, source_to_working);
+        if ok {
+            self.gpu_chain_preseeded = true;
+            self.gpu_chain_preseed_dims = Some((width, height));
+        }
+        ok
+    }
+
+    /// [`Self::prime_chain_from_gpu_u8_buffer`] from sRGB bytes in memory,
+    /// kept on the GPU as [`Self::prime_chain_from_hdr10_codes`] keeps codes.
+    pub fn prime_chain_from_srgb8(&mut self, rgba: &Arc<Vec<u8>>, width: u32, height: u32) -> bool {
+        if rgba.len() != (width as usize) * (height as usize) * 4 || !self.upload_seed(SeedPixels::Srgb8(Arc::clone(rgba))) {
+            return false;
+        }
+        let (Some(gpu), Some(seed)) = (self.gpu.as_mut(), self.uploaded_seed.as_ref()) else { return false };
+        let ok = gpu.bridge_u8_to_linear_into_chain(&seed.buffer, width, height);
+        if ok {
+            self.gpu_chain_preseeded = true;
+            self.gpu_chain_preseed_dims = Some((width, height));
+        }
+        ok
+    }
+
+    /// Put `pixels` in the kept seed buffer, unless they are what it
+    /// already holds. `false` without a GPU.
+    fn upload_seed(&mut self, pixels: SeedPixels) -> bool {
+        self.ensure_gpu();
+        let Some(gpu) = self.gpu.as_mut() else { return false };
+        if self.uploaded_seed.as_ref().is_some_and(|s| s.pixels.is(&pixels)) {
+            return true;
+        }
+        let bytes = pixels.bytes();
+        let buffer = match self.uploaded_seed.take() {
+            Some(s) if s.buffer.size() >= bytes.len() as u64 => s.buffer,
+            _ => gpu.device().create_buffer(&wgpu::BufferDescriptor {
+                label: Some("uploaded_seed"),
+                size: bytes.len() as u64,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            }),
+        };
+        gpu.queue().write_buffer(&buffer, 0, bytes);
+        self.uploaded_seed = Some(UploadedSeed { buffer, pixels });
+        true
     }
 
     /// Seed the GPU chain from an HDR frame's packed RGB10 code values

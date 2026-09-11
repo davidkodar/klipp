@@ -1566,10 +1566,15 @@ impl PlaybackEngine {
             // benefit.
             // Paused: 16 ms = 60 Hz loop rate, cheap enough to still
             // respond to user commands within one frame.
+            // A slider held: 2 ms. Its values come on the param queue,
+            // which does not wake this wait, so at 16 ms every step of a
+            // drag sat for up to a frame before it was seen.
             let timeout = if self.state == PlaybackState::Playing
                 || self.source_state == PlaybackState::Playing
             {
                 Duration::from_millis(8)
+            } else if self.in_node_param_edit {
+                Duration::from_millis(2)
             } else {
                 Duration::from_millis(16)
             };
@@ -5836,15 +5841,29 @@ impl PlaybackEngine {
     /// the consumers that opted out — the first question to ask when the
     /// fast path is not engaging.
     fn direct_present_blockers(&self) -> Vec<&'static str> {
+        self.fast_path_blockers(false)
+    }
+
+    /// [`Self::direct_present_blockers`], for playback (`parked_drag`
+    /// false) or for a slider step on the parked frame (true). A parked
+    /// frame's ungraded picture is already made, so a drag needs nothing
+    /// from the full path that playback does not — except what the grade
+    /// tools read off the linear frame while paused: a scope tap and the
+    /// inspector's matte preview. (Node thumbnails are not captured while
+    /// a slider is held.)
+    fn fast_path_blockers(&self, parked_drag: bool) -> Vec<&'static str> {
         if !direct_present_enabled() {
             return vec!["KLIPP_DIRECT_PRESENT=0"];
         }
-        // Steady-state playback only. Paused frames go through
-        // `regrade_cached_frame`, which needs the graded linear buffer.
+        // Steady-state playback, or a drag on the parked frame; any other
+        // paused frame goes through `regrade_cached_frame`'s full render.
         // Checked first and alone so the sequence lock below is not taken
         // on every idle tick.
-        if self.state != PlaybackState::Playing {
+        if !parked_drag && self.state != PlaybackState::Playing {
             return vec!["not playing"];
+        }
+        if parked_drag && (self.state != PlaybackState::Paused || !self.in_node_param_edit) {
+            return vec!["not a slider drag on the parked frame"];
         }
 
         // Every remaining reason is collected rather than returned at the
@@ -5852,13 +5871,22 @@ impl PlaybackEngine {
         // out is the slow way to learn why playback is not accelerating.
         let mut blockers: Vec<&'static str> = Vec::new();
 
-        // Compare modes, paused scrubbing and param drags read the
-        // ungraded CPU frame.
-        if self.pregrade_encode_needed() {
-            blockers.push("pre-grade CPU encode needed");
-        }
-        if self.in_node_param_edit {
-            blockers.push("node param edit in progress");
+        if parked_drag {
+            if self.scope_tap_node.is_some() {
+                blockers.push("scope tap on a node");
+            }
+            if self.inspector_matte_preview_target.is_some() {
+                blockers.push("inspector matte preview");
+            }
+        } else {
+            // Compare modes, paused scrubbing and param drags read the
+            // ungraded CPU frame.
+            if self.pregrade_encode_needed() {
+                blockers.push("pre-grade CPU encode needed");
+            }
+            if self.in_node_param_edit {
+                blockers.push("node param edit in progress");
+            }
         }
         // The two conditions the byte-identity rests on.
         if !matches!(self.tone_map_op, klipp_color::display::ToneMapOp::None) {
@@ -6027,6 +6055,87 @@ impl PlaybackEngine {
         };
         let (clip_time_secs, frame_number) = klipp_compose::render::grade_time(clip, self.playhead, seq.fps.as_f64());
         Some((graph, clip_time_secs, frame_number, clip.track_points.clone()))
+    }
+
+    /// A slider step on the parked frame, graded and encoded for display
+    /// on the GPU: `present_graded_frame_on_gpu` for a paused frame. The
+    /// parked frame goes up once, on the drag's first step, and stays; each
+    /// step then runs the graph and reads back only display bytes. Through
+    /// the renderer a step cost a 4K HDR frame ~40 ms, most of it floats
+    /// crossing the bus and being tone-mapped and encoded on the CPU.
+    ///
+    /// Only when `fast_path_blockers(true)` names nothing but the graph, so
+    /// the renderer would have done no more than this. Returns `false`,
+    /// having shown nothing, when the frame cannot take this path.
+    fn regrade_parked_on_gpu(&mut self) -> bool {
+        let Some((pixels, width, height)) = self.cached_pregrade_frame.clone() else { return false };
+        if !self.fast_path_blockers(true).iter().all(|b| *b == "grade graph is not an identity") {
+            return false;
+        }
+        let t_frame = std::time::Instant::now();
+        let Some((graph, clip_time_secs, frame_number, track_points)) = self.v1_graph_setup() else {
+            return false;
+        };
+        let seed = match &pixels {
+            PregradePixels::Hdr(h) => match &h.codes {
+                crate::types::HdrCodes::Cpu(codes) if (h.width, h.height) == (width, height) => {
+                    crate::fast_path::GpuSeed::SceneCodes {
+                        codes,
+                        transfer: h.transfer,
+                        source_to_working: h.source_to_working,
+                    }
+                }
+                _ => return false,
+            },
+            PregradePixels::Srgb8(bytes) => crate::fast_path::GpuSeed::Srgb8Bytes(bytes),
+        };
+        let at = crate::fast_path::GradeAt {
+            graph: &graph,
+            clip_time: clip_time_secs,
+            frame_number,
+            track_points: &track_points,
+            working: crate::video_decoder::working_colorspace(),
+            solo: self.solo_node,
+        };
+        let (tone_map, working) = (self.tone_map_op, at.working);
+        let display = |linear: &[f32]| klipp_color::display::display_transform_ws(linear, tone_map, working);
+        mark_stage(EngineStage::PostProcessInnerGradeExecute);
+        let Some(mut bytes) =
+            crate::fast_path::grade_to_display_on_gpu(self.renderer.executor(), seed, width, height, &at, &display)
+        else {
+            return false;
+        };
+        let grade_ms = t_frame.elapsed().as_secs_f64() * 1000.0;
+        {
+            let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
+            fb.write_frame_swap(&mut bytes, width, height);
+        }
+        self.composite_scratch_u8 = bytes;
+        let total_ms = t_frame.elapsed().as_secs_f64() * 1000.0;
+        if let Ok(mut ring) = self.perf_ring.lock() {
+            ring.push(crate::perf::PerfSample {
+                timestamp: std::time::Instant::now(),
+                width,
+                height,
+                target_fps: 0.0,
+                decode_ms: 0.0,
+                seq_read_ms: 0.0,
+                grade_ms: grade_ms as f32,
+                ofx_ms: 0.0,
+                builtin_ms: 0.0,
+                lut_ms: 0.0,
+                total_ms: total_ms as f32,
+                dropped: false,
+                bridge_u8_ms: 0.0,
+                reencode_ms: 0.0,
+                scope_ms: 0.0,
+                composite_ms: 0.0,
+                update_playback_ms: 0.0,
+            });
+        }
+        let _ = self.event_tx.send(AppEvent::FrameReady);
+        (self.repaint_cb)();
+        true
     }
 
     /// Grade the decoder's frame and present it without it ever leaving
@@ -6219,6 +6328,10 @@ impl PlaybackEngine {
     /// changes while paused.
     fn regrade_cached_frame(&mut self) {
         mark_stage(EngineStage::PausedRegrade);
+        // A slider step on a frame the renderer would only grade.
+        if self.in_node_param_edit && self.regrade_parked_on_gpu() {
+            return;
+        }
         let primary = self
             .cached_pregrade_frame
             .as_ref()

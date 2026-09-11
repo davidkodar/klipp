@@ -1567,6 +1567,12 @@ impl GpuEffectsPipeline {
         std::sync::Arc::clone(&self.device)
     }
 
+    /// Clone the Arc-wrapped queue, for writing into buffers made on
+    /// [`Self::device`].
+    pub fn queue(&self) -> std::sync::Arc<wgpu::Queue> {
+        std::sync::Arc::clone(&self.queue)
+    }
+
     /// Encode an externally-provided linear-f32 RGBA buffer directly
     /// into a `wgpu::Texture`. Same output as
     /// `encode_grade_to_texture` but input is a CPU slice uploaded

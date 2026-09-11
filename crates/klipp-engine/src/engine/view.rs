@@ -182,11 +182,15 @@ impl PlaybackEngine {
         } else {
             None
         };
-        // Thumbnails cost a readback per node: paused frames only, and
-        // never the speculative pre-render.
+        // Thumbnails cost a readback per node and keep every node they
+        // show off the GPU chain — twice the frame's cost at 4K. Paused
+        // frames only, never the speculative pre-render, and not while a
+        // slider is held: the drag's frames are for the viewer, and the
+        // regrade on release brings the thumbnails up to date.
         let thumbs = (self.state != PlaybackState::Playing
             && !self.visible_node_thumbs.is_empty()
-            && !self.thumb_capture_suspended)
+            && !self.thumb_capture_suspended
+            && !self.in_node_param_edit)
             .then(|| self.visible_node_thumbs.clone());
         Inspect {
             clip,
@@ -349,8 +353,14 @@ impl PlaybackEngine {
         }
 
         // The ungraded frame, for compare modes, scrubbing back and the UI's
-        // scope preview during a slider drag.
-        if let Some(p) = primary.as_ref().filter(|_| self.pregrade_encode_needed()) {
+        // scope preview during a slider drag. A regrade of the parked frame
+        // has it already: remaking it cost an HDR frame a CPU decode, tone
+        // map and encode — 20 ms at 4K — per slider step.
+        let parked = primary
+            .as_ref()
+            .zip(self.cached_pregrade_frame.as_ref())
+            .is_some_and(|(p, (c, cw, ch))| (*cw, *ch) == (p.width, p.height) && p.is_pregrade(c));
+        if let Some(p) = primary.as_ref().filter(|_| !parked && self.pregrade_encode_needed()) {
             let (pixels, display) = p.to_pregrade();
             self.cached_pregrade_frame = Some((pixels.clone(), w, h));
             self.frame_cache.insert(self.playhead.value, pixels, w, h);

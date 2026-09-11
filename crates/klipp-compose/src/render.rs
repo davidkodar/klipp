@@ -93,11 +93,17 @@ pub trait GpuPixels: Send + Sync {
     fn read(&self) -> Arc<Vec<f32>>;
 }
 
-/// A clip's pixels on their way into its grade: on the CPU, or still on
-/// the GPU until something needs them here.
+/// A clip's pixels on their way into its grade: on the CPU, still on the
+/// GPU, or a scene-referred source's codes — decoded to linear on the GPU
+/// as the grade starts, or here only when something needs them here.
 enum GradeInput {
     Cpu(Arc<Vec<f32>>),
     Gpu(Arc<dyn GpuPixels>),
+    Scene {
+        codes: Arc<Vec<u32>>,
+        transfer: klipp_color::hdr::HdrTransfer,
+        source_to_working: [[f32; 3]; 3],
+    },
 }
 
 impl GradeInput {
@@ -105,6 +111,9 @@ impl GradeInput {
         match self {
             GradeInput::Cpu(p) => Arc::clone(p),
             GradeInput::Gpu(g) => g.read(),
+            GradeInput::Scene { codes, transfer, source_to_working } => {
+                Arc::new(klipp_color::hdr::hdr10_codes_to_scene_linear_rgba(codes, *transfer, *source_to_working))
+            }
         }
     }
 }
@@ -695,6 +704,13 @@ impl Renderer {
                     {
                         (GradeInput::Gpu(g), None)
                     }
+                    // Scene-referred codes at the render size go to the
+                    // grade as they are.
+                    SourceFrame { pixels: SourcePixels::SceneReferred { codes, transfer, source_to_working }, width: w, height: h, .. }
+                        if next.is_none() && (w, h) == (width, height) && codes.len() == (w as usize) * (h as usize) =>
+                    {
+                        (GradeInput::Scene { codes, transfer, source_to_working }, Some(transfer))
+                    }
                     f => {
                         let pts = f.pts;
                         let (pixels, hdr) = to_linear(f, width, height);
@@ -870,6 +886,29 @@ impl Renderer {
                 }
             }
             GradeInput::Gpu(g) => self.run_graph(clip, &g.read(), width, height, clip_time, frame, inspecting, matte_view),
+            // Decoded on the GPU as the chain starts; the codes stay there
+            // while the same frame is regraded.
+            GradeInput::Scene { codes, transfer, source_to_working }
+                if self.allow_gpu
+                    && self.executor.prime_chain_from_hdr10_codes(
+                        codes,
+                        width,
+                        height,
+                        transfer.transfer_id(),
+                        transfer.scene_scale(),
+                        klipp_effects::color_wgsl::pack_primaries_matrix(*source_to_working),
+                    ) =>
+            {
+                match self.run_graph(clip, &[], width, height, clip_time, frame, inspecting, matte_view) {
+                    Err(klipp_nodes::executor::ExecutorError::CpuSourceRequired) => {
+                        self.run_graph(clip, &input.pixels(), width, height, clip_time, frame, inspecting, matte_view)
+                    }
+                    r => r,
+                }
+            }
+            GradeInput::Scene { .. } => {
+                self.run_graph(clip, &input.pixels(), width, height, clip_time, frame, inspecting, matte_view)
+            }
         };
         self.found.stats.grade_ms += ms_since(t);
         match out {

@@ -2857,6 +2857,7 @@ dependencies = [
 name = "klipp-nodes"
 version = "0.1.0"
 dependencies = [
+ "bytemuck",
  "image",
  "klipp-color",
  "klipp-core",

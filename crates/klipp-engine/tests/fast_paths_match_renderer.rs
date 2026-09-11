@@ -347,3 +347,72 @@ fn a_gpu_resident_frame_is_graded_where_it_is() {
     assert!(worst_lsb(&got, &want) <= 1);
     assert_eq!(on_gpu.reads.load(std::sync::atomic::Ordering::Relaxed), 1);
 }
+
+/// Packed PQ codes across the range, varied per pixel and channel.
+fn pq_codes(shift: u32) -> Vec<u32> {
+    (0..W * H)
+        .map(|i| {
+            let c = |k: u32| 64 + ((i * k + shift) % 877);
+            klipp_color::hdr::pack_rgb10(c(37), c(11), c(23))
+        })
+        .collect()
+}
+
+/// A parked frame — pixels in memory, not a decoder's GPU buffer — graded
+/// by the fast path from a seed the executor uploads and keeps: SDR bytes
+/// and PQ codes both give the renderer's frame, the reference decoded on
+/// the CPU. Seeding the same frame again reuses the upload; another frame
+/// replaces it.
+#[test]
+fn a_parked_frame_seeded_from_memory_is_the_renderers_frame() {
+    if GpuContext::shared().is_none() {
+        eprintln!("skipping: no usable GpuContext");
+        return;
+    }
+    let (seq, clip) = one_clip(keyframed_grade(None));
+    let mut r = renderer();
+    let mut cpu = renderer();
+    cpu.set_gpu_enabled(false);
+
+    // SDR bytes, and then another frame of them.
+    let mut last = Vec::new();
+    let inverted = sdr_bytes().iter().enumerate().map(|(i, b)| if i % 4 == 3 { *b } else { 255 - b }).collect();
+    for bytes in [sdr_bytes(), inverted] {
+        let bytes = Arc::new(bytes);
+        let linear = Arc::new(klipp_effects::srgb_u8_to_linear_f32_rgba(&bytes));
+        let mut src = Frame(Box::new(move || SourcePixels::Linear(Arc::clone(&linear))));
+        let want = rendered(&mut cpu, &seq, 4.0, &mut src);
+        let got = fast(&mut r, &clip, 4.0, GpuSeed::Srgb8Bytes(&bytes));
+        let again = fast(&mut r, &clip, 4.0, GpuSeed::Srgb8Bytes(&bytes));
+        let worst = worst_lsb(&got, &want);
+        eprintln!("SDR parked seed vs renderer: worst {worst} LSB");
+        assert!(worst <= 1, "an SDR parked seed differs from the renderer by {worst} levels");
+        assert_eq!(got, again, "grading the kept seed again changed the frame");
+        assert_ne!(got, last, "a new frame did not replace the kept seed");
+        last = got;
+    }
+
+    // PQ codes, twice over.
+    let (seq, clip) = one_clip(keyframed_grade(Some(LogFormat::PQ)));
+    let m = primaries_to_working_matrix(ColorPrimaries::Bt2020, WORKING);
+    for shift in [0, 400] {
+        let codes = Arc::new(pq_codes(shift));
+        let c = Arc::clone(&codes);
+        let mut src = Frame(Box::new(move || SourcePixels::SceneReferred {
+            codes: Arc::clone(&c),
+            transfer: HdrTransfer::Pq,
+            source_to_working: m,
+        }));
+        let want = rendered(&mut cpu, &seq, 4.0, &mut src);
+        let seed = || GpuSeed::SceneCodes { codes: &codes, transfer: HdrTransfer::Pq, source_to_working: m };
+        let got = fast(&mut r, &clip, 4.0, seed());
+        let again = fast(&mut r, &clip, 4.0, seed());
+        let worst = worst_lsb(&got, &want);
+        eprintln!("PQ parked seed vs renderer: worst {worst} LSB");
+        assert!(worst <= 1, "a PQ parked seed differs from the renderer by {worst} levels");
+        assert_eq!(got, again);
+        // The renderer seeds scene-referred codes on the GPU itself, too.
+        let seeded = rendered(&mut r, &seq, 4.0, &mut src);
+        assert!(worst_lsb(&seeded, &want) <= 1, "the renderer's own GPU seed is off");
+    }
+}
