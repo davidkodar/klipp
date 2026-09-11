@@ -64,8 +64,12 @@ pub struct P010GpuOutput {
     pub hdr_codes: Option<std::sync::Arc<wgpu::Buffer>>,
 }
 
+/// Transfers that take the scene-referred route: PQ, HLG, and every camera
+/// log curve (ids 100+). Their frames carry code values for the grade.
 fn is_hdr_transfer(transfer_id: u32) -> bool {
-    transfer_id == klipp_core_transfer::PQ || transfer_id == klipp_core_transfer::HLG
+    transfer_id == klipp_core_transfer::PQ
+        || transfer_id == klipp_core_transfer::HLG
+        || transfer_id >= klipp_core_transfer::FIRST_CAMERA_LOG
 }
 
 /// `klipp_core::color_ids` values, mirrored: klipp-effects sits below
@@ -73,6 +77,7 @@ fn is_hdr_transfer(transfer_id: u32) -> bool {
 mod klipp_core_transfer {
     pub const PQ: u32 = 3;
     pub const HLG: u32 = 4;
+    pub const FIRST_CAMERA_LOG: u32 = 100;
 }
 
 /// `color_range` / `matrix_id` / `transfer_id` / `primaries_id`
@@ -176,6 +181,9 @@ fn load_u16_le_uv(byte_idx: u32) -> u32 {
 // `klipp_color::hdr::hdr_display_tonemap` exactly — the preview here
 // and a graded frame's tone map are the same curve by construction.
 const HDR_DISPLAY_EXPOSURE: f32 = 0.18;
+// Camera log: the exposure that keeps 18% grey at display mid grey.
+// Must match `klipp_color::hdr::LOG_DISPLAY_EXPOSURE`.
+const LOG_DISPLAY_EXPOSURE: f32 = 0.723171;
 fn aces_filmic_scalar(x: f32) -> f32 {
     let a = 2.51;
     let b = 0.03;
@@ -185,8 +193,8 @@ fn aces_filmic_scalar(x: f32) -> f32 {
     return clamp((x * (a * x + b)) / (x * (c * x + d) + e), 0.0, 1.0);
 }
 
-fn tone_map_hdr_vec(rgb: vec3<f32>) -> vec3<f32> {
-    let exposed = rgb * HDR_DISPLAY_EXPOSURE;
+fn tone_map_hdr_vec(rgb: vec3<f32>, exposure: f32) -> vec3<f32> {
+    let exposed = rgb * exposure;
     return vec3<f32>(
         aces_filmic_scalar(max(exposed.x, 0.0)),
         aces_filmic_scalar(max(exposed.y, 0.0)),
@@ -246,20 +254,36 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let yuv = yuv_normalise(y_10, u_10, v_10, params.color_range, 1023.0);
     let rgb_display = yuv_to_rgb_display(yuv, params.matrix_id);
     var rgb_srgb: vec3<f32>;
-    if (params.transfer_id == TRANSFER_PQ || params.transfer_id == TRANSFER_HLG) {
+    let is_log = params.transfer_id >= 100u;
+    if (params.transfer_id == TRANSFER_PQ || params.transfer_id == TRANSFER_HLG || is_log) {
+        // Camera log curves are published over CV / 1023, the raw 10-bit
+        // code; `yuv_normalise` has mapped a limited-range file's 64..940
+        // onto 0..1. Undo that for logs, or S-Log3's white reads ~0.3
+        // stops hot. (PQ/HLG are defined on the legal-normalised signal,
+        // so they keep it.)
+        var signal = clamp(rgb_display, vec3<f32>(0.0), vec3<f32>(1.0));
+        if (is_log && params.color_range == 0u) {
+            signal = (vec3<f32>(64.0) + signal * 876.0) / 1023.0;
+        }
         // Quantise to the 10-bit codes the grade will read, then build
         // the preview from those same codes so the two cannot diverge.
-        let code = vec3<u32>(clamp(rgb_display, vec3<f32>(0.0), vec3<f32>(1.0)) * 1023.0
-                             + vec3<f32>(0.5));
+        let code = vec3<u32>(signal * 1023.0 + vec3<f32>(0.5));
         hdr_codes[dy * params.dst_width + dx] = code.x | (code.y << 10u) | (code.z << 20u);
-        // Scene-linear, 1.0 = 100 nits: the PQ EOTF's 1.0 is 10 000.
-        let scene = display_to_linear(vec3<f32>(code) / 1023.0, params.transfer_id) * 100.0;
+        // Scene-linear: PQ/HLG curves return 1.0 = 10 000 nits (x100 to
+        // 1.0 = 100 nits); camera logs already return reflectance.
+        var scale = 100.0;
+        var exposure = HDR_DISPLAY_EXPOSURE;
+        if (is_log) {
+            scale = 1.0;
+            exposure = LOG_DISPLAY_EXPOSURE;
+        }
+        let scene = display_to_linear(vec3<f32>(code) / 1023.0, params.transfer_id) * scale;
         let working = vec3<f32>(
             dot(params.primaries_row0.xyz, scene),
             dot(params.primaries_row1.xyz, scene),
             dot(params.primaries_row2.xyz, scene),
         );
-        rgb_srgb = linear_to_srgb_vec(tone_map_hdr_vec(working));
+        rgb_srgb = linear_to_srgb_vec(tone_map_hdr_vec(working, exposure));
     } else {
         let rgb_linear = display_to_linear(rgb_display, params.transfer_id);
         let rgb_working = vec3<f32>(

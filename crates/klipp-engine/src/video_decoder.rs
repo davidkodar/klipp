@@ -125,47 +125,97 @@ fn u8_linear_div255_lut() -> &'static [f32; 256] {
     })
 }
 
-/// Per-camera-log override of the colour-tagged baseline. Read once
-/// per process from `KLIPP_FORCE_LOG_FORMAT` (case-insensitive
-/// tokens: `slog3`, `slog2`, `vlog`, `clog`, `clog3`, `logc3`,
-/// `logc4`, `redlog3g10`, `bmdfilmgen5`, `dlog`, `flog`, `applelog`,
-/// `nlog`, `goproflat`). Replaces only `transfer` + `primaries` —
-/// matrix and range still come from the file (Sony / ARRI / Canon
-/// log workflows all use BT.709 matrix on the YUV samples).
+/// Camera log formats by media file, set from the media pool
+/// (`set_media_log_formats`). Log footage is tagged BT.709 by almost every
+/// camera — container metadata has no way to say "S-Log3" — so the user's
+/// choice (or the media's detected format) is the only source of truth.
+static MEDIA_LOG_FORMATS: std::sync::OnceLock<
+    std::sync::RwLock<std::collections::HashMap<PathBuf, klipp_core::LogFormat>>,
+> = std::sync::OnceLock::new();
+
+thread_local! {
+    /// The file this decode thread is decoding. Each decoder owns one
+    /// thread, so the per-frame colourspace code can find its file's log
+    /// format without every conversion function taking a path.
+    static DECODE_PATH: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Replace the per-file camera log formats the decoders use. Call whenever
+/// the media pool's log formats may have changed; decoders pick the change
+/// up on their next frame, with no reopen.
+pub fn set_media_log_formats(entries: impl IntoIterator<Item = (PathBuf, klipp_core::LogFormat)>) {
+    let map: std::collections::HashMap<_, _> = entries
+        .into_iter()
+        .filter(|(_, f)| f.needs_camera_decode())
+        .collect();
+    let lock = MEDIA_LOG_FORMATS.get_or_init(Default::default);
+    *lock.write().unwrap_or_else(|e| e.into_inner()) = map;
+}
+
+/// The camera-native (transfer, primaries) pair for a log format, or
+/// `None` for formats that are not camera logs.
+fn log_format_colourspace(
+    f: klipp_core::LogFormat,
+) -> Option<(klipp_core::ColorTransfer, klipp_core::ColorPrimaries)> {
+    use klipp_core::{ColorPrimaries as P, ColorTransfer as T, LogFormat as L};
+    Some(match f {
+        L::SLog3 => (T::SLog3, P::SGamut3Cine),
+        L::SLog2 => (T::SLog2, P::SGamut3),
+        L::VLog => (T::VLog, P::VGamut),
+        L::CanonLog => (T::CanonLog, P::CanonCinemaGamut),
+        L::CanonLog3 => (T::CanonLog3, P::CanonCinemaGamut),
+        L::LogC3 => (T::LogC3, P::AlexaWideGamut3),
+        L::LogC4 => (T::LogC4, P::AlexaWideGamut4),
+        L::RedLog3G10 => (T::RedLog3G10, P::RedWideGamut),
+        L::BmdFilmGen5 => (T::BmdFilmGen5, P::BmdWideGamut),
+        L::DJIDLog => (T::DJIDLog, P::Bt709),
+        L::FLog => (T::FLog, P::Bt2020),
+        L::AppleLog => (T::AppleLog, P::Bt2020),
+        L::NLog => (T::NLog, P::Bt2020),
+        L::GoProFlat => (T::GoProFlat, P::Bt709),
+        // No decoder curve yet for Leica L-Log; sRGB, linear, PQ and HLG
+        // are not camera logs.
+        L::LeicaLLog | L::Srgb | L::Linear | L::PQ | L::HLG => return None,
+    })
+}
+
+/// `KLIPP_FORCE_LOG_FORMAT` — a dev override that applies one log format to
+/// every file, for testing without touching the media pool. Tokens as the
+/// old stop-gap: slog3, slog2, vlog, clog, clog3, logc3, logc4, redlog3g10,
+/// bmdfilmgen5, dlog, flog, applelog, nlog, goproflat.
+fn env_forced_log_format() -> Option<klipp_core::LogFormat> {
+    use klipp_core::LogFormat as L;
+    static TOKEN: std::sync::OnceLock<Option<klipp_core::LogFormat>> = std::sync::OnceLock::new();
+    *TOKEN.get_or_init(|| {
+        let t = std::env::var("KLIPP_FORCE_LOG_FORMAT").ok()?.to_ascii_lowercase();
+        Some(match t.as_str() {
+            "slog3" => L::SLog3, "slog2" => L::SLog2, "vlog" => L::VLog,
+            "clog" => L::CanonLog, "clog3" => L::CanonLog3, "logc3" => L::LogC3,
+            "logc4" => L::LogC4, "redlog3g10" => L::RedLog3G10, "bmdfilmgen5" => L::BmdFilmGen5,
+            "dlog" => L::DJIDLog, "flog" => L::FLog, "applelog" => L::AppleLog,
+            "nlog" => L::NLog, "goproflat" => L::GoProFlat,
+            _ => return None,
+        })
+    })
+}
+
+/// Apply this decode thread's camera log format to a frame's resolved
+/// colourspace: transfer and primaries only — range and matrix still come
+/// from the file (Sony, ARRI and Canon log all use the BT.709 matrix).
 ///
-/// Stop-gap until the per-clip dropdown lands; the env var is the
-/// least-invasive way to get colour-correct decoding for the user's
-/// A6700 clip today. Tokens map to the same `(transfer, primaries)`
-/// pair that the per-clip UI will produce later.
-fn apply_env_log_override(
-    base: klipp_core::SourceColorspace,
-) -> klipp_core::SourceColorspace {
-    use klipp_core::{ColorPrimaries, ColorTransfer};
-    use std::sync::OnceLock;
-    static TOKEN: OnceLock<Option<String>> = OnceLock::new();
-    let token = TOKEN
-        .get_or_init(|| std::env::var("KLIPP_FORCE_LOG_FORMAT").ok().map(|s| s.to_ascii_lowercase()))
-        .as_deref();
-    let Some(t) = token else { return base; };
-    let (transfer, primaries) = match t {
-        "slog3" => (ColorTransfer::SLog3, ColorPrimaries::SGamut3Cine),
-        "slog3-sgamut3" => (ColorTransfer::SLog3, ColorPrimaries::SGamut3),
-        "slog2" => (ColorTransfer::SLog2, ColorPrimaries::SGamut3),
-        "vlog" => (ColorTransfer::VLog, ColorPrimaries::VGamut),
-        "clog" => (ColorTransfer::CanonLog, ColorPrimaries::CanonCinemaGamut),
-        "clog3" => (ColorTransfer::CanonLog3, ColorPrimaries::CanonCinemaGamut),
-        "logc3" => (ColorTransfer::LogC3, ColorPrimaries::AlexaWideGamut3),
-        "logc4" => (ColorTransfer::LogC4, ColorPrimaries::AlexaWideGamut4),
-        "redlog3g10" => (ColorTransfer::RedLog3G10, ColorPrimaries::RedWideGamut),
-        "bmdfilmgen5" => (ColorTransfer::BmdFilmGen5, ColorPrimaries::BmdWideGamut),
-        "dlog" => (ColorTransfer::DJIDLog, ColorPrimaries::Bt709),
-        "flog" => (ColorTransfer::FLog, ColorPrimaries::Bt2020),
-        "applelog" => (ColorTransfer::AppleLog, ColorPrimaries::Bt2020),
-        "nlog" => (ColorTransfer::NLog, ColorPrimaries::Bt2020),
-        "goproflat" => (ColorTransfer::GoProFlat, ColorPrimaries::Bt709),
-        _ => return base,
-    };
-    klipp_core::SourceColorspace { transfer, primaries, ..base }
+/// Must run *after* `resolve_with_baseline`. The frame's own tags win over
+/// the baseline, and log footage is tagged BT.709, so an override applied
+/// to the baseline — which is where the old env-var stop-gap put it — was
+/// silently replaced by the file's tag on every tagged frame.
+fn apply_log_override(cs: klipp_core::SourceColorspace) -> klipp_core::SourceColorspace {
+    let from_media = DECODE_PATH.with(|p| {
+        let p = p.borrow();
+        let path = p.as_ref()?;
+        MEDIA_LOG_FORMATS.get()?.read().ok()?.get(path).copied()
+    });
+    let Some(format) = from_media.or_else(env_forced_log_format) else { return cs };
+    let Some((transfer, primaries)) = log_format_colourspace(format) else { return cs };
+    klipp_core::SourceColorspace { transfer, primaries, ..cs }
 }
 
 /// Look up swscale's per-matrix coefficient table via
@@ -1380,13 +1430,13 @@ unsafe fn download_hw_frame(
     // `LinearFrame` constructed below stamps `source_cs` onto the
     // frame so downstream shaders can dispatch the correct YUV→RGB
     // matrix, range divisor, EOTF and gamut conversion.
-    let source_cs = klipp_core::SourceColorspace::resolve_with_baseline(
+    let source_cs = apply_log_override(klipp_core::SourceColorspace::resolve_with_baseline(
         (*sw_frame).color_range as i32,
         (*sw_frame).colorspace as i32,
         (*sw_frame).color_primaries as i32,
         (*sw_frame).color_trc as i32,
         cs_baseline,
-    );
+    ));
     {
         use std::sync::atomic::AtomicBool;
         static LOGGED: AtomicBool = AtomicBool::new(false);
@@ -1488,7 +1538,7 @@ unsafe fn download_hw_frame(
                         let mut display = klipp_color::hdr::hdr10_codes_to_scene_linear_rgba(
                             &codes, transfer, source_to_working,
                         );
-                        klipp_color::hdr::apply_hdr_display_tonemap(&mut display);
+                        klipp_color::hdr::apply_hdr_display_tonemap(&mut display, transfer);
                         PERF_LINEAR_ENCODE_US.fetch_add(t_linear.elapsed().as_micros() as u64, Ordering::Relaxed);
                         let hdr = crate::types::HdrInput {
                             codes: crate::types::HdrCodes::Cpu(Arc::new(codes)),
@@ -1833,6 +1883,7 @@ fn decode_thread_main(
     source_rotation: i32,
     last_decode_us: Arc<std::sync::atomic::AtomicU32>,
 ) {
+    DECODE_PATH.with(|p| *p.borrow_mut() = Some(path.clone()));
     let mut format_ctx = match ffmpeg_next::format::input(&path) {
         Ok(ctx) => ctx,
         Err(e) => {
@@ -1942,7 +1993,7 @@ fn decode_thread_main(
     // camera-native pair (e.g. S-Log3 + S-Gamut3.Cine), which the
     // shaders and the CPU swscale path then dispatch on. Container
     // metadata never tags these — every NLE asks the user.
-    let cs_baseline = apply_env_log_override(cs_baseline_from_codecpar);
+    let cs_baseline = cs_baseline_from_codecpar;
     info!(
         "decode_thread: source colourspace baseline: {}{}",
         cs_baseline.describe(),
@@ -2338,13 +2389,13 @@ fn convert_sw_frame(
         // unspecified; baseline carries the codec / override).
         let source_cs = unsafe {
             let avf = received_frame.as_ptr();
-            klipp_core::SourceColorspace::resolve_with_baseline(
+            apply_log_override(klipp_core::SourceColorspace::resolve_with_baseline(
                 (*avf).color_range as i32,
                 (*avf).colorspace as i32,
                 (*avf).color_primaries as i32,
                 (*avf).color_trc as i32,
                 cs_baseline,
-            )
+            ))
         };
         let src_w = received_frame.width();
         let src_h = received_frame.height();
@@ -2531,13 +2582,13 @@ fn convert_sw_frame(
     // matrix depend on it.
     let source_cs = unsafe {
         let avf = received_frame.as_ptr();
-        klipp_core::SourceColorspace::resolve_with_baseline(
+        apply_log_override(klipp_core::SourceColorspace::resolve_with_baseline(
             (*avf).color_range as i32,
             (*avf).colorspace as i32,
             (*avf).color_primaries as i32,
             (*avf).color_trc as i32,
             cs_baseline,
-        )
+        ))
     };
 
     // Rotation still operates on sRGB u8 via rotate_rgba. For hi-bit-

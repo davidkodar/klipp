@@ -478,12 +478,13 @@ impl GraphExecutor {
         width: u32,
         height: u32,
         transfer_id: u32,
+        scene_scale: f32,
         source_to_working: [[f32; 4]; 3],
     ) -> bool {
         self.ensure_gpu();
         let Some(gpu) = self.gpu.as_mut() else { return false };
         let ok = gpu.bridge_hdr10_to_linear_into_chain(
-            codes, width, height, transfer_id, source_to_working,
+            codes, width, height, transfer_id, scene_scale, source_to_working,
         );
         if ok {
             self.gpu_chain_preseeded = true;
@@ -508,16 +509,16 @@ impl GraphExecutor {
 
     /// Encode the last run's GPU-resident result to display sRGB u8 and
     /// read that back — see `GpuEffectsPipeline::encode_chain_to_display_u8`.
-    /// `hdr_tonemap` applies the HDR display tone map first. `None` if the
+    /// `tonemap_exposure` applies the display tone map first. `None` if the
     /// last run did not keep its output on the GPU, or the GPU failed.
     pub fn encode_output_to_display_u8(
         &mut self,
         width: u32,
         height: u32,
-        hdr_tonemap: bool,
+        tonemap_exposure: Option<f32>,
     ) -> Option<Vec<u8>> {
         let slot_a = self.output_on_gpu?;
-        self.gpu.as_mut()?.encode_chain_to_display_u8(slot_a, width, height, hdr_tonemap)
+        self.gpu.as_mut()?.encode_chain_to_display_u8(slot_a, width, height, tonemap_exposure)
     }
 
     /// True iff the executor owns a GPU pipeline. When false, every

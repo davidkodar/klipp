@@ -86,18 +86,28 @@ pub enum LogFormat {
 
 impl LogFormat {
     /// Whether an InputTransform node carrying this format has any work
-    /// to do on the pixels it receives.
+    /// to do on the pixels it receives. It never does now.
     ///
-    /// `Srgb` and `Linear` never did. `PQ` and `HLG` no longer do: the
-    /// decoder's HDR input stage turns PQ/HLG code values into
-    /// scene-linear before the graph runs (`klipp_color::hdr`), so a node
-    /// that decoded them again would decode twice — which is exactly what
-    /// crushed every HDR clip the moment a grade was applied. The node is
-    /// still seeded with PQ/HLG on import, where it records what the
-    /// source is; it just must not act on it.
+    /// Every format is decoded before the graph runs: PQ/HLG by the
+    /// decoder's HDR input stage, camera logs the same way once the media
+    /// pool tells the decoder the file's format (`set_media_log_formats`).
+    /// A node that transformed again would transform twice — exactly how
+    /// every PQ clip used to crush the moment it was graded. The node still
+    /// records the source format and is where the user picks it; it just
+    /// must not act on the pixels.
     ///
-    /// Camera log formats still need the node.
+    /// Its old in-graph transform was also broken for camera logs in its
+    /// own right: the GPU version clamped scene-linear to [0, 1], throwing
+    /// away every highlight above white, and neither version converted the
+    /// camera's gamut.
     pub fn needs_input_transform(self) -> bool {
+        false
+    }
+
+    /// Whether this is a camera log curve the decoder must decode (as
+    /// opposed to display-referred sRGB/linear, or PQ/HLG, which the
+    /// decoder recognises from the file's own tags).
+    pub fn needs_camera_decode(self) -> bool {
         !matches!(self, Self::Srgb | Self::Linear | Self::PQ | Self::HLG)
     }
 }
@@ -438,15 +448,19 @@ impl Default for GeneratorData {
 mod log_format_tests {
     use super::LogFormat;
 
-    /// PQ and HLG are decoded before the graph runs; the node must not
-    /// decode them again. Camera logs still need it.
+    /// Every format is decoded before the graph runs; the node must never
+    /// transform again. Camera logs are the ones the decoder needs told.
     #[test]
-    fn hdr_transfers_need_no_input_transform_but_camera_logs_do() {
-        for f in [LogFormat::Srgb, LogFormat::Linear, LogFormat::PQ, LogFormat::HLG] {
+    fn no_format_needs_the_node_and_camera_logs_need_the_decoder() {
+        for f in [LogFormat::Srgb, LogFormat::Linear, LogFormat::PQ, LogFormat::HLG,
+                  LogFormat::SLog3, LogFormat::LogC3, LogFormat::VLog, LogFormat::AppleLog] {
             assert!(!f.needs_input_transform(), "{f:?}");
         }
-        for f in [LogFormat::SLog3, LogFormat::LogC3, LogFormat::VLog, LogFormat::AppleLog] {
-            assert!(f.needs_input_transform(), "{f:?}");
+        for f in [LogFormat::Srgb, LogFormat::Linear, LogFormat::PQ, LogFormat::HLG] {
+            assert!(!f.needs_camera_decode(), "{f:?}");
+        }
+        for f in [LogFormat::SLog3, LogFormat::LogC4, LogFormat::VLog, LogFormat::AppleLog] {
+            assert!(f.needs_camera_decode(), "{f:?}");
         }
     }
 }

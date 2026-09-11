@@ -1796,6 +1796,7 @@ impl GpuEffectsPipeline {
         width: u32,
         height: u32,
         transfer_id: u32,
+        scene_scale: f32,
         source_to_working: [[f32; 4]; 3],
     ) -> bool {
         if self.is_device_lost() { return false; }
@@ -1806,7 +1807,7 @@ impl GpuEffectsPipeline {
 
         let buf_a = self.buf_a.as_ref().expect("ensure_buffers established buf_a");
         self.write_params(&Hdr10BridgeParams {
-            width, height, transfer_id, _pad0: 0, source_to_working,
+            width, height, transfer_id, scene_scale, source_to_working,
         });
         let bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("bridge_hdr10_to_linear_bg"),
@@ -1847,7 +1848,7 @@ impl GpuEffectsPipeline {
         slot_a: bool,
         width: u32,
         height: u32,
-        hdr_tonemap: bool,
+        tonemap_exposure: Option<f32>,
     ) -> Option<Vec<u8>> {
         if self.is_device_lost() { return None; }
         let pixel_count = (width as u64) * (height as u64);
@@ -1874,7 +1875,10 @@ impl GpuEffectsPipeline {
         let out = self.bridge_u8_out_buf.as_ref().unwrap();
         let staging = self.display_u8_staging.as_ref().unwrap();
         self.write_params(&DisplayU8Params {
-            width, height, hdr_tonemap: hdr_tonemap as u32, _pad0: 0,
+            width,
+            height,
+            hdr_tonemap: tonemap_exposure.is_some() as u32,
+            exposure: tonemap_exposure.unwrap_or(0.0),
         });
         let bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("linear_to_display_u8_bg"),
@@ -4676,7 +4680,8 @@ struct Hdr10BridgeParams {
     width: u32,
     height: u32,
     transfer_id: u32,
-    _pad0: u32,
+    /// Curve output -> scene-linear: 100 for PQ/HLG, 1 for camera logs.
+    scene_scale: f32,
     /// Source primaries → working space, 3 rows of vec4 (w unused).
     source_to_working: [[f32; 4]; 3],
 }
@@ -4687,7 +4692,8 @@ struct DisplayU8Params {
     width: u32,
     height: u32,
     hdr_tonemap: u32,
-    _pad0: u32,
+    /// Exposure ahead of the tone map (`HdrTransfer::display_exposure`).
+    exposure: f32,
 }
 
 #[repr(C)]
@@ -5889,7 +5895,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 // the gamut matrix, 1.0 = 100 nits.
 const SHADER_HDR10_TO_LINEAR_BODY: &str = "
 struct Params {
-    width: u32, height: u32, transfer_id: u32, _pad0: u32,
+    width: u32, height: u32, transfer_id: u32, scene_scale: f32,
     m0: vec4<f32>, m1: vec4<f32>, m2: vec4<f32>,
 }
 @group(0) @binding(0) var<storage, read> input: array<u32>;
@@ -5902,8 +5908,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     if idx >= params.width * params.height { return; }
     let p = input[idx];
     let code = vec3<f32>(f32(p & 1023u), f32((p >> 10u) & 1023u), f32((p >> 20u) & 1023u)) / 1023.0;
-    // PQ's 1.0 is 10 000 nits; scene-linear's 1.0 is 100.
-    let scene = display_to_linear(code, params.transfer_id) * 100.0;
+    // PQ/HLG return 1.0 = 10 000 nits (scale 100 to 1.0 = 100 nits);
+    // camera logs already return reflectance (scale 1).
+    let scene = display_to_linear(code, params.transfer_id) * params.scene_scale;
     output[idx] = vec4<f32>(
         dot(params.m0.xyz, scene),
         dot(params.m1.xyz, scene),
@@ -5921,7 +5928,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 // SDR display encode (`ToneMapOp::None`: clamp, sRGB). Same layout as
 // SHADER_LINEAR_TO_U8.
 const SHADER_LINEAR_TO_DISPLAY_U8: &str = "
-struct Params { width: u32, height: u32, hdr_tonemap: u32, _pad0: u32 }
+struct Params { width: u32, height: u32, hdr_tonemap: u32, exposure: f32 }
 @group(0) @binding(0) var<storage, read> input: array<vec4<f32>>;
 @group(0) @binding(1) var<storage, read_write> output: array<u32>;
 @group(0) @binding(2) var<uniform> params: Params;
@@ -5944,7 +5951,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let px = input[idx];
     var rgb = max(px.xyz, vec3<f32>(0.0));
     if (params.hdr_tonemap != 0u) {
-        rgb = vec3<f32>(filmic(rgb.x * 0.18), filmic(rgb.y * 0.18), filmic(rgb.z * 0.18));
+        rgb = vec3<f32>(filmic(rgb.x * params.exposure), filmic(rgb.y * params.exposure), filmic(rgb.z * params.exposure));
     }
     let r = u32(clamp(linear_to_srgb_c(rgb.x) * 255.0 + 0.5, 0.0, 255.0));
     let g = u32(clamp(linear_to_srgb_c(rgb.y) * 255.0 + 0.5, 0.0, 255.0));

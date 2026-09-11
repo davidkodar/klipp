@@ -3405,6 +3405,23 @@ impl KlippApp {
     fn sync_media_pool_to_engine(&self) {
         let mut pool = self.media_pool_shared.write().unwrap_or_else(|e| e.into_inner());
         *pool = self.state.media_pool.clone();
+        drop(pool);
+        self.sync_log_formats_to_decoders();
+    }
+
+    /// Tell the decoders each file's camera log format. The decoder is what
+    /// turns log footage into scene-linear (curve + camera gamut), and
+    /// container metadata never says "S-Log3" — the media's format (the
+    /// user's choice, else what was detected) is the only source of truth.
+    fn sync_log_formats_to_decoders(&self) {
+        klipp_engine::video_decoder::set_media_log_formats(self.state.media_pool.all().map(|m| {
+            let effective = if m.log_format != klipp_core::LogFormat::default() {
+                m.log_format
+            } else {
+                m.detected_log_format
+            };
+            (m.path.clone(), effective)
+        }));
     }
 
     fn send_commands(&mut self, cmds: Vec<AppCommand>) {
@@ -13235,20 +13252,27 @@ impl KlippApp {
                         break;
                     }
                 }
-                // Promote the user's choice to the source media's
-                // own `log_format` so the next clip imported from
-                // the same media inherits it via
-                // `apply_detected_log_format`. Only write back when
-                // the media is still on the default — don't clobber
-                // a deliberate per-media setting the user has made
-                // elsewhere.
+                // The format belongs to the file, not the clip: a camera
+                // file has one encoding, and the decoder — which does the
+                // conversion — works per file. So set it on the media and
+                // on every clip of that media. (This used to write back only
+                // when the media was still on the default, so re-picking a
+                // format on a clip changed its node but not what the
+                // decoder did: nothing visible happened.)
                 if let Some(mid) = media_id_for_writeback {
                     if let Some(item) = self.state.media_pool.get_mut(&mid) {
-                        if item.log_format == klipp_core::LogFormat::default() {
-                            item.log_format = *log_format;
+                        item.log_format = *log_format;
+                    }
+                    for seq in &mut self.state.sequences {
+                        for clip in seq.all_clips_mut() {
+                            if clip.media_id() == Some(mid) {
+                                clip.set_input_log_format(*log_format);
+                            }
                         }
                     }
+                    self.sync_media_pool_to_engine();
                 }
+                self.state.dirty = true;
                 *needs_refresh = true;
                 true
             }

@@ -79,7 +79,7 @@ fn hdr_codes_through_the_cpu_input_transform_reproduce_the_shader_preview() {
 
         // The graded-at-identity path, on the CPU.
         let mut linear = hdr10_codes_to_scene_linear_rgba(&codes, transfer, m);
-        apply_hdr_display_tonemap(&mut linear);
+        apply_hdr_display_tonemap(&mut linear, transfer);
 
         let mut worst = 0i32;
         for (i, px) in linear.chunks_exact(4).enumerate() {
@@ -142,4 +142,78 @@ fn sdr_sources_produce_no_hdr_codes_and_ids_stay_in_step() {
         .is_none());
     let out = conv.convert_p010_on_gpu(&y, &uv, W, H, W * 2, W * 2, W, H, 0, sdr, pack_primaries_matrix(m));
     assert!(out.hdr_codes.is_none(), "SDR frames must not allocate an HDR buffer");
+}
+
+/// Camera log takes the same route: the shader's S-Log3 codes, through the
+/// CPU input stage and log display tone map, must reproduce its preview.
+#[test]
+fn slog3_codes_through_the_cpu_input_stage_reproduce_the_shader_preview() {
+    let Some(mut conv) = GpuP010Converter::new() else {
+        eprintln!("skipping: P010 GPU converter unavailable");
+        return;
+    };
+    let (y, uv) = make_hdr_p010(W, H);
+    let m = primaries_to_working_matrix(ColorPrimaries::SGamut3Cine, WorkingColorspace::Rec709Linear);
+    // Log footage is BT.709-matrix, limited range; S-Log3 + S-Gamut3.Cine.
+    let ids = [
+        color_ids::COLOR_RANGE_LIMITED,
+        color_ids::MATRIX_BT709,
+        color_ids::TRANSFER_SLOG3,
+        color_ids::primaries_id(ColorPrimaries::SGamut3Cine),
+    ];
+    let preview = conv.convert_p010_to_rgba(&y, &uv, W, H, W * 2, W * 2, W, H, 0, ids, pack_primaries_matrix(m));
+    let codes = conv
+        .convert_p010_hdr_codes(&y, &uv, W, H, W * 2, W * 2, W, H, 0, ids, pack_primaries_matrix(m))
+        .expect("camera log must take the codes route");
+    let transfer = HdrTransfer::Log(klipp_core::ColorTransfer::SLog3);
+    let mut linear = hdr10_codes_to_scene_linear_rgba(&codes, transfer, m);
+    apply_hdr_display_tonemap(&mut linear, transfer);
+    let mut worst = 0i32;
+    for (i, px) in linear.chunks_exact(4).enumerate() {
+        for c in 0..3 {
+            let cpu = (linear_to_srgb(px[c]).clamp(0.0, 1.0) * 255.0 + 0.5) as i32;
+            worst = worst.max((cpu - preview[i * 4 + c] as i32).abs());
+        }
+    }
+    eprintln!("S-Log3: worst preview-vs-graded-path difference {worst} LSB");
+    assert!(worst <= 1, "S-Log3 preview and CPU input stage disagree by {worst} LSB");
+}
+
+/// The levels fix. S-Log3 is published over CV / 1023: 18% grey is code
+/// 420. A limited-range file stores that code as-is, and the decoder's
+/// range normalisation maps 64..940 onto 0..1 — feeding that to the curve
+/// read grey ~0.05 stops and white ~0.3 stops hot. A flat Y = 420 frame
+/// must decode to 0.18.
+#[test]
+fn slog3_published_grey_code_decodes_to_mid_grey_through_the_decoder() {
+    let Some(mut conv) = GpuP010Converter::new() else {
+        eprintln!("skipping: P010 GPU converter unavailable");
+        return;
+    };
+    let flat = |code: u32| -> (Vec<u8>, Vec<u8>) {
+        let y: Vec<u8> = (0..W * H).flat_map(|_| (((code & 0x3FF) << 6) as u16).to_le_bytes()).collect();
+        let uv: Vec<u8> = (0..(W / 2) * (H / 2) * 2).flat_map(|_| ((512u32 << 6) as u16).to_le_bytes()).collect();
+        (y, uv)
+    };
+    let m = primaries_to_working_matrix(ColorPrimaries::SGamut3Cine, WorkingColorspace::Rec709Linear);
+    let ids = [
+        color_ids::COLOR_RANGE_LIMITED,
+        color_ids::MATRIX_BT709,
+        color_ids::TRANSFER_SLOG3,
+        color_ids::primaries_id(ColorPrimaries::SGamut3Cine),
+    ];
+    let transfer = HdrTransfer::Log(klipp_core::ColorTransfer::SLog3);
+    for (code, expected, label) in [(420u32, 0.18_f32, "18% grey"), (598, 0.90, "90% white")] {
+        let (y, uv) = flat(code);
+        let codes = conv
+            .convert_p010_hdr_codes(&y, &uv, W, H, W * 2, W * 2, W, H, 0, ids, pack_primaries_matrix(m))
+            .unwrap();
+        let scene = hdr10_codes_to_scene_linear_rgba(&codes, transfer, m);
+        let g = scene[1];
+        eprintln!("S-Log3 {label}: code {code} -> {g:.4} (expected {expected})");
+        assert!(
+            (g / expected).log2().abs() < 0.02,
+            "S-Log3 {label} (code {code}) decoded to {g}, expected {expected} — levels wrong",
+        );
+    }
 }

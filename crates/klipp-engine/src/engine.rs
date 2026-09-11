@@ -9337,6 +9337,7 @@ impl PlaybackEngine {
                         width,
                         height,
                         h.transfer.transfer_id(),
+                        h.transfer.scene_scale(),
                         klipp_effects::color_wgsl::pack_primaries_matrix(h.source_to_working),
                     )
                 }
@@ -9366,7 +9367,8 @@ impl PlaybackEngine {
         };
         let t_readback = std::time::Instant::now();
         let bytes = if self.graph_executor.output_on_gpu().is_some() {
-            match self.graph_executor.encode_output_to_display_u8(width, height, hdr.is_some()) {
+            let exposure = hdr.map(|h| h.transfer.display_exposure());
+            match self.graph_executor.encode_output_to_display_u8(width, height, exposure) {
                 Some(b) => b,
                 None => return false,
             }
@@ -9377,8 +9379,8 @@ impl PlaybackEngine {
                 return false;
             }
             let mut linear = cpu_result;
-            if hdr.is_some() {
-                klipp_color::hdr::apply_hdr_display_tonemap(&mut linear);
+            if let Some(h) = hdr {
+                klipp_color::hdr::apply_hdr_display_tonemap(&mut linear, h.transfer);
             }
             self.display_encode(&linear)
         };
@@ -9547,8 +9549,8 @@ impl PlaybackEngine {
     /// what the viewer shows — the render cache, the scopes, the viewer
     /// texture — or those would capture scene-linear values above 1.0.
     fn finish_hdr_grade(&self, result: &mut [f32]) {
-        if self.grade_hdr.is_some() {
-            klipp_color::hdr::apply_hdr_display_tonemap(result);
+        if let Some(h) = self.grade_hdr.as_ref() {
+            klipp_color::hdr::apply_hdr_display_tonemap(result, h.transfer);
         }
     }
 
@@ -9626,7 +9628,7 @@ impl PlaybackEngine {
                 (None, None)
             } else if let Some(hdr) = self.grade_hdr.clone() {
                 let mut display = linear_rgba.clone();
-                klipp_color::hdr::apply_hdr_display_tonemap(&mut display);
+                klipp_color::hdr::apply_hdr_display_tonemap(&mut display, hdr.transfer);
                 let u8s = Arc::new(self.linear_rgba_to_u8_smart(&display, width, height));
                 (Some(PregradePixels::Hdr(hdr)), Some(u8s))
             } else {

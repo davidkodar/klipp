@@ -167,32 +167,78 @@ pub const DEFAULT_MASTERING_MIN_LUMA_CD_M2: f32 = 0.005;
 // time. Moving it to the end of the clip is what lets a grade see the
 // HDR range at all.
 
-/// HDR transfer characteristics decoded on input.
+/// Scene-referred transfers decoded on input: sources whose encoded
+/// range is wider than the display's, which the grade has to see before
+/// any tone map. PQ and HLG are HDR delivery formats; camera log curves
+/// (S-Log3, LogC, V-Log, Apple Log, ...) are the other kind — a camera
+/// capturing 12-15 stops. Both take the same route: code values from the
+/// decoder, scene-linear for the grade, a display tone map last.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HdrTransfer {
     /// SMPTE ST 2084.
     Pq,
     /// ARIB STD-B67 / BT.2100 HLG.
     Hlg,
+    /// A camera log curve, as the decoder's `ColorTransfer`.
+    Log(klipp_core::ColorTransfer),
 }
 
+/// Every camera log transfer the decoder can decode.
+const CAMERA_LOGS: &[klipp_core::ColorTransfer] = {
+    use klipp_core::ColorTransfer as T;
+    &[
+        T::SLog3, T::SLog2, T::VLog, T::LogC3, T::LogC4, T::CanonLog, T::CanonLog3,
+        T::RedLog3G10, T::BmdFilmGen5, T::DJIDLog, T::FLog, T::AppleLog, T::NLog, T::GoProFlat,
+    ]
+};
+
 impl HdrTransfer {
-    /// From a `klipp_core::color_ids` transfer id. `None` for every
-    /// non-HDR transfer, so callers can use it as the "is this HDR"
-    /// test as well.
     /// The `klipp_core::color_ids` transfer id, for GPU kernels.
     pub fn transfer_id(self) -> u32 {
         match self {
             Self::Pq => klipp_core::color_ids::TRANSFER_PQ,
             Self::Hlg => klipp_core::color_ids::TRANSFER_HLG,
+            Self::Log(t) => klipp_core::color_ids::transfer_id(t),
         }
     }
 
+    /// From a `klipp_core::color_ids` transfer id. `None` for every
+    /// display-referred transfer (sRGB, BT.709, ...), so callers can use
+    /// it as the "does this need the scene-referred route" test as well.
     pub fn from_transfer_id(id: u32) -> Option<Self> {
         match id {
             klipp_core::color_ids::TRANSFER_PQ => Some(Self::Pq),
             klipp_core::color_ids::TRANSFER_HLG => Some(Self::Hlg),
-            _ => None,
+            _ => CAMERA_LOGS
+                .iter()
+                .copied()
+                .find(|t| klipp_core::color_ids::transfer_id(*t) == id)
+                .map(Self::Log),
+        }
+    }
+
+    pub fn is_camera_log(self) -> bool {
+        matches!(self, Self::Log(_))
+    }
+
+    /// Multiplier from the curve's own output to scene-linear.
+    ///
+    /// PQ/HLG curves return 1.0 = 10 000 nits; this module's convention is
+    /// 1.0 = 100 nits, so 100. Camera log curves already return scene
+    /// reflectance (0.18 = mid grey), so 1.
+    pub fn scene_scale(self) -> f32 {
+        match self {
+            Self::Pq | Self::Hlg => PQ_PEAK_NITS / NITS_PER_LINEAR,
+            Self::Log(_) => 1.0,
+        }
+    }
+
+    /// Exposure ahead of the display tone map. See `HDR_DISPLAY_EXPOSURE`
+    /// and `LOG_DISPLAY_EXPOSURE` for why they differ.
+    pub fn display_exposure(self) -> f32 {
+        match self {
+            Self::Pq | Self::Hlg => HDR_DISPLAY_EXPOSURE,
+            Self::Log(_) => LOG_DISPLAY_EXPOSURE,
         }
     }
 }
@@ -206,6 +252,19 @@ impl HdrTransfer {
 /// looks, graded or not.
 pub const HDR_DISPLAY_EXPOSURE: f32 = 0.18;
 
+/// Exposure ahead of the display tone map for camera log footage: the
+/// value that keeps 18% grey at display mid grey, `filmic(0.18 * k) =
+/// 0.18` (sRGB 0.461). 90% white then lands at 0.85 and three stops over
+/// white at 0.996 — a normal-looking image whose highlights roll off
+/// instead of clipping, which is the "converted automatically" behaviour.
+///
+/// PQ uses a different constant for a principled reason, not an arbitrary
+/// one: PQ encodes absolute display luminance, and its exposure was chosen
+/// to keep the look HDR clips already had; camera log encodes scene
+/// reflectance, and the natural SDR rendering of reflectance maps grey to
+/// grey. Using PQ's 0.18 here would put mid grey at sRGB 0.16.
+pub const LOG_DISPLAY_EXPOSURE: f32 = 0.723_171;
+
 /// PQ's absolute peak, in nits.
 const PQ_PEAK_NITS: f32 = 10_000.0;
 
@@ -216,11 +275,15 @@ const PQ_PEAK_NITS: f32 = 10_000.0;
 /// before this module existed; that keeps existing HLG material looking
 /// the same rather than claiming a luminance interpretation it never had.
 pub fn hdr_code_to_scene_linear(code: f32, transfer: HdrTransfer) -> f32 {
-    let normalised = match transfer {
+    let curve = match transfer {
         HdrTransfer::Pq => crate::camera_log::pq_to_linear(code),
         HdrTransfer::Hlg => crate::camera_log::hlg_to_linear(code),
+        // For camera logs `code` is CV/1023, the domain the curves are
+        // published in. Clamped at 0 exactly as the decoder shader does,
+        // so a preview and a graded frame agree below black too.
+        HdrTransfer::Log(t) => crate::camera_log::apply_inverse_eotf(code, t),
     };
-    normalised * (PQ_PEAK_NITS / NITS_PER_LINEAR)
+    curve * transfer.scene_scale()
 }
 
 /// Narkowicz's fit of the ACES filmic curve, clamped to `[0, 1]`.
@@ -233,9 +296,10 @@ pub fn filmic(x: f32) -> f32 {
     ((x * (a * x + b)) / (x * (c * x + d) + e)).clamp(0.0, 1.0)
 }
 
-/// Scene-linear HDR channel → display-referred linear, `[0, 1]`.
-pub fn hdr_display_tonemap(scene_linear: f32) -> f32 {
-    filmic((scene_linear * HDR_DISPLAY_EXPOSURE).max(0.0))
+/// Scene-linear channel → display-referred linear, `[0, 1]`, at the given
+/// exposure (`HdrTransfer::display_exposure`).
+pub fn hdr_display_tonemap(scene_linear: f32, exposure: f32) -> f32 {
+    filmic((scene_linear * exposure).max(0.0))
 }
 
 /// Tone-map a graded scene-linear RGBA frame to display-referred linear,
@@ -244,12 +308,13 @@ pub fn hdr_display_tonemap(scene_linear: f32) -> f32 {
 /// This is the last step of an HDR clip's own processing. After it the
 /// clip is display-referred like any SDR clip, so compositing and the
 /// sRGB display encode need no HDR awareness at all.
-pub fn apply_hdr_display_tonemap(rgba: &mut [f32]) {
+pub fn apply_hdr_display_tonemap(rgba: &mut [f32], transfer: HdrTransfer) {
     use rayon::prelude::*;
+    let k = transfer.display_exposure();
     rgba.par_chunks_exact_mut(4).for_each(|px| {
-        px[0] = hdr_display_tonemap(px[0]);
-        px[1] = hdr_display_tonemap(px[1]);
-        px[2] = hdr_display_tonemap(px[2]);
+        px[0] = hdr_display_tonemap(px[0], k);
+        px[1] = hdr_display_tonemap(px[1], k);
+        px[2] = hdr_display_tonemap(px[2], k);
     });
 }
 
@@ -331,7 +396,7 @@ mod hdr_io_tests {
         for i in 0..1024u32 {
             let code = i as f32 / 1023.0;
             let old = filmic((crate::camera_log::pq_to_linear(code) * 18.0).max(0.0));
-            let new = hdr_display_tonemap(hdr_code_to_scene_linear(code, HdrTransfer::Pq));
+            let new = hdr_display_tonemap(hdr_code_to_scene_linear(code, HdrTransfer::Pq), HDR_DISPLAY_EXPOSURE);
             assert!((old - new).abs() < 1e-5, "code {i}: old {old} new {new}");
         }
     }
@@ -345,6 +410,32 @@ mod hdr_io_tests {
                 assert_eq!(*v, hdr_code_to_scene_linear(i as f32 / 1023.0, t));
             }
         }
+    }
+
+    #[test]
+    fn camera_logs_take_the_scene_referred_route_by_id() {
+        use klipp_core::ColorTransfer as T;
+        for t in CAMERA_LOGS {
+            let id = klipp_core::color_ids::transfer_id(*t);
+            assert_eq!(HdrTransfer::from_transfer_id(id), Some(HdrTransfer::Log(*t)), "{t:?}");
+        }
+        assert_eq!(HdrTransfer::from_transfer_id(klipp_core::color_ids::TRANSFER_BT709), None);
+        let slog3 = HdrTransfer::Log(T::SLog3);
+        assert!(slog3.is_camera_log());
+        assert_eq!(slog3.scene_scale(), 1.0);
+    }
+
+    /// The log display exposure is defined by one property: mid grey stays
+    /// mid grey — through the whole route, S-Log3's published 18% grey code
+    /// in, display out.
+    #[test]
+    fn log_display_exposure_keeps_mid_grey_at_mid_grey() {
+        assert!((filmic(0.18 * LOG_DISPLAY_EXPOSURE) - 0.18).abs() < 1e-5);
+        let slog3 = HdrTransfer::Log(klipp_core::ColorTransfer::SLog3);
+        let grey = hdr_code_to_scene_linear(420.0 / 1023.0, slog3);
+        assert!((grey - 0.18).abs() < 1e-4, "S-Log3 code 420 should decode to 0.18, got {grey}");
+        let shown = hdr_display_tonemap(grey, slog3.display_exposure());
+        assert!((shown - 0.18).abs() < 1e-3, "mid grey should display at 0.18, got {shown}");
     }
 
     #[test]
@@ -365,7 +456,7 @@ mod hdr_io_tests {
         assert!(peak[0] > 50.0, "PQ peak should be ~100 scene-linear, got {}", peak[0]);
         let mut prev = -1.0_f32;
         for i in 0..1024u32 {
-            let v = hdr_display_tonemap(hdr_code_to_scene_linear(i as f32 / 1023.0, HdrTransfer::Pq));
+            let v = hdr_display_tonemap(hdr_code_to_scene_linear(i as f32 / 1023.0, HdrTransfer::Pq), HDR_DISPLAY_EXPOSURE);
             assert!((0.0..=1.0).contains(&v));
             assert!(v >= prev, "tone map must be monotonic (code {i})");
             prev = v;

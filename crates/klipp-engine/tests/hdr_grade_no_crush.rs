@@ -102,7 +102,7 @@ fn grade_and_display(exec: &mut GraphExecutor, input: &[f32], graph: &NodeGraph)
     let (mut out, _) = exec
         .execute_linear(input, graph, W, H, 0.0, 0, None, None)
         .expect("grade must succeed");
-    apply_hdr_display_tonemap(&mut out);
+    apply_hdr_display_tonemap(&mut out, HdrTransfer::Pq);
     out
 }
 

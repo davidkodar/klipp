@@ -128,25 +128,34 @@ fn a_chain_seeded_from_hdr_codes_on_the_gpu_grades_like_the_cpu_path() {
 
     let mut exec = GraphExecutor::new();
     assert!(exec.prime_chain_from_gpu_hdr10_buffer(
-        &frame.gpu_codes, W, H, color_ids::TRANSFER_PQ, frame.matrix4,
+        &frame.gpu_codes, W, H, color_ids::TRANSFER_PQ, 100.0, frame.matrix4,
     ));
     let (gpu, _) = exec
         .execute_linear(&[], &graded_pq_graph(), W, H, 0.0, 0, None, None)
         .expect("a chain seeded from HDR codes must run with no CPU source");
 
     assert_eq!(gpu.len(), reference.len());
-    // Compare relatively — scene-linear reaches ~160 here — against the
-    // input's own precision. PQ's 10-bit code step is 0.9-1.0% relative
-    // across the whole range (it is built to be perceptually even), so a
-    // quarter of a step, 2.25e-3, is the line: below it, GPU `pow` and the
-    // CPU's table disagree by less than the source can express. Measured:
-    // 1.7e-3, and the picture-level test below agrees to 1 LSB.
+    // Compare against the input's own precision. PQ's 10-bit code step is
+    // 0.9-1.0% relative across its range (it is built to be perceptually
+    // even), so a quarter of a step, 2.25e-3, is the line: below it, GPU
+    // `pow` and the CPU's table disagree by less than the source can
+    // express.
+    //
+    // Relative to the *pixel's* magnitude, not each channel's own. The
+    // working-space matrix mixes channels, so a tiny relative difference in
+    // a bright channel lands as an absolute one in a dim neighbour: the
+    // worst case here is a saturated green near PQ peak, [-0.58, 108.8,
+    // -0.39], whose negative red differs by 0.003 — 3e-5 of the pixel. A
+    // per-channel denominator scored that as 3e-3.
     let worst = reference
-        .iter()
-        .zip(&gpu)
-        .map(|(a, b)| (a - b).abs() / a.abs().max(1.0))
+        .chunks_exact(4)
+        .zip(gpu.chunks_exact(4))
+        .flat_map(|(a, b)| {
+            let magnitude = a[..3].iter().fold(1.0_f32, |m, v| m.max(v.abs()));
+            (0..3).map(move |c| (a[c] - b[c]).abs() / magnitude)
+        })
         .fold(0.0_f32, f32::max);
-    eprintln!("GPU seed vs CPU input transform, graded: worst relative error {worst:.2e}");
+    eprintln!("GPU seed vs CPU input transform, graded: worst pixel-relative error {worst:.2e}");
     assert!(worst < 2.25e-3, "GPU HDR seed disagrees with the CPU path by {worst:.2e}");
 }
 
@@ -158,13 +167,13 @@ fn the_gpu_display_encode_matches_the_cpu_tonemap_and_display_transform() {
     };
     // CPU path, end to end: grade, tone-map, display encode.
     let mut expected = cpu_graded(&frame);
-    apply_hdr_display_tonemap(&mut expected);
+    apply_hdr_display_tonemap(&mut expected, HdrTransfer::Pq);
     let expected = display_transform_ws(&expected, ToneMapOp::None, WorkingColorspace::Rec709Linear);
 
     // GPU path: seed, grade, keep on GPU, encode, read back u8.
     let mut exec = GraphExecutor::new();
     assert!(exec.prime_chain_from_gpu_hdr10_buffer(
-        &frame.gpu_codes, W, H, color_ids::TRANSFER_PQ, frame.matrix4,
+        &frame.gpu_codes, W, H, color_ids::TRANSFER_PQ, 100.0, frame.matrix4,
     ));
     exec.request_output_on_gpu();
     let (cpu_side, _) = exec
@@ -172,7 +181,7 @@ fn the_gpu_display_encode_matches_the_cpu_tonemap_and_display_transform() {
         .expect("grade");
     assert!(exec.output_on_gpu().is_some(), "the result should have stayed on the GPU");
     assert!(cpu_side.is_empty(), "nothing is downloaded when the result stays on the GPU");
-    let got = exec.encode_output_to_display_u8(W, H, true).expect("GPU display encode");
+    let got = exec.encode_output_to_display_u8(W, H, Some(HdrTransfer::Pq.display_exposure())).expect("GPU display encode");
 
     assert_eq!(got.len(), expected.len());
     let worst = got
@@ -200,7 +209,7 @@ fn output_on_gpu_is_single_shot_and_refused_when_the_result_is_tapped() {
     let mut exec = GraphExecutor::new();
 
     // Not requested: normal download.
-    assert!(exec.prime_chain_from_gpu_hdr10_buffer(&frame.gpu_codes, W, H, color_ids::TRANSFER_PQ, frame.matrix4));
+    assert!(exec.prime_chain_from_gpu_hdr10_buffer(&frame.gpu_codes, W, H, color_ids::TRANSFER_PQ, 100.0, frame.matrix4));
     let (out, _) = exec.execute_linear(&[], &graph, W, H, 0.0, 0, None, None).unwrap();
     assert!(exec.output_on_gpu().is_none());
     assert_eq!(out.len(), (W * H * 4) as usize);
@@ -210,7 +219,7 @@ fn output_on_gpu_is_single_shot_and_refused_when_the_result_is_tapped() {
     // happens. A tapped node cannot chain, so with only a GPU seed the run
     // reports CpuSourceRequired — the engine's cue to supply real pixels,
     // which is what this does.
-    assert!(exec.prime_chain_from_gpu_hdr10_buffer(&frame.gpu_codes, W, H, color_ids::TRANSFER_PQ, frame.matrix4));
+    assert!(exec.prime_chain_from_gpu_hdr10_buffer(&frame.gpu_codes, W, H, color_ids::TRANSFER_PQ, 100.0, frame.matrix4));
     exec.request_output_on_gpu();
     assert!(matches!(
         exec.execute_linear(&[], &graph, W, H, 0.0, 0, Some(final_node), None),
@@ -224,7 +233,7 @@ fn output_on_gpu_is_single_shot_and_refused_when_the_result_is_tapped() {
     assert_eq!(out.len(), (W * H * 4) as usize);
 
     // The declined request does not leak into the next run.
-    assert!(exec.prime_chain_from_gpu_hdr10_buffer(&frame.gpu_codes, W, H, color_ids::TRANSFER_PQ, frame.matrix4));
+    assert!(exec.prime_chain_from_gpu_hdr10_buffer(&frame.gpu_codes, W, H, color_ids::TRANSFER_PQ, 100.0, frame.matrix4));
     let (out, _) = exec.execute_linear(&[], &graph, W, H, 0.0, 0, None, None).unwrap();
     assert!(exec.output_on_gpu().is_none(), "the request is single-shot");
     assert_eq!(out.len(), (W * H * 4) as usize);
