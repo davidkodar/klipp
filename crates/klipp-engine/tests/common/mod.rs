@@ -21,14 +21,31 @@ pub const FPS: u32 = 25;
 /// (`tags`, e.g. `color_trc=smpte2084:...`) — FFV1 in Matroska keeps
 /// only tags set on the frames. `None` without ffmpeg.
 pub fn source(name: &str, width: u32, height: u32, tags: &str) -> Option<PathBuf> {
-    let out = std::env::temp_dir().join(format!("klipp-parked-{name}-{width}x{height}.mkv"));
+    encoded(name, width, height, tags, Fps::new(FPS, 1), &["-c:v", "ffv1"], "mkv")
+}
+
+/// [`source`] as 10-bit HEVC with a keyframe every second — long-GOP, as
+/// camera and delivery files are, and decoded by NVDEC where there is one.
+pub fn hevc_source(name: &str, width: u32, height: u32, tags: &str) -> Option<PathBuf> {
+    hevc_source_at(name, width, height, tags, Fps::new(FPS, 1))
+}
+
+/// [`hevc_source`] at another frame rate (29.97 is `Fps::new(30000, 1001)`).
+pub fn hevc_source_at(name: &str, width: u32, height: u32, tags: &str, fps: Fps) -> Option<PathBuf> {
+    let gop = fps.as_f64().round().to_string();
+    encoded(name, width, height, tags, fps, &["-c:v", "libx265", "-preset", "ultrafast", "-x265-params", &format!("keyint={gop}:min-keyint={gop}:log-level=error")], "mp4")
+}
+
+fn encoded(name: &str, width: u32, height: u32, tags: &str, fps: Fps, codec: &[&str], ext: &str) -> Option<PathBuf> {
+    let out = std::env::temp_dir().join(format!("klipp-parked-{name}-{width}x{height}.{ext}"));
     if out.exists() {
         return Some(out);
     }
+    let rate = format!("{}/{}", fps.num, fps.den);
     let ok = std::process::Command::new("ffmpeg")
-        .args(["-nostdin", "-v", "error", "-y", "-f", "lavfi", "-i", &format!("testsrc2=s={width}x{height}:r={FPS}:d=2")])
+        .args(["-nostdin", "-v", "error", "-y", "-f", "lavfi", "-i", &format!("testsrc2=s={width}x{height}:r={rate}:d=2")])
         .args(["-vf", &format!("format=yuv420p10le,setparams=range=tv:{tags}")])
-        .args(["-c:v", "ffv1"])
+        .args(codec)
         .arg(&out)
         .status()
         .ok()?
@@ -52,11 +69,19 @@ fn exposure_graph(stops: f32) -> NodeGraph {
     NodeGraph { output_node_id: nodes[2].id, nodes, edges, node_positions, working_space_override: None, frames: vec![], sticky_notes: vec![] }
 }
 
+/// Frame `f` as a timeline position at `fps`: `f * den` ticks of `num`
+/// a second.
+pub fn frame_tc(f: i64, fps: Fps) -> RationalTime {
+    RationalTime { value: f * fps.den as i64, rate: fps.num }
+}
+
 /// The engine, running headless on one clip of `src` graded with an
 /// Exposure node, parked on frame 10.
 pub struct Parked {
     cmd: crossbeam_channel::Sender<AppCommand>,
     fb: Arc<Mutex<FrameBuffer>>,
+    playhead: Arc<Mutex<Option<RationalTime>>>,
+    pub fps: Fps,
     perf: Arc<Mutex<PerfRing>>,
     params: Arc<ArrayQueue<ParamChange>>,
     thread: Option<std::thread::JoinHandle<()>>,
@@ -67,7 +92,12 @@ pub struct Parked {
 
 impl Parked {
     pub fn start(src: PathBuf, width: u32, height: u32) -> Self {
-        let tc = |f: i64| RationalTime::from_frames(f, FPS);
+        Self::start_at(src, width, height, Fps::new(FPS, 1))
+    }
+
+    /// [`Self::start`] on a timeline at `fps`, for a source at that rate.
+    pub fn start_at(src: PathBuf, width: u32, height: u32, fps: Fps) -> Self {
+        let tc = |f: i64| frame_tc(f, fps);
         let id = MediaId::new();
         let mut clip = Clip { kind: ClipKind::Media { media_id: id }, ..Clip::gap(tc(0), tc(50)) };
         clip.source_in = tc(0);
@@ -75,7 +105,7 @@ impl Parked {
         clip.node_graph = exposure_graph(0.5);
         let (clip_id, source_node, exposure_node) = (clip.id, clip.node_graph.nodes[0].id, clip.node_graph.nodes[1].id);
         let mut seq = Sequence::new_default();
-        seq.fps = Fps::new(FPS, 1);
+        seq.fps = fps;
         seq.resolution = Resolution { width, height };
         let mut t = Track::new("V1", TrackKind::Video);
         t.clips = vec![clip];
@@ -87,12 +117,20 @@ impl Parked {
             path: src.clone(),
             kind: klipp_media::MediaItemKind::File,
             resolution: Resolution { width, height },
-            ..MediaItem::new_synthetic_title(id, src.display().to_string(), tc(50), Fps::new(FPS, 1))
+            ..MediaItem::new_synthetic_title(id, src.display().to_string(), tc(50), fps)
         });
 
         let (cmd, cmd_rx) = crossbeam_channel::unbounded();
         let (ev_tx, ev_rx) = crossbeam_channel::unbounded::<AppEvent>();
-        std::thread::spawn(move || while ev_rx.recv().is_ok() {});
+        let playhead = Arc::new(Mutex::new(None));
+        let reported = Arc::clone(&playhead);
+        std::thread::spawn(move || {
+            while let Ok(ev) = ev_rx.recv() {
+                if let AppEvent::PlayheadMoved(tc) = ev {
+                    *reported.lock().unwrap() = Some(tc);
+                }
+            }
+        });
         let fb = Arc::new(Mutex::new(FrameBuffer::new(width, height)));
         let perf = Arc::new(Mutex::new(PerfRing::default()));
         let engine = PlaybackEngine::new(
@@ -102,7 +140,7 @@ impl Parked {
         );
         let params = engine.param_change_queue();
         let thread = Some(std::thread::spawn(move || engine.run()));
-        let parked = Self { cmd, fb, perf, params, thread, clip_id, source_node, exposure_node };
+        let parked = Self { cmd, fb, playhead, fps, perf, params, thread, clip_id, source_node, exposure_node };
 
         parked.send(AppCommand::SetPlayhead(tc(10)));
         let g = parked.generation();
@@ -113,6 +151,12 @@ impl Parked {
 
     pub fn send(&self, c: AppCommand) {
         self.cmd.send(c).unwrap();
+    }
+
+    /// The playhead the engine last reported, as a frame number.
+    pub fn frame_number(&self) -> Option<f64> {
+        let tc = (*self.playhead.lock().unwrap())?;
+        Some(tc.value as f64 * self.fps.num as f64 / (tc.rate as f64 * self.fps.den as f64))
     }
 
     pub fn generation(&self) -> u64 {

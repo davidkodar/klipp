@@ -474,7 +474,9 @@ impl TransportBar {
         }
 
         let text_editing = ctx.wants_keyboard_input() || state.editing_timecode || state.viewer_text_edit;
-        let fps_rate = state.fps.rate() as i64;
+        // One second, in frames (what SeekRelative counts). `fps.rate()`
+        // is the numerator — 30000 at 29.97 — not frames a second.
+        let fps_rate = state.fps.as_f64().round() as i64;
         ctx.input(|i| {
             // Spacebar: play/pause — UNLESS the file browser has keyboard
             // focus, in which case Spacebar belongs to Quick Look. Only

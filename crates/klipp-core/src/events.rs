@@ -610,6 +610,8 @@ pub enum AppCommand {
     Pause,
     Stop,
     SeekTo(Timecode),
+    /// Move the playhead by this many *frames* (±1 steps one frame). Not
+    /// timecode ticks: at 29.97 fps a frame is 1001 of those.
     SeekRelative(i64),
     SetPlayheadFromTimecode { input: String },
     RequestWhiteBalanceSample { nx: f32, ny: f32 },

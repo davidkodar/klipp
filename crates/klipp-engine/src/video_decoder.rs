@@ -855,6 +855,7 @@ mod bsf_ffi {
         pub fn av_bsf_init(ctx: *mut AVBSFContext) -> c_int;
         pub fn av_bsf_send_packet(ctx: *mut AVBSFContext, pkt: *mut AVPacket) -> c_int;
         pub fn av_bsf_receive_packet(ctx: *mut AVBSFContext, pkt: *mut AVPacket) -> c_int;
+        pub fn av_bsf_flush(ctx: *mut AVBSFContext);
         pub fn av_bsf_free(ctx: *mut *mut AVBSFContext);
     }
 }
@@ -927,6 +928,14 @@ impl BsfContext {
 
     pub(crate) fn name(&self) -> &'static str {
         self.name
+    }
+
+    /// Reset the filter for a seek: drop what it holds and clear its
+    /// end-of-stream state. Once the end of the file has been read, the
+    /// filter otherwise refuses every packet ("A non-NULL packet sent
+    /// after an EOF") and the decoder never produces another frame.
+    pub(crate) fn flush(&self) {
+        unsafe { bsf_ffi::av_bsf_flush(self.ptr) };
     }
 }
 
@@ -2318,6 +2327,9 @@ fn decode_thread_main(
             let _ = format_ctx.seek(ts, ..ts);
             packets = format_ctx.packets();
             decoder.flush();
+            if let Some(bsf) = bsf_ctx.as_ref() {
+                bsf.flush();
+            }
             frame_queue.lock().unwrap_or_else(|e| e.into_inner()).clear();
             seek_target = Some(secs);
             eof_sent = false;
@@ -2373,6 +2385,9 @@ fn decode_thread_main(
                     let _ = format_ctx.seek(ts, ..ts);
                     packets = format_ctx.packets();
                     decoder.flush();
+                    if let Some(bsf) = bsf_ctx.as_ref() {
+                        bsf.flush();
+                    }
                     frame_queue.lock().unwrap_or_else(|e| e.into_inner()).clear();
                     seek_target = Some(secs);
                     eof_sent = false;

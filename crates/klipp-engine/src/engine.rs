@@ -98,19 +98,18 @@ fn downsample_srgb_u8_to_thumb(src: &[u8], src_w: u32, src_h: u32, dst_w: u32, d
 }
 
 fn u8_rgba_to_linear(rgba: &[u8]) -> Vec<f32> {
+    use rayon::prelude::*;
     let srgb_lut = srgb_u8_to_linear_lut();
     let alpha_lut = alpha_u8_to_f32_lut();
-    let n_pixels = rgba.len() / 4;
-    let mut out = Vec::with_capacity(n_pixels * 4);
-    // SAFETY: we write exactly n_pixels * 4 floats below.
-    unsafe { out.set_len(n_pixels * 4); }
-    for (i, chunk) in rgba.chunks_exact(4).enumerate() {
-        let o = i * 4;
-        out[o]     = srgb_lut[chunk[0] as usize];
-        out[o + 1] = srgb_lut[chunk[1] as usize];
-        out[o + 2] = srgb_lut[chunk[2] as usize];
-        out[o + 3] = alpha_lut[chunk[3] as usize];
-    }
+    let mut out = vec![0.0f32; rgba.len() / 4 * 4];
+    // In parallel: one thread took ~50 ms over a 4K frame, most of a
+    // render-cache hit's cost.
+    out.par_chunks_exact_mut(4).zip(rgba.par_chunks_exact(4)).for_each(|(o, chunk)| {
+        o[0] = srgb_lut[chunk[0] as usize];
+        o[1] = srgb_lut[chunk[1] as usize];
+        o[2] = srgb_lut[chunk[2] as usize];
+        o[3] = alpha_lut[chunk[3] as usize];
+    });
     out
 }
 
@@ -253,6 +252,11 @@ pub static UI_WANTS_FRAMES: AtomicBool = AtomicBool::new(false);
 /// dropped, so observing `true` means every GPU resource the engine
 /// owned has already been released.
 pub static ENGINE_SHUTDOWN_COMPLETE: AtomicBool = AtomicBool::new(false);
+
+/// Quiet time before the paused engine pre-renders nearby frames into the
+/// render cache: past the gap between steps of someone stepping through
+/// frames, short of anyone noticing the cache is late.
+const PRERENDER_AFTER_IDLE: Duration = Duration::from_millis(400);
 
 /// Fine-grained "last waypoint reached" marker for the watchdog. The
 /// engine thread updates this at each major stage of a tick; when the
@@ -954,6 +958,14 @@ pub struct PlaybackEngine {
     /// pre-seek frame until the user pressed an arrow key — that path
     /// pops from the now-filled queue immediately.
     pending_paused_refresh: bool,
+    /// When `pending_paused_refresh` was set, and the nearest frame short
+    /// of the playhead it has decoded so far, held back rather than shown
+    /// while the frame at the playhead is still coming.
+    paused_refresh_since: Option<std::time::Instant>,
+    paused_refresh_best: Option<crate::types::LinearFrame>,
+    /// When the engine last received a command; the idle pre-render waits
+    /// for `PRERENDER_AFTER_IDLE` of quiet.
+    last_command_at: std::time::Instant,
     /// Full-quality parked refresh: when optimised playback runs on
     /// the skim substitute, a parked playhead re-decodes ONE frame
     /// from the original media (background decoder, polled per tick)
@@ -1373,6 +1385,9 @@ impl PlaybackEngine {
             render_hashes: HashMap::new(),
             thumb_capture_suspended: false,
             pending_paused_refresh: false,
+            paused_refresh_since: None,
+            paused_refresh_best: None,
+            last_command_at: std::time::Instant::now(),
             parked_refresh: None,
             parked_refresh_done_for: None,
             parked_since: None,
@@ -1604,6 +1619,9 @@ impl PlaybackEngine {
             // Coalesce: keep only the last seek/setplayhead, drop earlier ones
             let commands = coalesce_commands(commands);
             let had_commands = !commands.is_empty();
+            if had_commands {
+                self.last_command_at = std::time::Instant::now();
+            }
 
             mark_stage(EngineStage::CommandDrain);
             for cmd in commands {
@@ -1713,11 +1731,14 @@ impl PlaybackEngine {
                     self.force_full_res_regrade = false;
                     self.dbg_regrade_count += 1;
                     self.regrade_cached_frame();
-                } else if !had_commands {
+                } else if !had_commands && self.last_command_at.elapsed() >= PRERENDER_AFTER_IDLE {
                     // Engine is genuinely idle — pre-render nearby frames
                     // into cache. Skip prerender when we just applied param
                     // changes so the next tick re-runs through the fresh
-                    // graph instead of caching stale output.
+                    // graph instead of caching stale output. And not between
+                    // the commands of someone stepping or clicking through
+                    // frames: one pre-render is a full render (~100 ms at
+                    // 4K), and the next step waited for it.
                     self.prerender_cache_frames();
                 }
             }
@@ -2085,7 +2106,7 @@ impl PlaybackEngine {
                     } else {
                         let seq_dur = self.sequence_duration();
                         let new_tc = RationalTime {
-                            value: self.playhead.value + frames,
+                            value: self.playhead.value + frames * self.frame_ticks(),
                             rate: self.playhead.rate,
                         };
                         let clamped = RationalTime {
@@ -2462,6 +2483,8 @@ impl PlaybackEngine {
                 // so a fresh snapshot must be built on the next `post_process_rgba_inner`.
                 self.current_grade_hash = 0;
                 self.current_graph_arc = None;
+                // The project's frame rate may be what changed.
+                self.sync_fps_to_sequence();
                 // Sync per-clip volume/pan to active audio sources
                 self.sync_clip_volumes();
                 // Restart audio sources only when audio-relevant state changed.
@@ -4841,11 +4864,26 @@ impl PlaybackEngine {
         }
     }
 
+    /// Take the timeline's frame rate, which positions on it are counted
+    /// in. Playback start always did; a timeline only ever seeked and
+    /// stepped on paused kept the engine's 24 fps default, so at 29.97 a
+    /// stepped frame's position was snapped to 1/24 s. No timeline (a
+    /// file opened on its own) keeps the file's rate.
+    fn sync_fps_to_sequence(&mut self) {
+        let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
+        if !seq.tracks.is_empty() {
+            self.fps = seq.fps;
+        }
+    }
+
     fn seek_in_sequence(&mut self, tc: Timecode) {
         self.seek_in_sequence_with_timeout(tc, Duration::from_millis(50));
     }
 
     fn seek_in_sequence_with_timeout(&mut self, tc: Timecode, grab_timeout: Duration) {
+        self.sync_fps_to_sequence();
+        // A frame held back for the previous seek is not this one's.
+        self.paused_refresh_best = None;
         // Clear frame cache on explicit seek (cache is only valid for sequential stepping)
         self.frame_cache.clear();
         self.last_synth_frame_rendered = None;
@@ -4997,6 +5035,7 @@ impl PlaybackEngine {
                     // running and let the per-tick paused branch
                     // post-process the frame the moment it lands.
                     self.pending_paused_refresh = true;
+                    self.paused_refresh_since = Some(std::time::Instant::now() - grab_timeout);
                 }
                 // Play scrub chirp (~40ms snippet at the seek position) unless
                 // the user has disabled audio during a scrub.
@@ -5080,7 +5119,10 @@ impl PlaybackEngine {
 
     /// Step forward or backward by one frame without a full seek.
     fn step_frame(&mut self, direction: i64) {
-        let target_frame = self.playhead.value + direction;
+        // Positions here are playhead ticks (frame_cache is keyed by
+        // them too); a frame is `frame_ticks` of them.
+        let step = self.frame_ticks();
+        let target_frame = self.playhead.value + direction * step;
 
         // Check frame cache first (works for both forward AND backward).
         // The cache stores sRGB u8 — bridge at this viewer seam.
@@ -5209,7 +5251,7 @@ impl PlaybackEngine {
             // Backward: cache miss. Seek to target AND prefill cache with nearby frames.
             // Strategy: seek to (target - 30) and decode forward to fill cache,
             // so subsequent backward steps are instant cache hits.
-            let prefetch_start = (target_frame - 30).max(0);
+            let prefetch_start = (target_frame - 30 * step).max(0);
             let seek_tc = RationalTime {
                 value: prefetch_start,
                 rate: self.playhead.rate,
@@ -5270,7 +5312,7 @@ impl PlaybackEngine {
                     }
 
                     // Stop after caching a few frames past target
-                    if frame_num > target_frame + 5 { break; }
+                    if frame_num > target_frame + 5 * step { break; }
                     continue;
                 }
                 std::thread::sleep(Duration::from_millis(1));
@@ -5505,13 +5547,15 @@ impl PlaybackEngine {
     fn grab_single_frame_timeout(&mut self, timeout: Duration) -> bool {
         let deadline = std::time::Instant::now() + timeout;
         let mut best = None;
+        let mut settled = false;
         while std::time::Instant::now() < deadline {
             if self.take_v1_frame_for_playhead(&mut best) && best.is_some() {
+                settled = true;
                 break;
             }
             std::thread::sleep(Duration::from_millis(2));
         }
-        if let Some(frame) = best {
+        if let Some(frame) = best.take_if(|_| settled) {
             // The whole frame, overlays and mattes included: the other
             // clips' streams are waited for, briefly, before it renders.
             self.present_frame(Some(streams::HeldFrame::from_frame(frame)));
@@ -5520,23 +5564,38 @@ impl PlaybackEngine {
             }
             return true;
         }
-        // Timed out without a frame. DO NOT pause the decoder here — the
-        // caller may set `pending_paused_refresh` so the per-tick paused
-        // branch picks up the frame when it finally arrives. If the caller
-        // doesn't care (e.g. initial load), it will get paused elsewhere.
+        // Timed out before the frame at the playhead. DO NOT pause the
+        // decoder here — the caller may set `pending_paused_refresh` so the
+        // per-tick paused branch picks up the frame when it finally
+        // arrives. A frame short of the playhead that did arrive is kept
+        // for it: shown then, it would have been left on screen with the
+        // decoder paused, as if it were the frame at the playhead.
+        self.paused_refresh_best = best;
         false
     }
 
-    /// Per-tick handler for `pending_paused_refresh`. Pops one frame the
+    /// Per-tick handler for `pending_paused_refresh`. Pops the frames the
     /// decoder has produced since the timed-out seek, runs the full
-    /// post_process pipeline on it (which captures per-node thumbs when
-    /// V2 canvas is open), and pauses the decoder. Returns true on
-    /// success so the caller can clear the flag. Returns false and leaves
-    /// the decoder running when the queue is still empty.
+    /// post_process pipeline on the one at the playhead (which captures
+    /// per-node thumbs when V2 canvas is open), and pauses the decoder.
+    /// Returns true on success so the caller can clear the flag. Returns
+    /// false and leaves the decoder running while that frame is still
+    /// coming.
+    ///
+    /// A frame short of the playhead is shown only once the seek has run
+    /// `PROGRESS_AFTER` — then a slow seek shows where it has got to. A
+    /// quick one would otherwise pay a full render (~100 ms at 4K) for a
+    /// frame that is not the playhead's, just before the one that is.
     fn try_drain_paused_refresh_frame(&mut self) -> bool {
-        let mut best = None;
+        const PROGRESS_AFTER: Duration = Duration::from_millis(200);
+        let mut best = self.paused_refresh_best.take();
         let settled = self.take_v1_frame_for_playhead(&mut best);
         let Some(frame) = best else { return false };
+        let slow = self.paused_refresh_since.is_none_or(|t| t.elapsed() >= PROGRESS_AFTER);
+        if !settled && !slow {
+            self.paused_refresh_best = Some(frame);
+            return false;
+        }
         self.present_frame(Some(streams::HeldFrame::from_frame(frame)));
         if !settled {
             // Shown, but a closer frame is still coming: keep draining.
@@ -6324,6 +6383,18 @@ impl PlaybackEngine {
     /// decoder's frame from the pre-grade cache, every other clip's from
     /// its stream. Called whenever something that changes the picture
     /// changes while paused.
+    /// Playhead ticks in one frame. `Timecode.value` counts `fps.rate()` —
+    /// the numerator — per second, so a frame is 1001 ticks at 23.976,
+    /// 29.97 and 59.94 fps and 1 at integer rates. Frame counts (a step, a
+    /// jump of N frames) must be scaled by this before they meet a
+    /// playhead. The timeline's rate, not `self.fps`: that one follows the
+    /// timeline only once playback starts, and a timeline parked on since
+    /// it was opened still has the engine's 24 fps default there.
+    fn frame_ticks(&self) -> i64 {
+        let fps = self.sequence.read().unwrap_or_else(|e| e.into_inner()).fps;
+        ((self.playhead.rate as f64 / fps.as_f64()).round() as i64).max(1)
+    }
+
     fn regrade_cached_frame(&mut self) {
         mark_stage(EngineStage::PausedRegrade);
         // A slider step on a frame the renderer would only grade.
