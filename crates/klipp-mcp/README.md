@@ -54,6 +54,7 @@ reports clearly if it cannot find it.
 | `klipp_add_node` / `klipp_remove_node` / `klipp_connect_nodes` | Build a grade graph |
 | `klipp_set_node_param` | Set one numeric grade parameter |
 | `klipp_toggle_node` | Bypass a node |
+| `klipp_set_log_format` | Declare a clip's camera log / HDR encoding (S-Log3, V-Log, LogC3, …) when the file doesn't say |
 | `klipp_screenshot` | PNG of the current viewer frame, downscaled by default |
 | `klipp_perf` | Frame timings, drops, GPU→CPU readback counters |
 | `klipp_log_tail` | Tail of `klipp-debug.log` |

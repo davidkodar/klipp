@@ -43,7 +43,7 @@ const WRITE_TOOLS: &[&str] = &[
     "klipp_play", "klipp_pause", "klipp_stop", "klipp_seek",
     "klipp_append_clip", "klipp_remove_clip", "klipp_select_clip",
     "klipp_add_node", "klipp_remove_node", "klipp_connect_nodes",
-    "klipp_set_node_param", "klipp_toggle_node",
+    "klipp_set_node_param", "klipp_toggle_node", "klipp_set_log_format",
 ];
 
 fn main() {
@@ -266,6 +266,11 @@ fn call_tool(name: &str, args: &Value) -> Result<Vec<Value>, String> {
             "clip_id": arg_str(args, "clip_id")?,
             "node_id": arg_str(args, "node_id")?,
         }),
+        "klipp_set_log_format" => json!({
+            "method": "set_log_format",
+            "clip_id": arg_str(args, "clip_id")?,
+            "format": arg_str(args, "format")?,
+        }),
         "klipp_screenshot" => {
             let mut v = json!({ "method": "screenshot" });
             if let Some(p) = args.get("path").and_then(|v| v.as_str()) {
@@ -455,6 +460,22 @@ fn tool_definitions() -> Vec<Value> {
         tool("klipp_toggle_node", "Enable or disable a grade node (a bypass toggle).",
              json!({ "clip_id": { "type": "string" }, "node_id": { "type": "string" } }),
              vec!["clip_id", "node_id"]),
+        tool("klipp_set_log_format",
+             "Set the camera log (or HDR) encoding a clip was recorded in, for footage \
+              whose file metadata does not say (most camera log files do not). Klipp \
+              then decodes it to scene-linear for grading and shows it converted to \
+              normal contrast. Applies to the clip's media, so every clip of the same \
+              file follows. klipp_list_media shows each file's detected and effective \
+              format.",
+             json!({
+                 "clip_id": { "type": "string" },
+                 "format": {
+                     "type": "string",
+                     "enum": klipp_control::LOG_FORMAT_NAMES,
+                     "description": "Srgb for ordinary video; SLog3, VLog, LogC3, CanonLog3, … for camera log"
+                 },
+             }),
+             vec!["clip_id", "format"]),
         tool("klipp_screenshot",
              "Capture what the viewer is currently showing, as a PNG. Returns the file \
               path, and inlines the image when it is small enough. This is how to \

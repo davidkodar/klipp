@@ -157,6 +157,28 @@ fn clip_id(s: &str) -> Result<klipp_core::ClipId, String> {
     Ok(klipp_core::ClipId(parse_uuid(s, "clip_id")?))
 }
 
+/// Every `LogFormat` a client may name, in the spelling the wire uses.
+pub const LOG_FORMAT_NAMES: &[&str] = &[
+    "Srgb", "Linear", "LogC3", "LogC4", "SLog2", "SLog3", "CanonLog", "CanonLog3",
+    "VLog", "NLog", "FLog", "DJIDLog", "GoProFlat", "AppleLog", "LeicaLLog",
+    "RedLog3G10", "BmdFilmGen5", "HLG", "PQ",
+];
+
+fn parse_log_format(name: &str) -> Result<klipp_core::LogFormat, String> {
+    serde_json::from_value(json!(name)).map_err(|_| {
+        format!("unknown log format {name:?}; expected one of {}", LOG_FORMAT_NAMES.join(", "))
+    })
+}
+
+fn log_format_json(m: &klipp_media::MediaItem) -> serde_json::Value {
+    json!({
+        // What the file's metadata says, and what Klipp decodes it as —
+        // the user's choice when they made one, the detection otherwise.
+        "detected": format!("{:?}", m.detected_log_format),
+        "effective": format!("{:?}", m.effective_log_format()),
+    })
+}
+
 fn handle(ctx: &ControlContext, cmd: ControlCommand) -> Result<serde_json::Value, String> {
     let send = |c: AppCommand| -> Result<serde_json::Value, String> {
         // Read the generation *before* queueing, so any frame rendered in
@@ -249,6 +271,7 @@ fn handle(ctx: &ControlContext, cmd: ControlCommand) -> Result<serde_json::Value
                                     "media_id": m.id.0.to_string(),
                                     "filename": m.filename,
                                     "path": m.path.to_string_lossy(),
+                                    "log_format": log_format_json(m),
                                 })),
                         })).collect::<Vec<_>>(),
                     })
@@ -270,6 +293,7 @@ fn handle(ctx: &ControlContext, cmd: ControlCommand) -> Result<serde_json::Value
                     "height": m.resolution.height,
                     "video_codec": m.video_codec,
                     "has_audio": m.has_audio,
+                    "log_format": log_format_json(m),
                 })).collect::<Vec<_>>(),
             }))
         }
@@ -346,6 +370,11 @@ fn handle(ctx: &ControlContext, cmd: ControlCommand) -> Result<serde_json::Value
                 clip_id: clip_id(&c)?,
                 node_id: parse_uuid(&node_id, "node_id")?,
             })
+        }
+
+        ControlCommand::SetLogFormat { clip_id: c, format } => {
+            let log_format = parse_log_format(&format)?;
+            send(AppCommand::SetClipLogFormat { clip_id: clip_id(&c)?, log_format })
         }
 
         ControlCommand::Screenshot { path, max_width, min_generation, timeout_ms } => {
@@ -502,4 +531,35 @@ fn write_png(
     let mut writer = encoder.write_header().map_err(|e| format!("png header: {e}"))?;
     writer.write_image_data(rgba).map_err(|e| format!("png data: {e}"))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Exhaustive on purpose: a variant added to `LogFormat` stops this
+    /// compiling until it is given a name in `LOG_FORMAT_NAMES` too.
+    fn wire_name(f: klipp_core::LogFormat) -> &'static str {
+        use klipp_core::LogFormat as L;
+        match f {
+            L::Srgb => "Srgb", L::Linear => "Linear", L::LogC3 => "LogC3", L::LogC4 => "LogC4",
+            L::SLog2 => "SLog2", L::SLog3 => "SLog3", L::CanonLog => "CanonLog",
+            L::CanonLog3 => "CanonLog3", L::VLog => "VLog", L::NLog => "NLog", L::FLog => "FLog",
+            L::DJIDLog => "DJIDLog", L::GoProFlat => "GoProFlat", L::AppleLog => "AppleLog",
+            L::LeicaLLog => "LeicaLLog", L::RedLog3G10 => "RedLog3G10",
+            L::BmdFilmGen5 => "BmdFilmGen5", L::HLG => "HLG", L::PQ => "PQ",
+        }
+    }
+
+    #[test]
+    fn log_format_names_cover_the_enum_and_round_trip() {
+        let mut seen = std::collections::HashSet::new();
+        for name in LOG_FORMAT_NAMES {
+            let f = parse_log_format(name).unwrap_or_else(|e| panic!("{e}"));
+            assert_eq!(wire_name(f), *name);
+            assert!(seen.insert(*name), "{name} listed twice");
+        }
+        assert_eq!(seen.len(), 19, "wire_name has 19 arms; every one must be listed");
+        assert!(parse_log_format("slog3").is_err(), "names are case-sensitive");
+    }
 }

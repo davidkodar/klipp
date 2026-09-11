@@ -86,6 +86,12 @@ pub enum ControlCommand {
         value: f32,
     },
     ToggleNodeEnabled { clip_id: String, node_id: String },
+    /// Tell Klipp what camera log (or HDR) encoding a clip's media was
+    /// recorded in — for footage whose file metadata does not say. Applies
+    /// to the media, so every clip of the same file follows. `format` is a
+    /// `LogFormat` name: "SLog3", "VLog", "LogC3", …, or "Srgb" for
+    /// ordinary display-referred video.
+    SetLogFormat { clip_id: String, format: String },
 
     // ── Observation ────────────────────────────────────────────────
     /// Write the current viewer frame to a PNG. Returns the path and
