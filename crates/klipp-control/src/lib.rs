@@ -392,6 +392,17 @@ fn handle(ctx: &ControlContext, cmd: ControlCommand) -> Result<serde_json::Value
                 }
                 _ => (data[..expected].to_vec(), width, height),
             };
+            // A relative path would resolve against *Klipp's* working
+            // directory, not the caller's — which is how a batch of test
+            // screenshots once landed in the repo root. Refuse it.
+            if let Some(p) = path.as_deref() {
+                if !std::path::Path::new(p).is_absolute() {
+                    return Err(format!(
+                        "screenshot path must be absolute (got {p:?}); a relative path \
+                         would resolve against Klipp's working directory"
+                    ));
+                }
+            }
             let out = path.map(std::path::PathBuf::from).unwrap_or_else(|| {
                 std::env::temp_dir().join(format!(
                     "klipp-screenshot-{}.png",

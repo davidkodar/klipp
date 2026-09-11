@@ -232,6 +232,10 @@ fn control_socket_reads_state_and_forwards_commands() {
     );
     let _ = std::fs::remove_file(&shot_path);
 
+    let rel = h.call(json!({ "method": "screenshot", "path": "relative.png" }));
+    assert_eq!(rel["ok"], json!(false), "relative screenshot paths must be refused");
+    assert!(!std::path::Path::new("relative.png").exists(), "and nothing written");
+
     // ── Errors are reported, not swallowed ─────────────────────────
     let bad = h.call(json!({ "method": "get_grade", "clip_id": "not-a-uuid" }));
     assert_eq!(bad["ok"], json!(false));
