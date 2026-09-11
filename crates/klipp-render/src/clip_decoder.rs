@@ -38,6 +38,10 @@ pub struct RenderDecoder {
     scaler: ffmpeg_next::software::scaling::Context,
     /// HW download scaler (raw sws context for NV12→RGBA after GPU download).
     hw_scaler: Option<*mut ffmpeg_next::ffi::SwsContext>,
+    /// The source's Y'CbCr matrix and range, resolved from its stream tags
+    /// the same way the viewer resolves them (untagged HD is BT.709).
+    yuv_matrix: klipp_core::ColorMatrix,
+    yuv_range: klipp_core::ColorRange,
     /// Active hardware acceleration mode.
     hw_accel: HwAccel,
     /// Target output dimensions.
@@ -139,7 +143,7 @@ impl RenderDecoder {
         // Software scaler: source format → RGBA at target resolution.
         // For HW decode, this is only used as fallback; the main path uses
         // download_hw_frame with raw sws for NV12→RGBA.
-        let scaler = ffmpeg_next::software::scaling::Context::get(
+        let mut scaler = ffmpeg_next::software::scaling::Context::get(
             decoder.format(),
             decoder.width(),
             decoder.height(),
@@ -149,6 +153,21 @@ impl RenderDecoder {
             ffmpeg_next::software::scaling::Flags::LANCZOS,
         )
         .map_err(RenderError::Decode)?;
+        let source_cs = unsafe {
+            let par = (*video_stream.as_ptr()).codecpar;
+            klipp_core::SourceColorspace::resolve(
+                (*par).color_range as i32,
+                (*par).color_space as i32,
+                (*par).color_primaries as i32,
+                (*par).color_trc as i32,
+                (*par).width.max(1) as u32,
+                (*par).height.max(1) as u32,
+            )
+        };
+        let (yuv_matrix, yuv_range) = (source_cs.matrix, source_cs.range);
+        unsafe {
+            crate::sws_colour::set_yuv_to_rgb(scaler.as_mut_ptr() as *mut _, yuv_matrix, yuv_range);
+        }
 
         if source_start_secs > 0.0 {
             let ts = (source_start_secs * 1_000_000.0) as i64;
@@ -176,6 +195,8 @@ impl RenderDecoder {
             video_stream_idx,
             scaler,
             hw_scaler: None,
+            yuv_matrix,
+            yuv_range,
             hw_accel,
             target_width,
             target_height,
@@ -302,6 +323,8 @@ impl RenderDecoder {
                     &mut self.hw_scaler,
                     scale_w,
                     scale_h,
+                    self.yuv_matrix,
+                    self.yuv_range,
                 )
             } {
                 rgba
@@ -488,6 +511,8 @@ unsafe fn download_hw_frame(
     sws_ctx: &mut Option<*mut ffmpeg_next::ffi::SwsContext>,
     target_w: u32,
     target_h: u32,
+    yuv_matrix: klipp_core::ColorMatrix,
+    yuv_range: klipp_core::ColorRange,
 ) -> Option<Vec<u8>> {
     use ffmpeg_next::ffi::*;
 
@@ -516,7 +541,7 @@ unsafe fn download_hw_frame(
         target_w as i32,
         target_h as i32,
         AVPixelFormat::AV_PIX_FMT_RGBA,
-        2_i32, // SWS_BICUBIC (Lanczos not available as FFI constant; bicubic is high-quality)
+        0x200, // SWS_LANCZOS, matching the software path
         std::ptr::null_mut(),
         std::ptr::null_mut(),
         std::ptr::null(),
@@ -525,6 +550,10 @@ unsafe fn download_hw_frame(
         warn!("HW download: sws_getCachedContext failed for fmt {:?}", sw_fmt);
         av_frame_free(&mut (sw_frame as *mut _));
         return None;
+    }
+    // A new context starts on swscale's BT.601 default.
+    if *sws_ctx != Some(sws) {
+        crate::sws_colour::set_yuv_to_rgb(sws, yuv_matrix, yuv_range);
     }
     *sws_ctx = Some(sws);
 

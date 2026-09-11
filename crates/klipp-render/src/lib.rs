@@ -50,6 +50,7 @@ pub mod pipeline;
 pub mod snapshot;
 pub mod stage;
 pub mod stages;
+mod sws_colour;
 
 pub mod audio_mixdown;
 pub mod encoder;

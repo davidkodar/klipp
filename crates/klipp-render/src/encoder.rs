@@ -388,6 +388,16 @@ impl Encoder {
             }
         }
 
+        // Every Y'CbCr output gets its colour tags and range — before, only
+        // the H.264/H.265 branches tagged colour, ProRes/DNxHD/AV1/VP9 went
+        // untagged, and no codec declared its (limited) range. GIF is RGB.
+        if settings.video_codec != ExportVideoCodec::Gif {
+            apply_color_tags(&mut video_ctx, settings.hdr_mode);
+            unsafe {
+                (*video_ctx.as_mut_ptr()).color_range = ffmpeg_next::ffi::AVColorRange::AVCOL_RANGE_MPEG;
+            }
+        }
+
         // CBR/VBR override: if rate_control is not CRF and a video bitrate is set,
         // override the CRF-based settings above.
         match settings.rate_control {
@@ -452,7 +462,7 @@ impl Encoder {
         // When no override is set, input = output = snapshot dims (also format conversion only).
         let scaler_in_w = out_w;
         let scaler_in_h = out_h;
-        let rgba_to_yuv = ffmpeg_next::software::scaling::Context::get(
+        let mut rgba_to_yuv = ffmpeg_next::software::scaling::Context::get(
             ffmpeg_next::format::Pixel::RGBA,
             scaler_in_w,
             scaler_in_h,
@@ -462,6 +472,21 @@ impl Encoder {
             ffmpeg_next::software::scaling::Flags::LANCZOS,
         )
         .map_err(|e| RenderError::Encode(format!("RGBA→YUV scaler: {e}")))?;
+        // Write the matrix the tags declare (swscale would use BT.601),
+        // limited range as tagged above.
+        if settings.video_codec != ExportVideoCodec::Gif {
+            let matrix = match settings.hdr_mode {
+                klipp_core::HdrMode::Sdr => klipp_core::ColorMatrix::Bt709,
+                klipp_core::HdrMode::Hlg | klipp_core::HdrMode::Pq => klipp_core::ColorMatrix::Bt2020Ncl,
+            };
+            unsafe {
+                crate::sws_colour::set_rgb_to_yuv(
+                    rgba_to_yuv.as_mut_ptr() as *mut _,
+                    matrix,
+                    klipp_core::ColorRange::Limited,
+                );
+            }
+        }
 
         // ═══════════════════════════════════════════════════════════
         // AUDIO ENCODER (optional)
