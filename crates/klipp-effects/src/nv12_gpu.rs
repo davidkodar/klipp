@@ -22,12 +22,23 @@ pub struct GpuNv12Converter {
     uv_buf: Option<wgpu::Buffer>,
     output_buf: Option<wgpu::Buffer>,
     staging_buf: Option<wgpu::Buffer>,
+    /// Packed RGB10 code values for scene-referred sources (camera log,
+    /// and the rare 8-bit PQ/HLG) on the CPU-readback path.
+    hdr_buf: Option<wgpu::Buffer>,
+    hdr_staging_buf: Option<wgpu::Buffer>,
+    /// Bound as the codes output on display-referred frames, which never
+    /// write it.
+    hdr_dummy_buf: wgpu::Buffer,
     params_buf: wgpu::Buffer,
     // Cached dimensions to avoid re-creating buffers
     cached_y_size: u64,
     cached_uv_size: u64,
     cached_output_size: u64,
 }
+
+/// What the GPU-resident NV12 conversion produced — the same shape as the
+/// P010 converter's, so the decoder treats both alike.
+pub type Nv12GpuOutput = crate::p010_gpu::P010GpuOutput;
 
 /// Params uniform for the NV12→RGBA shader (must match WGSL struct layout).
 ///
@@ -86,6 +97,8 @@ const SHADER_NV12_BODY: &str = "
 @group(0) @binding(1) var<storage, read> uv_plane: array<u32>;
 @group(0) @binding(2) var<storage, read_write> output: array<u32>;
 @group(0) @binding(3) var<uniform> params: Params;
+// Packed RGB10 code values for scene-referred sources; dummy otherwise.
+@group(0) @binding(4) var<storage, read_write> hdr_codes: array<u32>;
 
 struct Params {
     src_width: u32,
@@ -158,13 +171,40 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // Then re-encode to sRGB for the u8 hand-off.
     let yuv = yuv_normalise(y_val, u_val, v_val, params.color_range, 255.0);
     let rgb_display = yuv_to_rgb_display(yuv, params.matrix_id);
-    let rgb_linear  = display_to_linear(rgb_display, params.transfer_id);
-    let rgb_working = vec3<f32>(
-        dot(params.primaries_row0.xyz, rgb_linear),
-        dot(params.primaries_row1.xyz, rgb_linear),
-        dot(params.primaries_row2.xyz, rgb_linear),
-    );
-    let rgb_srgb    = linear_to_srgb_vec(rgb_working);
+    var rgb_srgb: vec3<f32>;
+    let is_log = params.transfer_id >= 100u;
+    if (params.transfer_id == TRANSFER_PQ || params.transfer_id == TRANSFER_HLG || is_log) {
+        // Scene-referred: the same route as the P010 decoder. 8-bit log
+        // (e.g. 8-bit XAVC S-Log3) lands in 10-bit code space by the same
+        // mapping — 64 and 876 are 16 and 219 scaled by 2^(10-8).
+        var signal = clamp(rgb_display, vec3<f32>(0.0), vec3<f32>(1.0));
+        if (is_log && params.color_range == 0u) {
+            signal = (vec3<f32>(64.0) + signal * 876.0) / 1023.0;
+        }
+        let code = vec3<u32>(signal * 1023.0 + vec3<f32>(0.5));
+        hdr_codes[dy * params.dst_width + dx] = code.x | (code.y << 10u) | (code.z << 20u);
+        var scale = 100.0;
+        var exposure = HDR_DISPLAY_EXPOSURE;
+        if (is_log) {
+            scale = 1.0;
+            exposure = LOG_DISPLAY_EXPOSURE;
+        }
+        let scene = display_to_linear(vec3<f32>(code) / 1023.0, params.transfer_id) * scale;
+        let working = vec3<f32>(
+            dot(params.primaries_row0.xyz, scene),
+            dot(params.primaries_row1.xyz, scene),
+            dot(params.primaries_row2.xyz, scene),
+        );
+        rgb_srgb = linear_to_srgb_vec(tone_map_hdr_vec(working, exposure));
+    } else {
+        let rgb_linear = display_to_linear(rgb_display, params.transfer_id);
+        let rgb_working = vec3<f32>(
+            dot(params.primaries_row0.xyz, rgb_linear),
+            dot(params.primaries_row1.xyz, rgb_linear),
+            dot(params.primaries_row2.xyz, rgb_linear),
+        );
+        rgb_srgb = linear_to_srgb_vec(rgb_working);
+    }
 
     let ri = u32(clamp(rgb_srgb.x * 255.0 + 0.5, 0.0, 255.0));
     let gi = u32(clamp(rgb_srgb.y * 255.0 + 0.5, 0.0, 255.0));
@@ -259,6 +299,16 @@ impl GpuNv12Converter {
                         },
                         count: None,
                     },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 4,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: false },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
                 ],
             });
 
@@ -297,6 +347,13 @@ impl GpuNv12Converter {
             mapped_at_creation: false,
         });
 
+        let hdr_dummy_buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("nv12_hdr_dummy"),
+            size: 16,
+            usage: wgpu::BufferUsages::STORAGE,
+            mapped_at_creation: false,
+        });
+
         info!("NV12 GPU converter initialized");
 
         Some(Self {
@@ -308,6 +365,9 @@ impl GpuNv12Converter {
             uv_buf: None,
             output_buf: None,
             staging_buf: None,
+            hdr_buf: None,
+            hdr_staging_buf: None,
+            hdr_dummy_buf,
             params_buf,
             cached_y_size: 0,
             cached_uv_size: 0,
@@ -420,10 +480,22 @@ impl GpuNv12Converter {
         self.ensure_y_buf(y_size);
         self.ensure_uv_buf(uv_size);
         self.ensure_output_buf(output_size);
+        // Scene-referred sources write codes too; give them a real buffer
+        // so nothing is written out of bounds.
+        let hdr = crate::p010_gpu::is_hdr_transfer(color_ids[2]);
+        if hdr && self.hdr_buf.as_ref().map_or(true, |b| b.size() < output_size) {
+            self.hdr_buf = Some(self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("nv12_hdr"),
+                size: output_size,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+                mapped_at_creation: false,
+            }));
+        }
 
         let y_buf = self.y_buf.as_ref().unwrap();
         let uv_buf = self.uv_buf.as_ref().unwrap();
         let output_buf = self.output_buf.as_ref().unwrap();
+        let hdr_binding = if hdr { self.hdr_buf.as_ref().unwrap() } else { &self.hdr_dummy_buf };
 
         // Upload planes
         self.queue.write_buffer(y_buf, 0, y_data);
@@ -468,6 +540,10 @@ impl GpuNv12Converter {
                 wgpu::BindGroupEntry {
                     binding: 3,
                     resource: self.params_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: hdr_binding.as_entire_binding(),
                 },
             ],
         });
@@ -565,12 +641,49 @@ impl GpuNv12Converter {
         color_ids: [u32; 4],
         primaries_matrix: [[f32; 4]; 3],
     ) -> std::sync::Arc<wgpu::Buffer> {
+        self.convert_nv12_on_gpu(
+            y_data, uv_data, src_width, src_height, y_stride, uv_stride,
+            dst_width, dst_height, rotation, color_ids, primaries_matrix,
+        )
+        .rgba
+    }
+
+    /// GPU-resident conversion returning the u8 buffer and, for
+    /// scene-referred sources (camera log, PQ, HLG), the packed RGB10 code
+    /// values the grade reads. Both freshly allocated for the caller.
+    #[allow(clippy::too_many_arguments)]
+    pub fn convert_nv12_on_gpu(
+        &mut self,
+        y_data: &[u8],
+        uv_data: &[u8],
+        src_width: u32,
+        src_height: u32,
+        y_stride: u32,
+        uv_stride: u32,
+        dst_width: u32,
+        dst_height: u32,
+        rotation: u32,
+        color_ids: [u32; 4],
+        primaries_matrix: [[f32; 4]; 3],
+    ) -> Nv12GpuOutput {
         let y_size = y_data.len() as u64;
         let uv_size = uv_data.len() as u64;
         let output_size = (dst_width * dst_height * 4) as u64;
 
         self.ensure_y_buf(y_size);
         self.ensure_uv_buf(uv_size);
+        let hdr_codes = crate::p010_gpu::is_hdr_transfer(color_ids[2]).then(|| {
+            std::sync::Arc::new(self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("nv12_hdr_codes_gpu_resident"),
+                size: output_size,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+                mapped_at_creation: false,
+            }))
+        });
+        let hdr_binding: &wgpu::Buffer = match hdr_codes.as_ref() {
+            Some(b) => b,
+            None => &self.hdr_dummy_buf,
+        };
 
         // Fresh output buffer per call — we're handing ownership to
         // the caller, so we can't reuse the internal cache.
@@ -627,6 +740,10 @@ impl GpuNv12Converter {
                     binding: 3,
                     resource: self.params_buf.as_entire_binding(),
                 },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: hdr_binding.as_entire_binding(),
+                },
             ],
         });
 
@@ -647,6 +764,63 @@ impl GpuNv12Converter {
         }
         self.queue.submit(std::iter::once(encoder.finish()));
 
-        output_buf
+        Nv12GpuOutput { rgba: output_buf, hdr_codes }
+    }
+
+    /// Convert one scene-referred NV12 frame and read back its packed RGB10
+    /// code values. `None` for a display-referred transfer or a failed
+    /// readback, so the caller can fall back to `convert_nv12_to_rgba`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn convert_nv12_hdr_codes(
+        &mut self,
+        y_data: &[u8],
+        uv_data: &[u8],
+        src_width: u32,
+        src_height: u32,
+        y_stride: u32,
+        uv_stride: u32,
+        dst_width: u32,
+        dst_height: u32,
+        rotation: u32,
+        color_ids: [u32; 4],
+        primaries_matrix: [[f32; 4]; 3],
+    ) -> Option<Vec<u32>> {
+        if !crate::p010_gpu::is_hdr_transfer(color_ids[2]) {
+            return None;
+        }
+        let out = self.convert_nv12_on_gpu(
+            y_data, uv_data, src_width, src_height, y_stride, uv_stride,
+            dst_width, dst_height, rotation, color_ids, primaries_matrix,
+        );
+        let codes = out.hdr_codes?;
+        let size = codes.size();
+        if self.hdr_staging_buf.as_ref().map_or(true, |b| b.size() < size) {
+            self.hdr_staging_buf = Some(self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("nv12_hdr_staging"),
+                size,
+                usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            }));
+        }
+        let staging = self.hdr_staging_buf.as_ref().unwrap();
+        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("nv12_hdr_readback"),
+        });
+        encoder.copy_buffer_to_buffer(&codes, 0, staging, 0, size);
+        self.queue.submit(std::iter::once(encoder.finish()));
+        let slice = staging.slice(..size);
+        let (tx, rx) = std::sync::mpsc::channel();
+        slice.map_async(wgpu::MapMode::Read, move |r| { let _ = tx.send(r); });
+        match crate::gpu::poll_until_mapped(&self.device, &rx) {
+            Ok(Ok(())) => {
+                let words = bytemuck::cast_slice::<u8, u32>(&slice.get_mapped_range()).to_vec();
+                staging.unmap();
+                Some(words)
+            }
+            _ => {
+                warn!("NV12 GPU converter: code readback failed");
+                None
+            }
+        }
     }
 }

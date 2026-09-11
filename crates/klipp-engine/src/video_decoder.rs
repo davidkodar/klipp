@@ -272,14 +272,17 @@ unsafe fn sws_get_coefficients_for_matrix(matrix: klipp_core::ColorMatrix) -> [i
 /// (PERF-GPU-RESIDENT-SCOPE in the tracker); for now non-`Rec709`
 /// projects accept the quantisation as a known limitation of the
 /// CPU-readback path.
+///
+/// Returns the plain 3×3 (kept on `HdrInput` for the grade) and the packed
+/// shader form.
 fn primaries_matrix_for_source(
     source_cs: klipp_core::SourceColorspace,
-) -> [[f32; 4]; 3] {
+) -> ([[f32; 3]; 3], [[f32; 4]; 3]) {
     let m = klipp_color::camera_log::primaries_to_working_matrix(
         source_cs.primaries,
         working_colorspace(),
     );
-    klipp_effects::color_wgsl::pack_primaries_matrix(m)
+    (m, klipp_effects::color_wgsl::pack_primaries_matrix(m))
 }
 
 /// sRGB-decode a RGBA u8 byte slice into a linear f32 RGBA buffer.
@@ -1491,11 +1494,7 @@ unsafe fn download_hw_frame(
             // `crate::types::HdrInput`). `data` stays display-referred for
             // every other consumer.
             let hdr_transfer = klipp_color::hdr::HdrTransfer::from_transfer_id(color_ids[2]);
-            let source_to_working = klipp_color::camera_log::primaries_to_working_matrix(
-                source_cs.primaries,
-                working_colorspace(),
-            );
-            let pm = klipp_effects::color_wgsl::pack_primaries_matrix(source_to_working);
+            let (source_to_working, pm) = primaries_matrix_for_source(source_cs);
             let (linear, gpu_source, hdr) = if should_attach_gpu_source() {
                 // GPU-resident handoff. The shader runs; the buffers stay
                 // on the GPU and CPU `data` stays empty — consumers that
@@ -1612,22 +1611,69 @@ unsafe fn download_hw_frame(
 
             let t_nv12 = std::time::Instant::now();
             let color_ids = klipp_core::color_ids::ids(source_cs);
-            let (linear, gpu_source) = if should_attach_gpu_source() {
+            // Scene-referred 8-bit sources (camera log recorded 8-bit, the
+            // odd 8-bit PQ/HLG) take the same route as P010: the shader
+            // emits 10-bit code values for the grade, `data` stays the
+            // tone-mapped preview.
+            let hdr_transfer = klipp_color::hdr::HdrTransfer::from_transfer_id(color_ids[2]);
+            let (source_to_working, pm) = primaries_matrix_for_source(source_cs);
+            let (linear, gpu_source, hdr) = if should_attach_gpu_source() {
                 // Phase 4d.1: see P010 path above. NV12 follows the
                 // same GPU-resident handoff — no readback, no
                 // linearise; the engine consumes the wgpu::Buffer
                 // directly when it primes the chain.
-                let pm = primaries_matrix_for_source(source_cs);
-                let buffer = converter.convert_nv12_to_rgba_on_gpu(
+                let out = converter.convert_nv12_on_gpu(
                     y_data, uv_data, src_w, src_h, y_stride, uv_stride,
                     out_w, out_h, source_rotation as u32, color_ids, pm,
                 );
                 let device = converter.device();
                 let queue = converter.queue();
-                let attach = Arc::new(GpuFrame::new(device, queue, buffer, out_w, out_h));
-                (Vec::new(), Some(attach))
+                let hdr = match (hdr_transfer, out.hdr_codes) {
+                    (Some(transfer), Some(buffer)) => Some(crate::types::HdrInput {
+                        codes: crate::types::HdrCodes::Gpu {
+                            buffer,
+                            device: Arc::clone(&device),
+                            queue: Arc::clone(&queue),
+                        },
+                        transfer,
+                        source_to_working,
+                        width: out_w,
+                        height: out_h,
+                    }),
+                    _ => None,
+                };
+                let attach = Arc::new(GpuFrame::new(device, queue, out.rgba, out_w, out_h));
+                (Vec::new(), Some(attach), hdr)
+            } else if let Some(transfer) = hdr_transfer {
+                match converter.convert_nv12_hdr_codes(
+                    y_data, uv_data, src_w, src_h, y_stride, uv_stride,
+                    out_w, out_h, source_rotation as u32, color_ids, pm,
+                ) {
+                    Some(codes) => {
+                        let t_linear = std::time::Instant::now();
+                        let mut display = klipp_color::hdr::hdr10_codes_to_scene_linear_rgba(
+                            &codes, transfer, source_to_working,
+                        );
+                        klipp_color::hdr::apply_hdr_display_tonemap(&mut display, transfer);
+                        PERF_LINEAR_ENCODE_US.fetch_add(t_linear.elapsed().as_micros() as u64, Ordering::Relaxed);
+                        let hdr = crate::types::HdrInput {
+                            codes: crate::types::HdrCodes::Cpu(Arc::new(codes)),
+                            transfer,
+                            source_to_working,
+                            width: out_w,
+                            height: out_h,
+                        };
+                        (display, None, Some(hdr))
+                    }
+                    None => {
+                        let bytes = converter.convert_nv12_to_rgba(
+                            y_data, uv_data, src_w, src_h, y_stride, uv_stride,
+                            out_w, out_h, source_rotation as u32, color_ids, pm,
+                        );
+                        (rgba_u8_to_linear(&bytes), None, None)
+                    }
+                }
             } else {
-                let pm = primaries_matrix_for_source(source_cs);
                 let bytes = converter.convert_nv12_to_rgba(
                     y_data, uv_data, src_w, src_h, y_stride, uv_stride,
                     out_w, out_h, source_rotation as u32, color_ids, pm,
@@ -1635,7 +1681,7 @@ unsafe fn download_hw_frame(
                 let t_linear = std::time::Instant::now();
                 let lin = rgba_u8_to_linear(&bytes);
                 PERF_LINEAR_ENCODE_US.fetch_add(t_linear.elapsed().as_micros() as u64, Ordering::Relaxed);
-                (lin, None)
+                (lin, None, None)
             };
             PERF_NV12_CONV_US.fetch_add(t_nv12.elapsed().as_micros() as u64, Ordering::Relaxed);
 
@@ -1663,7 +1709,7 @@ unsafe fn download_hw_frame(
                 is_eof: false,
                 gpu_source,
                 colorspace: source_cs,
-                hdr: None,
+                hdr,
             });
         }
     }

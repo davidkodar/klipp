@@ -66,7 +66,7 @@ pub struct P010GpuOutput {
 
 /// Transfers that take the scene-referred route: PQ, HLG, and every camera
 /// log curve (ids 100+). Their frames carry code values for the grade.
-fn is_hdr_transfer(transfer_id: u32) -> bool {
+pub(crate) fn is_hdr_transfer(transfer_id: u32) -> bool {
     transfer_id == klipp_core_transfer::PQ
         || transfer_id == klipp_core_transfer::HLG
         || transfer_id >= klipp_core_transfer::FIRST_CAMERA_LOG
@@ -174,32 +174,6 @@ fn load_u16_le_uv(byte_idx: u32) -> u32 {
         let hi = uv_plane[word_idx + 1u] & 0xFFu;
         return lo | (hi << 8u);
     }
-}
-
-// HDR → SDR display tone map. Input is scene-linear, 1.0 = 100 nits;
-// output is display-referred linear in [0, 1]. Must match
-// `klipp_color::hdr::hdr_display_tonemap` exactly — the preview here
-// and a graded frame's tone map are the same curve by construction.
-const HDR_DISPLAY_EXPOSURE: f32 = 0.18;
-// Camera log: the exposure that keeps 18% grey at display mid grey.
-// Must match `klipp_color::hdr::LOG_DISPLAY_EXPOSURE`.
-const LOG_DISPLAY_EXPOSURE: f32 = 0.723171;
-fn aces_filmic_scalar(x: f32) -> f32 {
-    let a = 2.51;
-    let b = 0.03;
-    let c = 2.43;
-    let d = 0.59;
-    let e = 0.14;
-    return clamp((x * (a * x + b)) / (x * (c * x + d) + e), 0.0, 1.0);
-}
-
-fn tone_map_hdr_vec(rgb: vec3<f32>, exposure: f32) -> vec3<f32> {
-    let exposed = rgb * exposure;
-    return vec3<f32>(
-        aces_filmic_scalar(max(exposed.x, 0.0)),
-        aces_filmic_scalar(max(exposed.y, 0.0)),
-        aces_filmic_scalar(max(exposed.z, 0.0)),
-    );
 }
 
 @compute @workgroup_size(16, 16)

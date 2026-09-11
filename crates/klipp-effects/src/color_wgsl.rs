@@ -465,6 +465,34 @@ fn linear_to_srgb_scalar(c: f32) -> f32 {
 fn linear_to_srgb_vec(rgb: vec3<f32>) -> vec3<f32> {
     return vec3<f32>(linear_to_srgb_scalar(rgb.x), linear_to_srgb_scalar(rgb.y), linear_to_srgb_scalar(rgb.z));
 }
+
+// ─── Scene-referred display tone map (both decoders' previews) ───
+// HDR → SDR display tone map. Input is scene-linear, 1.0 = 100 nits;
+// output is display-referred linear in [0, 1]. Must match
+// `klipp_color::hdr::hdr_display_tonemap` exactly — the preview here
+// and a graded frame's tone map are the same curve by construction.
+const HDR_DISPLAY_EXPOSURE: f32 = 0.18;
+// Camera log: the exposure that keeps 18% grey at display mid grey.
+// Must match `klipp_color::hdr::LOG_DISPLAY_EXPOSURE`.
+const LOG_DISPLAY_EXPOSURE: f32 = 0.723171;
+fn aces_filmic_scalar(x: f32) -> f32 {
+    let a = 2.51;
+    let b = 0.03;
+    let c = 2.43;
+    let d = 0.59;
+    let e = 0.14;
+    return clamp((x * (a * x + b)) / (x * (c * x + d) + e), 0.0, 1.0);
+}
+
+fn tone_map_hdr_vec(rgb: vec3<f32>, exposure: f32) -> vec3<f32> {
+    let exposed = rgb * exposure;
+    return vec3<f32>(
+        aces_filmic_scalar(max(exposed.x, 0.0)),
+        aces_filmic_scalar(max(exposed.y, 0.0)),
+        aces_filmic_scalar(max(exposed.z, 0.0)),
+    );
+}
+
 "#;
 
 #[cfg(test)]
