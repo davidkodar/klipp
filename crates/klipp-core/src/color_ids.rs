@@ -59,6 +59,8 @@ pub const TRANSFER_GAMMA28: u32 = 6;
 // Camera log curves — IDs >= 100 to leave room for adding more
 // container-tagged transfers in the 0..99 range without renumbering.
 pub const TRANSFER_SLOG3: u32 = 100;
+/// Every transfer id at or above this is a camera log curve.
+pub const FIRST_CAMERA_LOG: u32 = TRANSFER_SLOG3;
 pub const TRANSFER_SLOG2: u32 = 101;
 pub const TRANSFER_VLOG: u32 = 102;
 pub const TRANSFER_LOGC3: u32 = 103;

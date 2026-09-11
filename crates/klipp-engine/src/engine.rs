@@ -12355,12 +12355,52 @@ fn open_gpu_decoder(
 /// Convert a decoded frame (HW or SW) to RGBA at the given target dimensions.
 /// For HW frames: GPU→CPU transfer + swscale. For SW frames: just swscale.
 /// `sws_cache` is an optional cached sws context pointer for reuse across frames.
+/// What a single-frame decode (thumbnail, filmstrip, skim frame) needs to
+/// colour-manage its frames: the file being read — for its camera log
+/// format; proxy and skim files are registered under their own paths — and
+/// the stream's colour tags.
+///
+/// Scene-referred frames (PQ, HLG, camera log) are converted exactly as the
+/// viewer shows them ungraded. Without this they went through plain
+/// swscale: log looked flat and PQ washed out in the browser, the source
+/// viewer, thumbnails and filmstrips.
+#[derive(Clone)]
+struct ThumbColour {
+    path: std::path::PathBuf,
+    baseline: klipp_core::SourceColorspace,
+}
+
+impl ThumbColour {
+    fn new(path: &std::path::Path, format_ctx: &ffmpeg_next::format::context::Input, stream_index: usize) -> Self {
+        let baseline = format_ctx
+            .stream(stream_index)
+            .map(|st| unsafe { crate::video_decoder::stream_colour_baseline((*st.as_ptr()).codecpar) })
+            .unwrap_or_else(|| unsafe { crate::video_decoder::stream_colour_baseline(std::ptr::null()) });
+        Self { path: path.to_path_buf(), baseline }
+    }
+
+    /// sRGB RGBA8 for a scene-referred software frame; `None` for a
+    /// display-referred one, which keeps its swscale path.
+    ///
+    /// SAFETY: `frame` must be a valid software AVFrame.
+    unsafe fn scene_referred_rgba8(
+        &self,
+        frame: *const ffmpeg_next::ffi::AVFrame,
+        dst_w: u32,
+        dst_h: u32,
+    ) -> Option<Vec<u8>> {
+        let cs = crate::video_decoder::single_frame_colourspace(frame, self.baseline, &self.path);
+        crate::video_decoder::scene_referred_display_rgba8(frame, cs, dst_w, dst_h)
+    }
+}
+
 fn frame_to_rgba(
     frame: &ffmpeg_next::frame::Video,
     dst_w: u32,
     dst_h: u32,
     _is_hw: bool,
     sws_cache: &mut Option<*mut ffmpeg_next::ffi::SwsContext>,
+    colour: &ThumbColour,
 ) -> Option<Vec<u8>> {
     // Detect actual frame format — CUDA init may "succeed" but format negotiation
     // can fall back to software. Check the real pixel format per-frame.
@@ -12371,10 +12411,10 @@ fn frame_to_rgba(
     };
     if actual_hw {
         // HW frame path: GPU→CPU transfer then swscale
-        unsafe { hw_frame_to_rgba(frame, dst_w, dst_h, sws_cache) }
+        unsafe { hw_frame_to_rgba(frame, dst_w, dst_h, sws_cache, colour) }
     } else {
         // SW frame path: direct swscale
-        sw_frame_to_rgba(frame, dst_w, dst_h)
+        sw_frame_to_rgba(frame, dst_w, dst_h, colour)
     }
 }
 
@@ -12384,6 +12424,7 @@ unsafe fn hw_frame_to_rgba(
     dst_w: u32,
     dst_h: u32,
     sws_cache: &mut Option<*mut ffmpeg_next::ffi::SwsContext>,
+    colour: &ThumbColour,
 ) -> Option<Vec<u8>> {
     use ffmpeg_next::ffi::*;
 
@@ -12396,6 +12437,15 @@ unsafe fn hw_frame_to_rgba(
     if ret < 0 {
         av_frame_free(&mut (sw_frame as *mut _));
         return None;
+    }
+    // The download drops most colour tags; take them from the HW frame.
+    (*sw_frame).color_range = (*hw_frame.as_ptr()).color_range;
+    (*sw_frame).colorspace = (*hw_frame.as_ptr()).colorspace;
+    (*sw_frame).color_primaries = (*hw_frame.as_ptr()).color_primaries;
+    (*sw_frame).color_trc = (*hw_frame.as_ptr()).color_trc;
+    if let Some(rgba) = colour.scene_referred_rgba8(sw_frame, dst_w, dst_h) {
+        av_frame_free(&mut (sw_frame as *mut _));
+        return Some(rgba);
     }
 
     let src_w = (*sw_frame).width as u32;
@@ -12471,8 +12521,13 @@ fn sw_frame_to_rgba(
     frame: &ffmpeg_next::frame::Video,
     dst_w: u32,
     dst_h: u32,
+    colour: &ThumbColour,
 ) -> Option<Vec<u8>> {
     use ffmpeg_next::software::scaling;
+
+    if let Some(rgba) = unsafe { colour.scene_referred_rgba8(frame.as_ptr(), dst_w, dst_h) } {
+        return Some(rgba);
+    }
 
     let mut scaler = scaling::Context::get(
         frame.format(),
@@ -12800,7 +12855,8 @@ pub fn generate_thumbnail(
     let dst_w = (src_w as f64 * scale) as u32;
     let dst_h = (src_h as f64 * scale) as u32;
 
-    let rgba = sw_frame_to_rgba(&decoded_frame, dst_w, dst_h)
+    let colour = ThumbColour::new(path, &format_ctx, stream_index);
+    let rgba = sw_frame_to_rgba(&decoded_frame, dst_w, dst_h, &colour)
         .ok_or("Failed to convert frame to RGBA")?;
 
     // Apply source rotation if needed (phone videos)
@@ -12870,7 +12926,8 @@ pub fn generate_thumbnail_at_size(
     let dst_w = ((src_w as f64 * scale) as u32).max(1);
     let dst_h = ((src_h as f64 * scale) as u32).max(1);
 
-    let rgba = sw_frame_to_rgba(&decoded_frame, dst_w, dst_h)
+    let colour = ThumbColour::new(path, &format_ctx, stream_index);
+    let rgba = sw_frame_to_rgba(&decoded_frame, dst_w, dst_h, &colour)
         .ok_or("Failed to convert frame to RGBA")?;
 
     // Apply source rotation if needed (phone videos)
@@ -12933,7 +12990,8 @@ pub fn generate_thumbnail_at_size_with_rotation(
     let dst_w = ((src_w as f64 * scale) as u32).max(1);
     let dst_h = ((src_h as f64 * scale) as u32).max(1);
 
-    let rgba = sw_frame_to_rgba(&decoded_frame, dst_w, dst_h)
+    let colour = ThumbColour::new(path, &format_ctx, stream_index);
+    let rgba = sw_frame_to_rgba(&decoded_frame, dst_w, dst_h, &colour)
         .ok_or("Failed to convert frame to RGBA")?;
 
     if rotation != 0 {
@@ -12958,6 +13016,7 @@ struct CachedFrameDecoder {
     frame_duration: f64,
     /// Cached frames: (time, rgba, w, h)
     cache: Vec<(f64, Vec<u8>, u32, u32)>,
+    colour: ThumbColour,
 }
 
 impl CachedFrameDecoder {
@@ -12973,7 +13032,9 @@ impl CachedFrameDecoder {
             })
             .unwrap_or(1.0 / 24.0);
 
+        let colour = ThumbColour::new(path, &format_ctx, stream_index);
         Some(Self {
+            colour,
             format_ctx,
             decoder,
             stream_index,
@@ -13033,7 +13094,7 @@ impl CachedFrameDecoder {
                 let w = self.frame.width();
                 let h = self.frame.height();
 
-                if let Some(rgba) = sw_frame_to_rgba(&self.frame, w, h) {
+                if let Some(rgba) = sw_frame_to_rgba(&self.frame, w, h, &self.colour) {
                     best_frame = Some((rgba, w, h, frame_secs));
                 }
 
@@ -13105,7 +13166,8 @@ pub fn decode_frame_at_time(
 
     let w = decoded_frame.width();
     let h = decoded_frame.height();
-    let rgba = sw_frame_to_rgba(&decoded_frame, w, h)
+    let colour = ThumbColour::new(path, &format_ctx, stream_index);
+    let rgba = sw_frame_to_rgba(&decoded_frame, w, h, &colour)
         .ok_or("Failed to convert frame to RGBA")?;
     Ok((rgba, w, h))
 }
@@ -13224,6 +13286,8 @@ pub fn generate_filmstrip_incremental(
         if r != 0 { r } else { detect_rotation_from_path(path) }
     };
 
+    let colour = ThumbColour::new(path, &format_ctx, stream_index);
+
     let src_w = decoder.width();
     let src_h = decoder.height();
     // For rotated video (90/270), the final display is portrait.
@@ -13328,7 +13392,7 @@ pub fn generate_filmstrip_incremental(
             continue;
         }
 
-        if let Some(rgba) = frame_to_rgba(&decoded_frame, decode_w, decode_h, is_hw, &mut sws_cache.0) {
+        if let Some(rgba) = frame_to_rgba(&decoded_frame, decode_w, decode_h, is_hw, &mut sws_cache.0, &colour) {
             if rotation != 0 {
                 let (rotated, rw, rh) = rotate_rgba(&rgba, decode_w, decode_h, rotation);
                 on_frame(seek_secs, rotated, rw, rh);
@@ -13362,6 +13426,7 @@ pub struct SequentialFrameDecoder {
     sws_cache: Option<*mut ffmpeg_next::ffi::SwsContext>,
     eof_reached: bool,
     drained: bool,
+    colour: ThumbColour,
 }
 
 impl SequentialFrameDecoder {
@@ -13391,7 +13456,9 @@ impl SequentialFrameDecoder {
             decode_w,
             decode_h
         );
+        let colour = ThumbColour::new(path, &format_ctx, stream_index);
         Ok(Self {
+            colour,
             format_ctx,
             decoder,
             stream_index,
@@ -13462,7 +13529,7 @@ impl SequentialFrameDecoder {
     }
 
     fn convert(&mut self, decoded: &ffmpeg_next::frame::Video) -> Option<(Vec<u8>, u32, u32)> {
-        let rgba = frame_to_rgba(decoded, self.decode_w, self.decode_h, self.is_hw, &mut self.sws_cache)?;
+        let rgba = frame_to_rgba(decoded, self.decode_w, self.decode_h, self.is_hw, &mut self.sws_cache, &self.colour)?;
         if self.rotation != 0 {
             let (rotated, rw, rh) = rotate_rgba(&rgba, self.decode_w, self.decode_h, self.rotation);
             Some((rotated, rw, rh))

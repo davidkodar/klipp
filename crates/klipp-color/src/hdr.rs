@@ -367,6 +367,114 @@ pub fn hdr10_codes_to_scene_linear_rgba(
     out
 }
 
+/// One decoded frame's Y'CbCr samples at their native bit depth, any
+/// chroma subsampling. `u` and `v` hold `chroma_width x chroma_height`
+/// samples, where `chroma_width = ceil(width / 2^chroma_shift_w)`.
+pub struct YuvSamples<'a> {
+    pub y: &'a [u16],
+    pub u: &'a [u16],
+    pub v: &'a [u16],
+    pub width: u32,
+    pub height: u32,
+    /// log2 of the horizontal / vertical chroma subsampling: 4:2:0 is
+    /// (1, 1), 4:2:2 is (1, 0), 4:4:4 is (0, 0).
+    pub chroma_shift_w: u32,
+    pub chroma_shift_h: u32,
+    pub bit_depth: u32,
+}
+
+impl YuvSamples<'_> {
+    pub fn chroma_width(&self) -> u32 {
+        (self.width + (1 << self.chroma_shift_w) - 1) >> self.chroma_shift_w
+    }
+}
+
+/// Scene-referred Y'CbCr → packed 10-bit R'G'B' code values: the CPU twin
+/// of the scene-referred branch in the P010 / NV12 decoder shaders, for the
+/// software-decode paths (ProRes and other formats NVDEC cannot take, the
+/// no-GPU fallback, thumbnails and skim frames).
+///
+/// It must stay step-for-step identical to the shaders — nearest-neighbour
+/// resize with the same rotation mapping, `yuv_normalise`,
+/// `yuv_to_rgb_display`, the camera-log CV/1023 remap, the clamp in code
+/// space and the rounding — because a clip that decodes in software must
+/// look exactly like the same clip decoded on the GPU. Everything after the
+/// codes (curve, gamut, tone map) is already shared:
+/// [`hdr10_codes_to_scene_linear_rgba`] and [`apply_hdr_display_tonemap`].
+///
+/// `color_ids` is `[range, matrix, transfer, primaries]` as in
+/// `klipp_core::color_ids`. Sources deeper than 10 bits are quantised to 10
+/// bits, as the codes the grade reads are 10-bit.
+pub fn yuv_to_hdr_codes(
+    s: &YuvSamples,
+    dst_w: u32,
+    dst_h: u32,
+    rotation: u32,
+    color_ids: [u32; 4],
+) -> Vec<u32> {
+    use klipp_core::color_ids as ids;
+    use rayon::prelude::*;
+
+    let [range, matrix, transfer, _] = color_ids;
+    let is_log = transfer >= ids::FIRST_CAMERA_LOG;
+    let max = ((1u32 << s.bit_depth) - 1) as f32;
+    let (src_w, src_h) = (s.width.max(1), s.height.max(1));
+    let cw = s.chroma_width() as usize;
+
+    let normalise = |y: f32, u: f32, v: f32| -> [f32; 3] {
+        if range == ids::COLOR_RANGE_FULL {
+            [y / max, (u - max * 0.5 - 0.5) / max, (v - max * 0.5 - 0.5) / max]
+        } else {
+            let scale = (max + 1.0) / 256.0;
+            [
+                (y - 16.0 * scale) / (219.0 * scale),
+                (u - 128.0 * scale) / (224.0 * scale),
+                (v - 128.0 * scale) / (224.0 * scale),
+            ]
+        }
+    };
+    let to_rgb = |[y, u, v]: [f32; 3]| -> [f32; 3] {
+        match matrix {
+            ids::MATRIX_BT601 => [y + 1.402 * v, y - 0.344136 * u - 0.714136 * v, y + 1.772 * u],
+            ids::MATRIX_BT2020_NCL => [y + 1.4746 * v, y - 0.16455 * u - 0.57135 * v, y + 1.8814 * u],
+            ids::MATRIX_SMPTE240 => [y + 1.576 * v, y - 0.227 * u - 0.477 * v, y + 1.826 * u],
+            ids::MATRIX_IDENTITY => [v, y, u],
+            _ => [y + 1.5748 * v, y - 0.1873 * u - 0.4681 * v, y + 1.8556 * u],
+        }
+    };
+
+    let mut out = vec![0u32; (dst_w as usize) * (dst_h as usize)];
+    out.par_chunks_mut(dst_w.max(1) as usize).enumerate().for_each(|(dy, row)| {
+        let dy = dy as u32;
+        for (dx, px) in row.iter_mut().enumerate() {
+            let dx = dx as u32;
+            let (sx, sy) = match rotation {
+                90 => (dy * src_w / dst_h, (dst_w - 1 - dx) * src_h / dst_w),
+                180 => ((dst_w - 1 - dx) * src_w / dst_w, (dst_h - 1 - dy) * src_h / dst_h),
+                270 => ((dst_h - 1 - dy) * src_w / dst_h, dx * src_h / dst_w),
+                _ => (dx * src_w / dst_w, dy * src_h / dst_h),
+            };
+            let (sx, sy) = (sx.min(src_w - 1) as usize, sy.min(src_h - 1) as usize);
+            let ci = (sy >> s.chroma_shift_h) * cw + (sx >> s.chroma_shift_w);
+            let rgb = to_rgb(normalise(
+                s.y[sy * src_w as usize + sx] as f32,
+                s.u[ci] as f32,
+                s.v[ci] as f32,
+            ));
+            let code = rgb.map(|c| {
+                let signal = if is_log && range != ids::COLOR_RANGE_FULL {
+                    (64.0 + c * 876.0) / 1023.0
+                } else {
+                    c
+                };
+                (signal.clamp(0.0, 1.0) * 1023.0 + 0.5) as u32
+            });
+            *px = pack_rgb10(code[0], code[1], code[2]);
+        }
+    });
+    out
+}
+
 #[cfg(test)]
 mod hdr_io_tests {
     use super::*;

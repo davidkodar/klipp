@@ -164,6 +164,25 @@ pub fn set_media_log_formats(
     true
 }
 
+/// The camera log format registered for a file, if any — originals,
+/// proxies and skim files alike.
+pub fn registered_log_format(path: &std::path::Path) -> Option<klipp_core::LogFormat> {
+    MEDIA_LOG_FORMATS.get()?.read().ok()?.get(path).copied()
+}
+
+/// Disk-cache key for a file's *pictures* (thumbnails, filmstrips): the
+/// content key plus the camera log format they were converted with, so a
+/// format change never serves a picture made under the old one, and
+/// switching back finds the earlier one still cached. The content key alone
+/// stays right for format-independent caches (audio, skim transcodes).
+pub fn picture_cache_key(path: &std::path::Path) -> Option<String> {
+    let key = klipp_media::disk_cache::compute_cache_key(path)?;
+    Some(match registered_log_format(path) {
+        Some(f) => format!("{key}.{f:?}"),
+        None => key,
+    })
+}
+
 /// The camera-native (transfer, primaries) pair for a log format, or
 /// `None` for formats that are not camera logs.
 fn log_format_colourspace(
@@ -220,14 +239,259 @@ fn env_forced_log_format() -> Option<klipp_core::LogFormat> {
 /// to the baseline — which is where the old env-var stop-gap put it — was
 /// silently replaced by the file's tag on every tagged frame.
 fn apply_log_override(cs: klipp_core::SourceColorspace) -> klipp_core::SourceColorspace {
-    let from_media = DECODE_PATH.with(|p| {
-        let p = p.borrow();
-        let path = p.as_ref()?;
-        MEDIA_LOG_FORMATS.get()?.read().ok()?.get(path).copied()
-    });
+    DECODE_PATH.with(|p| log_override_for_path(p.borrow().as_deref(), cs))
+}
+
+/// [`apply_log_override`] for code that is not a decode thread and knows
+/// its file directly — thumbnails, filmstrips, skim frames. Proxy and skim
+/// files are registered under their own paths with their media's format,
+/// so passing whichever file is actually being read is right.
+pub(crate) fn log_override_for_path(
+    path: Option<&std::path::Path>,
+    cs: klipp_core::SourceColorspace,
+) -> klipp_core::SourceColorspace {
+    let from_media = path.and_then(|path| MEDIA_LOG_FORMATS.get()?.read().ok()?.get(path).copied());
     let Some(format) = from_media.or_else(env_forced_log_format) else { return cs };
     let Some((transfer, primaries)) = log_format_colourspace(format) else { return cs };
     klipp_core::SourceColorspace { transfer, primaries, ..cs }
+}
+
+/// A software frame's Y'CbCr samples, copied out at native bit depth.
+pub(crate) struct OwnedYuv {
+    y: Vec<u16>,
+    u: Vec<u16>,
+    v: Vec<u16>,
+    width: u32,
+    height: u32,
+    shift_w: u32,
+    shift_h: u32,
+    depth: u32,
+}
+
+impl OwnedYuv {
+    pub(crate) fn samples(&self) -> klipp_color::hdr::YuvSamples<'_> {
+        klipp_color::hdr::YuvSamples {
+            y: &self.y,
+            u: &self.u,
+            v: &self.v,
+            width: self.width,
+            height: self.height,
+            chroma_shift_w: self.shift_w,
+            chroma_shift_h: self.shift_h,
+            bit_depth: self.depth,
+        }
+    }
+}
+
+/// Read the Y, Cb and Cr samples of any software YUV frame — planar,
+/// semi-planar (NV12, P010) or packed, 8 to 16 bits, any subsampling —
+/// using the pixel format's descriptor, so ProRes 4:2:2 / 4:4:4, 12-bit
+/// and the rest need no per-format code. `None` for RGB, palette,
+/// bitstream and hardware formats; callers fall back to their old path.
+///
+/// SAFETY: `frame` must be a valid, allocated software AVFrame.
+pub(crate) unsafe fn read_yuv_samples(frame: *const ffmpeg_next::ffi::AVFrame) -> Option<OwnedYuv> {
+    use ffmpeg_next::ffi::*;
+    use rayon::prelude::*;
+    // AV_PIX_FMT_FLAG_* (pixdesc.h); bindgen does not export the macros.
+    const FLAG_BE: u64 = 1 << 0;
+    const FLAG_PAL: u64 = 1 << 1;
+    const FLAG_BITSTREAM: u64 = 1 << 2;
+    const FLAG_HWACCEL: u64 = 1 << 3;
+    const FLAG_RGB: u64 = 1 << 5;
+
+    let f = &*frame;
+    let desc = av_pix_fmt_desc_get(std::mem::transmute::<i32, AVPixelFormat>(f.format));
+    if desc.is_null() {
+        return None;
+    }
+    let d = &*desc;
+    if d.flags & (FLAG_PAL | FLAG_BITSTREAM | FLAG_HWACCEL | FLAG_RGB) != 0 || d.nb_components < 3 {
+        return None;
+    }
+    let depth = d.comp[0].depth as u32;
+    if depth == 0 || depth > 16 || d.comp[1].depth as u32 != depth || d.comp[2].depth as u32 != depth {
+        return None;
+    }
+    let (width, height) = (f.width.max(0) as u32, f.height.max(0) as u32);
+    if width == 0 || height == 0 {
+        return None;
+    }
+    let (shift_w, shift_h) = (d.log2_chroma_w as u32, d.log2_chroma_h as u32);
+    let cw = (width + (1 << shift_w) - 1) >> shift_w;
+    let ch = (height + (1 << shift_h) - 1) >> shift_h;
+    let big_endian = d.flags & FLAG_BE != 0;
+    let mask = ((1u32 << depth) - 1) as u16;
+
+    let read = |c: usize, pw: u32, ph: u32| -> Option<Vec<u16>> {
+        let comp = d.comp[c];
+        let plane = comp.plane as usize;
+        let base = f.data[plane];
+        if base.is_null() {
+            return None;
+        }
+        // Raw pointers are not Send; rows are disjoint reads of a frame
+        // that outlives this call.
+        let base = base as usize;
+        let linesize = f.linesize[plane] as isize;
+        let (step, offset, shift) = (comp.step as usize, comp.offset as usize, comp.shift as u32);
+        let mut out = vec![0u16; (pw as usize) * (ph as usize)];
+        out.par_chunks_mut(pw as usize).enumerate().for_each(|(y, row)| {
+            let p = (base as *const u8).offset(y as isize * linesize).add(offset);
+            for (x, dst) in row.iter_mut().enumerate() {
+                let q = p.add(x * step);
+                let raw = if depth > 8 {
+                    let b = [*q, *q.add(1)];
+                    if big_endian { u16::from_be_bytes(b) } else { u16::from_le_bytes(b) }
+                } else {
+                    *q as u16
+                };
+                *dst = (raw >> shift) & mask;
+            }
+        });
+        Some(out)
+    };
+    Some(OwnedYuv {
+        y: read(0, width, height)?,
+        u: read(1, cw, ch)?,
+        v: read(2, cw, ch)?,
+        width,
+        height,
+        shift_w,
+        shift_h,
+        depth,
+    })
+}
+
+/// The software decoders' scene-referred route: the CPU twin of the GPU
+/// converters' codes output, used when a PQ, HLG or camera-log frame did
+/// not come through NVDEC (ProRes and other formats NVDEC cannot take, the
+/// no-GPU fallback). Returns the display-referred preview and the codes the
+/// grade reads, exactly as the P010 readback branch does, so a clip looks
+/// the same whichever decoder ran. `None` for display-referred sources or
+/// unreadable formats.
+///
+/// `dst_w`/`dst_h` are the final (rotated) dimensions, as for the shaders.
+///
+/// SAFETY: `frame` must be a valid, allocated software AVFrame.
+pub(crate) unsafe fn scene_referred_sw_frame(
+    frame: *const ffmpeg_next::ffi::AVFrame,
+    source_cs: klipp_core::SourceColorspace,
+    dst_w: u32,
+    dst_h: u32,
+    rotation: u32,
+) -> Option<(Vec<f32>, crate::types::HdrInput)> {
+    let ids = klipp_core::color_ids::ids(source_cs);
+    let transfer = klipp_color::hdr::HdrTransfer::from_transfer_id(ids[2])?;
+    let yuv = read_yuv_samples(frame)?;
+    let codes = klipp_color::hdr::yuv_to_hdr_codes(&yuv.samples(), dst_w, dst_h, rotation, ids);
+    let (source_to_working, _) = primaries_matrix_for_source(source_cs);
+    let mut display = klipp_color::hdr::hdr10_codes_to_scene_linear_rgba(&codes, transfer, source_to_working);
+    klipp_color::hdr::apply_hdr_display_tonemap(&mut display, transfer);
+    Some((
+        display,
+        crate::types::HdrInput {
+            codes: crate::types::HdrCodes::Cpu(Arc::new(codes)),
+            transfer,
+            source_to_working,
+            width: dst_w,
+            height: dst_h,
+        },
+    ))
+}
+
+/// [`scene_referred_sw_frame`] packaged as the decoder's `LinearFrame`, at
+/// playback dimensions with the source rotation applied.
+///
+/// SAFETY: `frame` must be a valid, allocated software AVFrame.
+unsafe fn scene_referred_linear_frame(
+    frame: *const ffmpeg_next::ffi::AVFrame,
+    source_cs: klipp_core::SourceColorspace,
+    source_rotation: i32,
+) -> Option<LinearFrame> {
+    let (src_w, src_h) = ((*frame).width.max(1) as u32, (*frame).height.max(1) as u32);
+    let (out_w, out_h) = playback_dimensions(src_w, src_h, source_rotation);
+    let (display, hdr) =
+        scene_referred_sw_frame(frame, source_cs, out_w, out_h, source_rotation.rem_euclid(360) as u32)?;
+    Some(LinearFrame {
+        pts: RationalTime::zero(),
+        width: out_w,
+        height: out_h,
+        data: display,
+        is_eof: false,
+        gpu_source: None,
+        colorspace: source_cs,
+        hdr: Some(hdr),
+    })
+}
+
+/// Scene-referred frame → sRGB RGBA8 for thumbnails, filmstrips and skim
+/// frames: the same conversion and tone map as the viewer's ungraded
+/// picture, in BT.709 display primaries. `None` for display-referred
+/// sources, which keep their plain swscale path.
+///
+/// SAFETY: `frame` must be a valid, allocated software AVFrame.
+pub(crate) unsafe fn scene_referred_display_rgba8(
+    frame: *const ffmpeg_next::ffi::AVFrame,
+    source_cs: klipp_core::SourceColorspace,
+    dst_w: u32,
+    dst_h: u32,
+) -> Option<Vec<u8>> {
+    let ids = klipp_core::color_ids::ids(source_cs);
+    let transfer = klipp_color::hdr::HdrTransfer::from_transfer_id(ids[2])?;
+    let yuv = read_yuv_samples(frame)?;
+    let codes = klipp_color::hdr::yuv_to_hdr_codes(&yuv.samples(), dst_w, dst_h, 0, ids);
+    let m = klipp_color::camera_log::primaries_to_working_matrix(
+        source_cs.primaries,
+        klipp_core::WorkingColorspace::Rec709Linear,
+    );
+    let mut display = klipp_color::hdr::hdr10_codes_to_scene_linear_rgba(&codes, transfer, m);
+    klipp_color::hdr::apply_hdr_display_tonemap(&mut display, transfer);
+    Some(
+        display
+            .chunks_exact(4)
+            .flat_map(|px| {
+                let e = |c: f32| (klipp_color::transfer::linear_to_srgb(c).clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
+                [e(px[0]), e(px[1]), e(px[2]), 255]
+            })
+            .collect(),
+    )
+}
+
+/// A stream's colour tags from its codec parameters: the baseline the
+/// per-frame tags override. NVDEC downloads often drop per-frame tags, so
+/// this is what makes e.g. a full-range file decode as full range.
+///
+/// SAFETY: `codecpar` must be valid or null.
+pub(crate) unsafe fn stream_colour_baseline(
+    codecpar: *const ffmpeg_next::ffi::AVCodecParameters,
+) -> klipp_core::SourceColorspace {
+    if codecpar.is_null() {
+        return klipp_core::SourceColorspace::resolve(0, 0, 0, 0, 1920, 1080);
+    }
+    let p = &*codecpar;
+    klipp_core::SourceColorspace::resolve(
+        p.color_range as i32, p.color_space as i32, p.color_primaries as i32, p.color_trc as i32,
+        p.width.max(1) as u32, p.height.max(1) as u32,
+    )
+}
+
+/// A frame's colourspace for single-frame decodes (thumbnails, filmstrips,
+/// skim frames): its own tags over the stream baseline, then the file's
+/// camera log format — the same merge the decode threads use.
+///
+/// SAFETY: `frame` must be a valid AVFrame.
+pub(crate) unsafe fn single_frame_colourspace(
+    frame: *const ffmpeg_next::ffi::AVFrame,
+    baseline: klipp_core::SourceColorspace,
+    path: &std::path::Path,
+) -> klipp_core::SourceColorspace {
+    let f = &*frame;
+    let cs = klipp_core::SourceColorspace::resolve_with_baseline(
+        f.color_range as i32, f.colorspace as i32, f.color_primaries as i32, f.color_trc as i32,
+        baseline,
+    );
+    log_override_for_path(Some(path), cs)
 }
 
 /// Look up swscale's per-matrix coefficient table via
@@ -1323,6 +1587,119 @@ fn hw_transfer_cap_dimensions(src_w: u32, src_h: u32) -> (u32, u32) {
 }
 
 #[cfg(test)]
+mod yuv_reader_tests {
+    use super::*;
+    use ffmpeg_next::format::Pixel;
+
+    const W: u32 = 6;
+    const H: u32 = 4;
+
+    fn y_at(x: u32, y: u32) -> u16 { (x * 7 + y * 13 + 20) as u16 }
+    fn u_at(x: u32, y: u32) -> u16 { (x * 5 + y * 3 + 100) as u16 }
+    fn v_at(x: u32, y: u32) -> u16 { (x * 11 + y * 2 + 60) as u16 }
+
+    /// Write one sample of `bytes` width at byte offset `off` in `plane`.
+    fn put(f: &mut ffmpeg_next::frame::Video, plane: usize, row: u32, off: usize, bytes: usize, v: u16) {
+        let stride = f.stride(plane);
+        let d = f.data_mut(plane);
+        let i = row as usize * stride + off;
+        if bytes == 2 { d[i..i + 2].copy_from_slice(&v.to_le_bytes()) } else { d[i] = v as u8 }
+    }
+
+    fn check(f: &ffmpeg_next::frame::Video, shift_w: u32, shift_h: u32, depth: u32) {
+        let yuv = unsafe { read_yuv_samples(f.as_ptr()) }.expect("readable YUV format");
+        assert_eq!((yuv.width, yuv.height, yuv.shift_w, yuv.shift_h, yuv.depth), (W, H, shift_w, shift_h, depth));
+        let cw = (W + (1 << shift_w) - 1) >> shift_w;
+        for y in 0..H {
+            for x in 0..W {
+                assert_eq!(yuv.y[(y * W + x) as usize], y_at(x, y), "{:?} Y({x},{y})", f.format());
+            }
+        }
+        for y in 0..(H >> shift_h) {
+            for x in 0..cw {
+                assert_eq!(yuv.u[(y * cw + x) as usize], u_at(x, y), "{:?} U({x},{y})", f.format());
+                assert_eq!(yuv.v[(y * cw + x) as usize], v_at(x, y), "{:?} V({x},{y})", f.format());
+            }
+        }
+    }
+
+    #[test]
+    fn planar_formats_at_each_depth_and_subsampling() {
+        for (fmt, sw, sh, depth) in [
+            (Pixel::YUV420P, 1, 1, 8),
+            (Pixel::YUV422P10LE, 1, 0, 10),
+            (Pixel::YUV444P12LE, 0, 0, 12),
+        ] {
+            let mut f = ffmpeg_next::frame::Video::new(fmt, W, H);
+            let b = if depth > 8 { 2 } else { 1 };
+            for y in 0..H {
+                for x in 0..W {
+                    put(&mut f, 0, y, x as usize * b, b, y_at(x, y));
+                }
+            }
+            for y in 0..(H >> sh) {
+                for x in 0..(W >> sw) {
+                    put(&mut f, 1, y, x as usize * b, b, u_at(x, y));
+                    put(&mut f, 2, y, x as usize * b, b, v_at(x, y));
+                }
+            }
+            check(&f, sw, sh, depth);
+        }
+    }
+
+    /// Semi-planar with interleaved chroma, and P010's samples in the top
+    /// ten bits of each word.
+    #[test]
+    fn semi_planar_nv12_and_p010() {
+        let mut f = ffmpeg_next::frame::Video::new(Pixel::NV12, W, H);
+        for y in 0..H {
+            for x in 0..W { put(&mut f, 0, y, x as usize, 1, y_at(x, y)); }
+        }
+        for y in 0..H / 2 {
+            for x in 0..W / 2 {
+                put(&mut f, 1, y, x as usize * 2, 1, u_at(x, y));
+                put(&mut f, 1, y, x as usize * 2 + 1, 1, v_at(x, y));
+            }
+        }
+        check(&f, 1, 1, 8);
+
+        let mut f = ffmpeg_next::frame::Video::new(Pixel::P010LE, W, H);
+        for y in 0..H {
+            for x in 0..W { put(&mut f, 0, y, x as usize * 2, 2, y_at(x, y) << 6); }
+        }
+        for y in 0..H / 2 {
+            for x in 0..W / 2 {
+                put(&mut f, 1, y, x as usize * 4, 2, u_at(x, y) << 6);
+                put(&mut f, 1, y, x as usize * 4 + 2, 2, v_at(x, y) << 6);
+            }
+        }
+        check(&f, 1, 1, 10);
+    }
+
+    /// Packed 4:2:2: Y0 U Y1 V in one plane.
+    #[test]
+    fn packed_yuyv422() {
+        let mut f = ffmpeg_next::frame::Video::new(Pixel::YUYV422, W, H);
+        for y in 0..H {
+            for x in 0..W {
+                put(&mut f, 0, y, x as usize * 2, 1, y_at(x, y));
+            }
+            for x in 0..W / 2 {
+                put(&mut f, 0, y, x as usize * 4 + 1, 1, u_at(x, y));
+                put(&mut f, 0, y, x as usize * 4 + 3, 1, v_at(x, y));
+            }
+        }
+        check(&f, 1, 0, 8);
+    }
+
+    #[test]
+    fn rgb_is_refused() {
+        let f = ffmpeg_next::frame::Video::new(Pixel::RGBA, W, H);
+        assert!(unsafe { read_yuv_samples(f.as_ptr()) }.is_none());
+    }
+}
+
+#[cfg(test)]
 mod log_format_registry_tests {
     use super::*;
     use klipp_core::LogFormat;
@@ -1751,6 +2128,14 @@ unsafe fn download_hw_frame(
     }
     // Reaching here = CPU fallback path
     PERF_CPU_PATH_COUNT.fetch_add(1, Ordering::Relaxed);
+
+    // Scene-referred frames with no GPU converter: the CPU twin of the
+    // shaders' codes route rather than swscale's display-referred RGB.
+    if let Some(frame) = scene_referred_linear_frame(sw_frame, source_cs, source_rotation) {
+        av_frame_free(&mut (sw_frame as *mut _));
+        log_first_resident_delivery(false, "scene_referred_cpu");
+        return Some(frame);
+    }
 
     // Fallback: CPU swscale path. Bit-depth-aware output format so 10+-bit
     // sources keep their extra precision through the YUV→RGB step.
@@ -2454,6 +2839,29 @@ fn convert_sw_frame(
             );
         }
     }
+    // Scene-referred sources (PQ, HLG, camera log) take the GPU
+    // converters' route on the CPU: 10-bit codes for the grade plus the
+    // tone-mapped preview, identical to what NVDEC + the shader produce.
+    // This is where ProRes log lands, and where every format NVDEC cannot
+    // decode lands. Display-referred sources keep the paths below.
+    {
+        let source_cs = unsafe {
+            let avf = received_frame.as_ptr();
+            apply_log_override(klipp_core::SourceColorspace::resolve_with_baseline(
+                (*avf).color_range as i32,
+                (*avf).colorspace as i32,
+                (*avf).color_primaries as i32,
+                (*avf).color_trc as i32,
+                cs_baseline,
+            ))
+        };
+        if let Some(frame) = unsafe {
+            scene_referred_linear_frame(received_frame.as_ptr(), source_cs, source_rotation)
+        } {
+            return Some(frame);
+        }
+    }
+
     // YUV420P10LE direct path: skip swscale entirely. swscale's
     // YUV420P10LE → RGBA64LE conversion was observed producing
     // channel-clamped output (R/G hitting 0/1.0 across most pixels)
