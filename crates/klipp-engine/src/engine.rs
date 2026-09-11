@@ -6226,6 +6226,7 @@ impl PlaybackEngine {
         {
             let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
             fb.write_frame_swap(&mut bytes, width, height);
+            fb.set_presented(self.playhead);
         }
         self.composite_scratch_u8 = bytes;
         let total_ms = t_frame.elapsed().as_secs_f64() * 1000.0;
@@ -6342,6 +6343,7 @@ impl PlaybackEngine {
         {
             let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
             fb.write_frame_swap(&mut bytes, width, height);
+            fb.set_presented(self.playhead);
         }
         // `write_frame_swap` handed back the previous buffer — keep it as
         // the u8 scratch so the next frame reuses the allocation.

@@ -68,6 +68,12 @@ pub struct FrameBuffer {
     pub pending_height: u32,
     pub pending_generation: u64,
     pub pending_ready: bool,
+    /// Where on the timeline the frame in `data` is — what is on screen.
+    /// Written with the frame, so a reader holding the lock cannot pair a
+    /// frame with another one's position (during playback the playhead
+    /// moves on while a frame is still being shown).
+    pub presented: Option<klipp_core::RationalTime>,
+    pending_presented: Option<klipp_core::RationalTime>,
 
     // ── GPU-resident viewer path ──
     // When the engine and UI share one `wgpu::Device` (installed via
@@ -130,6 +136,8 @@ impl FrameBuffer {
             pending_height: 0,
             pending_generation: 0,
             pending_ready: false,
+            presented: None,
+            pending_presented: None,
             gpu_output: None,
             gpu_output_width: 0,
             gpu_output_height: 0,
@@ -239,6 +247,18 @@ impl FrameBuffer {
         }
     }
 
+    /// Where on the timeline [`Self::latest_frame`] is.
+    pub fn latest_presented(&self) -> Option<klipp_core::RationalTime> {
+        if self.pending_ready { self.pending_presented } else { self.presented }
+    }
+
+    /// Say which frame the next write is of. The engine calls this with
+    /// every frame it publishes.
+    pub fn set_presented(&mut self, at: klipp_core::RationalTime) {
+        self.pending_presented = Some(at);
+        self.presented = Some(at);
+    }
+
     /// Swap-based write — the engine provides a `&mut Vec<u8>` that is swapped
     /// with `pending_data`. After the call, `rgba_data` contains the previous
     /// `pending_data` buffer (which the engine can clear and reuse next frame,
@@ -278,6 +298,7 @@ impl FrameBuffer {
         self.width = self.pending_width;
         self.height = self.pending_height;
         self.generation = self.pending_generation;
+        self.presented = self.pending_presented;
         self.dirty = true;
         self.pending_ready = false;
         true

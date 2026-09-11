@@ -521,6 +521,7 @@ impl PlaybackEngine {
         {
             let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
             fb.write_frame_swap(&mut bytes, w, h);
+            fb.set_presented(self.playhead);
         }
         self.composite_scratch_u8 = bytes;
 

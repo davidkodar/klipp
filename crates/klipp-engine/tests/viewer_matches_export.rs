@@ -188,8 +188,6 @@ fn exported_frame(path: &Path, n: i64) -> Vec<u8> {
 struct Viewer {
     cmd: crossbeam_channel::Sender<AppCommand>,
     fb: Arc<Mutex<FrameBuffer>>,
-    /// The playhead the engine last reported.
-    playhead: Arc<Mutex<Option<RationalTime>>>,
     thread: Option<std::thread::JoinHandle<()>>,
 }
 
@@ -220,16 +218,10 @@ impl Viewer {
             Arc::new(Mutex::new(klipp_engine::perf::PerfRing::default())),
         );
         let thread = std::thread::spawn(move || engine.run());
-        let playhead = Arc::new(Mutex::new(None));
-        let reported = Arc::clone(&playhead);
-        std::thread::spawn(move || {
-            while let Ok(ev) = ev_rx.recv() {
-                if let AppEvent::PlayheadMoved(tc) = ev {
-                    *reported.lock().unwrap() = Some(tc);
-                }
-            }
-        });
-        Self { cmd, fb, playhead, thread: Some(thread) }
+        // Drain events: the engine must not block on a full channel. Which
+        // frame is on screen comes from the frame buffer, with the frame.
+        std::thread::spawn(move || while ev_rx.recv().is_ok() {});
+        Self { cmd, fb, thread: Some(thread) }
     }
 
     /// Wait until no new frame has arrived for 600 ms, then return the
@@ -251,6 +243,17 @@ impl Viewer {
         let (rgba, w, h, _) = fb.latest_frame();
         assert_eq!((w, h), (W, H), "viewer frame size");
         rgba.chunks_exact(4).flat_map(|p| [p[0], p[1], p[2]]).collect()
+    }
+
+    /// [`Self::settled_frame`], with the frame the viewer says it is
+    /// showing. Taken under one lock: during playback the playhead moves
+    /// on while a frame is still on screen, so asking afterwards can name
+    /// a different frame — under load, a whole frame out.
+    fn settled_frame_at(&self) -> (Vec<u8>, i64) {
+        let rgb = self.settled_frame();
+        let fb = self.fb.lock().unwrap();
+        let at = fb.latest_presented().expect("the engine names the frame it presents");
+        (rgb, at.value * FPS / at.rate as i64)
     }
 
     /// Park the playhead at frame `n` and return the frame the viewer
@@ -353,9 +356,7 @@ fn playing_through_a_dissolve_shows_the_exported_frames() {
         viewer.cmd.send(AppCommand::Play).unwrap();
         std::thread::sleep(Duration::from_millis(play_ms));
         viewer.cmd.send(AppCommand::Pause).unwrap();
-        let v = viewer.settled_frame();
-        let at = viewer.playhead.lock().unwrap().expect("a playhead");
-        let n = at.value * FPS / at.rate as i64;
+        let (v, n) = viewer.settled_frame_at();
         assert!(n > from, "playback did not move: from {from}, at {n}");
         worst = worst.max(compare(&format!("played {from}->{n:3}"), &v, &exported_frame(&out, n)));
     }
