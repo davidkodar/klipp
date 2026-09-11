@@ -1348,7 +1348,7 @@ pub fn optimised_playback_mode() -> u8 {
 /// `klipp_core::WorkingColorspace::as_u8`:
 ///   0 = Rec709Linear (default — pre-upgrade pipeline behaviour)
 ///   1 = AcesCG       (linear AP1 primaries, D60 white)
-///   2 = Bt2020Linear (placeholder until end-to-end Rec.2020 lands)
+///   2 = Bt2020Linear (linear BT.2020 primaries, D65 white)
 /// Unknown tags fall back to `Rec709Linear` via
 /// `WorkingColorspace::from_u8`. The setter is the only sanctioned way
 /// to change this — driven by project state when a `.klipp` file

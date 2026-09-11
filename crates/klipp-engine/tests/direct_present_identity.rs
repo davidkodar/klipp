@@ -9,10 +9,13 @@
 //!
 //! so what has to hold is that `display_transform_ws` inverts the
 //! expansion exactly. It does, but only for the two conditions
-//! `direct_present_blocker` checks: `ToneMapOp::None` and a non-ACES
+//! `direct_present_blocker` checks: `ToneMapOp::None` and a Rec.709
 //! working space. These tests pin both — the positive case for every one
-//! of the 256 input levels, and the negative case so the gate cannot be
-//! dropped as redundant.
+//! of the 256 input levels, and the negative cases so neither gate can
+//! be dropped as redundant. A wide-gamut working space is a negative
+//! case for the same reason in both directions: ACES routes through its
+//! ODT, BT.2020 through a matrix into BT.709, and neither lands back on
+//! the decoder's own bytes.
 //!
 //! Deliberately exercised through `realise_srgb_u8_from_gpu` and
 //! `realise_linear_from_gpu` rather than a local re-implementation: those
@@ -94,28 +97,27 @@ fn direct_present_is_byte_identical() {
         "the readback itself altered the decoder's bytes",
     );
 
-    // Both working spaces the blocker admits must agree with it, for
+    // The one working space the blocker admits must agree with it, for
     // every level, exactly.
-    for ws in [WorkingColorspace::Rec709Linear, WorkingColorspace::Bt2020Linear] {
-        let full = through_the_full_pipeline(&gpu, ToneMapOp::None, ws);
-        assert_eq!(full.len(), direct.len(), "{ws:?}: output size mismatch");
-        let mismatches: Vec<(usize, u8, u8)> = full
-            .iter()
-            .zip(direct.iter())
-            .enumerate()
-            .filter(|(_, (a, b))| a != b)
-            .map(|(i, (a, b))| (i, *a, *b))
-            .take(8)
-            .collect();
-        assert!(
-            mismatches.is_empty(),
-            "{ws:?}: direct present differs from the full pipeline at \
-             {} of {} bytes; first few (index, full, direct): {mismatches:?}",
-            full.iter().zip(direct.iter()).filter(|(a, b)| a != b).count(),
-            full.len(),
-        );
-        eprintln!("{ws:?}: direct present is byte-identical over all 256 levels");
-    }
+    let ws = WorkingColorspace::Rec709Linear;
+    let full = through_the_full_pipeline(&gpu, ToneMapOp::None, ws);
+    assert_eq!(full.len(), direct.len(), "{ws:?}: output size mismatch");
+    let mismatches: Vec<(usize, u8, u8)> = full
+        .iter()
+        .zip(direct.iter())
+        .enumerate()
+        .filter(|(_, (a, b))| a != b)
+        .map(|(i, (a, b))| (i, *a, *b))
+        .take(8)
+        .collect();
+    assert!(
+        mismatches.is_empty(),
+        "{ws:?}: direct present differs from the full pipeline at \
+         {} of {} bytes; first few (index, full, direct): {mismatches:?}",
+        full.iter().zip(direct.iter()).filter(|(a, b)| a != b).count(),
+        full.len(),
+    );
+    eprintln!("{ws:?}: direct present is byte-identical over all 256 levels");
 }
 
 /// The `ToneMapOp::None` gate is load-bearing, not defensive clutter:
@@ -146,5 +148,18 @@ fn a_tone_map_operator_makes_the_fast_path_wrong() {
         aces, direct,
         "the ACES ODT left the pixels unchanged — the working-space check \
          in direct_present_blocker is no longer protecting anything",
+    );
+
+    // And for BT.2020, which needs a matrix into BT.709 before the sRGB
+    // encode. While it was a stub aliased to Rec.709 this was identical
+    // and the fast path admitted it; now that it is a real working space
+    // the picture would come out over-saturated on the fast path and
+    // correct on the slow one — the worst way for this to be wrong.
+    let bt2020 = through_the_full_pipeline(&gpu, ToneMapOp::None, WorkingColorspace::Bt2020Linear);
+    assert_ne!(
+        bt2020, direct,
+        "a BT.2020 working space left the pixels unchanged — it is either \
+         still stubbed as Rec.709, or the gamut conversion is missing from \
+         display_transform_ws",
     );
 }

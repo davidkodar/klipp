@@ -527,10 +527,10 @@ fn matrix_coefficients(matrix: ColorMatrix) -> (f32, f32, f32, f32) {
 /// the per-pixel cost stays at one 3×3 multiply: source → AP1
 /// directly, no intermediate BT.709 hop.
 ///
-/// [`WorkingColorspace::Bt2020Linear`] currently routes through the
-/// BT.709 matrix as a placeholder — Bt2020Linear has no end-to-end
-/// pipeline behind it yet. Wiring lands later; until then a project
-/// set to Bt2020Linear behaves the same as Rec709Linear.
+/// [`WorkingColorspace::Bt2020Linear`] composes the same way, with
+/// [`crate::primaries::bt709_to_bt2020`]. A BT.2020 source lands
+/// unchanged: the source→709 and 709→2020 tables are mutual inverses,
+/// so the product is identity to float precision.
 pub fn primaries_to_working_matrix(
     p: ColorPrimaries,
     ws: WorkingColorspace,
@@ -547,7 +547,10 @@ pub fn primaries_to_working_matrix(
                 to_bt709,
             )
         }
-        WorkingColorspace::Bt2020Linear => to_bt709,
+        WorkingColorspace::Bt2020Linear => crate::primaries::matrix3_mul(
+            crate::primaries::bt709_to_bt2020(),
+            to_bt709,
+        ),
     }
 }
 
@@ -1229,5 +1232,39 @@ mod tests {
         let via_wrapper = rgba_u8_to_linear_bt709(&rgba, cs);
         let via_dispatch = rgba_u8_to_linear(&rgba, cs, WorkingColorspace::Rec709Linear);
         assert_eq!(via_wrapper, via_dispatch);
+    }
+    #[test]
+    fn a_bt2020_source_lands_unchanged_in_a_bt2020_project() {
+        // The whole point of a BT.2020 working space: the most common HDR
+        // source arrives in the basis the project already works in, so
+        // the decoder's matrix is identity and nothing is lost on the way
+        // in. Before this, the source was converted to BT.709 and then
+        // treated as BT.2020 — a silent double error.
+        let m = primaries_to_working_matrix(ColorPrimaries::Bt2020, WorkingColorspace::Bt2020Linear);
+        for (i, row) in m.iter().enumerate() {
+            for (j, v) in row.iter().enumerate() {
+                let want = if i == j { 1.0 } else { 0.0 };
+                assert!((v - want).abs() < 1e-5, "m[{i}][{j}] = {v}, want {want}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_bt709_source_is_widened_into_a_bt2020_project() {
+        // A BT.709 source in a BT.2020 project is the other everyday
+        // case: it must be converted in, landing inside the wider gamut
+        // with every channel positive, and come back where it started.
+        let m = primaries_to_working_matrix(ColorPrimaries::Bt709, WorkingColorspace::Bt2020Linear);
+        for rgb in [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0], [0.3, 0.6, 0.1]] {
+            let in_2020 = crate::primaries::matrix3_mul_vec(m, rgb);
+            assert!(in_2020.iter().all(|c| *c >= -1e-6), "{rgb:?} → {in_2020:?}");
+            let back = crate::primaries::matrix3_mul_vec(crate::primaries::bt2020_to_bt709(), in_2020);
+            for c in 0..3 {
+                assert!((back[c] - rgb[c]).abs() < 1e-5, "{rgb:?} → {in_2020:?} → {back:?}");
+            }
+        }
+        // Neutral is neutral: shared D65, no adaptation.
+        let white = crate::primaries::matrix3_mul_vec(m, [1.0, 1.0, 1.0]);
+        assert!(white.iter().all(|c| (c - 1.0).abs() < 1e-5), "white moved to {white:?}");
     }
 }

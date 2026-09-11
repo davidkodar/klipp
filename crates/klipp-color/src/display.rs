@@ -196,6 +196,18 @@ fn hable(x: f32) -> f32 {
 /// Expects interleaved linear f32 RGBA; returns interleaved sRGB u8
 /// RGBA. Alpha is normalised and quantised but never gamma-encoded.
 pub fn display_transform(linear_rgba: &[f32], tone_map_op: ToneMapOp) -> Vec<u8> {
+    display_transform_from(linear_rgba, tone_map_op, None)
+}
+
+/// [`display_transform`], with the working space's own basis converted
+/// into BT.709 first. `to_709` is `None` when the picture is already
+/// there. Folding the matrix into this loop keeps a wide-gamut project
+/// at one pass over the frame instead of a converted copy of it.
+fn display_transform_from(
+    linear_rgba: &[f32],
+    tone_map_op: ToneMapOp,
+    to_709: Option<[[f32; 3]; 3]>,
+) -> Vec<u8> {
     use rayon::prelude::*;
     assert!(
         linear_rgba.len() % 4 == 0,
@@ -212,8 +224,12 @@ pub fn display_transform(linear_rgba: &[f32], tone_map_op: ToneMapOp) -> Vec<u8>
             // positives (the 1.60475 coefficient in the output matrix
             // amplifies anything it sees). The other operators already
             // guard against negatives on their own.
+            let rgb = match to_709 {
+                Some(m) => crate::primaries::matrix3_mul_vec(m, [chunk[0], chunk[1], chunk[2]]),
+                None => [chunk[0], chunk[1], chunk[2]],
+            };
             let mapped = tone_map_rgb(
-                [chunk[0].max(0.0), chunk[1].max(0.0), chunk[2].max(0.0)],
+                [rgb[0].max(0.0), rgb[1].max(0.0), rgb[2].max(0.0)],
                 tone_map_op,
             );
             dst[0] = (linear_to_srgb(mapped[0]).clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
@@ -243,11 +259,14 @@ pub fn display_transform(linear_rgba: &[f32], tone_map_op: ToneMapOp) -> Vec<u8>
 ///   curve in this configuration; honouring `tone_map_op` on top
 ///   would compose two opinionated curves and produce a muddy look.
 ///
-/// * [`klipp_core::WorkingColorspace::Bt2020Linear`] — stub aliased
-///   to the `Rec709Linear` path until the BT.2020 pipeline lands
-///   end-to-end. Matches the decoder/grade-chain stubbing from
-///   earlier sessions; documented so the divergence is loud rather
-///   than silent.
+/// * [`klipp_core::WorkingColorspace::Bt2020Linear`] — the same path,
+///   with BT.2020 → BT.709 in linear light first. An SDR display
+///   cannot show BT.2020's gamut, so colours outside BT.709 go
+///   negative in the matrix and are clamped at the encode. That is a
+///   hard clip, not a gamut map: saturated wide-gamut colour flattens
+///   towards the BT.709 hull rather than rolling off. Good enough to
+///   monitor an HDR project on an SDR screen, not a deliverable —
+///   grade against the HDR view, or export through an ACES ODT.
 ///
 /// All branches preserve alpha as a linear value (never gamma-
 /// encoded; clamped + quantised only).
@@ -262,11 +281,15 @@ pub fn display_transform_ws(
         linear_rgba.len() % 4 == 0,
         "display_transform_ws requires RGBA-packed input",
     );
-    if matches!(working_space, WorkingColorspace::Rec709Linear | WorkingColorspace::Bt2020Linear) {
-        // Bt2020Linear is stubbed as Rec709Linear today (matches the
-        // decoder/grade-chain stubs). When BT.2020 PQ/HLG ODTs land
-        // (PHASE-E-S4C), this branch will need its own pipeline.
-        return display_transform(linear_rgba, tone_map_op);
+    if let WorkingColorspace::Rec709Linear | WorkingColorspace::Bt2020Linear = working_space {
+        return display_transform_from(
+            linear_rgba,
+            tone_map_op,
+            crate::primaries::working_space_conversion_matrix(
+                working_space,
+                WorkingColorspace::Rec709Linear,
+            ),
+        );
     }
     // AcesCG: ACES Output Device Transform path.
     let mut out = vec![0u8; linear_rgba.len()];
@@ -361,7 +384,9 @@ pub struct ExportDisplay {
 
 #[derive(Clone, Copy)]
 enum ExportPath {
-    ToneMapSrgb,
+    /// Tone map + sRGB encode, the working space's basis brought into
+    /// BT.709 first when it is not already there.
+    ToneMapSrgb(Option<[[f32; 3]; 3]>),
     AcesRec709,
     Odt(Option<[[f32; 3]; 3]>),
     /// An HDR delivery's display light (1.0 = 203 cd/m², see
@@ -374,23 +399,37 @@ enum ExportPath {
 impl ExportDisplay {
     /// MatchViewer follows the viewer (`display_transform_ws`): tone map +
     /// sRGB for BT.709/BT.2020-linear projects, the ACES Rec.709 output for
-    /// AcesCG ones. Srgb is the legacy path. Unknown aliases MatchViewer
-    /// for forwards-compat. The remaining variants are AcesCG-basis ODTs;
-    /// a BT.709-linear project walks into AP1 first, or the ODT would see
-    /// Rec.709-basis values and shift hue. (BT.2020-linear falls through
-    /// unconverted — no BT.2020 → AP1 matrix is wired yet; the viewer
-    /// aliases BT.2020 to Rec.709 today.)
+    /// AcesCG ones, and a BT.2020-linear project is brought into BT.709
+    /// first, clipping what BT.709 cannot hold — see
+    /// [`display_transform_ws`] on what that clip costs. Srgb is the
+    /// legacy path and converts nothing. Unknown aliases MatchViewer for
+    /// forwards-compat.
+    ///
+    /// The remaining variants are AcesCG-basis ODTs; a project that is not
+    /// already in AP1 walks there first, or the ODT would see foreign
+    /// values and shift hue.
     pub fn new(tone_map_op: ToneMapOp, working_space: klipp_core::WorkingColorspace, odt: OdtChoice) -> Self {
         use klipp_core::WorkingColorspace;
+        let to_709 = || {
+            crate::primaries::working_space_conversion_matrix(working_space, WorkingColorspace::Rec709Linear)
+        };
         let path = match odt {
             OdtChoice::MatchViewer | OdtChoice::Unknown => match working_space {
-                WorkingColorspace::Rec709Linear | WorkingColorspace::Bt2020Linear => ExportPath::ToneMapSrgb,
+                WorkingColorspace::Rec709Linear | WorkingColorspace::Bt2020Linear => {
+                    ExportPath::ToneMapSrgb(to_709())
+                }
                 _ => ExportPath::AcesRec709,
             },
-            OdtChoice::Srgb => ExportPath::ToneMapSrgb,
-            _ => ExportPath::Odt(
-                matches!(working_space, WorkingColorspace::Rec709Linear).then(crate::primaries::bt709_to_acescg),
-            ),
+            // The legacy escape hatch encodes the working values as they
+            // are, in any working space — the same way it leaves an
+            // AcesCG project in AP1. A BT.2020 project exported this way
+            // is over-saturated, which is what "give me the pre-ACES
+            // pixels" asks for; MatchViewer is the path that converts.
+            OdtChoice::Srgb => ExportPath::ToneMapSrgb(None),
+            _ => ExportPath::Odt(crate::primaries::working_space_conversion_matrix(
+                working_space,
+                WorkingColorspace::AcesCG,
+            )),
         };
         Self { tone_map_op, odt, path }
     }
@@ -404,7 +443,12 @@ impl ExportDisplay {
         let path = match delivery {
             klipp_core::HdrMode::Pq => ExportPath::Pq { to_2020, peak_nits },
             klipp_core::HdrMode::Hlg => ExportPath::Hlg { to_2020 },
-            klipp_core::HdrMode::Sdr => ExportPath::ToneMapSrgb,
+            klipp_core::HdrMode::Sdr => ExportPath::ToneMapSrgb(
+                crate::primaries::working_space_conversion_matrix(
+                    working_space,
+                    klipp_core::WorkingColorspace::Rec709Linear,
+                ),
+            ),
         };
         Self { tone_map_op: ToneMapOp::None, odt: OdtChoice::MatchViewer, path }
     }
@@ -427,9 +471,14 @@ impl ExportDisplay {
     fn encode_with(&self, rgb: [f32; 3], want_light: bool) -> ([f32; 3], f32) {
         let mut light = 0.0;
         let e = match self.path {
-            ExportPath::ToneMapSrgb => {
+            ExportPath::ToneMapSrgb(to_709) => {
+                let rgb = match to_709 {
+                    Some(m) => crate::primaries::matrix3_mul_vec(m, rgb),
+                    None => rgb,
+                };
                 // Clamp negatives before the tone map: ACES' matrix path
-                // amplifies small negatives into bright positives.
+                // amplifies small negatives into bright positives, and a
+                // wide-gamut colour outside BT.709 arrives negative here.
                 let m = tone_map_rgb([rgb[0].max(0.0), rgb[1].max(0.0), rgb[2].max(0.0)], self.tone_map_op);
                 [linear_to_srgb(m[0]), linear_to_srgb(m[1]), linear_to_srgb(m[2])]
             }
@@ -827,16 +876,35 @@ mod tests {
     }
 
     #[test]
-    fn ws_aware_bt2020_path_aliases_rec709_for_now() {
-        // Bt2020Linear is a stub — same output as Rec.709 until the
-        // proper BT.2020 PQ/HLG ODTs ship. Document that intent so
-        // a future "this is wrong" claim has a known baseline.
-        let pix = vec![0.18, 0.5, 0.9, 1.0];
-        let rec709 = display_transform_ws(&pix, ToneMapOp::Hable,
-            klipp_core::WorkingColorspace::Rec709Linear);
-        let bt2020 = display_transform_ws(&pix, ToneMapOp::Hable,
-            klipp_core::WorkingColorspace::Bt2020Linear);
-        assert_eq!(rec709, bt2020);
+    fn an_sdr_view_of_a_bt2020_project_converts_into_bt709() {
+        use klipp_core::WorkingColorspace::{Bt2020Linear, Rec709Linear};
+        let view = |px: &[f32], ws| display_transform_ws(px, ToneMapOp::Hable, ws);
+
+        // Neutral is neutral in both. BT.2020 and BT.709 share D65, so
+        // the matrix leaves grey alone and the two paths agree — the one
+        // case where the old aliasing stub was right.
+        let grey = vec![0.18, 0.18, 0.18, 1.0];
+        assert_eq!(view(&grey, Rec709Linear), view(&grey, Bt2020Linear));
+
+        // A saturated colour is where the stub showed the wrong picture:
+        // BT.2020 values encoded as sRGB read as a more saturated colour
+        // than they are. Converted, the same values are the colour they
+        // describe — a red beyond BT.709's gamut, so it pins the red
+        // channel and clips the other two.
+        let red = vec![0.5, 0.0, 0.0, 1.0];
+        let (as_709, as_2020) = (view(&red, Rec709Linear), view(&red, Bt2020Linear));
+        assert_ne!(as_709, as_2020, "BT.2020 red still aliases BT.709 red");
+        assert!(as_2020[0] > as_709[0], "{as_2020:?} vs {as_709:?}");
+
+        // And the path is exactly the matrix followed by the BT.709 one,
+        // for a colour inside both gamuts where nothing clips.
+        let px = [0.3, 0.55, 0.12];
+        let c = crate::primaries::matrix3_mul_vec(crate::primaries::bt2020_to_bt709(), px);
+        let converted = vec![c[0], c[1], c[2], 1.0];
+        assert_eq!(
+            view(&[px[0], px[1], px[2], 1.0], Bt2020Linear),
+            view(&converted, Rec709Linear),
+        );
     }
 
     #[test]

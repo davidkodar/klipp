@@ -542,10 +542,10 @@ impl NodeGraph {
         if old == new {
             return false;
         }
-        // Unsupported pair (e.g. BT.2020 ↔ AcesCG before the BT.2020
-        // basis lands as a first-class working space). The matrix
-        // helper returns None for these, and a passthrough node would
-        // silently corrupt the look — better to skip migration and
+        // A pair with no matrix in both directions. Every pair of the
+        // working spaces that exist today has one; this stays as the
+        // guard for whatever is added next, because a passthrough node
+        // would silently corrupt the look — better to skip migration and
         // let the caller surface a "look will shift" warning.
         if klipp_color::primaries::working_space_conversion_matrix(old, new).is_none() {
             return false;
@@ -779,15 +779,25 @@ mod tests {
     }
 
     #[test]
-    fn migrate_returns_false_for_unsupported_bt2020_pair() {
-        // BT.2020 is a stub today — working_space_conversion_matrix
-        // returns None for any pair touching it. Migration must
-        // refuse rather than insert passthrough nodes.
-        let mut g = default_graph();
-        let did = g.migrate_working_space(WorkingColorspace::Rec709Linear, WorkingColorspace::Bt2020Linear);
-        assert!(!did);
-        assert_eq!(count_kind(&g, NodeKind::PrimariesMatrix), 0);
-        assert!(g.working_space_override.is_none());
+    fn migrate_wraps_the_bt2020_pairs_like_any_other() {
+        // BT.2020 is a working space in its own right now, so switching a
+        // project into or out of it preserves the look the same way the
+        // ACES pairs do — wrapper nodes, not a refusal. While it was a
+        // stub the matrix helper returned None and migration skipped.
+        for (from, to) in [
+            (WorkingColorspace::Rec709Linear, WorkingColorspace::Bt2020Linear),
+            (WorkingColorspace::Bt2020Linear, WorkingColorspace::Rec709Linear),
+            (WorkingColorspace::AcesCG, WorkingColorspace::Bt2020Linear),
+            (WorkingColorspace::Bt2020Linear, WorkingColorspace::AcesCG),
+        ] {
+            let mut g = default_graph();
+            let nodes_before = g.nodes.len();
+            assert!(g.migrate_working_space(from, to), "{from:?} → {to:?} refused to migrate");
+            assert_eq!(count_kind(&g, NodeKind::PrimariesMatrix), 2, "{from:?} → {to:?}");
+            assert_eq!(g.nodes.len(), nodes_before + 2, "{from:?} → {to:?}");
+            assert_eq!(g.working_space_override, Some(from), "{from:?} → {to:?}");
+            assert!(g.topo_sort().is_ok(), "{from:?} → {to:?} left a cycle");
+        }
     }
 
     #[test]
