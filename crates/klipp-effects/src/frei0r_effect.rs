@@ -224,6 +224,12 @@ pub fn known_paths() -> Vec<PathBuf> {
 
 #[cfg(test)]
 mod tests {
+    /// The registry these tests reset and fill is global, so they cannot
+    /// run beside each other: one would clear the registry another had
+    /// just written, which failed at random depending on the schedule.
+    /// Each takes this lock for its whole body.
+    static REGISTRY: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     use super::*;
     use klipp_frei0r::{ColorModel, ParamInfo, ParamKind, PluginType};
 
@@ -255,6 +261,7 @@ mod tests {
 
     #[test]
     fn apply_returns_passthrough_for_unknown_plugin() {
+        let _guard = REGISTRY.lock().unwrap_or_else(|e| e.into_inner());
         _reset_for_test();
         let frame = vec![42u8; 16 * 16 * 4];
         let out = apply("frei0r:/nope/x.so:Bogus", &[], frame.clone(), 16, 16, 0.0);
@@ -263,6 +270,7 @@ mod tests {
 
     #[test]
     fn default_params_match_plugin_kinds() {
+        let _guard = REGISTRY.lock().unwrap_or_else(|e| e.into_inner());
         _reset_for_test();
         _register_for_test(fake_info());
         let params = default_params("frei0r:/tmp/nonexistent.so:FakeFx").unwrap();
@@ -291,12 +299,14 @@ mod tests {
 
     #[test]
     fn lookup_returns_none_for_missing() {
+        let _guard = REGISTRY.lock().unwrap_or_else(|e| e.into_inner());
         _reset_for_test();
         assert!(lookup("frei0r:/nonexistent.so:Whatever").is_none());
     }
 
     #[test]
     fn registry_snapshot_round_trip() {
+        let _guard = REGISTRY.lock().unwrap_or_else(|e| e.into_inner());
         _reset_for_test();
         _register_for_test(fake_info());
         let snap = registry_snapshot();
@@ -306,6 +316,7 @@ mod tests {
 
     #[test]
     fn known_paths_lists_registered() {
+        let _guard = REGISTRY.lock().unwrap_or_else(|e| e.into_inner());
         _reset_for_test();
         _register_for_test(fake_info());
         assert_eq!(
@@ -316,6 +327,7 @@ mod tests {
 
     #[test]
     fn set_plugin_registry_replaces_loaded_state() {
+        let _guard = REGISTRY.lock().unwrap_or_else(|e| e.into_inner());
         _reset_for_test();
         _register_for_test(fake_info());
         set_plugin_registry(vec![]);

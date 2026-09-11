@@ -8257,7 +8257,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let px = unpack(input[idx]);
     let luma = 0.2126 * px.x + 0.7152 * px.y + 0.0722 * px.z;
     if luma > params.threshold {
-        let factor = (luma - params.threshold) / (1.0 - params.threshold + 1e-6);
+        // A weight, not a ramp: normalising by 1 - threshold handed a 12x
+        // highlight a factor of 34, so the bloom grew the light it spread.
+        let factor = clamp((luma - params.threshold) / (1.0 - params.threshold + 1e-6), 0.0, 1.0);
         output[idx] = pack(vec4<f32>(px.xyz * factor, px.w));
     } else {
         output[idx] = pack(vec4<f32>(0.0, 0.0, 0.0, 0.0));
@@ -8494,7 +8496,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         let px = unpack(input[y * params.width + sx]);
         let luma = 0.2126 * px.x + 0.7152 * px.y + 0.0722 * px.z;
         if luma > params.threshold {
-            let factor = (luma - params.threshold) / (1.0 - params.threshold + 1e-6);
+            let factor = clamp((luma - params.threshold) / (1.0 - params.threshold + 1e-6), 0.0, 1.0);
             streak = streak + px.xyz * factor;
         }
     }

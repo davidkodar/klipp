@@ -131,7 +131,10 @@ fn bright(p: &[f32], threshold: f32) -> Vec<f32> {
     each_value(p.to_vec(), |c| {
         let l = luma(c);
         if l > threshold {
-            let f = (l - threshold) / (1.0 - threshold + 1e-6);
+            // A weight, not a ramp: normalising by `1 - threshold` gave a
+            // factor of 34 to a 12x highlight, so bloom and halation grew
+            // the light they spread instead of spreading it.
+            let f = ((l - threshold) / (1.0 - threshold + 1e-6)).clamp(0.0, 1.0);
             [c[0] * f, c[1] * f, c[2] * f, c[3]]
         } else {
             [0.0; 4]
@@ -416,7 +419,7 @@ pub(crate) fn apply(effect: &BuiltinEffect, p: Vec<f32>, w: u32, h: u32) -> Vec<
                     let q = f.at(sx as usize, y);
                     let l = luma(q);
                     if l > threshold {
-                        let k = (l - threshold) / (1.0 - threshold + 1e-6);
+                        let k = ((l - threshold) / (1.0 - threshold + 1e-6)).clamp(0.0, 1.0);
                         (0..3).for_each(|c| s[c] += q[c] * k);
                     }
                 }
