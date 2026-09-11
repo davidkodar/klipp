@@ -20,6 +20,26 @@ use klipp_core::{
 };
 
 // ─── Per-transfer inverse OETFs ─────────────────────────────────────
+//
+// Every curve here takes a *normalised 10-bit code value* — CV / 1023,
+// the numbering the manufacturers publish their curves in — and returns
+// scene-linear reflectance, 0.18 = mid grey. Each is checked across all
+// 1024 codes by tests/camera_log_parity.rs against an independent
+// reference: OpenColorIO's built-in manufacturer transforms where they
+// exist, colour-science otherwise (itself cross-checked against OCIO on
+// the seven formats both cover, to within 2e-5 stops). BMD Film Gen5 is
+// in neither and remains unverified.
+//
+// Several of these used to be wrong by stops — LogC4 by 20, Canon Log 3
+// negative at mid grey — and the InputTransform node carried a second,
+// separately wrong copy of every curve. There is now one copy, here.
+
+/// CV / 1023 → legal-range normalised, (CV − 64) / 876. Sony S-Log/S-Log2
+/// and Canon Log (v1) apply their formulas in this domain.
+#[inline]
+fn legal_to_full_10bit(c: f32) -> f32 {
+    (c * 1023.0 - 64.0) / 876.0
+}
 
 /// Sony S-Log3 inverse OETF.
 #[inline]
@@ -33,11 +53,22 @@ pub fn slog3_to_linear(c: f32) -> f32 {
     }
 }
 
-/// Sony S-Log2 inverse OETF.
+/// Sony S-Log2 inverse OETF: S-Log scaled by 219/155, per Sony's S-Log2
+/// technical summary. The S-Log formula itself works on legal-range
+/// normalised values.
 #[inline]
 pub fn slog2_to_linear(c: f32) -> f32 {
-    let s = c.clamp(0.0, 1.0);
-    (10.0_f32.powf((s - 0.616_596 - 0.03) / 0.432_699) - 0.037_584) / 0.166_666
+    let y = c.clamp(0.0, 1.0);
+    let x = legal_to_full_10bit(y);
+    // S-Log's code value for scene 0, back in CV/1023 terms: the knee
+    // between the linear toe and the log segment.
+    let knee = ((0.432_699 * 0.037_584_f32.log10() + 0.616_596 + 0.03) * 876.0 + 64.0) / 1023.0;
+    let slog = if y >= knee {
+        10.0_f32.powf((x - 0.616_596 - 0.03) / 0.432_699) - 0.037_584
+    } else {
+        (x - 0.030_001_223) / 5.0
+    } * 0.9;
+    219.0 * slog / 155.0
 }
 
 /// Panasonic V-Log inverse OETF.
@@ -52,25 +83,32 @@ pub fn vlog_to_linear(c: f32) -> f32 {
     }
 }
 
-/// Canon Log inverse OETF.
+/// Canon Log (v1) inverse OETF, per Canon's white paper; applied in the
+/// legal-range normalised domain and scaled by 0.9 to scene reflectance.
 #[inline]
 pub fn canon_log_to_linear(c: f32) -> f32 {
-    let s = c.clamp(0.0, 1.0);
-    let normed = (s - 0.073_059_7) / 0.529_136;
-    (10.0_f32.powf(normed) - 1.0) / 10.159_6
+    let x = legal_to_full_10bit(c.clamp(0.0, 1.0));
+    let lin = if x < 0.073_059_7 {
+        -(10.0_f32.powf((0.073_059_7 - x) / 0.529_136) - 1.0) / 10.159_6
+    } else {
+        (10.0_f32.powf((x - 0.073_059_7) / 0.529_136) - 1.0) / 10.159_6
+    };
+    lin * 0.9
 }
 
-/// Canon Log 3 inverse OETF.
+/// Canon Log 3 inverse OETF, per Canon's white paper and the ACES input
+/// transform: three segments, then × 0.9 so 18% grey lands on 0.18.
 #[inline]
 pub fn canon_log3_to_linear(c: f32) -> f32 {
-    let s = c.clamp(0.0, 1.0);
-    if s < 0.040_76 {
-        (s - 0.092_864) / 2.361_3
-    } else if s <= 0.105_357 {
-        (s - 0.073_059) / 2.361_3
+    let x = c.clamp(0.0, 1.0);
+    let lin = if x < 0.097_465_473 {
+        -(10.0_f32.powf((0.127_839_01 - x) / 0.367_268_45) - 1.0) / 14.983_25
+    } else if x <= 0.152_778_91 {
+        (x - 0.125_122_19) / 1.975_479_8
     } else {
-        (10.0_f32.powf((s - 0.069_886) / 0.428_89) - 1.0) / 14.983_25
-    }
+        (10.0_f32.powf((x - 0.122_405_37) / 0.367_268_45) - 1.0) / 14.983_25
+    };
+    lin * 0.9
 }
 
 /// ARRI Log C3 (LogC3 EI 800) inverse OETF.
@@ -85,25 +123,33 @@ pub fn logc3_to_linear(c: f32) -> f32 {
     }
 }
 
-/// ARRI Log C4 (Alexa 35) inverse OETF.
+/// ARRI LogC4 inverse OETF, per ARRI's LogC4 specification (2022).
 #[inline]
 pub fn logc4_to_linear(c: f32) -> f32 {
-    let s = c.clamp(0.0, 1.0);
-    let a: f32 = 2231.828_5;
-    let b: f32 = 0.092_864_1;
-    let c1: f32 = 0.069_885_77;
-    if s < c1 {
-        (s - 0.092_864_1) / 5.555_556
+    let e = c.clamp(0.0, 1.0) as f64;
+    let a = (262_144.0 - 16.0) / 117.45;
+    let b = (1023.0 - 95.0) / 1023.0;
+    let cc = 95.0 / 1023.0;
+    let s = (7.0 * std::f64::consts::LN_2 * 2.0_f64.powf(7.0 - 14.0 * cc / b)) / (a * b);
+    let t = (2.0_f64.powf(14.0 * (-cc / b) + 6.0) - 64.0) / a;
+    (if e >= 0.0 {
+        (2.0_f64.powf(14.0 * (e - cc) / b + 6.0) - 64.0) / a
     } else {
-        (2.0_f32.powf(s * 14.0 - 6.0) - b) / a
-    }
+        e * s + t
+    }) as f32
 }
 
-/// RED Log3G10 inverse OETF.
+/// RED Log3G10 inverse OETF, per RED's white paper (v2 curve, with its
+/// 0.01 linear offset).
 #[inline]
 pub fn red_log3g10_to_linear(c: f32) -> f32 {
-    let s = c.clamp(0.0, 1.0);
-    (10.0_f32.powf(s / 0.224_282) - 1.0) / 155.975_33
+    let x = c.clamp(0.0, 1.0);
+    let (a, b, off, g) = (0.224_282_f32, 155.975_33_f32, 0.01_f32, 15.192_7_f32);
+    if x < 0.0 {
+        x / g - off
+    } else {
+        (10.0_f32.powf(x / a) - 1.0) / b - off
+    }
 }
 
 /// Blackmagic Film Generation 5 — approximate inverse OETF (BMD
@@ -125,15 +171,16 @@ pub fn dji_dlog_to_linear(c: f32) -> f32 {
     }
 }
 
-/// Fuji F-Log inverse OETF.
+/// Fujifilm F-Log inverse OETF, per Fujifilm's F-Log data sheet.
 #[inline]
 pub fn flog_to_linear(c: f32) -> f32 {
-    let s = c.clamp(0.0, 1.0);
-    let a = 0.555_556;
-    if s < 0.100_537 {
-        (s - 0.092_864) / 1.970_095
+    let x = c.clamp(0.0, 1.0);
+    let (a, b, cc, d, e, f) = (0.555_556_f32, 0.009_468_f32, 0.344_676_f32, 0.790_453_f32, 8.735_631_f32, 0.092_864_f32);
+    let cut2 = 0.100_537_775_f32;
+    if x < cut2 {
+        (x - f) / e
     } else {
-        (10.0_f32.powf((s - 0.790_453) / 0.344_676) - 0.064_829) / a
+        10.0_f32.powf((x - d) / cc) / a - b / a
     }
 }
 
@@ -173,40 +220,64 @@ pub fn apple_log_to_linear(c: f32) -> f32 {
     }
 }
 
-/// Nikon N-Log inverse OETF (Nikon Z 6 / Z 7 / Z 8 / Z 9).
-///
-/// Two-segment curve per the Nikon N-Log Reference (2018):
-///   V <  Vₜ:  L = ((V − 0.0928)/0.6007)³ − 0.0075   (cube-root toe inverse)
-///   V ≥  Vₜ:  L = exp((V − 0.619)/0.14)              (log-segment inverse)
-///
-/// Vₜ ≈ 0.5101 — the V-space value where the toe and log branches
-/// would meet at L=0.328 (the linear-space breakpoint named in the
-/// forward curve); switching at this V keeps the inverse smooth
-/// across the small C0 gap that Nikon's own forward curve has at
-/// the breakpoint.
-///
-/// History: previous body used `(s + 0.0075)³ / 1242.0` for the toe
-/// (matches no published spec) plus a log expression with a literal
-/// `/ 0.328 * 0.328` no-op (cancels) and a stray `−0.0075` offset
-/// in the wrong segment. Decoded V=0.4 to ≈0.20 instead of the
-/// spec's ≈0.13 (off by ~18 LSB at u8). Caught in #58 by a parity
-/// test against six reference points covering both branches.
+/// Nikon N-Log inverse OETF, per Nikon's N-Log specification. Nikon's two
+/// published segments meet with a 0.09% step at the breakpoint.
 #[inline]
 pub fn nlog_to_linear(c: f32) -> f32 {
-    const V_BREAK: f32 = 0.5101;
-    let v = c.clamp(0.0, 1.0);
-    if v < V_BREAK {
-        let t = (v - 0.0928) / 0.6007;
-        t * t * t - 0.0075
+    let x = c.clamp(0.0, 1.0);
+    let (a, b, cc, d) = (0.635_386_12_f32, 0.0075_f32, 0.146_627_57_f32, 0.605_083_1_f32);
+    let cut2 = 0.441_837_73_f32;
+    if x < cut2 {
+        (x / a).powi(3) - b
     } else {
-        ((v - 0.619) / 0.14).exp()
+        ((x - d) / cc).exp()
     }
 }
 
-/// GoPro ProTune Flat inverse OETF — gamma 1.6 approximation.
+/// Leica L-Log inverse OETF, per Leica's L-Log reference.
+#[inline]
+pub fn leica_llog_to_linear(c: f32) -> f32 {
+    let x = c.clamp(0.0, 1.0);
+    let (a, b, cc, d, e, f) = (8.0_f32, 0.09_f32, 0.27_f32, 1.3_f32, 0.0115_f32, 0.6_f32);
+    if x <= 0.138 {
+        (x - b) / a
+    } else {
+        (10.0_f32.powf((x - f) / cc) - e) / d
+    }
+}
+
+/// Any `LogFormat` → scene-linear, from a normalised 10-bit code value.
+/// The one implementation behind both the decoder and the InputTransform
+/// node. Unlike `apply_inverse_eotf` it does not clamp the result at 0:
+/// the sub-black toe survives for a grade to work with.
+pub fn log_format_to_linear(c: f32, format: klipp_core::LogFormat) -> f32 {
+    use klipp_core::LogFormat as L;
+    match format {
+        L::Srgb | L::Linear => c,
+        L::SLog3 => slog3_to_linear(c),
+        L::SLog2 => slog2_to_linear(c),
+        L::LogC3 => logc3_to_linear(c),
+        L::LogC4 => logc4_to_linear(c),
+        L::CanonLog => canon_log_to_linear(c),
+        L::CanonLog3 => canon_log3_to_linear(c),
+        L::VLog => vlog_to_linear(c),
+        L::NLog => nlog_to_linear(c),
+        L::FLog => flog_to_linear(c),
+        L::DJIDLog => dji_dlog_to_linear(c),
+        L::GoProFlat => gopro_flat_to_linear(c),
+        L::AppleLog => apple_log_to_linear(c),
+        L::LeicaLLog => leica_llog_to_linear(c),
+        L::RedLog3G10 => red_log3g10_to_linear(c),
+        L::BmdFilmGen5 => bmd_film_gen5_to_linear(c),
+        L::HLG => hlg_to_linear(c),
+        L::PQ => pq_to_linear(c),
+    }
+}
+
+/// GoPro Protune (Flat) inverse OETF.
 #[inline]
 pub fn gopro_flat_to_linear(c: f32) -> f32 {
-    c.clamp(0.0, 1.0).powf(1.6)
+    (113.0_f32.powf(c.clamp(0.0, 1.0)) - 1.0) / 112.0
 }
 
 /// Apply the inverse OETF for a given [`ColorTransfer`]. Output is
@@ -874,49 +945,41 @@ mod tests {
 
     #[test]
     fn nlog_matches_nikon_2018_spec() {
-        // Nikon N-Log Reference (2018, Z 6/Z 7 technical notes).
+        // Nikon's N-Log specification (2018) gives the forward curve in
+        // 10-bit integer form:
+        //   x <  0.328:  V = 650 * (x + 0.0075)^(1/3) / 1023
+        //   x >= 0.328:  V = (150 * ln(x) + 619) / 1023
+        // Decoding Nikon's own encode of a scene value must give it back.
         //
-        // Forward (linear x → encoded V):
-        //   x < 0.328:  V = (x + 0.0075)^(1/3) * 0.6007 + 0.0928   (toe)
-        //   x ≥ 0.328:  V = ln(x) * 0.14 + 0.619                    (log)
-        //
-        // Inverse (V → linear), branch on the V-space breakpoint
-        // where the toe expression last applied (V ≈ 0.5101 — the
-        // toe at x=0.328). The published forward curve has a small
-        // C0 gap at the breakpoint that Nikon's own LUTs smooth
-        // over; we match the toe side because the natural inverse
-        // is toe-branch up to that point.
-        //   V <  0.5101:  x = ((V − 0.0928)/0.6007)^3 − 0.0075
-        //   V ≥  0.5101:  x = exp((V − 0.619)/0.14)
-        //
-        // Reference values computed by hand from the formulas
-        // above; the previous body (`((s + 0.0075)^3) / 1242.0`
-        // for the toe + a `/0.328*0.328 - 0.0075` log expression
-        // whose `/0.328*0.328` is a no-op) doesn't match any
-        // published Nikon N-Log curve and produced ≈0.20 at V=0.4
-        // where the spec says ≈0.13 (off by ~0.07 = 18 LSB at u8).
-        let cases: &[(f32, f32, &str)] = &[
-            // V       expected L     description
-            (0.0928,  -0.0075,        "toe anchor (V → −0.0075 sub-black)"),
-            (0.21,     0.0,           "near-black toe (≈0)"),
-            (0.4369,   0.18,          "≈18% mid-gray toe reference"),
-            (0.55,     0.6109,        "log segment, just past breakpoint"),
-            (0.619,    1.0,           "log: x=1 reference (V=δ)"),
-            (0.8,      3.6435,        "log: highlight"),
-            (1.0,     15.205,         "log: max code, full HDR highlight"),
-        ];
-        for &(v, expected, desc) in cases {
-            let got = nlog_to_linear(v);
-            // 0.005 abs tolerance — well below mid-grey threshold;
-            // tight enough to reject the broken implementations
-            // (which were off by 0.05+ at most points) but with
-            // enough margin to absorb f32 rounding.
-            let diff = (got - expected).abs();
+        // This test used to hard-code a mis-derived version — 619 and 150
+        // divided by 1000 rather than 1023, plus a spurious 0.0928 toe
+        // offset — which put 18% grey at V = 0.4369. The published
+        // formula puts it at 0.3637, as colour-science does (see
+        // tests/camera_log_parity.rs).
+        let encode = |x: f64| -> f64 {
+            if x < 0.328 {
+                650.0 * (x + 0.0075).cbrt() / 1023.0
+            } else {
+                (150.0 * x.ln() + 619.0) / 1023.0
+            }
+        };
+        // Up to 14: N-Log's top code (V = 1.0) decodes to
+        // exp((1023 - 619) / 150) = 14.78, its brightest representable value.
+        for x in [0.0_f64, 0.01, 0.18, 0.3, 0.5, 1.0, 5.0, 14.0] {
+            let v = encode(x) as f32;
+            let back = nlog_to_linear(v) as f64;
+            // Nikon's segments meet with a 0.09% step at the breakpoint;
+            // 0.2% relative (or 1e-4 absolute near 0) clears it.
+            let tol = (x.abs() * 2e-3).max(1e-4);
             assert!(
-                diff < 0.005,
-                "Nikon N-Log V={v}: expected L≈{expected} ({desc}), got {got}, diff={diff}",
+                (back - x).abs() <= tol,
+                "N-Log round trip at x={x}: encoded V={v}, decoded {back}",
             );
         }
+        assert!(
+            (encode(0.18) - 0.3637).abs() < 1e-3,
+            "18% grey should encode to V≈0.3637 per Nikon, got {}", encode(0.18),
+        );
     }
 
     #[test]

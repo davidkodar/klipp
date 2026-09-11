@@ -214,12 +214,19 @@ fn slog3_eotf_scalar(c: f32) -> f32 {
     return (cv - 95.0) * 0.01125000 / (171.2102946929 - 95.0);
 }
 
-// Sony S-Log2 inverse OETF.
+// Sony S-Log2: S-Log scaled by 219/155, S-Log applied to the legal-range
+// normalised value. Mirrors klipp_color::camera_log::slog2_to_linear.
 fn slog2_eotf_scalar(c: f32) -> f32 {
-    let s = clamp(c, 0.0, 1.0);
-    // Sony S-Log2 reference: y = (0.432699 * log10(x*0.166666 +
-    // 0.037584) + 0.616596 + 0.03), inverted analytically.
-    return (pow(10.0, (s - 0.616596 - 0.03) / 0.432699) - 0.037584) / 0.166666;
+    let y = clamp(c, 0.0, 1.0);
+    let x = (y * 1023.0 - 64.0) / 876.0;
+    let knee = ((0.432699 * log(0.037584) / log(10.0) + 0.616596 + 0.03) * 876.0 + 64.0) / 1023.0;
+    var slog: f32;
+    if (y >= knee) {
+        slog = pow(10.0, (x - 0.616596 - 0.03) / 0.432699) - 0.037584;
+    } else {
+        slog = (x - 0.030001223) / 5.0;
+    }
+    return 219.0 * (slog * 0.9) / 155.0;
 }
 
 // Panasonic V-Log inverse OETF.
@@ -232,24 +239,32 @@ fn vlog_eotf_scalar(c: f32) -> f32 {
     return pow(10.0, (s - 0.598206) / 0.241514) - 0.00873;
 }
 
-// Canon Log inverse OETF.
+// Canon Log (v1), legal-range normalised, x 0.9 to reflectance.
+// Mirrors klipp_color::camera_log::canon_log_to_linear.
 fn canon_log_eotf_scalar(c: f32) -> f32 {
-    let s = clamp(c, 0.0, 1.0);
-    let normed = (s - 0.0730597) / 0.529136;
-    // Re-derive linear from log10 form: y = 0.529136 * log10(10.1596 * x + 1) + 0.0730597
-    return (pow(10.0, normed) - 1.0) / 10.1596;
+    let x = (clamp(c, 0.0, 1.0) * 1023.0 - 64.0) / 876.0;
+    var lin: f32;
+    if (x < 0.0730597) {
+        lin = -(pow(10.0, (0.0730597 - x) / 0.529136) - 1.0) / 10.1596;
+    } else {
+        lin = (pow(10.0, (x - 0.0730597) / 0.529136) - 1.0) / 10.1596;
+    }
+    return lin * 0.9;
 }
 
-// Canon Log 3 inverse OETF.
+// Canon Log 3, three segments, x 0.9 so 18% grey lands on 0.18.
+// Mirrors klipp_color::camera_log::canon_log3_to_linear.
 fn canon_log3_eotf_scalar(c: f32) -> f32 {
-    let s = clamp(c, 0.0, 1.0);
-    if s < 0.04076 {
-        return (s - 0.092864) / 2.3613;
+    let x = clamp(c, 0.0, 1.0);
+    var lin: f32;
+    if (x < 0.097465473) {
+        lin = -(pow(10.0, (0.12783901 - x) / 0.36726845) - 1.0) / 14.98325;
+    } else if (x <= 0.15277891) {
+        lin = (x - 0.12512219) / 1.9754798;
+    } else {
+        lin = (pow(10.0, (x - 0.12240537) / 0.36726845) - 1.0) / 14.98325;
     }
-    if s <= 0.105357 {
-        return (s - 0.073059) / 2.3613;
-    }
-    return (pow(10.0, (s - 0.069886) / 0.42889) - 1.0) / 14.98325;
+    return lin * 0.9;
 }
 
 // ARRI Log C3 (LogC3 EI 800) inverse OETF.
@@ -262,22 +277,22 @@ fn logc3_eotf_scalar(c: f32) -> f32 {
     return (s - 0.092809) / 5.367655;
 }
 
-// ARRI Log C4 inverse OETF.
+// ARRI LogC4, per ARRI's LogC4 specification (2022). Constants:
+// a = (2^18 - 16) / 117.45, b = (1023 - 95) / 1023, c = 95 / 1023.
+// Mirrors klipp_color::camera_log::logc4_to_linear.
 fn logc4_eotf_scalar(c: f32) -> f32 {
-    let s = clamp(c, 0.0, 1.0);
-    let a: f32 = 2231.82854938;
-    let b: f32 = 0.092864125;
-    let c1: f32 = 0.069885769;
-    if s < c1 {
-        return (s - 0.092864125) / 5.555556;
-    }
-    return (pow(2.0, (s * 14.0 - 6.0)) - b) / a;
+    let e = clamp(c, 0.0, 1.0);
+    let a = (262144.0 - 16.0) / 117.45;
+    let b = (1023.0 - 95.0) / 1023.0;
+    let cc = 95.0 / 1023.0;
+    return (exp2(14.0 * (e - cc) / b + 6.0) - 64.0) / a;
 }
 
-// RED Log3G10 inverse OETF.
+// RED Log3G10 (v2), with its 0.01 linear offset.
+// Mirrors klipp_color::camera_log::red_log3g10_to_linear.
 fn red_log3g10_eotf_scalar(c: f32) -> f32 {
-    let s = clamp(c, 0.0, 1.0);
-    return (pow(10.0, s / 0.224282) - 1.0) / 155.975327;
+    let x = clamp(c, 0.0, 1.0);
+    return (pow(10.0, x / 0.224282) - 1.0) / 155.975327 - 0.01;
 }
 
 // Blackmagic Film Gen 5 inverse OETF (approximate; BMD doesn't
@@ -298,14 +313,13 @@ fn dji_dlog_eotf_scalar(c: f32) -> f32 {
     return (pow(10.0, (s - 0.584555) / 0.256663) - 0.0108) / 0.9892;
 }
 
-// Fuji F-Log inverse OETF.
+// Fujifilm F-Log. Mirrors klipp_color::camera_log::flog_to_linear.
 fn flog_eotf_scalar(c: f32) -> f32 {
-    let s = clamp(c, 0.0, 1.0);
-    let a: f32 = 0.555556;
-    if s < 0.100537 {
-        return (s - 0.092864) / 1.970095;
+    let x = clamp(c, 0.0, 1.0);
+    if (x < 0.100537775) {
+        return (x - 0.092864) / 8.735631;
     }
-    return (pow(10.0, (s - 0.790453) / 0.344676) - 0.064829) / a;
+    return pow(10.0, (x - 0.790453) / 0.344676) / 0.555556 - 0.009468 / 0.555556;
 }
 
 // Apple Log inverse OETF (iPhone 15 Pro+) — Apple Log Profile,
@@ -332,31 +346,20 @@ fn apple_log_eotf_scalar(c: f32) -> f32 {
     return pow(2.0, (s - delta) / gamma) - beta;
 }
 
-// Nikon N-Log inverse OETF (Z 6/7/8/9).
-// Two-segment per the Nikon N-Log Reference (2018):
-//   V <  Vt:  L = ((V - 0.0928)/0.6007)^3 - 0.0075   (cube-root toe)
-//   V >= Vt:  L = exp((V - 0.619)/0.14)               (log)
-// Vt ≈ 0.5101 — the V-space value where the toe expression last
-// holds. Mirrors klipp_color::camera_log::nlog_to_linear exactly
-// so GPU and CPU produce identical scene-linear values. Previous
-// body used a placeholder cube-of-(s+0.0075)/1242.0 toe and a log
-// expression with a literal `/0.328*0.328` no-op — wrong on every
-// Nikon N-Log clip flowing through the GPU input-transform path.
+// Nikon N-Log: 650/150/619 over 1023 in Nikon's integer form.
+// Mirrors klipp_color::camera_log::nlog_to_linear.
 fn nlog_eotf_scalar(c: f32) -> f32 {
-    let s = clamp(c, 0.0, 1.0);
-    let v_break: f32 = 0.5101;
-    if s < v_break {
-        let t = (s - 0.0928) / 0.6007;
+    let x = clamp(c, 0.0, 1.0);
+    if (x < 0.44183773) {
+        let t = x / 0.63538612;
         return t * t * t - 0.0075;
     }
-    return exp((s - 0.619) / 0.14);
+    return exp((x - 0.6050831) / 0.14662757);
 }
 
-// GoPro ProTune Flat inverse OETF — approximated as gamma 1.6 since
-// GoPro doesn't publish the exact curve.
+// GoPro Protune (Flat). Mirrors klipp_color::camera_log::gopro_flat_to_linear.
 fn gopro_flat_eotf_scalar(c: f32) -> f32 {
-    let s = clamp(c, 0.0, 1.0);
-    return pow(s, 1.6);
+    return (pow(113.0, clamp(c, 0.0, 1.0)) - 1.0) / 112.0;
 }
 
 // Wrap a per-channel log EOTF scalar so its output is clamped to
