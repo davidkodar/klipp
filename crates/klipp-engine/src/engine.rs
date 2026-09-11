@@ -12323,33 +12323,82 @@ fn open_gpu_decoder(
     let stream_index = video_stream.index();
     let params = video_stream.parameters();
 
+    let codec_id = params.id();
     let mut codec_ctx = ffmpeg_next::codec::context::Context::from_parameters(params)
         .map_err(|e| format!("codec context: {e}"))?;
 
+    // Always multi-threaded. Hardware decode ignores it; a software
+    // decoder with the default of one thread is the single biggest cost
+    // there is — see `hw_capable_decoder`.
+    let half_cores = (std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4) / 2).max(1) as i32;
+    unsafe { (*codec_ctx.as_mut_ptr()).thread_count = half_cores };
+
     // Try GPU acceleration: CUDA → VAAPI (AMD/Intel only) → Software
+    use ffmpeg_next::ffi::AVHWDeviceType::{AV_HWDEVICE_TYPE_CUDA, AV_HWDEVICE_TYPE_VAAPI};
     let vendor = cached_gpu_vendor();
-    let is_hw = unsafe {
-        if crate::video_decoder::try_init_cuda(codec_ctx.as_mut_ptr()) {
-            true
-        } else if vendor.should_try_vaapi()
-            && crate::video_decoder::try_init_vaapi(codec_ctx.as_mut_ptr())
-        {
-            true
-        } else {
-            // Software fallback: use half cores
-            let half_cores = (std::thread::available_parallelism()
-                .map(|n| n.get())
-                .unwrap_or(4) / 2)
-                .max(1) as i32;
-            (*codec_ctx.as_mut_ptr()).thread_count = half_cores;
-            false
+    let hw_codec = unsafe {
+        match hw_capable_decoder(codec_id, AV_HWDEVICE_TYPE_CUDA) {
+            Some(c) if crate::video_decoder::try_init_cuda(codec_ctx.as_mut_ptr()) => Some(c),
+            _ if vendor.should_try_vaapi() => hw_capable_decoder(codec_id, AV_HWDEVICE_TYPE_VAAPI)
+                .filter(|_| crate::video_decoder::try_init_vaapi(codec_ctx.as_mut_ptr())),
+            _ => None,
         }
     };
+    let is_hw = hw_codec.is_some();
 
-    let decoder = codec_ctx.decoder().video()
-        .map_err(|e| format!("video decoder: {e}"))?;
+    let decoder = match hw_codec {
+        Some(codec) => codec_ctx.decoder().open_as(codec).and_then(|o| o.video()),
+        None => codec_ctx.decoder().video(),
+    }
+    .map_err(|e| format!("video decoder: {e}"))?;
 
     Ok((decoder, stream_index, is_hw))
+}
+
+/// The decoder for `codec_id` that can actually decode on `device` (CUDA or
+/// VAAPI), if any.
+///
+/// ffmpeg's default decoder for a codec need not be it: for AV1 the
+/// default is libdav1d, which ignores a hardware device entirely. Attaching
+/// CUDA to it still "succeeded", so filmstrips and thumbnails believed they
+/// were hardware-decoding, left the thread count at its default of one,
+/// and decoded 4K AV1 in software on a single core — about 60 fps against
+/// ~430 for NVDEC, and a filmstrip tile every few seconds. The cuvid
+/// decoders are excluded: they need bitstream filters, which only the
+/// playback decoder sets up.
+unsafe fn hw_capable_decoder(
+    codec_id: ffmpeg_next::codec::Id,
+    device: ffmpeg_next::ffi::AVHWDeviceType,
+) -> Option<ffmpeg_next::Codec> {
+    use ffmpeg_next::ffi::*;
+    let id: AVCodecID = codec_id.into();
+    let mut opaque: *mut std::ffi::c_void = std::ptr::null_mut();
+    loop {
+        let c = av_codec_iterate(&mut opaque);
+        if c.is_null() {
+            return None;
+        }
+        if av_codec_is_decoder(c) == 0 || (*c).id != id {
+            continue;
+        }
+        let name = std::ffi::CStr::from_ptr((*c).name).to_string_lossy();
+        if name.ends_with("_cuvid") {
+            continue;
+        }
+        let mut i = 0;
+        loop {
+            let cfg = avcodec_get_hw_config(c, i);
+            if cfg.is_null() {
+                break;
+            }
+            if (*cfg).device_type == device
+                && (*cfg).methods & (AV_CODEC_HW_CONFIG_METHOD_HW_DEVICE_CTX as i32) != 0
+            {
+                return ffmpeg_next::codec::decoder::find_by_name(&name);
+            }
+            i += 1;
+        }
+    }
 }
 
 /// Convert a decoded frame (HW or SW) to RGBA at the given target dimensions.
@@ -13261,6 +13310,31 @@ pub fn generate_thumbnail_at_size_non_black(
     last_result.ok_or_else(|| "No non-black frame found".to_string())
 }
 
+/// Timestamp (µs, same scale as decoded frame timestamps) of the keyframe
+/// at or before `us` in the demuxer's index. `None` when the index has no
+/// such entry — the caller then simply seeks.
+fn keyframe_at_or_before_us(
+    format_ctx: &ffmpeg_next::format::context::Input,
+    stream_index: usize,
+    us: i64,
+) -> Option<i64> {
+    use ffmpeg_next::ffi::*;
+    let st = format_ctx.stream(stream_index)?;
+    let tb = st.time_base();
+    let (num, den) = (tb.numerator() as i128, tb.denominator() as i128);
+    if num <= 0 || den <= 0 {
+        return None;
+    }
+    let ts = (us as i128 * den / (num * 1_000_000)) as i64;
+    let entry = unsafe {
+        avformat_index_get_entry_from_timestamp(st.as_ptr() as *mut AVStream, ts, AVSEEK_FLAG_BACKWARD)
+    };
+    if entry.is_null() {
+        return None;
+    }
+    Some((unsafe { (*entry).timestamp } as i128 * num * 1_000_000 / den) as i64)
+}
+
 /// Generate filmstrip thumbnails incrementally with GPU acceleration (CUDA → VAAPI → CPU fallback).
 /// Calls `on_frame` for each generated frame. Returns the total number of frames generated.
 ///
@@ -13329,6 +13403,9 @@ pub fn generate_filmstrip_incremental(
     let accel_label = if is_hw { "GPU" } else { "CPU" };
     tracing::info!("Filmstrip: generating {} frames via {} decode for {:?}", num_frames, accel_label, path);
 
+    // Timestamp of the last frame the decoder produced, for deciding
+    // whether a tile needs a seek at all.
+    let mut decoded_to_us: Option<i64> = None;
     for i in 0..=num_frames {
         let seek_secs = i as f64 * interval_secs;
         if seek_secs > duration_secs {
@@ -13357,10 +13434,22 @@ pub fn generate_filmstrip_incremental(
         }
 
         let ts = (seek_secs * 1_000_000.0) as i64;
-        if format_ctx.seek(ts, ..ts).is_err() {
-            continue;
+        // Seek only when it saves work. A seek lands on the keyframe at or
+        // before the target and decodes forward from there; when that
+        // keyframe is at or behind where the decoder already is, carrying
+        // on forward reaches the target by decoding strictly fewer frames.
+        // Tiles are closer together than keyframes in most long-GOP files
+        // (4K AV1 here: tiles 0.78 s apart, keyframes every 1-7 s), and
+        // re-seeking re-decoded the same GOP for every tile in it.
+        let forward = decoded_to_us.is_some_and(|pos| {
+            pos < ts && keyframe_at_or_before_us(&format_ctx, stream_index, ts).is_some_and(|kf| kf <= pos)
+        });
+        if !forward {
+            if format_ctx.seek(ts, ..ts).is_err() {
+                continue;
+            }
+            decoder.flush();
         }
-        decoder.flush();
 
         let mut decoded_frame = ffmpeg_next::frame::Video::empty();
         let mut got_frame = false;
@@ -13380,6 +13469,7 @@ pub fn generate_filmstrip_incremental(
                 let frame_ts = decoded_frame.timestamp().unwrap_or(0);
                 let tb = stream.time_base();
                 let frame_us = frame_ts * 1_000_000 * tb.numerator() as i64 / tb.denominator() as i64;
+                decoded_to_us = Some(frame_us);
                 if frame_us >= target_pts - 100_000 {
                     got_frame = true;
                     break;
