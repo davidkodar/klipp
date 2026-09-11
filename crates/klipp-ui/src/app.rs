@@ -18390,7 +18390,8 @@ impl KlippApp {
                     &self.state.sequences,
                     &self.state.media_pool,
                     settings,
-                    None,
+                    // The confirmation dialogs used to drop the LUT here.
+                    self.state.global_lut_path.clone(),
                     use_marked,
                 );
                 if self.export_dialog.range_mode == 2 {
@@ -18434,7 +18435,8 @@ impl KlippApp {
                     &self.state.sequences,
                     &self.state.media_pool,
                     settings,
-                    None,
+                    // The confirmation dialogs used to drop the LUT here.
+                    self.state.global_lut_path.clone(),
                     use_marked,
                 );
                 if self.export_dialog.range_mode == 2 {
