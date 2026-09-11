@@ -159,14 +159,21 @@ fn clip_id(s: &str) -> Result<klipp_core::ClipId, String> {
 
 fn handle(ctx: &ControlContext, cmd: ControlCommand) -> Result<serde_json::Value, String> {
     let send = |c: AppCommand| -> Result<serde_json::Value, String> {
+        // Read the generation *before* queueing, so any frame rendered in
+        // response to this command is guaranteed to be newer than it.
+        let generation = ctx
+            .frame_buffer
+            .lock()
+            .map(|fb| fb.latest_generation())
+            .unwrap_or(0);
         ctx.commands
             .send(c)
             .map_err(|e| format!("app command channel closed: {e}"))?;
         (ctx.wake_ui)();
         // Commands are queued for the UI's next frame, not executed
-        // inline, so "accepted" is the honest answer. A caller that needs
-        // to see the effect polls `status` or `get_grade`.
-        Ok(json!({ "accepted": true }))
+        // inline, so "accepted" is the honest answer. To see the effect,
+        // screenshot with `min_generation: generation + 1`.
+        Ok(json!({ "accepted": true, "generation": generation }))
     };
 
     match cmd {
@@ -184,7 +191,13 @@ fn handle(ctx: &ControlContext, cmd: ControlCommand) -> Result<serde_json::Value
                 "tracks": seq.tracks.len(),
                 "clips": seq.tracks.iter().map(|t| t.clips.len()).sum::<usize>(),
                 "fps": seq.fps.as_f64(),
-                "viewer": { "width": fb.width, "height": fb.height, "generation": fb.generation },
+                "viewer": {
+                    "width": fb.width,
+                    "height": fb.height,
+                    // The newest frame the engine produced, swapped in or
+                    // not — what `screenshot` captures.
+                    "generation": fb.latest_generation(),
+                },
                 "perf": perf.map(|p| json!({
                     "width": p.width,
                     "height": p.height,
@@ -335,10 +348,30 @@ fn handle(ctx: &ControlContext, cmd: ControlCommand) -> Result<serde_json::Value
             })
         }
 
-        ControlCommand::Screenshot { path, max_width } => {
-            let (data, width, height) = {
-                let fb = ctx.frame_buffer.lock().map_err(|_| "frame buffer lock poisoned")?;
-                (fb.data.clone(), fb.width, fb.height)
+        ControlCommand::Screenshot { path, max_width, min_generation, timeout_ms } => {
+            let deadline = std::time::Instant::now()
+                + std::time::Duration::from_millis(timeout_ms.unwrap_or(3000));
+            let (data, width, height, generation) = loop {
+                {
+                    let fb = ctx.frame_buffer.lock().map_err(|_| "frame buffer lock poisoned")?;
+                    let (d, w, h, g) = fb.latest_frame();
+                    if min_generation.map_or(true, |m| g >= m) {
+                        break (d.to_vec(), w, h, g);
+                    }
+                    if std::time::Instant::now() >= deadline {
+                        // Say so rather than hand back the old frame as if
+                        // it were the new one. A timeout here is itself a
+                        // finding: the change did not trigger a re-render.
+                        return Err(format!(
+                            "no frame with generation >= {} within {} ms (newest is {g}). \
+                             The command was applied but did not trigger a re-render.",
+                            min_generation.unwrap_or(0),
+                            timeout_ms.unwrap_or(3000),
+                        ));
+                    }
+                }
+                // Lock released while waiting so the engine can write.
+                std::thread::sleep(std::time::Duration::from_millis(10));
             };
             if width == 0 || height == 0 || data.is_empty() {
                 return Err("viewer has no frame yet".into());
@@ -369,7 +402,12 @@ fn handle(ctx: &ControlContext, cmd: ControlCommand) -> Result<serde_json::Value
                 ))
             });
             write_png(&out, &data, width, height)?;
-            Ok(json!({ "path": out.to_string_lossy(), "width": width, "height": height }))
+            Ok(json!({
+                "path": out.to_string_lossy(),
+                "width": width,
+                "height": height,
+                "generation": generation,
+            }))
         }
 
         ControlCommand::Perf => {

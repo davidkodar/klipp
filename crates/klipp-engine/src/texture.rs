@@ -196,8 +196,47 @@ impl FrameBuffer {
         self.pending_data = rgba_data;
         self.pending_width = width;
         self.pending_height = height;
-        self.pending_generation = self.generation.wrapping_add(1);
+        self.pending_generation = self.next_pending_generation();
         self.pending_ready = true;
+    }
+
+    /// Generation for a newly written pending frame: one past the newest
+    /// frame *either* buffer holds.
+    ///
+    /// It used to be `generation + 1`, which gave every frame written
+    /// between two UI swaps the same number — so a second write while the
+    /// window was idle (the paused-regrade case) was indistinguishable
+    /// from the first. Anything waiting for "a frame newer than N" could
+    /// never see it. Strictly monotonic per write fixes that and changes
+    /// nothing for consumers that only compare for inequality.
+    fn next_pending_generation(&self) -> u64 {
+        let newest = if self.pending_ready {
+            self.generation.max(self.pending_generation)
+        } else {
+            self.generation
+        };
+        newest.wrapping_add(1)
+    }
+
+    /// Generation of the newest frame the engine has produced, whether or
+    /// not the UI has swapped it in yet.
+    pub fn latest_generation(&self) -> u64 {
+        if self.pending_ready {
+            self.pending_generation
+        } else {
+            self.generation
+        }
+    }
+
+    /// The newest frame the engine has produced: the queued pending frame
+    /// if there is one, else the one the UI last swapped in. While paused
+    /// the UI repaints rarely, so `data` alone can be several frames stale.
+    pub fn latest_frame(&self) -> (&[u8], u32, u32, u64) {
+        if self.pending_ready {
+            (&self.pending_data, self.pending_width, self.pending_height, self.pending_generation)
+        } else {
+            (&self.data, self.width, self.height, self.generation)
+        }
     }
 
     /// Swap-based write — the engine provides a `&mut Vec<u8>` that is swapped
@@ -209,7 +248,7 @@ impl FrameBuffer {
         std::mem::swap(&mut self.pending_data, rgba_data);
         self.pending_width = width;
         self.pending_height = height;
-        self.pending_generation = self.generation.wrapping_add(1);
+        self.pending_generation = self.next_pending_generation();
         self.pending_ready = true;
     }
 
@@ -268,6 +307,33 @@ pub type SharedFrameBuffer = Arc<Mutex<FrameBuffer>>;
 
 #[cfg(test)]
 mod tests {
+    /// Two frames written before the UI swaps must get distinct, rising
+    /// generations. With `generation + 1` both got the same number, so a
+    /// waiter could never tell the second (the one reflecting an edit)
+    /// from the first.
+    #[test]
+    fn frames_written_between_swaps_get_distinct_generations() {
+        let mut fb = FrameBuffer::new(2, 2);
+        let start = fb.latest_generation();
+        fb.write_frame(vec![1; 16], 2, 2);
+        let first = fb.latest_generation();
+        fb.write_frame(vec![2; 16], 2, 2);
+        let second = fb.latest_generation();
+        assert!(first > start, "first write must advance the generation");
+        assert!(second > first, "second write before a swap must advance it again");
+
+        // And the newest frame is the one reported, pixels and all.
+        let (data, w, h, gen) = fb.latest_frame();
+        assert_eq!((w, h, gen), (2, 2, second));
+        assert_eq!(data[0], 2, "latest_frame must return the newest pending pixels");
+
+        // After the swap the numbers keep rising from there.
+        assert!(fb.swap_pending());
+        assert_eq!(fb.latest_generation(), second);
+        fb.write_frame(vec![3; 16], 2, 2);
+        assert!(fb.latest_generation() > second);
+    }
+
     use super::*;
 
     #[test]

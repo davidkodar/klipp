@@ -98,6 +98,17 @@ pub enum ControlCommand {
         /// visually wants a fraction of that.
         #[serde(default)]
         max_width: Option<u32>,
+        /// Wait until the engine has produced a frame with at least this
+        /// generation before capturing. Every write replies with the
+        /// generation current when it was queued; pass that plus one to
+        /// capture the frame that actually reflects the change. Without
+        /// this, "change then look" races the render and captures the old
+        /// frame.
+        #[serde(default)]
+        min_generation: Option<u64>,
+        /// How long to wait for `min_generation`, default 3000 ms.
+        #[serde(default)]
+        timeout_ms: Option<u64>,
     },
     /// Latest performance sample plus a short rolling average.
     Perf,

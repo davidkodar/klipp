@@ -26,6 +26,26 @@ const PROTOCOL_VERSION: &str = "2024-11-05";
 /// worth a client's context window. Bigger ones come back as a path.
 const INLINE_IMAGE_MAX_BYTES: usize = 1_000_000;
 
+/// Generation of the viewer frame when the most recent write was queued,
+/// or `u64::MAX` when no write is outstanding.
+///
+/// Writes are asynchronous — a tool call returns as soon as the command
+/// is queued, well before a frame reflecting it exists. Without this, a
+/// screenshot taken straight after a grade change captures the *old*
+/// frame, and a "change then look" check silently compares a frame with
+/// itself. That is exactly what happened the first time this was used.
+static PENDING_WRITE_GENERATION: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(u64::MAX);
+
+/// Tools that change what the viewer should show. Any of them arms the
+/// next screenshot to wait for a fresh frame.
+const WRITE_TOOLS: &[&str] = &[
+    "klipp_play", "klipp_pause", "klipp_stop", "klipp_seek",
+    "klipp_append_clip", "klipp_remove_clip", "klipp_select_clip",
+    "klipp_add_node", "klipp_remove_node", "klipp_connect_nodes",
+    "klipp_set_node_param", "klipp_toggle_node",
+];
+
 fn main() {
     let stdin = std::io::stdin();
     let mut stdout = std::io::stdout();
@@ -251,6 +271,20 @@ fn call_tool(name: &str, args: &Value) -> Result<Vec<Value>, String> {
             if let Some(p) = args.get("path").and_then(|v| v.as_str()) {
                 v["path"] = json!(p);
             }
+            // After a write, wait for the frame that reflects it unless
+            // the caller opts out. A plain look with no write pending
+            // captures immediately.
+            let pending = PENDING_WRITE_GENERATION.load(std::sync::atomic::Ordering::Relaxed);
+            let wait = args
+                .get("wait_for_new_frame")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(pending != u64::MAX);
+            if wait && pending != u64::MAX {
+                v["min_generation"] = json!(pending.saturating_add(1));
+            }
+            if let Some(t) = args.get("timeout_ms").and_then(|v| v.as_u64()) {
+                v["timeout_ms"] = json!(t);
+            }
             // Default to something a model can actually look at rather
             // than a 33 MB 4K frame.
             v["max_width"] = json!(
@@ -270,6 +304,22 @@ fn call_tool(name: &str, args: &Value) -> Result<Vec<Value>, String> {
     };
 
     let result = control_call(cmd)?;
+
+    if WRITE_TOOLS.contains(&name) {
+        if let Some(g) = result.get("generation").and_then(|v| v.as_u64()) {
+            // Keep the *latest* outstanding write: after a burst of edits
+            // the frame worth capturing is one newer than the last of
+            // them — a frame newer than only the first may predate the
+            // rest. Cleared by the next screenshot.
+            let cur = PENDING_WRITE_GENERATION.load(std::sync::atomic::Ordering::Relaxed);
+            if cur == u64::MAX || g > cur {
+                PENDING_WRITE_GENERATION.store(g, std::sync::atomic::Ordering::Relaxed);
+            }
+        }
+    }
+    if name == "klipp_screenshot" {
+        PENDING_WRITE_GENERATION.store(u64::MAX, std::sync::atomic::Ordering::Relaxed);
+    }
 
     // Screenshots come back as a path; inline the image too when it is
     // small enough to be worth a context window.
@@ -412,6 +462,13 @@ fn tool_definitions() -> Vec<Value> {
              json!({
                  "path": { "type": "string", "description": "Where to write the PNG; omit for a temp file" },
                  "max_width": { "type": "integer", "description": "Downscale to this width (default 1280)" },
+                 "wait_for_new_frame": {
+                     "type": "boolean",
+                     "description": "Wait for a frame rendered after the last change. Defaults to \
+                                     true when a change was made since the last screenshot, so \
+                                     'change then look' captures the result, not the old frame."
+                 },
+                 "timeout_ms": { "type": "integer", "description": "How long to wait for that frame (default 3000)" },
              }),
              vec![]),
         tool("klipp_perf",

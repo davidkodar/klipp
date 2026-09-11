@@ -15,6 +15,7 @@ use serde_json::{json, Value};
 
 struct Harness {
     stream: UnixStream,
+    frame_buffer: Arc<Mutex<klipp_engine::FrameBuffer>>,
     reader: BufReader<UnixStream>,
     cmd_rx: crossbeam_channel::Receiver<klipp_core::AppCommand>,
     _log: std::path::PathBuf,
@@ -70,12 +71,13 @@ fn harness() -> Harness {
     fb.data[2] = 30;
     fb.data[3] = 255;
 
+    let frame_buffer = Arc::new(Mutex::new(fb));
     let ctx = ControlContext {
         commands: cmd_tx,
         wake_ui: Arc::new(|| {}),
         sequence: Arc::new(RwLock::new(klipp_timeline::Sequence::new_default())),
         media_pool: Arc::new(RwLock::new(klipp_media::MediaPool::new())),
-        frame_buffer: Arc::new(Mutex::new(fb)),
+        frame_buffer: frame_buffer.clone(),
         perf_ring: klipp_engine::perf::shared(),
         log_path: log.clone(),
     };
@@ -90,7 +92,7 @@ fn harness() -> Harness {
         match UnixStream::connect(&sock) {
             Ok(stream) => {
                 let reader = BufReader::new(stream.try_clone().expect("clone"));
-                return Harness { stream, reader, cmd_rx, _log: log, next_id: 0 };
+                return Harness { stream, frame_buffer, reader, cmd_rx, _log: log, next_id: 0 };
             }
             Err(e) => {
                 last_err = Some(e);
@@ -187,6 +189,48 @@ fn control_socket_reads_state_and_forwards_commands() {
         }
         other => panic!("expected SetNodeParam, got {other:?}"),
     }
+
+    // ── Change-then-look waits for the frame that reflects the change ─
+    // Writes report the generation current when they were queued.
+    let queued = h.ok(json!({ "method": "pause" }));
+    let _ = h.cmd_rx.try_recv();
+    let gen = queued["generation"].as_u64().expect("writes report a generation");
+
+    // Nothing newer exists yet, so a bounded wait must fail loudly rather
+    // than hand back the old frame as though it were the new one.
+    let stale = h.call(json!({
+        "method": "screenshot",
+        "path": shot_path.to_string_lossy(),
+        "min_generation": gen + 1,
+        "timeout_ms": 50,
+    }));
+    assert_eq!(stale["ok"], json!(false), "must not return a stale frame");
+    assert!(
+        stale["error"].as_str().unwrap().contains("did not trigger a re-render"),
+        "timeout should say what it means, got {}", stale["error"],
+    );
+
+    // The engine renders a frame after the command lands; the screenshot
+    // waits for it and returns *that* frame, not the one before it.
+    let fb = h.frame_buffer.clone();
+    let writer = std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        let mut pixels = vec![0u8; 64 * 32 * 4];
+        pixels[0] = 200;
+        fb.lock().unwrap().write_frame(pixels, 64, 32);
+    });
+    let fresh = h.ok(json!({
+        "method": "screenshot",
+        "path": shot_path.to_string_lossy(),
+        "min_generation": gen + 1,
+        "timeout_ms": 3000,
+    }));
+    writer.join().unwrap();
+    assert!(
+        fresh["generation"].as_u64().unwrap() > gen,
+        "captured generation {} must be newer than {gen}", fresh["generation"],
+    );
+    let _ = std::fs::remove_file(&shot_path);
 
     // ── Errors are reported, not swallowed ─────────────────────────
     let bad = h.call(json!({ "method": "get_grade", "clip_id": "not-a-uuid" }));
