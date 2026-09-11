@@ -138,21 +138,19 @@ fn linear_to_srgb_u8_lut() -> &'static [u8; 4096] {
 /// clamp at the u8 boundary, not earlier.
 #[inline]
 fn linear_rgba_to_u8(linear: &[f32]) -> Vec<u8> {
+    use rayon::prelude::*;
     let lut = linear_to_srgb_u8_lut();
-    let n_pixels = linear.len() / 4;
-    let mut out = Vec::with_capacity(n_pixels * 4);
-    // SAFETY: we write exactly n_pixels * 4 bytes below.
-    unsafe { out.set_len(n_pixels * 4); }
+    let mut out = vec![0u8; linear.len() / 4 * 4];
     // Clamp → quantise to 12 bits → LUT lookup. Alpha stays linear per
-    // sRGB spec (no gamma), so its "LUT" is just the clamp+scale.
-    for (i, chunk) in linear.chunks_exact(4).enumerate() {
+    // sRGB spec (no gamma), so its "LUT" is just the clamp+scale. In
+    // parallel: one thread took 40 ms over a 4K frame.
+    out.par_chunks_exact_mut(4).zip(linear.par_chunks_exact(4)).for_each(|(o, chunk)| {
         let q = |v: f32| -> usize { (v.clamp(0.0, 1.0) * 4095.0 + 0.5) as usize };
-        let o = i * 4;
-        out[o]     = lut[q(chunk[0])];
-        out[o + 1] = lut[q(chunk[1])];
-        out[o + 2] = lut[q(chunk[2])];
-        out[o + 3] = (chunk[3].clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
-    }
+        o[0] = lut[q(chunk[0])];
+        o[1] = lut[q(chunk[1])];
+        o[2] = lut[q(chunk[2])];
+        o[3] = (chunk[3].clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
+    });
     out
 }
 

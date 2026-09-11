@@ -170,6 +170,8 @@ pub struct GraphExecutor {
     /// The frame the last `prime_chain_from_hdr10_codes` or
     /// `prime_chain_from_srgb8` uploaded, still on the GPU.
     uploaded_seed: Option<UploadedSeed>,
+    /// Node thumbnails taken inside the GPU chain; built on first use.
+    chain_thumbs: Option<klipp_effects::gpu::ChainThumbs>,
     /// Single-shot request, set by `request_output_on_gpu`: leave the next
     /// run's final result in the chain buffer instead of downloading it.
     keep_output_on_gpu: bool,
@@ -365,6 +367,7 @@ impl GraphExecutor {
             gpu_chain_preseeded: false,
             gpu_chain_preseed_dims: None,
             uploaded_seed: None,
+            chain_thumbs: None,
             keep_output_on_gpu: false,
             run_gpu_output_node: None,
             output_on_gpu: None,
@@ -415,6 +418,7 @@ impl GraphExecutor {
             gpu_chain_preseeded: false,
             gpu_chain_preseed_dims: None,
             uploaded_seed: None,
+            chain_thumbs: None,
             keep_output_on_gpu: false,
             run_gpu_output_node: None,
             output_on_gpu: None,
@@ -823,6 +827,21 @@ impl GraphExecutor {
             return Err(ExecutorError::CpuSourceRequired);
         }
         self.ensure_gpu();
+        // Thumbnails are taken on the GPU, inside the chain, when there is
+        // one: a thumbnailed node then stays on the chain. Without a GPU
+        // they come from CPU pixels, as before.
+        let gpu_thumbs = visible_nodes.is_some_and(|v| !v.is_empty()) && self.gpu.is_some();
+        if gpu_thumbs {
+            let gpu = self.gpu.as_ref().expect("checked above");
+            self.chain_thumbs
+                .get_or_insert_with(|| klipp_effects::gpu::ChainThumbs::new(gpu, THUMB_W, THUMB_H))
+                .begin();
+        }
+        let mut gpu_thumb_of: HashMap<NodeId, usize> = HashMap::new();
+        let take_thumb = |this: &mut Self, slot_a: bool| -> Option<usize> {
+            let (Some(gpu), Some(thumbs)) = (this.gpu.as_mut(), this.chain_thumbs.as_mut()) else { return None };
+            gpu.take_chain_thumb(thumbs, slot_a, width, height)
+        };
         // Reset chain-state metadata before this run; populated by
         // `flush_chain` if the graph engages the GPU chain.
         self.last_chain_final_slot = None;
@@ -853,7 +872,9 @@ impl GraphExecutor {
         // matte tap, or a thumbnail.
         self.output_on_gpu = None;
         let keep = std::mem::take(&mut self.keep_output_on_gpu);
-        self.run_gpu_output_node = if keep && self.solo_node.is_none() {
+        // (Thumbnails also rule it out: they are read once the chain's
+        // last submit is in, and a result kept on the GPU never submits.)
+        self.run_gpu_output_node = if keep && self.solo_node.is_none() && !gpu_thumbs {
             graph.input_of(graph.output_node_id, 0).filter(|id| {
                 fan_out.get(id).copied().unwrap_or(0) <= 1
                     && Some(*id) != matte_tap
@@ -956,18 +977,16 @@ impl GraphExecutor {
             let chain_tail_fan_out_one = chain_tail
                 .map(|id| fan_out.get(&id).copied().unwrap_or(0) <= 1)
                 .unwrap_or(true);
-            // Visible nodes (those the V2 canvas wants thumbnails
-            // for) must NOT extend or start a GPU chain — otherwise
-            // their output lives as a sentinel Vec on `node_outputs`
-            // and the thumb pass has nothing to downsample. Forcing
-            // them onto the CPU path (or breaking the chain here) is
-            // what lets `execute_linear_with_thumbs` actually capture
-            // grade-chain nodes like the Corrector. Only active when
-            // `visible_nodes` is `Some` — playback callers pass None
-            // so chain fusion remains intact.
+            // Visible nodes (those the V2 canvas wants thumbnails for)
+            // keep the chain when their thumbnail can be taken on the GPU
+            // (`gpu_thumbs`), right after their dispatch. Otherwise they
+            // must not extend or start one: their output would live only
+            // on the GPU and the CPU thumbnail pass would have nothing to
+            // downsample, so they take the per-node CPU path.
             let node_is_visible_for_thumbs = visible_nodes
                 .map(|v| v.contains(&node_id))
                 .unwrap_or(false);
+            let thumb_needs_cpu = node_is_visible_for_thumbs && !gpu_thumbs;
             // MaskCutout has a second input (port 1 = matte). It can
             // only extend the GPU chain when that matte was just
             // dispatched into matte_buf by the upstream Mask node.
@@ -986,7 +1005,7 @@ impl GraphExecutor {
                 && mask_cutout_matte_ready
                 && Some(node_id) != matte_preview_node
                 && Some(node_id) != matte_tap
-                && !node_is_visible_for_thumbs;
+                && !thumb_needs_cpu;
 
             // Bypass tunnel: a bypass node whose primary input IS the
             // current chain tail doesn't touch pixels, so we can rename
@@ -1010,6 +1029,11 @@ impl GraphExecutor {
                 // Tunnel: chain stays on GPU, tail renames to this node.
                 node_outputs.insert(node.id, Arc::new(Vec::new()));
                 chain_tail = Some(node.id);
+                if node_is_visible_for_thumbs && gpu_thumbs {
+                    if let Some(i) = take_thumb(self, chain_slot_a) {
+                        gpu_thumb_of.insert(node.id, i);
+                    }
+                }
                 bypass_tunnel_count += 1;
                 per_node_ms.push((format!("{node_kind_name}#bypass_tunnel"), t_node.elapsed().as_secs_f64() * 1000.0));
                 continue;
@@ -1064,16 +1088,21 @@ impl GraphExecutor {
             // nothing to hand it on the CPU side — and the ordinary
             // `source_frame.to_vec()` in `execute_node` would be a
             // 132 MB memcpy per 4K frame (RGBA f32) for a buffer no one
-            // reads. Taps and thumbnails are excluded: those consumers
-            // do want real CPU pixels, so they fall through to the
-            // unchained path, hit `CpuSourceRequired`, and the engine
-            // retries with a readback.
+            // reads. Taps, and thumbnails that need CPU pixels, are
+            // excluded: they fall through to the unchained path, hit
+            // `CpuSourceRequired`, and the engine retries with a readback.
+            // A GPU thumbnail is taken from the seed itself.
             if node.kind == NodeKind::Source
                 && gpu_resident_source
                 && Some(node_id) != matte_tap
                 && Some(node_id) != matte_preview_node
-                && !node_is_visible_for_thumbs
+                && !thumb_needs_cpu
             {
+                if node_is_visible_for_thumbs {
+                    if let Some(i) = take_thumb(self, true) {
+                        gpu_thumb_of.insert(node.id, i);
+                    }
+                }
                 node_outputs.insert(node.id, Arc::new(Vec::new()));
                 per_node_ms.push((
                     format!("{node_kind_name}#gpu_resident"),
@@ -1119,6 +1148,11 @@ impl GraphExecutor {
                         }
                         chain_tail = Some(node_id);
                         node_outputs.insert(node_id, Arc::new(Vec::new()));
+                        if node_is_visible_for_thumbs {
+                            if let Some(i) = take_thumb(self, chain_slot_a) {
+                                gpu_thumb_of.insert(node_id, i);
+                            }
+                        }
                         // MaskCutout consumed the matte_buf contents;
                         // clear the marker so a later Mask node can
                         // reclaim the slot for its own matte. Other
@@ -1174,7 +1208,7 @@ impl GraphExecutor {
                 // Same visible-thumb gate as can_extend_chain: if the
                 // node needs a CPU-side output for thumb capture, it
                 // must go through the per-node CPU dispatch path.
-                && !node_is_visible_for_thumbs;
+                && !thumb_needs_cpu;
             if can_start_chain {
                 let primary_cpu: &[f32] = primary_input_id
                     .and_then(|id| node_outputs.get(&id))
@@ -1193,6 +1227,11 @@ impl GraphExecutor {
                     chain_tail = Some(node_id);
                     chain_slot_a = n % 2 == 0;
                     node_outputs.insert(node_id, Arc::new(Vec::new()));
+                    if node_is_visible_for_thumbs {
+                        if let Some(i) = take_thumb(self, chain_slot_a) {
+                            gpu_thumb_of.insert(node_id, i);
+                        }
+                    }
                     chain_start_count += 1;
                     per_node_ms.push((format!("{node_kind_name}#chain_start"), t_node.elapsed().as_secs_f64() * 1000.0));
                     continue;
@@ -1392,14 +1431,22 @@ impl GraphExecutor {
             );
         }
 
-        // 4. Capture node thumbnails for any visible nodes whose
-        //    output landed CPU-side. Mid-chain GPU-resident nodes
-        //    have empty sentinel buffers in `node_outputs` and are
-        //    silently skipped — no thumb available without forcing
-        //    extra GPU readbacks (deferred to a future iteration).
+        // 4. Node thumbnails for the visible nodes: those taken inside
+        //    the GPU chain, read back together, and the rest from their
+        //    CPU-side outputs. A GPU-resident node without one (its
+        //    thumbnail could not be taken) has an empty sentinel buffer
+        //    and gets none.
         let mut node_thumbs: HashMap<NodeId, Vec<u8>> = HashMap::new();
+        let from_gpu = match (gpu_thumb_of.is_empty(), self.gpu.as_ref(), self.chain_thumbs.as_ref()) {
+            (false, Some(gpu), Some(thumbs)) => gpu.read_chain_thumbs(thumbs).unwrap_or_default(),
+            _ => Vec::new(),
+        };
         if let Some(visible) = visible_nodes {
             for &node_id in visible {
+                if let Some(thumb) = gpu_thumb_of.get(&node_id).and_then(|&i| from_gpu.get(i)) {
+                    node_thumbs.insert(node_id, thumb.clone());
+                    continue;
+                }
                 let Some(arc) = node_outputs.get(&node_id) else { continue };
                 if arc.is_empty() { continue; }
                 let thumb = downsample_to_thumb_u8(arc.as_slice(), width, height,

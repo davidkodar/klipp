@@ -389,16 +389,20 @@ impl PlaybackEngine {
         let inspected = inspect.clip;
         let primary_ref = primary_clip.zip(primary.as_ref());
         let (linear, found) = self.render_timeline(&seq, primary_ref, w, h, inspect);
-
-        if let Some(key) = cache_key.filter(|_| self.state != PlaybackState::Playing) {
-            let bytes = super::linear_rgba_to_u8(&linear);
-            self.render_cache_hot.insert(key.clone(), bytes.clone(), w, h);
-            self.render_cache_disk.put(&key, &bytes, w, h);
-        }
+        let cached = cache_key
+            .filter(|_| self.state != PlaybackState::Playing)
+            .map(|key| (key, super::linear_rgba_to_u8(&linear)));
 
         self.show_split_views(&seq, primary_ref, w, h, inspected, found.ungraded.as_deref());
         self.show_inspection(&found, w, h);
         self.show_rendered(Rendered { linear, width: w, height: h, stats: Some(found.stats) }, t_frame);
+
+        // Cached once the frame is on screen: compressing and writing a 4K
+        // frame (~15 ms) is not something the viewer should wait for.
+        if let Some((key, bytes)) = cached {
+            self.render_cache_disk.put(&key, &bytes, w, h);
+            self.render_cache_hot.insert(key, bytes, w, h);
+        }
     }
 
     /// The split views' left halves: this frame with stabilisation off, or

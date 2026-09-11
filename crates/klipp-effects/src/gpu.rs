@@ -19,6 +19,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tracing::{debug, error, info, warn};
 
+mod thumbs;
+pub use thumbs::{ChainThumbs, MAX_CHAIN_THUMBS};
+
 /// sRGB → linear-light (IEC 61966-2-1).
 #[inline]
 fn srgb_to_linear_scalar(c: f32) -> f32 {
