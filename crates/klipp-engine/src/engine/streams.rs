@@ -33,6 +33,9 @@ pub(crate) struct HeldFrame {
     linear: OnceLock<Arc<Vec<f32>>>,
     /// `Held::Hdr` codes on the CPU, once asked for.
     codes: OnceLock<Arc<Vec<u32>>>,
+    /// The caches' own record of this frame, when it came from them —
+    /// carrying the ungraded picture they already made.
+    pregrade: Option<super::Pregrade>,
 }
 
 enum Held {
@@ -71,7 +74,7 @@ impl klipp_compose::GpuPixels for GpuHeld {
 
 impl HeldFrame {
     fn new(pixels: Held, width: u32, height: u32, pts: Option<f64>) -> Self {
-        Self { width, height, pts, pixels, linear: OnceLock::new(), codes: OnceLock::new() }
+        Self { width, height, pts, pixels, linear: OnceLock::new(), codes: OnceLock::new(), pregrade: None }
     }
 
     fn gpu(g: Arc<crate::frame::GpuFrame>) -> Held {
@@ -103,20 +106,23 @@ impl HeldFrame {
         Self::new(pixels, f.width, f.height, pts)
     }
 
-    /// A frame from the pre-grade caches.
-    pub fn from_pregrade(p: &super::PregradePixels, width: u32, height: u32) -> Self {
-        let pixels = match p {
+    /// A frame from the pre-grade caches, keeping their record of it so
+    /// its ungraded picture is not made a second time.
+    pub fn from_pregrade(p: &super::Pregrade, width: u32, height: u32) -> Self {
+        let pixels = match &p.pixels {
             super::PregradePixels::Srgb8(u8s) => Held::Srgb8(Arc::clone(u8s)),
             super::PregradePixels::Hdr(h) => Held::Hdr(h.clone()),
         };
-        Self::new(pixels, width, height, None)
+        let mut f = Self::new(pixels, width, height, None);
+        f.pregrade = Some(p.clone());
+        f
     }
 
     /// Whether this frame is `p` itself — the same pixels, not an equal
     /// copy: a regrade of the parked frame, whose pre-grade picture is
     /// already made.
-    pub fn is_pregrade(&self, p: &super::PregradePixels) -> bool {
-        match (&self.pixels, p) {
+    pub fn is_pregrade(&self, p: &super::Pregrade) -> bool {
+        match (&self.pixels, &p.pixels) {
             (Held::Srgb8(a), super::PregradePixels::Srgb8(b)) => Arc::ptr_eq(a, b),
             (Held::Hdr(a), super::PregradePixels::Hdr(b)) => match (&a.codes, &b.codes) {
                 (crate::types::HdrCodes::Cpu(a), crate::types::HdrCodes::Cpu(b)) => Arc::ptr_eq(a, b),
@@ -126,29 +132,23 @@ impl HeldFrame {
         }
     }
 
-    /// What the pre-grade caches keep of this frame, and the picture the
-    /// UI shows as "before": the same bytes for SDR; for scene-referred
-    /// sources the codes, and their display tone map.
-    pub fn to_pregrade(&self) -> (super::PregradePixels, Arc<Vec<u8>>) {
-        match &self.pixels {
-            Held::Srgb8(u8s) => (super::PregradePixels::Srgb8(Arc::clone(u8s)), Arc::clone(u8s)),
-            Held::Gpu(g) => {
-                let u8s = g.srgb();
-                (super::PregradePixels::Srgb8(Arc::clone(&u8s)), u8s)
-            }
-            Held::Linear(l) => {
-                let u8s = Arc::new(klipp_effects::linear_f32_rgba_to_srgb_u8(l));
-                (super::PregradePixels::Srgb8(Arc::clone(&u8s)), u8s)
-            }
-            Held::Hdr(h) => {
-                let cpu = HdrInput { codes: crate::types::HdrCodes::Cpu(self.cpu_codes(h)), ..h.clone() };
-                let mut display =
-                    klipp_color::hdr::hdr10_codes_to_scene_linear_rgba(&self.cpu_codes(h), h.transfer, h.source_to_working);
-                klipp_color::hdr::apply_hdr_display_tonemap(&mut display, h.transfer);
-                let u8s = Arc::new(klipp_effects::linear_f32_rgba_to_srgb_u8(&display));
-                (super::PregradePixels::Hdr(cpu), u8s)
-            }
+    /// What the pre-grade caches keep of this frame: theirs when it came
+    /// from them, else made from its pixels — the same bytes for SDR, and
+    /// for scene-referred sources the codes. The ungraded picture itself
+    /// is made on demand, by `Pregrade::display`.
+    pub fn pregrade(&self) -> super::Pregrade {
+        if let Some(p) = &self.pregrade {
+            return p.clone();
         }
+        super::Pregrade::new(match &self.pixels {
+            Held::Srgb8(u8s) => super::PregradePixels::Srgb8(Arc::clone(u8s)),
+            Held::Gpu(g) => super::PregradePixels::Srgb8(g.srgb()),
+            Held::Linear(l) => super::PregradePixels::Srgb8(Arc::new(klipp_effects::linear_f32_rgba_to_srgb_u8(l))),
+            Held::Hdr(h) => super::PregradePixels::Hdr(HdrInput {
+                codes: crate::types::HdrCodes::Cpu(self.cpu_codes(h)),
+                ..h.clone()
+            }),
+        })
     }
 
     fn cpu_codes(&self, h: &HdrInput) -> Arc<Vec<u32>> {

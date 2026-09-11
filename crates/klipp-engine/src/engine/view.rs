@@ -361,9 +361,10 @@ impl PlaybackEngine {
             .zip(self.cached_pregrade_frame.as_ref())
             .is_some_and(|(p, (c, cw, ch))| (*cw, *ch) == (p.width, p.height) && p.is_pregrade(c));
         if let Some(p) = primary.as_ref().filter(|_| !parked && self.pregrade_encode_needed()) {
-            let (pixels, display) = p.to_pregrade();
-            self.cached_pregrade_frame = Some((pixels.clone(), w, h));
-            self.frame_cache.insert(self.playhead.value, pixels, w, h);
+            let pregrade = p.pregrade();
+            let display = pregrade.display();
+            self.cached_pregrade_frame = Some((pregrade.clone(), w, h));
+            self.frame_cache.insert(self.playhead.value, pregrade, w, h);
             self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner()).pregrade_data = display;
         }
 

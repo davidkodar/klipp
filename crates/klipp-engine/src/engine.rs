@@ -570,7 +570,54 @@ impl PregradePixels {
             None => Self::Srgb8(Arc::new(linear_rgba_to_u8(&frame.data))),
         }
     }
+
 }
+
+/// A frame before its grade, as the caches hold it, with the ungraded
+/// picture the UI shows for it (the scope preview's source while a slider
+/// is dragged).
+///
+/// That picture is made once, on first use, and shared by every clone: an
+/// HDR frame's costs a decode, tone map and sRGB encode — 20-30 ms at 4K —
+/// and it was remade every time a cached frame was shown again.
+#[derive(Clone)]
+struct Pregrade {
+    pixels: PregradePixels,
+    display: Arc<std::sync::OnceLock<Arc<Vec<u8>>>>,
+}
+
+impl Pregrade {
+    fn new(pixels: PregradePixels) -> Self {
+        Self { pixels, display: Arc::new(std::sync::OnceLock::new()) }
+    }
+
+    fn from_frame(frame: &crate::types::LinearFrame) -> Self {
+        Self::new(PregradePixels::from_frame(frame))
+    }
+
+    /// The ungraded picture, sRGB RGBA8.
+    fn display(&self) -> Arc<Vec<u8>> {
+        Arc::clone(self.display.get_or_init(|| {
+            PREGRADE_DISPLAYS_MADE.fetch_add(1, Ordering::Relaxed);
+            match &self.pixels {
+                PregradePixels::Srgb8(u8s) => Arc::clone(u8s),
+                PregradePixels::Hdr(h) => {
+                    let codes = h.cpu_codes();
+                    let mut linear =
+                        klipp_color::hdr::hdr10_codes_to_scene_linear_rgba(&codes, h.transfer, h.source_to_working);
+                    klipp_color::hdr::apply_hdr_display_tonemap(&mut linear, h.transfer);
+                    Arc::new(klipp_effects::linear_f32_rgba_to_srgb_u8(&linear))
+                }
+            }
+        }))
+    }
+}
+
+/// How many ungraded pictures have been made (see [`Pregrade::display`]).
+/// One per frame the viewer has shown paused; showing a frame again, from
+/// either cache, must not add to it. Read by
+/// `tests/pregrade_made_once.rs`.
+pub static PREGRADE_DISPLAYS_MADE: AtomicU64 = AtomicU64::new(0);
 
 /// Bidirectional frame cache for instant backward stepping.
 /// Stores pre-grade frames keyed by frame number.
@@ -580,8 +627,8 @@ struct FrameCache {
 }
 
 struct FrameCacheEntry {
-    frame_number: i64,       // playhead.value at this frame
-    pixels: PregradePixels,  // pre-grade pixels (Arc-shared either way)
+    frame_number: i64,   // playhead.value at this frame
+    pixels: Pregrade,    // pre-grade pixels (Arc-shared either way)
     width: u32,
     height: u32,
 }
@@ -595,13 +642,26 @@ impl FrameCache {
     }
 
     /// Insert a frame into the cache. Uses frame_number as hash key.
-    fn insert(&mut self, frame_number: i64, pixels: PregradePixels, width: u32, height: u32) {
+    fn insert(&mut self, frame_number: i64, pixels: Pregrade, width: u32, height: u32) {
         let slot = (frame_number.unsigned_abs() as usize) % self.capacity;
         self.entries[slot] = Some(FrameCacheEntry { frame_number, pixels, width, height });
     }
 
+    /// Insert unless this frame is already held. Pre-grade pixels of a
+    /// frame do not change, so re-inserting one gains nothing — and it
+    /// would drop the ungraded picture the held copy has already made
+    /// (`Pregrade::display`), which the decode-ahead paths did to every
+    /// frame the viewer had just shown.
+    fn insert_if_absent(&mut self, frame_number: i64, pixels: Pregrade, width: u32, height: u32) {
+        let slot = (frame_number.unsigned_abs() as usize) % self.capacity;
+        if self.entries[slot].as_ref().is_some_and(|e| e.frame_number == frame_number) {
+            return;
+        }
+        self.entries[slot] = Some(FrameCacheEntry { frame_number, pixels, width, height });
+    }
+
     /// Look up a frame by number. Returns (pixels, width, height) if found.
-    fn get(&self, frame_number: i64) -> Option<(PregradePixels, u32, u32)> {
+    fn get(&self, frame_number: i64) -> Option<(Pregrade, u32, u32)> {
         let slot = (frame_number.unsigned_abs() as usize) % self.capacity;
         self.entries[slot].as_ref()
             .filter(|e| e.frame_number == frame_number)
@@ -1086,7 +1146,7 @@ pub struct PlaybackEngine {
     matte_preview_node: Option<klipp_nodes::NodeId>,
     // Cached pre-grade frame for instant parameter updates when paused.
     // Stored after decode, before color grading. Re-graded when sequence changes.
-    cached_pregrade_frame: Option<(PregradePixels, u32, u32)>, // (pixels, width, height)
+    cached_pregrade_frame: Option<(Pregrade, u32, u32)>, // (pixels, width, height)
     /// Reasons the direct-present fast path declined the previous frame,
     /// so they can be logged when the set *changes* rather than once per
     /// frame. Empty means the last frame took the fast path.
@@ -5165,7 +5225,7 @@ impl PlaybackEngine {
                 if frame.hdr.is_none() {
                     frame.ensure_cpu_data();
                 }
-                self.frame_cache.insert(self.playhead.value, PregradePixels::from_frame(&frame), w, h);
+                self.frame_cache.insert_if_absent(self.playhead.value, Pregrade::from_frame(&frame), w, h);
                 self.present_frame(Some(streams::HeldFrame::from_frame(frame)));
                 // Frame step chirp (~20ms). Chirps on a scrub are gated on
                 // the scrub-audio preference; non-scrub frame steps keep theirs.
@@ -5222,7 +5282,7 @@ impl PlaybackEngine {
                     if frame.hdr.is_none() {
                         frame.ensure_cpu_data();
                     }
-                    self.frame_cache.insert(self.playhead.value, PregradePixels::from_frame(&frame), w, h);
+                    self.frame_cache.insert_if_absent(self.playhead.value, Pregrade::from_frame(&frame), w, h);
                     self.present_frame(Some(streams::HeldFrame::from_frame(frame)));
                     // Frame step chirp (~20ms). Same gating as the primary
                     // frame-step path above — skip during a silenced scrub.
@@ -5298,7 +5358,7 @@ impl PlaybackEngine {
                     if frame.hdr.is_none() {
                         frame.ensure_cpu_data();
                     }
-                    self.frame_cache.insert(frame_num, PregradePixels::from_frame(&frame), w, h);
+                    self.frame_cache.insert_if_absent(frame_num, Pregrade::from_frame(&frame), w, h);
 
                     // When we reach the target frame, display it
                     if frame_num >= target_frame && !found_target {
@@ -5414,10 +5474,10 @@ impl PlaybackEngine {
                 if frame.is_eof { break; }
                 let pts = frame.pts;
                 let (w, h) = (frame.width, frame.height);
-                let pixels = match frame.hdr.as_ref() {
+                let pixels = Pregrade::new(match frame.hdr.as_ref() {
                     Some(hdr) => PregradePixels::Hdr(hdr.to_cpu()),
                     None => PregradePixels::Srgb8(Arc::new(frame.to_rgba())),
-                };
+                });
                 let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
                 let frame_num = if let Some(clip) = seq.tracks.get(self.current_track_index)
                     .and_then(|t| t.clips.get(self.current_clip_index))
@@ -5432,7 +5492,7 @@ impl PlaybackEngine {
                     continue;
                 };
                 drop(seq);
-                self.frame_cache.insert(frame_num, pixels, w, h);
+                self.frame_cache.insert_if_absent(frame_num, pixels, w, h);
             }
         }
 
@@ -5461,10 +5521,10 @@ impl PlaybackEngine {
                 if let Some(frame) = popped {
                     if frame.is_eof { break; }
                     let (w, h) = (frame.width, frame.height);
-                    let pixels = match frame.hdr.as_ref() {
+                    let pixels = Pregrade::new(match frame.hdr.as_ref() {
                         Some(hdr) => PregradePixels::Hdr(hdr.to_cpu()),
                         None => PregradePixels::Srgb8(Arc::new(frame.to_rgba())),
-                    };
+                    });
                     let frame_num = {
                         let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
                         if let Some(clip) = seq.tracks.get(self.current_track_index)
@@ -5478,7 +5538,7 @@ impl PlaybackEngine {
                             (clip.timeline_in + elapsed_tc).value
                         } else { break; }
                     };
-                    self.frame_cache.insert(frame_num, pixels, w, h);
+                    self.frame_cache.insert_if_absent(frame_num, pixels, w, h);
                     // Stop a few frames past current (forward will be handled by decoder resume)
                     if frame_num > current + 5 { break; }
                     continue;
@@ -6133,7 +6193,7 @@ impl PlaybackEngine {
         let Some((graph, clip_time_secs, frame_number, track_points)) = self.v1_graph_setup() else {
             return false;
         };
-        let seed = match &pixels {
+        let seed = match &pixels.pixels {
             PregradePixels::Hdr(h) => match &h.codes {
                 crate::types::HdrCodes::Cpu(codes) if (h.width, h.height) == (width, height) => {
                     crate::fast_path::GpuSeed::SceneCodes {
