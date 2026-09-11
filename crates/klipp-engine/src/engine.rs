@@ -1153,8 +1153,47 @@ pub enum PlaybackState {
     Paused,
 }
 
+/// A frame's pre-grade pixels, as the engine's caches hold them.
+///
+/// SDR frames are sRGB u8. HDR frames are their packed 10-bit PQ/HLG code
+/// values: the grade has to start from scene-linear with the highlights
+/// intact, and an 8-bit sRGB copy clips everything above white — a
+/// paused regrade or a step backwards would then grade a different image
+/// from the one playback graded. Both shapes are 4 bytes a pixel, so a
+/// full cache of 4K frames costs what it always did.
+#[derive(Clone)]
+enum PregradePixels {
+    Srgb8(Arc<Vec<u8>>),
+    Hdr(crate::types::HdrInput),
+}
+
+impl PregradePixels {
+    /// What a decoded frame should be cached as.
+    fn from_frame(frame: &crate::types::LinearFrame) -> Self {
+        match frame.hdr.as_ref() {
+            Some(h) => Self::Hdr(h.to_cpu()),
+            None => Self::Srgb8(Arc::new(linear_rgba_to_u8(&frame.data))),
+        }
+    }
+
+    /// The grade's input: linear for SDR, scene-linear for HDR.
+    fn grade_input(&self) -> Vec<f32> {
+        match self {
+            Self::Srgb8(b) => u8_rgba_to_linear(b),
+            Self::Hdr(h) => h.scene_linear(),
+        }
+    }
+
+    fn hdr(&self) -> Option<&crate::types::HdrInput> {
+        match self {
+            Self::Hdr(h) => Some(h),
+            Self::Srgb8(_) => None,
+        }
+    }
+}
+
 /// Bidirectional frame cache for instant backward stepping.
-/// Stores pre-grade RGBA frames keyed by frame number.
+/// Stores pre-grade frames keyed by frame number.
 struct FrameCache {
     entries: Vec<Option<FrameCacheEntry>>,
     capacity: usize,
@@ -1162,7 +1201,7 @@ struct FrameCache {
 
 struct FrameCacheEntry {
     frame_number: i64,       // playhead.value at this frame
-    rgba: Arc<Vec<u8>>,      // pre-grade RGBA (shared via Arc)
+    pixels: PregradePixels,  // pre-grade pixels (Arc-shared either way)
     width: u32,
     height: u32,
 }
@@ -1176,17 +1215,17 @@ impl FrameCache {
     }
 
     /// Insert a frame into the cache. Uses frame_number as hash key.
-    fn insert(&mut self, frame_number: i64, rgba: Arc<Vec<u8>>, width: u32, height: u32) {
+    fn insert(&mut self, frame_number: i64, pixels: PregradePixels, width: u32, height: u32) {
         let slot = (frame_number.unsigned_abs() as usize) % self.capacity;
-        self.entries[slot] = Some(FrameCacheEntry { frame_number, rgba, width, height });
+        self.entries[slot] = Some(FrameCacheEntry { frame_number, pixels, width, height });
     }
 
-    /// Look up a frame by number. Returns (Arc<rgba>, width, height) if found.
-    fn get(&self, frame_number: i64) -> Option<(Arc<Vec<u8>>, u32, u32)> {
+    /// Look up a frame by number. Returns (pixels, width, height) if found.
+    fn get(&self, frame_number: i64) -> Option<(PregradePixels, u32, u32)> {
         let slot = (frame_number.unsigned_abs() as usize) % self.capacity;
         self.entries[slot].as_ref()
             .filter(|e| e.frame_number == frame_number)
-            .map(|e| (Arc::clone(&e.rgba), e.width, e.height))
+            .map(|e| (e.pixels.clone(), e.width, e.height))
     }
 
     /// Clear the entire cache (on clip change, seek, etc.)
@@ -1665,7 +1704,7 @@ pub struct PlaybackEngine {
     matte_preview_node: Option<klipp_nodes::NodeId>,
     // Cached pre-grade frame for instant parameter updates when paused.
     // Stored after decode, before color grading. Re-graded when sequence changes.
-    cached_pregrade_frame: Option<(Arc<Vec<u8>>, u32, u32)>, // (rgba, width, height)
+    cached_pregrade_frame: Option<(PregradePixels, u32, u32)>, // (pixels, width, height)
     /// GPU-resident source for the frame currently in `post_process_rgba`,
     /// if the decoder produced one.
     ///
@@ -1683,6 +1722,12 @@ pub struct PlaybackEngine {
     /// so they can be logged when the set *changes* rather than once per
     /// frame. Empty means the last frame took the fast path.
     last_direct_present_blockers: Vec<&'static str>,
+    /// HDR input of the V1 frame currently being graded, if its source is
+    /// PQ/HLG. Scoped ambient state like `grade_gpu_source`: set around a
+    /// grade call, read by `post_process_rgba` to cache the right pixels
+    /// and by `finish_hdr_grade` to tone-map the result. Codes are on the
+    /// CPU.
+    grade_hdr: Option<crate::types::HdrInput>,
     // Bidirectional frame cache — keeps last N decoded pre-grade frames for instant
     // backward stepping without FFmpeg seeks.
     frame_cache: FrameCache,
@@ -2072,6 +2117,7 @@ impl PlaybackEngine {
             cached_pregrade_frame: None,
             grade_gpu_source: None,
             last_direct_present_blockers: Vec::new(),
+            grade_hdr: None,
             frame_cache: FrameCache::new(120), // ~5s at 24fps (backward history + forward prefetch)
             render_cache_hot: crate::render_cache::HotCache::new(30),
             render_cache_disk,
@@ -4751,12 +4797,16 @@ impl PlaybackEngine {
             }
         }
 
-        if gpu_source.is_none() || self.pregrade_encode_needed() {
+        // HDR frames grade their scene-linear input, not `data` — `data`
+        // is display-referred, already tone-mapped. Priming the chain from
+        // the decoder's u8 buffer is skipped for them too: that buffer is
+        // the tone-mapped preview, and grading it is the bug this path
+        // replaces. The codes are read back instead; a GPU bridge that
+        // seeds the chain from them directly is the follow-up.
+        if frame.hdr.is_none() && (gpu_source.is_none() || self.pregrade_encode_needed()) {
             frame.ensure_cpu_data();
         }
-        let v1_graded_linear = self.post_process_rgba_with_gpu_source(
-            frame.data, final_w, final_h, gpu_source.as_ref(),
-        );
+        let v1_graded_linear = self.grade_v1_frame(frame, final_w, final_h);
         let pp_full_us = t_pp_full.elapsed().as_micros();
 
         // Composite V1 (graded) + overlay tracks in linear-light f32.
@@ -6983,11 +7033,13 @@ impl PlaybackEngine {
 
         // Check frame cache first (works for both forward AND backward).
         // The cache stores sRGB u8 — bridge at this viewer seam.
-        if let Some((rgba_arc, w, h)) = self.frame_cache.get(target_frame) {
-            let rgba = rgba_arc.as_ref().clone();
+        if let Some((pixels, w, h)) = self.frame_cache.get(target_frame) {
             self.playhead = RationalTime { value: target_frame, rate: self.playhead.rate };
-            let linear = u8_rgba_to_linear(&rgba);
+            let linear = pixels.grade_input();
+            // `post_process_rgba` tone-maps HDR results itself.
+            self.grade_hdr = pixels.hdr().cloned();
             let final_linear = self.post_process_rgba(linear, w, h);
+            self.grade_hdr = None;
             let final_rgba = self.display_encode(&final_linear);
             let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
             fb.write_frame(final_rgba, w, h);
@@ -7026,13 +7078,12 @@ impl PlaybackEngine {
                 // Cache pre-grade frame as u8 for backward stepping
                 // (frame_cache stores u8). Feed linear straight into
                 // post_process_rgba so the hot path stays in linear.
-                frame.ensure_cpu_data();
-                let rgba_u8 = linear_rgba_to_u8(&frame.data);
-                self.frame_cache.insert(self.playhead.value, Arc::new(rgba_u8), w, h);
-                let gpu_source = frame.gpu_source.clone();
-                let final_linear = self.post_process_rgba_with_gpu_source(
-                    frame.data, w, h, gpu_source.as_ref(),
-                );
+                frame.realise_hdr_on_cpu();
+                if frame.hdr.is_none() {
+                    frame.ensure_cpu_data();
+                }
+                self.frame_cache.insert(self.playhead.value, PregradePixels::from_frame(&frame), w, h);
+                let final_linear = self.grade_v1_frame(frame, w, h);
                 let final_rgba = self.display_encode(&final_linear);
                 let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
                 fb.write_frame(final_rgba, w, h);
@@ -7088,13 +7139,12 @@ impl PlaybackEngine {
                     let (w, h) = (frame.width, frame.height);
                     // Cache pre-grade frame as u8 for backward
                     // stepping; post_process_rgba stays linear.
-                    frame.ensure_cpu_data();
-                    let rgba_u8 = linear_rgba_to_u8(&frame.data);
-                    self.frame_cache.insert(self.playhead.value, Arc::new(rgba_u8), w, h);
-                    let gpu_source = frame.gpu_source.clone();
-                    let final_linear = self.post_process_rgba_with_gpu_source(
-                        frame.data, w, h, gpu_source.as_ref(),
-                    );
+                    frame.realise_hdr_on_cpu();
+                    if frame.hdr.is_none() {
+                        frame.ensure_cpu_data();
+                    }
+                    self.frame_cache.insert(self.playhead.value, PregradePixels::from_frame(&frame), w, h);
+                    let final_linear = self.grade_v1_frame(frame, w, h);
                     let final_rgba = self.display_encode(&final_linear);
                     let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
                     fb.write_frame(final_rgba, w, h);
@@ -7169,18 +7219,17 @@ impl PlaybackEngine {
                     // Cache the pre-grade frame as u8 for backward
                     // stepping; the display path stays in linear until
                     // the viewer seam below.
-                    frame.ensure_cpu_data();
-                    let rgba_u8 = linear_rgba_to_u8(&frame.data);
-                    self.frame_cache.insert(frame_num, Arc::new(rgba_u8), w, h);
+                    frame.realise_hdr_on_cpu();
+                    if frame.hdr.is_none() {
+                        frame.ensure_cpu_data();
+                    }
+                    self.frame_cache.insert(frame_num, PregradePixels::from_frame(&frame), w, h);
 
                     // When we reach the target frame, display it
                     if frame_num >= target_frame && !found_target {
                         found_target = true;
                         self.playhead = RationalTime { value: frame_num, rate: self.playhead.rate };
-                        let gpu_source = frame.gpu_source.clone();
-                        let final_linear = self.post_process_rgba_with_gpu_source(
-                            frame.data, w, h, gpu_source.as_ref(),
-                        );
+                        let final_linear = self.grade_v1_frame(frame, w, h);
                         let final_rgba = self.display_encode(&final_linear);
                         let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
                         fb.write_frame(final_rgba, w, h);
@@ -7297,20 +7346,24 @@ impl PlaybackEngine {
             // too — bridge around `post_process_rgba_inner`, which is
             // linear-in/linear-out post the linear-edge-to-edge
             // refactor.
-            if let Some((rgba_arc, w, h)) = self.frame_cache.get(frame_num) {
-                let rgba = rgba_arc.as_ref().clone();
+            if let Some((pixels, w, h)) = self.frame_cache.get(frame_num) {
                 // Save/restore playhead so grading evaluates at the right time
                 let saved_playhead = self.playhead;
                 self.playhead = klipp_core::RationalTime { value: frame_num, rate: self.playhead.rate };
 
-                let linear = u8_rgba_to_linear(&rgba);
+                let linear = pixels.grade_input();
                 // Suspend per-node thumbnail capture: this speculative
                 // grade is for a NEAR-playhead frame (prerender cache
                 // warm-up), not the user's actual playhead. Capturing
                 // thumbs here would overwrite the canvas previews with
                 // frames the user didn't ask for.
                 self.thumb_capture_suspended = true;
-                let graded_linear = self.post_process_rgba_inner(linear, w, h);
+                self.grade_hdr = pixels.hdr().cloned();
+                let mut graded_linear = self.post_process_rgba_inner(linear, w, h);
+                // The render cache holds what the viewer shows, so an HDR
+                // entry is stored tone-mapped, same as playback stores it.
+                self.finish_hdr_grade(&mut graded_linear);
+                self.grade_hdr = None;
                 self.thumb_capture_suspended = false;
                 let graded = linear_rgba_to_u8(&graded_linear);
 
@@ -7372,7 +7425,10 @@ impl PlaybackEngine {
                 if frame.is_eof { break; }
                 let pts = frame.pts;
                 let (w, h) = (frame.width, frame.height);
-                let rgba = frame.to_rgba();
+                let pixels = match frame.hdr.as_ref() {
+                    Some(hdr) => PregradePixels::Hdr(hdr.to_cpu()),
+                    None => PregradePixels::Srgb8(Arc::new(frame.to_rgba())),
+                };
                 let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
                 let frame_num = if let Some(clip) = seq.tracks.get(self.current_track_index)
                     .and_then(|t| t.clips.get(self.current_clip_index))
@@ -7387,7 +7443,7 @@ impl PlaybackEngine {
                     continue;
                 };
                 drop(seq);
-                self.frame_cache.insert(frame_num, Arc::new(rgba), w, h);
+                self.frame_cache.insert(frame_num, pixels, w, h);
             }
         }
 
@@ -7416,7 +7472,10 @@ impl PlaybackEngine {
                 if let Some(frame) = popped {
                     if frame.is_eof { break; }
                     let (w, h) = (frame.width, frame.height);
-                    let rgba = frame.to_rgba();
+                    let pixels = match frame.hdr.as_ref() {
+                        Some(hdr) => PregradePixels::Hdr(hdr.to_cpu()),
+                        None => PregradePixels::Srgb8(Arc::new(frame.to_rgba())),
+                    };
                     let frame_num = {
                         let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
                         if let Some(clip) = seq.tracks.get(self.current_track_index)
@@ -7430,7 +7489,7 @@ impl PlaybackEngine {
                             (clip.timeline_in + elapsed_tc).value
                         } else { break; }
                     };
-                    self.frame_cache.insert(frame_num, Arc::new(rgba), w, h);
+                    self.frame_cache.insert(frame_num, pixels, w, h);
                     // Stop a few frames past current (forward will be handled by decoder resume)
                     if frame_num > current + 5 { break; }
                     continue;
@@ -9242,6 +9301,44 @@ impl PlaybackEngine {
             && !drag_skip
     }
 
+    /// Grade one decoded V1 frame through the full wrapper.
+    ///
+    /// The single place that decides what an HDR frame grades: its
+    /// scene-linear input, not `data`, which is display-referred and
+    /// already tone-mapped. The chain is not primed from the decoder's u8
+    /// buffer for HDR either — that buffer is the tone-mapped preview.
+    /// `post_process_rgba` tone-maps the HDR result itself.
+    ///
+    /// SDR frames need `data` populated by the caller (or a `gpu_source`
+    /// to seed from), exactly as before.
+    fn grade_v1_frame(&mut self, frame: crate::types::LinearFrame, width: u32, height: u32) -> Vec<f32> {
+        if let Some(hdr) = frame.hdr.as_ref() {
+            let hdr = hdr.to_cpu();
+            let input = hdr.scene_linear();
+            self.grade_hdr = Some(hdr);
+            let out = self.post_process_rgba_with_gpu_source(input, width, height, None);
+            self.grade_hdr = None;
+            out
+        } else {
+            let gpu_source = frame.gpu_source.clone();
+            self.post_process_rgba_with_gpu_source(frame.data, width, height, gpu_source.as_ref())
+        }
+    }
+
+    /// End of an HDR clip's own processing: tone-map the graded
+    /// scene-linear result to display-referred linear. After this the
+    /// clip is display-referred like any SDR clip, so composite,
+    /// transitions and the display encode need no HDR awareness.
+    ///
+    /// No-op for SDR. Must run before anything that treats the result as
+    /// what the viewer shows — the render cache, the scopes, the viewer
+    /// texture — or those would capture scene-linear values above 1.0.
+    fn finish_hdr_grade(&self, result: &mut [f32]) {
+        if self.grade_hdr.is_some() {
+            klipp_color::hdr::apply_hdr_display_tonemap(result);
+        }
+    }
+
     /// Realise the grade's CPU source if the speculative skip left it
     /// empty.
     ///
@@ -9305,28 +9402,40 @@ impl PlaybackEngine {
         let pregrade_needed = self.pregrade_encode_needed();
         let t_bridge = std::time::Instant::now();
         mark_stage(EngineStage::PostProcessPregradeEncode);
-        let rgba_u8 = if pregrade_needed {
-            // Routes large frames (≥ 1080p) through the GPU compute
-            // shader; HD-and-smaller stay on CPU LUT. At 4K this is
-            // the difference between 40-90 ms and 3-5 ms.
-            self.linear_rgba_to_u8_smart(&linear_rgba, width, height)
-        } else {
-            Vec::new()
-        };
+        // What the caches keep (`pregrade`) and what the UI shows as the
+        // "before" image (`pregrade_display`). The same bytes for SDR. For
+        // HDR they differ: the caches keep the packed codes so a later
+        // regrade starts from the full range, while the UI gets the
+        // tone-mapped picture — `linear_rgba` here is scene-linear and
+        // would clip if encoded directly.
+        let (pregrade, pregrade_display): (Option<PregradePixels>, Option<Arc<Vec<u8>>>) =
+            if !pregrade_needed {
+                (None, None)
+            } else if let Some(hdr) = self.grade_hdr.clone() {
+                let mut display = linear_rgba.clone();
+                klipp_color::hdr::apply_hdr_display_tonemap(&mut display);
+                let u8s = Arc::new(self.linear_rgba_to_u8_smart(&display, width, height));
+                (Some(PregradePixels::Hdr(hdr)), Some(u8s))
+            } else {
+                // Routes large frames (≥ 1080p) through the GPU compute
+                // shader; HD-and-smaller stay on CPU LUT. At 4K this is
+                // the difference between 40-90 ms and 3-5 ms.
+                let u8s = Arc::new(self.linear_rgba_to_u8_smart(&linear_rgba, width, height));
+                (Some(PregradePixels::Srgb8(Arc::clone(&u8s))), Some(u8s))
+            };
         let t_bridge_u8 = t_bridge.elapsed();
 
         let t_pregrade = std::time::Instant::now();
         let mut pregrade_fb_lock_us: u64 = 0;
-        if pregrade_needed {
-            let rgba_arc = Arc::new(rgba_u8);
-            self.cached_pregrade_frame = Some((Arc::clone(&rgba_arc), width, height));
-            self.frame_cache.insert(self.playhead.value, Arc::clone(&rgba_arc), width, height);
+        if let (Some(pixels), Some(display)) = (pregrade, pregrade_display) {
+            self.cached_pregrade_frame = Some((pixels.clone(), width, height));
+            self.frame_cache.insert(self.playhead.value, pixels, width, height);
             {
                 mark_stage(EngineStage::PostProcessFbLockA);
                 let t_lock = std::time::Instant::now();
                 let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
                 pregrade_fb_lock_us = t_lock.elapsed().as_micros() as u64;
-                fb.pregrade_data = rgba_arc;
+                fb.pregrade_data = display;
             }
         }
         let t_pregrade_ms = t_pregrade.elapsed();
@@ -9437,7 +9546,11 @@ impl PlaybackEngine {
         let t_key_lookup_ms = t_key_lookup.elapsed();
         mark_stage(EngineStage::PostProcessInner);
         let t_inner = std::time::Instant::now();
-        let result_linear = self.post_process_rgba_inner_drag_aware(linear_rgba, width, height);
+        let mut result_linear = self.post_process_rgba_inner_drag_aware(linear_rgba, width, height);
+        // Before the render cache, the scopes and the viewer texture all
+        // read it: they must see what the viewer shows. (A render-cache
+        // hit above returns pixels that were stored after this step.)
+        self.finish_hdr_grade(&mut result_linear);
         let t_inner_ms = t_inner.elapsed();
 
         // The reencode (`result_u8`) feeds two consumers — the render
@@ -9586,7 +9699,14 @@ impl PlaybackEngine {
             // (~5 ms at 1080p). Falls back to the CPU-upload path
             // when no chain ran (identity graph, pure-CPU node, or
             // executor produced its result without engaging GPU).
-            let chain_slot = self.graph_executor.last_chain_final_slot();
+            // The chain's buffer holds the grade's *scene-linear* output
+            // for HDR, before `finish_hdr_grade`; encoding it would show
+            // an un-tone-mapped frame. Use the finished result instead.
+            let chain_slot = if self.grade_hdr.is_some() {
+                None
+            } else {
+                self.graph_executor.last_chain_final_slot()
+            };
             if let Some(gpu) = self.graph_executor.gpu_pipeline_mut() {
                 let device = gpu.device();
                 let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
@@ -9614,11 +9734,16 @@ impl PlaybackEngine {
         mark_stage(EngineStage::PausedRegrade);
         self.ensure_gpu_effects();
         // Case 1: V1 video exists — regrade and composite with overlay(s)
-        if let Some((ref rgba_arc, w, h)) = self.cached_pregrade_frame.clone() {
-            // cached_pregrade_frame stores sRGB u8 — decode once here
-            // so the grade + composite run in linear.
-            let linear_in = u8_rgba_to_linear(rgba_arc.as_ref());
-            let graded_linear = self.post_process_rgba_inner_drag_aware(linear_in, w, h);
+        if let Some((ref pixels, w, h)) = self.cached_pregrade_frame.clone() {
+            // Decode once so the grade + composite run in linear. For HDR
+            // that is scene-linear from the cached codes, and the result is
+            // tone-mapped exactly as playback's is — paused and playing
+            // grades of the same frame must agree.
+            let linear_in = pixels.grade_input();
+            self.grade_hdr = pixels.hdr().cloned();
+            let mut graded_linear = self.post_process_rgba_inner_drag_aware(linear_in, w, h);
+            self.finish_hdr_grade(&mut graded_linear);
+            self.grade_hdr = None;
 
             // Pump any overlay-decoder frames that arrived since the
             // last composite, then route through the matte-aware

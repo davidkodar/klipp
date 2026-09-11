@@ -1436,25 +1436,81 @@ unsafe fn download_hw_frame(
             // BT.709 matrix/primaries, and limited vs full range from
             // these IDs — no ad-hoc HDR sniffing in the host code.
             let color_ids = klipp_core::color_ids::ids(source_cs);
-            let (linear, gpu_source) = if should_attach_gpu_source() {
-                // Phase 4d.1: GPU-resident handoff. The shader runs;
-                // we attach the resulting wgpu::Buffer to gpu_source
-                // and skip the readback + linearise entirely. The
-                // engine's grade chain consumes the buffer directly
-                // via `prime_chain_from_gpu_u8_buffer`. CPU `data`
-                // stays empty; consumers that need it call
-                // `LinearFrame::ensure_cpu_data` on demand.
-                let pm = primaries_matrix_for_source(source_cs);
-                let buffer = converter.convert_p010_to_rgba_on_gpu(
+            // PQ/HLG sources: the shader also emits packed 10-bit code
+            // values, which become the grade's input (see
+            // `crate::types::HdrInput`). `data` stays display-referred for
+            // every other consumer.
+            let hdr_transfer = klipp_color::hdr::HdrTransfer::from_transfer_id(color_ids[2]);
+            let source_to_working = klipp_color::camera_log::primaries_to_working_matrix(
+                source_cs.primaries,
+                working_colorspace(),
+            );
+            let pm = klipp_effects::color_wgsl::pack_primaries_matrix(source_to_working);
+            let (linear, gpu_source, hdr) = if should_attach_gpu_source() {
+                // GPU-resident handoff. The shader runs; the buffers stay
+                // on the GPU and CPU `data` stays empty — consumers that
+                // need it call `LinearFrame::ensure_cpu_data`, which reads
+                // the u8 output (for HDR, the tone-mapped preview).
+                let out = converter.convert_p010_on_gpu(
                     y_data, uv_data, src_w, src_h, y_stride, uv_stride,
                     out_w, out_h, source_rotation as u32, color_ids, pm,
                 );
                 let device = converter.device();
                 let queue = converter.queue();
-                let attach = Arc::new(GpuFrame::new(device, queue, buffer, out_w, out_h));
-                (Vec::new(), Some(attach))
+                let hdr = match (hdr_transfer, out.hdr_codes) {
+                    (Some(transfer), Some(buffer)) => Some(crate::types::HdrInput {
+                        codes: crate::types::HdrCodes::Gpu {
+                            buffer,
+                            device: Arc::clone(&device),
+                            queue: Arc::clone(&queue),
+                        },
+                        transfer,
+                        source_to_working,
+                        width: out_w,
+                        height: out_h,
+                    }),
+                    _ => None,
+                };
+                let attach = Arc::new(GpuFrame::new(device, queue, out.rgba, out_w, out_h));
+                (Vec::new(), Some(attach), hdr)
+            } else if let Some(transfer) = hdr_transfer {
+                // HDR on the readback path: read back the codes — the same
+                // 4 bytes a pixel the u8 frame cost — and derive the
+                // display-referred `data` from them on the CPU. The grade
+                // re-derives scene-linear from the same codes, so the two
+                // cannot drift.
+                match converter.convert_p010_hdr_codes(
+                    y_data, uv_data, src_w, src_h, y_stride, uv_stride,
+                    out_w, out_h, source_rotation as u32, color_ids, pm,
+                ) {
+                    Some(codes) => {
+                        let t_linear = std::time::Instant::now();
+                        let mut display = klipp_color::hdr::hdr10_codes_to_scene_linear_rgba(
+                            &codes, transfer, source_to_working,
+                        );
+                        klipp_color::hdr::apply_hdr_display_tonemap(&mut display);
+                        PERF_LINEAR_ENCODE_US.fetch_add(t_linear.elapsed().as_micros() as u64, Ordering::Relaxed);
+                        let hdr = crate::types::HdrInput {
+                            codes: crate::types::HdrCodes::Cpu(Arc::new(codes)),
+                            transfer,
+                            source_to_working,
+                            width: out_w,
+                            height: out_h,
+                        };
+                        (display, None, Some(hdr))
+                    }
+                    None => {
+                        // Readback failed: fall back to the preview, graded
+                        // as display-referred. Wrong for grading, but a
+                        // picture rather than a hole.
+                        let bytes = converter.convert_p010_to_rgba(
+                            y_data, uv_data, src_w, src_h, y_stride, uv_stride,
+                            out_w, out_h, source_rotation as u32, color_ids, pm,
+                        );
+                        (rgba_u8_to_linear(&bytes), None, None)
+                    }
+                }
             } else {
-                let pm = primaries_matrix_for_source(source_cs);
                 let bytes = converter.convert_p010_to_rgba(
                     y_data, uv_data, src_w, src_h, y_stride, uv_stride,
                     out_w, out_h, source_rotation as u32, color_ids, pm,
@@ -1462,7 +1518,7 @@ unsafe fn download_hw_frame(
                 let t_linear = std::time::Instant::now();
                 let lin = rgba_u8_to_linear(&bytes);
                 PERF_LINEAR_ENCODE_US.fetch_add(t_linear.elapsed().as_micros() as u64, Ordering::Relaxed);
-                (lin, None)
+                (lin, None, None)
             };
             // Reuse the NV12 perf bucket — the meaning is identical
             // (GPU YUV→RGBA encode time per frame).
@@ -1487,6 +1543,7 @@ unsafe fn download_hw_frame(
                 is_eof: false,
                 gpu_source,
                 colorspace: source_cs,
+                hdr,
             });
         }
     }
@@ -1556,6 +1613,7 @@ unsafe fn download_hw_frame(
                 is_eof: false,
                 gpu_source,
                 colorspace: source_cs,
+                hdr: None,
             });
         }
     }
@@ -1693,6 +1751,7 @@ unsafe fn download_hw_frame(
         is_eof: false,
         gpu_source: None,
         colorspace: source_cs,
+        hdr: None,
     })
 }
 
@@ -2321,6 +2380,7 @@ fn convert_sw_frame(
             is_eof: false,
             gpu_source: None,
             colorspace: source_cs,
+            hdr: None,
         });
     }
 
@@ -2517,6 +2577,7 @@ fn convert_sw_frame(
         is_eof: false,
         gpu_source: None,
         colorspace: source_cs,
+        hdr: None,
     })
 }
 

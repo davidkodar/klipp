@@ -82,6 +82,7 @@ impl DecodedFrame {
             // their working-space defaults. The range field doesn't
             // apply post-decode; left at the safe default.
             colorspace: klipp_core::SourceColorspace::default(),
+            hdr: None,
         }
     }
 }
@@ -122,9 +123,26 @@ pub struct LinearFrame {
     /// so the YUV→RGB shader, gamut conversion, and EOTF decode
     /// dispatch correctly per-source.
     pub colorspace: klipp_core::SourceColorspace,
+    /// HDR (PQ/HLG) sources only: the code values the grade reads, with
+    /// `data` staying display-referred for everything else. See
+    /// [`HdrInput`].
+    pub hdr: Option<HdrInput>,
 }
 
 impl LinearFrame {
+    /// Bring GPU-resident HDR codes to the CPU, once, in place.
+    ///
+    /// Paths that both cache a frame and grade it would otherwise read the
+    /// codes back twice. After this, every `HdrInput::cpu_codes` on the
+    /// frame is an `Arc` clone.
+    pub fn realise_hdr_on_cpu(&mut self) {
+        if let Some(h) = self.hdr.as_mut() {
+            if matches!(h.codes, HdrCodes::Gpu { .. }) {
+                *h = h.to_cpu();
+            }
+        }
+    }
+
     /// PTS as seconds. Thin wrapper for symmetry with
     /// [`DecodedFrame::pts_secs`].
     pub fn pts_secs(&self) -> f64 {
@@ -141,6 +159,7 @@ impl LinearFrame {
             is_eof: true,
             gpu_source: None,
             colorspace: klipp_core::SourceColorspace::default(),
+            hdr: None,
         }
     }
 
@@ -243,6 +262,80 @@ pub static CPU_READBACK_COUNT: std::sync::atomic::AtomicU64 =
 pub static CPU_READBACK_US: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);
 
+/// An HDR frame's input, carried alongside its display-referred `data`.
+///
+/// HDR frames reach consumers two ways at once. `LinearFrame::data` is
+/// display-referred — already tone-mapped — so every consumer that just
+/// wants to show or analyse the picture (source viewer, overlays, export,
+/// scene detection) keeps working unchanged. This is the other half: the
+/// frame's packed 10-bit PQ/HLG code values, which the *grade* reads so it
+/// can operate on scene-linear pixels with the highlights intact. The
+/// grade's output is then tone-mapped as the clip's last step.
+///
+/// Packed RGB10 is 4 bytes a pixel — the size of an sRGB-u8 frame — so
+/// carrying it costs a frame's readback once, not twice.
+#[derive(Clone)]
+pub struct HdrInput {
+    pub codes: HdrCodes,
+    pub transfer: klipp_color::hdr::HdrTransfer,
+    /// Source primaries → working space, applied after the transfer curve.
+    pub source_to_working: [[f32; 3]; 3],
+    pub width: u32,
+    pub height: u32,
+}
+
+/// Where an HDR frame's packed code values live.
+#[derive(Clone)]
+pub enum HdrCodes {
+    Cpu(std::sync::Arc<Vec<u32>>),
+    Gpu {
+        buffer: std::sync::Arc<wgpu::Buffer>,
+        device: std::sync::Arc<wgpu::Device>,
+        queue: std::sync::Arc<wgpu::Queue>,
+    },
+}
+
+impl HdrInput {
+    /// The packed codes on the CPU, reading them back if they are
+    /// GPU-resident. The readback counts toward `CPU_READBACK_*` like any
+    /// other, so the perf overlay reports it.
+    pub fn cpu_codes(&self) -> std::sync::Arc<Vec<u32>> {
+        match &self.codes {
+            HdrCodes::Cpu(c) => std::sync::Arc::clone(c),
+            HdrCodes::Gpu { buffer, device, queue } => {
+                let t0 = std::time::Instant::now();
+                let bytes = readback_buffer(
+                    device,
+                    queue,
+                    buffer,
+                    (self.width as u64) * (self.height as u64) * 4,
+                );
+                let words: Vec<u32> = bytemuck::cast_slice::<u8, u32>(&bytes).to_vec();
+                use std::sync::atomic::Ordering::Relaxed;
+                CPU_READBACK_COUNT.fetch_add(1, Relaxed);
+                CPU_READBACK_US.fetch_add(t0.elapsed().as_micros() as u64, Relaxed);
+                std::sync::Arc::new(words)
+            }
+        }
+    }
+
+    /// A copy whose codes are on the CPU, for caches that outlive the
+    /// GPU frame.
+    pub fn to_cpu(&self) -> HdrInput {
+        HdrInput { codes: HdrCodes::Cpu(self.cpu_codes()), ..self.clone() }
+    }
+
+    /// Scene-linear RGBA f32 in the working space, 1.0 = 100 nits — the
+    /// grade's input.
+    pub fn scene_linear(&self) -> Vec<f32> {
+        klipp_color::hdr::hdr10_codes_to_scene_linear_rgba(
+            &self.cpu_codes(),
+            self.transfer,
+            self.source_to_working,
+        )
+    }
+}
+
 /// Realise a GPU-resident frame as linear-f32 CPU pixels.
 ///
 /// The same work [`LinearFrame::ensure_cpu_data`] performs, exposed so
@@ -293,6 +386,24 @@ pub fn realise_srgb_u8_from_gpu(gpu: &crate::frame::GpuFrame) -> Vec<u8> {
 
 fn readback_gpu_frame_to_u8(gpu: &crate::frame::GpuFrame) -> Vec<u8> {
     let byte_size = (gpu.width as u64) * (gpu.height as u64) * 4;
+    readback_buffer(&gpu.device, &gpu.queue, &gpu.rgba_buffer, byte_size)
+}
+
+/// Copy the first `byte_size` bytes of a GPU buffer back to the CPU.
+/// Zero-filled on failure (treated as device-lost-equivalent; the next
+/// frame retries).
+fn readback_buffer(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    buffer: &wgpu::Buffer,
+    byte_size: u64,
+) -> Vec<u8> {
+    struct Ctx<'a> {
+        device: &'a wgpu::Device,
+        queue: &'a wgpu::Queue,
+        rgba_buffer: &'a wgpu::Buffer,
+    }
+    let gpu = Ctx { device, queue, rgba_buffer: buffer };
     let staging = gpu.device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("linear_frame_ensure_cpu_data_staging"),
         size: byte_size,
@@ -303,7 +414,7 @@ fn readback_gpu_frame_to_u8(gpu: &crate::frame::GpuFrame) -> Vec<u8> {
     let mut encoder = gpu.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
         label: Some("linear_frame_ensure_cpu_data"),
     });
-    encoder.copy_buffer_to_buffer(&gpu.rgba_buffer, 0, &staging, 0, byte_size);
+    encoder.copy_buffer_to_buffer(gpu.rgba_buffer, 0, &staging, 0, byte_size);
     gpu.queue.submit(std::iter::once(encoder.finish()));
 
     let slice = staging.slice(..byte_size);
@@ -485,6 +596,7 @@ mod linear_frame_tests {
             is_eof: false,
             gpu_source: None,
             colorspace: klipp_core::SourceColorspace::default(),
+            hdr: None,
         };
         assert_eq!(frame.data[0], 2.5);
         let back = frame.to_srgb_u8();
@@ -703,6 +815,7 @@ mod readback_cost {
             is_eof: false,
             gpu_source: Some(std::sync::Arc::clone(&gpu)),
             colorspace: klipp_core::SourceColorspace::default(),
+            hdr: None,
         };
         frame.ensure_cpu_data();
         assert_eq!(frame.data.len(), byte_len, "CPU mirror must be fully realised");
