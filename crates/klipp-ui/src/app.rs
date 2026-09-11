@@ -1447,7 +1447,7 @@ impl KlippApp {
         let tx = self.thumb_tx.clone();
         let duration_secs = duration.to_secs_f64();
         let seek_secs = duration_secs * 0.1;
-        let cache_key = klipp_media::disk_cache::compute_cache_key(&path);
+        let cache_key = klipp_engine::video_decoder::picture_cache_key(&path);
         // Decode the media-pool poster at the same resolution the Files
         // browser already uses. The previous default (160 px on the long
         // edge) gave 50×90 thumbs for 4K portrait clips, which then
@@ -1499,6 +1499,27 @@ impl KlippApp {
         });
     }
 
+    /// Drop a media item's thumbnail and filmstrip and request them again —
+    /// from the disk cache when pictures for its current decode settings
+    /// exist, freshly decoded otherwise.
+    fn refresh_media_pictures(&mut self, media_id: MediaId) {
+        let Some((path, duration)) = self.state.media_pool.get(&media_id)
+            .map(|m| (m.path.clone(), m.duration))
+        else {
+            return;
+        };
+        self.state.thumbnail_cache.set_filmstrip(media_id, Vec::new());
+        if let Some(strip) = self.state.filmstrip_textures.remove(&media_id) {
+            self.defer_drop_textures(strip.into_iter().map(|(_, t)| t));
+        }
+        if let Some(thumb) = self.state.thumbnail_textures.remove(&media_id) {
+            self.defer_drop_textures(std::iter::once(thumb));
+        }
+        self.state.filmstrip_in_progress.remove(&media_id);
+        self.spawn_thumbnail(media_id, path.clone(), duration);
+        self.spawn_filmstrip(media_id, path, duration);
+    }
+
     /// Queue a filmstrip for generation. Deduplicates and serializes — only one
     /// filmstrip generates at a time to avoid exhausting GPU NVDEC sessions.
     fn spawn_filmstrip(
@@ -1520,7 +1541,7 @@ impl KlippApp {
         }
         // Already have filmstrip on disk? Load it directly without showing the spinner.
         let filmstrip_height = self.prefs.media_cache.filmstrip_height.max(24);
-        let cache_key = klipp_media::disk_cache::compute_cache_key(&path);
+        let cache_key = klipp_engine::video_decoder::picture_cache_key(&path);
         if let Some(ref key) = cache_key {
             if klipp_media::disk_cache::filmstrip_cache_exists(key, filmstrip_height) {
                 // Load from disk cache on a background thread, skip the generating indicator
@@ -1569,7 +1590,7 @@ impl KlippApp {
 
         let tx = self.filmstrip_tx.clone();
         let duration_secs = duration.to_secs_f64();
-        let cache_key = klipp_media::disk_cache::compute_cache_key(&path);
+        let cache_key = klipp_engine::video_decoder::picture_cache_key(&path);
         let generate_if_missing = self.state.project_auto_filmstrips
             .unwrap_or(self.prefs.editing.auto_generate_filmstrips);
         // Target ~400 frames across the whole clip. The 0.2 s floor
@@ -3386,8 +3407,13 @@ impl KlippApp {
                 for entry in entries.filter_map(|e| e.ok()) {
                     let path = entry.path();
                     if !path.is_file() { continue; }
-                    let stem = path.file_stem()
+                    // The content key is everything before the first dot:
+                    // picture caches append `.{height}`, a log format and a
+                    // pipeline version. Comparing the whole stem treated
+                    // every filmstrip as an orphan and deleted it.
+                    let stem = path.file_name()
                         .and_then(|s| s.to_str())
+                        .and_then(|s| s.split('.').next())
                         .unwrap_or("");
                     if !is_valid(stem) {
                         if let Ok(meta) = path.metadata() {
@@ -3426,8 +3452,19 @@ impl KlippApp {
     /// container metadata never says "S-Log3" — the media's format (the
     /// user's choice, else what was detected) is the only source of truth.
     fn sync_log_formats_to_decoders(&self) {
+        // Proxies and skim files are transcodes that keep the source's
+        // encoding (8-bit, still log), and timeline playback or the browser
+        // may read them instead of the original, so they carry the media's
+        // format too. (PQ/HLG skims are tone-mapped to SDR by ffmpeg, but
+        // PQ/HLG never enter this registry: their files say what they are.)
         let changed = klipp_engine::video_decoder::set_media_log_formats(
-            self.state.media_pool.all().map(|m| (m.path.clone(), m.effective_log_format())),
+            self.state.media_pool.all().flat_map(|m| {
+                let f = m.effective_log_format();
+                std::iter::once(m.path.clone())
+                    .chain(m.proxy_path.clone())
+                    .chain(m.skim_file.clone())
+                    .map(move |p| (p, f))
+            }),
         );
         if changed {
             let _ = self.cmd_tx.send(AppCommand::MediaDecodeChanged);
@@ -13287,6 +13324,10 @@ impl KlippApp {
                     // cached — under the clips' new graphs, not the old.
                     self.sync_sequence_to_engine();
                     self.sync_media_pool_to_engine();
+                    // Thumbnail and filmstrip were converted under the old
+                    // format; their cache key includes it, so this finds or
+                    // makes the pictures for the new one.
+                    self.refresh_media_pictures(mid);
                 }
                 self.state.dirty = true;
                 *needs_refresh = true;
@@ -17891,11 +17932,12 @@ impl KlippApp {
                 let mid = *media_id;
                 // Delete disk cache
                 if let Some(item) = self.state.media_pool.get(&mid) {
-                    if let Some(key) = klipp_media::disk_cache::compute_cache_key(&item.path) {
-                        let cache_path = klipp_media::disk_cache::cache_base_dir()
-                            .join("filmstrips")
-                            .join(format!("{key}.strip"));
-                        let _ = std::fs::remove_file(&cache_path);
+                    // All heights and pipeline versions. (This deleted
+                    // `{key}.strip`, a name that stopped matching the real
+                    // files when the height joined it, so "regenerate" just
+                    // reloaded the old strip.)
+                    if let Some(key) = klipp_engine::video_decoder::picture_cache_key(&item.path) {
+                        klipp_media::disk_cache::remove_filmstrip_cache(&key);
                     }
                 }
                 // Clear in-memory filmstrip
@@ -29902,7 +29944,7 @@ impl KlippApp {
             // shared with the file browser thumbnails — if the user has seen
             // this file in the browser, the cache hit is instant.
             if self.state.file_info_thumb.is_none() {
-                if let Some(key) = klipp_media::disk_cache::compute_cache_key(&path) {
+                if let Some(key) = klipp_engine::video_decoder::picture_cache_key(&path) {
                     if let Ok((rgba, w, h)) = klipp_media::disk_cache::load_thumbnail_cache(&key, crate::browser::FILE_THUMB_MAX_WIDTH) {
                         let pixels: Vec<egui::Color32> = rgba
                             .chunks_exact(4)

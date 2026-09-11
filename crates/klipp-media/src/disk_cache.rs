@@ -81,6 +81,14 @@ fn ensure_dir(dir: &Path) -> std::io::Result<()> {
 const FILMSTRIP_MAGIC: [u8; 4] = *b"KLFS";
 const FILMSTRIP_VERSION: u32 = 1;
 
+/// Version of the colour pipeline that produced cached thumbnails and
+/// filmstrips, part of their filenames. Bump it when a change alters how
+/// frames become pictures, or every cached picture keeps the old look.
+/// c2: scene-referred sources (PQ, HLG, camera log) are converted and tone
+/// mapped as in the viewer; before, they were plain swscale output — log
+/// flat, PQ washed out.
+const PICTURE_PIPELINE: &str = "c2";
+
 fn filmstrip_dir() -> PathBuf {
     FILMSTRIP_DIR_OVERRIDE.lock().ok()
         .and_then(|g| g.clone())
@@ -93,7 +101,23 @@ fn filmstrip_path(cache_key: &str, height: u32) -> PathBuf {
     // filmstrip_height pref would silently reuse the old low-res cache
     // (content hash is identical for the same source file) and changes
     // wouldn't take effect until the user manually cleared the cache.
-    filmstrip_dir().join(format!("{cache_key}.{height}.strip"))
+    filmstrip_dir().join(format!("{cache_key}.{height}.{PICTURE_PIPELINE}.strip"))
+}
+
+/// Delete every cached filmstrip for `cache_key`, at any height and
+/// pipeline version. Returns how many files went.
+pub fn remove_filmstrip_cache(cache_key: &str) -> usize {
+    let prefix = format!("{cache_key}.");
+    let Ok(entries) = std::fs::read_dir(filmstrip_dir()) else { return 0 };
+    entries
+        .filter_map(|e| e.ok())
+        .filter(|e| {
+            let name = e.file_name();
+            let name = name.to_string_lossy();
+            name.starts_with(&prefix) && name.ends_with(".strip")
+        })
+        .filter(|e| std::fs::remove_file(e.path()).is_ok())
+        .count()
 }
 
 pub fn filmstrip_cache_exists(cache_key: &str, height: u32) -> bool {
@@ -222,7 +246,7 @@ fn thumbnail_dir() -> PathBuf {
 }
 
 fn thumbnail_path(cache_key: &str, max_width: u32) -> PathBuf {
-    thumbnail_dir().join(format!("{cache_key}.{max_width}.thumb"))
+    thumbnail_dir().join(format!("{cache_key}.{max_width}.{PICTURE_PIPELINE}.thumb"))
 }
 
 pub fn thumbnail_cache_exists(cache_key: &str, max_width: u32) -> bool {

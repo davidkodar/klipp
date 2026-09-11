@@ -228,7 +228,7 @@ fn is_visual_media(path: &std::path::Path) -> bool {
 /// Pure function — no UI state — so it can be called from a worker thread or
 /// directly from a test.
 fn generate_file_thumb(path: &std::path::Path) -> Result<(Vec<u8>, u32, u32), String> {
-    let cache_key = klipp_media::disk_cache::compute_cache_key(path);
+    let cache_key = klipp_engine::video_decoder::picture_cache_key(path);
 
     // Try disk cache first (shared with media-pool thumbnails). RAW files
     // use the same cache because the embedded JPEG preview is what we
@@ -1960,7 +1960,7 @@ impl BrowserPanel {
 
                 // Try the disk cache first (shared key with the rest of the
                 // klipp file caches: path + size + mtime).
-                let cache_key = klipp_media::disk_cache::compute_cache_key(&path);
+                let cache_key = klipp_engine::video_decoder::picture_cache_key(&path);
                 if let Some(ref key) = cache_key {
                     if klipp_media::disk_cache::audio_peaks_cache_exists(key) {
                         if let Ok(peaks) = klipp_media::disk_cache::load_audio_peaks_cache(key) {
@@ -5910,7 +5910,7 @@ mod tests {
         );
 
         // Verify the cache file was written.
-        let cache_key = klipp_media::disk_cache::compute_cache_key(&jpg_path)
+        let cache_key = klipp_engine::video_decoder::picture_cache_key(&jpg_path)
             .expect("cache key for real file");
         assert!(
             klipp_media::disk_cache::thumbnail_cache_exists(&cache_key, super::FILE_THUMB_MAX_WIDTH),
