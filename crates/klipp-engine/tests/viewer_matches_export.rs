@@ -160,6 +160,7 @@ fn export(t: &Timeline, out: &Path) {
         audio_bitrate_kbps: None, video_bitrate_kbps: None, rate_control: RateControl::Crf,
         burn_in_subtitles: false, embed_subtitles: false, target_lufs: None, embed_chapters: false,
         bit_depth: 0, hdr_mode: HdrMode::Sdr, tone_map_op: ToneMapOp::Hable, odt: OdtChoice::MatchViewer,
+        mastering_peak_nits: klipp_core::DEFAULT_MASTERING_PEAK_NITS,
     };
     ExportJob {
         id: uuid::Uuid::new_v4(), output_path: out.to_path_buf(), settings, snapshot,
