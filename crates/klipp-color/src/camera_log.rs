@@ -669,8 +669,7 @@ fn primaries_to_bt709_matrix(p: ColorPrimaries) -> [[f32; 3]; 3] {
 /// `s = i / 1024.0`. Linear-interpolated lookup costs ~3 ns/pixel
 /// versus ~30 ns for the analytic `powf` form, dropping the
 /// per-pixel EOTF cost by ~10×. Used per-channel inside the hot
-/// loop. The +1 sentinel slot lets the lookup avoid a bounds check
-/// when the floor index lands at 1024.
+/// loop.
 struct EotfLut {
     table: [f32; 1025],
 }
@@ -689,9 +688,12 @@ impl EotfLut {
     fn lookup(&self, s: f32) -> f32 {
         let s = s.clamp(0.0, 1.0);
         let pos = s * 1024.0;
-        let idx = pos as usize;
+        // The last segment ends at 1.0, so full scale interpolates to
+        // the last entry rather than reading one past it. (It used to
+        // index `table[1025]`: every clipped white in 10-bit software
+        // decode panicked, which aborts a release build.)
+        let idx = (pos as usize).min(1023);
         let frac = pos - idx as f32;
-        // `idx` is in 0..=1024 — sentinel slot covers idx=1024.
         let lo = self.table[idx];
         let hi = self.table[idx + 1];
         lo + (hi - lo) * frac
@@ -873,6 +875,41 @@ pub fn yuv420p10le_to_linear_acescg(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Full scale and beyond read the table's last entry — they used to
+    /// read one past it and panic, aborting a release build on any
+    /// clipped white.
+    #[test]
+    fn eotf_lut_takes_full_scale() {
+        for t in [ColorTransfer::Bt709, ColorTransfer::SLog3, ColorTransfer::Pq] {
+            let lut = EotfLut::new(t);
+            for s in [1.0_f32, 1.5, 0.999_999, 1023.0 / 1024.0] {
+                let got = lut.lookup(s);
+                let want = apply_inverse_eotf(s.min(1.0), t);
+                assert!((got - want).abs() <= want.abs() * 1e-3 + 1e-6, "{t:?} at {s}: {got} vs {want}");
+            }
+        }
+    }
+
+    /// A frame of limited-range super-white — Y above 940, as clipped
+    /// highlights in camera footage are — decodes instead of panicking.
+    #[test]
+    fn super_white_10bit_frame_decodes() {
+        let (w, h) = (8usize, 4usize);
+        let plane = |v: u16, n: usize| v.to_le_bytes().repeat(n);
+        let (y, u, v) = (plane(1019, w * h), plane(512, w * h / 4), plane(512, w * h / 4));
+        let cs = SourceColorspace {
+            range: ColorRange::Limited,
+            matrix: ColorMatrix::Bt709,
+            transfer: ColorTransfer::Bt709,
+            primaries: ColorPrimaries::Bt709,
+        };
+        let out = yuv420p10le_to_linear(
+            &y, &u, &v, w * 2, w, w, w as u32, h as u32, w as u32, h as u32, cs, WorkingColorspace::Rec709Linear,
+        );
+        assert_eq!(out.len(), w * h * 4);
+        assert!((out[0] - 1.0).abs() < 1e-3, "clipped white decodes as white, got {}", out[0]);
+    }
 
     #[test]
     fn slog3_mid_grey_anchor() {
