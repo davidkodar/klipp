@@ -4801,6 +4801,17 @@ impl PlaybackEngine {
                 );
                 return;
             }
+            // The graph is the only thing between the decoder and the
+            // viewer: grade it on the GPU and present the result without
+            // the float round trips. Falls through to the full pipeline if
+            // the frame cannot take this path.
+            if blockers.iter().all(|b| *b == "grade graph is not an identity")
+                && self.present_graded_frame_on_gpu(
+                    &frame, final_w, final_h, current_source_secs, q_len,
+                )
+            {
+                return;
+            }
         }
 
         // HDR frames grade their scene-linear input, not `data` — `data`
@@ -9160,8 +9171,20 @@ impl PlaybackEngine {
         if self.compare_stabilization || self.compare_effect_active {
             blockers.push("compare mode active");
         }
+        // Before/after split: the grade stores the pre-grade frame for the
+        // split's "before" half. Neither fast path produces it, so that
+        // half would freeze on a stale frame.
+        if self.bypass_color_grade {
+            blockers.push("before/after split active");
+        }
         if !self.overlay_frames.is_empty() {
             blockers.push("overlay frames present");
+        }
+        // The project-wide colour pipeline (global LUT) runs after the
+        // graph on every graded-path frame, identity or not. Neither fast
+        // path applies it, so either would show the picture without it.
+        if self.color_pipeline.enabled {
+            blockers.push("global colour pipeline active");
         }
 
         let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
@@ -9232,7 +9255,7 @@ impl PlaybackEngine {
     ) {
         let t_frame = std::time::Instant::now();
         mark_stage(EngineStage::PostProcessEntry);
-        let mut bytes = crate::types::realise_srgb_u8_from_gpu(gpu);
+        let bytes = crate::types::realise_srgb_u8_from_gpu(gpu);
         let readback_ms = t_frame.elapsed().as_secs_f64() * 1000.0;
 
         if bytes.len() != (width as usize) * (height as usize) * 4 {
@@ -9246,6 +9269,151 @@ impl PlaybackEngine {
             return;
         }
 
+        self.publish_fast_path_frame(
+            bytes, width, height, t_frame, 0.0, readback_ms, "direct_present",
+            current_source_secs, q_len,
+        );
+    }
+
+    /// What the V1 node graph needs to run for the frame under the
+    /// playhead: the graph (via the same Arc cache as
+    /// `post_process_rgba_inner`), the clip time it is evaluated at, and
+    /// the clip's track points for tracker-bound masks. Must resolve the
+    /// clip exactly as `post_process_rgba_inner` does — by playhead on the
+    /// video tracks — or the fast path could grade a clip with another
+    /// clip's graph.
+    fn v1_graph_setup(&mut self) -> Option<(Arc<klipp_nodes::NodeGraph>, f64, Vec<klipp_core::TrackPoint>)> {
+        let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
+        let clip = seq.tracks.iter()
+            .filter(|t| t.kind == klipp_timeline::TrackKind::Video)
+            .find_map(|t| t.clip_at_timecode(self.playhead))
+            .map(|(_, c)| c)?;
+        let graph = if self.current_graph_arc.is_some() && self.current_grade_clip_id == Some(clip.id) {
+            Arc::clone(self.current_graph_arc.as_ref().unwrap())
+        } else {
+            let arc = Arc::new(clip.node_graph.clone());
+            self.current_graph_arc = Some(Arc::clone(&arc));
+            self.current_grade_clip_id = Some(clip.id);
+            arc
+        };
+        let clip_time_secs = (self.playhead.to_secs_f64() - self.clip_timeline_start.to_secs_f64())
+            * self.clip_speed
+            + self.clip_source_start;
+        Some((graph, clip_time_secs, clip.track_points.clone()))
+    }
+
+    /// Grade the decoder's frame and present it without it ever leaving
+    /// the GPU as floats: seed the chain from the decoder's buffer (HDR
+    /// codes or SDR u8), run the graph, then tone-map (HDR) and encode to
+    /// display u8 on the GPU and read back only those 4 bytes a pixel.
+    ///
+    /// The CPU path it replaces measured 5.8 fps on 4K HDR with the grade
+    /// itself at 5.7 ms: every frame crossed the bus as 132 MB of floats,
+    /// twice. Only called when `direct_present_blockers` names nothing but
+    /// the graph, so no other step — effects, LUTs, composite, scopes —
+    /// would have touched the frame.
+    ///
+    /// Returns `false`, having published nothing, if the frame cannot take
+    /// this path (no GPU-resident source, seed refused, a node needs CPU
+    /// pixels); the caller then grades normally.
+    fn present_graded_frame_on_gpu(
+        &mut self,
+        frame: &crate::types::LinearFrame,
+        width: u32,
+        height: u32,
+        current_source_secs: f64,
+        q_len: usize,
+    ) -> bool {
+        let t_frame = std::time::Instant::now();
+        let Some((graph, clip_time_secs, track_points)) = self.v1_graph_setup() else {
+            return false;
+        };
+        let hdr = frame.hdr.as_ref();
+        let seeded = match (hdr, frame.gpu_source.as_ref()) {
+            (Some(h), _) => match &h.codes {
+                crate::types::HdrCodes::Gpu { buffer, .. } => {
+                    self.graph_executor.prime_chain_from_gpu_hdr10_buffer(
+                        buffer,
+                        width,
+                        height,
+                        h.transfer.transfer_id(),
+                        klipp_effects::color_wgsl::pack_primaries_matrix(h.source_to_working),
+                    )
+                }
+                crate::types::HdrCodes::Cpu(_) => false,
+            },
+            (None, Some(g)) => self.graph_executor.prime_chain_from_gpu_u8_buffer(&g.rgba_buffer, width, height),
+            (None, None) => false,
+        };
+        if !seeded {
+            return false;
+        }
+        self.graph_executor.set_working_colorspace(crate::video_decoder::working_colorspace());
+        self.graph_executor.set_current_clip_track_points(&track_points);
+        self.graph_executor.set_solo_node(self.solo_node);
+        self.graph_executor.request_output_on_gpu();
+        let frame_number = (clip_time_secs * self.playhead.rate as f64).max(0.0) as u64;
+        mark_stage(EngineStage::PostProcessInnerGradeExecute);
+        let t_grade = std::time::Instant::now();
+        let result = self.graph_executor.execute_linear_with_thumbs(
+            &[], &graph, width, height, clip_time_secs, frame_number, None, None, None,
+        );
+        let grade_ms = t_grade.elapsed().as_secs_f64() * 1000.0;
+        let Ok((cpu_result, _, _)) = result else {
+            // Typically CpuSourceRequired: some node needs CPU pixels. The
+            // normal path grades this frame instead; nothing was shown.
+            return false;
+        };
+        let t_readback = std::time::Instant::now();
+        let bytes = if self.graph_executor.output_on_gpu().is_some() {
+            match self.graph_executor.encode_output_to_display_u8(width, height, hdr.is_some()) {
+                Some(b) => b,
+                None => return false,
+            }
+        } else {
+            // The graph ran but its result came back to the CPU — a solo
+            // view does that. Finish it the way the full pipeline would.
+            if cpu_result.len() != (width as usize) * (height as usize) * 4 {
+                return false;
+            }
+            let mut linear = cpu_result;
+            if hdr.is_some() {
+                klipp_color::hdr::apply_hdr_display_tonemap(&mut linear);
+            }
+            self.display_encode(&linear)
+        };
+        let readback_ms = t_readback.elapsed().as_secs_f64() * 1000.0;
+        if bytes.len() != (width as usize) * (height as usize) * 4 {
+            tracing::error!(
+                "graded GPU present: {} bytes != {width}x{height}x4 — falling back",
+                bytes.len(),
+            );
+            return false;
+        }
+        self.publish_fast_path_frame(
+            bytes, width, height, t_frame, grade_ms, readback_ms, "graded_gpu_present",
+            current_source_secs, q_len,
+        );
+        true
+    }
+
+    /// The shared tail of both fast paths: publish a finished display
+    /// frame, push a perf sample (or the overlay would freeze on the last
+    /// full-pipeline frame and report numbers this frame never paid), and
+    /// notify the UI.
+    #[allow(clippy::too_many_arguments)]
+    fn publish_fast_path_frame(
+        &mut self,
+        mut bytes: Vec<u8>,
+        width: u32,
+        height: u32,
+        t_frame: std::time::Instant,
+        grade_ms: f64,
+        readback_ms: f64,
+        path: &str,
+        current_source_secs: f64,
+        q_len: usize,
+    ) {
         let t_fb = std::time::Instant::now();
         {
             let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
@@ -9274,10 +9442,9 @@ impl PlaybackEngine {
                 target_fps: target_fps.unwrap_or(0.0),
                 decode_ms,
                 seq_read_ms: 0.0,
-                // No grade ran. Attributing the readback to `grade_ms`
-                // would misreport where the time went; it is a readback
-                // and shows up as one.
-                grade_ms: 0.0,
+                // Only the node graph's own time. The readback is counted
+                // as a readback, not folded in here.
+                grade_ms: grade_ms as f32,
                 ofx_ms: 0.0,
                 builtin_ms: 0.0,
                 lut_ms: 0.0,
@@ -9294,8 +9461,8 @@ impl PlaybackEngine {
         self.frames_consumed += 1;
         if total_ms > 5.0 {
             tracing::debug!(
-                "PERF direct_present: {total_ms:.1}ms for {width}x{height} | \
-                 readback={readback_ms:.1} fb_write={fb_write_ms:.1}",
+                "PERF {path}: {total_ms:.1}ms for {width}x{height} | \
+                 grade={grade_ms:.1} readback={readback_ms:.1} fb_write={fb_write_ms:.1}",
             );
         }
         if self.last_playback_log.elapsed().as_secs() >= 2 {

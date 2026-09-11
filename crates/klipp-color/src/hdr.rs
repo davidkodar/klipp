@@ -180,6 +180,14 @@ impl HdrTransfer {
     /// From a `klipp_core::color_ids` transfer id. `None` for every
     /// non-HDR transfer, so callers can use it as the "is this HDR"
     /// test as well.
+    /// The `klipp_core::color_ids` transfer id, for GPU kernels.
+    pub fn transfer_id(self) -> u32 {
+        match self {
+            Self::Pq => klipp_core::color_ids::TRANSFER_PQ,
+            Self::Hlg => klipp_core::color_ids::TRANSFER_HLG,
+        }
+    }
+
     pub fn from_transfer_id(id: u32) -> Option<Self> {
         match id {
             klipp_core::color_ids::TRANSFER_PQ => Some(Self::Pq),
