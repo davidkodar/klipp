@@ -249,6 +249,147 @@ fn white_balance(temperature: f32, tint: f32, ws: klipp_core::WorkingColorspace)
     klipp_color::white_balance::white_balance_matrix(temperature, tint, ws).unwrap_or(NO_WHITE_BALANCE)
 }
 
+/// The unified grade doing nothing, in the working space `ws`.
+fn identity_grade(ws: klipp_core::WorkingColorspace) -> klipp_effects::cpu_grade::ColorGrade {
+    let zero = (0.0, 0.0, 0.0);
+    klipp_effects::cpu_grade::ColorGrade {
+        exposure: 0.0, contrast: 0.0, saturation: 1.0, white_balance: NO_WHITE_BALANCE,
+        highlights: 0.0, shadows: 0.0, whites: 0.0, blacks: 0.0,
+        lift: zero, gamma: zero, gain: zero, offset: zero, log_wheels: None,
+        hue: 0.0, global_mix: 1.0, luma: klipp_color::linear::luma_coefs(ws),
+    }
+}
+
+/// Lift, gamma, gain and offset from a node's wheel params.
+fn linear_wheels(p: &NodeParams) -> [(f32, f32, f32); 4] {
+    let w = |x: Option<f32>, y: Option<f32>, m: Option<f32>| {
+        klipp_color::wheel_offset_to_rgb(x.unwrap_or(0.0), y.unwrap_or(0.0), m.unwrap_or(0.0))
+    };
+    [
+        w(p.lift_x, p.lift_y, p.lift_master),
+        w(p.gamma_x, p.gamma_y, p.gamma_master),
+        w(p.gain_x, p.gain_y, p.gain_master),
+        w(p.offset_x, p.offset_y, p.offset_master),
+    ]
+}
+
+/// Low, mid and high log wheels, when the node is in log mode and they
+/// are not all zero.
+fn log_wheels(p: &NodeParams) -> Option<[(f32, f32, f32); 3]> {
+    if !p.wheels_log_mode.unwrap_or(false) {
+        return None;
+    }
+    let w = |x: Option<f32>, y: Option<f32>, m: Option<f32>| {
+        klipp_color::wheel_offset_to_rgb(x.unwrap_or(0.0), y.unwrap_or(0.0), m.unwrap_or(0.0))
+    };
+    let wheels = [
+        w(p.log_low_x, p.log_low_y, p.log_low_master),
+        w(p.log_mid_x, p.log_mid_y, p.log_mid_master),
+        w(p.log_high_x, p.log_high_y, p.log_high_master),
+    ];
+    wheels.iter().any(|v| *v != (0.0, 0.0, 0.0)).then_some(wheels)
+}
+
+/// Curve LUTs as the curves shader and its CPU twin take them.
+fn curve_lut_data(luts: &CurveLuts) -> [f32; 1024] {
+    let mut lut_data = [0.0f32; 1024];
+    for (c, lut) in [&luts.master, &luts.red, &luts.green, &luts.blue].into_iter().enumerate() {
+        for (i, &v) in lut.iter().enumerate().take(256) {
+            lut_data[c * 256 + i] = v as f32 / 255.0;
+        }
+    }
+    lut_data
+}
+
+/// Which hue/sat curves were edited, bit per curve in
+/// `build_huesat_lut_data`'s order.
+fn huesat_active(h: &klipp_core::HueSatCurves) -> u32 {
+    [&h.hue_vs_hue, &h.hue_vs_sat, &h.hue_vs_lum, &h.lum_vs_sat, &h.sat_vs_sat, &h.orange_vs_sat]
+        .iter()
+        .enumerate()
+        .filter(|(_, c)| !c.is_empty())
+        .fold(0, |m, (i, _)| m | 1 << i)
+}
+
+/// One step of a grade node, run on the GPU chain or by its CPU twin in
+/// `klipp_effects::cpu_grade`: the same list either way, so the two cannot
+/// run the steps in different orders.
+enum GradeStage {
+    /// Keep the node's input for a closing `Mix`.
+    Keep,
+    Grade(klipp_effects::cpu_grade::ColorGrade),
+    Clarity(f32),
+    Vibrance(f32),
+    WheelSatBri([f32; 8]),
+    Curves { lut: Box<[f32; 1024]>, preserve_luma: bool, mix: f32 },
+    HueSat { lut: Box<[f32; 1536]>, mix: f32, active: u32 },
+    Warper { hue: [f32; 12], sat: [f32; 12] },
+    /// Mix with the kept input.
+    Mix(f32),
+}
+
+impl GradeStage {
+    /// Record on the GPU chain, reading the slot `in_is_a` names; the
+    /// number of ping-pong flips.
+    fn dispatch(&self, gpu: &mut GpuEffectsPipeline, in_is_a: bool, width: u32, height: u32) -> u32 {
+        match self {
+            GradeStage::Keep => {
+                gpu.keep_chain_input(in_is_a, width, height);
+                return 0;
+            }
+            GradeStage::Grade(g) => gpu.apply_color_grade_chain(
+                in_is_a, width, height,
+                g.exposure, g.contrast, g.saturation, g.white_balance,
+                g.highlights, g.shadows, g.whites, g.blacks,
+                g.lift, g.gamma, g.gain, g.offset, g.log_wheels,
+                g.hue, g.global_mix,
+            ),
+            GradeStage::Clarity(a) => gpu.apply_clarity_chain(in_is_a, width, height, *a),
+            GradeStage::Vibrance(a) => gpu.apply_vibrance_chain(in_is_a, width, height, *a),
+            GradeStage::WheelSatBri(v) => {
+                gpu.apply_wheel_sat_bri_chain(in_is_a, width, height, v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7])
+            }
+            GradeStage::Curves { lut, preserve_luma, mix } => {
+                gpu.apply_rgb_curves_chain(in_is_a, width, height, lut, *preserve_luma, *mix)
+            }
+            GradeStage::HueSat { lut, mix, active } => gpu.apply_huesat_chain(in_is_a, width, height, *mix, lut, *active),
+            GradeStage::Warper { hue, sat } => gpu.apply_color_warper_chain(in_is_a, width, height, hue, sat),
+            GradeStage::Mix(m) => gpu.apply_mix_with_kept_chain(in_is_a, width, height, *m),
+        }
+        1
+    }
+
+    /// Run the CPU twin on `frame`; `kept` holds what `Keep` kept.
+    fn run_cpu(&self, frame: &mut Vec<f32>, kept: &mut Option<Vec<f32>>, width: u32, height: u32) {
+        use klipp_effects::cpu_grade as cg;
+        match self {
+            GradeStage::Keep => *kept = Some(frame.clone()),
+            GradeStage::Grade(g) => cg::color_grade(frame, g),
+            GradeStage::Clarity(a) => cg::clarity(frame, width, height, *a),
+            GradeStage::Vibrance(a) => cg::vibrance(frame, *a),
+            GradeStage::WheelSatBri(v) => cg::wheel_sat_bri(frame, v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7]),
+            GradeStage::Curves { lut, preserve_luma, mix } => cg::rgb_curves(frame, lut, *preserve_luma, *mix),
+            GradeStage::HueSat { lut, mix, active } => cg::huesat(frame, lut, *mix, *active),
+            GradeStage::Warper { hue, sat } => cg::color_warper(frame, hue, sat),
+            GradeStage::Mix(m) => {
+                if let Some(k) = kept.as_ref() {
+                    cg::grade_mix(frame, k, *m);
+                }
+            }
+        }
+    }
+}
+
+/// Run grade stages on the CPU.
+fn run_stages_cpu(stages: &[GradeStage], input: &[f32], width: u32, height: u32) -> Vec<f32> {
+    let mut frame = input.to_vec();
+    let mut kept = None;
+    for s in stages {
+        s.run_cpu(&mut frame, &mut kept, width, height);
+    }
+    frame
+}
+
 /// Cached matte for a Mask node. Reused across frames whenever the
 /// fingerprint matches — eliminates ~5-15 ms per 1080p frame for
 /// static masks (no keyframes, no edits).
@@ -1508,10 +1649,7 @@ impl GraphExecutor {
                 let bl = params.blacks.unwrap_or(0.0);
                 hi != 0.0 || sh != 0.0 || wh != 0.0 || bl != 0.0
             }
-            NodeKind::ColorWheels => {
-                // Log-mode wheels have no GPU shader — keep them on CPU.
-                !params.wheels_log_mode.unwrap_or(false)
-            }
+            NodeKind::ColorWheels => true,
             NodeKind::WheelSatBri => {
                 // All eight sat/bri offsets default to 0; at default
                 // every output pixel = input pixel, so the shader is
@@ -1718,7 +1856,7 @@ impl GraphExecutor {
                     in_is_a, width, height,
                     exp, 0.0, 1.0, NO_WHITE_BALANCE,
                     0.0, 0.0, 0.0, 0.0,
-                    (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0),
+                    (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), None,
                     0.0, 1.0,
                 );
                 Some(1)
@@ -1747,7 +1885,7 @@ impl GraphExecutor {
                         in_is_a, width, height,
                         0.0, con, 1.0, NO_WHITE_BALANCE,
                         0.0, 0.0, 0.0, 0.0,
-                        (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0),
+                        (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), None,
                         0.0, 1.0,
                     );
                     // Second: clarity reads from where color_grade wrote
@@ -1763,7 +1901,7 @@ impl GraphExecutor {
                         in_is_a, width, height,
                         0.0, con, 1.0, NO_WHITE_BALANCE,
                         0.0, 0.0, 0.0, 0.0,
-                        (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0),
+                        (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), None,
                         0.0, 1.0,
                     );
                 } else {
@@ -1784,7 +1922,7 @@ impl GraphExecutor {
                         in_is_a, width, height,
                         0.0, 0.0, sat, NO_WHITE_BALANCE,
                         0.0, 0.0, 0.0, 0.0,
-                        (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0),
+                        (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), None,
                         0.0, 1.0,
                     );
                     self.gpu.as_mut().unwrap()
@@ -1796,7 +1934,7 @@ impl GraphExecutor {
                         in_is_a, width, height,
                         0.0, 0.0, sat, NO_WHITE_BALANCE,
                         0.0, 0.0, 0.0, 0.0,
-                        (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0),
+                        (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), None,
                         0.0, 1.0,
                     );
                 } else {
@@ -1815,41 +1953,14 @@ impl GraphExecutor {
                     in_is_a, width, height,
                     0.0, 0.0, 1.0, NO_WHITE_BALANCE,
                     hi, sh, wh, bl,
-                    (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0),
+                    (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), None,
                     0.0, 1.0,
                 );
                 Some(1)
             }
             NodeKind::ColorWheels => {
-                if params.wheels_log_mode.unwrap_or(false) { return None; }
-                let lift = klipp_color::wheel_offset_to_rgb(
-                    params.lift_x.unwrap_or(0.0),
-                    params.lift_y.unwrap_or(0.0),
-                    params.lift_master.unwrap_or(0.0),
-                );
-                let gamma = klipp_color::wheel_offset_to_rgb(
-                    params.gamma_x.unwrap_or(0.0),
-                    params.gamma_y.unwrap_or(0.0),
-                    params.gamma_master.unwrap_or(0.0),
-                );
-                let gain = klipp_color::wheel_offset_to_rgb(
-                    params.gain_x.unwrap_or(0.0),
-                    params.gain_y.unwrap_or(0.0),
-                    params.gain_master.unwrap_or(0.0),
-                );
-                let offset = klipp_color::wheel_offset_to_rgb(
-                    params.offset_x.unwrap_or(0.0),
-                    params.offset_y.unwrap_or(0.0),
-                    params.offset_master.unwrap_or(0.0),
-                );
-                self.gpu.as_mut().unwrap().apply_color_grade_chain(
-                    in_is_a, width, height,
-                    0.0, 0.0, 1.0, NO_WHITE_BALANCE,
-                    0.0, 0.0, 0.0, 0.0,
-                    lift, gamma, gain, offset,
-                    0.0, 1.0,
-                );
-                Some(1)
+                let stage = GradeStage::Grade(self.color_wheels_grade(params));
+                Some(stage.dispatch(self.gpu.as_mut().unwrap(), in_is_a, width, height))
             }
             NodeKind::WheelSatBri => {
                 self.gpu.as_mut().unwrap().apply_wheel_sat_bri_chain(
@@ -1901,7 +2012,7 @@ impl GraphExecutor {
                 let lut_data = build_huesat_lut_data(huesat);
                 let mix = params.huesat_mix.unwrap_or(1.0);
                 self.gpu.as_mut().unwrap()
-                    .apply_huesat_chain(in_is_a, width, height, mix, &lut_data);
+                    .apply_huesat_chain(in_is_a, width, height, mix, &lut_data, huesat_active(huesat));
                 Some(1)
             }
             NodeKind::ColorBalance => {
@@ -1978,7 +2089,7 @@ impl GraphExecutor {
                     in_is_a, width, height,
                     s.exposure, 0.0, s.saturation, white_balance(s.temperature, s.tint, self.working_colorspace),
                     0.0, 0.0, 0.0, 0.0,
-                    (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0),
+                    (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), None,
                     0.0, 1.0,
                 );
                 Some(1)
@@ -2007,21 +2118,121 @@ impl GraphExecutor {
         }
     }
 
-    /// Dispatch the Corrector node's stages onto the GPU chain in
-    /// canonical order. Each enabled stage issues one ping-pong-flipping
-    /// dispatch; the running `cur_in_is_a` tracks which slot the next
-    /// stage reads from. Returns the total flip count so the caller can
-    /// mirror it into `chain_slot_a`. Returns `None` when nothing is
-    /// active (caller bypass-tunnels through this node).
-    ///
-    /// Stage order matches the legacy 12-step pipeline so visual
-    /// results are byte-identical to a clip with the same params spread
-    /// across the dedicated single-purpose nodes.
-    ///
-    /// Wheels in log mode are intentionally skipped here — the log
-    /// shader is CPU-only, mixing it in would force a chain flush
-    /// mid-Corrector. Users who need log-mode wheels should add a
-    /// dedicated `ColorWheels` node alongside the Corrector.
+    /// The Corrector's stages, in the one order the GPU chain and the CPU
+    /// both run them: the unified grade (exposure, tone, wheels — linear
+    /// or log — contrast, saturation, white balance, hue), clarity,
+    /// vibrance, wheel sat/bri, RGB curves, hue/sat curves, the warper.
+    /// Its mix applies to all of them: folded into the unified grade when
+    /// that is the only stage, otherwise a closing mix with the kept input.
+    fn corrector_stages(&self, node_id: NodeId, params: &NodeParams) -> Vec<GradeStage> {
+        let ws = self.working_colorspace;
+        let log = log_wheels(params);
+        let [lift, gamma, gain, offset] = if params.wheels_log_mode.unwrap_or(false) {
+            [(0.0, 0.0, 0.0); 4]
+        } else {
+            linear_wheels(params)
+        };
+        let grade = klipp_effects::cpu_grade::ColorGrade {
+            exposure: params.exposure.unwrap_or(0.0),
+            contrast: params.contrast.unwrap_or(0.0),
+            saturation: params.saturation.unwrap_or(1.0),
+            white_balance: white_balance(params.temperature.unwrap_or(0.0), params.tint.unwrap_or(0.0), ws),
+            highlights: params.highlights.unwrap_or(0.0),
+            shadows: params.shadows.unwrap_or(0.0),
+            whites: params.whites.unwrap_or(0.0),
+            blacks: params.blacks.unwrap_or(0.0),
+            lift, gamma, gain, offset,
+            log_wheels: log,
+            hue: params.hue.unwrap_or(0.0),
+            ..identity_grade(ws)
+        };
+        let grade_active = grade.exposure != 0.0
+            || grade.contrast != 0.0
+            || (grade.saturation - 1.0).abs() > f32::EPSILON
+            || grade.white_balance != NO_WHITE_BALANCE
+            || grade.highlights != 0.0 || grade.shadows != 0.0 || grade.whites != 0.0 || grade.blacks != 0.0
+            || [lift, gamma, gain, offset] != [(0.0, 0.0, 0.0); 4]
+            || log.is_some()
+            || grade.hue != 0.0;
+
+        let mut later = Vec::new();
+        let clarity = params.clarity.unwrap_or(0.0);
+        if clarity != 0.0 {
+            later.push(GradeStage::Clarity(clarity));
+        }
+        let vib = params.vibrance.unwrap_or(0.0);
+        if vib != 0.0 {
+            later.push(GradeStage::Vibrance(vib));
+        }
+        let satbri = [
+            params.lift_sat, params.lift_bri, params.gamma_sat, params.gamma_bri,
+            params.gain_sat, params.gain_bri, params.offset_sat, params.offset_bri,
+        ]
+        .map(|v| v.unwrap_or(0.0));
+        if satbri.iter().any(|&v| v != 0.0) {
+            later.push(GradeStage::WheelSatBri(satbri));
+        }
+        if let Some(curves) = params.curves.as_ref().filter(|c| !is_curves_identity(c)) {
+            let luts = self
+                .curve_lut_cache
+                .get(&node_id)
+                .cloned()
+                .unwrap_or_else(|| Arc::new(build_curve_luts(curves)));
+            later.push(GradeStage::Curves {
+                lut: Box::new(curve_lut_data(&luts)),
+                preserve_luma: params.curves_preserve_luma.unwrap_or(false),
+                mix: params.curves_mix.unwrap_or(1.0),
+            });
+        }
+        if let Some(huesat) = params.huesat.as_ref().filter(|h| !h.is_all_identity()) {
+            later.push(GradeStage::HueSat {
+                lut: Box::new(build_huesat_lut_data(huesat)),
+                mix: params.huesat_mix.unwrap_or(1.0),
+                active: huesat_active(huesat),
+            });
+        }
+        if let Some(warper) = params.warper_params.as_ref().filter(|w| !w.is_identity()) {
+            later.push(GradeStage::Warper { hue: warper.hue_shifts, sat: warper.sat_shifts });
+        }
+
+        let global_mix = params.global_mix.unwrap_or(1.0);
+        let mixing = (global_mix - 1.0).abs() > f32::EPSILON;
+        let mut stages = Vec::new();
+        if later.is_empty() {
+            if grade_active || mixing {
+                stages.push(GradeStage::Grade(klipp_effects::cpu_grade::ColorGrade { global_mix, ..grade }));
+            }
+        } else {
+            if mixing {
+                stages.push(GradeStage::Keep);
+            }
+            if grade_active {
+                stages.push(GradeStage::Grade(grade));
+            }
+            stages.extend(later);
+            if mixing {
+                stages.push(GradeStage::Mix(global_mix));
+            }
+        }
+        stages
+    }
+
+    /// A Color Wheels node as the unified grade: lift/gamma/gain/offset,
+    /// or low/mid/high in log mode.
+    fn color_wheels_grade(&self, params: &NodeParams) -> klipp_effects::cpu_grade::ColorGrade {
+        let log = log_wheels(params);
+        let [lift, gamma, gain, offset] = if params.wheels_log_mode.unwrap_or(false) {
+            [(0.0, 0.0, 0.0); 4]
+        } else {
+            linear_wheels(params)
+        };
+        klipp_effects::cpu_grade::ColorGrade { lift, gamma, gain, offset, log_wheels: log, ..identity_grade(self.working_colorspace) }
+    }
+
+    /// Dispatch the Corrector's stages ([`Self::corrector_stages`]) onto
+    /// the GPU chain. Returns the total flip count so the caller can
+    /// mirror it into `chain_slot_a`, or `None` when nothing is active
+    /// (caller bypass-tunnels through this node).
     fn dispatch_corrector_chain(
         &mut self,
         node_id: NodeId,
@@ -2031,173 +2242,17 @@ impl GraphExecutor {
         in_is_a: bool,
     ) -> Option<u32> {
         if self.gpu.is_none() { return None; }
-
+        let stages = self.corrector_stages(node_id, params);
+        let gpu = self.gpu.as_mut().unwrap();
         let mut cur = in_is_a;
         let mut flips: u32 = 0;
-
-        // Stage 1 — unified color_grade dispatch (folds exposure +
-        // contrast + saturation + temperature/tint + tone + linear
-        // wheels + hue + global_mix into a single shader call).
-        let exp = params.exposure.unwrap_or(0.0);
-        let con = params.contrast.unwrap_or(0.0);
-        let sat = params.saturation.unwrap_or(1.0);
-        let temp = params.temperature.unwrap_or(0.0);
-        let tint = params.tint.unwrap_or(0.0);
-        let hi = params.highlights.unwrap_or(0.0);
-        let sh = params.shadows.unwrap_or(0.0);
-        let wh = params.whites.unwrap_or(0.0);
-        let bl = params.blacks.unwrap_or(0.0);
-        let hue = params.hue.unwrap_or(0.0);
-        let global_mix = params.global_mix.unwrap_or(1.0);
-        let log_mode = params.wheels_log_mode.unwrap_or(false);
-        let (lift, gamma, gain, offset) = if log_mode {
-            ((0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0))
-        } else {
-            (
-                klipp_color::wheel_offset_to_rgb(
-                    params.lift_x.unwrap_or(0.0),
-                    params.lift_y.unwrap_or(0.0),
-                    params.lift_master.unwrap_or(0.0),
-                ),
-                klipp_color::wheel_offset_to_rgb(
-                    params.gamma_x.unwrap_or(0.0),
-                    params.gamma_y.unwrap_or(0.0),
-                    params.gamma_master.unwrap_or(0.0),
-                ),
-                klipp_color::wheel_offset_to_rgb(
-                    params.gain_x.unwrap_or(0.0),
-                    params.gain_y.unwrap_or(0.0),
-                    params.gain_master.unwrap_or(0.0),
-                ),
-                klipp_color::wheel_offset_to_rgb(
-                    params.offset_x.unwrap_or(0.0),
-                    params.offset_y.unwrap_or(0.0),
-                    params.offset_master.unwrap_or(0.0),
-                ),
-            )
-        };
-        let unified_active = exp != 0.0
-            || con != 0.0
-            || (sat - 1.0).abs() > f32::EPSILON
-            || temp != 0.0
-            || tint != 0.0
-            || hi != 0.0 || sh != 0.0 || wh != 0.0 || bl != 0.0
-            || lift != (0.0, 0.0, 0.0)
-            || gamma != (0.0, 0.0, 0.0)
-            || gain != (0.0, 0.0, 0.0)
-            || offset != (0.0, 0.0, 0.0)
-            || hue != 0.0
-            || (global_mix - 1.0).abs() > f32::EPSILON;
-        if unified_active {
-            self.gpu.as_mut().unwrap().apply_color_grade_chain(
-                cur, width, height,
-                exp, con, sat, white_balance(temp, tint, self.working_colorspace),
-                hi, sh, wh, bl,
-                lift, gamma, gain, offset,
-                hue, global_mix,
-            );
-            cur = !cur;
-            flips += 1;
-        }
-
-        // Stage 2 — Clarity. Net 1 flip (uses internal scratch buffer).
-        let clarity = params.clarity.unwrap_or(0.0);
-        if clarity != 0.0 {
-            self.gpu.as_mut().unwrap()
-                .apply_clarity_chain(cur, width, height, clarity);
-            cur = !cur;
-            flips += 1;
-        }
-
-        // Stage 3 — Vibrance.
-        let vib = params.vibrance.unwrap_or(0.0);
-        if vib != 0.0 {
-            self.gpu.as_mut().unwrap()
-                .apply_vibrance_chain(cur, width, height, vib);
-            cur = !cur;
-            flips += 1;
-        }
-
-        // Stage 4 — Wheel sat/bri.
-        let lift_sat = params.lift_sat.unwrap_or(0.0);
-        let lift_bri = params.lift_bri.unwrap_or(0.0);
-        let gamma_sat = params.gamma_sat.unwrap_or(0.0);
-        let gamma_bri = params.gamma_bri.unwrap_or(0.0);
-        let gain_sat = params.gain_sat.unwrap_or(0.0);
-        let gain_bri = params.gain_bri.unwrap_or(0.0);
-        let offset_sat = params.offset_sat.unwrap_or(0.0);
-        let offset_bri = params.offset_bri.unwrap_or(0.0);
-        let satbri_active = lift_sat != 0.0 || lift_bri != 0.0
-            || gamma_sat != 0.0 || gamma_bri != 0.0
-            || gain_sat != 0.0 || gain_bri != 0.0
-            || offset_sat != 0.0 || offset_bri != 0.0;
-        if satbri_active {
-            self.gpu.as_mut().unwrap().apply_wheel_sat_bri_chain(
-                cur, width, height,
-                lift_sat, lift_bri, gamma_sat, gamma_bri,
-                gain_sat, gain_bri, offset_sat, offset_bri,
-            );
-            cur = !cur;
-            flips += 1;
-        }
-
-        // Stage 5 — RGB curves.
-        if let Some(curves) = params.curves.as_ref() {
-            if !is_curves_identity(curves) {
-                let luts = self
-                    .curve_lut_cache
-                    .get(&node_id)
-                    .cloned()
-                    .unwrap_or_else(|| Arc::new(build_curve_luts(curves)));
-                let mut lut_data = [0.0f32; 1024];
-                for (i, &v) in luts.master.iter().enumerate().take(256) {
-                    lut_data[i] = v as f32 / 255.0;
-                }
-                for (i, &v) in luts.red.iter().enumerate().take(256) {
-                    lut_data[256 + i] = v as f32 / 255.0;
-                }
-                for (i, &v) in luts.green.iter().enumerate().take(256) {
-                    lut_data[512 + i] = v as f32 / 255.0;
-                }
-                for (i, &v) in luts.blue.iter().enumerate().take(256) {
-                    lut_data[768 + i] = v as f32 / 255.0;
-                }
-                let preserve_luma = params.curves_preserve_luma.unwrap_or(false);
-                let mix = params.curves_mix.unwrap_or(1.0);
-                self.gpu.as_mut().unwrap().apply_rgb_curves_chain(
-                    cur, width, height,
-                    &lut_data, preserve_luma, mix,
-                );
+        for stage in &stages {
+            let f = stage.dispatch(gpu, cur, width, height);
+            if f % 2 == 1 {
                 cur = !cur;
-                flips += 1;
             }
+            flips += f;
         }
-
-        // Stage 6 — Hue/Sat curves.
-        if let Some(huesat) = params.huesat.as_ref() {
-            if !huesat.is_all_identity() {
-                let lut_data = build_huesat_lut_data(huesat);
-                let mix = params.huesat_mix.unwrap_or(1.0);
-                self.gpu.as_mut().unwrap()
-                    .apply_huesat_chain(cur, width, height, mix, &lut_data);
-                cur = !cur;
-                flips += 1;
-            }
-        }
-
-        // Stage 7 — Color warper.
-        if let Some(warper) = params.warper_params.as_ref() {
-            if !warper.is_identity() {
-                self.gpu.as_mut().unwrap().apply_color_warper_chain(
-                    cur, width, height,
-                    &warper.hue_shifts, &warper.sat_shifts,
-                );
-                cur = !cur;
-                flips += 1;
-            }
-        }
-
-        let _ = cur;  // last-cur not used; only flip count matters
         if flips == 0 { None } else { Some(flips) }
     }
 
@@ -2316,13 +2371,12 @@ impl GraphExecutor {
                             primary_input.to_vec(), width, height,
                             exp, 0.0, 1.0, NO_WHITE_BALANCE,
                             0.0, 0.0, 0.0, 0.0,
-                            (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0),
+                            (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), None,
                             0.0, 1.0,
                         )
                     } else {
-                        let mut frame = primary_input.to_vec();
-                        klipp_color::linear::apply_exposure(&mut frame, exp);
-                        frame
+                        let g = klipp_effects::cpu_grade::ColorGrade { exposure: exp, ..identity_grade(self.working_colorspace) };
+                        run_stages_cpu(&[GradeStage::Grade(g)], primary_input, width, height)
                     }
                 } else {
                     primary_input.to_vec()
@@ -2339,13 +2393,12 @@ impl GraphExecutor {
                                 primary_input.to_vec(), width, height,
                                 0.0, con, 1.0, NO_WHITE_BALANCE,
                                 0.0, 0.0, 0.0, 0.0,
-                                (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0),
+                                (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), None,
                                 0.0, 1.0,
                             )
                         } else {
-                            let mut f = primary_input.to_vec();
-                            klipp_color::linear::apply_contrast(&mut f, con);
-                            f
+                            let g = klipp_effects::cpu_grade::ColorGrade { contrast: con, ..identity_grade(self.working_colorspace) };
+                            run_stages_cpu(&[GradeStage::Grade(g)], primary_input, width, height)
                         }
                     } else {
                         primary_input.to_vec()
@@ -2354,9 +2407,7 @@ impl GraphExecutor {
                         if let Some(gpu) = &mut self.gpu {
                             gpu.apply_clarity_gpu(frame, width, height, clarity)
                         } else {
-                            let mut f = frame;
-                            klipp_color::linear::apply_clarity_ws(&mut f, width, height, clarity, self.working_colorspace);
-                            f
+                            run_stages_cpu(&[GradeStage::Clarity(clarity)], &frame, width, height)
                         }
                     } else {
                         frame
@@ -2376,13 +2427,12 @@ impl GraphExecutor {
                                 primary_input.to_vec(), width, height,
                                 0.0, 0.0, sat, NO_WHITE_BALANCE,
                                 0.0, 0.0, 0.0, 0.0,
-                                (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0),
+                                (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), None,
                                 0.0, 1.0,
                             )
                         } else {
-                            let mut f = primary_input.to_vec();
-                            klipp_color::linear::apply_saturation_ws(&mut f, sat, self.working_colorspace);
-                            f
+                            let g = klipp_effects::cpu_grade::ColorGrade { saturation: sat, ..identity_grade(self.working_colorspace) };
+                            run_stages_cpu(&[GradeStage::Grade(g)], primary_input, width, height)
                         }
                     } else {
                         primary_input.to_vec()
@@ -2391,9 +2441,7 @@ impl GraphExecutor {
                         if let Some(gpu) = &mut self.gpu {
                             gpu.apply_vibrance_gpu(frame, width, height, vib)
                         } else {
-                            let mut f = frame;
-                            klipp_color::linear::apply_vibrance_ws(&mut f, vib, self.working_colorspace);
-                            f
+                            run_stages_cpu(&[GradeStage::Vibrance(vib)], &frame, width, height)
                         }
                     } else {
                         frame
@@ -2414,13 +2462,12 @@ impl GraphExecutor {
                             primary_input.to_vec(), width, height,
                             0.0, 0.0, 1.0, NO_WHITE_BALANCE,
                             hi, sh, wh, bl,
-                            (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0),
+                            (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), None,
                             0.0, 1.0,
                         )
                     } else {
-                        let mut frame = primary_input.to_vec();
-                        klipp_color::linear::apply_tone_controls_ws(&mut frame, hi, sh, wh, bl, self.working_colorspace);
-                        frame
+                        let g = klipp_effects::cpu_grade::ColorGrade { highlights: hi, shadows: sh, whites: wh, blacks: bl, ..identity_grade(self.working_colorspace) };
+                        run_stages_cpu(&[GradeStage::Grade(g)], primary_input, width, height)
                     }
                 } else {
                     primary_input.to_vec()
@@ -2428,65 +2475,17 @@ impl GraphExecutor {
             }
 
             NodeKind::ColorWheels => {
-                let log_mode = params.wheels_log_mode.unwrap_or(false);
-                if log_mode {
-                    // HDR Log wheels: Low/Mid/High with log-space tonal weighting
-                    let low = klipp_color::wheel_offset_to_rgb(
-                        params.log_low_x.unwrap_or(0.0),
-                        params.log_low_y.unwrap_or(0.0),
-                        params.log_low_master.unwrap_or(0.0),
-                    );
-                    let mid = klipp_color::wheel_offset_to_rgb(
-                        params.log_mid_x.unwrap_or(0.0),
-                        params.log_mid_y.unwrap_or(0.0),
-                        params.log_mid_master.unwrap_or(0.0),
-                    );
-                    let high = klipp_color::wheel_offset_to_rgb(
-                        params.log_high_x.unwrap_or(0.0),
-                        params.log_high_y.unwrap_or(0.0),
-                        params.log_high_master.unwrap_or(0.0),
-                    );
-                    let mut frame = primary_input.to_vec();
-                    klipp_color::linear::apply_log_wheels_ws(&mut frame, low, mid, high, self.working_colorspace);
-                    frame
+                let grade = self.color_wheels_grade(params);
+                if let Some(gpu) = &mut self.gpu {
+                    gpu.apply_color_grade(
+                        primary_input.to_vec(), width, height,
+                        0.0, 0.0, 1.0, NO_WHITE_BALANCE,
+                        0.0, 0.0, 0.0, 0.0,
+                        grade.lift, grade.gamma, grade.gain, grade.offset, grade.log_wheels,
+                        0.0, 1.0,
+                    )
                 } else {
-                    // Linear wheels: Lift/Gamma/Gain/Offset (traditional)
-                    let lift = klipp_color::wheel_offset_to_rgb(
-                        params.lift_x.unwrap_or(0.0),
-                        params.lift_y.unwrap_or(0.0),
-                        params.lift_master.unwrap_or(0.0),
-                    );
-                    let gamma = klipp_color::wheel_offset_to_rgb(
-                        params.gamma_x.unwrap_or(0.0),
-                        params.gamma_y.unwrap_or(0.0),
-                        params.gamma_master.unwrap_or(0.0),
-                    );
-                    let gain = klipp_color::wheel_offset_to_rgb(
-                        params.gain_x.unwrap_or(0.0),
-                        params.gain_y.unwrap_or(0.0),
-                        params.gain_master.unwrap_or(0.0),
-                    );
-                    let offset = klipp_color::wheel_offset_to_rgb(
-                        params.offset_x.unwrap_or(0.0),
-                        params.offset_y.unwrap_or(0.0),
-                        params.offset_master.unwrap_or(0.0),
-                    );
-                    // GPU path: SHADER_COLOR_GRADE applies wheels in a single dispatch
-                    if let Some(gpu) = &mut self.gpu {
-                        gpu.apply_color_grade(
-                            primary_input.to_vec(), width, height,
-                            0.0, 0.0, 1.0, NO_WHITE_BALANCE,
-                            0.0, 0.0, 0.0, 0.0,
-                            lift, gamma, gain, offset,
-                            0.0, 1.0,
-                        )
-                    } else {
-                        let mut frame = primary_input.to_vec();
-                        klipp_color::linear::apply_lift_gamma_gain_offset_ws(
-                            &mut frame, lift, gamma, gain, offset, self.working_colorspace,
-                        );
-                        frame
-                    }
+                    run_stages_cpu(&[GradeStage::Grade(grade)], primary_input, width, height)
                 }
             }
 
@@ -2505,11 +2504,7 @@ impl GraphExecutor {
                         ls, lb, gs, gb, gas, gab, os, ob,
                     )
                 } else {
-                    let mut frame = primary_input.to_vec();
-                    klipp_color::linear::apply_wheel_sat_bri_ws(
-                        &mut frame, ls, lb, gs, gb, gas, gab, os, ob, self.working_colorspace,
-                    );
-                    frame
+                    run_stages_cpu(&[GradeStage::WheelSatBri([ls, lb, gs, gb, gas, gab, os, ob])], primary_input, width, height)
                 }
             }
 
@@ -2530,42 +2525,15 @@ impl GraphExecutor {
                     let preserve_luma = params.curves_preserve_luma.unwrap_or(false);
                     let mix = params.curves_mix.unwrap_or(1.0);
 
+                    let lut_data = curve_lut_data(&luts);
                     if let Some(gpu) = &mut self.gpu {
-                        let mut lut_data = [0.0f32; 1024];
-                        for (i, &v) in luts.master.iter().enumerate().take(256) {
-                            lut_data[i] = v as f32 / 255.0;
-                        }
-                        for (i, &v) in luts.red.iter().enumerate().take(256) {
-                            lut_data[256 + i] = v as f32 / 255.0;
-                        }
-                        for (i, &v) in luts.green.iter().enumerate().take(256) {
-                            lut_data[512 + i] = v as f32 / 255.0;
-                        }
-                        for (i, &v) in luts.blue.iter().enumerate().take(256) {
-                            lut_data[768 + i] = v as f32 / 255.0;
-                        }
                         gpu.apply_rgb_curves_gpu(
                             primary_input.to_vec(), width, height,
                             &lut_data, preserve_luma, mix,
                         )
                     } else {
-                        // CPU fallback: curves/luma/mix helpers still speak u8. Bracket locally.
-                        let primary_u8 = linear_rgba_to_u8(primary_input);
-                        let mut frame_u8 = primary_u8.clone();
-                        klipp_color::curves::apply_curves(
-                            &mut frame_u8,
-                            &luts.master,
-                            &luts.red,
-                            &luts.green,
-                            &luts.blue,
-                        );
-                        if preserve_luma {
-                            apply_preserve_luma(&mut frame_u8, &primary_u8);
-                        }
-                        if mix < 0.999 {
-                            klipp_color::apply_global_mix(&mut frame_u8, &primary_u8, mix);
-                        }
-                        u8_rgba_to_linear(&frame_u8)
+                        let stage = GradeStage::Curves { lut: Box::new(lut_data), preserve_luma, mix };
+                        run_stages_cpu(&[stage], primary_input, width, height)
                     }
                 } else {
                     primary_input.to_vec()
@@ -2576,15 +2544,13 @@ impl GraphExecutor {
                 if let Some(huesat) = &params.huesat {
                     if !huesat.is_all_identity() {
                         let mix = params.huesat_mix.unwrap_or(1.0);
+                        let lut_data = build_huesat_lut_data(huesat);
+                        let active = huesat_active(huesat);
                         if let Some(gpu) = &mut self.gpu {
-                            let lut_data = build_huesat_lut_data(huesat);
-                            gpu.apply_huesat_gpu(primary_input.to_vec(), width, height, mix, &lut_data)
+                            gpu.apply_huesat_gpu(primary_input.to_vec(), width, height, mix, &lut_data, active)
                         } else {
-                            // CPU fallback: apply_huesat_curves still speaks u8.
-                            let primary_u8 = linear_rgba_to_u8(primary_input);
-                            let mut frame_u8 = primary_u8;
-                            klipp_color::huesat::apply_huesat_curves(&mut frame_u8, huesat, mix);
-                            u8_rgba_to_linear(&frame_u8)
+                            let stage = GradeStage::HueSat { lut: Box::new(lut_data), mix, active };
+                            run_stages_cpu(&[stage], primary_input, width, height)
                         }
                     } else {
                         primary_input.to_vec()
@@ -2606,17 +2572,8 @@ impl GraphExecutor {
                         white_balance(temp, tint, self.working_colorspace), hue, mix,
                     )
                 } else {
-                    let original = primary_input.to_vec();
-                    let mut frame = original.clone();
-                    if temp != 0.0 || tint != 0.0 {
-                        klipp_color::linear::apply_temperature_tint(&mut frame, temp, tint, self.working_colorspace);
-                    }
-                    if hue.abs() > 0.01 {
-                        klipp_color::linear::apply_hue_rotation(&mut frame, hue);
-                    }
-                    if mix < 0.999 {
-                        klipp_color::linear::apply_global_mix(&mut frame, &original, mix);
-                    }
+                    let mut frame = primary_input.to_vec();
+                    klipp_effects::cpu_grade::color_balance(&mut frame, white_balance(temp, tint, self.working_colorspace), hue, mix);
                     frame
                 }
             }
@@ -3225,19 +3182,17 @@ impl GraphExecutor {
                         primary_input.to_vec(), width, height,
                         s.exposure, 0.0, s.saturation, white_balance(s.temperature, s.tint, self.working_colorspace),
                         0.0, 0.0, 0.0, 0.0,
-                        (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0),
+                        (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), None,
                         0.0, 1.0,
                     )
                 } else {
-                    // CPU fallback — no equivalent of the unified
-                    // shader on CPU yet, so fall through to the
-                    // closest analogue (linear ops applied in the
-                    // same order the GPU shader uses).
-                    let mut frame = primary_input.to_vec();
-                    klipp_color::linear::apply_exposure(&mut frame, s.exposure);
-                    klipp_color::linear::apply_temperature_tint(&mut frame, s.temperature, s.tint, self.working_colorspace);
-                    klipp_color::linear::apply_saturation_ws(&mut frame, s.saturation, self.working_colorspace);
-                    frame
+                    let g = klipp_effects::cpu_grade::ColorGrade {
+                        exposure: s.exposure,
+                        saturation: s.saturation,
+                        white_balance: white_balance(s.temperature, s.tint, self.working_colorspace),
+                        ..identity_grade(self.working_colorspace)
+                    };
+                    run_stages_cpu(&[GradeStage::Grade(g)], primary_input, width, height)
                 }
             }
 
@@ -3251,11 +3206,8 @@ impl GraphExecutor {
                         &warper.hue_shifts, &warper.sat_shifts,
                     )
                 } else {
-                    // CPU fallback: klipp_color::apply_color_warper speaks u8.
-                    let primary_u8 = linear_rgba_to_u8(primary_input);
-                    let mut frame_u8 = primary_u8;
-                    klipp_color::apply_color_warper(&mut frame_u8, width, height, &warper);
-                    u8_rgba_to_linear(&frame_u8)
+                    let stage = GradeStage::Warper { hue: warper.hue_shifts, sat: warper.sat_shifts };
+                    run_stages_cpu(&[stage], primary_input, width, height)
                 }
             }
 
@@ -3286,161 +3238,13 @@ impl GraphExecutor {
             }
 
             NodeKind::Corrector => {
-                // CPU fallback for the Corrector. The GPU chain path
-                // covers the common case; this arm runs only when the
-                // GPU pipeline is unavailable OR the chain bailed
-                // mid-grade. Same canonical stage order as the GPU
-                // path so visual results stay equivalent.
+                // The CPU twins of the GPU chain's stages, in its order:
+                // without a GPU, or when the chain cannot take the node
+                // (a node whose thumbnail the node editor shows).
                 if !corrector_has_active_stage(params) {
                     return primary_input.to_vec();
                 }
-                let mut frame = primary_input.to_vec();
-                let exp = params.exposure.unwrap_or(0.0);
-                if exp != 0.0 {
-                    klipp_color::linear::apply_exposure(&mut frame, exp);
-                }
-                let con = params.contrast.unwrap_or(0.0);
-                if con != 0.0 {
-                    klipp_color::linear::apply_contrast(&mut frame, con);
-                }
-                let clarity = params.clarity.unwrap_or(0.0);
-                if clarity != 0.0 {
-                    klipp_color::linear::apply_clarity_ws(&mut frame, width, height, clarity, self.working_colorspace);
-                }
-                let sat = params.saturation.unwrap_or(1.0);
-                if (sat - 1.0).abs() > f32::EPSILON {
-                    klipp_color::linear::apply_saturation_ws(&mut frame, sat, self.working_colorspace);
-                }
-                let vib = params.vibrance.unwrap_or(0.0);
-                if vib != 0.0 {
-                    klipp_color::linear::apply_vibrance_ws(&mut frame, vib, self.working_colorspace);
-                }
-                let hi = params.highlights.unwrap_or(0.0);
-                let sh = params.shadows.unwrap_or(0.0);
-                let wh = params.whites.unwrap_or(0.0);
-                let bl = params.blacks.unwrap_or(0.0);
-                if hi != 0.0 || sh != 0.0 || wh != 0.0 || bl != 0.0 {
-                    klipp_color::linear::apply_tone_controls_ws(&mut frame, hi, sh, wh, bl, self.working_colorspace);
-                }
-                let log_mode = params.wheels_log_mode.unwrap_or(false);
-                if log_mode {
-                    let low = klipp_color::wheel_offset_to_rgb(
-                        params.log_low_x.unwrap_or(0.0),
-                        params.log_low_y.unwrap_or(0.0),
-                        params.log_low_master.unwrap_or(0.0),
-                    );
-                    let mid = klipp_color::wheel_offset_to_rgb(
-                        params.log_mid_x.unwrap_or(0.0),
-                        params.log_mid_y.unwrap_or(0.0),
-                        params.log_mid_master.unwrap_or(0.0),
-                    );
-                    let high = klipp_color::wheel_offset_to_rgb(
-                        params.log_high_x.unwrap_or(0.0),
-                        params.log_high_y.unwrap_or(0.0),
-                        params.log_high_master.unwrap_or(0.0),
-                    );
-                    klipp_color::linear::apply_log_wheels_ws(&mut frame, low, mid, high, self.working_colorspace);
-                } else {
-                    let lift = klipp_color::wheel_offset_to_rgb(
-                        params.lift_x.unwrap_or(0.0),
-                        params.lift_y.unwrap_or(0.0),
-                        params.lift_master.unwrap_or(0.0),
-                    );
-                    let gamma = klipp_color::wheel_offset_to_rgb(
-                        params.gamma_x.unwrap_or(0.0),
-                        params.gamma_y.unwrap_or(0.0),
-                        params.gamma_master.unwrap_or(0.0),
-                    );
-                    let gain = klipp_color::wheel_offset_to_rgb(
-                        params.gain_x.unwrap_or(0.0),
-                        params.gain_y.unwrap_or(0.0),
-                        params.gain_master.unwrap_or(0.0),
-                    );
-                    let offset = klipp_color::wheel_offset_to_rgb(
-                        params.offset_x.unwrap_or(0.0),
-                        params.offset_y.unwrap_or(0.0),
-                        params.offset_master.unwrap_or(0.0),
-                    );
-                    if lift != (0.0, 0.0, 0.0) || gamma != (0.0, 0.0, 0.0)
-                        || gain != (0.0, 0.0, 0.0) || offset != (0.0, 0.0, 0.0)
-                    {
-                        klipp_color::linear::apply_lift_gamma_gain_offset_ws(
-                            &mut frame, lift, gamma, gain, offset, self.working_colorspace,
-                        );
-                    }
-                }
-                let lift_sat = params.lift_sat.unwrap_or(0.0);
-                let lift_bri = params.lift_bri.unwrap_or(0.0);
-                let gamma_sat = params.gamma_sat.unwrap_or(0.0);
-                let gamma_bri = params.gamma_bri.unwrap_or(0.0);
-                let gain_sat = params.gain_sat.unwrap_or(0.0);
-                let gain_bri = params.gain_bri.unwrap_or(0.0);
-                let offset_sat = params.offset_sat.unwrap_or(0.0);
-                let offset_bri = params.offset_bri.unwrap_or(0.0);
-                if lift_sat != 0.0 || lift_bri != 0.0
-                    || gamma_sat != 0.0 || gamma_bri != 0.0
-                    || gain_sat != 0.0 || gain_bri != 0.0
-                    || offset_sat != 0.0 || offset_bri != 0.0
-                {
-                    klipp_color::linear::apply_wheel_sat_bri_ws(
-                        &mut frame,
-                        lift_sat, lift_bri, gamma_sat, gamma_bri,
-                        gain_sat, gain_bri, offset_sat, offset_bri,
-                        self.working_colorspace,
-                    );
-                }
-                let temp = params.temperature.unwrap_or(0.0);
-                let tint = params.tint.unwrap_or(0.0);
-                if temp != 0.0 || tint != 0.0 {
-                    klipp_color::linear::apply_temperature_tint(&mut frame, temp, tint, self.working_colorspace);
-                }
-                let hue = params.hue.unwrap_or(0.0);
-                if hue != 0.0 {
-                    klipp_color::linear::apply_hue_rotation(&mut frame, hue);
-                }
-                // Curves + hue/sat curves + warper still bracket through
-                // u8 — the linear-light variants don't exist yet. Same
-                // bracket the standalone nodes use.
-                if let Some(curves) = params.curves.as_ref() {
-                    if !is_curves_identity(curves) {
-                        let preserve_luma = params.curves_preserve_luma.unwrap_or(false);
-                        let mix = params.curves_mix.unwrap_or(1.0);
-                        let primary_u8 = linear_rgba_to_u8(&frame);
-                        let mut frame_u8 = primary_u8.clone();
-                        let luts = build_curve_luts(curves);
-                        klipp_color::curves::apply_curves(
-                            &mut frame_u8,
-                            &luts.master, &luts.red, &luts.green, &luts.blue,
-                        );
-                        if preserve_luma {
-                            apply_preserve_luma(&mut frame_u8, &primary_u8);
-                        }
-                        if mix < 0.999 {
-                            klipp_color::apply_global_mix(&mut frame_u8, &primary_u8, mix);
-                        }
-                        frame = u8_rgba_to_linear(&frame_u8);
-                    }
-                }
-                if let Some(huesat) = params.huesat.as_ref() {
-                    if !huesat.is_all_identity() {
-                        let mix = params.huesat_mix.unwrap_or(1.0);
-                        let mut frame_u8 = linear_rgba_to_u8(&frame);
-                        klipp_color::huesat::apply_huesat_curves(&mut frame_u8, huesat, mix);
-                        frame = u8_rgba_to_linear(&frame_u8);
-                    }
-                }
-                if let Some(warper) = params.warper_params.as_ref() {
-                    if !warper.is_identity() {
-                        let mut frame_u8 = linear_rgba_to_u8(&frame);
-                        klipp_color::apply_color_warper(&mut frame_u8, width, height, warper);
-                        frame = u8_rgba_to_linear(&frame_u8);
-                    }
-                }
-                let global_mix = params.global_mix.unwrap_or(1.0);
-                if (global_mix - 1.0).abs() > f32::EPSILON {
-                    klipp_color::linear::apply_global_mix(&mut frame, primary_input, global_mix);
-                }
-                frame
+                run_stages_cpu(&self.corrector_stages(node_id, params), primary_input, width, height)
             }
 
             // LayerMixer is handled in the dispatch loop before
@@ -3647,6 +3451,7 @@ fn corrector_has_active_stage(p: &NodeParams) -> bool {
         || p.curves.as_ref().map_or(false, |c| !is_curves_identity(c))
         || p.huesat.as_ref().map_or(false, |h| !h.is_all_identity())
         || p.warper_params.as_ref().map_or(false, |w| !w.is_identity())
+        || log_wheels(p).is_some()
 }
 
 /// Convert a klipp_core::Mask to a GpuMaskDef. Every shape variant
@@ -3675,20 +3480,6 @@ fn build_curve_luts(curves: &klipp_core::CurveSet) -> CurveLuts {
         red: klipp_color::curves::build_curve_lut(&curves.red),
         green: klipp_color::curves::build_curve_lut(&curves.green),
         blue: klipp_color::curves::build_curve_lut(&curves.blue),
-    }
-}
-
-/// Restore original luminance after curve application.
-fn apply_preserve_luma(frame: &mut [u8], original: &[u8]) {
-    for (g, o) in frame.chunks_exact_mut(4).zip(original.chunks_exact(4)) {
-        let luma_before = 0.2126 * o[0] as f32 + 0.7152 * o[1] as f32 + 0.0722 * o[2] as f32;
-        let luma_after = 0.2126 * g[0] as f32 + 0.7152 * g[1] as f32 + 0.0722 * g[2] as f32;
-        if luma_after > 0.5 {
-            let ratio = luma_before / luma_after;
-            g[0] = (g[0] as f32 * ratio).clamp(0.0, 255.0) as u8;
-            g[1] = (g[1] as f32 * ratio).clamp(0.0, 255.0) as u8;
-            g[2] = (g[2] as f32 * ratio).clamp(0.0, 255.0) as u8;
-        }
     }
 }
 

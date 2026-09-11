@@ -363,6 +363,8 @@ impl NodeParams {
             && self.log_format.is_none()
             && self.qualifier.is_none()
             && self.luma_key.is_none()
+            && self.difference_key.is_none()
+            && self.color_match.as_ref().map_or(true, |m| m.is_identity())
             && self.soft_clip.is_none()
             && self.masks.is_none()
             && self.lut_path.is_none()
@@ -641,6 +643,17 @@ impl NodeKeyframeTrack {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A Color Match node holding a match is not "default": default nodes
+    /// are bypassed, and one that ignored its match never ran.
+    #[test]
+    fn a_colour_match_is_not_default() {
+        let mut p = NodeParams::default();
+        p.color_match = Some(klipp_core::ColorMatchSettings { exposure: 0.0, temperature: 0.0, tint: 0.0, saturation: 1.0 });
+        assert!(p.is_default(), "an identity match changes nothing");
+        p.color_match = Some(klipp_core::ColorMatchSettings { exposure: 0.3, temperature: 20.0, tint: 0.0, saturation: 1.0 });
+        assert!(!p.is_default());
+    }
 
     /// `set_param("lut_input_space", n)` decodes `n` as a u8 and
     /// resolves it via `WorkingColorspace::from_u8`. In-range values

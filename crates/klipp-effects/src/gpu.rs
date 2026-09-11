@@ -217,6 +217,10 @@ pub struct GpuEffectsPipeline {
     /// MaskCutout → Output chain stay GPU-resident through the cutout
     /// instead of bouncing to CPU for the multiply.
     mask_cutout_pipeline: wgpu::ComputePipeline,
+    /// A grade's result mixed with the picture it started from (the
+    /// Corrector's mix over all its stages), and that picture's copy.
+    grade_mix_pipeline: wgpu::ComputePipeline,
+    grade_mix_src: Option<wgpu::Buffer>,
     // Compute pipeline — qualifier (secondary color correction)
     qualifier_pipeline: wgpu::ComputePipeline,
     // Compute pipeline — standalone luminance-threshold key (matte
@@ -796,6 +800,7 @@ impl GpuEffectsPipeline {
         let clarity_blur_v_pipeline = create_pipeline(&device, &pipeline_layout, "clarity_blur_v", SHADER_CLARITY_BLUR_V);
         let clarity_apply_pipeline = create_pipeline(&device, &huesat_pl, "clarity_apply", SHADER_CLARITY_APPLY);
         let mask_cutout_pipeline = create_pipeline(&device, &huesat_pl, "mask_cutout", SHADER_MASK_CUTOUT);
+        let grade_mix_pipeline = create_pipeline(&device, &huesat_pl, "grade_mix", SHADER_GRADE_MIX);
         let mask_pipeline = create_pipeline(&device, &mask_v2_pl, "mask_v2", SHADER_MASK_V2);
         let color_balance_pipeline = create_pipeline(&device, &pipeline_layout, "color_balance", SHADER_COLOR_BALANCE);
         let wheel_sat_bri_pipeline = create_pipeline(&device, &pipeline_layout, "wheel_sat_bri", SHADER_WHEEL_SAT_BRI);
@@ -955,6 +960,8 @@ impl GpuEffectsPipeline {
             clarity_blur_v_pipeline,
             clarity_apply_pipeline,
             mask_cutout_pipeline,
+            grade_mix_pipeline,
+            grade_mix_src: None,
             mask_pipeline,
             color_balance_pipeline,
             wheel_sat_bri_pipeline,
@@ -1267,6 +1274,7 @@ impl GpuEffectsPipeline {
         gamma: (f32, f32, f32),
         gain: (f32, f32, f32),
         offset: (f32, f32, f32),
+        log_wheels: Option<[(f32, f32, f32); 3]>,
         hue: f32,
         global_mix: f32,
     ) -> Vec<f32> {
@@ -1315,6 +1323,8 @@ impl GpuEffectsPipeline {
             luma_yg: self.luma_coefs[1],
             luma_yb: self.luma_coefs[2],
             _pad1: 0,
+            log_mode: log_wheels.is_some() as u32,
+            log_wheels: flat_wheels(log_wheels),
         });
         self.dispatch(&self.color_grade_pipeline, buf_a, buf_b, workgroups);
 
@@ -2289,6 +2299,7 @@ impl GpuEffectsPipeline {
         height: u32,
         mix: f32,
         lut_data: &[f32; 1536], // 6 × 256
+        active: u32,
     ) -> Vec<f32> {
         if self.is_device_lost() {
             return linear_rgba;
@@ -2309,7 +2320,7 @@ impl GpuEffectsPipeline {
             width,
             height,
             mix,
-            _pad0: 0,
+            active,
         });
 
         let pixel_count = width * height;
@@ -2783,6 +2794,7 @@ impl GpuEffectsPipeline {
         gamma: (f32, f32, f32),
         gain: (f32, f32, f32),
         offset: (f32, f32, f32),
+        log_wheels: Option<[(f32, f32, f32); 3]>,
         hue: f32,
         global_mix: f32,
     ) {
@@ -2802,6 +2814,8 @@ impl GpuEffectsPipeline {
             luma_yg: self.luma_coefs[1],
             luma_yb: self.luma_coefs[2],
             _pad1: 0,
+            log_mode: log_wheels.is_some() as u32,
+            log_wheels: flat_wheels(log_wheels),
         });
         let workgroups = (width * height).div_ceil(WORKGROUP_SIZE);
         // Disjoint-field borrow: read from chain_bg_3binding while
@@ -3102,6 +3116,54 @@ impl GpuEffectsPipeline {
         Self::record_compute_dispatch(enc, &self.mask_cutout_pipeline, bind_group, workgroups);
     }
 
+    /// Keep a copy of the chain's current picture (in the slot `in_is_a`
+    /// names) for [`Self::apply_mix_with_kept_chain`]: a node that mixes
+    /// its result with its input over several dispatches.
+    pub fn keep_chain_input(&mut self, in_is_a: bool, width: u32, height: u32) {
+        if self.is_device_lost() {
+            return;
+        }
+        let size = (width * height * 16) as u64;
+        if self.grade_mix_src.as_ref().map_or(true, |b| b.size() < size) {
+            self.grade_mix_src = Some(self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("grade_mix_src"),
+                size,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            }));
+        }
+        let src = if in_is_a { self.buf_a.as_ref() } else { self.buf_b.as_ref() }.expect(Self::CHAIN_BG_EXPECT);
+        let dst = self.grade_mix_src.as_ref().unwrap();
+        let enc = self.chain_encoder.as_mut().expect(Self::CHAIN_ENCODER_EXPECT);
+        enc.copy_buffer_to_buffer(src, 0, dst, 0, size);
+    }
+
+    /// Dispatch-only mix of the chain's picture with the one
+    /// [`Self::keep_chain_input`] kept: `kept + (current - kept) * mix`.
+    pub fn apply_mix_with_kept_chain(&mut self, in_is_a: bool, width: u32, height: u32, mix: f32) {
+        if self.is_device_lost() {
+            return;
+        }
+        let slot = self.next_params_slot();
+        self.write_chain_params(slot, &GpuGradeMixParams { width, height, mix, _pad: 0 });
+        let (a, b) = (self.buf_a.as_ref().expect(Self::CHAIN_BG_EXPECT), self.buf_b.as_ref().expect(Self::CHAIN_BG_EXPECT));
+        let (input, output) = if in_is_a { (a, b) } else { (b, a) };
+        let kept = self.grade_mix_src.as_ref().expect("keep_chain_input first");
+        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("chain_bg_grade_mix"),
+            layout: &self.huesat_bgl,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: input.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: output.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 2, resource: self.params_ring[slot].as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 3, resource: kept.as_entire_binding() },
+            ],
+        });
+        let workgroups = (width * height).div_ceil(WORKGROUP_SIZE);
+        let enc = self.chain_encoder.as_mut().expect(Self::CHAIN_ENCODER_EXPECT);
+        Self::record_compute_dispatch(enc, &self.grade_mix_pipeline, &bind_group, workgroups);
+    }
+
     /// Dispatch-only bilateral denoise pass.
     pub fn apply_denoise_chain(
         &mut self,
@@ -3133,13 +3195,14 @@ impl GpuEffectsPipeline {
         height: u32,
         mix: f32,
         lut_data: &[f32; 1536],
+        active: u32,
     ) {
         if self.is_device_lost() {
             return;
         }
         self.queue.write_buffer(&self.huesat_lut_buf, 0, bytemuck::cast_slice(lut_data));
         let slot = self.next_params_slot();
-        self.write_chain_params(slot, &GpuHueSatParams { width, height, mix, _pad0: 0 });
+        self.write_chain_params(slot, &GpuHueSatParams { width, height, mix, active });
         let workgroups = (width * height).div_ceil(WORKGROUP_SIZE);
         let bind_group = self.chain_bg_huesat[slot * 2 + Self::chain_cfg_4b(in_is_a)]
             .as_ref()
@@ -4879,6 +4942,12 @@ struct TransitionParams {
     color_a: f32,
 }
 
+/// Log-mode wheels (low, mid, high) as nine floats; zero when off.
+fn flat_wheels(w: Option<[(f32, f32, f32); 3]>) -> [f32; 9] {
+    let [l, m, h] = w.unwrap_or([(0.0, 0.0, 0.0); 3]);
+    [l.0, l.1, l.2, m.0, m.1, m.2, h.0, h.1, h.2]
+}
+
 /// A 3×3 matrix as nine row-major floats, the layout the shaders read.
 fn flat3(m: [[f32; 3]; 3]) -> [f32; 9] {
     [m[0][0], m[0][1], m[0][2], m[1][0], m[1][1], m[1][2], m[2][0], m[2][1], m[2][2]]
@@ -4923,8 +4992,12 @@ struct GpuColorGradeParams {
     luma_yg: f32,
     luma_yb: f32,
     _pad1: u32,
+    /// Non-zero: log-mode wheels (`log_wheels` = low, mid, high RGB)
+    /// replace lift/gamma/gain/offset.
+    log_mode: u32,
+    log_wheels: [f32; 9],
 }
-// 37 words = 148 bytes (still under 256-byte PARAMS_SIZE)
+// 47 words = 188 bytes (still under 256-byte PARAMS_SIZE)
 
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -4932,7 +5005,8 @@ struct GpuHueSatParams {
     width: u32,
     height: u32,
     mix: f32,
-    _pad0: u32,
+    /// Bit `c` set: curve `c` was edited and applies.
+    active: u32,
 }
 // 4 fields × 4 bytes = 16 bytes
 
@@ -5005,6 +5079,15 @@ struct GpuClarityBlurParams {
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct GpuClarityApplyParams {
     width: u32, height: u32, amount: f32, _pad: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct GpuGradeMixParams {
+    width: u32,
+    height: u32,
+    mix: f32,
+    _pad: u32,
 }
 
 #[repr(C)]
@@ -5483,6 +5566,47 @@ fn enc3(v: vec3<f32>) -> vec3<f32> {
 }
 fn dec3(v: vec3<f32>) -> vec3<f32> {
     return vec3<f32>(srgb_to_linear_component(v.x), srgb_to_linear_component(v.y), srgb_to_linear_component(v.z));
+}
+
+// Hue rotation by `degrees` in HSL, the hue slider's meaning: a colour's
+// HSL hue moves by exactly that much. HSL needs bounded input, so a pixel
+// brighter than 1 is scaled into range and back. Greys are left alone.
+fn hue_rotate_hsl(c: vec3<f32>, degrees: f32) -> vec3<f32> {
+    let magnitude = max(max(max(c.x, c.y), c.z), 1.0);
+    let r = c.x / magnitude;
+    let g = c.y / magnitude;
+    let b = c.z / magnitude;
+    let mx = max(max(r, g), b);
+    let mn = min(min(r, g), b);
+    let delta = mx - mn;
+    let l = (mx + mn) * 0.5;
+    if delta < 0.0001 { return c; }
+    let s = delta / (1.0 - abs(2.0 * l - 1.0));
+    var h: f32;
+    if mx == r {
+        h = ((g - b) / delta) % 6.0;
+        if h < 0.0 { h = h + 6.0; }
+        h = h / 6.0;
+    } else if mx == g {
+        h = ((b - r) / delta + 2.0) / 6.0;
+    } else {
+        h = ((r - g) / delta + 4.0) / 6.0;
+    }
+    h = (h + degrees / 360.0) % 1.0;
+    if h < 0.0 { h = h + 1.0; }
+    let cc = (1.0 - abs(2.0 * l - 1.0)) * s;
+    let x = cc * (1.0 - abs((h * 6.0) % 2.0 - 1.0));
+    let m = l - cc * 0.5;
+    var o: vec3<f32>;
+    switch u32(h * 6.0) {
+        case 0u: { o = vec3<f32>(cc, x, 0.0); }
+        case 1u: { o = vec3<f32>(x, cc, 0.0); }
+        case 2u: { o = vec3<f32>(0.0, cc, x); }
+        case 3u: { o = vec3<f32>(0.0, x, cc); }
+        case 4u: { o = vec3<f32>(x, 0.0, cc); }
+        default: { o = vec3<f32>(cc, 0.0, x); }
+    }
+    return (o + vec3<f32>(m, m, m)) * magnitude;
 }
 "
     };
@@ -7342,6 +7466,10 @@ struct Params {
     luma_yg: f32,
     luma_yb: f32,
     _pad1: u32,
+    log_mode: u32,
+    log_low_r: f32, log_low_g: f32, log_low_b: f32,
+    log_mid_r: f32, log_mid_g: f32, log_mid_b: f32,
+    log_high_r: f32, log_high_g: f32, log_high_b: f32,
 }
 
 @group(0) @binding(0) var<storage, read> input: array<vec4<f32>>;
@@ -7380,15 +7508,26 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     g = g + tone_adj;
     b = b + tone_adj;
 
-    // 3. Lift/Gamma/Gain/Offset colour wheels — band weighting via
-    //    working-space luma.
+    // 3. Colour wheels — band weighting via working-space luma.
+    //    Lift/Gamma/Gain/Offset, or in log mode Low/Mid/High with
+    //    Gaussian weights on log2 luma.
     let luma2 = params.luma_yr * r + params.luma_yg * g + params.luma_yb * b;
-    let lift_w = max(1.0 - luma2, 0.0);
-    let gain_w = max(luma2, 0.0);
-    let gamma_w = max(sin(clamp(luma2, 0.0, 1.0) * 3.14159265), 0.0);
-    r = r + params.lift_r * lift_w + params.gamma_r * gamma_w + params.gain_r * gain_w + params.offset_r;
-    g = g + params.lift_g * lift_w + params.gamma_g * gamma_w + params.gain_g * gain_w + params.offset_g;
-    b = b + params.lift_b * lift_w + params.gamma_b * gamma_w + params.gain_b * gain_w + params.offset_b;
+    if params.log_mode != 0u {
+        let log_luma = (log2(max(luma2, 0.001) + 0.001) + 10.0) / 10.0;
+        let low_w = exp(-((log_luma - 0.15) * (log_luma - 0.15)) / (2.0 * 0.15 * 0.15));
+        let mid_w = exp(-((log_luma - 0.50) * (log_luma - 0.50)) / (2.0 * 0.20 * 0.20));
+        let high_w = exp(-((log_luma - 0.85) * (log_luma - 0.85)) / (2.0 * 0.15 * 0.15));
+        r = r + params.log_low_r * low_w + params.log_mid_r * mid_w + params.log_high_r * high_w;
+        g = g + params.log_low_g * low_w + params.log_mid_g * mid_w + params.log_high_g * high_w;
+        b = b + params.log_low_b * low_w + params.log_mid_b * mid_w + params.log_high_b * high_w;
+    } else {
+        let lift_w = max(1.0 - luma2, 0.0);
+        let gain_w = max(luma2, 0.0);
+        let gamma_w = max(sin(clamp(luma2, 0.0, 1.0) * 3.14159265), 0.0);
+        r = r + params.lift_r * lift_w + params.gamma_r * gamma_w + params.gain_r * gain_w + params.offset_r;
+        g = g + params.lift_g * lift_w + params.gamma_g * gamma_w + params.gain_g * gain_w + params.offset_g;
+        b = b + params.lift_b * lift_w + params.gamma_b * gamma_w + params.gain_b * gain_w + params.offset_b;
+    }
 
     // 4. Contrast — pivots at 0.18 linear mid-grey.
     let cs = 1.0 + params.contrast;
@@ -7412,8 +7551,13 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     g = wb_g;
     b = wb_b;
 
-    // 7. Hue rotation — CPU path handles this (HSL conversion is
-    //    expensive on GPU and UX decision to keep).
+    // 7. Hue rotation, in HSL.
+    if abs(params.hue) >= 0.01 {
+        let rot = hue_rotate_hsl(vec3<f32>(r, g, b), params.hue);
+        r = rot.x;
+        g = rot.y;
+        b = rot.z;
+    }
 
     // 8. Global mix (blend with original).
     r = orig.x + (r - orig.x) * params.global_mix;
@@ -7437,7 +7581,10 @@ struct Params {
     width: u32,
     height: u32,
     mix: f32,
-    _pad0: u32,
+    // Bit c set: curve c was edited. The others are left out: an
+    // unedited curve's LUT is filler, and Sat vs Sat's would set every
+    // saturation to 0.5.
+    curves_on: u32,
 }
 
 @group(0) @binding(0) var<storage, read> input: array<vec4<f32>>;
@@ -7518,31 +7665,43 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     var l = hsl.z;
 
     // Curve 0: Hue vs Hue (0.5 = no change)
-    let hvh = lut_lookup(0u, h);
-    h = (h + (hvh - 0.5) * 2.0) % 1.0;
-    if h < 0.0 { h = h + 1.0; }
+    if (params.curves_on & 1u) != 0u {
+        let hvh = lut_lookup(0u, h);
+        h = (h + (hvh - 0.5) * 2.0) % 1.0;
+        if h < 0.0 { h = h + 1.0; }
+    }
 
     // Curve 1: Hue vs Sat (0.5 = identity)
-    let hvs = lut_lookup(1u, hsl.x);
-    s = clamp(s * hvs * 2.0, 0.0, 1.0);
+    if (params.curves_on & 2u) != 0u {
+        let hvs = lut_lookup(1u, hsl.x);
+        s = clamp(s * hvs * 2.0, 0.0, 1.0);
+    }
 
     // Curve 2: Hue vs Lum (0.5 = no change)
-    let hvl = lut_lookup(2u, hsl.x);
-    l = clamp(l + (hvl - 0.5), 0.0, 1.0);
+    if (params.curves_on & 4u) != 0u {
+        let hvl = lut_lookup(2u, hsl.x);
+        l = clamp(l + (hvl - 0.5), 0.0, 1.0);
+    }
 
     // Curve 3: Lum vs Sat (0.5 = identity)
-    let lvs = lut_lookup(3u, hsl.z);
-    s = clamp(s * lvs * 2.0, 0.0, 1.0);
+    if (params.curves_on & 8u) != 0u {
+        let lvs = lut_lookup(3u, hsl.z);
+        s = clamp(s * lvs * 2.0, 0.0, 1.0);
+    }
 
-    // Curve 4: Sat vs Sat
-    let svs = lut_lookup(4u, hsl.y);
-    s = clamp(svs, 0.0, 1.0);
+    // Curve 4: Sat vs Sat, a mapping of the input saturation
+    if (params.curves_on & 16u) != 0u {
+        let svs = lut_lookup(4u, hsl.y);
+        s = clamp(svs, 0.0, 1.0);
+    }
 
     // Curve 5: Orange vs Sat (targeted at ~30°/360° ≈ 0.083)
-    let ovs = lut_lookup(5u, hsl.y);
-    let orange_dist = min(abs(hsl.x - 0.083), min(abs(hsl.x - 0.083 + 1.0), abs(hsl.x - 0.083 - 1.0)));
-    let weight = clamp(1.0 - orange_dist * 8.0, 0.0, 1.0);
-    s = s + (ovs - s) * weight;
+    if (params.curves_on & 32u) != 0u {
+        let ovs = lut_lookup(5u, hsl.y);
+        let orange_dist = min(abs(hsl.x - 0.083), min(abs(hsl.x - 0.083 + 1.0), abs(hsl.x - 0.083 - 1.0)));
+        let weight = clamp(1.0 - orange_dist * 8.0, 0.0, 1.0);
+        s = s + (ovs - s) * weight;
+    }
 
     let rgb = hsl_to_rgb(h, s, l);
 
@@ -9561,10 +9720,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 "
 );
 
-// Colour balance — temperature / tint additive shifts + optional
-// Rodrigues hue rotation around the luma diagonal. Additive shifts
-// in linear mean "add N units of light to R, subtract from B"
-// rather than "add N units of gamma-encoded byte."
+// Colour balance — temperature / tint as a white-balance matrix, an
+// optional HSL hue rotation (the Corrector's), and a mix with the input.
 const SHADER_COLOR_BALANCE: &str = concat!(
     "
 struct Params {
@@ -9596,18 +9753,12 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     var g = params.wb3 * orig.x + params.wb4 * orig.y + params.wb5 * orig.z;
     var b = params.wb6 * orig.x + params.wb7 * orig.y + params.wb8 * orig.z;
 
-    // Hue rotation in RGB (Rodrigues rotation around (1,1,1)/sqrt(3) axis)
-    if abs(params.hue) > 0.01 {
-        let angle = params.hue * 3.14159265 / 180.0;
-        let cos_a = cos(angle);
-        let sin_a = sin(angle);
-        let k = 1.0 / 3.0;
-        let new_r = r * (cos_a + k * (1.0 - cos_a)) + g * (k * (1.0 - cos_a) - 0.57735 * sin_a) + b * (k * (1.0 - cos_a) + 0.57735 * sin_a);
-        let new_g = r * (k * (1.0 - cos_a) + 0.57735 * sin_a) + g * (cos_a + k * (1.0 - cos_a)) + b * (k * (1.0 - cos_a) - 0.57735 * sin_a);
-        let new_b = r * (k * (1.0 - cos_a) - 0.57735 * sin_a) + g * (k * (1.0 - cos_a) + 0.57735 * sin_a) + b * (cos_a + k * (1.0 - cos_a));
-        r = new_r;
-        g = new_g;
-        b = new_b;
+    // Hue rotation, in HSL (the Corrector's hue, the same maths).
+    if abs(params.hue) >= 0.01 {
+        let rot = hue_rotate_hsl(vec3<f32>(r, g, b), params.hue);
+        r = rot.x;
+        g = rot.y;
+        b = rot.z;
     }
 
     // Global mix
@@ -10182,6 +10333,34 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 "
 );
 
+// Grade mix — a grade's result mixed with the picture it started from,
+// kept in binding 3: the Corrector's mix, over all its stages.
+const SHADER_GRADE_MIX: &str = concat!(
+    "
+struct Params { width: u32, height: u32, mix: f32, _pad: u32, }
+@group(0) @binding(0) var<storage, read> input: array<vec4<f32>>;
+@group(0) @binding(1) var<storage, read_write> output: array<vec4<f32>>;
+@group(0) @binding(2) var<uniform> params: Params;
+@group(0) @binding(3) var<storage, read> kept: array<vec4<f32>>;
+",
+    shader_linear_helpers_wgsl!(),
+    "
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let idx = gid.x;
+    if idx >= params.width * params.height { return; }
+    let p = unpack(input[idx]);
+    let o = unpack(kept[idx]);
+    output[idx] = pack(vec4<f32>(
+        o.x + (p.x - o.x) * params.mix,
+        o.y + (p.y - o.y) * params.mix,
+        o.z + (p.z - o.z) * params.mix,
+        p.w,
+    ));
+}
+"
+);
+
 const SHADER_CLARITY_APPLY: &str = concat!(
     "
 struct Params { width: u32, height: u32, amount: f32, _pad: u32, }
@@ -10341,5 +10520,99 @@ mod bridge_u8_tests {
         let short = vec![0.5f32; 8];
         let out = gpu.linear_rgba_to_u8_gpu(&short, 4, 4);
         assert!(out.is_none(), "short input must return None for caller fallback");
+    }
+}
+
+/// Every compute shader parses and validates, without a GPU. A shader that
+/// does not compile makes `GpuEffectsPipeline::new` return `None`, which the
+/// GPU tests take for "no GPU here" and skip: a broken shader would pass.
+#[cfg(test)]
+mod shader_validation_tests {
+    use super::*;
+
+    #[test]
+    fn every_shader_compiles() {
+        let shaders = [
+        ("SHADER_OPACITY", SHADER_OPACITY),
+        ("SHADER_COLOR_FADE", SHADER_COLOR_FADE),
+        ("SHADER_BLUR_H", SHADER_BLUR_H),
+        ("SHADER_BLUR_V", SHADER_BLUR_V),
+        ("SHADER_SHARPEN", SHADER_SHARPEN),
+        ("SHADER_CROP", SHADER_CROP),
+        ("SHADER_TRANSFORM", SHADER_TRANSFORM),
+        ("SHADER_CHROMA_KEY", SHADER_CHROMA_KEY),
+        ("SHADER_LINEAR_TO_DISPLAY_U8", SHADER_LINEAR_TO_DISPLAY_U8),
+        ("SHADER_LINEAR_TO_U8", SHADER_LINEAR_TO_U8),
+        ("SHADER_U8_TO_LINEAR", SHADER_U8_TO_LINEAR),
+        ("SHADER_TRANSITION", SHADER_TRANSITION),
+        ("SHADER_COLOR_GRADE", SHADER_COLOR_GRADE),
+        ("SHADER_HUESAT", SHADER_HUESAT),
+        ("SHADER_QUALIFIER", SHADER_QUALIFIER),
+        ("SHADER_LUMA_KEY", SHADER_LUMA_KEY),
+        ("SHADER_SOFT_CLIP", SHADER_SOFT_CLIP),
+        ("SHADER_GRAIN", SHADER_GRAIN),
+        ("SHADER_ALPHA_BLUR_H", SHADER_ALPHA_BLUR_H),
+        ("SHADER_ALPHA_BLUR_V", SHADER_ALPHA_BLUR_V),
+        ("SHADER_ALPHA_DILATE", SHADER_ALPHA_DILATE),
+        ("SHADER_BLOOM_THRESHOLD", SHADER_BLOOM_THRESHOLD),
+        ("SHADER_BLOOM_BLEND", SHADER_BLOOM_BLEND),
+        ("SHADER_GLOW_BLEND", SHADER_GLOW_BLEND),
+        ("SHADER_LIGHT_RAYS", SHADER_LIGHT_RAYS),
+        ("SHADER_VIGNETTE", SHADER_VIGNETTE),
+        ("SHADER_LENS_FLARE", SHADER_LENS_FLARE),
+        ("SHADER_ANAMORPHIC_STREAK", SHADER_ANAMORPHIC_STREAK),
+        ("SHADER_FILM_HALATION", SHADER_FILM_HALATION),
+        ("SHADER_LUT3D", SHADER_LUT3D),
+        ("SHADER_INVERT", SHADER_INVERT),
+        ("SHADER_POSTERIZE", SHADER_POSTERIZE),
+        ("SHADER_MOSAIC", SHADER_MOSAIC),
+        ("SHADER_EDGE_DETECT", SHADER_EDGE_DETECT),
+        ("SHADER_CHANNEL_MIXER", SHADER_CHANNEL_MIXER),
+        ("SHADER_DIRECTIONAL_BLUR", SHADER_DIRECTIONAL_BLUR),
+        ("SHADER_EMBOSS", SHADER_EMBOSS),
+        ("SHADER_MIRROR", SHADER_MIRROR),
+        ("SHADER_LENS_DISTORTION", SHADER_LENS_DISTORTION),
+        ("SHADER_DILATE", SHADER_DILATE),
+        ("SHADER_ERODE", SHADER_ERODE),
+        ("SHADER_DENOISE", SHADER_DENOISE),
+        ("SHADER_GAMMA", SHADER_GAMMA),
+        ("SHADER_HSV_ADJUST", SHADER_HSV_ADJUST),
+        ("SHADER_NOISE_GENERATOR", SHADER_NOISE_GENERATOR),
+        ("SHADER_MEDIAN_FILTER", SHADER_MEDIAN_FILTER),
+        ("SHADER_RADIAL_BLUR", SHADER_RADIAL_BLUR),
+        ("SHADER_LEVELS", SHADER_LEVELS),
+        ("SHADER_EQUALIZE", SHADER_EQUALIZE),
+        ("SHADER_LETTERBOX", SHADER_LETTERBOX),
+        ("SHADER_CHROMATIC_ABERRATION", SHADER_CHROMATIC_ABERRATION),
+        ("SHADER_ROLLING_SHUTTER", SHADER_ROLLING_SHUTTER),
+        ("SHADER_STABILIZATION", SHADER_STABILIZATION),
+        ("SHADER_COLOR_BALANCE", SHADER_COLOR_BALANCE),
+        ("SHADER_WHEEL_SAT_BRI", SHADER_WHEEL_SAT_BRI),
+        ("SHADER_RGB_CURVES", SHADER_RGB_CURVES),
+        ("SHADER_MASK_V2", SHADER_MASK_V2),
+        ("SHADER_VIBRANCE", SHADER_VIBRANCE),
+        ("SHADER_COLOR_WARPER", SHADER_COLOR_WARPER),
+        ("SHADER_INPUT_TRANSFORM", SHADER_INPUT_TRANSFORM),
+        ("SHADER_CLARITY_BLUR_H", SHADER_CLARITY_BLUR_H),
+        ("SHADER_CLARITY_BLUR_V", SHADER_CLARITY_BLUR_V),
+        ("SHADER_MASK_CUTOUT", SHADER_MASK_CUTOUT),
+        ("SHADER_GRADE_MIX", SHADER_GRADE_MIX),
+        ("SHADER_CLARITY_APPLY", SHADER_CLARITY_APPLY),
+        ];
+        let mut failures = Vec::new();
+        for (name, src) in shaders {
+            let module = match naga::front::wgsl::parse_str(src) {
+                Ok(m) => m,
+                Err(e) => {
+                    failures.push(format!("{name}: {}", e.emit_to_string(src)));
+                    continue;
+                }
+            };
+            let mut validator = naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::all());
+            if let Err(e) = validator.validate(&module) {
+                failures.push(format!("{name}: {e:?}"));
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
     }
 }

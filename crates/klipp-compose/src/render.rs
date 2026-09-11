@@ -440,10 +440,18 @@ impl Renderer {
         &mut self.titles
     }
 
-    /// Use the GPU for effects and transitions when available (default).
-    /// Off, everything runs on the CPU paths — for tests, and machines
-    /// without a usable GPU.
+    /// Use the GPU for grades, effects and transitions when available
+    /// (default). Off, everything runs on the CPU paths — for tests, and
+    /// machines without a usable GPU. The grade's executor opens its own
+    /// GPU otherwise, so it is replaced along with the effects pipeline.
     pub fn set_gpu_enabled(&mut self, enabled: bool) {
+        if enabled != self.allow_gpu {
+            self.executor = if enabled {
+                klipp_nodes::GraphExecutor::new()
+            } else {
+                klipp_nodes::GraphExecutor::new_cpu_only()
+            };
+        }
         self.allow_gpu = enabled;
         if !enabled {
             self.gpu = None;

@@ -36,6 +36,7 @@
 pub mod aces_rrt_wgsl;
 pub mod blur;
 mod cpu;
+pub mod cpu_grade;
 mod cpu_transition;
 mod wgsl;
 pub use cpu_transition::render_transition_linear;
