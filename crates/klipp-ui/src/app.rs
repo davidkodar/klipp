@@ -1010,12 +1010,24 @@ impl KlippApp {
 
     /// Route queued control-socket commands through `send_commands`, the
     /// same entry point the UI's own widgets use.
+    ///
+    /// A remote client cannot see or answer a modal, so control commands
+    /// never open one: the frame-rate mismatch prompt is suppressed and the
+    /// append goes ahead without changing the project frame rate — the
+    /// prompt's non-destructive choice. (Before this, an MCP append of a
+    /// clip at another frame rate was reported as accepted, then sat behind
+    /// a dialog on the user's screen and never happened.) One command at a
+    /// time, because the append handler consumes the suppression, and the
+    /// flag is cleared afterwards so it cannot leak into the user's next
+    /// drag-and-drop.
     fn drain_control_inbox(&mut self) {
         let Some(inbox) = self.control_inbox.as_ref() else { return };
         let cmds: Vec<AppCommand> = inbox.try_iter().collect();
-        if !cmds.is_empty() {
-            self.send_commands(cmds);
+        for cmd in cmds {
+            self.suppress_fps_prompt = true;
+            self.send_commands(vec![cmd]);
         }
+        self.suppress_fps_prompt = false;
     }
 
     fn drain_events(&mut self, ctx: &egui::Context) {

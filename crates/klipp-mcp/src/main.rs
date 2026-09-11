@@ -404,7 +404,8 @@ fn tool_definitions() -> Vec<Value> {
              json!({ "path": { "type": "string", "description": "Absolute path to a media file" } }),
              vec!["path"]),
         tool("klipp_append_clip",
-             "Append a media pool item to the timeline as a new clip.",
+             "Append a media pool item to the timeline as a new clip. A clip at a different \
+              frame rate from the project is added without changing the project's rate.",
              json!({
                  "media_id": { "type": "string", "description": "From klipp_list_media" },
                  "track": { "type": "integer", "description": "Track index; omit for the default track" },

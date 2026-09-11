@@ -47,7 +47,10 @@ pub enum ControlCommand {
     /// Import a file into the media pool. Asynchronous: the app probes
     /// the file on a worker, so poll `list_media` for the result.
     ImportMedia { path: String },
-    /// Append a pool item to a track as a new clip.
+    /// Append a pool item to a track as a new clip. Never prompts: a clip
+    /// at a different frame rate from the project is added without
+    /// changing the project's rate (a remote client cannot answer the
+    /// dialog the UI would show).
     AppendClip {
         media_id: String,
         #[serde(default)]
