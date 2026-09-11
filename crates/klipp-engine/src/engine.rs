@@ -7571,11 +7571,10 @@ impl PlaybackEngine {
                 // LinearFrame carries linear natively — feed it
                 // straight into post_process_rgba, display-transform
                 // once at the viewer seam.
-                frame.ensure_cpu_data();
-                let gpu_source = frame.gpu_source.clone();
-                let v1_graded_linear = self.post_process_rgba_with_gpu_source(
-                    frame.data, w, h, gpu_source.as_ref(),
-                );
+                if frame.hdr.is_none() {
+                    frame.ensure_cpu_data();
+                }
+                let v1_graded_linear = self.grade_v1_frame(frame, w, h);
                 // Pump overlay decoder queues so any frames the
                 // async decoders have pushed during the V1 wait land
                 // in `overlay_frames` before the composite runs.
@@ -7633,11 +7632,10 @@ impl PlaybackEngine {
         });
         let Some(mut frame) = frame else { return false; };
         let (w, h) = (frame.width, frame.height);
-        frame.ensure_cpu_data();
-        let gpu_source = frame.gpu_source.clone();
-        let v1_graded_linear = self.post_process_rgba_with_gpu_source(
-            frame.data, w, h, gpu_source.as_ref(),
-        );
+        if frame.hdr.is_none() {
+            frame.ensure_cpu_data();
+        }
+        let v1_graded_linear = self.grade_v1_frame(frame, w, h);
         // Pump overlay decoder queues so V2 / other media-overlay
         // frames that arrived during the deferred wait land in
         // `overlay_frames` before the composite runs.
@@ -7730,11 +7728,10 @@ impl PlaybackEngine {
                     dec.stop_detached();
                 }
                 let (w, h) = (frame.width, frame.height);
-                frame.ensure_cpu_data();
-                let gpu_source = frame.gpu_source.clone();
-                let graded = self.post_process_rgba_with_gpu_source(
-                    frame.data, w, h, gpu_source.as_ref(),
-                );
+                if frame.hdr.is_none() {
+                    frame.ensure_cpu_data();
+                }
+                let graded = self.grade_v1_frame(frame, w, h);
                 self.pop_overlay_frames(ph);
                 let final_linear = if self.overlay_frames.is_empty() {
                     graded
@@ -9034,6 +9031,12 @@ impl PlaybackEngine {
     /// Falls through to the normal `post_process_rgba` path when
     /// `gpu_source` is `None`, priming fails, or the GPU pipeline
     /// isn't available.
+    ///
+    /// Grading a *decoded V1 frame*? Call `grade_v1_frame`, not this.
+    /// Passing `frame.data` here grades an HDR clip's tone-mapped preview
+    /// instead of its scene-linear input — three paused/refresh paths did
+    /// exactly that, which made paused edits on HDR disagree with
+    /// playback. `grade_v1_frame` should be this function's only caller.
     fn post_process_rgba_with_gpu_source(
         &mut self,
         linear_rgba: Vec<f32>,
@@ -9343,7 +9346,10 @@ impl PlaybackEngine {
 
     /// Grade one decoded V1 frame through the full wrapper.
     ///
-    /// The single place that decides what an HDR frame grades: its
+    /// Every path that grades a decoded V1 frame goes through here —
+    /// playback, frame stepping, paused seek, and the paused/parked
+    /// refresh paths. It is the single place that decides what an HDR
+    /// frame grades: its
     /// scene-linear input, not `data`, which is display-referred and
     /// already tone-mapped. The chain is not primed from the decoder's u8
     /// buffer for HDR either — that buffer is the tone-mapped preview.
