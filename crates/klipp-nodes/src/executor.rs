@@ -827,8 +827,12 @@ impl GraphExecutor {
                     .params
                     .log_format
                     .is_some_and(klipp_core::LogFormat::needs_input_transform);
+            // Default-ness at *this frame*: a keyframed node with neutral
+            // static params (an exposure ramp from 0) must not be bypassed
+            // for the whole clip. `params_for_frame` borrows when the node
+            // has no keyframes, so the common case costs nothing extra.
             let bypass = !effective_enabled(node, clip_time_secs)
-                || (is_param_driven_filter && node.params.is_default())
+                || (is_param_driven_filter && params_for_frame(node, clip_time_secs).is_default())
                 || noop_input_transform;
 
             // If a chain is live, see whether this node can extend it or

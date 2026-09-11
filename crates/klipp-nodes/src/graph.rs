@@ -403,11 +403,16 @@ pub struct CycleError;
 impl NodeGraph {
     /// Returns true if the graph has no active processing nodes.
     pub fn is_identity(&self) -> bool {
+        // A keyframed node is not an identity even when its static params
+        // are neutral: an exposure ramp starting at 0 or a fade-in grade
+        // animates *from* default. Checking static params alone let every
+        // identity fast path (viewer and export) skip such a graph, and
+        // with it the animation.
         self.nodes
             .iter()
             .all(|n| !n.enabled
                 || matches!(n.kind, NodeKind::Source | NodeKind::Output | NodeKind::InputTransform)
-                || n.params.is_default())
+                || (n.params.is_default() && n.keyframes.tracks.iter().all(|t| t.keyframes.is_empty())))
     }
 
     /// Topologically sorted execution order using Kahn's algorithm.
@@ -722,6 +727,21 @@ mod tests {
 
     fn count_kind(g: &NodeGraph, kind: NodeKind) -> usize {
         g.nodes.iter().filter(|n| n.kind == kind).count()
+    }
+
+    /// The default graph is an identity until a node is keyframed — even
+    /// keyframed starting from its neutral value.
+    #[test]
+    fn a_keyframed_node_is_not_an_identity() {
+        let mut g = default_graph();
+        assert!(g.is_identity());
+        let n = g.nodes.iter_mut().find(|n| n.kind == NodeKind::Corrector).expect("default graph has a Corrector");
+        let mut keys = Vec::new();
+        klipp_core::keyframe::upsert_keyframe(&mut keys, 0.0, 0.0);
+        klipp_core::keyframe::upsert_keyframe(&mut keys, 2.0, 2.0);
+        n.keyframes.tracks.push(crate::params::NodeKeyframeTrack { param_name: "exposure".into(), keyframes: keys });
+        assert!(n.params.is_default(), "static params stay neutral");
+        assert!(!g.is_identity(), "a node animating from neutral must still run");
     }
 
     #[test]
