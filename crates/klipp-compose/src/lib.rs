@@ -10,4 +10,7 @@ pub mod eval;
 pub mod synth;
 pub mod render;
 
-pub use render::{FrameSource, GlobalLut, RenderOptions, Renderer, SourceFrame, SourcePixels};
+pub use render::{
+    active_layers, frame_snapshot, ActiveLayer, FrameSource, GlobalLut, Inspect, Inspection, RenderOptions, RenderStats, Renderer,
+    SourceFrame, SourcePixels,
+};

@@ -7,7 +7,9 @@
 
 use std::collections::HashMap;
 
-use klipp_compose::{FrameSource, RenderOptions, Renderer, SourceFrame, SourcePixels};
+use std::sync::Arc;
+
+use klipp_compose::{active_layers, FrameSource, Inspect, RenderOptions, Renderer, SourceFrame, SourcePixels};
 use klipp_core::{ClipId, GeneratorData, RationalTime, Timecode, TransitionId};
 use klipp_effects::BuiltinEffect;
 use klipp_nodes::{Edge, Node, NodeGraph, NodeId, NodeKind, NodeParams, NodePos};
@@ -74,13 +76,13 @@ struct Flat(HashMap<ClipId, Box<dyn Fn() -> SourcePixels>>);
 
 impl Flat {
     fn grey(mut self, c: &Clip, v: f32) -> Self {
-        self.0.insert(c.id, Box::new(move || SourcePixels::Linear([v, v, v, 1.0].repeat((W * H) as usize))));
+        self.0.insert(c.id, Box::new(move || SourcePixels::Linear(Arc::new([v, v, v, 1.0].repeat((W * H) as usize)))));
         self
     }
     fn slog3(mut self, c: &Clip, code: u32) -> Self {
         let packed = klipp_color::hdr::pack_rgb10(code, code, code);
         self.0.insert(c.id, Box::new(move || SourcePixels::SceneReferred {
-            codes: vec![packed; (W * H) as usize],
+            codes: Arc::new(vec![packed; (W * H) as usize]),
             transfer: klipp_color::hdr::HdrTransfer::Log(klipp_core::ColorTransfer::SLog3),
             source_to_working: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
         }));
@@ -90,7 +92,7 @@ impl Flat {
 
 impl FrameSource for Flat {
     fn frame(&mut self, clip: &Clip, _source_secs: f64, width: u32, height: u32) -> Option<SourceFrame> {
-        self.0.get(&clip.id).map(|f| SourceFrame { pixels: f(), width, height })
+        self.0.get(&clip.id).map(|f| SourceFrame { pixels: f(), width, height, pts: None })
     }
 }
 
@@ -368,5 +370,146 @@ fn multicam_shows_the_cut_angle() {
         for (i, img) in render(&seq, t, &mut src).iter().enumerate() {
             assert_px(&format!("t={t}, run {i}"), px(img, 16, 9), [want; 3], 1e-3);
         }
+    }
+}
+
+/// Two frames of a clip's media, at 0 and 1/24 s, for frame blending.
+struct TwoFrames {
+    clip: ClipId,
+    first: f32,
+    second: f32,
+}
+
+impl TwoFrames {
+    fn at(v: f32, pts: f64) -> SourceFrame {
+        SourceFrame {
+            pixels: SourcePixels::Linear(Arc::new([v, v, v, 1.0].repeat((W * H) as usize))),
+            width: W,
+            height: H,
+            pts: Some(pts),
+        }
+    }
+}
+
+impl FrameSource for TwoFrames {
+    fn frame(&mut self, clip: &Clip, _: f64, _: u32, _: u32) -> Option<SourceFrame> {
+        (clip.id == self.clip).then(|| Self::at(self.first, 0.0))
+    }
+    fn frame_after(&mut self, clip: &Clip, _: f64, _: u32, _: u32) -> Option<SourceFrame> {
+        (clip.id == self.clip).then(|| Self::at(self.second, 1.0 / 24.0))
+    }
+}
+
+/// Slow motion with frame blending mixes the source frames either side
+/// of the source time, by where it falls between them. At half speed, one
+/// timeline frame in is half a source frame in: half of each. Without
+/// the blend mode, the earlier frame alone.
+#[test]
+fn slow_motion_blends_the_frames_either_side() {
+    let ramp = |blend_mode| BuiltinEffect::SpeedRamp {
+        speed: 0.5, blend_mode, ramp_curve: 0, ramp_start: 0.0, ramp_end: 1.0, reverse: false, freeze_at: 0.0, freeze: false,
+    };
+    for blend_mode in [1, 0] {
+        let mut c = media(0.0, 4.0);
+        c.speed = 0.5;
+        c.builtin_effects = vec![ramp(blend_mode)];
+        // Where the source time falls between the frames, through the
+        // clip's speed: about half.
+        let weight = klipp_compose::render::source_secs(&c, tc(1.0 / 24.0), 24.0) as f32 * 24.0;
+        assert!((weight - 0.5).abs() < 0.02, "source time weight {weight}");
+        let want = if blend_mode == 1 { 0.2 + 0.4 * weight } else { 0.2 };
+        let seq = sequence(vec![vec![c.clone()]]);
+        for gpu in [false, true] {
+            let mut r = Renderer::new(klipp_plugin::OfxHost::new(), klipp_title::TitleRenderer::new());
+            r.set_gpu_enabled(gpu);
+            let mut src = TwoFrames { clip: c.id, first: 0.2, second: 0.6 };
+            let img = r.render(&seq, tc(1.0 / 24.0), W, H, &mut src, RenderOptions::default());
+            assert_px(&format!("blend mode {blend_mode}, gpu {gpu}"), px(&img, 16, 9), [want; 3], 1e-3);
+        }
+    }
+}
+
+/// Inspecting a clip returns its picture before the grade, alongside the
+/// graded composite, and changes nothing about the picture.
+#[test]
+fn inspecting_a_clip_returns_its_ungraded_picture() {
+    let mut c = media(0.0, 2.0);
+    c.node_graph = exposure(1.0);
+    let seq = sequence(vec![vec![c.clone()]]);
+    let mut src = Flat::default().grey(&c, 0.2);
+    let mut r = Renderer::new(klipp_plugin::OfxHost::new(), klipp_title::TitleRenderer::new());
+    r.set_gpu_enabled(false);
+    let inspect = Inspect { clip: Some(c.id), ungraded: true, ..Default::default() };
+    let (img, found) = r.render_inspected(&seq, tc(1.0), W, H, &mut src, RenderOptions::default(), inspect);
+    assert_px("graded", px(&img, 16, 9), [0.4; 3], 0.005);
+    let before = found.ungraded.expect("the ungraded picture");
+    assert_px("before", px(&before, 16, 9), [0.2; 3], 1e-4);
+    let plain = r.render(&seq, tc(1.0), W, H, &mut src, RenderOptions::default());
+    assert_eq!(img, plain);
+}
+
+/// `active_layers` names what a render stacks: a transition's two clips
+/// on its track, a clip above it, bottom first.
+#[test]
+fn active_layers_lists_what_a_render_needs() {
+    let a = media(0.0, 2.0);
+    let b = media(2.0, 4.0);
+    let top = solid([255, 0, 0], 0.0, 4.0);
+    let tr = Transition {
+        id: TransitionId::new(),
+        kind: klipp_core::TransitionKind::CrossDissolve,
+        duration: tc(1.0),
+        clip_a_id: a.id,
+        clip_b_id: b.id,
+        user_params: Default::default(),
+        alignment: klipp_core::TransitionAlignment::Center,
+    };
+    let (a_id, b_id, top_id) = (a.id, b.id, top.id);
+    let mut seq = sequence(vec![vec![top], vec![a, b]]);
+    seq.tracks[1].transitions.push(tr);
+    let layers = active_layers(&seq, tc(2.0));
+    assert_eq!(layers.len(), 2);
+    assert_eq!(layers[0].track, 1);
+    assert!(layers[0].transition);
+    assert_eq!(layers[0].clips.iter().map(|c| c.id).collect::<Vec<_>>(), vec![a_id, b_id]);
+    assert_eq!(layers[1].clips[0].id, top_id);
+    let later = active_layers(&seq, tc(3.0));
+    assert_eq!(later[0].clips.iter().map(|c| c.id).collect::<Vec<_>>(), vec![b_id]);
+    assert!(!later[0].transition);
+}
+
+/// A frame snapshot renders exactly what the whole sequence does: through
+/// a transition, before and after its cut, and with a clip whose
+/// transform follows another that is not on screen.
+#[test]
+fn a_frame_snapshot_renders_the_same_frame() {
+    let a = solid([255, 0, 0], 0.0, 2.0);
+    let mut b = media(2.0, 4.0);
+    b.node_graph = exposure(1.0);
+    let far = solid([0, 0, 255], 10.0, 12.0);
+    let mut follower = solid([0, 255, 0], 0.0, 4.0);
+    follower.builtin_effects = vec![BuiltinEffect::Transform {
+        position_x: 0.0, position_y: 0.0, scale_x: 0.5, scale_y: 0.5, rotation: 0.0,
+        anchor_x: 0.5, anchor_y: 0.5, rotation_x: 0.0, rotation_y: 0.0, perspective: 0.0, focal_ref: None,
+    }];
+    follower.transform_link = Some(klipp_timeline::TransformLink::new(far.id));
+    let tr = Transition {
+        id: TransitionId::new(),
+        kind: klipp_core::TransitionKind::CrossDissolve,
+        duration: tc(1.0),
+        clip_a_id: a.id,
+        clip_b_id: b.id,
+        user_params: Default::default(),
+        alignment: klipp_core::TransitionAlignment::Center,
+    };
+    let mut src = Flat::default().grey(&b, 0.25);
+    let mut seq = sequence(vec![vec![follower, far], vec![a, b]]);
+    seq.tracks[1].transitions.push(tr);
+    for t in [1.0, 1.75, 2.25, 3.0] {
+        let snap = klipp_compose::frame_snapshot(&seq, tc(t));
+        let full = render(&seq, t, &mut src);
+        let part = render(&snap, t, &mut src);
+        assert_eq!(full[0], part[0], "CPU, t={t}");
+        assert_eq!(full[1], part[1], "GPU, t={t}");
     }
 }

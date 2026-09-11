@@ -84,7 +84,7 @@ pub struct RenderDecoder {
 /// grade reads it: packed 10-bit code values in the source primaries.
 #[derive(Clone)]
 pub struct SceneReferredFrame {
-    pub codes: Vec<u32>,
+    pub codes: std::sync::Arc<Vec<u32>>,
     pub transfer: klipp_color::hdr::HdrTransfer,
     /// Source primaries → the grade's working space.
     pub source_to_working: [[f32; 3]; 3],
@@ -491,7 +491,7 @@ impl RenderDecoder {
             scene.ids,
         );
         self.last_scene = Some(SceneReferredFrame {
-            codes,
+            codes: std::sync::Arc::new(codes),
             transfer: scene.transfer,
             source_to_working: scene.to_working,
             width: w,

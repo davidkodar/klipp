@@ -36,24 +36,36 @@
 //!   output. (The viewer applied it to the primary track only.)
 //! * **Background** is black: the composite is flattened over it unless
 //!   the caller asks to keep alpha.
+//! * **Slow motion with frame blending** (a `SpeedRamp` effect with blend
+//!   mode 1, the clip running below real time) mixes the two source
+//!   frames around the source time, weighted by where it falls between
+//!   them, in linear light before the grade. (The viewer mixed the
+//!   current picture with the previously *shown* one, in 8-bit, weighted
+//!   by a number that was noise at 59.94 fps; export did not blend.)
 
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
+use std::time::Instant;
 
 use klipp_core::{BlendMode, ClipId, Timecode, WorkingColorspace};
 use klipp_effects::BuiltinEffect;
+use klipp_nodes::NodeId;
 use klipp_timeline::{Clip, ClipKind, Sequence, Track, TrackKind};
 
 use crate::eval::{self, ResolvedTransform};
 
-/// A clip's decoded pixels, before its grade.
+/// A clip's decoded pixels, before its grade. Shared rather than owned so
+/// a source that keeps its frames (the viewer re-renders a paused frame
+/// many times) hands them over without a copy; the renderer copies only
+/// if it has to write to them.
 pub enum SourcePixels {
     /// Display-referred linear RGBA f32, straight alpha, in the working
     /// space: ordinary video.
-    Linear(Vec<f32>),
+    Linear(Arc<Vec<f32>>),
     /// Scene-referred packed 10-bit codes (PQ, HLG, camera log), as the
     /// decoders produce them. Graded scene-linear, tone-mapped after.
     SceneReferred {
-        codes: Vec<u32>,
+        codes: Arc<Vec<u32>>,
         transfer: klipp_color::hdr::HdrTransfer,
         /// Source primaries → working space.
         source_to_working: [[f32; 3]; 3],
@@ -65,6 +77,9 @@ pub struct SourceFrame {
     pub pixels: SourcePixels,
     pub width: u32,
     pub height: u32,
+    /// The frame's presentation time in the media, when known. Frame
+    /// blending weighs two frames by it.
+    pub pts: Option<f64>,
 }
 
 /// Where decoded frames come from. The viewer answers from its playback
@@ -77,6 +92,13 @@ pub trait FrameSource {
     /// for this clip.
     fn frame(&mut self, clip: &Clip, source_secs: f64, width: u32, height: u32) -> Option<SourceFrame>;
 
+    /// The frame after the one [`frame`](Self::frame) returns for
+    /// `source_secs`, for frame blending. Asked only after `frame`, for
+    /// the same time. `None` (the default) shows the one frame unblended.
+    fn frame_after(&mut self, _clip: &Clip, _source_secs: f64, _width: u32, _height: u32) -> Option<SourceFrame> {
+        None
+    }
+
     /// A small sRGB RGBA8 frame of `clip`'s media at `source_secs`, at most
     /// `max_width` wide, for motion estimation (rolling-shutter
     /// correction). Sources that cannot provide one return `None`, and the
@@ -84,6 +106,179 @@ pub trait FrameSource {
     fn motion_frame(&mut self, _clip: &Clip, _source_secs: f64, _max_width: u32) -> Option<(Vec<u8>, u32, u32)> {
         None
     }
+
+    /// Frames of `clip`'s media for OFX plugins that read other times than
+    /// the current one (retime, slit-scan, frame blend): a function from
+    /// clip time to an sRGB RGBA8 frame. `None` (the default) runs those
+    /// plugins on the current frame alone.
+    fn temporal_frames(&mut self, _clip: &Clip) -> Option<klipp_plugin::FrameProviderFn> {
+        None
+    }
+}
+
+/// What the viewer's grade tools want from one clip's grade besides the
+/// picture: the node canvas's thumbnails, the scope's tap point, a soloed
+/// node, a qualifier's matte, the before/after split's "before" half.
+/// Only `clip` is inspected; every other clip renders plainly.
+#[derive(Default, Clone)]
+pub struct Inspect {
+    pub clip: Option<ClipId>,
+    /// Nodes whose outputs to capture as thumbnails.
+    pub thumbs: Option<HashSet<NodeId>>,
+    /// Node whose output the scope reads instead of the graph's.
+    pub scope_tap: Option<NodeId>,
+    /// Node whose matte the grade shows instead of the picture.
+    pub matte_view: Option<NodeId>,
+    /// Node whose output the grade shows instead of the graph's.
+    pub solo: Option<NodeId>,
+    /// Also return the clip's picture before its grade.
+    pub ungraded: bool,
+    /// A clip whose track-matte mask to return (the inspector's matte
+    /// preview). Independent of `clip`.
+    pub matte_of: Option<ClipId>,
+}
+
+/// What an inspected render found. Fields are empty when not asked for,
+/// or when the clip was not on screen.
+#[derive(Default)]
+pub struct Inspection {
+    pub scope_tap: Option<Vec<f32>>,
+    pub thumbs: HashMap<NodeId, Vec<u8>>,
+    /// The inspected clip before its grade: display-referred linear RGBA
+    /// at the output size (scene-referred sources tone-mapped).
+    pub ungraded: Option<Vec<f32>>,
+    /// `matte_of`'s mask, one value a pixel at the output size.
+    pub matte_mask: Option<Vec<f32>>,
+    pub stats: RenderStats,
+}
+
+/// Where a render's time went, in milliseconds.
+#[derive(Default, Clone, Copy, Debug)]
+pub struct RenderStats {
+    pub grade_ms: f64,
+    pub ofx_ms: f64,
+    pub effects_ms: f64,
+    pub lut_ms: f64,
+    pub composite_ms: f64,
+    pub total_ms: f64,
+}
+
+/// One entry of the stack [`Renderer::render`] composites.
+pub struct ActiveLayer<'a> {
+    /// Index into `Sequence::tracks`.
+    pub track: usize,
+    /// The clip shown, or a transition's outgoing and incoming clips.
+    pub clips: Vec<&'a Clip>,
+    pub transition: bool,
+}
+
+/// What a render at `time` stacks, bottom first: every clip whose frame
+/// it will ask a [`FrameSource`] for is among these. Lets a source know
+/// which media to have ready, and a caller whether a frame is a single
+/// plain clip.
+pub fn active_layers(seq: &Sequence, time: Timecode) -> Vec<ActiveLayer<'_>> {
+    stack(seq, time)
+        .into_iter()
+        .map(|(track, _, item)| ActiveLayer {
+            track,
+            transition: matches!(item, TrackItem::Transition { .. }),
+            clips: item.clips(),
+        })
+        .collect()
+}
+
+/// A copy of `seq` holding only what a render at `time` reads: the clips
+/// in play (both sides of a running transition included) and every clip
+/// they refer to — a transform link's target, a tracker's host, a focal
+/// point's title. Rendering it gives the same frame as rendering `seq`,
+/// so a caller can let go of a large project's lock for the render.
+pub fn frame_snapshot(seq: &Sequence, time: Timecode) -> Sequence {
+    let mut keep: HashSet<ClipId> = HashSet::new();
+    let mut keep_transitions: HashSet<klipp_core::TransitionId> = HashSet::new();
+    for track in &seq.tracks {
+        for c in &track.clips {
+            if time >= c.timeline_in && time < c.timeline_out {
+                keep.insert(c.id);
+            }
+        }
+        for tr in &track.transitions {
+            if let Some(TrackItem::Transition { a, b, .. }) = transition_at(track, tr, time) {
+                keep.insert(a.id);
+                keep.insert(b.id);
+                keep_transitions.insert(tr.id);
+            }
+        }
+    }
+    // Follow references until nothing new turns up (links chain).
+    let by_id: HashMap<ClipId, &Clip> = seq.tracks.iter().flat_map(|t| t.clips.iter()).map(|c| (c.id, c)).collect();
+    let mut frontier: Vec<ClipId> = keep.iter().copied().collect();
+    while let Some(id) = frontier.pop() {
+        let Some(c) = by_id.get(&id) else { continue };
+        for r in clip_references(c) {
+            if by_id.contains_key(&r) && keep.insert(r) {
+                frontier.push(r);
+            }
+        }
+    }
+    let tracks = seq
+        .tracks
+        .iter()
+        .map(|t| Track {
+            id: t.id,
+            name: t.name.clone(),
+            kind: t.kind,
+            clips: t.clips.iter().filter(|c| keep.contains(&c.id)).cloned().collect(),
+            transitions: t.transitions.iter().filter(|tr| keep_transitions.contains(&tr.id)).cloned().collect(),
+            opacity: t.opacity,
+            muted: t.muted,
+            solo: t.solo,
+            visible: t.visible,
+            ..Track::new(&t.name, t.kind)
+        })
+        .collect();
+    Sequence {
+        id: seq.id,
+        name: seq.name.clone(),
+        fps: seq.fps,
+        resolution: seq.resolution,
+        tracks,
+        in_point: seq.in_point,
+        out_point: seq.out_point,
+        markers: Vec::new(),
+        last_playhead: None,
+    }
+}
+
+/// Clips `c` reads when it renders: its transform link's target or
+/// tracker host, and its focal point's title or tracker.
+fn clip_references(c: &Clip) -> Vec<ClipId> {
+    let mut refs = Vec::new();
+    if let Some(link) = &c.transform_link {
+        match &link.target {
+            klipp_timeline::TransformLinkTarget::Clip(id) => refs.push(*id),
+            klipp_timeline::TransformLinkTarget::Tracker { clip_id, .. } => refs.push(*clip_id),
+        }
+    }
+    for e in &c.builtin_effects {
+        if let BuiltinEffect::Transform { focal_ref: Some(f), .. } = e {
+            match f {
+                klipp_effects::FocalRef::Glyph { title_clip_id, .. } => refs.push(ClipId(*title_clip_id)),
+                klipp_effects::FocalRef::Tracker { clip_id, .. } => refs.push(ClipId(*clip_id)),
+            }
+        }
+    }
+    refs
+}
+
+/// Visible tracks with something on them at `time`, bottom first.
+fn stack(seq: &Sequence, time: Timecode) -> Vec<(usize, &Track, TrackItem<'_>)> {
+    seq.tracks
+        .iter()
+        .enumerate()
+        .rev()
+        .filter(|(_, t)| is_visual(t))
+        .filter_map(|(i, t)| active_item(t, time).map(|item| (i, t, item)))
+        .collect()
 }
 
 /// The timeline's global LUT.
@@ -122,6 +317,9 @@ pub struct Renderer {
     /// it decodes three frames, and a paused viewer re-renders the same
     /// frame many times.
     rsc_motion: HashMap<(ClipId, i64), (klipp_effects::rolling_shutter::Homography, klipp_effects::rolling_shutter::Homography)>,
+    /// The current render's inspection request, and what it has found.
+    inspect: Inspect,
+    found: Inspection,
 }
 
 /// A rendered clip, ready to composite: display-referred linear RGBA,
@@ -145,8 +343,8 @@ enum TrackItem<'a> {
     },
 }
 
-impl TrackItem<'_> {
-    fn clips(&self) -> Vec<&Clip> {
+impl<'a> TrackItem<'a> {
+    fn clips(&self) -> Vec<&'a Clip> {
         match self {
             TrackItem::Clip(c) => vec![*c],
             TrackItem::Transition { a, b, .. } => vec![*a, *b],
@@ -169,7 +367,30 @@ impl Renderer {
             working: WorkingColorspace::default(),
             global_lut: None,
             rsc_motion: HashMap::new(),
+            inspect: Inspect::default(),
+            found: Inspection::default(),
         }
+    }
+
+    /// The node-graph executor. The viewer's GPU-resident fast paths
+    /// drive it directly, so there is one executor and one GPU pipeline
+    /// per renderer rather than one per path.
+    pub fn executor(&mut self) -> &mut klipp_nodes::GraphExecutor {
+        &mut self.executor
+    }
+
+    /// The GPU effects pipeline, built on first use; `None` without a
+    /// usable GPU or with the GPU disabled.
+    pub fn gpu_pipeline(&mut self) -> Option<&mut klipp_effects::gpu::GpuEffectsPipeline> {
+        self.gpu()
+    }
+
+    pub fn ofx_host(&mut self) -> &mut klipp_plugin::OfxHost {
+        &mut self.ofx
+    }
+
+    pub fn title_renderer(&mut self) -> &mut klipp_title::TitleRenderer {
+        &mut self.titles
     }
 
     /// Use the GPU for effects and transitions when available (default).
@@ -209,20 +430,54 @@ impl Renderer {
         src: &mut dyn FrameSource,
         opts: RenderOptions,
     ) -> Vec<f32> {
+        self.render_inspected(seq, time, width, height, src, opts, Inspect::default()).0
+    }
+
+    /// [`render`](Self::render), also answering an [`Inspect`] request.
+    /// The picture is the same either way, except that a soloed node or a
+    /// matte view replaces the inspected clip's grade — the viewer shows
+    /// what the grade tools ask it to.
+    #[allow(clippy::too_many_arguments)]
+    pub fn render_inspected(
+        &mut self,
+        seq: &Sequence,
+        time: Timecode,
+        width: u32,
+        height: u32,
+        src: &mut dyn FrameSource,
+        opts: RenderOptions,
+        inspect: Inspect,
+    ) -> (Vec<f32>, Inspection) {
+        let t0 = Instant::now();
+        self.inspect = inspect;
+        self.found = Inspection::default();
+        let out = self.render_stack(seq, time, width, height, src, opts);
+        self.inspect = Inspect::default();
+        // A solo belongs to the inspected clip; leave the executor clean
+        // for whoever drives it next.
+        self.executor.set_solo_node(None);
+        let mut found = std::mem::take(&mut self.found);
+        found.stats.total_ms = ms_since(t0);
+        (out, found)
+    }
+
+    fn render_stack(
+        &mut self,
+        seq: &Sequence,
+        time: Timecode,
+        width: u32,
+        height: u32,
+        src: &mut dyn FrameSource,
+        opts: RenderOptions,
+    ) -> Vec<f32> {
         let fps = seq.fps.as_f64();
         // Bottom of the stack first.
-        let stack: Vec<(&Track, TrackItem)> = seq
-            .tracks
-            .iter()
-            .rev()
-            .filter(|t| is_visual(t))
-            .filter_map(|t| active_item(t, time).map(|item| (t, item)))
-            .collect();
+        let stack = stack(seq, time);
 
         // Transforms for every clip in play, links and focal points
         // resolved once against the whole sequence.
         let mut transforms: HashMap<ClipId, ResolvedTransform> = HashMap::new();
-        for (_, item) in &stack {
+        for (_, _, item) in &stack {
             for c in item.clips() {
                 eval::resolve_clip_transform(
                     c, seq, time, fps, &mut transforms, &mut self.glyph_cache, &mut self.titles,
@@ -233,7 +488,7 @@ impl Renderer {
 
         // Clips whose rendered pixels another clip masks with.
         let mut matte_sources: HashSet<ClipId> = HashSet::new();
-        for (_, item) in &stack {
+        for (_, _, item) in &stack {
             for c in item.clips() {
                 if let Some(b) = &c.matte_source {
                     matte_sources.insert(b.source_clip_id);
@@ -248,7 +503,7 @@ impl Renderer {
         // the clip it masks.
         let mut layers: Vec<Option<Layer>> = Vec::with_capacity(stack.len());
         let mut rendered: HashMap<ClipId, Vec<f32>> = HashMap::new();
-        for (track, item) in &stack {
+        for (_, track, item) in &stack {
             let layer = match item {
                 TrackItem::Clip(c) if matches!(c.kind, ClipKind::AdjustmentLayer) => None,
                 TrackItem::Clip(c) => self
@@ -271,7 +526,7 @@ impl Renderer {
         let stencils: Vec<(usize, &Clip)> = stack
             .iter()
             .enumerate()
-            .filter_map(|(i, (_, item))| match item {
+            .filter_map(|(i, (_, _, item))| match item {
                 TrackItem::Clip(c) if c.matte_stencil.is_some() => Some((i, *c)),
                 _ => None,
             })
@@ -283,8 +538,9 @@ impl Renderer {
         // a zeroed canvas — at 4K that canvas is 133 MB to allocate, zero
         // and blend through, every frame.
         let canvas = || vec![0.0f32; (width as usize) * (height as usize) * 4];
+        let mut composite_ms = 0.0;
         let mut acc: Option<Vec<f32>> = None;
-        for (i, ((track, item), layer)) in stack.iter().zip(layers).enumerate() {
+        for (i, ((_, track, item), layer)) in stack.iter().zip(layers).enumerate() {
             if let TrackItem::Clip(c) = item {
                 if matches!(c.kind, ClipKind::AdjustmentLayer) {
                     let opacity = eval::evaluate_clip_opacity(c, time, fps) * track.opacity;
@@ -300,6 +556,7 @@ impl Renderer {
             if layer.opacity <= 0.001 {
                 continue;
             }
+            let t = Instant::now();
             for (si, st) in &stencils {
                 if *si <= i {
                     continue;
@@ -324,6 +581,9 @@ impl Renderer {
                         feather_px: klipp_core::keyframe::evaluate(&c.matte_feather_keyframes, t, b.feather_px),
                         choke_px: klipp_core::keyframe::evaluate(&c.matte_choke_keyframes, t, b.choke_px),
                     };
+                    if self.inspect.matte_of == Some(c.id) {
+                        self.found.matte_mask = matte_mask(&rendered, &binding, width, height);
+                    }
                     apply_matte(&mut layer.pixels, &rendered, &binding, width, height);
                 }
             }
@@ -334,23 +594,27 @@ impl Renderer {
                     klipp_effects::composite::blend_layer_linear(a, &layer.pixels, layer.opacity, layer.blend);
                 }
             }
+            composite_ms += ms_since(t);
         }
         let mut acc = acc.unwrap_or_else(canvas);
 
-        if let Some(lut) = &self.global_lut {
-            let (data, size, opacity) = (lut.lut.data.clone(), lut.lut.size as u32, lut.opacity);
+        if let Some(lut) = self.global_lut.take() {
+            let t = Instant::now();
             acc = match self.gpu() {
-                Some(gpu) => gpu.apply_3d_lut_gpu(acc, width, height, &data, size, opacity),
+                Some(gpu) => gpu.apply_3d_lut_gpu(acc, width, height, &lut.lut.data, lut.lut.size as u32, lut.opacity),
                 None => {
                     let mut u8s = klipp_effects::linear_f32_rgba_to_srgb_u8(&acc);
-                    klipp_color::apply_3d_lut(&mut u8s, &self.global_lut.as_ref().unwrap().lut, opacity);
+                    klipp_color::apply_3d_lut(&mut u8s, &lut.lut, lut.opacity);
                     klipp_effects::srgb_u8_to_linear_f32_rgba(&u8s)
                 }
             };
+            self.global_lut = Some(lut);
+            self.found.stats.lut_ms += ms_since(t);
         }
 
         if !opts.keep_alpha {
             use rayon::prelude::*;
+            let t = Instant::now();
             acc.par_chunks_exact_mut(4).for_each(|px| {
                 let a = px[3].clamp(0.0, 1.0);
                 px[0] *= a;
@@ -358,7 +622,9 @@ impl Renderer {
                 px[2] *= a;
                 px[3] = 1.0;
             });
+            composite_ms += ms_since(t);
         }
+        self.found.stats.composite_ms += composite_ms;
         acc
     }
 
@@ -378,14 +644,16 @@ impl Renderer {
         let clip_time = eval_clip_time(clip, time);
         let (pixels, hdr) = match &clip.kind {
             ClipKind::Media { .. } => {
-                let f = src.frame(clip, source_secs(clip, time, fps), width, height)?;
-                match f.pixels {
-                    SourcePixels::Linear(p) => (fit(p, f.width, f.height, width, height), None),
-                    SourcePixels::SceneReferred { codes, transfer, source_to_working } => {
-                        let p = klipp_color::hdr::hdr10_codes_to_scene_linear_rgba(&codes, transfer, source_to_working);
-                        (fit(p, f.width, f.height, width, height), Some(transfer))
-                    }
-                }
+                let at = source_secs(clip, time, fps);
+                let f = src.frame(clip, at, width, height)?;
+                let next = if frame_blends(clip, time) { src.frame_after(clip, at, width, height) } else { None };
+                let pts = f.pts;
+                let (pixels, hdr) = to_linear(f, width, height);
+                let pixels = match (next, pts) {
+                    (Some(n), Some(p0)) => blend_frames(pixels, hdr, p0, n, at, width, height),
+                    _ => pixels,
+                };
+                (pixels, hdr)
             }
             ClipKind::Title(td) => {
                 let over = crate::synth::typewriter_override(td, clip_time);
@@ -393,23 +661,35 @@ impl Renderer {
                 let mut adapter = self.gpu.as_mut().map(crate::synth::GpuAlphaMaskAdapter);
                 let gpu = adapter.as_mut().map(|a| a as &mut dyn klipp_title::AlphaMaskProcessor);
                 let u8s = self.titles.render_with_time(td, width, height, gpu, clip_time as f32);
-                (klipp_effects::srgb_u8_to_linear_f32_rgba(&u8s), None)
+                (Arc::new(klipp_effects::srgb_u8_to_linear_f32_rgba(&u8s)), None)
             }
             ClipKind::Generator(g) => {
                 let total = (clip.timeline_out - clip.timeline_in).to_secs_f64();
                 let u8s = crate::synth::render_generator_with_slate(&mut self.titles, g, width, height, clip_time, total);
-                (klipp_effects::srgb_u8_to_linear_f32_rgba(&u8s), None)
+                (Arc::new(klipp_effects::srgb_u8_to_linear_f32_rgba(&u8s)), None)
             }
             ClipKind::Gap | ClipKind::Sequence { .. } | ClipKind::AdjustmentLayer => return None,
         };
 
+        if self.inspect.ungraded && self.inspect.clip == Some(clip.id) {
+            let mut before = (*pixels).clone();
+            if let Some(t) = hdr {
+                klipp_color::hdr::apply_hdr_display_tonemap(&mut before, t);
+            }
+            self.found.ungraded = Some(before);
+        }
         let mut pixels = self.grade(clip, pixels, clip_time, fps, width, height);
         if let Some(t) = hdr {
             klipp_color::hdr::apply_hdr_display_tonemap(&mut pixels, t);
         }
         let (fx, opacity) = clip_effects(clip, time, fps, transforms.get(&clip.id).copied());
         self.prepare_temporal_effects(clip, &fx, time, fps, height, src);
-        let pixels = self.ofx(clip, pixels, clip_time, width, height);
+        let provider = if clip.effects.iter().any(|e| e.enabled && is_temporal_plugin(&e.plugin_name)) {
+            src.temporal_frames(clip)
+        } else {
+            None
+        };
+        let pixels = self.ofx(clip, pixels, clip_time, width, height, provider);
         let pixels = match title_motion_blur(clip) {
             Some(samples) => self.motion_blurred(clip, pixels, &fx, samples, time, fps, width, height),
             None => self.effects(&fx, pixels, clip_time, width, height),
@@ -498,43 +778,82 @@ impl Renderer {
         }
     }
 
-    /// The clip's node graph, at clip-relative time.
-    fn grade(&mut self, clip: &Clip, pixels: Vec<f32>, clip_time: f64, fps: f64, width: u32, height: u32) -> Vec<f32> {
-        if clip.node_graph.is_identity() {
-            return pixels;
+    /// The clip's node graph, at clip-relative time. The inspected clip
+    /// also runs the grade tools' captures, its solo and its matte view.
+    fn grade(&mut self, clip: &Clip, pixels: Arc<Vec<f32>>, clip_time: f64, fps: f64, width: u32, height: u32) -> Vec<f32> {
+        let inspecting = self.inspect.clip == Some(clip.id);
+        let matte_view = if inspecting { self.inspect.matte_view } else { None };
+        if clip.node_graph.is_identity() && matte_view.is_none() {
+            return unshare(pixels);
         }
+        let t = Instant::now();
         self.executor.prepare_clip(&clip.node_graph);
         self.executor.set_working_colorspace(self.working);
         self.executor.set_current_clip_track_points(&clip.track_points);
+        self.executor.set_solo_node(if inspecting { self.inspect.solo } else { None });
         let frame = (clip_time * fps).max(0.0) as u64;
-        match self.executor.execute_linear(&pixels, &clip.node_graph, width, height, clip_time, frame, None, None) {
-            Ok((out, _)) => out,
+        let out = if inspecting {
+            let thumbs = self.inspect.thumbs.take();
+            let r = self.executor.execute_linear_with_thumbs(
+                &pixels, &clip.node_graph, width, height, clip_time, frame, self.inspect.scope_tap, matte_view, thumbs.as_ref(),
+            );
+            self.inspect.thumbs = thumbs;
+            r.map(|(out, tapped, thumbs)| {
+                self.found.scope_tap = tapped;
+                self.found.thumbs = thumbs;
+                out
+            })
+        } else {
+            self.executor
+                .execute_linear(&pixels, &clip.node_graph, width, height, clip_time, frame, None, None)
+                .map(|(out, _)| out)
+        };
+        self.found.stats.grade_ms += ms_since(t);
+        match out {
+            Ok(out) => out,
             Err(e) => {
                 tracing::error!("node graph failed for clip {:?}: {e:?}", clip.id);
-                pixels
+                unshare(pixels)
             }
         }
     }
 
     /// OFX plugins take 8-bit sRGB; the round trip is scoped to them.
-    fn ofx(&mut self, clip: &Clip, pixels: Vec<f32>, clip_time: f64, width: u32, height: u32) -> Vec<f32> {
+    fn ofx(
+        &mut self,
+        clip: &Clip,
+        pixels: Vec<f32>,
+        clip_time: f64,
+        width: u32,
+        height: u32,
+        frames: Option<klipp_plugin::FrameProviderFn>,
+    ) -> Vec<f32> {
         if clip.effects.is_empty() {
             return pixels;
         }
+        let t = Instant::now();
         let u8s = klipp_effects::linear_f32_rgba_to_srgb_u8(&pixels);
-        let out = self.ofx.apply_effects_chain(&clip.effects, &u8s, width, height, clip_time);
-        klipp_effects::srgb_u8_to_linear_f32_rgba(&out)
+        let out = match frames {
+            Some(frames) => self.ofx.apply_effects_chain_temporal(&clip.effects, &u8s, width, height, clip_time, frames),
+            None => self.ofx.apply_effects_chain(&clip.effects, &u8s, width, height, clip_time),
+        };
+        let out = klipp_effects::srgb_u8_to_linear_f32_rgba(&out);
+        self.found.stats.ofx_ms += ms_since(t);
+        out
     }
 
     fn effects(&mut self, fx: &[BuiltinEffect], pixels: Vec<f32>, clip_time: f64, width: u32, height: u32) -> Vec<f32> {
         if fx.is_empty() {
             return pixels;
         }
+        let t = Instant::now();
         let gpu_ok = klipp_effects::chain_supports_gpu(fx);
-        match self.gpu() {
+        let out = match self.gpu() {
             Some(gpu) if gpu_ok => gpu.apply_effects(fx, pixels, width, height),
             _ => klipp_effects::apply_effects_with_time(fx, pixels, width, height, clip_time),
-        }
+        };
+        self.found.stats.effects_ms += ms_since(t);
+        out
     }
 
     /// A title with motion blur: the transform is sampled across the
@@ -648,8 +967,8 @@ impl Renderer {
         }
         let clip_time = eval_clip_time(clip, time);
         let before = if opacity < 0.999 { Some(below.clone()) } else { None };
-        let graded = self.grade(clip, below, clip_time, fps, width, height);
-        let graded = self.ofx(clip, graded, clip_time, width, height);
+        let graded = self.grade(clip, Arc::new(below), clip_time, fps, width, height);
+        let graded = self.ofx(clip, graded, clip_time, width, height, None);
         let (fx, _) = clip_effects(clip, time, fps, transforms.get(&clip.id).copied());
         let mut after = self.effects(&fx, graded, clip_time, width, height);
         if let Some(before) = before {
@@ -668,28 +987,34 @@ fn is_visual(t: &Track) -> bool {
 
 /// The clip, or the transition, a track shows at `time`.
 fn active_item(track: &Track, time: Timecode) -> Option<TrackItem<'_>> {
-    for tr in &track.transitions {
-        let (Some(a), Some(b)) = (track.find_clip(tr.clip_a_id), track.find_clip(tr.clip_b_id)) else { continue };
-        if !a.enabled || !b.enabled {
-            continue;
-        }
-        let cut = b.timeline_in;
-        let (start, end) = match tr.alignment {
-            klipp_core::TransitionAlignment::Center => {
-                let half = klipp_core::RationalTime { value: tr.duration.value / 2, rate: tr.duration.rate };
-                (cut - half, cut + half)
-            }
-            klipp_core::TransitionAlignment::StartAtCut => (cut, cut + tr.duration),
-            klipp_core::TransitionAlignment::EndAtCut => (cut - tr.duration, cut),
-        };
-        if time >= start && time < end {
-            let total = tr.duration.to_secs_f64();
-            let progress = if total > 0.0 { ((time - start).to_secs_f64() / total).clamp(0.0, 1.0) as f32 } else { 0.0 };
-            return Some(TrackItem::Transition { a, b, kind: tr.kind, progress, params: tr.user_params });
-        }
+    if let Some(item) = track.transitions.iter().find_map(|tr| transition_at(track, tr, time)) {
+        return Some(item);
     }
     let clip = track.clip_at_timecode(time).map(|(_, c)| c).filter(|c| c.enabled)?;
     Some(TrackItem::Clip(multicam_angle(track, clip, time)))
+}
+
+/// `tr`, when it is running at `time` between two enabled clips.
+fn transition_at<'a>(track: &'a Track, tr: &klipp_timeline::Transition, time: Timecode) -> Option<TrackItem<'a>> {
+    let (a, b) = (track.find_clip(tr.clip_a_id)?, track.find_clip(tr.clip_b_id)?);
+    if !a.enabled || !b.enabled {
+        return None;
+    }
+    let cut = b.timeline_in;
+    let (start, end) = match tr.alignment {
+        klipp_core::TransitionAlignment::Center => {
+            let half = klipp_core::RationalTime { value: tr.duration.value / 2, rate: tr.duration.rate };
+            (cut - half, cut + half)
+        }
+        klipp_core::TransitionAlignment::StartAtCut => (cut, cut + tr.duration),
+        klipp_core::TransitionAlignment::EndAtCut => (cut - tr.duration, cut),
+    };
+    if time < start || time >= end {
+        return None;
+    }
+    let total = tr.duration.to_secs_f64();
+    let progress = if total > 0.0 { ((time - start).to_secs_f64() / total).clamp(0.0, 1.0) as f32 } else { 0.0 };
+    Some(TrackItem::Transition { a, b, kind: tr.kind, progress, params: tr.user_params })
 }
 
 /// The clip a multicam group shows at `time`: the angle chosen by the
@@ -743,7 +1068,8 @@ pub fn source_secs(clip: &Clip, time: Timecode, fps: f64) -> f64 {
 /// out. Keyframes and modifier stacks applied, the transform replaced by
 /// the resolved one (own keyframes, link, focal point), disabled and
 /// identity effects dropped, `Opacity` removed — it is a compositing
-/// weight, returned separately.
+/// weight, returned separately — and `SpeedRamp` removed, which acts on
+/// time, not pixels.
 pub fn clip_effects(
     clip: &Clip,
     time: Timecode,
@@ -808,8 +1134,14 @@ pub fn clip_effects(
             &clip.opacity_keyframes, &clip.param_modifiers, &klipp_core::ParamId::Opacity, t, 1.0, &ctx,
         );
     }
-    let mut fx: Vec<BuiltinEffect> =
-        fx.into_iter().map(|(_, e)| e).filter(|e| !matches!(e, BuiltinEffect::Opacity { .. })).collect();
+    // Opacity is a compositing weight and SpeedRamp a matter of time and
+    // frame blending; neither is a pixel effect. (SpeedRamp through the
+    // CPU chain was an 8-bit round trip that changed nothing else.)
+    let mut fx: Vec<BuiltinEffect> = fx
+        .into_iter()
+        .map(|(_, e)| e)
+        .filter(|e| !matches!(e, BuiltinEffect::Opacity { .. } | BuiltinEffect::SpeedRamp { .. }))
+        .collect();
 
     let xf = resolved.unwrap_or_else(|| eval::evaluate_clip_own_transform(clip, t, &ctx));
     let has_transform = fx.iter().any(|e| matches!(e, BuiltinEffect::Transform { .. }));
@@ -894,28 +1226,134 @@ pub fn matte_channel(ch: klipp_nodes::params::MatteChannel) -> klipp_effects::tr
 }
 
 /// Resample to the output size when a source arrives at another size
-/// (bilinear, straight alpha).
-fn fit(p: Vec<f32>, w: u32, h: u32, ow: u32, oh: u32) -> Vec<f32> {
-    if (w, h) == (ow, oh) || w == 0 || h == 0 {
+/// (straight alpha): an area average when shrinking by more than half, so
+/// a 4K overlay over a 1080p frame does not alias, bilinear otherwise.
+fn fit(p: Arc<Vec<f32>>, w: u32, h: u32, ow: u32, oh: u32) -> Arc<Vec<f32>> {
+    use rayon::prelude::*;
+    if (w, h) == (ow, oh) || w == 0 || h == 0 || ow == 0 || oh == 0 {
         return p;
     }
-    let mut out = vec![0.0f32; (ow as usize) * (oh as usize) * 4];
+    let (w, h, ow_u) = (w as usize, h as usize, ow as usize);
     let (sx, sy) = (w as f32 / ow as f32, h as f32 / oh as f32);
-    for y in 0..oh as usize {
+    let mut out = vec![0.0f32; ow_u * (oh as usize) * 4];
+    out.par_chunks_exact_mut(ow_u * 4).enumerate().for_each(|(y, row)| {
+        if sx >= 2.0 && sy >= 2.0 {
+            let y0 = ((y as f32 * sy) as usize).min(h - 1);
+            let y1 = (((y + 1) as f32 * sy) as usize).clamp(y0 + 1, h);
+            for x in 0..ow_u {
+                let x0 = ((x as f32 * sx) as usize).min(w - 1);
+                let x1 = (((x + 1) as f32 * sx) as usize).clamp(x0 + 1, w);
+                let mut acc = [0.0f32; 4];
+                for yy in y0..y1 {
+                    for xx in x0..x1 {
+                        let i = (yy * w + xx) * 4;
+                        for c in 0..4 {
+                            acc[c] += p[i + c];
+                        }
+                    }
+                }
+                let n = ((y1 - y0) * (x1 - x0)) as f32;
+                for c in 0..4 {
+                    row[x * 4 + c] = acc[c] / n;
+                }
+            }
+            return;
+        }
         let fy = ((y as f32 + 0.5) * sy - 0.5).clamp(0.0, (h - 1) as f32);
         let (y0, ty) = (fy.floor() as usize, fy.fract());
-        let y1 = (y0 + 1).min(h as usize - 1);
-        for x in 0..ow as usize {
+        let y1 = (y0 + 1).min(h - 1);
+        for x in 0..ow_u {
             let fx = ((x as f32 + 0.5) * sx - 0.5).clamp(0.0, (w - 1) as f32);
             let (x0, tx) = (fx.floor() as usize, fx.fract());
-            let x1 = (x0 + 1).min(w as usize - 1);
+            let x1 = (x0 + 1).min(w - 1);
             for c in 0..4 {
-                let at = |xx: usize, yy: usize| p[(yy * w as usize + xx) * 4 + c];
+                let at = |xx: usize, yy: usize| p[(yy * w + xx) * 4 + c];
                 let top = at(x0, y0) + (at(x1, y0) - at(x0, y0)) * tx;
                 let bot = at(x0, y1) + (at(x1, y1) - at(x0, y1)) * tx;
-                out[(y * ow as usize + x) * 4 + c] = top + (bot - top) * ty;
+                row[x * 4 + c] = top + (bot - top) * ty;
             }
         }
+    });
+    Arc::new(out)
+}
+
+/// A source frame as linear RGBA at the output size: scene-linear for
+/// scene-referred sources, whose transfer comes back alongside.
+fn to_linear(f: SourceFrame, width: u32, height: u32) -> (Arc<Vec<f32>>, Option<klipp_color::hdr::HdrTransfer>) {
+    match f.pixels {
+        SourcePixels::Linear(p) => (fit(p, f.width, f.height, width, height), None),
+        SourcePixels::SceneReferred { codes, transfer, source_to_working } => {
+            let p = klipp_color::hdr::hdr10_codes_to_scene_linear_rgba(&codes, transfer, source_to_working);
+            (fit(Arc::new(p), f.width, f.height, width, height), Some(transfer))
+        }
     }
-    out
+}
+
+/// Whether `clip` frame-blends at `time`: a `SpeedRamp` in blend mode 1,
+/// not frozen, with the clip running below real time.
+fn frame_blends(clip: &Clip, time: Timecode) -> bool {
+    let enabled = |i: usize| clip.builtin_effects_enabled.get(i).copied().unwrap_or(true);
+    let blend = clip.builtin_effects.iter().enumerate().any(|(i, e)| {
+        enabled(i) && matches!(e, BuiltinEffect::SpeedRamp { blend_mode: 1, freeze: false, .. })
+    });
+    blend && clip.speed_at(eval_clip_time(clip, time)).abs() < 1.0 - 1e-6
+}
+
+/// Mix `current` (the frame at `pts`) with `next`, by where `at` falls
+/// between their times. Mismatched frames — another transfer, no time —
+/// leave `current` as it is.
+fn blend_frames(
+    current: Arc<Vec<f32>>,
+    hdr: Option<klipp_color::hdr::HdrTransfer>,
+    pts: f64,
+    next: SourceFrame,
+    at: f64,
+    width: u32,
+    height: u32,
+) -> Arc<Vec<f32>> {
+    let Some(next_pts) = next.pts.filter(|p| *p > pts + 1e-6) else { return current };
+    let weight = (((at - pts) / (next_pts - pts)).clamp(0.0, 1.0)) as f32;
+    if weight <= 1e-4 {
+        return current;
+    }
+    let (next, next_hdr) = to_linear(next, width, height);
+    if next_hdr != hdr || next.len() != current.len() {
+        return current;
+    }
+    let mut out = unshare(current);
+    for (o, n) in out.iter_mut().zip(next.iter()) {
+        *o += (n - *o) * weight;
+    }
+    Arc::new(out)
+}
+
+/// OFX plugins known to read frames at other times than the current one.
+fn is_temporal_plugin(name: &str) -> bool {
+    ["Retime", "SlitScan", "timeOffset", "TimeOffset", "FrameBlend", "TimeBlur"]
+        .iter()
+        .any(|k| name.contains(k))
+}
+
+/// A track matte's mask, for the inspector's preview.
+fn matte_mask(
+    rendered: &HashMap<ClipId, Vec<f32>>,
+    binding: &klipp_timeline::MatteBinding,
+    width: u32,
+    height: u32,
+) -> Option<Vec<f32>> {
+    use klipp_effects::track_matte as tm;
+    let source = rendered.get(&binding.source_clip_id)?;
+    let mut mask = tm::extract_mask_linear(source, matte_channel(binding.channel), binding.invert, true);
+    tm::apply_choke_mask(&mut mask, width, height, binding.choke_px);
+    tm::feather_mask(&mut mask, width, height, binding.feather_px);
+    Some(mask)
+}
+
+/// Owned pixels, copied only if someone else still holds them.
+fn unshare(p: Arc<Vec<f32>>) -> Vec<f32> {
+    Arc::try_unwrap(p).unwrap_or_else(|p| (*p).clone())
+}
+
+fn ms_since(t: Instant) -> f64 {
+    t.elapsed().as_secs_f64() * 1000.0
 }

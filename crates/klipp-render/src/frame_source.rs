@@ -120,27 +120,18 @@ impl FrameSource for ExportFrameSource<'_> {
         let half_frame = 0.5 / self.fps.max(1.0);
         let stream = self.streams.get_mut(&clip.id)?;
         stream.seek_forward(source_secs, half_frame);
-        let cur = stream.current.as_ref()?;
-        let pixels = match &cur.scene {
-            Some(s) if s.width == width && s.height == height => SourcePixels::SceneReferred {
-                codes: s.codes.clone(),
-                transfer: s.transfer,
-                source_to_working: s.source_to_working,
-            },
-            _ => {
-                let mut linear = rgba64_to_linear(&cur.rgba);
-                if let Some(m) = stream.to_working {
-                    for px in linear.chunks_exact_mut(4) {
-                        let (r, g, b) = (px[0], px[1], px[2]);
-                        px[0] = m[0][0] * r + m[0][1] * g + m[0][2] * b;
-                        px[1] = m[1][0] * r + m[1][1] * g + m[1][2] * b;
-                        px[2] = m[2][0] * r + m[2][1] * g + m[2][2] * b;
-                    }
-                }
-                SourcePixels::Linear(linear)
-            }
-        };
-        Some(SourceFrame { pixels, width, height })
+        let to_working = stream.to_working;
+        stream.current.as_ref().map(|d| source_frame(d, to_working, width, height))
+    }
+
+    /// The decoder's next frame, already pulled by `frame`'s seek.
+    fn frame_after(&mut self, clip: &Clip, _source_secs: f64, width: u32, height: u32) -> Option<SourceFrame> {
+        let stream = self.streams.get_mut(&clip.id)?;
+        if stream.next.is_none() {
+            stream.next = stream.pull();
+        }
+        let to_working = stream.to_working;
+        stream.next.as_ref().map(|d| source_frame(d, to_working, width, height))
     }
 
     fn motion_frame(&mut self, clip: &Clip, source_secs: f64, max_width: u32) -> Option<(Vec<u8>, u32, u32)> {
@@ -148,6 +139,29 @@ impl FrameSource for ExportFrameSource<'_> {
         let file = self.media.get(media_id)?;
         crate::clip_decoder::decode_frame_at_size(&file.path, source_secs.max(0.0), max_width)
     }
+}
+
+fn source_frame(d: &Decoded, to_working: Option<[[f32; 3]; 3]>, width: u32, height: u32) -> SourceFrame {
+    let pixels = match &d.scene {
+        Some(s) if s.width == width && s.height == height => SourcePixels::SceneReferred {
+            codes: std::sync::Arc::clone(&s.codes),
+            transfer: s.transfer,
+            source_to_working: s.source_to_working,
+        },
+        _ => {
+            let mut linear = rgba64_to_linear(&d.rgba);
+            if let Some(m) = to_working {
+                for px in linear.chunks_exact_mut(4) {
+                    let (r, g, b) = (px[0], px[1], px[2]);
+                    px[0] = m[0][0] * r + m[0][1] * g + m[0][2] * b;
+                    px[1] = m[1][0] * r + m[1][1] * g + m[1][2] * b;
+                    px[2] = m[2][0] * r + m[2][1] * g + m[2][2] * b;
+                }
+            }
+            SourcePixels::Linear(std::sync::Arc::new(linear))
+        }
+    };
+    SourceFrame { pixels, width, height, pts: Some(d.pts) }
 }
 
 /// sRGB-encoded RGBA64 → linear RGBA f32, through a 65536-entry table:
