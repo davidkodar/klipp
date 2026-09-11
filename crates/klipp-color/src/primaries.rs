@@ -268,6 +268,43 @@ pub fn bt2020_to_acescg() -> [[f32; 3]; 3] {
     ]
 }
 
+/// Linear-light BT.709 RGB → linear-light BT.2020 RGB (the BT.2087
+/// matrix). The f64 inverse of the colour-science BT.2020 → BT.709 table
+/// the decoders use, so a BT.2020 source round-trips through a BT.709
+/// working space.
+#[inline]
+#[allow(clippy::excessive_precision)]
+pub fn bt709_to_bt2020() -> [[f32; 3]; 3] {
+    [
+        [0.6274038960, 0.3292830384, 0.0433130657],
+        [0.0690972894, 0.9195403952, 0.0113623156],
+        [0.0163914389, 0.0880133079, 0.8955952535],
+    ]
+}
+
+/// Linear working-space RGB → linear BT.2020, the primaries of every HDR
+/// delivery. A BT.2020-linear project holds BT.709-primaries values
+/// today (see [`working_space_conversion_matrix`]), so it takes the
+/// BT.709 matrix.
+pub fn working_to_bt2020(ws: klipp_core::WorkingColorspace) -> [[f32; 3]; 3] {
+    match ws {
+        klipp_core::WorkingColorspace::AcesCG => acescg_to_bt2020(),
+        klipp_core::WorkingColorspace::Rec709Linear | klipp_core::WorkingColorspace::Bt2020Linear => bt709_to_bt2020(),
+    }
+}
+
+/// Relative luminance of linear RGB in a working space's primaries: the Y
+/// row of its RGB → XYZ matrix.
+#[allow(clippy::excessive_precision)]
+pub fn luminance_weights(ws: klipp_core::WorkingColorspace) -> [f32; 3] {
+    match ws {
+        klipp_core::WorkingColorspace::AcesCG => [0.2722287168, 0.6740817658, 0.0536895174],
+        klipp_core::WorkingColorspace::Rec709Linear | klipp_core::WorkingColorspace::Bt2020Linear => {
+            [0.2126, 0.7152, 0.0722]
+        }
+    }
+}
+
 /// Linear-light AP1 (ACEScg) RGB → linear-light DCI-P3 D65 RGB.
 ///
 /// White-point conversion D60 → D65 baked in via Bradford CAT.
@@ -585,5 +622,31 @@ mod tests {
         // Bright channel (R) should stay clearly positive.
         assert!(ap0[0] > 0.5,
             "AP1 red's R channel should still dominate in AP0; got {ap0:?}");
+    }
+
+    #[test]
+    fn bt709_to_bt2020_inverts_the_decoders_bt2020_to_bt709() {
+        // A BT.2020 source decoded into a BT.709 working space and
+        // exported as BT.2020 must come back as it went in.
+        for rgb in [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0], [0.3, 0.6, 0.1]] {
+            let in_709 = crate::camera_log::primaries_to_bt709(rgb, klipp_core::ColorPrimaries::Bt2020);
+            let back = matrix3_mul_vec(bt709_to_bt2020(), in_709);
+            assert!(approx_eq_vec(back, rgb, 1e-5), "{rgb:?} came back as {back:?}");
+        }
+    }
+
+    #[test]
+    fn luminance_weights_are_the_y_of_each_space() {
+        // The same colour has the same luminance in either working space,
+        // up to the few thousandths the D65 → D60 adaptation moves a
+        // primary's Y; white exactly.
+        use klipp_core::WorkingColorspace::*;
+        let dot = |w: [f32; 3], c: [f32; 3]| w[0] * c[0] + w[1] * c[1] + w[2] * c[2];
+        for c in [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0], [1.0, 1.0, 1.0]] {
+            let y709 = dot(luminance_weights(Rec709Linear), c);
+            let yap1 = dot(luminance_weights(AcesCG), matrix3_mul_vec(bt709_to_acescg(), c));
+            let tol = if c == [1.0; 3] { 1e-4 } else { 5e-3 };
+            assert!(approx_eq(y709, yap1, tol), "{c:?}: {y709} vs {yap1}");
+        }
     }
 }

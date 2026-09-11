@@ -1,0 +1,280 @@
+//! HDR deliveries: an HLG or PQ export writes HDR pixels, not an SDR
+//! picture tagged as HDR.
+//!
+//! Each case exports through the real `ExportJob` at 10 bits and reads
+//! back the Y'CbCr codes the file carries. Expected codes come from the
+//! published curves and BT.2408's reference levels, not from Klipp.
+//! Sources are generated with the ffmpeg CLI; the tests skip without it.
+
+use klipp_core::*;
+use klipp_render::*;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, AtomicU64};
+use std::sync::Arc;
+
+const W: u32 = 640;
+const H: u32 = 360;
+const FRAMES: u64 = 3;
+const BAND: u32 = W / 4;
+
+fn tmp(name: &str) -> PathBuf {
+    let d = std::env::temp_dir().join(format!("klipp-hdr-export-{}", std::process::id()));
+    std::fs::create_dir_all(&d).unwrap();
+    d.join(name)
+}
+
+fn ffmpeg_ok() -> bool {
+    std::process::Command::new("ffmpeg").arg("-version").output().is_ok_and(|o| o.status.success())
+}
+
+fn clip(kind: klipp_timeline::ClipKind) -> klipp_timeline::Clip {
+    let tc = |f| RationalTime::from_frames(f, 25);
+    klipp_timeline::Clip { kind, source_in: tc(0), source_out: tc(FRAMES as i64), ..klipp_timeline::Clip::gap(tc(0), tc(FRAMES as i64)) }
+}
+
+/// Export a one-clip timeline as 10-bit H.265, near-lossless, adjusted
+/// by `tweak`.
+fn export(c: klipp_timeline::Clip, media: Option<(MediaId, MediaFile)>, out: &Path, tweak: impl FnOnce(&mut ExportSettings)) {
+    let mut video = VideoTimeline::default();
+    video.sequence.fps = Fps::new(25, 1);
+    video.sequence.resolution = Resolution { width: W, height: H };
+    let mut t = klipp_timeline::Track::new("V", klipp_timeline::TrackKind::Video);
+    t.clips = vec![c];
+    video.sequence.tracks.push(t);
+    video.media.extend(media);
+    let snapshot = SequenceSnapshot {
+        fps: 25.0, fps_num: 25, fps_den: 1, width: W, height: H, sample_rate: 48000,
+        duration_frames: FRAMES, export_range: None, video,
+        audio_tracks: vec![], global_lut_path: None, subtitle_tracks: vec![], chapters: vec![],
+        working_colorspace: WorkingColorspace::Rec709Linear,
+    };
+    let mut settings = ExportSettings {
+        output_path: out.to_path_buf(), format: ExportFormat::Mp4, video_codec: ExportVideoCodec::H265,
+        resolution: None, fps: None, crf: 1, preset: EncoderPreset::Fast, audio_codec: ExportAudioCodec::Copy,
+        audio_bitrate_kbps: None, video_bitrate_kbps: None, rate_control: RateControl::Crf,
+        burn_in_subtitles: false, embed_subtitles: false, target_lufs: None, embed_chapters: false,
+        bit_depth: 10, hdr_mode: HdrMode::Pq, tone_map_op: ToneMapOp::Hable, odt: OdtChoice::MatchViewer,
+    };
+    tweak(&mut settings);
+    ExportJob {
+        id: uuid::Uuid::new_v4(), output_path: out.to_path_buf(), settings, snapshot,
+        cancel: Arc::new(AtomicBool::new(false)), progress: Arc::new(AtomicU64::new(0)),
+        hw_info: Default::default(), render_stage: Default::default(), loudness_result: Default::default(),
+        total_frames: FRAMES,
+    }
+    .run()
+    .unwrap();
+}
+
+fn media_clip(path: PathBuf, log_format: Option<LogFormat>) -> (klipp_timeline::Clip, Option<(MediaId, MediaFile)>) {
+    let id = MediaId::new();
+    (clip(klipp_timeline::ClipKind::Media { media_id: id }), Some((id, MediaFile { path, log_format })))
+}
+
+fn white() -> klipp_timeline::Clip {
+    clip(klipp_timeline::ClipKind::Generator(GeneratorData::SolidColor { color: [255, 255, 255, 255] }))
+}
+
+/// A lossless 10-bit 4:2:2 clip of four vertical bands, each a flat
+/// limited-range Y'CbCr colour. FFV1 decodes in software, like ProRes.
+fn band_clip(name: &str, bands: [[u16; 3]; 4], tags: &[&str]) -> Option<PathBuf> {
+    if !ffmpeg_ok() {
+        return None;
+    }
+    let raw = tmp(&format!("{name}.yuv"));
+    let out = tmp(&format!("{name}.mkv"));
+    let mut bytes = Vec::new();
+    for _ in 0..FRAMES {
+        for plane in 0..3 {
+            let w = if plane == 0 { W } else { W / 2 };
+            for _ in 0..H {
+                for x in 0..w {
+                    let band = (x * W / w / BAND) as usize;
+                    bytes.extend_from_slice(&bands[band][plane].to_le_bytes());
+                }
+            }
+        }
+    }
+    std::fs::write(&raw, bytes).ok()?;
+    let size = format!("{W}x{H}");
+    let mut args: Vec<&str> = vec!["-nostdin", "-y", "-v", "error", "-f", "rawvideo", "-pix_fmt", "yuv422p10le", "-s", &size, "-r", "25"];
+    args.extend_from_slice(tags);
+    args.extend_from_slice(&["-i", raw.to_str()?, "-c:v", "ffv1", "-pix_fmt", "yuv422p10le"]);
+    args.extend_from_slice(tags);
+    args.push(out.to_str()?);
+    let ok = std::process::Command::new("ffmpeg").args(&args).status().ok()?.success();
+    let _ = std::fs::remove_file(&raw);
+    ok.then_some(out)
+}
+
+/// The first frame's 10-bit Y'CbCr at (x, y): the codes in the file, no
+/// conversion.
+fn codes_at(path: &Path, x: u32, y: u32) -> [i32; 3] {
+    let out = std::process::Command::new("ffmpeg")
+        .args(["-nostdin", "-v", "error", "-i"]).arg(path)
+        .args(["-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "yuv420p10le", "-"])
+        .output().unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let s: Vec<u16> = out.stdout.chunks_exact(2).map(|b| u16::from_le_bytes([b[0], b[1]])).collect();
+    let (cw, ch) = (W / 2, H / 2);
+    let yp = &s[..(W * H) as usize];
+    let up = &s[(W * H) as usize..][..(cw * ch) as usize];
+    let vp = &s[(W * H + cw * ch) as usize..][..(cw * ch) as usize];
+    [yp[(y * W + x) as usize] as i32, up[(y / 2 * cw + x / 2) as usize] as i32, vp[(y / 2 * cw + x / 2) as usize] as i32]
+}
+
+fn band_codes(path: &Path, band: u32) -> [i32; 3] {
+    codes_at(path, band * BAND + BAND / 2, H / 2)
+}
+
+fn probe(path: &Path, args: &[&str]) -> String {
+    let out = std::process::Command::new("ffprobe")
+        .args(["-v", "error", "-select_streams", "v"]).args(args)
+        .arg(path).output().unwrap();
+    String::from_utf8_lossy(&out.stdout).into_owned()
+}
+
+fn pq_signal(nits: f64) -> f64 {
+    let (m1, m2) = (2610.0 / 16384.0, 2523.0 / 4096.0 * 128.0);
+    let (c1, c2, c3) = (3424.0 / 4096.0, 2413.0 / 4096.0 * 32.0, 2392.0 / 4096.0 * 32.0);
+    let y = (nits / 10000.0f64).powf(m1);
+    ((c1 + c2 * y) / (1.0 + c3 * y)).powf(m2)
+}
+
+/// A limited-range 10-bit luma code for a signal in [0, 1].
+fn y10(signal: f64) -> i32 {
+    (64.0 + signal * 876.0).round() as i32
+}
+
+fn pq_y(nits: f64) -> u16 {
+    y10(pq_signal(nits)) as u16
+}
+
+const TAGS_PQ: &[&str] = &["-color_range", "tv", "-colorspace", "bt2020nc", "-color_primaries", "bt2020", "-color_trc", "smpte2084"];
+
+fn assert_codes(label: &str, got: [i32; 3], want: [i32; 3], tol: i32) {
+    eprintln!("{label}: file {got:?}, want {want:?}");
+    for c in 0..3 {
+        assert!((got[c] - want[c]).abs() <= tol, "{label}: the file carries {got:?}, want {want:?}");
+    }
+}
+
+/// An ungraded PQ clip exported as PQ comes back as it went in — every
+/// level up to the 1000-nit master's peak, a saturated BT.2020 colour
+/// outside the BT.709 working gamut included — and a 4000-nit highlight is
+/// held at the peak. The export used to write the SDR tone-mapped picture,
+/// sRGB-encoded, under PQ tags: 100 nits came out as 0.56 of PQ's range.
+#[test]
+fn a_pq_clip_exports_to_pq_as_it_came() {
+    let bands = [[pq_y(5.0), 512, 512], [pq_y(203.0), 512, 512], [450, 400, 650], [pq_y(4000.0), 512, 512]];
+    let Some(src) = band_clip("pq_src", bands, TAGS_PQ) else { return };
+    let out = tmp("pq_to_pq.mp4");
+    let (c, m) = media_clip(src, None);
+    export(c, m, &out, |_| {});
+    for band in 0..3 {
+        let want = bands[band as usize].map(|v| v as i32);
+        assert_codes(&format!("band {band}"), band_codes(&out, band), want, 3);
+    }
+    assert_codes("4000 nits", band_codes(&out, 3), [pq_y(1000.0) as i32, 512, 512], 3);
+
+    let tags = probe(&out, &["-show_entries", "stream=color_space,color_transfer,color_primaries", "-of", "default=nw=1"]);
+    for want in ["color_space=bt2020nc", "color_transfer=smpte2084", "color_primaries=bt2020"] {
+        assert!(tags.contains(want), "PQ export lacks {want}: {tags}");
+    }
+    // MaxCLL is the held peak; MaxFALL the bands' average brightest
+    // channel, (5 + 203 + the colour's red + 1000) / 4.
+    let red = {
+        let (y, cr) = ((450.0 - 64.0) / 876.0, (650.0 - 512.0) / 896.0);
+        let (m1, m2) = (2610.0 / 16384.0, 2523.0 / 4096.0 * 128.0);
+        let (c1, c2, c3) = (3424.0 / 4096.0, 2413.0 / 4096.0 * 32.0, 2392.0 / 4096.0 * 32.0);
+        let p = f64::powf(y + 1.4746 * cr, 1.0 / m2);
+        10000.0 * ((p - c1).max(0.0) / (c2 - c3 * p)).powf(1.0 / m1)
+    };
+    let fall = (5.0 + 203.0 + red + 1000.0) / 4.0;
+    let side = probe(&out, &["-show_streams", "-of", "default=nw=1"]);
+    let value = |key: &str| -> f64 {
+        let line = side.lines().find(|l| l.starts_with(key)).unwrap_or_else(|| panic!("no {key} in {side}"));
+        let v = line[key.len() + 1..].split('/').map(|p| p.parse::<f64>().unwrap()).collect::<Vec<_>>();
+        if v.len() == 2 { v[0] / v[1] } else { v[0] }
+    };
+    eprintln!("MaxCLL {} MaxFALL {} mastering peak {}", value("max_content"), value("max_average"), value("max_luminance"));
+    assert!((value("max_content") - 1000.0).abs() <= 5.0);
+    assert!((value("max_average") - fall).abs() <= 3.0, "MaxFALL {} want {fall}", value("max_average"));
+    assert_eq!(value("max_luminance"), 1000.0);
+}
+
+/// SDR material sits where BT.2408 puts it in an HDR programme: white at
+/// 203 cd/m², which is PQ 58% and HLG 75%.
+#[test]
+fn sdr_white_lands_on_the_bt2408_reference_level() {
+    if !ffmpeg_ok() {
+        return;
+    }
+    let out = tmp("white_pq.mp4");
+    export(white(), None, &out, |_| {});
+    assert_codes("white, PQ", codes_at(&out, W / 2, H / 2), [y10(pq_signal(203.0)), 512, 512], 2);
+
+    // ProRes, the usual HDR mastering format, the same.
+    let out = tmp("white_pq.mov");
+    export(white(), None, &out, |s| {
+        s.video_codec = ExportVideoCodec::ProRes422HQ;
+        s.format = ExportFormat::Mov;
+    });
+    assert_codes("white, PQ ProRes", codes_at(&out, W / 2, H / 2), [y10(pq_signal(203.0)), 512, 512], 2);
+
+    let out = tmp("white_hlg.mp4");
+    export(white(), None, &out, |s| s.hdr_mode = HdrMode::Hlg);
+    assert_codes("white, HLG", codes_at(&out, W / 2, H / 2), [y10(0.75), 512, 512], 2);
+    let tags = probe(&out, &["-show_entries", "stream=color_transfer,color_primaries", "-of", "default=nw=1"]);
+    assert!(tags.contains("color_transfer=arib-std-b67") && tags.contains("color_primaries=bt2020"), "{tags}");
+    // HDR10's light-level metadata describes PQ; HLG carries none.
+    let side = probe(&out, &["-show_streams", "-of", "default=nw=1"]);
+    assert!(!side.contains("max_content"), "HLG export signals MaxCLL: {side}");
+}
+
+fn slog3_to_linear(code: f64) -> f64 {
+    if code >= 171.210_294_692_9 {
+        10f64.powf((code - 420.0) / 261.5) * 0.19 - 0.01
+    } else {
+        (code - 95.0) * 0.011_25 / (171.210_294_692_9 - 95.0)
+    }
+}
+
+/// Camera log renders for the HDR display: black at black, 18% grey at
+/// BT.2408's 26 cd/m² (PQ 38%), 90% white near SDR white, a highlight
+/// five stops over white rolled into the 1000-nit peak rather than
+/// clipped at SDR white as before.
+#[test]
+fn slog3_exports_to_pq_with_bt2408_grey_and_its_highlights() {
+    let bands = [95u16, 420, 598, 1000].map(|y| [y, 512, 512]);
+    let tags_709 = ["-color_range", "tv", "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709"];
+    let Some(src) = band_clip("slog3_src", bands, &tags_709) else { return };
+    let out = tmp("slog3_pq.mp4");
+    let (c, m) = media_clip(src, Some(LogFormat::SLog3));
+    export(c, m, &out, |_| {});
+    assert_codes("black", band_codes(&out, 0), [64, 512, 512], 2);
+    assert_codes("18% grey", band_codes(&out, 1), [y10(pq_signal(26.0)), 512, 512], 3);
+    assert!((slog3_to_linear(598.0) - 0.9).abs() < 1e-3);
+    let white = band_codes(&out, 2)[0];
+    assert!((y10(pq_signal(160.0))..=y10(pq_signal(200.0))).contains(&white), "90% white at code {white}");
+    let hot = band_codes(&out, 3)[0];
+    assert!((y10(pq_signal(900.0))..y10(pq_signal(1000.0))).contains(&hot), "highlight at code {hot}");
+}
+
+/// An ACES Rec.2100 PQ output transform writes PQ pixels, so its file is
+/// tagged PQ whatever the HDR setting says. It was tagged BT.709.
+#[test]
+fn an_aces_pq_transform_is_a_pq_delivery() {
+    if !ffmpeg_ok() {
+        return;
+    }
+    let out = tmp("aces_pq.mp4");
+    export(white(), None, &out, |s| {
+        s.hdr_mode = HdrMode::Sdr;
+        s.odt = OdtChoice::Rec2100Pq1000;
+    });
+    let tags = probe(&out, &["-show_entries", "stream=color_transfer,color_primaries,color_space", "-of", "default=nw=1"]);
+    for want in ["color_space=bt2020nc", "color_transfer=smpte2084", "color_primaries=bt2020"] {
+        assert!(tags.contains(want), "ACES PQ export lacks {want}: {tags}");
+    }
+}

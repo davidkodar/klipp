@@ -178,6 +178,22 @@ impl OdtChoice {
         OdtChoice::Srgb,
     ];
 
+    /// The ACES Rec.2100 PQ transforms: their output is PQ-encoded.
+    pub const fn is_pq(self) -> bool {
+        matches!(self, OdtChoice::Rec2100Pq1000 | OdtChoice::Rec2100Pq4000)
+    }
+
+    /// Whether the transform can serve a delivery with this transfer: the
+    /// PQ transforms only a PQ one, the SDR transforms only SDR. Match
+    /// Viewer serves every delivery.
+    pub const fn fits(self, delivery: HdrMode) -> bool {
+        match delivery {
+            HdrMode::Sdr => !self.is_pq(),
+            HdrMode::Pq => matches!(self, OdtChoice::MatchViewer | OdtChoice::Unknown) || self.is_pq(),
+            HdrMode::Hlg => matches!(self, OdtChoice::MatchViewer | OdtChoice::Unknown),
+        }
+    }
+
     /// Human-readable label for menus.
     pub const fn label(self) -> &'static str {
         match self {
@@ -261,6 +277,33 @@ impl Default for ExportSettings {
             hdr_mode: HdrMode::default(),
             tone_map_op: ToneMapOp::default(),
             odt: OdtChoice::default(),
+        }
+    }
+}
+
+impl ExportSettings {
+    /// The transfer the file carries. An ACES Rec.2100 PQ output
+    /// transform writes PQ pixels whatever `hdr_mode` says, so it is a PQ
+    /// delivery and is tagged as one.
+    pub fn delivery(&self) -> HdrMode {
+        if self.odt.is_pq() { HdrMode::Pq } else { self.hdr_mode }
+    }
+
+    /// Whether the picture is rendered for HDR — scene-referred clips keep
+    /// their highlights and the encoder writes display light as PQ or HLG
+    /// — rather than being an SDR master through an output transform. True
+    /// for an HLG or PQ delivery, except through an ACES PQ output
+    /// transform, which renders its own HDR from the SDR master.
+    pub fn renders_hdr(&self) -> bool {
+        self.delivery() != HdrMode::Sdr && !self.odt.is_pq()
+    }
+
+    /// Peak luminance of the HDR master, cd/m²: the ACES transform's own,
+    /// otherwise 1000.
+    pub fn hdr_peak_nits(&self) -> f32 {
+        match self.odt {
+            OdtChoice::Rec2100Pq4000 => 4000.0,
+            _ => 1000.0,
         }
     }
 }
@@ -3208,5 +3251,34 @@ mod gif_format_tests {
     #[test]
     fn gif_codec_uses_ffmpeg_gif_encoder() {
         assert_eq!(ExportVideoCodec::Gif.ffmpeg_codec(), "gif");
+    }
+}
+
+#[cfg(test)]
+mod delivery_tests {
+    use super::*;
+
+    /// The HDR setting picks the delivery; an ACES PQ transform makes it
+    /// PQ regardless, and renders its own HDR from the SDR master.
+    #[test]
+    fn delivery_follows_the_hdr_setting_and_the_pq_transforms() {
+        let with = |hdr_mode, odt| ExportSettings { hdr_mode, odt, ..Default::default() };
+        let s = with(HdrMode::Sdr, OdtChoice::MatchViewer);
+        assert_eq!((s.delivery(), s.renders_hdr()), (HdrMode::Sdr, false));
+        let s = with(HdrMode::Pq, OdtChoice::MatchViewer);
+        assert_eq!((s.delivery(), s.renders_hdr(), s.hdr_peak_nits()), (HdrMode::Pq, true, 1000.0));
+        let s = with(HdrMode::Hlg, OdtChoice::MatchViewer);
+        assert_eq!((s.delivery(), s.renders_hdr()), (HdrMode::Hlg, true));
+        let s = with(HdrMode::Sdr, OdtChoice::Rec2100Pq4000);
+        assert_eq!((s.delivery(), s.renders_hdr(), s.hdr_peak_nits()), (HdrMode::Pq, false, 4000.0));
+    }
+
+    #[test]
+    fn output_transforms_fit_their_deliveries() {
+        for odt in OdtChoice::ALL {
+            assert_eq!(odt.fits(HdrMode::Sdr), !odt.is_pq(), "{odt:?}");
+            assert_eq!(odt.fits(HdrMode::Hlg), odt == OdtChoice::MatchViewer, "{odt:?}");
+            assert_eq!(odt.fits(HdrMode::Pq), odt == OdtChoice::MatchViewer || odt.is_pq(), "{odt:?}");
+        }
     }
 }

@@ -364,6 +364,11 @@ enum ExportPath {
     ToneMapSrgb,
     AcesRec709,
     Odt(Option<[[f32; 3]; 3]>),
+    /// An HDR delivery's display light (1.0 = 203 cd/m², see
+    /// `crate::hdr`): to BT.2020, the peak held, PQ-encoded.
+    Pq { to_2020: [[f32; 3]; 3], peak_nits: f32 },
+    /// The same, HLG-encoded on the nominal 1000-nit display.
+    Hlg { to_2020: [[f32; 3]; 3] },
 }
 
 impl ExportDisplay {
@@ -390,9 +395,37 @@ impl ExportDisplay {
         Self { tone_map_op, odt, path }
     }
 
+    /// An HLG or PQ delivery of an HDR render (display light, 1.0 = SDR
+    /// white at 203 cd/m²): BT.2020 primaries, the transfer's encode, the
+    /// picture held at `peak_nits`. An SDR `delivery` gives the viewer's
+    /// sRGB encode.
+    pub fn hdr(working_space: klipp_core::WorkingColorspace, delivery: klipp_core::HdrMode, peak_nits: f32) -> Self {
+        let to_2020 = crate::primaries::working_to_bt2020(working_space);
+        let path = match delivery {
+            klipp_core::HdrMode::Pq => ExportPath::Pq { to_2020, peak_nits },
+            klipp_core::HdrMode::Hlg => ExportPath::Hlg { to_2020 },
+            klipp_core::HdrMode::Sdr => ExportPath::ToneMapSrgb,
+        };
+        Self { tone_map_op: ToneMapOp::None, odt: OdtChoice::MatchViewer, path }
+    }
+
     /// Display-encoded RGB, clamped to `[0, 1]`.
     #[inline]
     pub fn encode(&self, rgb: [f32; 3]) -> [f32; 3] {
+        self.encode_with(rgb, false).0
+    }
+
+    /// [`encode`](Self::encode), and for a PQ output the light the pixel
+    /// will show, cd/m², by its brightest channel — what HDR10's MaxCLL /
+    /// MaxFALL are made of. 0 for other outputs.
+    #[inline]
+    pub fn encode_light(&self, rgb: [f32; 3]) -> ([f32; 3], f32) {
+        self.encode_with(rgb, true)
+    }
+
+    #[inline(always)]
+    fn encode_with(&self, rgb: [f32; 3], want_light: bool) -> ([f32; 3], f32) {
+        let mut light = 0.0;
         let e = match self.path {
             ExportPath::ToneMapSrgb => {
                 // Clamp negatives before the tone map: ACES' matrix path
@@ -406,16 +439,29 @@ impl ExportDisplay {
                     Some(m) => crate::primaries::matrix3_mul_vec(m, rgb),
                     None => rgb,
                 };
-                match self.odt {
+                let e = match self.odt {
                     OdtChoice::Rec709Sdr => crate::aces::acescg_to_rec709_sdr(ap1),
                     OdtChoice::Rec2100Pq1000 => crate::aces::acescg_to_rec2100_pq_1000_nit(ap1),
                     OdtChoice::Rec2100Pq4000 => crate::aces::acescg_to_rec2100_pq_4000_nit(ap1),
                     OdtChoice::DciP3D65_48 => crate::aces::acescg_to_dcip3_d65_48nit(ap1),
                     OdtChoice::MatchViewer | OdtChoice::Srgb | OdtChoice::Unknown => ap1,
+                };
+                if want_light && self.odt.is_pq() {
+                    light = crate::hdr::pq_decode_nits(e[0].max(e[1]).max(e[2]).clamp(0.0, 1.0));
                 }
+                e
             }
+            ExportPath::Pq { to_2020, peak_nits } => {
+                let nits = crate::hdr::display_light_to_nits(crate::primaries::matrix3_mul_vec(to_2020, rgb), peak_nits);
+                light = nits[0].max(nits[1]).max(nits[2]);
+                nits.map(crate::hdr::pq_encode_nits)
+            }
+            ExportPath::Hlg { to_2020 } => crate::hdr::hlg_encode_nits(crate::hdr::display_light_to_nits(
+                crate::primaries::matrix3_mul_vec(to_2020, rgb),
+                crate::hdr::HLG_NOMINAL_PEAK_NITS,
+            )),
         };
-        [e[0].clamp(0.0, 1.0), e[1].clamp(0.0, 1.0), e[2].clamp(0.0, 1.0)]
+        ([e[0].clamp(0.0, 1.0), e[1].clamp(0.0, 1.0), e[2].clamp(0.0, 1.0)], light)
     }
 }
 
@@ -427,23 +473,31 @@ fn export_pixels<T: Copy + Default + Send + Sync>(
     odt: OdtChoice,
     q: impl Fn(f32) -> T + Sync,
 ) -> Vec<T> {
-    use rayon::prelude::*;
-    assert!(
-        linear_rgba.len() % 4 == 0,
-        "display_transform_for_export requires RGBA-packed input",
-    );
-    let d = ExportDisplay::new(tone_map_op, working_space, odt);
-    let mut out = vec![T::default(); linear_rgba.len()];
-    out.par_chunks_exact_mut(4)
-        .zip(linear_rgba.par_chunks_exact(4))
-        .for_each(|(dst, chunk)| {
-            let e = d.encode([chunk[0], chunk[1], chunk[2]]);
-            dst[0] = q(e[0]);
-            dst[1] = q(e[1]);
-            dst[2] = q(e[2]);
-            dst[3] = q(chunk[3]);
-        });
-    out
+    ExportDisplay::new(tone_map_op, working_space, odt).frame(linear_rgba, q)
+}
+
+impl ExportDisplay {
+    /// The transform over an RGBA frame, each channel quantised by `q`
+    /// (alpha passes through `q` untransformed).
+    pub fn frame<T: Copy + Default + Send + Sync>(&self, linear_rgba: &[f32], q: impl Fn(f32) -> T + Sync) -> Vec<T> {
+        use rayon::prelude::*;
+        assert!(
+            linear_rgba.len() % 4 == 0,
+            "display_transform_for_export requires RGBA-packed input",
+        );
+        let d = *self;
+        let mut out = vec![T::default(); linear_rgba.len()];
+        out.par_chunks_exact_mut(4)
+            .zip(linear_rgba.par_chunks_exact(4))
+            .for_each(|(dst, chunk)| {
+                let e = d.encode([chunk[0], chunk[1], chunk[2]]);
+                dst[0] = q(e[0]);
+                dst[1] = q(e[1]);
+                dst[2] = q(e[2]);
+                dst[3] = q(chunk[3]);
+            });
+        out
+    }
 }
 
 #[cfg(test)]

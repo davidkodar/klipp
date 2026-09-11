@@ -36,6 +36,14 @@
 //!   output. (The viewer applied it to the primary track only.)
 //! * **Background** is black: the composite is flattened over it unless
 //!   the caller asks to keep alpha.
+//! * **HDR deliveries** (`RenderOptions::hdr_peak_nits`) render display
+//!   light instead of the SDR picture, 1.0 being SDR white at 203 cd/m²:
+//!   scene-referred clips end in `klipp_color::hdr::apply_hdr_display_light`
+//!   rather than the SDR tone map, so PQ keeps its own luminance, HLG takes
+//!   its OOTF and camera log rolls into the peak; SDR clips are untouched,
+//!   their white at 203 nits as BT.2408 places it. Effects then see the
+//!   highlights too. The global LUT applies to the SDR range and the light
+//!   above SDR white passes through it. The viewer renders SDR.
 //! * **Slow motion with frame blending** (a `SpeedRamp` effect with blend
 //!   mode 1, the clip running below real time) mixes the two source
 //!   frames around the source time, weighted by where it falls between
@@ -317,17 +325,15 @@ pub struct GlobalLut {
 }
 
 /// Per-render choices that are not part of the timeline.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Default)]
 pub struct RenderOptions {
     /// Leave the composite's alpha as is instead of flattening over black
     /// (for exports with an alpha channel).
     pub keep_alpha: bool,
-}
-
-impl Default for RenderOptions {
-    fn default() -> Self {
-        Self { keep_alpha: false }
-    }
+    /// Render for an HDR delivery mastered to this peak, cd/m²: display
+    /// light, 1.0 = SDR white at 203 nits (see the rules above). `None`
+    /// renders the SDR picture.
+    pub hdr_peak_nits: Option<f32>,
 }
 
 /// The resources rendering needs, owned per thread: the viewer has one,
@@ -349,6 +355,8 @@ pub struct Renderer {
     /// The current render's inspection request, and what it has found.
     inspect: Inspect,
     found: Inspection,
+    /// The current render's `RenderOptions::hdr_peak_nits`.
+    hdr_peak: Option<f32>,
 }
 
 /// A rendered clip, ready to composite: display-referred linear RGBA,
@@ -398,6 +406,7 @@ impl Renderer {
             rsc_motion: HashMap::new(),
             inspect: Inspect::default(),
             found: Inspection::default(),
+            hdr_peak: None,
         }
     }
 
@@ -480,8 +489,10 @@ impl Renderer {
         let t0 = Instant::now();
         self.inspect = inspect;
         self.found = Inspection::default();
+        self.hdr_peak = opts.hdr_peak_nits;
         let out = self.render_stack(seq, time, width, height, src, opts);
         self.inspect = Inspect::default();
+        self.hdr_peak = None;
         // A solo belongs to the inspected clip; leave the executor clean
         // for whoever drives it next.
         self.executor.set_solo_node(None);
@@ -629,10 +640,15 @@ impl Renderer {
 
         if let Some(lut) = self.global_lut.take() {
             let t = Instant::now();
+            let above_white = if self.hdr_peak.is_some() { split_above_white(&mut acc) } else { None };
             acc = match self.gpu() {
                 Some(gpu) => gpu.apply_3d_lut_gpu(acc, width, height, &lut.lut.data, lut.lut.size as u32, lut.opacity),
                 None => klipp_effects::apply_3d_lut(acc, &lut.lut.data, lut.lut.size as u32, lut.opacity),
             };
+            if let Some(over) = above_white {
+                use rayon::prelude::*;
+                acc.par_iter_mut().zip(over.par_iter()).for_each(|(v, o)| *v += o);
+            }
             self.global_lut = Some(lut);
             self.found.stats.lut_ms += ms_since(t);
         }
@@ -709,13 +725,13 @@ impl Renderer {
         if self.inspect.ungraded && self.inspect.clip == Some(clip.id) {
             let mut before = (*input.pixels()).clone();
             if let Some(t) = hdr {
-                klipp_color::hdr::apply_hdr_display_tonemap(&mut before, t);
+                self.display_render(&mut before, t);
             }
             self.found.ungraded = Some(before);
         }
         let mut pixels = self.grade(clip, input, clip_time, fps, width, height);
         if let Some(t) = hdr {
-            klipp_color::hdr::apply_hdr_display_tonemap(&mut pixels, t);
+            self.display_render(&mut pixels, t);
         }
         let (fx, opacity) = clip_effects(clip, time, fps, transforms.get(&clip.id).copied());
         self.prepare_temporal_effects(clip, &fx, time, fps, height, src);
@@ -730,6 +746,20 @@ impl Renderer {
             None => self.effects(&fx, pixels, clip_time, width, height),
         };
         Some((pixels, opacity))
+    }
+
+    /// A scene-referred clip's last step of its own: the SDR display tone
+    /// map, or for an HDR delivery its display light.
+    fn display_render(&self, pixels: &mut [f32], t: klipp_color::hdr::HdrTransfer) {
+        match self.hdr_peak {
+            Some(peak) => klipp_color::hdr::apply_hdr_display_light(
+                pixels,
+                t,
+                klipp_color::primaries::luminance_weights(self.working),
+                peak,
+            ),
+            None => klipp_color::hdr::apply_hdr_display_tonemap(pixels, t),
+        }
     }
 
     /// Upload the per-frame data the GPU's stabilisation and rolling-shutter
@@ -1348,6 +1378,27 @@ fn fit(p: Arc<Vec<f32>>, w: u32, h: u32, ow: u32, oh: u32) -> Arc<Vec<f32>> {
 
 /// A source frame as linear RGBA at the output size: scene-linear for
 /// scene-referred sources, whose transfer comes back alongside.
+/// Take the light above SDR white out of an HDR picture: clamp its
+/// colour channels to 1 and return what was over, for adding back after a
+/// step (the LUT) that only knows the SDR range. `None` when nothing is.
+fn split_above_white(px: &mut [f32]) -> Option<Vec<f32>> {
+    use rayon::prelude::*;
+    let is_colour_over = |(i, v): (usize, &f32)| i % 4 != 3 && *v > 1.0;
+    if !px.par_iter().enumerate().any(is_colour_over) {
+        return None;
+    }
+    let mut over = vec![0.0f32; px.len()];
+    px.par_chunks_exact_mut(4).zip(over.par_chunks_exact_mut(4)).for_each(|(p, o)| {
+        for c in 0..3 {
+            if p[c] > 1.0 {
+                o[c] = p[c] - 1.0;
+                p[c] = 1.0;
+            }
+        }
+    });
+    Some(over)
+}
+
 fn to_linear(f: SourceFrame, width: u32, height: u32) -> (Arc<Vec<f32>>, Option<klipp_color::hdr::HdrTransfer>) {
     match f.pixels {
         SourcePixels::Linear(p) => (fit(p, f.width, f.height, width, height), None),

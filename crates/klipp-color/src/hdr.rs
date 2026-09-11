@@ -20,10 +20,10 @@
 //!
 //! # Scope
 //!
-//! This module handles the *statistics* side of HDR10 (MaxCLL / MaxFALL
-//! computation + mastering-display defaults). Actual PQ/HLG pixel
-//! encoding lives in a later phase — today the encoder still writes
-//! sRGB pixels and only *tags* them as HDR via side-data.
+//! HDR sources on the way in (code values → scene-linear, the SDR display
+//! tone map), HDR deliveries on the way out (display light, the PQ and HLG
+//! encodes, BT.2408 placement of SDR material), and the HDR10 statistics
+//! (MaxCLL / MaxFALL, mastering-display defaults).
 
 /// Scale factor mapping `1.0 linear` to nits (cd/m²).
 ///
@@ -32,10 +32,11 @@
 /// / highlight cap relationships break otherwise.
 pub const NITS_PER_LINEAR: f32 = 100.0;
 
-/// Running light-level statistics for an HDR10 master.
+/// Running light-level statistics for an HDR10 master (CTA-861.3).
 ///
-/// Fed one linear-light frame at a time via [`Self::update`]; the final
-/// MaxCLL / MaxFALL are read out at export time via
+/// Fed one frame at a time via [`Self::add_frame`] with what the file
+/// actually carries — the encoder measures the signal it writes, after
+/// the peak is held — and read out at finalise via
 /// [`Self::max_cll_nits`] / [`Self::max_fall_nits`].
 ///
 /// Both values are expressed in **cd/m² (nits)**, rounded to the
@@ -45,11 +46,10 @@ pub const NITS_PER_LINEAR: f32 = 100.0;
 /// field doesn't need a type change.
 #[derive(Debug, Clone, Default)]
 pub struct LightLevelStats {
-    /// Running max of the per-pixel max-channel value across all
-    /// frames. Linear units.
-    max_cll_linear: f32,
-    /// Running max of per-frame average luminance. Linear units.
-    max_fall_linear: f32,
+    /// Brightest pixel so far, cd/m².
+    max_cll: f32,
+    /// Brightest frame average so far, cd/m².
+    max_fall: f32,
     /// Number of frames observed — lets us detect an empty stream.
     frames: u64,
 }
@@ -65,60 +65,31 @@ impl LightLevelStats {
         self.frames
     }
 
-    /// Update the stats with one linear-light RGBA frame.
-    ///
-    /// * `linear_rgba.len()` must be `width * height * 4`.
-    /// * Alpha is ignored — MaxCLL / MaxFALL are light-level statistics.
-    /// * Negative channel values (legal mid-pipeline) clamp to zero
-    ///   for the purpose of stats; they don't contribute brightness.
-    pub fn update(&mut self, linear_rgba: &[f32]) {
-        if linear_rgba.is_empty() {
-            return;
-        }
-        let mut frame_max = 0.0_f32;
-        let mut frame_sum = 0.0_f64;
-        let mut pixels: u64 = 0;
-        for chunk in linear_rgba.chunks_exact(4) {
-            let r = chunk[0].max(0.0);
-            let g = chunk[1].max(0.0);
-            let b = chunk[2].max(0.0);
-            frame_max = frame_max.max(r.max(g).max(b));
-            // BT.2020 luma coefficients — matches the HDR primaries we
-            // tag exports with. Done in linear light, which is the
-            // only domain where these weights are correct.
-            let y = 0.262_7 * r + 0.678_0 * g + 0.059_3 * b;
-            frame_sum += y as f64;
-            pixels += 1;
-        }
-        if pixels == 0 {
-            return;
-        }
-        let frame_avg = (frame_sum / pixels as f64) as f32;
-        if frame_max > self.max_cll_linear {
-            self.max_cll_linear = frame_max;
-        }
-        if frame_avg > self.max_fall_linear {
-            self.max_fall_linear = frame_avg;
-        }
+    /// One frame's light levels, cd/m²: its brightest pixel and its
+    /// average pixel, each pixel measured by its brightest channel
+    /// (CTA-861.3's maxRGB, for both).
+    pub fn add_frame(&mut self, max_nits: f32, average_nits: f32) {
+        self.max_cll = self.max_cll.max(max_nits);
+        self.max_fall = self.max_fall.max(average_nits);
         self.frames += 1;
     }
 
     /// Max Content Light Level in cd/m², rounded to nearest integer.
     pub fn max_cll_nits(&self) -> u32 {
-        to_nits_u32(self.max_cll_linear)
+        to_nits_u32(self.max_cll)
     }
 
     /// Max Frame-Average Light Level in cd/m², rounded to nearest integer.
     pub fn max_fall_nits(&self) -> u32 {
-        to_nits_u32(self.max_fall_linear)
+        to_nits_u32(self.max_fall)
     }
 }
 
-fn to_nits_u32(linear: f32) -> u32 {
-    if !(linear > 0.0) {
+fn to_nits_u32(nits: f32) -> u32 {
+    if !(nits > 0.0) {
         return 0;
     }
-    let nits = (linear * NITS_PER_LINEAR).round();
+    let nits = nits.round();
     if nits >= u32::MAX as f32 {
         u32::MAX
     } else {
@@ -159,7 +130,9 @@ pub const DEFAULT_MASTERING_MIN_LUMA_CD_M2: f32 = 0.005;
 //              intact.
 //   output     `apply_hdr_display_tonemap` brings the graded clip to
 //              display-referred linear; composite and the sRGB display
-//              encode then proceed exactly as for SDR clips.
+//              encode then proceed exactly as for SDR clips. An HDR
+//              delivery takes `apply_hdr_display_light` instead (see
+//              "HDR deliveries" below).
 //
 // The tone map used to run inside the decoder, which meant every grade
 // operated on an image whose highlights had already been compressed to
@@ -316,6 +289,173 @@ pub fn apply_hdr_display_tonemap(rgba: &mut [f32], transfer: HdrTransfer) {
         px[1] = hdr_display_tonemap(px[1], k);
         px[2] = hdr_display_tonemap(px[2], k);
     });
+}
+
+// ─── HDR deliveries ───────────────────────────────────────────────────
+//
+// An HLG or PQ export renders every clip to *display light* instead of
+// the SDR display picture, in units where 1.0 is SDR reference white,
+// 203 cd/m² (BT.2408):
+//
+//   SDR clips, titles, generators   unchanged — their white lands at
+//                                   203 nits, as BT.2408 places SDR
+//                                   material in an HDR programme.
+//   PQ sources                      their own absolute luminance: an
+//                                   ungraded PQ clip exports as it came.
+//   HLG sources                     the BT.2100 HLG OOTF on a 1000-nit
+//                                   display (75% signal → 203 nits).
+//   camera log                      the BT.2100 PQ reference OOTF, exposed
+//                                   so 18% grey lands at BT.2408's 26
+//                                   nits, highlights rolled off into the
+//                                   master's peak.
+//
+// The encoder then converts to BT.2020, holds the peak, and writes PQ
+// (`pq_encode_nits`) or HLG (`hlg_encode_nits`).
+
+/// SDR reference white in an HDR picture, cd/m² (ITU-R BT.2408): where an
+/// HDR delivery puts SDR white, and the unit of its display light.
+pub const HDR_REFERENCE_WHITE_NITS: f32 = 203.0;
+
+/// Nominal peak of the BT.2100 HLG reference display, cd/m².
+pub const HLG_NOMINAL_PEAK_NITS: f32 = 1000.0;
+
+/// BT.2100 HLG system gamma at the nominal 1000-nit peak.
+const HLG_GAMMA: f32 = 1.2;
+
+/// Exposure from camera-log scene reflectance to the BT.2100 PQ reference
+/// OOTF's input: 18% grey → 26 cd/m², BT.2408's grey. Diffuse white
+/// (100%) then lands at 205 nits, next to SDR white.
+pub const LOG_HDR_EXPOSURE: f32 = 0.031_024_16;
+
+/// Where the camera-log highlight roll-off starts, as a fraction of the
+/// master's peak. Below it the reference OOTF is untouched.
+const LOG_HDR_KNEE: f32 = 0.5;
+
+/// The BT.2100 PQ reference OOTF: scene light `e` (1.0 = the OOTF's
+/// 10 000-nit top) → display light, cd/m². The BT.709 OETF followed by
+/// the BT.1886 EOTF, with its toe and 1.2-ish system gamma.
+fn pq_reference_ootf(e: f32) -> f32 {
+    let x = 59.520_8 * e.max(0.0);
+    let ep = if x <= 0.018 { 4.5 * x } else { 1.099 * x.powf(0.45) - 0.099 };
+    100.0 * ep.powf(2.4)
+}
+
+/// Compress `x` above `knee` so it approaches `peak` without reaching it:
+/// slope 1 at the knee, so the curve has no corner.
+fn roll_off(x: f32, knee: f32, peak: f32) -> f32 {
+    if x <= knee {
+        return x;
+    }
+    let t = (x - knee) / (peak - knee);
+    knee + (peak - knee) * t / (1.0 + t)
+}
+
+/// A graded scene-linear pixel → HDR display light (1.0 = 203 cd/m²).
+/// `luma` is the working space's [`crate::primaries::luminance_weights`],
+/// for the HLG OOTF; `peak_nits` the master's peak, for the camera-log
+/// roll-off. PQ and HLG sources are display light already and are not
+/// rolled off: the encoder holds the peak.
+pub fn hdr_display_light(rgb: [f32; 3], transfer: HdrTransfer, luma: [f32; 3], peak_nits: f32) -> [f32; 3] {
+    let nits = match transfer {
+        HdrTransfer::Pq => rgb.map(|c| c * NITS_PER_LINEAR),
+        HdrTransfer::Hlg => {
+            // Undo the decoder's PQ-sized scale: HLG scene light, 0..1.
+            // Channels stay signed: a BT.2020 colour outside the working
+            // gamut is negative here and must survive the trip back.
+            let e = rgb.map(|c| c / transfer.scene_scale());
+            let ys = luma[0] * e[0] + luma[1] * e[1] + luma[2] * e[2];
+            let gain = if ys > 0.0 { HLG_NOMINAL_PEAK_NITS * ys.powf(HLG_GAMMA - 1.0) } else { 0.0 };
+            e.map(|c| c * gain)
+        }
+        HdrTransfer::Log(_) => {
+            // Odd-symmetric, for the same reason.
+            let n = rgb.map(|c| pq_reference_ootf(c.abs() * LOG_HDR_EXPOSURE).copysign(c));
+            // Roll off the brightest channel and scale the others with it,
+            // so a highlight keeps its hue as it compresses.
+            let m = n[0].max(n[1]).max(n[2]);
+            let rolled = roll_off(m, LOG_HDR_KNEE * peak_nits, peak_nits);
+            let k = if m > 0.0 { rolled / m } else { 1.0 };
+            n.map(|c| c * k)
+        }
+    };
+    nits.map(|c| c / HDR_REFERENCE_WHITE_NITS)
+}
+
+/// [`hdr_display_light`] over a graded scene-linear RGBA frame, in place:
+/// the last step of a scene-referred clip in an HDR delivery, where an SDR
+/// one runs [`apply_hdr_display_tonemap`]. Alpha is untouched.
+pub fn apply_hdr_display_light(rgba: &mut [f32], transfer: HdrTransfer, luma: [f32; 3], peak_nits: f32) {
+    use rayon::prelude::*;
+    rgba.par_chunks_exact_mut(4).for_each(|px| {
+        let d = hdr_display_light([px[0], px[1], px[2]], transfer, luma, peak_nits);
+        px[..3].copy_from_slice(&d);
+    });
+}
+
+/// BT.2020 display light (1.0 = 203 cd/m²) → absolute cd/m², clamped to
+/// `[0, peak_nits]`. Over the peak the pixel is scaled down as a whole, so
+/// a highlight too bright for the master keeps its hue instead of turning
+/// towards white or a primary channel by channel.
+#[inline]
+pub fn display_light_to_nits(rgb2020: [f32; 3], peak_nits: f32) -> [f32; 3] {
+    let n = rgb2020.map(|c| (c * HDR_REFERENCE_WHITE_NITS).max(0.0));
+    let m = n[0].max(n[1]).max(n[2]);
+    if m > peak_nits { n.map(|c| c * (peak_nits / m)) } else { n }
+}
+
+/// Entries in [`pq_encode_nits`]'s table.
+const PQ_TABLE_SIZE: usize = 1024;
+
+/// Absolute cd/m² → PQ signal (SMPTE ST 2084), `[0, 1]`; above 10 000
+/// nits, 1.
+///
+/// By table: the curve sampled at the eighth root of luminance, where it
+/// is nearly straight, and interpolated. That is within 3e-5 of the f32
+/// curve everywhere (a thirtieth of a 10-bit code) at a fraction of its
+/// two `powf`s per channel, which cost a 4K export ~20 ms a frame.
+#[inline]
+pub fn pq_encode_nits(nits: f32) -> f32 {
+    static TABLE: std::sync::OnceLock<Vec<f32>> = std::sync::OnceLock::new();
+    let table = TABLE.get_or_init(|| {
+        (0..=PQ_TABLE_SIZE)
+            .map(|i| crate::camera_log::linear_to_pq((i as f32 / PQ_TABLE_SIZE as f32).powi(8)))
+            .collect()
+    });
+    let t = (nits / PQ_PEAK_NITS).clamp(0.0, 1.0).sqrt().sqrt().sqrt() * PQ_TABLE_SIZE as f32;
+    let i = (t as usize).min(PQ_TABLE_SIZE - 1);
+    let f = t - i as f32;
+    table[i] + (table[i + 1] - table[i]) * f
+}
+
+/// PQ signal → absolute cd/m².
+#[inline]
+pub fn pq_decode_nits(signal: f32) -> f32 {
+    crate::camera_log::pq_to_linear(signal) * PQ_PEAK_NITS
+}
+
+/// HLG OETF (BT.2100): scene light `[0, 1]` → signal `[0, 1]`.
+#[inline]
+pub fn hlg_oetf(e: f32) -> f32 {
+    let (a, b, c) = (0.178_832_77_f32, 0.284_668_92_f32, 0.559_910_73_f32);
+    let e = e.clamp(0.0, 1.0);
+    if e <= 1.0 / 12.0 { (3.0 * e).sqrt() } else { a * (12.0 * e - b).ln() + c }
+}
+
+/// BT.2020 display light in cd/m² (at most the HLG display's 1000) → HLG
+/// signal: the inverse HLG OOTF on the nominal display, then the OETF.
+/// The BT.2100 conversion from display light, so SDR white at 203 nits
+/// arrives at the 75% signal BT.2408 gives it.
+#[inline]
+pub fn hlg_encode_nits(nits2020: [f32; 3]) -> [f32; 3] {
+    const Y2020: [f32; 3] = [0.2627, 0.6780, 0.0593];
+    let f = nits2020.map(|c| c.clamp(0.0, HLG_NOMINAL_PEAK_NITS) / HLG_NOMINAL_PEAK_NITS);
+    let yd = Y2020[0] * f[0] + Y2020[1] * f[1] + Y2020[2] * f[2];
+    if yd <= 0.0 {
+        return [0.0; 3];
+    }
+    // Fd = Ys^(γ-1)·E with Yd = Ys^γ, so E = Fd·Yd^((1-γ)/γ).
+    let k = yd.powf((1.0 - HLG_GAMMA) / HLG_GAMMA);
+    f.map(|c| hlg_oetf(c * k))
 }
 
 /// Every 10-bit code value → scene-linear. Evaluating the curve 1024
@@ -606,6 +746,101 @@ mod hdr_io_tests {
         assert!((out[2] - red).abs() < 1e-5);
         assert_eq!(out[3], 1.0);
     }
+
+    const LUMA_709: [f32; 3] = [0.2126, 0.7152, 0.0722];
+
+    fn close(a: f32, b: f32, tol: f32) -> bool {
+        (a - b).abs() <= tol
+    }
+
+    /// BT.2408's reference levels, which the HDR encodes are built on:
+    /// SDR white (203 nits) is PQ 58% and HLG 75%; 18% grey (26 nits) is
+    /// 38% in both.
+    #[test]
+    fn hdr_encodes_hit_the_bt2408_reference_levels() {
+        assert!(close(pq_encode_nits(203.0), 0.5807, 5e-4), "{}", pq_encode_nits(203.0));
+        assert!(close(pq_encode_nits(26.0), 0.3800, 5e-4));
+        assert!(close(pq_decode_nits(pq_encode_nits(640.0)), 640.0, 0.05));
+        let white = hlg_encode_nits([203.0; 3]);
+        assert!(white.iter().all(|&c| close(c, 0.75, 2e-3)), "{white:?}");
+        let grey = hlg_encode_nits([26.0; 3]);
+        assert!(grey.iter().all(|&c| close(c, 0.38, 5e-3)), "{grey:?}");
+        assert_eq!(hlg_encode_nits([1000.0; 3]), [1.0; 3]);
+        assert_eq!(hlg_encode_nits([0.0; 3]), [0.0; 3]);
+    }
+
+    #[test]
+    fn pq_encode_by_table_follows_the_curve() {
+        let mut worst = 0.0f32;
+        for i in 0..=100_000 {
+            let nits = 10_000.0 * (i as f32 / 100_000.0).powi(5);
+            let exact = crate::camera_log::linear_to_pq(nits / PQ_PEAK_NITS);
+            worst = worst.max((pq_encode_nits(nits) - exact).abs());
+        }
+        // A thirtieth of a 10-bit code; the f32 curve itself is only good
+        // to about 1e-5 (its exponent of 78.8 amplifies rounding).
+        assert!(worst < 3e-5, "table strays {worst} from the curve");
+        assert_eq!(pq_encode_nits(0.0), crate::camera_log::linear_to_pq(0.0));
+        assert!((pq_encode_nits(20_000.0) - 1.0).abs() < 1e-6);
+    }
+
+    /// An ungraded PQ clip reaches the delivery at its own luminance.
+    #[test]
+    fn pq_display_light_is_the_sources_own_luminance() {
+        for nits in [0.5_f32, 26.0, 203.0, 640.0, 1000.0, 4000.0] {
+            let s = hdr_code_to_scene_linear(pq_encode_nits(nits), HdrTransfer::Pq);
+            let d = hdr_display_light([s; 3], HdrTransfer::Pq, LUMA_709, 1000.0);
+            assert!(close(d[0] * HDR_REFERENCE_WHITE_NITS, nits, nits * 2e-3), "{nits} → {}", d[0] * 203.0);
+        }
+    }
+
+    /// HLG in, HLG out: the OOTF there and its inverse back give the
+    /// signal it came with, colours included.
+    #[test]
+    fn hlg_display_light_round_trips_through_the_hlg_encode() {
+        for code in [[0.75_f32; 3], [0.38; 3], [0.9, 0.5, 0.3], [0.2, 0.6, 0.8]] {
+            let s = code.map(|c| hdr_code_to_scene_linear(c, HdrTransfer::Hlg));
+            let d = hdr_display_light(s, HdrTransfer::Hlg, [0.2627, 0.6780, 0.0593], 1000.0);
+            let back = hlg_encode_nits(d.map(|c| c * HDR_REFERENCE_WHITE_NITS));
+            for ch in 0..3 {
+                assert!(close(back[ch], code[ch], 1e-3), "{code:?} → {back:?}");
+            }
+        }
+        // 75% HLG is SDR white.
+        let s = hdr_code_to_scene_linear(0.75, HdrTransfer::Hlg);
+        let d = hdr_display_light([s; 3], HdrTransfer::Hlg, LUMA_709, 1000.0);
+        assert!(close(d[0], 1.0, 5e-3), "{}", d[0]);
+    }
+
+    /// Camera log: grey at BT.2408's 26 nits, diffuse white beside SDR
+    /// white, highlights rising monotonically into the peak and never
+    /// through it, a bright colour keeping its hue as it rolls off.
+    #[test]
+    fn log_display_light_places_grey_and_rolls_highlights_into_the_peak() {
+        let log = HdrTransfer::Log(klipp_core::ColorTransfer::SLog3);
+        let nits = |s: f32| hdr_display_light([s; 3], log, LUMA_709, 1000.0)[0] * HDR_REFERENCE_WHITE_NITS;
+        assert!(close(nits(0.18), 26.0, 0.05), "grey at {}", nits(0.18));
+        assert!(close(nits(1.0), 205.0, 1.0), "white at {}", nits(1.0));
+        let mut prev = 0.0;
+        for i in 1..=400 {
+            let n = nits(i as f32 * 0.1);
+            assert!(n > prev && n < 1000.0, "stop {i}: {n}");
+            prev = n;
+        }
+        assert!(prev > 900.0, "40x white should be near the peak, got {prev}");
+        let hot = hdr_display_light([30.0, 15.0, 3.0], log, LUMA_709, 1000.0);
+        let plain = [30.0f32, 15.0, 3.0].map(|c| pq_reference_ootf(c * LOG_HDR_EXPOSURE));
+        assert!(close(hot[1] / hot[0], plain[1] / plain[0], 1e-4));
+        assert!(close(hot[2] / hot[0], plain[2] / plain[0], 1e-4));
+    }
+
+    #[test]
+    fn display_light_holds_the_peak_without_turning_hue() {
+        let n = display_light_to_nits([10.0, 5.0, 1.0], 1000.0);
+        assert!(close(n[0], 1000.0, 1e-2));
+        assert!(close(n[1], 500.0, 1e-2) && close(n[2], 100.0, 1e-2));
+        assert_eq!(display_light_to_nits([1.0, -0.1, 0.5], 1000.0), [203.0, 0.0, 101.5]);
+    }
 }
 
 #[cfg(test)]
@@ -621,74 +856,16 @@ mod tests {
     }
 
     #[test]
-    fn sdr_diffuse_white_master_reports_100_nits() {
-        // A pure-white 1.0-linear frame is the SDR reference —
-        // MaxCLL should land at NITS_PER_LINEAR (100 nits).
+    fn stats_keep_the_brightest_pixel_and_the_brightest_frame() {
         let mut stats = LightLevelStats::new();
-        let frame = vec![1.0_f32; 16 * 16 * 4];
-        stats.update(&frame);
-        assert_eq!(stats.max_cll_nits(), 100);
-        // Full white frame → MaxFALL equals MaxCLL (per BT.2020 luma
-        // coefficients, pure white = Y of 1.0).
-        assert_eq!(stats.max_fall_nits(), 100);
-    }
-
-    #[test]
-    fn thousand_nit_highlight_master_reports_1000_cll() {
-        // The Phase 11 acceptance criterion. A single bright
-        // highlight pixel at 10.0 linear = 1000 nits drives MaxCLL
-        // to 1000 even if the rest of the frame is dark.
-        let mut stats = LightLevelStats::new();
-        let mut frame = vec![0.0_f32; 32 * 32 * 4];
-        // alpha
-        for px in frame.chunks_exact_mut(4) {
-            px[3] = 1.0;
-        }
-        // one 1000-nit highlight pixel
-        frame[0] = 10.0;
-        frame[1] = 10.0;
-        frame[2] = 10.0;
-        stats.update(&frame);
+        // A bright frame on average, then one dark frame with a single
+        // 1000-nit highlight.
+        stats.add_frame(300.0, 250.4);
+        stats.add_frame(1000.2, 3.0);
         assert_eq!(stats.max_cll_nits(), 1000);
-        // Average luminance should be *well* below 1000 — one bright
-        // pixel in 1024 is near-zero average.
-        assert!(stats.max_fall_nits() < 10);
-    }
-
-    #[test]
-    fn stats_track_peak_across_frames() {
-        let mut stats = LightLevelStats::new();
-        // Frame 1: moderate brightness everywhere
-        let frame_a = vec![0.5_f32; 8 * 8 * 4];
-        stats.update(&frame_a);
-        let fall_after_a = stats.max_fall_nits();
-        // Frame 2: single very bright pixel, rest dark
-        let mut frame_b = vec![0.0_f32; 8 * 8 * 4];
-        frame_b[0] = 20.0;
-        frame_b[1] = 20.0;
-        frame_b[2] = 20.0;
-        stats.update(&frame_b);
-        assert_eq!(stats.max_cll_nits(), 2000);
-        // MaxFALL should *not* have dropped — it's a running max.
-        assert!(stats.max_fall_nits() >= fall_after_a);
+        // A running max: the dark frame does not pull it down.
+        assert_eq!(stats.max_fall_nits(), 250);
         assert_eq!(stats.frame_count(), 2);
-    }
-
-    #[test]
-    fn negative_channels_ignored() {
-        let mut stats = LightLevelStats::new();
-        // Over-saturation can produce negative channel values.
-        let frame = vec![-5.0_f32, 0.1, -0.2, 1.0, -1.0, 0.2, -0.3, 1.0];
-        stats.update(&frame);
-        // Peak should come from the non-negative 0.2, not the -5.0.
-        assert!(stats.max_cll_nits() <= 20);
-    }
-
-    #[test]
-    fn empty_frame_is_noop() {
-        let mut stats = LightLevelStats::new();
-        stats.update(&[]);
-        assert_eq!(stats.frame_count(), 0);
     }
 
     #[test]

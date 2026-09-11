@@ -307,42 +307,25 @@ fn export_then_re_decode_round_trip() {
 }
 
 #[test]
-fn hdr_maxcll_computed_from_linear_master() {
-    // MaxCLL (max content light level) from a 1000-nit linear master
-    // should report 1000 nits (± rounding). The encoder reads this
-    // from `klipp_color::hdr::LightLevelStats`, so if the stats are
-    // right, so is the HDR10 signalling written into the file. The
-    // actual container-level atom write-out is covered by
-    // `klipp-render`'s `hdr10_metadata_written_to_mp4` integration
-    // test — this one pins the math.
-    use klipp_color::hdr::LightLevelStats;
+fn hdr_maxcll_is_measured_on_the_pq_signal() {
+    // MaxCLL / MaxFALL (CTA-861.3) of a PQ master: the brightest pixel's
+    // brightest channel, and the brightest frame's average of it, in
+    // cd/m². The encoder measures the PQ signal it writes, so a 1000-nit
+    // highlight must read back as 1000 through the PQ curve. The
+    // container atoms themselves are covered by klipp-render's
+    // `hdr_export` tests — this one pins the math.
+    use klipp_color::hdr::{pq_decode_nits, pq_encode_nits, LightLevelStats};
 
     let mut stats = LightLevelStats::new();
-    // Simulate a 720p frame with a single 1000-nit highlight pixel
-    // (10.0 linear given the 100 nits/linear-unit convention) and
-    // the rest of the frame at diffuse white (1.0 linear = 100 nits).
-    let (w, h) = (1280usize, 720usize);
-    let mut frame = vec![1.0_f32; w * h * 4];
-    for px in frame.chunks_exact_mut(4) {
-        px[3] = 1.0;
-    }
-    frame[0] = 10.0;
-    frame[1] = 10.0;
-    frame[2] = 10.0;
-    stats.update(&frame);
+    // A 720p frame of SDR white (203 nits) with one 1000-nit pixel.
+    let pixels = 1280 * 720;
+    let white = pq_decode_nits(pq_encode_nits(203.0));
+    let peak = pq_decode_nits(pq_encode_nits(1000.0));
+    let average = (white * (pixels - 1) as f32 + peak) / pixels as f32;
+    stats.add_frame(peak, average);
 
-    assert_eq!(
-        stats.max_cll_nits(),
-        1000,
-        "1000-nit highlight master should report MaxCLL=1000",
-    );
-    // One 1000-nit pixel in ~1M — MaxFALL rounds to near-100 nits
-    // because the rest of the frame is diffuse white at 100 nits.
-    assert!(
-        stats.max_fall_nits() >= 99 && stats.max_fall_nits() <= 101,
-        "MaxFALL should be ~100 nits (diffuse white dominates), got {}",
-        stats.max_fall_nits(),
-    );
+    assert_eq!(stats.max_cll_nits(), 1000, "1000-nit highlight master should report MaxCLL=1000");
+    assert_eq!(stats.max_fall_nits(), 203, "MaxFALL should be SDR white, which dominates");
 }
 
 // Pure sanity: the harness itself must never grow silent.

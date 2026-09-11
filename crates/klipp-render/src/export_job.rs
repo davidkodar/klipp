@@ -205,6 +205,12 @@ impl ExportJob {
             fit_to_target(self.snapshot.width, self.snapshot.height, out_w, out_h)
         };
         let mut hw_reported = false;
+        // An HLG or PQ delivery renders display light for the encoder's
+        // HDR encode (an ACES PQ transform renders its own from SDR).
+        let render_opts = klipp_compose::RenderOptions {
+            hdr_peak_nits: self.settings.renders_hdr().then(|| self.settings.hdr_peak_nits()),
+            ..Default::default()
+        };
 
         let codec_label = self.settings.video_codec.label();
         Self::set_stage(&self.render_stage, &format!("Encoding video ({codec_label})\u{2026}"));
@@ -227,9 +233,7 @@ impl ExportJob {
                 value: frame_num as i64 * self.snapshot.fps_den as i64,
                 rate: self.snapshot.fps_num,
             };
-            let picture = renderer.render(
-                timeline, time, fit_w, fit_h, &mut frames, klipp_compose::RenderOptions::default(),
-            );
+            let picture = renderer.render(timeline, time, fit_w, fit_h, &mut frames, render_opts);
             frames.end_frame();
             if !hw_reported {
                 hw_reported = true;

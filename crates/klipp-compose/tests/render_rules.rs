@@ -79,11 +79,14 @@ impl Flat {
         self.0.insert(c.id, Box::new(move || SourcePixels::Linear(Arc::new([v, v, v, 1.0].repeat((W * H) as usize)))));
         self
     }
-    fn slog3(mut self, c: &Clip, code: u32) -> Self {
+    fn slog3(self, c: &Clip, code: u32) -> Self {
+        self.scene(c, klipp_color::hdr::HdrTransfer::Log(klipp_core::ColorTransfer::SLog3), code)
+    }
+    fn scene(mut self, c: &Clip, transfer: klipp_color::hdr::HdrTransfer, code: u32) -> Self {
         let packed = klipp_color::hdr::pack_rgb10(code, code, code);
         self.0.insert(c.id, Box::new(move || SourcePixels::SceneReferred {
             codes: Arc::new(vec![packed; (W * H) as usize]),
-            transfer: klipp_color::hdr::HdrTransfer::Log(klipp_core::ColorTransfer::SLog3),
+            transfer,
             source_to_working: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
         }));
         self
@@ -241,6 +244,60 @@ fn a_log_clip_is_graded_scene_linear_then_tone_mapped() {
     let mut src = Flat::default().slog3(&c, 420);
     for (i, img) in render(&sequence(vec![vec![c]]), 1.0, &mut src).iter().enumerate() {
         assert_px(&format!("+1 stop, run {i}"), px(img, 16, 9), [tonemap(0.36); 3], 2e-3);
+    }
+}
+
+/// An HDR delivery renders display light, 1.0 being SDR white at 203
+/// cd/m²: an SDR clip as it is, a PQ clip at its own luminance, S-Log3
+/// grey at BT.2408's 26 nits. A global LUT grades the SDR range, and the
+/// light above SDR white passes through it rather than clipping there.
+#[test]
+fn an_hdr_delivery_renders_display_light() {
+    use klipp_color::hdr::{pq_decode_nits, pq_encode_nits, HdrTransfer, HDR_REFERENCE_WHITE_NITS};
+    let hdr = RenderOptions { hdr_peak_nits: Some(1000.0), ..Default::default() };
+    let render_hdr = |seq: &Sequence, src: &mut Flat, lut: Option<&klipp_color::lut::LutData>| {
+        [false, true].map(|gpu| {
+            let mut r = Renderer::new(klipp_plugin::OfxHost::new(), klipp_title::TitleRenderer::new());
+            r.set_gpu_enabled(gpu);
+            r.set_global_lut(lut.map(|l| klipp_compose::GlobalLut { lut: l.clone(), opacity: 1.0 }));
+            r.render(seq, tc(1.0), W, H, src, hdr)
+        })
+    };
+    let code = (pq_encode_nits(1000.0) * 1023.0).round() as u32;
+    let pq_white = pq_decode_nits(code as f32 / 1023.0) / HDR_REFERENCE_WHITE_NITS;
+    let white = solid([255, 255, 255], 0.0, 2.0);
+    let (pq, log) = (media(0.0, 2.0), media(0.0, 2.0));
+    for (label, c, src, want) in [
+        ("SDR white", white.clone(), Flat::default(), 1.0),
+        ("PQ 1000 nits", pq.clone(), Flat::default().scene(&pq, HdrTransfer::Pq, code), pq_white),
+        ("S-Log3 grey", log.clone(), Flat::default().slog3(&log, 420), 26.0 / HDR_REFERENCE_WHITE_NITS),
+    ] {
+        let mut src = src;
+        for (i, img) in render_hdr(&sequence(vec![vec![c]]), &mut src, None).iter().enumerate() {
+            assert_px(&format!("{label}, run {i}"), px(img, 16, 9), [want; 3], want * 2e-3);
+        }
+    }
+    // A LUT that darkens everything to 80% of its encoded value.
+    let n = 5usize;
+    let mut data = Vec::new();
+    for b in 0..n {
+        for g in 0..n {
+            for r in 0..n {
+                data.extend([r, g, b].map(|v| 0.8 * v as f32 / (n - 1) as f32));
+            }
+        }
+    }
+    let lut = klipp_color::lut::LutData {
+        size: n, data, input_space: Default::default(), output_space: Default::default(),
+    };
+    let darkened_white = klipp_color::transfer::srgb_to_linear(0.8);
+    let mut src = Flat::default().scene(&pq, HdrTransfer::Pq, code);
+    for (i, img) in render_hdr(&sequence(vec![vec![pq]]), &mut src, Some(&lut)).iter().enumerate() {
+        let want = darkened_white + (pq_white - 1.0);
+        assert_px(&format!("PQ through the LUT, run {i}"), px(img, 16, 9), [want; 3], 5e-3);
+    }
+    for (i, img) in render_hdr(&sequence(vec![vec![white]]), &mut Flat::default(), Some(&lut)).iter().enumerate() {
+        assert_px(&format!("SDR white through the LUT, run {i}"), px(img, 16, 9), [darkened_white; 3], 5e-3);
     }
 }
 

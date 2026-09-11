@@ -28441,21 +28441,31 @@ impl KlippApp {
                         }
                         ui.end_row();
 
-                        // #65: bit-depth + HDR controls, only for H.264/H.265.
-                        // ProRes is always 10-bit, DNxHD is 8-bit, AV1/VP9 are
-                        // beyond baseline scope for this phase.
-                        if matches!(
+                        // #65: bit-depth + HDR controls. H.264/H.265 pick
+                        // their depth and take HDR at 10 bits; ProRes is
+                        // always 10-bit, so always can. DNxHD is 8-bit,
+                        // AV1/VP9 are beyond baseline scope for this phase.
+                        let h26x = matches!(
                             self.export_dialog.video_codec,
                             ExportVideoCodec::H264 | ExportVideoCodec::H265
-                        ) {
-                            ui.label("Bit depth:");
-                            ui.horizontal(|ui| {
-                                ui.radio_value(&mut self.export_dialog.bit_depth, 0u8, "8-bit");
-                                ui.radio_value(&mut self.export_dialog.bit_depth, 10u8, "10-bit");
-                            });
-                            ui.end_row();
+                        );
+                        let prores = matches!(
+                            self.export_dialog.video_codec,
+                            ExportVideoCodec::ProRes422 | ExportVideoCodec::ProRes422HQ | ExportVideoCodec::ProRes4444
+                        );
+                        if h26x || prores {
+                            if h26x {
+                                ui.label("Bit depth:");
+                                ui.horizontal(|ui| {
+                                    ui.radio_value(&mut self.export_dialog.bit_depth, 0u8, "8-bit");
+                                    ui.radio_value(&mut self.export_dialog.bit_depth, 10u8, "10-bit");
+                                });
+                                ui.end_row();
+                            } else {
+                                self.export_dialog.bit_depth = 0;
+                            }
 
-                            if self.export_dialog.bit_depth == 10 {
+                            if prores || self.export_dialog.bit_depth == 10 {
                                 ui.label("HDR:");
                                 ui.horizontal(|ui| {
                                     ui.radio_value(
@@ -28480,11 +28490,20 @@ impl KlippApp {
                                 self.export_dialog.hdr_mode = klipp_core::HdrMode::Sdr;
                             }
                         } else {
-                            // Non-H.264/H.265 codecs: reset to 8-bit/SDR so
-                            // the user-invisible state doesn't leak into the
+                            // Other codecs: reset to 8-bit/SDR so the
+                            // user-invisible state doesn't leak into the
                             // export settings.
                             self.export_dialog.bit_depth = 0;
                             self.export_dialog.hdr_mode = klipp_core::HdrMode::Sdr;
+                        }
+
+                        // An output transform only serves the deliveries
+                        // it fits: the ACES PQ ones write PQ, the others
+                        // SDR. Switching the delivery drops one that no
+                        // longer fits.
+                        let delivery = self.export_dialog.hdr_mode;
+                        if !self.export_dialog.odt.fits(delivery) {
+                            self.export_dialog.odt = klipp_core::OdtChoice::MatchViewer;
                         }
 
                         // Tone-map operator — the "colour science" picker.
@@ -28492,22 +28511,25 @@ impl KlippApp {
                         // `Encoder::encode_linear_frame` during export,
                         // after the grade and before sRGB quantise.
                         // ACES is the industry-standard filmic look;
-                        // Hable is the previous default.
-                        ui.label("Colour science:");
-                        egui::ComboBox::from_id_salt("export_tone_map")
-                            .selected_text(klipp_color::display::tone_map_op_label(
-                                self.export_dialog.tone_map_op,
-                            ))
-                            .show_ui(ui, |ui| {
-                                for op in klipp_color::display::TONE_MAP_OPS_ALL {
-                                    ui.selectable_value(
-                                        &mut self.export_dialog.tone_map_op,
-                                        op,
-                                        klipp_color::display::tone_map_op_label(op),
-                                    );
-                                }
-                            });
-                        ui.end_row();
+                        // Hable is the previous default. An HDR delivery
+                        // keeps its highlights instead, so it has none.
+                        if delivery == klipp_core::HdrMode::Sdr {
+                            ui.label("Colour science:");
+                            egui::ComboBox::from_id_salt("export_tone_map")
+                                .selected_text(klipp_color::display::tone_map_op_label(
+                                    self.export_dialog.tone_map_op,
+                                ))
+                                .show_ui(ui, |ui| {
+                                    for op in klipp_color::display::TONE_MAP_OPS_ALL {
+                                        ui.selectable_value(
+                                            &mut self.export_dialog.tone_map_op,
+                                            op,
+                                            klipp_color::display::tone_map_op_label(op),
+                                        );
+                                    }
+                                });
+                            ui.end_row();
+                        }
 
                         // Output Display Transform — picks the
                         // delivery-target colour space the rendered
@@ -28521,7 +28543,7 @@ impl KlippApp {
                         egui::ComboBox::from_id_salt("export_odt")
                             .selected_text(self.export_dialog.odt.label())
                             .show_ui(ui, |ui| {
-                                for choice in klipp_core::OdtChoice::ALL {
+                                for choice in klipp_core::OdtChoice::ALL.into_iter().filter(|c| c.fits(delivery)) {
                                     ui.selectable_value(
                                         &mut self.export_dialog.odt,
                                         choice,
@@ -28536,14 +28558,14 @@ impl KlippApp {
                         // the explicit ODTs are self-explanatory by
                         // their menu labels.
                         if self.export_dialog.odt == klipp_core::OdtChoice::MatchViewer {
+                            let hint = if delivery == klipp_core::HdrMode::Sdr {
+                                "Match Viewer = same colour space your monitor's been showing you while editing."
+                            } else {
+                                "Match Viewer = the viewer's picture with its highlights kept, mastered to 1000 nits. \
+                                 SDR material sits at 203 nits (BT.2408). The viewer itself shows the SDR version."
+                            };
                             ui.label("");
-                            ui.add(egui::Label::new(
-                                egui::RichText::new(
-                                    "Match Viewer = same colour space your monitor's been showing you while editing.",
-                                )
-                                .small()
-                                .italics(),
-                            ).wrap());
+                            ui.add(egui::Label::new(egui::RichText::new(hint).small().italics()).wrap());
                             ui.end_row();
                         }
 

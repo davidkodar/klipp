@@ -54,33 +54,21 @@ pub struct Encoder {
     audio_sample_format: Option<ffmpeg_next::format::Sample>,
     /// Subtitle stream index (if soft subtitle embedding is enabled).
     pub subtitle_stream_idx: Option<usize>,
-    /// HDR signalling mode — drives colour-space tags at `open()` and
-    /// decides whether HDR10 side-data (MaxCLL/MaxFALL + mastering
-    /// display metadata) is attached at `finalise()`.
+    /// The file's transfer ([`ExportSettings::delivery`]) — drives the
+    /// colour-space tags at `open()` and, for PQ, the HDR10 side data
+    /// (MaxCLL/MaxFALL + mastering display) attached at `finalise()`.
     hdr_mode: klipp_core::HdrMode,
-    /// Running light-level statistics fed from every linear-light
-    /// frame. MaxCLL/MaxFALL are derived from this at finalise.
-    /// Only meaningful when the caller routes frames through
-    /// [`Encoder::encode_linear_frame`]; pure u8-pixel exports leave
-    /// this at zero and skip the HDR10 side-data.
+    /// MaxCLL/MaxFALL of a PQ delivery, measured on the signal written.
+    /// Only frames through [`Encoder::encode_linear_frame`] count.
     light_stats: LightLevelStats,
-    /// Display-boundary tone-map picked by the user (or project
-    /// default). Applied inside [`Encoder::encode_linear_frame`] to
-    /// the linear master before sRGB encode. Read from
-    /// [`ExportSettings::tone_map_op`] at `open()` time and then
-    /// treated as immutable for the rest of the encode.
-    tone_map_op: klipp_color::display::ToneMapOp,
-    /// Delivery-target Output Display Transform. Drives the
-    /// linear → display-encoded u8 step inside
-    /// [`Encoder::encode_linear_frame`]. Defaults to
-    /// [`OdtChoice::MatchViewer`] which mirrors the viewer's pixels
-    /// pixel-for-pixel under the project's working colorspace.
-    odt: klipp_core::OdtChoice,
-    /// Project working colorspace, captured at `open()` time. Used
-    /// alongside `odt` to dispatch the linear → display step. Read
-    /// from the engine's atomic at export start so the export pixels
-    /// match what the user sees in the viewer.
-    working_colorspace: klipp_core::WorkingColorspace,
+    /// The mastering display's peak, cd/m², for the HDR10 side data.
+    hdr_peak_nits: f32,
+    /// Linear picture → display-encoded RGB, per pixel: the viewer's
+    /// transform, an ACES output transform, or an HDR delivery's PQ/HLG
+    /// encode. Fixed at `open()` from the settings and the project's
+    /// working colorspace, so a mid-export change cannot make frames
+    /// disagree.
+    display: klipp_color::display::ExportDisplay,
     /// When `Some`, this is a GIF export. The two-pass palette
     /// pipeline lives entirely behind this filter graph; the standard
     /// RGBA→YUV / audio / subtitle paths short-circuit when set.
@@ -137,8 +125,8 @@ fn pick_video_encoder(codec: &ExportVideoCodec, width: u32, height: u32) -> (&'s
     }
 }
 
-/// Write color-space tags onto the encoder's AVCodecContext.
-/// Picks BT.709 (SDR) or BT.2020 + HLG/PQ based on `settings.hdr_mode`.
+/// Write color-space tags onto the encoder's AVCodecContext: BT.709 (SDR)
+/// or BT.2020 + HLG/PQ, by the settings' `delivery()`.
 /// Safety: the caller must hold a valid `&mut Encoder` context; `as_mut_ptr`
 /// returns a non-null pointer for the lifetime of the context.
 fn apply_color_tags(
@@ -178,6 +166,50 @@ fn x265_color_params(hdr_mode: klipp_core::HdrMode) -> &'static str {
         klipp_core::HdrMode::Hlg => "colorprim=bt2020:transfer=arib-std-b67:colormatrix=bt2020nc",
         klipp_core::HdrMode::Pq => "colorprim=bt2020:transfer=smpte2084:colormatrix=bt2020nc",
     }
+}
+
+/// One frame's light levels as they accumulate: the brightest pixel and
+/// the sum over pixels, cd/m², each pixel by its brightest channel.
+#[derive(Clone, Copy, Default)]
+struct FrameLight {
+    max: f32,
+    sum: f64,
+    pixels: u64,
+}
+
+impl FrameLight {
+    fn add(self, nits: f32) -> Self {
+        Self { max: self.max.max(nits), sum: self.sum + nits as f64, pixels: self.pixels + 1 }
+    }
+    fn merge(self, o: Self) -> Self {
+        Self { max: self.max.max(o.max), sum: self.sum + o.sum, pixels: self.pixels + o.pixels }
+    }
+}
+
+/// A PQ signal's light, cd/m².
+fn pq_light(signal: f32) -> f32 {
+    klipp_color::hdr::pq_decode_nits(signal)
+}
+
+/// The per-pixel display transform an export with these settings writes.
+///
+/// An HDR render (`ExportSettings::renders_hdr`) is display light, encoded
+/// straight to PQ or HLG. Otherwise the picture is SDR and goes through
+/// the output transform: "Match viewer" is the viewer's, which applies no
+/// display tone map (scene-referred clips are tone-mapped per clip, before
+/// the composite); the operator picked in the export dialog applies to the
+/// legacy sRGB path only, the ACES transforms carrying their own curves.
+/// `working` is the project's working colorspace as the export starts.
+pub fn export_display(settings: &ExportSettings, working: klipp_core::WorkingColorspace) -> klipp_color::display::ExportDisplay {
+    use klipp_color::display::ExportDisplay;
+    if settings.renders_hdr() {
+        return ExportDisplay::hdr(working, settings.delivery(), settings.hdr_peak_nits());
+    }
+    let tone_map_op = match settings.odt {
+        klipp_core::OdtChoice::MatchViewer | klipp_core::OdtChoice::Unknown => klipp_core::ToneMapOp::None,
+        _ => settings.tone_map_op,
+    };
+    ExportDisplay::new(tone_map_op, working, settings.odt)
 }
 
 impl Encoder {
@@ -312,13 +344,13 @@ impl Encoder {
                 };
                 video_opts.set("preset", nvenc_preset);
                 // Colour-space tagging (BT.709 SDR or BT.2020 HDR — #65).
-                apply_color_tags(&mut video_ctx, settings.hdr_mode);
+                apply_color_tags(&mut video_ctx, settings.delivery());
             }
             ExportVideoCodec::H264 => {
                 video_ctx.set_bit_rate(0); // CRF mode
                 video_opts.set("crf", &settings.crf.to_string());
                 video_opts.set("preset", settings.preset.ffmpeg_value());
-                apply_color_tags(&mut video_ctx, settings.hdr_mode);
+                apply_color_tags(&mut video_ctx, settings.delivery());
             }
             ExportVideoCodec::H265 if is_hw_encoder => {
                 video_opts.set("rc", "vbr");
@@ -332,14 +364,14 @@ impl Encoder {
                     klipp_core::EncoderPreset::VerySlow => "p7",
                 };
                 video_opts.set("preset", nvenc_preset);
-                apply_color_tags(&mut video_ctx, settings.hdr_mode);
+                apply_color_tags(&mut video_ctx, settings.delivery());
             }
             ExportVideoCodec::H265 => {
                 video_ctx.set_bit_rate(0);
                 video_opts.set("crf", &settings.crf.to_string());
                 video_opts.set("preset", settings.preset.ffmpeg_value());
-                video_opts.set("x265-params", x265_color_params(settings.hdr_mode));
-                apply_color_tags(&mut video_ctx, settings.hdr_mode);
+                video_opts.set("x265-params", x265_color_params(settings.delivery()));
+                apply_color_tags(&mut video_ctx, settings.delivery());
             }
             ExportVideoCodec::ProRes422 => {
                 video_opts.set("profile:v", "2");
@@ -396,7 +428,7 @@ impl Encoder {
         // the H.264/H.265 branches tagged colour, ProRes/DNxHD/AV1/VP9 went
         // untagged, and no codec declared its (limited) range. GIF is RGB.
         if settings.video_codec != ExportVideoCodec::Gif {
-            apply_color_tags(&mut video_ctx, settings.hdr_mode);
+            apply_color_tags(&mut video_ctx, settings.delivery());
             unsafe {
                 (*video_ctx.as_mut_ptr()).color_range = ffmpeg_next::ffi::AVColorRange::AVCOL_RANGE_MPEG;
             }
@@ -479,7 +511,7 @@ impl Encoder {
         // Write the matrix the tags declare (swscale would use BT.601),
         // limited range as tagged above.
         if settings.video_codec != ExportVideoCodec::Gif {
-            let matrix = match settings.hdr_mode {
+            let matrix = match settings.delivery() {
                 klipp_core::HdrMode::Sdr => klipp_core::ColorMatrix::Bt709,
                 klipp_core::HdrMode::Hlg | klipp_core::HdrMode::Pq => klipp_core::ColorMatrix::Bt2020Ncl,
             };
@@ -776,7 +808,7 @@ impl Encoder {
             audio_time_base,
             rgba_to_yuv,
             rgba64_to_yuv: None,
-            yuv_matrix: match settings.hdr_mode {
+            yuv_matrix: match settings.delivery() {
                 klipp_core::HdrMode::Sdr => klipp_core::ColorMatrix::Bt709,
                 klipp_core::HdrMode::Hlg | klipp_core::HdrMode::Pq => klipp_core::ColorMatrix::Bt2020Ncl,
             },
@@ -797,25 +829,10 @@ impl Encoder {
             },
             video_codec_name,
             subtitle_stream_idx,
-            hdr_mode: settings.hdr_mode,
+            hdr_mode: settings.delivery(),
             light_stats: LightLevelStats::new(),
-            // "Match viewer" means the viewer's picture, and the viewer
-            // applies no display tone map (scene-referred clips are
-            // tone-mapped per clip, before the composite). The operator
-            // picked in the export dialog applies to the legacy sRGB
-            // path only; the ACES ODTs carry their own curves.
-            tone_map_op: match settings.odt {
-                klipp_core::OdtChoice::MatchViewer | klipp_core::OdtChoice::Unknown => klipp_core::ToneMapOp::None,
-                _ => settings.tone_map_op,
-            },
-            odt: settings.odt,
-            // Captured from the snapshot at open() — the export-job
-            // dispatch is responsible for populating
-            // `snapshot.working_colorspace` from the project at the
-            // moment the export starts. Pinning it here means a
-            // mid-export flip of the project setting can't make
-            // pixels diverge across frames.
-            working_colorspace: snapshot.working_colorspace,
+            hdr_peak_nits: settings.hdr_peak_nits(),
+            display: export_display(settings, snapshot.working_colorspace),
             gif_filter: if matches!(settings.format, ExportFormat::Gif) {
                 let fps_den = (snapshot.fps.max(1.0).round() as u32).max(1);
                 Some(crate::gif_filter::GifFilter::new(out_w, out_h, fps_den)?)
@@ -840,63 +857,49 @@ impl Encoder {
         }
     }
 
-    /// Encode one linear-light f32 RGBA video frame.
+    /// Encode one rendered frame: linear RGBA f32, the picture as the
+    /// renderer left it (display-referred for SDR, display light for an
+    /// HDR render — see [`export_display`]).
     ///
-    /// For SDR exports this is a straightforward linear → sRGB u8
-    /// encode via the display transform followed by the existing
-    /// RGBA→YUV scaler. The tone-map operator is user-configurable
-    /// via [`ExportSettings::tone_map_op`]: identity (`None`) for
-    /// "render what the grade produced", or filmic curves (`Hable`,
-    /// `Reinhard`, `Aces`) when the linear master legitimately
-    /// contains HDR values that need rolling off before encode.
-    ///
-    /// For HDR exports (`HdrMode::Hlg`, `HdrMode::Pq`) this currently
-    /// falls back to the sRGB path so the exported file has *correct*
-    /// colour-space tags ([`apply_color_tags`] writes BT.2020 + the
-    /// chosen transfer characteristic) but the pixel values
-    /// themselves are still sRGB-encoded. A follow-up phase wires in
-    /// a genuine PQ/HLG transfer encode so 10-bit HDR pixel data
-    /// reaches the file.
-    ///
-    /// HDR10 signalling side-data (MaxCLL / MaxFALL + mastering
-    /// display metadata) is populated from linear-light statistics
-    /// accumulated here and attached to the stream at
-    /// [`Self::finalise`] when `hdr_mode != HdrMode::Sdr`.
+    /// The export's display transform encodes it for the file: the
+    /// viewer's sRGB encode, an ACES output transform, or for an HDR
+    /// render PQ or HLG on BT.2020 primaries. A PQ delivery's light
+    /// levels are measured on the signal written, for the MaxCLL /
+    /// MaxFALL attached at [`Self::finalise`].
     pub fn encode_linear_frame(
         &mut self,
         linear_rgba: &[f32],
         width: u32,
         height: u32,
     ) -> Result<(), RenderError> {
-        // Light-level statistics from the linear master, before the
-        // display transform clips at 1.0 and the HDR peak is gone. Only
-        // HDR deliveries signal them.
-        if self.hdr_mode != klipp_core::HdrMode::Sdr {
-            self.light_stats.update(linear_rgba);
+        if self.gif_filter.is_none() {
+            if let Some(light) = self.encode_linear_direct(linear_rgba, width, height)? {
+                self.count_light(light);
+                return Ok(());
+            }
         }
-        if self.gif_filter.is_none() && self.encode_linear_direct(linear_rgba, width, height)? {
-            return Ok(());
-        }
-        // The delivery-target display transform: `MatchViewer` is the
-        // viewer's own; explicit ODTs walk into AcesCG first as needed.
-        // 10-bit outputs take it at 16 bits — built from the 8-bit
-        // result they would carry 8 bits of data.
+        // 10-bit outputs take the transform at 16 bits — built from the
+        // 8-bit result they would carry 8 bits of data.
         if self.is_deep() && self.gif_filter.is_none() {
-            let display = klipp_color::display::display_transform_for_export_u16(
-                linear_rgba,
-                self.tone_map_op,
-                self.working_colorspace,
-                self.odt,
-            );
+            let display = self.display.frame(linear_rgba, |v| (v.clamp(0.0, 1.0) * 65535.0 + 0.5) as u16);
+            if self.hdr_mode == klipp_core::HdrMode::Pq {
+                let light = display
+                    .chunks_exact(4)
+                    .map(|px| pq_light(px[0].max(px[1]).max(px[2]) as f32 / 65535.0))
+                    .fold(FrameLight::default(), FrameLight::add);
+                self.count_light(light);
+            }
             return self.encode_video_frame_u16(&display, width, height);
         }
-        let display_u8 = klipp_color::display::display_transform_for_export(
-            linear_rgba,
-            self.tone_map_op,
-            self.working_colorspace,
-            self.odt,
-        );
+        let display_u8 = self.display.frame(linear_rgba, |v| (v.clamp(0.0, 1.0) * 255.0 + 0.5) as u8);
         self.encode_video_frame(&display_u8, width, height)
+    }
+
+    /// Record a PQ frame's light levels (other deliveries signal none).
+    fn count_light(&mut self, light: FrameLight) {
+        if self.hdr_mode == klipp_core::HdrMode::Pq && light.pixels > 0 {
+            self.light_stats.add_frame(light.max, (light.sum / light.pixels as f64) as f32);
+        }
     }
 
     /// Linear frame → the output's Y'CbCr planes in one parallel pass: the
@@ -905,8 +908,9 @@ impl Encoder {
     /// Replaces display RGBA → single-threaded swscale, which cost 30+ ms a
     /// 4K frame, and skips the intermediate 8/16-bit rounding. Returns
     /// `false` for a pixel format it does not write, or odd dimensions;
-    /// the caller then takes the swscale path.
-    fn encode_linear_direct(&mut self, linear: &[f32], w: u32, h: u32) -> Result<bool, RenderError> {
+    /// the caller then takes the swscale path. For a PQ delivery, also
+    /// the frame's light levels.
+    fn encode_linear_direct(&mut self, linear: &[f32], w: u32, h: u32) -> Result<Option<FrameLight>, RenderError> {
         use ffmpeg_next::format::Pixel as P;
         use rayon::prelude::*;
         let fmt = self.video_encoder.format();
@@ -918,7 +922,7 @@ impl Encoder {
             P::YUV422P10LE => (10, false, 1, 0),
             P::YUV444P10LE => (10, false, 0, 0),
             P::P010LE => (10, true, 1, 1),
-            _ => return Ok(false),
+            _ => return Ok(None),
         };
         let (wu, hu) = (w as usize, h as usize);
         if (w, h) != (self.output_width, self.output_height)
@@ -926,9 +930,10 @@ impl Encoder {
             || wu % (1 << sw) != 0
             || hu % (1 << sh) != 0
         {
-            return Ok(false);
+            return Ok(None);
         }
-        let display = klipp_color::display::ExportDisplay::new(self.tone_map_op, self.working_colorspace, self.odt);
+        let display = self.display;
+        let measure = self.hdr_mode == klipp_core::HdrMode::Pq;
         let (kr, kb) = match self.yuv_matrix {
             klipp_core::ColorMatrix::Bt2020Ncl | klipp_core::ColorMatrix::Bt2020Cl => (0.2627f32, 0.0593f32),
             _ => (0.2126, 0.0722),
@@ -951,7 +956,8 @@ impl Encoder {
         let (rows, cols) = (1usize << sh, 1usize << sw);
         let cw = wu >> sw;
 
-        (0..hu >> sh).into_par_iter().for_each(|cy| unsafe {
+        let light = (0..hu >> sh).into_par_iter().map(|cy| unsafe {
+            let mut light = FrameLight::default();
             let put = |base: usize, idx: usize, v: u16| {
                 if bps == 2 {
                     let b = (v << shift).to_le_bytes();
@@ -967,7 +973,13 @@ impl Encoder {
                 let row = py + y * ys;
                 for x in 0..wu {
                     let i = (y * wu + x) * 4;
-                    let e = display.encode([linear[i], linear[i + 1], linear[i + 2]]);
+                    let e = if measure {
+                        let (e, nits) = display.encode_light([linear[i], linear[i + 1], linear[i + 2]]);
+                        light = light.add(nits);
+                        e
+                    } else {
+                        display.encode([linear[i], linear[i + 1], linear[i + 2]])
+                    };
                     rgb[r * wu + x] = e;
                     put(row, x, quant(kr * e[0] + kg * e[1] + kb * e[2], 16.0, 219.0));
                 }
@@ -996,7 +1008,9 @@ impl Encoder {
                     put(pv + cy * vs, cx, cr);
                 }
             }
-        });
+            light
+        })
+        .reduce(FrameLight::default, FrameLight::merge);
 
         frame.set_pts(Some(self.video_pts));
         self.video_pts += 1;
@@ -1004,7 +1018,7 @@ impl Encoder {
             .send_frame(&frame)
             .map_err(|e| RenderError::Encode(format!("send video frame: {e}")))?;
         self.drain_video_packets()?;
-        Ok(true)
+        Ok(Some(light))
     }
 
     /// Whether the output format holds more than 8 bits per sample.
@@ -1272,17 +1286,13 @@ impl Encoder {
         // muxer writes the `clli` and `mdcv` atoms inside the moov
         // box at trailer time, reading from codecpar->coded_side_data.
         // Attach now, once the per-frame stats are final.
-        if !matches!(self.hdr_mode, klipp_core::HdrMode::Sdr) {
+        // HDR10's metadata describes PQ; HLG is scene-relative and
+        // carries none.
+        if self.hdr_mode == klipp_core::HdrMode::Pq {
             if let Err(e) = self.attach_hdr10_side_data() {
                 warn!(
-                    "HDR10 side-data attach failed ({}); file will be tagged \
-                     BT.2020/{} but MaxCLL/MaxFALL/mastering display missing",
-                    e,
-                    match self.hdr_mode {
-                        klipp_core::HdrMode::Hlg => "HLG",
-                        klipp_core::HdrMode::Pq => "PQ",
-                        klipp_core::HdrMode::Sdr => "SDR",
-                    }
+                    "HDR10 side-data attach failed ({e}); file will be tagged \
+                     BT.2020/PQ but MaxCLL/MaxFALL/mastering display missing",
                 );
             }
         }
@@ -1391,7 +1401,7 @@ impl Encoder {
     /// Attach HDR10 signalling side-data (Content Light Level +
     /// Mastering Display Colour Volume) to the video stream.
     ///
-    /// Called once, at finalise time, when `hdr_mode != Sdr`. For MP4/
+    /// Called once, at finalise time, for a PQ delivery. For MP4/
     /// MOV the MOV muxer translates these into the `clli` and `mdcv`
     /// sample-description atoms; for MKV they become container-level
     /// `ColourMasteringMetadata` / `MaxCLL` / `MaxFALL` elements.
@@ -1443,9 +1453,7 @@ impl Encoder {
             }
         }
 
-        use klipp_color::hdr::{
-            bt2020_primaries, DEFAULT_MASTERING_MAX_LUMA_CD_M2, DEFAULT_MASTERING_MIN_LUMA_CD_M2,
-        };
+        use klipp_color::hdr::{bt2020_primaries, DEFAULT_MASTERING_MIN_LUMA_CD_M2};
 
         let cll_payload = AvContentLightMetadata {
             max_cll: self.light_stats.max_cll_nits() as std::os::raw::c_uint,
@@ -1472,7 +1480,7 @@ impl Encoder {
                 xy_rat(bt2020_primaries::WHITE_D65.1),
             ],
             min_luminance: lum_rat(DEFAULT_MASTERING_MIN_LUMA_CD_M2),
-            max_luminance: lum_rat(DEFAULT_MASTERING_MAX_LUMA_CD_M2),
+            max_luminance: lum_rat(self.hdr_peak_nits),
             has_primaries: 1,
             has_luminance: 1,
         };
