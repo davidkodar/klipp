@@ -21,6 +21,8 @@ struct LabStats {
     a_mean: f32,
     b_mean: f32,
     chroma_mean: f32,
+    /// Mean colour, linear BT.709.
+    linear_mean: [f32; 3],
 }
 
 /// Compute color match adjustments from source and reference RGBA buffers.
@@ -37,13 +39,12 @@ pub fn match_colors(
     // A 1-stop change ≈ 15 L units (rough approximation)
     let exposure_adjust = (ref_.l_mean - src.l_mean) / 15.0;
 
-    // b channel → temperature (positive b = yellow/warm, negative b = blue/cool)
-    // Scale: Lab b range is roughly ±128, temperature range is ±100
-    let temperature_adjust = (ref_.b_mean - src.b_mean) * (100.0 / 40.0);
-
-    // a channel → tint (positive a = magenta, negative a = green)
-    // Tint is inverted: positive tint = green, so negate
-    let tint_adjust = (ref_.a_mean - src.a_mean) * -(100.0 / 40.0);
+    // Lab a / b → tint / temperature: the white balance that moves the
+    // source's average colour (at the matched exposure) by the difference
+    // between the two frames' average a and b.
+    let exposed = src.linear_mean.map(|c| c * 2f32.powf(exposure_adjust.clamp(-3.0, 3.0)));
+    let (temperature_adjust, tint_adjust) =
+        white_balance_for_shift(exposed, ref_.a_mean - src.a_mean, ref_.b_mean - src.b_mean);
 
     // Chroma ratio → saturation multiplier
     let saturation_adjust = if src.chroma_mean > 0.5 {
@@ -60,11 +61,48 @@ pub fn match_colors(
     }
 }
 
+/// The temperature and tint whose white balance moves `rgb` (linear
+/// BT.709) by `(da, db)` in Lab a / b: Newton's method on the two slider
+/// values, clamped to their ±100 range.
+fn white_balance_for_shift(rgb: [f32; 3], da: f32, db: f32) -> (f32, f32) {
+    use crate::white_balance::white_balance_matrix;
+    let ab = |t: f32, g: f32| {
+        let c = match white_balance_matrix(t, g, klipp_core::WorkingColorspace::Rec709Linear) {
+            Some(m) => m.map(|row| row[0] * rgb[0] + row[1] * rgb[1] + row[2] * rgb[2]),
+            None => rgb,
+        };
+        let (_, a, b) = linear_to_lab(c[0], c[1], c[2]);
+        (a, b)
+    };
+    let (a0, b0) = ab(0.0, 0.0);
+    let (want_a, want_b) = (a0 + da, b0 + db);
+    let (mut t, mut g) = (0.0f32, 0.0f32);
+    for _ in 0..8 {
+        let (a, b) = ab(t, g);
+        let (ea, eb) = (want_a - a, want_b - b);
+        if ea.abs() < 0.01 && eb.abs() < 0.01 {
+            break;
+        }
+        let h = 1.0;
+        let (at, bt) = ab(t + h, g);
+        let (ag, bg) = ab(t, g + h);
+        let (dadt, dbdt, dadg, dbdg) = ((at - a) / h, (bt - b) / h, (ag - a) / h, (bg - b) / h);
+        let det = dadt * dbdg - dadg * dbdt;
+        if det.abs() < 1e-6 {
+            break;
+        }
+        t = (t + (ea * dbdg - eb * dadg) / det).clamp(-100.0, 100.0);
+        g = (g + (eb * dadt - ea * dbdt) / det).clamp(-100.0, 100.0);
+    }
+    (t, g)
+}
+
 fn rgba_to_lab_stats(rgba: &[u8]) -> LabStats {
     let mut l_sum = 0.0f64;
     let mut a_sum = 0.0f64;
     let mut b_sum = 0.0f64;
     let mut chroma_sum = 0.0f64;
+    let mut linear_sum = [0.0f64; 3];
     let mut count = 0u64;
 
     // Sample every 4th pixel for performance
@@ -74,6 +112,9 @@ fn rgba_to_lab_stats(rgba: &[u8]) -> LabStats {
         let b = chunk[2] as f32 / 255.0;
 
         let (l, la, lb) = rgb_to_lab(r, g, b);
+        for (acc, v) in linear_sum.iter_mut().zip([r, g, b]) {
+            *acc += srgb_decode(v) as f64;
+        }
         l_sum += l as f64;
         a_sum += la as f64;
         b_sum += lb as f64;
@@ -82,7 +123,7 @@ fn rgba_to_lab_stats(rgba: &[u8]) -> LabStats {
     }
 
     if count == 0 {
-        return LabStats { l_mean: 50.0, a_mean: 0.0, b_mean: 0.0, chroma_mean: 0.0 };
+        return LabStats { l_mean: 50.0, a_mean: 0.0, b_mean: 0.0, chroma_mean: 0.0, linear_mean: [0.18; 3] };
     }
 
     let n = count as f64;
@@ -91,19 +132,21 @@ fn rgba_to_lab_stats(rgba: &[u8]) -> LabStats {
         a_mean: (a_sum / n) as f32,
         b_mean: (b_sum / n) as f32,
         chroma_mean: (chroma_sum / n) as f32,
+        linear_mean: linear_sum.map(|v| (v / n) as f32),
     }
+}
+
+fn srgb_decode(v: f32) -> f32 {
+    if v <= 0.04045 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) }
 }
 
 /// sRGB → CIE XYZ (D65) → CIE Lab
 fn rgb_to_lab(r: f32, g: f32, b: f32) -> (f32, f32, f32) {
-    // sRGB → linear
-    let linearize = |v: f32| -> f32 {
-        if v <= 0.04045 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) }
-    };
-    let rl = linearize(r);
-    let gl = linearize(g);
-    let bl = linearize(b);
+    linear_to_lab(srgb_decode(r), srgb_decode(g), srgb_decode(b))
+}
 
+/// Linear BT.709 → CIE XYZ (D65) → CIE Lab
+fn linear_to_lab(rl: f32, gl: f32, bl: f32) -> (f32, f32, f32) {
     // Linear RGB → XYZ (sRGB/D65 matrix)
     let x = 0.4124564 * rl + 0.3575761 * gl + 0.1804375 * bl;
     let y = 0.2126729 * rl + 0.7151522 * gl + 0.0721750 * bl;
@@ -186,6 +229,25 @@ mod tests {
         // Matching warm→cool should produce negative temperature (shift toward cool)
         assert!(result.temperature_adjust < -5.0,
             "warm→cool should decrease temperature: {}", result.temperature_adjust);
+    }
+
+    /// Shot match finds the white balance that was applied: a reference
+    /// that is the source through temperature +30, tint -10 matches back
+    /// to about those values.
+    #[test]
+    fn match_recovers_a_white_balance() {
+        let m = crate::white_balance::white_balance_matrix(30.0, -10.0, klipp_core::WorkingColorspace::Rec709Linear).unwrap();
+        let grey = srgb_decode(120.0 / 255.0);
+        let enc = |v: f32| {
+            let e = if v <= 0.003_130_8 { 12.92 * v } else { 1.055 * v.powf(1.0 / 2.4) - 0.055 };
+            (e.clamp(0.0, 1.0) * 255.0).round() as u8
+        };
+        let shifted = m.map(|row| enc((row[0] + row[1] + row[2]) * grey));
+        let source: Vec<u8> = (0..400).flat_map(|_| [120, 120, 120, 255]).collect();
+        let reference: Vec<u8> = (0..400).flat_map(|_| [shifted[0], shifted[1], shifted[2], 255]).collect();
+        let r = match_colors(&source, &reference);
+        assert!((r.temperature_adjust - 30.0).abs() < 3.0, "temperature {}", r.temperature_adjust);
+        assert!((r.tint_adjust + 10.0).abs() < 3.0, "tint {}", r.tint_adjust);
     }
 
     #[test]

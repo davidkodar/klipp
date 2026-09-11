@@ -29,8 +29,7 @@
 //!    like HSV). Output behaviour is correct under any working
 //!    colorspace. Examples: [`apply_exposure`] (per-channel multiply
 //!    by 2^stops), [`apply_contrast`] (per-channel S-curve around a
-//!    fixed pivot), [`apply_temperature_tint`] (additive/scalar R/B
-//!    trim), [`apply_global_mix`] (mix between two RGBA buffers),
+//!    fixed pivot), [`apply_global_mix`] (mix between two RGBA buffers),
 //!    [`apply_hue_rotation`] (HSL space).
 //!
 //! 2. **Luma-weighted** — the math computes a "luminance" scalar from
@@ -267,23 +266,15 @@ pub fn apply_clarity(rgba: &mut [f32], width: u32, height: u32, amount: f32) {
     apply_clarity_ws(rgba, width, height, amount, WorkingColorspace::Rec709Linear)
 }
 
-/// Temperature / tint shift.
-/// `temperature > 0` = warmer (more red, less blue).
-/// `tint > 0` = more green; `< 0` = more magenta.
-/// Both `0.0` is identity. Input range roughly ±100.
+/// Temperature / tint: a white balance in the working space `ws` (see
+/// [`crate::white_balance`]). `temperature > 0` = warmer, `tint > 0` =
+/// greener; both `0.0` is identity. Input range roughly ±100.
 ///
 /// No clamp — pushing temperature past the gamut is legal; later
 /// gamut mapping at display/export resolves it.
-pub fn apply_temperature_tint(rgba: &mut [f32], temperature: f32, tint: f32) {
-    if temperature == 0.0 && tint == 0.0 {
-        return;
-    }
-    let t = temperature / 100.0 * 0.1;
-    let g = tint / 100.0 * 0.1;
-    for pixel in rgba.chunks_exact_mut(4) {
-        pixel[0] += t;
-        pixel[1] += g;
-        pixel[2] -= t;
+pub fn apply_temperature_tint(rgba: &mut [f32], temperature: f32, tint: f32, ws: WorkingColorspace) {
+    if let Some(m) = crate::white_balance::white_balance_matrix(temperature, tint, ws) {
+        crate::white_balance::apply_white_balance(rgba, &m);
     }
 }
 
@@ -892,17 +883,17 @@ mod tests {
     fn temperature_zero_is_identity() {
         let mut frame = make_frame(&[[0.3, 0.6, 0.9, 1.0]]);
         let original = frame.clone();
-        apply_temperature_tint(&mut frame, 0.0, 0.0);
+        apply_temperature_tint(&mut frame, 0.0, 0.0, WorkingColorspace::Rec709Linear);
         assert_eq!(frame, original);
     }
 
     #[test]
     fn temperature_positive_shifts_red_up_blue_down() {
         let mut frame = make_frame(&[[0.5, 0.5, 0.5, 1.0]]);
-        apply_temperature_tint(&mut frame, 50.0, 0.0);
-        assert!(frame[0] > 0.5, "red should warm up");
-        assert!(frame[2] < 0.5, "blue should cool down");
-        assert_eq!(frame[1], 0.5, "green unchanged by temperature");
+        apply_temperature_tint(&mut frame, 50.0, 0.0, WorkingColorspace::Rec709Linear);
+        assert!(frame[0] > 0.55, "red should warm up");
+        assert!(frame[2] < 0.45, "blue should cool down");
+        assert!((frame[1] - 0.5).abs() < 0.02, "green nearly unchanged by temperature");
     }
 
     // ─── tone controls ────────────────────────────────────────────

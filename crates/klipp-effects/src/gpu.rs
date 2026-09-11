@@ -1242,7 +1242,9 @@ impl GpuEffectsPipeline {
     }
 
     /// Apply per-clip color grading on the GPU. Returns the processed RGBA data.
-    /// Accepts the pre-converted lift/gamma/gain RGB tuples from wheel_offset_to_rgb.
+    /// Accepts the pre-converted lift/gamma/gain RGB tuples from wheel_offset_to_rgb,
+    /// and temperature / tint as a white-balance matrix
+    /// (`klipp_color::white_balance::white_balance_matrix`; identity for none).
     #[allow(clippy::too_many_arguments)]
     #[allow(clippy::too_many_arguments)]
     pub fn apply_color_grade(
@@ -1253,8 +1255,7 @@ impl GpuEffectsPipeline {
         exposure: f32,
         contrast: f32,
         saturation: f32,
-        temperature: f32,
-        tint: f32,
+        white_balance: [[f32; 3]; 3],
         highlights: f32,
         shadows: f32,
         whites: f32,
@@ -1287,8 +1288,7 @@ impl GpuEffectsPipeline {
             exposure,
             contrast,
             saturation,
-            temperature,
-            tint,
+            wb: flat3(white_balance),
             highlights,
             shadows,
             whites,
@@ -1318,14 +1318,15 @@ impl GpuEffectsPipeline {
         self.download_linear_rgba_f32(buf_b, (width * height) as usize)
     }
 
-    /// Apply color balance (temperature, tint, hue rotation, global mix) on GPU.
+    /// Apply color balance (white balance, hue rotation, global mix) on GPU.
+    /// `white_balance` is temperature / tint as a matrix on linear light
+    /// (`klipp_color::white_balance::white_balance_matrix`).
     pub fn apply_color_balance_gpu(
         &mut self,
         linear_rgba: Vec<f32>,
         width: u32,
         height: u32,
-        temperature: f32,
-        tint: f32,
+        white_balance: [[f32; 3]; 3],
         hue: f32,
         global_mix: f32,
     ) -> Vec<f32> {
@@ -1345,7 +1346,7 @@ impl GpuEffectsPipeline {
         let workgroups = pixel_count.div_ceil(WORKGROUP_SIZE);
 
         self.write_params(&GpuColorBalanceParams {
-            width, height, temperature, tint, hue, global_mix,
+            width, height, wb: flat3(white_balance), hue, global_mix,
             _pad0: 0, _pad1: 0,
         });
         self.dispatch(&self.color_balance_pipeline, buf_a, buf_b, workgroups);
@@ -2764,8 +2765,7 @@ impl GpuEffectsPipeline {
         exposure: f32,
         contrast: f32,
         saturation: f32,
-        temperature: f32,
-        tint: f32,
+        white_balance: [[f32; 3]; 3],
         highlights: f32,
         shadows: f32,
         whites: f32,
@@ -2782,7 +2782,7 @@ impl GpuEffectsPipeline {
         }
         let slot = self.next_params_slot();
         self.write_chain_params(slot, &GpuColorGradeParams {
-            width, height, exposure, contrast, saturation, temperature, tint,
+            width, height, exposure, contrast, saturation, wb: flat3(white_balance),
             highlights, shadows, whites, blacks,
             lift_r: lift.0, lift_g: lift.1, lift_b: lift.2,
             gamma_r: gamma.0, gamma_g: gamma.1, gamma_b: gamma.2,
@@ -2810,8 +2810,7 @@ impl GpuEffectsPipeline {
         in_is_a: bool,
         width: u32,
         height: u32,
-        temperature: f32,
-        tint: f32,
+        white_balance: [[f32; 3]; 3],
         hue: f32,
         global_mix: f32,
     ) {
@@ -2820,7 +2819,7 @@ impl GpuEffectsPipeline {
         }
         let slot = self.next_params_slot();
         self.write_chain_params(slot, &GpuColorBalanceParams {
-            width, height, temperature, tint, hue, global_mix,
+            width, height, wb: flat3(white_balance), hue, global_mix,
             _pad0: 0, _pad1: 0,
         });
         let workgroups = (width * height).div_ceil(WORKGROUP_SIZE);
@@ -4871,6 +4870,11 @@ struct TransitionParams {
     color_a: f32,
 }
 
+/// A 3×3 matrix as nine row-major floats, the layout the shaders read.
+fn flat3(m: [[f32; 3]; 3]) -> [f32; 9] {
+    [m[0][0], m[0][1], m[0][2], m[1][0], m[1][1], m[1][2], m[2][0], m[2][1], m[2][2]]
+}
+
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct GpuColorGradeParams {
@@ -4879,8 +4883,9 @@ struct GpuColorGradeParams {
     exposure: f32,
     contrast: f32,
     saturation: f32,
-    temperature: f32,
-    tint: f32,
+    /// Temperature / tint as a white-balance matrix, row-major
+    /// (`klipp_color::white_balance`).
+    wb: [f32; 9],
     highlights: f32,
     shadows: f32,
     whites: f32,
@@ -4910,7 +4915,7 @@ struct GpuColorGradeParams {
     luma_yb: f32,
     _pad1: u32,
 }
-// 30 fields × 4 bytes = 120 bytes (still under 256-byte PARAMS_SIZE)
+// 37 words = 148 bytes (still under 256-byte PARAMS_SIZE)
 
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -4927,8 +4932,8 @@ struct GpuHueSatParams {
 struct GpuColorBalanceParams {
     width: u32,
     height: u32,
-    temperature: f32,
-    tint: f32,
+    /// Temperature / tint as a white-balance matrix, row-major.
+    wb: [f32; 9],
     hue: f32,
     global_mix: f32,
     _pad0: u32,
@@ -7302,8 +7307,9 @@ struct Params {
     exposure: f32,
     contrast: f32,
     saturation: f32,
-    temperature: f32,
-    tint: f32,
+    wb0: f32, wb1: f32, wb2: f32,
+    wb3: f32, wb4: f32, wb5: f32,
+    wb6: f32, wb7: f32, wb8: f32,
     highlights: f32,
     shadows: f32,
     whites: f32,
@@ -7387,10 +7393,15 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     g = luma3 + (g - luma3) * params.saturation;
     b = luma3 + (b - luma3) * params.saturation;
 
-    // 6. Temperature / Tint.
-    r = r + params.temperature * 0.001;
-    b = b - params.temperature * 0.001;
-    g = g + params.tint * 0.001;
+    // 6. Temperature / Tint: a white balance, the matrix
+    //    `klipp_color::white_balance` builds. It scales, so it acts the
+    //    same at every exposure.
+    let wb_r = params.wb0 * r + params.wb1 * g + params.wb2 * b;
+    let wb_g = params.wb3 * r + params.wb4 * g + params.wb5 * b;
+    let wb_b = params.wb6 * r + params.wb7 * g + params.wb8 * b;
+    r = wb_r;
+    g = wb_g;
+    b = wb_b;
 
     // 7. Hue rotation — CPU path handles this (HSL conversion is
     //    expensive on GPU and UX decision to keep).
@@ -9550,8 +9561,9 @@ const SHADER_COLOR_BALANCE: &str = concat!(
 struct Params {
     width: u32,
     height: u32,
-    temperature: f32,
-    tint: f32,
+    wb0: f32, wb1: f32, wb2: f32,
+    wb3: f32, wb4: f32, wb5: f32,
+    wb6: f32, wb7: f32, wb8: f32,
     hue: f32,
     global_mix: f32,
     _pad0: u32,
@@ -9570,12 +9582,10 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     if idx >= params.width * params.height { return; }
 
     let orig = unpack(input[idx]);
-    let t = params.temperature / 100.0 * 0.1;
-    let g_tint = params.tint / 100.0 * 0.1;
-
-    var r = orig.x + t;
-    var g = orig.y + g_tint;
-    var b = orig.z - t;
+    // Temperature / tint: the white-balance matrix.
+    var r = params.wb0 * orig.x + params.wb1 * orig.y + params.wb2 * orig.z;
+    var g = params.wb3 * orig.x + params.wb4 * orig.y + params.wb5 * orig.z;
+    var b = params.wb6 * orig.x + params.wb7 * orig.y + params.wb8 * orig.z;
 
     // Hue rotation in RGB (Rodrigues rotation around (1,1,1)/sqrt(3) axis)
     if abs(params.hue) > 0.01 {

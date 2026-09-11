@@ -203,6 +203,15 @@ pub struct GraphExecutor {
 /// worst-case per-frame cost stays bounded.
 const COMPOUND_MAX_DEPTH: u32 = 8;
 
+/// The grade shaders' white balance for no temperature or tint.
+const NO_WHITE_BALANCE: [[f32; 3]; 3] = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+
+/// Temperature / tint as the grade shaders take them: a white-balance
+/// matrix on linear light in the working space.
+fn white_balance(temperature: f32, tint: f32, ws: klipp_core::WorkingColorspace) -> [[f32; 3]; 3] {
+    klipp_color::white_balance::white_balance_matrix(temperature, tint, ws).unwrap_or(NO_WHITE_BALANCE)
+}
+
 /// Cached matte for a Mask node. Reused across frames whenever the
 /// fingerprint matches — eliminates ~5-15 ms per 1080p frame for
 /// static masks (no keyframes, no edits).
@@ -1558,7 +1567,7 @@ impl GraphExecutor {
                 if exp == 0.0 { return None; }
                 self.gpu.as_mut().unwrap().apply_color_grade_chain(
                     in_is_a, width, height,
-                    exp, 0.0, 1.0, 0.0, 0.0,
+                    exp, 0.0, 1.0, NO_WHITE_BALANCE,
                     0.0, 0.0, 0.0, 0.0,
                     (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0),
                     0.0, 1.0,
@@ -1587,7 +1596,7 @@ impl GraphExecutor {
                     // writes to !in_is_a.
                     self.gpu.as_mut().unwrap().apply_color_grade_chain(
                         in_is_a, width, height,
-                        0.0, con, 1.0, 0.0, 0.0,
+                        0.0, con, 1.0, NO_WHITE_BALANCE,
                         0.0, 0.0, 0.0, 0.0,
                         (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0),
                         0.0, 1.0,
@@ -1603,7 +1612,7 @@ impl GraphExecutor {
                 if con != 0.0 {
                     self.gpu.as_mut().unwrap().apply_color_grade_chain(
                         in_is_a, width, height,
-                        0.0, con, 1.0, 0.0, 0.0,
+                        0.0, con, 1.0, NO_WHITE_BALANCE,
                         0.0, 0.0, 0.0, 0.0,
                         (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0),
                         0.0, 1.0,
@@ -1624,7 +1633,7 @@ impl GraphExecutor {
                 if sat != 1.0 && vib != 0.0 {
                     self.gpu.as_mut().unwrap().apply_color_grade_chain(
                         in_is_a, width, height,
-                        0.0, 0.0, sat, 0.0, 0.0,
+                        0.0, 0.0, sat, NO_WHITE_BALANCE,
                         0.0, 0.0, 0.0, 0.0,
                         (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0),
                         0.0, 1.0,
@@ -1636,7 +1645,7 @@ impl GraphExecutor {
                 if sat != 1.0 {
                     self.gpu.as_mut().unwrap().apply_color_grade_chain(
                         in_is_a, width, height,
-                        0.0, 0.0, sat, 0.0, 0.0,
+                        0.0, 0.0, sat, NO_WHITE_BALANCE,
                         0.0, 0.0, 0.0, 0.0,
                         (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0),
                         0.0, 1.0,
@@ -1655,7 +1664,7 @@ impl GraphExecutor {
                 if hi == 0.0 && sh == 0.0 && wh == 0.0 && bl == 0.0 { return None; }
                 self.gpu.as_mut().unwrap().apply_color_grade_chain(
                     in_is_a, width, height,
-                    0.0, 0.0, 1.0, 0.0, 0.0,
+                    0.0, 0.0, 1.0, NO_WHITE_BALANCE,
                     hi, sh, wh, bl,
                     (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0),
                     0.0, 1.0,
@@ -1686,7 +1695,7 @@ impl GraphExecutor {
                 );
                 self.gpu.as_mut().unwrap().apply_color_grade_chain(
                     in_is_a, width, height,
-                    0.0, 0.0, 1.0, 0.0, 0.0,
+                    0.0, 0.0, 1.0, NO_WHITE_BALANCE,
                     0.0, 0.0, 0.0, 0.0,
                     lift, gamma, gain, offset,
                     0.0, 1.0,
@@ -1749,8 +1758,7 @@ impl GraphExecutor {
             NodeKind::ColorBalance => {
                 self.gpu.as_mut().unwrap().apply_color_balance_chain(
                     in_is_a, width, height,
-                    params.temperature.unwrap_or(0.0),
-                    params.tint.unwrap_or(0.0),
+                    white_balance(params.temperature.unwrap_or(0.0), params.tint.unwrap_or(0.0), self.working_colorspace),
                     params.hue.unwrap_or(0.0),
                     params.global_mix.unwrap_or(1.0),
                 );
@@ -1819,7 +1827,7 @@ impl GraphExecutor {
                 };
                 self.gpu.as_mut().unwrap().apply_color_grade_chain(
                     in_is_a, width, height,
-                    s.exposure, 0.0, s.saturation, s.temperature, s.tint,
+                    s.exposure, 0.0, s.saturation, white_balance(s.temperature, s.tint, self.working_colorspace),
                     0.0, 0.0, 0.0, 0.0,
                     (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0),
                     0.0, 1.0,
@@ -1934,7 +1942,7 @@ impl GraphExecutor {
         if unified_active {
             self.gpu.as_mut().unwrap().apply_color_grade_chain(
                 cur, width, height,
-                exp, con, sat, temp, tint,
+                exp, con, sat, white_balance(temp, tint, self.working_colorspace),
                 hi, sh, wh, bl,
                 lift, gamma, gain, offset,
                 hue, global_mix,
@@ -2157,7 +2165,7 @@ impl GraphExecutor {
                     if let Some(gpu) = &mut self.gpu {
                         gpu.apply_color_grade(
                             primary_input.to_vec(), width, height,
-                            exp, 0.0, 1.0, 0.0, 0.0,
+                            exp, 0.0, 1.0, NO_WHITE_BALANCE,
                             0.0, 0.0, 0.0, 0.0,
                             (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0),
                             0.0, 1.0,
@@ -2180,7 +2188,7 @@ impl GraphExecutor {
                         if let Some(gpu) = &mut self.gpu {
                             gpu.apply_color_grade(
                                 primary_input.to_vec(), width, height,
-                                0.0, con, 1.0, 0.0, 0.0,
+                                0.0, con, 1.0, NO_WHITE_BALANCE,
                                 0.0, 0.0, 0.0, 0.0,
                                 (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0),
                                 0.0, 1.0,
@@ -2217,7 +2225,7 @@ impl GraphExecutor {
                         if let Some(gpu) = &mut self.gpu {
                             gpu.apply_color_grade(
                                 primary_input.to_vec(), width, height,
-                                0.0, 0.0, sat, 0.0, 0.0,
+                                0.0, 0.0, sat, NO_WHITE_BALANCE,
                                 0.0, 0.0, 0.0, 0.0,
                                 (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0),
                                 0.0, 1.0,
@@ -2255,7 +2263,7 @@ impl GraphExecutor {
                     if let Some(gpu) = &mut self.gpu {
                         gpu.apply_color_grade(
                             primary_input.to_vec(), width, height,
-                            0.0, 0.0, 1.0, 0.0, 0.0,
+                            0.0, 0.0, 1.0, NO_WHITE_BALANCE,
                             hi, sh, wh, bl,
                             (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0),
                             0.0, 1.0,
@@ -2318,7 +2326,7 @@ impl GraphExecutor {
                     if let Some(gpu) = &mut self.gpu {
                         gpu.apply_color_grade(
                             primary_input.to_vec(), width, height,
-                            0.0, 0.0, 1.0, 0.0, 0.0,
+                            0.0, 0.0, 1.0, NO_WHITE_BALANCE,
                             0.0, 0.0, 0.0, 0.0,
                             lift, gamma, gain, offset,
                             0.0, 1.0,
@@ -2446,13 +2454,13 @@ impl GraphExecutor {
                 if let Some(gpu) = &mut self.gpu {
                     gpu.apply_color_balance_gpu(
                         primary_input.to_vec(), width, height,
-                        temp, tint, hue, mix,
+                        white_balance(temp, tint, self.working_colorspace), hue, mix,
                     )
                 } else {
                     let original = primary_input.to_vec();
                     let mut frame = original.clone();
                     if temp != 0.0 || tint != 0.0 {
-                        klipp_color::linear::apply_temperature_tint(&mut frame, temp, tint);
+                        klipp_color::linear::apply_temperature_tint(&mut frame, temp, tint, self.working_colorspace);
                     }
                     if hue.abs() > 0.01 {
                         klipp_color::linear::apply_hue_rotation(&mut frame, hue);
@@ -3066,7 +3074,7 @@ impl GraphExecutor {
                 if let Some(gpu) = &mut self.gpu {
                     gpu.apply_color_grade(
                         primary_input.to_vec(), width, height,
-                        s.exposure, 0.0, s.saturation, s.temperature, s.tint,
+                        s.exposure, 0.0, s.saturation, white_balance(s.temperature, s.tint, self.working_colorspace),
                         0.0, 0.0, 0.0, 0.0,
                         (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0),
                         0.0, 1.0,
@@ -3078,7 +3086,7 @@ impl GraphExecutor {
                     // same order the GPU shader uses).
                     let mut frame = primary_input.to_vec();
                     klipp_color::linear::apply_exposure(&mut frame, s.exposure);
-                    klipp_color::linear::apply_temperature_tint(&mut frame, s.temperature, s.tint);
+                    klipp_color::linear::apply_temperature_tint(&mut frame, s.temperature, s.tint, self.working_colorspace);
                     klipp_color::linear::apply_saturation_ws(&mut frame, s.saturation, self.working_colorspace);
                     frame
                 }
@@ -3235,7 +3243,7 @@ impl GraphExecutor {
                 let temp = params.temperature.unwrap_or(0.0);
                 let tint = params.tint.unwrap_or(0.0);
                 if temp != 0.0 || tint != 0.0 {
-                    klipp_color::linear::apply_temperature_tint(&mut frame, temp, tint);
+                    klipp_color::linear::apply_temperature_tint(&mut frame, temp, tint, self.working_colorspace);
                 }
                 let hue = params.hue.unwrap_or(0.0);
                 if hue != 0.0 {

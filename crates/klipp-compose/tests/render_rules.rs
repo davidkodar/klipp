@@ -301,6 +301,31 @@ fn an_hdr_delivery_renders_display_light() {
     }
 }
 
+/// Temperature and tint are a white balance: they scale the channels, so a
+/// grey four times brighter is balanced exactly as the dim one, black stays
+/// black, and it is the same on the CPU and the GPU, in the Corrector and
+/// the Color Balance node. They used to add a fixed amount, which tinted
+/// blacks and did next to nothing to scene-linear highlights.
+#[test]
+fn temperature_and_tint_balance_every_exposure_alike() {
+    for kind in [NodeKind::Corrector, NodeKind::ColorBalance] {
+        let mut p = NodeParams::default();
+        p.temperature = Some(40.0);
+        p.tint = Some(-15.0);
+        let want = klipp_color::white_balance::white_balance_matrix(40.0, -15.0, Default::default()).unwrap();
+        for grey in [0.0f32, 0.18, 0.72, 6.0] {
+            let mut c = media(0.0, 2.0);
+            c.node_graph = graph(kind, p.clone(), Default::default());
+            let mut src = Flat::default().grey(&c, grey);
+            let expect = want.map(|row| (row[0] + row[1] + row[2]) * grey);
+            for (i, img) in render(&sequence(vec![vec![c]]), 1.0, &mut src).iter().enumerate() {
+                let tol = 1e-4 + grey * 1e-4;
+                assert_px(&format!("{kind:?}, grey {grey}, run {i}"), px(img, 16, 9), expect, tol);
+            }
+        }
+    }
+}
+
 /// Node keyframes are read at clip-relative time, where the UI writes
 /// them. Exposure ramps 0 → 2 stops over the clip's first two seconds;
 /// one second in it is one stop, even though the clip's source starts
