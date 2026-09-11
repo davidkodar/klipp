@@ -15,6 +15,7 @@ members = [
     "crates/klipp-transitions",
     "crates/klipp-validation",
     "crates/klipp-render",
+    "crates/klipp-compose",
     "crates/klipp-export",
     "crates/klipp-ml",
     "crates/klipp-ml-candle",
@@ -150,6 +151,7 @@ klipp-effects = { path = "crates/klipp-effects" }
 klipp-nodes   = { path = "crates/klipp-nodes" }
 klipp-title  = { path = "crates/klipp-title" }
 klipp-render  = { path = "crates/klipp-render" }
+klipp-compose = { path = "crates/klipp-compose" }
 klipp-export  = { path = "crates/klipp-export" }
 klipp-ml         = { path = "crates/klipp-ml" }
 klipp-ml-candle  = { path = "crates/klipp-ml-candle" }

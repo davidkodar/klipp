@@ -2652,6 +2652,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "klipp-compose"
+version = "0.1.0"
+dependencies = [
+ "klipp-color",
+ "klipp-core",
+ "klipp-effects",
+ "klipp-nodes",
+ "klipp-plugin",
+ "klipp-timeline",
+ "klipp-title",
+ "klipp-transitions",
+ "rayon",
+ "tracing",
+]
+
+[[package]]
 name = "klipp-control"
 version = "0.1.0"
 dependencies = [
@@ -2714,6 +2730,7 @@ dependencies = [
  "image",
  "klipp-audio",
  "klipp-color",
+ "klipp-compose",
  "klipp-core",
  "klipp-effects",
  "klipp-jobs",

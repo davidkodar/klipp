@@ -1,0 +1,20 @@
+[package]
+name = "klipp-compose"
+version = "0.1.0"
+edition = "2021"
+description = "One definition of how a timeline frame is rendered, shared by the viewer and export"
+
+[dependencies]
+klipp-core        = { workspace = true }
+klipp-timeline    = { workspace = true }
+klipp-nodes       = { workspace = true }
+klipp-effects     = { workspace = true }
+klipp-color       = { workspace = true }
+klipp-title       = { workspace = true }
+klipp-transitions = { workspace = true }
+klipp-plugin      = { workspace = true }
+rayon             = { workspace = true }
+tracing           = { workspace = true }
+
+[dev-dependencies]
+klipp-color = { workspace = true }
