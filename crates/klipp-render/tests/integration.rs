@@ -5,6 +5,7 @@
 
 use klipp_core::*;
 use klipp_render::*;
+use klipp_timeline::ClipKind;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
@@ -12,6 +13,32 @@ use uuid::Uuid;
 
 fn test_media_path() -> Option<PathBuf> {
     std::env::var("TEST_MEDIA_FILE").ok().map(PathBuf::from)
+}
+
+fn clip(kind: ClipKind, from: i64, to: i64, fps: u32) -> klipp_timeline::Clip {
+    let tc = |f| RationalTime::from_frames(f, fps);
+    klipp_timeline::Clip { kind, source_in: tc(0), source_out: tc(to - from), ..klipp_timeline::Clip::gap(tc(from), tc(to)) }
+}
+
+/// A single-video-track timeline at `fps`.
+fn one_track(fps: u32, clips: Vec<klipp_timeline::Clip>) -> VideoTimeline {
+    let mut v = VideoTimeline::default();
+    v.sequence.fps = Fps::new(fps, 1);
+    let mut t = klipp_timeline::Track::new("V1", klipp_timeline::TrackKind::Video);
+    t.clips = clips;
+    v.sequence.tracks.push(t);
+    v
+}
+
+/// One media clip from `path`, starting `source_in_secs` into the file.
+fn media_timeline(path: &std::path::Path, from: i64, to: i64, fps: u32, source_in_secs: f64) -> VideoTimeline {
+    let media_id = MediaId::new();
+    let mut c = clip(ClipKind::Media { media_id }, from, to, fps);
+    c.source_in = RationalTime::from_secs_f64(source_in_secs, fps);
+    c.source_out = c.source_in + RationalTime::from_frames(to - from, fps);
+    let mut v = one_track(fps, vec![c]);
+    v.media.insert(media_id, MediaFile { path: path.to_path_buf(), log_format: None });
+    v
 }
 
 fn make_export_settings(path: &std::path::Path) -> ExportSettings {
@@ -35,77 +62,6 @@ fn make_export_settings(path: &std::path::Path) -> ExportSettings {
 // ═══════════════════════════════════════════════════════════════════
 
 #[test]
-fn snapshot_to_pipeline_roundtrip() {
-    // Verify that a snapshot can be created and a pipeline initialized from it
-    let _snapshot = SequenceSnapshot {
-        fps: 24.0,
-        fps_num: 24,
-        fps_den: 1,
-        width: 320,
-        height: 240,
-        sample_rate: 48000,
-        duration_frames: 24,
-        export_range: None,
-        video_tracks: vec![],
-        audio_tracks: vec![],
-        global_lut_path: None,
-        subtitle_tracks: vec![], chapters: vec![], working_colorspace: klipp_core::WorkingColorspace::Rec709Linear,
-    };
-
-    let mut pipeline = RenderPipeline::default_stages(None);
-    let settings = make_export_settings(std::path::Path::new("/tmp/test.mp4"));
-    pipeline.begin_export(&settings);
-
-    // Process a black frame through the pipeline
-    let black = vec![0u8; 320 * 240 * 4];
-    let ctx = FrameContext {
-        export_frame: 0,
-        clip_frame: 0,
-        clip_time_secs: 0.0,
-        clip: None,
-        fps: 24.0,
-        track_index: 0,
-        scene_referred: None,
-    };
-    let result = pipeline.process_frame(black.clone(), 320, 240, &ctx);
-    assert_eq!(result.len(), black.len());
-
-    pipeline.end_export();
-}
-
-#[test]
-fn compositor_with_gap_produces_none() {
-    let snapshot = SequenceSnapshot {
-        fps: 24.0,
-        fps_num: 24,
-        fps_den: 1,
-        width: 64,
-        height: 64,
-        sample_rate: 48000,
-        duration_frames: 10,
-        export_range: None,
-        video_tracks: vec![],
-        audio_tracks: vec![],
-        global_lut_path: None,
-        subtitle_tracks: vec![], chapters: vec![], working_colorspace: klipp_core::WorkingColorspace::Rec709Linear,
-    };
-
-    let mut compositor = FrameCompositor::new();
-    let mut decoders = std::collections::HashMap::new();
-    let mut pipelines: Vec<klipp_render::RenderPipeline> = Vec::new();
-
-    // No tracks → None
-    let result = compositor
-        .composite_frame(0, 0, &snapshot, &mut decoders, &mut pipelines)
-        .unwrap();
-    assert!(result.is_none());
-}
-
-// ═══════════════════════════════════════════════════════════════════
-// ExportJob — synthetic (no real media)
-// ═══════════════════════════════════════════════════════════════════
-
-#[test]
 fn export_job_empty_sequence() {
     let dir = std::env::temp_dir().join("klipp_integration_test");
     let _ = std::fs::create_dir_all(&dir);
@@ -120,7 +76,7 @@ fn export_job_empty_sequence() {
         sample_rate: 48000,
         duration_frames: 5,
         export_range: None,
-        video_tracks: vec![],
+        video: Default::default(),
         audio_tracks: vec![],
         global_lut_path: None,
         subtitle_tracks: vec![], chapters: vec![], working_colorspace: klipp_core::WorkingColorspace::Rec709Linear,
@@ -171,7 +127,7 @@ fn export_job_cancellation_immediate() {
         sample_rate: 48000,
         duration_frames: 100,
         export_range: None,
-        video_tracks: vec![],
+        video: Default::default(),
         audio_tracks: vec![],
         global_lut_path: None,
         subtitle_tracks: vec![], chapters: vec![], working_colorspace: klipp_core::WorkingColorspace::Rec709Linear,
@@ -213,7 +169,7 @@ fn export_job_cancellation_midway() {
         sample_rate: 48000,
         duration_frames: 1000, // Long enough to cancel mid-way
         export_range: None,
-        video_tracks: vec![],
+        video: Default::default(),
         audio_tracks: vec![],
         global_lut_path: None,
         subtitle_tracks: vec![], chapters: vec![], working_colorspace: klipp_core::WorkingColorspace::Rec709Linear,
@@ -283,7 +239,7 @@ fn export_job_progress_advances() {
         sample_rate: 48000,
         duration_frames: total,
         export_range: None,
-        video_tracks: vec![],
+        video: Default::default(),
         audio_tracks: vec![],
         global_lut_path: None,
         subtitle_tracks: vec![], chapters: vec![], working_colorspace: klipp_core::WorkingColorspace::Rec709Linear,
@@ -328,8 +284,6 @@ fn export_real_media_h264() {
     let _ = std::fs::create_dir_all(&dir);
     let output_path = dir.join("real_export_h264.mp4");
 
-    let clip_id = ClipId::new();
-
     let snapshot = SequenceSnapshot {
         fps: 30.0,
         fps_num: 30,
@@ -339,42 +293,7 @@ fn export_real_media_h264() {
         sample_rate: 48000,
         duration_frames: 30, // 1 second
         export_range: None,
-        video_tracks: vec![snapshot::VideoTrackSnapshot {
-            opacity: 1.0,
-            visible: true,
-            clips: vec![snapshot::ClipSnapshot {
-                id: clip_id,
-                kind: snapshot::ClipKindSnapshot::Media {
-                    path: media_path.clone(),
-                    has_audio: true,
-                    log_format: None,
-                },
-                timeline_start_frame: 0,
-                timeline_end_frame: 30,
-                source_start_secs: 0.0,
-                source_end_secs: 1.0,
-                speed: 1.0,
-                node_graph: klipp_nodes::NodeGraph::default(),
-                effects: vec![],
-                builtin_effects: vec![],
-                source_rotation: 0,
-                stabilization_data: None,
-                smoothed_trajectory: None,
-                effect_keyframes: std::collections::HashMap::new(),
-                audio_effect_keyframes: std::collections::HashMap::new(),
-                opacity_keyframes: vec![],
-                transform_pos_x_keyframes: vec![],
-                transform_pos_y_keyframes: vec![],
-                transform_scale_keyframes: vec![],
-                transform_rotation_keyframes: vec![],
-                blend_mode: klipp_core::BlendMode::Normal,
-                matte_source: None,
-                matte_stencil: None,
-                consumed_as_matte: false,
-                transform_link: None,
-            }],
-            transitions: vec![],
-        }],
+        video: media_timeline(&media_path, 0, 30, 30, 0.0),
         audio_tracks: vec![snapshot::AudioTrackSnapshot {
             volume: 1.0,
             pan: 0.0,
@@ -449,12 +368,6 @@ fn export_real_media_with_color_grade() {
     let _ = std::fs::create_dir_all(&dir);
     let output_path = dir.join("real_export_graded.mp4");
 
-    let clip_id = ClipId::new();
-
-    // TODO Session 2: create a node graph with visible grading changes.
-    // For now, use default graph (pass-through).
-    let graph = klipp_nodes::NodeGraph::default();
-
     let snapshot = SequenceSnapshot {
         fps: 30.0,
         fps_num: 30,
@@ -464,42 +377,7 @@ fn export_real_media_with_color_grade() {
         sample_rate: 48000,
         duration_frames: 15, // 0.5 seconds
         export_range: None,
-        video_tracks: vec![snapshot::VideoTrackSnapshot {
-            opacity: 1.0,
-            visible: true,
-            clips: vec![snapshot::ClipSnapshot {
-                id: clip_id,
-                kind: snapshot::ClipKindSnapshot::Media {
-                    path: media_path,
-                    has_audio: false,
-                    log_format: None,
-                },
-                timeline_start_frame: 0,
-                timeline_end_frame: 15,
-                source_start_secs: 1.0, // Start at 1s to test seek
-                source_end_secs: 1.5,
-                speed: 1.0,
-                node_graph: graph,
-                effects: vec![],
-                builtin_effects: vec![],
-                source_rotation: 0,
-                stabilization_data: None,
-                smoothed_trajectory: None,
-                effect_keyframes: std::collections::HashMap::new(),
-                audio_effect_keyframes: std::collections::HashMap::new(),
-                opacity_keyframes: vec![],
-                transform_pos_x_keyframes: vec![],
-                transform_pos_y_keyframes: vec![],
-                transform_scale_keyframes: vec![],
-                transform_rotation_keyframes: vec![],
-                blend_mode: klipp_core::BlendMode::Normal,
-                matte_source: None,
-                matte_stencil: None,
-                consumed_as_matte: false,
-                transform_link: None,
-            }],
-            transitions: vec![],
-        }],
+        video: media_timeline(&media_path, 0, 15, 30, 1.0),
         audio_tracks: vec![],
         global_lut_path: None,
         subtitle_tracks: vec![], chapters: vec![], working_colorspace: klipp_core::WorkingColorspace::Rec709Linear,
@@ -549,69 +427,7 @@ fn export_with_title_and_gap() {
         sample_rate: 48000,
         duration_frames: 48, // 2 seconds
         export_range: None,
-        video_tracks: vec![snapshot::VideoTrackSnapshot {
-            opacity: 1.0,
-            visible: true,
-            clips: vec![
-                // Gap for first second
-                snapshot::ClipSnapshot {
-                    id: ClipId::new(),
-                    kind: snapshot::ClipKindSnapshot::Gap,
-                    timeline_start_frame: 0,
-                    timeline_end_frame: 24,
-                    source_start_secs: 0.0,
-                    source_end_secs: 1.0,
-                    speed: 1.0,
-                    node_graph: klipp_nodes::NodeGraph::default(),
-                    effects: vec![],
-                    builtin_effects: vec![],
-                    source_rotation: 0,
-                    stabilization_data: None,
-                    smoothed_trajectory: None,
-                    effect_keyframes: std::collections::HashMap::new(),
-                    audio_effect_keyframes: std::collections::HashMap::new(),
-                    opacity_keyframes: vec![],
-                    transform_pos_x_keyframes: vec![],
-                    transform_pos_y_keyframes: vec![],
-                    transform_scale_keyframes: vec![],
-                    transform_rotation_keyframes: vec![],
-                    blend_mode: klipp_core::BlendMode::Normal,
-                    matte_source: None,
-                    matte_stencil: None,
-                    consumed_as_matte: false,
-                    transform_link: None,
-                },
-                // Title for second second
-                snapshot::ClipSnapshot {
-                    id: ClipId::new(),
-                    kind: snapshot::ClipKindSnapshot::Title(title_data),
-                    timeline_start_frame: 24,
-                    timeline_end_frame: 48,
-                    source_start_secs: 0.0,
-                    source_end_secs: 1.0,
-                    speed: 1.0,
-                    node_graph: klipp_nodes::NodeGraph::default(),
-                    effects: vec![],
-                    builtin_effects: vec![],
-                    source_rotation: 0,
-                    stabilization_data: None,
-                    smoothed_trajectory: None,
-                    effect_keyframes: std::collections::HashMap::new(),
-                    audio_effect_keyframes: std::collections::HashMap::new(),
-                    opacity_keyframes: vec![],
-                    transform_pos_x_keyframes: vec![],
-                    transform_pos_y_keyframes: vec![],
-                    transform_scale_keyframes: vec![],
-                    transform_rotation_keyframes: vec![],
-                    blend_mode: klipp_core::BlendMode::Normal,
-                    matte_source: None,
-                    matte_stencil: None,
-                    consumed_as_matte: false,
-                    transform_link: None,
-                },
-            ],
-            transitions: vec![],
-        }],
+        video: one_track(24, vec![clip(ClipKind::Gap, 0, 24, 24), clip(ClipKind::Title(title_data), 24, 48, 24)]),
         audio_tracks: vec![],
         global_lut_path: None,
         subtitle_tracks: vec![], chapters: vec![], working_colorspace: klipp_core::WorkingColorspace::Rec709Linear,
@@ -678,38 +494,13 @@ fn export_with_keyframed_opacity() {
         sample_rate: 48000,
         duration_frames: 24,
         export_range: None,
-        video_tracks: vec![snapshot::VideoTrackSnapshot {
-            opacity: 1.0,
-            visible: true,
-            clips: vec![snapshot::ClipSnapshot {
-                id: ClipId::new(),
-                kind: snapshot::ClipKindSnapshot::Title(title_data),
-                timeline_start_frame: 0,
-                timeline_end_frame: 24,
-                source_start_secs: 0.0,
-                source_end_secs: 1.0,
-                speed: 1.0,
-                node_graph: klipp_nodes::NodeGraph::default(),
-                effects: vec![],
-                builtin_effects: vec![klipp_effects::BuiltinEffect::Opacity { value: 1.0 }],
-                source_rotation: 0,
-                stabilization_data: None,
-                smoothed_trajectory: None,
-                effect_keyframes,
-                audio_effect_keyframes: std::collections::HashMap::new(),
-                opacity_keyframes: vec![kf_start, kf_end],
-                transform_pos_x_keyframes: vec![],
-                transform_pos_y_keyframes: vec![],
-                transform_scale_keyframes: vec![],
-                transform_rotation_keyframes: vec![],
-                blend_mode: klipp_core::BlendMode::Normal,
-                matte_source: None,
-                matte_stencil: None,
-                consumed_as_matte: false,
-                transform_link: None,
-            }],
-            transitions: vec![],
-        }],
+        video: {
+            let mut c = clip(ClipKind::Title(title_data), 0, 24, 24);
+            c.builtin_effects = vec![klipp_effects::BuiltinEffect::Opacity { value: 1.0 }];
+            c.effect_keyframes = effect_keyframes;
+            c.opacity_keyframes = vec![kf_start, kf_end];
+            one_track(24, vec![c])
+        },
         audio_tracks: vec![],
         global_lut_path: None,
         subtitle_tracks: vec![], chapters: vec![], working_colorspace: klipp_core::WorkingColorspace::Rec709Linear,
@@ -762,38 +553,7 @@ fn export_mp4_with_embedded_subtitle_stream() {
         sample_rate: 48000,
         duration_frames: 48,
         export_range: None,
-        video_tracks: vec![snapshot::VideoTrackSnapshot {
-            opacity: 1.0,
-            visible: true,
-            clips: vec![snapshot::ClipSnapshot {
-                id: ClipId::new(),
-                kind: snapshot::ClipKindSnapshot::Title(title_data),
-                timeline_start_frame: 0,
-                timeline_end_frame: 48,
-                source_start_secs: 0.0,
-                source_end_secs: 2.0,
-                speed: 1.0,
-                node_graph: klipp_nodes::NodeGraph::default(),
-                effects: vec![],
-                builtin_effects: vec![],
-                source_rotation: 0,
-                stabilization_data: None,
-                smoothed_trajectory: None,
-                effect_keyframes: std::collections::HashMap::new(),
-                audio_effect_keyframes: std::collections::HashMap::new(),
-                opacity_keyframes: vec![],
-                transform_pos_x_keyframes: vec![],
-                transform_pos_y_keyframes: vec![],
-                transform_scale_keyframes: vec![],
-                transform_rotation_keyframes: vec![],
-                blend_mode: klipp_core::BlendMode::Normal,
-                matte_source: None,
-                matte_stencil: None,
-                consumed_as_matte: false,
-                transform_link: None,
-            }],
-            transitions: vec![],
-        }],
+        video: one_track(24, vec![clip(ClipKind::Title(title_data), 0, 48, 24)]),
         audio_tracks: vec![],
         global_lut_path: None,
         subtitle_tracks: vec![snapshot::SubtitleTrackSnapshot {
@@ -868,38 +628,7 @@ fn export_without_embed_has_no_subtitle_stream() {
         sample_rate: 48000,
         duration_frames: 24,
         export_range: None,
-        video_tracks: vec![snapshot::VideoTrackSnapshot {
-            opacity: 1.0,
-            visible: true,
-            clips: vec![snapshot::ClipSnapshot {
-                id: ClipId::new(),
-                kind: snapshot::ClipKindSnapshot::Title(title_data),
-                timeline_start_frame: 0,
-                timeline_end_frame: 24,
-                source_start_secs: 0.0,
-                source_end_secs: 1.0,
-                speed: 1.0,
-                node_graph: klipp_nodes::NodeGraph::default(),
-                effects: vec![],
-                builtin_effects: vec![],
-                source_rotation: 0,
-                stabilization_data: None,
-                smoothed_trajectory: None,
-                effect_keyframes: std::collections::HashMap::new(),
-                audio_effect_keyframes: std::collections::HashMap::new(),
-                opacity_keyframes: vec![],
-                transform_pos_x_keyframes: vec![],
-                transform_pos_y_keyframes: vec![],
-                transform_scale_keyframes: vec![],
-                transform_rotation_keyframes: vec![],
-                blend_mode: klipp_core::BlendMode::Normal,
-                matte_source: None,
-                matte_stencil: None,
-                consumed_as_matte: false,
-                transform_link: None,
-            }],
-            transitions: vec![],
-        }],
+        video: one_track(24, vec![clip(ClipKind::Title(title_data), 0, 24, 24)]),
         audio_tracks: vec![],
         global_lut_path: None,
         subtitle_tracks: vec![snapshot::SubtitleTrackSnapshot {

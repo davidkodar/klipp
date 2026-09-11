@@ -31,6 +31,10 @@ pub struct Encoder {
     audio_time_base: Option<ffmpeg_next::Rational>,
     /// Pre-created RGBA→YUV scaler (Gap 9: created once, reused per frame).
     rgba_to_yuv: ffmpeg_next::software::scaling::Context,
+    /// RGBA64 → YUV scaler for 10-bit outputs, made on first use.
+    rgba64_to_yuv: Option<ffmpeg_next::software::scaling::Context>,
+    /// The Y'CbCr matrix both scalers write (the one the file is tagged).
+    yuv_matrix: klipp_core::ColorMatrix,
     /// Encoder output resolution (may differ from snapshot if resolution override is set).
     output_width: u32,
     output_height: u32,
@@ -771,6 +775,11 @@ impl Encoder {
             video_time_base,
             audio_time_base,
             rgba_to_yuv,
+            rgba64_to_yuv: None,
+            yuv_matrix: match settings.hdr_mode {
+                klipp_core::HdrMode::Sdr => klipp_core::ColorMatrix::Bt709,
+                klipp_core::HdrMode::Hlg | klipp_core::HdrMode::Pq => klipp_core::ColorMatrix::Bt2020Ncl,
+            },
             output_width: out_w,
             output_height: out_h,
             audio_frame_size,
@@ -790,7 +799,15 @@ impl Encoder {
             subtitle_stream_idx,
             hdr_mode: settings.hdr_mode,
             light_stats: LightLevelStats::new(),
-            tone_map_op: settings.tone_map_op,
+            // "Match viewer" means the viewer's picture, and the viewer
+            // applies no display tone map (scene-referred clips are
+            // tone-mapped per clip, before the composite). The operator
+            // picked in the export dialog applies to the legacy sRGB
+            // path only; the ACES ODTs carry their own curves.
+            tone_map_op: match settings.odt {
+                klipp_core::OdtChoice::MatchViewer | klipp_core::OdtChoice::Unknown => klipp_core::ToneMapOp::None,
+                _ => settings.tone_map_op,
+            },
             odt: settings.odt,
             // Captured from the snapshot at open() — the export-job
             // dispatch is responsible for populating
@@ -851,18 +868,28 @@ impl Encoder {
         width: u32,
         height: u32,
     ) -> Result<(), RenderError> {
-        // Accumulate light-level statistics from the linear master
-        // before we quantise to display u8 — once we've clipped at 1.0
-        // we can no longer recover the HDR peak. Cheap enough to run
-        // unconditionally; `LightLevelStats` fits in three f64s.
-        self.light_stats.update(linear_rgba);
-        // Route through the delivery-target Output Display Transform.
-        // For `OdtChoice::MatchViewer` this dispatches based on the
-        // project working colorspace and matches the viewer's pixels
-        // pixel-for-pixel; explicit ODTs (Rec.709 SDR / Rec.2100 PQ /
-        // DCI-P3) walk the linear master into AcesCG first when the
-        // project's working space is BT.709-linear so the ODT chain
-        // sees the right basis.
+        // Light-level statistics from the linear master, before the
+        // display transform clips at 1.0 and the HDR peak is gone. Only
+        // HDR deliveries signal them.
+        if self.hdr_mode != klipp_core::HdrMode::Sdr {
+            self.light_stats.update(linear_rgba);
+        }
+        if self.gif_filter.is_none() && self.encode_linear_direct(linear_rgba, width, height)? {
+            return Ok(());
+        }
+        // The delivery-target display transform: `MatchViewer` is the
+        // viewer's own; explicit ODTs walk into AcesCG first as needed.
+        // 10-bit outputs take it at 16 bits — built from the 8-bit
+        // result they would carry 8 bits of data.
+        if self.is_deep() && self.gif_filter.is_none() {
+            let display = klipp_color::display::display_transform_for_export_u16(
+                linear_rgba,
+                self.tone_map_op,
+                self.working_colorspace,
+                self.odt,
+            );
+            return self.encode_video_frame_u16(&display, width, height);
+        }
         let display_u8 = klipp_color::display::display_transform_for_export(
             linear_rgba,
             self.tone_map_op,
@@ -870,6 +897,167 @@ impl Encoder {
             self.odt,
         );
         self.encode_video_frame(&display_u8, width, height)
+    }
+
+    /// Linear frame → the output's Y'CbCr planes in one parallel pass: the
+    /// export display transform per pixel, then the file's matrix, limited
+    /// range, chroma averaged over each 2×2 (4:2:0) or 2×1 (4:2:2) block.
+    /// Replaces display RGBA → single-threaded swscale, which cost 30+ ms a
+    /// 4K frame, and skips the intermediate 8/16-bit rounding. Returns
+    /// `false` for a pixel format it does not write, or odd dimensions;
+    /// the caller then takes the swscale path.
+    fn encode_linear_direct(&mut self, linear: &[f32], w: u32, h: u32) -> Result<bool, RenderError> {
+        use ffmpeg_next::format::Pixel as P;
+        use rayon::prelude::*;
+        let fmt = self.video_encoder.format();
+        let (bits, semi, sw, sh) = match fmt {
+            P::YUV420P => (8u32, false, 1usize, 1usize),
+            P::YUV422P => (8, false, 1, 0),
+            P::NV12 => (8, true, 1, 1),
+            P::YUV420P10LE => (10, false, 1, 1),
+            P::YUV422P10LE => (10, false, 1, 0),
+            P::YUV444P10LE => (10, false, 0, 0),
+            P::P010LE => (10, true, 1, 1),
+            _ => return Ok(false),
+        };
+        let (wu, hu) = (w as usize, h as usize);
+        if (w, h) != (self.output_width, self.output_height)
+            || linear.len() != wu * hu * 4
+            || wu % (1 << sw) != 0
+            || hu % (1 << sh) != 0
+        {
+            return Ok(false);
+        }
+        let display = klipp_color::display::ExportDisplay::new(self.tone_map_op, self.working_colorspace, self.odt);
+        let (kr, kb) = match self.yuv_matrix {
+            klipp_core::ColorMatrix::Bt2020Ncl | klipp_core::ColorMatrix::Bt2020Cl => (0.2627f32, 0.0593f32),
+            _ => (0.2126, 0.0722),
+        };
+        let kg = 1.0 - kr - kb;
+        let scale = (1u32 << (bits - 8)) as f32;
+        let max = ((1u32 << bits) - 1) as f32;
+        let bps = if bits > 8 { 2usize } else { 1 };
+        let shift = if fmt == P::P010LE { 6 } else { 0 };
+        let quant = move |v: f32, off: f32, range: f32| ((off + v * range) * scale + 0.5).clamp(0.0, max) as u16;
+
+        let mut frame = ffmpeg_next::frame::Video::new(fmt, w, h);
+        let (ys, cs) = (frame.stride(0), frame.stride(1));
+        let vs = if semi { 0 } else { frame.stride(2) };
+        // Raw plane addresses: every band below writes rows no other band
+        // touches, and the frame outlives the parallel loop.
+        let py = frame.data_mut(0).as_mut_ptr() as usize;
+        let pu = frame.data_mut(1).as_mut_ptr() as usize;
+        let pv = if semi { 0 } else { frame.data_mut(2).as_mut_ptr() as usize };
+        let (rows, cols) = (1usize << sh, 1usize << sw);
+        let cw = wu >> sw;
+
+        (0..hu >> sh).into_par_iter().for_each(|cy| unsafe {
+            let put = |base: usize, idx: usize, v: u16| {
+                if bps == 2 {
+                    let b = (v << shift).to_le_bytes();
+                    *((base + idx * 2) as *mut u8) = b[0];
+                    *((base + idx * 2 + 1) as *mut u8) = b[1];
+                } else {
+                    *((base + idx) as *mut u8) = v as u8;
+                }
+            };
+            let mut rgb = vec![[0.0f32; 3]; wu * rows];
+            for r in 0..rows {
+                let y = cy * rows + r;
+                let row = py + y * ys;
+                for x in 0..wu {
+                    let i = (y * wu + x) * 4;
+                    let e = display.encode([linear[i], linear[i + 1], linear[i + 2]]);
+                    rgb[r * wu + x] = e;
+                    put(row, x, quant(kr * e[0] + kg * e[1] + kb * e[2], 16.0, 219.0));
+                }
+            }
+            let n = (rows * cols) as f32;
+            for cx in 0..cw {
+                let mut acc = [0.0f32; 3];
+                for r in 0..rows {
+                    for c in 0..cols {
+                        let e = rgb[r * wu + cx * cols + c];
+                        acc[0] += e[0];
+                        acc[1] += e[1];
+                        acc[2] += e[2];
+                    }
+                }
+                let (red, grn, blu) = (acc[0] / n, acc[1] / n, acc[2] / n);
+                let luma = kr * red + kg * grn + kb * blu;
+                let cb = quant((blu - luma) / (2.0 * (1.0 - kb)), 128.0, 224.0);
+                let cr = quant((red - luma) / (2.0 * (1.0 - kr)), 128.0, 224.0);
+                if semi {
+                    let row = pu + cy * cs;
+                    put(row, cx * 2, cb);
+                    put(row, cx * 2 + 1, cr);
+                } else {
+                    put(pu + cy * cs, cx, cb);
+                    put(pv + cy * vs, cx, cr);
+                }
+            }
+        });
+
+        frame.set_pts(Some(self.video_pts));
+        self.video_pts += 1;
+        self.video_encoder
+            .send_frame(&frame)
+            .map_err(|e| RenderError::Encode(format!("send video frame: {e}")))?;
+        self.drain_video_packets()?;
+        Ok(true)
+    }
+
+    /// Whether the output format holds more than 8 bits per sample.
+    pub fn is_deep(&self) -> bool {
+        use ffmpeg_next::format::Pixel as P;
+        matches!(self.video_encoder.format(), P::P010LE | P::YUV420P10LE | P::YUV422P10LE | P::YUV444P10LE)
+    }
+
+    /// Encode one 16-bit display-encoded RGBA frame (`width * height * 4`
+    /// samples, full range) into a 10-bit output.
+    pub fn encode_video_frame_u16(&mut self, rgba: &[u16], width: u32, height: u32) -> Result<(), RenderError> {
+        use ffmpeg_next::format::Pixel;
+        if self.rgba64_to_yuv.is_none() {
+            let mut sws = ffmpeg_next::software::scaling::Context::get(
+                Pixel::RGBA64LE,
+                width,
+                height,
+                self.video_encoder.format(),
+                self.output_width,
+                self.output_height,
+                ffmpeg_next::software::scaling::Flags::LANCZOS,
+            )
+            .map_err(|e| RenderError::Encode(format!("RGBA64→YUV scaler: {e}")))?;
+            unsafe {
+                crate::sws_colour::set_rgb_to_yuv(sws.as_mut_ptr() as *mut _, self.yuv_matrix, klipp_core::ColorRange::Limited);
+            }
+            self.rgba64_to_yuv = Some(sws);
+        }
+        let mut frame = ffmpeg_next::frame::Video::new(Pixel::RGBA64LE, width, height);
+        let stride = frame.stride(0);
+        let row = width as usize * 4;
+        {
+            let dst = frame.data_mut(0);
+            for y in 0..height as usize {
+                let d = &mut dst[y * stride..y * stride + row * 2];
+                for (k, v) in rgba[y * row..(y + 1) * row].iter().enumerate() {
+                    d[k * 2..k * 2 + 2].copy_from_slice(&v.to_le_bytes());
+                }
+            }
+        }
+        let mut yuv = ffmpeg_next::frame::Video::new(self.video_encoder.format(), self.output_width, self.output_height);
+        self.rgba64_to_yuv
+            .as_mut()
+            .unwrap()
+            .run(&frame, &mut yuv)
+            .map_err(|e| RenderError::Encode(format!("RGBA64→YUV scale: {e}")))?;
+        yuv.set_pts(Some(self.video_pts));
+        self.video_pts += 1;
+        self.video_encoder
+            .send_frame(&yuv)
+            .map_err(|e| RenderError::Encode(format!("send video frame: {e}")))?;
+        self.drain_video_packets()?;
+        Ok(())
     }
 
     /// Encode one RGBA video frame.
@@ -1445,7 +1633,7 @@ mod tests {
             sample_rate: 48000,
             duration_frames: 10,
             export_range: None,
-            video_tracks: vec![],
+            video: Default::default(),
             audio_tracks: vec![],
             global_lut_path: None,
             subtitle_tracks: vec![], chapters: vec![],
@@ -1589,7 +1777,7 @@ mod tests {
             sample_rate: 48000,
             duration_frames: 4,
             export_range: None,
-            video_tracks: vec![],
+            video: Default::default(),
             audio_tracks: vec![],
             global_lut_path: None,
             subtitle_tracks: vec![],

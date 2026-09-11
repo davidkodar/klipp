@@ -14,11 +14,13 @@ klipp-effects  = { workspace = true }
 klipp-nodes    = { workspace = true }
 klipp-plugin   = { workspace = true }
 klipp-title    = { workspace = true }
+klipp-compose  = { workspace = true }
 ffmpeg-next    = { workspace = true }
 bytemuck       = { workspace = true }
 wgpu           = { workspace = true }
 uuid           = { workspace = true }
 tracing        = { workspace = true }
+rayon          = { workspace = true }
 thiserror      = { workspace = true }
 
 [dev-dependencies]

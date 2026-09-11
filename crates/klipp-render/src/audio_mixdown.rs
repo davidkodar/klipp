@@ -414,7 +414,7 @@ mod tests {
             sample_rate: 48000,
             duration_frames: 240,
             export_range: None,
-            video_tracks: vec![],
+            video: Default::default(),
             audio_tracks,
             global_lut_path: None,
             subtitle_tracks: vec![], chapters: vec![],

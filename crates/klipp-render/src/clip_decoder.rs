@@ -44,11 +44,13 @@ pub struct RenderDecoder {
     yuv_range: klipp_core::ColorRange,
     /// The source's resolved colourspace, before any camera log format.
     source_cs: klipp_core::SourceColorspace,
+    log_format: Option<klipp_core::LogFormat>,
+    working: klipp_core::WorkingColorspace,
     /// Set for scene-referred sources (PQ, HLG, camera log): their frames
     /// go through the viewer's codes route, not swscale RGB.
     scene: Option<SceneSource>,
     /// The codes of the frame `next_frame` last returned, for the grade.
-    last_scene: Option<crate::stage::SceneReferredFrame>,
+    last_scene: Option<SceneReferredFrame>,
     /// Active hardware acceleration mode.
     hw_accel: HwAccel,
     /// Target output dimensions.
@@ -78,26 +80,34 @@ pub struct RenderDecoder {
     frames_skipped: u64,
 }
 
+/// A scene-referred source frame (PQ, HLG, camera log) as the viewer's
+/// grade reads it: packed 10-bit code values in the source primaries.
+#[derive(Clone)]
+pub struct SceneReferredFrame {
+    pub codes: Vec<u32>,
+    pub transfer: klipp_color::hdr::HdrTransfer,
+    /// Source primaries → the grade's working space.
+    pub source_to_working: [[f32; 3]; 3],
+    pub width: u32,
+    pub height: u32,
+}
+
 /// How a scene-referred source's frames are decoded.
 #[derive(Clone, Copy)]
 struct SceneSource {
     /// `[range, matrix, transfer, primaries]` as `klipp_core::color_ids`.
     ids: [u32; 4],
     transfer: klipp_color::hdr::HdrTransfer,
-    /// Source primaries → BT.709 linear, export's working space (its
-    /// grade executor is never given another).
-    to_display: [[f32; 3]; 3],
+    /// Source primaries → the project's working space.
+    to_working: [[f32; 3]; 3],
 }
 
 impl SceneSource {
-    fn for_colourspace(cs: klipp_core::SourceColorspace) -> Option<Self> {
+    fn for_colourspace(cs: klipp_core::SourceColorspace, ws: klipp_core::WorkingColorspace) -> Option<Self> {
         let ids = klipp_core::color_ids::ids(cs);
         let transfer = klipp_color::hdr::HdrTransfer::from_transfer_id(ids[2])?;
-        let to_display = klipp_color::camera_log::primaries_to_working_matrix(
-            cs.primaries,
-            klipp_core::WorkingColorspace::Rec709Linear,
-        );
-        Some(Self { ids, transfer, to_display })
+        let to_working = klipp_color::camera_log::primaries_to_working_matrix(cs.primaries, ws);
+        Some(Self { ids, transfer, to_working })
     }
 }
 
@@ -177,7 +187,7 @@ impl RenderDecoder {
             decoder.format(),
             decoder.width(),
             decoder.height(),
-            ffmpeg_next::format::Pixel::RGBA,
+            ffmpeg_next::format::Pixel::RGBA64LE,
             scale_w,
             scale_h,
             ffmpeg_next::software::scaling::Flags::LANCZOS,
@@ -227,8 +237,10 @@ impl RenderDecoder {
             hw_scaler: None,
             yuv_matrix,
             yuv_range,
-            scene: SceneSource::for_colourspace(source_cs),
+            scene: SceneSource::for_colourspace(source_cs, klipp_core::WorkingColorspace::Rec709Linear),
             source_cs,
+            log_format: None,
+            working: klipp_core::WorkingColorspace::Rec709Linear,
             last_scene: None,
             hw_accel,
             target_width,
@@ -250,12 +262,31 @@ impl RenderDecoder {
     /// which the file's own tags never state. `None` leaves the file's tags
     /// in charge (PQ and HLG files say what they are).
     pub fn with_log_format(mut self, log_format: Option<klipp_core::LogFormat>) -> Self {
-        let cs = match log_format {
+        self.log_format = log_format;
+        self.resolve_scene();
+        self
+    }
+
+    /// The project's working colourspace, which scene-referred codes are
+    /// converted into (default BT.709 linear).
+    pub fn with_working_colorspace(mut self, ws: klipp_core::WorkingColorspace) -> Self {
+        self.working = ws;
+        self.resolve_scene();
+        self
+    }
+
+    fn resolve_scene(&mut self) {
+        let cs = match self.log_format {
             Some(f) => f.apply_to(self.source_cs),
             None => self.source_cs,
         };
-        self.scene = SceneSource::for_colourspace(cs);
-        self
+        self.scene = SceneSource::for_colourspace(cs, self.working);
+    }
+
+    /// The source's primaries (for converting display-referred frames into
+    /// the working space).
+    pub fn source_primaries(&self) -> klipp_core::ColorPrimaries {
+        self.source_cs.primaries
     }
 
     /// Whether frames decode through the scene-referred route.
@@ -266,12 +297,20 @@ impl RenderDecoder {
     /// The codes of the frame `next_frame` last returned, when the source
     /// is scene-referred. Taken, so a stale frame's codes can never be
     /// graded in place of a later frame's.
-    pub fn take_scene_referred(&mut self) -> Option<crate::stage::SceneReferredFrame> {
+    pub fn take_scene_referred(&mut self) -> Option<SceneReferredFrame> {
         self.last_scene.take()
     }
 
     /// Decode the next frame. Returns `Ok(None)` when the clip is exhausted.
+    /// The next frame as sRGB RGBA8 (empty for a scene-referred source,
+    /// whose frames travel as codes — see [`Self::take_scene_referred`]).
     pub fn next_frame(&mut self) -> Result<Option<Vec<u8>>, RenderError> {
+        Ok(self.next_frame_with_pts()?.map(|(_, rgba)| rgba.iter().map(|v| (v >> 8) as u8).collect()))
+    }
+
+    /// The next frame as sRGB-encoded RGBA64 — the source's full precision
+    /// for 10- and 12-bit video — with its source time in seconds.
+    pub fn next_frame_with_pts(&mut self) -> Result<Option<(f64, Vec<u16>)>, RenderError> {
         if self.decoder_eof {
             return Ok(None);
         }
@@ -311,7 +350,7 @@ impl RenderDecoder {
                     // Convert to RGBA
                     let rgba = self.frame_to_rgba(&decoded)?;
                     self.frames_decoded += 1;
-                    return Ok(Some(rgba));
+                    return Ok(Some((frame_pts_secs, rgba)));
                 }
                 Err(ffmpeg_next::Error::Other { errno })
                     if errno == ffmpeg_next::error::EAGAIN =>
@@ -364,7 +403,7 @@ impl RenderDecoder {
     fn frame_to_rgba(
         &mut self,
         decoded: &ffmpeg_next::util::frame::Video,
-    ) -> Result<Vec<u8>, RenderError> {
+    ) -> Result<Vec<u16>, RenderError> {
         // For 90/270 rotation, scale to swapped dimensions first.
         let (scale_w, scale_h) = if self.source_rotation == 90 || self.source_rotation == 270 {
             (self.target_height, self.target_width)
@@ -373,8 +412,9 @@ impl RenderDecoder {
         };
 
         if let Some(scene) = self.scene {
-            if let Some(rgba) = unsafe { self.scene_referred_frame(decoded, scene) } {
-                return Ok(rgba);
+            if unsafe { self.scene_referred_frame(decoded, scene) } {
+                // The frame travels as codes (`take_scene_referred`).
+                return Ok(Vec::new());
             }
         }
         let rgba = if self.hw_accel != HwAccel::Software {
@@ -410,17 +450,17 @@ impl RenderDecoder {
 
     /// A scene-referred frame the way the viewer decodes it: 10-bit codes
     /// (`klipp_color::hdr::yuv_to_hdr_codes`, bit-identical to the
-    /// viewer's decoder shaders) kept for the grade, and the tone-mapped
-    /// preview returned as the 8-bit frame. Resized nearest-neighbour and
-    /// rotated as the viewer's decoders do. `None` if the frame's samples
-    /// cannot be read, in which case the caller falls back to swscale.
+    /// viewer's decoder shaders), kept for `take_scene_referred`. Resized
+    /// nearest-neighbour and rotated as the viewer's decoders do. `false`
+    /// if the frame's samples cannot be read, in which case the caller
+    /// falls back to swscale.
     ///
     /// SAFETY: `decoded` must be a valid decoded frame.
     unsafe fn scene_referred_frame(
         &mut self,
         decoded: &ffmpeg_next::util::frame::Video,
         scene: SceneSource,
-    ) -> Option<Vec<u8>> {
+    ) -> bool {
         use ffmpeg_next::ffi::*;
         // Hardware frames are downloaded first; tags come from the source,
         // resolved at open, so the download dropping them does not matter.
@@ -431,7 +471,7 @@ impl RenderDecoder {
             sw = av_frame_alloc();
             if sw.is_null() || av_hwframe_transfer_data(sw, decoded.as_ptr(), 0) < 0 {
                 av_frame_free(&mut sw);
-                return None;
+                return false;
             }
             sw
         } else {
@@ -441,7 +481,7 @@ impl RenderDecoder {
         if !sw.is_null() {
             av_frame_free(&mut sw);
         }
-        let yuv = yuv?;
+        let Some(yuv) = yuv else { return false };
         let (w, h) = (self.target_width, self.target_height);
         let codes = klipp_color::hdr::yuv_to_hdr_codes(
             &yuv.samples(),
@@ -450,45 +490,27 @@ impl RenderDecoder {
             self.source_rotation.rem_euclid(360) as u32,
             scene.ids,
         );
-        let preview = klipp_color::hdr::hdr10_codes_to_display_srgb8(&codes, scene.transfer, scene.to_display);
-        self.last_scene = Some(crate::stage::SceneReferredFrame {
+        self.last_scene = Some(SceneReferredFrame {
             codes,
             transfer: scene.transfer,
-            source_to_working: scene.to_display,
+            source_to_working: scene.to_working,
             width: w,
             height: h,
         });
-        Some(preview)
+        true
     }
 
     /// Scale a decoded frame using the software scaler.
     fn scale_frame_sw(
         &mut self,
         decoded: &ffmpeg_next::util::frame::Video,
-    ) -> Result<Vec<u8>, RenderError> {
+    ) -> Result<Vec<u16>, RenderError> {
         let mut rgba_frame = ffmpeg_next::util::frame::Video::empty();
         self.scaler
             .run(decoded, &mut rgba_frame)
             .map_err(RenderError::Decode)?;
-
-        let width = rgba_frame.width() as usize;
-        let height = rgba_frame.height() as usize;
-        let linesize = rgba_frame.stride(0);
-        let expected_stride = width * 4;
-
-        if linesize == expected_stride {
-            Ok(rgba_frame.data(0)[..expected_stride * height].to_vec())
-        } else {
-            let mut out = vec![0u8; expected_stride * height];
-            let src = rgba_frame.data(0);
-            for y in 0..height {
-                let src_offset = y * linesize;
-                let dst_offset = y * expected_stride;
-                out[dst_offset..dst_offset + expected_stride]
-                    .copy_from_slice(&src[src_offset..src_offset + expected_stride]);
-            }
-            Ok(out)
-        }
+        let (w, h) = (rgba_frame.width() as usize, rgba_frame.height() as usize);
+        Ok(rgba64_rows(rgba_frame.data(0), rgba_frame.stride(0), w, h))
     }
 
     pub fn frames_decoded(&self) -> u64 {
@@ -628,7 +650,7 @@ unsafe fn download_hw_frame(
     target_h: u32,
     yuv_matrix: klipp_core::ColorMatrix,
     yuv_range: klipp_core::ColorRange,
-) -> Option<Vec<u8>> {
+) -> Option<Vec<u16>> {
     use ffmpeg_next::ffi::*;
 
     let sw_frame = av_frame_alloc();
@@ -655,7 +677,7 @@ unsafe fn download_hw_frame(
         sw_fmt,
         target_w as i32,
         target_h as i32,
-        AVPixelFormat::AV_PIX_FMT_RGBA,
+        AVPixelFormat::AV_PIX_FMT_RGBA64LE,
         0x200, // SWS_LANCZOS, matching the software path
         std::ptr::null_mut(),
         std::ptr::null_mut(),
@@ -680,7 +702,7 @@ unsafe fn download_hw_frame(
     }
     (*rgba_frame).width = target_w as i32;
     (*rgba_frame).height = target_h as i32;
-    (*rgba_frame).format = AVPixelFormat::AV_PIX_FMT_RGBA as i32;
+    (*rgba_frame).format = AVPixelFormat::AV_PIX_FMT_RGBA64LE as i32;
     if av_frame_get_buffer(rgba_frame, 0) < 0 {
         av_frame_free(&mut (sw_frame as *mut _));
         av_frame_free(&mut (rgba_frame as *mut _));
@@ -699,35 +721,32 @@ unsafe fn download_hw_frame(
 
     av_frame_free(&mut (sw_frame as *mut _));
 
-    // Extract RGBA data (handle stride padding)
+    // Extract the RGBA64 samples (handle stride padding).
     let stride = (*rgba_frame).linesize[0] as usize;
-    let expected_stride = (target_w * 4) as usize;
-    let data_slice =
-        std::slice::from_raw_parts((*rgba_frame).data[0], stride * target_h as usize);
-
-    let rgba_data = if stride == expected_stride {
-        data_slice.to_vec()
-    } else {
-        let mut buf = Vec::with_capacity(expected_stride * target_h as usize);
-        for row in 0..target_h as usize {
-            let start = row * stride;
-            buf.extend_from_slice(&data_slice[start..start + expected_stride]);
-        }
-        buf
-    };
-
+    let data_slice = std::slice::from_raw_parts((*rgba_frame).data[0], stride * target_h as usize);
+    let rgba_data = rgba64_rows(data_slice, stride, target_w as usize, target_h as usize);
     av_frame_free(&mut (rgba_frame as *mut _));
     Some(rgba_data)
 }
 
+/// RGBA64LE rows (`stride` bytes apart) → packed `u16` samples.
+fn rgba64_rows(data: &[u8], stride: usize, w: usize, h: usize) -> Vec<u16> {
+    let mut out = Vec::with_capacity(w * h * 4);
+    for row in 0..h {
+        let r = &data[row * stride..row * stride + w * 8];
+        out.extend(r.chunks_exact(2).map(|b| u16::from_le_bytes([b[0], b[1]])));
+    }
+    out
+}
+
 /// Rotate an RGBA frame by 0/90/180/270 degrees clockwise.
 /// Returns (rotated_data, new_width, new_height).
-fn rotate_rgba(rgba: &[u8], w: u32, h: u32, degrees: i32) -> (Vec<u8>, u32, u32) {
+fn rotate_rgba<T: Copy + Default>(rgba: &[T], w: u32, h: u32, degrees: i32) -> (Vec<T>, u32, u32) {
     match degrees {
         90 => {
             let nw = h;
             let nh = w;
-            let mut out = vec![0u8; (nw * nh * 4) as usize];
+            let mut out = vec![T::default(); (nw * nh * 4) as usize];
             for y in 0..h {
                 for x in 0..w {
                     let src = ((y * w + x) * 4) as usize;
@@ -740,7 +759,7 @@ fn rotate_rgba(rgba: &[u8], w: u32, h: u32, degrees: i32) -> (Vec<u8>, u32, u32)
             (out, nw, nh)
         }
         180 => {
-            let mut out = vec![0u8; rgba.len()];
+            let mut out = vec![T::default(); rgba.len()];
             for y in 0..h {
                 for x in 0..w {
                     let src = ((y * w + x) * 4) as usize;
@@ -755,7 +774,7 @@ fn rotate_rgba(rgba: &[u8], w: u32, h: u32, degrees: i32) -> (Vec<u8>, u32, u32)
         270 => {
             let nw = h;
             let nh = w;
-            let mut out = vec![0u8; (nw * nh * 4) as usize];
+            let mut out = vec![T::default(); (nw * nh * 4) as usize];
             for y in 0..h {
                 for x in 0..w {
                     let src = ((y * w + x) * 4) as usize;

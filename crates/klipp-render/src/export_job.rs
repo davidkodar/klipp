@@ -6,81 +6,39 @@
 //!   Sequence + ExportSettings
 //!           │
 //!           ▼
-//!   SequenceSnapshot          ← immutable copy-for-rendering
-//!           │   (tracks, clip refs, node graphs, audio levels,
-//!           │    markers, subtitles — everything the render
-//!           │    needs without holding the editor's RwLock)
+//!   SequenceSnapshot   ← immutable copy: the flattened timeline, the media
+//!           │            files, audio, subtitles, chapters
 //!           │
-//!           ├──────► RenderPipeline  (one per VIDEO track)
-//!           │              │
-//!           │              ├──► RenderDecoder  (one per clip, on demand)
-//!           │              │       │
-//!           │              │       ▼    decode + linear convert
-//!           │              │    linear-f32 frame
-//!           │              │       │
-//!           │              │       ▼
-//!           │              ├──► Stage (effects + grade chain, GPU)
-//!           │              │       │
-//!           │              │       ▼
-//!           │              └──► track-local composite
-//!           │                      │
-//!           │                      ▼
-//!           │               FrameCompositor  (blend tracks + overlay)
-//!           │                      │
-//!           │                      ▼
-//!           │                 display_transform
-//!           │                      │
-//!           │                      ▼
-//!           ├─────────────► Encoder (video side: YUV convert + x264/nvenc/…)
+//!           ├──► klipp_compose::Renderer   (the viewer's renderer)
+//!           │        │  ◄── ExportFrameSource: one sequential decoder per clip
+//!           │        ▼
+//!           │    display-referred linear frame
+//!           │        │
+//!           │        ▼
+//!           ├──► Encoder: export display transform (8- or 16-bit) → YUV
 //!           │
-//!           └──────► AudioMixdown  (all audio tracks in one pass)
-//!                          │
-//!                          ├──► RenderDecoder (per audio clip)
-//!                          │       │
-//!                          │       ▼   decode + resample + DSP chain
-//!                          │    interleaved f32 stereo
-//!                          │       │
-//!                          ▼       ▼
-//!                     per-track mix → master
-//!                          │
-//!                          ▼
-//!                      Encoder (audio side: aac/opus/…)
+//!           └──► AudioMixdown → Encoder (audio)
 //! ```
 //!
-//! The encoder muxes a single output file with video + audio +
-//! subtitle streams. Subtitles come from the snapshot's
-//! `subtitle_tracks` and the per-clip `ClipKindSnapshot::Subtitle`
-//! variants (soft-embedded or burned-in depending on
-//! `ExportSettings`).
-//!
-//! # Gap-11 invariant: one pipeline per video track
-//!
-//! Each video track has its own [`RenderPipeline`] instance, not
-//! a shared one. Each pipeline tracks `begin_clip` / `end_clip`
-//! state for chain optimisation; sharing would bleed per-clip
-//! grade parameters across tracks. See the `HashMap<TrackId,
-//! RenderPipeline>` in `ExportJob`.
+//! Video is rendered by `klipp_compose` — the same code, on the same
+//! flattened timeline, as the viewer — so an export is what was on screen.
+//! Subtitles are muxed from the snapshot's `subtitle_tracks`, soft-embedded
+//! or burned in depending on `ExportSettings`.
 
 use crate::audio_mixdown::AudioMixdown;
-use crate::clip_decoder::RenderDecoder;
-use crate::compositor::FrameCompositor;
 use crate::encoder::Encoder;
 use crate::error::RenderError;
-use crate::pipeline::RenderPipeline;
-use crate::snapshot::{ClipKindSnapshot, SequenceSnapshot, SubtitleClipSnapshot};
-use crate::stage::ClipContext;
-use klipp_core::{ClipId, ExportSettings};
-use std::collections::HashMap;
+use crate::frame_source::ExportFrameSource;
+use crate::snapshot::{SequenceSnapshot, SubtitleClipSnapshot};
+use klipp_core::ExportSettings;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use tracing::info;
 use uuid::Uuid;
 
-/// Top-level export coordinator. Ties together all render pipeline components.
-///
-/// Gap 11 fix: one pipeline per video track (each track has its own begin_clip/end_clip
-/// state so per-clip color grades don't bleed across tracks).
+/// Top-level export coordinator. Ties together the renderer, the encoder
+/// and the audio mixdown.
 pub struct ExportJob {
     pub id: Uuid,
     pub output_path: PathBuf,
@@ -124,52 +82,37 @@ impl ExportJob {
             self.snapshot.start_frame(),
             self.output_path,
         );
+        let timeline = &self.snapshot.video.sequence;
         info!(
-            "ExportJob {}: {} video tracks, {} audio tracks, duration_frames={}",
+            "ExportJob {}: {} tracks ({} clips), {} audio tracks, duration_frames={}",
             self.id,
-            self.snapshot.video_tracks.len(),
+            timeline.tracks.len(),
+            timeline.tracks.iter().map(|t| t.clips.len()).sum::<usize>(),
             self.snapshot.audio_tracks.len(),
             self.snapshot.duration_frames,
         );
-        for (ti, track) in self.snapshot.video_tracks.iter().enumerate() {
-            info!(
-                "  V{}: {} clips, visible={}, opacity={}",
-                ti, track.clips.len(), track.visible, track.opacity,
-            );
-            for (ci, clip) in track.clips.iter().enumerate() {
-                let kind = match &clip.kind {
-                    ClipKindSnapshot::Media { path, .. } => format!("Media({})", path.file_name().unwrap_or_default().to_string_lossy()),
-                    ClipKindSnapshot::Title(_) => "Title".to_string(),
-                    ClipKindSnapshot::Generator(_) => "Generator".to_string(),
-                    ClipKindSnapshot::AdjustmentLayer => "AdjustmentLayer".to_string(),
-                    ClipKindSnapshot::Gap => "Gap".to_string(),
-                };
-                info!(
-                    "    clip[{}]: {} frames [{}-{}), src [{:.3}s-{:.3}s], kind={}",
-                    ci, clip.timeline_end_frame - clip.timeline_start_frame,
-                    clip.timeline_start_frame, clip.timeline_end_frame,
-                    clip.source_start_secs, clip.source_end_secs,
-                    kind,
-                );
-            }
-        }
 
         Self::set_stage(&self.render_stage, "Initializing\u{2026}");
 
         // ─── Initialise all systems ───────────────────────────────
-        // Gap 11: one pipeline per video track
-        let mut pipelines: Vec<RenderPipeline> = self
-            .snapshot
-            .video_tracks
-            .iter()
-            .map(|_| RenderPipeline::default_stages(self.snapshot.global_lut_path.clone()))
-            .collect();
-
-        for pipeline in &mut pipelines {
-            pipeline.begin_export(&self.settings);
+        // The viewer's renderer. OFX plugin discovery is slow; only when a
+        // clip uses a plugin.
+        let mut ofx = klipp_plugin::OfxHost::new();
+        if timeline.tracks.iter().flat_map(|t| &t.clips).any(|c| !c.effects.is_empty()) {
+            ofx.discover_plugins();
         }
-
-        let mut compositor = FrameCompositor::new();
+        let mut renderer = klipp_compose::Renderer::new(ofx, klipp_title::TitleRenderer::new());
+        renderer.set_working_colorspace(self.snapshot.working_colorspace);
+        if let Some(path) = &self.snapshot.global_lut_path {
+            match klipp_color::lut::load_lut(path) {
+                Ok(lut) => renderer.set_global_lut(Some(klipp_compose::GlobalLut {
+                    lut,
+                    opacity: self.snapshot.video.global_lut_opacity,
+                })),
+                Err(e) => tracing::warn!("ExportJob {}: global LUT {:?} failed to load: {e}", self.id, path),
+            }
+        }
+        let mut frames = ExportFrameSource::new(&self.snapshot.video.media, self.snapshot.fps, self.snapshot.working_colorspace);
         let mut audio_mixdown = AudioMixdown::new(&self.snapshot)?;
 
         // R-5: encode to a `.partial` sibling so the final path only
@@ -186,41 +129,6 @@ impl ExportJob {
         let _ = std::fs::remove_file(&partial_path);
         let mut encoder =
             Encoder::open(&partial_path, &self.settings, &self.snapshot)?;
-
-        // Pre-open all clip decoders (seek to their start positions)
-        let mut decoders: HashMap<ClipId, RenderDecoder> = HashMap::new();
-        for track in &self.snapshot.video_tracks {
-            for clip in &track.clips {
-                if let ClipKindSnapshot::Media { ref path, log_format, .. } = clip.kind {
-                    let decoder = RenderDecoder::open(
-                        path,
-                        clip.source_start_secs,
-                        clip.source_end_secs,
-                        self.snapshot.width,
-                        self.snapshot.height,
-                        self.snapshot.fps,
-                        clip.source_rotation,
-                    )?
-                    .with_log_format(log_format);
-                    decoders.insert(clip.id, decoder);
-                }
-            }
-        }
-
-        // Report hardware info
-        {
-            let decode_hw = decoders
-                .values()
-                .next()
-                .map(|d| d.hw_accel_name())
-                .unwrap_or("N/A");
-            let encode_hw = encoder.hw_info();
-            let hw_str = format!("Decode: {} | Encode: {}", decode_hw, encode_hw);
-            info!("ExportJob {}: {}", self.id, hw_str);
-            if let Ok(mut hw) = self.hw_info.lock() {
-                *hw = hw_str;
-            }
-        }
 
         // Determine frame range
         let start_frame = self.snapshot.start_frame();
@@ -282,26 +190,21 @@ impl ExportJob {
             1.0 // No normalization — unity gain
         };
 
-        // Per-track current clip tracking (Gap 11)
-        let mut current_clips: Vec<Option<ClipId>> =
-            vec![None; self.snapshot.video_tracks.len()];
-
         let mut export_frame_num: u64 = 0;
 
-        // Determine if aspect-ratio-preserving fit-and-pad is needed.
-        // When the export resolution differs from the sequence AND aspect ratios
-        // don't match, we letterbox/pillarbox each frame before encoding.
-        let needs_fit = match &self.settings.resolution {
-            Some(res) => {
-                let (tw, th) = (res.width & !1, res.height & !1);
-                tw != self.snapshot.width || th != self.snapshot.height
-            }
-            None => false,
+        // Output size, and where the sequence's picture sits in it: an
+        // export resolution with another aspect is letterboxed or
+        // pillarboxed, not stretched.
+        let (out_w, out_h) = match &self.settings.resolution {
+            Some(r) => (r.width & !1, r.height & !1),
+            None => (self.snapshot.width, self.snapshot.height),
         };
-        let fit_target = self.settings.resolution.as_ref().map(|r| (r.width & !1, r.height & !1));
-        // Single swscale Context cached across every frame of the export —
-        // dimensions are fixed for the run (see FitScaler docs).
-        let mut fit_scaler = FitScaler::new();
+        let (fit_w, fit_h, fit_x, fit_y) = if (out_w, out_h) == (self.snapshot.width, self.snapshot.height) {
+            (out_w, out_h, 0, 0)
+        } else {
+            fit_to_target(self.snapshot.width, self.snapshot.height, out_w, out_h)
+        };
+        let mut hw_reported = false;
 
         let codec_label = self.settings.video_codec.label();
         Self::set_stage(&self.render_stage, &format!("Encoding video ({codec_label})\u{2026}"));
@@ -319,56 +222,29 @@ impl ExportJob {
                 return Err(RenderError::Cancelled);
             }
 
-            // ─── Per-track clip boundary tracking (Gap 11) ────────
-            for (track_idx, track) in self.snapshot.video_tracks.iter().enumerate() {
-                let active_clip = track.clips.iter().find(|c| {
-                    frame_num >= c.timeline_start_frame && frame_num < c.timeline_end_frame
-                });
-
-                let active_id = active_clip.map(|c| c.id);
-
-                if active_id != current_clips[track_idx] {
-                    // Clip boundary change on this track
-                    if current_clips[track_idx].is_some() {
-                        pipelines[track_idx].end_clip();
-                    }
-                    if let Some(clip) = active_clip {
-                        pipelines[track_idx].begin_clip(&ClipContext {
-                            clip: Arc::new(clip.clone()),
-                            sequence_fps: self.snapshot.fps,
-                            sequence_width: self.snapshot.width,
-                            sequence_height: self.snapshot.height,
-                        });
-                    }
-                    current_clips[track_idx] = active_id;
+            // ─── Render, the viewer's way, and encode ─────────────
+            let time = klipp_core::RationalTime {
+                value: frame_num as i64 * self.snapshot.fps_den as i64,
+                rate: self.snapshot.fps_num,
+            };
+            let picture = renderer.render(
+                timeline, time, fit_w, fit_h, &mut frames, klipp_compose::RenderOptions::default(),
+            );
+            frames.end_frame();
+            if !hw_reported {
+                hw_reported = true;
+                let hw_str = format!(
+                    "Decode: {} | Encode: {}",
+                    frames.hw_accel_name().unwrap_or("N/A"),
+                    encoder.hw_info(),
+                );
+                info!("ExportJob {}: {}", self.id, hw_str);
+                if let Ok(mut hw) = self.hw_info.lock() {
+                    *hw = hw_str;
                 }
             }
-
-            // ─── Composite all video tracks with per-clip effects ──
-            // Each clip's effects (color grade, OFX, builtins) are applied to its
-            // decoded frame before compositing, so every clip renders with its own
-            // effects. This replaces the previous "topmost clip only" approach.
-            let rgba = compositor.composite_frame(
-                frame_num,
-                export_frame_num,
-                &self.snapshot,
-                &mut decoders,
-                &mut pipelines,
-            )?;
-
-            // Black frame if nothing to composite
-            let processed = rgba.unwrap_or_else(|| {
-                vec![0u8; (self.snapshot.width * self.snapshot.height * 4) as usize]
-            });
-
-            // ─── Encode video frame (with aspect-preserving fit if needed) ──
-            if needs_fit {
-                let (tw, th) = fit_target.unwrap();
-                let padded = fit_and_pad_rgba(&mut fit_scaler, &processed, self.snapshot.width, self.snapshot.height, tw, th)?;
-                encoder.encode_video_frame(&padded, tw, th)?;
-            } else {
-                encoder.encode_video_frame(&processed, self.snapshot.width, self.snapshot.height)?;
-            }
+            let picture = pad_linear(picture, fit_w, fit_h, out_w, out_h, fit_x, fit_y);
+            encoder.encode_linear_frame(&picture, out_w, out_h)?;
 
             // ─── Encode audio (with loudness normalization gain if enabled) ──
             let mut audio = audio_mixdown.get_frame_audio(frame_num);
@@ -385,15 +261,6 @@ impl ExportJob {
         Self::set_stage(&self.render_stage, "Finalizing file\u{2026}");
 
         // ─── Finalise ─────────────────────────────────────────────
-        for (track_idx, clip_id) in current_clips.iter().enumerate() {
-            if clip_id.is_some() {
-                pipelines[track_idx].end_clip();
-            }
-        }
-        for pipeline in &mut pipelines {
-            pipeline.end_export();
-        }
-
         // ─── Subtitle embedding ───────────────────────────────────
         if let Some(sub_stream_idx) = encoder.subtitle_stream_idx {
             Self::encode_subtitles(
@@ -578,6 +445,21 @@ impl ExportJob {
 // Aspect-ratio-preserving fit for resolution overrides
 // ═══════════════════════════════════════════════════════════════════
 
+/// Place a `w` × `h` linear frame at (`x`, `y`) on a black `dst_w` ×
+/// `dst_h` canvas.
+fn pad_linear(frame: Vec<f32>, w: u32, h: u32, dst_w: u32, dst_h: u32, x: u32, y: u32) -> Vec<f32> {
+    if (w, h) == (dst_w, dst_h) {
+        return frame;
+    }
+    let mut out = [0.0f32, 0.0, 0.0, 1.0].repeat((dst_w as usize) * (dst_h as usize));
+    for row in 0..h as usize {
+        let src = &frame[row * w as usize * 4..(row + 1) * w as usize * 4];
+        let o = ((y as usize + row) * dst_w as usize + x as usize) * 4;
+        out[o..o + src.len()].copy_from_slice(src);
+    }
+    out
+}
+
 /// Compute fitted dimensions and centering offset to fit `(src_w, src_h)`
 /// R-5: derive the `.partial` sibling path for atomic export. Appends
 /// `.partial` to the full filename so the original extension survives
@@ -589,6 +471,7 @@ fn partial_path_for(final_path: &Path) -> PathBuf {
     PathBuf::from(buf)
 }
 
+/// Size and offset that fit a `(src_w, src_h)` picture
 /// into `(target_w, target_h)` while preserving aspect ratio.
 /// Returns (fitted_w, fitted_h, offset_x, offset_y).
 /// Fitted dimensions are forced even for YUV420p chroma subsampling compatibility.
@@ -616,110 +499,6 @@ fn fit_to_target(src_w: u32, src_h: u32, target_w: u32, target_h: u32) -> (u32, 
     (fitted_w, fitted_h, offset_x, offset_y)
 }
 
-/// Cached swscale Context for `fit_and_pad_rgba`. The source and target
-/// dimensions are fixed for the duration of an export, so we build the
-/// ffmpeg scaler exactly once per run instead of per frame. Keyed on the
-/// full tuple so a dimension change (shouldn't happen mid-export, but
-/// defensive) transparently rebuilds.
-struct FitScaler {
-    context: Option<ffmpeg_next::software::scaling::Context>,
-    key: Option<(u32, u32, u32, u32)>,
-}
-
-impl FitScaler {
-    fn new() -> Self {
-        Self { context: None, key: None }
-    }
-
-    fn get(
-        &mut self,
-        src_w: u32,
-        src_h: u32,
-        dst_w: u32,
-        dst_h: u32,
-    ) -> Result<&mut ffmpeg_next::software::scaling::Context, RenderError> {
-        let key = (src_w, src_h, dst_w, dst_h);
-        if self.key != Some(key) {
-            self.context = Some(
-                ffmpeg_next::software::scaling::Context::get(
-                    ffmpeg_next::format::Pixel::RGBA, src_w, src_h,
-                    ffmpeg_next::format::Pixel::RGBA, dst_w, dst_h,
-                    ffmpeg_next::software::scaling::Flags::LANCZOS,
-                ).map_err(|e| RenderError::Encode(format!("fit scaler: {e}")))?,
-            );
-            self.key = Some(key);
-        }
-        Ok(self.context.as_mut().unwrap())
-    }
-}
-
-/// Take an RGBA buffer at (src_w, src_h) and return a new RGBA buffer at
-/// (target_w, target_h) with the source content fitted in the center
-/// preserving aspect ratio, padded with opaque black on the unused area.
-/// Uses ffmpeg swscale (Lanczos) for the resize step.
-fn fit_and_pad_rgba(
-    scaler: &mut FitScaler,
-    src: &[u8],
-    src_w: u32,
-    src_h: u32,
-    target_w: u32,
-    target_h: u32,
-) -> Result<Vec<u8>, RenderError> {
-    let (fitted_w, fitted_h, offset_x, offset_y) = fit_to_target(src_w, src_h, target_w, target_h);
-
-    // If fitted equals target, just resize directly (no padding needed)
-    if fitted_w == target_w && fitted_h == target_h {
-        let sws = scaler.get(src_w, src_h, target_w, target_h)?;
-        let mut src_frame = ffmpeg_next::frame::Video::new(ffmpeg_next::format::Pixel::RGBA, src_w, src_h);
-        let stride = src_frame.stride(0);
-        let row_bytes = src_w as usize * 4;
-        for (i, chunk) in src.chunks_exact(row_bytes).enumerate() {
-            src_frame.data_mut(0)[i * stride..i * stride + row_bytes].copy_from_slice(chunk);
-        }
-        let mut dst_frame = ffmpeg_next::frame::Video::new(ffmpeg_next::format::Pixel::RGBA, target_w, target_h);
-        sws.run(&src_frame, &mut dst_frame).map_err(|e| RenderError::Encode(format!("fit scale: {e}")))?;
-        let dst_stride = dst_frame.stride(0);
-        let dst_row = target_w as usize * 4;
-        let mut out = vec![0u8; target_w as usize * target_h as usize * 4];
-        for y in 0..target_h as usize {
-            out[y * dst_row..y * dst_row + dst_row].copy_from_slice(&dst_frame.data(0)[y * dst_stride..y * dst_stride + dst_row]);
-        }
-        return Ok(out);
-    }
-
-    // Resize source to fitted dimensions
-    let sws = scaler.get(src_w, src_h, fitted_w, fitted_h)?;
-    let mut src_frame = ffmpeg_next::frame::Video::new(ffmpeg_next::format::Pixel::RGBA, src_w, src_h);
-    let stride = src_frame.stride(0);
-    let row_bytes = src_w as usize * 4;
-    for (i, chunk) in src.chunks_exact(row_bytes).enumerate() {
-        src_frame.data_mut(0)[i * stride..i * stride + row_bytes].copy_from_slice(chunk);
-    }
-    let mut fitted_frame = ffmpeg_next::frame::Video::new(ffmpeg_next::format::Pixel::RGBA, fitted_w, fitted_h);
-    sws.run(&src_frame, &mut fitted_frame).map_err(|e| RenderError::Encode(format!("fit scale: {e}")))?;
-
-    // Create black canvas at target dims (opaque black: R=0 G=0 B=0 A=255)
-    let target_pixels = target_w as usize * target_h as usize;
-    let mut canvas = vec![0u8; target_pixels * 4];
-    // Set alpha to 255 for all pixels
-    for pixel in canvas.chunks_exact_mut(4) {
-        pixel[3] = 255;
-    }
-
-    // Blit fitted content onto canvas at offset
-    let fitted_stride = fitted_frame.stride(0);
-    let fitted_row_bytes = fitted_w as usize * 4;
-    let canvas_row_bytes = target_w as usize * 4;
-    for y in 0..fitted_h as usize {
-        let src_start = y * fitted_stride;
-        let dst_y = y + offset_y as usize;
-        let dst_start = dst_y * canvas_row_bytes + offset_x as usize * 4;
-        canvas[dst_start..dst_start + fitted_row_bytes]
-            .copy_from_slice(&fitted_frame.data(0)[src_start..src_start + fitted_row_bytes]);
-    }
-
-    Ok(canvas)
-}
 
 // ═══════════════════════════════════════════════════════════════════
 // EBU R128 loudness normalization — two-pass measurement + static gain
@@ -804,7 +583,7 @@ mod tests {
             sample_rate: 48000,
             duration_frames: 100,
             export_range: None,
-            video_tracks: vec![],
+            video: Default::default(),
             audio_tracks: vec![],
             global_lut_path: None,
             subtitle_tracks: vec![], chapters: vec![],

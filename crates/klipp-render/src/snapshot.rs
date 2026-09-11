@@ -1,13 +1,7 @@
 use crate::error::RenderError;
-use klipp_core::{ClipId, ExportSettings, Keyframe, RationalTime, TransitionId};
-use klipp_effects::BuiltinEffect;
-use klipp_effects::stabilization::{SmoothedTrajectory, StabilizationData};
+use klipp_core::{ExportSettings, Keyframe, RationalTime};
 use klipp_media::MediaPool;
-use klipp_nodes::NodeGraph;
-use klipp_plugin::AppliedEffect;
-use klipp_timeline::{
-    ClipKind, Sequence, TitleData, Track, TrackKind, Transition, TransitionKind,
-};
+use klipp_timeline::{ClipKind, Sequence, Track, TrackKind};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
@@ -30,8 +24,8 @@ pub struct SequenceSnapshot {
     pub duration_frames: u64,
     /// If set, only export this frame range (start inclusive, end exclusive).
     pub export_range: Option<(u64, u64)>,
-    /// Video tracks in render order (bottom to top = index 0 to N).
-    pub video_tracks: Vec<VideoTrackSnapshot>,
+    /// Everything the video render reads: see [`VideoTimeline`].
+    pub video: VideoTimeline,
     /// Audio tracks.
     pub audio_tracks: Vec<AudioTrackSnapshot>,
     /// Global 3D LUT path if loaded.
@@ -52,73 +46,39 @@ pub struct SequenceSnapshot {
     pub working_colorspace: klipp_core::WorkingColorspace,
 }
 
+/// The video half of an export: the timeline exactly as the viewer's
+/// engine receives it — flattened by the same
+/// `klipp_timeline::flatten::flatten_sequence` — rendered by the same
+/// `klipp_compose::Renderer`. Keeping the timeline as-is, rather than a
+/// converted copy, is what lets export and viewer agree by construction.
 #[derive(Clone)]
-pub struct VideoTrackSnapshot {
-    pub opacity: f32,
-    pub visible: bool,
-    pub clips: Vec<ClipSnapshot>,
-    pub transitions: Vec<TransitionSnapshot>,
+pub struct VideoTimeline {
+    /// The flattened sequence. Text and subtitle tracks are hidden when
+    /// subtitles are not burned in.
+    pub sequence: Sequence,
+    /// The file behind each media clip, resolved at snapshot time.
+    pub media: HashMap<klipp_core::MediaId, MediaFile>,
+    /// Strength of the global LUT (`SequenceSnapshot::global_lut_path`).
+    pub global_lut_opacity: f32,
 }
 
-#[derive(Clone)]
-pub struct ClipSnapshot {
-    pub id: ClipId,
-    pub kind: ClipKindSnapshot,
-    /// Start frame on the sequence timeline (inclusive).
-    pub timeline_start_frame: u64,
-    /// End frame on the sequence timeline (exclusive).
-    pub timeline_end_frame: u64,
-    /// Where to seek in the source file (seconds).
-    pub source_start_secs: f64,
-    /// Where the clip ends in the source file (seconds).
-    pub source_end_secs: f64,
-    /// Playback speed multiplier (1.0 = normal).
-    pub speed: f64,
-    /// Node-based color processing graph.
-    pub node_graph: NodeGraph,
-    /// OFX effects chain.
-    pub effects: Vec<AppliedEffect>,
-    /// Built-in effects chain (GPU/CPU).
-    pub builtin_effects: Vec<BuiltinEffect>,
-    /// Source rotation in degrees (0, 90, 180, 270) — from container metadata.
-    pub source_rotation: i32,
-    /// Pre-computed stabilization analysis data (frame transforms + trajectory).
-    pub stabilization_data: Option<StabilizationData>,
-    /// Smoothed trajectory with per-frame correction homographies.
-    pub smoothed_trajectory: Option<SmoothedTrajectory>,
-    /// Per-effect keyframes: maps "{effect_index}:{param_name}" to keyframe track.
-    pub effect_keyframes: HashMap<String, Vec<Keyframe>>,
-    /// Per-audio-effect keyframes: maps "{effect_index}:{param_name}" to keyframe track.
-    pub audio_effect_keyframes: HashMap<String, Vec<Keyframe>>,
-    /// Clip-level opacity keyframes.
-    pub opacity_keyframes: Vec<Keyframe>,
-    /// Transform position X keyframes.
-    pub transform_pos_x_keyframes: Vec<Keyframe>,
-    /// Transform position Y keyframes.
-    pub transform_pos_y_keyframes: Vec<Keyframe>,
-    /// Transform scale keyframes.
-    pub transform_scale_keyframes: Vec<Keyframe>,
-    /// Transform rotation keyframes.
-    pub transform_rotation_keyframes: Vec<Keyframe>,
-    /// Per-clip blend mode for the visible composite.
-    pub blend_mode: klipp_core::BlendMode,
-    /// Track-matte binding: when set, this clip's alpha is masked by the
-    /// rendered RGBA of `source_clip_id` at the same timeline time. Phase 2
-    /// (render path) reads this; Phase 1 (data model) only carries it.
-    pub matte_source: Option<klipp_timeline::MatteBinding>,
-    /// Phase 4B — when set, this clip's pixels mask every clip on a
-    /// lower track at the same time-range. Forwarded as-is from the
-    /// authoring `Clip`. Implicitly hides the source from the visible
-    /// composite.
-    pub matte_stencil: Option<klipp_timeline::StencilSettings>,
-    /// True when this clip is being used as a matte source by another clip
-    /// AND should be hidden from the visible composite. Default false.
-    pub consumed_as_matte: bool,
-    /// Optional transform inheritance from another clip in the same
-    /// sequence. Forwarded as-is from the authoring `Clip` so the
-    /// renderer/export resolves it via the same per-frame cache the
-    /// playback compositor uses.
-    pub transform_link: Option<klipp_timeline::TransformLink>,
+impl Default for VideoTimeline {
+    /// No video: an empty timeline.
+    fn default() -> Self {
+        let mut sequence = Sequence::new_default();
+        sequence.tracks.clear();
+        Self { sequence, media: HashMap::new(), global_lut_opacity: 1.0 }
+    }
+}
+
+/// A media file as export decodes it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MediaFile {
+    pub path: PathBuf,
+    /// The media's camera log format, when it is one (S-Log3, V-Log, ...).
+    /// File tags never say so; the viewer takes it from the media pool,
+    /// and export must decode the file the same way.
+    pub log_format: Option<klipp_core::LogFormat>,
 }
 
 /// A media item's camera log format for its export decoder: the same
@@ -126,23 +86,6 @@ pub struct ClipSnapshot {
 /// decoder registry holds, or `None` for anything that is not a camera log.
 fn camera_log_format(media: &klipp_media::MediaItem) -> Option<klipp_core::LogFormat> {
     Some(media.effective_log_format()).filter(|f| f.camera_colourspace().is_some())
-}
-
-#[derive(Clone)]
-pub enum ClipKindSnapshot {
-    Media {
-        path: PathBuf,
-        has_audio: bool,
-        /// The media's camera log format, when it is one (S-Log3, V-Log,
-        /// ...). File tags never say so; the viewer takes it from the media
-        /// pool, and export must decode the file the same way.
-        log_format: Option<klipp_core::LogFormat>,
-    },
-    Title(TitleData),
-    Generator(klipp_core::GeneratorData),
-    /// Adjustment layer — applies its clip's effects to the accumulated composite below.
-    AdjustmentLayer,
-    Gap,
 }
 
 #[derive(Clone)]
@@ -176,17 +119,6 @@ pub struct SubtitleClipSnapshot {
 #[derive(Debug, Clone)]
 pub struct SubtitleTrackSnapshot {
     pub clips: Vec<SubtitleClipSnapshot>,
-}
-
-#[derive(Clone)]
-pub struct TransitionSnapshot {
-    pub id: TransitionId,
-    pub kind: TransitionKind,
-    pub duration_frames: u64,
-    pub clip_a_id: ClipId,
-    pub clip_b_id: ClipId,
-    pub user_params: klipp_core::TransitionUserParams,
-    pub alignment: klipp_core::TransitionAlignment,
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -255,26 +187,31 @@ impl SequenceSnapshot {
         let total_duration = seq.total_duration();
         let duration_frames = time_to_frame(&total_duration, fps);
 
-        let mut video_tracks = Vec::new();
         let mut audio_tracks = Vec::new();
-
-        // Process tracks in order. Video tracks are stored bottom-to-top
-        // (V1 = index 0, composited first).
         for track in seq.tracks.iter().rev() {
-            match track.kind {
-                TrackKind::Video => {
-                    video_tracks.push(snapshot_video_track(track, all_sequences, media_pool, fps, 0)?);
+            if track.kind == TrackKind::Audio {
+                audio_tracks.push(snapshot_audio_track(track, all_sequences, media_pool, fps, 0)?);
+            }
+        }
+
+        // Video: the viewer's flattened timeline, as it is. Text and
+        // subtitle tracks render into the picture only when burning in
+        // (the user can still export sidecar SRT/VTT).
+        let mut timeline = klipp_timeline::flatten::flatten_sequence(seq, all_sequences);
+        if !burn_in {
+            for t in &mut timeline.tracks {
+                if matches!(t.kind, TrackKind::Text | TrackKind::Subtitle) {
+                    t.visible = false;
                 }
-                // Subtitle and Text tracks are composited as video overlays.
-                // When burn_in_subtitles is false, skip them so they don't render
-                // into the video (the user can still export sidecar SRT/VTT).
-                TrackKind::Text | TrackKind::Subtitle if burn_in => {
-                    video_tracks.push(snapshot_video_track(track, all_sequences, media_pool, fps, 0)?);
-                }
-                TrackKind::Text | TrackKind::Subtitle => {} // skip — no burn-in
-                TrackKind::Audio => {
-                    audio_tracks.push(snapshot_audio_track(track, all_sequences, media_pool, fps, 0)?);
-                }
+            }
+        }
+        let mut media = HashMap::new();
+        for clip in timeline.tracks.iter().flat_map(|t| &t.clips) {
+            if let ClipKind::Media { media_id } = &clip.kind {
+                let item = media_pool
+                    .get(media_id)
+                    .ok_or_else(|| RenderError::Snapshot(format!("media {media_id:?} not in pool")))?;
+                media.insert(*media_id, MediaFile { path: item.path.clone(), log_format: camera_log_format(item) });
             }
         }
 
@@ -371,7 +308,7 @@ impl SequenceSnapshot {
             sample_rate: 48000, // Standard NLE audio rate
             duration_frames,
             export_range,
-            video_tracks,
+            video: VideoTimeline { sequence: timeline, media, global_lut_opacity: 1.0 },
             audio_tracks,
             global_lut_path,
             subtitle_tracks,
@@ -406,199 +343,6 @@ impl SequenceSnapshot {
 
 /// Maximum nesting depth for compound clips to prevent infinite recursion.
 const MAX_COMPOUND_DEPTH: u8 = 8;
-
-fn snapshot_video_track(
-    track: &Track,
-    all_sequences: &[Sequence],
-    media_pool: &MediaPool,
-    fps: f64,
-    depth: u8,
-) -> Result<VideoTrackSnapshot, RenderError> {
-    let mut clips = Vec::with_capacity(track.clips.len());
-    for clip in &track.clips {
-        if !clip.enabled { continue; }
-        if let ClipKind::Sequence { sequence_id } = &clip.kind {
-            if depth < MAX_COMPOUND_DEPTH {
-                flatten_compound_video_clips(clip, *sequence_id, all_sequences, media_pool, fps, depth, &mut clips)?;
-                continue;
-            }
-            // Exceeded depth limit — skip as gap
-        }
-
-        // Multicam flattening: if this is the primary clip (angle 0) with
-        // a cut list, expand each cut segment into a snapshot sourcing from
-        // the appropriate angle clip.
-        if clip.multicam_group.is_some()
-            && clip.multicam_angle == 0
-            && !clip.multicam_cuts.is_empty()
-        {
-            flatten_multicam_video_clips(clip, track, media_pool, fps, &mut clips)?;
-            continue;
-        }
-
-        // Skip non-primary multicam angles — they are referenced via the
-        // primary clip's cut list and rendered through flattening above.
-        if clip.multicam_group.is_some() && clip.multicam_angle != 0 {
-            continue;
-        }
-
-        clips.push(snapshot_clip(clip, media_pool, fps)?);
-    }
-
-    let transitions = track
-        .transitions
-        .iter()
-        .map(|t| snapshot_transition(t, fps))
-        .collect();
-
-    Ok(VideoTrackSnapshot {
-        opacity: track.opacity,
-        visible: track.visible,
-        clips,
-        transitions,
-    })
-}
-
-/// Flatten a primary multicam clip's cut list into individual clip snapshots.
-/// Each cut segment (from time A to time B, showing angle N) is resolved to the
-/// corresponding angle clip in the same track, producing a snapshot that sources
-/// from that angle's media for the relevant time range.
-fn flatten_multicam_video_clips(
-    primary: &klipp_timeline::Clip,
-    track: &Track,
-    media_pool: &MediaPool,
-    fps: f64,
-    out: &mut Vec<ClipSnapshot>,
-) -> Result<(), RenderError> {
-    let group_id = primary.multicam_group.expect("caller checked");
-    let clip_in_secs = primary.timeline_in.to_secs_f64();
-    let clip_out_secs = primary.timeline_out.to_secs_f64();
-    let clip_duration_secs = clip_out_secs - clip_in_secs;
-
-    // Build cut segments: (start_secs, end_secs, angle_index)
-    // Each entry in multicam_cuts is (time_from_clip_start, angle_index).
-    // We fill in the gaps: from the start of the clip to the first cut, between
-    // cuts, and from the last cut to the end.
-    let mut segments: Vec<(f64, f64, u8)> = Vec::new();
-    let cuts = &primary.multicam_cuts;
-    for (i, &(cut_time, angle)) in cuts.iter().enumerate() {
-        let seg_start = cut_time;
-        let seg_end = if i + 1 < cuts.len() {
-            cuts[i + 1].0
-        } else {
-            clip_duration_secs
-        };
-        if seg_end > seg_start {
-            segments.push((seg_start, seg_end, angle));
-        }
-    }
-    // If the first cut doesn't start at 0, insert a segment for angle 0
-    // from clip start to the first cut.
-    if segments.is_empty() || segments[0].0 > 0.001 {
-        let first_end = if segments.is_empty() { clip_duration_secs } else { segments[0].0 };
-        if first_end > 0.001 {
-            segments.insert(0, (0.0, first_end, 0));
-        }
-    }
-
-    // Collect angle clips in this group from the same track
-    let angle_clips: Vec<&klipp_timeline::Clip> = track.clips.iter()
-        .filter(|c| c.multicam_group == Some(group_id) && c.enabled)
-        .collect();
-
-    for (seg_start, seg_end, angle) in &segments {
-        // Find the clip for this angle. If not found, fall back to the primary (angle 0).
-        let angle_clip = angle_clips.iter()
-            .find(|c| c.multicam_angle == *angle)
-            .or_else(|| angle_clips.iter().find(|c| c.multicam_angle == 0));
-
-        let Some(angle_clip) = angle_clip else { continue };
-
-        let kind = match &angle_clip.kind {
-            ClipKind::Media { media_id } => {
-                let media = media_pool
-                    .get(media_id)
-                    .ok_or_else(|| RenderError::Snapshot(format!("multicam media {media_id:?} not in pool")))?;
-                ClipKindSnapshot::Media {
-                    path: media.path.clone(),
-                    has_audio: media.has_audio,
-                    log_format: camera_log_format(media),
-                }
-            }
-            ClipKind::Title(data) => ClipKindSnapshot::Title(data.clone()),
-            _ => continue,
-        };
-
-        // Map segment times to the parent timeline
-        let parent_in_secs = clip_in_secs + seg_start;
-        let parent_out_secs = clip_in_secs + seg_end;
-
-        // Map to source media time: offset into the angle clip's source
-        let source_start_secs = angle_clip.source_in.to_secs_f64() + seg_start;
-        let source_end_secs = angle_clip.source_in.to_secs_f64() + seg_end;
-
-        out.push(ClipSnapshot {
-            id: angle_clip.id,
-            kind,
-            timeline_start_frame: (parent_in_secs * fps).round() as u64,
-            timeline_end_frame: (parent_out_secs * fps).round() as u64,
-            source_start_secs,
-            source_end_secs,
-            speed: angle_clip.speed,
-            node_graph: angle_clip.node_graph.clone(),
-            effects: angle_clip.effects.clone(),
-            builtin_effects: angle_clip.builtin_effects.clone(),
-            source_rotation: angle_clip.source_rotation,
-            stabilization_data: angle_clip.stabilization_data.clone(),
-            smoothed_trajectory: angle_clip.smoothed_trajectory.clone(),
-            effect_keyframes: angle_clip.effect_keyframes.clone(),
-            audio_effect_keyframes: angle_clip.audio_effect_keyframes.clone(),
-            opacity_keyframes: angle_clip.opacity_keyframes.clone(),
-            transform_pos_x_keyframes: angle_clip.transform_pos_x_keyframes.clone(),
-            transform_pos_y_keyframes: angle_clip.transform_pos_y_keyframes.clone(),
-            transform_scale_keyframes: angle_clip.transform_scale_keyframes.clone(),
-            transform_rotation_keyframes: angle_clip.transform_rotation_keyframes.clone(),
-            blend_mode: angle_clip.blend_mode,
-            matte_source: angle_clip.matte_source.clone(),
-            matte_stencil: angle_clip.matte_stencil.clone(),
-            consumed_as_matte: angle_clip.consumed_as_matte,
-            transform_link: None,
-        });
-    }
-
-    Ok(())
-}
-
-/// Flatten a compound clip's inner sequence video tracks into the parent clip list.
-/// Delegates the time-mapping math to
-/// `klipp_timeline::flatten::flatten_clip_for_track`, which produces real
-/// `Clip` values that we then map to `ClipSnapshot`. The shared flattener is
-/// also used by `sync_sequence_to_engine` so the viewer and exporter agree
-/// by construction.
-fn flatten_compound_video_clips(
-    compound: &klipp_timeline::Clip,
-    sequence_id: klipp_core::SequenceId,
-    all_sequences: &[Sequence],
-    media_pool: &MediaPool,
-    fps: f64,
-    depth: u8,
-    out: &mut Vec<ClipSnapshot>,
-) -> Result<(), RenderError> {
-    let flat_clips = klipp_timeline::flatten::flatten_clip_for_track(
-        compound,
-        sequence_id,
-        all_sequences,
-        TrackKind::Video,
-        depth,
-    );
-    for clip in flat_clips {
-        if matches!(clip.kind, ClipKind::Gap | ClipKind::Sequence { .. }) {
-            continue;
-        }
-        out.push(snapshot_clip(&clip, media_pool, fps)?);
-    }
-    Ok(())
-}
 
 fn snapshot_audio_track(
     track: &Track,
@@ -763,81 +507,6 @@ fn flatten_multicam_audio_clips(
     Ok(())
 }
 
-fn snapshot_clip(
-    clip: &klipp_timeline::Clip,
-    media_pool: &MediaPool,
-    fps: f64,
-) -> Result<ClipSnapshot, RenderError> {
-    let kind = match &clip.kind {
-        ClipKind::Media { media_id } => {
-            let media = media_pool
-                .get(media_id)
-                .ok_or_else(|| RenderError::Snapshot(format!("media {media_id:?} not in pool")))?;
-            ClipKindSnapshot::Media {
-                path: media.path.clone(),
-                has_audio: media.has_audio,
-                log_format: camera_log_format(media),
-            }
-        }
-        ClipKind::Title(data) => ClipKindSnapshot::Title(data.clone()),
-        ClipKind::Gap => ClipKindSnapshot::Gap,
-        // Compound clips are flattened at the track level. This fallback
-        // is only reached if nesting depth exceeds MAX_COMPOUND_DEPTH.
-        ClipKind::Sequence { .. } => ClipKindSnapshot::Gap,
-        ClipKind::Generator(data) => ClipKindSnapshot::Generator(data.clone()),
-        ClipKind::AdjustmentLayer => ClipKindSnapshot::AdjustmentLayer,
-    };
-
-    Ok(ClipSnapshot {
-        id: clip.id,
-        kind,
-        timeline_start_frame: time_to_frame(&clip.timeline_in, fps),
-        timeline_end_frame: time_to_frame(&clip.timeline_out, fps),
-        source_start_secs: clip.source_in.to_secs_f64(),
-        source_end_secs: clip.source_out.to_secs_f64(),
-        speed: clip.speed,
-        node_graph: clip.node_graph.clone(),
-        effects: clip.effects.clone(),
-        builtin_effects: clip.builtin_effects.clone(),
-        source_rotation: clip.source_rotation,
-        stabilization_data: clip.stabilization_data.clone(),
-        smoothed_trajectory: clip.smoothed_trajectory.clone(),
-        effect_keyframes: clip.effect_keyframes.clone(),
-        audio_effect_keyframes: clip.audio_effect_keyframes.clone(),
-        opacity_keyframes: clip.opacity_keyframes.clone(),
-        transform_pos_x_keyframes: clip.transform_pos_x_keyframes.clone(),
-        transform_pos_y_keyframes: clip.transform_pos_y_keyframes.clone(),
-        transform_scale_keyframes: clip.transform_scale_keyframes.clone(),
-        transform_rotation_keyframes: clip.transform_rotation_keyframes.clone(),
-        blend_mode: clip.blend_mode,
-        matte_source: clip.matte_source.clone(),
-        matte_stencil: clip.matte_stencil.clone(),
-        consumed_as_matte: clip.consumed_as_matte,
-        transform_link: None,
-    })
-}
-
-fn snapshot_transition(t: &Transition, fps: f64) -> TransitionSnapshot {
-    TransitionSnapshot {
-        id: t.id,
-        kind: t.kind,
-        duration_frames: time_to_frame(&t.duration, fps).max(1),
-        clip_a_id: t.clip_a_id,
-        clip_b_id: t.clip_b_id,
-        user_params: t.user_params,
-        alignment: t.alignment,
-    }
-}
-
-/// Test-only access to `snapshot_transition`.
-#[cfg(test)]
-pub fn snapshot_transition_for_test(
-    t: &klipp_timeline::Transition,
-    fps: f64,
-) -> TransitionSnapshot {
-    snapshot_transition(t, fps)
-}
-
 /// Convert a RationalTime to a frame number at the given fps.
 fn time_to_frame(rt: &RationalTime, fps: f64) -> u64 {
     let secs = rt.to_secs_f64();
@@ -853,8 +522,7 @@ mod tests {
     use super::*;
     use klipp_core::{ClipId, LogFormat, ExportAudioCodec, ExportFormat, ExportVideoCodec, Fps, MediaId, Resolution, EncoderPreset};
     use klipp_media::{MediaItem, MediaItemKind, MediaPool};
-    use klipp_nodes::NodeGraph;
-    use klipp_timeline::{Clip, ClipKind, Sequence};
+    use klipp_timeline::{Clip, ClipKind, Sequence, Track, TrackKind};
 
     fn make_fps24() -> Fps {
         Fps::new(24, 1)
@@ -924,6 +592,34 @@ mod tests {
         }
     }
 
+    fn make_marker_at_secs(secs: f64, label: &str) -> klipp_timeline::Marker {
+        // These tests cover chapter-snapshot behaviour, so the default
+        // helper produces Chapter-kind markers (the only kind that
+        // gets baked into chapter atoms). The non-Chapter exclusion
+        // test below uses an inline construction with a different kind.
+        klipp_timeline::Marker {
+            id: klipp_core::MarkerId::new(),
+            position: klipp_core::Timecode {
+                value: (secs * 24.0).round() as i64,
+                rate: 24,
+            },
+            label: label.to_string(),
+            color: klipp_core::MarkerColor::Blue,
+            duration: None,
+            comment: String::new(),
+            kind: klipp_core::MarkerKind::Chapter,
+        }
+    }
+
+
+    fn make_sequence_with_length_secs(secs: f64) -> Sequence {
+        let mut seq = make_sequence();
+        let frames = (secs * 24.0).round() as i64;
+        let gap = Clip::gap(make_rational(0, 24), make_rational(frames, 24));
+        seq.tracks[0].clips.push(gap);
+        seq
+    }
+
     fn make_settings() -> ExportSettings {
         ExportSettings {
             output_path: PathBuf::from("/tmp/test.mp4"),
@@ -938,97 +634,6 @@ mod tests {
             burn_in_subtitles: true, embed_subtitles: false, target_lufs: None, embed_chapters: false,
             bit_depth: 0, hdr_mode: klipp_core::HdrMode::Sdr, tone_map_op: klipp_core::ToneMapOp::Hable,
             odt: klipp_core::OdtChoice::MatchViewer }
-    }
-
-    #[test]
-    fn snapshot_captures_single_clip() {
-        let media_id = MediaId::new();
-        let mut pool = MediaPool::new();
-        pool.add(make_media_item(media_id, "/media/clip1.mp4"));
-
-        let clip = Clip {
-            id: ClipId::new(),
-            kind: ClipKind::Media { media_id },
-            timeline_in: make_rational(0, 24),
-            timeline_out: make_rational(48, 24),
-            source_in: make_rational(24, 24),
-            source_out: make_rational(72, 24),
-            ..Clip::gap(make_rational(0, 24), make_rational(48, 24))
-        };
-
-        let mut seq = make_sequence();
-        seq.tracks[0].clips.push(clip.clone()); // Video 1 is tracks[0] (V1, A1)
-
-        let settings = make_settings();
-        let snap = SequenceSnapshot::from_sequence(&seq, &pool, &settings, None, false).unwrap();
-
-        assert_eq!(snap.fps, 24.0);
-        assert_eq!(snap.width, 1920);
-        assert_eq!(snap.height, 1080);
-        assert_eq!(snap.duration_frames, 48); // 2 seconds at 24fps
-        assert!(snap.export_range.is_none());
-
-        // Should have video tracks (reversed: V1 first)
-        assert!(!snap.video_tracks.is_empty());
-        let v1 = snap.video_tracks.iter().find(|t| !t.clips.is_empty()).unwrap();
-        assert_eq!(v1.clips.len(), 1);
-
-        let sc = &v1.clips[0];
-        assert_eq!(sc.timeline_start_frame, 0);
-        assert_eq!(sc.timeline_end_frame, 48);
-        assert_eq!(sc.source_start_secs, 1.0); // 24 frames at 24fps = 1s
-        assert_eq!(sc.source_end_secs, 3.0); // 72 frames at 24fps = 3s
-
-        match &sc.kind {
-            ClipKindSnapshot::Media { path, has_audio, .. } => {
-                assert_eq!(path, &PathBuf::from("/media/clip1.mp4"));
-                assert!(*has_audio);
-            }
-            _ => panic!("expected Media clip"),
-        }
-    }
-
-    /// The export decoder gets the same log format the viewer's decoder
-    /// registry holds: the user's choice, else detection; and nothing for
-    /// media that is not camera log, including an explicit sRGB override
-    /// of a detected log.
-    #[test]
-    fn snapshot_carries_the_effective_camera_log_format() {
-        let cases: [(LogFormat, bool, LogFormat, Option<LogFormat>); 4] = [
-            (LogFormat::Srgb, false, LogFormat::SLog3, Some(LogFormat::SLog3)), // detected
-            (LogFormat::VLog, true, LogFormat::SLog3, Some(LogFormat::VLog)),   // user's choice wins
-            (LogFormat::Srgb, true, LogFormat::SLog3, None),                    // explicit sRGB override
-            (LogFormat::Srgb, false, LogFormat::PQ, None),                      // PQ: the file says so
-        ];
-        for (chosen, user_set, detected, want) in cases {
-            let media_id = MediaId::new();
-            let mut item = make_media_item(media_id, "/media/log.mp4");
-            item.log_format = chosen;
-            item.log_format_user_set = user_set;
-            item.detected_log_format = detected;
-            let mut pool = MediaPool::new();
-            pool.add(item);
-            let clip = Clip {
-                id: ClipId::new(),
-                kind: ClipKind::Media { media_id },
-                timeline_in: make_rational(0, 24),
-                timeline_out: make_rational(24, 24),
-                source_in: make_rational(0, 24),
-                source_out: make_rational(24, 24),
-                ..Clip::gap(make_rational(0, 24), make_rational(24, 24))
-            };
-            let mut seq = make_sequence();
-            seq.tracks[0].clips.push(clip);
-            let snap = SequenceSnapshot::from_sequence(&seq, &pool, &make_settings(), None, false).unwrap();
-            let sc = &snap.video_tracks.iter().find(|t| !t.clips.is_empty()).unwrap().clips[0];
-            match &sc.kind {
-                ClipKindSnapshot::Media { log_format, .. } => assert_eq!(
-                    *log_format, want,
-                    "chosen {chosen:?} (user set {user_set}), detected {detected:?}",
-                ),
-                _ => panic!("expected Media clip"),
-            }
-        }
     }
 
     #[test]
@@ -1059,95 +664,6 @@ mod tests {
         assert_eq!(snap.frames_to_export(), 96);
         assert_eq!(snap.start_frame(), 24);
         assert_eq!(snap.end_frame(), 120);
-    }
-
-    #[test]
-    fn snapshot_captures_node_graph() {
-        let media_id = MediaId::new();
-        let mut pool = MediaPool::new();
-        pool.add(make_media_item(media_id, "/media/clip1.mp4"));
-
-        let graph = NodeGraph::default();
-
-        let clip = Clip {
-            id: ClipId::new(),
-            kind: ClipKind::Media { media_id },
-            timeline_in: make_rational(0, 24),
-            timeline_out: make_rational(24, 24),
-            source_in: make_rational(0, 24),
-            source_out: make_rational(24, 24),
-            node_graph: graph.clone(),
-            ..Clip::gap(make_rational(0, 24), make_rational(24, 24))
-        };
-
-        let mut seq = make_sequence();
-        seq.tracks[0].clips.push(clip);
-
-        let settings = make_settings();
-        let snap = SequenceSnapshot::from_sequence(&seq, &pool, &settings, None, false).unwrap();
-
-        let v1 = snap.video_tracks.iter().find(|t| !t.clips.is_empty()).unwrap();
-        let sc = &v1.clips[0];
-        // Verify node graph was cloned into snapshot
-        assert_eq!(sc.node_graph.nodes.len(), graph.nodes.len());
-    }
-
-    #[test]
-    fn snapshot_captures_title_clip() {
-        let title = TitleData::default();
-        let clip = Clip {
-            id: ClipId::new(),
-            kind: ClipKind::Title(title.clone()),
-            timeline_in: make_rational(0, 24),
-            timeline_out: make_rational(72, 24),
-            source_in: make_rational(0, 24),
-            source_out: make_rational(72, 24),
-            ..Clip::gap(make_rational(0, 24), make_rational(72, 24))
-        };
-
-        let pool = MediaPool::new();
-        let mut seq = make_sequence();
-        seq.tracks[0].clips.push(clip);
-
-        let settings = make_settings();
-        let snap = SequenceSnapshot::from_sequence(&seq, &pool, &settings, None, false).unwrap();
-
-        let v1 = snap.video_tracks.iter().find(|t| !t.clips.is_empty()).unwrap();
-        match &v1.clips[0].kind {
-            ClipKindSnapshot::Title(data) => {
-                assert_eq!(data.text(), title.text());
-            }
-            _ => panic!("expected Title clip"),
-        }
-    }
-
-    // ── Chapter snapshot tests (#44) ──────────────────────────────────
-
-    fn make_marker_at_secs(secs: f64, label: &str) -> klipp_timeline::Marker {
-        // These tests cover chapter-snapshot behaviour, so the default
-        // helper produces Chapter-kind markers (the only kind that
-        // gets baked into chapter atoms). The non-Chapter exclusion
-        // test below uses an inline construction with a different kind.
-        klipp_timeline::Marker {
-            id: klipp_core::MarkerId::new(),
-            position: klipp_core::Timecode {
-                value: (secs * 24.0).round() as i64,
-                rate: 24,
-            },
-            label: label.to_string(),
-            color: klipp_core::MarkerColor::Blue,
-            duration: None,
-            comment: String::new(),
-            kind: klipp_core::MarkerKind::Chapter,
-        }
-    }
-
-    fn make_sequence_with_length_secs(secs: f64) -> Sequence {
-        let mut seq = make_sequence();
-        let frames = (secs * 24.0).round() as i64;
-        let gap = Clip::gap(make_rational(0, 24), make_rational(frames, 24));
-        seq.tracks[0].clips.push(gap);
-        seq
     }
 
     #[test]
@@ -1286,118 +802,6 @@ mod tests {
     }
 
     #[test]
-    fn snapshot_captures_gap_clip() {
-        let clip = Clip::gap(make_rational(0, 24), make_rational(24, 24));
-
-        let pool = MediaPool::new();
-        let mut seq = make_sequence();
-        seq.tracks[0].clips.push(clip);
-
-        let settings = make_settings();
-        let snap = SequenceSnapshot::from_sequence(&seq, &pool, &settings, None, false).unwrap();
-
-        let v1 = snap.video_tracks.iter().find(|t| !t.clips.is_empty()).unwrap();
-        assert!(matches!(v1.clips[0].kind, ClipKindSnapshot::Gap));
-    }
-
-    #[test]
-    fn snapshot_captures_multi_track() {
-        let media_id_a = MediaId::new();
-        let media_id_b = MediaId::new();
-        let mut pool = MediaPool::new();
-        pool.add(make_media_item(media_id_a, "/media/a.mp4"));
-        pool.add(make_media_item(media_id_b, "/media/b.mp4"));
-
-        let clip_a = Clip {
-            id: ClipId::new(),
-            kind: ClipKind::Media { media_id: media_id_a },
-            timeline_in: make_rational(0, 24),
-            timeline_out: make_rational(48, 24),
-            source_in: make_rational(0, 24),
-            source_out: make_rational(48, 24),
-            ..Clip::gap(make_rational(0, 24), make_rational(48, 24))
-        };
-
-        let clip_b = Clip {
-            id: ClipId::new(),
-            kind: ClipKind::Media { media_id: media_id_b },
-            timeline_in: make_rational(0, 24),
-            timeline_out: make_rational(24, 24),
-            source_in: make_rational(0, 24),
-            source_out: make_rational(24, 24),
-            ..Clip::gap(make_rational(0, 24), make_rational(24, 24))
-        };
-
-        let mut seq = make_sequence();
-        // Default: V1(0), A1(1). Add a second video track for multi-track test.
-        seq.add_video_track("Video 2".into());
-        // After add: V2(0), V1(1), A1(2)
-        seq.tracks[0].clips.push(clip_b); // V2 (overlay)
-        seq.tracks[1].clips.push(clip_a); // V1 (base)
-
-        let settings = make_settings();
-        let snap = SequenceSnapshot::from_sequence(&seq, &pool, &settings, None, false).unwrap();
-
-        let tracks_with_clips: Vec<_> = snap.video_tracks.iter()
-            .filter(|t| !t.clips.is_empty())
-            .collect();
-        assert_eq!(tracks_with_clips.len(), 2);
-    }
-
-    #[test]
-    fn snapshot_captures_transitions() {
-        let clip_a_id = ClipId::new();
-        let clip_b_id = ClipId::new();
-        let media_id = MediaId::new();
-        let mut pool = MediaPool::new();
-        pool.add(make_media_item(media_id, "/media/clip.mp4"));
-
-        let clip_a = Clip {
-            id: clip_a_id,
-            kind: ClipKind::Media { media_id },
-            timeline_in: make_rational(0, 24),
-            timeline_out: make_rational(48, 24),
-            source_in: make_rational(0, 24),
-            source_out: make_rational(48, 24),
-            ..Clip::gap(make_rational(0, 24), make_rational(48, 24))
-        };
-        let clip_b = Clip {
-            id: clip_b_id,
-            kind: ClipKind::Media { media_id },
-            timeline_in: make_rational(36, 24),
-            timeline_out: make_rational(96, 24),
-            source_in: make_rational(0, 24),
-            source_out: make_rational(60, 24),
-            ..Clip::gap(make_rational(36, 24), make_rational(96, 24))
-        };
-
-        let transition = Transition {
-            id: TransitionId::new(),
-            kind: TransitionKind::CrossDissolve,
-            duration: make_rational(12, 24), // 0.5 sec
-            clip_a_id,
-            clip_b_id,
-            user_params: Default::default(),
-            alignment: Default::default(),
-        };
-
-        let mut seq = make_sequence();
-        seq.tracks[0].clips.push(clip_a);
-        seq.tracks[0].clips.push(clip_b);
-        seq.tracks[0].transitions.push(transition);
-
-        let settings = make_settings();
-        let snap = SequenceSnapshot::from_sequence(&seq, &pool, &settings, None, false).unwrap();
-
-        let v1 = snap.video_tracks.iter().find(|t| !t.clips.is_empty()).unwrap();
-        assert_eq!(v1.transitions.len(), 1);
-        assert_eq!(v1.transitions[0].kind, TransitionKind::CrossDissolve);
-        assert_eq!(v1.transitions[0].duration_frames, 12);
-        assert_eq!(v1.transitions[0].clip_a_id, clip_a_id);
-        assert_eq!(v1.transitions[0].clip_b_id, clip_b_id);
-    }
-
-    #[test]
     fn snapshot_audio_tracks() {
         let media_id = MediaId::new();
         let mut pool = MediaPool::new();
@@ -1427,131 +831,6 @@ mod tests {
         assert_eq!(at.pan, -0.5);
         assert_eq!(at.clips.len(), 1);
         assert_eq!(at.clips[0].source_start_secs, 1.0);
-    }
-
-    #[test]
-    fn snapshot_carries_effect_keyframes() {
-        let media_id = MediaId::new();
-        let mut pool = MediaPool::new();
-        pool.add(make_media_item(media_id, "/media/clip1.mp4"));
-
-        let kf0 = klipp_core::Keyframe {
-            time_secs: 0.0,
-            value: 5.0,
-            interpolation: klipp_core::Interpolation::Linear,
-            tangent_out: (0.0, 0.0),
-            tangent_in: (0.0, 0.0),
-        };
-        let kf1 = klipp_core::Keyframe {
-            time_secs: 1.0,
-            value: 50.0,
-            interpolation: klipp_core::Interpolation::Linear,
-            tangent_out: (0.0, 0.0),
-            tangent_in: (0.0, 0.0),
-        };
-
-        let mut effect_keyframes = std::collections::HashMap::new();
-        effect_keyframes.insert("0:radius".to_string(), vec![kf0.clone(), kf1.clone()]);
-
-        let opacity_kf = klipp_core::Keyframe {
-            time_secs: 0.5,
-            value: 0.5,
-            interpolation: klipp_core::Interpolation::Linear,
-            tangent_out: (0.0, 0.0),
-            tangent_in: (0.0, 0.0),
-        };
-
-        let mut clip = Clip::gap(make_rational(0, 24), make_rational(48, 24));
-        clip.kind = ClipKind::Media { media_id };
-        clip.source_in = make_rational(0, 24);
-        clip.source_out = make_rational(48, 24);
-        clip.effect_keyframes = effect_keyframes;
-        clip.opacity_keyframes = vec![opacity_kf];
-        clip.transform_scale_keyframes = vec![kf0.clone(), kf1.clone()];
-
-        let mut seq = make_sequence();
-        seq.tracks[0].clips.push(clip);
-
-        let settings = make_settings();
-        let snap = SequenceSnapshot::from_sequence(&seq, &pool, &settings, None, false).unwrap();
-
-        let v1 = snap.video_tracks.iter().find(|t| !t.clips.is_empty()).unwrap();
-        let sc = &v1.clips[0];
-
-        assert_eq!(sc.effect_keyframes.len(), 1);
-        assert!(sc.effect_keyframes.contains_key("0:radius"));
-        assert_eq!(sc.effect_keyframes["0:radius"].len(), 2);
-        assert_eq!(sc.opacity_keyframes.len(), 1);
-        assert!((sc.opacity_keyframes[0].value - 0.5).abs() < 0.001);
-        assert_eq!(sc.transform_scale_keyframes.len(), 2);
-        assert!(sc.transform_pos_x_keyframes.is_empty());
-        assert!(sc.transform_pos_y_keyframes.is_empty());
-        assert!(sc.transform_rotation_keyframes.is_empty());
-    }
-
-    #[test]
-    fn snapshot_carries_audio_effect_keyframes() {
-        // Mirrors snapshot_carries_effect_keyframes for the audio chain:
-        // both ClipSnapshot.audio_effect_keyframes (video-track snapshot
-        // path) and AudioClipSnapshot.audio_effect_keyframes (audio-track
-        // snapshot path) must round-trip the source clip's data so the
-        // offline mixdown path sees the same kfs as live playback.
-        let media_id = MediaId::new();
-        let mut pool = MediaPool::new();
-        pool.add(make_media_item(media_id, "/media/clip1.mp4"));
-
-        let mk_kf = |t: f64, v: f32| klipp_core::Keyframe {
-            time_secs: t,
-            value: v,
-            interpolation: klipp_core::Interpolation::Linear,
-            tangent_out: (0.0, 0.0),
-            tangent_in: (0.0, 0.0),
-        };
-
-        let mut audio_effect_keyframes = std::collections::HashMap::new();
-        audio_effect_keyframes.insert(
-            "0:gain".to_string(),
-            vec![mk_kf(0.0, -6.0), mk_kf(1.0, 0.0)],
-        );
-        audio_effect_keyframes.insert(
-            "0:__bypass".to_string(),
-            vec![mk_kf(0.5, 1.0)],
-        );
-
-        let mut clip = Clip::gap(make_rational(0, 24), make_rational(48, 24));
-        clip.kind = ClipKind::Media { media_id };
-        clip.source_in = make_rational(0, 24);
-        clip.source_out = make_rational(48, 24);
-        clip.audio_effect_keyframes = audio_effect_keyframes;
-
-        let mut seq = make_sequence();
-        // Mirror onto both video and audio tracks so we exercise BOTH
-        // snapshot paths (ClipSnapshot via video lane, AudioClipSnapshot
-        // via audio lane).
-        seq.tracks[0].clips.push(clip.clone());
-        seq.tracks[1].clips.push(clip);
-
-        let settings = make_settings();
-        let snap = SequenceSnapshot::from_sequence(&seq, &pool, &settings, None, false).unwrap();
-
-        // Video-side ClipSnapshot must carry the field.
-        let v1 = snap.video_tracks.iter().find(|t| !t.clips.is_empty()).unwrap();
-        let sc = &v1.clips[0];
-        assert_eq!(sc.audio_effect_keyframes.len(), 2,
-            "ClipSnapshot must carry both kf tracks");
-        assert!(sc.audio_effect_keyframes.contains_key("0:gain"));
-        assert!(sc.audio_effect_keyframes.contains_key("0:__bypass"));
-        assert_eq!(sc.audio_effect_keyframes["0:gain"].len(), 2);
-
-        // Audio-side AudioClipSnapshot (offline mixdown path) must carry
-        // the same data.
-        assert_eq!(snap.audio_tracks.len(), 1);
-        let ac = &snap.audio_tracks[0].clips[0];
-        assert_eq!(ac.audio_effect_keyframes.len(), 2,
-            "AudioClipSnapshot must carry both kf tracks for offline mixdown");
-        assert!((ac.audio_effect_keyframes["0:gain"][0].value - (-6.0)).abs() < 1e-6);
-        assert!((ac.audio_effect_keyframes["0:gain"][1].value - 0.0).abs() < 1e-6);
-        assert!((ac.audio_effect_keyframes["0:__bypass"][0].time_secs - 0.5).abs() < 1e-9);
     }
 
     #[test]
@@ -1664,5 +943,90 @@ mod tests {
         let settings = make_settings();
         let snap = SequenceSnapshot::from_sequence(&seq, &pool, &settings, None, false).unwrap();
         assert!(snap.subtitle_tracks.is_empty());
+    }
+
+    fn media_clip(media_id: MediaId, from: i64, to: i64) -> Clip {
+        Clip {
+            id: ClipId::new(),
+            kind: ClipKind::Media { media_id },
+            timeline_in: make_rational(from, 24),
+            timeline_out: make_rational(to, 24),
+            source_in: make_rational(0, 24),
+            source_out: make_rational(to - from, 24),
+            ..Clip::gap(make_rational(from, 24), make_rational(to, 24))
+        }
+    }
+
+    /// The video half is the viewer's flattened timeline, and every media
+    /// clip's file is in the media table.
+    #[test]
+    fn video_timeline_is_the_flattened_sequence_with_its_media() {
+        let media_id = MediaId::new();
+        let mut pool = MediaPool::new();
+        pool.add(make_media_item(media_id, "/media/clip1.mp4"));
+        let mut seq = make_sequence();
+        seq.tracks[0].clips.push(media_clip(media_id, 0, 48));
+        let snap = SequenceSnapshot::from_sequence(&seq, &pool, &make_settings(), None, false).unwrap();
+        let flat = klipp_timeline::flatten::flatten_sequence(&seq, &[]);
+        assert_eq!(snap.video.sequence.tracks.len(), flat.tracks.len());
+        assert_eq!(snap.video.sequence.tracks[0].clips[0].id, seq.tracks[0].clips[0].id);
+        assert_eq!(
+            snap.video.media.get(&media_id),
+            Some(&MediaFile { path: PathBuf::from("/media/clip1.mp4"), log_format: None }),
+        );
+    }
+
+    /// The export decoder gets the same log format the viewer's decoder
+    /// registry holds: the user's choice, else detection; and nothing for
+    /// media that is not camera log, including an explicit sRGB override
+    /// of a detected log.
+    #[test]
+    fn media_table_carries_the_effective_camera_log_format() {
+        let cases: [(LogFormat, bool, LogFormat, Option<LogFormat>); 4] = [
+            (LogFormat::Srgb, false, LogFormat::SLog3, Some(LogFormat::SLog3)), // detected
+            (LogFormat::VLog, true, LogFormat::SLog3, Some(LogFormat::VLog)),   // user's choice wins
+            (LogFormat::Srgb, true, LogFormat::SLog3, None),                    // explicit sRGB override
+            (LogFormat::Srgb, false, LogFormat::PQ, None),                      // PQ: the file says so
+        ];
+        for (chosen, user_set, detected, want) in cases {
+            let media_id = MediaId::new();
+            let mut item = make_media_item(media_id, "/media/log.mp4");
+            item.log_format = chosen;
+            item.log_format_user_set = user_set;
+            item.detected_log_format = detected;
+            let mut pool = MediaPool::new();
+            pool.add(item);
+            let mut seq = make_sequence();
+            seq.tracks[0].clips.push(media_clip(media_id, 0, 24));
+            let snap = SequenceSnapshot::from_sequence(&seq, &pool, &make_settings(), None, false).unwrap();
+            assert_eq!(
+                snap.video.media[&media_id].log_format, want,
+                "chosen {chosen:?} (user set {user_set}), detected {detected:?}",
+            );
+        }
+    }
+
+    /// Text and subtitle tracks render into the picture only when burning
+    /// subtitles in.
+    #[test]
+    fn subtitle_tracks_are_hidden_unless_burned_in() {
+        let mut seq = make_sequence();
+        seq.tracks.insert(0, Track::new("Subtitles", TrackKind::Subtitle));
+        let pool = MediaPool::new();
+        for burn in [true, false] {
+            let mut settings = make_settings();
+            settings.burn_in_subtitles = burn;
+            let snap = SequenceSnapshot::from_sequence(&seq, &pool, &settings, None, false).unwrap();
+            let sub = snap.video.sequence.tracks.iter().find(|t| t.kind == TrackKind::Subtitle).unwrap();
+            assert_eq!(sub.visible, burn);
+        }
+    }
+
+    /// A media clip whose file is missing from the pool cannot be exported.
+    #[test]
+    fn missing_media_is_an_error() {
+        let mut seq = make_sequence();
+        seq.tracks[0].clips.push(media_clip(MediaId::new(), 0, 24));
+        assert!(SequenceSnapshot::from_sequence(&seq, &MediaPool::new(), &make_settings(), None, false).is_err());
     }
 }

@@ -18334,7 +18334,7 @@ impl KlippApp {
                     &self.state.sequences,
                     &self.state.media_pool,
                     settings,
-                    self.state.global_lut_path.clone(),
+                    self.state.global_lut_path.clone().filter(|_| self.state.global_lut_enabled),
                     use_marked,
                 );
                 // Override range for selected-clips mode
@@ -18349,6 +18349,7 @@ impl KlippApp {
                 // the same value the user has been editing under.
                 if let Ok(ref mut snap) = snapshot {
                     snap.sequence_snapshot.working_colorspace = self.state.project_working_colorspace;
+                    snap.sequence_snapshot.video.global_lut_opacity = self.state.global_lut_opacity;
                 }
                 let label = settings.output_path.file_name()
                     .map(|n| n.to_string_lossy().to_string())
@@ -18391,7 +18392,7 @@ impl KlippApp {
                     &self.state.media_pool,
                     settings,
                     // The confirmation dialogs used to drop the LUT here.
-                    self.state.global_lut_path.clone(),
+                    self.state.global_lut_path.clone().filter(|_| self.state.global_lut_enabled),
                     use_marked,
                 );
                 if self.export_dialog.range_mode == 2 {
@@ -18402,6 +18403,7 @@ impl KlippApp {
                 }
                 if let Ok(ref mut snap) = snapshot {
                     snap.sequence_snapshot.working_colorspace = self.state.project_working_colorspace;
+                    snap.sequence_snapshot.video.global_lut_opacity = self.state.global_lut_opacity;
                 }
                 let label = settings.output_path.file_name()
                     .map(|n| n.to_string_lossy().to_string())
@@ -18436,7 +18438,7 @@ impl KlippApp {
                     &self.state.media_pool,
                     settings,
                     // The confirmation dialogs used to drop the LUT here.
-                    self.state.global_lut_path.clone(),
+                    self.state.global_lut_path.clone().filter(|_| self.state.global_lut_enabled),
                     use_marked,
                 );
                 if self.export_dialog.range_mode == 2 {
@@ -18448,6 +18450,7 @@ impl KlippApp {
                 }
                 if let Ok(ref mut snap) = snapshot {
                     snap.sequence_snapshot.working_colorspace = self.state.project_working_colorspace;
+                    snap.sequence_snapshot.video.global_lut_opacity = self.state.global_lut_opacity;
                 }
                 let label = settings.output_path.file_name()
                     .map(|n| n.to_string_lossy().to_string())
@@ -19305,7 +19308,7 @@ impl KlippApp {
                 &self.state.sequences,
                 &self.state.media_pool,
                 &job_settings,
-                self.state.global_lut_path.clone(),
+                self.state.global_lut_path.clone().filter(|_| self.state.global_lut_enabled),
                 false,
             );
             let mut snap = match snap {
@@ -19320,6 +19323,7 @@ impl KlippApp {
             // exports route through the same display transform as
             // the rest of the pipeline.
             snap.sequence_snapshot.working_colorspace = self.state.project_working_colorspace;
+            snap.sequence_snapshot.video.global_lut_opacity = self.state.global_lut_opacity;
 
             let display_label = format!(
                 "{} [{}/{}]",
@@ -28851,7 +28855,7 @@ impl KlippApp {
                             &self.state.sequences,
                             &self.state.media_pool,
                             &settings,
-                            self.state.global_lut_path.clone(),
+                            self.state.global_lut_path.clone().filter(|_| self.state.global_lut_enabled),
                             use_marked,
                         );
                         if self.export_dialog.range_mode == 2 {
@@ -28862,6 +28866,7 @@ impl KlippApp {
                         }
                         if let Ok(ref mut snap) = snapshot {
                             snap.sequence_snapshot.working_colorspace = self.state.project_working_colorspace;
+                            snap.sequence_snapshot.video.global_lut_opacity = self.state.global_lut_opacity;
                         }
                         let label = path.file_name()
                             .map(|n| n.to_string_lossy().to_string())
