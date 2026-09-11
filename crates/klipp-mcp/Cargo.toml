@@ -1,0 +1,24 @@
+[package]
+name = "klipp-mcp"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# Model Context Protocol server for Klipp.
+#
+# Speaks MCP (JSON-RPC 2.0 over stdio) to a client such as Claude Code,
+# and forwards to a running Klipp via its control socket. Lets an agent
+# inspect the timeline, drive playback, apply grades and look at the
+# actual viewer output.
+#
+# Depends on klipp-control only for the wire types, so the two cannot
+# drift apart.
+
+[[bin]]
+name = "klipp-mcp"
+path = "src/main.rs"
+
+[dependencies]
+klipp-control = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }

@@ -1,0 +1,33 @@
+[package]
+name = "klipp-control"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# Control surface for a running Klipp instance.
+#
+# A line-delimited JSON protocol over a Unix socket, so external tools
+# (klipp-mcp, scripts, tests) can drive the app and read its state
+# without a GUI in the loop.
+#
+# Deliberately its own vocabulary rather than exposing `AppCommand`:
+# that enum has 566 variants and is internal, so serialising it would
+# make every refactor a breaking change for anything on the other end
+# of the socket. `ControlCommand` is small, stable, and maps *into*
+# AppCommand.
+
+[dependencies]
+klipp-core = { workspace = true }
+klipp-timeline = { workspace = true }
+klipp-media = { workspace = true }
+klipp-engine = { workspace = true }
+klipp-nodes = { workspace = true }
+crossbeam-channel = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+uuid = { workspace = true }
+png = "0.18"
+
+[dev-dependencies]
+klipp-timeline = { workspace = true }

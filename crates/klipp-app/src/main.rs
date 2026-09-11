@@ -437,6 +437,24 @@ fn main() -> Result<()> {
         ..Default::default()
     };
 
+    // Control socket: lets an MCP server, a script or a test drive this
+    // instance and read its state without a GUI in the loop. Reads go at
+    // the shared state directly; writes go through the same
+    // `AppCommand` channel the UI's own buttons use, so undo, autosave
+    // and the engine's caches behave identically either way.
+    // `KLIPP_CONTROL=0` disables it.
+    match klipp_control::spawn(klipp_control::ControlContext {
+        cmd_tx: cmd_tx.clone(),
+        sequence: sequence.clone(),
+        media_pool: media_pool.clone(),
+        frame_buffer: frame_buffer.clone(),
+        perf_ring: perf_ring.clone(),
+        log_path: std::path::PathBuf::from("klipp-debug.log"),
+    }) {
+        Some(p) => info!("control socket ready at {}", p.display()),
+        None => info!("control socket not started"),
+    }
+
     let cmd_tx_clone = cmd_tx.clone();
     let fb_clone = frame_buffer.clone();
     let source_fb_clone = source_frame_buffer.clone();

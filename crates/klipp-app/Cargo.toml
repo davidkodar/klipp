@@ -18,6 +18,7 @@ ai-candle-cuda = ["klipp-ui/ai-candle-cuda"]
 [dependencies]
 klipp-core = { workspace = true }
 klipp-ui = { workspace = true }
+klipp-control = { workspace = true }
 klipp-engine = { workspace = true }
 klipp-effects = { workspace = true }
 klipp-jobs = { path = "../klipp-jobs" }

@@ -2609,6 +2609,7 @@ dependencies = [
  "eframe",
  "egui",
  "ffmpeg-next",
+ "klipp-control",
  "klipp-core",
  "klipp-effects",
  "klipp-engine",
@@ -2648,6 +2649,23 @@ dependencies = [
  "rayon",
  "serde_json",
  "tracing",
+]
+
+[[package]]
+name = "klipp-control"
+version = "0.1.0"
+dependencies = [
+ "crossbeam-channel",
+ "klipp-core",
+ "klipp-engine",
+ "klipp-media",
+ "klipp-nodes",
+ "klipp-timeline",
+ "png 0.18.1",
+ "serde",
+ "serde_json",
+ "tracing",
+ "uuid",
 ]
 
 [[package]]
@@ -2748,6 +2766,15 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "uuid",
+]
+
+[[package]]
+name = "klipp-mcp"
+version = "0.1.0"
+dependencies = [
+ "klipp-control",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "klipp": {
+      "command": "./target/release/klipp-mcp",
+      "args": [],
+      "env": {}
+    }
+  }
+}
