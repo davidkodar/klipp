@@ -92,17 +92,23 @@ pub struct Parked {
 
 impl Parked {
     pub fn start(src: PathBuf, width: u32, height: u32) -> Self {
-        Self::start_at(src, width, height, Fps::new(FPS, 1))
+        Self::start_at(src, width, height, Fps::new(FPS, 1), true)
+    }
+
+    /// [`Self::start`] with the clip ungraded: what it shows is the
+    /// source's own levels.
+    pub fn start_ungraded(src: PathBuf, width: u32, height: u32) -> Self {
+        Self::start_at(src, width, height, Fps::new(FPS, 1), false)
     }
 
     /// [`Self::start`] on a timeline at `fps`, for a source at that rate.
-    pub fn start_at(src: PathBuf, width: u32, height: u32, fps: Fps) -> Self {
+    pub fn start_at(src: PathBuf, width: u32, height: u32, fps: Fps, graded: bool) -> Self {
         let tc = |f: i64| frame_tc(f, fps);
         let id = MediaId::new();
         let mut clip = Clip { kind: ClipKind::Media { media_id: id }, ..Clip::gap(tc(0), tc(50)) };
         clip.source_in = tc(0);
         clip.source_out = tc(50);
-        clip.node_graph = exposure_graph(0.5);
+        clip.node_graph = exposure_graph(if graded { 0.5 } else { 0.0 });
         let (clip_id, source_node, exposure_node) = (clip.id, clip.node_graph.nodes[0].id, clip.node_graph.nodes[1].id);
         let mut seq = Sequence::new_default();
         seq.fps = fps;
@@ -204,6 +210,12 @@ impl Parked {
     /// The frame on screen, RGBA.
     pub fn frame(&self) -> Vec<u8> {
         self.fb.lock().unwrap().latest_frame().0.to_vec()
+    }
+
+    /// The picture's light in cd/m² at `(nx, ny)`, while HDR monitoring
+    /// is on.
+    pub fn nits_at(&self, nx: f32, ny: f32) -> Option<f32> {
+        self.fb.lock().unwrap().nits_at(nx, ny)
     }
 
     pub fn perf(&self) -> Vec<PerfSample> {

@@ -45,6 +45,37 @@ pub enum HdrMode {
     Pq,
 }
 
+/// What the viewer shows while grading for an HDR delivery.
+///
+/// `Off` is the SDR picture: every scene-referred clip tone-mapped to the
+/// display, which is all the viewer could ever show. The other two render
+/// the HDR picture the export writes — highlights kept, in display light
+/// where 1.0 is 203 cd/m² — and differ in how that reaches an SDR screen,
+/// which cannot show it directly:
+///
+/// * `Preview` — as an SDR picture ([`klipp_color::hdr_view`]): the grade's
+///   mid-tones where they are, the light above reference white rolled into
+///   the top so its structure stays visible.
+/// * `FalseColour` — the standard levels as flat colours, for reading
+///   where the picture sits against 26, 203 and 1000 cd/m².
+///
+/// Either way the viewer also publishes the picture's light in cd/m², for
+/// the readout under the pointer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum HdrMonitor {
+    #[default]
+    Off,
+    Preview,
+    FalseColour,
+}
+
+impl HdrMonitor {
+    /// Whether the viewer renders the HDR picture.
+    pub fn renders_hdr(self) -> bool {
+        self != HdrMonitor::Off
+    }
+}
+
 /// Display-boundary tone-map operator.
 ///
 /// Picked by the user as a viewer / export "colour science" option.
@@ -1406,6 +1437,10 @@ pub enum AppCommand {
         is_ofx: bool,
     },
     SetMattePreview(bool),
+
+    /// What the viewer shows while grading for an HDR delivery — see
+    /// [`HdrMonitor`]. Off is the SDR picture the viewer has always shown.
+    SetHdrMonitor(HdrMonitor),
 
     /// Phase 4C — Inspector requests track-matte preview thumbnails for
     /// the given consumer clip. `None` clears the request. Engine emits

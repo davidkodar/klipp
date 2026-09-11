@@ -230,6 +230,9 @@ impl PlaybackEngine {
         if self.in_node_param_edit
             || self.solo_node.is_some()
             || self.matte_preview
+            // The cache holds display bytes of the SDR picture; HDR
+            // monitoring shows another picture entirely.
+            || self.hdr_monitor.renders_hdr()
             || self.bypass_color_grade
             || self.compare_stabilization
             || self.compare_effect_active
@@ -318,7 +321,16 @@ impl PlaybackEngine {
             streams: &self.streams,
             media_pool: &self.media_pool,
         };
-        let (out, found) = self.renderer.render_inspected(seq, time, w, h, &mut src, RenderOptions::default(), inspect);
+        // HDR monitoring renders what the export writes: display light,
+        // 1.0 = 203 cd/m², mastered to the delivery's peak.
+        let opts = RenderOptions {
+            hdr_peak_nits: self
+                .hdr_monitor
+                .renders_hdr()
+                .then_some(klipp_color::hdr::DEFAULT_MASTERING_MAX_LUMA_CD_M2),
+            ..Default::default()
+        };
+        let (out, found) = self.renderer.render_inspected(seq, time, w, h, &mut src, opts, inspect);
         if downsample {
             self.drag_downsampled_count = self.drag_downsampled_count.saturating_add(1);
             (crate::grade_resample::upsample_linear_2x(&out, w, h), found)
@@ -493,6 +505,36 @@ impl PlaybackEngine {
         }
     }
 
+    /// The picture for the screen, and the light it carries.
+    ///
+    /// Off HDR monitoring this is the display encode of a display-referred
+    /// frame, as it has always been. On, the frame is HDR display light:
+    /// the screen gets either its SDR preview or the false colours, and
+    /// the light itself goes out as a map for the readout
+    /// (`klipp_color::hdr_view`).
+    fn encode_for_screen(&self, linear: &[f32], w: u32, h: u32) -> (Vec<u8>, Option<(Vec<f32>, u32, u32, u32)>) {
+        use klipp_core::HdrMonitor;
+        if !self.hdr_monitor.renders_hdr() {
+            return (self.display_encode(linear), None);
+        }
+        const NIT_MAP_STEP: u32 = 4;
+        let map = klipp_color::hdr_view::nit_map(linear, w, h, NIT_MAP_STEP);
+        let bytes = match self.hdr_monitor {
+            HdrMonitor::FalseColour => klipp_color::hdr_view::false_colour_frame(linear),
+            _ => {
+                let mut preview = linear.to_vec();
+                use rayon::prelude::*;
+                preview.par_chunks_exact_mut(4).for_each(|px| {
+                    for c in 0..3 {
+                        px[c] = klipp_color::hdr_view::hdr_to_sdr_preview(px[c]);
+                    }
+                });
+                self.display_encode(&preview)
+            }
+        };
+        (bytes, Some((map.0, map.1, map.2, NIT_MAP_STEP)))
+    }
+
     /// Show a rendered frame: scopes, the perf overlay, the GPU viewer
     /// texture, then the display encode into the frame buffer.
     fn show_rendered(&mut self, r: Rendered, t_frame: Instant) {
@@ -516,12 +558,23 @@ impl PlaybackEngine {
         }
 
         let t_encode = Instant::now();
-        let mut bytes = self.display_encode(&linear);
+        let (mut bytes, nits) = self.encode_for_screen(&linear, w, h);
         let encode_ms = t_encode.elapsed().as_secs_f64() * 1000.0;
         {
             let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
             fb.write_frame_swap(&mut bytes, w, h);
             fb.set_presented(self.playhead);
+            match nits {
+                Some((map, mw, mh, step)) => {
+                    fb.nit_map = map;
+                    (fb.nit_map_w, fb.nit_map_h, fb.nit_map_step) = (mw, mh, step);
+                }
+                None if !fb.nit_map.is_empty() => {
+                    fb.nit_map = Vec::new();
+                    (fb.nit_map_w, fb.nit_map_h) = (0, 0);
+                }
+                None => {}
+            }
         }
         self.composite_scratch_u8 = bytes;
 

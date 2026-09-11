@@ -30192,6 +30192,22 @@ impl KlippApp {
                     self.render_source_viewer_placeholder(ui, source_viewer_rect, all_cmds);
                     self.render_viewer_panel(ui, viewer_rect, all_cmds);
 
+                    // The light under the pointer, while HDR monitoring is
+                    // on: the engine publishes the picture's cd/m² with
+                    // each frame, since an SDR screen cannot show it.
+                    self.state.hdr_nits_under_pointer = match (
+                        self.state.hdr_monitor.renders_hdr(),
+                        self.state.viewer_pointer_pos,
+                        self.state.viewer_image_rect,
+                    ) {
+                        (true, Some(pos), Some(rect)) => {
+                            let (nx, ny) = crate::panels::viewer::viewer_screen_to_norm(rect, pos);
+                            let fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
+                            fb.nits_at(nx, ny)
+                        }
+                        _ => None,
+                    };
+
                     // Compute bottom-panel scope cursor data (shared by overlay + bottom panel)
                     // If locked but data not yet computed, compute it now
                     if self.state.scope_cursor_locked && self.state.scope_cursor_locked_data.is_none() {

@@ -1690,6 +1690,84 @@ impl ViewerPanel {
 
         self.handle_scope_cursor_input(ui, state, &frame);
         self.draw_scope_cursor(ui.painter(), state, &frame);
+        self.draw_hdr_monitor(ui, state, theme, image_rect, cmds);
+    }
+
+    /// HDR monitoring: what the viewer shows for an HDR delivery, and the
+    /// light under the pointer.
+    ///
+    /// An SDR screen cannot show an HDR picture, so the numbers are the
+    /// instrument: the readout says what the picture is in cd/m² at the
+    /// pointer, and false colour says it for the whole frame at once. The
+    /// levels to judge against are 26 (an 18% grey card), 203 (diffuse
+    /// white) and 1000 (the master's peak).
+    fn draw_hdr_monitor(
+        &mut self,
+        ui: &mut egui::Ui,
+        state: &mut AppState,
+        theme: &KlippTheme,
+        image_rect: egui::Rect,
+        cmds: &mut Vec<AppCommand>,
+    ) {
+        use klipp_core::HdrMonitor;
+        const H: f32 = 22.0;
+        let label = match state.hdr_monitor {
+            HdrMonitor::Off => "HDR: off",
+            HdrMonitor::Preview => "HDR: preview",
+            HdrMonitor::FalseColour => "HDR: false colour",
+        };
+        let width = if state.hdr_monitor == HdrMonitor::Off { 78.0 } else { 118.0 };
+        let btn = egui::Rect::from_min_size(
+            egui::pos2(image_rect.max.x - width - 8.0, image_rect.min.y + 8.0),
+            egui::vec2(width, H),
+        );
+        let resp = ui.interact(btn, ui.id().with("hdr_monitor"), egui::Sense::click());
+        let on = state.hdr_monitor.renders_hdr();
+        let bg = if on { theme.accent } else { theme.bg_raised.gamma_multiply(0.9) };
+        ui.painter().rect_filled(btn, 4.0, bg);
+        ui.painter().text(
+            btn.center(),
+            egui::Align2::CENTER_CENTER,
+            label,
+            egui::FontId::proportional(11.0),
+            if on { theme.text_on_accent } else { theme.text_secondary },
+        );
+        if resp.clicked() {
+            // Off → preview → false colour → off.
+            state.hdr_monitor = match state.hdr_monitor {
+                HdrMonitor::Off => HdrMonitor::Preview,
+                HdrMonitor::Preview => HdrMonitor::FalseColour,
+                HdrMonitor::FalseColour => HdrMonitor::Off,
+            };
+            cmds.push(AppCommand::SetHdrMonitor(state.hdr_monitor));
+        }
+        resp.on_hover_text(
+            "What the viewer shows for an HDR delivery. Preview: the HDR picture as SDR, \
+             highlights rolled off. False colour: the levels as flat colours — grey 26, \
+             white 203, peak 1000 cd/m². The readout below gives the light under the pointer.",
+        );
+
+        // The readout: the picture's light where the pointer is.
+        if on {
+            let text = match state.hdr_nits_under_pointer {
+                Some(nits) if nits >= 100.0 => format!("{nits:.0} cd/m²"),
+                Some(nits) if nits >= 10.0 => format!("{nits:.1} cd/m²"),
+                Some(nits) => format!("{nits:.2} cd/m²"),
+                None => "— cd/m²".to_string(),
+            };
+            let row = egui::Rect::from_min_size(
+                egui::pos2(btn.min.x, btn.max.y + 4.0),
+                egui::vec2(width, H),
+            );
+            ui.painter().rect_filled(row, 4.0, theme.bg_raised.gamma_multiply(0.9));
+            ui.painter().text(
+                row.center(),
+                egui::Align2::CENTER_CENTER,
+                text,
+                egui::FontId::monospace(11.0),
+                theme.text_primary,
+            );
+        }
     }
 
     fn draw_scrub_bar(

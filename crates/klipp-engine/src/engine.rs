@@ -968,6 +968,9 @@ pub struct PlaybackEngine {
     pub compare_effect_is_ofx: bool,
     // Matte preview — when true, show B&W qualifier/mask matte instead of graded frame
     matte_preview: bool,
+    /// What the viewer shows while grading for an HDR delivery
+    /// (`AppCommand::SetHdrMonitor`). Off renders the SDR picture.
+    hdr_monitor: klipp_core::HdrMonitor,
     /// Phase 4C — Inspector's currently-displayed matte consumer.
     /// While set, after each composited frame the engine emits an
     /// `AppEvent::MatteMaskReady` with the resolved single-channel
@@ -1435,6 +1438,7 @@ impl PlaybackEngine {
             compare_effect_index: 0,
             compare_effect_is_ofx: false,
             matte_preview: false,
+            hdr_monitor: klipp_core::HdrMonitor::default(),
             inspector_matte_preview_target: None,
             scope_tap_node: None,
             solo_node: None,
@@ -2409,6 +2413,15 @@ impl PlaybackEngine {
                 );
             }
 
+            AppCommand::SetHdrMonitor(mode) => {
+                if self.hdr_monitor != mode {
+                    self.hdr_monitor = mode;
+                    info!("HDR monitoring: {mode:?}");
+                    // The picture changes; the frame on screen was made
+                    // the other way.
+                    self.regrade_cached_frame();
+                }
+            }
             AppCommand::SetMattePreview(active) => {
                 self.matte_preview = active;
                 // When matte preview is disabled, clear the matte preview node
@@ -6032,6 +6045,12 @@ impl PlaybackEngine {
         // that runs only during playback — no check for them here.
         if self.matte_preview_node.is_some() {
             blockers.push("matte preview active");
+        }
+        // Both fast paths render the SDR picture and encode it for the
+        // display; HDR monitoring renders display light and shows it
+        // another way entirely.
+        if self.hdr_monitor.renders_hdr() {
+            blockers.push("HDR monitoring active");
         }
         if self.compare_stabilization || self.compare_effect_active {
             blockers.push("compare mode active");

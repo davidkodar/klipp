@@ -1696,6 +1696,11 @@ pub struct AppState {
     pub scope_cursor_sample_radius: u32,
     /// Whether to show the scope cursor indicator on the bottom panel.
     pub scope_cursor_show: bool,
+    /// What the viewer shows while grading for an HDR delivery.
+    pub hdr_monitor: klipp_core::HdrMonitor,
+    /// The light under the pointer, cd/m², while HDR monitoring is on —
+    /// read from the frame buffer's map each frame.
+    pub hdr_nits_under_pointer: Option<f32>,
 
     // Eyedropper mode (shared between WB and qualifier)
     pub eyedropper_mode: EyedropperMode,
@@ -3353,6 +3358,8 @@ impl Default for AppState {
             scope_cursor_locked_data: None,
             scope_cursor_sample_radius: 2,
             scope_cursor_show: true,
+            hdr_monitor: klipp_core::HdrMonitor::Off,
+            hdr_nits_under_pointer: None,
             eyedropper_mode: EyedropperMode::None,
             wb_sample_request: None,
             qualifier_sample_request: None,

@@ -25,7 +25,7 @@ fn steps_and_jumps_move_whole_frames_at_29_97() {
         eprintln!("skipping: no ffmpeg");
         return;
     };
-    let parked = common::Parked::start_at(src, 640, 360, fps);
+    let parked = common::Parked::start_at(src, 640, 360, fps, true);
     let at = |parked: &common::Parked| parked.frame_number().expect("no playhead reported");
 
     eprintln!("parked at frame {:?}", parked.frame_number());

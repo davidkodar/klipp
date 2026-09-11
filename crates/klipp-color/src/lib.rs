@@ -48,6 +48,7 @@ pub mod denoise;
 pub mod difference_key;
 pub mod display;
 pub mod hdr;
+pub mod hdr_view;
 pub mod huesat;
 pub mod linear;
 pub mod luma_key;

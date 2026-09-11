@@ -38,6 +38,13 @@ pub struct FrameBuffer {
     pub scope_preview: Vec<u8>,
     pub scope_preview_w: u32,
     pub scope_preview_h: u32,
+    /// While HDR monitoring is on: the picture's light in cd/m², one
+    /// sample per `nit_map_step` pixels, of the brightest channel — what
+    /// the readout under the pointer shows. Empty otherwise.
+    pub nit_map: Vec<f32>,
+    pub nit_map_w: u32,
+    pub nit_map_h: u32,
+    pub nit_map_step: u32,
     /// GPU-rendered scope texture (RGBA) — ready for display.
     /// Legacy singular-scope path: holds whichever mode the main dock
     /// most recently requested. Kept for back-compat with the in-tree
@@ -136,6 +143,10 @@ impl FrameBuffer {
             pending_height: 0,
             pending_generation: 0,
             pending_ready: false,
+            nit_map: Vec::new(),
+            nit_map_w: 0,
+            nit_map_h: 0,
+            nit_map_step: 1,
             presented: None,
             pending_presented: None,
             gpu_output: None,
@@ -245,6 +256,18 @@ impl FrameBuffer {
         } else {
             (&self.data, self.width, self.height, self.generation)
         }
+    }
+
+    /// The picture's light in cd/m² at `(nx, ny)` — both in `0..=1` over
+    /// the frame — from [`Self::nit_map`]. `None` unless HDR monitoring is
+    /// on, which is the only thing that fills it.
+    pub fn nits_at(&self, nx: f32, ny: f32) -> Option<f32> {
+        if self.nit_map.is_empty() || self.nit_map_w == 0 || self.nit_map_h == 0 {
+            return None;
+        }
+        let x = ((nx.clamp(0.0, 1.0) * (self.nit_map_w - 1) as f32).round() as u32).min(self.nit_map_w - 1);
+        let y = ((ny.clamp(0.0, 1.0) * (self.nit_map_h - 1) as f32).round() as u32).min(self.nit_map_h - 1);
+        self.nit_map.get((y * self.nit_map_w + x) as usize).copied()
     }
 
     /// Where on the timeline [`Self::latest_frame`] is.
