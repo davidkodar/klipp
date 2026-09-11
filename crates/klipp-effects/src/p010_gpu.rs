@@ -7,20 +7,28 @@
 //! lands the correct image in ~5-8 ms total (sub-ms compute + 33 MB
 //! readback).
 //!
-//! Layered transformations performed in the shader, per pixel:
-//!   1. Decode P010: 10-bit Y from upper bits of u16, similarly UV.
-//!   2. Limited-range YUV → matrix RGB (BT.2020 for HDR, BT.709 for SDR-10).
-//!   3. Apply EOTF: PQ for HDR, BT.1886/sRGB for SDR — pixel is now
-//!      linear-light cd/m².
-//!   4. (HDR only) Hable filmic tone-map to bring 10000-nit range
-//!      into ~100-nit display range.
-//!   5. (HDR only) Gamut-convert BT.2020 → BT.709 primaries.
-//!   6. sRGB OETF + clamp to byte boundary.
+//! Per pixel, the shader decodes P010 (10-bit Y and interleaved UV, value
+//! in the upper bits of each u16), normalises for range and applies the
+//! source YUV→RGB matrix. What happens next depends on the transfer:
 //!
-//! The shader chooses `is_hdr` from a uniform set by the host based
-//! on the source frame's colorspace metadata. SDR 10-bit (most "high
-//! quality" deliverables) uses the simpler path; HDR (PQ / Dolby
-//! Vision) goes through the full chain.
+//! * **SDR** — EOTF, gamut conversion to the working space, sRGB OETF,
+//!   quantise to u8. That u8 frame is the grade's input.
+//! * **HDR (PQ / HLG)** — the RGB is still PQ/HLG-*encoded*; it is
+//!   quantised to 10-bit code values and written, packed RGB10, to a
+//!   second output. That buffer — not the u8 one — is the grade's input:
+//!   the input transform turns it into scene-linear (1.0 = 100 nits) so a
+//!   grade sees the full HDR range. The u8 output becomes a *display
+//!   preview* (scene-linear → working primaries → filmic tone map →
+//!   sRGB) used only where nothing grades the frame.
+//!
+//! The HDR preview is computed from the quantised codes, not the
+//! pre-quantisation RGB, so a preview frame and a graded-at-identity
+//! frame start from byte-identical input. The shared reference for all
+//! of this is `klipp_color::hdr`.
+//!
+//! The tone map used to run here on *every* HDR frame, before any grade —
+//! so grades operated on already-compressed highlights, and the
+//! InputTransform(PQ) seeded on import then decoded PQ a second time.
 
 use tracing::{info, warn};
 
@@ -33,10 +41,38 @@ pub struct GpuP010Converter {
     uv_buf: Option<wgpu::Buffer>,
     output_buf: Option<wgpu::Buffer>,
     staging_buf: Option<wgpu::Buffer>,
+    /// Packed RGB10 HDR code values for the CPU-readback path.
+    hdr_buf: Option<wgpu::Buffer>,
+    hdr_staging_buf: Option<wgpu::Buffer>,
+    /// Bound as the HDR output on SDR frames, which never write it. A
+    /// binding has to exist; a real frame-sized buffer would be waste.
+    hdr_dummy_buf: wgpu::Buffer,
     params_buf: wgpu::Buffer,
     cached_y_size: u64,
     cached_uv_size: u64,
     cached_output_size: u64,
+    cached_hdr_size: u64,
+}
+
+/// What the GPU-resident conversion produced.
+pub struct P010GpuOutput {
+    /// sRGB-u8 RGBA. For SDR the grade's input; for HDR a tone-mapped
+    /// display preview.
+    pub rgba: std::sync::Arc<wgpu::Buffer>,
+    /// Packed RGB10 PQ/HLG code values in the source primaries — present
+    /// exactly when the source is HDR, and then the grade's input.
+    pub hdr_codes: Option<std::sync::Arc<wgpu::Buffer>>,
+}
+
+fn is_hdr_transfer(transfer_id: u32) -> bool {
+    transfer_id == klipp_core_transfer::PQ || transfer_id == klipp_core_transfer::HLG
+}
+
+/// `klipp_core::color_ids` values, mirrored: klipp-effects sits below
+/// klipp-core. `color_ids_are_in_step` below pins them.
+mod klipp_core_transfer {
+    pub const PQ: u32 = 3;
+    pub const HLG: u32 = 4;
 }
 
 /// `color_range` / `matrix_id` / `transfer_id` / `primaries_id`
@@ -86,6 +122,9 @@ const SHADER_P010_BODY: &str = r#"
 @group(0) @binding(1) var<storage, read> uv_plane: array<u32>;
 @group(0) @binding(2) var<storage, read_write> output: array<u32>;
 @group(0) @binding(3) var<uniform> params: Params;
+// Packed RGB10 HDR code values (source primaries, still PQ/HLG-encoded).
+// Written only for HDR transfers; bound to a dummy on SDR frames.
+@group(0) @binding(4) var<storage, read_write> hdr_codes: array<u32>;
 
 struct Params {
     src_width: u32,
@@ -132,10 +171,11 @@ fn load_u16_le_uv(byte_idx: u32) -> u32 {
     }
 }
 
-// HDR → SDR tone map. Input is linear cd/m² normalised so 1.0 =
-// 10000 nits (the PQ peak). Output is linear in [0, 1] where 1.0
-// is "SDR display peak". Scale 100-nit HDR diffuse white to 0.18
-// linear (Rec.709 mid-grey), then push through ACES filmic.
+// HDR → SDR display tone map. Input is scene-linear, 1.0 = 100 nits;
+// output is display-referred linear in [0, 1]. Must match
+// `klipp_color::hdr::hdr_display_tonemap` exactly — the preview here
+// and a graded frame's tone map are the same curve by construction.
+const HDR_DISPLAY_EXPOSURE: f32 = 0.18;
 fn aces_filmic_scalar(x: f32) -> f32 {
     let a = 2.51;
     let b = 0.03;
@@ -146,7 +186,7 @@ fn aces_filmic_scalar(x: f32) -> f32 {
 }
 
 fn tone_map_hdr_vec(rgb: vec3<f32>) -> vec3<f32> {
-    let exposed = rgb * 18.0;
+    let exposed = rgb * HDR_DISPLAY_EXPOSURE;
     return vec3<f32>(
         aces_filmic_scalar(max(exposed.x, 0.0)),
         aces_filmic_scalar(max(exposed.y, 0.0)),
@@ -205,16 +245,30 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // Then re-encode to sRGB-u8 for the existing CPU/GPU hand-off.
     let yuv = yuv_normalise(y_10, u_10, v_10, params.color_range, 1023.0);
     let rgb_display = yuv_to_rgb_display(yuv, params.matrix_id);
-    var rgb_linear  = display_to_linear(rgb_display, params.transfer_id);
+    var rgb_srgb: vec3<f32>;
     if (params.transfer_id == TRANSFER_PQ || params.transfer_id == TRANSFER_HLG) {
-        rgb_linear = tone_map_hdr_vec(rgb_linear);
+        // Quantise to the 10-bit codes the grade will read, then build
+        // the preview from those same codes so the two cannot diverge.
+        let code = vec3<u32>(clamp(rgb_display, vec3<f32>(0.0), vec3<f32>(1.0)) * 1023.0
+                             + vec3<f32>(0.5));
+        hdr_codes[dy * params.dst_width + dx] = code.x | (code.y << 10u) | (code.z << 20u);
+        // Scene-linear, 1.0 = 100 nits: the PQ EOTF's 1.0 is 10 000.
+        let scene = display_to_linear(vec3<f32>(code) / 1023.0, params.transfer_id) * 100.0;
+        let working = vec3<f32>(
+            dot(params.primaries_row0.xyz, scene),
+            dot(params.primaries_row1.xyz, scene),
+            dot(params.primaries_row2.xyz, scene),
+        );
+        rgb_srgb = linear_to_srgb_vec(tone_map_hdr_vec(working));
+    } else {
+        let rgb_linear = display_to_linear(rgb_display, params.transfer_id);
+        let rgb_working = vec3<f32>(
+            dot(params.primaries_row0.xyz, rgb_linear),
+            dot(params.primaries_row1.xyz, rgb_linear),
+            dot(params.primaries_row2.xyz, rgb_linear),
+        );
+        rgb_srgb = linear_to_srgb_vec(rgb_working);
     }
-    let rgb_working = vec3<f32>(
-        dot(params.primaries_row0.xyz, rgb_linear),
-        dot(params.primaries_row1.xyz, rgb_linear),
-        dot(params.primaries_row2.xyz, rgb_linear),
-    );
-    let rgb_srgb  = linear_to_srgb_vec(rgb_working);
 
     let r_b = u32(clamp(rgb_srgb.x * 255.0 + 0.5, 0.0, 255.0));
     let g_b = u32(clamp(rgb_srgb.y * 255.0 + 0.5, 0.0, 255.0));
@@ -281,6 +335,13 @@ impl GpuP010Converter {
                         has_dynamic_offset: false, min_binding_size: None,
                     }, count: None,
                 },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 4, visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: false },
+                        has_dynamic_offset: false, min_binding_size: None,
+                    }, count: None,
+                },
             ],
         });
 
@@ -313,6 +374,13 @@ impl GpuP010Converter {
             mapped_at_creation: false,
         });
 
+        let hdr_dummy_buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("p010_hdr_dummy"),
+            size: 16,
+            usage: wgpu::BufferUsages::STORAGE,
+            mapped_at_creation: false,
+        });
+
         info!("P010 GPU converter initialized");
 
         Some(Self {
@@ -320,8 +388,9 @@ impl GpuP010Converter {
             queue,
             pipeline, bind_group_layout,
             y_buf: None, uv_buf: None, output_buf: None, staging_buf: None,
+            hdr_buf: None, hdr_staging_buf: None, hdr_dummy_buf,
             params_buf,
-            cached_y_size: 0, cached_uv_size: 0, cached_output_size: 0,
+            cached_y_size: 0, cached_uv_size: 0, cached_output_size: 0, cached_hdr_size: 0,
         })
     }
 
@@ -403,10 +472,22 @@ impl GpuP010Converter {
             }
         }
 
+        // HDR sources write their codes too; give them a real buffer so
+        // nothing is written out of bounds. This path returns only the
+        // u8 preview — `convert_p010_hdr_codes` is the one that reads the
+        // codes back.
+        let hdr = is_hdr_transfer(color_ids[2]);
+        if hdr {
+            let hdr_size = (dst_width as u64) * (dst_height as u64) * 4;
+            Self::ensure_buf(&mut self.hdr_buf, &mut self.cached_hdr_size, hdr_size,
+                "p010_hdr", wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC, &self.device);
+        }
+
         let y_buf = self.y_buf.as_ref().unwrap();
         let uv_buf = self.uv_buf.as_ref().unwrap();
         let output_buf = self.output_buf.as_ref().unwrap();
         let staging = self.staging_buf.as_ref().unwrap();
+        let hdr_binding = if hdr { self.hdr_buf.as_ref().unwrap() } else { &self.hdr_dummy_buf };
 
         self.queue.write_buffer(y_buf, 0, y_data);
         self.queue.write_buffer(uv_buf, 0, uv_data);
@@ -431,6 +512,7 @@ impl GpuP010Converter {
                 wgpu::BindGroupEntry { binding: 1, resource: uv_buf.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 2, resource: output_buf.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 3, resource: self.params_buf.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 4, resource: hdr_binding.as_entire_binding() },
             ],
         });
 
@@ -511,6 +593,31 @@ impl GpuP010Converter {
         color_ids: [u32; 4],
         primaries_matrix: [[f32; 4]; 3],
     ) -> std::sync::Arc<wgpu::Buffer> {
+        self.convert_p010_on_gpu(
+            y_data, uv_data, src_width, src_height, y_stride, uv_stride,
+            dst_width, dst_height, rotation, color_ids, primaries_matrix,
+        )
+        .rgba
+    }
+
+    /// GPU-resident conversion returning every output: the u8 buffer
+    /// and, for HDR sources, the packed RGB10 code values the grade reads.
+    /// Both freshly allocated, so the caller owns them.
+    #[allow(clippy::too_many_arguments)]
+    pub fn convert_p010_on_gpu(
+        &mut self,
+        y_data: &[u8],
+        uv_data: &[u8],
+        src_width: u32,
+        src_height: u32,
+        y_stride: u32,
+        uv_stride: u32,
+        dst_width: u32,
+        dst_height: u32,
+        rotation: u32,
+        color_ids: [u32; 4],
+        primaries_matrix: [[f32; 4]; 3],
+    ) -> P010GpuOutput {
         let y_size = y_data.len() as u64;
         let uv_size = uv_data.len() as u64;
         let output_size = (dst_width * dst_height * 4) as u64;
@@ -538,6 +645,19 @@ impl GpuP010Converter {
             },
         ));
 
+        let hdr_codes = is_hdr_transfer(color_ids[2]).then(|| {
+            std::sync::Arc::new(self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("p010_hdr_codes_gpu_resident"),
+                size: (dst_width as u64) * (dst_height as u64) * 4,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+                mapped_at_creation: false,
+            }))
+        });
+        let hdr_binding: &wgpu::Buffer = match hdr_codes.as_ref() {
+            Some(b) => b,
+            None => &self.hdr_dummy_buf,
+        };
+
         let y_buf = self.y_buf.as_ref().unwrap();
         let uv_buf = self.uv_buf.as_ref().unwrap();
 
@@ -564,6 +684,7 @@ impl GpuP010Converter {
                 wgpu::BindGroupEntry { binding: 1, resource: uv_buf.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 2, resource: output_buf.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 3, resource: self.params_buf.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 4, resource: hdr_binding.as_entire_binding() },
             ],
         });
 
@@ -583,7 +704,75 @@ impl GpuP010Converter {
         }
         self.queue.submit(std::iter::once(encoder.finish()));
 
-        output_buf
+        P010GpuOutput { rgba: output_buf, hdr_codes }
+    }
+
+    /// Convert one HDR P010 frame and read back its packed RGB10 code
+    /// values — the CPU path's equivalent of `hdr_codes`. Skips the u8
+    /// readback entirely: for HDR the grade reads the codes, and the
+    /// codes cost the same 4 bytes a pixel the u8 frame did.
+    ///
+    /// Returns `None` for a non-HDR transfer or a failed readback, so the
+    /// caller can fall back to `convert_p010_to_rgba`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn convert_p010_hdr_codes(
+        &mut self,
+        y_data: &[u8],
+        uv_data: &[u8],
+        src_width: u32,
+        src_height: u32,
+        y_stride: u32,
+        uv_stride: u32,
+        dst_width: u32,
+        dst_height: u32,
+        rotation: u32,
+        color_ids: [u32; 4],
+        primaries_matrix: [[f32; 4]; 3],
+    ) -> Option<Vec<u32>> {
+        if !is_hdr_transfer(color_ids[2]) {
+            return None;
+        }
+        let out = self.convert_p010_on_gpu(
+            y_data, uv_data, src_width, src_height, y_stride, uv_stride,
+            dst_width, dst_height, rotation, color_ids, primaries_matrix,
+        );
+        let codes = out.hdr_codes?;
+        let size = codes.size();
+        if self.hdr_staging_buf.as_ref().map_or(true, |b| b.size() < size) {
+            self.hdr_staging_buf = Some(self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("p010_hdr_staging"),
+                size,
+                usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            }));
+        }
+        let staging = self.hdr_staging_buf.as_ref().unwrap();
+        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("p010_hdr_readback"),
+        });
+        encoder.copy_buffer_to_buffer(&codes, 0, staging, 0, size);
+        self.queue.submit(std::iter::once(encoder.finish()));
+
+        let slice = staging.slice(..size);
+        let (tx, rx) = std::sync::mpsc::channel();
+        slice.map_async(wgpu::MapMode::Read, move |r| { let _ = tx.send(r); });
+        crate::gpu::mark_gpu_stage(crate::gpu::GpuStage::P010Convert);
+        let mapped = crate::gpu::poll_until_mapped(&self.device, &rx);
+        crate::gpu::mark_gpu_stage(crate::gpu::GpuStage::Idle);
+        match mapped {
+            Ok(Ok(())) => {
+                let words = {
+                    let view = slice.get_mapped_range();
+                    bytemuck::cast_slice::<u8, u32>(&view).to_vec()
+                };
+                staging.unmap();
+                Some(words)
+            }
+            _ => {
+                warn!("P010 GPU converter: HDR code readback failed");
+                None
+            }
+        }
     }
 }
 
