@@ -143,13 +143,25 @@ thread_local! {
 /// Replace the per-file camera log formats the decoders use. Call whenever
 /// the media pool's log formats may have changed; decoders pick the change
 /// up on their next frame, with no reopen.
-pub fn set_media_log_formats(entries: impl IntoIterator<Item = (PathBuf, klipp_core::LogFormat)>) {
+///
+/// Returns whether anything changed. Frames already decoded — cached, or
+/// read ahead by a decoder — were decoded under the old formats, so on
+/// `true` the caller must send `AppCommand::MediaDecodeChanged`; otherwise
+/// a paused viewer keeps showing the old picture.
+pub fn set_media_log_formats(
+    entries: impl IntoIterator<Item = (PathBuf, klipp_core::LogFormat)>,
+) -> bool {
     let map: std::collections::HashMap<_, _> = entries
         .into_iter()
         .filter(|(_, f)| f.needs_camera_decode())
         .collect();
     let lock = MEDIA_LOG_FORMATS.get_or_init(Default::default);
-    *lock.write().unwrap_or_else(|e| e.into_inner()) = map;
+    let mut current = lock.write().unwrap_or_else(|e| e.into_inner());
+    if *current == map {
+        return false;
+    }
+    *current = map;
+    true
 }
 
 /// The camera-native (transfer, primaries) pair for a log format, or
@@ -1308,6 +1320,30 @@ fn max_playback_width() -> u32 {
 /// work is worse than no setting.
 fn hw_transfer_cap_dimensions(src_w: u32, src_h: u32) -> (u32, u32) {
     playback_dimensions(src_w, src_h, 0)
+}
+
+#[cfg(test)]
+mod log_format_registry_tests {
+    use super::*;
+    use klipp_core::LogFormat;
+
+    /// The caller re-decodes only when told something changed, so the
+    /// answer has to be right both ways: a real change says so, a resync of
+    /// the same pool does not (a re-decode on every media sync would reseek
+    /// the viewer constantly), and sRGB entries count as "no entry".
+    #[test]
+    fn reports_changes_only() {
+        let a = PathBuf::from("/registry-test/a.mp4");
+        let b = PathBuf::from("/registry-test/b.mp4");
+        set_media_log_formats([(a.clone(), LogFormat::Srgb)]);
+        assert!(set_media_log_formats([(a.clone(), LogFormat::SLog3)]), "Srgb -> SLog3 is a change");
+        assert!(!set_media_log_formats([(a.clone(), LogFormat::SLog3)]), "same map again is not");
+        assert!(
+            !set_media_log_formats([(a.clone(), LogFormat::SLog3), (b.clone(), LogFormat::Srgb)]),
+            "adding an sRGB file changes nothing the decoders use",
+        );
+        assert!(set_media_log_formats([(a, LogFormat::Srgb), (b, LogFormat::Srgb)]), "SLog3 -> Srgb is a change");
+    }
 }
 
 #[cfg(test)]

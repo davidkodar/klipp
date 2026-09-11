@@ -1369,6 +1369,13 @@ pub enum AppCommand {
     /// preview in the COMPOSITING section.
     SetInspectorMattePreviewTarget(Option<ClipId>),
     SetClipLogFormat { clip_id: ClipId, log_format: crate::types::LogFormat },
+    /// How some media decodes has changed (its camera log format). Frames
+    /// decoded before the change are stale — the engine's frame cache, its
+    /// pre-grade snapshot and whatever the decoders read ahead — so the
+    /// engine drops them and re-decodes at the playhead. Grade caches are
+    /// unaffected: their key covers the clip's InputTransform node, which
+    /// carries the format.
+    MediaDecodeChanged,
     /// Auto white balance: analyze current frame and set temperature/tint on the clip's ColorBalance node.
     AutoWhiteBalance { clip_id: ClipId },
 

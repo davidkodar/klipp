@@ -2935,6 +2935,20 @@ impl PlaybackEngine {
                 }
             }
 
+            AppCommand::MediaDecodeChanged => {
+                info!("Engine: media decode settings changed; re-decoding at the playhead");
+                self.cached_pregrade_frame = None;
+                self.transition_frame_cache = None;
+                // Idle / stopped has nothing on screen to refresh; the next
+                // seek or play decodes with the new settings anyway.
+                if !matches!(self.state, PlaybackState::Idle | PlaybackState::Stopped) {
+                    // Clears the frame cache and restarts decoding at the
+                    // playhead, discarding frames read ahead.
+                    let ph = self.playhead;
+                    self.seek_in_sequence(ph);
+                    (self.repaint_cb)();
+                }
+            }
             AppCommand::SetUseProxies(enabled) => {
                 info!("Engine: use_proxies = {enabled}");
                 self.use_proxies = enabled;

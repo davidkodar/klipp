@@ -3426,9 +3426,12 @@ impl KlippApp {
     /// container metadata never says "S-Log3" — the media's format (the
     /// user's choice, else what was detected) is the only source of truth.
     fn sync_log_formats_to_decoders(&self) {
-        klipp_engine::video_decoder::set_media_log_formats(
+        let changed = klipp_engine::video_decoder::set_media_log_formats(
             self.state.media_pool.all().map(|m| (m.path.clone(), m.effective_log_format())),
         );
+        if changed {
+            let _ = self.cmd_tx.send(AppCommand::MediaDecodeChanged);
+        }
     }
 
     fn send_commands(&mut self, cmds: Vec<AppCommand>) {
@@ -13279,6 +13282,10 @@ impl KlippApp {
                             }
                         }
                     }
+                    // Sequence first: the media sync makes the engine
+                    // re-decode, and that frame must be graded — and
+                    // cached — under the clips' new graphs, not the old.
+                    self.sync_sequence_to_engine();
                     self.sync_media_pool_to_engine();
                 }
                 self.state.dirty = true;
