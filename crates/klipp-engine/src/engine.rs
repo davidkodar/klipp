@@ -1228,6 +1228,12 @@ impl FrameCache {
             .map(|e| (e.pixels.clone(), e.width, e.height))
     }
 
+    /// Frame numbers currently held — the only frames that can be graded
+    /// without decoding.
+    fn frame_numbers(&self) -> impl Iterator<Item = i64> + '_ {
+        self.entries.iter().flatten().map(|e| e.frame_number)
+    }
+
     /// Clear the entire cache (on clip change, seek, etc.)
     fn clear(&mut self) {
         for entry in &mut self.entries {
@@ -7267,6 +7273,25 @@ impl PlaybackEngine {
     /// Runs ONE frame per call to stay responsive to new commands.
     fn prerender_cache_frames(&mut self) {
         mark_stage(EngineStage::Prerender);
+        // Per-phase timing, logged when a call is slow. The watchdog has
+        // caught this function holding the engine thread for 10-24 s at
+        // a time while paused on a graded clip; without a breakdown there
+        // is no telling which phase it is.
+        let t_call = std::time::Instant::now();
+        let mut phases: Vec<(&'static str, f64)> = Vec::new();
+        let mut lap = std::time::Instant::now();
+        let mut mark = |name: &'static str, phases: &mut Vec<(&'static str, f64)>| {
+            phases.push((name, lap.elapsed().as_secs_f64() * 1000.0));
+            lap = std::time::Instant::now();
+        };
+        let report = |phases: &[(&'static str, f64)], outcome: &str| {
+            let total = t_call.elapsed().as_secs_f64() * 1000.0;
+            if total > 20.0 {
+                let parts: Vec<String> =
+                    phases.iter().map(|(n, ms)| format!("{n}={ms:.1}")).collect();
+                debug!("PERF prerender: {total:.1}ms {outcome} | {}", parts.join(" "));
+            }
+        };
         // Previously a source of 70+ second hangs at
         // `stage=Prerender` — the inner GPU grade call occasionally
         // never returned on Wayland+NVIDIA, taking the engine thread
@@ -7303,34 +7328,38 @@ impl PlaybackEngine {
             Some(info) => info,
             None => return,
         };
+        mark("clip_info", &mut phases);
 
         let current = self.playhead.value;
-        let fps = self.fps.rate() as i64;
-        let range = fps * 2; // ±2 seconds
-
-        // Priority 1: frames within ±2 seconds of playhead
-        // Priority 2: rest of the clip outward from playhead
+        // Only frames already decoded into `frame_cache` can be
+        // pre-rendered — this function never decodes. So the candidates
+        // are those frames, nearest the playhead first, and nothing else.
+        //
+        // It used to enumerate every timeline position in the clip. Those
+        // are ticks, not frames: `Fps::rate()` is the numerator, so at
+        // 59.94 fps (60000/1001) a frame is 1001 ticks and a five-minute
+        // clip is 18.8 million candidates, each probed against the disk
+        // cache with a `stat`. Measured: 15 s per call, on every idle tick
+        // while paused on a graded clip — the engine thread was
+        // effectively never free, and paused edits froze. Integer frame
+        // rates happened to work because there a tick *is* a frame.
+        // Iterating what can be rendered is independent of the units.
         let candidates: Vec<i64> = {
-            let mut frames = Vec::new();
-            // Near playhead first (alternating forward/backward)
-            for offset in 1..=range {
-                let fwd = current + offset;
-                let bwd = current - offset;
-                if fwd < clip_end { frames.push(fwd); }
-                if bwd >= clip_start { frames.push(bwd); }
-            }
-            // Rest of clip
-            for f in (clip_start..current.saturating_sub(range as i64)).rev() {
-                frames.push(f);
-            }
-            for f in (current + range + 1)..clip_end {
-                frames.push(f);
-            }
+            let mut frames: Vec<i64> = self
+                .frame_cache
+                .frame_numbers()
+                .filter(|f| *f >= clip_start && *f < clip_end && *f != current)
+                .collect();
+            frames.sort_by_key(|f| (f - current).abs());
             frames
         };
+        mark("candidates", &mut phases);
+        let candidate_count = candidates.len();
+        let mut scanned = 0usize;
 
         // Find the first uncached frame and pre-render it
         for frame_num in candidates {
+            scanned += 1;
             let key = crate::render_cache::RenderCacheKey {
                 clip_id,
                 frame_number: frame_num,
@@ -7347,11 +7376,13 @@ impl PlaybackEngine {
             // linear-in/linear-out post the linear-edge-to-edge
             // refactor.
             if let Some((pixels, w, h)) = self.frame_cache.get(frame_num) {
+                mark("scan", &mut phases);
                 // Save/restore playhead so grading evaluates at the right time
                 let saved_playhead = self.playhead;
                 self.playhead = klipp_core::RationalTime { value: frame_num, rate: self.playhead.rate };
 
                 let linear = pixels.grade_input();
+                mark("grade_input", &mut phases);
                 // Suspend per-node thumbnail capture: this speculative
                 // grade is for a NEAR-playhead frame (prerender cache
                 // warm-up), not the user's actual playhead. Capturing
@@ -7360,24 +7391,37 @@ impl PlaybackEngine {
                 self.thumb_capture_suspended = true;
                 self.grade_hdr = pixels.hdr().cloned();
                 let mut graded_linear = self.post_process_rgba_inner(linear, w, h);
+                mark("grade", &mut phases);
                 // The render cache holds what the viewer shows, so an HDR
                 // entry is stored tone-mapped, same as playback stores it.
                 self.finish_hdr_grade(&mut graded_linear);
                 self.grade_hdr = None;
                 self.thumb_capture_suspended = false;
+                mark("tonemap", &mut phases);
                 let graded = linear_rgba_to_u8(&graded_linear);
+                mark("to_u8", &mut phases);
 
                 self.render_cache_hot.insert(key.clone(), graded.clone(), w, h);
+                mark("hot_insert", &mut phases);
                 self.render_cache_disk.put(&key, &graded, w, h);
+                mark("disk_put", &mut phases);
 
                 // Restore playhead
                 self.playhead = saved_playhead;
+                report(
+                    &phases,
+                    &format!("rendered frame {frame_num} ({w}x{h}, hdr={}) after scanning {scanned}/{candidate_count}",
+                             pixels.hdr().is_some()),
+                );
                 return; // One frame per call — stay responsive
             }
         }
 
+        mark("scan", &mut phases);
         // Update render cache ranges for timeline visualization
         self.update_render_cache_ranges();
+        mark("ranges", &mut phases);
+        report(&phases, &format!("nothing to render after scanning {scanned}/{candidate_count}"));
     }
 
     /// Update the shared frame buffer with current render cache coverage per clip.
@@ -7393,19 +7437,15 @@ impl PlaybackEngine {
                 let grade_hash = crate::render_cache::compute_grade_hash(
                     &clip.node_graph, &clip.builtin_effects, &clip.builtin_effects_enabled,
                 );
-                let total = (clip.timeline_out.value - clip.timeline_in.value).max(1) as u32;
-                let mut cached = 0u32;
-                for f in clip.timeline_in.value..clip.timeline_out.value {
-                    let key = crate::render_cache::RenderCacheKey {
-                        clip_id: clip.id,
-                        frame_number: f,
-                        grade_hash,
-                    };
-                    if self.render_cache_hot.get(&key).is_some() {
-                        cached += 1;
-                    }
-                    // Don't check disk here — too slow for timeline display
-                }
+                // Timeline positions are ticks; a frame is `fps.den` of them
+                // (1001 at the NTSC rates, 1 at integer rates). Counting
+                // ticks made every clip look 1001x longer than it is, so
+                // the cache bar read ~0% however much was cached.
+                let ticks_per_frame = (self.fps.den as i64).max(1);
+                let total = ((clip.timeline_out.value - clip.timeline_in.value) / ticks_per_frame)
+                    .max(1) as u32;
+                // Hot cache only — disk is too slow for timeline display.
+                let cached = self.render_cache_hot.count_for(clip.id, grade_hash) as u32;
                 if cached > 0 {
                     ranges.push((clip.id, cached, total));
                 }

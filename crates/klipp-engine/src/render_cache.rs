@@ -104,6 +104,17 @@ struct HotCacheEntry {
 }
 
 impl HotCache {
+    /// How many entries belong to one clip at one grade. O(capacity) —
+    /// the hot cache holds ~30 frames — where probing every timeline
+    /// position was O(clip length in ticks): 18.8 million lookups for a
+    /// five-minute 59.94 fps clip.
+    pub fn count_for(&self, clip_id: klipp_core::ClipId, grade_hash: u64) -> usize {
+        self.entries
+            .keys()
+            .filter(|k| k.clip_id == clip_id && k.grade_hash == grade_hash)
+            .count()
+    }
+
     pub fn new(capacity: usize) -> Self {
         Self {
             entries: HashMap::with_capacity(capacity),
@@ -418,6 +429,23 @@ impl DiskRenderCache {
 
 #[cfg(test)]
 mod tests {
+    /// The coverage bar's count must come from the entries, not from
+    /// probing timeline positions — and only this clip at this grade.
+    #[test]
+    fn hot_cache_counts_one_clip_at_one_grade() {
+        let a = klipp_core::ClipId::new();
+        let b = klipp_core::ClipId::new();
+        let mut hot = HotCache::new(8);
+        for f in 0..3 {
+            hot.insert(RenderCacheKey { clip_id: a, frame_number: f * 1001, grade_hash: 7 }, vec![0; 4], 1, 1);
+        }
+        hot.insert(RenderCacheKey { clip_id: a, frame_number: 5005, grade_hash: 9 }, vec![0; 4], 1, 1);
+        hot.insert(RenderCacheKey { clip_id: b, frame_number: 0, grade_hash: 7 }, vec![0; 4], 1, 1);
+        assert_eq!(hot.count_for(a, 7), 3);
+        assert_eq!(hot.count_for(a, 9), 1, "a stale grade's frames are not this grade's");
+        assert_eq!(hot.count_for(b, 7), 1);
+    }
+
     use super::*;
     use std::sync::atomic::{AtomicU64, Ordering};
 
