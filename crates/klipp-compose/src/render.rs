@@ -791,7 +791,7 @@ impl Renderer {
         self.executor.set_working_colorspace(self.working);
         self.executor.set_current_clip_track_points(&clip.track_points);
         self.executor.set_solo_node(if inspecting { self.inspect.solo } else { None });
-        let frame = (clip_time * fps).max(0.0) as u64;
+        let frame = grade_frame(clip_time, fps);
         let out = if inspecting {
             let thumbs = self.inspect.thumbs.take();
             let r = self.executor.execute_linear_with_thumbs(
@@ -1047,6 +1047,18 @@ fn multicam_angle<'a>(track: &'a Track, clip: &'a Clip, time: Timecode) -> &'a C
 /// (a transition's incoming side), clamped to zero for evaluation.
 fn eval_clip_time(clip: &Clip, time: Timecode) -> f64 {
     (time - clip.timeline_in).to_secs_f64().max(0.0)
+}
+
+/// Where a clip's node graph is evaluated at `time`: clip-relative
+/// seconds, and the frame number there. The viewer's GPU fast path grades
+/// at exactly this too.
+pub fn grade_time(clip: &Clip, time: Timecode, fps: f64) -> (f64, u64) {
+    let t = eval_clip_time(clip, time);
+    (t, grade_frame(t, fps))
+}
+
+fn grade_frame(clip_time: f64, fps: f64) -> u64 {
+    (clip_time * fps).max(0.0) as u64
 }
 
 /// Source time for `time`, through the clip's speed curve. Outside the

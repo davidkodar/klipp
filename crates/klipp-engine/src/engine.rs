@@ -6,11 +6,12 @@ use crate::pcm_reader::PcmAudioFeeder;
 use crate::sync::MasterClock;
 use crate::texture::SharedFrameBuffer;
 use crate::video_decoder::VideoDecoder;
-use klipp_compose::eval::{
-    eval_effect_with_modifiers, eval_with_modifiers, evaluate_clip_opacity,
-    evaluate_clip_own_transform, resolve_clip_transform, ResolvedTransform,
-};
-use klipp_compose::synth::{render_generator_with_slate, typewriter_override, GpuAlphaMaskAdapter};
+use klipp_compose::eval::eval_with_modifiers;
+#[cfg(test)]
+use klipp_compose::eval::{resolve_clip_transform, ResolvedTransform};
+
+mod streams;
+mod view;
 
 /// Wrapper to make AudioOutput Send. The cpal::Stream inside is !Send
 /// due to platform internals, but we only ever use it on the engine thread.
@@ -483,10 +484,10 @@ fn direct_present_enabled() -> bool {
     *GATE.get_or_init(|| std::env::var("KLIPP_DIRECT_PRESENT").ok().as_deref() != Some("0"))
 }
 
-/// Maximum number of live overlay decoders during playback.
-/// Prevents runaway decoder spawning on projects with many video tracks.
-/// Overlay tracks beyond this cap still render correctly in export.
-const MAX_OVERLAY_DECODERS: usize = 4;
+/// Decoders the viewer opens besides the primary track's: overlays, a
+/// transition's other side, multicam angles. Caps decoder spawning on
+/// projects with many video tracks; clips beyond it still export.
+const MAX_CLIP_STREAMS: usize = 6;
 
 /// Common write of a freshly-rendered scope texture into the shared
 /// `FrameBuffer`. `Some(t)` populates the texture and mode tag; `None`
@@ -565,21 +566,6 @@ impl PregradePixels {
         match frame.hdr.as_ref() {
             Some(h) => Self::Hdr(h.to_cpu()),
             None => Self::Srgb8(Arc::new(linear_rgba_to_u8(&frame.data))),
-        }
-    }
-
-    /// The grade's input: linear for SDR, scene-linear for HDR.
-    fn grade_input(&self) -> Vec<f32> {
-        match self {
-            Self::Srgb8(b) => u8_rgba_to_linear(b),
-            Self::Hdr(h) => h.scene_linear(),
-        }
-    }
-
-    fn hdr(&self) -> Option<&crate::types::HdrInput> {
-        match self {
-            Self::Hdr(h) => Some(h),
-            Self::Srgb8(_) => None,
         }
     }
 }
@@ -836,20 +822,13 @@ pub struct PlaybackEngine {
     dropped_frames: u64,
     // Video decoders
     v1_decoder: Option<VideoDecoder>,
-    // Overlay management: one entry per overlay track that has an active clip at the playhead.
-    // Keyed by track_index (the index in sequence.tracks).
-    overlay_decoders: HashMap<usize, VideoDecoder>,
-    overlay_clips: HashMap<usize, usize>,        // track_index -> clip_index within that track
-    overlay_frames: HashMap<usize, crate::types::LinearFrame>, // track_index -> latest decoded/rendered frame (linear f32 RGBA)
-    overlay_synth_frame: HashMap<usize, i64>,    // track_index -> last rendered frame number (for synthetic clip caching)
-    // Track which time-invariant generator content was last rendered
-    // per overlay track. SolidColor / Gradient / ColorBars / StillFrame
-    // produce identical pixels for every frame of the clip, so once we
-    // have one in `overlay_frames` we can short-circuit subsequent
-    // ticks regardless of the playhead frame number — no allocation,
-    // no sRGB→linear conversion. Countdown is intentionally excluded
-    // because its rendered numeral changes per second.
-    overlay_static_gen: HashMap<usize, (klipp_core::GeneratorData, u32, u32)>,
+    /// Decoders for every other media clip a frame needs: overlays, a
+    /// transition's other side, multicam angles. See `engine::streams`.
+    streams: streams::ClipStreams,
+    /// Renders every frame the viewer shows off the fast paths — the same
+    /// renderer, and rules, export uses. Owns the node-graph executor and
+    /// GPU effects pipeline the fast paths drive too.
+    renderer: klipp_compose::Renderer,
     // Audio — one source per active track, mixed through mix thread
     audio_sources: Vec<ActiveAudioSource>,
     audio_output: Option<SendAudioOutput>,
@@ -882,11 +861,6 @@ pub struct PlaybackEngine {
     // Last speed we pushed to master_clock via the ramp path. Tracked here because
     // MasterClock has no getter; we use it to decide whether to re-anchor.
     ramp_last_clock_speed: f64,
-    // Previous post-effects RGBA frame, kept for linear frame blending on the
-    // SpeedRamp effect's `blend_mode == 1` path (slow-mo only). Dimensions are
-    // stored alongside so we can safely skip blending after a resolution change.
-    prev_blend_frame: Option<Vec<u8>>,
-    prev_blend_dims: (u32, u32),
     current_source_rotation: i32, // source rotation in degrees (0, 90, 180, 270)
     /// Last sequence-frame number rendered by the synthetic playback path.
     /// Avoids re-rendering the same generator/title frame ~1000x per second.
@@ -915,8 +889,6 @@ pub struct PlaybackEngine {
     last_rss_mb: f64,
     // Color pipeline — post-processing on RGBA frames before display
     color_pipeline: klipp_color::ColorPipeline,
-    // Node graph executor — processes per-clip color grading
-    graph_executor: klipp_nodes::GraphExecutor,
     // Before/After — when true, skip per-clip color grade to show ungraded frame
     bypass_color_grade: bool,
     // Stabilization compare — when true, render the builtin effect chain twice
@@ -954,6 +926,18 @@ pub struct PlaybackEngine {
     /// previews. Empty during playback (capturing N readbacks per
     /// frame would cost more than the grade itself).
     visible_node_thumbs: std::collections::HashSet<klipp_nodes::NodeId>,
+    /// The clip the grade panel is on, from the node canvas's and scope
+    /// tap's commands. The grade tools follow it when it is on screen.
+    inspect_clip: Option<klipp_core::ClipId>,
+    /// A paused frame was shown before every clip stream had its frame;
+    /// re-render when they do.
+    pending_stream_refresh: bool,
+    /// The global LUT last handed to the renderer, to hand it over again
+    /// only when it changes.
+    pushed_lut_sig: Option<(bool, Option<PathBuf>, u32, Option<(usize, usize)>)>,
+    /// Per-clip hashes keying the render cache, dropped whenever
+    /// `current_grade_hash` is reset.
+    render_hashes: HashMap<klipp_core::ClipId, u64>,
     /// Set to `true` while `prerender_cache_frames` is running a
     /// background re-grade at some near-playhead frame. Those
     /// speculative grades must NOT overwrite the per-node thumbnails
@@ -985,16 +969,6 @@ pub struct PlaybackEngine {
     parked_refresh_done_for: Option<Timecode>,
     /// Parked position and when it was reached; None while not paused.
     parked_since: Option<(Timecode, std::time::Instant)>,
-    /// Set of overlay track indexes whose source-vs-final dimension
-    /// log line has already fired this session. Keeps the diagnostic
-    /// log to one line per overlay rather than spamming per-frame.
-    overlay_dim_logged: std::collections::HashSet<usize>,
-    /// Same one-shot policy for title-cache-miss diagnostics. Logs
-    /// the reason a synthetic-skip cache missed once per overlay
-    /// track, so the perf log shows whether the cache key is
-    /// landing on `clip changed`, `frame_key mismatch`, or `no
-    /// overlay frame` — and we can target the right fix.
-    title_cache_diag_logged: std::collections::HashSet<usize>,
 
     // ── Source Viewer playback (separate from timeline) ───────────
     /// Persistent decoder for whatever media the user has loaded into
@@ -1103,29 +1077,10 @@ pub struct PlaybackEngine {
     // Cached pre-grade frame for instant parameter updates when paused.
     // Stored after decode, before color grading. Re-graded when sequence changes.
     cached_pregrade_frame: Option<(PregradePixels, u32, u32)>, // (pixels, width, height)
-    /// GPU-resident source for the frame currently in `post_process_rgba`,
-    /// if the decoder produced one.
-    ///
-    /// Scoped ambient state rather than a parameter: `post_process_rgba`
-    /// has a dozen call sites and only one of them can supply this, so
-    /// threading it through every signature would be noise. Set and
-    /// cleared around a single synchronous call in
-    /// `post_process_rgba_with_gpu_source`, the same single-shot shape the
-    /// executor's own `gpu_chain_preseeded` flag uses.
-    ///
-    /// Read only when the executor reports `CpuSourceRequired`, to realise
-    /// the pixels the speculative path chose not to fetch.
-    grade_gpu_source: Option<std::sync::Arc<crate::frame::GpuFrame>>,
     /// Reasons the direct-present fast path declined the previous frame,
     /// so they can be logged when the set *changes* rather than once per
     /// frame. Empty means the last frame took the fast path.
     last_direct_present_blockers: Vec<&'static str>,
-    /// HDR input of the V1 frame currently being graded, if its source is
-    /// PQ/HLG. Scoped ambient state like `grade_gpu_source`: set around a
-    /// grade call, read by `post_process_rgba` to cache the right pixels
-    /// and by `finish_hdr_grade` to tone-map the result. Codes are on the
-    /// CPU.
-    grade_hdr: Option<crate::types::HdrInput>,
     // Bidirectional frame cache — keeps last N decoded pre-grade frames for instant
     // backward stepping without FFmpeg seeks.
     frame_cache: FrameCache,
@@ -1165,12 +1120,6 @@ pub struct PlaybackEngine {
     /// Optional so legacy constructors / tests still work; when
     /// `None`, all writes are no-ops.
     foreground_activity: Option<Arc<ForegroundActivity>>,
-    // OFX plugin host — applies per-clip effects chain after color grade
-    ofx_host: klipp_plugin::OfxHost,
-    // GPU effects pipeline — compute shaders for built-in effects
-    gpu_effects: Option<klipp_effects::gpu::GpuEffectsPipeline>,
-    /// True if GPU effects init was attempted and failed — prevents retrying every frame.
-    gpu_effects_failed: bool,
     /// libavfilter-based scope renderer bank (waveform / parade /
     /// vectorscope / histogram). Enabled by `KLIPP_SCOPE_FFMPEG=1`;
     /// when off, the existing GPU shader path is used. The bank holds
@@ -1183,16 +1132,6 @@ pub struct PlaybackEngine {
     /// writes stderr noise that bypasses av_log suppression).
     #[allow(dead_code)] // Read via DETECTED_GPU_VENDOR cache from free functions
     gpu_vendor: klipp_core::GpuVendor,
-    /// Reusable accumulator for the viewer compositor. Sized to the last
-    /// composite resolution; reallocated only on resolution change. Swapped
-    /// with `FrameBuffer::pending_data` via `write_frame_swap` to eliminate
-    /// the per-frame 8-33 MB allocation of the composite buffer.
-    /// Reused scratch buffer for the main composite loop. Linear
-    /// f32 RGBA; converted to u8 once at the end of the composite.
-    /// Each multi-track frame pulls this out via `mem::take`, blends
-    /// into it, then puts it back for the next frame to reuse —
-    /// avoids reallocating a 4K×4 f32 buffer every frame.
-    composite_scratch_linear: Vec<f32>,
     /// u8 output pool — the sRGB-encoded final composite swapped
     /// into `fb.pending_data`. The returned stale pending_data comes
     /// back here so we don't churn 33 MB/frame through the allocator.
@@ -1203,44 +1142,6 @@ pub struct PlaybackEngine {
     /// `Reinhard` become useful once HDR footage surfaces; flipping
     /// this is a one-line change. See [`klipp_color::display`].
     tone_map_op: klipp_color::display::ToneMapOp,
-    // Rolling shutter correction motion cache
-    rsc_motion_cache: klipp_effects::rolling_shutter::MotionCache,
-    // Transition decoder — secondary decoder for the partner clip during transitions
-    transition_decoder: Option<VideoDecoder>,
-    transition_clip_id: Option<klipp_core::ClipId>,
-    /// Latest partner-clip frame as **linear-f32 RGBA** (Phase B of
-    /// the GPU end-to-end pipeline). Caching as linear skips two
-    /// per-pixel pow loops per frame: the sRGB encode that the old
-    /// `Option<DecodedFrame>` cache did when popping, and the sRGB
-    /// decode the GPU transition's u8 boundary did when uploading.
-    /// The width/height go alongside so the GPU upload can validate
-    /// dimensions without consulting the partner decoder.
-    transition_frame_cache: Option<crate::types::LinearFrame>,
-    /// Cached clip_a frame captured during the first half of a centered transition
-    /// window. Reused as the "from" frame during the second half, after the main
-    /// decoder has advanced to clip_b. Stored as linear-f32 so the
-    /// transition shader consumes it directly without a sRGB round-
-    /// trip. Cleared when the transition ends.
-    transition_clip_a_last_frame: Option<Vec<f32>>,
-    /// True when the partner decoder has signaled EOF during the current
-    /// transition — the clip ran out of source material. This is the ONLY
-    /// trigger for tagging frames as `Frozen`. Transient cache reuse
-    /// (priming, seeking, underrun) does NOT set this flag.
-    transition_partner_eof: bool,
-    /// Per-transition degradation counter. Reset when the active transition
-    /// changes or ends.
-    pub transition_degradation: crate::transition::TransitionDegradation,
-    // Title renderer — generates RGBA frames for title clips
-    title_renderer: klipp_title::TitleRenderer,
-    /// Glyph-position cache for the glyph-anchored focal-point
-    /// resolver (HZ-NEXT-GLYPH-LOCK). Keyed by title clip id; entries
-    /// rebuild via `klipp_title::ensure_glyph_positions` when the
-    /// `layout_hash` no longer matches the title's current
-    /// `TitleData` + render frame size. Mirrors the inspector
-    /// picker's cache shape so both surfaces share the
-    /// `klipp_title` primitives — different consumer, identical
-    /// logic.
-    glyph_position_cache: std::collections::HashMap<klipp_core::ClipId, klipp_title::GlyphCacheEntry>,
     // VU metering — emit peak levels at ~30Hz
     last_peak_time: std::time::Instant,
     // Proxy: when true, decode from proxy files instead of originals
@@ -1421,11 +1322,8 @@ impl PlaybackEngine {
             last_frame_time: std::time::Instant::now(),
             dropped_frames: 0,
             v1_decoder: None,
-            overlay_decoders: HashMap::new(),
-            overlay_clips: HashMap::new(),
-            overlay_frames: HashMap::new(),
-            overlay_synth_frame: HashMap::new(),
-            overlay_static_gen: HashMap::new(),
+            streams: streams::ClipStreams::new(MAX_CLIP_STREAMS),
+            renderer: klipp_compose::Renderer::new(ofx_host, title_renderer),
             audio_sources: Vec::new(),
             audio_output,
             mix_thread: Some(mix_thread),
@@ -1445,8 +1343,6 @@ impl PlaybackEngine {
             ramp_timeline_anchor_secs: 0.0,
             ramp_timeline_anchor_wall: std::time::Instant::now(),
             ramp_last_clock_speed: 1.0,
-            prev_blend_frame: None,
-            prev_blend_dims: (0, 0),
             current_source_rotation: 0,
             last_synth_frame_rendered: None,
             expected_audio_generation: 0,
@@ -1462,12 +1358,6 @@ impl PlaybackEngine {
             last_reliability_time: std::time::Instant::now(),
             last_rss_mb: 0.0,
             color_pipeline: klipp_color::ColorPipeline::new(),
-            // GraphExecutor MUST have its own GPU pipeline — `new_cpu_only`
-            // forces every node onto the CPU and turns the entire grade
-            // chain into a 60-90 ms/frame stall during slider scrub.
-            // (The engine has its own `gpu_effects` for scope/wrap; the
-            // two pipelines are independent for now. TODO share via Arc.)
-            graph_executor: klipp_nodes::GraphExecutor::new(),
             bypass_color_grade: false,
             compare_stabilization: false,
             compare_effect_active: false,
@@ -1479,13 +1369,15 @@ impl PlaybackEngine {
             scope_tap_node: None,
             solo_node: None,
             visible_node_thumbs: std::collections::HashSet::new(),
+            inspect_clip: None,
+            pending_stream_refresh: false,
+            pushed_lut_sig: None,
+            render_hashes: HashMap::new(),
             thumb_capture_suspended: false,
             pending_paused_refresh: false,
             parked_refresh: None,
             parked_refresh_done_for: None,
             parked_since: None,
-            overlay_dim_logged: std::collections::HashSet::new(),
-            title_cache_diag_logged: std::collections::HashSet::new(),
             source_decoder: None,
             source_path: None,
             source_state: PlaybackState::Idle,
@@ -1513,9 +1405,7 @@ impl PlaybackEngine {
             last_scope_render: std::time::Instant::now() - std::time::Duration::from_secs(1),
             matte_preview_node: None,
             cached_pregrade_frame: None,
-            grade_gpu_source: None,
             last_direct_present_blockers: Vec::new(),
-            grade_hdr: None,
             frame_cache: FrameCache::new(120), // ~5s at 24fps (backward history + forward prefetch)
             render_cache_hot: crate::render_cache::HotCache::new(30),
             render_cache_disk,
@@ -1528,9 +1418,6 @@ impl PlaybackEngine {
             drag_grade_count: 0,
             drag_downsampled_count: 0,
             foreground_activity: None,
-            ofx_host,
-            gpu_effects: None, // lazily initialized on first use
-            gpu_effects_failed: false,
             ffmpeg_scope_bank: crate::ffmpeg_scope::FfmpegScopeBank::new(),
             gpu_vendor: {
                 let v = klipp_core::GpuVendor::detect();
@@ -1538,18 +1425,8 @@ impl PlaybackEngine {
                 info!("PlaybackEngine: detected GPU vendor = {v:?}");
                 v
             },
-            composite_scratch_linear: Vec::new(),
             composite_scratch_u8: Vec::new(),
             tone_map_op: klipp_color::display::ToneMapOp::None,
-            rsc_motion_cache: klipp_effects::rolling_shutter::MotionCache::new(256),
-            transition_decoder: None,
-            transition_clip_id: None,
-            transition_frame_cache: None,
-            transition_clip_a_last_frame: None,
-            transition_partner_eof: false,
-            transition_degradation: Default::default(),
-            title_renderer,
-            glyph_position_cache: std::collections::HashMap::new(),
             last_peak_time: std::time::Instant::now(),
             use_proxies: true,
             skim_consumer,
@@ -1607,10 +1484,11 @@ impl PlaybackEngine {
             .unwrap_or((0, 0));
 
         let overlay_qs: Vec<String> = self
-            .overlay_decoders
-            .iter()
-            .map(|(idx, d)| {
-                let q = d.frame_queue().lock().unwrap_or_else(|e| e.into_inner());
+            .streams
+            .queues()
+            .enumerate()
+            .map(|(idx, q)| {
+                let q = q.lock().unwrap_or_else(|e| e.into_inner());
                 format!("{}:{}/{}", idx, q.len(), q.capacity())
             })
             .collect();
@@ -1798,6 +1676,9 @@ impl PlaybackEngine {
                 // Sync clip audio params periodically during playback (for keyframe animation)
                 self.sync_clip_volumes();
             } else if self.state == PlaybackState::Paused {
+                // A paused frame shown before every clip stream had its
+                // frame: re-render once they have.
+                self.tick_stream_refresh();
                 if self.pending_paused_refresh {
                     // A previous seek (Pause / SetPlayhead / SeekTo
                     // while paused) left the decoder running because
@@ -1888,7 +1769,7 @@ impl PlaybackEngine {
                     self.dropped_frames,
                     hw,
                     self.v1_decoder.is_some(),
-                    self.overlay_decoders.len(),
+                    self.streams.len(),
                     rb_count,
                     rb_avg_ms,
                     rb_us as f64 / 1000.0,
@@ -2031,9 +1912,6 @@ impl PlaybackEngine {
                         }
                         dec.resume();
                     }
-                    for dec in self.overlay_decoders.values() {
-                        dec.resume();
-                    }
 
                     // Flush stale audio, seek all tracks to current position.
                     // Flushes mix thread staging, seeks each source per-track,
@@ -2083,9 +1961,6 @@ impl PlaybackEngine {
                     if let Some(dec) = &self.v1_decoder {
                         dec.pause();
                     }
-                    for dec in self.overlay_decoders.values() {
-                        dec.pause();
-                    }
                     self.master_clock.pause();
                     for active in &self.audio_sources {
                         active.source.pause();
@@ -2126,7 +2001,7 @@ impl PlaybackEngine {
                 if self.state != PlaybackState::Idle {
                     self.master_clock.pause();
                     self.v1_decoder = None;
-                    self.clear_all_overlays();
+                    self.streams.clear();
                     self.stop_all_audio();
                     self.playhead = RationalTime::from_frames(0, self.fps.rate());
                     self.last_synth_frame_rendered = None;
@@ -2330,7 +2205,8 @@ impl PlaybackEngine {
             AppCommand::MediaDecodeChanged => {
                 info!("Engine: media decode settings changed; re-decoding at the playhead");
                 self.cached_pregrade_frame = None;
-                self.transition_frame_cache = None;
+                // Decoded with the old settings: every stream reopens.
+                self.streams.clear();
                 // Idle / stopped has nothing on screen to refresh; the next
                 // seek or play decodes with the new settings anyway.
                 if !matches!(self.state, PlaybackState::Idle | PlaybackState::Stopped) {
@@ -2343,6 +2219,10 @@ impl PlaybackEngine {
             }
             AppCommand::SetUseProxies(enabled) => {
                 info!("Engine: use_proxies = {enabled}");
+                if enabled != self.use_proxies {
+                    // The other clips' streams decode from the old files.
+                    self.streams.clear();
+                }
                 self.use_proxies = enabled;
             }
             AppCommand::SetRenderCacheEnabled(enabled) => {
@@ -2506,7 +2386,8 @@ impl PlaybackEngine {
                 let linear = u8_rgba_to_linear(&rgba);
                 self.render_active_scopes_via_ffmpeg_linear(&linear, width, height, scope_w, scope_h);
             }
-            AppCommand::SetScopeTapNode { node_id, .. } => {
+            AppCommand::SetScopeTapNode { clip_id, node_id } => {
+                self.inspect_clip = Some(clip_id);
                 self.scope_tap_node = node_id.clone();
                 debug!("Scope tap node: {:?}", self.scope_tap_node);
             }
@@ -2514,7 +2395,8 @@ impl PlaybackEngine {
                 self.solo_node = node_id.clone();
                 debug!("Solo node: {:?}", self.solo_node);
             }
-            AppCommand::SetVisibleNodeThumbs { node_ids, .. } => {
+            AppCommand::SetVisibleNodeThumbs { clip_id, node_ids } => {
+                self.inspect_clip = Some(clip_id);
                 self.visible_node_thumbs = node_ids.iter().copied().collect();
                 // Clear the old thumb cache so the next re-grade is
                 // what the UI sees (stale thumbs from a different node
@@ -2634,13 +2516,8 @@ impl PlaybackEngine {
                         self.reset_ramp_anchor();
                     }
                 } else {
-                    // Re-render overlays and re-grade cached frame when paused —
-                    // instant parameter feedback for title/generator edits.
-                    // Clear synth frame cache so update_overlay_decoders re-renders
-                    // all synthetic clips, reflecting any parameter changes.
-                    self.overlay_synth_frame.clear();
-                    self.overlay_static_gen.clear();
-                    self.update_overlay_decoders(self.playhead);
+                    // Paused: re-render, so title, generator and layout
+                    // edits show at once.
                     self.regrade_cached_frame();
                 }
             }
@@ -2732,7 +2609,6 @@ impl PlaybackEngine {
             } else {
                 None
             };
-            let res = seq.resolution;
             drop(seq);
 
             if let Some((ti, idx, _title_data, timeline_in, clip_source_in)) = title_info {
@@ -2767,7 +2643,7 @@ impl PlaybackEngine {
                 self.master_clock.resume();
 
                 self.state = PlaybackState::Playing;
-                self.update_overlay_decoders(self.playhead);
+                self.sync_streams();
                 self.dropped_frames = 0;
                 self.frames_consumed = 0;
                 self.last_playback_log = std::time::Instant::now();
@@ -2778,7 +2654,7 @@ impl PlaybackEngine {
             }
 
             // Standalone generator clip at playhead — render and display
-            if let Some((ti, idx, gen_data, timeline_in, timeline_out)) = generator_info {
+            if let Some((ti, idx, _gen_data, timeline_in, _timeline_out)) = generator_info {
                 info!("handle_play: generator clip {idx} on track {ti} at playhead");
                 self.v1_decoder = None;
                 self.current_clip_index = idx;
@@ -2787,26 +2663,7 @@ impl PlaybackEngine {
                 self.clip_source_start = 0.0;
                 self.clip_timeline_start = timeline_in;
 
-                let clip_relative_secs = (self.playhead - timeline_in).to_secs_f64().max(0.0);
-                let total_secs = (timeline_out - timeline_in).to_secs_f64();
-                let rgba = render_generator_with_slate(
-                    &mut self.title_renderer,
-                    &gen_data,
-                    res.width,
-                    res.height,
-                    clip_relative_secs,
-                    total_secs,
-                );
-                // Generator produces sRGB u8; lift to linear at the
-                // caller seam so `post_process_rgba` stays linear-in/
-                // linear-out, then display-transform at the viewer
-                // boundary.
-                let linear = u8_rgba_to_linear(&rgba);
-                let final_linear = self.post_process_rgba(linear, res.width, res.height);
-                let final_rgba = self.display_encode(&final_linear);
-                let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
-                fb.write_frame(final_rgba, res.width, res.height);
-                drop(fb);
+                self.present_frame(None);
 
                 // Start audio + clock for playback
                 self.start_all_audio(self.playhead);
@@ -2933,7 +2790,7 @@ impl PlaybackEngine {
                 self.state = PlaybackState::Playing;
 
                 // Open overlay decoders for all non-primary video tracks at the playhead
-                self.update_overlay_decoders(self.playhead);
+                self.sync_streams();
                 self.dropped_frames = 0;
                 self.frames_consumed = 0;
                 self.last_playback_log = std::time::Instant::now();
@@ -3205,17 +3062,6 @@ impl PlaybackEngine {
     }
 
     /// Stop and drop all audio sources, mix thread, and the output.
-    /// Stop all overlay decoders and clear overlay state.
-    fn clear_all_overlays(&mut self) {
-        for dec in self.overlay_decoders.values_mut() {
-            dec.stop_detached();
-        }
-        self.overlay_decoders.clear();
-        self.overlay_clips.clear();
-        self.overlay_frames.clear();
-        self.overlay_synth_frame.clear();
-        self.overlay_static_gen.clear();
-    }
 
     /// Wipe all engine-side state to a clean slate.
     /// Called on `AppCommand::ResetEngine` (new project / close project).
@@ -3228,19 +3074,13 @@ impl PlaybackEngine {
 
         // Drop all video decoders
         self.v1_decoder = None;
-        self.clear_all_overlays();
+        self.streams.clear();
+        self.pending_stream_refresh = false;
         if let Some(mut dec) = self.preroll_decoder.take() {
             dec.stop_detached();
         }
         self.preroll_clip_index = None;
         self.preroll_source_in = 0.0;
-        if let Some(mut dec) = self.transition_decoder.take() {
-            dec.stop_detached();
-        }
-        self.transition_clip_id = None;
-        self.transition_frame_cache = None;
-        self.transition_clip_a_last_frame = None;
-        self.transition_partner_eof = false;
 
         // Stop audio
         self.stop_all_audio();
@@ -3743,8 +3583,6 @@ impl PlaybackEngine {
         let mut stage_clock_ramp_us: u128 = 0;
         let mut stage_queue_pop_us: u128 = 0;
         let mut stage_overlay_open_us: u128 = 0;
-        let mut stage_overlay_pop_us: u128 = 0;
-        let mut stage_fb_write_us: u128 = 0;
         let mut stage_mid_us: u128 = 0;
 
         // Drain UI-queued colour-grade param changes BEFORE we take any
@@ -3817,7 +3655,6 @@ impl PlaybackEngine {
                         }
                     })
                 });
-            let res = seq.resolution;
             drop(seq);
 
             if let Some(clip) = synth_clip {
@@ -3853,30 +3690,7 @@ impl PlaybackEngine {
                 }
                 self.last_synth_frame_rendered = Some(current_frame);
 
-                let (w, h) = (res.width, res.height);
-                let rgba = if let Some(title_data) = clip.title_data() {
-                    let clip_elapsed = (self.playhead - clip.timeline_in).to_secs_f64().max(0.0);
-                    let typewriter = typewriter_override(title_data, clip_elapsed);
-                    let td_for_render = typewriter.as_ref().unwrap_or(title_data);
-                    let mut gpu_adapter = self.gpu_effects.as_mut().map(GpuAlphaMaskAdapter);
-                    let gpu: Option<&mut dyn klipp_title::AlphaMaskProcessor> = gpu_adapter.as_mut().map(|a| a as &mut dyn klipp_title::AlphaMaskProcessor);
-                    self.title_renderer.render_with_time(td_for_render, w, h, gpu, clip_elapsed as f32)
-                } else if let Some(gen_data) = clip.generator_data() {
-                    let clip_relative = (self.playhead - clip.timeline_in).to_secs_f64().max(0.0);
-                    let total = (clip.timeline_out - clip.timeline_in).to_secs_f64();
-                    render_generator_with_slate(&mut self.title_renderer, gen_data, w, h, clip_relative, total)
-                } else {
-                    return;
-                };
-
-                // u8→linear→post_process→display_transform→u8 at this
-                // title/generator viewer boundary.
-                let linear = u8_rgba_to_linear(&rgba);
-                let final_linear = self.post_process_rgba(linear, w, h);
-                let final_rgba = self.display_encode(&final_linear);
-                let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
-                fb.write_frame(final_rgba, w, h);
-                drop(fb);
+                self.present_frame(None);
 
                 self.frames_consumed += 1;
                 let _ = self.event_tx.send(AppEvent::PlayheadMoved(self.playhead));
@@ -3940,7 +3754,7 @@ impl PlaybackEngine {
             }
         }
 
-        let mut frame = match display_frame {
+        let frame = match display_frame {
             Some(f) => f,
             None => {
                 if self.v1_decoder.is_none() && !self.audio_sources.is_empty() {
@@ -4074,104 +3888,13 @@ impl PlaybackEngine {
         stage_queue_pop_us = t_stage.elapsed().as_micros();
         t_stage = std::time::Instant::now();
 
-        // Check overlay decoder lifecycle — open/close as playhead moves through overlay clips
-        self.update_overlay_decoders(self.playhead);
+        // Every other clip the frame needs — overlays, a transition's other
+        // side, multicam angles — follows the playhead on its own decoder.
+        self.sync_streams();
         stage_overlay_open_us = t_stage.elapsed().as_micros();
         t_stage = std::time::Instant::now();
 
-        // Pop frames from each overlay decoder using per-clip source timing.
-        // Each overlay clip has its own source_in, timeline_in, and speed, so we compute
-        // the expected source time independently for each overlay decoder.
-        let overlay_dec_indices: Vec<usize> = self.overlay_decoders.keys().copied().collect();
-        {
-            let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
-            for track_idx in overlay_dec_indices {
-                // Compute this overlay clip's source time from the current playhead
-                let overlay_source_secs = if let Some(clip_idx) = self.overlay_clips.get(&track_idx) {
-                    seq.tracks.get(track_idx)
-                        .and_then(|t| t.clips.get(*clip_idx))
-                        .map(|clip| {
-                            clip.source_in.to_secs_f64()
-                                + (self.playhead - clip.timeline_in).to_secs_f64() * clip.speed
-                        })
-                        .unwrap_or(current_source_secs)
-                } else {
-                    current_source_secs
-                };
-
-                if let Some(dec) = self.overlay_decoders.get(&track_idx) {
-                    let mut queue = dec.frame_queue().lock().unwrap_or_else(|e| e.into_inner());
-                    let q_len = queue.len();
-                    if q_len > 0 || self.overlay_frames.contains_key(&track_idx) {
-                        debug!("OV track={} q={} has_frame={} src={:.3}s front_pts={:?}",
-                            track_idx, q_len, self.overlay_frames.contains_key(&track_idx),
-                            overlay_source_secs, queue.front().map(|f| f.pts_secs()));
-                    }
-                    while let Some(f) = queue.front() {
-                        if f.is_eof {
-                            let _ = queue.pop();
-                            break;
-                        }
-                        let pts = f.pts_secs();
-                        if pts <= overlay_source_secs + frame_tolerance {
-                            let ovf = queue.pop().unwrap();
-                            if let Some(next) = queue.front() {
-                                if !next.is_eof && next.pts_secs() <= overlay_source_secs + frame_tolerance {
-                                    continue;
-                                }
-                            }
-                            // Store the raw overlay frame WITHOUT baking clip opacity in.
-                            // Clip opacity is now applied at composite time so paused
-                            // opacity drags update the visible frame.
-                            // Store linear-f32 directly — the composite path is linear,
-                            // so the old sRGB u8 round-trip (~10 ms on 1920x818) was
-                            // pure waste on the hot path.
-                            self.overlay_frames.insert(track_idx, ovf);
-                            break;
-                        } else {
-                            break;
-                        }
-                    }
-                }
-            }
-        }
-
-        // Overlay frame popping (walks each overlay decoder's queue, picks
-        // the frame closest to the current source time, stashes it in
-        // overlay_frames).
-        stage_overlay_pop_us = t_stage.elapsed().as_micros();
-        t_stage = std::time::Instant::now();
-
-        // Grade V1's frame through the full processing pipeline (scopes, stabilization,
-        // comparison mode, keyframes, global LUT) BEFORE compositing.
-        // `post_process_rgba` is linear-in/linear-out post the linear-
-        // edge-to-edge refactor, and `LinearFrame.data` already sits in
-        // linear — feed it directly, skipping the pre-refactor round-
-        // trip via `frame.into_rgba().to_linear()`.
         let (final_w, final_h) = (frame.width, frame.height);
-        let t_pp_full = std::time::Instant::now();
-        // Realise CPU `data` from `gpu_source` only if something is
-        // actually going to read it.
-        //
-        // The grade chain consumes the decoder's GPU buffer directly via
-        // `prime_chain_from_gpu_u8_buffer`, and everything downstream of
-        // the grade works from the executor's output rather than this
-        // input. That leaves the pre-grade encode as the sole consumer of
-        // the *ungraded* CPU buffer — so when it is not needed and a
-        // gpu_source exists, this readback has no consumer at all.
-        //
-        // It is not a cheap thing to do speculatively: 19.2 ms per frame
-        // on a 4K 10-bit HDR source, more than a whole 59.94 fps budget,
-        // paid before anyone asked for it.
-        //
-        // Skipping it is a bet, not a proof — the graph might contain a
-        // node that breaks the chain and wants CPU pixels. That case is
-        // handled rather than predicted: the executor returns
-        // `CpuSourceRequired` and the grade realises the pixels then. A
-        // wrong bet costs the readback that would have happened anyway.
-        //
-        // No-op regardless when `data` is already populated (software
-        // decode, or KLIPP_GPU_FRAMES unset).
         let gpu_source = frame.gpu_source.clone();
 
         // Direct present: the decoder's frame is already the frame the
@@ -4224,572 +3947,22 @@ impl PlaybackEngine {
             }
         }
 
-        // HDR frames grade their scene-linear input, not `data` — `data`
-        // is display-referred, already tone-mapped. Priming the chain from
-        // the decoder's u8 buffer is skipped for them too: that buffer is
-        // the tone-mapped preview, and grading it is the bug this path
-        // replaces. The codes are read back instead; a GPU bridge that
-        // seeds the chain from them directly is the follow-up.
-        if frame.hdr.is_none() && (gpu_source.is_none() || self.pregrade_encode_needed()) {
-            frame.ensure_cpu_data();
-        }
-        let v1_graded_linear = self.grade_v1_frame(frame, final_w, final_h);
-        let pp_full_us = t_pp_full.elapsed().as_micros();
-
-        // Composite V1 (graded) + overlay tracks in linear-light f32.
-        // Every layer is already linear (post_process_rgba, apply_clip_
-        // effects, and LinearFrame all speak linear now), so we blend
-        // without any u8⇄linear seams in the hot loop.
-        //
-        // Phase 2 of track matte adds two structural wrinkles:
-        // 1. Per-clip `blend_mode` is now honoured (was hard-coded
-        //    Normal at every blend site).
-        // 2. Track-matte resolution: any clip with `matte_source` reads
-        //    its source's already-graded linear-f32 buffer from the
-        //    `graded_layers` cache, derives a single-channel mask, and
-        //    multiplies its own alpha by the mask before blending. The
-        //    cache is only populated for clips that are *referenced as
-        //    matte sources by someone else in this frame* — empty in
-        //    the no-matte common case so the existing fast path keeps
-        //    its memory profile.
-        let t_composite_full = std::time::Instant::now();
-        let t_composite = std::time::Instant::now();
-        let v1_opacity = {
-            let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
-            seq.tracks.get(self.current_track_index).map(|t| t.opacity).unwrap_or(1.0)
-        };
-
-        // Capture V1's currently-active clip alongside opacity. Needed so
-        // V1 can be both a matte source (other clip references V1's clip
-        // id) and a matte consumer (V1 itself has matte_source set).
-        let v1_clip: Option<klipp_timeline::Clip> = {
-            let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
-            seq.tracks.get(self.current_track_index)
-                .and_then(|t| t.clip_at_timecode(self.playhead).map(|(_, c)| c.clone()))
-        };
-
-        // Gather overlay clip data while holding the sequence lock, then drop
-        // the lock before calling apply_clip_effects (which needs &mut self).
-        let overlay_clip_data: Vec<(usize, f32, Option<klipp_timeline::Clip>)> = {
-            let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
-            let fps_f64 = self.fps.as_f64();
-            let overlay_tracks = seq.overlay_video_tracks(self.current_track_index);
-            overlay_tracks.iter().filter_map(|(track_idx, track)| {
-                self.overlay_frames.get(track_idx).map(|_| {
-                    let clip_opacity = track
-                        .clip_at_timecode(self.playhead)
-                        .map(|(_, clip)| evaluate_clip_opacity(clip, self.playhead, fps_f64))
-                        .unwrap_or(1.0);
-                    let effective = track.opacity * clip_opacity;
-                    let clip = track.clip_at_timecode(self.playhead).map(|(_, c)| c.clone());
-                    (*track_idx, effective, clip)
-                })
-            }).collect()
-        };
-
-        // transform_link — pre-resolve composed transforms for V1 + every
-        // overlay clip (and any chain targets reachable from them). Done
-        // under one short seq-read so we can pass entries into
-        // apply_clip_effects (which holds &mut self) by clip-id later.
-        // glyph_position_cache + title_renderer thread through for
-        // the glyph-anchored focal-point resolver
-        // (HZ-NEXT-GLYPH-LOCK); they're untouched on clips with no
-        // FocalRef on their Transform builtin.
-        let transform_cache: std::collections::HashMap<klipp_core::ClipId, ResolvedTransform> = {
-            let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
-            let fps_f64 = self.fps.as_f64();
-            let frame_w = seq.resolution.width;
-            let frame_h = seq.resolution.height;
-            let mut cache = std::collections::HashMap::new();
-            if let Some(c) = &v1_clip {
-                let _ = resolve_clip_transform(c, &seq, self.playhead, fps_f64, &mut cache,
-                    &mut self.glyph_position_cache, &mut self.title_renderer, frame_w, frame_h);
-            }
-            for (_, _, c) in &overlay_clip_data {
-                if let Some(c) = c {
-                    let _ = resolve_clip_transform(c, &seq, self.playhead, fps_f64, &mut cache,
-                        &mut self.glyph_position_cache, &mut self.title_renderer, frame_w, frame_h);
-                }
-            }
-            cache
-        };
-
-        // Phase 2 — track matte: build the set of clip-ids that are
-        // referenced as matte sources by SOME clip active in this
-        // frame. Empty in the dominant no-matte case; the cache below
-        // stays empty too and the rest of the path runs unchanged.
-        let matte_source_ids: std::collections::HashSet<klipp_core::ClipId> = {
-            let mut s = std::collections::HashSet::new();
-            for (_, _, c) in &overlay_clip_data {
-                if let Some(c) = c {
-                    if let Some(b) = c.matte_source.as_ref() {
-                        s.insert(b.source_clip_id);
-                    }
-                    // Phase 4B — stencil clips' own pixels also need
-                    // to be cached so lower clips can read them as
-                    // mask sources.
-                    if c.matte_stencil.is_some() {
-                        s.insert(c.id);
-                    }
-                }
-            }
-            if let Some(c) = &v1_clip {
-                if let Some(b) = c.matte_source.as_ref() {
-                    s.insert(b.source_clip_id);
-                }
-                if c.matte_stencil.is_some() {
-                    s.insert(c.id);
-                }
-            }
-            s
-        };
-
-        // Phase 4B — collect stencil clips with their track index so
-        // the composite loop can apply their masks to clips on lower
-        // tracks. Track index is taken from the iteration position;
-        // V1 sits "below" all overlays (track index = primary).
-        let mut stencil_clips: Vec<(usize, klipp_core::ClipId, klipp_timeline::StencilSettings, f64)> = Vec::new();
-        for (track_idx, _, c) in &overlay_clip_data {
-            if let Some(c) = c {
-                if let Some(s) = c.matte_stencil.as_ref() {
-                    let clip_time = (self.playhead.to_secs_f64() - c.timeline_in.to_secs_f64()).max(0.0);
-                    stencil_clips.push((*track_idx, c.id, s.clone(), clip_time));
-                }
-            }
-        }
-        if let Some(c) = &v1_clip {
-            if let Some(s) = c.matte_stencil.as_ref() {
-                let clip_time = (self.playhead.to_secs_f64() - c.timeline_in.to_secs_f64()).max(0.0);
-                stencil_clips.push((self.current_track_index, c.id, s.clone(), clip_time));
-            }
-        }
-
-        // Reuse the pooled linear scratch buffer across frames.
-        let pixel_count = (final_w * final_h) as usize;
-        let needed_f = pixel_count * 4;
-        let mut accumulated_linear = std::mem::take(&mut self.composite_scratch_linear);
-        if accumulated_linear.len() != needed_f {
-            accumulated_linear.resize(needed_f, 0.0);
-        } else {
-            accumulated_linear.fill(0.0);
-        }
-
-        // Per-step accumulators so we can see where composite+into_rgba time
-        // actually goes when it busts the budget. Sub-millisecond on the fast
-        // path, stay zero when there are no overlays.
-        let mut ov_clone_us: u128 = 0;
-        let mut ov_grade_us: u128 = 0;
-        let mut ov_resize_us: u128 = 0;
-        let mut ov_blend_us: u128 = 0;
-
-        // Per-clip post-effects buffer cache for matte resolution.
-        // Keyed by clip-id, stores the graded linear-f32 RGBA at the
-        // sequence's final resolution. Populated lazily during the
-        // pre-render pass below — only for clips in `matte_source_ids`.
-        let mut graded_layers: std::collections::HashMap<klipp_core::ClipId, Vec<f32>> =
-            std::collections::HashMap::new();
-
-        // Cache V1 first (cheap clone only when V1 is itself a matte
-        // source for some overlay in this frame).
-        if let Some(c) = &v1_clip {
-            if matte_source_ids.contains(&c.id) {
-                graded_layers.insert(c.id, v1_graded_linear.clone());
-            }
-        }
-
-        // Pre-render pass: grade every overlay's frame to final
-        // resolution. Stores the graded buffer in two places:
-        // * `pre_rendered` — the per-layer entry the composite loop
-        //   consumes, in track order.
-        // * `graded_layers` — the matte-source cache, only for clips
-        //   referenced by a consumer.
-        struct PreRenderedLayer {
-            track_idx: usize,
-            effective: f32,
-            clip: Option<klipp_timeline::Clip>,
-            // None for AdjustmentLayer (no own pixels) and for clips
-            // whose overlay frame is missing this tick.
-            graded: Option<Vec<f32>>,
-        }
-        let mut pre_rendered: Vec<PreRenderedLayer> = Vec::with_capacity(overlay_clip_data.len());
-        for (track_idx, effective, clip) in &overlay_clip_data {
-            // AdjustmentLayer: no own pixels, no pre-render.
-            if matches!(clip.as_ref().map(|c| &c.kind), Some(klipp_timeline::ClipKind::AdjustmentLayer)) {
-                pre_rendered.push(PreRenderedLayer {
-                    track_idx: *track_idx,
-                    effective: *effective,
-                    clip: clip.clone(),
-                    graded: None,
-                });
-                continue;
-            }
-            let Some(ov_frame) = self.overlay_frames.get(track_idx) else {
-                pre_rendered.push(PreRenderedLayer {
-                    track_idx: *track_idx,
-                    effective: *effective,
-                    clip: clip.clone(),
-                    graded: None,
-                });
-                continue;
-            };
-            let (ov_w, ov_h) = (ov_frame.width, ov_frame.height);
-            let needs_resize = ov_w != final_w || ov_h != final_h;
-            // Buffer acquisition: when a resize is needed, hand the
-            // source buffer directly into `resize_linear` and let it
-            // allocate the destination — skipping the per-frame
-            // `ov_frame.data.clone()` (an 8 MB f32 memcpy at 1080p,
-            // ~3 ms) that the previous version paid even though the
-            // resize was about to throw the cloned buffer away. When
-            // no resize, we still need an owned buffer so the grade
-            // chain can mutate; the clone stays.
-            let (work_w, work_h, mut ov_linear) = if !needs_resize {
-                let t_clone = std::time::Instant::now();
-                let cloned = ov_frame.data.clone();
-                ov_clone_us += t_clone.elapsed().as_micros();
-                (ov_w, ov_h, cloned)
-            } else {
-                let t_resize = std::time::Instant::now();
-                let resized = crate::grade_resample::resize_linear(&ov_frame.data, ov_w, ov_h, final_w, final_h);
-                ov_resize_us += t_resize.elapsed().as_micros();
-                (final_w, final_h, resized)
-            };
-            // ov_frame's borrow ends here — `self` is unborrowed for
-            // the diagnostic log + grade call below.
-            // One-shot log so we can confirm dimensions vs final
-            // and verify the right resize primitive is dispatched.
-            if needs_resize && !self.overlay_dim_logged.contains(track_idx) {
-                let path = if ov_w == final_w * 2 && ov_h == final_h * 2 {
-                    "downsample_linear_2x"
-                } else if ov_w >= final_w && ov_h >= final_h {
-                    "downsample_linear_box"
-                } else {
-                    "upsample_linear_bilinear"
-                };
-                tracing::debug!(
-                    "overlay track={track_idx} src={ov_w}x{ov_h} → final={final_w}x{final_h} via {path}"
-                );
-                self.overlay_dim_logged.insert(*track_idx);
-            }
-            if let Some(c) = clip {
-                let clip_time = (self.playhead.to_secs_f64() - c.timeline_in.to_secs_f64()).max(0.0);
-                let t_grade = std::time::Instant::now();
-                let resolved = if c.transform_link.is_some() {
-                    transform_cache.get(&c.id).copied()
-                } else { None };
-                ov_linear = self.apply_clip_effects(ov_linear, work_w, work_h, c, clip_time, resolved);
-                ov_grade_us += t_grade.elapsed().as_micros();
-            }
-            // Decide where the buffer goes: matte sources marked
-            // `consumed_as_matte` (or `matte_stencil`) are skipped
-            // by the composite loop entirely, so no need to keep a
-            // copy in `pre_rendered`. Move the buffer straight into
-            // `graded_layers` instead — saves an 8 MB clone per
-            // matte-source clip per frame.
-            let is_consumed = clip.as_ref()
-                .is_some_and(|c| c.consumed_as_matte || c.matte_stencil.is_some());
-            let is_matte_source = clip.as_ref()
-                .is_some_and(|c| matte_source_ids.contains(&c.id));
-            if is_consumed {
-                if is_matte_source {
-                    graded_layers.insert(clip.as_ref().unwrap().id, ov_linear);
-                }
-                // Otherwise drop ov_linear; the clip won't render.
-            } else {
-                if is_matte_source {
-                    graded_layers.insert(clip.as_ref().unwrap().id, ov_linear.clone());
-                }
-                pre_rendered.push(PreRenderedLayer {
-                    track_idx: *track_idx,
-                    effective: *effective,
-                    clip: clip.clone(),
-                    graded: Some(ov_linear),
-                });
-            }
-        }
-
-        // Blend V1 (always the first layer) onto the zero canvas. V1
-        // already comes back from post_process_rgba as linear f32.
-        // V1 honours its own clip.blend_mode (default Normal); against
-        // a zero canvas Normal is the only mode that produces an
-        // intuitive result, but a user override is respected for
-        // round-trip predictability with project files.
-        let v1_blend_us: u128 = {
-            let t_blend = std::time::Instant::now();
-            // Phase 2: V1 may itself be a matte consumer. Apply mask
-            // to a clone (so the cached `graded_layers` entry, if any,
-            // stays unmasked for downstream consumers). Cheap: only
-            // clones when V1 has matte_source set (uncommon).
-            let v1_blend_mode = v1_clip.as_ref().map(|c| c.blend_mode).unwrap_or(klipp_core::BlendMode::Normal);
-            let v1_matte = v1_clip.as_ref().and_then(|c| c.matte_source.as_ref());
-            if v1_matte.is_some() || stencil_clips.iter().any(|(t, id, _, _)| *t > self.current_track_index && Some(*id) != v1_clip.as_ref().map(|c| c.id)) {
-                let mut v1_masked = v1_graded_linear.clone();
-                // Phase 4B — apply every stencil ABOVE V1 (which is
-                // every stencil overlay in this frame).
-                if let Some(c) = &v1_clip {
-                    for (st_track_idx, st_clip_id, st_settings, _) in &stencil_clips {
-                        if *st_track_idx <= self.current_track_index { continue; }
-                        if *st_clip_id == c.id { continue; }
-                        let pseudo_binding = klipp_timeline::MatteBinding {
-                            source_clip_id: *st_clip_id,
-                            channel: st_settings.channel,
-                            invert: st_settings.invert,
-                            feather_px: st_settings.feather_px,
-                            choke_px: st_settings.choke_px,
-                        };
-                        Self::apply_track_matte_linear(
-                            &mut v1_masked, &graded_layers, &pseudo_binding, final_w, final_h,
-                        );
-                    }
-                }
-                if let Some(binding) = v1_matte {
-                    // Phase 4D — same kf evaluation as the overlay path.
-                    let v1_clip_time = v1_clip.as_ref()
-                        .map(|c| (self.playhead.to_secs_f64() - c.timeline_in.to_secs_f64()).max(0.0))
-                        .unwrap_or(0.0);
-                    let effective = klipp_timeline::MatteBinding {
-                        source_clip_id: binding.source_clip_id,
-                        channel: binding.channel,
-                        invert: binding.invert,
-                        feather_px: v1_clip.as_ref()
-                            .map(|c| klipp_core::keyframe::evaluate(&c.matte_feather_keyframes, v1_clip_time, binding.feather_px))
-                            .unwrap_or(binding.feather_px),
-                        choke_px: v1_clip.as_ref()
-                            .map(|c| klipp_core::keyframe::evaluate(&c.matte_choke_keyframes, v1_clip_time, binding.choke_px))
-                            .unwrap_or(binding.choke_px),
-                    };
-                    Self::apply_track_matte_linear(
-                        &mut v1_masked, &graded_layers, &effective, final_w, final_h,
-                    );
-                    if let Some(c) = &v1_clip {
-                        if self.inspector_matte_preview_target == Some(c.id) {
-                            Self::emit_matte_preview(
-                                &self.event_tx, c.id, &effective, &graded_layers,
-                                final_w, final_h,
-                            );
-                        }
-                    }
-                }
-                klipp_effects::composite::blend_layer_linear(
-                    &mut accumulated_linear, &v1_masked, v1_opacity, v1_blend_mode,
-                );
-            } else {
-                klipp_effects::composite::blend_layer_linear(
-                    &mut accumulated_linear, &v1_graded_linear, v1_opacity, v1_blend_mode,
-                );
-            }
-            let el = t_blend.elapsed();
-            tracing::trace!("PERF blend_layer pass: {:.3}ms res={final_w}x{final_h} layer=V1", el.as_secs_f64() * 1000.0);
-            el.as_micros()
-        };
-
-        // Composite each overlay onto the accumulated buffer. The
-        // pre-render pass above means matte lookups always hit the
-        // cache (when the source is active in this frame), regardless
-        // of track stacking order — the AE convention "matte clip on
-        // the track DIRECTLY ABOVE" works out of the box.
-        for entry in pre_rendered {
-            if entry.effective <= 0.001 { continue; }
-
-            // Adjustment layer: apply its effects directly to the
-            // accumulated linear composite — no u8 bookends needed
-            // post-refactor. Phase 2 explicitly does NOT support
-            // matte_source on adjustment layers; the binding (if set)
-            // is silently ignored. Tracked as a future enhancement.
-            if let Some(c) = &entry.clip {
-                if matches!(c.kind, klipp_timeline::ClipKind::AdjustmentLayer) {
-                    let clip_time = (self.playhead.to_secs_f64() - c.timeline_in.to_secs_f64()).max(0.0);
-                    let pass = std::mem::take(&mut accumulated_linear);
-                    // AdjustmentLayer is rejected as a transform_link
-                    // origin/target by the AppCommand handler, so no
-                    // resolved transform applies here.
-                    accumulated_linear = self.apply_clip_effects(pass, final_w, final_h, c, clip_time, None);
-                    continue;
-                }
-                // `consumed_as_matte` clips render but never appear in
-                // the visible composite — they exist purely to drive
-                // some other clip's mask via `graded_layers`. Stencil
-                // clips are likewise hidden (AE convention: stencil
-                // mode replaces the layer's own visibility with its
-                // mask role).
-                if c.consumed_as_matte || c.matte_stencil.is_some() { continue; }
-            }
-
-            let Some(mut graded) = entry.graded else { continue; };
-
-            // Phase 4B — apply every stencil that sits ABOVE this
-            // clip (higher track index). Each stencil multiplies the
-            // consumer's alpha by its mask; stacked stencils combine
-            // multiplicatively (intersection of visible regions).
-            if let Some(c) = &entry.clip {
-                let consumer_track = entry.track_idx;
-                for (st_track_idx, st_clip_id, st_settings, _st_time) in &stencil_clips {
-                    if *st_track_idx <= consumer_track { continue; }
-                    if *st_clip_id == c.id { continue; }
-                    let pseudo_binding = klipp_timeline::MatteBinding {
-                        source_clip_id: *st_clip_id,
-                        channel: st_settings.channel,
-                        invert: st_settings.invert,
-                        feather_px: st_settings.feather_px,
-                        choke_px: st_settings.choke_px,
-                    };
-                    Self::apply_track_matte_linear(
-                        &mut graded, &graded_layers, &pseudo_binding, final_w, final_h,
-                    );
-                }
-            }
-
-            // Track-matte resolution: if this clip points at another
-            // clip as its matte source, multiply our own alpha by the
-            // resolved single-channel mask before blending.
-            if let Some(c) = &entry.clip {
-                if let Some(binding) = c.matte_source.as_ref() {
-                    // Phase 4D — evaluate feather/choke keyframes at
-                    // the consumer's clip-time. Empty kfs fall through
-                    // to the binding's static value, so the no-keyframe
-                    // case is byte-identical to Phase 2 behaviour.
-                    let clip_time = (self.playhead.to_secs_f64() - c.timeline_in.to_secs_f64()).max(0.0);
-                    let effective = klipp_timeline::MatteBinding {
-                        source_clip_id: binding.source_clip_id,
-                        channel: binding.channel,
-                        invert: binding.invert,
-                        feather_px: klipp_core::keyframe::evaluate(&c.matte_feather_keyframes, clip_time, binding.feather_px),
-                        choke_px: klipp_core::keyframe::evaluate(&c.matte_choke_keyframes, clip_time, binding.choke_px),
-                    };
-                    Self::apply_track_matte_linear(
-                        &mut graded, &graded_layers, &effective, final_w, final_h,
-                    );
-                    // Phase 4C — emit a tiny grayscale preview of this
-                    // mask if the inspector is currently watching it.
-                    if self.inspector_matte_preview_target == Some(c.id) {
-                        Self::emit_matte_preview(
-                            &self.event_tx, c.id, &effective, &graded_layers,
-                            final_w, final_h,
-                        );
-                    }
-                }
-            }
-
-            let blend_mode = entry.clip.as_ref().map(|c| c.blend_mode).unwrap_or(klipp_core::BlendMode::Normal);
-            let track_idx = entry.track_idx;
-            let t_blend = std::time::Instant::now();
-            klipp_effects::composite::blend_layer_linear(
-                &mut accumulated_linear,
-                &graded,
-                entry.effective,
-                blend_mode,
-            );
-            let el = t_blend.elapsed();
-            ov_blend_us += el.as_micros();
-            tracing::trace!(
-                "PERF blend_layer pass: {:.3}ms res={final_w}x{final_h} overlay_track={track_idx}",
-                el.as_secs_f64() * 1000.0,
-            );
-        }
-
-        // Run the transition (if any) on the linear-f32 composite
-        // BEFORE the sRGB display encode. This is the Phase B
-        // boundary — transitions blend in linear light, the GPU
-        // path stays linear end-to-end, and `display_encode` is the
-        // single seam that converts to u8 for the viewer / export.
-        let t_transition = std::time::Instant::now();
-        let transitioned_linear = self.apply_transition_if_active(accumulated_linear, final_w, final_h);
-        let transition_us = t_transition.elapsed().as_micros();
-        let transition_ms = transition_us as f64 / 1000.0;
-        if transition_ms > 2.0 {
-            debug!("PERF apply_transition: {transition_ms:.1}ms");
-        }
-
-        // Encode the final linear composite to u8 for downstream (viewer,
-        // export, cache). This is the display boundary — applies the
-        // user-selected tone-map operator (None = identity for SDR) then
-        // sRGB-encodes the result. For `ToneMapOp::None` + SDR content
-        // this is bit-identical to the old linear_rgba_to_u8 path.
-        let t_display = std::time::Instant::now();
-        let final_rgba = self.display_encode(&transitioned_linear);
-        let display_us = t_display.elapsed().as_micros();
-        // Return the linear scratch to the pool for the next frame.
-        self.composite_scratch_linear = transitioned_linear;
-
-        let composite_ms = t_composite.elapsed().as_secs_f64() * 1000.0;
-        let overlay_count = {
-            let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
-            seq.overlay_video_tracks(self.current_track_index).len()
-        };
-        if composite_ms > 2.0 {
-            debug!("PERF composite+into_rgba: {composite_ms:.1}ms");
-        }
-        if composite_ms > 5.0 {
-            let budget = if composite_ms < 16.7 { "OK" }
-                else if composite_ms < 41.0 { "WARN" }
-                else { "OVER" };
-            debug!(
-                "PERF blend_composite: {composite_ms:.2}ms overlays={overlay_count} \
-                 res={final_w}x{final_h} budget={budget} | v1_blend={:.2} ov_clone={:.2} ov_grade={:.2} ov_resize={:.2} ov_blend={:.2} display={:.2}",
-                v1_blend_us as f64 / 1000.0,
-                ov_clone_us as f64 / 1000.0,
-                ov_grade_us as f64 / 1000.0,
-                ov_resize_us as f64 / 1000.0,
-                ov_blend_us as f64 / 1000.0,
-                display_us as f64 / 1000.0,
-            );
-        }
-
-        let composite_full_us = t_composite_full.elapsed().as_micros();
-
-        // Transition is now applied above; final_rgba already
-        // reflects the blended result.
-        let mut final_rgba = final_rgba;
-
-        // Snapshot how much time the "big middle" (post_process +
-        // composite + apply_transition) actually took. Expected ~15 ms
-        // from logs (10 grade + 5 composite); if mid >> sum of logged
-        // pieces, apply_transition or something in between is the
-        // culprit.
+        // Everything else: the shared renderer, as export renders it. The
+        // frame's pixels are read back only if the render uses them.
+        self.present_frame(Some(streams::HeldFrame::from_frame(frame)));
         stage_mid_us = t_stage.elapsed().as_micros();
-        let mid_accounted_us = pp_full_us + composite_full_us + transition_us;
-        let mid_gap_us = stage_mid_us.saturating_sub(mid_accounted_us);
-        let mid_ms = stage_mid_us as f64 / 1000.0;
-        if mid_ms > 20.0 {
-            debug!(
-                "PERF mid_breakdown: {mid_ms:.1}ms total | pp={pp:.1} composite={cp:.1} transition={tr:.1} gap={gap:.1}",
-                pp = pp_full_us as f64 / 1000.0,
-                cp = composite_full_us as f64 / 1000.0,
-                tr = transition_us as f64 / 1000.0,
-                gap = mid_gap_us as f64 / 1000.0,
-            );
-        }
-        let t_fb_write = std::time::Instant::now();
-        // Write frame to the shared FrameBuffer via swap — `final_rgba` ends up
-        // holding the PREVIOUS pending_data buffer, which we return to the pool.
-        // This eliminates the 8-33 MB per-frame allocation that used to be
-        // `vec![0u8; pixel_count * 4]` at the top of the composite block.
-        {
-            let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
-            fb.write_frame_swap(&mut final_rgba, final_w, final_h);
-        }
-        // Return the stale buffer (formerly pending_data) to the u8 pool.
-        self.composite_scratch_u8 = final_rgba;
-        stage_fb_write_us = t_fb_write.elapsed().as_micros();
 
         self.frames_consumed += 1;
-
         let update_ms = t_update.elapsed().as_secs_f64() * 1000.0;
         if update_ms > 5.0 {
-            // Consolidated per-stage breakdown so the "~45ms unaccounted"
-            // gap in `PERF update_playback` has a home. `grade` and
-            // `composite` are the existing PERF lines; anything else large
-            // is a new stage to investigate.
             debug!(
-                "PERF update_playback: {update_ms:.1}ms for {}x{} frame | \
-                 drain={:.1} clock={:.1} queue_pop={:.1} ov_open={:.1} ov_pop={:.1} mid={:.1} fb_write={:.1}",
-                final_w, final_h,
+                "PERF update_playback: {update_ms:.1}ms for {final_w}x{final_h} frame | \
+                 drain={:.1} clock={:.1} queue_pop={:.1} streams={:.1} render={:.1}",
                 stage_drain_us as f64 / 1000.0,
                 stage_clock_ramp_us as f64 / 1000.0,
                 stage_queue_pop_us as f64 / 1000.0,
                 stage_overlay_open_us as f64 / 1000.0,
-                stage_overlay_pop_us as f64 / 1000.0,
                 stage_mid_us as f64 / 1000.0,
-                stage_fb_write_us as f64 / 1000.0,
             );
         }
 
@@ -4807,12 +3980,11 @@ impl PlaybackEngine {
         }
 
         let _ = self.event_tx.send(AppEvent::PlayheadMoved(self.playhead));
-        let _ = self.event_tx.send(AppEvent::FrameReady);
-        (self.repaint_cb)();
     }
 
     fn advance_to_next_clip(&mut self) {
         let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
+        let old_clip = self.v1_clip_id(&seq);
 
         // Find the track that contains the current clip (by index + is_playable),
         // then look for the next playable clip on the SAME track.
@@ -4855,15 +4027,12 @@ impl PlaybackEngine {
                 actual_idx,
                 std::mem::discriminant(&next_clip.kind),
             );
-            // Tear down any active decoder from the current clip
-            if let Some(dec) = &mut self.v1_decoder {
-                dec.stop_detached();
-            }
-            self.v1_decoder = None;
-            self.current_file = None;
-
             self.current_clip_index = actual_idx;
             self.playhead = timeline_in;
+            // The current clip's decoder: kept for a transition into this
+            // clip, stopped otherwise.
+            self.retire_v1_decoder(old_clip);
+            self.current_file = None;
             self.last_synth_frame_rendered = None;
             self.clip_source_start = 0.0;
             self.clip_timeline_start = timeline_in;
@@ -4878,7 +4047,7 @@ impl PlaybackEngine {
             self.master_clock.resume();
 
             let _ = self.event_tx.send(AppEvent::PlayheadMoved(self.playhead));
-            self.update_overlay_decoders(self.playhead);
+            self.sync_streams();
             return;
         }
 
@@ -4967,7 +4136,7 @@ impl PlaybackEngine {
                     "CUT-DIAG CONTIGUOUS: audio media or chain changed at boundary — restarting audio sources",
                 );
                 self.start_all_audio(self.playhead);
-                self.update_overlay_decoders(self.playhead);
+                self.sync_streams();
                 return;
             }
 
@@ -4993,7 +4162,7 @@ impl PlaybackEngine {
                 }
             }
 
-            self.update_overlay_decoders(self.playhead);
+            self.sync_streams();
             return;
         }
 
@@ -5005,9 +4174,7 @@ impl PlaybackEngine {
         if self.preroll_clip_index == Some(actual_idx) {
             if let Some(preroll_dec) = self.preroll_decoder.take() {
                 info!("CUT-DIAG PREROLL HIT: swapping in pre-decoded clip idx={} source_in={:.4}s", actual_idx, source_in_secs);
-                if let Some(dec) = &mut self.v1_decoder {
-                    dec.stop_detached();
-                }
+                self.retire_v1_decoder(old_clip);
                 self.v1_decoder = Some(preroll_dec);
                 self.preroll_clip_index = None;
 
@@ -5034,7 +4201,7 @@ impl PlaybackEngine {
                     .unwrap_or(source_rotation);
                 self.last_frame_time = std::time::Instant::now();
                 let _ = self.event_tx.send(AppEvent::PlayheadMoved(self.playhead));
-                self.update_overlay_decoders(self.playhead);
+                self.sync_streams();
                 return;
             }
         }
@@ -5076,18 +4243,13 @@ impl PlaybackEngine {
                     .unwrap_or(source_rotation);
                 self.last_frame_time = std::time::Instant::now();
                 let _ = self.event_tx.send(AppEvent::PlayheadMoved(self.playhead));
-                self.update_overlay_decoders(self.playhead);
+                self.sync_streams();
                 return;
             }
 
             info!("Advancing to clip {} ({:?})", actual_idx, path);
 
-            // Stop old decoders (detached)
-            if let Some(dec) = &mut self.v1_decoder {
-                dec.stop_detached();
-            }
-            self.v1_decoder = None;
-            self.clear_all_overlays();
+            self.retire_v1_decoder(old_clip);
             for active in &mut self.audio_sources {
                 active.source.stop_detached();
             }
@@ -5136,11 +4298,38 @@ impl PlaybackEngine {
             self.last_frame_time = std::time::Instant::now();
             let _ = self.event_tx.send(AppEvent::PlayheadMoved(self.playhead));
 
-            self.update_overlay_decoders(self.playhead);
+            self.sync_streams();
         } else {
             warn!("No path for media {:?}", media_id);
             self.stop_at_end();
         }
+    }
+
+    /// The primary decoder is leaving `old_clip`. When the frame at the
+    /// (new) playhead still shows that clip — the outgoing side of a
+    /// transition, running on into its handle — the clip streams take the
+    /// decoder over: it is already where that side needs it, and a fresh
+    /// one would leave the side empty while it seeks. Stopped otherwise.
+    fn retire_v1_decoder(&mut self, old_clip: Option<klipp_core::ClipId>) {
+        let Some(mut dec) = self.v1_decoder.take() else { return };
+        if let Some(id) = old_clip.filter(|id| !self.streams.has(*id)) {
+            let time = self.playhead;
+            let still_shown = {
+                let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
+                let fps = seq.fps.as_f64();
+                klipp_compose::active_layers(&seq, time)
+                    .iter()
+                    .flat_map(|l| l.clips.iter())
+                    .find(|c| c.id == id)
+                    .map(|c| klipp_compose::render::source_secs(c, time, fps))
+            };
+            if let Some(secs) = still_shown {
+                debug!("CUT-DIAG primary decoder handed to the clip streams for {id:?} at {secs:.3}s");
+                self.streams.adopt(id, dec, secs);
+                return;
+            }
+        }
+        dec.stop_detached();
     }
 
     /// Start pre-decoding the next clip so frames are ready when the cut arrives.
@@ -5195,505 +4384,6 @@ impl PlaybackEngine {
         }
     }
 
-    /// Check if Video 2 has a clip at the given playhead position.
-    /// Opens/closes the V2 decoder as needed.
-    fn update_overlay_decoders(&mut self, playhead: Timecode) {
-        let t_total = std::time::Instant::now();
-        let t_collect = std::time::Instant::now();
-        let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
-        // Collect overlay info for all overlay tracks (not just the first one).
-        let overlay_tracks = seq.overlay_video_tracks(self.current_track_index);
-        let mut active_overlays: Vec<(usize, usize, klipp_timeline::Clip)> = Vec::new();
-        for (track_idx, track) in &overlay_tracks {
-            if let Some((clip_idx, clip)) = track.clip_at_timecode(playhead) {
-                active_overlays.push((*track_idx, clip_idx, clip.clone()));
-            }
-        }
-        let active_track_indices: std::collections::HashSet<usize> = active_overlays.iter().map(|(ti, _, _)| *ti).collect();
-        let res = seq.resolution;
-        // Pre-resolve transforms while the seq read lock is still
-        // held. Recursively walks `transform_link` chains and caches
-        // each result by ClipId. After the lock is dropped, the
-        // per-overlay loop reads from `transform_cache` without
-        // re-locking. Empty when no overlay clip has a link.
-        let mut transform_cache: std::collections::HashMap<klipp_core::ClipId, ResolvedTransform>
-            = std::collections::HashMap::new();
-        let fps_f64 = self.fps.as_f64();
-        let frame_w = res.width;
-        let frame_h = res.height;
-        for (_, _, clip) in &active_overlays {
-            let _ = resolve_clip_transform(clip, &seq, playhead, fps_f64, &mut transform_cache,
-                &mut self.glyph_position_cache, &mut self.title_renderer, frame_w, frame_h);
-        }
-        drop(seq);
-        let collect_us = t_collect.elapsed().as_micros();
-
-        // Close decoders/frames for tracks that no longer have an active clip
-        let stale: Vec<usize> = self.overlay_clips.keys()
-            .filter(|ti| !active_track_indices.contains(ti))
-            .copied().collect();
-        for track_idx in stale {
-            if let Some(mut dec) = self.overlay_decoders.remove(&track_idx) {
-                dec.stop_detached();
-                debug!("Overlay decoder closed for track {track_idx} (no clip at playhead)");
-            }
-            self.overlay_clips.remove(&track_idx);
-            self.overlay_frames.remove(&track_idx);
-            self.overlay_synth_frame.remove(&track_idx);
-            self.overlay_static_gen.remove(&track_idx);
-        }
-
-        // Count live media decoders (for cap enforcement later)
-        let mut media_decoder_count = self.overlay_decoders.len();
-
-        // Cache key for synthetic-clip skip. Computed as a hash of
-        // the values that actually drive the rasterised title's
-        // appearance — animation type + evaluated keyframe values at
-        // the current playhead — so a clip with non-empty keyframe
-        // vecs that all hold the same value (e.g. user added a
-        // scale keyframe at 1.0 then never moved it) still hits the
-        // cache, instead of being treated as "animated" by the prior
-        // empty-vec detector.
-        //
-        // Static and frame-invariant input → constant key → cache
-        // hits forever. Genuinely animated input → key changes per
-        // tick → re-render fires.
-        //
-        // Logged as 0 fast path when nothing's animated at all so
-        // the perf line stays readable.
-        let synth_frame_key_for = |clip: &klipp_timeline::Clip, default_frame: i64| -> i64 {
-            use klipp_core::ParamId;
-            use std::hash::{Hash, Hasher};
-
-            let clip_relative_secs = (playhead - clip.timeline_in).to_secs_f64().max(0.0);
-
-            // Animated `animation_type` (typewriter, scroll, fade,
-            // zoom-in, …) — per-frame render. Static animation_type
-            // falls through to the keyframe-evaluation path.
-            if let Some(td) = clip.title_data() {
-                if !matches!(td.animation_type, klipp_timeline::TitleAnimationType::Static) {
-                    return default_frame;
-                }
-            }
-
-            // Modifiers: any modifier on a param that affects the
-            // rasterised title means we have to re-render each
-            // tick. Cheap to detect; we skip the keyframe hash path
-            // when this fires.
-            if clip.param_modifiers.contains_key(&ParamId::PositionX)
-                || clip.param_modifiers.contains_key(&ParamId::PositionY)
-                || clip.param_modifiers.contains_key(&ParamId::Scale)
-                || clip.param_modifiers.contains_key(&ParamId::Rotation)
-            {
-                return default_frame;
-            }
-
-            let mut hasher = std::collections::hash_map::DefaultHasher::new();
-            let mut any_kf = false;
-
-            // Per-object center keyframes (title objects)
-            if let Some(td) = clip.title_data() {
-                for obj in &td.objects {
-                    if !obj.transform.center_x_keyframes.is_empty()
-                        || !obj.transform.center_y_keyframes.is_empty()
-                    {
-                        any_kf = true;
-                        let v = obj.transform.evaluated_center(clip_relative_secs);
-                        v.x.to_bits().hash(&mut hasher);
-                        v.y.to_bits().hash(&mut hasher);
-                    }
-                }
-            }
-
-            // Clip-level transform keyframes
-            if !clip.transform_pos_x_keyframes.is_empty() {
-                any_kf = true;
-                let v = klipp_core::keyframe::evaluate(&clip.transform_pos_x_keyframes, clip_relative_secs, 0.0);
-                v.to_bits().hash(&mut hasher);
-            }
-            if !clip.transform_pos_y_keyframes.is_empty() {
-                any_kf = true;
-                let v = klipp_core::keyframe::evaluate(&clip.transform_pos_y_keyframes, clip_relative_secs, 0.0);
-                v.to_bits().hash(&mut hasher);
-            }
-            if !clip.transform_scale_keyframes.is_empty() {
-                any_kf = true;
-                let v = klipp_core::keyframe::evaluate(&clip.transform_scale_keyframes, clip_relative_secs, 1.0);
-                v.to_bits().hash(&mut hasher);
-            }
-            if !clip.transform_rotation_keyframes.is_empty() {
-                any_kf = true;
-                let v = klipp_core::keyframe::evaluate(&clip.transform_rotation_keyframes, clip_relative_secs, 0.0);
-                v.to_bits().hash(&mut hasher);
-            }
-
-            // Note: opacity_keyframes are applied at composite time,
-            // not in the title raster — they don't affect the
-            // cached overlay frame.
-
-            if any_kf {
-                hasher.finish() as i64
-            } else {
-                0
-            }
-        };
-        let default_frame = playhead.value;
-
-        // Process each active overlay track
-        let active_overlays_count = active_overlays.len();
-        // Per-iteration timing breakdown logged when a single
-        // overlay's processing exceeds 1 ms — helps localise which
-        // clip + which sub-block owns the cost.
-        let mut per_iter_log: Vec<(usize, bool, bool, u128, &'static str)> = Vec::new();
-        for (track_idx, clip_idx, clip) in active_overlays {
-            let t_iter = std::time::Instant::now();
-            // Skip re-rendering synthetic clips when the same clip+frame is already cached.
-            // This mirrors the `last_synth_frame_rendered` optimization on the V1 path and
-            // prevents ~1000 re-renders/sec for static titles/generators.
-            let is_synthetic = clip.title_data().is_some() || clip.generator_data().is_some();
-            let frame_key = synth_frame_key_for(&clip, default_frame);
-            if is_synthetic
-                && self.overlay_clips.get(&track_idx) == Some(&clip_idx)
-                && self.overlay_synth_frame.get(&track_idx) == Some(&frame_key)
-                && self.overlay_frames.contains_key(&track_idx)
-            {
-                // Same synthetic clip at same frame-key already rendered — skip.
-                // For frame-invariant titles, `frame_key` is constant 0
-                // so the cache hits forever after the first render.
-                let us = t_iter.elapsed().as_micros();
-                per_iter_log.push((track_idx, is_synthetic, true, us, "synthetic_cache_hit"));
-                continue;
-            }
-            // One-shot diagnostic on the first cache miss per track.
-            // Once the cache is healthy, no further misses log; if a
-            // future change breaks the cache, the line fires again
-            // and points at the broken condition.
-            if is_synthetic && clip.title_data().is_some()
-                && !self.title_cache_diag_logged.contains(&track_idx)
-            {
-                let reason = if self.overlay_clips.get(&track_idx) != Some(&clip_idx) {
-                    format!("clip changed (cached_idx={:?} new_idx={clip_idx})", self.overlay_clips.get(&track_idx))
-                } else if self.overlay_synth_frame.get(&track_idx) != Some(&frame_key) {
-                    format!("frame_key mismatch (cached={:?} new={frame_key} default={default_frame})",
-                        self.overlay_synth_frame.get(&track_idx))
-                } else if !self.overlay_frames.contains_key(&track_idx) {
-                    "no overlay frame".to_string()
-                } else {
-                    "unknown".to_string()
-                };
-                tracing::debug!(
-                    "title cache miss track={track_idx} reason: {reason} (frame_key={frame_key} animation_type={:?})",
-                    clip.title_data().unwrap().animation_type,
-                );
-                self.title_cache_diag_logged.insert(track_idx);
-            }
-
-            // Static-generator fast path: SolidColor / Gradient /
-            // ColorBars / StillFrame produce identical pixels at every
-            // frame of the clip. The frame-tagged throttle above still
-            // pays a full 8.3 MB allocation + sRGB→linear conversion
-            // every time the playhead frame advances (24× per second
-            // at 24 fps for content that never changes), which slows
-            // playback when several generator overlays stack up.
-            // Bypass the render entirely when the cached
-            // `(GeneratorData, width, height)` matches the live clip
-            // — bumping `overlay_synth_frame` so the throttle above
-            // catches subsequent ticks too.
-            if let Some(gen_data) = clip.generator_data() {
-                if !matches!(gen_data, klipp_core::GeneratorData::Countdown)
-                    && self.overlay_clips.get(&track_idx) == Some(&clip_idx)
-                    && self.overlay_static_gen.get(&track_idx)
-                        == Some(&(gen_data.clone(), res.width, res.height))
-                    && self.overlay_frames.contains_key(&track_idx)
-                {
-                    self.overlay_synth_frame.insert(track_idx, frame_key);
-                    let us = t_iter.elapsed().as_micros();
-                    per_iter_log.push((track_idx, true, true, us, "static_gen_hit"));
-                    continue;
-                }
-            }
-
-            // Title clip — render directly to overlay_frames
-            if let Some(title_data) = clip.title_data() {
-                // Close any media decoder for this track
-                if let Some(mut dec) = self.overlay_decoders.remove(&track_idx) {
-                    dec.stop_detached();
-                    media_decoder_count = media_decoder_count.saturating_sub(1);
-                }
-                let clip_elapsed_tw = (playhead - clip.timeline_in).to_secs_f64().max(0.0);
-                let typewriter_td = typewriter_override(title_data, clip_elapsed_tw);
-                let td_for_render = typewriter_td.as_ref().unwrap_or(title_data);
-                let mut gpu_adapter = self.gpu_effects.as_mut().map(GpuAlphaMaskAdapter);
-                let gpu: Option<&mut dyn klipp_title::AlphaMaskProcessor> = gpu_adapter.as_mut().map(|a| a as &mut dyn klipp_title::AlphaMaskProcessor);
-                let mut rgba = self.title_renderer.render_with_time(td_for_render, res.width, res.height, gpu, clip_elapsed_tw as f32);
-
-                // Note: clip-level opacity is NOT baked in here. It is applied at
-                // composite time so paused opacity drags update the visible frame
-                // even when no new frame is being rendered.
-                let clip_relative_secs = (playhead - clip.timeline_in).to_secs_f64().max(0.0);
-
-                // Apply transform keyframes + modifiers (position, scale, rotation)
-                let has_transform = !clip.transform_pos_x_keyframes.is_empty()
-                    || !clip.transform_pos_y_keyframes.is_empty()
-                    || !clip.transform_scale_keyframes.is_empty()
-                    || !clip.transform_rotation_keyframes.is_empty()
-                    || clip.param_modifiers.contains_key(&klipp_core::ParamId::PositionX)
-                    || clip.param_modifiers.contains_key(&klipp_core::ParamId::PositionY)
-                    || clip.param_modifiers.contains_key(&klipp_core::ParamId::Scale)
-                    || clip.param_modifiers.contains_key(&klipp_core::ParamId::Rotation)
-                    || clip.transform_link.is_some();
-
-                if has_transform {
-                    let tdef = clip.builtin_effects.iter()
-                        .find_map(|e| match e {
-                            klipp_effects::BuiltinEffect::Transform { position_x, position_y, scale_x, scale_y, rotation, anchor_x, anchor_y, .. } =>
-                                Some((*position_x, *position_y, *scale_x, *scale_y, *rotation, *anchor_x, *anchor_y)),
-                            _ => None,
-                        })
-                        .unwrap_or((0.0, 0.0, 1.0, 1.0, 0.0, 0.5, 0.5));
-
-                    let eval_ctx = klipp_core::EvalContext {
-                        clip_time_secs: clip_relative_secs,
-                        clip_duration_secs: (clip.source_out.to_secs_f64() - clip.source_in.to_secs_f64()),
-                        timeline_time_secs: playhead.to_secs_f64(),
-                        fps: self.fps.as_f64(),
-                        seed: clip.id.0.as_u64_pair().0,
-                    };
-
-                    // Per-sample motion blur is incompatible with
-                    // transform_link (the chain target's per-sample
-                    // values would also need resolving). For Phase 1
-                    // we collapse linked clips to the single resolved
-                    // transform, skipping motion-blur sample loop.
-                    let has_link = clip.transform_link.is_some();
-                    let motion_blur = title_data.motion_blur()
-                        .filter(|mb| mb.samples >= 2)
-                        .filter(|_| !has_link);
-
-                    if let Some(mb) = motion_blur {
-                        let frame_dur = self.fps.frame_duration_secs();
-                        // shutter_angle may animate via keyframes —
-                        // evaluate against clip-local time. samples
-                        // stays static (integer, not keyframable).
-                        let shutter = mb.evaluated_shutter_angle(clip_relative_secs);
-                        let half_shutter = (shutter as f64 / 360.0) * frame_dur;
-                        let n = mb.samples as usize;
-                        let pixel_count = (res.width * res.height) as usize * 4;
-                        let mut accum = vec![0u32; pixel_count];
-
-                        for si in 0..n {
-                            let t_offset = if n > 1 {
-                                (si as f64 / (n - 1) as f64 - 0.5) * 2.0 * half_shutter
-                            } else {
-                                0.0
-                            };
-                            let sample_t = (clip_relative_secs + t_offset).max(0.0);
-                            let sample_eval = klipp_core::EvalContext {
-                                clip_time_secs: sample_t,
-                                ..eval_ctx
-                            };
-
-                            let spx = match clip.param_modifiers.get(&klipp_core::ParamId::PositionX) {
-                                Some(stack) if !stack.modifiers.is_empty() =>
-                                    klipp_core::evaluate_param(&clip.transform_pos_x_keyframes, stack, sample_t, tdef.0, &sample_eval),
-                                _ => klipp_core::keyframe::evaluate(&clip.transform_pos_x_keyframes, sample_t, tdef.0),
-                            };
-                            let spy = match clip.param_modifiers.get(&klipp_core::ParamId::PositionY) {
-                                Some(stack) if !stack.modifiers.is_empty() =>
-                                    klipp_core::evaluate_param(&clip.transform_pos_y_keyframes, stack, sample_t, tdef.1, &sample_eval),
-                                _ => klipp_core::keyframe::evaluate(&clip.transform_pos_y_keyframes, sample_t, tdef.1),
-                            };
-                            let ssc = match clip.param_modifiers.get(&klipp_core::ParamId::Scale) {
-                                Some(stack) if !stack.modifiers.is_empty() =>
-                                    klipp_core::evaluate_param(&clip.transform_scale_keyframes, stack, sample_t, tdef.2, &sample_eval),
-                                _ => klipp_core::keyframe::evaluate(&clip.transform_scale_keyframes, sample_t, tdef.2),
-                            };
-                            let sro = match clip.param_modifiers.get(&klipp_core::ParamId::Rotation) {
-                                Some(stack) if !stack.modifiers.is_empty() =>
-                                    klipp_core::evaluate_param(&clip.transform_rotation_keyframes, stack, sample_t, tdef.4, &sample_eval),
-                                _ => klipp_core::keyframe::evaluate(&clip.transform_rotation_keyframes, sample_t, tdef.4),
-                            };
-
-                            let sample_rgba = klipp_effects::transform::apply(
-                                rgba.clone(), res.width, res.height,
-                                spx, spy, ssc, ssc, sro, tdef.5, tdef.6, 0.0, 0.0, 0.0,
-                            );
-                            for (i, &b) in sample_rgba.iter().enumerate() {
-                                accum[i] += b as u32;
-                            }
-                        }
-                        rgba = accum.iter().map(|v| (*v / n as u32) as u8).collect();
-                    } else {
-                        // Use the pre-resolved transform from the
-                        // overlay-decoder cache. Falls back to a fresh
-                        // own-only evaluation if (somehow) the cache
-                        // doesn't have it — should never happen since
-                        // we pre-resolve every active overlay above.
-                        let (px, py, sx, sy, ro, ax, ay) = transform_cache
-                            .get(&clip.id)
-                            .copied()
-                            .unwrap_or_else(|| {
-                                evaluate_clip_own_transform(&clip, clip_relative_secs, &eval_ctx)
-                            });
-
-                        rgba = klipp_effects::transform::apply(rgba, res.width, res.height, px, py, sx, sy, ro, ax, ay, 0.0, 0.0, 0.0);
-                    }
-                }
-
-                // Title renderer is u8-only; bridge to linear once
-                // here so `overlay_frames` stays linear-native for the
-                // compositor (which runs every frame).
-                let u8_frame = crate::types::DecodedFrame {
-                    data: rgba,
-                    width: res.width,
-                    height: res.height,
-                    pts: RationalTime::from_frames(0, 24),
-                    is_eof: false,
-                };
-                self.overlay_frames.insert(track_idx, u8_frame.to_linear());
-                self.overlay_clips.insert(track_idx, clip_idx);
-                self.overlay_synth_frame.insert(track_idx, frame_key);
-                let us = t_iter.elapsed().as_micros();
-                per_iter_log.push((track_idx, true, false, us, "title_rendered"));
-                continue;
-            }
-
-            // Generator clip — render directly to overlay_frames
-            if let Some(gen_data) = clip.generator_data() {
-                if let Some(mut dec) = self.overlay_decoders.remove(&track_idx) {
-                    dec.stop_detached();
-                    media_decoder_count = media_decoder_count.saturating_sub(1);
-                }
-                let clip_relative_secs = (playhead - clip.timeline_in).to_secs_f64().max(0.0);
-                let total_secs = (clip.timeline_out - clip.timeline_in).to_secs_f64();
-                let rgba = render_generator_with_slate(
-                    &mut self.title_renderer,
-                    gen_data,
-                    res.width,
-                    res.height,
-                    clip_relative_secs,
-                    total_secs,
-                );
-
-                // Note: clip-level opacity is NOT baked in here. It is applied at
-                // composite time so paused opacity drags update the visible frame.
-
-                // Generator renderer is u8-only; bridge to linear once
-                // here so `overlay_frames` stays linear-native for the
-                // compositor.
-                let u8_frame = crate::types::DecodedFrame {
-                    data: rgba,
-                    width: res.width,
-                    height: res.height,
-                    pts: RationalTime::from_frames(0, 24),
-                    is_eof: false,
-                };
-                self.overlay_frames.insert(track_idx, u8_frame.to_linear());
-                self.overlay_clips.insert(track_idx, clip_idx);
-                self.overlay_synth_frame.insert(track_idx, frame_key);
-                // Record the static-generator fingerprint so the
-                // fast path above can short-circuit subsequent ticks.
-                // Countdown is excluded — its rendered numeral changes
-                // per second so we want the regular per-frame path.
-                if !matches!(gen_data, klipp_core::GeneratorData::Countdown) {
-                    self.overlay_static_gen
-                        .insert(track_idx, (gen_data.clone(), res.width, res.height));
-                } else {
-                    self.overlay_static_gen.remove(&track_idx);
-                }
-                continue;
-            }
-
-            // Media clip — open decoder if needed
-            if let Some(media_id) = clip.media_id() {
-                let source_secs = clip.source_in.to_secs_f64()
-                    + (playhead - clip.timeline_in).to_secs_f64() * clip.speed;
-                // Already have the right decoder open for this track+clip?
-                if self.overlay_clips.get(&track_idx) == Some(&clip_idx) && self.overlay_decoders.contains_key(&track_idx) {
-                    let us = t_iter.elapsed().as_micros();
-                    per_iter_log.push((track_idx, false, true, us, "media_decoder_open"));
-                    continue;
-                }
-                // Close old decoder for this track if any
-                if let Some(mut dec) = self.overlay_decoders.remove(&track_idx) {
-                    dec.stop_detached();
-                    media_decoder_count = media_decoder_count.saturating_sub(1);
-                }
-                self.overlay_frames.remove(&track_idx);
-
-                // Enforce decoder cap
-                if media_decoder_count >= MAX_OVERLAY_DECODERS {
-                    debug!("Overlay decoder cap reached ({MAX_OVERLAY_DECODERS}), skipping track {track_idx}");
-                    continue;
-                }
-
-                if let Some(path) = self.path_for_media(media_id) {
-                    // Path-aware rotation: 0 when path is the skim/proxy
-                    // (already upright via ffmpeg autorotate during transcode),
-                    // clip.source_rotation when it's the original. Avoids the
-                    // double-rotation bug where iPhone portrait clips played
-                    // sideways once their skim file was generated.
-                    let rotation = self.effective_decode_rotation(media_id, &path, clip.source_rotation);
-                    match VideoDecoder::open(&path, rotation) {
-                        Ok(dec) => {
-                            if source_secs > 0.01 {
-                                dec.seek(source_secs);
-                            }
-                            dec.resume();
-                            self.overlay_decoders.insert(track_idx, dec);
-                            self.overlay_clips.insert(track_idx, clip_idx);
-                            media_decoder_count += 1;
-                            debug!("Overlay decoder opened for track {track_idx} clip {clip_idx}");
-                        }
-                        Err(e) => {
-                            warn!("Failed to open overlay decoder for track {track_idx}: {e}");
-                            self.overlay_clips.remove(&track_idx);
-                        }
-                    }
-                }
-            }
-        }
-
-        // Enforce decoder cap: remove excess starting from highest track index
-        while self.overlay_decoders.len() > MAX_OVERLAY_DECODERS {
-            let max_idx = self.overlay_decoders.keys().copied().max();
-            if let Some(track_idx) = max_idx {
-                if let Some(mut dec) = self.overlay_decoders.remove(&track_idx) {
-                    dec.stop_detached();
-                }
-                self.overlay_clips.remove(&track_idx);
-                self.overlay_frames.remove(&track_idx);
-                debug!("Overlay decoder capped: closed track {track_idx}");
-            } else {
-                break;
-            }
-        }
-        // Per-stage timing: localise where the per-tick `ov_open`
-        // cost goes. `collect_us` is the seq-read + clip.clone()
-        // gather. `total - collect` is the active-overlays
-        // processing loop (synthetic-skip cache check + V2-decoder
-        // already-open check + any actual work).
-        let total_us = t_total.elapsed().as_micros();
-        if total_us > 2_000 {
-            let mut iter_summary = String::new();
-            for (track_idx, is_synthetic, hit, us, label) in &per_iter_log {
-                iter_summary.push_str(&format!(
-                    " [t{}{}{} {:.2}ms via {}]",
-                    track_idx,
-                    if *is_synthetic { " synth" } else { " media" },
-                    if *hit { " hit" } else { " miss" },
-                    *us as f64 / 1000.0,
-                    label,
-                ));
-            }
-            tracing::debug!(
-                "PERF update_overlay_decoders: {:.2}ms (collect={:.2} loop={:.2}) overlays={active_overlays_count}{iter_summary}",
-                total_us as f64 / 1000.0,
-                collect_us as f64 / 1000.0,
-                total_us.saturating_sub(collect_us) as f64 / 1000.0,
-            );
-        }
-    }
 
     fn stop_at_end(&mut self) {
         info!("stop_at_end called — loop_enabled={}, playhead={:.3}s",
@@ -5709,16 +4399,7 @@ impl PlaybackEngine {
         }
 
         self.v1_decoder = None;
-        self.clear_all_overlays();
-        if let Some(dec) = &mut self.transition_decoder {
-            dec.stop_detached();
-        }
-        self.transition_decoder = None;
-        self.transition_clip_id = None;
-        self.transition_frame_cache = None;
-        self.transition_clip_a_last_frame = None;
-        self.transition_partner_eof = false;
-        self.transition_degradation = Default::default();
+        self.streams.clear();
         self.stop_all_audio();
         self.last_synth_frame_rendered = None;
         self.state = PlaybackState::Paused;
@@ -5985,11 +4666,11 @@ impl PlaybackEngine {
                     self.master_clock.resume();
                 }
 
-                // 6. Overlay decoder update
-                self.overlay_frames.clear();
-                self.update_overlay_decoders(target);
-
+                // 6. The other clips' streams follow (they seek themselves
+                // when their time jumps back).
                 self.playhead = target;
+                self.sync_streams();
+
                 let _ = self.event_tx.send(AppEvent::LoopedBack);
                 let _ = self.event_tx.send(AppEvent::PlayheadMoved(target));
                 (self.repaint_cb)();
@@ -6029,30 +4710,17 @@ impl PlaybackEngine {
         } else {
             None
         };
-        let res = seq.resolution;
         drop(seq);
 
         // Handle title clip at loop target
-        if let Some((idx, title_data, timeline_in, clip_source_in)) = title_info {
+        if let Some((idx, _title_data, timeline_in, clip_source_in)) = title_info {
             self.v1_decoder = None;
             self.current_clip_index = idx;
             self.current_file = None;
             self.clip_source_start = clip_source_in;
             self.clip_timeline_start = timeline_in;
-
-            let clip_elapsed_tw = (target - timeline_in).to_secs_f64().max(0.0);
-            let typewriter_td = typewriter_override(&title_data, clip_elapsed_tw);
-            let td_for_render = typewriter_td.as_ref().unwrap_or(&title_data);
-            let mut gpu_adapter = self.gpu_effects.as_mut().map(GpuAlphaMaskAdapter);
-                let gpu: Option<&mut dyn klipp_title::AlphaMaskProcessor> = gpu_adapter.as_mut().map(|a| a as &mut dyn klipp_title::AlphaMaskProcessor);
-            let rgba = self.title_renderer.render_with_time(td_for_render, res.width, res.height, gpu, clip_elapsed_tw as f32);
-            // Title renderer emits u8; bridge at this viewer boundary.
-            let linear = u8_rgba_to_linear(&rgba);
-            let final_linear = self.post_process_rgba(linear, res.width, res.height);
-            let final_rgba = self.display_encode(&final_linear);
-            let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
-            fb.write_frame(final_rgba, res.width, res.height);
-            drop(fb);
+            self.playhead = target;
+            self.present_frame(None);
 
             // Reopen audio at target
             self.master_clock.pause();
@@ -6136,18 +4804,17 @@ impl PlaybackEngine {
                 self.master_clock.resume();
             }
 
-            // 5. Overlay decoder update
-            self.overlay_frames.clear();
-            self.update_overlay_decoders(target);
-
+            // 5. The other clips' streams follow (they seek themselves
+            // when their time jumps back).
             self.playhead = target;
+            self.sync_streams();
+
             let _ = self.event_tx.send(AppEvent::LoopedBack);
             let _ = self.event_tx.send(AppEvent::PlayheadMoved(target));
             (self.repaint_cb)();
         } else {
             // No video clip at target — audio-only loop
             self.v1_decoder = None;
-            self.overlay_frames.clear();
 
             self.master_clock.pause();
             if let Some(aout) = &self.audio_output { aout.0.pause(); }
@@ -6179,7 +4846,9 @@ impl PlaybackEngine {
         // Clear frame cache on explicit seek (cache is only valid for sequential stepping)
         self.frame_cache.clear();
         self.last_synth_frame_rendered = None;
-        // Check for standalone title clip (no media clip at this timecode on any track)
+        // No media clip on any video track at this time: nothing to
+        // decode. A title or generator there becomes the clip playback
+        // starts from; the renderer draws whatever is on screen.
         {
             let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
             let has_media_clip = seq.tracks.iter()
@@ -6189,88 +4858,36 @@ impl PlaybackEngine {
                         .map(|(_, c)| c.media_id().is_some())
                         .unwrap_or(false)
                 });
-            let title_info = if !has_media_clip {
-                seq.tracks.iter()
-                    .filter(|t| t.kind == klipp_timeline::TrackKind::Video)
-                    .find_map(|track| {
+            let synth = if !has_media_clip {
+                seq.tracks.iter().enumerate()
+                    .filter(|(_, t)| t.kind == klipp_timeline::TrackKind::Video)
+                    .find_map(|(ti, track)| {
                         track.clip_at_timecode(tc).and_then(|(idx, clip)| {
-                            let td = clip.title_data()?.clone();
-                            Some((idx, td, clip.timeline_in, clip.source_in.to_secs_f64()))
+                            let source_start = match &clip.kind {
+                                klipp_timeline::ClipKind::Title(_) => clip.source_in.to_secs_f64(),
+                                klipp_timeline::ClipKind::Generator(_) => 0.0,
+                                _ => return None,
+                            };
+                            Some((ti, idx, clip.timeline_in, source_start))
                         })
                     })
             } else {
                 None
             };
-            let res = seq.resolution;
             drop(seq);
 
-            if let Some((idx, title_data, timeline_in, clip_source_in)) = title_info {
-                // Close any existing video decoder — title clips don't need one
+            if let Some((ti, idx, timeline_in, source_start)) = synth {
                 self.v1_decoder = None;
+                self.current_track_index = ti;
                 self.current_clip_index = idx;
                 self.current_file = None;
-                self.clip_source_start = clip_source_in;
+                self.clip_source_start = source_start;
                 self.clip_timeline_start = timeline_in;
-
-                // Render title frame and write to frame buffer
-                let clip_elapsed_tw = (tc - timeline_in).to_secs_f64().max(0.0);
-                let typewriter_td = typewriter_override(&title_data, clip_elapsed_tw);
-                let td_for_render = typewriter_td.as_ref().unwrap_or(&title_data);
-                let mut gpu_adapter = self.gpu_effects.as_mut().map(GpuAlphaMaskAdapter);
-                let gpu: Option<&mut dyn klipp_title::AlphaMaskProcessor> = gpu_adapter.as_mut().map(|a| a as &mut dyn klipp_title::AlphaMaskProcessor);
-                let rgba = self.title_renderer.render_with_time(td_for_render, res.width, res.height, gpu, clip_elapsed_tw as f32);
-                let linear = u8_rgba_to_linear(&rgba);
-                let final_linear = self.post_process_rgba(linear, res.width, res.height);
-                let final_rgba = self.display_encode(&final_linear);
-                let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
-                fb.write_frame(final_rgba, res.width, res.height);
-                drop(fb);
-
                 self.playhead = tc;
+                self.present_frame(None);
                 let _ = self.event_tx.send(AppEvent::PlayheadMoved(tc));
                 (self.repaint_cb)();
                 return;
-            }
-
-            // Check for standalone generator clip at this timecode
-            if !has_media_clip {
-                let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
-                let gen_info = seq.tracks.iter()
-                    .filter(|t| t.kind == klipp_timeline::TrackKind::Video)
-                    .find_map(|track| {
-                        track.clip_at_timecode(tc).and_then(|(idx, clip)| {
-                            let gd = clip.generator_data()?.clone();
-                            Some((idx, gd, clip.timeline_in, clip.timeline_out))
-                        })
-                    });
-                let res2 = seq.resolution;
-                drop(seq);
-
-                if let Some((idx, gen_data, timeline_in, timeline_out)) = gen_info {
-                    self.v1_decoder = None;
-                    self.current_clip_index = idx;
-                    self.current_file = None;
-                    self.clip_source_start = 0.0;
-                    self.clip_timeline_start = timeline_in;
-
-                    let elapsed_secs = (tc - timeline_in).to_secs_f64().max(0.0);
-                    let total_secs = (timeline_out - timeline_in).to_secs_f64();
-                    let rgba = render_generator_with_slate(
-                        &mut self.title_renderer,
-                        &gen_data, res2.width, res2.height, elapsed_secs, total_secs,
-                    );
-                    let linear = u8_rgba_to_linear(&rgba);
-                    let final_linear = self.post_process_rgba(linear, res2.width, res2.height);
-                    let final_rgba = self.display_encode(&final_linear);
-                    let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
-                    fb.write_frame(final_rgba, res2.width, res2.height);
-                    drop(fb);
-
-                    self.playhead = tc;
-                    let _ = self.event_tx.send(AppEvent::PlayheadMoved(tc));
-                    (self.repaint_cb)();
-                    return;
-                }
             }
         }
 
@@ -6290,8 +4907,9 @@ impl PlaybackEngine {
         drop(seq);
 
         if let Some((ti, idx, media_id, source_secs, timeline_in, clip_source_in, spd, rot)) = clip_info {
+            let need_new_decoder =
+                self.current_track_index != ti || self.current_clip_index != idx || self.v1_decoder.is_none();
             self.current_track_index = ti;
-            let need_new_decoder = self.current_clip_index != idx || self.v1_decoder.is_none();
 
             if need_new_decoder {
                 if let Some(path) = self.path_for_media(media_id) {
@@ -6361,9 +4979,10 @@ impl PlaybackEngine {
             }
             // Sources already start paused, no need to pause them
 
-            // Re-check overlays at the new playhead
-            self.overlay_frames.clear();
-            self.update_overlay_decoders(tc);
+            // The frame renders at the new time; the other clips' streams
+            // start seeking now, alongside the primary decoder.
+            self.playhead = tc;
+            self.sync_streams();
 
             if !was_playing {
                 let got_frame = self.grab_single_frame_timeout(grab_timeout);
@@ -6388,9 +5007,11 @@ impl PlaybackEngine {
                 }
             }
         } else {
-            // No video clip at this timecode — handle audio-only seek
+            // No video clip at this timecode — handle audio-only seek.
+            // The viewer shows what is there: nothing.
             self.v1_decoder = None;
-            self.overlay_frames.clear();
+            self.playhead = tc;
+            self.present_frame(None);
 
             // Check if any audio track has a clip here
             let has_audio = {
@@ -6462,18 +5083,8 @@ impl PlaybackEngine {
         // The cache stores sRGB u8 — bridge at this viewer seam.
         if let Some((pixels, w, h)) = self.frame_cache.get(target_frame) {
             self.playhead = RationalTime { value: target_frame, rate: self.playhead.rate };
-            let linear = pixels.grade_input();
-            // `post_process_rgba` tone-maps HDR results itself.
-            self.grade_hdr = pixels.hdr().cloned();
-            let final_linear = self.post_process_rgba(linear, w, h);
-            self.grade_hdr = None;
-            let final_rgba = self.display_encode(&final_linear);
-            let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
-            fb.write_frame(final_rgba, w, h);
-            drop(fb);
+            self.present_frame(Some(streams::HeldFrame::from_pregrade(&pixels, w, h)));
             let _ = self.event_tx.send(AppEvent::PlayheadMoved(self.playhead));
-            let _ = self.event_tx.send(AppEvent::FrameReady);
-            (self.repaint_cb)();
             // Keep decoder filling the queue for future steps
             self.prefetch_ahead();
             return;
@@ -6510,11 +5121,7 @@ impl PlaybackEngine {
                     frame.ensure_cpu_data();
                 }
                 self.frame_cache.insert(self.playhead.value, PregradePixels::from_frame(&frame), w, h);
-                let final_linear = self.grade_v1_frame(frame, w, h);
-                let final_rgba = self.display_encode(&final_linear);
-                let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
-                fb.write_frame(final_rgba, w, h);
-                drop(fb);
+                self.present_frame(Some(streams::HeldFrame::from_frame(frame)));
                 // Frame step chirp (~20ms). Chirps on a scrub are gated on
                 // the scrub-audio preference; non-scrub frame steps keep theirs.
                 if !self.is_scrubbing || self.scrub_audio_enabled {
@@ -6571,11 +5178,7 @@ impl PlaybackEngine {
                         frame.ensure_cpu_data();
                     }
                     self.frame_cache.insert(self.playhead.value, PregradePixels::from_frame(&frame), w, h);
-                    let final_linear = self.grade_v1_frame(frame, w, h);
-                    let final_rgba = self.display_encode(&final_linear);
-                    let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
-                    fb.write_frame(final_rgba, w, h);
-                    drop(fb);
+                    self.present_frame(Some(streams::HeldFrame::from_frame(frame)));
                     // Frame step chirp (~20ms). Same gating as the primary
                     // frame-step path above — skip during a silenced scrub.
                     if !self.is_scrubbing || self.scrub_audio_enabled {
@@ -6656,11 +5259,7 @@ impl PlaybackEngine {
                     if frame_num >= target_frame && !found_target {
                         found_target = true;
                         self.playhead = RationalTime { value: frame_num, rate: self.playhead.rate };
-                        let final_linear = self.grade_v1_frame(frame, w, h);
-                        let final_rgba = self.display_encode(&final_linear);
-                        let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
-                        fb.write_frame(final_rgba, w, h);
-                        drop(fb);
+                        self.present_frame(Some(streams::HeldFrame::from_frame(frame)));
                         let _ = self.event_tx.send(AppEvent::PlayheadMoved(self.playhead));
                         let _ = self.event_tx.send(AppEvent::FrameReady);
                         (self.repaint_cb)();
@@ -6686,168 +5285,54 @@ impl PlaybackEngine {
         }
     }
 
-    /// Bidirectional prefetch: fill cache with frames both behind and ahead
-    /// of the current playhead. After this call, stepping in either direction
-    /// is an instant cache hit.
-    /// Pre-render nearby frames into the render cache during idle time.
-    /// Priority: ±2 seconds from playhead first, then rest of clip.
-    /// Runs ONE frame per call to stay responsive to new commands.
+    /// Pre-render nearby frames into the render cache during idle time,
+    /// one per call to stay responsive. Only frames already decoded into
+    /// `frame_cache` are candidates — this never decodes — nearest the
+    /// playhead first. (It once enumerated every timeline tick of the
+    /// clip; at 59.94 fps a tick is a thousandth of a frame, and the scan
+    /// held the engine thread for seconds on every idle tick.)
     fn prerender_cache_frames(&mut self) {
         mark_stage(EngineStage::Prerender);
-        // Per-phase timing, logged when a call is slow. The watchdog has
-        // caught this function holding the engine thread for 10-24 s at
-        // a time while paused on a graded clip; without a breakdown there
-        // is no telling which phase it is.
         let t_call = std::time::Instant::now();
-        let mut phases: Vec<(&'static str, f64)> = Vec::new();
-        let mut lap = std::time::Instant::now();
-        let mut mark = |name: &'static str, phases: &mut Vec<(&'static str, f64)>| {
-            phases.push((name, lap.elapsed().as_secs_f64() * 1000.0));
-            lap = std::time::Instant::now();
-        };
-        let report = |phases: &[(&'static str, f64)], outcome: &str| {
-            let total = t_call.elapsed().as_secs_f64() * 1000.0;
-            if total > 20.0 {
-                let parts: Vec<String> =
-                    phases.iter().map(|(n, ms)| format!("{n}={ms:.1}")).collect();
-                debug!("PERF prerender: {total:.1}ms {outcome} | {}", parts.join(" "));
-            }
-        };
-        // Previously a source of 70+ second hangs at
-        // `stage=Prerender` — the inner GPU grade call occasionally
-        // never returned on Wayland+NVIDIA, taking the engine thread
-        // (and eventually the UI) down with it. Re-enabled with
-        // finer-grained `GPU_STAGE` instrumentation: the next hang
-        // (if any) will name its exact blocking call
-        // (`gpu_stage=LinearRgbaToU8`, `FlushChain`, etc.) instead
-        // of hiding behind the coarse `Prerender` stage.
-        // Skip if render cache is disabled
-        if !self.render_cache_disk.is_enabled() { return; }
-        // Only pre-render if we have a clip with a non-identity grade
-        let clip_info = {
+        if !self.render_cache_disk.is_enabled() {
+            return;
+        }
+        let clip_range = {
             let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
-            seq.tracks.iter()
-                .filter(|t| t.kind == klipp_timeline::TrackKind::Video)
-                .find_map(|t| t.clip_at_timecode(self.playhead))
-                .and_then(|(_, clip)| {
-                    if clip.node_graph.is_identity() && clip.builtin_effects.is_empty() {
-                        None
-                    } else {
-                        Some((
-                            clip.id,
-                            clip.timeline_in.value,
-                            clip.timeline_out.value,
-                            crate::render_cache::compute_grade_hash(
-                                &clip.node_graph, &clip.builtin_effects, &clip.builtin_effects_enabled,
-                            ),
-                        ))
-                    }
-                })
+            seq.tracks
+                .get(self.current_track_index)
+                .and_then(|t| t.clips.get(self.current_clip_index))
+                .filter(|c| !(c.node_graph.is_identity() && c.builtin_effects.is_empty()))
+                .map(|c| (c.timeline_in.value, c.timeline_out.value))
         };
-
-        let (clip_id, clip_start, clip_end, grade_hash) = match clip_info {
-            Some(info) => info,
-            None => return,
-        };
-        mark("clip_info", &mut phases);
-
+        let Some((clip_start, clip_end)) = clip_range else { return };
         let current = self.playhead.value;
-        // Only frames already decoded into `frame_cache` can be
-        // pre-rendered — this function never decodes. So the candidates
-        // are those frames, nearest the playhead first, and nothing else.
-        //
-        // It used to enumerate every timeline position in the clip. Those
-        // are ticks, not frames: `Fps::rate()` is the numerator, so at
-        // 59.94 fps (60000/1001) a frame is 1001 ticks and a five-minute
-        // clip is 18.8 million candidates, each probed against the disk
-        // cache with a `stat`. Measured: 15 s per call, on every idle tick
-        // while paused on a graded clip — the engine thread was
-        // effectively never free, and paused edits froze. Integer frame
-        // rates happened to work because there a tick *is* a frame.
-        // Iterating what can be rendered is independent of the units.
-        let candidates: Vec<i64> = {
-            let mut frames: Vec<i64> = self
-                .frame_cache
-                .frame_numbers()
-                .filter(|f| *f >= clip_start && *f < clip_end && *f != current)
-                .collect();
-            frames.sort_by_key(|f| (f - current).abs());
-            frames
-        };
-        mark("candidates", &mut phases);
+        let mut candidates: Vec<i64> = self
+            .frame_cache
+            .frame_numbers()
+            .filter(|f| *f >= clip_start && *f < clip_end && *f != current)
+            .collect();
+        candidates.sort_by_key(|f| (f - current).abs());
         let candidate_count = candidates.len();
-        let mut scanned = 0usize;
-
-        // Find the first uncached frame and pre-render it
-        for frame_num in candidates {
-            scanned += 1;
-            let key = crate::render_cache::RenderCacheKey {
-                clip_id,
-                frame_number: frame_num,
-                grade_hash,
-            };
-
-            // Skip if already in hot or cold cache
-            if self.render_cache_hot.get(&key).is_some() { continue; }
-            if self.render_cache_disk.get(&key).is_some() { continue; }
-
-            // Check if we have the pre-grade frame in the decode cache.
-            // `frame_cache` stores sRGB u8 and both render caches do
-            // too — bridge around `post_process_rgba_inner`, which is
-            // linear-in/linear-out post the linear-edge-to-edge
-            // refactor.
-            if let Some((pixels, w, h)) = self.frame_cache.get(frame_num) {
-                mark("scan", &mut phases);
-                // Save/restore playhead so grading evaluates at the right time
-                let saved_playhead = self.playhead;
-                self.playhead = klipp_core::RationalTime { value: frame_num, rate: self.playhead.rate };
-
-                let linear = pixels.grade_input();
-                mark("grade_input", &mut phases);
-                // Suspend per-node thumbnail capture: this speculative
-                // grade is for a NEAR-playhead frame (prerender cache
-                // warm-up), not the user's actual playhead. Capturing
-                // thumbs here would overwrite the canvas previews with
-                // frames the user didn't ask for.
-                self.thumb_capture_suspended = true;
-                self.grade_hdr = pixels.hdr().cloned();
-                let mut graded_linear = self.post_process_rgba_inner(linear, w, h);
-                mark("grade", &mut phases);
-                // The render cache holds what the viewer shows, so an HDR
-                // entry is stored tone-mapped, same as playback stores it.
-                self.finish_hdr_grade(&mut graded_linear);
-                self.grade_hdr = None;
-                self.thumb_capture_suspended = false;
-                mark("tonemap", &mut phases);
-                let graded = linear_rgba_to_u8(&graded_linear);
-                mark("to_u8", &mut phases);
-
-                self.render_cache_hot.insert(key.clone(), graded.clone(), w, h);
-                mark("hot_insert", &mut phases);
-                self.render_cache_disk.put(&key, &graded, w, h);
-                mark("disk_put", &mut phases);
-
-                // Restore playhead
-                self.playhead = saved_playhead;
-                report(
-                    &phases,
-                    &format!("rendered frame {frame_num} ({w}x{h}, hdr={}) after scanning {scanned}/{candidate_count}",
-                             pixels.hdr().is_some()),
-                );
-                return; // One frame per call — stay responsive
+        for (scanned, frame_num) in candidates.into_iter().enumerate() {
+            let Some((pixels, w, h)) = self.frame_cache.get(frame_num) else { continue };
+            if self.prerender_frame(frame_num, streams::HeldFrame::from_pregrade(&pixels, w, h)) {
+                let ms = t_call.elapsed().as_secs_f64() * 1000.0;
+                if ms > 20.0 {
+                    debug!("PERF prerender: {ms:.1}ms rendered frame {frame_num} ({w}x{h}) after scanning {}/{candidate_count}", scanned + 1);
+                }
+                return;
             }
         }
-
-        mark("scan", &mut phases);
-        // Update render cache ranges for timeline visualization
         self.update_render_cache_ranges();
-        mark("ranges", &mut phases);
-        report(&phases, &format!("nothing to render after scanning {scanned}/{candidate_count}"));
     }
 
     /// Update the shared frame buffer with current render cache coverage per clip.
     fn update_render_cache_ranges(&mut self) {
-        let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
+        // A lock on a clone of the Arc, so hashing (which caches into
+        // `self`) can run while it is held.
+        let sequence = Arc::clone(&self.sequence);
+        let seq = sequence.read().unwrap_or_else(|e| e.into_inner());
         let mut ranges = Vec::new();
 
         for track in seq.tracks.iter().filter(|t| t.kind == klipp_timeline::TrackKind::Video) {
@@ -6855,9 +5340,7 @@ impl PlaybackEngine {
                 if clip.node_graph.is_identity() && clip.builtin_effects.is_empty() {
                     continue;
                 }
-                let grade_hash = crate::render_cache::compute_grade_hash(
-                    &clip.node_graph, &clip.builtin_effects, &clip.builtin_effects_enabled,
-                );
+                let grade_hash = self.render_key_hash(clip, track.opacity);
                 // Timeline positions are ticks; a frame is `fps.den` of them
                 // (1001 at the NTSC rates, 1 at integer rates). Counting
                 // ticks made every clip look 1001x longer than it is, so
@@ -6987,43 +5470,13 @@ impl PlaybackEngine {
                 }
                 best
             });
-            if let Some(mut frame) = best {
-                let (w, h) = (frame.width, frame.height);
-                // LinearFrame carries linear natively — feed it
-                // straight into post_process_rgba, display-transform
-                // once at the viewer seam.
-                if frame.hdr.is_none() {
-                    frame.ensure_cpu_data();
-                }
-                let v1_graded_linear = self.grade_v1_frame(frame, w, h);
-                // Pump overlay decoder queues so any frames the
-                // async decoders have pushed during the V1 wait land
-                // in `overlay_frames` before the composite runs.
-                // Without this, a paused seek-then-composite races
-                // V2's decoder and misses its first frame.
-                let ph = self.playhead;
-                self.pop_overlay_frames(ph);
-                // Composite overlays + matte on top of V1's graded
-                // buffer. Without this, an immediate seek-while-paused
-                // writes V1 alone and matte effects only appear after
-                // the user starts playback.
-                let final_linear = if self.overlay_frames.is_empty() {
-                    v1_graded_linear
-                } else {
-                    let composited = self.compose_with_overlays_and_matte(v1_graded_linear, w, h);
-                    let to_encode = composited.clone();
-                    self.composite_scratch_linear = composited;
-                    to_encode
-                };
-                let final_rgba = self.display_encode(&final_linear);
-                let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
-                fb.write_frame(final_rgba, w, h);
-                drop(fb);
-                let _ = self.event_tx.send(AppEvent::FrameReady);
+            if let Some(frame) = best {
+                // The whole frame, overlays and mattes included: the other
+                // clips' streams are waited for, briefly, before it renders.
+                self.present_frame(Some(streams::HeldFrame::from_frame(frame)));
                 if let Some(dec) = &self.v1_decoder {
                     dec.pause();
                 }
-                (self.repaint_cb)();
                 return true;
             }
             std::thread::sleep(Duration::from_millis(2));
@@ -7051,40 +5504,11 @@ impl PlaybackEngine {
             }
             best
         });
-        let Some(mut frame) = frame else { return false; };
-        let (w, h) = (frame.width, frame.height);
-        if frame.hdr.is_none() {
-            frame.ensure_cpu_data();
-        }
-        let v1_graded_linear = self.grade_v1_frame(frame, w, h);
-        // Pump overlay decoder queues so V2 / other media-overlay
-        // frames that arrived during the deferred wait land in
-        // `overlay_frames` before the composite runs.
-        let ph = self.playhead;
-        self.pop_overlay_frames(ph);
-        // Composite overlays + matte on top of V1's graded buffer.
-        // Without this the deferred paused refresh writes V1 alone,
-        // so video-in-text and other matte effects don't show after
-        // a cold seek (the original "freeze on the pre-seek frame"
-        // path that this function exists to recover from).
-        let final_linear = if self.overlay_frames.is_empty() {
-            v1_graded_linear
-        } else {
-            let composited = self.compose_with_overlays_and_matte(v1_graded_linear, w, h);
-            let to_encode = composited.clone();
-            self.composite_scratch_linear = composited;
-            to_encode
-        };
-        let final_rgba = self.display_encode(&final_linear);
-        {
-            let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
-            fb.write_frame(final_rgba, w, h);
-        }
-        let _ = self.event_tx.send(AppEvent::FrameReady);
+        let Some(frame) = frame else { return false; };
+        self.present_frame(Some(streams::HeldFrame::from_frame(frame)));
         if let Some(dec) = &self.v1_decoder {
             dec.pause();
         }
-        (self.repaint_cb)();
         true
     }
 
@@ -7144,32 +5568,13 @@ impl PlaybackEngine {
                     (f, out_of_time)
                 }
             };
-            if let Some(mut frame) = frame {
+            if let Some(frame) = frame {
                 if let Some((mut dec, _, _)) = self.parked_refresh.take() {
                     dec.stop_detached();
                 }
                 let (w, h) = (frame.width, frame.height);
-                if frame.hdr.is_none() {
-                    frame.ensure_cpu_data();
-                }
-                let graded = self.grade_v1_frame(frame, w, h);
-                self.pop_overlay_frames(ph);
-                let final_linear = if self.overlay_frames.is_empty() {
-                    graded
-                } else {
-                    let composited = self.compose_with_overlays_and_matte(graded, w, h);
-                    let to_encode = composited.clone();
-                    self.composite_scratch_linear = composited;
-                    to_encode
-                };
-                let final_rgba = self.display_encode(&final_linear);
-                {
-                    let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
-                    fb.write_frame(final_rgba, w, h);
-                }
+                self.present_frame(Some(streams::HeldFrame::from_frame(frame)));
                 self.parked_refresh_done_for = Some(ph);
-                let _ = self.event_tx.send(AppEvent::FrameReady);
-                (self.repaint_cb)();
                 debug!(
                     "parked refresh: original-quality frame painted at {:.3}s ({w}x{h})",
                     ph.to_secs_f64(),
@@ -7312,16 +5717,14 @@ impl PlaybackEngine {
         let linear_in = u8_rgba_to_linear(&src_rgba);
         let frame_number = (clip_time_secs * self.playhead.rate as f64).max(0.0) as u64;
         let thumb_set = self.visible_node_thumbs.clone();
-        self.ensure_gpu_effects();
+        let executor = self.renderer.executor();
         // Mirror the project's active working colorspace into the
         // executor so gamut-aware grade ops (Saturation, Vibrance,
         // ToneControls, ColorWheels, etc.) use the right luma vector.
         // Cheap setter; safe to call per-frame.
-        self.graph_executor.set_working_colorspace(
-            crate::video_decoder::working_colorspace(),
-        );
-        self.graph_executor.set_current_clip_track_points(&clip_track_points);
-        match self.graph_executor.execute_linear_with_thumbs(
+        executor.set_working_colorspace(crate::video_decoder::working_colorspace());
+        executor.set_current_clip_track_points(&clip_track_points);
+        match executor.execute_linear_with_thumbs(
             &linear_in,
             &graph,
             src_w,
@@ -7346,1141 +5749,15 @@ impl PlaybackEngine {
         }
     }
 
-    /// Apply the full post-processing pipeline to a raw decoded RGBA frame:
-    /// color grade → OFX effects → built-in effects → global LUT.
-    /// Check for an active transition at the current playhead and blend if needed.
-    /// Phase B GPU end-to-end transition path: consumes linear-f32
-    /// RGBA from the compositor and returns linear-f32 RGBA back to
-    /// the caller. Display-encode runs **after** this method, so
-    /// the transition shader operates on the same colour space as
-    /// the rest of the GPU pipeline (linear light), and we save the
-    /// pre-transition `display_encode` + post-transition u8→linear
-    /// conversion that the old u8 boundary path paid every frame.
-    ///
-    /// The shape `Vec<f32>` is the same `composite_scratch_linear`
-    /// the engine pools across frames; on transition-active frames
-    /// we may build a new Vec (from the GPU download), and the
-    /// caller restores the input back to the pool for the next
-    /// frame. On no-transition frames we hand the buffer straight
-    /// back so the pool stays warm.
-    fn apply_transition_if_active(&mut self, from_linear: Vec<f32>, width: u32, height: u32) -> Vec<f32> {
-        // Read sequence to check for transitions
-        let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
-        let active = crate::transition::find_active_transition(&seq, self.playhead);
-        drop(seq);
 
-        // Make sure the GPU pipeline is up before we hit the
-        // hot blend path. `post_process_rgba` initialises it for
-        // every graded frame, but if the user hits a transition
-        // on a clip whose grade chain is empty (no node graph,
-        // no global LUT) post_process can early-return without
-        // calling `ensure_gpu_effects`, leaving us on the CPU
-        // pixel-loop fallback at 100+ ms / frame.
-        if active.is_some() {
-            self.ensure_gpu_effects();
-        }
 
-        let active = match active {
-            Some(a) => a,
-            None => {
-                // No transition active — close transition decoder if open
-                if self.transition_decoder.is_some() {
-                    if let Some(dec) = &mut self.transition_decoder {
-                        dec.stop_detached();
-                    }
-                    self.transition_decoder = None;
-                    self.transition_clip_id = None;
-                    self.transition_frame_cache = None;
-                }
-                self.transition_clip_a_last_frame = None;
-                self.transition_partner_eof = false;
-                self.transition_degradation = Default::default();
-                return from_linear;
-            }
-        };
 
-        // Open transition decoder for partner clip if needed
-        let partner_clip_id = active.partner_clip.id;
-        if self.transition_clip_id != Some(partner_clip_id) {
-            // Close old transition decoder
-            if let Some(dec) = &mut self.transition_decoder {
-                dec.stop_detached();
-            }
-            self.transition_decoder = None;
-            self.transition_frame_cache = None;
-            self.transition_partner_eof = false;
-            self.transition_degradation = Default::default();
 
-            // Open new decoder for the partner clip
-            if let Some(media_id) = active.partner_clip.media_id() {
-                if let Some(path) = self.path_for_media(media_id) {
-                    let partner_rot = self.effective_decode_rotation(media_id, &path, active.partner_clip.source_rotation);
-                    match VideoDecoder::open(&path, partner_rot) {
-                        Ok(dec) => {
-                            let source_secs = active.partner_clip.source_in.to_secs_f64()
-                                + (self.playhead - active.partner_clip.timeline_in).to_secs_f64().max(0.0) * active.partner_clip.speed;
-                            if source_secs > 0.01 {
-                                dec.seek(source_secs);
-                            }
-                            dec.resume();
-                            self.transition_decoder = Some(dec);
-                            self.transition_clip_id = Some(partner_clip_id);
-                            debug!("Transition decoder opened for partner clip");
-                        }
-                        Err(e) => {
-                            warn!("Failed to open transition decoder: {e}");
-                        }
-                    }
-                }
-            }
-        }
 
-        // Pop the latest partner-decoder frame. We hold the popped
-        // LinearFrame in `transition_frame_cache` so the GPU
-        // transition shader gets linear-f32 RGBA directly — no
-        // sRGB encode on the cache write, no sRGB decode on the
-        // shader upload.
-        let partner_source_secs = active.partner_clip.source_in.to_secs_f64()
-            + (self.playhead - active.partner_clip.timeline_in)
-                .to_secs_f64()
-                .max(0.0)
-                * active.partner_clip.speed;
-        if let Some(t_dec) = &self.transition_decoder {
-            let current_source_secs = partner_source_secs;
-            let frame_tolerance = self.fps.frame_duration_secs() * 0.5;
-            let mut queue = t_dec.frame_queue().lock().unwrap_or_else(|e| e.into_inner());
-            while let Some(f) = queue.front() {
-                if f.is_eof {
-                    let _ = queue.pop();
-                    self.transition_partner_eof = true;
-                    break;
-                }
-                let pts = f.pts_secs();
-                if pts <= current_source_secs + frame_tolerance {
-                    let mut tf = queue.pop().unwrap();
-                    if let Some(next) = queue.front() {
-                        if !next.is_eof && next.pts_secs() <= current_source_secs + frame_tolerance {
-                            continue;
-                        }
-                    }
-                    // Realise CPU-side `data` if the decoder produced a
-                    // GPU-only frame. Phase B feeds the existing
-                    // partner-cache via CPU-side linear-f32 — Phase F
-                    // (NVDEC ↔ wgpu external memory) will route the GPU
-                    // buffer directly without the bounce.
-                    tf.ensure_cpu_data();
-                    self.transition_frame_cache = Some(tf);
-                    break;
-                } else {
-                    break;
-                }
-            }
-        }
 
-        let kind_id = crate::transition::transition_kind_to_id(active.kind);
-        let pixel_count = (width as usize) * (height as usize);
-        let f32_count = pixel_count * 4;
 
-        // Fall back to unblended main when the transition cache
-        // can't supply a partner / clip-A buffer of the right
-        // dimensions. Returning `from_linear` is correct because the
-        // linear-f32 shape matches `composite_scratch_linear`.
-        let cache_ok = self
-            .transition_frame_cache
-            .as_ref()
-            .is_some_and(|f| (f.width as usize) * (f.height as usize) * 4 == f32_count);
 
-        let up = active.user_params;
-        let gpu_progress = if matches!(active.kind, klipp_timeline::TransitionKind::CrossDissolve) {
-            crate::transition::apply_easing(active.progress, up.param0)
-        } else {
-            active.progress
-        };
 
-        if !active.past_cut {
-            // First half: clip_a is the main side (`from_linear`),
-            // clip_b is the partner cache (`to`).
-            if !cache_ok {
-                return from_linear;
-            }
-            if self.transition_partner_eof {
-                self.transition_degradation.frozen_b_count += 1;
-            }
-            // Cache the linear clip_a frame so the second-half
-            // branch can still show it after the main decoder
-            // advances. Single clone per render — the same shape
-            // the previous u8 path paid (`Vec<u8>` clone of the same
-            // size); linear-f32 is 4× larger but a single memcpy
-            // here costs ~1 ms even at 4K and saves us the round
-            // trip through sRGB on the next frame.
-            self.transition_clip_a_last_frame = Some(from_linear.clone());
-            // Clone the partner data to release the borrow on `self`
-            // before the mutable call. The buffer is already in CPU
-            // RAM at this point (the cache pop did `ensure_cpu_data`)
-            // so this is a single memcpy of the active partner frame.
-            let to_linear = self.transition_frame_cache.as_ref().unwrap().data.clone();
-            self.run_transition_blend_linear(
-                active.kind, kind_id, gpu_progress,
-                &from_linear, &to_linear, width, height, &up,
-            )
-        } else {
-            // Second half: main is on clip_b (`from_linear`),
-            // clip_a's tail comes from either the partner decoder
-            // (StartAtCut alignment) or the cached pre-cut frame.
-            let blend_from_linear: Vec<f32> = if active.alignment
-                == klipp_core::TransitionAlignment::StartAtCut
-            {
-                if !cache_ok {
-                    return from_linear;
-                }
-                if self.transition_partner_eof {
-                    self.transition_degradation.frozen_a_count += 1;
-                }
-                self.transition_frame_cache.as_ref().unwrap().data.clone()
-            } else {
-                match self.transition_clip_a_last_frame.clone() {
-                    Some(buf) if buf.len() == f32_count => buf,
-                    _ => return from_linear,
-                }
-            };
-            self.run_transition_blend_linear(
-                active.kind, kind_id, gpu_progress,
-                &blend_from_linear, &from_linear, width, height, &up,
-            )
-        }
-    }
-
-    /// Dispatch the actual blend — GPU when available, CPU fallback
-    /// otherwise. Both paths consume linear-f32 input and produce
-    /// linear-f32 output. The GPU path skips the u8 boundary entirely;
-    /// the CPU path wraps the existing parallel u8 implementation
-    /// with a thin linear↔u8 conversion at the boundary (a future
-    /// commit can add a native linear-f32 CPU implementation —
-    /// rayon already covers most of the speed-up today).
-    #[allow(clippy::too_many_arguments)]
-    fn run_transition_blend_linear(
-        &mut self,
-        kind: klipp_timeline::TransitionKind,
-        kind_id: u32,
-        gpu_progress: f32,
-        from_linear: &[f32],
-        to_linear: &[f32],
-        width: u32,
-        height: u32,
-        up: &klipp_core::TransitionUserParams,
-    ) -> Vec<f32> {
-        if let Some(gpu) = &mut self.gpu_effects {
-            return gpu.render_transition_linear(
-                from_linear, to_linear, kind_id, gpu_progress, width, height,
-                up.param0, up.param1, up.param2, up.param3, up.color,
-            );
-        }
-        // CPU fallback. The existing rayon-parallelised CPU path
-        // operates on u8 sRGB; bridge linear → u8 at entry and
-        // u8 → linear at exit. The conversion is a few ms at 1080p
-        // (≈8 MB per channel × 3 channels of pow ops) — meaningful
-        // but dwarfed by the per-pixel transition math, and far
-        // cheaper than the unparallelised single-threaded loop the
-        // previous engine path paid (~125 ms for barn-door at
-        // 1080p, observed in production logs).
-        let from_u8 = klipp_effects::linear_f32_rgba_to_srgb_u8(from_linear);
-        let to_u8 = klipp_effects::linear_f32_rgba_to_srgb_u8(to_linear);
-        let blended_u8 = klipp_transitions::render_transition_with_params(
-            kind, &from_u8, &to_u8, gpu_progress, width, height, up,
-        );
-        klipp_effects::srgb_u8_to_linear_f32_rgba(&blended_u8)
-    }
-
-    /// Smart linear-f32 RGBA → sRGB-u8 RGBA encode. Routes to the
-    /// GPU compute shader for frames ≥ 1080p when a GPU pipeline is
-    /// available, falls back to the CPU LUT for everything else.
-    ///
-    /// At 4K the GPU path is ~20× faster (40-90 ms CPU LUT → 3-5 ms
-    /// GPU readback). At HD or smaller the CPU LUT wins because the
-    /// PCIe round-trip exceeds the encode cost. The threshold is set
-    /// at 1080p — that's the breakeven point measured on the user's
-    /// RTX 4080 hardware.
-    fn linear_rgba_to_u8_smart(&mut self, linear: &[f32], width: u32, height: u32) -> Vec<u8> {
-        const GPU_THRESHOLD_PIXELS: u64 = 1920 * 1080;
-        let pixel_count = (width as u64) * (height as u64);
-        if pixel_count >= GPU_THRESHOLD_PIXELS {
-            if let Some(gpu) = &mut self.gpu_effects {
-                if let Some(out) = gpu.linear_rgba_to_u8_gpu(linear, width, height) {
-                    return out;
-                }
-                // GPU rejected (device-lost / short input) — fall
-                // through to CPU LUT.
-            }
-        }
-        linear_rgba_to_u8(linear)
-    }
-
-    /// Lazily initialize GPU effects pipeline on first use.
-    /// This defers the ~1-2s shader compilation cost from startup to the first frame
-    /// that actually needs GPU processing.
-    fn ensure_gpu_effects(&mut self) {
-        if self.gpu_effects.is_none() && !self.gpu_effects_failed {
-            let t = std::time::Instant::now();
-            self.gpu_effects = klipp_effects::gpu::GpuEffectsPipeline::new();
-            let ms = t.elapsed().as_secs_f64() * 1000.0;
-            if self.gpu_effects.is_some() {
-                info!("PlaybackEngine: GPU effects pipeline initialized in {ms:.0}ms");
-            } else {
-                self.gpu_effects_failed = true;
-                info!("GPU effects pipeline unavailable — running without GPU effects");
-                warn!("GPU effects pipeline init failed ({ms:.0}ms) — will not retry");
-            }
-        }
-    }
-
-    /// Phase 2 of track-matte: resolve the binding's matte from the
-    /// per-frame `graded_layers` cache and multiply the consumer's
-    /// alpha in-place. When the source clip isn't active in this frame
-    /// (i.e. not in the cache), the consumer's alpha is zeroed so it
-    /// disappears rather than rendering with no mask. Inspector
-    /// surfaces a "matte source missing at this frame" warning in
-    /// Phase 3 for the same case.
-    ///
-    /// Operates on linear-f32 RGBA at the sequence's final resolution
-    /// — the caller pre-resizes both buffers to that geometry, so
-    /// we can extract → feather → multiply without a second resample.
-    /// Phase 4C — re-derive the matte mask for `binding`, downsample
-    /// it to a small grayscale RGBA tile, and ship it to the UI as
-    /// `AppEvent::MatteMaskReady`. Called only when the inspector
-    /// COMPOSITING section is open for this consumer (gated by
-    /// `inspector_matte_preview_target`), so the per-frame cost is
-    /// confined to the active inspector view rather than every clip.
-    ///
-    /// The downsample target is fixed at ≈80×45 px (16:9-ish, matches
-    /// most clip aspect ratios). For non-16:9 sources we letterbox by
-    /// preserving the source aspect — the inspector renders the tile
-    /// inside a fixed-size container, so the underlying bitmap
-    /// dimensions can drift without breaking layout.
-    fn emit_matte_preview(
-        event_tx: &crossbeam_channel::Sender<klipp_core::AppEvent>,
-        consumer_clip_id: klipp_core::ClipId,
-        binding: &klipp_timeline::MatteBinding,
-        graded_layers: &std::collections::HashMap<klipp_core::ClipId, Vec<f32>>,
-        width: u32,
-        height: u32,
-    ) {
-        const PREVIEW_W: u32 = 96;
-        const PREVIEW_H: u32 = 54;
-
-        let Some(source) = graded_layers.get(&binding.source_clip_id) else {
-            return;
-        };
-        let channel = matte_channel_to_effects(binding.channel);
-        // Source comes from the post-grade `graded_layers` buffer, which
-        // is the compositor's premultiplied internal form (any opacity
-        // effect on the source has already darkened RGB by alpha).
-        // Un-premult so a soft-edged title luma matte reads as logical
-        // brightness, not alpha-darkened brightness.
-        let mut mask = klipp_effects::track_matte::extract_mask_linear(source, channel, binding.invert, true);
-        klipp_effects::track_matte::apply_choke_mask(&mut mask, width, height, binding.choke_px);
-        klipp_effects::track_matte::feather_mask(&mut mask, width, height, binding.feather_px);
-        if mask.len() != (width as usize) * (height as usize) {
-            return;
-        }
-
-        // Nearest-neighbour downsample. The inspector tile is small
-        // enough that the visual difference vs a real low-pass
-        // resample is invisible — and we keep the cost trivial
-        // (~5000 reads per frame at 96×54).
-        let mut rgba = Vec::with_capacity((PREVIEW_W as usize) * (PREVIEW_H as usize) * 4);
-        for ty in 0..PREVIEW_H {
-            for tx in 0..PREVIEW_W {
-                let sx = (tx as u64 * width as u64 / PREVIEW_W as u64) as usize;
-                let sy = (ty as u64 * height as u64 / PREVIEW_H as u64) as usize;
-                let v = mask[sy * width as usize + sx];
-                let g = (v.clamp(0.0, 1.0) * 255.0).round() as u8;
-                rgba.extend_from_slice(&[g, g, g, 255]);
-            }
-        }
-
-        let _ = event_tx.send(klipp_core::AppEvent::MatteMaskReady {
-            consumer_clip_id,
-            rgba,
-            width: PREVIEW_W,
-            height: PREVIEW_H,
-        });
-    }
-
-    fn apply_track_matte_linear(
-        consumer_linear: &mut [f32],
-        graded_layers: &std::collections::HashMap<klipp_core::ClipId, Vec<f32>>,
-        binding: &klipp_timeline::MatteBinding,
-        width: u32,
-        height: u32,
-    ) {
-        let Some(source) = graded_layers.get(&binding.source_clip_id) else {
-            // Source clip not active in this frame — make the consumer
-            // invisible. Predictable failure beats undefined visuals
-            // when a user rearranges the timeline mid-edit.
-            for chunk in consumer_linear.chunks_exact_mut(4) {
-                chunk[3] = 0.0;
-            }
-            return;
-        };
-        if source.len() != consumer_linear.len() {
-            // Geometry drift — same defensive choice as above.
-            for chunk in consumer_linear.chunks_exact_mut(4) {
-                chunk[3] = 0.0;
-            }
-            return;
-        }
-        let channel = matte_channel_to_effects(binding.channel);
-
-        // Fast path: when neither choke nor feather is in use, fuse
-        // extract + apply into one pass. Skips the 8 MB mask
-        // allocation + write + read per frame — the dominant matte
-        // cost when both radii are zero (the default user case the
-        // perf logs flagged).
-        let no_choke = binding.choke_px < 0.5;
-        let no_feather = binding.feather_px < 0.25;
-        if no_choke && no_feather {
-            let t_fused = std::time::Instant::now();
-            // Source is the post-grade premultiplied buffer (see comment
-            // in generate_matte_mask_preview); un-premult so the matte
-            // reflects logical brightness for soft-edged sources.
-            klipp_effects::track_matte::apply_matte_fused_linear(
-                consumer_linear, source, channel, binding.invert, true,
-            );
-            let fused_us = t_fused.elapsed().as_micros();
-            tracing::trace!(
-                "matte stage_us fused={fused_us} total={fused_us} \
-                 res={width}x{height} choke_px=0.0 feather_px=0.0 ch={channel:?} cpu_fused",
-            );
-            if fused_us > 2_000 {
-                tracing::debug!(
-                    "PERF matte: {:.2}ms (fused) res={width}x{height} ch={channel:?} CPU_FUSED",
-                    fused_us as f64 / 1000.0,
-                );
-            }
-            return;
-        }
-
-        // Slow path: choke and/or feather are non-zero, so we need
-        // the intermediate mask buffer for the kernels. Same premult
-        // assumption as the fast path — source is post-grade.
-        let t_extract = std::time::Instant::now();
-        let mut mask = klipp_effects::track_matte::extract_mask_linear(source, channel, binding.invert, true);
-        let extract_us = t_extract.elapsed().as_micros();
-
-        // Choke before feather so the soft edge of feather sits on top of
-        // the eroded boundary (chromakey clean-up convention: tighten,
-        // then soften).
-        let t_choke = std::time::Instant::now();
-        klipp_effects::track_matte::apply_choke_mask(&mut mask, width, height, binding.choke_px);
-        let choke_us = t_choke.elapsed().as_micros();
-
-        let t_feather = std::time::Instant::now();
-        klipp_effects::track_matte::feather_mask(&mut mask, width, height, binding.feather_px);
-        let feather_us = t_feather.elapsed().as_micros();
-
-        let t_apply = std::time::Instant::now();
-        klipp_effects::track_matte::apply_mask_to_alpha_linear(consumer_linear, &mask);
-        let apply_us = t_apply.elapsed().as_micros();
-
-        let total_us = extract_us + choke_us + feather_us + apply_us;
-        tracing::trace!(
-            "matte stage_us extract={extract_us} choke={choke_us} feather={feather_us} apply={apply_us} total={total_us} \
-             res={width}x{height} choke_px={:.1} feather_px={:.1} ch={channel:?} cpu_kernel",
-            binding.choke_px, binding.feather_px,
-        );
-        if total_us > 2_000 {
-            tracing::debug!(
-                "PERF matte: {:.2}ms (extract={:.2} choke={:.2} feather={:.2} apply={:.2}) \
-                 res={width}x{height} ch={channel:?} choke_px={:.1} feather_px={:.1} CPU_KERNEL",
-                total_us as f64 / 1000.0,
-                extract_us as f64 / 1000.0,
-                choke_us as f64 / 1000.0,
-                feather_us as f64 / 1000.0,
-                apply_us as f64 / 1000.0,
-                binding.choke_px, binding.feather_px,
-            );
-        }
-    }
-
-    /// Apply a clip's effects (node graph → builtin effects → OFX) to a decoded frame.
-    /// Simplified path for overlay clips — does NOT run scopes, stabilization, comparison
-    /// mode, or global LUT. V1 continues to use post_process_rgba_inner() for those.
-    fn apply_clip_effects(
-        &mut self,
-        linear_rgba: Vec<f32>,
-        width: u32,
-        height: u32,
-        clip: &klipp_timeline::Clip,
-        clip_time_secs: f64,
-        transform_resolved: Option<ResolvedTransform>,
-    ) -> Vec<f32> {
-        // 1. Node graph (color grade) — takes linear natively via
-        //    `execute_linear`, skipping the u8 round-trip that
-        //    `execute` would otherwise introduce.
-        let t_graph = std::time::Instant::now();
-        let graph_identity = clip.node_graph.is_identity();
-        let rgba = if !graph_identity {
-            self.graph_executor.prepare_clip(&clip.node_graph);
-            let frame_number = (clip_time_secs * self.fps.as_f64()).max(0.0) as u64;
-            self.graph_executor.set_working_colorspace(
-                crate::video_decoder::working_colorspace(),
-            );
-            // Hand the clip's track-points to the executor so any
-            // tracker-bound mask centres get overridden per-frame
-            // inside the Mask node handler.
-            self.graph_executor.set_current_clip_track_points(&clip.track_points);
-            match self.graph_executor.execute_linear(
-                &linear_rgba, &clip.node_graph, width, height, clip_time_secs, frame_number, None, None,
-            ) {
-                Ok((result, _)) => result,
-                Err(e) => { tracing::error!("Overlay node graph failed: {e:?}"); linear_rgba }
-            }
-        } else { linear_rgba };
-        let graph_us = t_graph.elapsed().as_micros();
-
-        // 2. Builtin effects (GPU preferred, CPU fallback) with keyframe evaluation
-        let t_fx = std::time::Instant::now();
-        let fx_count_initial = clip.builtin_effects.iter()
-            .zip(clip.builtin_effects_enabled.iter().chain(std::iter::repeat(&true)))
-            .filter(|(_, enabled)| **enabled)
-            .count();
-        let rgba = if !clip.builtin_effects.is_empty() {
-            let mut fx: Vec<_> = clip.builtin_effects.iter()
-                .zip(clip.builtin_effects_enabled.iter().chain(std::iter::repeat(&true)))
-                .filter(|(_, enabled)| **enabled)
-                .map(|(e, _)| e.clone())
-                .collect();
-
-            if !fx.is_empty() {
-                // Build evaluation context for keyframes
-                let clip_duration_secs = (clip.source_out.to_secs_f64() - clip.source_in.to_secs_f64()).max(0.001);
-                let eval_ctx = klipp_core::EvalContext {
-                    clip_time_secs,
-                    clip_duration_secs,
-                    timeline_time_secs: self.playhead.to_secs_f64(),
-                    fps: self.fps.as_f64(),
-                    seed: clip.id.0.as_u64_pair().0,
-                };
-
-                // Evaluate opacity keyframes
-                if !clip.opacity_keyframes.is_empty() {
-                    let opacity_default = fx.iter().find_map(|e| match e {
-                        klipp_effects::BuiltinEffect::Opacity { value } => Some(*value),
-                        _ => None,
-                    }).unwrap_or(1.0);
-                    let opacity_val = eval_with_modifiers(
-                        &clip.opacity_keyframes,
-                        &clip.param_modifiers,
-                        &klipp_core::ParamId::Opacity,
-                        clip_time_secs,
-                        opacity_default,
-                        &eval_ctx,
-                    );
-                    let mut found = false;
-                    for effect in &mut fx {
-                        if let klipp_effects::BuiltinEffect::Opacity { value } = effect {
-                            *value = opacity_val;
-                            found = true;
-                            break;
-                        }
-                    }
-                    if !found && (opacity_val - 1.0).abs() > 0.001 {
-                        fx.push(klipp_effects::BuiltinEffect::Opacity { value: opacity_val });
-                    }
-                }
-
-                // Evaluate transform keyframes
-                let has_transform_kf = !clip.transform_pos_x_keyframes.is_empty()
-                    || !clip.transform_pos_y_keyframes.is_empty()
-                    || !clip.transform_scale_keyframes.is_empty()
-                    || !clip.transform_rotation_keyframes.is_empty();
-
-                if has_transform_kf || transform_resolved.is_some() {
-                    let (mut pos_x, mut pos_y, mut scale_x, mut scale_y, mut rotation, mut anchor_x, mut anchor_y, rotation_x_val, rotation_y_val, perspective_val) =
-                        fx.iter().find_map(|e| match e {
-                            klipp_effects::BuiltinEffect::Transform {
-                                position_x, position_y, scale_x, scale_y, rotation, anchor_x, anchor_y,
-                                rotation_x, rotation_y, perspective, focal_ref: _,
-                            } => Some((*position_x, *position_y, *scale_x, *scale_y, *rotation, *anchor_x, *anchor_y, *rotation_x, *rotation_y, *perspective)),
-                            _ => None,
-                        }).unwrap_or((0.0, 0.0, 1.0, 1.0, 0.0, 0.5, 0.5, 0.0, 0.0, 0.0));
-
-                    // A resolved transform from transform_link short-circuits
-                    // the own-keyframe evaluation: the resolver already ran
-                    // own keyframes for this clip and composed them with the
-                    // target's. Mixing the two paths would double-apply the
-                    // owns.
-                    if let Some((rpx, rpy, rsx, rsy, rro, rax, ray)) = transform_resolved {
-                        pos_x = rpx;
-                        pos_y = rpy;
-                        scale_x = rsx;
-                        scale_y = rsy;
-                        rotation = rro;
-                        anchor_x = rax;
-                        anchor_y = ray;
-                    } else {
-                        if !clip.transform_pos_x_keyframes.is_empty() {
-                            pos_x = eval_with_modifiers(&clip.transform_pos_x_keyframes, &clip.param_modifiers, &klipp_core::ParamId::PositionX, clip_time_secs, pos_x, &eval_ctx);
-                        }
-                        if !clip.transform_pos_y_keyframes.is_empty() {
-                            pos_y = eval_with_modifiers(&clip.transform_pos_y_keyframes, &clip.param_modifiers, &klipp_core::ParamId::PositionY, clip_time_secs, pos_y, &eval_ctx);
-                        }
-                        if !clip.transform_scale_keyframes.is_empty() {
-                            let s = eval_with_modifiers(&clip.transform_scale_keyframes, &clip.param_modifiers, &klipp_core::ParamId::Scale, clip_time_secs, scale_x, &eval_ctx);
-                            scale_x = s;
-                            scale_y = s;
-                        }
-                        if !clip.transform_rotation_keyframes.is_empty() {
-                            rotation = eval_with_modifiers(&clip.transform_rotation_keyframes, &clip.param_modifiers, &klipp_core::ParamId::Rotation, clip_time_secs, rotation, &eval_ctx);
-                        }
-                    }
-
-                    let new_transform = klipp_effects::BuiltinEffect::Transform {
-                        position_x: pos_x, position_y: pos_y,
-                        scale_x, scale_y, rotation, anchor_x, anchor_y,
-                        rotation_x: rotation_x_val, rotation_y: rotation_y_val, perspective: perspective_val,
-                        // Static rebuild — focal_ref preservation
-                        // belongs in evaluate_clip_own_transform's
-                        // glyph-anchor resolution path (commit 2 of
-                        // HZ-NEXT-GLYPH-LOCK), not here. None is
-                        // the back-compat default.
-                        focal_ref: None,
-                    };
-                    let mut found = false;
-                    for effect in &mut fx {
-                        if matches!(effect, klipp_effects::BuiltinEffect::Transform { .. }) {
-                            *effect = new_transform.clone();
-                            found = true;
-                            break;
-                        }
-                    }
-                    if !found {
-                        fx.push(new_transform);
-                    }
-                }
-
-                // Evaluate effect parameter keyframes (blur, sharpen, crop, chroma key, opacity, etc.)
-                for (i, effect) in fx.iter_mut().enumerate() {
-                    match effect {
-                        klipp_effects::BuiltinEffect::GaussianBlur { radius } => {
-                            let key = format!("{}:radius", i);
-                            if let Some(kfs) = clip.effect_keyframes.get(&key) {
-                                if !kfs.is_empty() {
-                                    *radius = eval_effect_with_modifiers(kfs, &clip.param_modifiers, i, "radius", clip_time_secs, *radius, &eval_ctx);
-                                }
-                            }
-                        }
-                        klipp_effects::BuiltinEffect::Sharpen { amount } => {
-                            let key = format!("{}:amount", i);
-                            if let Some(kfs) = clip.effect_keyframes.get(&key) {
-                                if !kfs.is_empty() {
-                                    *amount = eval_effect_with_modifiers(kfs, &clip.param_modifiers, i, "amount", clip_time_secs, *amount, &eval_ctx);
-                                }
-                            }
-                        }
-                        klipp_effects::BuiltinEffect::Crop { left, right, top, bottom, feather } => {
-                            for (name, val) in [("left", left as &mut f32), ("right", right), ("top", top), ("bottom", bottom), ("feather", feather)] {
-                                let key = format!("{}:{}", i, name);
-                                if let Some(kfs) = clip.effect_keyframes.get(&key) {
-                                    if !kfs.is_empty() {
-                                        *val = eval_effect_with_modifiers(kfs, &clip.param_modifiers, i, name, clip_time_secs, *val, &eval_ctx);
-                                    }
-                                }
-                            }
-                        }
-                        klipp_effects::BuiltinEffect::ChromaKey { tolerance, soft_edge, spill_strength, .. } => {
-                            // Keyframe key "spill" continues to address the soft-edge
-                            // field — that's what the slider was always wired to, even
-                            // back when it was misnamed `spill_suppression`. New
-                            // "spill_strength" key drives the real spill knob.
-                            for (name, val) in [("tolerance", tolerance as &mut f32), ("spill", soft_edge), ("spill_strength", spill_strength)] {
-                                let key = format!("{}:{}", i, name);
-                                if let Some(kfs) = clip.effect_keyframes.get(&key) {
-                                    if !kfs.is_empty() {
-                                        *val = eval_effect_with_modifiers(kfs, &clip.param_modifiers, i, name, clip_time_secs, *val, &eval_ctx);
-                                    }
-                                }
-                            }
-                        }
-                        klipp_effects::BuiltinEffect::Opacity { value } => {
-                            let key = format!("{}:value", i);
-                            if let Some(kfs) = clip.effect_keyframes.get(&key) {
-                                if !kfs.is_empty() {
-                                    *value = eval_effect_with_modifiers(kfs, &clip.param_modifiers, i, "value", clip_time_secs, *value, &eval_ctx);
-                                }
-                            }
-                        }
-                        _ => {} // Transform already handled by dedicated keyframes
-                    }
-                }
-
-                // Strip identity-valued effects before dispatch. GPU
-                // and CPU paths each have per-effect skips, but they
-                // don't avoid the surrounding upload/download (GPU)
-                // or sRGB bridge (CPU) — so a list of "Opacity 1.0 +
-                // default Transform" still pays the round-trip even
-                // though no pixel changes. Filtering here drops that.
-                fx.retain(|e| !klipp_effects::is_identity_effect(e));
-
-                if fx.is_empty() {
-                    rgba
-                } else if let Some(gpu) = &mut self.gpu_effects {
-                    if klipp_effects::chain_supports_gpu(&fx) {
-                        gpu.apply_effects(&fx, rgba, width, height)
-                    } else {
-                        klipp_effects::apply_effects(&fx, rgba, width, height)
-                    }
-                } else {
-                    klipp_effects::apply_effects(&fx, rgba, width, height)
-                }
-            } else { rgba }
-        } else { rgba };
-
-        let fx_us = t_fx.elapsed().as_micros();
-
-        // 3. OFX effects chain — OFX plugins are an external boundary we
-        //    don't control, so they still receive sRGB u8. Bridge
-        //    locally (linear → u8 in, u8 → linear out) and keep the
-        //    round-trip scoped to just the OFX call.
-        let t_ofx = std::time::Instant::now();
-        let result = if !clip.effects.is_empty() {
-            let rgba_u8 = klipp_effects::linear_f32_rgba_to_srgb_u8(&rgba);
-            let out_u8 = self.ofx_host.apply_effects_chain(&clip.effects, &rgba_u8, width, height, clip_time_secs);
-            klipp_effects::srgb_u8_to_linear_f32_rgba(&out_u8)
-        } else {
-            rgba
-        };
-        let ofx_us = t_ofx.elapsed().as_micros();
-        let total_us = graph_us + fx_us + ofx_us;
-        // Log when the per-clip-effects chain spends >2 ms — same
-        // threshold as the matte and composite perf lines, so the
-        // non-trivial paths jump out in the log.
-        if total_us > 2_000 {
-            tracing::debug!(
-                "PERF clip_effects: {:.2}ms (graph={:.2}{} fx={:.2} fx_count={fx_count_initial} ofx={:.2}) \
-                 res={width}x{height} clip={:?}",
-                total_us as f64 / 1000.0,
-                graph_us as f64 / 1000.0,
-                if graph_identity { " IDENTITY_SKIP" } else { "" },
-                fx_us as f64 / 1000.0,
-                ofx_us as f64 / 1000.0,
-                clip.id,
-            );
-        }
-        result
-    }
-
-    /// Phase 4d.3 companion to `post_process_rgba`: call this when the
-    /// frame you're handing in carries a GPU-resident mirror
-    /// (`LinearFrame.gpu_source`). It primes the grade chain's
-    /// `buf_a` directly from the on-GPU u8 buffer via the
-    /// `bridge_u8_to_linear` compute shader — the CPU upload that
-    /// `start_chain` would otherwise do is skipped entirely.
-    ///
-    /// Pump overlay decoder frame queues, depositing frames whose pts
-    /// is at-or-before the playhead's source time into
-    /// `overlay_frames`. Used by paused-state composite paths that
-    /// want fresh overlay frames before running the matte composite —
-    /// without this, a paused-after-seek paint can race ahead of the
-    /// async overlay decoders and miss V2's first frame, leaving
-    /// `compose_with_overlays_and_matte` with no graded buffer for V2.
-    fn pop_overlay_frames(&mut self, playhead: Timecode) {
-        const FRAME_TOLERANCE: f64 = 0.01;
-        let track_indices: Vec<usize> = self.overlay_decoders.keys().copied().collect();
-        let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
-        for track_idx in track_indices {
-            let overlay_source_secs = if let Some(clip_idx) = self.overlay_clips.get(&track_idx) {
-                seq.tracks.get(track_idx)
-                    .and_then(|t| t.clips.get(*clip_idx))
-                    .map(|clip| {
-                        clip.source_in.to_secs_f64()
-                            + (playhead - clip.timeline_in).to_secs_f64() * clip.speed
-                    })
-                    .unwrap_or(0.0)
-            } else {
-                0.0
-            };
-            if let Some(dec) = self.overlay_decoders.get(&track_idx) {
-                let mut queue = dec.frame_queue().lock().unwrap_or_else(|e| e.into_inner());
-                while let Some(f) = queue.front() {
-                    if f.is_eof {
-                        let _ = queue.pop();
-                        break;
-                    }
-                    let pts = f.pts_secs();
-                    if pts <= overlay_source_secs + FRAME_TOLERANCE {
-                        let ovf = queue.pop().unwrap();
-                        if let Some(next) = queue.front() {
-                            if !next.is_eof && next.pts_secs() <= overlay_source_secs + FRAME_TOLERANCE {
-                                continue;
-                            }
-                        }
-                        self.overlay_frames.insert(track_idx, ovf);
-                        break;
-                    } else {
-                        break;
-                    }
-                }
-            }
-        }
-    }
-
-    /// Run the matte-aware overlay composite pipeline. Takes V1's
-    /// already-graded linear buffer and returns the final composited
-    /// linear buffer with all overlays, matte sources, stencils,
-    /// blend modes, and adjustment layers applied at the sequence's
-    /// final resolution. Caller owns the returned buffer; the pooled
-    /// `self.composite_scratch_linear` is left empty after the call
-    /// (caller is expected to write the final result back to it once
-    /// it has run any post-composite stages — transition, display
-    /// encode, framebuffer upload).
-    ///
-    /// This is the same logic that lives inline in `update_playback`,
-    /// extracted so paused-state paths (`regrade_cached_frame`,
-    /// `grab_single_frame_timeout`, `try_drain_paused_refresh_frame`)
-    /// can reuse it. Without that, matte_source bindings only render
-    /// during active playback — pausing or scrubbing freezes a
-    /// composite that ignores the matte chain, so the user sees V1
-    /// alone (or V1 + naive overlay-stack) instead of the masked
-    /// result. The user-visible symptom was "video-in-text only
-    /// works while playing; paused or after a click it disappears."
-    fn compose_with_overlays_and_matte(
-        &mut self,
-        v1_graded_linear: Vec<f32>,
-        final_w: u32,
-        final_h: u32,
-    ) -> Vec<f32> {
-        let t_compose = std::time::Instant::now();
-        let v1_opacity = {
-            let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
-            seq.tracks.get(self.current_track_index).map(|t| t.opacity).unwrap_or(1.0)
-        };
-
-        let v1_clip: Option<klipp_timeline::Clip> = {
-            let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
-            seq.tracks.get(self.current_track_index)
-                .and_then(|t| t.clip_at_timecode(self.playhead).map(|(_, c)| c.clone()))
-        };
-
-        let overlay_clip_data: Vec<(usize, f32, Option<klipp_timeline::Clip>)> = {
-            let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
-            let fps_f64 = self.fps.as_f64();
-            let overlay_tracks = seq.overlay_video_tracks(self.current_track_index);
-            overlay_tracks.iter().filter_map(|(track_idx, track)| {
-                self.overlay_frames.get(track_idx).map(|_| {
-                    let clip_opacity = track
-                        .clip_at_timecode(self.playhead)
-                        .map(|(_, clip)| evaluate_clip_opacity(clip, self.playhead, fps_f64))
-                        .unwrap_or(1.0);
-                    let effective = track.opacity * clip_opacity;
-                    let clip = track.clip_at_timecode(self.playhead).map(|(_, c)| c.clone());
-                    (*track_idx, effective, clip)
-                })
-            }).collect()
-        };
-
-        // transform_link — pre-resolve composed transforms for V1 +
-        // every overlay clip under one short seq-read so the per-clip
-        // calls into apply_clip_effects (which holds &mut self) can
-        // look up by clip-id.
-        let transform_cache: std::collections::HashMap<klipp_core::ClipId, ResolvedTransform> = {
-            let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
-            let fps_f64 = self.fps.as_f64();
-            let frame_w = seq.resolution.width;
-            let frame_h = seq.resolution.height;
-            let mut cache = std::collections::HashMap::new();
-            if let Some(c) = &v1_clip {
-                let _ = resolve_clip_transform(c, &seq, self.playhead, fps_f64, &mut cache,
-                    &mut self.glyph_position_cache, &mut self.title_renderer, frame_w, frame_h);
-            }
-            for (_, _, c) in &overlay_clip_data {
-                if let Some(c) = c {
-                    let _ = resolve_clip_transform(c, &seq, self.playhead, fps_f64, &mut cache,
-                        &mut self.glyph_position_cache, &mut self.title_renderer, frame_w, frame_h);
-                }
-            }
-            cache
-        };
-
-        let matte_source_ids: std::collections::HashSet<klipp_core::ClipId> = {
-            let mut s = std::collections::HashSet::new();
-            for (_, _, c) in &overlay_clip_data {
-                if let Some(c) = c {
-                    if let Some(b) = c.matte_source.as_ref() {
-                        s.insert(b.source_clip_id);
-                    }
-                    if c.matte_stencil.is_some() {
-                        s.insert(c.id);
-                    }
-                }
-            }
-            if let Some(c) = &v1_clip {
-                if let Some(b) = c.matte_source.as_ref() {
-                    s.insert(b.source_clip_id);
-                }
-                if c.matte_stencil.is_some() {
-                    s.insert(c.id);
-                }
-            }
-            s
-        };
-
-        let mut stencil_clips: Vec<(usize, klipp_core::ClipId, klipp_timeline::StencilSettings, f64)> = Vec::new();
-        for (track_idx, _, c) in &overlay_clip_data {
-            if let Some(c) = c {
-                if let Some(s) = c.matte_stencil.as_ref() {
-                    let clip_time = (self.playhead.to_secs_f64() - c.timeline_in.to_secs_f64()).max(0.0);
-                    stencil_clips.push((*track_idx, c.id, s.clone(), clip_time));
-                }
-            }
-        }
-        if let Some(c) = &v1_clip {
-            if let Some(s) = c.matte_stencil.as_ref() {
-                let clip_time = (self.playhead.to_secs_f64() - c.timeline_in.to_secs_f64()).max(0.0);
-                stencil_clips.push((self.current_track_index, c.id, s.clone(), clip_time));
-            }
-        }
-
-        let pixel_count = (final_w * final_h) as usize;
-        let needed_f = pixel_count * 4;
-        let mut accumulated_linear = std::mem::take(&mut self.composite_scratch_linear);
-        if accumulated_linear.len() != needed_f {
-            accumulated_linear.resize(needed_f, 0.0);
-        } else {
-            accumulated_linear.fill(0.0);
-        }
-
-        let mut graded_layers: std::collections::HashMap<klipp_core::ClipId, Vec<f32>> =
-            std::collections::HashMap::new();
-        if let Some(c) = &v1_clip {
-            if matte_source_ids.contains(&c.id) {
-                graded_layers.insert(c.id, v1_graded_linear.clone());
-            }
-        }
-
-        struct PreRenderedLayer {
-            track_idx: usize,
-            effective: f32,
-            clip: Option<klipp_timeline::Clip>,
-            graded: Option<Vec<f32>>,
-        }
-        let mut pre_rendered: Vec<PreRenderedLayer> = Vec::with_capacity(overlay_clip_data.len());
-        for (track_idx, effective, clip) in &overlay_clip_data {
-            if matches!(clip.as_ref().map(|c| &c.kind), Some(klipp_timeline::ClipKind::AdjustmentLayer)) {
-                pre_rendered.push(PreRenderedLayer {
-                    track_idx: *track_idx, effective: *effective, clip: clip.clone(), graded: None,
-                });
-                continue;
-            }
-            let Some(ov_frame) = self.overlay_frames.get(track_idx) else {
-                pre_rendered.push(PreRenderedLayer {
-                    track_idx: *track_idx, effective: *effective, clip: clip.clone(), graded: None,
-                });
-                continue;
-            };
-            let (ov_w, ov_h) = (ov_frame.width, ov_frame.height);
-            let needs_resize = ov_w != final_w || ov_h != final_h;
-            // Same buffer-hygiene fix as the inline block in
-            // update_playback: skip the per-frame
-            // `ov_frame.data.clone()` when a resize is going to
-            // allocate a fresh buffer anyway, and move-instead-of-
-            // clone matte sources into `graded_layers` when their
-            // clip is `consumed_as_matte` (the composite loop skips
-            // them so `pre_rendered` doesn't need its own copy).
-            let (work_w, work_h, mut ov_linear) = if !needs_resize {
-                (ov_w, ov_h, ov_frame.data.clone())
-            } else {
-                let resized = crate::grade_resample::resize_linear(&ov_frame.data, ov_w, ov_h, final_w, final_h);
-                (final_w, final_h, resized)
-            };
-            if let Some(c) = clip {
-                let clip_time = (self.playhead.to_secs_f64() - c.timeline_in.to_secs_f64()).max(0.0);
-                let resolved = if c.transform_link.is_some() {
-                    transform_cache.get(&c.id).copied()
-                } else { None };
-                ov_linear = self.apply_clip_effects(ov_linear, work_w, work_h, c, clip_time, resolved);
-            }
-            let is_consumed = clip.as_ref()
-                .is_some_and(|c| c.consumed_as_matte || c.matte_stencil.is_some());
-            let is_matte_source = clip.as_ref()
-                .is_some_and(|c| matte_source_ids.contains(&c.id));
-            if is_consumed {
-                if is_matte_source {
-                    graded_layers.insert(clip.as_ref().unwrap().id, ov_linear);
-                }
-            } else {
-                if is_matte_source {
-                    graded_layers.insert(clip.as_ref().unwrap().id, ov_linear.clone());
-                }
-                pre_rendered.push(PreRenderedLayer {
-                    track_idx: *track_idx, effective: *effective, clip: clip.clone(), graded: Some(ov_linear),
-                });
-            }
-        }
-
-        // Blend V1 (with stencils + matte if applicable) onto the zero canvas.
-        let v1_blend_mode = v1_clip.as_ref().map(|c| c.blend_mode).unwrap_or(klipp_core::BlendMode::Normal);
-        let v1_matte = v1_clip.as_ref().and_then(|c| c.matte_source.as_ref());
-        if v1_matte.is_some() || stencil_clips.iter().any(|(t, id, _, _)| *t > self.current_track_index && Some(*id) != v1_clip.as_ref().map(|c| c.id)) {
-            let mut v1_masked = v1_graded_linear.clone();
-            if let Some(c) = &v1_clip {
-                for (st_track_idx, st_clip_id, st_settings, _) in &stencil_clips {
-                    if *st_track_idx <= self.current_track_index { continue; }
-                    if *st_clip_id == c.id { continue; }
-                    let pseudo_binding = klipp_timeline::MatteBinding {
-                        source_clip_id: *st_clip_id,
-                        channel: st_settings.channel,
-                        invert: st_settings.invert,
-                        feather_px: st_settings.feather_px,
-                        choke_px: st_settings.choke_px,
-                    };
-                    Self::apply_track_matte_linear(&mut v1_masked, &graded_layers, &pseudo_binding, final_w, final_h);
-                }
-            }
-            if let Some(binding) = v1_matte {
-                let v1_clip_time = v1_clip.as_ref()
-                    .map(|c| (self.playhead.to_secs_f64() - c.timeline_in.to_secs_f64()).max(0.0))
-                    .unwrap_or(0.0);
-                let effective = klipp_timeline::MatteBinding {
-                    source_clip_id: binding.source_clip_id,
-                    channel: binding.channel,
-                    invert: binding.invert,
-                    feather_px: v1_clip.as_ref()
-                        .map(|c| klipp_core::keyframe::evaluate(&c.matte_feather_keyframes, v1_clip_time, binding.feather_px))
-                        .unwrap_or(binding.feather_px),
-                    choke_px: v1_clip.as_ref()
-                        .map(|c| klipp_core::keyframe::evaluate(&c.matte_choke_keyframes, v1_clip_time, binding.choke_px))
-                        .unwrap_or(binding.choke_px),
-                };
-                Self::apply_track_matte_linear(&mut v1_masked, &graded_layers, &effective, final_w, final_h);
-                if let Some(c) = &v1_clip {
-                    if self.inspector_matte_preview_target == Some(c.id) {
-                        Self::emit_matte_preview(&self.event_tx, c.id, &effective, &graded_layers, final_w, final_h);
-                    }
-                }
-            }
-            klipp_effects::composite::blend_layer_linear(&mut accumulated_linear, &v1_masked, v1_opacity, v1_blend_mode);
-        } else {
-            klipp_effects::composite::blend_layer_linear(&mut accumulated_linear, &v1_graded_linear, v1_opacity, v1_blend_mode);
-        }
-
-        for entry in pre_rendered {
-            if entry.effective <= 0.001 { continue; }
-            if let Some(c) = &entry.clip {
-                if matches!(c.kind, klipp_timeline::ClipKind::AdjustmentLayer) {
-                    let clip_time = (self.playhead.to_secs_f64() - c.timeline_in.to_secs_f64()).max(0.0);
-                    let pass = std::mem::take(&mut accumulated_linear);
-                    accumulated_linear = self.apply_clip_effects(pass, final_w, final_h, c, clip_time, None);
-                    continue;
-                }
-                if c.consumed_as_matte || c.matte_stencil.is_some() { continue; }
-            }
-            let Some(mut graded) = entry.graded else { continue; };
-            if let Some(c) = &entry.clip {
-                let consumer_track = entry.track_idx;
-                for (st_track_idx, st_clip_id, st_settings, _st_time) in &stencil_clips {
-                    if *st_track_idx <= consumer_track { continue; }
-                    if *st_clip_id == c.id { continue; }
-                    let pseudo_binding = klipp_timeline::MatteBinding {
-                        source_clip_id: *st_clip_id,
-                        channel: st_settings.channel,
-                        invert: st_settings.invert,
-                        feather_px: st_settings.feather_px,
-                        choke_px: st_settings.choke_px,
-                    };
-                    Self::apply_track_matte_linear(&mut graded, &graded_layers, &pseudo_binding, final_w, final_h);
-                }
-            }
-            if let Some(c) = &entry.clip {
-                if let Some(binding) = c.matte_source.as_ref() {
-                    let clip_time = (self.playhead.to_secs_f64() - c.timeline_in.to_secs_f64()).max(0.0);
-                    let effective = klipp_timeline::MatteBinding {
-                        source_clip_id: binding.source_clip_id,
-                        channel: binding.channel,
-                        invert: binding.invert,
-                        feather_px: klipp_core::keyframe::evaluate(&c.matte_feather_keyframes, clip_time, binding.feather_px),
-                        choke_px: klipp_core::keyframe::evaluate(&c.matte_choke_keyframes, clip_time, binding.choke_px),
-                    };
-                    Self::apply_track_matte_linear(&mut graded, &graded_layers, &effective, final_w, final_h);
-                    if self.inspector_matte_preview_target == Some(c.id) {
-                        Self::emit_matte_preview(&self.event_tx, c.id, &effective, &graded_layers, final_w, final_h);
-                    }
-                }
-            }
-            let blend_mode = entry.clip.as_ref().map(|c| c.blend_mode).unwrap_or(klipp_core::BlendMode::Normal);
-            klipp_effects::composite::blend_layer_linear(&mut accumulated_linear, &graded, entry.effective, blend_mode);
-        }
-
-        // Frame-level summary: how many matte chains were active, how
-        // many stencils, total composite cost. The matte primitives
-        // themselves run on CPU today (extract/choke/feather/apply all
-        // f32 single-channel SIMD-friendly loops); the surrounding
-        // clip-effects chain uses GPU when `gpu_effects` is available
-        // — the "gpu_clip_fx={...}" field reports that. A future
-        // klipp_effects::track_matte_gpu pipeline would flip the
-        // matte-side label to "matte=gpu" without touching this log.
-        let compose_ms = t_compose.elapsed().as_secs_f64() * 1000.0;
-        let matte_count = overlay_clip_data.iter()
-            .filter(|(_, _, c)| c.as_ref().is_some_and(|c| c.matte_source.is_some()))
-            .count()
-            + v1_clip.as_ref().is_some_and(|c| c.matte_source.is_some()) as usize;
-        let stencil_count = stencil_clips.len();
-        if matte_count > 0 || stencil_count > 0 {
-            // Only log when there's something matte-related to report.
-            // No matte/stencil → silent (the existing PERF lines in
-            // update_playback already cover the no-matte fast path).
-            let gpu_clip_fx = self.gpu_effects.is_some();
-            tracing::trace!(
-                "compose_with_overlays_and_matte: {compose_ms:.2}ms mattes={matte_count} stencils={stencil_count} \
-                 res={final_w}x{final_h} overlays={} gpu_clip_fx={gpu_clip_fx} matte=cpu",
-                overlay_clip_data.len(),
-            );
-            // Promote to debug when the composite blew the 16ms (60Hz)
-            // budget — that's when users start seeing dropped frames.
-            if compose_ms > 16.0 {
-                tracing::debug!(
-                        "PERF compose_matte_overbudget: {compose_ms:.2}ms mattes={matte_count} stencils={stencil_count} \
-                     res={final_w}x{final_h} overlays={} gpu_clip_fx={gpu_clip_fx} matte=cpu",
-                    overlay_clip_data.len(),
-                );
-            }
-        }
-
-        accumulated_linear
-    }
-
-    /// Falls through to the normal `post_process_rgba` path when
-    /// `gpu_source` is `None`, priming fails, or the GPU pipeline
-    /// isn't available.
-    ///
-    /// Grading a *decoded V1 frame*? Call `grade_v1_frame`, not this.
-    /// Passing `frame.data` here grades an HDR clip's tone-mapped preview
-    /// instead of its scene-linear input — three paused/refresh paths did
-    /// exactly that, which made paused edits on HDR disagree with
-    /// playback. `grade_v1_frame` should be this function's only caller.
-    fn post_process_rgba_with_gpu_source(
-        &mut self,
-        linear_rgba: Vec<f32>,
-        width: u32,
-        height: u32,
-        gpu_source: Option<&std::sync::Arc<crate::frame::GpuFrame>>,
-    ) -> Vec<f32> {
-        if let Some(gpu_src) = gpu_source {
-            // Single-shot: consumed by the first `start_chain` inside
-            // the executor. If it returns false (device lost, size
-            // mismatch, no GPU) the normal CPU upload path runs —
-            // correctness preserved, just no perf win.
-            let _ = self.graph_executor.prime_chain_from_gpu_u8_buffer(
-                &gpu_src.rgba_buffer, width, height,
-            );
-        }
-        // Park the source for the duration of this call so the grade can
-        // realise CPU pixels on demand if it turns out to need them.
-        self.grade_gpu_source = gpu_source.cloned();
-        let out = self.post_process_rgba(linear_rgba, width, height);
-        self.grade_gpu_source = None;
-        out
-    }
 
     /// Working-space-aware viewer display encode. Used at every site
     /// where a linear-light frame leaves the engine for the framebuffer
@@ -8587,9 +5864,6 @@ impl PlaybackEngine {
         if self.bypass_color_grade {
             blockers.push("before/after split active");
         }
-        if !self.overlay_frames.is_empty() {
-            blockers.push("overlay frames present");
-        }
         // The project-wide colour pipeline (global LUT) runs after the
         // graph on every graded-path frame, identity or not. Neither fast
         // path applies it, so either would show the picture without it.
@@ -8597,26 +5871,41 @@ impl PlaybackEngine {
             blockers.push("global colour pipeline active");
         }
 
+        // The fast paths show the primary decoder's frame, so they are the
+        // shared renderer's frame only when that renders exactly one clip,
+        // the primary decoder's, on a fully opaque track: no other layer, no
+        // transition, no other multicam angle. Asked of the renderer's own
+        // stack, so the two cannot disagree about what is on screen.
         let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
-        // Any track above this one can contribute an overlay, a title or
-        // an adjustment layer, all of which composite over V1.
-        if !seq.overlay_video_tracks(self.current_track_index).is_empty() {
-            blockers.push("overlay video tracks present");
-        }
-        if crate::transition::find_active_transition(&seq, self.playhead).is_some() {
-            blockers.push("transition active");
-        }
-        let Some(track) = seq.tracks.get(self.current_track_index) else {
-            blockers.push("no current track");
-            return blockers;
+        let layers = klipp_compose::active_layers(&seq, self.playhead);
+        let primary = self.v1_clip_id(&seq);
+        let (layer, clip) = match layers.as_slice() {
+            [] => {
+                blockers.push("nothing on screen");
+                return blockers;
+            }
+            [layer] if layer.transition => {
+                blockers.push("transition active");
+                return blockers;
+            }
+            [layer] => match layer.clips.as_slice() {
+                [clip] if Some(clip.id) == primary => (layer, *clip),
+                _ => {
+                    blockers.push("another clip on screen");
+                    return blockers;
+                }
+            },
+            _ => {
+                blockers.push("overlay layers present");
+                return blockers;
+            }
         };
-        if (track.opacity - 1.0).abs() > 1e-6 {
+        if seq.tracks.get(layer.track).is_none_or(|t| (t.opacity - 1.0).abs() > 1e-6) {
             blockers.push("track opacity below 1.0");
         }
-        let Some((_, clip)) = track.clip_at_timecode(self.playhead) else {
-            blockers.push("no clip at playhead");
-            return blockers;
-        };
+        if clip.consumed_as_matte {
+            blockers.push("clip is a matte source");
+        }
         if !clip.node_graph.is_identity() {
             blockers.push("grade graph is not an identity");
         }
@@ -8685,19 +5974,16 @@ impl PlaybackEngine {
         );
     }
 
-    /// What the V1 node graph needs to run for the frame under the
-    /// playhead: the graph (via the same Arc cache as
-    /// `post_process_rgba_inner`), the clip time it is evaluated at, and
-    /// the clip's track points for tracker-bound masks. Must resolve the
-    /// clip exactly as `post_process_rgba_inner` does — by playhead on the
-    /// video tracks — or the fast path could grade a clip with another
-    /// clip's graph.
-    fn v1_graph_setup(&mut self) -> Option<(Arc<klipp_nodes::NodeGraph>, f64, Vec<klipp_core::TrackPoint>)> {
+    /// What the primary clip's node graph needs to run for the frame under
+    /// the playhead, exactly as the shared renderer runs it: the graph (an
+    /// Arc cached per clip, rebuilt when the sequence changes), the
+    /// clip-relative time and frame number it is evaluated at, and the
+    /// clip's track points for tracker-bound masks. The clip is the primary
+    /// decoder's — the one `direct_present_blockers` checked is alone on
+    /// screen.
+    fn v1_graph_setup(&mut self) -> Option<(Arc<klipp_nodes::NodeGraph>, f64, u64, Vec<klipp_core::TrackPoint>)> {
         let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
-        let clip = seq.tracks.iter()
-            .filter(|t| t.kind == klipp_timeline::TrackKind::Video)
-            .find_map(|t| t.clip_at_timecode(self.playhead))
-            .map(|(_, c)| c)?;
+        let clip = seq.tracks.get(self.current_track_index)?.clips.get(self.current_clip_index)?;
         let graph = if self.current_graph_arc.is_some() && self.current_grade_clip_id == Some(clip.id) {
             Arc::clone(self.current_graph_arc.as_ref().unwrap())
         } else {
@@ -8706,10 +5992,8 @@ impl PlaybackEngine {
             self.current_grade_clip_id = Some(clip.id);
             arc
         };
-        let clip_time_secs = (self.playhead.to_secs_f64() - self.clip_timeline_start.to_secs_f64())
-            * self.clip_speed
-            + self.clip_source_start;
-        Some((graph, clip_time_secs, clip.track_points.clone()))
+        let (clip_time_secs, frame_number) = klipp_compose::render::grade_time(clip, self.playhead, seq.fps.as_f64());
+        Some((graph, clip_time_secs, frame_number, clip.track_points.clone()))
     }
 
     /// Grade the decoder's frame and present it without it ever leaving
@@ -8735,73 +6019,42 @@ impl PlaybackEngine {
         q_len: usize,
     ) -> bool {
         let t_frame = std::time::Instant::now();
-        let Some((graph, clip_time_secs, track_points)) = self.v1_graph_setup() else {
+        let Some((graph, clip_time_secs, frame_number, track_points)) = self.v1_graph_setup() else {
             return false;
         };
-        let hdr = frame.hdr.as_ref();
-        let seeded = match (hdr, frame.gpu_source.as_ref()) {
+        let seed = match (frame.hdr.as_ref(), frame.gpu_source.as_ref()) {
             (Some(h), _) => match &h.codes {
-                crate::types::HdrCodes::Gpu { buffer, .. } => {
-                    self.graph_executor.prime_chain_from_gpu_hdr10_buffer(
-                        buffer,
-                        width,
-                        height,
-                        h.transfer.transfer_id(),
-                        h.transfer.scene_scale(),
-                        klipp_effects::color_wgsl::pack_primaries_matrix(h.source_to_working),
-                    )
-                }
-                crate::types::HdrCodes::Cpu(_) => false,
+                crate::types::HdrCodes::Gpu { buffer, .. } => crate::fast_path::GpuSeed::SceneReferred {
+                    buffer,
+                    transfer: h.transfer,
+                    source_to_working: h.source_to_working,
+                },
+                crate::types::HdrCodes::Cpu(_) => return false,
             },
-            (None, Some(g)) => self.graph_executor.prime_chain_from_gpu_u8_buffer(&g.rgba_buffer, width, height),
-            (None, None) => false,
+            (None, Some(g)) => crate::fast_path::GpuSeed::Srgb8(&g.rgba_buffer),
+            (None, None) => return false,
         };
-        if !seeded {
-            return false;
-        }
-        self.graph_executor.set_working_colorspace(crate::video_decoder::working_colorspace());
-        self.graph_executor.set_current_clip_track_points(&track_points);
-        self.graph_executor.set_solo_node(self.solo_node);
-        self.graph_executor.request_output_on_gpu();
-        let frame_number = (clip_time_secs * self.playhead.rate as f64).max(0.0) as u64;
+        let at = crate::fast_path::GradeAt {
+            graph: &graph,
+            clip_time: clip_time_secs,
+            frame_number,
+            track_points: &track_points,
+            working: crate::video_decoder::working_colorspace(),
+            solo: self.solo_node,
+        };
+        let (tone_map, working) = (self.tone_map_op, at.working);
+        let display = |linear: &[f32]| klipp_color::display::display_transform_ws(linear, tone_map, working);
         mark_stage(EngineStage::PostProcessInnerGradeExecute);
         let t_grade = std::time::Instant::now();
-        let result = self.graph_executor.execute_linear_with_thumbs(
-            &[], &graph, width, height, clip_time_secs, frame_number, None, None, None,
-        );
+        let Some(bytes) =
+            crate::fast_path::grade_to_display_on_gpu(self.renderer.executor(), seed, width, height, &at, &display)
+        else {
+            return false;
+        };
+        // The grade and its display readback run as one submission; the
+        // time is reported as the grade's.
         let grade_ms = t_grade.elapsed().as_secs_f64() * 1000.0;
-        let Ok((cpu_result, _, _)) = result else {
-            // Typically CpuSourceRequired: some node needs CPU pixels. The
-            // normal path grades this frame instead; nothing was shown.
-            return false;
-        };
-        let t_readback = std::time::Instant::now();
-        let bytes = if self.graph_executor.output_on_gpu().is_some() {
-            let exposure = hdr.map(|h| h.transfer.display_exposure());
-            match self.graph_executor.encode_output_to_display_u8(width, height, exposure) {
-                Some(b) => b,
-                None => return false,
-            }
-        } else {
-            // The graph ran but its result came back to the CPU — a solo
-            // view does that. Finish it the way the full pipeline would.
-            if cpu_result.len() != (width as usize) * (height as usize) * 4 {
-                return false;
-            }
-            let mut linear = cpu_result;
-            if let Some(h) = hdr {
-                klipp_color::hdr::apply_hdr_display_tonemap(&mut linear, h.transfer);
-            }
-            self.display_encode(&linear)
-        };
-        let readback_ms = t_readback.elapsed().as_secs_f64() * 1000.0;
-        if bytes.len() != (width as usize) * (height as usize) * 4 {
-            tracing::error!(
-                "graded GPU present: {} bytes != {width}x{height}x4 — falling back",
-                bytes.len(),
-            );
-            return false;
-        }
+        let readback_ms = 0.0;
         self.publish_fast_path_frame(
             bytes, width, height, t_frame, grade_ms, readback_ms, "graded_gpu_present",
             current_source_secs, q_len,
@@ -8923,1643 +6176,26 @@ impl PlaybackEngine {
             && !drag_skip
     }
 
-    /// Grade one decoded V1 frame through the full wrapper.
-    ///
-    /// Every path that grades a decoded V1 frame goes through here —
-    /// playback, frame stepping, paused seek, and the paused/parked
-    /// refresh paths. It is the single place that decides what an HDR
-    /// frame grades: its
-    /// scene-linear input, not `data`, which is display-referred and
-    /// already tone-mapped. The chain is not primed from the decoder's u8
-    /// buffer for HDR either — that buffer is the tone-mapped preview.
-    /// `post_process_rgba` tone-maps the HDR result itself.
-    ///
-    /// SDR frames need `data` populated by the caller (or a `gpu_source`
-    /// to seed from), exactly as before.
-    fn grade_v1_frame(&mut self, frame: crate::types::LinearFrame, width: u32, height: u32) -> Vec<f32> {
-        if let Some(hdr) = frame.hdr.as_ref() {
-            let hdr = hdr.to_cpu();
-            let input = hdr.scene_linear();
-            self.grade_hdr = Some(hdr);
-            let out = self.post_process_rgba_with_gpu_source(input, width, height, None);
-            self.grade_hdr = None;
-            out
-        } else {
-            let gpu_source = frame.gpu_source.clone();
-            self.post_process_rgba_with_gpu_source(frame.data, width, height, gpu_source.as_ref())
-        }
-    }
 
-    /// End of an HDR clip's own processing: tone-map the graded
-    /// scene-linear result to display-referred linear. After this the
-    /// clip is display-referred like any SDR clip, so composite,
-    /// transitions and the display encode need no HDR awareness.
-    ///
-    /// No-op for SDR. Must run before anything that treats the result as
-    /// what the viewer shows — the render cache, the scopes, the viewer
-    /// texture — or those would capture scene-linear values above 1.0.
-    fn finish_hdr_grade(&self, result: &mut [f32]) {
-        if let Some(h) = self.grade_hdr.as_ref() {
-            klipp_color::hdr::apply_hdr_display_tonemap(result, h.transfer);
-        }
-    }
 
-    /// Realise the grade's CPU source if the speculative skip left it
-    /// empty.
-    ///
-    /// The pre-grade readback is skipped when the chain can be seeded
-    /// from the decoder's GPU buffer, but not every path through the
-    /// grade consumes that seed: an identity graph never calls the
-    /// executor at all, and the drag path resamples on the CPU. Each
-    /// such consumer realises the pixels here instead of predicting the
-    /// need up front. This costs the readback that was deferred, never an
-    /// extra one — `gpu_source` holds the frame either way.
-    fn realise_grade_source_if_empty(
-        &mut self,
-        rgba: Vec<f32>,
-        width: u32,
-        height: u32,
-    ) -> Vec<f32> {
-        if !rgba.is_empty() {
-            return rgba;
-        }
-        match self.grade_gpu_source.clone() {
-            Some(gpu) => crate::types::realise_linear_from_gpu(&gpu),
-            None => {
-                // An empty source is only ever passed alongside a parked
-                // gpu_source. Say so loudly rather than let a
-                // zero-length buffer reach composite.
-                tracing::error!(
-                    "grade source empty with no gpu_source parked — rendering black"
-                );
-                vec![0.0; (width as usize) * (height as usize) * 4]
-            }
-        }
-    }
 
-    fn post_process_rgba(&mut self, linear_rgba: Vec<f32>, width: u32, height: u32) -> Vec<f32> {
-        mark_stage(EngineStage::PostProcessEntry);
-        let t_wrap_start = std::time::Instant::now();
-        mark_stage(EngineStage::PostProcessEnsureGpu);
-        self.ensure_gpu_effects();
-        let t_ensure_gpu = t_wrap_start.elapsed();
 
-        // The pregrade encode feeds three consumers — `cached_pregrade_
-        // frame` (compare-mode snapshot), `frame_cache` (scrub-back),
-        // and `fb.pregrade_data` (UI scope-preview during slider scrub).
-        // None of them are touched during pure forward playback. At 4K
-        // the encode + 32 MB allocation is 40-90 ms/frame, and that
-        // single line is the dominant cost in the grade-disabled hot
-        // path. Skip when:
-        //   * we're playing forward (state == Playing), AND
-        //   * no compare-mode is active (compare reads pregrade_data),
-        //     AND
-        //   * the user isn't actively node-param-editing (UI scope
-        //     preview reads pregrade_data on every slider tick).
-        // Pause / scrub / compare / grade-edit still pay the encode —
-        // EXCEPT during a Playing+drag with no compare modes active.
-        // In that combination the encode runs at full res ~30 times
-        // per second purely to keep the UI scope-preview fresh. The
-        // user is staring at the main image while gesturing, not the
-        // scope, so we accept a slightly stale scope preview to
-        // recover the ~5 ms / frame and stay under the per-frame
-        // budget. Compare-mode + paused-scrub still get fresh data.
-        let pregrade_needed = self.pregrade_encode_needed();
-        let t_bridge = std::time::Instant::now();
-        mark_stage(EngineStage::PostProcessPregradeEncode);
-        // What the caches keep (`pregrade`) and what the UI shows as the
-        // "before" image (`pregrade_display`). The same bytes for SDR. For
-        // HDR they differ: the caches keep the packed codes so a later
-        // regrade starts from the full range, while the UI gets the
-        // tone-mapped picture — `linear_rgba` here is scene-linear and
-        // would clip if encoded directly.
-        let (pregrade, pregrade_display): (Option<PregradePixels>, Option<Arc<Vec<u8>>>) =
-            if !pregrade_needed {
-                (None, None)
-            } else if let Some(hdr) = self.grade_hdr.clone() {
-                let mut display = linear_rgba.clone();
-                klipp_color::hdr::apply_hdr_display_tonemap(&mut display, hdr.transfer);
-                let u8s = Arc::new(self.linear_rgba_to_u8_smart(&display, width, height));
-                (Some(PregradePixels::Hdr(hdr)), Some(u8s))
-            } else {
-                // Routes large frames (≥ 1080p) through the GPU compute
-                // shader; HD-and-smaller stay on CPU LUT. At 4K this is
-                // the difference between 40-90 ms and 3-5 ms.
-                let u8s = Arc::new(self.linear_rgba_to_u8_smart(&linear_rgba, width, height));
-                (Some(PregradePixels::Srgb8(Arc::clone(&u8s))), Some(u8s))
-            };
-        let t_bridge_u8 = t_bridge.elapsed();
-
-        let t_pregrade = std::time::Instant::now();
-        let mut pregrade_fb_lock_us: u64 = 0;
-        if let (Some(pixels), Some(display)) = (pregrade, pregrade_display) {
-            self.cached_pregrade_frame = Some((pixels.clone(), width, height));
-            self.frame_cache.insert(self.playhead.value, pixels, width, height);
-            {
-                mark_stage(EngineStage::PostProcessFbLockA);
-                let t_lock = std::time::Instant::now();
-                let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
-                pregrade_fb_lock_us = t_lock.elapsed().as_micros() as u64;
-                fb.pregrade_data = display;
-            }
-        }
-        let t_pregrade_ms = t_pregrade.elapsed();
-
-        // ── Smart render cache: check for cached graded frame ──
-        // Skip render cache when overlays are present — cache keys don't represent
-        // multi-clip composite state. V1-only playback still benefits from the cache.
-        //
-        // Also skip the render cache while a colour-grade slider drag is in
-        // flight. The grade hash changes every UI tick during a drag, so a
-        // read would always miss and a write would burn ~6 MB of LZ4 for an
-        // entry that never gets reused (203 evictions + 34 decompress races
-        // in a 60 s scrub session). Nulling `cache_key` makes both the read
-        // block and the write block skip naturally. Playback without an
-        // active gesture still gets the full cache benefit.
-        mark_stage(EngineStage::PostProcessCacheLookup);
-        let t_key_lookup = std::time::Instant::now();
-        let has_overlays = !self.overlay_frames.is_empty();
-        let cache_key = if has_overlays || self.in_node_param_edit {
-            None
-        } else {
-            let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
-            let clip = seq.tracks.iter()
-                .filter(|t| t.kind == klipp_timeline::TrackKind::Video)
-                .find_map(|t| t.clip_at_timecode(self.playhead))
-                .map(|(_, c)| c);
-            if let Some(clip) = clip {
-                if self.current_grade_clip_id != Some(clip.id) || self.current_grade_hash == 0 {
-                    self.current_grade_hash = crate::render_cache::compute_grade_hash(
-                        &clip.node_graph, &clip.builtin_effects, &clip.builtin_effects_enabled,
-                    );
-                    self.current_grade_clip_id = Some(clip.id);
-                    // CRITICAL: `current_grade_clip_id` is shared with
-                    // the graph-Arc cache in `post_process_rgba_inner`
-                    // (the `cache_hit` check compares that same id).
-                    // Bumping the id without invalidating the Arc would
-                    // leave the previous clip's graph in the cache and
-                    // `_inner` would happily reuse it — exactly the
-                    // "grade applied to every clip" bug we chased here.
-                    self.current_graph_arc = None;
-                }
-                if !clip.node_graph.is_identity() || !clip.builtin_effects.is_empty() {
-                    Some(crate::render_cache::RenderCacheKey {
-                        clip_id: clip.id,
-                        frame_number: self.playhead.value,
-                        grade_hash: self.current_grade_hash,
-                    })
-                } else {
-                    None
-                }
-            } else {
-                None
-            }
-        };
-
-        // Check hot cache first, then disk cache
-        if let Some(ref key) = cache_key {
-            let t_hit_lookup = std::time::Instant::now();
-            let mut hit_source = "miss";
-            let cached_result = self.render_cache_hot.get(key)
-                .filter(|(_, w, h)| *w == width && *h == height)
-                .map(|(data, w, h)| { hit_source = "hot"; (data.to_vec(), w, h) })
-                .or_else(|| {
-                    self.render_cache_disk.get(key)
-                        .filter(|(_, w, h)| *w == width && *h == height)
-                        .inspect(|_| { hit_source = "disk"; })
-                });
-            let t_hit_lookup_ms = t_hit_lookup.elapsed().as_secs_f64() * 1000.0;
-
-            if let Some((cached, _w, _h)) = cached_result {
-                let t_hit_insert = std::time::Instant::now();
-                self.render_cache_hot.insert(key.clone(), cached.clone(), width, height);
-                let t_hit_insert_ms = t_hit_insert.elapsed().as_secs_f64() * 1000.0;
-                // Linearise the cached u8 frame once and share between the
-                // scope tap (10-bit FFmpeg path) and the linear return
-                // value. Previously these were two separate LUT passes —
-                // hoisting it up saves ~3-5 ms when scope is active.
-                let t_hit_decode = std::time::Instant::now();
-                let linear_out = u8_rgba_to_linear(&cached);
-                let t_hit_decode_ms = t_hit_decode.elapsed().as_secs_f64() * 1000.0;
-                if self.should_render_scope() {
-                  let scope_w = 1024u32;
-                  let scope_h = 512u32;
-                  let _ = self.scope_render_mode;
-                  let _ = &cached; // u8 cached frame no longer needed for scope render
-                  self.render_active_scopes_via_ffmpeg_linear(&linear_out, width, height, scope_w, scope_h);
-                  self.last_scope_render = std::time::Instant::now();
-                }
-                let hit_total_ms = t_wrap_start.elapsed().as_secs_f64() * 1000.0;
-                if hit_total_ms > 5.0 {
-                    debug!(
-                        "PERF post_process_hit: {hit_total_ms:.1}ms source={hit_source} | \
-                         bridge_u8={:.1} pregrade={:.1} lookup={:.1} insert={:.1} decode={:.1}",
-                        t_bridge_u8.as_secs_f64() * 1000.0,
-                        t_pregrade_ms.as_secs_f64() * 1000.0,
-                        t_hit_lookup_ms,
-                        t_hit_insert_ms,
-                        t_hit_decode_ms,
-                    );
-                }
-                return linear_out;
-            }
-        }
-
-        // Key computation + hot/disk lookup is done now; everything above was
-        // cache-check and potential cache-hit early return. If we reach
-        // here it was a miss and we're running the real grade pipeline.
-        let t_key_lookup_ms = t_key_lookup.elapsed();
-        mark_stage(EngineStage::PostProcessInner);
-        let t_inner = std::time::Instant::now();
-        let mut result_linear = self.post_process_rgba_inner_drag_aware(linear_rgba, width, height);
-        // Before the render cache, the scopes and the viewer texture all
-        // read it: they must see what the viewer shows. (A render-cache
-        // hit above returns pixels that were stored after this step.)
-        self.finish_hdr_grade(&mut result_linear);
-        let t_inner_ms = t_inner.elapsed();
-
-        // The reencode (`result_u8`) feeds two consumers — the render
-        // cache (`cache_put`) and the scope renderer. Both are
-        // independently gated:
-        //   * `cache_put` skips during Playing (see below).
-        //   * scope is throttled at ~10 Hz and skipped when not visible
-        //     (`should_render_scope`).
-        // So during steady-state playback with cache_put off and scope
-        // throttle off, `result_u8` is wholly unused. At 4K the encode
-        // is 40-90 ms / frame — the second-largest single cost in the
-        // wrap. Compute it lazily so the common playback frame pays
-        // zero CPU u8 conversion.
-        let cache_put_active = cache_key.is_some() && self.state != PlaybackState::Playing;
-        // Scope rendering no longer consumes `result_u8` — the FFmpeg
-        // path taps `result_linear` directly. Only the render cache
-        // still needs the u8 encode.
-        let need_result_u8 = cache_put_active;
-
-        mark_stage(EngineStage::PostProcessReencode);
-        let t_reencode = std::time::Instant::now();
-        // CPU LUT, not the smart-GPU split. `result_linear` is already
-        // a CPU `Vec<f32>` returned from `post_process_rgba_inner`, so
-        // taking the GPU path here pays a 33 MB upload + shader + 8 MB
-        // readback (~13 ms at 1080p, dominated by `device.poll(Wait)`
-        // draining the whole queue) purely to convert data the CPU
-        // already has. The CPU LUT path is a single LUT lookup per
-        // channel and lands at ~3-5 ms on a modern CPU at 1080p.
-        // The GPU path is only the right answer when the source data
-        // is *already* on the GPU — that's the future GPU-resident
-        // grade output (option B), which would let the scope shader
-        // bind the chain buffer directly and skip the encode entirely.
-        let result_u8 = if need_result_u8 {
-            linear_rgba_to_u8(&result_linear)
-        } else {
-            Vec::new()
-        };
-        let t_reencode_ms = t_reencode.elapsed();
-
-        let t_cache_put = std::time::Instant::now();
-        // Render-cache write is paused-only (see `cache_put_active`).
-        if cache_put_active {
-            if let Some(key) = cache_key {
-                self.render_cache_hot.insert(key.clone(), result_u8.clone(), width, height);
-                self.render_cache_disk.put(&key, &result_u8, width, height);
-            }
-        }
-        let t_cache_put_ms = t_cache_put.elapsed();
-
-        // Render GPU scope texture from the graded frame. Modes with
-        // no GPU kernel (vectorscope, unknown codes) clear the
-        // texture so the UI falls back to the CPU renderer in
-        // `klipp-ui/widgets/scopes.rs`.
-        mark_stage(EngineStage::PostProcessScopeRender);
-        let t_scope = std::time::Instant::now();
-        let mut scope_gpu_ms: f64 = 0.0;
-        let mut scope_fb_lock_us: u64 = 0;
-        if self.should_render_scope() {
-          let scope_w = 1024u32;
-          let scope_h = 512u32;
-          let _ = self.scope_render_mode;
-          // `result_linear` (above) is the post-grade, pre-display-encode
-          // linear-BT.709 f32 frame. Feeding it directly hands FFmpeg
-          // 10-bit code-value precision — no u8 round-trip. The multi-
-          // mode helper renders every active mode (dock + floating-
-          // window panes) and takes the FB lock internally.
-          let t_filter = std::time::Instant::now();
-          self.render_active_scopes_via_ffmpeg_linear(&result_linear, width, height, scope_w, scope_h);
-          scope_gpu_ms = t_filter.elapsed().as_secs_f64() * 1000.0;
-          self.last_scope_render = std::time::Instant::now();
-          scope_fb_lock_us = 0;
-          let _ = &result_u8; // u8 result kept for cache write, not scope
-        }
-        let t_scope_ms = t_scope.elapsed();
-
-        let wrap_total_ms = t_wrap_start.elapsed().as_secs_f64() * 1000.0;
-        // Always emit the breakdown while the user is dragging a grade
-        // param — that's the window we're trying to diagnose. Otherwise
-        // keep the old > 5 ms threshold so steady-state playback stays
-        // quiet in the log.
-        let force_log = self.in_node_param_edit;
-        if wrap_total_ms > 5.0 || force_log {
-            // Breakdown of the OUTER post_process_rgba wrapper. `inner`
-            // is the grade/ofx/builtin/lut pipeline (matches PERF
-            // post_process). `scope_gpu_ms` is the wgpu submit +
-            // device.poll(Wait) + map_async readback fence only — the
-            // hard sync that stalls this thread until the GPU has
-            // drained the whole queue. `fb_lock_us` fields capture
-            // mutex contention with the UI thread. During a slider
-            // drag (force_log=true) this fires every frame, so the
-            // timeline is fully reconstructable from the log.
-            debug!(
-                "PERF post_process_wrap: {:.1}ms total | ensure_gpu={:.1} bridge_u8={:.1} pregrade={:.1} key_lookup={:.1} inner={:.1} reencode={:.1} cache_put={:.1} scope={:.1} | scope_gpu={:.1} pregrade_fb_lock_us={} scope_fb_lock_us={} in_edit={} wxh={}x{}",
-                wrap_total_ms,
-                t_ensure_gpu.as_secs_f64() * 1000.0,
-                t_bridge_u8.as_secs_f64() * 1000.0,
-                t_pregrade_ms.as_secs_f64() * 1000.0,
-                t_key_lookup_ms.as_secs_f64() * 1000.0,
-                t_inner_ms.as_secs_f64() * 1000.0,
-                t_reencode_ms.as_secs_f64() * 1000.0,
-                t_cache_put_ms.as_secs_f64() * 1000.0,
-                t_scope_ms.as_secs_f64() * 1000.0,
-                scope_gpu_ms,
-                pregrade_fb_lock_us,
-                scope_fb_lock_us,
-                self.in_node_param_edit,
-                width, height,
-            );
-        }
-
-        // Surface wrap-stage timings to the live perf overlay. The
-        // grade-only sample pushed by `post_process_rgba_inner` shows
-        // 0 for everything when the user has no grade applied — this
-        // patch fills in the bridge/reencode/scope numbers so the
-        // overlay always reports something useful for any clip.
-        if let Ok(mut ring) = self.perf_ring.lock() {
-            ring.update_wrap_stages(crate::perf::WrapStages {
-                bridge_u8_ms: t_bridge_u8.as_secs_f64() as f32 * 1000.0,
-                reencode_ms: t_reencode_ms.as_secs_f64() as f32 * 1000.0,
-                scope_ms: t_scope_ms.as_secs_f64() as f32 * 1000.0,
-            });
-        }
-
-        // Mirror the graded output into `FrameBuffer.gpu_output` when
-        // the viewer-GPU path is wired and a shared wgpu device is
-        // available. The UI picks this texture up via its egui
-        // `TextureId` registration and samples it directly — no
-        // `fb.data` upload. CPU `fb.data` is still populated above
-        // so the fallback path keeps working if the UI hasn't
-        // registered the texture yet.
-        //
-        // Width constraint: `w × 4` must be a multiple of
-        // `COPY_BYTES_PER_ROW_ALIGNMENT` (256). Every playback
-        // resolution meets this (1920 × 4 = 7680, ...), but scope-
-        // preview or odd downscales might not — skip silently in
-        // that case.
-        if should_publish_gpu_viewer() && (width * 4) % 256 == 0 {
-            mark_stage(EngineStage::GpuEncodeToTexture);
-            // When the grade chain just ran, its final linear-RGBA
-            // output is still in `buf_a`/`buf_b` on the GPU — the
-            // CPU `result_linear` we hold is a mirror produced by
-            // the chain-tail download. Routing the viewer texture
-            // from that on-GPU buffer via `encode_grade_to_texture`
-            // skips the 33 MB PCIe re-upload that
-            // `linear_rgba_to_texture_gpu` would otherwise do
-            // (~5 ms at 1080p). Falls back to the CPU-upload path
-            // when no chain ran (identity graph, pure-CPU node, or
-            // executor produced its result without engaging GPU).
-            // The chain's buffer holds the grade's *scene-linear* output
-            // for HDR, before `finish_hdr_grade`; encoding it would show
-            // an un-tone-mapped frame. Use the finished result instead.
-            let chain_slot = if self.grade_hdr.is_some() {
-                None
-            } else {
-                self.graph_executor.last_chain_final_slot()
-            };
-            if let Some(gpu) = self.graph_executor.gpu_pipeline_mut() {
-                let device = gpu.device();
-                let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
-                let tex = fb.ensure_gpu_output(&device, width, height);
-                drop(fb);
-                if let Some(tex) = tex {
-                    match chain_slot {
-                        Some(slot_a) => {
-                            let _ = gpu.encode_grade_to_texture(slot_a, width, height, &tex);
-                        }
-                        None => {
-                            let _ = gpu.linear_rgba_to_texture_gpu(&result_linear, width, height, &tex);
-                        }
-                    }
-                }
-            }
-        }
-
-        result_linear
-    }
-
-    /// Re-grade the cached pre-grade frame without re-decoding.
-    /// Called when color parameters change while paused.
+    /// Re-render the paused frame without decoding again: the primary
+    /// decoder's frame from the pre-grade cache, every other clip's from
+    /// its stream. Called whenever something that changes the picture
+    /// changes while paused.
     fn regrade_cached_frame(&mut self) {
         mark_stage(EngineStage::PausedRegrade);
-        self.ensure_gpu_effects();
-        // Case 1: V1 video exists — regrade and composite with overlay(s)
-        if let Some((ref pixels, w, h)) = self.cached_pregrade_frame.clone() {
-            // Decode once so the grade + composite run in linear. For HDR
-            // that is scene-linear from the cached codes, and the result is
-            // tone-mapped exactly as playback's is — paused and playing
-            // grades of the same frame must agree.
-            let linear_in = pixels.grade_input();
-            self.grade_hdr = pixels.hdr().cloned();
-            let mut graded_linear = self.post_process_rgba_inner_drag_aware(linear_in, w, h);
-            self.finish_hdr_grade(&mut graded_linear);
-            self.grade_hdr = None;
-
-            // Pump any overlay-decoder frames that arrived since the
-            // last composite, then route through the matte-aware
-            // composite. Without the pump, a regrade triggered before
-            // V2's first frame lands paints with stale or missing
-            // overlays. Without the matte route, track-matte
-            // bindings and stencil clips don't render in paused
-            // state — the video-in-text effect only appears during
-            // active playback. Both fixes together keep the paused
-            // composite consistent with the playing one.
-            let ph = self.playhead;
-            self.pop_overlay_frames(ph);
-            let has_overlays = !self.overlay_frames.is_empty();
-
-            // Build the final linear buffer (composited if overlays exist,
-            // else the single-layer graded frame). Keeping it alive past
-            // the display-encode is the difference between 8-bit and 10-bit
-            // scope precision — the FFmpeg scope tap sips from this buffer
-            // directly, the legacy GPU path falls back to the u8 output.
-            let final_linear = if has_overlays {
-                self.compose_with_overlays_and_matte(graded_linear, w, h)
-            } else {
-                graded_linear
-            };
-            let out_u8 = self.display_encode(&final_linear);
-
-            // Render GPU scope texture from the graded frame. Modes
-            // with no GPU kernel (vectorscope, unknown codes) clear
-            // the texture so the UI falls back to the CPU renderer.
-            // Throttled to ~10 Hz — rapid slider scrubbing fires this
-            // path on every parameter change, which would otherwise
-            // pay the scope-render cost dozens of times per second.
-            //
-            // FFmpeg path produces multi-mode results (one per active
-            // scope mode). Results land under the same FB lock as
-            // `write_frame` below so a single critical section covers
-            // both writes (preserves the prior single-lock optimisation).
-            let should_render = self.should_render_scope();
-            let scope_w = 1024u32;
-            let scope_h = 512u32;
-            let scope_renders: Option<Vec<(u8, Option<Vec<u8>>)>> = if should_render {
-                let renders = self.render_active_scopes_pending(&final_linear, w, h);
-                self.last_scope_render = std::time::Instant::now();
-                Some(renders)
-            } else {
-                None
-            };
-
-            // Recycle the final linear buffer back into the composite scratch
-            // pool — matches the prior behaviour where the overlays branch
-            // stashed `composited` for reuse. (No-overlay path also benefits
-            // now since the buffer is identical to graded_linear, which the
-            // post-process inner caller had no slot for.)
-            if has_overlays {
-                self.composite_scratch_linear = final_linear;
-            }
-
-            let dock_mode = self.scope_render_mode;
-            let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
-            fb.write_frame(out_u8, w, h);
-            if let Some(renders) = scope_renders {
-                Self::apply_scope_renders(&mut fb, dock_mode, renders, scope_w, scope_h);
-            }
-            drop(fb);
-            let _ = self.event_tx.send(AppEvent::FrameReady);
-            // Wake the UI. When paused, egui sleeps until an input
-            // event or a scheduled repaint — neither fires on its
-            // own for a param-change-triggered regrade. Without this,
-            // slider drags on a paused clip write a fresh frame to
-            // `frame_buffer` but the viewer stays asleep until the
-            // user moves the mouse.
-            (self.repaint_cb)();
-        } else if let Some((track_idx, ov_w, ov_h)) = {
-            // Pick the topmost overlay (highest track index) with a frame in deterministic order.
-            let overlay_indices: Vec<usize> = {
-                let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
-                seq.overlay_video_tracks(self.current_track_index).iter().map(|(i, _)| *i).collect()
-            };
-            overlay_indices.iter().rev().find_map(|ti| {
-                self.overlay_frames.get(ti).map(|f| (*ti, f.width, f.height))
-            })
-        } {
-            // Case 2: No V1 video, but overlay exists (standalone title/generator).
-            // Apply track + clip opacity by pre-multiplying alpha.
-            let (effective_opacity, ov_rgba) = {
-                let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
-                let fps_f64 = self.fps.as_f64();
-                let track_opacity = seq.tracks.get(track_idx).map(|t| t.opacity).unwrap_or(1.0);
-                let clip_opacity = seq.tracks.get(track_idx)
-                    .and_then(|t| t.clip_at_timecode(self.playhead))
-                    .map(|(_, clip)| evaluate_clip_opacity(clip, self.playhead, fps_f64))
-                    .unwrap_or(1.0);
-                let effective = track_opacity * clip_opacity;
-                let rgba = self.overlay_frames.get(&track_idx).map(|f| f.to_rgba()).unwrap_or_default();
-                (effective, rgba)
-            };
-            let mut rgba = ov_rgba;
-            if (effective_opacity - 1.0).abs() > 0.001 && effective_opacity >= 0.0 {
-                let mul = (effective_opacity * 255.0).clamp(0.0, 255.0) as u16;
-                for pixel in rgba.chunks_exact_mut(4) {
-                    pixel[3] = ((pixel[3] as u16 * mul) / 255) as u8;
-                }
-            }
-            let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
-            fb.write_frame(rgba, ov_w, ov_h);
-            drop(fb);
-            let _ = self.event_tx.send(AppEvent::FrameReady);
-            (self.repaint_cb)();
+        let primary = self
+            .cached_pregrade_frame
+            .as_ref()
+            .map(|(pixels, w, h)| streams::HeldFrame::from_pregrade(pixels, *w, *h));
+        // A primary decoder whose first frame has not arrived yet: nothing
+        // to show until it does (the paused refresh paints it).
+        if primary.is_none() && self.v1_decoder.is_some() {
+            return;
         }
-    }
-
-    /// Drag-time downsample wrapper around `post_process_rgba_inner`.
-    ///
-    /// During an active colour-grade gesture (`in_node_param_edit`), the
-    /// grade chain is the dominant per-frame cost — running it at half
-    /// resolution removes ~75 % of that cost while the user is dragging.
-    /// The result is upsampled back so the wrapper's caller never has
-    /// to know which pass it got.
-    ///
-    /// Bypassed when:
-    /// - the env gate (`KLIPP_DRAG_DOWNSAMPLE=1`) is off,
-    /// - any compare mode is active (those paths read full-res snapshots),
-    /// - the engine is recovering from drag end (`force_full_res_regrade`),
-    /// - the source is too small for the optimisation to be worth the
-    ///   resample overhead (< 480p in either axis).
-    fn post_process_rgba_inner_drag_aware(
-        &mut self,
-        linear_rgba: Vec<f32>,
-        width: u32,
-        height: u32,
-    ) -> Vec<f32> {
-        let downsample = self.in_node_param_edit
-            && drag_downsample_enabled()
-            && !self.force_full_res_regrade
-            && !self.bypass_color_grade
-            && !self.compare_stabilization
-            && !self.compare_effect_active
-            && width >= 480
-            && height >= 480;
-
-        if self.in_node_param_edit {
-            self.drag_grade_count = self.drag_grade_count.saturating_add(1);
-        }
-
-        if !downsample {
-            return self.post_process_rgba_inner(linear_rgba, width, height);
-        }
-
-        // The resample below is CPU work on the ungraded frame, so it
-        // needs real pixels even when the grade itself could have run
-        // from the GPU seed. The seed is unusable here anyway: it was
-        // made at full res and this grade runs at half, which the
-        // executor now checks and refuses.
-        let linear_rgba = self.realise_grade_source_if_empty(linear_rgba, width, height);
-
-        let half_w = (width / 2).max(1);
-        let half_h = (height / 2).max(1);
-
-        let t_down = std::time::Instant::now();
-        let small_in = crate::grade_resample::downsample_linear_2x(
-            &linear_rgba, width, height,
-        );
-        let down_ms = t_down.elapsed().as_secs_f64() * 1000.0;
-
-        let t_grade = std::time::Instant::now();
-        let small_out = self.post_process_rgba_inner(small_in, half_w, half_h);
-        let grade_ms = t_grade.elapsed().as_secs_f64() * 1000.0;
-
-        let t_up = std::time::Instant::now();
-        let full_out = crate::grade_resample::upsample_linear_2x(
-            &small_out, half_w, half_h,
-        );
-        let up_ms = t_up.elapsed().as_secs_f64() * 1000.0;
-
-        self.drag_downsampled_count = self.drag_downsampled_count.saturating_add(1);
-
-        tracing::debug!(
-            "DRAG_DOWNSAMPLE src={}x{} grade={}x{} down={:.1}ms grade={:.1}ms up={:.1}ms",
-            width, height, half_w, half_h, down_ms, grade_ms, up_ms,
-        );
-
-        full_out
-    }
-
-    fn post_process_rgba_inner(&mut self, linear_rgba: Vec<f32>, width: u32, height: u32) -> Vec<f32> {
-        // Through this function `rgba` now names the linear-f32 RGBA
-        // buffer, not the sRGB u8 buffer from before the linear-edge-
-        // to-edge refactor. Each u8 boundary (speed-ramp blend, OFX
-        // plugin chain, global 3D LUT, compare snapshots) bridges
-        // locally and commentarily, keeping the shared node-graph /
-        // builtin-effects spine in linear throughout.
-        let rgba = linear_rgba;
-        let t0 = std::time::Instant::now();
-        let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
-        // Pick the clip by playhead position, NOT by the engine's
-        // current_track_index/current_clip_index decoder bookkeeping.
-        // The two can disagree for a window during clip transitions
-        // (decoder switches files before advance_to_next_clip bumps
-        // the indices, or vice versa), and any disagreement here means
-        // the wrong clip's grade gets applied to the new clip's
-        // pixels. The cache key path above (`clip_at_timecode`) uses
-        // playhead lookup; matching it makes the grade follow the
-        // playhead 1:1.
-        //
-        // Falls back to the index-based lookup when no playable clip
-        // sits under the playhead — preserves the synthetic / no-clip
-        // paths that the original lookup served.
-        let clip = seq.tracks.iter()
-            .filter(|t| t.kind == klipp_timeline::TrackKind::Video)
-            .find_map(|t| t.clip_at_timecode(self.playhead))
-            .map(|(_, c)| c)
-            .or_else(|| seq.tracks.get(self.current_track_index)
-                .and_then(|t| t.clips.get(self.current_clip_index)));
-        // Capture the current clip's id for per-effect compare gating after
-        // the seq lock drops. Some() only when we actually have a clip.
-        let current_clip_id: Option<klipp_core::ClipId> = clip.map(|c| c.id);
-        let ofx_effects = clip.map(|c| c.effects.clone()).unwrap_or_default();
-        // Track-points are needed by the graph executor's Mask handler
-        // to override mask centres for tracker-bound masks. Capture
-        // here while the seq lock is held so the executor sees an
-        // up-to-date snapshot when invoked below.
-        let clip_track_points: Vec<klipp_core::TrackPoint> = clip
-            .map(|c| c.track_points.clone())
-            .unwrap_or_default();
-        // Reuse the cached Arc<NodeGraph> when the current clip still matches.
-        // The Arc is invalidated on SequenceUpdated (graph mutation) and on clip
-        // switch, so a cache hit here means we can skip the multi-kB node/edge/
-        // params clone entirely — we just bump the refcount.
-        let node_graph: Option<Arc<klipp_nodes::NodeGraph>> = if let Some(c) = clip {
-            let cache_hit = self.current_graph_arc.is_some()
-                && self.current_grade_clip_id == Some(c.id);
-            if cache_hit {
-                // Safe unwrap: cache_hit checks is_some().
-                Some(Arc::clone(self.current_graph_arc.as_ref().unwrap()))
-            } else {
-                let arc = Arc::new(c.node_graph.clone());
-                self.current_graph_arc = Some(Arc::clone(&arc));
-                self.current_grade_clip_id = Some(c.id);
-                Some(arc)
-            }
-        } else {
-            None
-        };
-        let rsc_clip_id_hash = clip.map(|c| c.id.0.as_u64_pair().0).unwrap_or(0);
-        let rsc_media_id = clip.and_then(|c| c.media_id());
-        let clip_time_secs = clip.map(|_c| {
-            (self.playhead.to_secs_f64() - self.clip_timeline_start.to_secs_f64()) * self.clip_speed
-                + self.clip_source_start
-        }).unwrap_or(0.0);
-
-        // Clip-relative time for keyframe evaluation (time since clip's timeline_in)
-        let clip_relative_secs = clip.map(|c| {
-            (self.playhead.to_secs_f64() - c.timeline_in.to_secs_f64()).max(0.0)
-        }).unwrap_or(0.0);
-
-        // Build modifier evaluation context
-        let eval_ctx = clip.map(|c| klipp_core::EvalContext {
-            clip_time_secs: clip_relative_secs,
-            clip_duration_secs: (c.source_out.to_secs_f64() - c.source_in.to_secs_f64()),
-            timeline_time_secs: self.playhead.to_secs_f64(),
-            fps: self.fps.as_f64(),
-            seed: c.id.0.as_u64_pair().0,
-        });
-
-        // Build builtin_fx with keyframed values overriding static ones
-        let builtin_fx = if let Some(c) = clip {
-            let mut fx = c.builtin_effects.clone();
-
-            // Evaluate opacity keyframes + modifiers
-            let has_opacity_modifiers = c.param_modifiers.contains_key(&klipp_core::ParamId::Opacity);
-            if !c.opacity_keyframes.is_empty() || has_opacity_modifiers {
-                let opacity_default = fx.iter().find_map(|e| match e {
-                    klipp_effects::BuiltinEffect::Opacity { value } => Some(*value),
-                    _ => None,
-                }).unwrap_or(1.0);
-                let opacity_val = eval_with_modifiers(
-                    &c.opacity_keyframes,
-                    &c.param_modifiers,
-                    &klipp_core::ParamId::Opacity,
-                    clip_relative_secs,
-                    opacity_default,
-                    eval_ctx.as_ref().unwrap(),
-                );
-                let mut found = false;
-                for effect in &mut fx {
-                    if let klipp_effects::BuiltinEffect::Opacity { value } = effect {
-                        *value = opacity_val;
-                        found = true;
-                        break;
-                    }
-                }
-                if !found && (opacity_val - 1.0).abs() > 0.001 {
-                    fx.push(klipp_effects::BuiltinEffect::Opacity { value: opacity_val });
-                }
-            }
-
-            // Patch ColorFade `progress` per-frame from clip-time + duration + mode.
-            // Same per-frame patch pattern used by Opacity above. The
-            // `progress` field is `#[serde(skip)]` so the value here is
-            // engine-transient and never written to project files.
-            let clip_dur_secs = (c.source_out.to_secs_f64() - c.source_in.to_secs_f64()).max(0.0);
-            for effect in &mut fx {
-                if let klipp_effects::BuiltinEffect::ColorFade { duration_secs, mode, progress, .. } = effect {
-                    let dur = (*duration_secs as f64).max(0.0);
-                    *progress = if dur <= 0.0 {
-                        1.0 // zero-duration fade is identity (passes through unchanged)
-                    } else {
-                        match *mode {
-                            klipp_effects::ColorFadeMode::In => {
-                                (clip_relative_secs / dur).clamp(0.0, 1.0) as f32
-                            }
-                            klipp_effects::ColorFadeMode::Out => {
-                                let from_end = (clip_dur_secs - clip_relative_secs).max(0.0);
-                                (from_end / dur).clamp(0.0, 1.0) as f32
-                            }
-                        }
-                    };
-                }
-            }
-
-            // Evaluate transform keyframes + modifiers
-            let has_transform_modifiers = c.param_modifiers.contains_key(&klipp_core::ParamId::PositionX)
-                || c.param_modifiers.contains_key(&klipp_core::ParamId::PositionY)
-                || c.param_modifiers.contains_key(&klipp_core::ParamId::Scale)
-                || c.param_modifiers.contains_key(&klipp_core::ParamId::Rotation);
-            let has_transform_kf = !c.transform_pos_x_keyframes.is_empty()
-                || !c.transform_pos_y_keyframes.is_empty()
-                || !c.transform_scale_keyframes.is_empty()
-                || !c.transform_rotation_keyframes.is_empty()
-                || has_transform_modifiers;
-
-            if has_transform_kf {
-                // Get current transform values (or defaults)
-                let (mut pos_x, mut pos_y, mut scale_x, mut scale_y, mut rotation, anchor_x, anchor_y, rotation_x_val, rotation_y_val, perspective_val) =
-                    fx.iter().find_map(|e| match e {
-                        klipp_effects::BuiltinEffect::Transform {
-                            position_x, position_y, scale_x, scale_y, rotation, anchor_x, anchor_y,
-                            rotation_x, rotation_y, perspective, focal_ref: _,
-                        } => Some((*position_x, *position_y, *scale_x, *scale_y, *rotation, *anchor_x, *anchor_y, *rotation_x, *rotation_y, *perspective)),
-                        _ => None,
-                    }).unwrap_or((0.0, 0.0, 1.0, 1.0, 0.0, 0.5, 0.5, 0.0, 0.0, 0.0));
-
-                let ectx = eval_ctx.as_ref().unwrap();
-                if !c.transform_pos_x_keyframes.is_empty() || c.param_modifiers.contains_key(&klipp_core::ParamId::PositionX) {
-                    pos_x = eval_with_modifiers(&c.transform_pos_x_keyframes, &c.param_modifiers, &klipp_core::ParamId::PositionX, clip_relative_secs, pos_x, ectx);
-                }
-                if !c.transform_pos_y_keyframes.is_empty() || c.param_modifiers.contains_key(&klipp_core::ParamId::PositionY) {
-                    pos_y = eval_with_modifiers(&c.transform_pos_y_keyframes, &c.param_modifiers, &klipp_core::ParamId::PositionY, clip_relative_secs, pos_y, ectx);
-                }
-                if !c.transform_scale_keyframes.is_empty() || c.param_modifiers.contains_key(&klipp_core::ParamId::Scale) {
-                    let s = eval_with_modifiers(&c.transform_scale_keyframes, &c.param_modifiers, &klipp_core::ParamId::Scale, clip_relative_secs, scale_x, ectx);
-                    scale_x = s;
-                    scale_y = s; // uniform scale from the Video tab
-                }
-                if !c.transform_rotation_keyframes.is_empty() || c.param_modifiers.contains_key(&klipp_core::ParamId::Rotation) {
-                    rotation = eval_with_modifiers(&c.transform_rotation_keyframes, &c.param_modifiers, &klipp_core::ParamId::Rotation, clip_relative_secs, rotation, ectx);
-                }
-
-                // Source rotation is now handled in the decode pipeline (NV12→RGBA GPU converter)
-                // rather than the effects pipeline, so it's not added to the Transform here.
-
-                let new_transform = klipp_effects::BuiltinEffect::Transform {
-                    position_x: pos_x, position_y: pos_y,
-                    scale_x, scale_y, rotation, anchor_x, anchor_y,
-                    rotation_x: rotation_x_val, rotation_y: rotation_y_val, perspective: perspective_val,
-                    // Static rebuild — see HZ-NEXT-GLYPH-LOCK note
-                    // at the matching site above; focal_ref
-                    // resolution lives in the engine's own-transform
-                    // evaluator, not in this re-emit.
-                    focal_ref: None,
-                };
-                let mut found = false;
-                for effect in &mut fx {
-                    if matches!(effect, klipp_effects::BuiltinEffect::Transform { .. }) {
-                        *effect = new_transform.clone();
-                        found = true;
-                        break;
-                    }
-                }
-                if !found {
-                    fx.push(new_transform);
-                }
-            }
-
-            // Evaluate effect keyframes + modifiers (blur, sharpen, crop, chroma key)
-            {
-                let ectx = eval_ctx.as_ref().unwrap();
-                for (i, effect) in fx.iter_mut().enumerate() {
-                    match effect {
-                        klipp_effects::BuiltinEffect::GaussianBlur { radius } => {
-                            let key = format!("{}:radius", i);
-                            if let Some(kfs) = c.effect_keyframes.get(&key) {
-                                if !kfs.is_empty() {
-                                    *radius = eval_effect_with_modifiers(kfs, &c.param_modifiers, i, "radius", clip_relative_secs, *radius, ectx);
-                                }
-                            } else {
-                                // No keyframes but may have modifiers
-                                *radius = eval_effect_with_modifiers(&[], &c.param_modifiers, i, "radius", clip_relative_secs, *radius, ectx);
-                            }
-                        }
-                        klipp_effects::BuiltinEffect::Sharpen { amount } => {
-                            let key = format!("{}:amount", i);
-                            if let Some(kfs) = c.effect_keyframes.get(&key) {
-                                if !kfs.is_empty() {
-                                    *amount = eval_effect_with_modifiers(kfs, &c.param_modifiers, i, "amount", clip_relative_secs, *amount, ectx);
-                                }
-                            } else {
-                                *amount = eval_effect_with_modifiers(&[], &c.param_modifiers, i, "amount", clip_relative_secs, *amount, ectx);
-                            }
-                        }
-                        klipp_effects::BuiltinEffect::Crop { left, right, top, bottom, feather } => {
-                            for (name, val) in [("left", left as &mut f32), ("right", right), ("top", top), ("bottom", bottom), ("feather", feather)] {
-                                let key = format!("{}:{}", i, name);
-                                let kfs = c.effect_keyframes.get(&key).map(|v| v.as_slice()).unwrap_or(&[]);
-                                *val = eval_effect_with_modifiers(kfs, &c.param_modifiers, i, name, clip_relative_secs, *val, ectx);
-                            }
-                        }
-                        klipp_effects::BuiltinEffect::ChromaKey { tolerance, soft_edge, spill_strength, .. } => {
-                            // Keyframe key "spill" continues to address the soft-edge
-                            // field — that's what the slider was always wired to, even
-                            // back when it was misnamed `spill_suppression`. New
-                            // "spill_strength" key drives the real spill knob.
-                            for (name, val) in [("tolerance", tolerance as &mut f32), ("spill", soft_edge), ("spill_strength", spill_strength)] {
-                                let key = format!("{}:{}", i, name);
-                                let kfs = c.effect_keyframes.get(&key).map(|v| v.as_slice()).unwrap_or(&[]);
-                                *val = eval_effect_with_modifiers(kfs, &c.param_modifiers, i, name, clip_relative_secs, *val, ectx);
-                            }
-                        }
-                        klipp_effects::BuiltinEffect::Opacity { value } => {
-                            let key = format!("{}:value", i);
-                            if let Some(kfs) = c.effect_keyframes.get(&key) {
-                                if !kfs.is_empty() {
-                                    *value = eval_effect_with_modifiers(kfs, &c.param_modifiers, i, "value", clip_relative_secs, *value, ectx);
-                                }
-                            } else {
-                                *value = eval_effect_with_modifiers(&[], &c.param_modifiers, i, "value", clip_relative_secs, *value, ectx);
-                            }
-                        }
-                        _ => {} // Transform already handled by dedicated keyframes
-                    }
-                }
-            }
-
-            // Filter out disabled builtin effects. The iter-by-ref + clone
-            // shape (instead of into_iter) lets the per-effect compare path
-            // below filter the same `fx` a second time with a flipped bit.
-            let enabled = &c.builtin_effects_enabled;
-            fx.iter().enumerate()
-                .filter(|(i, _)| enabled.get(*i).copied().unwrap_or(true))
-                .map(|(_, e)| e.clone())
-                .collect()
-        } else {
-            Vec::new()
-        };
-
-        // Per-effect compare: build a second builtin_fx that flips the
-        // target effect's enabled flag. Runs only when compare is active
-        // AND targets a builtin on the current clip. Uses the same
-        // post-keyframe `fx` list as the main path, refiltering with a
-        // cloned enabled vec whose target bit is toggled.
-        let compare_builtin_fx: Vec<klipp_effects::BuiltinEffect> =
-            if self.compare_effect_active
-                && !self.compare_effect_is_ofx
-                && current_clip_id.is_some()
-                && current_clip_id == self.compare_effect_clip_id
-            {
-                if let Some(c) = clip {
-                    let mut fx = c.builtin_effects.clone();
-                    // Re-run the same transform / keyframe evaluation loop so
-                    // the compare fx matches the main fx's animated state.
-                    // (The main path mutates a local `fx`; it's out of scope
-                    // here, so we just re-evaluate on our own clone — same
-                    // cost as one extra keyframe pass.)
-                    let target = self.compare_effect_index;
-                    let mut enabled_clone = c.builtin_effects_enabled.clone();
-                    while enabled_clone.len() <= target {
-                        enabled_clone.push(true);
-                    }
-                    if target < enabled_clone.len() {
-                        enabled_clone[target] = !enabled_clone[target];
-                    }
-                    // Evaluate effect keyframes against the clone (mirrors
-                    // the main path — only the filter differs).
-                    if let Some(ectx) = eval_ctx.as_ref() {
-                        for (i, effect) in fx.iter_mut().enumerate() {
-                            match effect {
-                                klipp_effects::BuiltinEffect::GaussianBlur { radius } => {
-                                    let key = format!("{}:radius", i);
-                                    let kfs = c.effect_keyframes.get(&key).map(|v| v.as_slice()).unwrap_or(&[]);
-                                    *radius = eval_effect_with_modifiers(kfs, &c.param_modifiers, i, "radius", clip_relative_secs, *radius, ectx);
-                                }
-                                klipp_effects::BuiltinEffect::Sharpen { amount } => {
-                                    let key = format!("{}:amount", i);
-                                    let kfs = c.effect_keyframes.get(&key).map(|v| v.as_slice()).unwrap_or(&[]);
-                                    *amount = eval_effect_with_modifiers(kfs, &c.param_modifiers, i, "amount", clip_relative_secs, *amount, ectx);
-                                }
-                                klipp_effects::BuiltinEffect::Crop { left, right, top, bottom, feather } => {
-                                    for (name, val) in [("left", left as &mut f32), ("right", right), ("top", top), ("bottom", bottom), ("feather", feather)] {
-                                        let key = format!("{}:{}", i, name);
-                                        let kfs = c.effect_keyframes.get(&key).map(|v| v.as_slice()).unwrap_or(&[]);
-                                        *val = eval_effect_with_modifiers(kfs, &c.param_modifiers, i, name, clip_relative_secs, *val, ectx);
-                                    }
-                                }
-                                klipp_effects::BuiltinEffect::ChromaKey { tolerance, soft_edge, spill_strength, .. } => {
-                                    for (name, val) in [("tolerance", tolerance as &mut f32), ("spill", soft_edge), ("spill_strength", spill_strength)] {
-                                        let key = format!("{}:{}", i, name);
-                                        let kfs = c.effect_keyframes.get(&key).map(|v| v.as_slice()).unwrap_or(&[]);
-                                        *val = eval_effect_with_modifiers(kfs, &c.param_modifiers, i, name, clip_relative_secs, *val, ectx);
-                                    }
-                                }
-                                klipp_effects::BuiltinEffect::Opacity { value } => {
-                                    let key = format!("{}:value", i);
-                                    let kfs = c.effect_keyframes.get(&key).map(|v| v.as_slice()).unwrap_or(&[]);
-                                    *value = eval_effect_with_modifiers(kfs, &c.param_modifiers, i, "value", clip_relative_secs, *value, ectx);
-                                }
-                                _ => {}
-                            }
-                        }
-                    }
-                    fx.into_iter().enumerate()
-                        .filter(|(i, _)| enabled_clone.get(*i).copied().unwrap_or(true))
-                        .map(|(_, e)| e)
-                        .collect()
-                } else {
-                    Vec::new()
-                }
-            } else {
-                Vec::new()
-            };
-
-        // Per-effect compare (OFX): clone `ofx_effects` with the target
-        // effect's `enabled` flag flipped. Used by the second render pass
-        // further down.
-        let compare_ofx_effects: Vec<klipp_plugin::AppliedEffect> =
-            if self.compare_effect_active
-                && self.compare_effect_is_ofx
-                && current_clip_id.is_some()
-                && current_clip_id == self.compare_effect_clip_id
-            {
-                let mut clone = ofx_effects.clone();
-                if let Some(e) = clone.get_mut(self.compare_effect_index) {
-                    e.enabled = !e.enabled;
-                }
-                clone
-            } else {
-                Vec::new()
-            };
-
-        // Extract stabilization homography while seq lock is held
-        let stab_homography: Option<[f32; 12]> = if builtin_fx.iter().any(|e| matches!(e, klipp_effects::BuiltinEffect::VideoStabilization { .. })) {
-            clip.and_then(|c| {
-                let smoothed = c.smoothed_trajectory.as_ref()?;
-                if smoothed.corrections.is_empty() { return None; }
-                let source_dur = (c.source_out.to_secs_f64() - c.source_in.to_secs_f64()).max(0.001);
-                let source_fps = smoothed.corrections.len() as f64 / source_dur;
-                let frame_idx = (clip_time_secs * source_fps).round() as usize;
-                let frame_idx = frame_idx.min(smoothed.corrections.len() - 1);
-                let correction = &smoothed.corrections[frame_idx];
-                Some([
-                    correction.h[0][0] as f32, correction.h[0][1] as f32, correction.h[0][2] as f32,
-                    correction.h[1][0] as f32, correction.h[1][1] as f32, correction.h[1][2] as f32,
-                    correction.h[2][0] as f32, correction.h[2][1] as f32, correction.h[2][2] as f32,
-                    0.0, 0.0, 0.0,
-                ])
-            })
-        } else {
-            None
-        };
-
-        drop(seq);
-
-        // Save pre-grade frame (linear) for Before/After split view.
-        // The frame buffer stores u8 so the u8 encode stays at the
-        // split-view seam below; the snapshot itself is linear to
-        // match the rest of the chain.
-        let pre_grade_rgba = if self.bypass_color_grade {
-            Some(rgba.clone())
-        } else {
-            None
-        };
-
-        // 1. Per-clip color grade via node graph executor
-        let t1 = std::time::Instant::now();
-
-        // Determine matte preview node: when matte_preview is active, find first
-        // Qualifier or Mask node in the graph to preview its matte output
-        let matte_pv_node = if self.matte_preview {
-            self.matte_preview_node.or_else(|| {
-                node_graph.as_ref().and_then(|g| {
-                    g.nodes.iter()
-                        .find(|n| matches!(n.kind, klipp_nodes::NodeKind::Qualifier | klipp_nodes::NodeKind::Mask))
-                        .map(|n| n.id)
-                })
-            })
-        } else {
-            None
-        };
-
-        let rgba = if let Some(ref graph) = node_graph {
-            if !graph.is_identity() || matte_pv_node.is_some() {
-                let frame_number = (clip_time_secs * self.playhead.rate as f64).max(0.0) as u64;
-                // Use the linear native entry point — the graph
-                // executor operates in linear natively; the old
-                // `execute` wrapper would decode u8→linear then re-
-                // encode on the way back.
-                mark_stage(EngineStage::PostProcessInnerGradeExecute);
-                // Per-node thumbnail capture — only while NOT actively
-                // playing. During playback the N extra readbacks (one
-                // per visible node) would cost more than the grade
-                // itself; when paused we can afford them. `None` =
-                // zero-overhead capture skip; `Some(&set)` enables it.
-                let thumb_set: Option<&std::collections::HashSet<klipp_nodes::NodeId>> =
-                    if self.state != PlaybackState::Playing
-                        && !self.visible_node_thumbs.is_empty()
-                        && !self.thumb_capture_suspended
-                    {
-                        Some(&self.visible_node_thumbs)
-                    } else {
-                        None
-                    };
-                self.graph_executor.set_working_colorspace(
-                    crate::video_decoder::working_colorspace(),
-                );
-                self.graph_executor.set_current_clip_track_points(&clip_track_points);
-                // Push the panel-set solo target into the executor —
-                // None clears it. Cheap setter; the executor handles
-                // unknown ids gracefully (silent fallback to Output)
-                // so a stale solo id from a different clip doesn't
-                // need explicit clearing on clip switches.
-                self.graph_executor.set_solo_node(self.solo_node);
-                // `rgba` may be empty here: when the decoder handed over a
-                // GPU-resident frame and nothing else wanted CPU pixels,
-                // the readback was skipped and the chain seeded straight
-                // from the decoder's buffer. If any node in this graph
-                // turns out to need the pixels after all, the executor
-                // says so and we fetch them then — paying a readback we
-                // would have paid anyway, rather than one we might not.
-                let mut exec_source = rgba;
-                let mut attempt = self.graph_executor.execute_linear_with_thumbs(
-                    &exec_source,
-                    graph,
-                    width,
-                    height,
-                    clip_time_secs,
-                    frame_number,
-                    self.scope_tap_node,
-                    matte_pv_node,
-                    thumb_set.clone(),
-                );
-                if matches!(
-                    attempt,
-                    Err(klipp_nodes::executor::ExecutorError::CpuSourceRequired)
-                ) {
-                    match self.grade_gpu_source.clone() {
-                        Some(gpu) => {
-                            tracing::debug!(
-                                "grade needs CPU pixels — realising from gpu_source and retrying"
-                            );
-                            exec_source = crate::types::realise_linear_from_gpu(&gpu);
-                            attempt = self.graph_executor.execute_linear_with_thumbs(
-                                &exec_source,
-                                graph,
-                                width,
-                                height,
-                                clip_time_secs,
-                                frame_number,
-                                self.scope_tap_node,
-                                matte_pv_node,
-                                thumb_set,
-                            );
-                        }
-                        None => {
-                            // Cannot happen: an empty source is only ever
-                            // passed alongside a parked gpu_source. Log
-                            // loudly rather than render a black frame.
-                            tracing::error!(
-                                "grade reported CpuSourceRequired with no gpu_source parked"
-                            );
-                        }
-                    }
-                }
-                match attempt {
-                    Ok((result, tapped, thumbs)) => {
-                        // Store tapped output for scope display — scope
-                        // consumers still speak u8, so encode at this
-                        // one seam only.
-                        let has_tap = tapped.is_some();
-                        let has_thumbs = !thumbs.is_empty();
-                        if has_tap || has_thumbs {
-                            let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
-                            if let Some(tap_linear) = tapped {
-                                let tap_u8 = klipp_effects::linear_f32_rgba_to_srgb_u8(&tap_linear);
-                                fb.scope_data = tap_u8;
-                            }
-                            if has_thumbs {
-                                fb.node_thumbs = thumbs;
-                                fb.node_thumbs_gen = fb.node_thumbs_gen.wrapping_add(1);
-                            }
-                        }
-                        result
-                    }
-                    Err(e) => {
-                        tracing::error!("Node graph execution failed: {:?}", e);
-                        // Ungraded passthrough, except that `exec_source`
-                        // is empty when the readback was skipped and the
-                        // retry above could not recover. Downstream
-                        // (composite, into_rgba) indexes by width*height,
-                        // so hand back a black frame of the right size
-                        // rather than a zero-length buffer.
-                        self.realise_grade_source_if_empty(exec_source, width, height)
-                    }
-                }
-            } else {
-                // Identity graph: the executor is never called, so
-                // nothing consumes the seed and the pixels have to be
-                // realised here.
-                self.realise_grade_source_if_empty(rgba, width, height)
-            }
-        } else {
-            self.realise_grade_source_if_empty(rgba, width, height)
-        };
-        let t2 = std::time::Instant::now();
-
-        // 1.5. Speed Ramp — modify effective speed if SpeedRamp effect is present
-        // The SpeedRamp effect modifies the clip's playback speed natively, bypassing OFX.
-        // Frame blending uses the GPU transition pipeline for smooth interpolation.
-        //
-        // `prev_blend_frame` stays sRGB u8: the slow-motion crossfade
-        // here is bit-for-bit the pre-refactor math (lerp of two u8
-        // frames clamped to `[0, 255]`). Converting the alpha to linear
-        // would change the blend curve across stops. We bridge at the
-        // entry/exit of this block instead — one decode + one encode —
-        // to preserve the original behaviour exactly.
-        let speed_ramp = builtin_fx.iter().find_map(|e| match e {
-            klipp_effects::BuiltinEffect::SpeedRamp { speed, blend_mode, reverse, freeze, freeze_at, .. } => {
-                Some((*speed, *blend_mode, *reverse, *freeze, *freeze_at))
-            }
-            _ => None,
-        });
-        let rgba = if let Some((speed, blend_mode, _reverse, freeze, _freeze_at)) = speed_ramp {
-            if freeze {
-                // Freeze frame: keep using the current frame (no speed change needed)
-                rgba
-            } else if blend_mode == 1
-                && speed > 0.0
-                && speed < 1.0
-                && self.prev_blend_frame.is_some()
-                && self.prev_blend_dims == (width, height)
-                && rgba.len() == width as usize * height as usize * 4
-            {
-                // u8 boundary: decode this frame, blend against the u8
-                // prev frame, re-encode. Pre-refactor-identical math.
-                let mut cur_u8 = linear_rgba_to_u8(&rgba);
-                let source_secs = self.master_clock.current_secs();
-                let frac = (source_secs * self.fps.rate() as f64).fract();
-                let alpha = frac.clamp(0.0, 1.0) as f32;
-                let inv_alpha = 1.0 - alpha;
-                let prev = self.prev_blend_frame.as_ref().unwrap();
-                if prev.len() == cur_u8.len() {
-                    for (o, p) in cur_u8.iter_mut().zip(prev.iter()) {
-                        *o = (*p as f32 * inv_alpha + *o as f32 * alpha).clamp(0.0, 255.0) as u8;
-                    }
-                    u8_rgba_to_linear(&cur_u8)
-                } else {
-                    // Length mismatch (e.g. stride) — skip blend defensively.
-                    rgba
-                }
-            } else {
-                // blend_mode == 0 (nearest), speed >= 1.0, or no prev frame yet —
-                // pass through. SpeedRamp's effective speed is applied by the
-                // clip.speed / speed_keyframes pipeline, not here.
-                rgba
-            }
-        } else {
-            rgba
-        };
-
-        // Cache this frame (as u8) as the blend source for the next
-        // tick. Only track when the SpeedRamp effect is present —
-        // avoids a per-frame clone cost on clips with no time-remap
-        // work to do.
-        if speed_ramp.is_some() && rgba.len() == (width as usize * height as usize * 4) {
-            self.prev_blend_frame = Some(linear_rgba_to_u8(&rgba));
-            self.prev_blend_dims = (width, height);
-        } else if speed_ramp.is_none() && self.prev_blend_frame.is_some() {
-            // Free memory when the effect is removed.
-            self.prev_blend_frame = None;
-            self.prev_blend_dims = (0, 0);
-        }
-
-        // Per-effect compare (OFX branch): snapshot before the OFX chain
-        // runs so we can re-apply the chain with the target bypassed.
-        // Snapshot is linear, matching the rest of the chain; the OFX
-        // compare replay below bridges at the plugin call.
-        let effect_compare_ofx_active = self.compare_effect_active
-            && self.compare_effect_is_ofx
-            && current_clip_id == self.compare_effect_clip_id;
-        let pre_ofx_for_compare = if effect_compare_ofx_active {
-            Some(rgba.clone())
-        } else { None };
-
-        // 2. OFX effects chain (with temporal clip access for Retime/SlitScan/etc.)
-        //
-        // OFX plugins are an external boundary we don't control, so
-        // they still receive sRGB u8. Bridge locally: linear→u8 in,
-        // u8→linear out.
-        let frame_time = self.playhead.to_secs_f64();
-        let rgba = if !ofx_effects.is_empty() {
-            let rgba_u8 = linear_rgba_to_u8(&rgba);
-            // Check if any OFX effect needs temporal clip access (Retime, SlitScan, etc.)
-            let needs_temporal = ofx_effects.iter().any(|e| {
-                e.plugin_name.contains("Retime")
-                    || e.plugin_name.contains("SlitScan")
-                    || e.plugin_name.contains("timeOffset")
-                    || e.plugin_name.contains("TimeOffset")
-                    || e.plugin_name.contains("FrameBlend")
-                    || e.plugin_name.contains("TimeBlur")
-            });
-
-            let out_u8 = if needs_temporal {
-                // Only create temporal decoder for plugins that actually need it
-                let (source_path, clip_source_in) = {
-                    let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
-                    let clip = seq.tracks.get(self.current_track_index)
-                        .and_then(|t| t.clips.get(self.current_clip_index));
-                    let path = clip.and_then(|c| {
-                        c.media_id().and_then(|mid| {
-                            self.media_pool.read().ok().and_then(|pool| {
-                                pool.get(&mid).map(|item| item.path.clone())
-                            })
-                        })
-                    });
-                    let src_in = clip.map(|c| c.source_in.to_secs_f64()).unwrap_or(0.0);
-                    (path, src_in)
-                };
-
-                if let Some(path) = source_path {
-                    let cached_decoder = std::cell::RefCell::new(
-                        CachedFrameDecoder::open(&path)
-                    );
-                    let frame_provider: klipp_plugin::FrameProviderFn = Box::new(move |time_secs: f64| {
-                        let source_secs = (clip_source_in + time_secs).max(0.0);
-                        let mut decoder = cached_decoder.borrow_mut();
-                        if let Some(ref mut dec) = *decoder {
-                            dec.decode_at(source_secs)
-                        } else {
-                            None
-                        }
-                    });
-                    self.ofx_host.apply_effects_chain_temporal(
-                        &ofx_effects, &rgba_u8, width, height, frame_time, frame_provider,
-                    )
-                } else {
-                    self.ofx_host.apply_effects_chain(&ofx_effects, &rgba_u8, width, height, frame_time)
-                }
-            } else {
-                // No temporal plugins — fast path, no decoder creation
-                self.ofx_host.apply_effects_chain(&ofx_effects, &rgba_u8, width, height, frame_time)
-            };
-            u8_rgba_to_linear(&out_u8)
-        } else { rgba };
-        let t3 = std::time::Instant::now();
-
-        // 2.4. Video Stabilization: upload pre-extracted homography to GPU
-        if let Some(ref h_f32) = stab_homography {
-            if let Some(gpu) = &mut self.gpu_effects {
-                gpu.upload_stabilization_homography(h_f32);
-            }
-        }
-
-        // 2.5. Rolling Shutter Correction: compute per-row transforms from adjacent frames
-        if let Some(rsc_effect) = builtin_fx.iter().find(|e| matches!(e, klipp_effects::BuiltinEffect::RollingShutterCorrection { .. })) {
-            if let klipp_effects::BuiltinEffect::RollingShutterCorrection { strength, readout_ratio } = rsc_effect {
-                if *strength > f32::EPSILON {
-                    let frame_pts_ms = (clip_time_secs * 1000.0) as i64;
-
-                    // Check cache
-                    let cached = self.rsc_motion_cache.get(rsc_clip_id_hash, frame_pts_ms).cloned();
-
-                    let row_transforms = if let Some((h_prev, h_next)) = cached {
-                        klipp_effects::rolling_shutter::compute_row_transforms(&h_prev, &h_next, height, *readout_ratio, *strength)
-                    } else {
-                        // Decode adjacent frames for motion estimation
-                        let frame_dur = if self.fps.as_f64() > 0.0 { 1.0 / self.fps.as_f64() } else { 1.0 / 30.0 };
-                        let prev_secs = (clip_time_secs - frame_dur).max(0.0);
-                        let next_secs = clip_time_secs + frame_dur;
-
-                        // Use the source media path to open a temporary decoder
-                        let source_path = rsc_media_id.and_then(|mid| {
-                            self.media_pool.read().ok().and_then(|pool| pool.get(&mid).map(|item| item.path.clone()))
-                        });
-
-                        if let Some(ref path) = source_path {
-                            // Decode prev and next frames at 480p for fast motion estimation
-                            let prev_frame = generate_thumbnail_at_size(path, prev_secs, 480).ok();
-                            let next_frame = generate_thumbnail_at_size(path, next_secs, 480).ok();
-
-                            if let (Some((prev_rgba, pw, ph)), Some((next_rgba, nw, nh))) = (prev_frame, next_frame) {
-                                let curr_frame = generate_thumbnail_at_size(path, clip_time_secs, 480).ok();
-                                if let Some((curr_rgba, cw, ch)) = curr_frame {
-                                    if let Some((h_prev, h_next)) = klipp_effects::rolling_shutter::estimate_motion(
-                                        &prev_rgba, pw, ph, &curr_rgba, cw, ch, &next_rgba, nw, nh,
-                                    ) {
-                                        self.rsc_motion_cache.insert(rsc_clip_id_hash, frame_pts_ms, h_prev.clone(), h_next.clone());
-                                        klipp_effects::rolling_shutter::compute_row_transforms(&h_prev, &h_next, height, *readout_ratio, *strength)
-                                    } else {
-                                        klipp_effects::rolling_shutter::compute_row_transforms(
-                                            &klipp_effects::rolling_shutter::Homography::identity(),
-                                            &klipp_effects::rolling_shutter::Homography::identity(),
-                                            height, *readout_ratio, *strength,
-                                        )
-                                    }
-                                } else {
-                                    vec![]
-                                }
-                            } else {
-                                vec![]
-                            }
-                        } else {
-                            vec![]
-                        }
-                    };
-
-                    if !row_transforms.is_empty() {
-                        if let Some(gpu) = &mut self.gpu_effects {
-                            gpu.upload_rsc_row_transforms(&row_transforms);
-                        }
-                    }
-                }
-            }
-        }
-
-        // Stabilization compare: if compare mode is on AND this clip has a
-        // VideoStabilization effect, snapshot the buffer here so we can re-run
-        // the builtin chain a second time with stab filtered out.
-        let stab_compare_active = self.compare_stabilization
-            && builtin_fx.iter().any(|e| matches!(e, klipp_effects::BuiltinEffect::VideoStabilization { .. }));
-        // Per-effect compare (builtin branch): reuse the same pre-builtin
-        // snapshot so we can re-run the builtin chain with the target
-        // effect flipped. OFX compare snapshots earlier (before step 2).
-        let effect_compare_builtin_active = self.compare_effect_active
-            && !self.compare_effect_is_ofx
-            && current_clip_id == self.compare_effect_clip_id;
-        let pre_builtin_for_compare = if stab_compare_active || effect_compare_builtin_active {
-            Some(rgba.clone())
-        } else { None };
-
-        // 3. Built-in effects (GPU-accelerated when available, CPU fallback).
-        //    Both `gpu.apply_effects` and the CPU fallback now speak
-        //    linear-f32 natively — no u8 round-trip here.
-        let rgba = if !builtin_fx.is_empty() {
-            if let Some(gpu) = &mut self.gpu_effects {
-                if klipp_effects::chain_supports_gpu(&builtin_fx) {
-                    gpu.apply_effects(&builtin_fx, rgba, width, height)
-                } else {
-                    klipp_effects::apply_effects(&builtin_fx, rgba, width, height)
-                }
-            } else {
-                klipp_effects::apply_effects(&builtin_fx, rgba, width, height)
-            }
-        } else { rgba };
-        let t4 = std::time::Instant::now();
-
-        // 4. Global color pipeline (GPU-accelerated 3D LUT when available).
-        //    `apply_3d_lut_gpu` now speaks linear-f32. The CPU fallback
-        //    `color_pipeline.process_frame` still speaks u8 — bracket only that
-        //    branch.
-        let rgba = if self.color_pipeline.enabled {
-            if let (Some(lut), Some(gpu)) = (&self.color_pipeline.global_lut, &mut self.gpu_effects) {
-                gpu.apply_3d_lut_gpu(rgba, width, height, &lut.data, lut.size as u32, self.color_pipeline.global_lut_opacity)
-            } else {
-                let rgba_u8 = linear_rgba_to_u8(&rgba);
-                let out_u8 = self.color_pipeline.process_frame(rgba_u8, width, height);
-                u8_rgba_to_linear(&out_u8)
-            }
-        } else {
-            rgba
-        };
-        let t5 = std::time::Instant::now();
-
-        // 4b. Stabilization compare second pass: re-run builtin chain + LUT with
-        // VideoStabilization filtered out, producing the "raw" half of the split.
-        // Mirrors steps 3 + 4 exactly so both halves are pixel-comparable except
-        // for the stab warp.
-        // Only the stab compare path actually consumes `pre_builtin_for_compare`
-        // directly; the per-effect compare path further down borrows it by
-        // reference via `.as_ref()`. To let both paths coexist when — in
-        // theory — both were ever active on the same frame, we clone into
-        // the stab path instead of moving out.
-        let unstab_rgba = if stab_compare_active {
-            let pre_builtin = pre_builtin_for_compare.as_ref()
-                .expect("stab compare path: pre_builtin snapshot must exist when stab_compare_active")
-                .clone();
-            let no_stab: Vec<klipp_effects::BuiltinEffect> = builtin_fx.iter()
-                .filter(|e| !matches!(e, klipp_effects::BuiltinEffect::VideoStabilization { .. }))
-                .cloned()
-                .collect();
-            let r = if !no_stab.is_empty() {
-                if let Some(gpu) = &mut self.gpu_effects {
-                    if klipp_effects::chain_supports_gpu(&no_stab) {
-                        gpu.apply_effects(&no_stab, pre_builtin, width, height)
-                    } else {
-                        klipp_effects::apply_effects(&no_stab, pre_builtin, width, height)
-                    }
-                } else {
-                    klipp_effects::apply_effects(&no_stab, pre_builtin, width, height)
-                }
-            } else { pre_builtin };
-            let r = if self.color_pipeline.enabled {
-                if let (Some(lut), Some(gpu)) = (&self.color_pipeline.global_lut, &mut self.gpu_effects) {
-                    gpu.apply_3d_lut_gpu(r, width, height, &lut.data, lut.size as u32, self.color_pipeline.global_lut_opacity)
-                } else {
-                    let r_u8 = linear_rgba_to_u8(&r);
-                    let out_u8 = self.color_pipeline.process_frame(r_u8, width, height);
-                    u8_rgba_to_linear(&out_u8)
-                }
-            } else { r };
-            Some(r)
-        } else { None };
-
-        // 4c. Per-effect compare second pass. Two branches: builtin (re-run
-        // builtin chain + LUT with the target's enabled flag flipped) and
-        // OFX (re-run OFX chain + builtin chain + LUT with the target's
-        // enabled flag flipped). The viewer composites the output onto the
-        // left half of the split; the right half is the normal `rgba`.
-        let compare_effect_rgba = if effect_compare_builtin_active {
-            pre_builtin_for_compare.as_ref().map(|pre| {
-                // Builtin path: re-run builtin chain with compare_builtin_fx.
-                let r = if !compare_builtin_fx.is_empty() {
-                    if let Some(gpu) = &mut self.gpu_effects {
-                        if klipp_effects::chain_supports_gpu(&compare_builtin_fx) {
-                            gpu.apply_effects(&compare_builtin_fx, pre.clone(), width, height)
-                        } else {
-                            klipp_effects::apply_effects(&compare_builtin_fx, pre.clone(), width, height)
-                        }
-                    } else {
-                        klipp_effects::apply_effects(&compare_builtin_fx, pre.clone(), width, height)
-                    }
-                } else {
-                    pre.clone()
-                };
-                // Global color LUT — same pass as the main path so both
-                // halves are pixel-comparable.
-                if self.color_pipeline.enabled {
-                    if let (Some(lut), Some(gpu)) = (&self.color_pipeline.global_lut, &mut self.gpu_effects) {
-                        gpu.apply_3d_lut_gpu(r, width, height, &lut.data, lut.size as u32, self.color_pipeline.global_lut_opacity)
-                    } else {
-                        let r_u8 = linear_rgba_to_u8(&r);
-                        let out_u8 = self.color_pipeline.process_frame(r_u8, width, height);
-                        u8_rgba_to_linear(&out_u8)
-                    }
-                } else {
-                    r
-                }
-            })
-        } else if effect_compare_ofx_active {
-            pre_ofx_for_compare.as_ref().map(|pre| {
-                // OFX path: re-apply OFX chain with the target bypassed,
-                // then the full builtin chain and LUT. OFX plugins speak
-                // u8 — bridge.
-                let pre_u8 = linear_rgba_to_u8(pre);
-                let r_u8 = if !compare_ofx_effects.is_empty() {
-                    self.ofx_host.apply_effects_chain(&compare_ofx_effects, &pre_u8, width, height, frame_time)
-                } else {
-                    pre_u8
-                };
-                let r = u8_rgba_to_linear(&r_u8);
-                let r = if !builtin_fx.is_empty() {
-                    if let Some(gpu) = &mut self.gpu_effects {
-                        if klipp_effects::chain_supports_gpu(&builtin_fx) {
-                            gpu.apply_effects(&builtin_fx, r, width, height)
-                        } else {
-                            klipp_effects::apply_effects(&builtin_fx, r, width, height)
-                        }
-                    } else {
-                        klipp_effects::apply_effects(&builtin_fx, r, width, height)
-                    }
-                } else {
-                    r
-                };
-                if self.color_pipeline.enabled {
-                    if let (Some(lut), Some(gpu)) = (&self.color_pipeline.global_lut, &mut self.gpu_effects) {
-                        gpu.apply_3d_lut_gpu(r, width, height, &lut.data, lut.size as u32, self.color_pipeline.global_lut_opacity)
-                    } else {
-                        let r_u8 = linear_rgba_to_u8(&r);
-                        let out_u8 = self.color_pipeline.process_frame(r_u8, width, height);
-                        u8_rgba_to_linear(&out_u8)
-                    }
-                } else {
-                    r
-                }
-            })
-        } else {
-            None
-        };
-
-        // Store pre-grade frame in frame buffer for Before/After split.
-        // `fb.original_data` is u8 sRGB — encode at the seam.
-        if let Some(original_linear) = pre_grade_rgba {
-            let original_u8 = linear_rgba_to_u8(&original_linear);
-            let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
-            fb.original_data = original_u8;
-        } else {
-            // Clear original when not in split mode to free memory
-            let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
-            if !fb.original_data.is_empty() {
-                fb.original_data = Vec::new();
-            }
-        }
-
-        // Store unstab frame for stabilization compare split. `fb.unstab_data` is u8.
-        {
-            let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
-            if let Some(u_linear) = unstab_rgba {
-                fb.unstab_data = linear_rgba_to_u8(&u_linear);
-            } else if !fb.unstab_data.is_empty() {
-                fb.unstab_data = Vec::new();
-            }
-        }
-
-        // Store per-effect compare frame (or clear when inactive).
-        {
-            let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
-            if let Some(cmp_linear) = compare_effect_rgba {
-                fb.compare_effect_data = linear_rgba_to_u8(&cmp_linear);
-            } else if !fb.compare_effect_data.is_empty() {
-                fb.compare_effect_data = Vec::new();
-            }
-        }
-
-        let total_ms = t0.elapsed().as_secs_f64() * 1000.0;
-        let seq_ms = (t1 - t0).as_secs_f64() * 1000.0;
-        let grade_ms = (t2 - t1).as_secs_f64() * 1000.0;
-        let ofx_ms = (t3 - t2).as_secs_f64() * 1000.0;
-        let builtin_ms = (t4 - t3).as_secs_f64() * 1000.0;
-        let lut_ms = (t5 - t4).as_secs_f64() * 1000.0;
-
-        if total_ms > 2.0 {
-            // `gpu=y` means `gpu_effects` is initialized — the GRAD
-            // pipeline *could* run on GPU. Doesn't prove every node inside
-            // the node graph used GPU (some nodes may still fall back to
-            // CPU internally). `gpu=n` is a definite red flag — means GPU
-            // init failed and everything is on CPU.
-            let gpu_available = if self.gpu_effects.is_some() { "y" } else { "n" };
-            debug!(
-                "PERF post_process: {:.1}ms total | seq_read={:.1}ms grade={:.1}ms ofx={:.1}ms builtin={:.1}ms lut={:.1}ms | gpu={}",
-                total_ms, seq_ms, grade_ms, ofx_ms, builtin_ms, lut_ms, gpu_available,
-            );
-        }
-
-        // Push one sample per processed frame into the shared ring
-        // so the UI overlay + session recorder have real numbers to
-        // paint. Target fps is read from the active clip's source
-        // framerate (falls back to 0.0 when nothing is playing).
-        // Drop heuristic: `total_ms` exceeded the frame budget.
-        let target_fps = self.target_fps_for_overlay();
-        // Decode runs on its own thread, pipelined with this one — the
-        // budget is blown when the *slowest* stage exceeds it, not the sum.
-        let decode_ms = self.v1_decoder.as_ref().map(|d| d.last_decode_ms()).unwrap_or(0.0);
-        let dropped = match target_fps {
-            Some(fps) if fps > 0.0 => (total_ms as f32).max(decode_ms) > (1000.0 / fps),
-            _ => false,
-        };
-        let sample = crate::perf::PerfSample {
-            timestamp: std::time::Instant::now(),
-            width,
-            height,
-            target_fps: target_fps.unwrap_or(0.0),
-            decode_ms,
-            seq_read_ms: seq_ms as f32,
-            grade_ms: grade_ms as f32,
-            ofx_ms: ofx_ms as f32,
-            builtin_ms: builtin_ms as f32,
-            lut_ms: lut_ms as f32,
-            total_ms: total_ms as f32,
-            dropped,
-            // Wrap-level stages aren't known here — `post_process_rgba`
-            // (the wrapper) updates them in the most-recent sample
-            // after we return. Defaulted to 0 so cache-hit paths
-            // that skip the wrapper still produce a valid sample.
-            bridge_u8_ms: 0.0,
-            reencode_ms: 0.0,
-            scope_ms: 0.0,
-            composite_ms: 0.0,
-            update_playback_ms: 0.0,
-        };
-        if let Ok(mut ring) = self.perf_ring.lock() {
-            ring.push(sample);
-        }
-
-        rgba
+        self.present_frame(primary);
     }
 
     /// Best-available target fps for perf reporting. Reads from the
@@ -12049,25 +7685,6 @@ fn detect_rotation(format_ctx: &ffmpeg_next::format::context::Input, stream_inde
         }
     }
     0
-}
-
-/// Bridge `klipp_nodes::params::MatteChannel` (the wire-format enum,
-/// shared with the ExternalMatte node) to the matching enum in
-/// `klipp_effects::track_matte`. The duplication exists because the two
-/// crates can't depend on each other — keeping the conversion local
-/// avoids leaking either crate's type into the other's public surface.
-fn matte_channel_to_effects(
-    ch: klipp_nodes::params::MatteChannel,
-) -> klipp_effects::track_matte::MatteChannel {
-    use klipp_nodes::params::MatteChannel as N;
-    use klipp_effects::track_matte::MatteChannel as E;
-    match ch {
-        N::Alpha => E::Alpha,
-        N::Luminance => E::Luminance,
-        N::Red => E::Red,
-        N::Green => E::Green,
-        N::Blue => E::Blue,
-    }
 }
 
 /// Detect rotation from a file path using ffprobe (catches display matrix side data
