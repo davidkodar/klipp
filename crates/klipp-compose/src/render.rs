@@ -76,6 +76,14 @@ pub trait FrameSource {
     /// handle; return the nearest available frame. `None` renders nothing
     /// for this clip.
     fn frame(&mut self, clip: &Clip, source_secs: f64, width: u32, height: u32) -> Option<SourceFrame>;
+
+    /// A small sRGB RGBA8 frame of `clip`'s media at `source_secs`, at most
+    /// `max_width` wide, for motion estimation (rolling-shutter
+    /// correction). Sources that cannot provide one return `None`, and the
+    /// correction is skipped.
+    fn motion_frame(&mut self, _clip: &Clip, _source_secs: f64, _max_width: u32) -> Option<(Vec<u8>, u32, u32)> {
+        None
+    }
 }
 
 /// The timeline's global LUT.
@@ -110,6 +118,10 @@ pub struct Renderer {
     glyph_cache: HashMap<ClipId, klipp_title::GlyphCacheEntry>,
     working: WorkingColorspace,
     global_lut: Option<GlobalLut>,
+    /// Rolling-shutter motion per (clip, source millisecond): estimating
+    /// it decodes three frames, and a paused viewer re-renders the same
+    /// frame many times.
+    rsc_motion: HashMap<(ClipId, i64), (klipp_effects::rolling_shutter::Homography, klipp_effects::rolling_shutter::Homography)>,
 }
 
 /// A rendered clip, ready to composite: display-referred linear RGBA,
@@ -156,6 +168,7 @@ impl Renderer {
             glyph_cache: HashMap::new(),
             working: WorkingColorspace::default(),
             global_lut: None,
+            rsc_motion: HashMap::new(),
         }
     }
 
@@ -264,12 +277,19 @@ impl Renderer {
             })
             .collect();
 
-        let mut acc = vec![0.0f32; (width as usize) * (height as usize) * 4];
+        // The composite starts empty. The first layer, when it is a Normal
+        // blend at full weight, *is* the composite (src-over onto nothing
+        // leaves it unchanged), so it is moved in rather than blended onto
+        // a zeroed canvas — at 4K that canvas is 133 MB to allocate, zero
+        // and blend through, every frame.
+        let canvas = || vec![0.0f32; (width as usize) * (height as usize) * 4];
+        let mut acc: Option<Vec<f32>> = None;
         for (i, ((track, item), layer)) in stack.iter().zip(layers).enumerate() {
             if let TrackItem::Clip(c) = item {
                 if matches!(c.kind, ClipKind::AdjustmentLayer) {
                     let opacity = eval::evaluate_clip_opacity(c, time, fps) * track.opacity;
-                    acc = self.apply_adjustment(c, acc, opacity, time, fps, width, height, &transforms);
+                    let below = acc.take().unwrap_or_else(canvas);
+                    acc = Some(self.apply_adjustment(c, below, opacity, time, fps, width, height, &transforms));
                     continue;
                 }
                 if c.consumed_as_matte || c.matte_stencil.is_some() {
@@ -307,8 +327,15 @@ impl Renderer {
                     apply_matte(&mut layer.pixels, &rendered, &binding, width, height);
                 }
             }
-            klipp_effects::composite::blend_layer_linear(&mut acc, &layer.pixels, layer.opacity, layer.blend);
+            match &mut acc {
+                None if layer.blend == BlendMode::Normal && layer.opacity >= 1.0 => acc = Some(layer.pixels),
+                _ => {
+                    let a = acc.get_or_insert_with(canvas);
+                    klipp_effects::composite::blend_layer_linear(a, &layer.pixels, layer.opacity, layer.blend);
+                }
+            }
         }
+        let mut acc = acc.unwrap_or_else(canvas);
 
         if let Some(lut) = &self.global_lut {
             let (data, size, opacity) = (lut.lut.data.clone(), lut.lut.size as u32, lut.opacity);
@@ -323,13 +350,14 @@ impl Renderer {
         }
 
         if !opts.keep_alpha {
-            for px in acc.chunks_exact_mut(4) {
+            use rayon::prelude::*;
+            acc.par_chunks_exact_mut(4).for_each(|px| {
                 let a = px[3].clamp(0.0, 1.0);
                 px[0] *= a;
                 px[1] *= a;
                 px[2] *= a;
                 px[3] = 1.0;
-            }
+            });
         }
         acc
     }
@@ -380,12 +408,94 @@ impl Renderer {
             klipp_color::hdr::apply_hdr_display_tonemap(&mut pixels, t);
         }
         let (fx, opacity) = clip_effects(clip, time, fps, transforms.get(&clip.id).copied());
+        self.prepare_temporal_effects(clip, &fx, time, fps, height, src);
         let pixels = self.ofx(clip, pixels, clip_time, width, height);
         let pixels = match title_motion_blur(clip) {
             Some(samples) => self.motion_blurred(clip, pixels, &fx, samples, time, fps, width, height),
             None => self.effects(&fx, pixels, clip_time, width, height),
         };
         Some((pixels, opacity))
+    }
+
+    /// Upload the per-frame data the GPU's stabilisation and rolling-shutter
+    /// effects read: the stabilisation correction for this frame, and the
+    /// row transforms from motion between the neighbouring source frames.
+    /// Both exist on the GPU path only; the CPU effects skip them.
+    fn prepare_temporal_effects(
+        &mut self,
+        clip: &Clip,
+        fx: &[BuiltinEffect],
+        time: Timecode,
+        fps: f64,
+        height: u32,
+        src: &mut dyn FrameSource,
+    ) {
+        use klipp_effects::rolling_shutter::{compute_row_transforms, estimate_motion, Homography};
+        let stabilise = fx.iter().any(|e| matches!(e, BuiltinEffect::VideoStabilization { .. }));
+        let rsc = fx.iter().find_map(|e| match e {
+            BuiltinEffect::RollingShutterCorrection { strength, readout_ratio } if *strength > f32::EPSILON => {
+                Some((*strength, *readout_ratio))
+            }
+            _ => None,
+        });
+        if !stabilise && rsc.is_none() {
+            return;
+        }
+        let clip_time = eval_clip_time(clip, time);
+        if stabilise {
+            if let Some(tr) = clip.smoothed_trajectory.as_ref().filter(|t| !t.corrections.is_empty()) {
+                let source_dur = (clip.source_out.to_secs_f64() - clip.source_in.to_secs_f64()).max(0.001);
+                let idx = ((clip_time * tr.corrections.len() as f64 / source_dur).round() as usize).min(tr.corrections.len() - 1);
+                let h = &tr.corrections[idx].h;
+                let m = [
+                    h[0][0] as f32, h[0][1] as f32, h[0][2] as f32,
+                    h[1][0] as f32, h[1][1] as f32, h[1][2] as f32,
+                    h[2][0] as f32, h[2][1] as f32, h[2][2] as f32,
+                    0.0, 0.0, 0.0,
+                ];
+                if let Some(gpu) = self.gpu() {
+                    gpu.upload_stabilization_homography(&m);
+                }
+            }
+        }
+        if let Some((strength, readout)) = rsc {
+            if self.gpu().is_none() {
+                return;
+            }
+            let at = source_secs(clip, time, fps);
+            let key = (clip.id, (at * 1000.0).round() as i64);
+            let motion = match self.rsc_motion.get(&key) {
+                Some(m) => Some(*m),
+                None => {
+                    let dt = 1.0 / fps.max(1.0);
+                    let frames = (
+                        src.motion_frame(clip, (at - dt).max(0.0), 480),
+                        src.motion_frame(clip, at, 480),
+                        src.motion_frame(clip, at + dt, 480),
+                    );
+                    let m = match frames {
+                        (Some((p, pw, ph)), Some((c, cw, ch)), Some((n, nw, nh))) => {
+                            Some(estimate_motion(&p, pw, ph, &c, cw, ch, &n, nw, nh)
+                                .unwrap_or((Homography::identity(), Homography::identity())))
+                        }
+                        _ => None,
+                    };
+                    if let Some(m) = m {
+                        if self.rsc_motion.len() > 512 {
+                            self.rsc_motion.clear();
+                        }
+                        self.rsc_motion.insert(key, m);
+                    }
+                    m
+                }
+            };
+            if let Some((prev, next)) = motion {
+                let rows = compute_row_transforms(&prev, &next, height, readout, strength);
+                if let Some(gpu) = self.gpu() {
+                    gpu.upload_rsc_row_transforms(&rows);
+                }
+            }
+        }
     }
 
     /// The clip's node graph, at clip-relative time.
@@ -578,7 +688,34 @@ fn active_item(track: &Track, time: Timecode) -> Option<TrackItem<'_>> {
             return Some(TrackItem::Transition { a, b, kind: tr.kind, progress, params: tr.user_params });
         }
     }
-    track.clip_at_timecode(time).map(|(_, c)| c).filter(|c| c.enabled).map(TrackItem::Clip)
+    let clip = track.clip_at_timecode(time).map(|(_, c)| c).filter(|c| c.enabled)?;
+    Some(TrackItem::Clip(multicam_angle(track, clip, time)))
+}
+
+/// The clip a multicam group shows at `time`: the angle chosen by the
+/// primary (angle 0) clip's cut list — angle 0 until its first cut. Angle
+/// clips span the primary's range, so the chosen clip's own timing maps
+/// the frame. Clips outside a multicam group are returned as they are.
+fn multicam_angle<'a>(track: &'a Track, clip: &'a Clip, time: Timecode) -> &'a Clip {
+    let Some(group) = clip.multicam_group else { return clip };
+    let in_group = |c: &&Clip| c.multicam_group == Some(group) && c.enabled;
+    let Some(primary) = track
+        .clips
+        .iter()
+        .filter(in_group)
+        .find(|c| c.multicam_angle == 0 && time >= c.timeline_in && time < c.timeline_out)
+    else {
+        return clip;
+    };
+    let rel = (time - primary.timeline_in).to_secs_f64();
+    let angle = primary
+        .multicam_cuts
+        .iter()
+        .filter(|(at, _)| *at <= rel + 1e-9)
+        .last()
+        .map(|(_, a)| *a)
+        .unwrap_or(0);
+    track.clips.iter().filter(in_group).find(|c| c.multicam_angle == angle).unwrap_or(primary)
 }
 
 /// Seconds since the clip's start on the timeline; negative before it

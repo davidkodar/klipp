@@ -348,3 +348,25 @@ fn an_adjustment_layer_grades_what_is_below_it() {
         assert_px(&format!("half, run {i}"), px(img, 16, 9), [0.3; 3], 0.005);
     }
 }
+
+/// A multicam group shows the angle its primary clip's cut list chooses:
+/// angle 0 until the first cut, then the cut's angle. (Only export used
+/// to honour cut lists; the viewer showed whichever angle came first.)
+#[test]
+fn multicam_shows_the_cut_angle() {
+    let group = klipp_core::GroupId::new();
+    let mut primary = media(0.0, 4.0);
+    primary.multicam_group = Some(group);
+    primary.multicam_cuts = vec![(2.0, 1)];
+    let mut angle1 = media(0.0, 4.0);
+    angle1.multicam_group = Some(group);
+    angle1.multicam_angle = 1;
+    let mut src = Flat::default().grey(&primary, 0.2).grey(&angle1, 0.6);
+    // Angle 1 listed first, so "first clip under the playhead" would pick it.
+    let seq = sequence(vec![vec![angle1, primary]]);
+    for (t, want) in [(1.0, 0.2), (3.0, 0.6)] {
+        for (i, img) in render(&seq, t, &mut src).iter().enumerate() {
+            assert_px(&format!("t={t}, run {i}"), px(img, 16, 9), [want; 3], 1e-3);
+        }
+    }
+}
