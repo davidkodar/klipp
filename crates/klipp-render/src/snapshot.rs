@@ -121,9 +121,23 @@ pub struct ClipSnapshot {
     pub transform_link: Option<klipp_timeline::TransformLink>,
 }
 
+/// A media item's camera log format for its export decoder: the same
+/// effective format (the user's choice, else detection) the viewer's
+/// decoder registry holds, or `None` for anything that is not a camera log.
+fn camera_log_format(media: &klipp_media::MediaItem) -> Option<klipp_core::LogFormat> {
+    Some(media.effective_log_format()).filter(|f| f.camera_colourspace().is_some())
+}
+
 #[derive(Clone)]
 pub enum ClipKindSnapshot {
-    Media { path: PathBuf, has_audio: bool },
+    Media {
+        path: PathBuf,
+        has_audio: bool,
+        /// The media's camera log format, when it is one (S-Log3, V-Log,
+        /// ...). File tags never say so; the viewer takes it from the media
+        /// pool, and export must decode the file the same way.
+        log_format: Option<klipp_core::LogFormat>,
+    },
     Title(TitleData),
     Generator(klipp_core::GeneratorData),
     /// Adjustment layer — applies its clip's effects to the accumulated composite below.
@@ -508,6 +522,7 @@ fn flatten_multicam_video_clips(
                 ClipKindSnapshot::Media {
                     path: media.path.clone(),
                     has_audio: media.has_audio,
+                    log_format: camera_log_format(media),
                 }
             }
             ClipKind::Title(data) => ClipKindSnapshot::Title(data.clone()),
@@ -761,6 +776,7 @@ fn snapshot_clip(
             ClipKindSnapshot::Media {
                 path: media.path.clone(),
                 has_audio: media.has_audio,
+                log_format: camera_log_format(media),
             }
         }
         ClipKind::Title(data) => ClipKindSnapshot::Title(data.clone()),
@@ -835,7 +851,7 @@ fn time_to_frame(rt: &RationalTime, fps: f64) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use klipp_core::{ClipId, ExportAudioCodec, ExportFormat, ExportVideoCodec, Fps, MediaId, Resolution, EncoderPreset};
+    use klipp_core::{ClipId, LogFormat, ExportAudioCodec, ExportFormat, ExportVideoCodec, Fps, MediaId, Resolution, EncoderPreset};
     use klipp_media::{MediaItem, MediaItemKind, MediaPool};
     use klipp_nodes::NodeGraph;
     use klipp_timeline::{Clip, ClipKind, Sequence};
@@ -964,11 +980,54 @@ mod tests {
         assert_eq!(sc.source_end_secs, 3.0); // 72 frames at 24fps = 3s
 
         match &sc.kind {
-            ClipKindSnapshot::Media { path, has_audio } => {
+            ClipKindSnapshot::Media { path, has_audio, .. } => {
                 assert_eq!(path, &PathBuf::from("/media/clip1.mp4"));
                 assert!(*has_audio);
             }
             _ => panic!("expected Media clip"),
+        }
+    }
+
+    /// The export decoder gets the same log format the viewer's decoder
+    /// registry holds: the user's choice, else detection; and nothing for
+    /// media that is not camera log, including an explicit sRGB override
+    /// of a detected log.
+    #[test]
+    fn snapshot_carries_the_effective_camera_log_format() {
+        let cases: [(LogFormat, bool, LogFormat, Option<LogFormat>); 4] = [
+            (LogFormat::Srgb, false, LogFormat::SLog3, Some(LogFormat::SLog3)), // detected
+            (LogFormat::VLog, true, LogFormat::SLog3, Some(LogFormat::VLog)),   // user's choice wins
+            (LogFormat::Srgb, true, LogFormat::SLog3, None),                    // explicit sRGB override
+            (LogFormat::Srgb, false, LogFormat::PQ, None),                      // PQ: the file says so
+        ];
+        for (chosen, user_set, detected, want) in cases {
+            let media_id = MediaId::new();
+            let mut item = make_media_item(media_id, "/media/log.mp4");
+            item.log_format = chosen;
+            item.log_format_user_set = user_set;
+            item.detected_log_format = detected;
+            let mut pool = MediaPool::new();
+            pool.add(item);
+            let clip = Clip {
+                id: ClipId::new(),
+                kind: ClipKind::Media { media_id },
+                timeline_in: make_rational(0, 24),
+                timeline_out: make_rational(24, 24),
+                source_in: make_rational(0, 24),
+                source_out: make_rational(24, 24),
+                ..Clip::gap(make_rational(0, 24), make_rational(24, 24))
+            };
+            let mut seq = make_sequence();
+            seq.tracks[0].clips.push(clip);
+            let snap = SequenceSnapshot::from_sequence(&seq, &pool, &make_settings(), None, false).unwrap();
+            let sc = &snap.video_tracks.iter().find(|t| !t.clips.is_empty()).unwrap().clips[0];
+            match &sc.kind {
+                ClipKindSnapshot::Media { log_format, .. } => assert_eq!(
+                    *log_format, want,
+                    "chosen {chosen:?} (user set {user_set}), detected {detected:?}",
+                ),
+                _ => panic!("expected Media clip"),
+            }
         }
     }
 

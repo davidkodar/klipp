@@ -35,6 +35,7 @@ mod item;
 mod pool;
 mod thumbnail;
 pub mod waveform;
+pub mod yuv_samples;
 
 pub use audio_cache::AudioCacheEntry;
 pub use item::{Bin, ColorLabel, ColourSpace, MediaItem, MediaItemKind};

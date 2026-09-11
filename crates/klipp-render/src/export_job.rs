@@ -191,7 +191,7 @@ impl ExportJob {
         let mut decoders: HashMap<ClipId, RenderDecoder> = HashMap::new();
         for track in &self.snapshot.video_tracks {
             for clip in &track.clips {
-                if let ClipKindSnapshot::Media { ref path, .. } = clip.kind {
+                if let ClipKindSnapshot::Media { ref path, log_format, .. } = clip.kind {
                     let decoder = RenderDecoder::open(
                         path,
                         clip.source_start_secs,
@@ -200,7 +200,8 @@ impl ExportJob {
                         self.snapshot.height,
                         self.snapshot.fps,
                         clip.source_rotation,
-                    )?;
+                    )?
+                    .with_log_format(log_format);
                     decoders.insert(clip.id, decoder);
                 }
             }

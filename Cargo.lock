@@ -2784,7 +2784,9 @@ dependencies = [
  "bytemuck",
  "dirs",
  "ffmpeg-next",
+ "klipp-color",
  "klipp-core",
+ "rayon",
  "serde",
  "tracing",
 ]

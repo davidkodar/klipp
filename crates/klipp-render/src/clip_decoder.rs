@@ -42,6 +42,13 @@ pub struct RenderDecoder {
     /// the same way the viewer resolves them (untagged HD is BT.709).
     yuv_matrix: klipp_core::ColorMatrix,
     yuv_range: klipp_core::ColorRange,
+    /// The source's resolved colourspace, before any camera log format.
+    source_cs: klipp_core::SourceColorspace,
+    /// Set for scene-referred sources (PQ, HLG, camera log): their frames
+    /// go through the viewer's codes route, not swscale RGB.
+    scene: Option<SceneSource>,
+    /// The codes of the frame `next_frame` last returned, for the grade.
+    last_scene: Option<crate::stage::SceneReferredFrame>,
     /// Active hardware acceleration mode.
     hw_accel: HwAccel,
     /// Target output dimensions.
@@ -69,6 +76,29 @@ pub struct RenderDecoder {
     eof_sent: bool,
     frames_decoded: u64,
     frames_skipped: u64,
+}
+
+/// How a scene-referred source's frames are decoded.
+#[derive(Clone, Copy)]
+struct SceneSource {
+    /// `[range, matrix, transfer, primaries]` as `klipp_core::color_ids`.
+    ids: [u32; 4],
+    transfer: klipp_color::hdr::HdrTransfer,
+    /// Source primaries → BT.709 linear, export's working space (its
+    /// grade executor is never given another).
+    to_display: [[f32; 3]; 3],
+}
+
+impl SceneSource {
+    fn for_colourspace(cs: klipp_core::SourceColorspace) -> Option<Self> {
+        let ids = klipp_core::color_ids::ids(cs);
+        let transfer = klipp_color::hdr::HdrTransfer::from_transfer_id(ids[2])?;
+        let to_display = klipp_color::camera_log::primaries_to_working_matrix(
+            cs.primaries,
+            klipp_core::WorkingColorspace::Rec709Linear,
+        );
+        Some(Self { ids, transfer, to_display })
+    }
 }
 
 impl RenderDecoder {
@@ -197,6 +227,9 @@ impl RenderDecoder {
             hw_scaler: None,
             yuv_matrix,
             yuv_range,
+            scene: SceneSource::for_colourspace(source_cs),
+            source_cs,
+            last_scene: None,
             hw_accel,
             target_width,
             target_height,
@@ -211,6 +244,30 @@ impl RenderDecoder {
             frames_decoded: 0,
             frames_skipped: 0,
         })
+    }
+
+    /// Decode as this camera log format — the media's effective format,
+    /// which the file's own tags never state. `None` leaves the file's tags
+    /// in charge (PQ and HLG files say what they are).
+    pub fn with_log_format(mut self, log_format: Option<klipp_core::LogFormat>) -> Self {
+        let cs = match log_format {
+            Some(f) => f.apply_to(self.source_cs),
+            None => self.source_cs,
+        };
+        self.scene = SceneSource::for_colourspace(cs);
+        self
+    }
+
+    /// Whether frames decode through the scene-referred route.
+    pub fn is_scene_referred(&self) -> bool {
+        self.scene.is_some()
+    }
+
+    /// The codes of the frame `next_frame` last returned, when the source
+    /// is scene-referred. Taken, so a stale frame's codes can never be
+    /// graded in place of a later frame's.
+    pub fn take_scene_referred(&mut self) -> Option<crate::stage::SceneReferredFrame> {
+        self.last_scene.take()
     }
 
     /// Decode the next frame. Returns `Ok(None)` when the clip is exhausted.
@@ -315,6 +372,11 @@ impl RenderDecoder {
             (self.target_width, self.target_height)
         };
 
+        if let Some(scene) = self.scene {
+            if let Some(rgba) = unsafe { self.scene_referred_frame(decoded, scene) } {
+                return Ok(rgba);
+            }
+        }
         let rgba = if self.hw_accel != HwAccel::Software {
             // Try HW download path
             if let Some(rgba) = unsafe {
@@ -344,6 +406,59 @@ impl RenderDecoder {
         } else {
             Ok(rgba)
         }
+    }
+
+    /// A scene-referred frame the way the viewer decodes it: 10-bit codes
+    /// (`klipp_color::hdr::yuv_to_hdr_codes`, bit-identical to the
+    /// viewer's decoder shaders) kept for the grade, and the tone-mapped
+    /// preview returned as the 8-bit frame. Resized nearest-neighbour and
+    /// rotated as the viewer's decoders do. `None` if the frame's samples
+    /// cannot be read, in which case the caller falls back to swscale.
+    ///
+    /// SAFETY: `decoded` must be a valid decoded frame.
+    unsafe fn scene_referred_frame(
+        &mut self,
+        decoded: &ffmpeg_next::util::frame::Video,
+        scene: SceneSource,
+    ) -> Option<Vec<u8>> {
+        use ffmpeg_next::ffi::*;
+        // Hardware frames are downloaded first; tags come from the source,
+        // resolved at open, so the download dropping them does not matter.
+        let is_hw = decoded.format() == ffmpeg_next::format::Pixel::CUDA
+            || decoded.format() == ffmpeg_next::format::Pixel::VAAPI;
+        let mut sw = std::ptr::null_mut::<AVFrame>();
+        let src: *const AVFrame = if is_hw {
+            sw = av_frame_alloc();
+            if sw.is_null() || av_hwframe_transfer_data(sw, decoded.as_ptr(), 0) < 0 {
+                av_frame_free(&mut sw);
+                return None;
+            }
+            sw
+        } else {
+            decoded.as_ptr()
+        };
+        let yuv = klipp_media::yuv_samples::read_yuv_samples(src);
+        if !sw.is_null() {
+            av_frame_free(&mut sw);
+        }
+        let yuv = yuv?;
+        let (w, h) = (self.target_width, self.target_height);
+        let codes = klipp_color::hdr::yuv_to_hdr_codes(
+            &yuv.samples(),
+            w,
+            h,
+            self.source_rotation.rem_euclid(360) as u32,
+            scene.ids,
+        );
+        let preview = klipp_color::hdr::hdr10_codes_to_display_srgb8(&codes, scene.transfer, scene.to_display);
+        self.last_scene = Some(crate::stage::SceneReferredFrame {
+            codes,
+            transfer: scene.transfer,
+            source_to_working: scene.to_display,
+            width: w,
+            height: h,
+        });
+        Some(preview)
     }
 
     /// Scale a decoded frame using the software scaler.

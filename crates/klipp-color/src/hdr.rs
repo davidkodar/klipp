@@ -367,6 +367,30 @@ pub fn hdr10_codes_to_scene_linear_rgba(
     out
 }
 
+/// A scene-referred frame's codes as the viewer shows them ungraded: scene
+/// linear, the display tone map, sRGB-encoded RGBA8. `source_to_display`
+/// takes the source primaries to BT.709.
+pub fn hdr10_codes_to_display_srgb8(
+    packed: &[u32],
+    transfer: HdrTransfer,
+    source_to_display: [[f32; 3]; 3],
+) -> Vec<u8> {
+    let mut linear = hdr10_codes_to_scene_linear_rgba(packed, transfer, source_to_display);
+    apply_hdr_display_tonemap(&mut linear, transfer);
+    display_linear_to_srgb8(&linear)
+}
+
+/// Display-referred linear RGBA f32 → sRGB-encoded RGBA8, alpha opaque.
+pub fn display_linear_to_srgb8(linear: &[f32]) -> Vec<u8> {
+    use rayon::prelude::*;
+    let e = |c: f32| (crate::transfer::linear_to_srgb(c).clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
+    let mut out = vec![0u8; linear.len()];
+    out.par_chunks_exact_mut(4).zip(linear.par_chunks_exact(4)).for_each(|(o, px)| {
+        o.copy_from_slice(&[e(px[0]), e(px[1]), e(px[2]), 255]);
+    });
+    out
+}
+
 /// One decoded frame's Y'CbCr samples at their native bit depth, any
 /// chroma subsampling. `u` and `v` hold `chroma_width x chroma_height`
 /// samples, where `chroma_width = ceil(width / 2^chroma_shift_w)`.

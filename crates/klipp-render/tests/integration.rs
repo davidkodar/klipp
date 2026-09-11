@@ -65,6 +65,7 @@ fn snapshot_to_pipeline_roundtrip() {
         clip: None,
         fps: 24.0,
         track_index: 0,
+        scene_referred: None,
     };
     let result = pipeline.process_frame(black.clone(), 320, 240, &ctx);
     assert_eq!(result.len(), black.len());
@@ -346,6 +347,7 @@ fn export_real_media_h264() {
                 kind: snapshot::ClipKindSnapshot::Media {
                     path: media_path.clone(),
                     has_audio: true,
+                    log_format: None,
                 },
                 timeline_start_frame: 0,
                 timeline_end_frame: 30,
@@ -470,6 +472,7 @@ fn export_real_media_with_color_grade() {
                 kind: snapshot::ClipKindSnapshot::Media {
                     path: media_path,
                     has_audio: false,
+                    log_format: None,
                 },
                 timeline_start_frame: 0,
                 timeline_end_frame: 15,

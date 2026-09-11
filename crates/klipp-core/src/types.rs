@@ -85,6 +85,43 @@ pub enum LogFormat {
 }
 
 impl LogFormat {
+    /// The camera-native (transfer, primaries) pair a file in this format
+    /// is decoded with, or `None` for formats that are not camera logs.
+    /// Range and matrix still come from the file: Sony, ARRI and Canon log
+    /// all use the BT.709 matrix. Shared by the viewer's and the export's
+    /// decoders so the two cannot decode the same file differently.
+    pub fn camera_colourspace(self) -> Option<(crate::ColorTransfer, crate::ColorPrimaries)> {
+        use crate::{ColorPrimaries as P, ColorTransfer as T};
+        Some(match self {
+            Self::SLog3 => (T::SLog3, P::SGamut3Cine),
+            Self::SLog2 => (T::SLog2, P::SGamut3),
+            Self::VLog => (T::VLog, P::VGamut),
+            Self::CanonLog => (T::CanonLog, P::CanonCinemaGamut),
+            Self::CanonLog3 => (T::CanonLog3, P::CanonCinemaGamut),
+            Self::LogC3 => (T::LogC3, P::AlexaWideGamut3),
+            Self::LogC4 => (T::LogC4, P::AlexaWideGamut4),
+            Self::RedLog3G10 => (T::RedLog3G10, P::RedWideGamut),
+            Self::BmdFilmGen5 => (T::BmdFilmGen5, P::BmdWideGamut),
+            Self::DJIDLog => (T::DJIDLog, P::Bt709),
+            Self::FLog => (T::FLog, P::Bt2020),
+            Self::AppleLog => (T::AppleLog, P::Bt2020),
+            Self::NLog => (T::NLog, P::Bt2020),
+            Self::GoProFlat => (T::GoProFlat, P::Bt709),
+            // No decoder curve yet for Leica L-Log; sRGB, linear, PQ and
+            // HLG are not camera logs.
+            Self::LeicaLLog | Self::Srgb | Self::Linear | Self::PQ | Self::HLG => return None,
+        })
+    }
+
+    /// `cs` with this format's camera transfer and primaries, when it is a
+    /// camera log; `cs` unchanged otherwise.
+    pub fn apply_to(self, cs: crate::SourceColorspace) -> crate::SourceColorspace {
+        match self.camera_colourspace() {
+            Some((transfer, primaries)) => crate::SourceColorspace { transfer, primaries, ..cs },
+            None => cs,
+        }
+    }
+
     /// Whether an InputTransform node carrying this format has any work
     /// to do on the pixels it receives. It never does now.
     ///

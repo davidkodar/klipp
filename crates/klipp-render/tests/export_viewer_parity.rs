@@ -143,7 +143,7 @@ fn probe(path: &Path, entries: &str) -> String {
 fn ungraded_sdr_export_reproduces_the_source() {
     let Some(src) = bars_source() else { return };
     let out = tmp("bars.mp4");
-    export(clip(snapshot::ClipKindSnapshot::Media { path: src.clone(), has_audio: false }, Default::default()), &out);
+    export(clip(snapshot::ClipKindSnapshot::Media { path: src.clone(), has_audio: false, log_format: None }, Default::default()), &out);
     let (a, b) = (decode_709(&src), decode_709(&out));
     let flat = |x: u32, y: u32| {
         let c = &a[((y * W + x) * 3) as usize..][..3];
@@ -196,4 +196,138 @@ fn exports_are_fully_tagged() {
             assert!(tags.contains(want), "{codec:?} export lacks {want}: {tags}");
         }
     }
+}
+
+// ── Scene-referred sources (camera log, PQ) ─────────────────────────────
+//
+// Expected values come from the published curves, not from Klipp: Sony's
+// S-Log3 and SMPTE ST 2084, then the viewer's documented ungraded look
+// (log exposure 0.723171, PQ exposure 0.18, Narkowicz filmic, sRGB).
+
+const BAND: u32 = W / 4;
+
+fn filmic(x: f64) -> f64 {
+    let (a, b, c, d, e) = (2.51, 0.03, 2.43, 0.59, 0.14);
+    ((x * (a * x + b)) / (x * (c * x + d) + e)).clamp(0.0, 1.0)
+}
+
+fn srgb8(linear: f64) -> i32 {
+    let v = if linear <= 0.0031308 { 12.92 * linear } else { 1.055 * linear.powf(1.0 / 2.4) - 0.055 };
+    (v.clamp(0.0, 1.0) * 255.0).round() as i32
+}
+
+fn slog3_to_linear(code: f64) -> f64 {
+    if code >= 171.210_294_692_9 {
+        10f64.powf((code - 420.0) / 261.5) * 0.19 - 0.01
+    } else {
+        (code - 95.0) * 0.011_25 / (171.210_294_692_9 - 95.0)
+    }
+}
+
+fn pq_code(nits: f64) -> u16 {
+    let (m1, m2) = (2610.0 / 16384.0, 2523.0 / 4096.0 * 128.0);
+    let (c1, c2, c3) = (3424.0 / 4096.0, 2413.0 / 4096.0 * 32.0, 2392.0 / 4096.0 * 32.0);
+    let y = (nits / 10000.0f64).powf(m1);
+    (64.0 + ((c1 + c2 * y) / (1.0 + c3 * y)).powf(m2) * 876.0).round() as u16
+}
+
+/// A lossless 10-bit 4:2:2 clip of four vertical luma bands, neutral
+/// chroma. FFV1 decodes in software, like ProRes.
+fn band_clip(name: &str, bands: [u16; 4], tags: &[&str]) -> Option<PathBuf> {
+    if !ffmpeg_ok() { return None; }
+    let raw = tmp(&format!("{name}.yuv"));
+    let out = tmp(&format!("{name}.mkv"));
+    let mut bytes = Vec::with_capacity((W * H * 4) as usize * 3);
+    for _ in 0..3 {
+        for _ in 0..H {
+            for x in 0..W { bytes.extend_from_slice(&bands[(x / BAND) as usize].to_le_bytes()); }
+        }
+        for _ in 0..(W / 2) * H * 2 { bytes.extend_from_slice(&512u16.to_le_bytes()); }
+    }
+    std::fs::write(&raw, bytes).ok()?;
+    let size = format!("{W}x{H}");
+    let mut args: Vec<&str> = vec!["-nostdin", "-y", "-v", "error", "-f", "rawvideo", "-pix_fmt", "yuv422p10le", "-s", &size, "-r", "25"];
+    args.extend_from_slice(tags);
+    args.extend_from_slice(&["-i", raw.to_str()?, "-c:v", "ffv1", "-pix_fmt", "yuv422p10le"]);
+    args.extend_from_slice(tags);
+    args.push(out.to_str()?);
+    let ok = std::process::Command::new("ffmpeg").args(&args).status().ok()?.success();
+    let _ = std::fs::remove_file(&raw);
+    ok.then_some(out)
+}
+
+const SLOG3: [u16; 4] = [95, 420, 598, 1000];
+const TAGS_709: &[&str] = &["-color_range", "tv", "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709"];
+
+fn exposure_graph(stops: f32) -> klipp_nodes::NodeGraph {
+    use klipp_nodes::*;
+    let node = |kind, params| Node {
+        id: NodeId::new_v4(), kind, label: format!("{kind:?}"), enabled: true, params,
+        keyframes: Default::default(), output_link: None, input_links: vec![],
+    };
+    let mut p = NodeParams::default();
+    p.exposure = Some(stops);
+    let nodes = vec![node(NodeKind::Source, NodeParams::default()), node(NodeKind::Exposure, p), node(NodeKind::Output, NodeParams::default())];
+    let edges = (0..2).map(|i| Edge { from_node: nodes[i].id, from_port: 0, to_node: nodes[i + 1].id, to_port: 0 }).collect();
+    let node_positions = nodes.iter().enumerate().map(|(i, n)| (n.id, NodePos { x: i as f32 * 100.0, y: 0.0 })).collect();
+    NodeGraph {
+        output_node_id: nodes[2].id, nodes, edges, node_positions,
+        working_space_override: None, frames: vec![], sticky_notes: vec![],
+    }
+}
+
+fn check_bands(out: &Path, label: &str, want: [i32; 4]) {
+    let rgb = decode_709(out);
+    for (band, w) in want.iter().enumerate() {
+        let got = px(&rgb, band as u32 * BAND + BAND / 2, H / 2);
+        eprintln!("{label} band {band}: export {got:?}, viewer {w}");
+        for c in got {
+            assert!((c - w).abs() <= 2, "{label} band {band}: export {got:?}, the viewer shows {w}");
+        }
+    }
+}
+
+/// An ungraded S-Log3 clip exports as the viewer shows it: converted, not
+/// flat. Export used to know nothing of the clip's log format and encoded
+/// the log signal as if it were the picture (grey 118 came out 102, 90%
+/// white 208 came out 145).
+#[test]
+fn ungraded_slog3_export_matches_the_viewer() {
+    let Some(src) = band_clip("slog3", SLOG3, TAGS_709) else { return };
+    let out = tmp("slog3_ungraded.mp4");
+    let kind = snapshot::ClipKindSnapshot::Media { path: src, has_audio: false, log_format: Some(LogFormat::SLog3) };
+    export(clip(kind, Default::default()), &out);
+    check_bands(&out, "S-Log3 ungraded", SLOG3.map(|c| srgb8(filmic(slog3_to_linear(c as f64) * 0.723171))));
+}
+
+/// The grade runs on scene-linear light, before the tone map, as in the
+/// viewer. Two stops down brings the super-white band (~31x grey) to about
+/// 8x grey — still near white after the tone map. Grading the 8-bit
+/// preview, which has already clipped it to white, would give mid-grey.
+#[test]
+fn graded_slog3_is_graded_in_scene_linear() {
+    let Some(src) = band_clip("slog3", SLOG3, TAGS_709) else { return };
+    let out = tmp("slog3_graded.mp4");
+    let kind = snapshot::ClipKindSnapshot::Media { path: src, has_audio: false, log_format: Some(LogFormat::SLog3) };
+    export(clip(kind, exposure_graph(-2.0)), &out);
+    check_bands(&out, "S-Log3 -2 stops", SLOG3.map(|c| srgb8(filmic(slog3_to_linear(c as f64) * 0.25 * 0.723171))));
+}
+
+/// PQ needs no log format: the file's tags say what it is.
+#[test]
+fn ungraded_pq_export_matches_the_viewer() {
+    let nits = [1.0, 100.0, 1000.0, 4000.0];
+    let codes = nits.map(pq_code);
+    let tags = ["-color_range", "tv", "-colorspace", "bt2020nc", "-color_primaries", "bt2020", "-color_trc", "smpte2084"];
+    let Some(src) = band_clip("pq", codes, &tags) else { return };
+    let out = tmp("pq_ungraded.mp4");
+    export(clip(snapshot::ClipKindSnapshot::Media { path: src, has_audio: false, log_format: None }, Default::default()), &out);
+    // Scene-linear from the codes actually written (rounded), 1.0 = 100 nits.
+    let (m1, m2) = (2610.0 / 16384.0, 2523.0 / 4096.0 * 128.0);
+    let (c1, c2, c3) = (3424.0 / 4096.0, 2413.0 / 4096.0 * 32.0, 2392.0 / 4096.0 * 32.0);
+    let scene = |code: u16| {
+        let p = ((code as f64 - 64.0) / 876.0).powf(1.0 / m2);
+        100.0 * ((p - c1).max(0.0) / (c2 - c3 * p)).powf(1.0 / m1)
+    };
+    check_bands(&out, "PQ ungraded", codes.map(|c| srgb8(filmic(scene(c) * 0.18))));
 }

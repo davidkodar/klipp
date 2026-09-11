@@ -50,6 +50,29 @@ pub struct FrameContext {
     pub fps: f64,
     /// Track index this frame belongs to (for multi-track pipeline routing).
     pub track_index: usize,
+    /// The source frame's scene-referred codes, for a PQ, HLG or camera-log
+    /// clip whose pixels reached this stage unmixed. The grade reads these,
+    /// not the 8-bit frame, which is the tone-mapped preview — see
+    /// [`SceneReferredFrame`].
+    pub scene_referred: Option<Arc<SceneReferredFrame>>,
+}
+
+/// A scene-referred source frame (PQ, HLG, camera log) as the viewer's
+/// grade reads it: packed 10-bit code values in the source primaries.
+///
+/// The pipeline between stages is 8-bit sRGB, which cannot hold a scene's
+/// highlights, so for these clips the 8-bit frame is only the tone-mapped
+/// preview (what the viewer shows ungraded) and the grade stage starts over
+/// from the codes: scene-linear, grade, display tone map — the viewer's
+/// order.
+#[derive(Clone)]
+pub struct SceneReferredFrame {
+    pub codes: Vec<u32>,
+    pub transfer: klipp_color::hdr::HdrTransfer,
+    /// Source primaries → the grade's working space.
+    pub source_to_working: [[f32; 3]; 3],
+    pub width: u32,
+    pub height: u32,
 }
 
 /// Per-clip context passed to `begin_clip()`.

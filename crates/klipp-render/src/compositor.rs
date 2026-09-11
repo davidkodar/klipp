@@ -174,9 +174,18 @@ impl FrameCompositor {
 
             // Decode + transition + per-clip effects.
             let raw = self.decode_clip_frame(clip, decoders, frame_num, snapshot.fps, w, h)?;
+            // Taken before the transition, which may decode the partner
+            // clip on the same decoder map.
+            let mut scene_referred = decoders
+                .get_mut(&clip.id)
+                .and_then(|d| d.take_scene_referred())
+                .map(Arc::new);
             let decoded = if let Some(transitioned) =
                 self.apply_transition(raw.as_ref(), frame_num, snapshot.fps, clip, track, decoders, w, h)?
             {
+                // A mix of two clips has no single source to go back to;
+                // it is graded as the 8-bit mix, as before.
+                scene_referred = None;
                 transitioned
             } else {
                 match raw {
@@ -200,6 +209,7 @@ impl FrameCompositor {
                 clip: Some(Arc::new(clip.clone())),
                 fps: snapshot.fps,
                 track_index: track_idx,
+                scene_referred,
             };
             let layer_frame = pipelines[track_idx].process_frame(decoded, w, h, &ctx);
 
@@ -233,6 +243,8 @@ impl FrameCompositor {
                         clip: Some(Arc::new(entry.clip.clone())),
                         fps: snapshot.fps,
                         track_index: entry.track_idx,
+                        // An adjustment layer grades the composite.
+                        scene_referred: None,
                     };
                     base = Some(pipelines[entry.track_idx].process_frame(base_frame, w, h, &ctx));
                 }

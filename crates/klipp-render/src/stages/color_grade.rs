@@ -67,7 +67,40 @@ impl ProcessingStage for ColorGradeStage {
     ) -> Vec<u8> {
         // 1. Execute node graph for per-clip color grading
         let mut rgba = if let Some(ref graph) = self.cached_graph {
-            if !graph.is_identity() {
+            let scene = ctx
+                .scene_referred
+                .as_ref()
+                .filter(|s| s.width == width && s.height == height && s.codes.len() == (width * height) as usize);
+            if !graph.is_identity() && scene.is_some() {
+                // PQ / HLG / camera log: grade scene-linear from the codes,
+                // then the display tone map — the viewer's order. The
+                // 8-bit `frame` is only the tone-mapped preview.
+                let scene = scene.unwrap();
+                let linear = klipp_color::hdr::hdr10_codes_to_scene_linear_rgba(
+                    &scene.codes,
+                    scene.transfer,
+                    scene.source_to_working,
+                );
+                match self.executor.execute_linear(
+                    &linear,
+                    graph,
+                    width,
+                    height,
+                    ctx.clip_time_secs,
+                    self.export_frame_counter,
+                    None,
+                    None,
+                ) {
+                    Ok((mut graded, _)) => {
+                        klipp_color::hdr::apply_hdr_display_tonemap(&mut graded, scene.transfer);
+                        klipp_color::hdr::display_linear_to_srgb8(&graded)
+                    }
+                    Err(e) => {
+                        tracing::error!("Node graph execution failed: {:?}", e);
+                        frame
+                    }
+                }
+            } else if !graph.is_identity() {
                 match self.executor.execute(
                     &frame,
                     graph,

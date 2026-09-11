@@ -120,6 +120,7 @@ mod tests {
             clip: None,
             fps: 24.0,
             track_index: 0,
+            scene_referred: None,
         }
     }
 
