@@ -133,6 +133,7 @@ pub struct GpuEffectsPipeline {
     queue: std::sync::Arc<wgpu::Queue>,
     // Compute pipelines — effects (2-buffer: input, output, params)
     opacity_pipeline: wgpu::ComputePipeline,
+    color_fade_pipeline: wgpu::ComputePipeline,
     blur_h_pipeline: wgpu::ComputePipeline,
     blur_v_pipeline: wgpu::ComputePipeline,
     sharpen_pipeline: wgpu::ComputePipeline,
@@ -635,6 +636,7 @@ impl GpuEffectsPipeline {
         };
 
         let opacity_pipeline = create_pipeline(&device, &pipeline_layout, "opacity", SHADER_OPACITY);
+        let color_fade_pipeline = create_pipeline(&device, &pipeline_layout, "color_fade", SHADER_COLOR_FADE);
         let blur_h_pipeline = create_pipeline(&device, &pipeline_layout, "blur_h", SHADER_BLUR_H);
         let blur_v_pipeline = create_pipeline(&device, &pipeline_layout, "blur_v", SHADER_BLUR_V);
         let sharpen_pipeline = create_pipeline(&device, &pipeline_layout, "sharpen", SHADER_SHARPEN);
@@ -893,6 +895,7 @@ impl GpuEffectsPipeline {
             device,
             queue,
             opacity_pipeline,
+            color_fade_pipeline,
             blur_h_pipeline,
             blur_v_pipeline,
             sharpen_pipeline,
@@ -3573,7 +3576,7 @@ impl GpuEffectsPipeline {
                     self.write_params(&BloomBlendParams {
                         width, height,
                         intensity: *intensity,
-                        _pad: 0,
+                        desat: 0.0,
                     });
                     // bloom_blend reads input + buf_c, writes output
                     self.dispatch_bloom_blend(input, buf_c, output, workgroups, *intensity, width, height);
@@ -3602,7 +3605,7 @@ impl GpuEffectsPipeline {
                     }
 
                     // Step 2: Screen blend blurred (buf_c) with original (input) → output
-                    self.dispatch_bloom_blend_screen(input, buf_c, output, workgroups, *intensity, width, height);
+                    self.dispatch_bloom_blend_screen(input, buf_c, output, workgroups, *intensity, 0.0, width, height);
                     current_in_a = !current_in_a;
                 }
                 BuiltinEffect::LightRays { center_x, center_y, threshold, samples, decay, intensity } => {
@@ -3627,7 +3630,7 @@ impl GpuEffectsPipeline {
                     self.dispatch(&self.vignette_pipeline, input, output, workgroups);
                     current_in_a = !current_in_a;
                 }
-                BuiltinEffect::Diffusion { amount, radius, threshold, desaturation: _ } => {
+                BuiltinEffect::Diffusion { amount, radius, threshold, desaturation } => {
                     // Same as bloom: threshold → blur → screen blend
                     let buf_c = self.buf_c.as_ref().unwrap();
                     self.write_params(&BloomThresholdParams { width, height, threshold: *threshold, _pad: 0 });
@@ -3639,7 +3642,7 @@ impl GpuEffectsPipeline {
                         self.write_params(&BlurParams { width, height, radius: box_r as i32, _pad: 0 });
                         self.dispatch(&self.blur_v_pipeline, output, buf_c, workgroups);
                     }
-                    self.dispatch_bloom_blend_screen(input, buf_c, output, workgroups, *amount, width, height);
+                    self.dispatch_bloom_blend_screen(input, buf_c, output, workgroups, *amount, *desaturation, width, height);
                     current_in_a = !current_in_a;
                 }
                 BuiltinEffect::LensFlare { position_x, position_y, brightness, flare_size, ghost_count, ghost_intensity, chromatic_aberration } => {
@@ -3673,7 +3676,7 @@ impl GpuEffectsPipeline {
                         self.write_params(&BlurParams { width, height, radius: box_r as i32, _pad: 0 });
                         self.dispatch(&self.blur_v_pipeline, output, buf_c, workgroups);
                     }
-                    self.dispatch_bloom_blend_screen(input, buf_c, output, workgroups, *intensity, width, height);
+                    self.dispatch_bloom_blend_screen(input, buf_c, output, workgroups, *intensity, 0.0, width, height);
                     current_in_a = !current_in_a;
                 }
                 BuiltinEffect::AnamorphicStreak { threshold, length, intensity, tint } => {
@@ -3965,41 +3968,13 @@ impl GpuEffectsPipeline {
                 BuiltinEffect::Equalize { strength } => {
                     // Hybrid GPU: build histogram/CDF on CPU (fast), remap on GPU (parallel).
                     // Step 1: Download current frame to compute histogram.
-                    // Storage is linear-f32 vec4s; read each pixel's
-                    // three channels as floats in [0,1] and bin the
-                    // BT.709 linear luma into 256 bins (0..=255).
+                    // The CDF of display-encoded luma, built as the CPU
+                    // path builds it.
                     let current_buf = if current_in_a { buf_a } else { buf_b };
                     let frame_bytes = self.download(current_buf, byte_size);
                     let frame_data: &[f32] = bytemuck::cast_slice(&frame_bytes);
 
-                    let mut histogram = [0u32; 256];
-                    let pixel_count = (width * height) as usize;
-                    for i in 0..pixel_count {
-                        let idx = i * 4;
-                        let r = frame_data[idx];
-                        let g = frame_data[idx + 1];
-                        let b = frame_data[idx + 2];
-                        let luma = (0.2126 * r + 0.7152 * g + 0.0722 * b).clamp(0.0, 1.0);
-                        let bin = (luma * 255.0) as u8;
-                        histogram[bin as usize] += 1;
-                    }
-
-                    // Step 3: Build CDF and normalize to 0.0-1.0
-                    let mut cdf = [0.0f32; 256];
-                    let mut cumulative = 0u32;
-                    let total = pixel_count as f32;
-                    // Find first non-zero bin for CDF normalization
-                    let cdf_min = histogram.iter().position(|&h| h > 0).unwrap_or(0);
-                    let min_cumulative = histogram[..=cdf_min].iter().sum::<u32>();
-                    for i in 0..256 {
-                        cumulative += histogram[i];
-                        // Standard histogram equalization formula
-                        cdf[i] = if total > min_cumulative as f32 {
-                            ((cumulative - min_cumulative) as f32 / (total - min_cumulative as f32)).clamp(0.0, 1.0)
-                        } else {
-                            i as f32 / 255.0
-                        };
-                    }
+                    let cdf = crate::equalize_cdf(frame_data);
 
                     // Step 4: Upload CDF as storage buffer and dispatch GPU remap shader
                     let cdf_bytes = bytemuck::cast_slice(&cdf);
@@ -4132,19 +4107,27 @@ impl GpuEffectsPipeline {
                     self.device.poll(wgpu::Maintain::Poll);
                     current_in_a = !current_in_a;
                 }
-                BuiltinEffect::Vibrance { .. } => {
-                    // Vibrance handled by CPU fallback. Pass through GPU chain.
+                BuiltinEffect::Vibrance { amount } => {
+                    self.write_params(&GpuVibranceParams { width, height, amount: *amount, _pad: 0 });
+                    self.dispatch(&self.vibrance_pipeline, input, output, workgroups);
+                    current_in_a = !current_in_a;
                 }
                 BuiltinEffect::SpeedRamp { .. } => {
                     // SpeedRamp is handled at the engine level (frame queue + GPU blend),
                     // not in the per-frame GPU effects chain. Pass through.
                 }
-                BuiltinEffect::ColorFade { .. } => {
-                    // ColorFade is CPU-only for now. Engine dispatch falls back
-                    // to klipp_effects::apply_effects when any ColorFade is in the
-                    // chain (see chain_supports_gpu); reaching this arm means the
-                    // dispatcher decided to run it anyway, so silently pass through
-                    // rather than corrupt downstream effects.
+                BuiltinEffect::ColorFade { color, progress, .. } => {
+                    let t = progress.clamp(0.0, 1.0);
+                    if t >= 0.9999 {
+                        continue;
+                    }
+                    let lin = |c: u8| crate::cpu::decode(c as f32 / 255.0);
+                    self.write_params(&ColorFadeParams {
+                        width, height, progress: t, _pad: 0,
+                        color: [lin(color[0]), lin(color[1]), lin(color[2]), color[3] as f32 / 255.0],
+                    });
+                    self.dispatch(&self.color_fade_pipeline, input, output, workgroups);
+                    current_in_a = !current_in_a;
                 }
                 BuiltinEffect::Frei0r { .. } => {
                     // Frei0r 1.x has no GPU surface; chain_supports_gpu returns
@@ -4600,7 +4583,7 @@ impl GpuEffectsPipeline {
         &self, input: &wgpu::Buffer, bright: &wgpu::Buffer, output: &wgpu::Buffer,
         workgroups: u32, intensity: f32, width: u32, height: u32,
     ) {
-        self.write_params(&BloomBlendParams { width, height, intensity, _pad: 0 });
+        self.write_params(&BloomBlendParams { width, height, intensity, desat: 0.0 });
         let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("bloom_blend_bg"),
             layout: &self.transition_bgl,
@@ -4625,11 +4608,12 @@ impl GpuEffectsPipeline {
     }
 
     /// Dispatch glow blend: screen blend of blurred (buf_c) onto original (input) → output
+    #[allow(clippy::too_many_arguments)]
     fn dispatch_bloom_blend_screen(
         &self, input: &wgpu::Buffer, blurred: &wgpu::Buffer, output: &wgpu::Buffer,
-        workgroups: u32, intensity: f32, width: u32, height: u32,
+        workgroups: u32, intensity: f32, desat: f32, width: u32, height: u32,
     ) {
-        self.write_params(&BloomBlendParams { width, height, intensity, _pad: 0 });
+        self.write_params(&BloomBlendParams { width, height, intensity, desat });
         let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("glow_blend_bg"),
             layout: &self.transition_bgl,
@@ -4663,6 +4647,17 @@ struct OpacityParams {
     height: u32,
     value: f32,
     _pad: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct ColorFadeParams {
+    width: u32,
+    height: u32,
+    progress: f32,
+    _pad: u32,
+    /// Linear RGB and alpha.
+    color: [f32; 4],
 }
 
 #[repr(C)]
@@ -4784,7 +4779,8 @@ struct BloomBlendParams {
     width: u32,
     height: u32,
     intensity: f32,
-    _pad: u32,
+    /// Desaturation of the blended layer (screen blend only; Diffusion).
+    desat: f32,
 }
 
 #[repr(C)]
@@ -5467,6 +5463,13 @@ fn linear_to_srgb_component(c: f32) -> f32 {
 
 fn unpack(v: vec4<f32>) -> vec4<f32> { return v; }
 fn pack(v: vec4<f32>) -> vec4<f32> { return v; }
+
+fn enc3(v: vec3<f32>) -> vec3<f32> {
+    return vec3<f32>(linear_to_srgb_component(v.x), linear_to_srgb_component(v.y), linear_to_srgb_component(v.z));
+}
+fn dec3(v: vec3<f32>) -> vec3<f32> {
+    return vec3<f32>(srgb_to_linear_component(v.x), srgb_to_linear_component(v.y), srgb_to_linear_component(v.z));
+}
 "
     };
 }
@@ -5499,6 +5502,30 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 }
 "
 );
+
+// Colour fade — from a solid colour into the picture (or out to it):
+// the pixel mixed with the colour by `progress`, in linear light, as a
+// dissolve mixes.
+const SHADER_COLOR_FADE: &str = "
+struct Params {
+    width: u32,
+    height: u32,
+    progress: f32,
+    _pad: u32,
+    color: vec4<f32>,
+}
+
+@group(0) @binding(0) var<storage, read> input: array<vec4<f32>>;
+@group(0) @binding(1) var<storage, read_write> output: array<vec4<f32>>;
+@group(0) @binding(2) var<uniform> params: Params;
+
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let idx = gid.x;
+    if idx >= params.width * params.height { return; }
+    output[idx] = mix(params.color, input[idx], params.progress);
+}
+";
 
 // Horizontal blur. Averages linear-light RGB — the gamma-encoded
 // version underestimated midtone brightness and made edges look
@@ -7985,7 +8012,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 // curve match how real light stacks rather than how sRGB bytes add.
 const SHADER_GLOW_BLEND: &str = concat!(
     "
-struct Params { width: u32, height: u32, intensity: f32, _pad: u32 }
+struct Params { width: u32, height: u32, intensity: f32, desat: f32 }
 @group(0) @binding(0) var<storage, read> original: array<vec4<f32>>;
 @group(0) @binding(1) var<storage, read> blurred: array<vec4<f32>>;
 @group(0) @binding(2) var<storage, read_write> output: array<vec4<f32>>;
@@ -7998,7 +8025,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let idx = gid.x;
     if idx >= params.width * params.height { return; }
     let o = unpack(original[idx]);
-    let b = unpack(blurred[idx]) * params.intensity;
+    let bl = unpack(blurred[idx]).xyz;
+    let l = 0.2126 * bl.x + 0.7152 * bl.y + 0.0722 * bl.z;
+    let b = (bl + (vec3<f32>(l) - bl) * params.desat) * params.intensity;
     // Screen blend in linear: 1 − (1 − o)(1 − b).
     let s = vec3<f32>(
         1.0 - (1.0 - o.x) * (1.0 - b.x),
@@ -8201,8 +8230,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 "
 );
 
-// Film halation — Screen-blend the pre-blurred "halation" layer
-// (warm red/orange spread around highlights) onto the original.
+// Film halation — Screen-blend the pre-blurred highlights onto the
+// original, in the halation's colour (deep red to warm yellow, from
+// `hue`) whatever colour the highlight was.
 // Screen blend in linear matches how light spreads on actual film
 // emulsion — additive glow that asymptotes at diffuse white.
 const SHADER_FILM_HALATION: &str = concat!(
@@ -8220,7 +8250,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let idx = gid.x;
     if idx >= params.width * params.height { return; }
     let o = unpack(original[idx]);
-    let h = unpack(halation[idx]).xyz * params.intensity;
+    let bl = unpack(halation[idx]).xyz;
+    let l = 0.2126 * bl.x + 0.7152 * bl.y + 0.0722 * bl.z;
+    let h = vec3<f32>(params.hal_r, params.hal_g, params.hal_b) * l * params.intensity;
     let s = vec3<f32>(
         1.0 - (1.0 - o.x) * (1.0 - h.x),
         1.0 - (1.0 - o.y) * (1.0 - h.y),
@@ -8328,11 +8360,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
 // ─── New effect shaders ─────────────────────────────────────────────────────
 
-// Invert — 1 − x applied per channel in linear light. Linear
-// inversion is what "negate the physical light" means; the sRGB
-// version inverted gamma-encoded bytes, producing the classic
-// "photo negative" look that's technically wrong but historically
-// what users expect. We take the physically correct path.
+// Invert — 1 − x on the display-encoded picture: the photo negative
+// editors mean by invert. (Inverting linear light turned 18% grey into
+// a near-white, not a negative.)
 const SHADER_INVERT: &str = concat!(
     "
 struct Params {
@@ -8354,17 +8384,16 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     if idx >= params.width * params.height { return; }
     let p = unpack(input[idx]);
     let m = params.mix_val;
-    let inv = vec3<f32>(1.0) - p.xyz;
-    let out = p.xyz + (inv - p.xyz) * m;
-    output[idx] = pack(vec4<f32>(out, p.w));
+    let e = enc3(p.xyz);
+    let inv = vec3<f32>(1.0) - e;
+    let out = e + (inv - e) * m;
+    output[idx] = pack(vec4<f32>(dec3(out), p.w));
 }
 "
 );
 
-// Posterize — quantise to N levels. Banding will now distribute in
-// linear space rather than sRGB, so bands bunch slightly differently
-// in shadows; the effect is still recognisable as a poster-style
-// colour reduction.
+// Posterize — quantise to N levels, even on the display scale (in linear
+// light the shadows collapsed into one band). White stays white.
 const SHADER_POSTERIZE: &str = concat!(
     "
 struct Params {
@@ -8387,12 +8416,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let p = unpack(input[idx]);
     let lvl = params.levels;
     let div = lvl - 1.0;
-    let out = vec3<f32>(
-        floor(p.x * lvl) / div,
-        floor(p.y * lvl) / div,
-        floor(p.z * lvl) / div,
-    );
-    output[idx] = pack(vec4<f32>(out, p.w));
+    let e = clamp(enc3(p.xyz), vec3<f32>(0.0), vec3<f32>(1.0));
+    let out = min(floor(e * lvl), vec3<f32>(div)) / div;
+    output[idx] = pack(vec4<f32>(dec3(out), p.w));
 }
 "
 );
@@ -8836,11 +8862,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 "
 );
 
-// Gamma — power curve applied per channel in linear. The user's
-// gamma slider now acts on physical light, so gamma=2.2 makes
-// the image appear perceptually-gamma-corrected (same as raising
-// a linear image to 1/2.2 at display). For users coming from
-// sRGB-pipeline apps, a gamma value of 1.0 remains identity.
+// Gamma — power curve on the display-encoded picture, as in other
+// editors.
 const SHADER_GAMMA: &str = concat!(
     "
 struct Params {
@@ -8861,20 +8884,20 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let idx = gid.x;
     if idx >= params.width * params.height { return; }
     let p = unpack(input[idx]);
+    let e = enc3(p.xyz);
     let out = vec3<f32>(
-        pow(max(p.x, 0.0), params.inv_gamma),
-        pow(max(p.y, 0.0), params.inv_gamma),
-        pow(max(p.z, 0.0), params.inv_gamma),
+        pow(max(e.x, 0.0), params.inv_gamma),
+        pow(max(e.y, 0.0), params.inv_gamma),
+        pow(max(e.z, 0.0), params.inv_gamma),
     );
-    output[idx] = pack(vec4<f32>(out, p.w));
+    output[idx] = pack(vec4<f32>(dec3(out), p.w));
 }
 "
 );
 
-// HSV adjust — hue shift + saturation + value multiplier. HSV is
-// defined on any normalised RGB; fed linear values, the hue and
-// saturation semantics are the same but "value" now measures
-// physical brightness rather than sRGB code value.
+// HSV adjust — hue shift + saturation + value multiplier, on the
+// display-encoded picture: HSV is a perceptual model, and in linear
+// light its saturation and value misread every midtone.
 const SHADER_HSV_ADJUST: &str = concat!(
     "
 struct Params {
@@ -8899,9 +8922,10 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let idx = gid.x;
     if idx >= params.width * params.height { return; }
     let p = unpack(input[idx]);
-    let r = p.x;
-    let g = p.y;
-    let b = p.z;
+    let e = enc3(p.xyz);
+    let r = e.x;
+    let g = e.y;
+    let b = e.z;
 
     // RGB to HSV
     let cmax = max(r, max(g, b));
@@ -8943,7 +8967,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     else if h < 300.0 { rr = x; gg = 0.0; bb = c; }
     else { rr = c; gg = 0.0; bb = x; }
 
-    output[idx] = pack(vec4<f32>(rr + m, gg + m, bb + m, p.w));
+    output[idx] = pack(vec4<f32>(dec3(vec3<f32>(rr + m, gg + m, bb + m)), p.w));
 }
 "
 );
@@ -9072,8 +9096,11 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 ";
 
 // Radial blur (zoom or spin). Averages samples along a radial or
-// rotational path — linear-light averaging keeps midtones intact
-// through the trail.
+// rotational path, in linear light. Zoom spreads the samples over
+// ±amount % of each pixel's distance from the centre; spin over an arc
+// of `amount` degrees. (Both amounts used to be divided by the sample
+// count and the distance again, so the presets moved pixels by less
+// than one — no visible blur.)
 const SHADER_RADIAL_BLUR: &str = concat!(
     "
 struct Params {
@@ -9118,8 +9145,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
     if params.mode == 0u {
         // Zoom blur
-        let dist = max(sqrt(dx * dx + dy * dy), 1.0);
-        let scale = params.amount / f32(s) / dist;
+        let scale = params.amount / 100.0;
         for (var i = 0u; i < s; i = i + 1u) {
             let t = (f32(i) / f32(s) - 0.5) * 2.0;
             let sx = i32(round(x + dx * t * scale));
@@ -9128,10 +9154,10 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         }
     } else {
         // Spin blur
-        let angle_step = params.amount * 3.14159265 / 180.0 / f32(s);
+        let half_arc = params.amount * 3.14159265 / 180.0 * 0.5;
         for (var i = 0u; i < s; i = i + 1u) {
             let t = (f32(i) / f32(s) - 0.5) * 2.0;
-            let ang = t * angle_step;
+            let ang = t * half_arc;
             let cos_a = cos(ang);
             let sin_a = sin(ang);
             let sx = i32(round(cx + dx * cos_a - dy * sin_a));
@@ -9148,10 +9174,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 "
 );
 
-// Levels — black/white point remap + gamma, applied per channel
-// in linear. in_black / in_white / out_black / out_white are now
-// linear values; users coming from sRGB-pipeline tooling will find
-// 0.18 linear behaves as "mid grey" rather than 0.5.
+// Levels — black/white point remap + gamma on the display-encoded
+// picture: the points are on the scale the user sees, as in other
+// editors (in linear light, "0.1" meant sRGB 89).
 const SHADER_LEVELS: &str = concat!(
     "
 struct Params {
@@ -9176,9 +9201,10 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let idx = gid.x;
     if idx >= params.width * params.height { return; }
     let p = unpack(input[idx]);
+    let e = enc3(p.xyz);
 
     let in_range = max(params.in_white - params.in_black, 0.001);
-    let m = clamp((p.xyz - vec3<f32>(params.in_black)) / in_range, vec3<f32>(0.0), vec3<f32>(1.0));
+    let m = clamp((e - vec3<f32>(params.in_black)) / in_range, vec3<f32>(0.0), vec3<f32>(1.0));
 
     let g = vec3<f32>(
         pow(m.x, params.inv_gamma),
@@ -9188,15 +9214,14 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
     let out_range = params.out_white - params.out_black;
     let out = vec3<f32>(params.out_black) + g * out_range;
-    output[idx] = pack(vec4<f32>(out, p.w));
+    output[idx] = pack(vec4<f32>(dec3(out), p.w));
 }
 "
 );
 
-// Histogram equalisation — map the linear-luma CDF back through the
-// image so brightness distribution flattens. CPU-side CDF build
-// and the GPU lookup both operate on linear luma now; the CDF
-// indexing byte (0-255) maps to 0-1 linear rather than 0-1 sRGB.
+// Histogram equalisation — flatten the distribution of display-encoded
+// luma, the brightness the user sees. The CDF is built on the CPU by
+// `crate::equalize_cdf`.
 const SHADER_EQUALIZE: &str = concat!(
     "
 struct Params {
@@ -9219,23 +9244,19 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     if idx >= params.width * params.height { return; }
 
     let p = unpack(input[idx]);
+    let e = enc3(p.xyz);
 
     // Compute luminance and look up equalised value from CDF
-    let luma = 0.2126 * p.x + 0.7152 * p.y + 0.0722 * p.z;
+    let luma = 0.2126 * e.x + 0.7152 * e.y + 0.0722 * e.z;
     let luma_idx = u32(clamp(luma * 255.0, 0.0, 255.0));
     let eq_luma = cdf[luma_idx];
 
     // Scale RGB proportionally to match new luminance
     let scale = select(eq_luma / luma, 1.0, luma < 0.001);
-    let eq_r = p.x * scale;
-    let eq_g = p.y * scale;
-    let eq_b = p.z * scale;
 
     // Blend with original based on strength
-    let fr = p.x + (eq_r - p.x) * params.strength;
-    let fg = p.y + (eq_g - p.y) * params.strength;
-    let fb = p.z + (eq_b - p.z) * params.strength;
-    output[idx] = pack(vec4<f32>(fr, fg, fb, p.w));
+    let out = e + (e * scale - e) * params.strength;
+    output[idx] = pack(vec4<f32>(dec3(out), p.w));
 }
 "
 );
