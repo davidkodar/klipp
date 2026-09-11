@@ -220,7 +220,9 @@ impl ClipStream {
             return true;
         }
         let Some(held) = self.held.as_ref().filter(|_| self.seeking.is_none()) else { return false };
-        if held.pts.unwrap_or(f64::MAX) >= self.target - half_frame * 3.0 {
+        // Within half a frame of the target. (A seek lands up to 50 ms
+        // early — the frame before, at 25 fps — and pumping moves on.)
+        if held.pts.unwrap_or(f64::MAX) >= self.target - half_frame {
             return true;
         }
         // Behind the target, but the next frame is past it: a source with

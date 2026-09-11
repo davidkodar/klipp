@@ -2703,7 +2703,13 @@ fn convert_sw_frame(
             target_format,
             out_w,
             out_h,
-            ffmpeg_next::software::scaling::Flags::FAST_BILINEAR,
+            // Accurate rounding and full chroma interpolation: swscale's
+            // default fixed-point YUV→RGB reads colours up to four levels
+            // low (a saturated blue 180 as 176), which export — converting
+            // accurately — does not.
+            ffmpeg_next::software::scaling::Flags::FAST_BILINEAR
+                | ffmpeg_next::software::scaling::Flags::ACCURATE_RND
+                | ffmpeg_next::software::scaling::Flags::FULL_CHR_H_INT,
         ) {
             Ok(mut s) => {
                 if received_frame.width() != out_w || received_frame.height() != out_h {
@@ -2751,7 +2757,7 @@ fn convert_sw_frame(
                             inv_table.as_ptr(),
                             src_range,
                             dst_table.as_ptr(),
-                            0, // dst is RGBA — range doesn't apply
+                            1, // RGB out is full range
                             0,
                             1 << 16,
                             1 << 16,

@@ -5455,31 +5455,67 @@ impl PlaybackEngine {
         }
     }
 
-    fn grab_single_frame_timeout(&mut self, timeout: Duration) -> bool {
-        let deadline = std::time::Instant::now() + timeout;
-        while std::time::Instant::now() < deadline {
-            // Pop best frame in limited scope to avoid borrow across post_process
-            let best = self.v1_decoder.as_ref().and_then(|dec| {
-                let mut queue = dec.frame_queue().lock().unwrap_or_else(|e| e.into_inner());
-                let mut best = None;
-                while let Some(frame) = queue.pop() {
-                    if frame.is_eof {
-                        break;
-                    }
-                    best = Some(frame);
-                }
-                best
-            });
-            if let Some(frame) = best {
-                // The whole frame, overlays and mattes included: the other
-                // clips' streams are waited for, briefly, before it renders.
-                self.present_frame(Some(streams::HeldFrame::from_frame(frame)));
-                if let Some(dec) = &self.v1_decoder {
-                    dec.pause();
+    /// The primary clip's source time at the playhead.
+    fn v1_source_secs(&self) -> Option<f64> {
+        let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
+        let clip = seq.tracks.get(self.current_track_index)?.clips.get(self.current_clip_index)?;
+        Some(klipp_compose::render::source_secs(clip, self.playhead, seq.fps.as_f64()))
+    }
+
+    /// Take the primary decoder's frame for the playhead out of its queue:
+    /// the latest at or before the playhead's source time, leaving later
+    /// frames queued for stepping on. Returns whether `best` is settled —
+    /// within half a frame of the time, or the queue shows nothing closer
+    /// is coming. (After a seek the decoder hands over frames from up to
+    /// 50 ms early, a whole frame at 25 fps; taking whatever arrived first
+    /// showed the frame before the playhead.)
+    fn take_v1_frame_for_playhead(&mut self, best: &mut Option<crate::types::LinearFrame>) -> bool {
+        let Some(target) = self.v1_source_secs() else { return true };
+        let half = self.fps.frame_duration_secs() * 0.5;
+        let Some(dec) = self.v1_decoder.as_ref() else { return true };
+        let mut queue = dec.frame_queue().lock().unwrap_or_else(|e| e.into_inner());
+        while let Some(f) = queue.front() {
+            if f.is_eof {
+                queue.pop();
+                return true;
+            }
+            let pts = f.pts_secs();
+            if (pts - target).abs() > 1.0 {
+                // From before a seek: the decode thread clears its queue
+                // when it takes one, but a frame in flight can still land.
+                queue.pop();
+                continue;
+            }
+            if pts > target + half {
+                // Past the playhead. The nearest there is, if nothing came
+                // before it (the media starts after the time, or skips it).
+                if best.is_none() {
+                    *best = queue.pop();
                 }
                 return true;
             }
+            *best = queue.pop();
+        }
+        best.as_ref().is_some_and(|b| b.pts_secs() >= target - half)
+    }
+
+    fn grab_single_frame_timeout(&mut self, timeout: Duration) -> bool {
+        let deadline = std::time::Instant::now() + timeout;
+        let mut best = None;
+        while std::time::Instant::now() < deadline {
+            if self.take_v1_frame_for_playhead(&mut best) && best.is_some() {
+                break;
+            }
             std::thread::sleep(Duration::from_millis(2));
+        }
+        if let Some(frame) = best {
+            // The whole frame, overlays and mattes included: the other
+            // clips' streams are waited for, briefly, before it renders.
+            self.present_frame(Some(streams::HeldFrame::from_frame(frame)));
+            if let Some(dec) = &self.v1_decoder {
+                dec.pause();
+            }
+            return true;
         }
         // Timed out without a frame. DO NOT pause the decoder here — the
         // caller may set `pending_paused_refresh` so the per-tick paused
@@ -5495,17 +5531,14 @@ impl PlaybackEngine {
     /// success so the caller can clear the flag. Returns false and leaves
     /// the decoder running when the queue is still empty.
     fn try_drain_paused_refresh_frame(&mut self) -> bool {
-        let frame = self.v1_decoder.as_ref().and_then(|dec| {
-            let mut queue = dec.frame_queue().lock().unwrap_or_else(|e| e.into_inner());
-            let mut best = None;
-            while let Some(f) = queue.pop() {
-                if f.is_eof { break; }
-                best = Some(f);
-            }
-            best
-        });
-        let Some(frame) = frame else { return false; };
+        let mut best = None;
+        let settled = self.take_v1_frame_for_playhead(&mut best);
+        let Some(frame) = best else { return false };
         self.present_frame(Some(streams::HeldFrame::from_frame(frame)));
+        if !settled {
+            // Shown, but a closer frame is still coming: keep draining.
+            return false;
+        }
         if let Some(dec) = &self.v1_decoder {
             dec.pause();
         }
