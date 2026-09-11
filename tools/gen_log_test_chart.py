@@ -2,8 +2,9 @@
 """Generate an S-Log3 / S-Gamut3.Cine test chart with known ground truth.
 
 Writes a 10-bit HEVC (NVDEC -> P010 path) and an 8-bit HEVC (NVDEC -> NV12
-path), both lossless, limited range, BT.709 matrix -- the way Sony cameras
-record. The encoding uses colour-science, independent of Klipp's own
+path), both lossless, plus a ProRes 422 HQ (software decode -- the Atomos /
+Blackmagic recorder case); limited range, BT.709 matrix, the way Sony
+cameras record. The encoding uses colour-science, independent of Klipp's own
 curves and matrices, so a live check against the file is a real check.
 
 Also writes `<out>/slog3_chart_expected.csv`: for each patch, its centre in
@@ -95,8 +96,9 @@ def scene_to_slog3_codes(scene_709):
     return cv * 1023.0
 
 
-def codes_to_yuv420(codes10, bits):
-    """R'G'B' code values -> limited-range BT.709 Y'CbCr 4:2:0 planes."""
+def codes_to_yuv420(codes10, bits, chroma_rows=2):
+    """R'G'B' code values -> limited-range BT.709 Y'CbCr planes: 4:2:0, or
+    4:2:2 with `chroma_rows=1`."""
     e = (codes10 - 64.0) / 876.0  # legal-normalised R'G'B'
     r, g, b = e[..., 0], e[..., 1], e[..., 2]
     y = 0.2126 * r + 0.7152 * g + 0.0722 * b
@@ -105,20 +107,23 @@ def codes_to_yuv420(codes10, bits):
     scale = 2 ** (bits - 8)
     ymax = (1 << bits) - 1
     Y = np.clip(np.round((16 + 219 * y) * scale), 0, ymax)
-    # Chroma: average 2x2 blocks (patch edges are on even pixels).
-    cb2 = cb.reshape(H // 2, 2, W // 2, 2).mean(axis=(1, 3))
-    cr2 = cr.reshape(H // 2, 2, W // 2, 2).mean(axis=(1, 3))
+    # Chroma: average 2x2 (or 2x1) blocks; patch edges are on even pixels.
+    r_ = chroma_rows
+    cb2 = cb.reshape(H // r_, r_, W // 2, 2).mean(axis=(1, 3))
+    cr2 = cr.reshape(H // r_, r_, W // 2, 2).mean(axis=(1, 3))
     U = np.clip(np.round((128 + 224 * cb2) * scale), 0, ymax)
     V = np.clip(np.round((128 + 224 * cr2) * scale), 0, ymax)
     dtype = np.uint16 if bits > 8 else np.uint8
     return [p.astype(dtype) for p in (Y, U, V)]
 
 
-def encode(planes, bits, path):
+def encode(planes, bits, path, prores=False):
     # One frame on disk, looped by ffmpeg (it cannot loop stdin).
     frame = path.with_suffix(".yuv")
     frame.write_bytes(b"".join(p.tobytes() for p in planes))
-    pix = "yuv420p10le" if bits == 10 else "yuv420p"
+    pix = "yuv422p10le" if prores else ("yuv420p10le" if bits == 10 else "yuv420p")
+    codec = (["-c:v", "prores_ks", "-profile:v", "3", "-vendor", "apl0"] if prores
+             else ["-c:v", "libx265", "-x265-params", "lossless=1:log-level=error", "-tag:v", "hvc1"])
     # The same tags on input and output. Tagging only the output makes
     # ffmpeg insert a silent range/matrix conversion (super-whites clipped
     # to 940, 8-bit grey 105 -> 104), which would wreck the ground truth.
@@ -128,8 +133,7 @@ def encode(planes, bits, path):
         "ffmpeg", "-nostdin", "-y", "-loglevel", "error",
         "-f", "rawvideo", "-pix_fmt", pix, "-s", f"{W}x{H}", "-r", str(FPS), *tags,
         "-stream_loop", str(FPS * SECONDS - 1), "-i", str(frame),
-        "-c:v", "libx265", "-x265-params", "lossless=1:log-level=error",
-        "-pix_fmt", pix, "-tag:v", "hvc1", *tags,
+        *codec, "-pix_fmt", pix, *tags,
         str(path),
     ]
     try:
@@ -147,6 +151,8 @@ def main():
     for bits, name in [(10, "slog3_chart_10bit.mp4"), (8, "slog3_chart_8bit.mp4")]:
         encode(codes_to_yuv420(codes, bits), bits, out / name)
         print(f"wrote {out / name}")
+    encode(codes_to_yuv420(codes, 10, chroma_rows=1), 10, out / "slog3_chart_prores.mov", prores=True)
+    print(f"wrote {out / 'slog3_chart_prores.mov'}")
     with open(out / "slog3_chart_expected.csv", "w", newline="") as f:
         w = csv.writer(f)
         w.writerow(["patch", "x", "y", "scene_r", "scene_g", "scene_b",
