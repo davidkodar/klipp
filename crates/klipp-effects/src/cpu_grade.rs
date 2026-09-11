@@ -309,31 +309,58 @@ pub fn rgb_curves(px: &mut [f32], lut: &[f32; 1024], preserve_luma: bool, mix: f
     });
 }
 
-/// `rgb_to_hsl` in `SHADER_HUESAT` and `rgb2hsl` in `SHADER_COLOR_WARPER`.
-fn rgb_to_hsl(r: f32, g: f32, b: f32) -> [f32; 3] {
-    let mx = r.max(g).max(b);
-    let mn = r.min(g).min(b);
-    let delta = mx - mn;
-    let l = (mx + mn) * 0.5;
-    if delta < 0.0001 {
-        return [0.0, 0.0, l];
-    }
-    let s = delta / (1.0 - (2.0 * l - 1.0).abs());
-    let h = if mx == r {
-        let mut h = ((g - b) / delta) % 6.0;
-        if h < 0.0 {
-            h += 6.0;
-        }
-        h
-    } else if mx == g {
-        (b - r) / delta + 2.0
-    } else {
-        (r - g) / delta + 4.0
-    };
-    [h / 6.0, s.clamp(0.0, 1.0), l]
+/// `PictureHsl` in the shaders' shared helpers: the hue/sat tools' HSL,
+/// on the display-encoded picture and scaled into range when the pixel is
+/// brighter than white.
+#[derive(Clone, Copy)]
+pub struct PictureHsl {
+    pub h: f32,
+    pub s: f32,
+    pub l: f32,
+    pub magnitude: f32,
 }
 
-/// `hsl_to_rgb` / `hsl2rgb`.
+impl PictureHsl {
+    /// The luminance axis the lum-driven lookups use: everything above
+    /// white sits at the top of it.
+    pub fn lum_axis(&self) -> f32 {
+        (self.l * self.magnitude).clamp(0.0, 1.0)
+    }
+}
+
+/// `picture_hsl`.
+pub fn picture_hsl(c: [f32; 3]) -> PictureHsl {
+    let e = c.map(enc_signed);
+    let magnitude = e[0].max(e[1]).max(e[2]).max(1.0);
+    let n = e.map(|v| v / magnitude);
+    let mx = n[0].max(n[1]).max(n[2]);
+    let mn = n[0].min(n[1]).min(n[2]);
+    let delta = mx - mn;
+    let l = (mx + mn) * 0.5;
+    let (mut s, mut h) = (0.0, 0.0);
+    if delta > 0.0001 {
+        s = (delta / (1.0 - (2.0 * l - 1.0).abs())).clamp(0.0, 1.0);
+        h = if mx == n[0] {
+            let mut h = ((n[1] - n[2]) / delta) % 6.0;
+            if h < 0.0 {
+                h += 6.0;
+            }
+            h / 6.0
+        } else if mx == n[1] {
+            ((n[2] - n[0]) / delta + 2.0) / 6.0
+        } else {
+            ((n[0] - n[1]) / delta + 4.0) / 6.0
+        };
+    }
+    PictureHsl { h, s, l, magnitude }
+}
+
+/// `picture_rgb`: HSL back to linear light.
+pub fn picture_rgb(h: f32, s: f32, l: f32, magnitude: f32) -> [f32; 3] {
+    hsl_to_rgb(h, s, l).map(|v| dec_signed(v * magnitude))
+}
+
+/// `hsl_rgb_norm`.
 fn hsl_to_rgb(h: f32, s: f32, l: f32) -> [f32; 3] {
     if s < 0.0001 {
         return [l, l, l];
@@ -368,8 +395,9 @@ pub fn huesat(px: &mut [f32], lut: &[f32; 1536], mix: f32, active: u32) {
     let on = |c: u32| active & (1 << c) != 0;
     px.par_chunks_exact_mut(4).for_each(|p| {
         let orig = [p[0], p[1], p[2]];
-        let hsl = rgb_to_hsl(orig[0], orig[1], orig[2]);
-        let (mut h, mut s, mut l) = (hsl[0], hsl[1], hsl[2]);
+        let hsl = picture_hsl(orig);
+        let lum_axis = hsl.lum_axis();
+        let (mut h, mut s, mut l) = (hsl.h, hsl.s, hsl.l);
         if on(0) {
             let hvh = huesat_lookup(lut, 0, h);
             h = (h + (hvh - 0.5) * 2.0) % 1.0;
@@ -378,28 +406,28 @@ pub fn huesat(px: &mut [f32], lut: &[f32; 1536], mix: f32, active: u32) {
             }
         }
         if on(1) {
-            let hvs = huesat_lookup(lut, 1, hsl[0]);
+            let hvs = huesat_lookup(lut, 1, hsl.h);
             s = (s * hvs * 2.0).clamp(0.0, 1.0);
         }
         if on(2) {
-            let hvl = huesat_lookup(lut, 2, hsl[0]);
+            let hvl = huesat_lookup(lut, 2, hsl.h);
             l = (l + (hvl - 0.5)).clamp(0.0, 1.0);
         }
         if on(3) {
-            let lvs = huesat_lookup(lut, 3, hsl[2]);
+            let lvs = huesat_lookup(lut, 3, lum_axis);
             s = (s * lvs * 2.0).clamp(0.0, 1.0);
         }
         if on(4) {
-            let svs = huesat_lookup(lut, 4, hsl[1]);
+            let svs = huesat_lookup(lut, 4, hsl.s);
             s = svs.clamp(0.0, 1.0);
         }
         if on(5) {
-            let ovs = huesat_lookup(lut, 5, hsl[1]);
-            let orange_dist = (hsl[0] - 0.083).abs().min((hsl[0] - 0.083 + 1.0).abs().min((hsl[0] - 0.083 - 1.0).abs()));
+            let ovs = huesat_lookup(lut, 5, hsl.s);
+            let orange_dist = (hsl.h - 0.083).abs().min((hsl.h - 0.083 + 1.0).abs().min((hsl.h - 0.083 - 1.0).abs()));
             let weight = (1.0 - orange_dist * 8.0).clamp(0.0, 1.0);
             s += (ovs - s) * weight;
         }
-        let rgb = hsl_to_rgb(h, s, l);
+        let rgb = picture_rgb(h, s, l, hsl.magnitude);
         for c in 0..3 {
             p[c] = orig[c] + (rgb[c] - orig[c]) * mix;
         }
@@ -409,8 +437,8 @@ pub fn huesat(px: &mut [f32], lut: &[f32; 1536], mix: f32, active: u32) {
 /// `SHADER_COLOR_WARPER`: twelve 30° sectors, cosine-blended.
 pub fn color_warper(px: &mut [f32], hue_shifts: &[f32; 12], sat_shifts: &[f32; 12]) {
     px.par_chunks_exact_mut(4).for_each(|p| {
-        let hsl = rgb_to_hsl(p[0], p[1], p[2]);
-        let h_deg = hsl[0] * 360.0;
+        let hsl = picture_hsl([p[0], p[1], p[2]]);
+        let h_deg = hsl.h * 360.0;
         let sector_f = h_deg / 30.0;
         let sector_low = (sector_f.floor() as u32 % 12) as usize;
         let sector_high = (sector_low + 1) % 12;
@@ -418,10 +446,10 @@ pub fn color_warper(px: &mut [f32], hue_shifts: &[f32; 12], sat_shifts: &[f32; 1
         let blend = (1.0 - (t * 3.141_592_65).cos()) * 0.5;
         let hue_shift = hue_shifts[sector_low] * (1.0 - blend) + hue_shifts[sector_high] * blend;
         let sat_shift = sat_shifts[sector_low] * (1.0 - blend) + sat_shifts[sector_high] * blend;
-        let sat_weight = hsl[1].clamp(0.0, 1.0);
+        let sat_weight = hsl.s.clamp(0.0, 1.0);
         let new_h = ((h_deg + hue_shift * sat_weight) % 360.0 + 360.0) % 360.0 / 360.0;
-        let new_s = (hsl[1] + sat_shift * sat_weight).clamp(0.0, 1.0);
-        let rgb = hsl_to_rgb(new_h, new_s, hsl[2]);
+        let new_s = (hsl.s + sat_shift * sat_weight).clamp(0.0, 1.0);
+        let rgb = picture_rgb(new_h, new_s, hsl.l, hsl.magnitude);
         p[..3].copy_from_slice(&rgb);
     });
 }
@@ -442,6 +470,59 @@ pub fn color_balance(px: &mut [f32], white_balance: [[f32; 3]; 3], hue: f32, glo
         for i in 0..3 {
             p[i] = orig[i] + (c[i] - orig[i]) * global_mix;
         }
+    });
+}
+
+/// The qualifier's HSL window, as `SHADER_QUALIFIER` computes it: a
+/// greyscale matte (R=G=B=matte, alpha kept). Hue values are turns, not
+/// degrees, as the shader takes them.
+#[allow(clippy::too_many_arguments)]
+pub fn qualifier_matte(
+    px: &mut [f32],
+    hue_center: f32, hue_width: f32, hue_soft: f32,
+    sat_low: f32, sat_high: f32, sat_soft: f32,
+    lum_low: f32, lum_high: f32, lum_soft: f32,
+    invert: bool,
+) {
+    let circular_distance = |a: f32, b: f32| {
+        let d = (a - b).abs();
+        d.min(1.0 - d)
+    };
+    let soft_range_centered = |dist: f32, width: f32, soft: f32| {
+        let half_w = width * 0.5;
+        if dist <= half_w {
+            return 1.0;
+        }
+        if soft <= 0.0001 {
+            return 0.0;
+        }
+        (1.0 - (dist - half_w) / soft).clamp(0.0, 1.0)
+    };
+    let soft_range = |val: f32, lo: f32, hi: f32, soft: f32| {
+        if val >= lo && val <= hi {
+            return 1.0;
+        }
+        if soft <= 0.0001 {
+            return 0.0;
+        }
+        if val < lo {
+            (1.0 - (lo - val) / soft).clamp(0.0, 1.0)
+        } else {
+            (1.0 - (val - hi) / soft).clamp(0.0, 1.0)
+        }
+    };
+    px.par_chunks_exact_mut(4).for_each(|p| {
+        let hsl = picture_hsl([p[0], p[1], p[2]]);
+        let hue_m = soft_range_centered(circular_distance(hsl.h, hue_center), hue_width, hue_soft);
+        let sat_m = soft_range(hsl.s, sat_low, sat_high, sat_soft);
+        let lum_m = soft_range(hsl.lum_axis(), lum_low, lum_high, lum_soft);
+        let mut matte = hue_m * sat_m * lum_m;
+        if invert {
+            matte = 1.0 - matte;
+        }
+        p[0] = matte;
+        p[1] = matte;
+        p[2] = matte;
     });
 }
 

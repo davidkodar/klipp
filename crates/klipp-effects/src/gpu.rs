@@ -5591,6 +5591,86 @@ fn dec3(v: vec3<f32>) -> vec3<f32> {
     return vec3<f32>(srgb_to_linear_component(v.x), srgb_to_linear_component(v.y), srgb_to_linear_component(v.z));
 }
 
+// sRGB encode / decode that keep the sign, so a negative channel — a
+// colour outside the working space's gamut — is not lost to a NaN or a
+// clamp.
+fn enc_signed(c: f32) -> f32 {
+    let e = linear_to_srgb_component(abs(c));
+    return select(e, -e, c < 0.0);
+}
+fn dec_signed(c: f32) -> f32 {
+    let d = srgb_to_linear_component(abs(c));
+    return select(d, -d, c < 0.0);
+}
+
+// The HSL the hue/sat tools work in: the picture as displayed (sRGB
+// encoded, where their axes live), and scaled into [0, 1] when the pixel
+// is brighter than white, because HSL's saturation is only defined
+// there — feeding it a highlight of 4.0 gave a negative saturation that
+// clamped to zero, which turned every bright colour grey. `magnitude`
+// carries the scale back out.
+struct PictureHsl {
+    h: f32,
+    s: f32,
+    l: f32,
+    magnitude: f32,
+}
+
+fn picture_hsl(c: vec3<f32>) -> PictureHsl {
+    let e = vec3<f32>(enc_signed(c.x), enc_signed(c.y), enc_signed(c.z));
+    let magnitude = max(max(max(e.x, e.y), e.z), 1.0);
+    let n = e / magnitude;
+    let mx = max(max(n.x, n.y), n.z);
+    let mn = min(min(n.x, n.y), n.z);
+    let delta = mx - mn;
+    let l = (mx + mn) * 0.5;
+    var s = 0.0;
+    var h = 0.0;
+    if delta > 0.0001 {
+        s = clamp(delta / (1.0 - abs(2.0 * l - 1.0)), 0.0, 1.0);
+        if mx == n.x {
+            h = ((n.y - n.z) / delta) % 6.0;
+            if h < 0.0 { h = h + 6.0; }
+            h = h / 6.0;
+        } else if mx == n.y {
+            h = ((n.z - n.x) / delta + 2.0) / 6.0;
+        } else {
+            h = ((n.x - n.y) / delta + 4.0) / 6.0;
+        }
+    }
+    return PictureHsl(h, s, l, magnitude);
+}
+
+// HSL back to a normalised encoded RGB.
+fn hsl_rgb_norm(h: f32, s: f32, l: f32) -> vec3<f32> {
+    if s < 0.0001 { return vec3<f32>(l, l, l); }
+    let c = (1.0 - abs(2.0 * l - 1.0)) * s;
+    let x = c * (1.0 - abs((h * 6.0) % 2.0 - 1.0));
+    let m = l - c * 0.5;
+    var rgb: vec3<f32>;
+    switch u32(h * 6.0) {
+        case 0u: { rgb = vec3<f32>(c, x, 0.0); }
+        case 1u: { rgb = vec3<f32>(x, c, 0.0); }
+        case 2u: { rgb = vec3<f32>(0.0, c, x); }
+        case 3u: { rgb = vec3<f32>(0.0, x, c); }
+        case 4u: { rgb = vec3<f32>(x, 0.0, c); }
+        default: { rgb = vec3<f32>(c, 0.0, x); }
+    }
+    return rgb + vec3<f32>(m, m, m);
+}
+
+// The inverse of `picture_hsl`: HSL back to linear light.
+fn picture_rgb(h: f32, s: f32, l: f32, magnitude: f32) -> vec3<f32> {
+    let e = hsl_rgb_norm(h, s, l) * magnitude;
+    return vec3<f32>(dec_signed(e.x), dec_signed(e.y), dec_signed(e.z));
+}
+
+// The luminance axis those tools look up on: the encoded lightness, with
+// everything above white at the top of the axis.
+fn picture_lum_axis(p: PictureHsl) -> f32 {
+    return clamp(p.l * p.magnitude, 0.0, 1.0);
+}
+
 // Hue rotation by `degrees` in HSL, the hue slider's meaning: a colour's
 // HSL hue moves by exactly that much. HSL needs bounded input, so a pixel
 // brighter than 1 is scaled into range and back. Greys are left alone.
@@ -7634,58 +7714,17 @@ fn lut_lookup(curve: u32, t: f32) -> f32 {
     return lut[base + idx0] * (1.0 - frac) + lut[base + idx1] * frac;
 }
 
-fn rgb_to_hsl(r: f32, g: f32, b: f32) -> vec3<f32> {
-    let mx = max(max(r, g), b);
-    let mn = min(min(r, g), b);
-    let delta = mx - mn;
-    let l = (mx + mn) * 0.5;
-    if delta < 0.0001 {
-        return vec3<f32>(0.0, 0.0, l);
-    }
-    let s = delta / (1.0 - abs(2.0 * l - 1.0));
-    var h: f32;
-    if mx == r {
-        h = ((g - b) / delta) % 6.0;
-        if h < 0.0 { h = h + 6.0; }
-    } else if mx == g {
-        h = (b - r) / delta + 2.0;
-    } else {
-        h = (r - g) / delta + 4.0;
-    }
-    h = h / 6.0;
-    return vec3<f32>(h, clamp(s, 0.0, 1.0), l);
-}
-
-fn hsl_to_rgb(h: f32, s: f32, l: f32) -> vec3<f32> {
-    if s < 0.0001 {
-        return vec3<f32>(l, l, l);
-    }
-    let c = (1.0 - abs(2.0 * l - 1.0)) * s;
-    let x = c * (1.0 - abs((h * 6.0) % 2.0 - 1.0));
-    let m = l - c * 0.5;
-    let h6 = u32(h * 6.0);
-    var rgb: vec3<f32>;
-    switch h6 {
-        case 0u: { rgb = vec3<f32>(c, x, 0.0); }
-        case 1u: { rgb = vec3<f32>(x, c, 0.0); }
-        case 2u: { rgb = vec3<f32>(0.0, c, x); }
-        case 3u: { rgb = vec3<f32>(0.0, x, c); }
-        case 4u: { rgb = vec3<f32>(x, 0.0, c); }
-        default: { rgb = vec3<f32>(c, 0.0, x); }
-    }
-    return rgb + vec3<f32>(m, m, m);
-}
-
 @compute @workgroup_size(256)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let idx = gid.x;
     if idx >= params.width * params.height { return; }
 
     let orig = unpack(input[idx]);
-    let hsl = rgb_to_hsl(orig.x, orig.y, orig.z);
-    var h = hsl.x;
-    var s = hsl.y;
-    var l = hsl.z;
+    let hsl = picture_hsl(orig.xyz);
+    let lum_axis = picture_lum_axis(hsl);
+    var h = hsl.h;
+    var s = hsl.s;
+    var l = hsl.l;
 
     // Curve 0: Hue vs Hue (0.5 = no change)
     if (params.curves_on & 1u) != 0u {
@@ -7696,37 +7735,37 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
     // Curve 1: Hue vs Sat (0.5 = identity)
     if (params.curves_on & 2u) != 0u {
-        let hvs = lut_lookup(1u, hsl.x);
+        let hvs = lut_lookup(1u, hsl.h);
         s = clamp(s * hvs * 2.0, 0.0, 1.0);
     }
 
     // Curve 2: Hue vs Lum (0.5 = no change)
     if (params.curves_on & 4u) != 0u {
-        let hvl = lut_lookup(2u, hsl.x);
+        let hvl = lut_lookup(2u, hsl.h);
         l = clamp(l + (hvl - 0.5), 0.0, 1.0);
     }
 
     // Curve 3: Lum vs Sat (0.5 = identity)
     if (params.curves_on & 8u) != 0u {
-        let lvs = lut_lookup(3u, hsl.z);
+        let lvs = lut_lookup(3u, lum_axis);
         s = clamp(s * lvs * 2.0, 0.0, 1.0);
     }
 
     // Curve 4: Sat vs Sat, a mapping of the input saturation
     if (params.curves_on & 16u) != 0u {
-        let svs = lut_lookup(4u, hsl.y);
+        let svs = lut_lookup(4u, hsl.s);
         s = clamp(svs, 0.0, 1.0);
     }
 
     // Curve 5: Orange vs Sat (targeted at ~30°/360° ≈ 0.083)
     if (params.curves_on & 32u) != 0u {
-        let ovs = lut_lookup(5u, hsl.y);
-        let orange_dist = min(abs(hsl.x - 0.083), min(abs(hsl.x - 0.083 + 1.0), abs(hsl.x - 0.083 - 1.0)));
+        let ovs = lut_lookup(5u, hsl.s);
+        let orange_dist = min(abs(hsl.h - 0.083), min(abs(hsl.h - 0.083 + 1.0), abs(hsl.h - 0.083 - 1.0)));
         let weight = clamp(1.0 - orange_dist * 8.0, 0.0, 1.0);
         s = s + (ovs - s) * weight;
     }
 
-    let rgb = hsl_to_rgb(h, s, l);
+    let rgb = picture_rgb(h, s, l, hsl.magnitude);
 
     let mixed = orig.xyz + (rgb - orig.xyz) * params.mix;
     output[idx] = pack(vec4<f32>(mixed, orig.w));
@@ -7805,27 +7844,13 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let g = orig.y;
     let b = orig.z;
 
-    // RGB -> HSL
-    let mx = max(r, max(g, b));
-    let mn = min(r, min(g, b));
-    let delta = mx - mn;
-    let l = (mx + mn) * 0.5;
-    var s = 0.0;
-    if delta > 0.0001 {
-        s = clamp(delta / (1.0 - abs(2.0 * l - 1.0)), 0.0, 1.0);
-    }
-    var h = 0.0;
-    if delta > 0.0001 {
-        if mx == r {
-            h = ((g - b) / delta) % 6.0;
-            if h < 0.0 { h += 6.0; }
-            h = h / 6.0;
-        } else if mx == g {
-            h = ((b - r) / delta + 2.0) / 6.0;
-        } else {
-            h = ((r - g) / delta + 4.0) / 6.0;
-        }
-    }
+    // The picture's hue, saturation and lightness — display-encoded, and
+    // defined for a pixel brighter than white, which used to read as
+    // fully desaturated and so never qualified.
+    let hsl = picture_hsl(orig.xyz);
+    let h = hsl.h;
+    let s = hsl.s;
+    let l = picture_lum_axis(hsl);
 
     // Qualifier matte
     let hue_dist = circular_distance(h, params.hue_center);
@@ -9917,17 +9942,6 @@ fn curve(channel: u32, val: f32) -> f32 {
     return lut_lookup(channel, val);
 }
 
-// sRGB encode / decode that keep the sign, so a negative channel is not
-// lost to a NaN or a clamp.
-fn enc_signed(c: f32) -> f32 {
-    let e = linear_to_srgb_component(abs(c));
-    return select(e, -e, c < 0.0);
-}
-fn dec_signed(c: f32) -> f32 {
-    let d = srgb_to_linear_component(abs(c));
-    return select(d, -d, c < 0.0);
-}
-
 @compute @workgroup_size(256)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let idx = gid.x;
@@ -10192,38 +10206,6 @@ struct Params {
     shader_linear_helpers_wgsl!(),
     "
 
-fn rgb2hsl(r: f32, g: f32, b: f32) -> vec3<f32> {
-    let mx = max(max(r, g), b);
-    let mn = min(min(r, g), b);
-    let d = mx - mn;
-    let l = (mx + mn) * 0.5;
-    if d < 0.0001 { return vec3<f32>(0.0, 0.0, l); }
-    let s = d / (1.0 - abs(2.0 * l - 1.0));
-    var h: f32;
-    if mx == r { h = ((g - b) / d) % 6.0; if h < 0.0 { h += 6.0; } }
-    else if mx == g { h = (b - r) / d + 2.0; }
-    else { h = (r - g) / d + 4.0; }
-    return vec3<f32>(h / 6.0, clamp(s, 0.0, 1.0), l);
-}
-
-fn hsl2rgb(h: f32, s: f32, l: f32) -> vec3<f32> {
-    if s < 0.0001 { return vec3<f32>(l, l, l); }
-    let c = (1.0 - abs(2.0 * l - 1.0)) * s;
-    let x = c * (1.0 - abs((h * 6.0) % 2.0 - 1.0));
-    let m = l - c * 0.5;
-    let h6 = u32(h * 6.0);
-    var rgb: vec3<f32>;
-    switch h6 {
-        case 0u: { rgb = vec3<f32>(c, x, 0.0); }
-        case 1u: { rgb = vec3<f32>(x, c, 0.0); }
-        case 2u: { rgb = vec3<f32>(0.0, c, x); }
-        case 3u: { rgb = vec3<f32>(0.0, x, c); }
-        case 4u: { rgb = vec3<f32>(x, 0.0, c); }
-        default: { rgb = vec3<f32>(c, 0.0, x); }
-    }
-    return rgb + vec3<f32>(m, m, m);
-}
-
 fn get_hue_shift(sector: u32) -> f32 {
     switch sector {
         case 0u: { return params.hue0; } case 1u: { return params.hue1; }
@@ -10250,8 +10232,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let idx = gid.x;
     if idx >= params.width * params.height { return; }
     let p = unpack(input[idx]);
-    let hsl = rgb2hsl(p.x, p.y, p.z);
-    let h_deg = hsl.x * 360.0;
+    let hsl = picture_hsl(p.xyz);
+    let h_deg = hsl.h * 360.0;
     let sector_f = h_deg / 30.0;
     let sector_low = u32(floor(sector_f)) % 12u;
     let sector_high = (sector_low + 1u) % 12u;
@@ -10259,10 +10241,10 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let blend = (1.0 - cos(t * 3.14159265)) * 0.5;
     let hue_shift = get_hue_shift(sector_low) * (1.0 - blend) + get_hue_shift(sector_high) * blend;
     let sat_shift = get_sat_shift(sector_low) * (1.0 - blend) + get_sat_shift(sector_high) * blend;
-    let sat_weight = clamp(hsl.y, 0.0, 1.0);
+    let sat_weight = clamp(hsl.s, 0.0, 1.0);
     let new_h = ((h_deg + hue_shift * sat_weight) % 360.0 + 360.0) % 360.0 / 360.0;
-    let new_s = clamp(hsl.y + sat_shift * sat_weight, 0.0, 1.0);
-    let rgb = hsl2rgb(new_h, new_s, hsl.z);
+    let new_s = clamp(hsl.s + sat_shift * sat_weight, 0.0, 1.0);
+    let rgb = picture_rgb(new_h, new_s, hsl.l, hsl.magnitude);
     output[idx] = pack(vec4<f32>(rgb, p.w));
 }
 "

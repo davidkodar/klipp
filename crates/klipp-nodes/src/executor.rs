@@ -2571,15 +2571,16 @@ impl GraphExecutor {
                             true, // always matte_preview for Qualifier node (outputs matte)
                         )
                     } else {
-                        // CPU fallback: generate_qualifier_matte still speaks u8.
-                        let primary_u8 = linear_rgba_to_u8(primary_input);
-                        let matte = klipp_color::qualifier::generate_qualifier_matte(
-                            &primary_u8, width, height, qual,
+                        // The CPU twin of the qualifier shader's window.
+                        let mut frame = primary_input.to_vec();
+                        klipp_effects::cpu_grade::qualifier_matte(
+                            &mut frame,
+                            qual.hue_center / 360.0, qual.hue_width / 360.0, qual.hue_soft / 360.0,
+                            qual.sat_low, qual.sat_high, qual.sat_soft,
+                            qual.lum_low, qual.lum_high, qual.lum_soft,
+                            qual.invert,
                         );
-                        let matte_u8: Vec<u8> = matte.iter()
-                            .flat_map(|&v| { let b = (v * 255.0) as u8; [b, b, b, 255] })
-                            .collect();
-                        u8_rgba_to_linear(&matte_u8)
+                        frame
                     }
                 } else {
                     vec![1.0f32; (width * height * 4) as usize]

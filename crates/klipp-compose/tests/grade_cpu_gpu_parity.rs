@@ -147,25 +147,26 @@ fn cases() -> Vec<(&'static str, NodeKind, NodeParams)> {
         ("RGB Curves", RGBCurves, p(|p| { p.curves = Some(curves()); p.curves_preserve_luma = Some(true) })),
         ("Hue/Sat Curves", HueSatCurves, p(|p| p.huesat = Some(huesat()))),
         ("Color Warper", ColorWarper, p(|p| p.warper_params = Some(warper()))),
+        ("Qualifier", Qualifier, p(|p| p.qualifier = Some(red_window()))),
     ]
 }
 
 /// A flat frame, for the behaviour tests below.
-struct Flat(f32);
+struct Flat([f32; 3]);
 
 impl FrameSource for Flat {
     fn frame(&mut self, _c: &Clip, _secs: f64, w: u32, h: u32) -> Option<SourceFrame> {
-        let px = vec![self.0, self.0, self.0, 1.0].repeat((w * h) as usize);
+        let px = vec![self.0[0], self.0[1], self.0[2], 1.0].repeat((w * h) as usize);
         Some(SourceFrame { pixels: SourcePixels::Linear(Arc::new(px)), width: w, height: h, pts: None })
     }
 }
 
-fn render_flat(value: f32, params: &NodeParams, gpu: bool) -> [f32; 3] {
+fn render_flat_node(value: [f32; 3], kind: NodeKind, params: &NodeParams, gpu: bool) -> [f32; 3] {
     let node = |kind, params| Node {
         id: NodeId::new_v4(), kind, label: String::new(), enabled: true, params,
         keyframes: Default::default(), output_link: None, input_links: vec![],
     };
-    let nodes = vec![node(NodeKind::Source, NodeParams::default()), node(NodeKind::RGBCurves, params.clone()), node(NodeKind::Output, NodeParams::default())];
+    let nodes = vec![node(NodeKind::Source, NodeParams::default()), node(kind, params.clone()), node(NodeKind::Output, NodeParams::default())];
     let edges = (0..2).map(|i| Edge { from_node: nodes[i].id, from_port: 0, to_node: nodes[i + 1].id, to_port: 0 }).collect();
     let graph = NodeGraph {
         output_node_id: nodes[2].id, nodes, edges, node_positions: Default::default(),
@@ -182,6 +183,76 @@ fn render_flat(value: f32, params: &NodeParams, gpu: bool) -> [f32; 3] {
     let out = r.render(&seq, tc(1.0), W, H, &mut Flat(value), RenderOptions::default());
     let i = ((H / 2 * W + W / 2) * 4) as usize;
     [out[i], out[i + 1], out[i + 2]]
+}
+
+fn render_flat(value: f32, params: &NodeParams, gpu: bool) -> [f32; 3] {
+    render_flat_node([value; 3], NodeKind::RGBCurves, params, gpu)
+}
+
+fn have_gpu() -> bool {
+    klipp_effects::gpu::GpuEffectsPipeline::new().is_some()
+}
+
+/// A red window over the middle of the hue wheel.
+fn red_window() -> klipp_core::QualifierSettings {
+    klipp_core::QualifierSettings {
+        hue_center: 0.0, hue_width: 60.0, hue_soft: 10.0,
+        sat_low: 0.2, sat_high: 1.0, sat_soft: 0.1,
+        lum_low: 0.0, lum_high: 1.0, lum_soft: 0.1,
+        ..Default::default()
+    }
+}
+
+/// The hue/sat tools keep a bright colour's colour. Their HSL maths ran
+/// on linear light, where saturation is only defined below 1: a
+/// highlight's saturation came out negative, clamped to zero, and every
+/// bright colour — a neon sign, a sunlit dress — came back grey.
+#[test]
+fn the_hue_sat_tools_keep_bright_colours() {
+    // Saturation lifted on the reds, so the case bites on a red highlight.
+    let red_sat = HueSatCurves { hue_vs_sat: vec![[0.0, 0.70], [0.25, 0.5], [1.0, 0.5]], ..Default::default() };
+    let huesat_p = p(|p| p.huesat = Some(red_sat));
+    let warper_p = p(|p| p.warper_params = Some(warper()));
+    for gpu in [false, true] {
+        if gpu && !have_gpu() {
+            continue;
+        }
+        for (label, kind, params) in [
+            ("Hue/Sat Curves", NodeKind::HueSatCurves, &huesat_p),
+            ("Color Warper", NodeKind::ColorWarper, &warper_p),
+        ] {
+            for input in [[0.8f32, 0.2, 0.1], [4.0, 1.0, 0.5], [12.0, 3.0, 1.5]] {
+                let got = render_flat_node(input, kind, params, gpu);
+                eprintln!("{label} (gpu {gpu}) {input:?} -> [{:.3}, {:.3}, {:.3}]", got[0], got[1], got[2]);
+                let ratio = got[0] / got[2].max(1e-6);
+                let was = input[0] / input[2];
+                assert!(ratio > was * 0.8, "{label} flattened {input:?} to {got:?}");
+                // And it stays about as bright as it was.
+                assert!(got[0] > input[0] * 0.5 && got[0] < input[0] * 2.0, "{label}: {input:?} -> {got:?}");
+            }
+        }
+    }
+}
+
+/// The qualifier selects a bright colour too: a saturated red qualified
+/// at 0.6 but not at 4.0, so a secondary correction quietly skipped
+/// every highlight in log or PQ footage.
+#[test]
+fn the_qualifier_selects_bright_colours() {
+    let params = p(|p| p.qualifier = Some(red_window()));
+    for gpu in [false, true] {
+        if gpu && !have_gpu() {
+            continue;
+        }
+        for input in [[0.6f32, 0.1, 0.1], [4.0, 0.7, 0.7], [12.0, 2.0, 2.0]] {
+            let matte = render_flat_node(input, NodeKind::Qualifier, &params, gpu)[0];
+            eprintln!("qualifier (gpu {gpu}) {input:?} -> matte {matte:.3}");
+            assert!(matte > 0.9, "a bright red did not qualify: {input:?} -> {matte}");
+        }
+        // A blue is still outside the window.
+        let matte = render_flat_node([0.1, 0.2, 4.0], NodeKind::Qualifier, &params, gpu)[0];
+        assert!(matte < 0.1, "a bright blue qualified as red: {matte}");
+    }
 }
 
 /// The curve's axis is the picture, not the light: a point lifted at 0.46
