@@ -726,8 +726,21 @@ impl GraphExecutor {
                     | NodeKind::ColorWarper
                     | NodeKind::Denoise
             );
+            // An InputTransform whose format needs no transform (sRGB,
+            // linear, and PQ/HLG — which the decoder's HDR input stage
+            // already decodes) is a pure passthrough. Its params are not
+            // "default" — it records the source format — so without this
+            // it ran as a real node on the CPU and copied the whole frame
+            // to change nothing: 31 ms a frame at 4K, and it sat in front
+            // of the Corrector, so the chain could not start from a seed.
+            let noop_input_transform = node.kind == NodeKind::InputTransform
+                && !node
+                    .params
+                    .log_format
+                    .is_some_and(klipp_core::LogFormat::needs_input_transform);
             let bypass = !effective_enabled(node, clip_time_secs)
-                || (is_param_driven_filter && node.params.is_default());
+                || (is_param_driven_filter && node.params.is_default())
+                || noop_input_transform;
 
             // If a chain is live, see whether this node can extend it or
             // whether we must flush the tail back to CPU first.
