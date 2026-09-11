@@ -821,7 +821,7 @@ pub fn equalize_cdf(linear: &[f32]) -> [f32; 256] {
 /// it: indexed by the display-encoded colour (clamped), trilinear, the
 /// result decoded and mixed with the original by `opacity` in linear
 /// light. `data` is RGB triples, blue-major, `size`³ of them.
-pub fn apply_3d_lut(linear: Vec<f32>, data: &[f32], size: u32, opacity: f32) -> Vec<f32> {
+pub fn apply_3d_lut(linear: Vec<f32>, data: &[f32], size: u32, opacity: f32, tetrahedral: bool) -> Vec<f32> {
     if opacity <= 0.0 || size < 2 || data.len() < (size * size * size * 3) as usize {
         return linear;
     }
@@ -841,7 +841,36 @@ pub fn apply_3d_lut(linear: Vec<f32>, data: &[f32], size: u32, opacity: f32) -> 
         let c01 = lerp3(at(r0, g0, b0 + 1), at(r0 + 1, g0, b0 + 1), f[0]);
         let c10 = lerp3(at(r0, g0 + 1, b0), at(r0 + 1, g0 + 1, b0), f[0]);
         let c11 = lerp3(at(r0, g0 + 1, b0 + 1), at(r0 + 1, g0 + 1, b0 + 1), f[0]);
-        let graded = lerp3(lerp3(c00, c10, f[1]), lerp3(c01, c11, f[1]), f[2]).map(|v| decode(v.clamp(0.0, 1.0)));
+        let interpolated = if tetrahedral {
+            // The unit cube split into six tetrahedra by the order of the
+            // fractional coordinates: the sample is interpolated over the
+            // four corners that surround it rather than all eight, which
+            // holds a LUT's straight lines straight.
+            let (rf, gf, bf) = (f[0], f[1], f[2]);
+            let corner = |r: usize, g: usize, b: usize| at(r0 + r, g0 + g, b0 + b);
+            let (c000, c111) = (corner(0, 0, 0), corner(1, 1, 1));
+            let mix4 = |a: [f32; 3], b: [f32; 3], c: [f32; 3], d: [f32; 3], x: f32, y: f32, z: f32| {
+                [0, 1, 2].map(|i| a[i] + (b[i] - a[i]) * x + (c[i] - b[i]) * y + (d[i] - c[i]) * z)
+            };
+            if rf > gf {
+                if gf > bf {
+                    mix4(c000, corner(1, 0, 0), corner(1, 1, 0), c111, rf, gf, bf)
+                } else if rf > bf {
+                    mix4(c000, corner(1, 0, 0), corner(1, 0, 1), c111, rf, bf, gf)
+                } else {
+                    mix4(c000, corner(0, 0, 1), corner(1, 0, 1), c111, bf, rf, gf)
+                }
+            } else if rf > bf {
+                mix4(c000, corner(0, 1, 0), corner(1, 1, 0), c111, gf, rf, bf)
+            } else if gf > bf {
+                mix4(c000, corner(0, 1, 0), corner(0, 1, 1), c111, gf, bf, rf)
+            } else {
+                mix4(c000, corner(0, 0, 1), corner(0, 1, 1), c111, bf, gf, rf)
+            }
+        } else {
+            lerp3(lerp3(c00, c10, f[1]), lerp3(c01, c11, f[1]), f[2])
+        };
+        let graded = interpolated.map(|v| decode(v.clamp(0.0, 1.0)));
         [
             c[0] + (graded[0] - c[0]) * opacity,
             c[1] + (graded[1] - c[1]) * opacity,

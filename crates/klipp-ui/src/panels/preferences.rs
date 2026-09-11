@@ -3157,8 +3157,20 @@ impl PreferencesPanel {
                 })
                 .width(100.0)
                 .show_ui(ui, |ui| {
-                    if ui.selectable_value(&mut prefs.color.lut_interpolation, LutInterpolation::Trilinear, "Trilinear").changed() { *dirty = true; }
-                    if ui.selectable_value(&mut prefs.color.lut_interpolation, LutInterpolation::Tetrahedral, "Tetrahedral").changed() { *dirty = true; }
+                    if ui
+                        .selectable_value(&mut prefs.color.lut_interpolation, LutInterpolation::Trilinear, "Trilinear")
+                        .on_hover_text("Faster in the viewer. Bends the straight lines a LUT draws, which shows as a shifted hue or a banded gradient.")
+                        .changed()
+                    {
+                        *dirty = true;
+                    }
+                    if ui
+                        .selectable_value(&mut prefs.color.lut_interpolation, LutInterpolation::Tetrahedral, "Tetrahedral")
+                        .on_hover_text("Follows the LUT. What exports always use, whatever this is set to.")
+                        .changed()
+                    {
+                        *dirty = true;
+                    }
                 });
         });
 

@@ -42,6 +42,9 @@ pub struct GradeAt<'a> {
     pub frame_number: u64,
     pub track_points: &'a [TrackPoint],
     pub working: WorkingColorspace,
+    /// The user's 3D-LUT interpolation preference, so a clip with a LUT
+    /// node looks the same here as through the renderer.
+    pub lut_tetrahedral: bool,
     pub solo: Option<NodeId>,
 }
 
@@ -102,6 +105,7 @@ pub fn grade_to_display_on_gpu(
     };
     exec.prepare_clip(at.graph);
     exec.set_working_colorspace(at.working);
+    exec.set_lut_tetrahedral(at.lut_tetrahedral);
     exec.set_current_clip_track_points(at.track_points);
     exec.set_solo_node(at.solo);
     exec.request_output_on_gpu();

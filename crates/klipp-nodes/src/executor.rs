@@ -153,6 +153,9 @@ pub struct GraphExecutor {
     /// engine sets the value behave exactly like the pre-Phase-E
     /// pipeline.
     working_colorspace: klipp_core::WorkingColorspace,
+    /// Tetrahedral 3D-LUT interpolation, or trilinear when the user
+    /// picked speed over accuracy in the viewer.
+    lut_tetrahedral: bool,
     /// Phase 4d: when true, `start_chain` skips the
     /// `upload_chain_input_linear` call because `buf_a` was already
     /// seeded with linear RGBA — typically by
@@ -505,6 +508,7 @@ impl GraphExecutor {
             last_chain_final_slot: None,
             compound_depth: 0,
             working_colorspace: klipp_core::WorkingColorspace::Rec709Linear,
+            lut_tetrahedral: true,
             current_clip_track_points: Vec::new(),
             solo_node: None,
         }
@@ -556,6 +560,7 @@ impl GraphExecutor {
             last_chain_final_slot: None,
             compound_depth: 0,
             working_colorspace: klipp_core::WorkingColorspace::Rec709Linear,
+            lut_tetrahedral: true,
             current_clip_track_points: Vec::new(),
             solo_node: None,
         }
@@ -596,6 +601,13 @@ impl GraphExecutor {
     }
 
     #[inline]
+    /// Tetrahedral 3D-LUT interpolation (the default) or trilinear. The
+    /// viewer follows the user's preference; an export always asks for
+    /// tetrahedral.
+    pub fn set_lut_tetrahedral(&mut self, tetrahedral: bool) {
+        self.lut_tetrahedral = tetrahedral;
+    }
+
     pub fn set_working_colorspace(&mut self, ws: klipp_core::WorkingColorspace) {
         self.working_colorspace = ws;
         if let Some(gpu) = self.gpu.as_mut() {
@@ -2014,9 +2026,10 @@ impl GraphExecutor {
                     })
                     .clone();
                 let opacity = params.lut_opacity.unwrap_or(1.0);
+                let tetrahedral = self.lut_tetrahedral;
                 self.gpu.as_mut().unwrap().apply_3d_lut_chain(
                     in_is_a, width, height,
-                    &lut.data, lut.size as u32, opacity,
+                    &lut.data, lut.size as u32, opacity, tetrahedral,
                 );
                 Some(1)
             }
@@ -3068,6 +3081,7 @@ impl GraphExecutor {
                         })
                         .clone();
                     let opacity = params.lut_opacity.unwrap_or(1.0);
+                    let tetrahedral = self.lut_tetrahedral;
                     if let Some(gpu) = &mut self.gpu {
                         // GPU LUT path is still working-space-naive
                         // (the compute shader treats the LUT as
@@ -3077,7 +3091,7 @@ impl GraphExecutor {
                         // change tracked separately.
                         gpu.apply_3d_lut_gpu(
                             primary_input.to_vec(), width, height,
-                            &lut.data, lut.size as u32, opacity,
+                            &lut.data, lut.size as u32, opacity, tetrahedral,
                         )
                     } else {
                         // CPU fallback: linear-light, working-space-
@@ -3091,7 +3105,7 @@ impl GraphExecutor {
                         let mut frame = primary_input.to_vec();
                         klipp_color::apply_3d_lut_linear_ws_with_overrides(
                             &mut frame, &lut, opacity, self.working_colorspace,
-                            in_space, out_space,
+                            in_space, out_space, tetrahedral,
                         );
                         frame
                     }

@@ -366,6 +366,8 @@ pub struct Renderer {
     found: Inspection,
     /// The current render's `RenderOptions::hdr_peak_nits`.
     hdr_peak: Option<f32>,
+    /// Tetrahedral 3D-LUT interpolation, or trilinear for speed.
+    lut_tetrahedral: bool,
 }
 
 /// A rendered clip, ready to composite: display-referred linear RGBA,
@@ -416,6 +418,7 @@ impl Renderer {
             inspect: Inspect::default(),
             found: Inspection::default(),
             hdr_peak: None,
+            lut_tetrahedral: true,
         }
     }
 
@@ -456,6 +459,14 @@ impl Renderer {
         if !enabled {
             self.gpu = None;
         }
+    }
+
+    /// Tetrahedral 3D-LUT interpolation (the default, and what a
+    /// delivery should have) or trilinear, which the viewer offers for
+    /// speed. Applies to the timeline's global LUT and to every clip's
+    /// LUT node.
+    pub fn set_lut_tetrahedral(&mut self, tetrahedral: bool) {
+        self.lut_tetrahedral = tetrahedral;
     }
 
     pub fn set_working_colorspace(&mut self, ws: WorkingColorspace) {
@@ -657,10 +668,11 @@ impl Renderer {
 
         if let Some(lut) = self.global_lut.take() {
             let t = Instant::now();
+            let tetrahedral = self.lut_tetrahedral;
             let above_white = if self.hdr_peak.is_some() { split_above_white(&mut acc) } else { None };
             acc = match self.gpu() {
-                Some(gpu) => gpu.apply_3d_lut_gpu(acc, width, height, &lut.lut.data, lut.lut.size as u32, lut.opacity),
-                None => klipp_effects::apply_3d_lut(acc, &lut.lut.data, lut.lut.size as u32, lut.opacity),
+                Some(gpu) => gpu.apply_3d_lut_gpu(acc, width, height, &lut.lut.data, lut.lut.size as u32, lut.opacity, tetrahedral),
+                None => klipp_effects::apply_3d_lut(acc, &lut.lut.data, lut.lut.size as u32, lut.opacity, tetrahedral),
             };
             if let Some(over) = above_white {
                 use rayon::prelude::*;
@@ -880,6 +892,7 @@ impl Renderer {
         let t = Instant::now();
         self.executor.prepare_clip(&clip.node_graph);
         self.executor.set_working_colorspace(self.working);
+        self.executor.set_lut_tetrahedral(self.lut_tetrahedral);
         self.executor.set_current_clip_track_points(&clip.track_points);
         self.executor.set_solo_node(if inspecting { self.inspect.solo } else { None });
         let frame = grade_frame(clip_time, fps);

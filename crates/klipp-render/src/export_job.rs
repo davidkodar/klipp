@@ -103,6 +103,10 @@ impl ExportJob {
         }
         let mut renderer = klipp_compose::Renderer::new(ofx, klipp_title::TitleRenderer::new());
         renderer.set_working_colorspace(self.snapshot.working_colorspace);
+        // Tetrahedral, always: the trilinear option exists so the viewer
+        // can stay responsive, and a delivery is not the place to trade
+        // LUT accuracy for speed.
+        renderer.set_lut_tetrahedral(true);
         if let Some(path) = &self.snapshot.global_lut_path {
             match klipp_color::lut::load_lut(path) {
                 Ok(lut) => renderer.set_global_lut(Some(klipp_compose::GlobalLut {

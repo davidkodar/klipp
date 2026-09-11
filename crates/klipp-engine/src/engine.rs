@@ -6231,6 +6231,7 @@ impl PlaybackEngine {
             frame_number,
             track_points: &track_points,
             working: crate::video_decoder::working_colorspace(),
+            lut_tetrahedral: self.color_pipeline.use_tetrahedral,
             solo: self.solo_node,
         };
         let (tone_map, working) = (self.tone_map_op, at.working);
@@ -6319,6 +6320,7 @@ impl PlaybackEngine {
             frame_number,
             track_points: &track_points,
             working: crate::video_decoder::working_colorspace(),
+            lut_tetrahedral: self.color_pipeline.use_tetrahedral,
             solo: self.solo_node,
         };
         let (tone_map, working) = (self.tone_map_op, at.working);

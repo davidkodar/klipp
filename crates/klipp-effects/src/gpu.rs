@@ -2306,6 +2306,7 @@ impl GpuEffectsPipeline {
         lut_data: &[f32],
         lut_size: u32,
         opacity: f32,
+        tetrahedral: bool,
     ) -> Vec<f32> {
         if self.is_device_lost() {
             return linear_rgba;
@@ -2341,6 +2342,8 @@ impl GpuEffectsPipeline {
             height,
             lut_size,
             opacity,
+            tetrahedral: tetrahedral as u32,
+            _pad0: 0, _pad1: 0, _pad2: 0,
         });
 
         let pixel_count = width * height;
@@ -3147,6 +3150,7 @@ impl GpuEffectsPipeline {
         lut_data: &[f32],
         lut_size: u32,
         opacity: f32,
+        tetrahedral: bool,
     ) {
         if self.is_device_lost() {
             return;
@@ -3182,7 +3186,11 @@ impl GpuEffectsPipeline {
         // (lut_buf, chain_in_out) don't clash with the `&mut self` that
         // `next_params_slot` needs.
         let slot = self.next_params_slot();
-        self.write_chain_params(slot, &GpuLut3dParams { width, height, lut_size, opacity });
+        self.write_chain_params(slot, &GpuLut3dParams {
+            width, height, lut_size, opacity,
+            tetrahedral: tetrahedral as u32,
+            _pad0: 0, _pad1: 0, _pad2: 0,
+        });
         let lut_buf = self.lut3d_buf.as_ref().unwrap();
         self.queue.write_buffer(lut_buf, 0, bytemuck::cast_slice(lut_data));
         let workgroups = (width * height).div_ceil(WORKGROUP_SIZE);
@@ -5080,8 +5088,13 @@ struct GpuLut3dParams {
     height: u32,
     lut_size: u32,
     opacity: f32,
+    /// Non-zero: tetrahedral interpolation instead of trilinear.
+    tetrahedral: u32,
+    _pad0: u32,
+    _pad1: u32,
+    _pad2: u32,
 }
-// 4 fields × 4 bytes = 16 bytes
+// 8 fields × 4 bytes = 32 bytes
 
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -8463,6 +8476,10 @@ struct Params {
     height: u32,
     lut_size: u32,
     opacity: f32,
+    tetrahedral: u32,
+    _pad0: u32,
+    _pad1: u32,
+    _pad2: u32,
 }
 
 @group(0) @binding(0) var<storage, read> input: array<vec4<f32>>;
@@ -8513,7 +8530,6 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let gf = g_idx - f32(g0);
     let bf = b_idx - f32(b0);
 
-    // Trilinear interpolation
     let c000 = lut_sample(r0, g0, b0);
     let c100 = lut_sample(r1, g0, b0);
     let c010 = lut_sample(r0, g1, b0);
@@ -8522,6 +8538,39 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let c101 = lut_sample(r1, g0, b1);
     let c011 = lut_sample(r0, g1, b1);
     let c111 = lut_sample(r1, g1, b1);
+
+    // Tetrahedral: the unit cube split into six tetrahedra by the order
+    // of the fractional coordinates, so the sample is interpolated over
+    // the four corners that surround it rather than all eight. It holds a
+    // LUT's straight lines straight, where trilinear bows them — the
+    // wobble that shows on a skin tone or in a sky gradient.
+    if params.tetrahedral != 0u {
+        var lut_out: vec3<f32>;
+        if rf > gf {
+            if gf > bf {
+                lut_out = c000 + (c100 - c000) * rf + (c110 - c100) * gf + (c111 - c110) * bf;
+            } else if rf > bf {
+                lut_out = c000 + (c100 - c000) * rf + (c101 - c100) * bf + (c111 - c101) * gf;
+            } else {
+                lut_out = c000 + (c001 - c000) * bf + (c101 - c001) * rf + (c111 - c101) * gf;
+            }
+        } else if rf > bf {
+            lut_out = c000 + (c010 - c000) * gf + (c110 - c010) * rf + (c111 - c110) * bf;
+        } else if gf > bf {
+            lut_out = c000 + (c010 - c000) * gf + (c011 - c010) * bf + (c111 - c011) * rf;
+        } else {
+            lut_out = c000 + (c001 - c000) * bf + (c011 - c001) * gf + (c111 - c011) * rf;
+        }
+        let graded_t = vec3<f32>(
+            srgb_to_linear_component(clamp(lut_out.x, 0.0, 1.0)),
+            srgb_to_linear_component(clamp(lut_out.y, 0.0, 1.0)),
+            srgb_to_linear_component(clamp(lut_out.z, 0.0, 1.0)),
+        );
+        let orig_t = vec3<f32>(pixel.x, pixel.y, pixel.z);
+        let result_t = mix(orig_t, graded_t, params.opacity);
+        output[pixel_idx] = vec4<f32>(result_t.x, result_t.y, result_t.z, pixel.w);
+        return;
+    }
 
     let c00 = mix(c000, c100, rf);
     let c01 = mix(c001, c101, rf);

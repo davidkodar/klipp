@@ -570,10 +570,11 @@ pub fn apply_3d_lut_linear_ws(
     lut: &LutData,
     opacity: f32,
     working_space: WorkingColorspace,
+    tetrahedral: bool,
 ) {
     apply_3d_lut_linear_ws_with_overrides(
         rgba_linear, lut, opacity, working_space,
-        lut.input_space, lut.output_space,
+        lut.input_space, lut.output_space, tetrahedral,
     )
 }
 
@@ -587,6 +588,7 @@ pub fn apply_3d_lut_linear_ws(
 /// Pass `lut.input_space` / `lut.output_space` directly to recover
 /// the un-overridden behaviour.
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)]
 pub fn apply_3d_lut_linear_ws_with_overrides(
     rgba_linear: &mut [f32],
     lut: &LutData,
@@ -594,6 +596,7 @@ pub fn apply_3d_lut_linear_ws_with_overrides(
     working_space: WorkingColorspace,
     input_space: WorkingColorspace,
     output_space: WorkingColorspace,
+    tetrahedral: bool,
 ) {
     if opacity <= 0.0 {
         return;
@@ -639,13 +642,35 @@ pub fn apply_3d_lut_linear_ws_with_overrides(
             let c101 = lut.data[idx(r1, g0, b1) + ch];
             let c011 = lut.data[idx(r0, g1, b1) + ch];
             let c111 = lut.data[idx(r1, g1, b1) + ch];
-            let c00 = c000 + (c100 - c000) * rf;
-            let c01 = c001 + (c101 - c001) * rf;
-            let c10 = c010 + (c110 - c010) * rf;
-            let c11 = c011 + (c111 - c011) * rf;
-            let c0 = c00 + (c10 - c00) * gf;
-            let c1 = c01 + (c11 - c01) * gf;
-            *slot = c0 + (c1 - c0) * bf;
+            *slot = if tetrahedral {
+                // The unit cube split into six tetrahedra by the order of
+                // the fractional coordinates: four surrounding corners
+                // instead of all eight, which holds a LUT's straight
+                // lines straight where trilinear bows them.
+                if rf > gf {
+                    if gf > bf {
+                        c000 + (c100 - c000) * rf + (c110 - c100) * gf + (c111 - c110) * bf
+                    } else if rf > bf {
+                        c000 + (c100 - c000) * rf + (c101 - c100) * bf + (c111 - c101) * gf
+                    } else {
+                        c000 + (c001 - c000) * bf + (c101 - c001) * rf + (c111 - c101) * gf
+                    }
+                } else if rf > bf {
+                    c000 + (c010 - c000) * gf + (c110 - c010) * rf + (c111 - c110) * bf
+                } else if gf > bf {
+                    c000 + (c010 - c000) * gf + (c011 - c010) * bf + (c111 - c011) * rf
+                } else {
+                    c000 + (c001 - c000) * bf + (c011 - c001) * gf + (c111 - c011) * rf
+                }
+            } else {
+                let c00 = c000 + (c100 - c000) * rf;
+                let c01 = c001 + (c101 - c001) * rf;
+                let c10 = c010 + (c110 - c010) * rf;
+                let c11 = c011 + (c111 - c011) * rf;
+                let c0 = c00 + (c10 - c00) * gf;
+                let c1 = c01 + (c11 - c01) * gf;
+                c0 + (c1 - c0) * bf
+            };
         }
 
         let post_rgb = if let Some(m) = post {
@@ -1086,7 +1111,7 @@ mod tests {
             0.99, 0.01, 0.50, 1.0,
         ];
         let original = pixels.clone();
-        apply_3d_lut_linear_ws(&mut pixels, &lut, 1.0, WorkingColorspace::Rec709Linear);
+        apply_3d_lut_linear_ws(&mut pixels, &lut, 1.0, WorkingColorspace::Rec709Linear, false);
         for i in 0..pixels.len() {
             assert!(approx_eq(pixels[i], original[i], 1e-3),
                 "identity LUT at index {i}: {} → {}", original[i], pixels[i]);
@@ -1118,7 +1143,7 @@ mod tests {
             0.40, 0.45, 0.50, 1.0,
         ];
         let original = pixels.clone();
-        apply_3d_lut_linear_ws(&mut pixels, &lut, 1.0, WorkingColorspace::AcesCG);
+        apply_3d_lut_linear_ws(&mut pixels, &lut, 1.0, WorkingColorspace::AcesCG, false);
         // Tolerance: 33-grid trilinear adds ~3e-4, AcesCG ↔ Rec709
         // round-trip ~1e-7 in f32. 5e-3 covers both cleanly with
         // headroom for the value range we're testing (~0.3 to 0.55).
@@ -1141,7 +1166,7 @@ mod tests {
         // (0.1, 0.3, 0.7) AcesCG → Rec.709 has a negative R channel
         // (out of BT.709 red gamut on the wide-blue side).
         let mut pixels: Vec<f32> = vec![0.10, 0.30, 0.70, 1.0];
-        apply_3d_lut_linear_ws(&mut pixels, &lut, 1.0, WorkingColorspace::AcesCG);
+        apply_3d_lut_linear_ws(&mut pixels, &lut, 1.0, WorkingColorspace::AcesCG, false);
         // The LUT clamp lifts the input to a non-negative neighbourhood,
         // which the post-bracket maps back to AcesCG. Output must be
         // measurably different from the input on at least one channel
@@ -1180,7 +1205,7 @@ mod tests {
             output_space: WorkingColorspace::Rec709Linear,
         };
         let mut pixels: Vec<f32> = vec![1.0, 1.0, 1.0, 1.0];
-        apply_3d_lut_linear_ws(&mut pixels, &lut, 1.0, WorkingColorspace::Rec709Linear);
+        apply_3d_lut_linear_ws(&mut pixels, &lut, 1.0, WorkingColorspace::Rec709Linear, false);
         assert!(approx_eq(pixels[0], 0.5, 1e-3), "got {}", pixels[0]);
         assert!(approx_eq(pixels[1], 0.5, 1e-3));
         assert!(approx_eq(pixels[2], 0.5, 1e-3));
@@ -1200,7 +1225,7 @@ mod tests {
             output_space: WorkingColorspace::Rec709Linear,
         };
         let mut pixels: Vec<f32> = vec![0.8, 0.6, 0.4, 1.0];
-        apply_3d_lut_linear_ws(&mut pixels, &zero_lut, 0.5, WorkingColorspace::Rec709Linear);
+        apply_3d_lut_linear_ws(&mut pixels, &zero_lut, 0.5, WorkingColorspace::Rec709Linear, false);
         assert!(approx_eq(pixels[0], 0.4, 1e-3));
         assert!(approx_eq(pixels[1], 0.3, 1e-3));
         assert!(approx_eq(pixels[2], 0.2, 1e-3));
@@ -1218,7 +1243,7 @@ mod tests {
         };
         let mut pixels: Vec<f32> = vec![0.8, 0.6, 0.4, 1.0];
         let original = pixels.clone();
-        apply_3d_lut_linear_ws(&mut pixels, &zero_lut, 0.0, WorkingColorspace::AcesCG);
+        apply_3d_lut_linear_ws(&mut pixels, &zero_lut, 0.0, WorkingColorspace::AcesCG, false);
         assert_eq!(pixels, original);
     }
 
@@ -1258,11 +1283,12 @@ mod tests {
         let lut = LutData::identity(33);
         let mut a = vec![0.50, 0.50, 0.50, 1.0, 0.30, 0.20, 0.40, 1.0];
         let mut b = a.clone();
-        apply_3d_lut_linear_ws(&mut a, &lut, 1.0, WorkingColorspace::AcesCG);
+        apply_3d_lut_linear_ws(&mut a, &lut, 1.0, WorkingColorspace::AcesCG, true);
         apply_3d_lut_linear_ws_with_overrides(
             &mut b, &lut, 1.0,
             WorkingColorspace::AcesCG,
             lut.input_space, lut.output_space,
+            true,
         );
         assert_eq!(a, b);
     }
@@ -1277,14 +1303,14 @@ mod tests {
         let lut = LutData::identity(33);
         let mut pixels: Vec<f32> = vec![0.50, 0.50, 0.50, 1.0, 0.30, 0.45, 0.55, 1.0];
         let original = pixels.clone();
-        apply_3d_lut_linear_ws_with_overrides(
-            &mut pixels, &lut, 1.0,
+        apply_3d_lut_linear_ws_with_overrides(&mut pixels, &lut, 1.0,
             WorkingColorspace::AcesCG,
             // User says: this LUT is ACEScg-tagged. Working space
             // is also ACEScg. → no conversion either side, identity
             // LUT → passthrough.
             WorkingColorspace::AcesCG,
             WorkingColorspace::AcesCG,
+            false,
         );
         for i in 0..pixels.len() {
             assert!((pixels[i] - original[i]).abs() < 1e-3,
@@ -1313,6 +1339,7 @@ mod tests {
             WorkingColorspace::AcesCG,
             WorkingColorspace::AcesCG,    // no pre/post conversion
             WorkingColorspace::AcesCG,
+            false,
         );
 
         let mut rec709_lut_path = pixels_in.clone();
@@ -1321,6 +1348,7 @@ mod tests {
             WorkingColorspace::AcesCG,
             WorkingColorspace::Rec709Linear,  // brackets in
             WorkingColorspace::Rec709Linear,
+            false,
         );
 
         // Expect divergence on at least one channel — the bracket

@@ -140,6 +140,7 @@ fn fast(r: &mut Renderer, clip: &Clip, t: f64, seed: GpuSeed<'_>) -> Vec<u8> {
         frame_number,
         track_points: &clip.track_points,
         working: WORKING,
+        lut_tetrahedral: true,
         solo: None,
     };
     let display = |l: &[f32]| display_transform_ws(l, ToneMapOp::None, WORKING);
@@ -225,6 +226,7 @@ fn the_graded_fast_path_is_the_renderers_frame() {
         frame_number,
         track_points: &[],
         working: WORKING,
+        lut_tetrahedral: true,
         solo: None,
     };
     let display = |l: &[f32]| display_transform_ws(l, ToneMapOp::None, WORKING);

@@ -299,6 +299,9 @@ impl PlaybackEngine {
         inspect: Inspect,
     ) -> (Vec<f32>, Inspection) {
         self.renderer.set_working_colorspace(crate::video_decoder::working_colorspace());
+        // The user's LUT interpolation preference, for the global LUT and
+        // every clip's LUT node. An export always asks for tetrahedral.
+        self.renderer.set_lut_tetrahedral(self.color_pipeline.use_tetrahedral);
         self.push_global_lut();
         let downsample = self.in_node_param_edit
             && super::drag_downsample_enabled()
