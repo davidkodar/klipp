@@ -1,4 +1,5 @@
-/// [`build_curve_lut_f32`] quantised to 8 bits, for the u8 paths.
+/// [`build_curve_lut_f32`] quantised to 8 bits, for drawing the curve
+/// in the inspector's editor. The grade reads the float table.
 pub fn build_curve_lut(points: &[[f32; 2]]) -> [u8; 256] {
     build_curve_lut_f32(points).map(|v| (v * 255.0) as u8)
 }
@@ -129,22 +130,6 @@ fn lerp_points(pts: &[[f32; 2]], t: f32) -> f32 {
     pts[pts.len() - 1][1]
 }
 
-/// Apply curve LUTs to an RGBA buffer.
-/// Each channel is looked up independently: r_out = red[master[r_in]], etc.
-pub fn apply_curves(
-    rgba: &mut [u8],
-    master: &[u8; 256],
-    red: &[u8; 256],
-    green: &[u8; 256],
-    blue: &[u8; 256],
-) {
-    for pixel in rgba.chunks_exact_mut(4) {
-        pixel[0] = red[master[pixel[0] as usize] as usize];
-        pixel[1] = green[master[pixel[1] as usize] as usize];
-        pixel[2] = blue[master[pixel[2] as usize] as usize];
-    }
-}
-
 /// Check if curve points represent identity (no adjustment).
 pub fn is_identity(points: &[[f32; 2]]) -> bool {
     points.len() == 2
@@ -216,25 +201,6 @@ mod tests {
         assert!(lut[64] < 64, "shadows should be darker: lut[64] = {}", lut[64]);
         // Highlights should be brighter than identity
         assert!(lut[192] > 192, "highlights should be brighter: lut[192] = {}", lut[192]);
-    }
-
-    #[test]
-    fn apply_curves_identity() {
-        let identity: [u8; 256] = std::array::from_fn(|i| i as u8);
-        let mut rgba = vec![100, 150, 200, 255];
-        apply_curves(&mut rgba, &identity, &identity, &identity, &identity);
-        assert_eq!(rgba, vec![100, 150, 200, 255]);
-    }
-
-    #[test]
-    fn apply_curves_invert() {
-        let invert: [u8; 256] = std::array::from_fn(|i| (255 - i) as u8);
-        let identity: [u8; 256] = std::array::from_fn(|i| i as u8);
-        let mut rgba = vec![100, 150, 200, 255];
-        apply_curves(&mut rgba, &invert, &identity, &identity, &identity);
-        assert_eq!(rgba[0], 155); // master inverts: 255 - 100 = 155
-        assert_eq!(rgba[1], 105); // master inverts: 255 - 150 = 105
-        assert_eq!(rgba[2], 55);  // master inverts: 255 - 200 = 55
     }
 
     #[test]
