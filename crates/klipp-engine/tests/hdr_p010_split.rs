@@ -217,3 +217,32 @@ fn slog3_published_grey_code_decodes_to_mid_grey_through_the_decoder() {
         );
     }
 }
+
+/// Log highlights above legal white are picture, not overshoot: S-Log3
+/// code 1000 is ~31x grey. The decoder once clamped to legal range before
+/// the log remap, which pinned everything above 940 (~18.5x) to 940.
+#[test]
+fn slog3_super_white_survives_the_decoder() {
+    let Some(mut conv) = GpuP010Converter::new() else {
+        eprintln!("skipping: P010 GPU converter unavailable");
+        return;
+    };
+    let y: Vec<u8> = (0..W * H).flat_map(|_| ((1000u32 << 6) as u16).to_le_bytes()).collect();
+    let uv: Vec<u8> = (0..(W / 2) * (H / 2) * 2).flat_map(|_| ((512u32 << 6) as u16).to_le_bytes()).collect();
+    let m = primaries_to_working_matrix(ColorPrimaries::SGamut3Cine, WorkingColorspace::Rec709Linear);
+    let ids = [
+        color_ids::COLOR_RANGE_LIMITED,
+        color_ids::MATRIX_BT709,
+        color_ids::TRANSFER_SLOG3,
+        color_ids::primaries_id(ColorPrimaries::SGamut3Cine),
+    ];
+    let codes = conv
+        .convert_p010_hdr_codes(&y, &uv, W, H, W * 2, W * 2, W, H, 0, ids, pack_primaries_matrix(m))
+        .unwrap();
+    assert_eq!(klipp_color::hdr::unpack_rgb10(codes[0]), [1000, 1000, 1000]);
+    let scene = hdr10_codes_to_scene_linear_rgba(&codes, HdrTransfer::Log(klipp_core::ColorTransfer::SLog3), m);
+    // Sony: x = 10^((code - 420) / 261.5) * 0.19 - 0.01.
+    let expected = 10f32.powf((1000.0 - 420.0) / 261.5) * 0.19 - 0.01;
+    eprintln!("S-Log3 code 1000 -> {:.3} (expected {expected:.3})", scene[1]);
+    assert!((scene[1] / expected).log2().abs() < 0.02, "super-white decoded to {}", scene[1]);
+}

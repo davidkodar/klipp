@@ -177,10 +177,15 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         // Scene-referred: the same route as the P010 decoder. 8-bit log
         // (e.g. 8-bit XAVC S-Log3) lands in 10-bit code space by the same
         // mapping — 64 and 876 are 16 and 219 scaled by 2^(10-8).
-        var signal = clamp(rgb_display, vec3<f32>(0.0), vec3<f32>(1.0));
+        var signal = rgb_display;
         if (is_log && params.color_range == 0u) {
             signal = (vec3<f32>(64.0) + signal * 876.0) / 1023.0;
         }
+        // Clamp to the code range, after the remap: camera logs record
+        // real highlights above legal white (S-Log3 940 is ~18x grey, 1023
+        // ~38x), so a legal-range clamp would flatten the top stop.
+        // PQ/HLG signal is legal-range, so for them this is the same clamp.
+        signal = clamp(signal, vec3<f32>(0.0), vec3<f32>(1.0));
         let code = vec3<u32>(signal * 1023.0 + vec3<f32>(0.5));
         hdr_codes[dy * params.dst_width + dx] = code.x | (code.y << 10u) | (code.z << 20u);
         var scale = 100.0;

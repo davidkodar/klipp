@@ -235,10 +235,15 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         // onto 0..1. Undo that for logs, or S-Log3's white reads ~0.3
         // stops hot. (PQ/HLG are defined on the legal-normalised signal,
         // so they keep it.)
-        var signal = clamp(rgb_display, vec3<f32>(0.0), vec3<f32>(1.0));
+        var signal = rgb_display;
         if (is_log && params.color_range == 0u) {
             signal = (vec3<f32>(64.0) + signal * 876.0) / 1023.0;
         }
+        // Clamp to the code range, after the remap: camera logs record
+        // real highlights above legal white (S-Log3 940 is ~18x grey, 1023
+        // ~38x), so a legal-range clamp would flatten the top stop.
+        // PQ/HLG signal is legal-range, so for them this is the same clamp.
+        signal = clamp(signal, vec3<f32>(0.0), vec3<f32>(1.0));
         // Quantise to the 10-bit codes the grade will read, then build
         // the preview from those same codes so the two cannot diverge.
         let code = vec3<u32>(signal * 1023.0 + vec3<f32>(0.5));
