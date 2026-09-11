@@ -2897,7 +2897,9 @@ name = "klipp-smoke"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "klipp-color",
  "klipp-core",
+ "klipp-effects",
  "klipp-engine",
  "klipp-media",
  "klipp-nodes",
