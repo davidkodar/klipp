@@ -7,9 +7,16 @@
 //! The point is to make Klipp drivable without a GUI in the loop:
 //! by an MCP server, by a script, by a test. Reads (status, clip list,
 //! grade graph, screenshot, perf, log) go straight at the shared state;
-//! writes go through `AppCommand` exactly as the UI's own buttons do, so
-//! there is one code path for mutation and the undo stack, autosave and
-//! engine caches all behave as they would for a human.
+//! writes are handed to the UI's command router (`KlippApp::send_commands`)
+//! exactly as a button click is, so there is one code path for mutation
+//! and the undo stack, autosave and engine caches all behave as they
+//! would for a human.
+//!
+//! That routing is load-bearing, not a nicety. `AppCommand` is split
+//! between two consumers: the UI handles colour, clip, media and most
+//! editing commands itself and forwards only the remainder to the
+//! engine. Writing straight to the engine's channel therefore made
+//! transport work while every grade edit silently vanished.
 //!
 //! Enabled by default; `KLIPP_CONTROL=0` turns it off. The socket lives
 //! in `$XDG_RUNTIME_DIR`, which is user-owned and mode 0700, so it is
@@ -29,7 +36,13 @@ use serde_json::json;
 /// in `main.rs` from the same handles the UI and engine already share.
 #[derive(Clone)]
 pub struct ControlContext {
-    pub cmd_tx: crossbeam_channel::Sender<AppCommand>,
+    /// Into the UI's command router, *not* the engine's channel — see the
+    /// module docs for why the difference matters.
+    pub commands: crossbeam_channel::Sender<AppCommand>,
+    /// Wakes the UI so it drains `commands`. egui repaints reactively; an
+    /// idle window would otherwise sit on a queued command until the
+    /// mouse next moved.
+    pub wake_ui: std::sync::Arc<dyn Fn() + Send + Sync>,
     pub sequence: Arc<RwLock<klipp_timeline::Sequence>>,
     pub media_pool: Arc<RwLock<klipp_media::MediaPool>>,
     pub frame_buffer: Arc<Mutex<klipp_engine::FrameBuffer>>,
@@ -146,12 +159,13 @@ fn clip_id(s: &str) -> Result<klipp_core::ClipId, String> {
 
 fn handle(ctx: &ControlContext, cmd: ControlCommand) -> Result<serde_json::Value, String> {
     let send = |c: AppCommand| -> Result<serde_json::Value, String> {
-        ctx.cmd_tx
+        ctx.commands
             .send(c)
             .map_err(|e| format!("app command channel closed: {e}"))?;
-        // Commands are queued for the engine, not executed inline, so
-        // "accepted" is the honest answer. A caller that needs to see the
-        // effect polls `status` or `get_grade`.
+        (ctx.wake_ui)();
+        // Commands are queued for the UI's next frame, not executed
+        // inline, so "accepted" is the honest answer. A caller that needs
+        // to see the effect polls `status` or `get_grade`.
         Ok(json!({ "accepted": true }))
     };
 

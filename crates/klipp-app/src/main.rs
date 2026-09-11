@@ -443,8 +443,18 @@ fn main() -> Result<()> {
     // `AppCommand` channel the UI's own buttons use, so undo, autosave
     // and the engine's caches behave identically either way.
     // `KLIPP_CONTROL=0` disables it.
+    // Control commands go to the UI's router, not straight to the engine:
+    // most editing commands are handled by the UI and never reach the
+    // engine's channel. The UI drains this inbox every frame.
+    let (control_tx, control_rx) = crossbeam_channel::unbounded();
+    let repaint_ctx_for_control = std::sync::Arc::clone(&repaint_ctx);
     match klipp_control::spawn(klipp_control::ControlContext {
-        cmd_tx: cmd_tx.clone(),
+        commands: control_tx,
+        wake_ui: std::sync::Arc::new(move || {
+            if let Some(ctx) = repaint_ctx_for_control.get() {
+                ctx.request_repaint();
+            }
+        }),
         sequence: sequence.clone(),
         media_pool: media_pool.clone(),
         frame_buffer: frame_buffer.clone(),
@@ -513,7 +523,7 @@ fn main() -> Result<()> {
                 }
             }
 
-            Ok(Box::new(klipp_ui::KlippApp::new(
+            let mut app = klipp_ui::KlippApp::new(
                 cc,
                 cmd_tx_clone,
                 event_rx,
@@ -527,7 +537,9 @@ fn main() -> Result<()> {
                 perf_ring_clone,
                 param_change_queue,
                 foreground_for_ui,
-            )))
+            );
+            app.set_control_inbox(control_rx);
+            Ok(Box::new(app))
         }),
     )
     .map_err(|e| anyhow::anyhow!("eframe error: {e}"))?;

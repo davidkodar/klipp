@@ -71,7 +71,8 @@ fn harness() -> Harness {
     fb.data[3] = 255;
 
     let ctx = ControlContext {
-        cmd_tx,
+        commands: cmd_tx,
+        wake_ui: Arc::new(|| {}),
         sequence: Arc::new(RwLock::new(klipp_timeline::Sequence::new_default())),
         media_pool: Arc::new(RwLock::new(klipp_media::MediaPool::new())),
         frame_buffer: Arc::new(Mutex::new(fb)),

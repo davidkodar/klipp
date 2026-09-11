@@ -165,6 +165,14 @@ impl Default for ExportDialogState {
 pub struct KlippApp {
     cmd_tx: Sender<AppCommand>,
     event_rx: Receiver<AppEvent>,
+    /// Commands from the control socket (klipp-control / klipp-mcp).
+    ///
+    /// Drained into `send_commands` every frame, so a remote command
+    /// takes exactly the route a button click does. That matters: many
+    /// `AppCommand`s — colour, clip, media — are handled *here* by the
+    /// UI's routers and never reach the engine's channel, so a control
+    /// server that wrote to the engine directly saw them silently vanish.
+    control_inbox: Option<Receiver<AppCommand>>,
     frame_buffer: SharedFrameBuffer,
     /// Source-viewer frame buffer — engine writes decoded source
     /// media frames here during source playback / seek; the source
@@ -423,6 +431,7 @@ impl KlippApp {
         let mut app = Self {
             cmd_tx,
             event_rx,
+            control_inbox: None,
             frame_buffer,
             source_frame_buffer,
             sequence,
@@ -994,7 +1003,23 @@ impl KlippApp {
         }
     }
 
+    /// Attach the control socket's command inbox. See `control_inbox`.
+    pub fn set_control_inbox(&mut self, inbox: Receiver<AppCommand>) {
+        self.control_inbox = Some(inbox);
+    }
+
+    /// Route queued control-socket commands through `send_commands`, the
+    /// same entry point the UI's own widgets use.
+    fn drain_control_inbox(&mut self) {
+        let Some(inbox) = self.control_inbox.as_ref() else { return };
+        let cmds: Vec<AppCommand> = inbox.try_iter().collect();
+        if !cmds.is_empty() {
+            self.send_commands(cmds);
+        }
+    }
+
     fn drain_events(&mut self, ctx: &egui::Context) {
+        self.drain_control_inbox();
         while let Ok(event) = self.event_rx.try_recv() {
             match event {
                 AppEvent::PlaybackStarted => {
