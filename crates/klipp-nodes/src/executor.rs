@@ -1084,11 +1084,10 @@ impl GraphExecutor {
             // it ran as a real node on the CPU and copied the whole frame
             // to change nothing: 31 ms a frame at 4K, and it sat in front
             // of the Corrector, so the chain could not start from a seed.
-            let noop_input_transform = node.kind == NodeKind::InputTransform
-                && !node
-                    .params
-                    .log_format
-                    .is_some_and(klipp_core::LogFormat::needs_input_transform);
+            // An InputTransform only records the source format (the
+            // decoder has already decoded it), so it is always a
+            // passthrough: tunnelled, never run, never copied.
+            let noop_input_transform = node.kind == NodeKind::InputTransform;
             // Default-ness at *this frame*: a keyframed node with neutral
             // static params (an exposure ramp from 0) must not be bypassed
             // for the whole clip. `params_for_frame` borrows when the node
@@ -1621,9 +1620,8 @@ impl GraphExecutor {
             return false;
         }
         match kind {
-            NodeKind::InputTransform => params
-                .log_format
-                .is_some_and(klipp_core::LogFormat::needs_input_transform),
+            // Records the source format; never touches the pixels.
+            NodeKind::InputTransform => false,
             NodeKind::Exposure => params.exposure.unwrap_or(0.0) != 0.0,
             NodeKind::Contrast => {
                 params.contrast.unwrap_or(0.0) != 0.0 || params.clarity.unwrap_or(0.0) != 0.0
@@ -1828,16 +1826,6 @@ impl GraphExecutor {
         let _ = gpu; // borrow released for the match arms below
 
         match kind {
-            NodeKind::InputTransform => {
-                let Some(fmt) = params.log_format else { return None };
-                if !fmt.needs_input_transform() {
-                    return None;
-                }
-                let lut = klipp_color::build_input_transform_lut(fmt);
-                self.gpu.as_mut().unwrap()
-                    .apply_input_transform_chain(in_is_a, width, height, &lut);
-                Some(1)
-            }
             NodeKind::Exposure => {
                 let exp = params.exposure.unwrap_or(0.0);
                 if exp == 0.0 { return None; }
@@ -2324,22 +2312,12 @@ impl GraphExecutor {
             // into any chain is a no-op on the pixels.
             NodeKind::Reroute => primary_input.to_vec(),
 
-            NodeKind::InputTransform => {
-                if let Some(fmt) = params.log_format {
-                    if !fmt.needs_input_transform() {
-                        primary_input.to_vec()
-                    } else if let Some(gpu) = &mut self.gpu {
-                        let lut = klipp_color::build_input_transform_lut(fmt);
-                        gpu.apply_input_transform_gpu(primary_input.to_vec(), width, height, &lut)
-                    } else {
-                        let mut frame = primary_input.to_vec();
-                        klipp_color::linear::apply_input_transform(&mut frame, fmt);
-                        frame
-                    }
-                } else {
-                    primary_input.to_vec()
-                }
-            }
+            // The node records which log format the media is — the media
+            // pool passes it to the decoder, which decodes before the
+            // graph runs. It must not touch the pixels: transforming here
+            // would transform a second time. See
+            // `LogFormat::needs_input_transform`.
+            NodeKind::InputTransform => primary_input.to_vec(),
 
             NodeKind::Exposure => {
                 let exp = params.exposure.unwrap_or(0.0);
@@ -5247,6 +5225,50 @@ mod tests {
         let frame: Vec<f32> = input.to_vec();
         let (result, _) = exec.execute_linear(&frame, &graph, 1, 1, 0.0, 0, None, None).unwrap();
         [result[0], result[1], result[2], result[3]]
+    }
+
+    /// An InputTransform node never touches the pixels, whatever format
+    /// it records: the decoder has already decoded the clip, and a second
+    /// transform is what used to crush every PQ clip the moment it was
+    /// graded. Scene-linear values above white say so loudly — the GPU
+    /// version of that transform clamped them to 1.0.
+    #[test]
+    fn an_input_transform_node_leaves_the_picture_alone() {
+        let (src, it, out) = (NodeId::new_v4(), NodeId::new_v4(), NodeId::new_v4());
+        let node = |id, kind, params| crate::graph::Node {
+            id, kind, label: String::new(), enabled: true, params,
+            keyframes: Default::default(), output_link: None, input_links: Vec::new(),
+        };
+        for format in [
+            klipp_core::LogFormat::SLog3,
+            klipp_core::LogFormat::PQ,
+            klipp_core::LogFormat::LogC3,
+            klipp_core::LogFormat::Srgb,
+        ] {
+            let mut params = NodeParams::default();
+            params.log_format = Some(format);
+            let graph = NodeGraph {
+                nodes: vec![
+                    node(src, NodeKind::Source, Default::default()),
+                    node(it, NodeKind::InputTransform, params),
+                    node(out, NodeKind::Output, Default::default()),
+                ],
+                edges: vec![
+                    crate::graph::Edge { from_node: src, from_port: 0, to_node: it, to_port: 0 },
+                    crate::graph::Edge { from_node: it, from_port: 0, to_node: out, to_port: 0 },
+                ],
+                output_node_id: out,
+                node_positions: Default::default(),
+                working_space_override: None,
+                frames: Vec::new(),
+                sticky_notes: Vec::new(),
+            };
+            // Mid-grey, a highlight four times white, and a negative.
+            let frame: Vec<f32> = vec![0.18, 4.0, -0.05, 1.0];
+            let mut exec = GraphExecutor::new_cpu_only();
+            let (result, _) = exec.execute_linear(&frame, &graph, 1, 1, 0.0, 0, None, None).unwrap();
+            assert_eq!(result, frame, "{format:?} changed the picture");
+        }
     }
 
     #[test]

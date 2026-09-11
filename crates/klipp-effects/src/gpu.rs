@@ -203,8 +203,6 @@ pub struct GpuEffectsPipeline {
     // Compute pipeline — color warper (12-sector hue/sat)
     color_warper_pipeline: wgpu::ComputePipeline,
     // Compute pipeline — input transform (log-to-sRGB via 1D LUT, reuses huesat_bgl)
-    input_transform_pipeline: wgpu::ComputePipeline,
-    input_transform_lut_buf: wgpu::Buffer,
     // Compute pipelines — clarity (3-pass: blur_h, blur_v, apply)
     clarity_blur_h_pipeline: wgpu::ComputePipeline,
     clarity_blur_v_pipeline: wgpu::ComputePipeline,
@@ -319,9 +317,6 @@ pub struct GpuEffectsPipeline {
     /// `rgb_curves_lut_buf` as binding 3. Used by `apply_rgb_curves_chain`.
     chain_bg_rgb_curves: Vec<Option<wgpu::BindGroup>>,
     /// Pre-allocated bind groups for the huesat layout with
-    /// `input_transform_lut_buf` as binding 3. Used by
-    /// `apply_input_transform_chain`.
-    chain_bg_input_transform: Vec<Option<wgpu::BindGroup>>,
     /// Pre-allocated bind groups for the huesat layout with `buf_c`
     /// as binding 3. Used by `apply_clarity_chain` pass 3.
     chain_bg_clarity_apply: Vec<Option<wgpu::BindGroup>>,
@@ -795,7 +790,6 @@ impl GpuEffectsPipeline {
         let stabilization_pipeline = create_pipeline(&device, &huesat_pl, "stabilization", SHADER_STABILIZATION);
         let vibrance_pipeline = create_pipeline(&device, &pipeline_layout, "vibrance", SHADER_VIBRANCE);
         let color_warper_pipeline = create_pipeline(&device, &pipeline_layout, "color_warper", SHADER_COLOR_WARPER);
-        let input_transform_pipeline = create_pipeline(&device, &huesat_pl, "input_transform", SHADER_INPUT_TRANSFORM);
         let clarity_blur_h_pipeline = create_pipeline(&device, &pipeline_layout, "clarity_blur_h", SHADER_CLARITY_BLUR_H);
         let clarity_blur_v_pipeline = create_pipeline(&device, &pipeline_layout, "clarity_blur_v", SHADER_CLARITY_BLUR_V);
         let clarity_apply_pipeline = create_pipeline(&device, &huesat_pl, "clarity_apply", SHADER_CLARITY_APPLY);
@@ -825,14 +819,6 @@ impl GpuEffectsPipeline {
         let rgb_curves_lut_buf = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("rgb_curves_lut"),
             size: 4 * 256 * 4,
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-
-        // Input transform LUT buffer: 256 entries × 4 bytes = 1024 bytes
-        let input_transform_lut_buf = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("input_transform_lut"),
-            size: 256 * 4,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -954,8 +940,6 @@ impl GpuEffectsPipeline {
             lut3d_buf_size: 0,
             vibrance_pipeline,
             color_warper_pipeline,
-            input_transform_pipeline,
-            input_transform_lut_buf,
             clarity_blur_h_pipeline,
             clarity_blur_v_pipeline,
             clarity_apply_pipeline,
@@ -1001,7 +985,6 @@ impl GpuEffectsPipeline {
             chain_bg_3binding: (0..CHAIN_PARAMS_RING_SIZE * 4).map(|_| None).collect(),
             chain_bg_huesat: (0..CHAIN_PARAMS_RING_SIZE * 2).map(|_| None).collect(),
             chain_bg_rgb_curves: (0..CHAIN_PARAMS_RING_SIZE * 2).map(|_| None).collect(),
-            chain_bg_input_transform: (0..CHAIN_PARAMS_RING_SIZE * 2).map(|_| None).collect(),
             chain_bg_clarity_apply: (0..CHAIN_PARAMS_RING_SIZE * 2).map(|_| None).collect(),
             chain_bg_mask_cutout: (0..CHAIN_PARAMS_RING_SIZE * 2).map(|_| None).collect(),
             chain_bg_build_count: Arc::new(std::sync::atomic::AtomicU64::new(0)),
@@ -1186,19 +1169,6 @@ impl GpuEffectsPipeline {
                 });
                 self.chain_bg_build_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 self.chain_bg_rgb_curves[idx] = Some(bg_rgb_curves);
-
-                let bg_input_transform = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                    label: Some("chain_bg_input_transform"),
-                    layout: &self.huesat_bgl,
-                    entries: &[
-                        wgpu::BindGroupEntry { binding: 0, resource: input.as_entire_binding() },
-                        wgpu::BindGroupEntry { binding: 1, resource: output.as_entire_binding() },
-                        wgpu::BindGroupEntry { binding: 2, resource: self.params_ring[slot].as_entire_binding() },
-                        wgpu::BindGroupEntry { binding: 3, resource: self.input_transform_lut_buf.as_entire_binding() },
-                    ],
-                });
-                self.chain_bg_build_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                self.chain_bg_input_transform[idx] = Some(bg_input_transform);
 
                 let bg_clarity_apply = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
                     label: Some("chain_bg_clarity_apply"),
@@ -1984,42 +1954,6 @@ impl GpuEffectsPipeline {
         self.download_linear_rgba_f32(buf_b, (width * height) as usize)
     }
 
-    /// Apply input transform (log-to-sRGB) on GPU using a pre-computed 1D LUT.
-    pub fn apply_input_transform_gpu(&mut self, linear_rgba: Vec<f32>, width: u32, height: u32, lut_data: &[f32; 256]) -> Vec<f32> {
-        if self.is_device_lost() {
-            return linear_rgba;
-        }
-        let byte_size = (width * height * 16) as u64;
-        self.ensure_buffers(byte_size);
-        let buf_a = self.buf_a.as_ref().unwrap();
-        let buf_b = self.buf_b.as_ref().unwrap();
-        self.queue.write_buffer(buf_a, 0, bytemuck::cast_slice(&linear_rgba));
-        self.queue.write_buffer(&self.input_transform_lut_buf, 0, bytemuck::cast_slice(lut_data));
-        self.write_params(&GpuInputTransformParams { width, height, _pad0: 0, _pad1: 0 });
-        let workgroups = (width * height).div_ceil(WORKGROUP_SIZE);
-        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("input_transform_bg"),
-            layout: &self.huesat_bgl,
-            entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: buf_a.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: buf_b.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 2, resource: self.params_buf.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 3, resource: self.input_transform_lut_buf.as_entire_binding() },
-            ],
-        });
-        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
-        {
-            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: None, timestamp_writes: None });
-            pass.set_pipeline(&self.input_transform_pipeline);
-            pass.set_bind_group(0, &bind_group, &[]);
-            pass.dispatch_workgroups(workgroups, 1, 1);
-        }
-        self.queue.submit(std::iter::once(encoder.finish()));
-        // Non-blocking driver nudge so NVIDIA Vulkan's deferred-destruction
-        // queue drains between submits. See submit_chain for context.
-        self.device.poll(wgpu::Maintain::Poll);
-        self.download_linear_rgba_f32(buf_b, (width * height) as usize)
-    }
 
     /// Apply clarity (midtone unsharp mask) on GPU using 3-pass approach.
     pub fn apply_clarity_gpu(&mut self, linear_rgba: Vec<f32>, width: u32, height: u32, amount: f32) -> Vec<f32> {
@@ -2971,27 +2905,6 @@ impl GpuEffectsPipeline {
         Self::record_compute_dispatch(enc, &self.color_warper_pipeline, bind_group, workgroups);
     }
 
-    /// Dispatch-only input-transform (log→linear via 1D LUT) pass.
-    pub fn apply_input_transform_chain(
-        &mut self,
-        in_is_a: bool,
-        width: u32,
-        height: u32,
-        lut_data: &[f32; 256],
-    ) {
-        if self.is_device_lost() {
-            return;
-        }
-        self.queue.write_buffer(&self.input_transform_lut_buf, 0, bytemuck::cast_slice(lut_data));
-        let slot = self.next_params_slot();
-        self.write_chain_params(slot, &GpuInputTransformParams { width, height, _pad0: 0, _pad1: 0 });
-        let workgroups = (width * height).div_ceil(WORKGROUP_SIZE);
-        let bind_group = self.chain_bg_input_transform[slot * 2 + Self::chain_cfg_4b(in_is_a)]
-            .as_ref()
-            .expect(Self::CHAIN_BG_EXPECT);
-        let enc = self.chain_encoder.as_mut().expect(Self::CHAIN_ENCODER_EXPECT);
-        Self::record_compute_dispatch(enc, &self.input_transform_pipeline, bind_group, workgroups);
-    }
 
     /// Dispatch-only clarity (midtone unsharp-mask) pass. Uses `buf_c` as
     /// scratch for the horizontal/vertical luma blur. The caller must have
@@ -10274,45 +10187,6 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 "
 );
 
-// ── Input Transform (log-to-linear + sRGB gamma) ─────────────────────────────
-// Uses a 256-entry 1D LUT per channel (pre-computed on CPU from the log format).
-const SHADER_INPUT_TRANSFORM: &str = "
-struct Params { width: u32, height: u32, _pad0: u32, _pad1: u32, }
-@group(0) @binding(0) var<storage, read> input: array<vec4<f32>>;
-@group(0) @binding(1) var<storage, read_write> output: array<vec4<f32>>;
-@group(0) @binding(2) var<uniform> params: Params;
-@group(0) @binding(3) var<storage, read> lut: array<f32>;
-// LUT layout: 256 entries (input 0..255 → output 0..1 sRGB)
-
-// Input transform is a 1D LUT keyed by sRGB 0-255 (the historical
-// design). Storage is now linear-f32, so we re-encode to sRGB,
-// index, and decode the LUT output (also sRGB) back to linear.
-fn it_linear_to_srgb(c: f32) -> f32 {
-    let x = clamp(c, 0.0, 1.0);
-    if (x <= 0.0031308) { return x * 12.92; }
-    else { return 1.055 * pow(x, 1.0/2.4) - 0.055; }
-}
-
-fn it_srgb_to_linear(c: f32) -> f32 {
-    let x = clamp(c, 0.0, 1.0);
-    if (x <= 0.04045) { return x / 12.92; }
-    else { return pow((x + 0.055) / 1.055, 2.4); }
-}
-
-@compute @workgroup_size(256)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
-    let idx = gid.x;
-    if idx >= params.width * params.height { return; }
-    let pixel = input[idx];
-    let ri = u32(clamp(it_linear_to_srgb(pixel.x) * 255.0, 0.0, 255.0));
-    let gi = u32(clamp(it_linear_to_srgb(pixel.y) * 255.0, 0.0, 255.0));
-    let bi = u32(clamp(it_linear_to_srgb(pixel.z) * 255.0, 0.0, 255.0));
-    let ro = it_srgb_to_linear(lut[ri]);
-    let go = it_srgb_to_linear(lut[gi]);
-    let bo = it_srgb_to_linear(lut[bi]);
-    output[idx] = vec4<f32>(ro, go, bo, pixel.w);
-}
-";
 
 // Clarity — three-pass midtone unsharp mask. CLARITY_BLUR_H reads
 // linear RGBA, computes linear-light BT.709 luma, writes the luma
@@ -10671,7 +10545,6 @@ mod shader_validation_tests {
         ("SHADER_MASK_V2", SHADER_MASK_V2),
         ("SHADER_VIBRANCE", SHADER_VIBRANCE),
         ("SHADER_COLOR_WARPER", SHADER_COLOR_WARPER),
-        ("SHADER_INPUT_TRANSFORM", SHADER_INPUT_TRANSFORM),
         ("SHADER_CLARITY_BLUR_H", SHADER_CLARITY_BLUR_H),
         ("SHADER_CLARITY_BLUR_V", SHADER_CLARITY_BLUR_V),
         ("SHADER_MASK_CUTOUT", SHADER_MASK_CUTOUT),
