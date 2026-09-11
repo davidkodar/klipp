@@ -670,28 +670,39 @@ fn linear_to_srgb_scalar(c: f32) -> f32 {
 /// Bulk sRGB u8 RGBA → linear f32 RGBA decode. Alpha stays linear per
 /// sRGB spec. Used at the u8⇄linear boundary when an effect (or caller
 /// that still speaks u8) needs to meet the linear-f32 `apply_effects`
-/// signature.
+/// signature, and for every title and generator frame the renderer draws.
+///
+/// A u8 has 256 values, so the curve is a table — the same numbers as
+/// evaluating it per channel, without a `powf` each — filled in parallel.
 pub fn srgb_u8_to_linear_f32_rgba(rgba: &[u8]) -> Vec<f32> {
-    let mut out = Vec::with_capacity(rgba.len());
-    for chunk in rgba.chunks_exact(4) {
-        out.push(srgb_to_linear_scalar(chunk[0] as f32 / 255.0));
-        out.push(srgb_to_linear_scalar(chunk[1] as f32 / 255.0));
-        out.push(srgb_to_linear_scalar(chunk[2] as f32 / 255.0));
-        out.push(chunk[3] as f32 / 255.0);
-    }
+    use rayon::prelude::*;
+    static LUT: std::sync::OnceLock<[f32; 256]> = std::sync::OnceLock::new();
+    let lut = LUT.get_or_init(|| std::array::from_fn(|i| srgb_to_linear_scalar(i as f32 / 255.0)));
+    let mut out = vec![0.0f32; rgba.len() / 4 * 4];
+    out.par_chunks_mut(4 * 4096).zip(rgba.par_chunks(4 * 4096)).for_each(|(o, i)| {
+        for (o, i) in o.chunks_exact_mut(4).zip(i.chunks_exact(4)) {
+            o[0] = lut[i[0] as usize];
+            o[1] = lut[i[1] as usize];
+            o[2] = lut[i[2] as usize];
+            o[3] = i[3] as f32 / 255.0;
+        }
+    });
     out
 }
 
 /// Inverse of [`srgb_u8_to_linear_f32_rgba`]. Values outside `[0, 1]`
 /// clamp at the u8 boundary (not earlier).
 pub fn linear_f32_rgba_to_srgb_u8(linear: &[f32]) -> Vec<u8> {
-    let mut out = Vec::with_capacity(linear.len());
-    for chunk in linear.chunks_exact(4) {
-        out.push((linear_to_srgb_scalar(chunk[0]).clamp(0.0, 1.0) * 255.0 + 0.5) as u8);
-        out.push((linear_to_srgb_scalar(chunk[1]).clamp(0.0, 1.0) * 255.0 + 0.5) as u8);
-        out.push((linear_to_srgb_scalar(chunk[2]).clamp(0.0, 1.0) * 255.0 + 0.5) as u8);
-        out.push((chunk[3].clamp(0.0, 1.0) * 255.0 + 0.5) as u8);
-    }
+    use rayon::prelude::*;
+    let mut out = vec![0u8; linear.len() / 4 * 4];
+    out.par_chunks_mut(4 * 4096).zip(linear.par_chunks(4 * 4096)).for_each(|(o, i)| {
+        for (o, i) in o.chunks_exact_mut(4).zip(i.chunks_exact(4)) {
+            o[0] = (linear_to_srgb_scalar(i[0]).clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
+            o[1] = (linear_to_srgb_scalar(i[1]).clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
+            o[2] = (linear_to_srgb_scalar(i[2]).clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
+            o[3] = (i[3].clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
+        }
+    });
     out
 }
 
