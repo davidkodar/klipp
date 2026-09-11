@@ -1397,7 +1397,10 @@ impl GpuEffectsPipeline {
             width, height,
             lift_sat, lift_bri, gamma_sat, gamma_bri,
             gain_sat, gain_bri, offset_sat, offset_bri,
-            _pad0: 0, _pad1: 0,
+            luma_yr: self.luma_coefs[0],
+            luma_yg: self.luma_coefs[1],
+            luma_yb: self.luma_coefs[2],
+            _pad0: 0,
         });
         self.dispatch(&self.wheel_sat_bri_pipeline, buf_a, buf_b, workgroups);
 
@@ -1434,6 +1437,10 @@ impl GpuEffectsPipeline {
             width, height,
             preserve_luma: if preserve_luma { 1 } else { 0 },
             mix,
+            luma_yr: self.luma_coefs[0],
+            luma_yg: self.luma_coefs[1],
+            luma_yb: self.luma_coefs[2],
+            _pad0: 0,
         });
 
         let pixel_count = width * height;
@@ -1953,7 +1960,7 @@ impl GpuEffectsPipeline {
         let buf_b = self.buf_b.as_ref().unwrap();
         self.queue.write_buffer(buf_a, 0, bytemuck::cast_slice(&linear_rgba));
         let workgroups = (width * height).div_ceil(WORKGROUP_SIZE);
-        self.write_params(&GpuVibranceParams { width, height, amount, _pad: 0 });
+        self.write_params(&GpuVibranceParams { width, height, amount, _pad: 0, luma_yr: self.luma_coefs[0], luma_yg: self.luma_coefs[1], luma_yb: self.luma_coefs[2], _pad1: 0 });
         self.dispatch(&self.vibrance_pipeline, buf_a, buf_b, workgroups);
         self.download_linear_rgba_f32(buf_b, (width * height) as usize)
     }
@@ -2040,14 +2047,14 @@ impl GpuEffectsPipeline {
         let radius = 20u32;
 
         // Pass 1: horizontal blur (input RGBA → buf_b luma)
-        self.write_params(&GpuClarityBlurParams { width, height, radius, _pad: 0 });
+        self.write_params(&GpuClarityBlurParams { width, height, radius, _pad: 0, luma_yr: self.luma_coefs[0], luma_yg: self.luma_coefs[1], luma_yb: self.luma_coefs[2], _pad1: 0 });
         self.dispatch(&self.clarity_blur_h_pipeline, buf_a, buf_b, workgroups);
 
         // Pass 2: vertical blur (buf_b luma → buf_c blurred luma)
         self.dispatch(&self.clarity_blur_v_pipeline, buf_b, buf_c, workgroups);
 
         // Pass 3: apply unsharp mask (input RGBA + blurred luma → output RGBA)
-        self.write_params(&GpuClarityApplyParams { width, height, amount, _pad: 0 });
+        self.write_params(&GpuClarityApplyParams { width, height, amount, _pad: 0, luma_yr: self.luma_coefs[0], luma_yg: self.luma_coefs[1], luma_yb: self.luma_coefs[2], _pad1: 0 });
         let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("clarity_apply_bg"),
             layout: &self.huesat_bgl,
@@ -2873,7 +2880,10 @@ impl GpuEffectsPipeline {
             width, height,
             lift_sat, lift_bri, gamma_sat, gamma_bri,
             gain_sat, gain_bri, offset_sat, offset_bri,
-            _pad0: 0, _pad1: 0,
+            luma_yr: self.luma_coefs[0],
+            luma_yg: self.luma_coefs[1],
+            luma_yb: self.luma_coefs[2],
+            _pad0: 0,
         });
         let workgroups = (width * height).div_ceil(WORKGROUP_SIZE);
         let bind_group = self.chain_bg_3binding[slot * 4 + Self::chain_cfg_3b_ab(in_is_a)]
@@ -2902,6 +2912,10 @@ impl GpuEffectsPipeline {
             width, height,
             preserve_luma: if preserve_luma { 1 } else { 0 },
             mix,
+            luma_yr: self.luma_coefs[0],
+            luma_yg: self.luma_coefs[1],
+            luma_yb: self.luma_coefs[2],
+            _pad0: 0,
         });
         let workgroups = (width * height).div_ceil(WORKGROUP_SIZE);
         let bind_group = self.chain_bg_rgb_curves[slot * 2 + Self::chain_cfg_4b(in_is_a)]
@@ -2923,7 +2937,7 @@ impl GpuEffectsPipeline {
             return;
         }
         let slot = self.next_params_slot();
-        self.write_chain_params(slot, &GpuVibranceParams { width, height, amount, _pad: 0 });
+        self.write_chain_params(slot, &GpuVibranceParams { width, height, amount, _pad: 0, luma_yr: self.luma_coefs[0], luma_yg: self.luma_coefs[1], luma_yb: self.luma_coefs[2], _pad1: 0 });
         let workgroups = (width * height).div_ceil(WORKGROUP_SIZE);
         let bind_group = self.chain_bg_3binding[slot * 4 + Self::chain_cfg_3b_ab(in_is_a)]
             .as_ref()
@@ -3020,9 +3034,9 @@ impl GpuEffectsPipeline {
         // but keeping them separate simplifies reasoning and leaves
         // room if the blur params ever diverge.
         let blur_slot = self.next_params_slot();
-        self.write_chain_params(blur_slot, &GpuClarityBlurParams { width, height, radius, _pad: 0 });
+        self.write_chain_params(blur_slot, &GpuClarityBlurParams { width, height, radius, _pad: 0, luma_yr: self.luma_coefs[0], luma_yg: self.luma_coefs[1], luma_yb: self.luma_coefs[2], _pad1: 0 });
         let apply_slot = self.next_params_slot();
-        self.write_chain_params(apply_slot, &GpuClarityApplyParams { width, height, amount, _pad: 0 });
+        self.write_chain_params(apply_slot, &GpuClarityApplyParams { width, height, amount, _pad: 0, luma_yr: self.luma_coefs[0], luma_yg: self.luma_coefs[1], luma_yb: self.luma_coefs[2], _pad1: 0 });
 
         // Pass 1: horizontal blur (in RGBA → out luma scratch).
         // 3-binding pool AtoB/BtoA at `blur_slot`.
@@ -4179,7 +4193,7 @@ impl GpuEffectsPipeline {
                     current_in_a = !current_in_a;
                 }
                 BuiltinEffect::Vibrance { amount } => {
-                    self.write_params(&GpuVibranceParams { width, height, amount: *amount, _pad: 0 });
+                    self.write_params(&GpuVibranceParams { width, height, amount: *amount, _pad: 0, luma_yr: self.luma_coefs[0], luma_yg: self.luma_coefs[1], luma_yb: self.luma_coefs[2], _pad1: 0 });
                     self.dispatch(&self.vibrance_pipeline, input, output, workgroups);
                     current_in_a = !current_in_a;
                 }
@@ -5036,8 +5050,10 @@ struct GpuWheelSatBriParams {
     gain_bri: f32,
     offset_sat: f32,
     offset_bri: f32,
+    luma_yr: f32,
+    luma_yg: f32,
+    luma_yb: f32,
     _pad0: u32,
-    _pad1: u32,
 }
 
 #[repr(C)]
@@ -5047,12 +5063,17 @@ struct GpuRgbCurvesParams {
     height: u32,
     preserve_luma: u32,
     mix: f32,
+    luma_yr: f32,
+    luma_yg: f32,
+    luma_yb: f32,
+    _pad0: u32,
 }
 
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct GpuVibranceParams {
     width: u32, height: u32, amount: f32, _pad: u32,
+    luma_yr: f32, luma_yg: f32, luma_yb: f32, _pad1: u32,
 }
 
 #[repr(C)]
@@ -5073,12 +5094,14 @@ struct GpuInputTransformParams {
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct GpuClarityBlurParams {
     width: u32, height: u32, radius: u32, _pad: u32,
+    luma_yr: f32, luma_yg: f32, luma_yb: f32, _pad1: u32,
 }
 
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct GpuClarityApplyParams {
     width: u32, height: u32, amount: f32, _pad: u32,
+    luma_yr: f32, luma_yg: f32, luma_yb: f32, _pad1: u32,
 }
 
 #[repr(C)]
@@ -9789,8 +9812,10 @@ struct Params {
     gain_bri: f32,
     offset_sat: f32,
     offset_bri: f32,
+    luma_yr: f32,
+    luma_yg: f32,
+    luma_yb: f32,
     _pad0: u32,
-    _pad1: u32,
 }
 
 @group(0) @binding(0) var<storage, read> input: array<vec4<f32>>;
@@ -9809,7 +9834,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     var g = orig.y;
     var b = orig.z;
 
-    let luma = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    let luma = params.luma_yr * r + params.luma_yg * g + params.luma_yb * b;
 
     let lift_w = max(1.0 - luma, 0.0);
     let gamma_w = max(sin(clamp(luma, 0.0, 1.0) * 3.14159265), 0.0);
@@ -9823,7 +9848,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
     let sat_adj = params.lift_sat * lift_w + params.gamma_sat * gamma_w + params.gain_sat * gain_w + params.offset_sat;
     let sat_factor = 1.0 + sat_adj;
-    let luma2 = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    let luma2 = params.luma_yr * r + params.luma_yg * g + params.luma_yb * b;
     r = luma2 + (r - luma2) * sat_factor;
     g = luma2 + (g - luma2) * sat_factor;
     b = luma2 + (b - luma2) * sat_factor;
@@ -9833,10 +9858,15 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 "
 );
 
-// RGB curves — four LUT-lookup curves (master + per-channel).
-// Curves are authored on linear input now; 0.18 is mid-grey on
-// the curve axis, not 0.46. BT.709 luma coefficients apply to
-// linear directly for the preserve-luma option.
+// RGB curves — four LUT-lookup curves (master + per-channel), on the
+// display-encoded picture: the curve's axis is the sRGB encoding of the
+// light, so mid-grey sits at 0.46 where a colourist expects it, not at
+// 0.18. Past the curve's ends it continues straight at the slope it
+// ends with, so an identity curve is identity on an HDR highlight
+// instead of flattening it to white, and a curve the user flattened at
+// the top still flattens. Negative channels (a wide-gamut colour in a
+// narrower working space) take the curve mirrored, so they survive too.
+// Preserve-luma and the mix stay in linear light, where luminance is.
 const SHADER_RGB_CURVES: &str = concat!(
     "
 struct Params {
@@ -9844,6 +9874,10 @@ struct Params {
     height: u32,
     preserve_luma: u32,
     mix: f32,
+    luma_yr: f32,
+    luma_yg: f32,
+    luma_yb: f32,
+    _pad0: u32,
 }
 
 @group(0) @binding(0) var<storage, read> input: array<vec4<f32>>;
@@ -9858,6 +9892,7 @@ struct Params {
 ",
     shader_linear_helpers_wgsl!(),
     "
+// The curve inside its [0, 1] domain.
 fn lut_lookup(channel: u32, val: f32) -> f32 {
     let base = channel * 256u;
     let idx_f = clamp(val, 0.0, 1.0) * 255.0;
@@ -9867,6 +9902,32 @@ fn lut_lookup(channel: u32, val: f32) -> f32 {
     return lut[base + idx0] * (1.0 - frac) + lut[base + idx1] * frac;
 }
 
+// The curve over the whole real line: straight past either end, at the
+// slope the curve ends with there.
+fn curve(channel: u32, val: f32) -> f32 {
+    let base = channel * 256u;
+    if val > 1.0 {
+        let slope = (lut[base + 255u] - lut[base + 254u]) * 255.0;
+        return lut[base + 255u] + (val - 1.0) * slope;
+    }
+    if val < 0.0 {
+        let slope = (lut[base + 1u] - lut[base]) * 255.0;
+        return lut[base] + val * slope;
+    }
+    return lut_lookup(channel, val);
+}
+
+// sRGB encode / decode that keep the sign, so a negative channel is not
+// lost to a NaN or a clamp.
+fn enc_signed(c: f32) -> f32 {
+    let e = linear_to_srgb_component(abs(c));
+    return select(e, -e, c < 0.0);
+}
+fn dec_signed(c: f32) -> f32 {
+    let d = srgb_to_linear_component(abs(c));
+    return select(d, -d, c < 0.0);
+}
+
 @compute @workgroup_size(256)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let idx = gid.x;
@@ -9874,18 +9935,18 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
     let orig = unpack(input[idx]);
 
-    // Apply per-channel curves, then master
-    var r = lut_lookup(1u, orig.x);
-    var g = lut_lookup(2u, orig.y);
-    var b = lut_lookup(3u, orig.z);
-    r = lut_lookup(0u, r);
-    g = lut_lookup(0u, g);
-    b = lut_lookup(0u, b);
+    // Per-channel curves, then master, on the display-encoded picture.
+    var r = curve(1u, enc_signed(orig.x));
+    var g = curve(2u, enc_signed(orig.y));
+    var b = curve(3u, enc_signed(orig.z));
+    r = dec_signed(curve(0u, r));
+    g = dec_signed(curve(0u, g));
+    b = dec_signed(curve(0u, b));
 
     // Preserve luma: scale output to match input luma
     if params.preserve_luma != 0u {
-        let orig_luma = 0.2126 * orig.x + 0.7152 * orig.y + 0.0722 * orig.z;
-        let new_luma = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+        let orig_luma = params.luma_yr * orig.x + params.luma_yg * orig.y + params.luma_yb * orig.z;
+        let new_luma = params.luma_yr * r + params.luma_yg * g + params.luma_yb * b;
         if new_luma > 0.0001 {
             let scale = orig_luma / new_luma;
             r = r * scale;
@@ -10075,7 +10136,10 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 // BT.709 luma now sits in its defined domain.
 const SHADER_VIBRANCE: &str = concat!(
     "
-struct Params { width: u32, height: u32, amount: f32, _pad: u32, }
+struct Params {
+    width: u32, height: u32, amount: f32, _pad: u32,
+    luma_yr: f32, luma_yg: f32, luma_yb: f32, _pad1: u32,
+}
 @group(0) @binding(0) var<storage, read> input: array<vec4<f32>>;
 @group(0) @binding(1) var<storage, read_write> output: array<vec4<f32>>;
 @group(0) @binding(2) var<uniform> params: Params;
@@ -10090,7 +10154,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let mx = max(max(p.x, p.y), p.z);
     let mn = min(min(p.x, p.y), p.z);
     let sat = mx - mn;
-    let luma = 0.2126 * p.x + 0.7152 * p.y + 0.0722 * p.z;
+    let luma = params.luma_yr * p.x + params.luma_yg * p.y + params.luma_yb * p.z;
     let weight = 1.0 - clamp(sat, 0.0, 1.0);
     let boost = 1.0 + params.amount * weight;
     let out = vec3<f32>(
@@ -10252,7 +10316,10 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 // weighted by linear midtone presence, centred on 0.18 linear.
 const SHADER_CLARITY_BLUR_H: &str = concat!(
     "
-struct Params { width: u32, height: u32, radius: u32, _pad: u32, }
+struct Params {
+    width: u32, height: u32, radius: u32, _pad: u32,
+    luma_yr: f32, luma_yg: f32, luma_yb: f32, _pad1: u32,
+}
 @group(0) @binding(0) var<storage, read> input: array<vec4<f32>>;
 @group(0) @binding(1) var<storage, read_write> output: array<vec4<f32>>;
 @group(0) @binding(2) var<uniform> params: Params;
@@ -10271,7 +10338,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     for (var dx = -r; dx <= r; dx = dx + 1) {
         let sx = clamp(x + dx, 0, i32(params.width) - 1);
         let p = unpack(input[u32(y) * params.width + u32(sx)]);
-        sum += 0.2126 * p.x + 0.7152 * p.y + 0.0722 * p.z;
+        sum += params.luma_yr * p.x + params.luma_yg * p.y + params.luma_yb * p.z;
         count += 1u;
     }
     let luma = sum / f32(count);
@@ -10283,7 +10350,10 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 );
 
 const SHADER_CLARITY_BLUR_V: &str = "
-struct Params { width: u32, height: u32, radius: u32, _pad: u32, }
+struct Params {
+    width: u32, height: u32, radius: u32, _pad: u32,
+    luma_yr: f32, luma_yg: f32, luma_yb: f32, _pad1: u32,
+}
 @group(0) @binding(0) var<storage, read> input: array<vec4<f32>>;
 @group(0) @binding(1) var<storage, read_write> output: array<vec4<f32>>;
 @group(0) @binding(2) var<uniform> params: Params;
@@ -10363,7 +10433,10 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
 const SHADER_CLARITY_APPLY: &str = concat!(
     "
-struct Params { width: u32, height: u32, amount: f32, _pad: u32, }
+struct Params {
+    width: u32, height: u32, amount: f32, _pad: u32,
+    luma_yr: f32, luma_yg: f32, luma_yb: f32, _pad1: u32,
+}
 @group(0) @binding(0) var<storage, read> input: array<vec4<f32>>;
 @group(0) @binding(1) var<storage, read_write> output: array<vec4<f32>>;
 @group(0) @binding(2) var<uniform> params: Params;
@@ -10376,7 +10449,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let idx = gid.x;
     if idx >= params.width * params.height { return; }
     let p = unpack(input[idx]);
-    let luma = 0.2126 * p.x + 0.7152 * p.y + 0.0722 * p.z;
+    let luma = params.luma_yr * p.x + params.luma_yg * p.y + params.luma_yb * p.z;
     let blurred_luma = blurred[idx].x;
     let detail = luma - blurred_luma;
     // Midtone weight peaked on linear 0.18 (perceptual mid-grey).

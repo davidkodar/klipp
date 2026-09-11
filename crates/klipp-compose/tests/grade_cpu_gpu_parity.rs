@@ -150,6 +150,80 @@ fn cases() -> Vec<(&'static str, NodeKind, NodeParams)> {
     ]
 }
 
+/// A flat frame, for the behaviour tests below.
+struct Flat(f32);
+
+impl FrameSource for Flat {
+    fn frame(&mut self, _c: &Clip, _secs: f64, w: u32, h: u32) -> Option<SourceFrame> {
+        let px = vec![self.0, self.0, self.0, 1.0].repeat((w * h) as usize);
+        Some(SourceFrame { pixels: SourcePixels::Linear(Arc::new(px)), width: w, height: h, pts: None })
+    }
+}
+
+fn render_flat(value: f32, params: &NodeParams, gpu: bool) -> [f32; 3] {
+    let node = |kind, params| Node {
+        id: NodeId::new_v4(), kind, label: String::new(), enabled: true, params,
+        keyframes: Default::default(), output_link: None, input_links: vec![],
+    };
+    let nodes = vec![node(NodeKind::Source, NodeParams::default()), node(NodeKind::RGBCurves, params.clone()), node(NodeKind::Output, NodeParams::default())];
+    let edges = (0..2).map(|i| Edge { from_node: nodes[i].id, from_port: 0, to_node: nodes[i + 1].id, to_port: 0 }).collect();
+    let graph = NodeGraph {
+        output_node_id: nodes[2].id, nodes, edges, node_positions: Default::default(),
+        working_space_override: None, frames: vec![], sticky_notes: vec![],
+    };
+    let mut clip = Clip { kind: ClipKind::Media { media_id: klipp_core::MediaId::new() }, ..Clip::gap(tc(0.0), tc(2.0)) };
+    clip.node_graph = graph;
+    let mut seq = Sequence::new_default();
+    let mut track = Track::new("V", TrackKind::Video);
+    track.clips = vec![clip];
+    seq.tracks = vec![track];
+    let mut r = Renderer::new(klipp_plugin::OfxHost::new(), klipp_title::TitleRenderer::new());
+    r.set_gpu_enabled(gpu);
+    let out = r.render(&seq, tc(1.0), W, H, &mut Flat(value), RenderOptions::default());
+    let i = ((H / 2 * W + W / 2) * 4) as usize;
+    [out[i], out[i + 1], out[i + 2]]
+}
+
+/// The curve's axis is the picture, not the light: a point lifted at 0.46
+/// — the middle of the curve, where mid-grey sits on screen — moves
+/// mid-grey. On the light axis 0.18 was mid-grey and 0.46 was a
+/// three-quarter tone, so the same curve barely touched the mids.
+#[test]
+fn a_curve_moves_the_tones_it_is_drawn_over() {
+    let lifted = CurveSet { master: vec![[0.0, 0.0], [0.46, 0.60], [1.0, 1.0]], ..Default::default() };
+    let params = p(|p| p.curves = Some(lifted));
+    for gpu in [false, true] {
+        if gpu && klipp_effects::gpu::GpuEffectsPipeline::new().is_none() {
+            continue;
+        }
+        let got = render_flat(0.18, &params, gpu);
+        // 0.18 linear is 0.46 encoded; the curve sends it to 0.60, which
+        // is 0.325 in light.
+        let want = klipp_color::transfer::srgb_to_linear(0.60);
+        eprintln!("mid-grey through a lifted curve (gpu {gpu}): {got:?}, want {want:.4}");
+        assert!((got[0] - want).abs() < 0.02, "{got:?} vs {want}");
+    }
+}
+
+/// Past the ends the curve continues straight, so a curve drawn in the
+/// SDR range leaves an HDR highlight where it was instead of flattening
+/// it to white: a 4.0 highlight (four times SDR white) used to come back
+/// as 1.0 whatever the curve did up there.
+#[test]
+fn a_curve_keeps_the_highlights_above_white() {
+    let shadows = CurveSet { master: vec![[0.0, 0.0], [0.25, 0.34], [1.0, 1.0]], ..Default::default() };
+    let params = p(|p| p.curves = Some(shadows));
+    for gpu in [false, true] {
+        if gpu && klipp_effects::gpu::GpuEffectsPipeline::new().is_none() {
+            continue;
+        }
+        let got = render_flat(4.0, &params, gpu);
+        eprintln!("a 4.0 highlight through a shadow curve (gpu {gpu}): {got:?}");
+        assert!(got[0] > 3.0, "the highlight was crushed to {:?}", got);
+        assert!(got[0] < 5.5, "the highlight ran away to {:?}", got);
+    }
+}
+
 #[test]
 fn every_grade_control_matches_between_cpu_and_gpu() {
     if klipp_effects::gpu::GpuEffectsPipeline::new().is_none() {

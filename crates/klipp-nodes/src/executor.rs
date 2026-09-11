@@ -318,10 +318,10 @@ enum GradeStage {
     /// Keep the node's input for a closing `Mix`.
     Keep,
     Grade(klipp_effects::cpu_grade::ColorGrade),
-    Clarity(f32),
-    Vibrance(f32),
-    WheelSatBri([f32; 8]),
-    Curves { lut: Box<[f32; 1024]>, preserve_luma: bool, mix: f32 },
+    Clarity(f32, [f32; 3]),
+    Vibrance(f32, [f32; 3]),
+    WheelSatBri([f32; 8], [f32; 3]),
+    Curves { lut: Box<[f32; 1024]>, preserve_luma: bool, mix: f32, luma: [f32; 3] },
     HueSat { lut: Box<[f32; 1536]>, mix: f32, active: u32 },
     Warper { hue: [f32; 12], sat: [f32; 12] },
     /// Mix with the kept input.
@@ -344,12 +344,12 @@ impl GradeStage {
                 g.lift, g.gamma, g.gain, g.offset, g.log_wheels,
                 g.hue, g.global_mix,
             ),
-            GradeStage::Clarity(a) => gpu.apply_clarity_chain(in_is_a, width, height, *a),
-            GradeStage::Vibrance(a) => gpu.apply_vibrance_chain(in_is_a, width, height, *a),
-            GradeStage::WheelSatBri(v) => {
+            GradeStage::Clarity(a, _) => gpu.apply_clarity_chain(in_is_a, width, height, *a),
+            GradeStage::Vibrance(a, _) => gpu.apply_vibrance_chain(in_is_a, width, height, *a),
+            GradeStage::WheelSatBri(v, _) => {
                 gpu.apply_wheel_sat_bri_chain(in_is_a, width, height, v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7])
             }
-            GradeStage::Curves { lut, preserve_luma, mix } => {
+            GradeStage::Curves { lut, preserve_luma, mix, .. } => {
                 gpu.apply_rgb_curves_chain(in_is_a, width, height, lut, *preserve_luma, *mix)
             }
             GradeStage::HueSat { lut, mix, active } => gpu.apply_huesat_chain(in_is_a, width, height, *mix, lut, *active),
@@ -365,10 +365,10 @@ impl GradeStage {
         match self {
             GradeStage::Keep => *kept = Some(frame.clone()),
             GradeStage::Grade(g) => cg::color_grade(frame, g),
-            GradeStage::Clarity(a) => cg::clarity(frame, width, height, *a),
-            GradeStage::Vibrance(a) => cg::vibrance(frame, *a),
-            GradeStage::WheelSatBri(v) => cg::wheel_sat_bri(frame, v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7]),
-            GradeStage::Curves { lut, preserve_luma, mix } => cg::rgb_curves(frame, lut, *preserve_luma, *mix),
+            GradeStage::Clarity(a, l) => cg::clarity(frame, width, height, *a, *l),
+            GradeStage::Vibrance(a, l) => cg::vibrance(frame, *a, *l),
+            GradeStage::WheelSatBri(v, l) => cg::wheel_sat_bri(frame, v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7], *l),
+            GradeStage::Curves { lut, preserve_luma, mix, luma } => cg::rgb_curves(frame, lut, *preserve_luma, *mix, *luma),
             GradeStage::HueSat { lut, mix, active } => cg::huesat(frame, lut, *mix, *active),
             GradeStage::Warper { hue, sat } => cg::color_warper(frame, hue, sat),
             GradeStage::Mix(m) => {
@@ -2156,13 +2156,14 @@ impl GraphExecutor {
             || grade.hue != 0.0;
 
         let mut later = Vec::new();
+        let luma = klipp_color::linear::luma_coefs(ws);
         let clarity = params.clarity.unwrap_or(0.0);
         if clarity != 0.0 {
-            later.push(GradeStage::Clarity(clarity));
+            later.push(GradeStage::Clarity(clarity, luma));
         }
         let vib = params.vibrance.unwrap_or(0.0);
         if vib != 0.0 {
-            later.push(GradeStage::Vibrance(vib));
+            later.push(GradeStage::Vibrance(vib, luma));
         }
         let satbri = [
             params.lift_sat, params.lift_bri, params.gamma_sat, params.gamma_bri,
@@ -2170,7 +2171,7 @@ impl GraphExecutor {
         ]
         .map(|v| v.unwrap_or(0.0));
         if satbri.iter().any(|&v| v != 0.0) {
-            later.push(GradeStage::WheelSatBri(satbri));
+            later.push(GradeStage::WheelSatBri(satbri, luma));
         }
         if let Some(curves) = params.curves.as_ref().filter(|c| !is_curves_identity(c)) {
             let luts = self
@@ -2182,6 +2183,7 @@ impl GraphExecutor {
                 lut: Box::new(curve_lut_data(&luts)),
                 preserve_luma: params.curves_preserve_luma.unwrap_or(false),
                 mix: params.curves_mix.unwrap_or(1.0),
+                luma,
             });
         }
         if let Some(huesat) = params.huesat.as_ref().filter(|h| !h.is_all_identity()) {
@@ -2407,7 +2409,7 @@ impl GraphExecutor {
                         if let Some(gpu) = &mut self.gpu {
                             gpu.apply_clarity_gpu(frame, width, height, clarity)
                         } else {
-                            run_stages_cpu(&[GradeStage::Clarity(clarity)], &frame, width, height)
+                            run_stages_cpu(&[GradeStage::Clarity(clarity, klipp_color::linear::luma_coefs(self.working_colorspace))], &frame, width, height)
                         }
                     } else {
                         frame
@@ -2441,7 +2443,7 @@ impl GraphExecutor {
                         if let Some(gpu) = &mut self.gpu {
                             gpu.apply_vibrance_gpu(frame, width, height, vib)
                         } else {
-                            run_stages_cpu(&[GradeStage::Vibrance(vib)], &frame, width, height)
+                            run_stages_cpu(&[GradeStage::Vibrance(vib, klipp_color::linear::luma_coefs(self.working_colorspace))], &frame, width, height)
                         }
                     } else {
                         frame
@@ -2504,7 +2506,8 @@ impl GraphExecutor {
                         ls, lb, gs, gb, gas, gab, os, ob,
                     )
                 } else {
-                    run_stages_cpu(&[GradeStage::WheelSatBri([ls, lb, gs, gb, gas, gab, os, ob])], primary_input, width, height)
+                    let luma = klipp_color::linear::luma_coefs(self.working_colorspace);
+                    run_stages_cpu(&[GradeStage::WheelSatBri([ls, lb, gs, gb, gas, gab, os, ob], luma)], primary_input, width, height)
                 }
             }
 
@@ -2532,7 +2535,8 @@ impl GraphExecutor {
                             &lut_data, preserve_luma, mix,
                         )
                     } else {
-                        let stage = GradeStage::Curves { lut: Box::new(lut_data), preserve_luma, mix };
+                        let luma = klipp_color::linear::luma_coefs(self.working_colorspace);
+                        let stage = GradeStage::Curves { lut: Box::new(lut_data), preserve_luma, mix, luma };
                         run_stages_cpu(&[stage], primary_input, width, height)
                     }
                 } else {

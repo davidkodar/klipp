@@ -155,18 +155,17 @@ pub fn hue_rotate_hsl(c: [f32; 3], degrees: f32) -> [f32; 3] {
     [(o[0] + m) * magnitude, (o[1] + m) * magnitude, (o[2] + m) * magnitude]
 }
 
-const BT709: [f32; 3] = [0.2126, 0.7152, 0.0722];
-
-fn luma709(p: &[f32]) -> f32 {
-    BT709[0] * p[0] + BT709[1] * p[1] + BT709[2] * p[2]
+fn luma(l: [f32; 3], p: &[f32]) -> f32 {
+    l[0] * p[0] + l[1] * p[1] + l[2] * p[2]
 }
 
 /// `SHADER_CLARITY_BLUR_H`, `_BLUR_V` and `_APPLY`: a 41-pixel box blur of
-/// BT.709 luma, then midtone detail added back. The GPU's radius is 20.
-pub fn clarity(px: &mut [f32], width: u32, height: u32, amount: f32) {
+/// working-space luma, then midtone detail added back. The GPU's radius
+/// is 20.
+pub fn clarity(px: &mut [f32], width: u32, height: u32, amount: f32, l: [f32; 3]) {
     let (w, h) = (width as usize, height as usize);
     let r: i32 = 20;
-    let luma: Vec<f32> = px.chunks_exact(4).map(luma709).collect();
+    let lumas: Vec<f32> = px.chunks_exact(4).map(|p| luma(l, p)).collect();
     let mut horiz = vec![0.0f32; w * h];
     horiz.par_chunks_exact_mut(w).enumerate().for_each(|(y, row)| {
         for (x, out) in row.iter_mut().enumerate() {
@@ -174,7 +173,7 @@ pub fn clarity(px: &mut [f32], width: u32, height: u32, amount: f32) {
             let mut count = 0u32;
             for dx in -r..=r {
                 let sx = (x as i32 + dx).clamp(0, w as i32 - 1) as usize;
-                sum += luma[y * w + sx];
+                sum += lumas[y * w + sx];
                 count += 1;
             }
             *out = sum / count as f32;
@@ -194,9 +193,9 @@ pub fn clarity(px: &mut [f32], width: u32, height: u32, amount: f32) {
         }
     });
     px.par_chunks_exact_mut(4).zip(blurred.par_iter()).for_each(|(p, &bl)| {
-        let luma = luma709(p);
-        let detail = luma - bl;
-        let midtone_weight = (1.0 - ((luma / 0.18) - 1.0).abs()).max(0.0);
+        let y = luma(l, p);
+        let detail = y - bl;
+        let midtone_weight = (1.0 - ((y / 0.18) - 1.0).abs()).max(0.0);
         let adj = detail * amount * midtone_weight;
         p[0] += adj;
         p[1] += adj;
@@ -205,16 +204,16 @@ pub fn clarity(px: &mut [f32], width: u32, height: u32, amount: f32) {
 }
 
 /// `SHADER_VIBRANCE`.
-pub fn vibrance(px: &mut [f32], amount: f32) {
+pub fn vibrance(px: &mut [f32], amount: f32, l: [f32; 3]) {
     px.par_chunks_exact_mut(4).for_each(|p| {
         let mx = p[0].max(p[1]).max(p[2]);
         let mn = p[0].min(p[1]).min(p[2]);
         let sat = mx - mn;
-        let luma = luma709(p);
+        let y = luma(l, p);
         let weight = 1.0 - sat.clamp(0.0, 1.0);
         let boost = 1.0 + amount * weight;
         for c in &mut p[..3] {
-            *c = luma + (*c - luma) * boost;
+            *c = y + (*c - y) * boost;
         }
     });
 }
@@ -227,26 +226,27 @@ pub fn wheel_sat_bri(
     gamma_sat: f32, gamma_bri: f32,
     gain_sat: f32, gain_bri: f32,
     offset_sat: f32, offset_bri: f32,
+    l: [f32; 3],
 ) {
     px.par_chunks_exact_mut(4).for_each(|p| {
-        let luma = luma709(p);
-        let lift_w = (1.0 - luma).max(0.0);
-        let gamma_w = (luma.clamp(0.0, 1.0) * 3.141_592_65).sin().max(0.0);
-        let gain_w = luma;
+        let y = luma(l, p);
+        let lift_w = (1.0 - y).max(0.0);
+        let gamma_w = (y.clamp(0.0, 1.0) * 3.141_592_65).sin().max(0.0);
+        let gain_w = y;
         let bri_adj = lift_bri * lift_w + gamma_bri * gamma_w + gain_bri * gain_w + offset_bri;
         for c in &mut p[..3] {
             *c += bri_adj;
         }
         let sat_adj = lift_sat * lift_w + gamma_sat * gamma_w + gain_sat * gain_w + offset_sat;
         let sat_factor = 1.0 + sat_adj;
-        let luma2 = luma709(p);
+        let luma2 = luma(l, p);
         for c in &mut p[..3] {
             *c = luma2 + (*c - luma2) * sat_factor;
         }
     });
 }
 
-/// `lut_lookup` in `SHADER_RGB_CURVES`: input clamped to [0, 1].
+/// `lut_lookup` in `SHADER_RGB_CURVES`: inside the [0, 1] domain.
 fn curve_lookup(lut: &[f32], channel: usize, val: f32) -> f32 {
     let base = channel * 256;
     let idx_f = val.clamp(0.0, 1.0) * 255.0;
@@ -255,19 +255,47 @@ fn curve_lookup(lut: &[f32], channel: usize, val: f32) -> f32 {
     lut[base + idx0] * (1.0 - frac) + lut[base + idx0 + 1] * frac
 }
 
-/// `SHADER_RGB_CURVES`. `lut` is master, red, green, blue, 256 each.
-pub fn rgb_curves(px: &mut [f32], lut: &[f32; 1024], preserve_luma: bool, mix: f32) {
+/// `curve` in `SHADER_RGB_CURVES`: straight past either end, at the slope
+/// the curve ends with.
+fn curve(lut: &[f32], channel: usize, val: f32) -> f32 {
+    let base = channel * 256;
+    if val > 1.0 {
+        let slope = (lut[base + 255] - lut[base + 254]) * 255.0;
+        return lut[base + 255] + (val - 1.0) * slope;
+    }
+    if val < 0.0 {
+        let slope = (lut[base + 1] - lut[base]) * 255.0;
+        return lut[base] + val * slope;
+    }
+    curve_lookup(lut, channel, val)
+}
+
+/// `enc_signed` / `dec_signed` in `SHADER_RGB_CURVES`.
+fn enc_signed(c: f32) -> f32 {
+    let e = crate::linear_to_srgb_scalar(c.abs());
+    if c < 0.0 { -e } else { e }
+}
+
+fn dec_signed(c: f32) -> f32 {
+    let d = crate::srgb_to_linear_scalar(c.abs());
+    if c < 0.0 { -d } else { d }
+}
+
+/// `SHADER_RGB_CURVES`. `lut` is master, red, green, blue, 256 each; the
+/// curves act on the display-encoded picture, preserve-luma and the mix
+/// on linear light.
+pub fn rgb_curves(px: &mut [f32], lut: &[f32; 1024], preserve_luma: bool, mix: f32, l: [f32; 3]) {
     px.par_chunks_exact_mut(4).for_each(|p| {
         let orig = [p[0], p[1], p[2]];
-        let mut r = curve_lookup(lut, 1, orig[0]);
-        let mut g = curve_lookup(lut, 2, orig[1]);
-        let mut b = curve_lookup(lut, 3, orig[2]);
-        r = curve_lookup(lut, 0, r);
-        g = curve_lookup(lut, 0, g);
-        b = curve_lookup(lut, 0, b);
+        let mut r = curve(lut, 1, enc_signed(orig[0]));
+        let mut g = curve(lut, 2, enc_signed(orig[1]));
+        let mut b = curve(lut, 3, enc_signed(orig[2]));
+        r = dec_signed(curve(lut, 0, r));
+        g = dec_signed(curve(lut, 0, g));
+        b = dec_signed(curve(lut, 0, b));
         if preserve_luma {
-            let orig_luma = luma709(&orig);
-            let new_luma = BT709[0] * r + BT709[1] * g + BT709[2] * b;
+            let orig_luma = luma(l, &orig);
+            let new_luma = l[0] * r + l[1] * g + l[2] * b;
             if new_luma > 0.0001 {
                 let scale = orig_luma / new_luma;
                 r *= scale;
