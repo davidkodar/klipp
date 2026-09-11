@@ -284,6 +284,33 @@ pub struct ExportSettings {
     /// loadable.
     #[serde(default)]
     pub odt: OdtChoice,
+    /// Peak luminance the HDR master is graded for, cd/m² — the
+    /// mastering display the highlights roll into and the figure written
+    /// as the file's mastering-display max luminance. The user picks it
+    /// for a PQ delivery; 1000, 2000 and 4000 are the mastering displays
+    /// in use. Read it through [`ExportSettings::hdr_peak_nits`] rather
+    /// than directly: an ACES PQ output transform and an HLG delivery
+    /// each carry a peak of their own that overrides this. `serde`
+    /// default keeps settings files written before the peak was
+    /// choosable loading as the 1000 nits they were exported at.
+    #[serde(default = "default_mastering_peak_nits")]
+    pub mastering_peak_nits: f32,
+}
+
+/// The mastering peak an export has when nobody has chosen one: the
+/// 1000-nit display HDR10 masters assume, and what every Klipp HDR
+/// export was fixed at before the peak became a setting.
+pub const DEFAULT_MASTERING_PEAK_NITS: f32 = 1000.0;
+
+/// Mastering peaks offered in the export dialog, cd/m².
+pub const MASTERING_PEAK_CHOICES: [f32; 3] = [1000.0, 2000.0, 4000.0];
+
+/// Bounds a hand-edited or malformed peak is held inside. Below 100 nits
+/// is not an HDR display at all; above 10000 is past what PQ can encode.
+pub const MASTERING_PEAK_RANGE: std::ops::RangeInclusive<f32> = 100.0..=10000.0;
+
+fn default_mastering_peak_nits() -> f32 {
+    DEFAULT_MASTERING_PEAK_NITS
 }
 
 impl Default for ExportSettings {
@@ -308,6 +335,7 @@ impl Default for ExportSettings {
             hdr_mode: HdrMode::default(),
             tone_map_op: ToneMapOp::default(),
             odt: OdtChoice::default(),
+            mastering_peak_nits: DEFAULT_MASTERING_PEAK_NITS,
         }
     }
 }
@@ -329,12 +357,23 @@ impl ExportSettings {
         self.delivery() != HdrMode::Sdr && !self.odt.is_pq()
     }
 
-    /// Peak luminance of the HDR master, cd/m²: the ACES transform's own,
-    /// otherwise 1000.
+    /// Peak luminance of the HDR master, cd/m². An ACES Rec.2100 output
+    /// transform states its own peak and an HLG delivery is defined on a
+    /// 1000-nit nominal display (BT.2100); a PQ delivery is mastered to
+    /// the peak the user picked, held inside
+    /// [`MASTERING_PEAK_RANGE`] in case a settings file carries
+    /// something else.
     pub fn hdr_peak_nits(&self) -> f32 {
         match self.odt {
+            OdtChoice::Rec2100Pq1000 => 1000.0,
             OdtChoice::Rec2100Pq4000 => 4000.0,
-            _ => 1000.0,
+            _ if self.delivery() == HdrMode::Hlg => DEFAULT_MASTERING_PEAK_NITS,
+            // `clamp` would pass a NaN straight through, and a NaN peak
+            // divides the whole picture into NaN downstream.
+            _ if !self.mastering_peak_nits.is_finite() => DEFAULT_MASTERING_PEAK_NITS,
+            _ => self
+                .mastering_peak_nits
+                .clamp(*MASTERING_PEAK_RANGE.start(), *MASTERING_PEAK_RANGE.end()),
         }
     }
 }

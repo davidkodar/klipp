@@ -123,6 +123,11 @@ struct ExportDialogState {
     /// space of the rendered file. Default `MatchViewer` mirrors what
     /// the user has been seeing while editing.
     odt: klipp_core::OdtChoice,
+    /// Mastering peak for a PQ delivery, cd/m². Only surfaced when the
+    /// delivery is PQ through the viewer's own picture — HLG has a
+    /// nominal peak of its own and the ACES transforms are named for
+    /// theirs, so neither offers the choice.
+    mastering_peak_nits: f32,
 }
 
 impl Default for ExportDialogState {
@@ -158,6 +163,7 @@ impl Default for ExportDialogState {
             hdr_mode: klipp_core::HdrMode::Sdr,
             tone_map_op: klipp_core::ToneMapOp::Hable,
             odt: klipp_core::OdtChoice::MatchViewer,
+            mastering_peak_nits: klipp_core::DEFAULT_MASTERING_PEAK_NITS,
         }
     }
 }
@@ -24437,6 +24443,7 @@ fn build_export_settings(dialog: &ExportDialogState) -> ExportSettings {
         hdr_mode: dialog.hdr_mode,
         tone_map_op: dialog.tone_map_op,
         odt: dialog.odt,
+        mastering_peak_nits: dialog.mastering_peak_nits,
     }
 }
 
@@ -28506,6 +28513,41 @@ impl KlippApp {
                             self.export_dialog.odt = klipp_core::OdtChoice::MatchViewer;
                         }
 
+                        // Mastering peak — the display the HDR master is
+                        // graded for. It is what camera-log highlights
+                        // roll into, where the picture is held, and the
+                        // mastering-display max luminance written into
+                        // the file. Only a PQ delivery gets to pick one:
+                        // HLG is defined on a 1000-nit nominal display
+                        // (BT.2100), and the ACES PQ transforms are named
+                        // for the peak they master to.
+                        if delivery == klipp_core::HdrMode::Hlg {
+                            ui.label("Mastering peak:");
+                            ui.add(
+                                egui::Label::new(
+                                    egui::RichText::new(
+                                        "1000 nits — HLG is defined on a 1000-nit nominal display (BT.2100).",
+                                    )
+                                    .small()
+                                    .italics(),
+                                )
+                                .wrap(),
+                            );
+                            ui.end_row();
+                        } else if delivery == klipp_core::HdrMode::Pq && !self.export_dialog.odt.is_pq() {
+                            ui.label("Mastering peak:");
+                            ui.horizontal(|ui| {
+                                for peak in klipp_core::MASTERING_PEAK_CHOICES {
+                                    ui.radio_value(
+                                        &mut self.export_dialog.mastering_peak_nits,
+                                        peak,
+                                        format!("{peak:.0} nits"),
+                                    );
+                                }
+                            });
+                            ui.end_row();
+                        }
+
                         // Tone-map operator — the "colour science" picker.
                         // Applied at the display-boundary inside
                         // `Encoder::encode_linear_frame` during export,
@@ -28560,9 +28602,20 @@ impl KlippApp {
                         if self.export_dialog.odt == klipp_core::OdtChoice::MatchViewer {
                             let hint = if delivery == klipp_core::HdrMode::Sdr {
                                 "Match Viewer = same colour space your monitor's been showing you while editing."
+                                    .to_string()
                             } else {
-                                "Match Viewer = the viewer's picture with its highlights kept, mastered to 1000 nits. \
-                                 SDR material sits at 203 nits (BT.2408). The viewer itself shows the SDR version."
+                                // Name the peak the export actually masters
+                                // to, so the hint cannot contradict the
+                                // picker sitting above it.
+                                let peak = if delivery == klipp_core::HdrMode::Hlg {
+                                    klipp_core::DEFAULT_MASTERING_PEAK_NITS
+                                } else {
+                                    self.export_dialog.mastering_peak_nits
+                                };
+                                format!(
+                                    "Match Viewer = the viewer's picture with its highlights kept, mastered to {peak:.0} nits. \
+                                     SDR material sits at 203 nits (BT.2408). The viewer itself shows the SDR version."
+                                )
                             };
                             ui.label("");
                             ui.add(egui::Label::new(egui::RichText::new(hint).small().italics()).wrap());
@@ -35686,6 +35739,7 @@ mod render_script_tests {
             hdr_mode: klipp_core::HdrMode::Sdr,
             tone_map_op: klipp_core::ToneMapOp::Hable,
             odt: klipp_core::OdtChoice::MatchViewer,
+            mastering_peak_nits: klipp_core::DEFAULT_MASTERING_PEAK_NITS,
         };
         let script = generate_render_script(&seq, &media_pool, &settings, "/tmp/out.mp4");
         assert!(script.starts_with("#!/usr/bin/env bash\n"), "missing shebang: {script}");

@@ -54,6 +54,7 @@ fn export(c: klipp_timeline::Clip, media: Option<(MediaId, MediaFile)>, out: &Pa
         audio_bitrate_kbps: None, video_bitrate_kbps: None, rate_control: RateControl::Crf,
         burn_in_subtitles: false, embed_subtitles: false, target_lufs: None, embed_chapters: false,
         bit_depth: 10, hdr_mode: HdrMode::Pq, tone_map_op: ToneMapOp::Hable, odt: OdtChoice::MatchViewer,
+        mastering_peak_nits: klipp_core::DEFAULT_MASTERING_PEAK_NITS,
     };
     tweak(&mut settings);
     ExportJob {
@@ -277,4 +278,51 @@ fn an_aces_pq_transform_is_a_pq_delivery() {
     for want in ["color_space=bt2020nc", "color_transfer=smpte2084", "color_primaries=bt2020"] {
         assert!(tags.contains(want), "ACES PQ export lacks {want}: {tags}");
     }
+}
+
+/// The mastering-display max luminance the file carries, cd/m².
+fn mastering_peak(path: &Path) -> f64 {
+    let side = probe(path, &["-show_streams", "-of", "default=nw=1"]);
+    let line = side
+        .lines()
+        .find(|l| l.starts_with("max_luminance"))
+        .unwrap_or_else(|| panic!("no max_luminance in {side}"));
+    let v: Vec<f64> = line["max_luminance".len() + 1..]
+        .split('/')
+        .map(|p| p.parse::<f64>().unwrap())
+        .collect();
+    if v.len() == 2 { v[0] / v[1] } else { v[0] }
+}
+
+/// The mastering peak is the user's to pick. The same PQ source, mastered
+/// for a 4000-nit display, keeps the highlights a 1000-nit master holds at
+/// its peak — and the file says which display it was graded for, so a
+/// player tone-maps it for the one in front of it. Everything below either
+/// peak is untouched by the choice: reference white stays where BT.2408
+/// puts it.
+#[test]
+fn a_pq_export_masters_to_the_peak_the_user_picked() {
+    let bands = [[pq_y(203.0), 512, 512], [pq_y(2000.0), 512, 512], [pq_y(4000.0), 512, 512], [pq_y(500.0), 512, 512]];
+    let Some(src) = band_clip("peak_src", bands, TAGS_PQ) else { return };
+
+    // The default 1000-nit master: both highlights held at the peak.
+    let out = tmp("peak_1000.mp4");
+    let (c, m) = media_clip(src.clone(), None);
+    export(c, m, &out, |_| {});
+    assert_codes("203 nits, 1000-nit master", band_codes(&out, 0), [pq_y(203.0) as i32, 512, 512], 3);
+    assert_codes("2000 nits, 1000-nit master", band_codes(&out, 1), [pq_y(1000.0) as i32, 512, 512], 3);
+    assert_codes("4000 nits, 1000-nit master", band_codes(&out, 2), [pq_y(1000.0) as i32, 512, 512], 3);
+    assert_codes("500 nits, 1000-nit master", band_codes(&out, 3), [pq_y(500.0) as i32, 512, 512], 3);
+    assert_eq!(mastering_peak(&out), 1000.0);
+
+    // The same source mastered for 4000 nits: the 2000-nit highlight is
+    // below the peak now and comes back as it came.
+    let out = tmp("peak_4000.mp4");
+    let (c, m) = media_clip(src, None);
+    export(c, m, &out, |s| s.mastering_peak_nits = 4000.0);
+    assert_codes("203 nits, 4000-nit master", band_codes(&out, 0), [pq_y(203.0) as i32, 512, 512], 3);
+    assert_codes("2000 nits, 4000-nit master", band_codes(&out, 1), [pq_y(2000.0) as i32, 512, 512], 3);
+    assert_codes("4000 nits, 4000-nit master", band_codes(&out, 2), [pq_y(4000.0) as i32, 512, 512], 3);
+    assert_codes("500 nits, 4000-nit master", band_codes(&out, 3), [pq_y(500.0) as i32, 512, 512], 3);
+    assert_eq!(mastering_peak(&out), 4000.0);
 }
