@@ -2315,11 +2315,15 @@ impl PlaybackEngine {
 
             // Collect all pending commands, coalescing seeks
             let mut commands = Vec::new();
+            let wait_start = std::time::Instant::now();
             match self.cmd_rx.recv_timeout(timeout) {
                 Ok(cmd) => commands.push(cmd),
                 Err(crossbeam_channel::RecvTimeoutError::Timeout) => {}
                 Err(crossbeam_channel::RecvTimeoutError::Disconnected) => break,
             }
+            // Idle time waiting for a command is not work; counting it made
+            // every idle paused tick (a 16 ms timeout) log as "slow".
+            let waited = wait_start.elapsed();
             while let Ok(cmd) = self.cmd_rx.try_recv() {
                 commands.push(cmd);
             }
@@ -2545,7 +2549,7 @@ impl PlaybackEngine {
             // thread was blocked in a long op (GPU fence, decode stall,
             // mutex wait). Noisy ticks are fine; persistent >30 ms ticks
             // during a slider drag point directly at the regression.
-            let tick_ms = tick_start.elapsed().as_secs_f64() * 1000.0;
+            let tick_ms = tick_start.elapsed().saturating_sub(waited).as_secs_f64() * 1000.0;
             if tick_ms > 16.0 {
                 debug!(
                     "ENGINE_TICK_SLOW {:.1}ms state={:?} in_edit={} had_cmds={} drained={}",
