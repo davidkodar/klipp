@@ -1,0 +1,231 @@
+//! The GPU-resident graded path, checked against the CPU path it replaces.
+//!
+//! Graded 4K HDR playback measured 5.8 fps with the grade itself taking
+//! 5.7 ms — the rest was 132 MB float frames crossing the bus. This path
+//! keeps the frame on the GPU from decode to display: the chain is seeded
+//! from the decoder's HDR code values, graded, then tone-mapped and
+//! encoded to display u8 on the GPU, and only those 4 bytes a pixel come
+//! back. Each GPU step must produce what its CPU counterpart does.
+
+use klipp_color::camera_log::primaries_to_working_matrix;
+use klipp_color::display::{display_transform_ws, ToneMapOp};
+use klipp_color::hdr::{apply_hdr_display_tonemap, hdr10_codes_to_scene_linear_rgba, HdrTransfer};
+use klipp_core::{color_ids, ColorPrimaries, LogFormat, WorkingColorspace};
+use klipp_effects::color_wgsl::pack_primaries_matrix;
+use klipp_effects::p010_gpu::GpuP010Converter;
+use klipp_nodes::{
+    executor::GraphExecutor,
+    graph::{Edge, Node, NodeGraph, NodeId, NodePos},
+    kinds::NodeKind,
+    params::{NodeKeyframeTracks, NodeParams},
+};
+
+const W: u32 = 64;
+const H: u32 = 32;
+
+fn node(kind: NodeKind, params: NodeParams) -> Node {
+    Node {
+        id: NodeId::new_v4(),
+        kind,
+        label: format!("{kind:?}"),
+        enabled: true,
+        params,
+        keyframes: NodeKeyframeTracks::default(),
+        output_link: None,
+        input_links: vec![],
+    }
+}
+
+/// The graph a PQ clip is seeded with, Corrector warmed.
+fn graded_pq_graph() -> NodeGraph {
+    let mut it = NodeParams::default();
+    it.log_format = Some(LogFormat::PQ);
+    let mut corrector = NodeParams::default();
+    corrector.temperature = Some(20.0);
+    let nodes = vec![
+        node(NodeKind::Source, NodeParams::default()),
+        node(NodeKind::InputTransform, it),
+        node(NodeKind::Corrector, corrector),
+        node(NodeKind::Output, NodeParams::default()),
+    ];
+    let edges = (0..3)
+        .map(|i| Edge { from_node: nodes[i].id, from_port: 0, to_node: nodes[i + 1].id, to_port: 0 })
+        .collect();
+    let positions = nodes
+        .iter()
+        .enumerate()
+        .map(|(i, n)| (n.id, NodePos { x: i as f32 * 110.0, y: 0.0 }))
+        .collect();
+    NodeGraph {
+        output_node_id: nodes[3].id,
+        nodes,
+        edges,
+        node_positions: positions,
+        working_space_override: None,
+        frames: Vec::new(),
+        sticky_notes: Vec::new(),
+    }
+}
+
+struct Frame {
+    gpu_codes: std::sync::Arc<wgpu::Buffer>,
+    cpu_scene_linear: Vec<f32>,
+    matrix4: [[f32; 4]; 3],
+}
+
+/// One HDR P010 frame, as both the GPU codes buffer the decoder hands the
+/// engine and the CPU scene-linear the CPU path grades.
+fn hdr_frame() -> Option<Frame> {
+    let mut conv = GpuP010Converter::new()?;
+    let mut y = Vec::new();
+    for row in 0..H {
+        for col in 0..W {
+            let v: u32 = 64 + ((col * 37 + row * 11) % 877);
+            y.extend_from_slice(&(((v & 0x3FF) << 6) as u16).to_le_bytes());
+        }
+    }
+    let mut uv = Vec::new();
+    for row in 0..(H / 2) {
+        for col in 0..(W / 2) {
+            let u = 512 + (((col as i32 - row as i32) * 23).rem_euclid(300)) as u32 - 150;
+            let v = 512 + (((col as i32 + row as i32) * 29).rem_euclid(300)) as u32 - 150;
+            uv.extend_from_slice(&(((u & 0x3FF) << 6) as u16).to_le_bytes());
+            uv.extend_from_slice(&(((v & 0x3FF) << 6) as u16).to_le_bytes());
+        }
+    }
+    let m = primaries_to_working_matrix(ColorPrimaries::Bt2020, WorkingColorspace::Rec709Linear);
+    let matrix4 = pack_primaries_matrix(m);
+    let ids = [
+        color_ids::COLOR_RANGE_LIMITED,
+        color_ids::MATRIX_BT2020_NCL,
+        color_ids::TRANSFER_PQ,
+        color_ids::PRIMARIES_BT2020,
+    ];
+    let codes = conv.convert_p010_hdr_codes(&y, &uv, W, H, W * 2, W * 2, W, H, 0, ids, matrix4)?;
+    let out = conv.convert_p010_on_gpu(&y, &uv, W, H, W * 2, W * 2, W, H, 0, ids, matrix4);
+    Some(Frame {
+        gpu_codes: out.hdr_codes?,
+        cpu_scene_linear: hdr10_codes_to_scene_linear_rgba(&codes, HdrTransfer::Pq, m),
+        matrix4,
+    })
+}
+
+/// The CPU path's graded scene-linear result, for reference.
+fn cpu_graded(frame: &Frame) -> Vec<f32> {
+    let mut exec = GraphExecutor::new();
+    exec.execute_linear(&frame.cpu_scene_linear, &graded_pq_graph(), W, H, 0.0, 0, None, None)
+        .expect("CPU-path grade")
+        .0
+}
+
+#[test]
+fn a_chain_seeded_from_hdr_codes_on_the_gpu_grades_like_the_cpu_path() {
+    let Some(frame) = hdr_frame() else {
+        eprintln!("skipping: P010 GPU converter unavailable");
+        return;
+    };
+    let reference = cpu_graded(&frame);
+
+    let mut exec = GraphExecutor::new();
+    assert!(exec.prime_chain_from_gpu_hdr10_buffer(
+        &frame.gpu_codes, W, H, color_ids::TRANSFER_PQ, frame.matrix4,
+    ));
+    let (gpu, _) = exec
+        .execute_linear(&[], &graded_pq_graph(), W, H, 0.0, 0, None, None)
+        .expect("a chain seeded from HDR codes must run with no CPU source");
+
+    assert_eq!(gpu.len(), reference.len());
+    // Compare relatively — scene-linear reaches ~160 here — against the
+    // input's own precision. PQ's 10-bit code step is 0.9-1.0% relative
+    // across the whole range (it is built to be perceptually even), so a
+    // quarter of a step, 2.25e-3, is the line: below it, GPU `pow` and the
+    // CPU's table disagree by less than the source can express. Measured:
+    // 1.7e-3, and the picture-level test below agrees to 1 LSB.
+    let worst = reference
+        .iter()
+        .zip(&gpu)
+        .map(|(a, b)| (a - b).abs() / a.abs().max(1.0))
+        .fold(0.0_f32, f32::max);
+    eprintln!("GPU seed vs CPU input transform, graded: worst relative error {worst:.2e}");
+    assert!(worst < 2.25e-3, "GPU HDR seed disagrees with the CPU path by {worst:.2e}");
+}
+
+#[test]
+fn the_gpu_display_encode_matches_the_cpu_tonemap_and_display_transform() {
+    let Some(frame) = hdr_frame() else {
+        eprintln!("skipping: P010 GPU converter unavailable");
+        return;
+    };
+    // CPU path, end to end: grade, tone-map, display encode.
+    let mut expected = cpu_graded(&frame);
+    apply_hdr_display_tonemap(&mut expected);
+    let expected = display_transform_ws(&expected, ToneMapOp::None, WorkingColorspace::Rec709Linear);
+
+    // GPU path: seed, grade, keep on GPU, encode, read back u8.
+    let mut exec = GraphExecutor::new();
+    assert!(exec.prime_chain_from_gpu_hdr10_buffer(
+        &frame.gpu_codes, W, H, color_ids::TRANSFER_PQ, frame.matrix4,
+    ));
+    exec.request_output_on_gpu();
+    let (cpu_side, _) = exec
+        .execute_linear(&[], &graded_pq_graph(), W, H, 0.0, 0, None, None)
+        .expect("grade");
+    assert!(exec.output_on_gpu().is_some(), "the result should have stayed on the GPU");
+    assert!(cpu_side.is_empty(), "nothing is downloaded when the result stays on the GPU");
+    let got = exec.encode_output_to_display_u8(W, H, true).expect("GPU display encode");
+
+    assert_eq!(got.len(), expected.len());
+    let worst = got
+        .iter()
+        .zip(&expected)
+        .enumerate()
+        .filter(|(i, _)| i % 4 != 3)
+        .map(|(_, (a, b))| (*a as i32 - *b as i32).abs())
+        .max()
+        .unwrap();
+    eprintln!("GPU display encode vs CPU tonemap + display transform: worst {worst} LSB");
+    assert!(worst <= 1, "GPU and CPU display paths disagree by {worst} LSB");
+}
+
+/// Output-on-GPU is a request, not a mode: honoured for one run, and
+/// refused when something needs the final pixels on the CPU.
+#[test]
+fn output_on_gpu_is_single_shot_and_refused_when_the_result_is_tapped() {
+    let Some(frame) = hdr_frame() else {
+        eprintln!("skipping: P010 GPU converter unavailable");
+        return;
+    };
+    let graph = graded_pq_graph();
+    let final_node = graph.input_of(graph.output_node_id, 0).unwrap();
+    let mut exec = GraphExecutor::new();
+
+    // Not requested: normal download.
+    assert!(exec.prime_chain_from_gpu_hdr10_buffer(&frame.gpu_codes, W, H, color_ids::TRANSFER_PQ, frame.matrix4));
+    let (out, _) = exec.execute_linear(&[], &graph, W, H, 0.0, 0, None, None).unwrap();
+    assert!(exec.output_on_gpu().is_none());
+    assert_eq!(out.len(), (W * H * 4) as usize);
+
+    // Requested, but the final node is the scope tap: its pixels are
+    // wanted on the CPU, so the request is declined and the download
+    // happens. A tapped node cannot chain, so with only a GPU seed the run
+    // reports CpuSourceRequired — the engine's cue to supply real pixels,
+    // which is what this does.
+    assert!(exec.prime_chain_from_gpu_hdr10_buffer(&frame.gpu_codes, W, H, color_ids::TRANSFER_PQ, frame.matrix4));
+    exec.request_output_on_gpu();
+    assert!(matches!(
+        exec.execute_linear(&[], &graph, W, H, 0.0, 0, Some(final_node), None),
+        Err(klipp_nodes::executor::ExecutorError::CpuSourceRequired),
+    ));
+    exec.request_output_on_gpu();
+    let (out, _) = exec
+        .execute_linear(&frame.cpu_scene_linear, &graph, W, H, 0.0, 0, Some(final_node), None)
+        .unwrap();
+    assert!(exec.output_on_gpu().is_none(), "a tapped result must come back to the CPU");
+    assert_eq!(out.len(), (W * H * 4) as usize);
+
+    // The declined request does not leak into the next run.
+    assert!(exec.prime_chain_from_gpu_hdr10_buffer(&frame.gpu_codes, W, H, color_ids::TRANSFER_PQ, frame.matrix4));
+    let (out, _) = exec.execute_linear(&[], &graph, W, H, 0.0, 0, None, None).unwrap();
+    assert!(exec.output_on_gpu().is_none(), "the request is single-shot");
+    assert_eq!(out.len(), (W * H * 4) as usize);
+}

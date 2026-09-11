@@ -135,6 +135,17 @@ pub struct GraphExecutor {
     /// half res off a full-res seed, which would reinterpret the buffer
     /// at the wrong stride and scramble the image.
     gpu_chain_preseed_dims: Option<(u32, u32)>,
+    /// Single-shot request, set by `request_output_on_gpu`: leave the next
+    /// run's final result in the chain buffer instead of downloading it.
+    keep_output_on_gpu: bool,
+    /// The node whose chain output may stay on the GPU this run: the one
+    /// feeding Output, when nothing else reads it. `None` unless
+    /// `keep_output_on_gpu` was requested and the graph allows it.
+    run_gpu_output_node: Option<NodeId>,
+    /// After a run: `Some(slot_a)` if its final result was left in the
+    /// chain buffer — in which case the returned Vec is empty and the
+    /// caller reads the result from the GPU (`encode_output_to_display_u8`).
+    output_on_gpu: Option<bool>,
     /// The seed, scoped to one `execute_linear*` run. Taken from
     /// `gpu_chain_preseed_dims` at entry, which is cleared at the same
     /// moment: a seed the run does not consume must not survive into the
@@ -309,6 +320,9 @@ impl GraphExecutor {
             matte_cache: HashMap::new(),
             gpu_chain_preseeded: false,
             gpu_chain_preseed_dims: None,
+            keep_output_on_gpu: false,
+            run_gpu_output_node: None,
+            output_on_gpu: None,
             run_seed_dims: None,
             last_chain_final_slot: None,
             compound_depth: 0,
@@ -355,6 +369,9 @@ impl GraphExecutor {
             matte_cache: HashMap::new(),
             gpu_chain_preseeded: false,
             gpu_chain_preseed_dims: None,
+            keep_output_on_gpu: false,
+            run_gpu_output_node: None,
+            output_on_gpu: None,
             run_seed_dims: None,
             last_chain_final_slot: None,
             compound_depth: 0,
@@ -448,6 +465,59 @@ impl GraphExecutor {
             self.gpu_chain_preseed_dims = Some((width, height));
         }
         ok
+    }
+
+    /// Seed the GPU chain from an HDR frame's packed RGB10 code values
+    /// (the P010 decoder's `hdr_codes`), decoding them to scene-linear on
+    /// the GPU — the HDR counterpart of `prime_chain_from_gpu_u8_buffer`.
+    /// Same contract: the next run consumes the seed if it starts a chain
+    /// at this resolution, and returns `false` if the GPU cannot take it.
+    pub fn prime_chain_from_gpu_hdr10_buffer(
+        &mut self,
+        codes: &wgpu::Buffer,
+        width: u32,
+        height: u32,
+        transfer_id: u32,
+        source_to_working: [[f32; 4]; 3],
+    ) -> bool {
+        self.ensure_gpu();
+        let Some(gpu) = self.gpu.as_mut() else { return false };
+        let ok = gpu.bridge_hdr10_to_linear_into_chain(
+            codes, width, height, transfer_id, source_to_working,
+        );
+        if ok {
+            self.gpu_chain_preseeded = true;
+            self.gpu_chain_preseed_dims = Some((width, height));
+        }
+        ok
+    }
+
+    /// Ask the next run to leave its final result on the GPU. Honoured
+    /// only when a chain produces that result directly and nothing else
+    /// reads it; check `output_on_gpu` after the run.
+    pub fn request_output_on_gpu(&mut self) {
+        self.keep_output_on_gpu = true;
+    }
+
+    /// `Some(slot_a)` if the last run left its final result in the chain
+    /// buffer. Its returned Vec is then empty; read the result with
+    /// `encode_output_to_display_u8`.
+    pub fn output_on_gpu(&self) -> Option<bool> {
+        self.output_on_gpu
+    }
+
+    /// Encode the last run's GPU-resident result to display sRGB u8 and
+    /// read that back — see `GpuEffectsPipeline::encode_chain_to_display_u8`.
+    /// `hdr_tonemap` applies the HDR display tone map first. `None` if the
+    /// last run did not keep its output on the GPU, or the GPU failed.
+    pub fn encode_output_to_display_u8(
+        &mut self,
+        width: u32,
+        height: u32,
+        hdr_tonemap: bool,
+    ) -> Option<Vec<u8>> {
+        let slot_a = self.output_on_gpu?;
+        self.gpu.as_mut()?.encode_chain_to_display_u8(slot_a, width, height, hdr_tonemap)
     }
 
     /// True iff the executor owns a GPU pipeline. When false, every
@@ -663,6 +733,24 @@ impl GraphExecutor {
         for edge in &graph.edges {
             *fan_out.entry(edge.from_node).or_insert(0) += 1;
         }
+
+        // Output-on-GPU is single-shot, like the seed: take the request
+        // here so a run that cannot honour it does not leave it set. The
+        // final node qualifies only when Output is its sole reader and no
+        // one wants its pixels on the CPU — not a solo view, a scope or
+        // matte tap, or a thumbnail.
+        self.output_on_gpu = None;
+        let keep = std::mem::take(&mut self.keep_output_on_gpu);
+        self.run_gpu_output_node = if keep && self.solo_node.is_none() {
+            graph.input_of(graph.output_node_id, 0).filter(|id| {
+                fan_out.get(id).copied().unwrap_or(0) <= 1
+                    && Some(*id) != matte_tap
+                    && Some(*id) != matte_preview_node
+                    && !visible_nodes.is_some_and(|v| v.contains(id))
+            })
+        } else {
+            None
+        };
 
         // NodeId → &Node index. The topo walk below resolves every
         // node id in `order` to its full Node. A linear scan per step
@@ -1970,6 +2058,18 @@ impl GraphExecutor {
             None => return,
         };
         let pixel_count = (width as usize) * (height as usize);
+        // The run's final result, and the caller asked for it on the GPU:
+        // submit the chain and stop. The download this skips is 16 bytes
+        // a pixel — 132 MB at 4K, ~40 ms — for a frame the caller will
+        // encode to display u8 on the GPU and read back at 4 bytes a
+        // pixel instead.
+        if self.run_gpu_output_node == Some(tail_id) && Some(tail_id) != matte_tap {
+            gpu.submit_chain();
+            self.last_chain_final_slot = Some(slot_a);
+            self.output_on_gpu = Some(slot_a);
+            node_outputs.insert(tail_id, Arc::new(Vec::new()));
+            return;
+        }
         // Merged submit: chain dispatches + readback copy in ONE
         // queue.submit. Halves NVIDIA Vulkan driver overhead vs the
         // previous submit_chain() + download_chain_output_linear()

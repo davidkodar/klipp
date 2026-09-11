@@ -248,6 +248,16 @@ pub struct GpuEffectsPipeline {
     // slot. Enables phase 4d's GPU-resident decode → grade path —
     // without this bridge the grade chain can only consume CPU data.
     bridge_u8_to_linear_pipeline: wgpu::ComputePipeline,
+    /// Packed RGB10 HDR code values → scene-linear working-space f32,
+    /// written into the chain's `buf_a`. The GPU half of
+    /// `klipp_color::hdr::hdr10_codes_to_scene_linear_rgba`.
+    bridge_hdr10_pipeline: wgpu::ComputePipeline,
+    /// Chain output (linear f32) → display sRGB u8, with the HDR display
+    /// tone map applied first when asked. Lets a graded frame leave the
+    /// GPU as 4 bytes a pixel instead of 16.
+    display_u8_pipeline: wgpu::ComputePipeline,
+    /// Map-readable copy of `bridge_u8_out_buf` for the display readback.
+    display_u8_staging: Option<wgpu::Buffer>,
     // Bind group layouts
     bind_group_layout: wgpu::BindGroupLayout,         // effects: input, output, params
     transition_bgl: wgpu::BindGroupLayout,             // transitions: from, to, output, params
@@ -828,8 +838,22 @@ impl GpuEffectsPipeline {
         let bridge_u8_to_linear_pipeline = create_pipeline(
             &device, &pipeline_layout, "bridge_u8_to_linear", SHADER_U8_TO_LINEAR,
         );
+        // Both HDR kernels share the colourspace prelude with the P010
+        // decoder, so the PQ/HLG curves on either side are one definition.
+        let hdr10_src = format!(
+            "{}{}{}",
+            crate::color_wgsl::WGSL_PRELUDE,
+            crate::color_wgsl::WGSL_HELPERS,
+            SHADER_HDR10_TO_LINEAR_BODY,
+        );
+        let bridge_hdr10_pipeline = create_pipeline(
+            &device, &pipeline_layout, "bridge_hdr10_to_linear", &hdr10_src,
+        );
+        let display_u8_pipeline = create_pipeline(
+            &device, &pipeline_layout, "linear_to_display_u8", SHADER_LINEAR_TO_DISPLAY_U8,
+        );
 
-        let pipeline_count = 61;
+        let pipeline_count = 63;
         info!(
             "GPU effects: compiled {} pipelines in {:.0}ms",
             pipeline_count,
@@ -940,6 +964,9 @@ impl GpuEffectsPipeline {
             transition_pipeline,
             bridge_u8_pipeline,
             bridge_u8_to_linear_pipeline,
+            bridge_hdr10_pipeline,
+            display_u8_pipeline,
+            display_u8_staging: None,
             bridge_u8_out_buf: None,
             bridge_u8_out_size: 0,
             bridge_u8_staging_buf: None,
@@ -1754,6 +1781,139 @@ impl GpuEffectsPipeline {
         self.queue.submit(std::iter::once(encoder.finish()));
         self.submit_count.fetch_add(1, Ordering::Relaxed);
         true
+    }
+
+    /// GPU input transform for HDR: packed RGB10 code values (the P010
+    /// decoder's `hdr_codes`) → scene-linear working-space f32 in `buf_a`,
+    /// leaving the chain primed exactly as `bridge_u8_to_linear_into_chain`
+    /// does for SDR. `transfer_id` is a `klipp_core::color_ids` PQ/HLG id.
+    ///
+    /// Returns `false` when the device is lost or `codes` is too small;
+    /// callers fall back to the CPU input transform.
+    pub fn bridge_hdr10_to_linear_into_chain(
+        &mut self,
+        codes: &wgpu::Buffer,
+        width: u32,
+        height: u32,
+        transfer_id: u32,
+        source_to_working: [[f32; 4]; 3],
+    ) -> bool {
+        if self.is_device_lost() { return false; }
+        let pixel_count = (width as u64) * (height as u64);
+        if pixel_count == 0 { return true; }
+        self.ensure_buffers(pixel_count * 16);
+        if codes.size() < pixel_count * 4 { return false; }
+
+        let buf_a = self.buf_a.as_ref().expect("ensure_buffers established buf_a");
+        self.write_params(&Hdr10BridgeParams {
+            width, height, transfer_id, _pad0: 0, source_to_working,
+        });
+        let bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("bridge_hdr10_to_linear_bg"),
+            layout: &self.bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: codes.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: buf_a.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 2, resource: self.params_buf.as_entire_binding() },
+            ],
+        });
+        let mut encoder = self.device.create_command_encoder(
+            &wgpu::CommandEncoderDescriptor { label: Some("bridge_hdr10_to_linear") },
+        );
+        {
+            let mut pass = encoder.begin_compute_pass(
+                &wgpu::ComputePassDescriptor { label: None, timestamp_writes: None },
+            );
+            pass.set_pipeline(&self.bridge_hdr10_pipeline);
+            pass.set_bind_group(0, &bg, &[]);
+            pass.dispatch_workgroups((pixel_count as u32).div_ceil(WORKGROUP_SIZE), 1, 1);
+        }
+        self.queue.submit(std::iter::once(encoder.finish()));
+        self.submit_count.fetch_add(1, Ordering::Relaxed);
+        true
+    }
+
+    /// Encode the chain's final linear output (`buf_a` when `slot_a`,
+    /// else `buf_b`) to display sRGB u8 on the GPU and read back only
+    /// that: 4 bytes a pixel instead of the 16 a linear download costs —
+    /// 33 MB at 4K rather than 132. `hdr_tonemap` applies the HDR display
+    /// tone map first, making this an HDR clip's last step.
+    ///
+    /// Only valid where the CPU display path would be
+    /// `display_transform_ws(ToneMapOp::None, Rec709/BT2020 linear)`; the
+    /// caller gates on that. `None` on device loss or a failed readback.
+    pub fn encode_chain_to_display_u8(
+        &mut self,
+        slot_a: bool,
+        width: u32,
+        height: u32,
+        hdr_tonemap: bool,
+    ) -> Option<Vec<u8>> {
+        if self.is_device_lost() { return None; }
+        let pixel_count = (width as u64) * (height as u64);
+        if pixel_count == 0 { return Some(Vec::new()); }
+        let out_bytes = pixel_count * 4;
+        if self.bridge_u8_out_size < out_bytes {
+            self.bridge_u8_out_buf = Some(self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("bridge_u8_out"),
+                size: out_bytes,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+                mapped_at_creation: false,
+            }));
+            self.bridge_u8_out_size = out_bytes;
+        }
+        if self.display_u8_staging.as_ref().map_or(true, |b| b.size() < out_bytes) {
+            self.display_u8_staging = Some(self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("display_u8_staging"),
+                size: out_bytes,
+                usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            }));
+        }
+        let src = if slot_a { self.buf_a.as_ref() } else { self.buf_b.as_ref() }?;
+        let out = self.bridge_u8_out_buf.as_ref().unwrap();
+        let staging = self.display_u8_staging.as_ref().unwrap();
+        self.write_params(&DisplayU8Params {
+            width, height, hdr_tonemap: hdr_tonemap as u32, _pad0: 0,
+        });
+        let bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("linear_to_display_u8_bg"),
+            layout: &self.bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: src.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: out.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 2, resource: self.params_buf.as_entire_binding() },
+            ],
+        });
+        let mut encoder = self.device.create_command_encoder(
+            &wgpu::CommandEncoderDescriptor { label: Some("linear_to_display_u8") },
+        );
+        {
+            let mut pass = encoder.begin_compute_pass(
+                &wgpu::ComputePassDescriptor { label: None, timestamp_writes: None },
+            );
+            pass.set_pipeline(&self.display_u8_pipeline);
+            pass.set_bind_group(0, &bg, &[]);
+            pass.dispatch_workgroups((pixel_count as u32).div_ceil(WORKGROUP_SIZE), 1, 1);
+        }
+        encoder.copy_buffer_to_buffer(out, 0, staging, 0, out_bytes);
+        self.queue.submit(std::iter::once(encoder.finish()));
+        self.submit_count.fetch_add(1, Ordering::Relaxed);
+
+        let slice = staging.slice(..out_bytes);
+        let (tx, rx) = std::sync::mpsc::channel();
+        slice.map_async(wgpu::MapMode::Read, move |r| { let _ = tx.send(r); });
+        match poll_until_mapped(&self.device, &rx) {
+            Ok(Ok(())) => {
+                let bytes = slice.get_mapped_range().to_vec();
+                staging.unmap();
+                Some(bytes)
+            }
+            other => {
+                self.mark_device_lost(&format!("display_u8 map_async failed: {other:?}"));
+                None
+            }
+        }
     }
 
     pub fn apply_vibrance_gpu(&mut self, linear_rgba: Vec<f32>, width: u32, height: u32, amount: f32) -> Vec<f32> {
@@ -4511,6 +4671,26 @@ struct BridgeU8Params {
 }
 
 #[repr(C)]
+#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+struct Hdr10BridgeParams {
+    width: u32,
+    height: u32,
+    transfer_id: u32,
+    _pad0: u32,
+    /// Source primaries → working space, 3 rows of vec4 (w unused).
+    source_to_working: [[f32; 4]; 3],
+}
+
+#[repr(C)]
+#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+struct DisplayU8Params {
+    width: u32,
+    height: u32,
+    hdr_tonemap: u32,
+    _pad0: u32,
+}
+
+#[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct BlurParams {
     width: u32,
@@ -5701,6 +5881,79 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 // `linear_to_srgb` reference within rounding to u8. The CPU LUT we
 // replace was also a quantised approximation (4096 input bins → u8
 // output) so the GPU result here is at least as accurate.
+// Packed RGB10 HDR code values (source primaries, PQ/HLG-encoded, as the
+// P010 decoder writes them) → scene-linear working-space f32 RGBA in the
+// chain's input slot. Concatenated after the colourspace prelude, which
+// supplies `display_to_linear` and the TRANSFER_* ids. Must match
+// `klipp_color::hdr::hdr10_codes_to_scene_linear_rgba`: curve first, then
+// the gamut matrix, 1.0 = 100 nits.
+const SHADER_HDR10_TO_LINEAR_BODY: &str = "
+struct Params {
+    width: u32, height: u32, transfer_id: u32, _pad0: u32,
+    m0: vec4<f32>, m1: vec4<f32>, m2: vec4<f32>,
+}
+@group(0) @binding(0) var<storage, read> input: array<u32>;
+@group(0) @binding(1) var<storage, read_write> output: array<vec4<f32>>;
+@group(0) @binding(2) var<uniform> params: Params;
+
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let idx = gid.x;
+    if idx >= params.width * params.height { return; }
+    let p = input[idx];
+    let code = vec3<f32>(f32(p & 1023u), f32((p >> 10u) & 1023u), f32((p >> 20u) & 1023u)) / 1023.0;
+    // PQ's 1.0 is 10 000 nits; scene-linear's 1.0 is 100.
+    let scene = display_to_linear(code, params.transfer_id) * 100.0;
+    output[idx] = vec4<f32>(
+        dot(params.m0.xyz, scene),
+        dot(params.m1.xyz, scene),
+        dot(params.m2.xyz, scene),
+        1.0,
+    );
+}
+";
+
+// Chain output (linear f32 RGBA) → display sRGB u8, for a graded frame
+// that nothing else needs on the CPU. With `hdr_tonemap` set it applies
+// the HDR display tone map first — the GPU half of
+// `klipp_color::hdr::apply_hdr_display_tonemap` — so an HDR clip's last
+// step runs here rather than on a 132 MB CPU copy. Without it this is the
+// SDR display encode (`ToneMapOp::None`: clamp, sRGB). Same layout as
+// SHADER_LINEAR_TO_U8.
+const SHADER_LINEAR_TO_DISPLAY_U8: &str = "
+struct Params { width: u32, height: u32, hdr_tonemap: u32, _pad0: u32 }
+@group(0) @binding(0) var<storage, read> input: array<vec4<f32>>;
+@group(0) @binding(1) var<storage, read_write> output: array<u32>;
+@group(0) @binding(2) var<uniform> params: Params;
+
+fn linear_to_srgb_c(c: f32) -> f32 {
+    let x = clamp(c, 0.0, 1.0);
+    if (x <= 0.0031308) { return x * 12.92; }
+    return 1.055 * pow(x, 1.0/2.4) - 0.055;
+}
+
+// Narkowicz ACES fit; constants shared with klipp_color::hdr::filmic.
+fn filmic(x: f32) -> f32 {
+    return clamp((x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14), 0.0, 1.0);
+}
+
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let idx = gid.x;
+    if idx >= params.width * params.height { return; }
+    let px = input[idx];
+    var rgb = max(px.xyz, vec3<f32>(0.0));
+    if (params.hdr_tonemap != 0u) {
+        rgb = vec3<f32>(filmic(rgb.x * 0.18), filmic(rgb.y * 0.18), filmic(rgb.z * 0.18));
+    }
+    let r = u32(clamp(linear_to_srgb_c(rgb.x) * 255.0 + 0.5, 0.0, 255.0));
+    let g = u32(clamp(linear_to_srgb_c(rgb.y) * 255.0 + 0.5, 0.0, 255.0));
+    let b = u32(clamp(linear_to_srgb_c(rgb.z) * 255.0 + 0.5, 0.0, 255.0));
+    let a = u32(clamp(px.w * 255.0 + 0.5, 0.0, 255.0));
+    output[idx] = r | (g << 8u) | (b << 16u) | (a << 24u);
+}
+";
+
 const SHADER_LINEAR_TO_U8: &str = "
 struct Params { width: u32, height: u32, _pad0: u32, _pad1: u32 }
 @group(0) @binding(0) var<storage, read> input: array<vec4<f32>>;
