@@ -5591,6 +5591,21 @@ fn dec3(v: vec3<f32>) -> vec3<f32> {
     return vec3<f32>(srgb_to_linear_component(v.x), srgb_to_linear_component(v.y), srgb_to_linear_component(v.z));
 }
 
+// Screen blend — light added on top — at the picture's own ceiling.
+// 1 - (1-o)(1-v) is only a blend while o and v stay under 1: on a
+// highlight of 4.0 both factors go negative and their product came back
+// as a negative pixel, a black halo where the glow should be. Written as
+// o + v - o*v/W with W = max(1, o, v) it is the same formula under 1 and
+// keeps adding light above it.
+fn screen_at_ceiling(o: f32, v: f32) -> f32 {
+    let w = max(max(o, v), 1.0);
+    return o + v - o * v / w;
+}
+
+fn screen3_at_ceiling(o: vec3<f32>, v: vec3<f32>) -> vec3<f32> {
+    return vec3<f32>(screen_at_ceiling(o.x, v.x), screen_at_ceiling(o.y, v.y), screen_at_ceiling(o.z, v.z));
+}
+
 // sRGB encode / decode that keep the sign, so a negative channel — a
 // colour outside the working space's gamut — is not lost to a NaN or a
 // clamp.
@@ -5933,7 +5948,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             min(yf - params.crop_top, params.crop_bottom - 1.0 - yf),
         );
         if dist < params.feather {
-            let factor = dist / params.feather;
+            // Clamped: on the last row and column `dist` goes slightly
+            // negative, and the alpha came out negative with it.
+            let factor = clamp(dist / params.feather, 0.0, 1.0);
             pixel.w = pixel.w * factor;
         }
     }
@@ -8297,13 +8314,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let bl = unpack(blurred[idx]).xyz;
     let l = 0.2126 * bl.x + 0.7152 * bl.y + 0.0722 * bl.z;
     let b = (bl + (vec3<f32>(l) - bl) * params.desat) * params.intensity;
-    // Screen blend in linear: 1 − (1 − o)(1 − b).
-    let s = vec3<f32>(
-        1.0 - (1.0 - o.x) * (1.0 - b.x),
-        1.0 - (1.0 - o.y) * (1.0 - b.y),
-        1.0 - (1.0 - o.z) * (1.0 - b.z),
-    );
-    output[idx] = pack(vec4<f32>(s, o.w));
+    output[idx] = pack(vec4<f32>(screen3_at_ceiling(o.xyz, b), o.w));
 }
 "
 );
@@ -8522,12 +8533,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let bl = unpack(halation[idx]).xyz;
     let l = 0.2126 * bl.x + 0.7152 * bl.y + 0.0722 * bl.z;
     let h = vec3<f32>(params.hal_r, params.hal_g, params.hal_b) * l * params.intensity;
-    let s = vec3<f32>(
-        1.0 - (1.0 - o.x) * (1.0 - h.x),
-        1.0 - (1.0 - o.y) * (1.0 - h.y),
-        1.0 - (1.0 - o.z) * (1.0 - h.z),
-    );
-    output[idx] = pack(vec4<f32>(s, o.w));
+    output[idx] = pack(vec4<f32>(screen3_at_ceiling(o.xyz, h), o.w));
 }
 "
 );
@@ -8654,7 +8660,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let p = unpack(input[idx]);
     let m = params.mix_val;
     let e = enc3(p.xyz);
-    let inv = vec3<f32>(1.0) - e;
+    // The inverse of a highlight is black, not a negative: invert what
+    // the display can show. `e` stays the mix's base, so mix 0 is identity.
+    let inv = vec3<f32>(1.0) - clamp(e, vec3<f32>(0.0), vec3<f32>(1.0));
     let out = e + (inv - e) * m;
     output[idx] = pack(vec4<f32>(dec3(out), p.w));
 }
@@ -8685,8 +8693,12 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let p = unpack(input[idx]);
     let lvl = params.levels;
     let div = lvl - 1.0;
-    let e = clamp(enc3(p.xyz), vec3<f32>(0.0), vec3<f32>(1.0));
-    let out = min(floor(e * lvl), vec3<f32>(div)) / div;
+    let e = enc3(p.xyz);
+    let banded = min(floor(clamp(e, vec3<f32>(0.0), vec3<f32>(1.0)) * lvl), vec3<f32>(div)) / div;
+    // Above white the ladder carries on at the same spacing, instead of
+    // every highlight landing on white.
+    let over = floor(max(e - vec3<f32>(1.0), vec3<f32>(0.0)) * lvl) / div;
+    let out = banded + over;
     output[idx] = pack(vec4<f32>(dec3(out), p.w));
 }
 "
@@ -9021,7 +9033,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let x = i32(idx % w);
     let y = i32(idx / w);
     let r = i32(params.radius);
-    var max_px = vec4<f32>(0.0);
+    // From the centre, not from black: a channel darker than 0 (a colour
+    // outside the working gamut) is a legal value to spread.
+    var max_px = input[u32(y) * w + u32(x)];
     for (var dy = -r; dy <= r; dy = dy + 1) {
         for (var dx = -r; dx <= r; dx = dx + 1) {
             let sx = u32(clamp(x + dx, 0, i32(w) - 1));
@@ -9054,8 +9068,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let x = i32(idx % w);
     let y = i32(idx / w);
     let r = i32(params.radius);
-    // 1.0 = 'white', matches the 255u sentinel the byte-packed version used.
-    var min_px = vec4<f32>(1.0);
+    // From the centre, not from white: starting at 1.0 made every pixel
+    // of a picture brighter than white come back as white.
+    var min_px = input[u32(y) * w + u32(x)];
     for (var dy = -r; dy <= r; dy = dy + 1) {
         for (var dx = -r; dx <= r; dx = dx + 1) {
             let sx = u32(clamp(x + dx, 0, i32(w) - 1));
@@ -9473,7 +9488,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let e = enc3(p.xyz);
 
     let in_range = max(params.in_white - params.in_black, 0.001);
-    let m = clamp((e - vec3<f32>(params.in_black)) / in_range, vec3<f32>(0.0), vec3<f32>(1.0));
+    // No ceiling: a highlight above the input white keeps its distance
+    // above the output white rather than clipping to it.
+    let m = max((e - vec3<f32>(params.in_black)) / in_range, vec3<f32>(0.0));
 
     let g = vec3<f32>(
         pow(m.x, params.inv_gamma),
@@ -9515,8 +9532,13 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let p = unpack(input[idx]);
     let e = enc3(p.xyz);
 
+    // The histogram covers what the display shows; light above white
+    // passes through, so equalising does not crush the highlights.
+    let over = max(e - vec3<f32>(1.0), vec3<f32>(0.0));
+    let d = min(e, vec3<f32>(1.0));
+
     // Compute luminance and look up equalised value from CDF
-    let luma = 0.2126 * e.x + 0.7152 * e.y + 0.0722 * e.z;
+    let luma = 0.2126 * d.x + 0.7152 * d.y + 0.0722 * d.z;
     let luma_idx = u32(clamp(luma * 255.0, 0.0, 255.0));
     let eq_luma = cdf[luma_idx];
 
@@ -9524,7 +9546,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let scale = select(eq_luma / luma, 1.0, luma < 0.001);
 
     // Blend with original based on strength
-    let out = e + (e * scale - e) * params.strength;
+    let out = d + (d * scale - d) * params.strength + over;
     output[idx] = pack(vec4<f32>(dec3(out), p.w));
 }
 "

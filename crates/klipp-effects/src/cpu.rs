@@ -147,10 +147,18 @@ fn screen(base: &[f32], layer: &[f32], intensity: f32, desat: f32) -> Vec<f32> {
         let l = luma([b[0], b[1], b[2], 0.0]);
         for c in 0..3 {
             let v = (b[c] + (l - b[c]) * desat) * intensity;
-            o[c] = 1.0 - (1.0 - o[c]) * (1.0 - v);
+            o[c] = screen_at_ceiling(o[c], v);
         }
     });
     out
+}
+
+/// `screen_at_ceiling` in the shaders' shared helpers: the screen blend
+/// at the picture's own ceiling, so light lands on a highlight instead of
+/// the blend coming back negative.
+pub(crate) fn screen_at_ceiling(o: f32, v: f32) -> f32 {
+    let w = o.max(v).max(1.0);
+    o + v - o * v / w
 }
 
 /// Apply one built-in effect. Frei0r plugins are not here (they take
@@ -189,7 +197,9 @@ pub(crate) fn apply(effect: &BuiltinEffect, p: Vec<f32>, w: u32, h: u32) -> Vec<
                 if feather > 0.0 {
                     let dist = (xf - l).min(r - 1.0 - xf).min((yf - t).min(b - 1.0 - yf));
                     if dist < feather {
-                        px[3] *= dist / feather;
+                        // Clamped: on the last row and column `dist` goes
+                        // slightly negative, taking the alpha with it.
+                        px[3] *= (dist / feather).clamp(0.0, 1.0);
                     }
                 }
                 px
@@ -425,8 +435,7 @@ pub(crate) fn apply(effect: &BuiltinEffect, p: Vec<f32>, w: u32, h: u32) -> Vec<
             out.par_chunks_exact_mut(4).zip(blurred.par_chunks_exact(4)).for_each(|(o, b)| {
                 let l = luma([b[0], b[1], b[2], 0.0]);
                 for c in 0..3 {
-                    let v = l * tint[c] * intensity;
-                    o[c] = 1.0 - (1.0 - o[c]) * (1.0 - v);
+                    o[c] = screen_at_ceiling(o[c], l * tint[c] * intensity);
                 }
             });
             out
@@ -435,12 +444,22 @@ pub(crate) fn apply(effect: &BuiltinEffect, p: Vec<f32>, w: u32, h: u32) -> Vec<
             if m.abs() < f32::EPSILON {
                 return p;
             }
-            each_encoded(p, |s| s.map(|v| v + ((1.0 - v) - v) * m))
+            // The inverse of a highlight is black, not a negative: invert
+            // what the display can show, and leave `v` as the mix's base
+            // so mix 0 is identity.
+            each_encoded(p, |s| s.map(|v| v + ((1.0 - v.clamp(0.0, 1.0)) - v) * m))
         }
         Posterize { levels } => {
-            // Bands even on the display scale; white stays white.
+            // Bands even on the display scale; white stays white, and
+            // above it the ladder carries on at the same spacing rather
+            // than every highlight landing on white.
             let div = levels - 1.0;
-            each_encoded(p, |s| s.map(|v| (v.clamp(0.0, 1.0) * levels).floor().min(div) / div))
+            each_encoded(p, |s| {
+                s.map(|v| {
+                    let banded = (v.clamp(0.0, 1.0) * levels).floor().min(div) / div;
+                    banded + ((v - 1.0).max(0.0) * levels).floor() / div
+                })
+            })
         }
         Mosaic { block_size } => {
             if block_size <= 1.0 {
@@ -531,7 +550,10 @@ pub(crate) fn apply(effect: &BuiltinEffect, p: Vec<f32>, w: u32, h: u32) -> Vec<
             let dilate = matches!(effect, Dilate { .. });
             let r = radius.clamp(1, 10) as i32;
             each_pixel(&p, w, h, |x, y, f| {
-                let mut m = if dilate { [0.0f32; 4] } else { [1.0f32; 4] };
+                // From the centre, not from black or white: starting at
+                // 1.0 made every pixel of a picture brighter than white
+                // erode to white, and 0.0 clipped negative channels.
+                let mut m = f.at(x, y);
                 for dy in -r..=r {
                     for dx in -r..=r {
                         let q = f.clamped(x as i32 + dx, y as i32 + dy);
@@ -654,17 +676,23 @@ pub(crate) fn apply(effect: &BuiltinEffect, p: Vec<f32>, w: u32, h: u32) -> Vec<
             }
             let inv_gamma = if gamma.abs() > f32::EPSILON { 1.0 / gamma } else { 1.0 };
             let in_range = (in_white - in_black).max(0.001);
+            // No ceiling: a highlight above the input white keeps its
+            // distance above the output white rather than clipping to it.
             each_encoded(p, |s| {
-                s.map(|v| out_black + ((v - in_black) / in_range).clamp(0.0, 1.0).powf(inv_gamma) * (out_white - out_black))
+                s.map(|v| out_black + ((v - in_black) / in_range).max(0.0).powf(inv_gamma) * (out_white - out_black))
             })
         }
         Equalize { strength } => {
             let cdf = equalize_cdf(&p);
+            // The histogram covers what the display shows; light above
+            // white passes through, so equalising does not crush the
+            // highlights.
             each_encoded(p, |s| {
-                let l = 0.2126 * s[0] + 0.7152 * s[1] + 0.0722 * s[2];
+                let d = s.map(|v| v.min(1.0));
+                let l = 0.2126 * d[0] + 0.7152 * d[1] + 0.0722 * d[2];
                 let eq = cdf[(l * 255.0).clamp(0.0, 255.0) as usize];
                 let k = if l < 0.001 { 1.0 } else { eq / l };
-                s.map(|v| v + (v * k - v) * strength)
+                [0, 1, 2].map(|i| d[i] + (d[i] * k - d[i]) * strength + (s[i] - 1.0).max(0.0))
             })
         }
         Letterbox { aspect_ratio, bar_color, opacity } => {
