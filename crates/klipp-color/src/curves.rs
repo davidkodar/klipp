@@ -1,13 +1,23 @@
-/// Build a 256-entry lookup table from a set of control points using
-/// monotone cubic Hermite interpolation (Fritsch-Carlson method).
-/// Points are [x, y] pairs in 0..1 range. Returns a [u8; 256] LUT.
+/// [`build_curve_lut_f32`] quantised to 8 bits, for the u8 paths.
 pub fn build_curve_lut(points: &[[f32; 2]]) -> [u8; 256] {
-    let mut lut = [0u8; 256];
+    build_curve_lut_f32(points).map(|v| (v * 255.0) as u8)
+}
+
+/// Build a 256-entry float lookup table from a set of control points
+/// using monotone cubic Hermite interpolation (Fritsch-Carlson method).
+/// Points are [x, y] pairs in 0..1 range; the output is clamped there.
+///
+/// Float, not 8-bit: the grade reads these tables per channel in float,
+/// and 1/255 steps both banded smooth gradients and — since the curve's
+/// slope at its ends is measured from the last two entries, to continue
+/// it past them — scaled highlights above white by up to half a step.
+pub fn build_curve_lut_f32(points: &[[f32; 2]]) -> [f32; 256] {
+    let mut lut = [0.0f32; 256];
 
     if points.len() < 2 {
         // Identity: output = input
         for (i, val) in lut.iter_mut().enumerate() {
-            *val = i as u8;
+            *val = i as f32 / 255.0;
         }
         return lut;
     }
@@ -22,8 +32,7 @@ pub fn build_curve_lut(points: &[[f32; 2]]) -> [u8; 256] {
         // Linear interpolation
         for (i, val) in lut.iter_mut().enumerate() {
             let t = i as f32 / 255.0;
-            let y = lerp_points(&pts, t);
-            *val = (y.clamp(0.0, 1.0) * 255.0) as u8;
+            *val = lerp_points(&pts, t).clamp(0.0, 1.0);
         }
         return lut;
     }
@@ -100,7 +109,7 @@ pub fn build_curve_lut(points: &[[f32; 2]]) -> [u8; 256] {
             h00 * y0 + h10 * dx * m[seg] + h01 * y1 + h11 * dx * m[seg + 1]
         };
 
-        *lut_val = (y.clamp(0.0, 1.0) * 255.0) as u8;
+        *lut_val = y.clamp(0.0, 1.0);
     }
 
     lut
@@ -136,17 +145,6 @@ pub fn apply_curves(
     }
 }
 
-/// Build a 256-entry float LUT from control points (for hue/sat curves).
-/// Same Fritsch-Carlson method as build_curve_lut but returns [f32; 256] in 0..1 range.
-pub fn build_curve_lut_f32(points: &[[f32; 2]]) -> [f32; 256] {
-    let u8_lut = build_curve_lut(points);
-    let mut lut = [0.0f32; 256];
-    for (i, &v) in u8_lut.iter().enumerate() {
-        lut[i] = v as f32 / 255.0;
-    }
-    lut
-}
-
 /// Check if curve points represent identity (no adjustment).
 pub fn is_identity(points: &[[f32; 2]]) -> bool {
     points.len() == 2
@@ -154,6 +152,46 @@ pub fn is_identity(points: &[[f32; 2]]) -> bool {
         && (points[0][1] - 0.0).abs() < 0.001
         && (points[1][0] - 1.0).abs() < 0.001
         && (points[1][1] - 1.0).abs() < 0.001
+}
+
+#[cfg(test)]
+mod float_lut_tests {
+    use super::*;
+
+    /// The tables carry more than 8 bits: a shallow curve's entries do
+    /// not all land on the 1/255 grid, so a smooth gradient through a
+    /// curve does not band.
+    #[test]
+    fn the_tables_are_not_quantised_to_8_bits() {
+        let lut = build_curve_lut_f32(&[[0.0, 0.0], [0.5, 0.502], [1.0, 1.0]]);
+        let off_grid = lut
+            .iter()
+            .filter(|v| {
+                let steps = *v * 255.0;
+                (steps - steps.round()).abs() > 0.02
+            })
+            .count();
+        assert!(off_grid > 200, "only {off_grid} of 256 entries carry sub-8-bit detail");
+    }
+
+    /// The slope a curve ends with survives the table, because the grade
+    /// reads it to continue the curve past white. Through 8 bits, a curve
+    /// ending at half slope measured 0 or 1 instead of 0.5.
+    #[test]
+    fn an_end_slope_survives_the_table() {
+        let lut = build_curve_lut_f32(&[[0.0, 0.0], [1.0, 0.5]]);
+        let slope = (lut[255] - lut[254]) * 255.0;
+        assert!((slope - 0.5).abs() < 0.02, "end slope {slope}, want 0.5");
+    }
+
+    /// An identity curve is still identity, to float precision.
+    #[test]
+    fn identity_stays_identity() {
+        let lut = build_curve_lut_f32(&[[0.0, 0.0], [1.0, 1.0]]);
+        for (i, v) in lut.iter().enumerate() {
+            assert!((v - i as f32 / 255.0).abs() < 1e-6, "entry {i} is {v}");
+        }
+    }
 }
 
 #[cfg(test)]

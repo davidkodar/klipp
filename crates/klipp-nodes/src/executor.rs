@@ -4,7 +4,6 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use klipp_color::lut::LutData;
-use klipp_color::pipeline::CurveLuts;
 use klipp_effects::gpu::GpuEffectsPipeline;
 
 use crate::graph::{Edge, Node, NodeGraph, NodeId};
@@ -128,7 +127,7 @@ pub struct GraphExecutor {
     /// Cache of loaded LUT data keyed by file path.
     lut_cache: HashMap<PathBuf, Arc<LutData>>,
     /// Cache of pre-built curve LUTs keyed by node ID.
-    curve_lut_cache: HashMap<NodeId, Arc<CurveLuts>>,
+    curve_lut_cache: HashMap<NodeId, Arc<[f32; 1024]>>,
     /// Cache of decoded external-matte images, keyed by source path.
     /// Stores the raw linear-RGBA buffer + native dimensions so the
     /// per-frame resize to the timeline resolution can run without
@@ -290,16 +289,6 @@ fn log_wheels(p: &NodeParams) -> Option<[(f32, f32, f32); 3]> {
     wheels.iter().any(|v| *v != (0.0, 0.0, 0.0)).then_some(wheels)
 }
 
-/// Curve LUTs as the curves shader and its CPU twin take them.
-fn curve_lut_data(luts: &CurveLuts) -> [f32; 1024] {
-    let mut lut_data = [0.0f32; 1024];
-    for (c, lut) in [&luts.master, &luts.red, &luts.green, &luts.blue].into_iter().enumerate() {
-        for (i, &v) in lut.iter().enumerate().take(256) {
-            lut_data[c * 256 + i] = v as f32 / 255.0;
-        }
-    }
-    lut_data
-}
 
 /// Which hue/sat curves were edited, bit per curve in
 /// `build_huesat_lut_data`'s order.
@@ -1980,24 +1969,11 @@ impl GraphExecutor {
                 let Some(curves) = params.curves.as_ref() else { return None };
                 if is_curves_identity(curves) { return None; }
                 // Use pre-built LUTs from prepare_clip() when available.
-                let luts = self
+                let lut_data = self
                     .curve_lut_cache
                     .get(&node_id)
                     .cloned()
                     .unwrap_or_else(|| Arc::new(build_curve_luts(curves)));
-                let mut lut_data = [0.0f32; 1024];
-                for (i, &v) in luts.master.iter().enumerate().take(256) {
-                    lut_data[i] = v as f32 / 255.0;
-                }
-                for (i, &v) in luts.red.iter().enumerate().take(256) {
-                    lut_data[256 + i] = v as f32 / 255.0;
-                }
-                for (i, &v) in luts.green.iter().enumerate().take(256) {
-                    lut_data[512 + i] = v as f32 / 255.0;
-                }
-                for (i, &v) in luts.blue.iter().enumerate().take(256) {
-                    lut_data[768 + i] = v as f32 / 255.0;
-                }
                 let preserve_luma = params.curves_preserve_luma.unwrap_or(false);
                 let mix = params.curves_mix.unwrap_or(1.0);
                 self.gpu.as_mut().unwrap().apply_rgb_curves_chain(
@@ -2180,7 +2156,7 @@ impl GraphExecutor {
                 .cloned()
                 .unwrap_or_else(|| Arc::new(build_curve_luts(curves)));
             later.push(GradeStage::Curves {
-                lut: Box::new(curve_lut_data(&luts)),
+                lut: Box::new(*luts),
                 preserve_luma: params.curves_preserve_luma.unwrap_or(false),
                 mix: params.curves_mix.unwrap_or(1.0),
                 luma,
@@ -2527,8 +2503,7 @@ impl GraphExecutor {
                 if let Some(luts) = luts {
                     let preserve_luma = params.curves_preserve_luma.unwrap_or(false);
                     let mix = params.curves_mix.unwrap_or(1.0);
-
-                    let lut_data = curve_lut_data(&luts);
+                    let lut_data = *luts;
                     if let Some(gpu) = &mut self.gpu {
                         gpu.apply_rgb_curves_gpu(
                             primary_input.to_vec(), width, height,
@@ -3478,13 +3453,14 @@ fn mask_to_gpu_def(mask: &klipp_core::Mask) -> Option<klipp_effects::gpu::GpuMas
     }
 }
 
-fn build_curve_luts(curves: &klipp_core::CurveSet) -> CurveLuts {
-    CurveLuts {
-        master: klipp_color::curves::build_curve_lut(&curves.master),
-        red: klipp_color::curves::build_curve_lut(&curves.red),
-        green: klipp_color::curves::build_curve_lut(&curves.green),
-        blue: klipp_color::curves::build_curve_lut(&curves.blue),
+/// The four curves as the curves shader and its CPU twin read them:
+/// master, red, green, blue, 256 float entries each.
+fn build_curve_luts(curves: &klipp_core::CurveSet) -> [f32; 1024] {
+    let mut lut = [0.0f32; 1024];
+    for (c, points) in [&curves.master, &curves.red, &curves.green, &curves.blue].into_iter().enumerate() {
+        lut[c * 256..(c + 1) * 256].copy_from_slice(&klipp_color::curves::build_curve_lut_f32(points));
     }
+    lut
 }
 
 /// CPU film grain using Wang hash noise.
