@@ -1171,6 +1171,7 @@ impl KlippApp {
                         color_transfer,
                         pixel_format,
                         detected_log_format: Default::default(),
+                        log_format_user_set: false,
                         skim_file: None,
                         waveform_data: None,
                         audio_cache: None,
@@ -3124,10 +3125,9 @@ impl KlippApp {
     /// effective format is Srgb so we don't insert pointless
     /// `Some(Srgb)` overrides on plain SDR clips.
     fn apply_detected_log_format(&mut self, clip_id: klipp_core::ClipId, media_id: klipp_core::MediaId) {
-        let (user_lf, detected_lf) = self.state.media_pool.get(&media_id)
-            .map(|m| (m.log_format, m.detected_log_format))
+        let effective = self.state.media_pool.get(&media_id)
+            .map(|m| m.effective_log_format())
             .unwrap_or_default();
-        let effective = if user_lf != klipp_core::LogFormat::default() { user_lf } else { detected_lf };
         if effective != klipp_core::LogFormat::Srgb {
             let seq = &mut self.state.sequences[self.state.active_sequence_idx];
             if let Some(clip) = seq.all_clips_mut().find(|c| c.id == clip_id) {
@@ -3414,14 +3414,9 @@ impl KlippApp {
     /// container metadata never says "S-Log3" — the media's format (the
     /// user's choice, else what was detected) is the only source of truth.
     fn sync_log_formats_to_decoders(&self) {
-        klipp_engine::video_decoder::set_media_log_formats(self.state.media_pool.all().map(|m| {
-            let effective = if m.log_format != klipp_core::LogFormat::default() {
-                m.log_format
-            } else {
-                m.detected_log_format
-            };
-            (m.path.clone(), effective)
-        }));
+        klipp_engine::video_decoder::set_media_log_formats(
+            self.state.media_pool.all().map(|m| (m.path.clone(), m.effective_log_format())),
+        );
     }
 
     fn send_commands(&mut self, cmds: Vec<AppCommand>) {
@@ -11126,6 +11121,7 @@ impl KlippApp {
                         color_transfer: None,
                         pixel_format: None,
                         detected_log_format: Default::default(),
+                        log_format_user_set: false,
                         skim_file: None,
                         waveform_data: None,
                         audio_cache: None,
@@ -13262,6 +13258,7 @@ impl KlippApp {
                 if let Some(mid) = media_id_for_writeback {
                     if let Some(item) = self.state.media_pool.get_mut(&mid) {
                         item.log_format = *log_format;
+                        item.log_format_user_set = true;
                     }
                     for seq in &mut self.state.sequences {
                         for clip in seq.all_clips_mut() {
@@ -33418,6 +33415,7 @@ fn build_whoosh_media_item(
         color_transfer: None,
         pixel_format: None,
         detected_log_format: klipp_core::LogFormat::default(),
+        log_format_user_set: false,
         skim_file: None,
         needs_reprobe: false,
         waveform_data: None,
@@ -37605,6 +37603,7 @@ mod insert_audio_media_clip_tests {
             color_transfer: None,
             pixel_format: None,
             detected_log_format: klipp_core::LogFormat::default(),
+            log_format_user_set: false,
             skim_file: None,
             needs_reprobe: false,
             waveform_data: None,

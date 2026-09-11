@@ -306,6 +306,7 @@ fn make_otio_media_item(path: PathBuf, filename: String, fps: Fps, offline: bool
         color_transfer: None,
         pixel_format: None,
         detected_log_format: klipp_core::LogFormat::default(),
+        log_format_user_set: false,
         skim_file: None,
         needs_reprobe: !offline,
         waveform_data: None,

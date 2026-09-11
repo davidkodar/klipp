@@ -688,6 +688,11 @@ pub struct MediaItemJson {
     /// `apply_detected_log_format` in app.rs.
     #[serde(default, skip_serializing_if = "is_default_log_format")]
     pub log_format: klipp_core::LogFormat,
+    /// The user explicitly chose `log_format` — including choosing the
+    /// default, sRGB, to override a detected log. Older projects lack it;
+    /// a non-default `log_format` there was necessarily a choice.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub log_format_user_set: bool,
 }
 
 fn is_default_log_format(f: &klipp_core::LogFormat) -> bool {

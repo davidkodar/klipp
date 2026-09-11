@@ -79,6 +79,7 @@ fn make_media_item(path: PathBuf) -> MediaItem {
         color_transfer: None,
         pixel_format: None,
         detected_log_format: klipp_core::LogFormat::default(),
+        log_format_user_set: false,
         skim_file: None,
         needs_reprobe: false,
         waveform_data: None,

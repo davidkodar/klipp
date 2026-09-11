@@ -162,7 +162,7 @@ fn render_info_tab(ui: &mut egui::Ui, media: &klipp_media::MediaItem) {
                 ColourSpace::Unknown => "Unknown",
             };
             kv(ui, "Colour space", cs_text);
-            if media.log_format != klipp_core::LogFormat::Srgb {
+            if media.log_format_user_set {
                 kv(ui, "Log format", &format!("{:?}", media.log_format));
             } else if media.detected_log_format != klipp_core::LogFormat::Srgb {
                 kv(ui, "Detected log", &format!("{:?}", media.detected_log_format));

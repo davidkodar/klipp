@@ -530,6 +530,7 @@ fn media_item_to_json(item: &MediaItem, project_dir: &Path) -> MediaItemJson {
         color_transfer: item.color_transfer.clone(),
         pixel_format: item.pixel_format.clone(),
         log_format: item.log_format,
+        log_format_user_set: item.log_format_user_set,
     }
 }
 

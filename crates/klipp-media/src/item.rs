@@ -206,9 +206,17 @@ pub struct MediaItem {
     /// Detected colour space / HDR format.
     #[serde(default)]
     pub colour_space: ColourSpace,
-    /// Camera log encoding format (for IDT conversion)
+    /// Camera log encoding format the user picked (for IDT conversion).
+    /// Meaningful only when `log_format_user_set`; see
+    /// [`MediaItem::effective_log_format`].
     #[serde(default)]
     pub log_format: klipp_core::LogFormat,
+    /// Whether `log_format` is the user's choice. Without this, choosing
+    /// "sRGB / Rec.709" (the default value) could not override a detected
+    /// log format: it read as "never chosen" and detection won, so a
+    /// mis-detected clip stayed converted whatever the user picked.
+    #[serde(default)]
+    pub log_format_user_set: bool,
     /// Source rotation in degrees (0, 90, 180, 270) from container metadata / display matrix.
     /// Phone videos often have 90° or 270° rotation.
     #[serde(default)]
@@ -366,6 +374,7 @@ impl MediaItem {
             color_transfer: None,
             pixel_format: None,
             detected_log_format: klipp_core::LogFormat::default(),
+            log_format_user_set: false,
             skim_file: None,
             needs_reprobe: false,
             waveform_data: None,
@@ -374,6 +383,16 @@ impl MediaItem {
     }
 
     /// Detect the likely log format from metadata (color_transfer, camera, bit depth, pixel format).
+    /// What the decoder should treat this file as: the user's choice
+    /// when they made one, otherwise what detection found.
+    pub fn effective_log_format(&self) -> klipp_core::LogFormat {
+        if self.log_format_user_set || self.log_format != klipp_core::LogFormat::default() {
+            self.log_format
+        } else {
+            self.detected_log_format
+        }
+    }
+
     pub fn detect_log_format(&self) -> klipp_core::LogFormat {
         use klipp_core::LogFormat;
 
@@ -525,6 +544,7 @@ mod subclip_tests {
             color_transfer: None,
             pixel_format: None,
             detected_log_format: klipp_core::LogFormat::default(),
+            log_format_user_set: false,
             skim_file: None,
             needs_reprobe: false,
             waveform_data: None,
@@ -697,6 +717,7 @@ mod effective_rotation_tests {
             color_transfer: None,
             pixel_format: None,
             detected_log_format: klipp_core::LogFormat::default(),
+            log_format_user_set: false,
             skim_file: skim.map(PathBuf::from),
             needs_reprobe: false,
             waveform_data: None,

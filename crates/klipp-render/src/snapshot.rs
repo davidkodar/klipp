@@ -903,6 +903,7 @@ mod tests {
             color_transfer: None,
             pixel_format: None,
             detected_log_format: klipp_core::LogFormat::default(),
+            log_format_user_set: false,
             parent_media_id: None,
         }
     }

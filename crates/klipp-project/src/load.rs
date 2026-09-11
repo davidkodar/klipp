@@ -187,6 +187,8 @@ pub fn load_project(dir: &Path) -> Result<LoadResult, String> {
             color_transfer: item_json.color_transfer.clone(),
             pixel_format: item_json.pixel_format.clone(),
             detected_log_format: Default::default(),
+            log_format_user_set: item_json.log_format_user_set
+                || item_json.log_format != klipp_core::LogFormat::default(),
             skim_file: None,
             waveform_data: None,
             audio_cache: None,
