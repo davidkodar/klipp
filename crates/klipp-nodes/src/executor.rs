@@ -1227,14 +1227,9 @@ impl GraphExecutor {
             return false;
         }
         match kind {
-            NodeKind::InputTransform => {
-                if let Some(fmt) = params.log_format {
-                    use klipp_core::LogFormat;
-                    !matches!(fmt, LogFormat::Srgb | LogFormat::Linear)
-                } else {
-                    false
-                }
-            }
+            NodeKind::InputTransform => params
+                .log_format
+                .is_some_and(klipp_core::LogFormat::needs_input_transform),
             NodeKind::Exposure => params.exposure.unwrap_or(0.0) != 0.0,
             NodeKind::Contrast => {
                 params.contrast.unwrap_or(0.0) != 0.0 || params.clarity.unwrap_or(0.0) != 0.0
@@ -1444,8 +1439,7 @@ impl GraphExecutor {
         match kind {
             NodeKind::InputTransform => {
                 let Some(fmt) = params.log_format else { return None };
-                use klipp_core::LogFormat;
-                if matches!(fmt, LogFormat::Srgb | LogFormat::Linear) {
+                if !fmt.needs_input_transform() {
                     return None;
                 }
                 let lut = klipp_color::build_input_transform_lut(fmt);
@@ -2024,8 +2018,7 @@ impl GraphExecutor {
 
             NodeKind::InputTransform => {
                 if let Some(fmt) = params.log_format {
-                    use klipp_core::LogFormat;
-                    if matches!(fmt, LogFormat::Srgb | LogFormat::Linear) {
+                    if !fmt.needs_input_transform() {
                         primary_input.to_vec()
                     } else if let Some(gpu) = &mut self.gpu {
                         let lut = klipp_color::build_input_transform_lut(fmt);

@@ -84,6 +84,24 @@ pub enum LogFormat {
     PQ,
 }
 
+impl LogFormat {
+    /// Whether an InputTransform node carrying this format has any work
+    /// to do on the pixels it receives.
+    ///
+    /// `Srgb` and `Linear` never did. `PQ` and `HLG` no longer do: the
+    /// decoder's HDR input stage turns PQ/HLG code values into
+    /// scene-linear before the graph runs (`klipp_color::hdr`), so a node
+    /// that decoded them again would decode twice — which is exactly what
+    /// crushed every HDR clip the moment a grade was applied. The node is
+    /// still seeded with PQ/HLG on import, where it records what the
+    /// source is; it just must not act on it.
+    ///
+    /// Camera log formats still need the node.
+    pub fn needs_input_transform(self) -> bool {
+        !matches!(self, Self::Srgb | Self::Linear | Self::PQ | Self::HLG)
+    }
+}
+
 // `BlendMode` lives in klipp-effects (alongside the composite math
 // that consumes it). klipp-core can't own the type because klipp-core
 // already depends on klipp-effects via `BuiltinEffect` payloads — a
@@ -413,5 +431,22 @@ fn default_fill() -> bool { true }
 impl Default for GeneratorData {
     fn default() -> Self {
         GeneratorData::SolidColor { color: [0, 0, 0, 255] }
+    }
+}
+
+#[cfg(test)]
+mod log_format_tests {
+    use super::LogFormat;
+
+    /// PQ and HLG are decoded before the graph runs; the node must not
+    /// decode them again. Camera logs still need it.
+    #[test]
+    fn hdr_transfers_need_no_input_transform_but_camera_logs_do() {
+        for f in [LogFormat::Srgb, LogFormat::Linear, LogFormat::PQ, LogFormat::HLG] {
+            assert!(!f.needs_input_transform(), "{f:?}");
+        }
+        for f in [LogFormat::SLog3, LogFormat::LogC3, LogFormat::VLog, LogFormat::AppleLog] {
+            assert!(f.needs_input_transform(), "{f:?}");
+        }
     }
 }
