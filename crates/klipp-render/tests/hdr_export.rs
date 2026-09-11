@@ -33,8 +33,19 @@ fn clip(kind: klipp_timeline::ClipKind) -> klipp_timeline::Clip {
 }
 
 /// Export a one-clip timeline as 10-bit H.265, near-lossless, adjusted
-/// by `tweak`.
+/// by `tweak`, from a BT.709-linear project.
 fn export(c: klipp_timeline::Clip, media: Option<(MediaId, MediaFile)>, out: &Path, tweak: impl FnOnce(&mut ExportSettings)) {
+    export_ws(c, media, out, WorkingColorspace::Rec709Linear, tweak)
+}
+
+/// [`export`], from a project in `ws`.
+fn export_ws(
+    c: klipp_timeline::Clip,
+    media: Option<(MediaId, MediaFile)>,
+    out: &Path,
+    ws: WorkingColorspace,
+    tweak: impl FnOnce(&mut ExportSettings),
+) {
     let mut video = VideoTimeline::default();
     video.sequence.fps = Fps::new(25, 1);
     video.sequence.resolution = Resolution { width: W, height: H };
@@ -46,7 +57,7 @@ fn export(c: klipp_timeline::Clip, media: Option<(MediaId, MediaFile)>, out: &Pa
         fps: 25.0, fps_num: 25, fps_den: 1, width: W, height: H, sample_rate: 48000,
         duration_frames: FRAMES, export_range: None, video,
         audio_tracks: vec![], global_lut_path: None, subtitle_tracks: vec![], chapters: vec![],
-        working_colorspace: WorkingColorspace::Rec709Linear,
+        working_colorspace: ws,
     };
     let mut settings = ExportSettings {
         output_path: out.to_path_buf(), format: ExportFormat::Mp4, video_codec: ExportVideoCodec::H265,
@@ -277,4 +288,76 @@ fn an_aces_pq_transform_is_a_pq_delivery() {
     for want in ["color_space=bt2020nc", "color_transfer=smpte2084", "color_primaries=bt2020"] {
         assert!(tags.contains(want), "ACES PQ export lacks {want}: {tags}");
     }
+}
+
+/// A BT.2020 project is the shortest path for HDR: the most common HDR
+/// source arrives in the basis the grade already works in, and every HDR
+/// delivery leaves in it. Neither end converts, so the file comes back
+/// carrying the codes it went in with — including a saturated BT.2020
+/// colour that has no BT.709 expression at all, which in a BT.709
+/// project makes the round trip only because the two matrices undo each
+/// other exactly.
+///
+/// The second half is the one that would catch a regression: the same
+/// source through a BT.709 project must land on the same codes. If
+/// `working_to_bt2020` ever converted a BT.2020 project again, or the
+/// decoder converted it in, the two would differ.
+#[test]
+fn a_bt2020_project_exports_a_bt2020_source_as_it_came() {
+    let bands = [[pq_y(5.0), 512, 512], [pq_y(203.0), 512, 512], [450, 400, 650], [pq_y(1000.0), 512, 512]];
+    let Some(src) = band_clip("bt2020_ws_src", bands, TAGS_PQ) else { return };
+
+    let wide = tmp("bt2020_project.mp4");
+    let (c, m) = media_clip(src.clone(), None);
+    export_ws(c, m, &wide, WorkingColorspace::Bt2020Linear, |_| {});
+    for band in 0..4 {
+        let want = bands[band as usize].map(|v| v as i32);
+        assert_codes(&format!("band {band}, BT.2020 project"), band_codes(&wide, band), want, 3);
+    }
+
+    let narrow = tmp("rec709_project.mp4");
+    let (c, m) = media_clip(src, None);
+    export_ws(c, m, &narrow, WorkingColorspace::Rec709Linear, |_| {});
+    for band in 0..4 {
+        assert_codes(
+            &format!("band {band}, BT.709 project"),
+            band_codes(&narrow, band),
+            band_codes(&wide, band),
+            3,
+        );
+    }
+}
+
+/// An SDR delivery of a BT.2020 project is converted into BT.709 rather
+/// than encoded as if it were already there. Neutral is untouched —
+/// shared D65 — and a saturated colour is not: encoding BT.2020 values
+/// straight to sRGB, as the old stub did, reads as a more saturated
+/// colour than the file holds.
+#[test]
+fn an_sdr_export_of_a_bt2020_project_is_converted() {
+    let bands = [[pq_y(203.0), 512, 512], [450, 400, 650], [pq_y(203.0), 512, 512], [pq_y(5.0), 512, 512]];
+    let Some(src) = band_clip("bt2020_sdr_src", bands, TAGS_PQ) else { return };
+
+    let sdr = |out: &Path, ws| {
+        let (c, m) = media_clip(src.clone(), None);
+        export_ws(c, m, out, ws, |s| {
+            s.hdr_mode = HdrMode::Sdr;
+            s.bit_depth = 10;
+        });
+    };
+    let wide = tmp("bt2020_sdr.mp4");
+    let narrow = tmp("rec709_sdr.mp4");
+    sdr(&wide, WorkingColorspace::Bt2020Linear);
+    sdr(&narrow, WorkingColorspace::Rec709Linear);
+
+    // Grey stays grey, and lands where the BT.709 project puts it.
+    for band in [0, 2] {
+        let g = band_codes(&wide, band);
+        assert!((g[1] - 512).abs() <= 4 && (g[2] - 512).abs() <= 4, "grey drifted to {g:?}");
+        assert_codes(&format!("grey band {band}"), g, band_codes(&narrow, band), 4);
+    }
+    // The saturated band does not: it is a different colour once read as
+    // BT.2020, and BT.709 cannot hold it.
+    let (w, n) = (band_codes(&wide, 1), band_codes(&narrow, 1));
+    assert!(w != n, "saturated colour still encoded as if it were BT.709: {w:?}");
 }

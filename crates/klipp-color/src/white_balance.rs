@@ -23,7 +23,7 @@
 
 use klipp_core::WorkingColorspace;
 
-use crate::primaries::{Primaries, PRIMARIES_ACES_AP1, PRIMARIES_BT709};
+use crate::primaries::{Primaries, PRIMARIES_ACES_AP1, PRIMARIES_BT2020, PRIMARIES_BT709};
 
 /// Mireds of assumed-light shift per temperature unit.
 pub const MIRED_PER_TEMPERATURE: f64 = 1.0;
@@ -74,12 +74,14 @@ pub fn apply_white_balance(rgba: &mut [f32], m: &[[f32; 3]; 3]) {
     });
 }
 
-/// The working space's primaries and white. BT.2020-linear holds
-/// BT.709-primaries values today (see `primaries::working_space_conversion_matrix`).
+/// The working space's primaries and white. BT.2020 shares BT.709's D65
+/// white, so a project in either has the same base CCT; only the gamut
+/// the balance is expressed in differs.
 fn working_primaries(ws: WorkingColorspace) -> Primaries {
     match ws {
         WorkingColorspace::AcesCG => PRIMARIES_ACES_AP1,
-        WorkingColorspace::Rec709Linear | WorkingColorspace::Bt2020Linear => PRIMARIES_BT709,
+        WorkingColorspace::Rec709Linear => PRIMARIES_BT709,
+        WorkingColorspace::Bt2020Linear => PRIMARIES_BT2020,
     }
 }
 

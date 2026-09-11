@@ -5946,9 +5946,11 @@ impl PlaybackEngine {
     ///
     /// So the fast path reads the decoder's bytes back and publishes
     /// them. Its correctness rests on two conditions checked below —
-    /// `ToneMapOp::None` and a non-ACES working space — under which
+    /// `ToneMapOp::None` and a Rec.709 working space — under which
     /// `display_transform_ws` reduces to exactly the sRGB encode that
-    /// inverts the decode. `direct_present_is_byte_identical` in
+    /// inverts the decode. A wide-gamut working space does not qualify:
+    /// ACES needs its ODT, and BT.2020 needs a matrix into BT.709 before
+    /// the encode, so neither round-trips to the decoder's own bytes. `direct_present_is_byte_identical` in
     /// tests/direct_present_identity.rs pins that for all 256 levels.
     ///
     /// Everything else here is a consumer that wants pixels this path
@@ -6012,9 +6014,8 @@ impl PlaybackEngine {
         if !matches!(
             crate::video_decoder::working_colorspace(),
             klipp_core::WorkingColorspace::Rec709Linear
-                | klipp_core::WorkingColorspace::Bt2020Linear
         ) {
-            blockers.push("ACES working space needs the ODT");
+            blockers.push("wide-gamut working space needs its display transform");
         }
         // Scopes sample the post-grade linear frame, which this path
         // never builds. But they refresh at 10 Hz, so only the frames

@@ -96,6 +96,20 @@ pub const PRIMARIES_BT709: Primaries = Primaries {
     white: Chromaticity { x: 0.3127,  y: 0.3290 }, // D65
 };
 
+/// BT.2020 primaries — the wide-gamut basis of every HDR delivery, and
+/// a working space in its own right for HDR work that does not want the
+/// ACES tone curve. White point is D65, the same as BT.709's, so no
+/// chromatic adaptation is involved in moving between the two.
+///
+/// Source: ITU-R BT.2020-2 Table 1. Red sits exactly on the spectral
+/// locus (x + y = 1).
+pub const PRIMARIES_BT2020: Primaries = Primaries {
+    red:   Chromaticity { x: 0.708,   y: 0.292  },
+    green: Chromaticity { x: 0.170,   y: 0.797  },
+    blue:  Chromaticity { x: 0.131,   y: 0.046  },
+    white: Chromaticity { x: 0.3127,  y: 0.3290 }, // D65
+};
+
 /// Linear-light ACEScg (AP1) RGB → linear-light BT.709 RGB.
 ///
 /// Includes the D60→D65 CAT02 chromatic adaptation built in. Apply to
@@ -282,16 +296,40 @@ pub fn bt709_to_bt2020() -> [[f32; 3]; 3] {
     ]
 }
 
+/// Linear-light BT.2020 RGB → linear-light BT.709 RGB.
+///
+/// The exact table the decoders use for a BT.2020 source
+/// ([`crate::camera_log::primaries_to_bt709`] with
+/// [`klipp_core::ColorPrimaries::Bt2020`]), repeated here so the gamut
+/// maths reads in one place; `bt2020_matrix_matches_the_decoders_table`
+/// pins the two together. That makes it the exact inverse of
+/// [`bt709_to_bt2020`], which was built as that table's f64 inverse.
+///
+/// A BT.2020 primary has no BT.709 expression, so the result goes
+/// negative — that is the matrix being right, not a bug. Anything
+/// heading for an 8-bit display has to clamp or gamut-map after this.
+#[inline]
+#[allow(clippy::excessive_precision)]
+pub fn bt2020_to_bt709() -> [[f32; 3]; 3] {
+    [
+        [ 1.660491002,   -0.5876411388,  -0.07284986332],
+        [-0.1245504745,   1.132899897,   -0.008349422604],
+        [-0.01815076335, -0.100578898,    1.118729661],
+    ]
+}
+
 /// Linear working-space RGB → linear BT.2020, the primaries of every HDR
-/// delivery. A BT.2020-linear project holds BT.709-primaries values
-/// today (see [`working_space_conversion_matrix`]), so it takes the
-/// BT.709 matrix.
+/// delivery. A BT.2020-linear project is already there.
 pub fn working_to_bt2020(ws: klipp_core::WorkingColorspace) -> [[f32; 3]; 3] {
     match ws {
         klipp_core::WorkingColorspace::AcesCG => acescg_to_bt2020(),
-        klipp_core::WorkingColorspace::Rec709Linear | klipp_core::WorkingColorspace::Bt2020Linear => bt709_to_bt2020(),
+        klipp_core::WorkingColorspace::Rec709Linear => bt709_to_bt2020(),
+        klipp_core::WorkingColorspace::Bt2020Linear => IDENTITY,
     }
 }
+
+/// The 3×3 that changes nothing.
+pub const IDENTITY: [[f32; 3]; 3] = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
 
 /// Relative luminance of linear RGB in a working space's primaries: the Y
 /// row of its RGB → XYZ matrix.
@@ -299,9 +337,9 @@ pub fn working_to_bt2020(ws: klipp_core::WorkingColorspace) -> [[f32; 3]; 3] {
 pub fn luminance_weights(ws: klipp_core::WorkingColorspace) -> [f32; 3] {
     match ws {
         klipp_core::WorkingColorspace::AcesCG => [0.2722287168, 0.6740817658, 0.0536895174],
-        klipp_core::WorkingColorspace::Rec709Linear | klipp_core::WorkingColorspace::Bt2020Linear => {
-            [0.2126, 0.7152, 0.0722]
-        }
+        klipp_core::WorkingColorspace::Rec709Linear => [0.2126, 0.7152, 0.0722],
+        // BT.2020 NCL, ITU-R BT.2020-2 Table 4.
+        klipp_core::WorkingColorspace::Bt2020Linear => [0.2627, 0.6780, 0.0593],
     }
 }
 
@@ -349,12 +387,14 @@ pub fn p3d65_to_acescg() -> [[f32; 3]; 3] {
 /// can short-circuit the matmul for the identity case. For mismatched
 /// pairs the returned matrix is the standard CAT-included basis change.
 ///
-/// Currently only `Rec709Linear ↔ AcesCG` is handled with a real
-/// matrix; conversions involving `Bt2020Linear` fall back to identity
-/// because the BT.2020 end-to-end pipeline isn't wired yet (the
-/// CPU/GPU decoders treat it as a stub aliased to BT.709). When
-/// BT.2020 lands as a first-class working space, extend this match
-/// rather than scattering matrix-pair logic across consumers.
+/// Every pair of working spaces has its matrix here; this is the one
+/// place that knows how the bases relate, so a consumer never composes
+/// its own. The BT.709 ↔ BT.2020 pair shares D65 white and needs no
+/// chromatic adaptation; the AP1 pairs carry a D60 ↔ D65 CAT.
+///
+/// Converting into a narrower gamut takes colours outside it negative.
+/// That is correct and reversible in linear light — only a display
+/// encode has to decide what to do about it.
 pub fn working_space_conversion_matrix(
     from: klipp_core::WorkingColorspace,
     to: klipp_core::WorkingColorspace,
@@ -366,11 +406,14 @@ pub fn working_space_conversion_matrix(
     Some(match (from, to) {
         (Rec709Linear, AcesCG) => bt709_to_acescg(),
         (AcesCG, Rec709Linear) => acescg_to_bt709(),
-        // BT.2020 stub: route through Rec.709 (= identity for now,
-        // since the decoder treats Bt2020Linear as Rec709Linear's
-        // alias). Document the limitation rather than silently
-        // returning a wrong matrix.
-        _ => return None,
+        (Rec709Linear, Bt2020Linear) => bt709_to_bt2020(),
+        (Bt2020Linear, Rec709Linear) => bt2020_to_bt709(),
+        (AcesCG, Bt2020Linear) => acescg_to_bt2020(),
+        (Bt2020Linear, AcesCG) => bt2020_to_acescg(),
+        // Unreachable — `from == to` returned above — but spelling the
+        // pairs out keeps the match exhaustive, so adding a working
+        // space is a compile error here rather than a silent identity.
+        (Rec709Linear, Rec709Linear) | (AcesCG, AcesCG) | (Bt2020Linear, Bt2020Linear) => return None,
     })
 }
 
@@ -647,6 +690,104 @@ mod tests {
             let yap1 = dot(luminance_weights(AcesCG), matrix3_mul_vec(bt709_to_acescg(), c));
             let tol = if c == [1.0; 3] { 1e-4 } else { 5e-3 };
             assert!(approx_eq(y709, yap1, tol), "{c:?}: {y709} vs {yap1}");
+        }
+    }
+    #[test]
+    fn bt2020_to_bt709_is_the_table_the_decoders_use() {
+        // The gamut maths and the decoder must agree on what BT.2020 is,
+        // or a BT.2020 source lands somewhere other than where a BT.2020
+        // project says it is. Pinned elementwise so a regenerated
+        // decoder table cannot drift away from this copy unnoticed.
+        for basis in [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]] {
+            let decoder = crate::camera_log::primaries_to_bt709(basis, klipp_core::ColorPrimaries::Bt2020);
+            let ours = matrix3_mul_vec(bt2020_to_bt709(), basis);
+            assert!(approx_eq_vec(decoder, ours, 1e-6), "{basis:?}: {decoder:?} vs {ours:?}");
+        }
+    }
+
+    #[test]
+    fn bt709_and_bt2020_are_mutual_inverses() {
+        for rgb in [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0], [0.18, 0.18, 0.18], [0.3, 0.6, 0.1]] {
+            let there = matrix3_mul_vec(bt709_to_bt2020(), rgb);
+            let back = matrix3_mul_vec(bt2020_to_bt709(), there);
+            assert!(approx_eq_vec(back, rgb, 1e-5), "{rgb:?} → {there:?} → {back:?}");
+        }
+    }
+
+    #[test]
+    fn a_bt2020_primary_has_no_bt709_expression() {
+        // BT.2020's gamut contains BT.709's, so its primaries lie outside
+        // BT.709 and the conversion must go negative. A matrix that kept
+        // everything positive would be quietly clipping the gamut instead
+        // of converting it.
+        for (i, primary) in [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]].iter().enumerate() {
+            let in_709 = matrix3_mul_vec(bt2020_to_bt709(), *primary);
+            assert!(
+                in_709.iter().any(|c| *c < -1e-3),
+                "BT.2020 primary {i} came back inside BT.709: {in_709:?}",
+            );
+        }
+        // The other direction cannot: BT.709's primaries are inside
+        // BT.2020, so every channel stays positive.
+        for primary in [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]] {
+            let in_2020 = matrix3_mul_vec(bt709_to_bt2020(), primary);
+            assert!(in_2020.iter().all(|c| *c >= 0.0), "{primary:?} → {in_2020:?}");
+        }
+    }
+
+    #[test]
+    fn white_is_white_in_both_gamuts() {
+        // BT.709 and BT.2020 share D65, so neutral needs no adaptation
+        // and must survive the matrix untouched in both directions.
+        for m in [bt709_to_bt2020(), bt2020_to_bt709()] {
+            let white = matrix3_mul_vec(m, [1.0, 1.0, 1.0]);
+            assert!(approx_eq_vec(white, [1.0, 1.0, 1.0], 1e-5), "white moved to {white:?}");
+        }
+    }
+
+    #[test]
+    fn every_pair_of_working_spaces_round_trips() {
+        use klipp_core::WorkingColorspace::*;
+        let spaces = [Rec709Linear, AcesCG, Bt2020Linear];
+        for from in spaces {
+            for to in spaces {
+                let (Some(there), Some(back)) = (
+                    working_space_conversion_matrix(from, to),
+                    working_space_conversion_matrix(to, from),
+                ) else {
+                    assert_eq!(from, to, "{from:?} → {to:?} has no matrix");
+                    continue;
+                };
+                let rgb = [0.3, 0.55, 0.12];
+                let round = matrix3_mul_vec(back, matrix3_mul_vec(there, rgb));
+                assert!(approx_eq_vec(round, rgb, 1e-4), "{from:?} → {to:?} → {from:?}: {round:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_bt2020_project_is_already_at_the_delivery_primaries() {
+        // Every HDR delivery is BT.2020. A BT.2020 project is there
+        // already, so this must be identity — converting again would
+        // widen the gamut a second time and desaturate the whole file.
+        let m = working_to_bt2020(klipp_core::WorkingColorspace::Bt2020Linear);
+        assert_eq!(m, IDENTITY);
+        // And the other two agree with the pairwise matrices.
+        assert_eq!(working_to_bt2020(klipp_core::WorkingColorspace::Rec709Linear), bt709_to_bt2020());
+        assert_eq!(working_to_bt2020(klipp_core::WorkingColorspace::AcesCG), acescg_to_bt2020());
+    }
+
+    #[test]
+    fn bt2020_luminance_weights_are_the_bt2020_row() {
+        use klipp_core::WorkingColorspace::*;
+        // ITU-R BT.2020-2 Table 4, and the same colour carries the same
+        // luminance whichever space it is expressed in.
+        assert_eq!(luminance_weights(Bt2020Linear), [0.2627, 0.6780, 0.0593]);
+        let dot = |w: [f32; 3], c: [f32; 3]| w[0] * c[0] + w[1] * c[1] + w[2] * c[2];
+        for c in [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0], [1.0, 1.0, 1.0]] {
+            let y709 = dot(luminance_weights(Rec709Linear), c);
+            let y2020 = dot(luminance_weights(Bt2020Linear), matrix3_mul_vec(bt709_to_bt2020(), c));
+            assert!(approx_eq(y709, y2020, 1e-3), "{c:?}: {y709} vs {y2020}");
         }
     }
 }
