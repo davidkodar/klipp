@@ -189,6 +189,61 @@ fn inverse(m: &M3) -> M3 {
     ]
 }
 
+/// CIE Lab a and b of linear BT.709 RGB, D65: the axes the colour-match
+/// and auto-white-balance solvers work in.
+fn lab_ab(c: [f32; 3]) -> (f32, f32) {
+    let [r, g, b] = c.map(|v| v as f64);
+    let x = 0.412_456_4 * r + 0.357_576_1 * g + 0.180_437_5 * b;
+    let y = 0.212_672_9 * r + 0.715_152_2 * g + 0.072_175_0 * b;
+    let z = 0.019_333_9 * r + 0.119_192_0 * g + 0.950_304_1 * b;
+    let f = |t: f64| if t > 0.008_856 { t.cbrt() } else { 7.787 * t + 16.0 / 116.0 };
+    let (fx, fy, fz) = (f(x / 0.950_47), f(y), f(z / 1.088_83));
+    ((500.0 * (fx - fy)) as f32, (200.0 * (fy - fz)) as f32)
+}
+
+/// The temperature and tint whose balance moves `rgb` (linear BT.709) by
+/// `(da, db)` in Lab a / b: Newton's method on the two slider values,
+/// clamped to their ±100 range.
+///
+/// The sliders are a chromatic adaptation, so there is no closed form for
+/// "which slider values produce this colour shift" — solving it is what
+/// keeps the auto white balance and the shot match honest whatever the
+/// scale of the sliders.
+pub fn white_balance_for_lab_shift(rgb: [f32; 3], da: f32, db: f32, ws: WorkingColorspace) -> (f32, f32) {
+    let ab = |t: f32, g: f32| match white_balance_matrix(t, g, ws) {
+        Some(m) => lab_ab(m.map(|row| row[0] * rgb[0] + row[1] * rgb[1] + row[2] * rgb[2])),
+        None => lab_ab(rgb),
+    };
+    let (a0, b0) = ab(0.0, 0.0);
+    let (want_a, want_b) = (a0 + da, b0 + db);
+    let (mut t, mut g) = (0.0f32, 0.0f32);
+    for _ in 0..8 {
+        let (a, b) = ab(t, g);
+        let (ea, eb) = (want_a - a, want_b - b);
+        if ea.abs() < 0.01 && eb.abs() < 0.01 {
+            break;
+        }
+        let h = 1.0;
+        let (at, bt) = ab(t + h, g);
+        let (ag, bg) = ab(t, g + h);
+        let (dadt, dbdt, dadg, dbdg) = ((at - a) / h, (bt - b) / h, (ag - a) / h, (bg - b) / h);
+        let det = dadt * dbdg - dadg * dbdt;
+        if det.abs() < 1e-6 {
+            break;
+        }
+        t = (t + (ea * dbdg - eb * dadg) / det).clamp(-100.0, 100.0);
+        g = (g + (eb * dadt - ea * dbdt) / det).clamp(-100.0, 100.0);
+    }
+    (t, g)
+}
+
+/// The temperature and tint that make `rgb` (linear BT.709) neutral —
+/// the grey-world auto white balance.
+pub fn white_balance_to_neutralise(rgb: [f32; 3], ws: WorkingColorspace) -> (f32, f32) {
+    let (a, b) = lab_ab(rgb);
+    white_balance_for_lab_shift(rgb, -a, -b, ws)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -279,6 +334,22 @@ mod tests {
         let via_ap1 = apply(&to_709, apply(&white_balance_matrix(40.0, 20.0, AcesCG).unwrap(), apply(&to_ap1, c709)));
         for c in 0..3 {
             assert!((in_709[c] - via_ap1[c]).abs() < 0.01, "{in_709:?} vs {via_ap1:?}");
+        }
+    }
+
+    /// Auto white balance: the values it returns really do neutralise the
+    /// colour it was given.
+    #[test]
+    fn neutralising_a_cast_leaves_a_neutral() {
+        for cast in [[0.18, 0.19, 0.26], [0.30, 0.20, 0.12], [0.5, 0.5, 0.5]] {
+            let (t, tint) = white_balance_to_neutralise(cast, Rec709Linear);
+            let corrected = match white_balance_matrix(t, tint, Rec709Linear) {
+                Some(m) => apply(&m, cast),
+                None => cast,
+            };
+            let [_, a, b] = lab(corrected);
+            eprintln!("{cast:?} -> temperature {t:.1} tint {tint:.1} -> Lab a {a:.2} b {b:.2}");
+            assert!(a.abs() < 1.0 && b.abs() < 1.0, "{cast:?} left a cast: a {a}, b {b}");
         }
     }
 

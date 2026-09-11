@@ -167,19 +167,24 @@ pub fn apply_clarity_inplace(rgba: &mut [u8], width: u32, height: u32, amount: f
     }
 }
 
-/// Auto white balance using the gray world assumption.
-/// Returns (temperature_adjustment, tint_adjustment) compatible with ColorGradeParams.
+/// Auto white balance on the grey-world assumption: the temperature and
+/// tint that make the frame's average colour neutral.
+///
+/// `rgba` is a displayed frame (sRGB bytes). The average is taken in
+/// linear light, and the slider values come from
+/// [`crate::white_balance::white_balance_to_neutralise`] — solved
+/// against the balance the grade actually applies, rather than a scale
+/// factor guessed from the channel differences, which stopped meaning
+/// anything when temperature and tint became a chromatic adaptation.
 pub fn auto_white_balance(rgba: &[u8], _width: u32, _height: u32) -> (f32, f32) {
-    let mut sum_r: f64 = 0.0;
-    let mut sum_g: f64 = 0.0;
-    let mut sum_b: f64 = 0.0;
+    let mut sum = [0.0f64; 3];
     let mut count: u64 = 0;
 
     // Sample every 4th pixel for performance
     for chunk in rgba.chunks_exact(4).step_by(4) {
-        sum_r += chunk[0] as f64;
-        sum_g += chunk[1] as f64;
-        sum_b += chunk[2] as f64;
+        for (acc, v) in sum.iter_mut().zip(&chunk[..3]) {
+            *acc += crate::transfer::srgb_to_linear(*v as f32 / 255.0) as f64;
+        }
         count += 1;
     }
 
@@ -187,22 +192,8 @@ pub fn auto_white_balance(rgba: &[u8], _width: u32, _height: u32) -> (f32, f32) 
         return (0.0, 0.0);
     }
 
-    let avg_r = sum_r / count as f64;
-    let avg_g = sum_g / count as f64;
-    let avg_b = sum_b / count as f64;
-
-    // Gray world: ideal is avg_r == avg_g == avg_b
-    // Temperature: how far B is from R. If avg_b > avg_r, image is too cool.
-    // Scale to the temperature param range (roughly -50..50)
-    let rb_diff = (avg_b - avg_r) / 255.0;
-    let temperature = (rb_diff * 100.0).clamp(-50.0, 50.0) as f32;
-
-    // Tint: how far G deviates from the R/B midpoint
-    let rb_mid = (avg_r + avg_b) / 2.0;
-    let g_diff = (avg_g - rb_mid) / 255.0;
-    let tint = (-g_diff * 100.0).clamp(-50.0, 50.0) as f32;
-
-    (temperature, tint)
+    let mean = sum.map(|v| (v / count as f64) as f32);
+    crate::white_balance::white_balance_to_neutralise(mean, klipp_core::WorkingColorspace::Rec709Linear)
 }
 
 /// Temperature/tint shift.
@@ -599,6 +590,26 @@ mod tests {
         // luma = 0.2126*200/255 + 0.7152*128/255 + 0.0722*128/255 = ~0.525
         // 128/255 = 0.502, so g and b are slightly below luma → they decrease
         assert!(px[1] < 128);
+    }
+
+    /// Auto white balance on a frame with a blue cast asks for a warmer
+    /// balance, and the values it returns really do neutralise the
+    /// average — they are solved against the balance the grade applies,
+    /// not scaled from the channel differences.
+    #[test]
+    fn auto_white_balance_neutralises_a_cast() {
+        let cool: Vec<u8> = (0..400).flat_map(|_| [110u8, 120, 150, 255]).collect();
+        let (temperature, tint) = auto_white_balance(&cool, 20, 20);
+        assert!(temperature > 5.0, "a blue cast should ask for warmth, got {temperature}");
+        let mean = [110f32, 120.0, 150.0].map(|v| crate::transfer::srgb_to_linear(v / 255.0));
+        let m = crate::white_balance::white_balance_matrix(temperature, tint, klipp_core::WorkingColorspace::Rec709Linear).unwrap();
+        let out = m.map(|row| row[0] * mean[0] + row[1] * mean[1] + row[2] * mean[2]);
+        let (mx, mn) = (out[0].max(out[1]).max(out[2]), out[0].min(out[1]).min(out[2]));
+        assert!((mx - mn) / mx < 0.02, "still a cast: {out:?}");
+        // A neutral frame needs no correction.
+        let grey: Vec<u8> = (0..400).flat_map(|_| [128u8, 128, 128, 255]).collect();
+        let (t, g) = auto_white_balance(&grey, 20, 20);
+        assert!(t.abs() < 0.5 && g.abs() < 0.5, "a neutral frame asked for ({t}, {g})");
     }
 
     #[test]

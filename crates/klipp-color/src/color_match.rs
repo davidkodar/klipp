@@ -43,8 +43,12 @@ pub fn match_colors(
     // source's average colour (at the matched exposure) by the difference
     // between the two frames' average a and b.
     let exposed = src.linear_mean.map(|c| c * 2f32.powf(exposure_adjust.clamp(-3.0, 3.0)));
-    let (temperature_adjust, tint_adjust) =
-        white_balance_for_shift(exposed, ref_.a_mean - src.a_mean, ref_.b_mean - src.b_mean);
+    let (temperature_adjust, tint_adjust) = crate::white_balance::white_balance_for_lab_shift(
+        exposed,
+        ref_.a_mean - src.a_mean,
+        ref_.b_mean - src.b_mean,
+        klipp_core::WorkingColorspace::Rec709Linear,
+    );
 
     // Chroma ratio → saturation multiplier
     let saturation_adjust = if src.chroma_mean > 0.5 {
@@ -59,42 +63,6 @@ pub fn match_colors(
         tint_adjust: tint_adjust.clamp(-100.0, 100.0),
         saturation_adjust: saturation_adjust.clamp(0.1, 3.0),
     }
-}
-
-/// The temperature and tint whose white balance moves `rgb` (linear
-/// BT.709) by `(da, db)` in Lab a / b: Newton's method on the two slider
-/// values, clamped to their ±100 range.
-fn white_balance_for_shift(rgb: [f32; 3], da: f32, db: f32) -> (f32, f32) {
-    use crate::white_balance::white_balance_matrix;
-    let ab = |t: f32, g: f32| {
-        let c = match white_balance_matrix(t, g, klipp_core::WorkingColorspace::Rec709Linear) {
-            Some(m) => m.map(|row| row[0] * rgb[0] + row[1] * rgb[1] + row[2] * rgb[2]),
-            None => rgb,
-        };
-        let (_, a, b) = linear_to_lab(c[0], c[1], c[2]);
-        (a, b)
-    };
-    let (a0, b0) = ab(0.0, 0.0);
-    let (want_a, want_b) = (a0 + da, b0 + db);
-    let (mut t, mut g) = (0.0f32, 0.0f32);
-    for _ in 0..8 {
-        let (a, b) = ab(t, g);
-        let (ea, eb) = (want_a - a, want_b - b);
-        if ea.abs() < 0.01 && eb.abs() < 0.01 {
-            break;
-        }
-        let h = 1.0;
-        let (at, bt) = ab(t + h, g);
-        let (ag, bg) = ab(t, g + h);
-        let (dadt, dbdt, dadg, dbdg) = ((at - a) / h, (bt - b) / h, (ag - a) / h, (bg - b) / h);
-        let det = dadt * dbdg - dadg * dbdt;
-        if det.abs() < 1e-6 {
-            break;
-        }
-        t = (t + (ea * dbdg - eb * dadg) / det).clamp(-100.0, 100.0);
-        g = (g + (eb * dadt - ea * dbdt) / det).clamp(-100.0, 100.0);
-    }
-    (t, g)
 }
 
 fn rgba_to_lab_stats(rgba: &[u8]) -> LabStats {
