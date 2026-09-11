@@ -1,7 +1,8 @@
 //! Standalone luminance-threshold key — generates a matte from
-//! Rec.709 luma alone. Simpler than [`crate::qualifier`], which
-//! evaluates HSL jointly. Mirrors the qualifier's u8 RGBA → matte
-//! contract so the executor's existing matte-consumer wiring
+//! Rec.709 luma alone. Simpler than the HSL qualifier
+//! (`klipp_effects::cpu_grade::qualifier_matte`), which evaluates hue,
+//! saturation and luminance jointly. Mirrors the qualifier's RGBA →
+//! matte contract so the executor's existing matte-consumer wiring
 //! (`MaskCutout`, `CombineMattes`, `ApplyMatte`) works unchanged.
 
 use klipp_core::LumaKeySettings;
@@ -13,9 +14,8 @@ use klipp_core::LumaKeySettings;
 /// `0.2126 R + 0.7152 G + 0.0722 B`. Technically wrong for AP1
 /// (ACEScg working colorspace) where the correct weights are
 /// approximately `0.272 / 0.674 / 0.054`. Matches
-/// [`crate::qualifier::generate_qualifier_matte`]'s behaviour;
-/// both will be re-tuned per working_colorspace in a post-Phase-E
-/// follow-up.
+/// `klipp_effects::cpu_grade::qualifier_matte`'s behaviour; both will
+/// be re-tuned per working_colorspace in a post-Phase-E follow-up.
 ///
 /// Returns an `Vec<f32>` with one matte value per pixel (NOT one
 /// per RGBA component) — same shape as the qualifier helper, so

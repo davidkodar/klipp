@@ -6,10 +6,10 @@
 //! exceed 1.0 (highlight headroom). Alpha stays linear per the sRGB
 //! convention — never gamma-encoded.
 //!
-//! The matching u8 sRGB helpers in [`crate::transforms`] are retained
-//! so downstream crates can flip call sites one at a time. Once every
-//! consumer reads linear frames directly (see
-//! [`klipp_engine::LinearFrame`]), the u8 copies go away.
+//! This is the crate's grade: frames are linear f32 from decode to
+//! display, so there is no encoded copy of these ops to keep in step.
+//! `klipp_effects` holds the GPU shaders and the whole-frame CPU
+//! twins that must match them pixel for pixel.
 //!
 //! # Why there are no `.clamp(0.0, 1.0)` calls
 //!
@@ -92,9 +92,8 @@ pub fn luma_of(pixel: &[f32], ws: WorkingColorspace) -> f32 {
 ///
 /// Identity when `stops == 0.0`. +1 stop on 0.18 linear produces 0.36
 /// linear (one additional photographic stop — literally doubles the
-/// light). Unlike the sRGB u8 version, this doesn't clip at 1.0;
-/// highlights can exceed 1.0 and will be resolved at the display or
-/// encode boundary.
+/// light). Nothing clips at 1.0; highlights above diffuse white are
+/// resolved at the display or encode boundary.
 pub fn apply_exposure(rgba: &mut [f32], stops: f32) {
     if stops == 0.0 {
         return;
@@ -112,14 +111,13 @@ pub fn apply_exposure(rgba: &mut [f32], stops: f32) {
 /// linear).
 ///
 /// `factor > 0.0` steepens the curve (higher contrast); `factor < 0.0`
-/// flattens it. `factor == 0.0` is identity. Pivot at 0.18 keeps
-/// perceptual mid-grey fixed — the sRGB u8 version pivoted at 0.5
-/// sRGB (≈ 0.21 linear) which visibly shifted mid-grey every time
-/// the slider moved.
+/// flattens it. `factor == 0.0` is identity. The pivot sits at 0.18
+/// so perceptual mid-grey stays put as the slider moves; a pivot at
+/// 0.5 linear would visibly shift it.
 ///
-/// Unlike the sRGB u8 version this doesn't clamp — highlights that
-/// cross 1.0 through contrast expansion are preserved for later
-/// stages (tone-mapping at display, colour-space encode at export).
+/// No clamp — highlights that cross 1.0 through contrast expansion
+/// are preserved for later stages (tone-mapping at display,
+/// colour-space encode at export).
 pub fn apply_contrast(rgba: &mut [f32], factor: f32) {
     if factor == 0.0 {
         return;
@@ -177,8 +175,7 @@ pub fn apply_vibrance(rgba: &mut [f32], amount: f32) {
 ///
 /// Midtone weight peaks around linear 0.18 — the perceptually
 /// mid-grey point — so the enhancement targets the region where the
-/// human visual system resolves most detail. The sRGB u8 version
-/// peaked at 0.5 sRGB, which landed around linear 0.21.
+/// human visual system resolves most detail.
 pub fn apply_clarity_ws(rgba: &mut [f32], width: u32, height: u32, amount: f32, ws: WorkingColorspace) {
     if amount == 0.0 || width == 0 || height == 0 {
         return;
@@ -283,9 +280,9 @@ pub fn apply_temperature_tint(rgba: &mut [f32], temperature: f32, tint: f32, ws:
 /// Each parameter is an adjustment in `−1.0..+1.0`; `0.0` is identity.
 /// Weights are computed from linear luma; band centres at
 /// `highlights=0.21`, `whites=0.52`, `shadows=0.21`, `blacks=0.032`
-/// — the linear-light equivalents of the sRGB 0.5 / 0.8 / 0.2 thresh-
-/// olds the u8 version used, so the slider positions feel roughly
-/// the same.
+/// — the linear-light equivalents of the sRGB 0.5 / 0.8 / 0.2
+/// thresholds the sliders were calibrated against, so a given slider
+/// position still lands on the tonal band the label promises.
 pub fn apply_tone_controls_ws(
     rgba: &mut [f32],
     highlights: f32,
@@ -616,9 +613,8 @@ pub fn apply_primaries_matrix(rgba: &mut [f32], m: [[f32; 3]; 3]) {
 
 /// Input device transform — convert camera log encoding to linear.
 ///
-/// Unlike the u8 version, this stays in linear after decode — the
-/// old u8 path re-encoded to sRGB before handing off, defeating
-/// every downstream grade.
+/// The frame stays linear after the decode: re-encoding here would
+/// defeat every grade downstream of it.
 pub fn apply_input_transform(rgba: &mut [f32], log_format: klipp_core::LogFormat) {
     use klipp_core::LogFormat;
     if matches!(log_format, LogFormat::Srgb | LogFormat::Linear) {
