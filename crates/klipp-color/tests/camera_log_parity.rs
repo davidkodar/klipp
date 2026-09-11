@@ -88,3 +88,44 @@ fn the_decoder_uses_the_same_curve_clamped_at_zero() {
         }
     }
 }
+
+/// Every source-primaries -> BT.709 matrix, against colour-science
+/// (tools/gen_colour_primaries_reference.py), element by element. The
+/// hand-typed table this replaced was off by up to 0.57 per element for
+/// camera gamuts; S-Gamut3, S-Gamut3.Cine and ARRI Wide Gamut 3 were also
+/// checked against the matrices inside OCIO's camera transforms (~5e-3,
+/// the manufacturers' own rounding).
+#[test]
+fn every_primaries_matrix_matches_colour_science() {
+    use klipp_core::{ColorPrimaries as P, WorkingColorspace as W};
+    let path = format!("{}/tests/fixtures/colour_primaries_to_bt709.csv", env!("CARGO_MANIFEST_DIR"));
+    let mut checked = 0;
+    for line in std::fs::read_to_string(&path).unwrap().lines().filter(|l| !l.starts_with('#')) {
+        let mut it = line.split(',');
+        let name = it.next().unwrap();
+        let reference: Vec<f32> = it.map(|v| v.parse().unwrap()).collect();
+        let p = match name {
+            "Bt2020" => P::Bt2020, "Bt601_525" => P::Bt601_525, "Bt601_625" => P::Bt601_625,
+            "Bt470M" => P::Bt470M, "DciP3" => P::DciP3, "DisplayP3" => P::DisplayP3,
+            "Ebu3213" => P::Ebu3213, "Smpte428" => P::Smpte428, "SGamut3" => P::SGamut3,
+            "SGamut3Cine" => P::SGamut3Cine, "VGamut" => P::VGamut,
+            "CanonCinemaGamut" => P::CanonCinemaGamut, "AlexaWideGamut3" => P::AlexaWideGamut3,
+            "AlexaWideGamut4" => P::AlexaWideGamut4, "RedWideGamut" => P::RedWideGamut,
+            "BmdWideGamut" => P::BmdWideGamut,
+            other => panic!("fixture names unknown primaries {other}"),
+        };
+        let m = klipp_color::camera_log::primaries_to_working_matrix(p, W::Rec709Linear);
+        let worst = m.iter().flatten().zip(&reference).map(|(a, b)| (a - b).abs()).fold(0.0_f32, f32::max);
+        assert!(worst < 1e-6, "{name}: matrix off colour-science by {worst:.2e}");
+        // And the per-pixel form is the same table.
+        let px = klipp_color::camera_log::primaries_to_bt709([0.3, 0.6, 0.1], p);
+        let want = [
+            m[0][0] * 0.3 + m[0][1] * 0.6 + m[0][2] * 0.1,
+            m[1][0] * 0.3 + m[1][1] * 0.6 + m[1][2] * 0.1,
+            m[2][0] * 0.3 + m[2][1] * 0.6 + m[2][2] * 0.1,
+        ];
+        assert_eq!(px, want, "{name}: per-pixel and matrix forms disagree");
+        checked += 1;
+    }
+    assert_eq!(checked, 16, "every non-identity primaries set must be pinned");
+}
