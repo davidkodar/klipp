@@ -332,78 +332,117 @@ pub fn display_transform_for_export(
     working_space: klipp_core::WorkingColorspace,
     odt: OdtChoice,
 ) -> Vec<u8> {
-    use klipp_core::WorkingColorspace;
+    export_pixels(linear_rgba, tone_map_op, working_space, odt, |v| (v.clamp(0.0, 1.0) * 255.0 + 0.5) as u8)
+}
+
+/// [`display_transform_for_export`] at 16 bits per channel, for 10-bit
+/// and deeper deliveries. The same per-pixel maths, only quantised to
+/// 65535 instead of 255 — a 10-bit export built from the 8-bit output
+/// would carry 8 bits of data in 10-bit containers.
+pub fn display_transform_for_export_u16(
+    linear_rgba: &[f32],
+    tone_map_op: ToneMapOp,
+    working_space: klipp_core::WorkingColorspace,
+    odt: OdtChoice,
+) -> Vec<u16> {
+    export_pixels(linear_rgba, tone_map_op, working_space, odt, |v| (v.clamp(0.0, 1.0) * 65535.0 + 0.5) as u16)
+}
+
+/// The export display transform for one pixel: linear working-space RGB
+/// in, display-encoded RGB in `[0, 1]` out. Built once per export from its
+/// settings; [`display_transform_for_export`] and its 16-bit twin apply it
+/// to whole frames, and the encoder applies it on the way into Y'CbCr.
+#[derive(Clone, Copy)]
+pub struct ExportDisplay {
+    tone_map_op: ToneMapOp,
+    odt: OdtChoice,
+    path: ExportPath,
+}
+
+#[derive(Clone, Copy)]
+enum ExportPath {
+    ToneMapSrgb,
+    AcesRec709,
+    Odt(Option<[[f32; 3]; 3]>),
+}
+
+impl ExportDisplay {
+    /// MatchViewer follows the viewer (`display_transform_ws`): tone map +
+    /// sRGB for BT.709/BT.2020-linear projects, the ACES Rec.709 output for
+    /// AcesCG ones. Srgb is the legacy path. Unknown aliases MatchViewer
+    /// for forwards-compat. The remaining variants are AcesCG-basis ODTs;
+    /// a BT.709-linear project walks into AP1 first, or the ODT would see
+    /// Rec.709-basis values and shift hue. (BT.2020-linear falls through
+    /// unconverted — no BT.2020 → AP1 matrix is wired yet; the viewer
+    /// aliases BT.2020 to Rec.709 today.)
+    pub fn new(tone_map_op: ToneMapOp, working_space: klipp_core::WorkingColorspace, odt: OdtChoice) -> Self {
+        use klipp_core::WorkingColorspace;
+        let path = match odt {
+            OdtChoice::MatchViewer | OdtChoice::Unknown => match working_space {
+                WorkingColorspace::Rec709Linear | WorkingColorspace::Bt2020Linear => ExportPath::ToneMapSrgb,
+                _ => ExportPath::AcesRec709,
+            },
+            OdtChoice::Srgb => ExportPath::ToneMapSrgb,
+            _ => ExportPath::Odt(
+                matches!(working_space, WorkingColorspace::Rec709Linear).then(crate::primaries::bt709_to_acescg),
+            ),
+        };
+        Self { tone_map_op, odt, path }
+    }
+
+    /// Display-encoded RGB, clamped to `[0, 1]`.
+    #[inline]
+    pub fn encode(&self, rgb: [f32; 3]) -> [f32; 3] {
+        let e = match self.path {
+            ExportPath::ToneMapSrgb => {
+                // Clamp negatives before the tone map: ACES' matrix path
+                // amplifies small negatives into bright positives.
+                let m = tone_map_rgb([rgb[0].max(0.0), rgb[1].max(0.0), rgb[2].max(0.0)], self.tone_map_op);
+                [linear_to_srgb(m[0]), linear_to_srgb(m[1]), linear_to_srgb(m[2])]
+            }
+            ExportPath::AcesRec709 => crate::aces::acescg_to_rec709_sdr(rgb),
+            ExportPath::Odt(m) => {
+                let ap1 = match m {
+                    Some(m) => crate::primaries::matrix3_mul_vec(m, rgb),
+                    None => rgb,
+                };
+                match self.odt {
+                    OdtChoice::Rec709Sdr => crate::aces::acescg_to_rec709_sdr(ap1),
+                    OdtChoice::Rec2100Pq1000 => crate::aces::acescg_to_rec2100_pq_1000_nit(ap1),
+                    OdtChoice::Rec2100Pq4000 => crate::aces::acescg_to_rec2100_pq_4000_nit(ap1),
+                    OdtChoice::DciP3D65_48 => crate::aces::acescg_to_dcip3_d65_48nit(ap1),
+                    OdtChoice::MatchViewer | OdtChoice::Srgb | OdtChoice::Unknown => ap1,
+                }
+            }
+        };
+        [e[0].clamp(0.0, 1.0), e[1].clamp(0.0, 1.0), e[2].clamp(0.0, 1.0)]
+    }
+}
+
+/// The export display transform over a frame, quantised by `q`.
+fn export_pixels<T: Copy + Default + Send + Sync>(
+    linear_rgba: &[f32],
+    tone_map_op: ToneMapOp,
+    working_space: klipp_core::WorkingColorspace,
+    odt: OdtChoice,
+    q: impl Fn(f32) -> T + Sync,
+) -> Vec<T> {
     use rayon::prelude::*;
     assert!(
         linear_rgba.len() % 4 == 0,
         "display_transform_for_export requires RGBA-packed input",
     );
-
-    // MatchViewer + Srgb: dispatch directly so the legacy path stays
-    // byte-identical to today's output. Unknown variant aliases
-    // MatchViewer for forwards-compat.
-    match odt {
-        OdtChoice::MatchViewer | OdtChoice::Unknown => {
-            return display_transform_ws(linear_rgba, tone_map_op, working_space);
-        }
-        OdtChoice::Srgb => {
-            // Legacy non-ACES path. No RRT/ODT, no working-space
-            // awareness — the user explicitly opted out of the new
-            // pipeline. Byte-identical to pre-Phase-E exports.
-            return display_transform(linear_rgba, tone_map_op);
-        }
-        _ => {}
-    }
-
-    // The remaining variants are all AcesCG-basis ODTs. If the
-    // project's working space is BT.709-linear we have to walk the
-    // input into AP1 first; otherwise the ODT sees Rec.709-basis
-    // values and produces a wrong, hue-shifted look.
-    //
-    // BT.2020-linear projects fall through unconverted — there's no
-    // BT.2020 → AP1 matrix wired here yet. The viewer aliases BT.2020
-    // to Rec.709 today (display_transform_ws stub), so this matches
-    // that intent until a proper BT.2020 IDT lands.
-    let needs_709_to_ap1 = matches!(working_space, WorkingColorspace::Rec709Linear);
-    let m_709_to_ap1 = if needs_709_to_ap1 {
-        Some(crate::primaries::bt709_to_acescg())
-    } else {
-        None
-    };
-
-    let mut out = vec![0u8; linear_rgba.len()];
+    let d = ExportDisplay::new(tone_map_op, working_space, odt);
+    let mut out = vec![T::default(); linear_rgba.len()];
     out.par_chunks_exact_mut(4)
         .zip(linear_rgba.par_chunks_exact(4))
         .for_each(|(dst, chunk)| {
-            // Walk into AP1 if the project ws isn't already there.
-            let ap1 = if let Some(m) = m_709_to_ap1 {
-                crate::primaries::matrix3_mul_vec(m, [chunk[0], chunk[1], chunk[2]])
-            } else {
-                [chunk[0], chunk[1], chunk[2]]
-            };
-
-            let encoded = match odt {
-                OdtChoice::Rec709Sdr => crate::aces::acescg_to_rec709_sdr(ap1),
-                OdtChoice::Rec2100Pq1000 => {
-                    crate::aces::acescg_to_rec2100_pq_1000_nit(ap1)
-                }
-                OdtChoice::Rec2100Pq4000 => {
-                    crate::aces::acescg_to_rec2100_pq_4000_nit(ap1)
-                }
-                OdtChoice::DciP3D65_48 => crate::aces::acescg_to_dcip3_d65_48nit(ap1),
-                // The MatchViewer / Srgb / Unknown branches were
-                // handled above; this match arm is unreachable, but
-                // a Rust match must be total.
-                OdtChoice::MatchViewer | OdtChoice::Srgb | OdtChoice::Unknown => ap1,
-            };
-
-            dst[0] = (encoded[0].clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
-            dst[1] = (encoded[1].clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
-            dst[2] = (encoded[2].clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
-            dst[3] = (chunk[3].clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
+            let e = d.encode([chunk[0], chunk[1], chunk[2]]);
+            dst[0] = q(e[0]);
+            dst[1] = q(e[1]);
+            dst[2] = q(e[2]);
+            dst[3] = q(chunk[3]);
         });
-
-    let _ = tone_map_op; // Intentionally unused on the ODT branches.
     out
 }
 
