@@ -513,3 +513,30 @@ fn a_frame_snapshot_renders_the_same_frame() {
         assert_eq!(full[1], part[1], "GPU, t={t}");
     }
 }
+
+/// Transitions other than the dissolve render the same with and without
+/// a GPU: the CPU runs the transition shader transcribed. (Its fallback
+/// mixed 8-bit sRGB bytes with a separate implementation of each kind.)
+#[test]
+fn every_transition_renders_the_same_with_and_without_a_gpu() {
+    for kind in [klipp_core::TransitionKind::WipeLeft, klipp_core::TransitionKind::FilmDissolve, klipp_core::TransitionKind::DipToBlack] {
+        let a = solid([230, 40, 40], 0.0, 2.0);
+        let mut b = media(2.0, 4.0);
+        b.node_graph = exposure(1.0);
+        let mut src = Flat::default().grey(&b, 0.2);
+        let tr = Transition {
+            id: TransitionId::new(),
+            kind,
+            duration: tc(1.0),
+            clip_a_id: a.id,
+            clip_b_id: b.id,
+            user_params: Default::default(),
+            alignment: klipp_core::TransitionAlignment::Center,
+        };
+        let mut seq = sequence(vec![vec![a, b]]);
+        seq.tracks[0].transitions.push(tr);
+        let [cpu, gpu] = render(&seq, 2.1, &mut src);
+        let worst = cpu.iter().zip(&gpu).map(|(c, g)| (c - g).abs()).fold(0.0f32, f32::max);
+        assert!(worst < 2e-3, "{kind:?}: CPU and GPU differ by {worst}");
+    }
+}

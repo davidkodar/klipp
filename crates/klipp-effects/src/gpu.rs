@@ -6092,6 +6092,52 @@ fn lerp_pixel(a: vec4<f32>, b: vec4<f32>, t: f32) -> vec4<f32> {
     return a * (1.0 - t) + b * t;
 }
 
+// Noise for the grain, static and glitch kinds: an integer hash of
+// integer inputs (pixel or block coordinates, progress's bits), so the
+// pattern is the same on every GPU and on the CPU. A `fract(sin(…))`
+// hash depended on each GPU's approximation of `sin` at large arguments.
+fn hash_u(v: u32) -> u32 {
+    var x = v;
+    x = ((x >> 16u) ^ x) * 0x45d9f3bu;
+    x = ((x >> 16u) ^ x) * 0x45d9f3bu;
+    return (x >> 16u) ^ x;
+}
+
+fn rand3(a: u32, b: u32, c: u32) -> f32 {
+    return f32(hash_u(a ^ hash_u(b ^ hash_u(c)))) / 4294967295.0;
+}
+
+// Bilinear samples for the kinds that move pixels by fractional amounts
+// (spin, wave, zoom): smooth motion, where nearest-pixel sampling
+// stair-stepped — and picked a different pixel on each GPU wherever a
+// coordinate fell on a boundary. Clamped to the frame; unpacked.
+fn bilinear(buf_is_to: bool, sx: f32, sy: f32) -> vec4<f32> {
+    let fx = clamp(sx, 0.0, f32(params.width) - 1.0);
+    let fy = clamp(sy, 0.0, f32(params.height) - 1.0);
+    let x0 = u32(floor(fx));
+    let y0 = u32(floor(fy));
+    let x1 = min(x0 + 1u, params.width - 1u);
+    let y1 = min(y0 + 1u, params.height - 1u);
+    let tx = fx - f32(x0);
+    let ty = fy - f32(y0);
+    var c00: vec4<f32>;
+    var c10: vec4<f32>;
+    var c01: vec4<f32>;
+    var c11: vec4<f32>;
+    if buf_is_to {
+        c00 = to_buf[y0 * params.width + x0];
+        c10 = to_buf[y0 * params.width + x1];
+        c01 = to_buf[y1 * params.width + x0];
+        c11 = to_buf[y1 * params.width + x1];
+    } else {
+        c00 = from_buf[y0 * params.width + x0];
+        c10 = from_buf[y0 * params.width + x1];
+        c01 = from_buf[y1 * params.width + x0];
+        c11 = from_buf[y1 * params.width + x1];
+    }
+    return unpack(mix(mix(c00, c10, tx), mix(c01, c11, tx), ty));
+}
+
 @compute @workgroup_size(256)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let idx = gid.x;
@@ -6287,10 +6333,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         let dy = f32(y) - cy;
         let rx = (dx * cos(angle) + dy * sin(angle)) * inv_s + cx;
         let ry = (-dx * sin(angle) + dy * cos(angle)) * inv_s + cy;
-        let sx = u32(clamp(rx, 0.0, f32(params.width) - 1.0));
-        let sy = u32(clamp(ry, 0.0, f32(params.height) - 1.0));
-        let src_idx = sy * params.width + sx;
-        let rotated_from = unpack(from_buf[src_idx]);
+        let rotated_from = bilinear(false, rx, ry);
         result = lerp_pixel(rotated_from, to_px, p);
     } else if params.kind_id == 12u {
         // Light Leak: additive coloured glow peaking at midpoint.
@@ -6496,8 +6539,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         let burn_b = 1.0 - temp * 0.75;
         let shaped_p = pow(p * speed, 0.6);
         let envelope = sin(min(shaped_p, 1.0) * 3.14159265);
-        let hash = fract(sin(f32(x) * 127.1 + f32(y) * 311.7) * 43758.545);
-        let hash2 = fract(sin(f32(x) * 269.5 + f32(y) * 183.3) * 12345.678);
+        let hash = rand3(x, y, 1u);
+        let hash2 = rand3(x, y, 2u);
         let pixel_thresh = hash * 0.6 + 0.2;
         let burn_t = clamp((envelope - pixel_thresh) / 0.3, 0.0, 1.0);
         let grain_val = (hash2 - 0.5) * grain * envelope;
@@ -6792,13 +6835,13 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             let scale_a = 1.0 + (zoom_amount - 1.0) * ep;
             let from_sx = clamp(dx / scale_a + cx, 0.0, f32(params.width) - 1.0);
             let from_sy = clamp(dy / scale_a + cy, 0.0, f32(params.height) - 1.0);
-            from_sample = unpack(from_buf[u32(from_sy) * params.width + u32(from_sx)]);
+            from_sample = bilinear(false, from_sx, from_sy);
             to_sample = to_px;
         } else if params.kind_id == 64u {
             let scale_a = zoom_amount - (zoom_amount - 1.0) * ep;
             let from_sx = clamp(dx / scale_a + cx, 0.0, f32(params.width) - 1.0);
             let from_sy = clamp(dy / scale_a + cy, 0.0, f32(params.height) - 1.0);
-            from_sample = unpack(from_buf[u32(from_sy) * params.width + u32(from_sx)]);
+            from_sample = bilinear(false, from_sx, from_sy);
             to_sample = to_px;
         } else {
             let scale_a = 1.0 + (zoom_amount - 1.0) * ep;
@@ -6807,8 +6850,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             let from_sy = clamp(dy / scale_a + cy, 0.0, f32(params.height) - 1.0);
             let to_sx = clamp(dx / scale_b + cx, 0.0, f32(params.width) - 1.0);
             let to_sy = clamp(dy / scale_b + cy, 0.0, f32(params.height) - 1.0);
-            from_sample = unpack(from_buf[u32(from_sy) * params.width + u32(from_sx)]);
-            to_sample = unpack(to_buf[u32(to_sy) * params.width + u32(to_sx)]);
+            from_sample = bilinear(false, from_sx, from_sy);
+            to_sample = bilinear(true, to_sx, to_sy);
         }
         result = lerp_pixel(from_sample, to_sample, ep);
     } else if params.kind_id == 62u {
@@ -6881,9 +6924,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         let flicker_intensity = params.param0;
         let weave_amount = params.param1;
         let envelope = sin(p * 3.14159265) * flicker_intensity;
-        let frame_hash = fract(sin(p * 127.1) * 43758.545);
-        let frame_hash2 = fract(sin(p * 311.7) * 12345.678);
-        let frame_hash3 = fract(sin(p * 543.2) * 98765.432);
+        let frame_hash = rand3(bitcast<u32>(p), 0u, 3u);
+        let frame_hash2 = rand3(bitcast<u32>(p), 0u, 4u);
+        let frame_hash3 = rand3(bitcast<u32>(p), 0u, 5u);
         let brightness = 1.0 + (frame_hash - 0.5) * envelope * 0.6;
         let weave = (frame_hash2 - 0.5) * weave_amount * envelope;
         let sx = clamp(f32(x) + weave, 0.0, f32(params.width) - 1.0);
@@ -6930,9 +6973,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         let envelope = sin(p * 3.14159265) * intensity;
         let block_x = u32(f32(x) / block_size);
         let block_y = u32(f32(y) / block_size);
-        let hash_r = fract(sin(f32(block_x) * 127.1 + f32(block_y) * 311.7 + p * 999.9) * 43758.545);
-        let hash_g = fract(sin(f32(block_x) * 269.5 + f32(block_y) * 183.3 + p * 543.2) * 12345.678);
-        let hash_b = fract(sin(f32(block_x) * 419.2 + f32(block_y) * 371.9 + p * 777.3) * 98765.432);
+        let hash_r = rand3(block_x + block_y * 65536u, bitcast<u32>(p), 6u);
+        let hash_g = rand3(block_x + block_y * 65536u, bitcast<u32>(p), 7u);
+        let hash_b = rand3(block_x + block_y * 65536u, bitcast<u32>(p), 8u);
         let r_shift = (hash_r - 0.5) * envelope * 80.0;
         let g_shift = (hash_g - 0.5) * envelope * 60.0;
         let b_shift = (hash_b - 0.5) * envelope * 80.0;
@@ -6955,15 +6998,15 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         let intensity = params.param0;
         let line_h = max(params.param1, 1.0);
         let envelope = sin(p * 3.14159265) * intensity;
-        let hash = fract(sin(f32(x) * 127.1 + f32(y) * 311.7 + p * 999.9) * 43758.545);
-        let hash2 = fract(sin(f32(x) * 269.5 + f32(y) * 183.3 + p * 543.2) * 12345.678);
+        let hash = rand3(x + y * 65536u, bitcast<u32>(p), 9u);
+        let hash2 = rand3(x + y * 65536u, bitcast<u32>(p), 10u);
         var scan_line: f32 = 1.0;
         if (u32(f32(y) / line_h) % 2u) == 0u {
             scan_line = 0.75;
         }
         let static_val = hash * 255.0 * envelope * scan_line;
         let band = u32(f32(y) / line_h);
-        let band_hash = fract(sin(f32(band) * 127.1 + p * 311.7) * 43758.545);
+        let band_hash = rand3(band, bitcast<u32>(p), 11u);
         let shift = (band_hash - 0.5) * envelope * 20.0;
         let sx = clamp(f32(x) + shift, 0.0, f32(params.width) - 1.0);
         let sample_idx = u32(y) * params.width + u32(sx);
@@ -6983,8 +7026,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         let band_count = max(params.param1, 1.0);
         let envelope = sin(p * 3.14159265) * intensity;
         let band = u32(f32(y) / f32(params.height) * band_count);
-        let band_hash = fract(sin(f32(band) * 127.1 + p * 311.7) * 43758.545);
-        let band_hash2 = fract(sin(f32(band) * 269.5 + p * 183.3) * 12345.678);
+        let band_hash = rand3(band, bitcast<u32>(p), 11u);
+        let band_hash2 = rand3(band, bitcast<u32>(p), 12u);
         let shift = (band_hash - 0.5) * envelope * 40.0;
         let sx = clamp(f32(x) + shift, 0.0, f32(params.width) - 1.0);
         let sample_idx = u32(y) * params.width + u32(sx);
@@ -7047,9 +7090,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         }
         let sx = clamp(f32(x) + off_x, 0.0, f32(params.width) - 1.0);
         let sy = clamp(f32(y) + off_y, 0.0, f32(params.height) - 1.0);
-        let sample_idx = u32(sy) * params.width + u32(sx);
-        let from_s = unpack(from_buf[sample_idx]);
-        let to_s = unpack(to_buf[sample_idx]);
+        let from_s = bilinear(false, sx, sy);
+        let to_s = bilinear(true, sx, sy);
         result = lerp_pixel(from_s, to_s, p);
     } else if params.kind_id == 51u {
         // Colorize Flash: user-defined color washes over at the cut.
@@ -7175,8 +7217,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         let block_size = max(params.param1, 1.0);
         let envelope = sin(p * 3.14159265) * intensity;
         let block_row = u32(f32(y) / block_size);
-        let hash = fract(sin(f32(block_row) * 127.1 + p * 311.7) * 43758.545);
-        let hash2 = fract(sin(f32(block_row) * 269.5 + p * 183.3) * 12345.678);
+        let hash = rand3(block_row, bitcast<u32>(p), 13u);
+        let hash2 = rand3(block_row, bitcast<u32>(p), 14u);
         let shift = (hash - 0.5) * envelope * 40.0;
         let sx_g = clamp(f32(x) + shift, 0.0, f32(params.width) - 1.0);
         let r_shift = shift * 0.5;

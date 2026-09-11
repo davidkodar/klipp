@@ -146,3 +146,31 @@ fn every_effect_matches_between_cpu_and_gpu() {
     }
     assert!(failures.is_empty(), "{failures:#?}");
 }
+
+/// The global LUT, both ways: a warm, contrasty 17-point LUT at 70%.
+#[test]
+fn the_lut_matches_between_cpu_and_gpu() {
+    let Some(mut gpu) = GpuEffectsPipeline::new() else {
+        eprintln!("skipping: no GPU");
+        return;
+    };
+    let n = 17usize;
+    let mut data = Vec::with_capacity(n * n * n * 3);
+    for b in 0..n {
+        for g in 0..n {
+            for r in 0..n {
+                let s = |i: usize| i as f32 / (n - 1) as f32;
+                let curve = |v: f32| (v * v * (3.0 - 2.0 * v)).clamp(0.0, 1.0);
+                data.extend_from_slice(&[curve(s(r)) * 1.05, curve(s(g)), curve(s(b)) * 0.9]);
+            }
+        }
+    }
+    let input = frame();
+    let cpu = klipp_effects::apply_3d_lut(input.clone(), &data, n as u32, 0.7);
+    let on_gpu = gpu.apply_3d_lut_gpu(input.clone(), W, H, &data, n as u32, 0.7);
+    let (worst, mean) = diff(&cpu, &on_gpu);
+    let (_, change) = diff(&input, &on_gpu);
+    eprintln!("LUT: CPU vs GPU worst {worst} mean {mean:.3}, change {change:.2}");
+    assert!(worst <= 1, "LUT differs by {worst} levels");
+    assert!(change > 1.0);
+}

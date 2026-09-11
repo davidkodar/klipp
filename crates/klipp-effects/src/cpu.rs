@@ -785,3 +785,37 @@ pub fn equalize_cdf(linear: &[f32]) -> [f32; 256] {
     }
     cdf
 }
+
+/// A 3D LUT on the CPU, as `GpuEffectsPipeline::apply_3d_lut_gpu` applies
+/// it: indexed by the display-encoded colour (clamped), trilinear, the
+/// result decoded and mixed with the original by `opacity` in linear
+/// light. `data` is RGB triples, blue-major, `size`³ of them.
+pub fn apply_3d_lut(linear: Vec<f32>, data: &[f32], size: u32, opacity: f32) -> Vec<f32> {
+    if opacity <= 0.0 || size < 2 || data.len() < (size * size * size * 3) as usize {
+        return linear;
+    }
+    let n = size as usize;
+    let n1 = (n - 1) as f32;
+    let at = |r: usize, g: usize, b: usize| {
+        let i = (b * n * n + g * n + r) * 3;
+        [data[i], data[i + 1], data[i + 2]]
+    };
+    let lerp3 = |a: [f32; 3], b: [f32; 3], t: f32| [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t];
+    each_value(linear, |c| {
+        let idx = [0, 1, 2].map(|ch| (encode(c[ch]).clamp(0.0, 1.0) * n1).clamp(0.0, n1));
+        let i0 = idx.map(|v| (v as usize).min(n - 2));
+        let f = [idx[0] - i0[0] as f32, idx[1] - i0[1] as f32, idx[2] - i0[2] as f32];
+        let (r0, g0, b0) = (i0[0], i0[1], i0[2]);
+        let c00 = lerp3(at(r0, g0, b0), at(r0 + 1, g0, b0), f[0]);
+        let c01 = lerp3(at(r0, g0, b0 + 1), at(r0 + 1, g0, b0 + 1), f[0]);
+        let c10 = lerp3(at(r0, g0 + 1, b0), at(r0 + 1, g0 + 1, b0), f[0]);
+        let c11 = lerp3(at(r0, g0 + 1, b0 + 1), at(r0 + 1, g0 + 1, b0 + 1), f[0]);
+        let graded = lerp3(lerp3(c00, c10, f[1]), lerp3(c01, c11, f[1]), f[2]).map(|v| decode(v.clamp(0.0, 1.0)));
+        [
+            c[0] + (graded[0] - c[0]) * opacity,
+            c[1] + (graded[1] - c[1]) * opacity,
+            c[2] + (graded[2] - c[2]) * opacity,
+            c[3],
+        ]
+    })
+}

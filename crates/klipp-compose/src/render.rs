@@ -631,11 +631,7 @@ impl Renderer {
             let t = Instant::now();
             acc = match self.gpu() {
                 Some(gpu) => gpu.apply_3d_lut_gpu(acc, width, height, &lut.lut.data, lut.lut.size as u32, lut.opacity),
-                None => {
-                    let mut u8s = klipp_effects::linear_f32_rgba_to_srgb_u8(&acc);
-                    klipp_color::apply_3d_lut(&mut u8s, &lut.lut, lut.opacity);
-                    klipp_effects::srgb_u8_to_linear_f32_rgba(&u8s)
-                }
+                None => klipp_effects::apply_3d_lut(acc, &lut.lut.data, lut.lut.size as u32, lut.opacity),
             };
             self.global_lut = Some(lut);
             self.found.stats.lut_ms += ms_since(t);
@@ -1001,19 +997,11 @@ impl Renderer {
                 &from, &to, kind_id, eased, width, height,
                 params.param0, params.param1, params.param2, params.param3, params.color,
             ),
-            // A dissolve is a mix in linear light, as on the GPU.
-            None if matches!(kind, klipp_core::TransitionKind::CrossDissolve) => {
-                from.iter().zip(&to).map(|(f, t)| f + (t - f) * eased).collect()
-            }
-            None => {
-                // TODO(phase D): native linear CPU kernels. These mix in
-                // 8-bit sRGB; they ease CrossDissolve themselves, so pass
-                // the raw progress.
-                let f = klipp_effects::linear_f32_rgba_to_srgb_u8(&from);
-                let t = klipp_effects::linear_f32_rgba_to_srgb_u8(&to);
-                let out = klipp_transitions::render_transition_with_params(kind, &f, &t, progress, width, height, params);
-                klipp_effects::srgb_u8_to_linear_f32_rgba(&out)
-            }
+            // The same shader, transcribed: the same picture without a GPU.
+            None => klipp_effects::render_transition_linear(
+                &from, &to, kind_id, eased, width, height,
+                params.param0, params.param1, params.param2, params.param3, params.color,
+            ),
         })
     }
 
