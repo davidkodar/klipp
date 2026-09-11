@@ -280,3 +280,70 @@ fn the_graded_fast_path_is_the_renderers_frame_for_pq() {
     eprintln!("PQ graded fast path vs renderer: worst {worst} LSB");
     assert!(worst <= 1, "the graded fast path differs from the renderer by {worst} levels");
 }
+
+/// A decoder frame left on the GPU, as the viewer hands it to the
+/// renderer: the grade seeds from it; `read` counts readbacks.
+struct OnGpu {
+    buffer: Arc<wgpu::Buffer>,
+    bytes: Vec<u8>,
+    reads: std::sync::atomic::AtomicUsize,
+}
+
+impl klipp_compose::GpuPixels for OnGpu {
+    fn seed(&self, exec: &mut klipp_nodes::GraphExecutor, width: u32, height: u32) -> bool {
+        exec.prime_chain_from_gpu_u8_buffer(&self.buffer, width, height)
+    }
+    fn read(&self) -> Arc<Vec<f32>> {
+        self.reads.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Arc::new(klipp_effects::srgb_u8_to_linear_f32_rgba(&self.bytes))
+    }
+}
+
+/// Over another layer, a graded clip whose frame is still on the GPU
+/// renders as its read-back pixels do — the grade starting from the GPU
+/// buffer, never reading the frame back.
+#[test]
+fn a_gpu_resident_frame_is_graded_where_it_is() {
+    let Some(ctx) = GpuContext::shared() else {
+        eprintln!("skipping: no usable GpuContext");
+        return;
+    };
+    let bytes = sdr_bytes();
+    let on_gpu = Arc::new(OnGpu {
+        buffer: gpu_buffer(ctx, &bytes),
+        bytes: bytes.clone(),
+        reads: Default::default(),
+    });
+    let (mut seq, _) = one_clip(keyframed_grade(None));
+    // A half-transparent title above: the frame is a composite, not a
+    // fast-path frame.
+    let mut title = Clip {
+        kind: ClipKind::Generator(klipp_core::GeneratorData::SolidColor { color: [255, 255, 255, 255] }),
+        ..Clip::gap(tc(0.0), tc(10.0))
+    };
+    title.builtin_effects = vec![klipp_effects::BuiltinEffect::Opacity { value: 0.25 }];
+    let mut top = Track::new("V2", TrackKind::Video);
+    top.clips = vec![title];
+    seq.tracks.insert(0, top);
+
+    let linear = Arc::new(klipp_effects::srgb_u8_to_linear_f32_rgba(&bytes));
+    let mut on_cpu = Frame(Box::new(move || SourcePixels::Linear(Arc::clone(&linear))));
+    let g = Arc::clone(&on_gpu);
+    let mut resident = Frame(Box::new(move || SourcePixels::Gpu(Arc::clone(&g) as Arc<dyn klipp_compose::GpuPixels>)));
+
+    let mut r = renderer();
+    let want = rendered(&mut r, &seq, 4.0, &mut on_cpu);
+    let got = rendered(&mut r, &seq, 4.0, &mut resident);
+    let worst = worst_lsb(&got, &want);
+    eprintln!("GPU-resident graded source vs CPU source: worst {worst} LSB");
+    assert!(worst <= 1, "a GPU-resident source renders {worst} levels off");
+    assert_eq!(on_gpu.reads.load(std::sync::atomic::Ordering::Relaxed), 0, "the frame was read back");
+
+    // Ungraded, there is no grade to start: it is read back, once.
+    let (mut plain, _) = one_clip(NodeGraph::default());
+    plain.tracks.insert(0, seq.tracks[0].clone());
+    let want = rendered(&mut r, &plain, 4.0, &mut on_cpu);
+    let got = rendered(&mut r, &plain, 4.0, &mut resident);
+    assert!(worst_lsb(&got, &want) <= 1);
+    assert_eq!(on_gpu.reads.load(std::sync::atomic::Ordering::Relaxed), 1);
+}

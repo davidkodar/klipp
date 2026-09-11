@@ -70,6 +70,35 @@ pub enum SourcePixels {
         /// Source primaries → working space.
         source_to_working: [[f32; 3]; 3],
     },
+    /// Display-referred pixels still on the GPU, where a hardware decoder
+    /// left them. A grade starts from them there, without the frame
+    /// crossing the bus; anything else reads them back.
+    Gpu(Arc<dyn GpuPixels>),
+}
+
+/// A decoded frame on the GPU (see [`SourcePixels::Gpu`]).
+pub trait GpuPixels: Send + Sync {
+    /// Seed `exec`'s next grade from the frame. `false` when it cannot
+    /// (the size, the device), and the pixels are read back instead.
+    fn seed(&self, exec: &mut klipp_nodes::GraphExecutor, width: u32, height: u32) -> bool;
+    /// The frame on the CPU: display-referred linear RGBA.
+    fn read(&self) -> Arc<Vec<f32>>;
+}
+
+/// A clip's pixels on their way into its grade: on the CPU, or still on
+/// the GPU until something needs them here.
+enum GradeInput {
+    Cpu(Arc<Vec<f32>>),
+    Gpu(Arc<dyn GpuPixels>),
+}
+
+impl GradeInput {
+    fn pixels(&self) -> Arc<Vec<f32>> {
+        match self {
+            GradeInput::Cpu(p) => Arc::clone(p),
+            GradeInput::Gpu(g) => g.read(),
+        }
+    }
 }
 
 /// One decoded frame of a clip's media.
@@ -642,18 +671,28 @@ impl Renderer {
         transforms: &HashMap<ClipId, ResolvedTransform>,
     ) -> Option<(Vec<f32>, f32)> {
         let clip_time = eval_clip_time(clip, time);
-        let (pixels, hdr) = match &clip.kind {
+        let (input, hdr) = match &clip.kind {
             ClipKind::Media { .. } => {
                 let at = source_secs(clip, time, fps);
                 let f = src.frame(clip, at, width, height)?;
                 let next = if frame_blends(clip, time) { src.frame_after(clip, at, width, height) } else { None };
-                let pts = f.pts;
-                let (pixels, hdr) = to_linear(f, width, height);
-                let pixels = match (next, pts) {
-                    (Some(n), Some(p0)) => blend_frames(pixels, hdr, p0, n, at, width, height),
-                    _ => pixels,
-                };
-                (pixels, hdr)
+                match f {
+                    // Left on the GPU for the grade to start from.
+                    SourceFrame { pixels: SourcePixels::Gpu(g), width: w, height: h, .. }
+                        if next.is_none() && (w, h) == (width, height) =>
+                    {
+                        (GradeInput::Gpu(g), None)
+                    }
+                    f => {
+                        let pts = f.pts;
+                        let (pixels, hdr) = to_linear(f, width, height);
+                        let pixels = match (next, pts) {
+                            (Some(n), Some(p0)) => blend_frames(pixels, hdr, p0, n, at, width, height),
+                            _ => pixels,
+                        };
+                        (GradeInput::Cpu(pixels), hdr)
+                    }
+                }
             }
             ClipKind::Title(td) => {
                 let over = crate::synth::typewriter_override(td, clip_time);
@@ -661,24 +700,24 @@ impl Renderer {
                 let mut adapter = self.gpu.as_mut().map(crate::synth::GpuAlphaMaskAdapter);
                 let gpu = adapter.as_mut().map(|a| a as &mut dyn klipp_title::AlphaMaskProcessor);
                 let u8s = self.titles.render_with_time(td, width, height, gpu, clip_time as f32);
-                (Arc::new(klipp_effects::srgb_u8_to_linear_f32_rgba(&u8s)), None)
+                (GradeInput::Cpu(Arc::new(klipp_effects::srgb_u8_to_linear_f32_rgba(&u8s))), None)
             }
             ClipKind::Generator(g) => {
                 let total = (clip.timeline_out - clip.timeline_in).to_secs_f64();
                 let u8s = crate::synth::render_generator_with_slate(&mut self.titles, g, width, height, clip_time, total);
-                (Arc::new(klipp_effects::srgb_u8_to_linear_f32_rgba(&u8s)), None)
+                (GradeInput::Cpu(Arc::new(klipp_effects::srgb_u8_to_linear_f32_rgba(&u8s))), None)
             }
             ClipKind::Gap | ClipKind::Sequence { .. } | ClipKind::AdjustmentLayer => return None,
         };
 
         if self.inspect.ungraded && self.inspect.clip == Some(clip.id) {
-            let mut before = (*pixels).clone();
+            let mut before = (*input.pixels()).clone();
             if let Some(t) = hdr {
                 klipp_color::hdr::apply_hdr_display_tonemap(&mut before, t);
             }
             self.found.ungraded = Some(before);
         }
-        let mut pixels = self.grade(clip, pixels, clip_time, fps, width, height);
+        let mut pixels = self.grade(clip, input, clip_time, fps, width, height);
         if let Some(t) = hdr {
             klipp_color::hdr::apply_hdr_display_tonemap(&mut pixels, t);
         }
@@ -780,11 +819,13 @@ impl Renderer {
 
     /// The clip's node graph, at clip-relative time. The inspected clip
     /// also runs the grade tools' captures, its solo and its matte view.
-    fn grade(&mut self, clip: &Clip, pixels: Arc<Vec<f32>>, clip_time: f64, fps: f64, width: u32, height: u32) -> Vec<f32> {
+    /// Pixels still on the GPU seed the grade there; read back only when
+    /// there is no grade to run, or a node needs them on the CPU.
+    fn grade(&mut self, clip: &Clip, input: GradeInput, clip_time: f64, fps: f64, width: u32, height: u32) -> Vec<f32> {
         let inspecting = self.inspect.clip == Some(clip.id);
         let matte_view = if inspecting { self.inspect.matte_view } else { None };
         if clip.node_graph.is_identity() && matte_view.is_none() {
-            return unshare(pixels);
+            return unshare(input.pixels());
         }
         let t = Instant::now();
         self.executor.prepare_clip(&clip.node_graph);
@@ -792,30 +833,58 @@ impl Renderer {
         self.executor.set_current_clip_track_points(&clip.track_points);
         self.executor.set_solo_node(if inspecting { self.inspect.solo } else { None });
         let frame = grade_frame(clip_time, fps);
-        let out = if inspecting {
-            let thumbs = self.inspect.thumbs.take();
-            let r = self.executor.execute_linear_with_thumbs(
-                &pixels, &clip.node_graph, width, height, clip_time, frame, self.inspect.scope_tap, matte_view, thumbs.as_ref(),
-            );
-            self.inspect.thumbs = thumbs;
-            r.map(|(out, tapped, thumbs)| {
-                self.found.scope_tap = tapped;
-                self.found.thumbs = thumbs;
-                out
-            })
-        } else {
-            self.executor
-                .execute_linear(&pixels, &clip.node_graph, width, height, clip_time, frame, None, None)
-                .map(|(out, _)| out)
+        let out = match &input {
+            GradeInput::Cpu(p) => self.run_graph(clip, p, width, height, clip_time, frame, inspecting, matte_view),
+            GradeInput::Gpu(g) if g.seed(&mut self.executor, width, height) => {
+                match self.run_graph(clip, &[], width, height, clip_time, frame, inspecting, matte_view) {
+                    Err(klipp_nodes::executor::ExecutorError::CpuSourceRequired) => {
+                        self.run_graph(clip, &g.read(), width, height, clip_time, frame, inspecting, matte_view)
+                    }
+                    r => r,
+                }
+            }
+            GradeInput::Gpu(g) => self.run_graph(clip, &g.read(), width, height, clip_time, frame, inspecting, matte_view),
         };
         self.found.stats.grade_ms += ms_since(t);
         match out {
             Ok(out) => out,
             Err(e) => {
                 tracing::error!("node graph failed for clip {:?}: {e:?}", clip.id);
-                unshare(pixels)
+                unshare(input.pixels())
             }
         }
+    }
+
+    /// Run the executor on `source` (empty when the chain is seeded on
+    /// the GPU), with the grade tools' captures for the inspected clip.
+    #[allow(clippy::too_many_arguments)]
+    fn run_graph(
+        &mut self,
+        clip: &Clip,
+        source: &[f32],
+        width: u32,
+        height: u32,
+        clip_time: f64,
+        frame: u64,
+        inspecting: bool,
+        matte_view: Option<NodeId>,
+    ) -> Result<Vec<f32>, klipp_nodes::executor::ExecutorError> {
+        if !inspecting {
+            return self
+                .executor
+                .execute_linear(source, &clip.node_graph, width, height, clip_time, frame, None, None)
+                .map(|(out, _)| out);
+        }
+        let thumbs = self.inspect.thumbs.take();
+        let r = self.executor.execute_linear_with_thumbs(
+            source, &clip.node_graph, width, height, clip_time, frame, self.inspect.scope_tap, matte_view, thumbs.as_ref(),
+        );
+        self.inspect.thumbs = thumbs;
+        r.map(|(out, tapped, thumbs)| {
+            self.found.scope_tap = tapped;
+            self.found.thumbs = thumbs;
+            out
+        })
     }
 
     /// OFX plugins take 8-bit sRGB; the round trip is scoped to them.
@@ -967,7 +1036,7 @@ impl Renderer {
         }
         let clip_time = eval_clip_time(clip, time);
         let before = if opacity < 0.999 { Some(below.clone()) } else { None };
-        let graded = self.grade(clip, Arc::new(below), clip_time, fps, width, height);
+        let graded = self.grade(clip, GradeInput::Cpu(Arc::new(below)), clip_time, fps, width, height);
         let graded = self.ofx(clip, graded, clip_time, width, height, None);
         let (fx, _) = clip_effects(clip, time, fps, transforms.get(&clip.id).copied());
         let mut after = self.effects(&fx, graded, clip_time, width, height);
@@ -1298,6 +1367,7 @@ fn to_linear(f: SourceFrame, width: u32, height: u32) -> (Arc<Vec<f32>>, Option<
             let p = klipp_color::hdr::hdr10_codes_to_scene_linear_rgba(&codes, transfer, source_to_working);
             (fit(Arc::new(p), f.width, f.height, width, height), Some(transfer))
         }
+        SourcePixels::Gpu(g) => (fit(g.read(), f.width, f.height, width, height), None),
     }
 }
 

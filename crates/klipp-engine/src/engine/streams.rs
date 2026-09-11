@@ -29,11 +29,8 @@ pub(crate) struct HeldFrame {
     pub height: u32,
     pub pts: Option<f64>,
     pixels: Held,
-    /// `Held::Srgb8` / `Held::Gpu` as linear light, once asked for.
+    /// `Held::Srgb8` as linear light, once asked for.
     linear: OnceLock<Arc<Vec<f32>>>,
-    /// `Held::Gpu` read back as its sRGB bytes, once asked for: the
-    /// pre-grade caches and the linear pixels both come from one readback.
-    srgb: OnceLock<Arc<Vec<u8>>>,
     /// `Held::Hdr` codes on the CPU, once asked for.
     codes: OnceLock<Arc<Vec<u32>>>,
 }
@@ -41,14 +38,44 @@ pub(crate) struct HeldFrame {
 enum Held {
     Linear(Arc<Vec<f32>>),
     Srgb8(Arc<Vec<u8>>),
-    /// A frame the decoder left on the GPU, not yet read back.
-    Gpu(Arc<crate::frame::GpuFrame>),
+    /// A frame the decoder left on the GPU.
+    Gpu(Arc<GpuHeld>),
     Hdr(HdrInput),
+}
+
+/// An SDR frame the decoder left on the GPU as sRGB u8. The renderer seeds
+/// a grade from it there; read back — once, as its sRGB bytes, a quarter of
+/// a linear readback — when something needs it on the CPU.
+struct GpuHeld {
+    frame: Arc<crate::frame::GpuFrame>,
+    srgb: OnceLock<Arc<Vec<u8>>>,
+    linear: OnceLock<Arc<Vec<f32>>>,
+}
+
+impl GpuHeld {
+    fn srgb(&self) -> Arc<Vec<u8>> {
+        Arc::clone(self.srgb.get_or_init(|| Arc::new(crate::types::realise_srgb_u8_from_gpu(&self.frame))))
+    }
+}
+
+impl klipp_compose::GpuPixels for GpuHeld {
+    fn seed(&self, exec: &mut klipp_nodes::GraphExecutor, width: u32, height: u32) -> bool {
+        (self.frame.width, self.frame.height) == (width, height)
+            && exec.prime_chain_from_gpu_u8_buffer(&self.frame.rgba_buffer, width, height)
+    }
+
+    fn read(&self) -> Arc<Vec<f32>> {
+        Arc::clone(self.linear.get_or_init(|| Arc::new(klipp_effects::srgb_u8_to_linear_f32_rgba(&self.srgb()))))
+    }
 }
 
 impl HeldFrame {
     fn new(pixels: Held, width: u32, height: u32, pts: Option<f64>) -> Self {
-        Self { width, height, pts, pixels, linear: OnceLock::new(), srgb: OnceLock::new(), codes: OnceLock::new() }
+        Self { width, height, pts, pixels, linear: OnceLock::new(), codes: OnceLock::new() }
+    }
+
+    fn gpu(g: Arc<crate::frame::GpuFrame>) -> Held {
+        Held::Gpu(Arc::new(GpuHeld { frame: g, srgb: OnceLock::new(), linear: OnceLock::new() }))
     }
 
     /// A decoded frame, taken over.
@@ -57,7 +84,7 @@ impl HeldFrame {
         let pixels = match (f.hdr, f.data.is_empty(), f.gpu_source) {
             (Some(h), _, _) => Held::Hdr(h),
             (None, false, _) => Held::Linear(Arc::new(f.data)),
-            (None, true, Some(g)) => Held::Gpu(g),
+            (None, true, Some(g)) => Self::gpu(g),
             (None, true, None) => Held::Linear(Arc::new(Vec::new())),
         };
         Self::new(pixels, f.width, f.height, pts)
@@ -70,7 +97,7 @@ impl HeldFrame {
         let pixels = match (&f.hdr, f.data.is_empty(), &f.gpu_source) {
             (Some(h), _, _) => Held::Hdr(h.clone()),
             (None, false, _) => Held::Linear(Arc::new(f.data.clone())),
-            (None, true, Some(g)) => Held::Gpu(Arc::clone(g)),
+            (None, true, Some(g)) => Self::gpu(Arc::clone(g)),
             (None, true, None) => Held::Linear(Arc::new(Vec::new())),
         };
         Self::new(pixels, f.width, f.height, pts)
@@ -92,7 +119,7 @@ impl HeldFrame {
         match &self.pixels {
             Held::Srgb8(u8s) => (super::PregradePixels::Srgb8(Arc::clone(u8s)), Arc::clone(u8s)),
             Held::Gpu(g) => {
-                let u8s = self.gpu_srgb(g);
+                let u8s = g.srgb();
                 (super::PregradePixels::Srgb8(Arc::clone(&u8s)), u8s)
             }
             Held::Linear(l) => {
@@ -110,13 +137,6 @@ impl HeldFrame {
         }
     }
 
-    /// The decoder's buffer is sRGB u8 already: read back as it is, a
-    /// quarter of a linear readback, and expanded on the CPU when linear
-    /// is wanted — `realise_linear_from_gpu` does the same.
-    fn gpu_srgb(&self, g: &crate::frame::GpuFrame) -> Arc<Vec<u8>> {
-        Arc::clone(self.srgb.get_or_init(|| Arc::new(crate::types::realise_srgb_u8_from_gpu(g))))
-    }
-
     fn cpu_codes(&self, h: &HdrInput) -> Arc<Vec<u32>> {
         Arc::clone(self.codes.get_or_init(|| h.cpu_codes()))
     }
@@ -128,9 +148,7 @@ impl HeldFrame {
             Held::Srgb8(u8s) => SourcePixels::Linear(Arc::clone(
                 self.linear.get_or_init(|| Arc::new(klipp_effects::srgb_u8_to_linear_f32_rgba(u8s))),
             )),
-            Held::Gpu(g) => SourcePixels::Linear(Arc::clone(
-                self.linear.get_or_init(|| Arc::new(klipp_effects::srgb_u8_to_linear_f32_rgba(&self.gpu_srgb(g)))),
-            )),
+            Held::Gpu(g) => SourcePixels::Gpu(Arc::clone(g) as Arc<dyn klipp_compose::GpuPixels>),
             Held::Hdr(h) => SourcePixels::SceneReferred {
                 codes: self.cpu_codes(h),
                 transfer: h.transfer,

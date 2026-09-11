@@ -11,6 +11,7 @@ pub mod synth;
 pub mod render;
 
 pub use render::{
-    active_layers, frame_snapshot, ActiveLayer, FrameSource, GlobalLut, Inspect, Inspection, RenderOptions, RenderStats, Renderer,
+    active_layers, frame_snapshot, ActiveLayer, FrameSource, GlobalLut, GpuPixels, Inspect, Inspection, RenderOptions,
+    RenderStats, Renderer,
     SourceFrame, SourcePixels,
 };
