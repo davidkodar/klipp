@@ -38,6 +38,19 @@ pub struct FrameBuffer {
     pub scope_preview: Vec<u8>,
     pub scope_preview_w: u32,
     pub scope_preview_h: u32,
+    /// While a CIE chromaticity scope is open: the picture as the renderer
+    /// made it — linear light, in the project's working space — one RGB
+    /// triple per `cie_samples_w * cie_samples_h` grid point. Empty
+    /// otherwise.
+    ///
+    /// A chromaticity diagram is absolute, so it has to measure the picture
+    /// and not the view of it: `data` has been through the display
+    /// transform, which in a wide-gamut project has already mapped the
+    /// gamut, and plotting that would draw the compression rather than the
+    /// colour. See [`crate::ffmpeg_scope::CIE_SAMPLES_MODE`].
+    pub cie_samples: Vec<f32>,
+    pub cie_samples_w: u32,
+    pub cie_samples_h: u32,
     /// While HDR monitoring is on: the picture's light in cd/m², one
     /// sample per `nit_map_step` pixels, of the brightest channel — what
     /// the readout under the pointer shows. Empty otherwise.
@@ -143,6 +156,9 @@ impl FrameBuffer {
             pending_height: 0,
             pending_generation: 0,
             pending_ready: false,
+            cie_samples: Vec::new(),
+            cie_samples_w: 0,
+            cie_samples_h: 0,
             nit_map: Vec::new(),
             nit_map_w: 0,
             nit_map_h: 0,

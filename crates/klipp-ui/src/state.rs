@@ -2489,25 +2489,42 @@ impl ScopeScale {
 /// Pixel data sampled from the viewer for scope cursor overlay.
 #[derive(Debug, Clone, Copy)]
 pub struct ScopeCursorData {
-    /// Normalized x position in the video frame (0.0–1.0).
+    /// Normalised position in the video frame (0.0–1.0).
     pub x_frac: f32,
-    /// Linear RGB values (0.0–1.0).
+    pub y_frac: f32,
+    /// The **display-encoded** values under the pointer, as shown on
+    /// screen — these come from the framebuffer, which has been through
+    /// the display transform.
     pub r: f32,
     pub g: f32,
     pub b: f32,
-    /// Luma (BT.709).
+    /// Luma and CbCr, in the project's basis, of those display values.
     pub luma: f32,
-    /// CbCr for vectorscope.
     pub cb: f32,
     pub cr: f32,
+    /// The picture's own linear value there, in the working space, when the
+    /// engine is publishing samples for it. This is what the chromaticity
+    /// scope plots, so it is what its cursor has to read: the display
+    /// values above have already been fitted to the screen's gamut and
+    /// cannot be turned back into the colour the picture holds.
+    pub linear_working: Option<[f32; 3]>,
 }
 
 impl ScopeCursorData {
-    pub fn from_srgb(x_frac: f32, sr: f32, sg: f32, sb: f32) -> Self {
-        let luma = 0.2126 * sr + 0.7152 * sg + 0.0722 * sb;
-        let cb = -0.1146 * sr - 0.3854 * sg + 0.5000 * sb;
-        let cr = 0.5000 * sr - 0.4542 * sg - 0.0458 * sb;
-        Self { x_frac, r: sr, g: sg, b: sb, luma, cb, cr }
+    /// From the display-encoded values under the pointer, measured in
+    /// `basis` so the readouts agree with the traces they sit on.
+    pub fn from_display(
+        x_frac: f32,
+        y_frac: f32,
+        sr: f32,
+        sg: f32,
+        sb: f32,
+        basis: klipp_color::scopes::ScopeBasis,
+        linear_working: Option<[f32; 3]>,
+    ) -> Self {
+        let luma = basis.luma([sr, sg, sb]);
+        let (cb, cr) = basis.chroma([sr, sg, sb]);
+        Self { x_frac, y_frac, r: sr, g: sg, b: sb, luma, cb, cr, linear_working }
     }
 
     /// Convert sRGB to HSL.

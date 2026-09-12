@@ -6549,6 +6549,9 @@ impl PlaybackEngine {
         let dock_mode = self.scope_render_mode;
         let mut to_render: std::collections::BTreeSet<u8> = self.active_scope_modes.clone();
         to_render.insert(dock_mode);
+        // The CIE scope is in the active set but is not a filter graph —
+        // it asks for sample data instead. See `cie_samples_pending`.
+        to_render.remove(&crate::ffmpeg_scope::CIE_SAMPLES_MODE);
 
         let settings = self.scope_ffmpeg_settings;
         let bloom_enabled = self.scope_bloom_enabled;
@@ -6647,9 +6650,58 @@ impl PlaybackEngine {
         scope_h: u32,
     ) {
         let renders = self.render_active_scopes_pending(linear_rgba, src_w, src_h);
+        let cie = self.cie_samples_pending(linear_rgba, src_w, src_h);
         let dock_mode = self.scope_render_mode;
         let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
         Self::apply_scope_renders(&mut fb, dock_mode, renders, scope_w, scope_h);
+        match cie {
+            Some((samples, w, h)) => {
+                fb.cie_samples = samples;
+                fb.cie_samples_w = w;
+                fb.cie_samples_h = h;
+            }
+            None if !fb.cie_samples.is_empty() => {
+                fb.cie_samples = Vec::new();
+                fb.cie_samples_w = 0;
+                fb.cie_samples_h = 0;
+            }
+            None => {}
+        }
+    }
+
+    /// The picture as the renderer made it, reduced to a sample grid, for
+    /// the CIE chromaticity scope. `None` when no such scope is open.
+    ///
+    /// Deliberately the linear working-space frame and not `fb.data`: a
+    /// chromaticity diagram is absolute, so it has to plot the colours the
+    /// picture has, not the ones left after the display transform has fitted
+    /// them to the screen's gamut.
+    fn cie_samples_pending(
+        &self,
+        linear_rgba: &[f32],
+        src_w: u32,
+        src_h: u32,
+    ) -> Option<(Vec<f32>, u32, u32)> {
+        if !self
+            .active_scope_modes
+            .contains(&crate::ffmpeg_scope::CIE_SAMPLES_MODE)
+        {
+            return None;
+        }
+        if src_w == 0 || src_h == 0 || linear_rgba.len() < (src_w * src_h * 4) as usize {
+            return None;
+        }
+        let edge = crate::ffmpeg_scope::CIE_SAMPLES_MAX_EDGE;
+        let step = (src_w.max(src_h) as f32 / edge as f32).ceil().max(1.0) as u32;
+        let (out_w, out_h) = (src_w.div_ceil(step), src_h.div_ceil(step));
+        let mut out = Vec::with_capacity((out_w * out_h * 3) as usize);
+        for y in (0..src_h).step_by(step as usize) {
+            for x in (0..src_w).step_by(step as usize) {
+                let i = ((y * src_w + x) * 4) as usize;
+                out.extend_from_slice(&linear_rgba[i..i + 3]);
+            }
+        }
+        Some((out, out_w, out_h))
     }
 
     /// Wait for a video frame near `target_secs` to appear in the queue.

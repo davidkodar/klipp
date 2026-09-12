@@ -25358,11 +25358,11 @@ impl eframe::App for KlippApp {
 
             // Publish the union of all video scope modes the UI needs
             // rendered per tick: dock mode + every floating-window pane
-            // whose `ScopeType` maps to a video scope. Audio scopes and
-            // CIE chromaticity don't go through the engine FFmpeg path
-            // (they're rendered in the UI thread directly), so they're
-            // excluded from the set. Re-sent only on change so the engine
-            // command channel doesn't churn.
+            // whose `ScopeType` maps to a video scope. Audio scopes don't
+            // go through the engine at all. CIE chromaticity is drawn in
+            // the UI thread but still asks the engine for the linear
+            // samples it measures, under its own byte. Re-sent only on
+            // change so the engine command channel doesn't churn.
             let mut active: std::collections::BTreeSet<u8> =
                 std::collections::BTreeSet::new();
             active.insert(mode_byte);
@@ -25376,6 +25376,11 @@ impl eframe::App for KlippApp {
                             crate::state::ScopeMode::Histogram => 3,
                         };
                         active.insert(pane_byte);
+                    } else if pane.scope_type == crate::state::ScopeType::CIEChromaticity {
+                        // Drawn in the UI, but it still needs the engine to
+                        // publish the linear working-space samples it
+                        // measures — the picture, not the view of it.
+                        active.insert(klipp_engine::ffmpeg_scope::CIE_SAMPLES_MODE);
                     }
                 }
             }
@@ -30271,6 +30276,9 @@ impl KlippApp {
                             let fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
                             self.state.scope_cursor_locked_data = crate::widgets::scope_window::sample_viewer_pixel(
                                 pos, rect, &fb, self.state.scope_cursor_sample_radius,
+                                klipp_color::scopes::ScopeBasis::for_working_space(
+                                    self.state.project_working_colorspace,
+                                ),
                             );
                         }
                     }
@@ -30282,6 +30290,9 @@ impl KlippApp {
                             let fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
                             crate::widgets::scope_window::sample_viewer_pixel(
                                 pos, rect, &fb, self.state.scope_cursor_sample_radius,
+                                klipp_color::scopes::ScopeBasis::for_working_space(
+                                    self.state.project_working_colorspace,
+                                ),
                             )
                         } else {
                             None

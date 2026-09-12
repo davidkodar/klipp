@@ -34,6 +34,23 @@ type Result<T> = std::result::Result<T, String>;
 pub const SCOPE_OUT_W: u32 = 1024;
 pub const SCOPE_OUT_H: u32 = 512;
 
+/// The CIE chromaticity scope's place in `active_scope_modes`.
+///
+/// Not a filter mode — libavfilter has no gamut scope, and this one is drawn
+/// in the UI. What the byte asks the engine for is
+/// [`crate::texture::FrameBuffer::cie_samples`]: the picture in the
+/// project's working space, linear, before the display transform. Sits above
+/// the four filter modes (0..=3) so nothing tries to build a graph for it.
+pub const CIE_SAMPLES_MODE: u8 = 4;
+
+/// Longest edge of the sample grid the CIE scope measures.
+///
+/// The scope plots one dot per sample and the diagram is a few hundred
+/// pixels across, so more samples than this buy nothing but memory: a 4K
+/// frame reduces to 384x216 RGB f32, under a megabyte, at the ≤10 Hz the
+/// scope path already runs at.
+pub const CIE_SAMPLES_MAX_EDGE: u32 = 384;
+
 /// Which pixel format the caller is supplying to [`FfmpegScope::render`].
 /// Drives the buffer-source pix_fmt + the leading format-conversion clause
 /// in the filter spec, and selects which `process_*` method runs.

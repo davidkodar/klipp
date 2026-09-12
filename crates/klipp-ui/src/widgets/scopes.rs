@@ -691,7 +691,7 @@ pub fn show_scopes(
             if let Some(ref cur) = scope_cursor {
                 let scope_type = crate::state::ScopeType::from(mode);
                 super::scope_window::draw_scope_cursor_indicator(
-                    &ui.painter_at(full_rect), scope_type, cur, full_rect,
+                    &ui.painter_at(full_rect), scope_type, cur, full_rect, basis,
                 );
             }
         }
@@ -780,9 +780,27 @@ impl AccumBuffer {
     }
 }
 
-/// Render CIE 1931 xy chromaticity diagram.
-/// Plots image pixels in CIE xy space with spectral locus outline and sRGB gamut triangle.
-pub(crate) fn render_cie_chromaticity(rgba: &[u8], width: u32, height: u32, step: u32, rw: usize, rh: usize) -> egui::ColorImage {
+/// Render a CIE 1931 xy chromaticity diagram of `samples` — linear RGB
+/// triples in `working`'s primaries, as the renderer made them.
+///
+/// A chromaticity diagram is the one scope that reads in absolute terms: a
+/// point on it is a colour, not a code value. So it takes the picture in the
+/// project's own basis and converts with that basis's own RGB → XYZ matrix,
+/// including its own white point — an ACEScg project is D60-referred, and
+/// adapting it to D65 first would move every colour on the plot, the white
+/// included.
+///
+/// The gamut triangle is the working space's, for the same reason: drawing
+/// Rec.709's around a BT.2020 picture would show most of the frame outside
+/// a gamut it was never in.
+pub(crate) fn render_cie_chromaticity(
+    samples: &[f32],
+    width: u32,
+    height: u32,
+    working: klipp_core::WorkingColorspace,
+    rw: usize,
+    rh: usize,
+) -> egui::ColorImage {
     let size = rw.min(rh);
     let mut buf = AccumBuffer::new(size, size);
 
@@ -844,11 +862,15 @@ pub(crate) fn render_cie_chromaticity(rgba: &[u8], width: u32, height: u32, step
         }
     }
 
-    // ── 2. sRGB / Rec.709 gamut triangle ──
-    let srgb_r = (0.6400_f32, 0.3300_f32);
-    let srgb_g = (0.3000, 0.6000);
-    let srgb_b = (0.1500, 0.0600);
-    let gamut_verts = [(srgb_r, srgb_g), (srgb_g, srgb_b), (srgb_b, srgb_r)];
+    // ── 2. The working space's gamut triangle ──
+    let primaries = klipp_color::primaries::working_primaries(working);
+    let xy_of = |c: klipp_color::primaries::Chromaticity| (c.x, c.y);
+    let (gam_r, gam_g, gam_b) = (
+        xy_of(primaries.red),
+        xy_of(primaries.green),
+        xy_of(primaries.blue),
+    );
+    let gamut_verts = [(gam_r, gam_g), (gam_g, gam_b), (gam_b, gam_r)];
     let gamut_colors = [
         (0.15_f32, 0.06, 0.06), // R-G edge: reddish
         (0.06, 0.12, 0.06),     // G-B edge: greenish
@@ -868,8 +890,8 @@ pub(crate) fn render_cie_chromaticity(rgba: &[u8], width: u32, height: u32, step
         }
     }
 
-    // ── 3. D65 white point marker ──
-    let (wpx, wpy) = xy_to_px(0.3127, 0.3290);
+    // ── 3. White point marker — the working space's own ──
+    let (wpx, wpy) = xy_to_px(primaries.white.x, primaries.white.y);
     for dx in 0..3_usize {
         for dy in 0..3_usize {
             let gx = wpx.saturating_sub(1) + dx;
@@ -878,42 +900,31 @@ pub(crate) fn render_cie_chromaticity(rgba: &[u8], width: u32, height: u32, step
         }
     }
 
-    // ── 4. Plot image data ──
-    let sample_step = (step * 3).max(3) as usize;
-    for y in (0..height).step_by(sample_step) {
-        for x in (0..width).step_by(sample_step) {
-            let idx = ((y * width + x) * 4) as usize;
-            if idx + 2 >= rgba.len() { continue; }
-            // sRGB → linear
-            let sr = rgba[idx] as f32 / 255.0;
-            let sg = rgba[idx + 1] as f32 / 255.0;
-            let sb = rgba[idx + 2] as f32 / 255.0;
-            let to_linear = |v: f32| -> f32 {
-                if v <= 0.04045 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) }
-            };
-            let lr = to_linear(sr);
-            let lg = to_linear(sg);
-            let lb = to_linear(sb);
+    // ── 4. Plot the picture ──
+    // Already linear, already in `working`'s basis: the engine samples the
+    // renderer's frame before the display transform, so no decode to guess
+    // at and no gamut mapping already applied.
+    let to_xyz = klipp_color::primaries::rgb_to_xyz_matrix(&primaries);
+    for i in 0..(width as usize * height as usize) {
+        let idx = i * 3;
+        if idx + 2 >= samples.len() {
+            break;
+        }
+        let rgb = [samples[idx], samples[idx + 1], samples[idx + 2]];
+        let xyz = klipp_color::primaries::matrix3_mul_vec(to_xyz, rgb);
+        let sum = xyz[0] + xyz[1] + xyz[2];
+        if sum < 0.001 {
+            continue; // near-black has no chromaticity to speak of
+        }
+        let (cx, cy) = (xyz[0] / sum, xyz[1] / sum);
 
-            // Linear sRGB → CIE XYZ (D65)
-            let cap_x = 0.4124564 * lr + 0.3575761 * lg + 0.1804375 * lb;
-            let cap_y = 0.2126729 * lr + 0.7151522 * lg + 0.0721750 * lb;
-            let z = 0.0193339 * lr + 0.1191920 * lg + 0.9503041 * lb;
-
-            let sum = cap_x + cap_y + z;
-            if sum < 0.001 { continue; } // skip near-black
-
-            // XYZ → xy chromaticity
-            let cx = cap_x / sum;
-            let cy = cap_y / sum;
-
-            let (px, py) = xy_to_px(cx, cy);
-            if px < size && py < size {
-                // Plot with actual pixel color, brightness-weighted
-                let brightness = cap_y.sqrt().min(1.0);
-                let boost = 0.15 + brightness * 0.6;
-                buf.add(px, py, sr * boost, sg * boost, sb * boost);
-            }
+        let (px, py) = xy_to_px(cx, cy);
+        if px < size && py < size {
+            // Weighted by the colour's own luminance, and tinted with it.
+            let brightness = xyz[1].max(0.0).sqrt().min(1.0);
+            let boost = 0.15 + brightness * 0.6;
+            let tint = |v: f32| v.clamp(0.0, 1.0).sqrt() * boost;
+            buf.add(px, py, tint(rgb[0]), tint(rgb[1]), tint(rgb[2]));
         }
     }
 
@@ -965,6 +976,121 @@ fn draw_ire_lines(pixels: &mut [egui::Color32], w: usize, h: usize) {
 mod tests {
     use super::*;
     use crate::state::ScopeScale;
+
+    // ── the chromaticity diagram measures the picture ────────────────
+
+    const CIE_SIZE: usize = 256;
+
+    /// A flat frame of one linear working-space colour.
+    fn flat_samples(rgb: [f32; 3], w: u32, h: u32) -> Vec<f32> {
+        let mut out = Vec::with_capacity((w * h * 3) as usize);
+        for _ in 0..(w * h) {
+            out.extend_from_slice(&rgb);
+        }
+        out
+    }
+
+    /// Invert the diagram's pixel mapping, so a plotted dot can be read
+    /// back as the chromaticity it claims.
+    fn px_to_xy(px: usize, py: usize) -> (f32, f32) {
+        let margin = 12.0_f32;
+        let plot = CIE_SIZE as f32 - margin * 2.0;
+        (
+            (px as f32 - margin) / plot * 0.8,
+            (1.0 - (py as f32 - margin) / plot) * 0.9,
+        )
+    }
+
+    /// Where the picture plotted.
+    ///
+    /// Found by differencing against the same diagram drawn with a black
+    /// frame, which plots nothing: what is left is the trace alone. The
+    /// accumulation buffer stores means rather than sums, so the trace is
+    /// not necessarily the brightest thing on the diagram — the white-point
+    /// marker can outshine it.
+    fn trace_xy(rgb: [f32; 3], ws: klipp_core::WorkingColorspace) -> (f32, f32) {
+        let render = |rgb: [f32; 3]| {
+            render_cie_chromaticity(&flat_samples(rgb, 16, 16), 16, 16, ws, CIE_SIZE, CIE_SIZE)
+        };
+        let (with, without) = (render(rgb), render([0.0, 0.0, 0.0]));
+        let (mut best, mut at) = (0i32, (0usize, 0usize));
+        for y in 0..CIE_SIZE {
+            for x in 0..CIE_SIZE {
+                let i = y * CIE_SIZE + x;
+                let (a, b) = (with.pixels[i], without.pixels[i]);
+                let d = (a.r() as i32 - b.r() as i32).abs()
+                    + (a.g() as i32 - b.g() as i32).abs()
+                    + (a.b() as i32 - b.b() as i32).abs();
+                if d > best {
+                    best = d;
+                    at = (x, y);
+                }
+            }
+        }
+        assert!(best > 0, "the picture left no mark on the diagram");
+        px_to_xy(at.0, at.1)
+    }
+
+    /// A saturated primary has to plot on its own published chromaticity,
+    /// in whichever space the project works in. Read as sRGB — which is
+    /// what this scope did before — a BT.2020 red lands on BT.709's red,
+    /// 0.068 away in x: a quarter of the way across the diagram's red
+    /// corner, and inside the triangle rather than on it.
+    #[test]
+    fn a_primary_plots_on_its_own_chromaticity() {
+        use klipp_core::WorkingColorspace::*;
+        for (ws, primaries) in [
+            (Rec709Linear, klipp_color::primaries::PRIMARIES_BT709),
+            (Bt2020Linear, klipp_color::primaries::PRIMARIES_BT2020),
+            (AcesCG, klipp_color::primaries::PRIMARIES_ACES_AP1),
+        ] {
+            for (i, want) in [primaries.red, primaries.green, primaries.blue].iter().enumerate() {
+                let mut rgb = [0.0; 3];
+                rgb[i] = 1.0;
+                let (x, y) = trace_xy(rgb, ws);
+                // One pixel of the diagram is about 0.0034 in x.
+                assert!(
+                    (x - want.x).abs() < 0.01 && (y - want.y).abs() < 0.01,
+                    "{ws:?} primary {i} plotted at ({x:.4}, {y:.4}), belongs at ({}, {})",
+                    want.x,
+                    want.y,
+                );
+            }
+        }
+    }
+
+    /// The same three numbers are a different colour in a different working
+    /// space, and the diagram has to say so — it is the one scope that reads
+    /// in absolute terms.
+    #[test]
+    fn the_same_numbers_plot_elsewhere_in_a_wider_space() {
+        let red = [1.0, 0.0, 0.0];
+        let (nx, ny) = trace_xy(red, klipp_core::WorkingColorspace::Rec709Linear);
+        let (wx, wy) = trace_xy(red, klipp_core::WorkingColorspace::Bt2020Linear);
+        assert!(
+            (wx - nx).abs() > 0.05,
+            "BT.2020 red plotted at ({wx:.4}, {wy:.4}) and Rec.709 red at ({nx:.4}, {ny:.4}) — \
+             the diagram is not following the working space",
+        );
+    }
+
+    /// A D60 space's white belongs at D60. Adapting it to D65 first — which
+    /// is what routing through Rec.709 would have done — moves it.
+    #[test]
+    fn neutral_plots_on_the_working_spaces_own_white() {
+        use klipp_core::WorkingColorspace::*;
+        for ws in [Rec709Linear, Bt2020Linear, AcesCG] {
+            let (x, y) = trace_xy([0.5, 0.5, 0.5], ws);
+            let white = klipp_color::primaries::working_primaries(ws).white;
+            assert!(
+                (x - white.x).abs() < 0.01 && (y - white.y).abs() < 0.01,
+                "{ws:?} neutral plotted at ({x:.4}, {y:.4}), white is ({}, {})",
+                white.x,
+                white.y,
+            );
+        }
+    }
+
 
     #[test]
     fn test_settings_gen_increments_on_bloom_toggle() {

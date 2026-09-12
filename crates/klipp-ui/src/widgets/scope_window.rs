@@ -50,6 +50,7 @@ pub fn sample_viewer_pixel(
     image_rect: egui::Rect,
     fb: &klipp_engine::FrameBuffer,
     sample_radius: u32,
+    basis: klipp_color::scopes::ScopeBasis,
 ) -> Option<crate::state::ScopeCursorData> {
     if !image_rect.contains(pointer_pos) {
         return None;
@@ -86,7 +87,21 @@ pub fn sample_viewer_pixel(
     let sr = (sum_r / count) as f32 / 255.0;
     let sg = (sum_g / count) as f32 / 255.0;
     let sb = (sum_b / count) as f32 / 255.0;
-    Some(crate::state::ScopeCursorData::from_srgb(nx, sr, sg, sb))
+
+    // The picture's own value there, if the engine is publishing samples.
+    let linear_working = (!fb.cie_samples.is_empty()).then(|| {
+        let sx = ((nx * fb.cie_samples_w as f32) as u32).min(fb.cie_samples_w.saturating_sub(1));
+        let sy = ((ny * fb.cie_samples_h as f32) as u32).min(fb.cie_samples_h.saturating_sub(1));
+        let i = ((sy * fb.cie_samples_w + sx) * 3) as usize;
+        fb.cie_samples
+            .get(i..i + 3)
+            .map(|s| [s[0], s[1], s[2]])
+    })
+    .flatten();
+
+    Some(crate::state::ScopeCursorData::from_display(
+        nx, ny, sr, sg, sb, basis, linear_working,
+    ))
 }
 
 /// Show the floating scope window.
@@ -135,7 +150,7 @@ pub fn show_scope_window(
         viewer_pointer_pos.and_then(|pos| {
             let image_rect = viewer_image_rect?;
             let fb = frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
-            let result = sample_viewer_pixel(pos, image_rect, &fb, sample_radius);
+            let result = sample_viewer_pixel(pos, image_rect, &fb, sample_radius, basis);
             if result.is_some() {
                 ctx.request_repaint();
             }
@@ -558,11 +573,27 @@ fn render_pane_scope(
 
                 if let Some(image) = ffmpeg_image {
                     Some((image, gen))
-                } else if pane.scope_type == ScopeType::CIEChromaticity {
-                    let (src, w, h) = (&fb.data[..], fb.width, fb.height);
-                    let render_w = (w as usize).min(960);
-                    let step: u32 = if w > 1280 { 4 } else if w > 640 { 3 } else { 2 };
-                    let image = super::scopes::render_cie_chromaticity(src, w, h, step, render_w, render_h);
+                } else if pane.scope_type == ScopeType::CIEChromaticity
+                    && !fb.cie_samples.is_empty()
+                {
+                    // The engine's linear working-space samples, not
+                    // `fb.data`: that has been through the display
+                    // transform, so in a wide-gamut project it is the view
+                    // after the gamut has been mapped to the screen, and
+                    // plotting it would draw the mapping instead of the
+                    // picture. Empty until the engine's next tick sees this
+                    // pane's mode — the pane keeps its previous image, as
+                    // the other modes do.
+                    let (w, h) = (fb.cie_samples_w, fb.cie_samples_h);
+                    let render_w = (fb.width as usize).min(960);
+                    let image = super::scopes::render_cie_chromaticity(
+                        &fb.cie_samples,
+                        w,
+                        h,
+                        basis.working_space(),
+                        render_w,
+                        render_h,
+                    );
                     Some((image, gen))
                 } else {
                     // Engine hasn't published this mode's FFmpeg texture
@@ -872,7 +903,7 @@ fn render_pane_scope(
         // ── Scope cursor indicator ──
         if pane.settings.show_scope_cursor {
             if let Some(cur) = scope_cursor {
-                draw_scope_cursor_indicator(&painter, pane.scope_type, &cur, r);
+                draw_scope_cursor_indicator(&painter, pane.scope_type, &cur, r, basis);
             }
         }
 
@@ -891,6 +922,7 @@ pub fn draw_scope_cursor_indicator(
     scope_type: ScopeType,
     cur: &crate::state::ScopeCursorData,
     rect: egui::Rect,
+    basis: klipp_color::scopes::ScopeBasis,
 ) {
     let cursor_color = egui::Color32::from_rgb(0xff, 0xff, 0xff);
     let outline_color = egui::Color32::from_rgba_unmultiplied(0, 0, 0, 200);
@@ -944,19 +976,18 @@ pub fn draw_scope_cursor_indicator(
             );
         }
         ScopeType::CIEChromaticity => {
-            let to_linear = |v: f32| -> f32 {
-                if v <= 0.04045 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) }
-            };
-            let lr = to_linear(cur.r);
-            let lg = to_linear(cur.g);
-            let lb = to_linear(cur.b);
-            let cap_x = 0.4124564 * lr + 0.3575761 * lg + 0.1804375 * lb;
-            let cap_y = 0.2126729 * lr + 0.7151522 * lg + 0.0721750 * lb;
-            let z = 0.0193339 * lr + 0.1191920 * lg + 0.9503041 * lb;
-            let sum = cap_x + cap_y + z;
+            // Read the picture, exactly as the plot does — and draw nothing
+            // rather than guess when the samples are not there yet, since a
+            // dot in the wrong place is worse than no dot.
+            let Some(rgb) = cur.linear_working else { return };
+            let to_xyz = klipp_color::primaries::rgb_to_xyz_matrix(
+                &klipp_color::primaries::working_primaries(basis.working_space()),
+            );
+            let xyz = klipp_color::primaries::matrix3_mul_vec(to_xyz, rgb);
+            let sum = xyz[0] + xyz[1] + xyz[2];
             if sum > 0.001 {
-                let cxv = cap_x / sum;
-                let cyv = cap_y / sum;
+                let cxv = xyz[0] / sum;
+                let cyv = xyz[1] / sum;
                 let side = rect.width().min(rect.height());
                 let margin = 12.0;
                 let plot_size = side - margin * 2.0;

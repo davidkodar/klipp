@@ -331,6 +331,76 @@ pub fn working_to_bt2020(ws: klipp_core::WorkingColorspace) -> [[f32; 3]; 3] {
 /// The 3×3 that changes nothing.
 pub const IDENTITY: [[f32; 3]; 3] = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
 
+/// Linear RGB in `p`'s basis → CIE XYZ, with `p`'s own white point.
+///
+/// The standard derivation: each primary contributes a column proportional
+/// to its `(X, Y, Z)` at unit `y`, and the three scale factors are whatever
+/// makes `RGB = (1, 1, 1)` come out as the white point's XYZ. No chromatic
+/// adaptation — the result is referred to `p.white`, which is the point of
+/// it: a D60 space's colours belong at their D60 chromaticities, and
+/// adapting them to D65 first would move every one of them.
+pub fn rgb_to_xyz_matrix(p: &Primaries) -> [[f32; 3]; 3] {
+    // A chromaticity as XYZ at unit luminance.
+    let xyz_of = |c: &Chromaticity| [c.x / c.y, 1.0, (1.0 - c.x - c.y) / c.y];
+    let (r, g, b) = (xyz_of(&p.red), xyz_of(&p.green), xyz_of(&p.blue));
+    let white = xyz_of(&p.white);
+    // Columns of the unscaled matrix, then solve for the scales.
+    let unscaled = [
+        [r[0], g[0], b[0]],
+        [r[1], g[1], b[1]],
+        [r[2], g[2], b[2]],
+    ];
+    let scale = matrix3_mul_vec(invert3(unscaled), white);
+    [
+        [r[0] * scale[0], g[0] * scale[1], b[0] * scale[2]],
+        [r[1] * scale[0], g[1] * scale[1], b[1] * scale[2]],
+        [r[2] * scale[0], g[2] * scale[1], b[2] * scale[2]],
+    ]
+}
+
+/// CIE XYZ → linear RGB in `p`'s basis. Inverse of [`rgb_to_xyz_matrix`].
+pub fn xyz_to_rgb_matrix(p: &Primaries) -> [[f32; 3]; 3] {
+    invert3(rgb_to_xyz_matrix(p))
+}
+
+/// Inverse of a 3x3 matrix, by cofactors. A colour basis is never
+/// singular — three primaries that shared a line would not span a gamut —
+/// so a zero determinant means the caller built something that is not a
+/// basis, and the identity keeps that visible rather than producing NaNs.
+pub fn invert3(m: [[f32; 3]; 3]) -> [[f32; 3]; 3] {
+    let c = [
+        [
+            m[1][1] * m[2][2] - m[1][2] * m[2][1],
+            m[0][2] * m[2][1] - m[0][1] * m[2][2],
+            m[0][1] * m[1][2] - m[0][2] * m[1][1],
+        ],
+        [
+            m[1][2] * m[2][0] - m[1][0] * m[2][2],
+            m[0][0] * m[2][2] - m[0][2] * m[2][0],
+            m[0][2] * m[1][0] - m[0][0] * m[1][2],
+        ],
+        [
+            m[1][0] * m[2][1] - m[1][1] * m[2][0],
+            m[0][1] * m[2][0] - m[0][0] * m[2][1],
+            m[0][0] * m[1][1] - m[0][1] * m[1][0],
+        ],
+    ];
+    let det = m[0][0] * c[0][0] + m[0][1] * c[1][0] + m[0][2] * c[2][0];
+    if det.abs() < 1e-12 {
+        return IDENTITY;
+    }
+    c.map(|row| row.map(|v| v / det))
+}
+
+/// The primaries a working space is defined by.
+pub fn working_primaries(ws: klipp_core::WorkingColorspace) -> Primaries {
+    match ws {
+        klipp_core::WorkingColorspace::AcesCG => PRIMARIES_ACES_AP1,
+        klipp_core::WorkingColorspace::Rec709Linear => PRIMARIES_BT709,
+        klipp_core::WorkingColorspace::Bt2020Linear => PRIMARIES_BT2020,
+    }
+}
+
 /// Relative luminance of linear RGB in a working space's primaries: the Y
 /// row of its RGB → XYZ matrix.
 #[allow(clippy::excessive_precision)]
@@ -789,5 +859,126 @@ mod tests {
             let y2020 = dot(luminance_weights(Bt2020Linear), matrix3_mul_vec(bt709_to_bt2020(), c));
             assert!(approx_eq(y709, y2020, 1e-3), "{c:?}: {y709} vs {y2020}");
         }
+    }
+
+    /// The derivation has to reproduce the sRGB → XYZ matrix everyone
+    /// quotes (IEC 61966-2-1 / Lindbloom).
+    ///
+    /// Two assertions, because the published matrix is derived from D65 at
+    /// more digits than BT.709 itself quotes. Given the full-precision
+    /// white it reproduces to 2.2e-7 — that is the derivation being right.
+    /// Given [`PRIMARIES_BT709`]'s four-decimal white, blue's Z comes out
+    /// 0.950532 against the published 0.950304: a 2.3e-4 disagreement that
+    /// belongs to the spec's own rounding, not to this function, and sits
+    /// far below anything visible.
+    #[test]
+    fn bt709_primaries_give_the_published_xyz_matrix() {
+        let published = [
+            [0.4124564, 0.3575761, 0.1804375],
+            [0.2126729, 0.7151522, 0.0721750],
+            [0.0193339, 0.1191920, 0.9503041],
+        ];
+        let worst = |m: [[f32; 3]; 3]| {
+            let mut worst = 0.0f32;
+            for r in 0..3 {
+                for c in 0..3 {
+                    worst = worst.max((m[r][c] - published[r][c]).abs());
+                }
+            }
+            worst
+        };
+
+        let precise_d65 = Primaries {
+            white: Chromaticity { x: 0.3127266, y: 0.3290231 },
+            ..PRIMARIES_BT709
+        };
+        let exact = worst(rgb_to_xyz_matrix(&precise_d65));
+        assert!(exact < 1e-5, "with full-precision D65 the worst error is {exact:.3e}");
+
+        let rounded = worst(rgb_to_xyz_matrix(&PRIMARIES_BT709));
+        assert!(
+            rounded < 3e-4,
+            "with BT.709's own rounded white the worst error is {rounded:.3e}",
+        );
+    }
+
+    /// And its Y row is the luminance row, which is written out by hand
+    /// elsewhere in this module — two independent statements of the same
+    /// three numbers, which is the point of checking.
+    #[test]
+    fn the_y_row_is_the_luminance_row_in_every_working_space() {
+        use klipp_core::WorkingColorspace::*;
+        for ws in [Rec709Linear, Bt2020Linear, AcesCG] {
+            let m = rgb_to_xyz_matrix(&working_primaries(ws));
+            let want = luminance_weights(ws);
+            for c in 0..3 {
+                assert!(
+                    (m[1][c] - want[c]).abs() < 5e-4,
+                    "{ws:?} channel {c}: XYZ matrix says {}, luminance_weights says {}",
+                    m[1][c],
+                    want[c],
+                );
+            }
+        }
+    }
+
+    /// White in, white point out — in each space's own white, not D65's.
+    #[test]
+    fn unit_rgb_lands_on_the_spaces_own_white_point() {
+        use klipp_core::WorkingColorspace::*;
+        for ws in [Rec709Linear, Bt2020Linear, AcesCG] {
+            let p = working_primaries(ws);
+            let xyz = matrix3_mul_vec(rgb_to_xyz_matrix(&p), [1.0, 1.0, 1.0]);
+            let sum = xyz[0] + xyz[1] + xyz[2];
+            let (x, y) = (xyz[0] / sum, xyz[1] / sum);
+            assert!(
+                (x - p.white.x).abs() < 1e-4 && (y - p.white.y).abs() < 1e-4,
+                "{ws:?}: white lands at ({x:.5}, {y:.5}), primaries say ({}, {})",
+                p.white.x,
+                p.white.y,
+            );
+        }
+    }
+
+    /// Each primary lands on its own chromaticity — the claim a CIE
+    /// diagram's gamut triangle rests on.
+    #[test]
+    fn each_primary_lands_on_its_own_chromaticity() {
+        use klipp_core::WorkingColorspace::*;
+        for ws in [Rec709Linear, Bt2020Linear, AcesCG] {
+            let p = working_primaries(ws);
+            let m = rgb_to_xyz_matrix(&p);
+            for (i, want) in [p.red, p.green, p.blue].iter().enumerate() {
+                let mut rgb = [0.0; 3];
+                rgb[i] = 1.0;
+                let xyz = matrix3_mul_vec(m, rgb);
+                let sum = xyz[0] + xyz[1] + xyz[2];
+                let (x, y) = (xyz[0] / sum, xyz[1] / sum);
+                assert!(
+                    (x - want.x).abs() < 1e-4 && (y - want.y).abs() < 1e-4,
+                    "{ws:?} primary {i}: ({x:.5}, {y:.5}) vs ({}, {})",
+                    want.x,
+                    want.y,
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn xyz_round_trips_back_to_rgb() {
+        let p = PRIMARIES_BT2020;
+        let m = matrix3_mul(xyz_to_rgb_matrix(&p), rgb_to_xyz_matrix(&p));
+        for r in 0..3 {
+            for c in 0..3 {
+                let want = if r == c { 1.0 } else { 0.0 };
+                assert!((m[r][c] - want).abs() < 1e-5, "row {r} col {c} = {}", m[r][c]);
+            }
+        }
+    }
+
+    #[test]
+    fn inverting_a_degenerate_basis_gives_the_identity_rather_than_nans() {
+        let flat = [[1.0, 2.0, 3.0], [2.0, 4.0, 6.0], [1.0, 0.0, 1.0]];
+        assert_eq!(invert3(flat), IDENTITY);
     }
 }
