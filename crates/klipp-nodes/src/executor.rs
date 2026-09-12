@@ -1171,23 +1171,23 @@ impl GraphExecutor {
             } else {
                 true
             };
-            // The Qualifier and ApplyMatte of a recognised secondary are
+            // The keyer and ApplyMatte of a recognised secondary are
             // chain ops for this graph even though the kinds are not
             // chainable in general: one writes `matte_buf`, the other
             // reads it alongside the kept picture.
             let secondary_chain_node = secondary
-                .is_some_and(|sec| sec.qualifier == node_id || sec.apply == node_id);
-            // The secondary's Qualifier keys the kept copy of its
-            // source, not the chain's current picture, so it does not
-            // need to be looking at the tail — the grade branch may
-            // already have moved it on.
-            let secondary_qualifier_ready = secondary.is_some_and(|sec| {
-                sec.qualifier == node_id
+                .is_some_and(|sec| sec.matte == node_id || sec.apply == node_id);
+            // The secondary's keyer reads the kept copy of its source,
+            // not the chain's current picture, so it does not need to be
+            // looking at the tail — the grade branch may already have
+            // moved it on.
+            let secondary_keyer_ready = secondary.is_some_and(|sec| {
+                sec.matte == node_id
                     && chain_tail.is_some()
                     && primary_input_id == Some(sec.source)
             });
             let can_extend_chain = !bypass
-                && (primary_is_chain_tail || secondary_qualifier_ready)
+                && (primary_is_chain_tail || secondary_keyer_ready)
                 && chain_tail_fan_out_one
                 && (secondary_chain_node
                     || self.node_supports_gpu_chain(&node.kind, &node.params))
@@ -1484,10 +1484,16 @@ impl GraphExecutor {
                 let consumers: Vec<&Edge> = graph.edges.iter()
                     .filter(|e| e.from_node == node_id)
                     .collect();
+                // One consumer, on its matte port: a MaskCutout, or the
+                // ApplyMatte of a recognised secondary. Either reads
+                // `matte_buf` on the GPU.
                 let single_cutout_target = consumers.len() == 1
                     && consumers[0].to_port == 1
-                    && node_by_id.get(&consumers[0].to_node)
-                        .map_or(false, |n| n.kind == NodeKind::MaskCutout);
+                    && node_by_id.get(&consumers[0].to_node).is_some_and(|n| {
+                        n.kind == NodeKind::MaskCutout
+                            || (n.kind == NodeKind::ApplyMatte
+                                && secondary.is_some_and(|sec| sec.apply == n.id))
+                    });
                 let masks_opt = node.params.masks.as_ref()
                     .map(|ms| ms.evaluated_at(clip_time_secs));
                 let gpu_ready_masks: Vec<klipp_effects::gpu::GpuMaskDef> = masks_opt.as_ref()
@@ -1592,6 +1598,7 @@ impl GraphExecutor {
                 source_frame,
                 frame_number,
                 clip_time_secs,
+                matte_in_buf.is_some() && graph.input_of(node.id, 1) == matte_in_buf,
             );
 
             // Matte preview — return greyscale matte early
@@ -1900,20 +1907,25 @@ pub struct ChainStats {
 }
 
 /// A secondary correction the GPU chain can carry end to end: one
-/// node's picture keyed by a Qualifier, graded down one branch, and the
-/// two recombined by an ApplyMatte.
+/// node's picture keyed by a Qualifier, graded down a branch of any
+/// length, and the two recombined by an ApplyMatte.
 ///
 /// ```text
-///   source ─┬─────────────► ApplyMatte port 2 (ungraded)
-///           ├─► Qualifier ─► ApplyMatte port 1 (matte)
-///           └─► branch ────► ApplyMatte port 0 (graded)
+///   source ─┬──────────────────────► ApplyMatte port 2 (ungraded)
+///           ├─► Qualifier ─────────► ApplyMatte port 1 (matte)
+///           └─► grade… ─► grade… ──► ApplyMatte port 0 (graded)
 /// ```
+///
+/// A branch node the chain cannot carry does not disqualify the shape —
+/// it flushes, and ApplyMatte then reads the matte back rather than
+/// dropping the secondary. Slower, still right.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct SecondaryChain {
     /// The node whose output is kept and keyed. Its fan-out is three,
     /// which normally breaks the chain; this shape is the exception.
     source: NodeId,
-    qualifier: NodeId,
+    /// The keyer or mask that produces the matte.
+    matte: NodeId,
     apply: NodeId,
 }
 
@@ -1946,52 +1958,94 @@ impl SecondaryChain {
                 graph.input_of(apply, 1)?,
                 graph.input_of(apply, 2)?,
             );
-            // The matte comes from a Qualifier that is switched on, keys
-            // the same picture the ungraded port carries, and feeds
-            // nothing but this node.
-            if kind_of(matte) != Some(NodeKind::Qualifier) || !enabled(matte) {
+            // The matte comes from a keyer or a mask that is switched
+            // on and feeds nothing but this node. A keyer has to be
+            // looking at the same picture the ungraded port carries, or
+            // the matte would not describe it; a Mask draws geometry and
+            // has no input to check.
+            if !enabled(matte) || fan_out.get(&matte).copied().unwrap_or(0) != 1 {
                 continue;
             }
-            let keyed = graph.input_of(matte, 0);
-            if keyed != Some(plain) || fan_out.get(&matte).copied().unwrap_or(0) != 1 {
+            let params_of = |id: NodeId| {
+                graph.nodes.iter().find(|n| n.id == id).map(|n| &n.params)
+            };
+            let matte_params = params_of(matte)?;
+            let keys_the_source = graph.input_of(matte, 0) == Some(plain);
+            let matte_armed = match kind_of(matte) {
+                Some(NodeKind::Qualifier) => {
+                    keys_the_source && matte_params.qualifier.as_ref().is_some_and(|q| q.enabled)
+                }
+                // LumaKey is deliberately not here. Its shader keys
+                // *linear* luma while its CPU twin keys the
+                // display-encoded picture, so the same threshold means
+                // two different brightnesses depending on which path
+                // ran — see `secondary_gpu_parity`, which found it, and
+                // the note in `luma_key_gpu_parity` that feeds both
+                // paths matching numbers precisely to avoid asking the
+                // question. Carrying the shape would make that
+                // inconsistency worse, because the resident path and
+                // the fallback would disagree with each other. Once the
+                // domains are reconciled this is one line.
+                Some(NodeKind::Mask) => matte_params
+                    .masks
+                    .as_ref()
+                    .is_some_and(|ms| ms.masks.iter().any(|m| m.enabled)),
+                _ => false,
+            };
+            if !matte_armed {
                 continue;
             }
-            let qualifier_armed = graph
-                .nodes
+            // The graded branch: any number of nodes, each fed by the
+            // one before, the first fed by the same picture the matte
+            // was keyed from. Walking it back from ApplyMatte is how we
+            // learn which nodes belong to the shape.
+            let mut branch = Vec::new();
+            let mut walk = graded;
+            let reached_source = loop {
+                if walk == plain {
+                    break true;
+                }
+                if !enabled(walk) || fan_out.get(&walk).copied().unwrap_or(0) != 1 {
+                    break false;
+                }
+                branch.push(walk);
+                match graph.input_of(walk, 0) {
+                    Some(prev) if branch.len() <= graph.nodes.len() => walk = prev,
+                    _ => break false,
+                }
+            };
+            if !reached_source {
+                continue;
+            }
+            // Every consumer of the source must be one this shape
+            // accounts for: the branch, the blend, and the keyer when it
+            // is looking at the source. A fourth reader would need the
+            // picture on the CPU, which is exactly what the fan-out rule
+            // this shape suspends is there to guarantee.
+            let first_branch = branch.last().copied().unwrap_or(apply);
+            if graph
+                .edges
                 .iter()
-                .find(|n| n.id == matte)
-                .and_then(|n| n.params.qualifier.as_ref())
-                .is_some_and(|q| q.enabled);
-            if !qualifier_armed {
-                continue;
-            }
-            // The graded branch is one node deep, fed by the same
-            // picture. A longer branch would work too, but each node in
-            // it would need checking, and one is the shape a secondary
-            // actually builds.
-            if graded == plain || graph.input_of(graded, 0) != Some(plain) {
-                continue;
-            }
-            if fan_out.get(&graded).copied().unwrap_or(0) != 1 || !enabled(graded) {
-                continue;
-            }
-            // Exactly the three consumers this shape accounts for.
-            if fan_out.get(&plain).copied().unwrap_or(0) != 3 {
-                continue;
-            }
-            // Consecutive in the execution order, in some order among
-            // the middle two.
-            let at = |id: NodeId| order.iter().position(|n| *n == id);
-            let (i_plain, i_apply) = (at(plain)?, at(apply)?);
-            let (i_qual, i_graded) = (at(matte)?, at(graded)?);
-            let middle = [i_qual, i_graded];
-            if i_apply != i_plain + 3
-                || !middle.contains(&(i_plain + 1))
-                || !middle.contains(&(i_plain + 2))
+                .filter(|e| e.from_node == plain)
+                .any(|e| e.to_node != apply && e.to_node != matte && e.to_node != first_branch)
             {
                 continue;
             }
-            return Some(Self { source: plain, qualifier: matte, apply });
+            // Nothing foreign may run between the source and the blend.
+            // The matte sits in `matte_buf` and the picture in the kept
+            // buffer across that stretch; a node that flushed the chain
+            // in between would leave ApplyMatte on the CPU, where the
+            // matte has to be read back — correct, but the transfer is
+            // the whole thing we are avoiding.
+            let at = |id: NodeId| order.iter().position(|n| *n == id);
+            let (i_source, i_apply) = (at(plain)?, at(apply)?);
+            let mut shape = vec![plain, matte, apply];
+            shape.extend_from_slice(&branch);
+            if order[i_source + 1..i_apply].iter().any(|n| !shape.contains(n)) {
+                continue;
+            }
+            return Some(Self { source: plain, matte, apply });
+
         }
         None
     }
@@ -2539,6 +2593,9 @@ impl GraphExecutor {
         source_frame: &[f32],
         frame_number: u64,
         clip_time_secs: f64,
+        // The node wiring this one's matte port left its matte in GPU
+        // memory rather than on the CPU. Only ApplyMatte cares.
+        matte_in_gpu: bool,
     ) -> Vec<f32> {
         match kind {
             NodeKind::Source => source_frame.to_vec(),
@@ -2840,17 +2897,23 @@ impl GraphExecutor {
                             lk.low, lk.high, lk.soft, lk.invert,
                         )
                     } else {
-                        // CPU fallback: generate_luma_key_matte still
-                        // speaks u8, so quantise the linear input
-                        // (consistent with Qualifier's CPU path).
+                        // CPU fallback. `generate_luma_key_matte` still
+                        // speaks u8, so the key is measured on the
+                        // display-encoded picture — which is the domain
+                        // the shader keys in too, so the two agree.
+                        //
+                        // The matte itself comes back as it is. It is a
+                        // blend coefficient and not a colour: running it
+                        // through `u8_rgba_to_linear`, as this used to,
+                        // applied the sRGB decode to it and turned a
+                        // half matte into 0.21. That put this path a
+                        // quarter of a frame away from the shader, which
+                        // `secondary_gpu_parity` caught.
                         let primary_u8 = linear_rgba_to_u8(primary_input);
                         let matte = klipp_color::luma_key::generate_luma_key_matte(
                             &primary_u8, width, height, lk,
                         );
-                        let matte_u8: Vec<u8> = matte.iter()
-                            .flat_map(|&v| { let b = (v * 255.0) as u8; [b, b, b, 255] })
-                            .collect();
-                        u8_rgba_to_linear(&matte_u8)
+                        matte.iter().flat_map(|&v| [v, v, v, 1.0]).collect()
                     }
                 } else {
                     vec![1.0f32; (width * height * 4) as usize]
@@ -3230,8 +3293,18 @@ impl GraphExecutor {
                 use rayon::prelude::*;
                 let n = primary_input.len();
                 let mix = params.mix.unwrap_or(1.0);
-                let matte = match secondary_input {
-                    Some(m) if m.len() == n => m,
+                // A matte the chain left in GPU memory, for a blend that
+                // then could not stay on the chain. Reading it back costs
+                // a transfer; not reading it would drop the secondary
+                // from the picture without saying so.
+                let downloaded = if matte_in_gpu && secondary_input.map_or(true, |m| m.len() != n) {
+                    self.gpu.as_ref().map(|g| g.read_matte_buf_linear(n / 4)).filter(|m| m.len() == n)
+                } else {
+                    None
+                };
+                let matte = match (downloaded.as_deref(), secondary_input) {
+                    (Some(m), _) => m,
+                    (None, Some(m)) if m.len() == n => m,
                     // Unwired, or a Mask whose shapes are all disabled (it
                     // returns an empty Vec rather than allocating 130 MB of
                     // 1.0 at 4K).

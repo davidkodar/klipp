@@ -3415,6 +3415,24 @@ impl GpuEffectsPipeline {
 
     /// Download the final linear-f32 RGBA frame. `slot_a` selects `buf_a`
     /// when true, `buf_b` when false — the caller's ping-pong parity.
+    /// Read `matte_buf` back to the CPU.
+    ///
+    /// The slow way to get at a matte, and only correct once the
+    /// dispatch that wrote it has been submitted — after a chain flush,
+    /// in other words. It exists so a matte left in GPU memory by a node
+    /// whose consumer then fell off the chain can still be blended
+    /// correctly: the alternative is a silently un-applied secondary,
+    /// which is a wrong picture rather than a slow one.
+    pub fn read_matte_buf_linear(&self, pixel_count: usize) -> Vec<f32> {
+        if self.is_device_lost() {
+            return Vec::new();
+        }
+        match self.matte_buf.as_ref() {
+            Some(buf) => self.download_linear_rgba_f32(buf, pixel_count),
+            None => Vec::new(),
+        }
+    }
+
     pub fn download_chain_output_linear(&self, slot_a: bool, pixel_count: usize) -> Vec<f32> {
         let buf = if slot_a { self.buf_a.as_ref() } else { self.buf_b.as_ref() };
         let buf = buf.expect("ensure_chain_buffers must be called first");
@@ -5640,8 +5658,26 @@ fn boxes_for_gaussian(sigma: f32) -> [usize; 3] {
 // compile unchanged. The sRGB↔linear component helpers remain for
 // shaders that must linearise user-supplied sRGB colour parameters
 // (for example `SHADER_TRANSITION`).
+/// How a pixel is stored, as the shaders see it.
+///
+/// Identity today: a frame is `vec4<f32>` in the buffer and in the
+/// registers. The pair exists so the *storage* form can change — half
+/// floats at half the bandwidth being the obvious candidate — without
+/// touching any shader's arithmetic. Every shader that indexes a pixel
+/// buffer includes this and goes through it, which the
+/// `pixel_access_goes_through_pack` test enforces on the source.
+macro_rules! shader_pixel_storage_wgsl {
+    () => {
+        "
+fn unpack(v: vec4<f32>) -> vec4<f32> { return v; }
+fn pack(v: vec4<f32>) -> vec4<f32> { return v; }
+"
+    };
+}
+
 macro_rules! shader_linear_helpers_wgsl {
     () => {
+        concat!(
         "
 fn srgb_to_linear_component(c: f32) -> f32 {
     if (c <= 0.04045) {
@@ -5659,8 +5695,9 @@ fn linear_to_srgb_component(c: f32) -> f32 {
     }
 }
 
-fn unpack(v: vec4<f32>) -> vec4<f32> { return v; }
-fn pack(v: vec4<f32>) -> vec4<f32> { return v; }
+",
+        shader_pixel_storage_wgsl!(),
+        "
 
 fn enc3(v: vec3<f32>) -> vec3<f32> {
     return vec3<f32>(linear_to_srgb_component(v.x), linear_to_srgb_component(v.y), linear_to_srgb_component(v.z));
@@ -5805,6 +5842,7 @@ fn hue_rotate_hsl(c: vec3<f32>, degrees: f32) -> vec3<f32> {
     return (o + vec3<f32>(m, m, m)) * magnitude;
 }
 "
+        )
     };
 }
 
@@ -5840,7 +5878,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 // Colour fade — from a solid colour into the picture (or out to it):
 // the pixel mixed with the colour by `progress`, in linear light, as a
 // dissolve mixes.
-const SHADER_COLOR_FADE: &str = "
+const SHADER_COLOR_FADE: &str = concat!(
+    shader_pixel_storage_wgsl!(),
+    "
 struct Params {
     width: u32,
     height: u32,
@@ -5857,9 +5897,10 @@ struct Params {
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let idx = gid.x;
     if idx >= params.width * params.height { return; }
-    output[idx] = mix(params.color, input[idx], params.progress);
+    output[idx] = pack(mix(params.color, unpack(input[idx]), params.progress));
 }
-";
+"
+);
 
 // Horizontal blur. Averages linear-light RGB — the gamma-encoded
 // version underestimated midtone brightness and made edges look
@@ -5987,7 +6028,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 "
 );
 
-const SHADER_CROP: &str = "
+const SHADER_CROP: &str = concat!(
+    shader_pixel_storage_wgsl!(),
+    "
 struct Params {
     width: u32,
     height: u32,
@@ -6014,11 +6057,11 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let yf = f32(y);
 
     if xf < params.crop_left || xf >= params.crop_right || yf < params.crop_top || yf >= params.crop_bottom {
-        output[idx] = vec4<f32>(0.0);
+        output[idx] = pack(vec4<f32>(0.0));
         return;
     }
 
-    var pixel = input[idx];
+    var pixel = unpack(input[idx]);
 
     if params.feather > 0.0 {
         let dist = min(
@@ -6033,11 +6076,13 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         }
     }
 
-    output[idx] = pixel;
+    output[idx] = pack(pixel);
 }
-";
+"
+);
 
 const SHADER_TRANSFORM: &str = concat!(
+    shader_pixel_storage_wgsl!(),
     "
 struct Params {
     width: u32,
@@ -6124,7 +6169,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
     let top = mix(p00, p10, fx);
     let bot = mix(p01, p11, fx);
-    output[idx] = mix(top, bot, fy);
+    output[idx] = pack(mix(top, bot, fy));
 }
 
 fn sample_pixel(x: i32, y: i32) -> vec4<f32> {
@@ -6132,7 +6177,7 @@ fn sample_pixel(x: i32, y: i32) -> vec4<f32> {
         return vec4<f32>(0.0);
     }
     let src_idx = u32(y) * params.width + u32(x);
-    return input[src_idx];
+    return unpack(input[src_idx]);
 }
 "
 );
@@ -6142,7 +6187,9 @@ fn sample_pixel(x: i32, y: i32) -> vec4<f32> {
 // colour). Storage buffers are now linear-f32, so we re-encode to
 // sRGB inside the shader for the YCbCr distance test, then write back
 // the (possibly alpha-faded) linear pixel.
-const SHADER_CHROMA_KEY: &str = "
+const SHADER_CHROMA_KEY: &str = concat!(
+    shader_pixel_storage_wgsl!(),
+    "
 struct Params {
     width: u32,
     height: u32,
@@ -6189,7 +6236,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let idx = gid.x;
     if idx >= params.width * params.height { return; }
 
-    var pixel = input[idx];
+    var pixel = unpack(input[idx]);
     // Re-encode to sRGB 0-255 for YCbCr math (matches CPU path + user input).
     let srgb_r = clamp(linear_to_srgb_component(pixel.x), 0.0, 1.0) * 255.0;
     let srgb_g = clamp(linear_to_srgb_component(pixel.y), 0.0, 1.0) * 255.0;
@@ -6202,7 +6249,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
     if dist < params.tolerance {
         // Fully keyed out — no spill stage needed.
-        output[idx] = vec4<f32>(0.0);
+        output[idx] = pack(vec4<f32>(0.0));
         return;
     } else if dist < params.tolerance + params.soft_edge {
         let factor = (dist - params.tolerance) / params.soft_edge;
@@ -6236,9 +6283,10 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         }
     }
 
-    output[idx] = pixel;
+    output[idx] = pack(pixel);
 }
-";
+"
+);
 
 // Linear-f32 RGBA → sRGB-u8 RGBA encode. One workgroup-thread per
 // output pixel. Output buffer is `array<u32>` where each u32 packs
@@ -6256,7 +6304,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 // supplies `display_to_linear` and the TRANSFER_* ids. Must match
 // `klipp_color::hdr::hdr10_codes_to_scene_linear_rgba`: curve first, then
 // the gamut matrix, 1.0 = 100 nits.
-const SHADER_HDR10_TO_LINEAR_BODY: &str = "
+const SHADER_HDR10_TO_LINEAR_BODY: &str = concat!(
+    shader_pixel_storage_wgsl!(),
+    "
 struct Params {
     width: u32, height: u32, transfer_id: u32, scene_scale: f32,
     m0: vec4<f32>, m1: vec4<f32>, m2: vec4<f32>,
@@ -6274,14 +6324,10 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // PQ/HLG return 1.0 = 10 000 nits (scale 100 to 1.0 = 100 nits);
     // camera logs already return reflectance (scale 1).
     let scene = display_to_linear(code, params.transfer_id) * params.scene_scale;
-    output[idx] = vec4<f32>(
-        dot(params.m0.xyz, scene),
-        dot(params.m1.xyz, scene),
-        dot(params.m2.xyz, scene),
-        1.0,
-    );
+    output[idx] = pack(vec4<f32>( dot(params.m0.xyz, scene), dot(params.m1.xyz, scene), dot(params.m2.xyz, scene), 1.0, ));
 }
-";
+"
+);
 
 // Chain output (linear f32 RGBA) → display sRGB u8, for a graded frame
 // that nothing else needs on the CPU. With `hdr_tonemap` set it applies
@@ -6290,7 +6336,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 // step runs here rather than on a 132 MB CPU copy. Without it this is the
 // SDR display encode (`ToneMapOp::None`: clamp, sRGB). Same layout as
 // SHADER_LINEAR_TO_U8.
-const SHADER_LINEAR_TO_DISPLAY_U8: &str = "
+const SHADER_LINEAR_TO_DISPLAY_U8: &str = concat!(
+    shader_pixel_storage_wgsl!(),
+    "
 struct Params { width: u32, height: u32, hdr_tonemap: u32, exposure: f32 }
 @group(0) @binding(0) var<storage, read> input: array<vec4<f32>>;
 @group(0) @binding(1) var<storage, read_write> output: array<u32>;
@@ -6311,7 +6359,7 @@ fn filmic(x: f32) -> f32 {
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let idx = gid.x;
     if idx >= params.width * params.height { return; }
-    let px = input[idx];
+    let px = unpack(input[idx]);
     var rgb = max(px.xyz, vec3<f32>(0.0));
     if (params.hdr_tonemap != 0u) {
         rgb = vec3<f32>(filmic(rgb.x * params.exposure), filmic(rgb.y * params.exposure), filmic(rgb.z * params.exposure));
@@ -6322,9 +6370,12 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let a = u32(clamp(px.w * 255.0 + 0.5, 0.0, 255.0));
     output[idx] = r | (g << 8u) | (b << 16u) | (a << 24u);
 }
-";
+"
+);
 
-const SHADER_LINEAR_TO_U8: &str = "
+const SHADER_LINEAR_TO_U8: &str = concat!(
+    shader_pixel_storage_wgsl!(),
+    "
 struct Params { width: u32, height: u32, _pad0: u32, _pad1: u32 }
 @group(0) @binding(0) var<storage, read> input: array<vec4<f32>>;
 @group(0) @binding(1) var<storage, read_write> output: array<u32>;
@@ -6340,7 +6391,7 @@ fn linear_to_srgb_c(c: f32) -> f32 {
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let idx = gid.x;
     if idx >= params.width * params.height { return; }
-    let pixel = input[idx];
+    let pixel = unpack(input[idx]);
     // Encode RGB through sRGB transfer, alpha is linear (no gamma).
     let r = u32(clamp(linear_to_srgb_c(pixel.x) * 255.0 + 0.5, 0.0, 255.0));
     let g = u32(clamp(linear_to_srgb_c(pixel.y) * 255.0 + 0.5, 0.0, 255.0));
@@ -6349,7 +6400,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // Pack RGBA into a single u32, little-endian (R in byte 0).
     output[idx] = r | (g << 8u) | (b << 16u) | (a << 24u);
 }
-";
+"
+);
 
 // Opposite direction: packed sRGB-u8 RGBA (4 bytes per pixel, one u32)
 // → linear-f32 vec4 RGBA. Reads from `input: array<u32>`, writes to
@@ -6358,7 +6410,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 // phase-4d GPU-resident decode → grade path: the decoder's output
 // buffer is plugged in as `input`, the grade chain's `buf_a` is the
 // `output`.
-const SHADER_U8_TO_LINEAR: &str = "
+const SHADER_U8_TO_LINEAR: &str = concat!(
+    shader_pixel_storage_wgsl!(),
+    "
 struct Params { width: u32, height: u32, _pad0: u32, _pad1: u32 }
 @group(0) @binding(0) var<storage, read> input: array<u32>;
 @group(0) @binding(1) var<storage, read_write> output: array<vec4<f32>>;
@@ -6383,11 +6437,14 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let b = f32(b_u) / 255.0;
     let a = f32(a_u) / 255.0;
     // sRGB transfer on RGB; alpha stays linear per sRGB spec.
-    output[idx] = vec4<f32>(srgb_to_linear_c(r), srgb_to_linear_c(g), srgb_to_linear_c(b), a);
+    output[idx] = pack(vec4<f32>(srgb_to_linear_c(r), srgb_to_linear_c(g), srgb_to_linear_c(b), a));
 }
-";
+"
+);
 
-const SHADER_TRANSITION: &str = "
+const SHADER_TRANSITION: &str = concat!(
+    shader_pixel_storage_wgsl!(),
+    "
 struct Params {
     width: u32,
     height: u32,
@@ -6421,8 +6478,10 @@ fn srgb_to_linear_component(c: f32) -> f32 {
 // keep the large body unchanged, the local `unpack` scales linear
 // [0,1] → 0-255, and `pack` divides by 255 back to linear. Alpha
 // stays in 0-255 internally the same way (max alpha = 255.0 ⇒ 1.0).
-fn unpack(v: vec4<f32>) -> vec4<f32> { return v * 255.0; }
-fn pack(v: vec4<f32>) -> vec4<f32> { return v / 255.0; }
+// 0-1 <-> 0-255, this shader's own convention. Named away from
+// pack/unpack, which mean how a pixel is *stored*.
+fn to_bytes(v: vec4<f32>) -> vec4<f32> { return v * 255.0; }
+fn from_bytes(v: vec4<f32>) -> vec4<f32> { return v / 255.0; }
 
 fn lerp_pixel(a: vec4<f32>, b: vec4<f32>, t: f32) -> vec4<f32> {
     return a * (1.0 - t) + b * t;
@@ -6461,17 +6520,17 @@ fn bilinear(buf_is_to: bool, sx: f32, sy: f32) -> vec4<f32> {
     var c01: vec4<f32>;
     var c11: vec4<f32>;
     if buf_is_to {
-        c00 = to_buf[y0 * params.width + x0];
-        c10 = to_buf[y0 * params.width + x1];
-        c01 = to_buf[y1 * params.width + x0];
-        c11 = to_buf[y1 * params.width + x1];
+        c00 = unpack(to_buf[y0 * params.width + x0]);
+        c10 = unpack(to_buf[y0 * params.width + x1]);
+        c01 = unpack(to_buf[y1 * params.width + x0]);
+        c11 = unpack(to_buf[y1 * params.width + x1]);
     } else {
-        c00 = from_buf[y0 * params.width + x0];
-        c10 = from_buf[y0 * params.width + x1];
-        c01 = from_buf[y1 * params.width + x0];
-        c11 = from_buf[y1 * params.width + x1];
+        c00 = unpack(from_buf[y0 * params.width + x0]);
+        c10 = unpack(from_buf[y0 * params.width + x1]);
+        c01 = unpack(from_buf[y1 * params.width + x0]);
+        c11 = unpack(from_buf[y1 * params.width + x1]);
     }
-    return unpack(mix(mix(c00, c10, tx), mix(c01, c11, tx), ty));
+    return to_bytes(mix(mix(c00, c10, tx), mix(c01, c11, tx), ty));
 }
 
 @compute @workgroup_size(256)
@@ -6483,8 +6542,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let x = idx % params.width;
     let p = params.progress;
 
-    let from_px = unpack(from_buf[idx]);
-    let to_px = unpack(to_buf[idx]);
+    let from_px = to_bytes(unpack(from_buf[idx]));
+    let to_px = to_bytes(unpack(to_buf[idx]));
 
     var result: vec4<f32>;
 
@@ -6550,40 +6609,40 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             let offset = i32(p * f32(params.width));
             let src_x = i32(x) - offset;
             if src_x >= 0 {
-                result = unpack(from_buf[y * params.width + u32(src_x)]);
+                result = to_bytes(unpack(from_buf[y * params.width + u32(src_x)]));
             } else {
                 let in_x = u32(src_x + i32(params.width));
-                result = unpack(to_buf[y * params.width + in_x]);
+                result = to_bytes(unpack(to_buf[y * params.width + in_x]));
             }
         } else if dir == 2u {
             // Push Up: outgoing slides up, incoming enters from bottom
             let offset = u32(p * f32(params.height));
             let src_y = y + offset;
             if src_y < params.height {
-                result = unpack(from_buf[src_y * params.width + x]);
+                result = to_bytes(unpack(from_buf[src_y * params.width + x]));
             } else {
                 let in_y = src_y - params.height;
-                result = unpack(to_buf[in_y * params.width + x]);
+                result = to_bytes(unpack(to_buf[in_y * params.width + x]));
             }
         } else if dir == 3u {
             // Push Down: outgoing slides down, incoming enters from top
             let offset = i32(p * f32(params.height));
             let src_y = i32(y) - offset;
             if src_y >= 0 {
-                result = unpack(from_buf[u32(src_y) * params.width + x]);
+                result = to_bytes(unpack(from_buf[u32(src_y) * params.width + x]));
             } else {
                 let in_y = u32(src_y + i32(params.height));
-                result = unpack(to_buf[in_y * params.width + x]);
+                result = to_bytes(unpack(to_buf[in_y * params.width + x]));
             }
         } else {
             // Push Left (default): outgoing slides left, incoming enters from right
             let offset = u32(p * f32(params.width));
             let src_x = x + offset;
             if src_x < params.width {
-                result = unpack(from_buf[y * params.width + src_x]);
+                result = to_bytes(unpack(from_buf[y * params.width + src_x]));
             } else {
                 let in_x = src_x - params.width;
-                result = unpack(to_buf[y * params.width + in_x]);
+                result = to_bytes(unpack(to_buf[y * params.width + in_x]));
             }
         }
     } else if params.kind_id == 8u {
@@ -6608,8 +6667,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         for (var dx = -blur_r; dx <= blur_r; dx += step_sz) {
             let sx = clamp(ix + dx, 0, i32(params.width) - 1);
             let si = y * params.width + u32(sx);
-            let fpx = unpack(from_buf[si]);
-            let tpx = unpack(to_buf[si]);
+            let fpx = to_bytes(unpack(from_buf[si]));
+            let tpx = to_bytes(unpack(to_buf[si]));
             acc += lerp_pixel(fpx, tpx, p);
             count += 1.0;
         }
@@ -6775,9 +6834,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         let bx = min((x / block) * block + block / 2u, params.width - 1u);
         let by = min((y / block) * block + block / 2u, params.height - 1u);
         let block_idx = by * params.width + bx;
-        let from_block = unpack(from_buf[block_idx]);
+        let from_block = to_bytes(unpack(from_buf[block_idx]));
         if params.param1 > 0.5 {
-            let to_block = unpack(to_buf[block_idx]);
+            let to_block = to_bytes(unpack(to_buf[block_idx]));
             result = lerp_pixel(from_block, to_block, p);
         } else if p < 0.5 {
             result = from_block;
@@ -6808,7 +6867,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         let sx = clamp(f32(x) + nx * ripple, 0.0, f32(params.width) - 1.0);
         let sy = clamp(f32(y) + ny * ripple, 0.0, f32(params.height) - 1.0);
         let sample_idx = u32(sy) * params.width + u32(sx);
-        let from_distorted = unpack(from_buf[sample_idx]);
+        let from_distorted = to_bytes(unpack(from_buf[sample_idx]));
         result = lerp_pixel(from_distorted, to_px, p);
     } else if params.kind_id == 21u || params.kind_id == 22u {
         // Page Turn (21) / Page Turn Reverse (22): peel from one side with fold shadow.
@@ -6858,11 +6917,11 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         let rx = clamp(f32(x) + r_ox, 0.0, f32(params.width) - 1.0);
         let ry = clamp(f32(y) + r_oy, 0.0, f32(params.height) - 1.0);
         let r_idx = u32(ry) * params.width + u32(rx);
-        let r_val = lerp_pixel(unpack(from_buf[r_idx]), unpack(to_buf[r_idx]), p).x;
+        let r_val = lerp_pixel(to_bytes(unpack(from_buf[r_idx])), to_bytes(unpack(to_buf[r_idx])), p).x;
         let bx = clamp(f32(x) + b_ox, 0.0, f32(params.width) - 1.0);
         let by = clamp(f32(y) + b_oy, 0.0, f32(params.height) - 1.0);
         let b_idx = u32(by) * params.width + u32(bx);
-        let b_val = lerp_pixel(unpack(from_buf[b_idx]), unpack(to_buf[b_idx]), p).z;
+        let b_val = lerp_pixel(to_bytes(unpack(from_buf[b_idx])), to_bytes(unpack(to_buf[b_idx])), p).z;
         result = vec4<f32>(r_val, base_g, b_val, 255.0);
     } else if params.kind_id == 24u {
         // Film Burn: hot-spot bleach toward burn color, with grain.
@@ -6880,7 +6939,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         let pixel_thresh = hash * 0.6 + 0.2;
         let burn_t = clamp((envelope - pixel_thresh) / 0.3, 0.0, 1.0);
         let grain_val = (hash2 - 0.5) * grain * envelope;
-        // unpack() returns 0..255 floats in this shader; normalize for the burn math.
+        // to_bytes() returns 0..255 floats in this shader; normalize for the burn math.
         let base_rn = (from_px.x * (1.0 - p) + to_px.x * p) / 255.0;
         let base_gn = (from_px.y * (1.0 - p) + to_px.y * p) / 255.0;
         let base_bn = (from_px.z * (1.0 - p) + to_px.z * p) / 255.0;
@@ -7089,7 +7148,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
                         out_color = vec4<f32>(0.0, 0.0, 0.0, 255.0);
                     } else {
                         let src_x = clamp((f32(x) - half) / scale + half, 0.0, wf - 1.0);
-                        out_color = unpack(from_buf[u32(y) * params.width + u32(src_x)]);
+                        out_color = to_bytes(unpack(from_buf[u32(y) * params.width + u32(src_x)]));
                     }
                 }
             } else {
@@ -7103,7 +7162,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
                         out_color = vec4<f32>(0.0, 0.0, 0.0, 255.0);
                     } else {
                         let src_x = clamp((f32(x) - half) / scale + half, 0.0, wf - 1.0);
-                        out_color = unpack(to_buf[u32(y) * params.width + u32(src_x)]);
+                        out_color = to_bytes(unpack(to_buf[u32(y) * params.width + u32(src_x)]));
                     }
                 }
             }
@@ -7124,7 +7183,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
                         out_color = vec4<f32>(0.0, 0.0, 0.0, 255.0);
                     } else {
                         let src_y = clamp((f32(y) - half) / scale + half, 0.0, hf - 1.0);
-                        out_color = unpack(from_buf[u32(src_y) * params.width + u32(x)]);
+                        out_color = to_bytes(unpack(from_buf[u32(src_y) * params.width + u32(x)]));
                     }
                 }
             } else {
@@ -7138,7 +7197,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
                         out_color = vec4<f32>(0.0, 0.0, 0.0, 255.0);
                     } else {
                         let src_y = clamp((f32(y) - half) / scale + half, 0.0, hf - 1.0);
-                        out_color = unpack(to_buf[u32(src_y) * params.width + u32(x)]);
+                        out_color = to_bytes(unpack(to_buf[u32(src_y) * params.width + u32(x)]));
                     }
                 }
             }
@@ -7149,9 +7208,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         if params.kind_id <= 42u {
             let sidx = u32(sy) * params.width + u32(sx);
             if use_to {
-                result = unpack(to_buf[sidx]);
+                result = to_bytes(unpack(to_buf[sidx]));
             } else {
-                result = unpack(from_buf[sidx]);
+                result = to_bytes(unpack(from_buf[sidx]));
             }
         }
     } else if params.kind_id == 63u || params.kind_id == 64u || params.kind_id == 65u {
@@ -7272,8 +7331,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         }
         let sy = clamp(f32(y) + jump, 0.0, f32(params.height) - 1.0);
         let sample_idx = u32(sy) * params.width + u32(sx);
-        let from_s = unpack(from_buf[sample_idx]);
-        let to_s = unpack(to_buf[sample_idx]);
+        let from_s = to_bytes(unpack(from_buf[sample_idx]));
+        let to_s = to_bytes(unpack(to_buf[sample_idx]));
         let base = lerp_pixel(from_s, to_s, p);
         result = vec4<f32>(
             clamp(base.x * brightness, 0.0, 255.0),
@@ -7321,9 +7380,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         let r_idx = u32(y) * params.width + u32(rx);
         let g_idx = u32(y) * params.width + u32(gx);
         let b_idx = u32(y) * params.width + u32(bx);
-        let r_val = lerp_pixel(unpack(from_buf[r_idx]), unpack(to_buf[r_idx]), p).x;
-        let g_val = lerp_pixel(unpack(from_buf[g_idx]), unpack(to_buf[g_idx]), p).y;
-        let b_val = lerp_pixel(unpack(from_buf[b_idx]), unpack(to_buf[b_idx]), p).z;
+        let r_val = lerp_pixel(to_bytes(unpack(from_buf[r_idx])), to_bytes(unpack(to_buf[r_idx])), p).x;
+        let g_val = lerp_pixel(to_bytes(unpack(from_buf[g_idx])), to_bytes(unpack(to_buf[g_idx])), p).y;
+        let b_val = lerp_pixel(to_bytes(unpack(from_buf[b_idx])), to_bytes(unpack(to_buf[b_idx])), p).z;
         var blackout: f32 = 1.0;
         if hash_r < envelope * 0.15 {
             blackout = 0.0;
@@ -7346,8 +7405,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         let shift = (band_hash - 0.5) * envelope * 20.0;
         let sx = clamp(f32(x) + shift, 0.0, f32(params.width) - 1.0);
         let sample_idx = u32(y) * params.width + u32(sx);
-        let from_s = unpack(from_buf[sample_idx]);
-        let to_s = unpack(to_buf[sample_idx]);
+        let from_s = to_bytes(unpack(from_buf[sample_idx]));
+        let to_s = to_bytes(unpack(to_buf[sample_idx]));
         let base = lerp_pixel(from_s, to_s, p);
         let static_mix = envelope * hash2 * 0.8;
         result = vec4<f32>(
@@ -7367,15 +7426,15 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         let shift = (band_hash - 0.5) * envelope * 40.0;
         let sx = clamp(f32(x) + shift, 0.0, f32(params.width) - 1.0);
         let sample_idx = u32(y) * params.width + u32(sx);
-        let from_s = unpack(from_buf[sample_idx]);
-        let to_s = unpack(to_buf[sample_idx]);
+        let from_s = to_bytes(unpack(from_buf[sample_idx]));
+        let to_s = to_bytes(unpack(to_buf[sample_idx]));
         let base = lerp_pixel(from_s, to_s, p);
         let luma = dot(base.xyz, vec3<f32>(0.2126, 0.7152, 0.0722));
         let chroma_shift = (band_hash2 - 0.5) * envelope * 15.0;
         let csx = clamp(f32(x) + chroma_shift, 0.0, f32(params.width) - 1.0);
         let c_idx = u32(y) * params.width + u32(csx);
-        let from_c = unpack(from_buf[c_idx]);
-        let to_c = unpack(to_buf[c_idx]);
+        let from_c = to_bytes(unpack(from_buf[c_idx]));
+        let to_c = to_bytes(unpack(to_buf[c_idx]));
         let chroma_base = lerp_pixel(from_c, to_c, p);
         let vhs_r = mix(base.x, chroma_base.x, envelope * 0.5);
         let vhs_g = mix(base.y, luma, envelope * 0.5);
@@ -7405,8 +7464,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         let sx = clamp(cos_a * dx - sin_a * dy + cx, 0.0, f32(params.width) - 1.0);
         let sy = clamp(sin_a * dx + cos_a * dy + cy, 0.0, f32(params.height) - 1.0);
         let sample_idx = u32(sy) * params.width + u32(sx);
-        let from_s = unpack(from_buf[sample_idx]);
-        let to_s = unpack(to_buf[sample_idx]);
+        let from_s = to_bytes(unpack(from_buf[sample_idx]));
+        let to_s = to_bytes(unpack(to_buf[sample_idx]));
         result = lerp_pixel(from_s, to_s, p);
     } else if params.kind_id == 54u {
         // Wave Distortion: sinusoidal displacement.
@@ -7564,9 +7623,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         let g_idx = u32(y) * params.width + u32(sx_g);
         let r_idx = u32(y) * params.width + u32(rx);
         let b_idx = u32(y) * params.width + u32(bx);
-        let base_g = lerp_pixel(unpack(from_buf[g_idx]), unpack(to_buf[g_idx]), p);
-        let r_base = lerp_pixel(unpack(from_buf[r_idx]), unpack(to_buf[r_idx]), p);
-        let b_base = lerp_pixel(unpack(from_buf[b_idx]), unpack(to_buf[b_idx]), p);
+        let base_g = lerp_pixel(to_bytes(unpack(from_buf[g_idx])), to_bytes(unpack(to_buf[g_idx])), p);
+        let r_base = lerp_pixel(to_bytes(unpack(from_buf[r_idx])), to_bytes(unpack(to_buf[r_idx])), p);
+        let b_base = lerp_pixel(to_bytes(unpack(from_buf[b_idx])), to_bytes(unpack(to_buf[b_idx])), p);
         let noise = (hash2 - 0.5) * envelope * 60.0;
         result = vec4<f32>(
             clamp(r_base.x + noise, 0.0, 255.0),
@@ -7618,9 +7677,10 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         result = lerp_pixel(from_px, to_px, p);
     }
 
-    output[idx] = pack(result);
+    output[idx] = pack(from_bytes(result));
 }
-";
+"
+);
 
 // Colour grade — the big one. Exposure, tone controls, LGG+offset
 // wheels, contrast, saturation, temperature/tint, global mix. All
@@ -8622,7 +8682,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 // triplet to an sRGB triplet). Storage is now native linear-f32, so
 // we encode pixel → sRGB, sample the LUT, then decode the result back
 // to linear. The opacity blend is done in linear space.
-const SHADER_LUT3D: &str = "
+const SHADER_LUT3D: &str = concat!(
+    shader_pixel_storage_wgsl!(),
+    "
 struct Params {
     width: u32,
     height: u32,
@@ -8660,7 +8722,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let pixel_idx = gid.x;
     if pixel_idx >= params.width * params.height { return; }
 
-    let pixel = input[pixel_idx];
+    let pixel = unpack(input[pixel_idx]);
     let r_in = clamp(linear_to_srgb_component(pixel.x), 0.0, 1.0);
     let g_in = clamp(linear_to_srgb_component(pixel.y), 0.0, 1.0);
     let b_in = clamp(linear_to_srgb_component(pixel.z), 0.0, 1.0);
@@ -8720,7 +8782,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         );
         let orig_t = vec3<f32>(pixel.x, pixel.y, pixel.z);
         let result_t = mix(orig_t, graded_t, params.opacity);
-        output[pixel_idx] = vec4<f32>(result_t.x, result_t.y, result_t.z, pixel.w);
+        output[pixel_idx] = pack(vec4<f32>(result_t.x, result_t.y, result_t.z, pixel.w));
         return;
     }
 
@@ -8745,9 +8807,10 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let orig = vec3<f32>(pixel.x, pixel.y, pixel.z);
     let result = mix(orig, graded, params.opacity);
 
-    output[pixel_idx] = vec4<f32>(result.x, result.y, result.z, pixel.w);
+    output[pixel_idx] = pack(vec4<f32>(result.x, result.y, result.z, pixel.w));
 }
-";
+"
+);
 
 // ─── New effect shaders ─────────────────────────────────────────────────────
 
@@ -9076,7 +9139,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 }
 ";
 
-const SHADER_LENS_DISTORTION: &str = "
+const SHADER_LENS_DISTORTION: &str = concat!(
+    shader_pixel_storage_wgsl!(),
+    "
 struct Params {
     width: u32,
     height: u32,
@@ -9099,10 +9164,10 @@ fn sample_pixel(sx: f32, sy: f32, w: u32, h: u32) -> vec4<f32> {
     let cy0 = u32(clamp(y0, 0, i32(h) - 1));
     let cx1 = u32(clamp(x1, 0, i32(w) - 1));
     let cy1 = u32(clamp(y1, 0, i32(h) - 1));
-    let c00 = input[cy0 * w + cx0];
-    let c10 = input[cy0 * w + cx1];
-    let c01 = input[cy1 * w + cx0];
-    let c11 = input[cy1 * w + cx1];
+    let c00 = unpack(input[cy0 * w + cx0]);
+    let c10 = unpack(input[cy0 * w + cx1]);
+    let c01 = unpack(input[cy1 * w + cx0]);
+    let c11 = unpack(input[cy1 * w + cx1]);
     let top = mix(c00, c10, fx);
     let bot = mix(c01, c11, fx);
     return mix(top, bot, fy);
@@ -9124,11 +9189,14 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let factor = 1.0 + params.distortion * r2;
     let sx = (nx * factor / params.scale) * cx + cx;
     let sy = (ny * factor / params.scale) * cy + cy;
-    output[idx] = sample_pixel(sx, sy, w, h);
+    output[idx] = pack(sample_pixel(sx, sy, w, h));
 }
-";
+"
+);
 
-const SHADER_DILATE: &str = "
+const SHADER_DILATE: &str = concat!(
+    shader_pixel_storage_wgsl!(),
+    "
 struct Params {
     width: u32,
     height: u32,
@@ -9151,19 +9219,22 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let r = i32(params.radius);
     // From the centre, not from black: a channel darker than 0 (a colour
     // outside the working gamut) is a legal value to spread.
-    var max_px = input[u32(y) * w + u32(x)];
+    var max_px = unpack(input[u32(y) * w + u32(x)]);
     for (var dy = -r; dy <= r; dy = dy + 1) {
         for (var dx = -r; dx <= r; dx = dx + 1) {
             let sx = u32(clamp(x + dx, 0, i32(w) - 1));
             let sy = u32(clamp(y + dy, 0, i32(h) - 1));
-            max_px = max(max_px, input[sy * w + sx]);
+            max_px = max(max_px, unpack(input[sy * w + sx]));
         }
     }
-    output[idx] = max_px;
+    output[idx] = pack(max_px);
 }
-";
+"
+);
 
-const SHADER_ERODE: &str = "
+const SHADER_ERODE: &str = concat!(
+    shader_pixel_storage_wgsl!(),
+    "
 struct Params {
     width: u32,
     height: u32,
@@ -9186,17 +9257,18 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let r = i32(params.radius);
     // From the centre, not from white: starting at 1.0 made every pixel
     // of a picture brighter than white come back as white.
-    var min_px = input[u32(y) * w + u32(x)];
+    var min_px = unpack(input[u32(y) * w + u32(x)]);
     for (var dy = -r; dy <= r; dy = dy + 1) {
         for (var dx = -r; dx <= r; dx = dx + 1) {
             let sx = u32(clamp(x + dx, 0, i32(w) - 1));
             let sy = u32(clamp(y + dy, 0, i32(h) - 1));
-            min_px = min(min_px, input[sy * w + sx]);
+            min_px = min(min_px, unpack(input[sy * w + sx]));
         }
     }
-    output[idx] = min_px;
+    output[idx] = pack(min_px);
 }
-";
+"
+);
 
 // Denoise — bilateral filter. Spatial + colour-similarity weights.
 // Linear-light luma (BT.709) matches what the coefficients were
@@ -9372,7 +9444,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 "
 );
 
-const SHADER_NOISE_GENERATOR: &str = "
+const SHADER_NOISE_GENERATOR: &str = concat!(
+    shader_pixel_storage_wgsl!(),
+    "
 struct Params {
     width: u32,
     height: u32,
@@ -9400,7 +9474,7 @@ fn hash(p: u32) -> f32 {
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let idx = gid.x;
     if idx >= params.width * params.height { return; }
-    let v = input[idx];
+    let v = unpack(input[idx]);
     var r = v.x;
     var g = v.y;
     var b = v.z;
@@ -9417,11 +9491,14 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         b = b + (hash(noise_seed + 2u) - 0.5) * 2.0 * params.amount;
     }
 
-    output[idx] = vec4<f32>(r, g, b, v.w);
+    output[idx] = pack(vec4<f32>(r, g, b, v.w));
 }
-";
+"
+);
 
-const SHADER_MEDIAN_FILTER: &str = "
+const SHADER_MEDIAN_FILTER: &str = concat!(
+    shader_pixel_storage_wgsl!(),
+    "
 struct Params {
     width: u32,
     height: u32,
@@ -9452,7 +9529,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         for (var dx = -r; dx <= r; dx = dx + 1) {
             let sx = u32(clamp(x + dx, 0, i32(w) - 1));
             let sy = u32(clamp(y + dy, 0, i32(h) - 1));
-            let p = input[sy * w + sx];
+            let p = unpack(input[sy * w + sx]);
             vals_r[n] = p.x;
             vals_g[n] = p.y;
             vals_b[n] = p.z;
@@ -9490,10 +9567,11 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         }
     }
 
-    let orig = input[idx];
-    output[idx] = vec4<f32>(vals_r[mid], vals_g[mid], vals_b[mid], orig.w);
+    let orig = unpack(input[idx]);
+    output[idx] = pack(vec4<f32>(vals_r[mid], vals_g[mid], vals_b[mid], orig.w));
 }
-";
+"
+);
 
 // Radial blur (zoom or spin). Averages samples along a radial or
 // rotational path, in linear light. Zoom spreads the samples over
@@ -9668,7 +9746,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 "
 );
 
-const SHADER_LETTERBOX: &str = "
+const SHADER_LETTERBOX: &str = concat!(
+    shader_pixel_storage_wgsl!(),
+    "
 struct Params {
     width: u32,
     height: u32,
@@ -9709,7 +9789,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let in_bar = f32(y) < bar_height || f32(y) >= f32(h) - bar_height
               || f32(x) < bar_width || f32(x) >= f32(w) - bar_width;
 
-    let v = input[idx];
+    let v = unpack(input[idx]);
     if in_bar {
         // bar_color 0 = black, non-zero = white. Linear black = 0.0,
         // linear white = 1.0 (same as sRGB 0/1 endpoints).
@@ -9719,14 +9799,17 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         let bar_rgb = vec3<f32>(bv);
         let mixed = orig_rgb * (1.0 - op) + bar_rgb * op;
         let na = v.w * (1.0 - op) + op;
-        output[idx] = vec4<f32>(mixed.x, mixed.y, mixed.z, na);
+        output[idx] = pack(vec4<f32>(mixed.x, mixed.y, mixed.z, na));
     } else {
-        output[idx] = v;
+        output[idx] = pack(v);
     }
 }
-";
+"
+);
 
-const SHADER_CHROMATIC_ABERRATION: &str = "
+const SHADER_CHROMATIC_ABERRATION: &str = concat!(
+    shader_pixel_storage_wgsl!(),
+    "
 struct Params {
     width: u32,
     height: u32,
@@ -9763,10 +9846,10 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let r_scale = 1.0 + params.red_shift * norm_dist / max_dist;
     let r_sx = clamp(i32(round(cx + dx * r_scale)), 0, i32(w) - 1);
     let r_sy = clamp(i32(round(cy + dy * r_scale)), 0, i32(h) - 1);
-    let r_val = input[u32(r_sy) * w + u32(r_sx)].x;
+    let r_val = unpack(input[u32(r_sy) * w + u32(r_sx)]).x;
 
     // Green channel: original position
-    let g_pixel = input[idx];
+    let g_pixel = unpack(input[idx]);
     let g_val = g_pixel.y;
     let a_val = g_pixel.w;
 
@@ -9774,11 +9857,12 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let b_scale = 1.0 + params.blue_shift * norm_dist / max_dist;
     let b_sx = clamp(i32(round(cx + dx * b_scale)), 0, i32(w) - 1);
     let b_sy = clamp(i32(round(cy + dy * b_scale)), 0, i32(h) - 1);
-    let b_val = input[u32(b_sy) * w + u32(b_sx)].z;
+    let b_val = unpack(input[u32(b_sy) * w + u32(b_sx)]).z;
 
-    output[idx] = vec4<f32>(r_val, g_val, b_val, a_val);
+    output[idx] = pack(vec4<f32>(r_val, g_val, b_val, a_val));
 }
-";
+"
+);
 
 // Rolling shutter correction — per-row affine warp with bilinear
 // sampling. Bilinear averaging benefits from linear light; without
@@ -10130,7 +10214,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 // alpha. The CPU readback path uses `download_raw_rgba_as_u8` (no
 // sRGB transform); writing to the linear storage buffer is a no-op
 // conversion as long as readers don't gamma-encode it.
-const SHADER_MASK_V2: &str = "
+const SHADER_MASK_V2: &str = concat!(
+    shader_pixel_storage_wgsl!(),
+    "
 struct Params {
     width: u32,
     height: u32,
@@ -10279,9 +10365,10 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         matte = max(matte, m);
     }
     let m = clamp(matte, 0.0, 1.0);
-    output[idx] = vec4<f32>(m, m, m, 1.0);
+    output[idx] = pack(vec4<f32>(m, m, m, 1.0));
 }
-";
+"
+);
 
 // Vibrance — saturation-weighted boost. Muted colours get a bigger
 // push; already-saturated colours (including skin) are protected.
@@ -10425,12 +10512,14 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let luma = sum / f32(count);
     // Store linear luma in the .x channel; downstream passes read it as
     // a linear [0,1] scalar.
-    output[idx] = vec4<f32>(luma, 0.0, 0.0, 0.0);
+    output[idx] = pack(vec4<f32>(luma, 0.0, 0.0, 0.0));
 }
 "
 );
 
-const SHADER_CLARITY_BLUR_V: &str = "
+const SHADER_CLARITY_BLUR_V: &str = concat!(
+    shader_pixel_storage_wgsl!(),
+    "
 struct Params {
     width: u32, height: u32, radius: u32, _pad: u32,
     luma_yr: f32, luma_yg: f32, luma_yb: f32, _pad1: u32,
@@ -10450,13 +10539,14 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     var count = 0u;
     for (var dy = -r; dy <= r; dy = dy + 1) {
         let sy = clamp(y + dy, 0, i32(params.height) - 1);
-        let val = input[u32(sy) * params.width + u32(x)].x;
+        let val = unpack(input[u32(sy) * params.width + u32(x)]).x;
         sum += val;
         count += 1u;
     }
-    output[idx] = vec4<f32>(sum / f32(count), 0.0, 0.0, 0.0);
+    output[idx] = pack(vec4<f32>(sum / f32(count), 0.0, 0.0, 0.0));
 }
-";
+"
+);
 
 /// Mask cutout — multiply chain RGB by matte's R channel and force
 /// alpha=1.0 so the egui viewer (which expects opaque RGBA) stays
@@ -10478,7 +10568,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let idx = gid.x;
     if idx >= params.width * params.height { return; }
     let p = unpack(input[idx]);
-    let k = clamp(matte[idx].x, 0.0, 1.0);
+    let k = clamp(unpack(matte[idx]).x, 0.0, 1.0);
     output[idx] = pack(vec4<f32>(p.x * k, p.y * k, p.z * k, 1.0));
 }
 "
@@ -10567,7 +10657,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     if idx >= params.width * params.height { return; }
     let p = unpack(input[idx]);
     let luma = params.luma_yr * p.x + params.luma_yg * p.y + params.luma_yb * p.z;
-    let blurred_luma = blurred[idx].x;
+    let blurred_luma = unpack(blurred[idx]).x;
     let detail = luma - blurred_luma;
     // Midtone weight peaked on linear 0.18 (perceptual mid-grey).
     let midtone_weight = max(1.0 - abs((luma / 0.18) - 1.0), 0.0);
@@ -10716,13 +10806,14 @@ mod bridge_u8_tests {
 /// Every compute shader parses and validates, without a GPU. A shader that
 /// does not compile makes `GpuEffectsPipeline::new` return `None`, which the
 /// GPU tests take for "no GPU here" and skip: a broken shader would pass.
-#[cfg(test)]
-mod shader_validation_tests {
-    use super::*;
-
-    #[test]
-    fn every_shader_compiles() {
-        let shaders = [
+/// Every compute shader in this module, by name.
+///
+/// One list, two consumers: the naga test that parses them all, and the
+/// source lint that checks every pixel access goes through the storage
+/// hook. A shader missing from here is a shader neither protects, so
+/// add new ones as they are written.
+pub fn shader_sources() -> Vec<(&'static str, &'static str)> {
+    vec![
         ("SHADER_OPACITY", SHADER_OPACITY),
         ("SHADER_COLOR_FADE", SHADER_COLOR_FADE),
         ("SHADER_BLUR_H", SHADER_BLUR_H),
@@ -10788,7 +10879,15 @@ mod shader_validation_tests {
         ("SHADER_GRADE_MIX", SHADER_GRADE_MIX),
         ("SHADER_APPLY_MATTE_CHAIN", SHADER_APPLY_MATTE_CHAIN),
         ("SHADER_CLARITY_APPLY", SHADER_CLARITY_APPLY),
-        ];
+    ]
+}
+
+#[cfg(test)]
+mod shader_validation_tests {
+
+    #[test]
+    fn every_shader_compiles() {
+        let shaders = super::shader_sources();
         let mut failures = Vec::new();
         for (name, src) in shaders {
             let module = match naga::front::wgsl::parse_str(src) {

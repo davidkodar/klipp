@@ -46,14 +46,22 @@ fn window() -> klipp_core::QualifierSettings {
     }
 }
 
-/// The graph a secondary builds: a primary grade, a Qualifier keying it,
-/// a second grade on the branch, and an ApplyMatte recombining them.
 fn secondary_graph(mix: Option<f32>) -> NodeGraph {
-    let (src, primary, qual, branch, apply, out) = (
+    secondary_graph_with(mix, 1, false)
+}
+
+/// The graph a secondary builds: a primary grade, a Qualifier keying it,
+/// `branch_len` grades on the branch, and an ApplyMatte recombining
+/// them. With `foreign`, an unrelated node hangs off the Source — it
+/// belongs to no part of the shape, and if the execution order drops it
+/// between the source and the blend the shape must be declined rather
+/// than mis-scheduled.
+fn secondary_graph_with(mix: Option<f32>, branch_len: usize, foreign: bool) -> NodeGraph {
+    let (src, primary, qual, apply, out) = (
         NodeId::new_v4(), NodeId::new_v4(), NodeId::new_v4(),
-        NodeId::new_v4(), NodeId::new_v4(), NodeId::new_v4(),
+        NodeId::new_v4(), NodeId::new_v4(),
     );
-    let nodes = vec![
+    let mut nodes = vec![
         node(src, NodeKind::Source, Default::default()),
         node(primary, NodeKind::Corrector, NodeParams {
             temperature: Some(-15.0),
@@ -61,19 +69,38 @@ fn secondary_graph(mix: Option<f32>) -> NodeGraph {
             ..Default::default()
         }),
         node(qual, NodeKind::Qualifier, NodeParams { qualifier: Some(window()), ..Default::default() }),
-        node(branch, NodeKind::Corrector, NodeParams { temperature: Some(-45.0), ..Default::default() }),
         node(apply, NodeKind::ApplyMatte, NodeParams { mix, ..Default::default() }),
         node(out, NodeKind::Output, Default::default()),
     ];
-    let edges = vec![
+    let mut edges = vec![
         Edge { from_node: src, from_port: 0, to_node: primary, to_port: 0 },
         Edge { from_node: primary, from_port: 0, to_node: qual, to_port: 0 },
-        Edge { from_node: primary, from_port: 0, to_node: branch, to_port: 0 },
-        Edge { from_node: branch, from_port: 0, to_node: apply, to_port: 0 },
         Edge { from_node: qual, from_port: 0, to_node: apply, to_port: 1 },
         Edge { from_node: primary, from_port: 0, to_node: apply, to_port: 2 },
         Edge { from_node: apply, from_port: 0, to_node: out, to_port: 0 },
     ];
+    // The grade branch: `branch_len` nodes in a line from the primary to
+    // ApplyMatte's graded port.
+    let mut upstream = primary;
+    for i in 0..branch_len {
+        let id = NodeId::new_v4();
+        // Each one does something different, so a branch that silently
+        // lost a node would show up in the picture.
+        nodes.push(node(id, NodeKind::Corrector, NodeParams {
+            temperature: Some(-45.0 + i as f32 * 12.0),
+            ..Default::default()
+        }));
+        edges.push(Edge { from_node: upstream, from_port: 0, to_node: id, to_port: 0 });
+        upstream = id;
+    }
+    edges.push(Edge { from_node: upstream, from_port: 0, to_node: apply, to_port: 0 });
+    if foreign {
+        let odd = NodeId::new_v4();
+        nodes.push(node(odd, NodeKind::Exposure, NodeParams { exposure: Some(0.5), ..Default::default() }));
+        edges.push(Edge { from_node: src, from_port: 0, to_node: odd, to_port: 0 });
+    }
+    let branch = upstream;
+    let _ = branch;
     let node_positions = nodes
         .iter()
         .enumerate()
@@ -193,5 +220,186 @@ fn the_secondarys_mix_agrees_on_both_paths() {
             .fold(0.0f32, f32::max);
         eprintln!("mix {mix}: worst {worst:e}");
         assert!(worst < 0.001, "mix {mix} differs by {worst}");
+    }
+}
+
+/// The grade branch may be any length. Three nodes on it should ride
+/// the chain exactly as one does — the branch is ordinary chain work
+/// once the shape is recognised.
+#[test]
+fn a_longer_grade_branch_still_rides_the_chain() {
+    for branch_len in [1usize, 2, 3] {
+        let graph = secondary_graph_with(Some(1.0), branch_len, false);
+        let (cpu, _) = run(&graph, false);
+        let (gpu, stats) = run(&graph, true);
+        if stats.extends == 0 && stats.flushes == 0 {
+            eprintln!("skipping: no usable GPU");
+            return;
+        }
+        let worst = worst_diff(&cpu, &gpu);
+        eprintln!("branch of {branch_len}: worst {worst:e}, {stats:?}");
+        assert!(worst < 0.001, "branch of {branch_len} differs by {worst}");
+        // One dispatch for the qualifier, one for the blend, and one per
+        // branch node.
+        assert!(
+            stats.extends >= 2 + branch_len as u32,
+            "branch of {branch_len} should all ride the chain: {stats:?}",
+        );
+        assert_eq!(stats.flushes, 1, "still one readback: {stats:?}");
+    }
+}
+
+/// A node that belongs to no part of the shape, sitting on the same
+/// source. If the execution order puts it between the source and the
+/// blend the shape is declined — and the picture must still be right,
+/// because ApplyMatte then reads the matte back out of GPU memory
+/// instead of pretending it has none.
+#[test]
+fn a_foreign_node_costs_speed_and_not_correctness() {
+    let graph = secondary_graph_with(Some(1.0), 1, true);
+    let (cpu, _) = run(&graph, false);
+    let (gpu, stats) = run(&graph, true);
+    if stats.extends == 0 && stats.flushes == 0 {
+        eprintln!("skipping: no usable GPU");
+        return;
+    }
+    let worst = worst_diff(&cpu, &gpu);
+    eprintln!("with a foreign node: worst {worst:e}, {stats:?}");
+    assert!(worst < 0.001, "a foreign node changed the picture: {worst}");
+
+    // And the secondary is still in the result — the failure this
+    // guards against is a matte that quietly resolves to "select
+    // nothing", which would leave the picture merely ungraded.
+    let (plain, _) = run(&secondary_graph_with(Some(0.0), 1, true), true);
+    let changed = worst_diff(&plain, &gpu);
+    assert!(changed > 0.01, "the secondary went missing: {changed}");
+}
+
+fn worst_diff(a: &[f32], b: &[f32]) -> f32 {
+    assert_eq!(a.len(), b.len());
+    a.chunks_exact(4)
+        .zip(b.chunks_exact(4))
+        .map(|(x, y)| (0..3).map(|i| (x[i] - y[i]).abs()).fold(0.0f32, f32::max))
+        .fold(0.0f32, f32::max)
+}
+
+
+/// The matte need not come from a Qualifier: a spatial Mask draws
+/// geometry instead of keying, so it has no input picture to check, and
+/// publishes its matte through its own dispatch rather than the chain
+/// encoder — a submit, but never a readback.
+///
+/// (A LumaKey would belong here too, but its shader and its CPU twin
+/// key different domains; see the note in `SecondaryChain::detect`.)
+#[test]
+fn the_other_matte_sources_ride_the_chain_too() {
+    for (name, matte) in [("mask", MatteSource::Mask)] {
+        let graph = matte_graph(matte, Some(1.0));
+        let (cpu, _) = run(&graph, false);
+        let (gpu, stats) = run(&graph, true);
+        if stats.extends == 0 && stats.flushes == 0 {
+            eprintln!("skipping: no usable GPU");
+            return;
+        }
+        let worst = worst_diff(&cpu, &gpu);
+        eprintln!("{name}: worst {worst:e}, {stats:?}");
+        assert!(worst < 0.001, "{name} differs by {worst}");
+        // The blend and the branch ride the chain. A Mask publishes its
+        // matte through its own dispatch rather than the chain encoder,
+        // so it costs a submit but never a readback.
+        assert!(stats.extends >= 2, "{name} should ride the chain: {stats:?}");
+        assert_eq!(stats.flushes, 1, "{name}: one readback: {stats:?}");
+
+        let (plain, _) = run(&matte_graph(matte, Some(0.0)), true);
+        let changed = worst_diff(&plain, &gpu);
+        assert!(changed > 0.005, "{name}: the secondary did nothing ({changed})");
+    }
+}
+
+#[derive(Clone, Copy)]
+enum MatteSource {
+    Luma,
+    Mask,
+}
+
+/// The same secondary, with the matte from a luma key or a spatial mask.
+fn matte_graph(source: MatteSource, mix: Option<f32>) -> NodeGraph {
+    let (src, primary, matte, branch, apply, out) = (
+        NodeId::new_v4(), NodeId::new_v4(), NodeId::new_v4(),
+        NodeId::new_v4(), NodeId::new_v4(), NodeId::new_v4(),
+    );
+    let (matte_kind, matte_params) = match source {
+        MatteSource::Luma => (
+            NodeKind::LumaKey,
+            NodeParams {
+                luma_key: Some(klipp_core::LumaKeySettings {
+                    enabled: true,
+                    low: 0.15,
+                    high: 0.75,
+                    soft: 0.08,
+                    invert: false,
+                }),
+                ..Default::default()
+            },
+        ),
+        MatteSource::Mask => (
+            NodeKind::Mask,
+            NodeParams {
+                masks: Some(klipp_core::MaskStack {
+                    masks: vec![klipp_core::Mask {
+                        shape: klipp_core::MaskShape::Circle {
+                            center_x: 0.5,
+                            center_y: 0.5,
+                            radius: 0.3,
+                        },
+                        feather: 0.1,
+                        invert: false,
+                        opacity: 1.0,
+                        enabled: true,
+                        ..Default::default()
+                    }],
+                }),
+                ..Default::default()
+            },
+        ),
+    };
+    let mut nodes = vec![
+        node(src, NodeKind::Source, Default::default()),
+        node(primary, NodeKind::Corrector, NodeParams {
+            temperature: Some(-15.0),
+            ..Default::default()
+        }),
+        node(matte, matte_kind, matte_params),
+        node(branch, NodeKind::Corrector, NodeParams { temperature: Some(-45.0), ..Default::default() }),
+        node(apply, NodeKind::ApplyMatte, NodeParams { mix, ..Default::default() }),
+        node(out, NodeKind::Output, Default::default()),
+    ];
+    let mut edges = vec![
+        Edge { from_node: src, from_port: 0, to_node: primary, to_port: 0 },
+        Edge { from_node: primary, from_port: 0, to_node: branch, to_port: 0 },
+        Edge { from_node: branch, from_port: 0, to_node: apply, to_port: 0 },
+        Edge { from_node: matte, from_port: 0, to_node: apply, to_port: 1 },
+        Edge { from_node: primary, from_port: 0, to_node: apply, to_port: 2 },
+        Edge { from_node: apply, from_port: 0, to_node: out, to_port: 0 },
+    ];
+    // A keyer looks at the picture; a mask does not.
+    if matches!(source, MatteSource::Luma) {
+        edges.push(Edge { from_node: primary, from_port: 0, to_node: matte, to_port: 0 });
+    }
+    let node_positions = nodes
+        .iter()
+        .enumerate()
+        .map(|(i, n)| (n.id, NodePos { x: i as f32 * 200.0, y: 0.0 }))
+        .collect();
+    nodes.shrink_to_fit();
+    edges.shrink_to_fit();
+    NodeGraph {
+        output_node_id: out,
+        nodes,
+        edges,
+        node_positions,
+        working_space_override: None,
+        frames: Vec::new(),
+        sticky_notes: Vec::new(),
     }
 }
