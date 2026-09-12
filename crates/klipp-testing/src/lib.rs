@@ -26,5 +26,6 @@
 
 pub mod diff;
 pub mod fixtures;
+pub mod scratch;
 pub mod snapshot;
 pub mod transfer;

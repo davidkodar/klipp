@@ -56,10 +56,14 @@ const FPS: i64 = 25;
 /// Timeline length, frames.
 const LEN: i64 = 200;
 
+/// Generated fixtures live in a directory named for this test process,
+/// because these binaries run in parallel and a shared filename means
+/// one run reads a file another is still writing — a black frame that
+/// looks like a pipeline bug. `scratch_file` also removes the
+/// directories that finished runs left behind; before it did, a day of
+/// full-suite runs left 313 of them holding 5.4 GB on the tmpfs.
 fn tmp(name: &str) -> PathBuf {
-    let d = std::env::temp_dir().join(format!("klipp-viewer-export-{}", std::process::id()));
-    std::fs::create_dir_all(&d).unwrap();
-    d.join(name)
+    klipp_testing::scratch::scratch_file("klipp-viewer-export", name)
 }
 
 fn ffmpeg_ok() -> bool {

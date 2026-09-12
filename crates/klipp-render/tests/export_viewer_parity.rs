@@ -15,10 +15,12 @@ const W: u32 = 1920;
 const H: u32 = 1080;
 const FRAMES: u64 = 5;
 
+/// See `viewer_matches_export`'s copy: a directory per test process so
+/// parallel runs cannot read each other's half-written media, and a
+/// sweep of finished runs' directories so they do not accumulate. These
+/// were 42 MB apiece and nothing removed them.
 fn tmp(name: &str) -> PathBuf {
-    let d = std::env::temp_dir().join(format!("klipp-export-parity-{}", std::process::id()));
-    std::fs::create_dir_all(&d).unwrap();
-    d.join(name)
+    klipp_testing::scratch::scratch_file("klipp-export-parity", name)
 }
 
 /// A clip for a one-track test timeline, with the media entry its file
