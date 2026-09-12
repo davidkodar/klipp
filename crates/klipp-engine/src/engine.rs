@@ -136,6 +136,25 @@ fn linear_to_srgb_u8_lut() -> &'static [u8; 4096] {
 /// inverse of [`u8_rgba_to_linear`]; values outside `[0.0, 1.0]`
 /// clamp at the u8 boundary, not earlier.
 #[inline]
+/// Map each colour channel of an RGBA frame through `lut`, leaving alpha as
+/// it is — the display transform does not touch alpha, which
+/// `display::the_transform_leaves_alpha_where_it_found_it` pins.
+///
+/// One pass over the frame, no float buffer: this is the whole cost of a
+/// render-cache hit's display transform once the chain has been collapsed
+/// into a table.
+fn map_u8_rgb(rgba: &[u8], lut: &[u8; 256]) -> Vec<u8> {
+    use rayon::prelude::*;
+    let mut out = vec![0u8; rgba.len() / 4 * 4];
+    out.par_chunks_exact_mut(4).zip(rgba.par_chunks_exact(4)).for_each(|(o, c)| {
+        o[0] = lut[c[0] as usize];
+        o[1] = lut[c[1] as usize];
+        o[2] = lut[c[2] as usize];
+        o[3] = c[3];
+    });
+    out
+}
+
 fn linear_rgba_to_u8(linear: &[f32]) -> Vec<u8> {
     use rayon::prelude::*;
     let lut = linear_to_srgb_u8_lut();
@@ -9758,5 +9777,43 @@ mod audio_fingerprint_kf_tests {
         let b = make_clip_with_kfs(&["makeup", "threshold", "ratio"]);
         assert_eq!(audio_fingerprint_for_clip(&a), audio_fingerprint_for_clip(&b),
             "fingerprint must be insertion-order-independent");
+    }
+}
+
+#[cfg(test)]
+mod cached_frame_display_tests {
+    use super::*;
+
+    /// The table path a render-cache hit takes has to land on the bytes the
+    /// float path would have produced. `klipp-color` pins the table against
+    /// the display transform; this pins the composition around it — that
+    /// `map_u8_rgb` applies it to the right channels, that alpha comes
+    /// through, and that the engine's own decode LUT is the one the table
+    /// was built from.
+    #[test]
+    fn the_table_path_is_the_float_path_it_replaces() {
+        let ws = klipp_core::WorkingColorspace::Rec709Linear;
+        // Every code in every channel, with alpha varying independently.
+        let mut frame: Vec<u8> = Vec::new();
+        for r in 0..256usize {
+            frame.extend_from_slice(&[
+                r as u8,
+                (255 - r) as u8,
+                ((r * 7) % 256) as u8,
+                (r / 2) as u8,
+            ]);
+        }
+        for op in klipp_color::display::TONE_MAP_OPS_ALL {
+            let Some(lut) = klipp_color::display::display_transform_u8_lut(op, ws) else {
+                continue;
+            };
+            let through_table = map_u8_rgb(&frame, &lut);
+            let through_float =
+                klipp_color::display::display_transform_ws(&u8_rgba_to_linear(&frame), op, ws);
+            assert_eq!(
+                through_table, through_float,
+                "{op:?}: the cache-hit shortcut does not match the path it replaces",
+            );
+        }
     }
 }

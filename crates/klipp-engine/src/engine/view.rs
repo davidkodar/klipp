@@ -84,12 +84,25 @@ impl FrameSource for ViewerSource<'_> {
     }
 }
 
-/// A rendered viewer frame, before the display encode.
+/// A rendered viewer frame.
 struct Rendered {
-    linear: Vec<f32>,
+    picture: Picture,
     width: u32,
     height: u32,
     stats: Option<RenderStats>,
+}
+
+/// What there is to show.
+enum Picture {
+    /// The renderer's own output: linear light, working space. Everything
+    /// that measures the picture — the scopes, the chromaticity samples, the
+    /// HDR nit map — reads this, and the display transform runs over it.
+    Linear(Vec<f32>),
+    /// Display bytes, finished. A frame from the render cache, which holds
+    /// frames 8-bit, taken through the display transform as a per-channel
+    /// table (see [`PlaybackEngine::cached_frame_display_lut`]) instead of
+    /// expanding to 132 MB of float at 4K to arrive at the same bytes.
+    Display(Vec<u8>),
 }
 
 impl PlaybackEngine {
@@ -385,18 +398,43 @@ impl PlaybackEngine {
 
         let cache_key = self.render_cache_key(&seq, primary_clip);
         if let Some(key) = &cache_key {
-            let hit = self
-                .render_cache_hot
-                .get(key)
-                .filter(|(_, cw, ch)| (*cw, *ch) == (w, h))
-                .map(|(data, _, _)| data.to_vec())
-                .or_else(|| {
-                    self.render_cache_disk.get(key).filter(|(_, cw, ch)| (*cw, *ch) == (w, h)).map(|(data, _, _)| data)
-                });
-            if let Some(bytes) = hit {
-                self.render_cache_hot.insert(key.clone(), bytes.clone(), w, h);
-                let linear = super::u8_rgba_to_linear(&bytes);
-                self.show_rendered(Rendered { linear, width: w, height: h, stats: None }, t_frame);
+            // The cached frame is 8-bit, so the display transform over it is
+            // a table: no expansion to float on the way to the same bytes.
+            let lut = self.cached_frame_display_lut(w);
+            // Read it where it lies. A 4K frame is 33 MB, and this path used
+            // to copy it twice — once out of the cache, once back in to say
+            // it had been used — before doing any work on it.
+            let from_hot = {
+                let hot = self
+                    .render_cache_hot
+                    .get(key)
+                    .filter(|(_, cw, ch)| (*cw, *ch) == (w, h))
+                    .map(|(data, _, _)| data);
+                hot.map(|data| match lut {
+                    Some(lut) => Picture::Display(super::map_u8_rgb(data, &lut)),
+                    None => Picture::Linear(super::u8_rgba_to_linear(data)),
+                })
+            };
+            if let Some(picture) = from_hot {
+                self.render_cache_hot.touch(key);
+                self.show_rendered(Rendered { picture, width: w, height: h, stats: None }, t_frame);
+                return;
+            }
+            let from_disk =
+                self.render_cache_disk.get(key).filter(|(_, cw, ch)| (*cw, *ch) == (w, h));
+            if let Some((bytes, _, _)) = from_disk {
+                // Straight into the hot cache, then read back out of it, so
+                // the frame is moved rather than copied.
+                self.render_cache_hot.insert(key.clone(), bytes, w, h);
+                let picture = self
+                    .render_cache_hot
+                    .get(key)
+                    .map(|(data, _, _)| match lut {
+                        Some(lut) => Picture::Display(super::map_u8_rgb(data, &lut)),
+                        None => Picture::Linear(super::u8_rgba_to_linear(data)),
+                    })
+                    .expect("just inserted");
+                self.show_rendered(Rendered { picture, width: w, height: h, stats: None }, t_frame);
                 return;
             }
         }
@@ -411,7 +449,10 @@ impl PlaybackEngine {
 
         self.show_split_views(&seq, primary_ref, w, h, inspected, found.ungraded.as_deref());
         self.show_inspection(&found, w, h);
-        self.show_rendered(Rendered { linear, width: w, height: h, stats: Some(found.stats) }, t_frame);
+        self.show_rendered(
+            Rendered { picture: Picture::Linear(linear), width: w, height: h, stats: Some(found.stats) },
+            t_frame,
+        );
 
         // Cached once the frame is on screen: compressing and writing a 4K
         // frame (~15 ms) is not something the viewer should wait for.
@@ -515,6 +556,40 @@ impl PlaybackEngine {
     /// the screen gets either its SDR preview or the false colours, and
     /// the light itself goes out as a map for the readout
     /// (`klipp_color::hdr_view`).
+    /// The display transform for a frame that is already 8-bit, as a
+    /// per-channel table — or `None` when this tick cannot use one.
+    ///
+    /// The render cache holds frames sRGB-encoded, so a hit used to expand
+    /// them back to linear light (132 MB at 4K, and ~34 ms of it) purely to
+    /// run a transform that then quantises straight back to 8 bit. With 256
+    /// possible values per channel the whole chain is a table, and
+    /// `display::the_u8_table_is_the_float_path` pins it byte for byte.
+    ///
+    /// Four things have to hold, and any of them can change between ticks:
+    ///
+    /// * the transform is per-channel — a BT.2020 or ACEScg project mixes
+    ///   channels on the way to the display and cannot be a table;
+    /// * HDR monitoring is off, since its readout needs the picture's light
+    ///   and a cached frame has been clamped to `[0, 1]` besides;
+    /// * no scope is rendering this tick, for the same reason;
+    /// * the GPU viewer mirror is not in use, which wants linear floats.
+    ///
+    /// The last two are the reason this is decided per tick rather than
+    /// once: scopes run at 10 Hz, so most ticks can take the table even
+    /// while a scope is open.
+    fn cached_frame_display_lut(&self, w: u32) -> Option<[u8; 256]> {
+        if self.hdr_monitor.renders_hdr() || self.should_render_scope() {
+            return None;
+        }
+        if super::should_publish_gpu_viewer() && (w * 4) % 256 == 0 {
+            return None;
+        }
+        klipp_color::display::display_transform_u8_lut(
+            self.tone_map_op,
+            crate::video_decoder::working_colorspace(),
+        )
+    }
+
     fn encode_for_screen(&self, linear: &[f32], w: u32, h: u32) -> (Vec<u8>, Option<(Vec<f32>, u32, u32, u32)>) {
         use klipp_core::HdrMonitor;
         if !self.hdr_monitor.renders_hdr() {
@@ -544,27 +619,39 @@ impl PlaybackEngine {
     /// Show a rendered frame: scopes, the perf overlay, the GPU viewer
     /// texture, then the display encode into the frame buffer.
     fn show_rendered(&mut self, r: Rendered, t_frame: Instant) {
-        let Rendered { linear, width: w, height: h, stats } = r;
-        let t_scope = Instant::now();
-        if self.should_render_scope() {
-            self.render_active_scopes_via_ffmpeg_linear(&linear, w, h, 1024, 512);
-            self.last_scope_render = Instant::now();
-        }
-        let scope_ms = t_scope.elapsed().as_secs_f64() * 1000.0;
-
-        // Mirror the frame into the UI's GPU texture when that path is on.
-        if super::should_publish_gpu_viewer() && (w * 4) % 256 == 0 {
-            if let Some(gpu) = self.renderer.executor().gpu_pipeline_mut() {
-                let device = gpu.device();
-                let tex = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner()).ensure_gpu_output(&device, w, h);
-                if let Some(tex) = tex {
-                    let _ = gpu.linear_rgba_to_texture_gpu(&linear, w, h, &tex);
-                }
-            }
-        }
-
+        let Rendered { picture, width: w, height: h, stats } = r;
+        let mut scope_ms = 0.0;
         let t_encode = Instant::now();
-        let (mut bytes, nits) = self.encode_for_screen(&linear, w, h);
+        let (mut bytes, nits) = match picture {
+            // Already the bytes the screen wants. Nothing here measures the
+            // picture or mirrors it to the GPU — that is a precondition of
+            // taking this path, checked in `cached_frame_display_lut`.
+            Picture::Display(bytes) => (bytes, None),
+            Picture::Linear(linear) => {
+                let t_scope = Instant::now();
+                if self.should_render_scope() {
+                    self.render_active_scopes_via_ffmpeg_linear(&linear, w, h, 1024, 512);
+                    self.last_scope_render = Instant::now();
+                }
+                scope_ms = t_scope.elapsed().as_secs_f64() * 1000.0;
+
+                // Mirror the frame into the UI's GPU texture when that path is on.
+                if super::should_publish_gpu_viewer() && (w * 4) % 256 == 0 {
+                    if let Some(gpu) = self.renderer.executor().gpu_pipeline_mut() {
+                        let device = gpu.device();
+                        let tex = self
+                            .frame_buffer
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .ensure_gpu_output(&device, w, h);
+                        if let Some(tex) = tex {
+                            let _ = gpu.linear_rgba_to_texture_gpu(&linear, w, h, &tex);
+                        }
+                    }
+                }
+                self.encode_for_screen(&linear, w, h)
+            }
+        };
         let encode_ms = t_encode.elapsed().as_secs_f64() * 1000.0;
         {
             let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());

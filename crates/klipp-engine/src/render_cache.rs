@@ -150,6 +150,23 @@ impl HotCache {
         self.entries.insert(key, HotCacheEntry { rgba, width, height });
     }
 
+    /// Move an existing key to the back of the FIFO, leaving its frame
+    /// where it is.
+    ///
+    /// A hit that reads the frame straight out of the cache has no copy of
+    /// it to re-insert, and should not have to make one to say it was used:
+    /// at 4K that copy is 33 MB.
+    pub fn touch(&mut self, key: &RenderCacheKey) {
+        if !self.entries.contains_key(key) {
+            return;
+        }
+        if let Some(pos) = self.order.iter().position(|k| k == key) {
+            if let Some(k) = self.order.remove(pos) {
+                self.order.push_back(k);
+            }
+        }
+    }
+
     pub fn clear(&mut self) {
         self.entries.clear();
         self.order.clear();

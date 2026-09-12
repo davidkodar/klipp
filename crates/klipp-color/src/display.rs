@@ -32,7 +32,7 @@
 //!   "cinematic" or "filmic" default looks resolve to in modern DCC
 //!   tools — the industry standard for HDR mastering.
 
-use crate::transfer::linear_to_srgb;
+use crate::transfer::{linear_to_srgb, srgb_to_linear};
 
 /// Re-export of [`klipp_core::ToneMapOp`]. The enum lives in
 /// `klipp-core` so `ExportSettings` can carry it, but existing code
@@ -340,6 +340,42 @@ pub fn display_transform_ws(
         });
     let _ = tone_map_op; // Intentionally unused in the ACES path.
     out
+}
+
+/// The display transform of an **already 8-bit** frame, as one 256-entry
+/// per-channel table.
+///
+/// A frame that is already sRGB-encoded 8-bit — the render cache holds its
+/// frames that way — has 256 possible values per channel, so the whole
+/// chain of decode to linear, tone map, and encode back has 256 possible
+/// answers. Composing it into a table is not an approximation of that
+/// chain: it *is* that chain, evaluated ahead of time, and
+/// `the_u8_table_is_the_float_path` pins the two byte for byte.
+///
+/// `None` when the transform is not per-channel, and so cannot be a table:
+/// a working space that needs a matrix into BT.709 (BT.2020, with its gamut
+/// compression, or ACEScg through its ODT), or [`ToneMapOp::Aces`], whose
+/// fit sandwiches its curve between two matrices. Those callers have to go
+/// through linear light.
+pub fn display_transform_u8_lut(
+    tone_map_op: ToneMapOp,
+    working_space: klipp_core::WorkingColorspace,
+) -> Option<[u8; 256]> {
+    if working_space != klipp_core::WorkingColorspace::Rec709Linear {
+        return None;
+    }
+    if matches!(tone_map_op, ToneMapOp::Aces) {
+        return None;
+    }
+    let mut lut = [0u8; 256];
+    for (code, slot) in lut.iter_mut().enumerate() {
+        // The same three steps `display_transform_from` takes per pixel,
+        // on the linear value this code decodes to.
+        let linear = srgb_to_linear(code as f32 / 255.0);
+        let mapped = tone_map(linear.max(0.0), tone_map_op);
+        *slot = (linear_to_srgb(mapped).clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
+    }
+    Some(lut)
 }
 
 /// Export-side display transform.
@@ -1290,5 +1326,71 @@ mod tests {
             "Rec.709 project with PQ ODT didn't apply the AP1 matrix step — \
              the ODT is being fed the wrong basis",
         );
+    }
+
+    // ── the 8-bit display transform as a table ───────────────────────
+
+    /// The table has to be the float path, not an approximation of it: the
+    /// cache-hit viewer path shows its output instead of decoding to linear
+    /// and transforming, so a single differing code would change the
+    /// picture depending on whether a frame came from the cache.
+    #[test]
+    fn the_u8_table_is_the_float_path() {
+        use klipp_core::WorkingColorspace::Rec709Linear;
+        for op in TONE_MAP_OPS_ALL {
+            let Some(lut) = display_transform_u8_lut(op, Rec709Linear) else {
+                // Only ACES is expected to decline, and it is checked below.
+                assert!(matches!(op, ToneMapOp::Aces), "{op:?} should have a table");
+                continue;
+            };
+            // Every code, decoded the way the engine decodes a cached frame,
+            // then through the real transform.
+            let linear: Vec<f32> = (0..256)
+                .flat_map(|c| {
+                    let v = crate::transfer::srgb_to_linear(c as f32 / 255.0);
+                    [v, v, v, c as f32 / 255.0]
+                })
+                .collect();
+            let want = display_transform_ws(&linear, op, Rec709Linear);
+            for code in 0..256usize {
+                assert_eq!(
+                    lut[code], want[code * 4],
+                    "{op:?}: code {code} is {} through the table and {} through linear",
+                    lut[code], want[code * 4],
+                );
+            }
+        }
+    }
+
+    /// Alpha is left alone by the transform, so a cached frame's alpha needs
+    /// no table — the caller copies it. Pinned so a future change to the
+    /// alpha handling does not silently make the shortcut wrong.
+    #[test]
+    fn the_transform_leaves_alpha_where_it_found_it() {
+        use klipp_core::WorkingColorspace::Rec709Linear;
+        let linear: Vec<f32> = (0..256).flat_map(|c| [0.5, 0.5, 0.5, c as f32 / 255.0]).collect();
+        let out = display_transform_ws(&linear, ToneMapOp::None, Rec709Linear);
+        for code in 0..256usize {
+            assert_eq!(out[code * 4 + 3], code as u8, "alpha {code} changed");
+        }
+    }
+
+    /// A transform that mixes channels cannot be a per-channel table, and
+    /// says so rather than returning a wrong one.
+    #[test]
+    fn a_transform_that_mixes_channels_has_no_table() {
+        use klipp_core::WorkingColorspace::*;
+        // ACES' fit sandwiches its curve between two 3x3 matrices.
+        assert!(display_transform_u8_lut(ToneMapOp::Aces, Rec709Linear).is_none());
+        // BT.2020 needs a matrix into BT.709 and a gamut compression with
+        // it; ACEScg goes through an ODT.
+        for ws in [Bt2020Linear, AcesCG] {
+            for op in TONE_MAP_OPS_ALL {
+                assert!(
+                    display_transform_u8_lut(op, ws).is_none(),
+                    "{ws:?} with {op:?} is not per-channel",
+                );
+            }
+        }
     }
 }
