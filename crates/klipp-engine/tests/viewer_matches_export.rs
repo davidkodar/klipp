@@ -68,8 +68,14 @@ fn ffmpeg_ok() -> bool {
 
 /// A flat or per-frame-changing RGB source: `r`, `g`, `b` are lavfi `geq`
 /// expressions in N, the frame number.
+///
+/// The file name carries a uuid because cargo runs these tests in
+/// parallel and each one builds its own timeline: on a shared name, one
+/// test reads the file while another's ffmpeg is still writing it, and
+/// gets a truncated source — which shows up as a black export and looks
+/// like a pipeline bug rather than a test one.
 fn rgb_source(name: &str, r: &str, g: &str, b: &str) -> PathBuf {
-    let out = tmp(name);
+    let out = tmp(&format!("{}-{}", uuid::Uuid::new_v4(), name));
     let filter = format!(
         "color=c=black:s={W}x{H}:r={FPS}:d=10,format=rgb24,geq=r='{r}':g='{g}':b='{b}',\
          setparams=range=tv:colorspace=bt709:color_primaries=bt709:color_trc=bt709"
@@ -387,4 +393,135 @@ fn playing_through_a_dissolve_shows_the_exported_frames() {
     }
     eprintln!("viewer vs export, after playing: worst {worst} levels");
     assert!(worst <= 3, "the viewer differs from the export by {worst} levels");
+}
+
+/// A qualifier-driven secondary: the primary grade, a key over it, a
+/// second grade on the branch, and an ApplyMatte recombining the two.
+///
+/// This is the graph the viewer now carries on the GPU end to end, and
+/// the one an export renders by whatever route the render path takes.
+/// The two have to agree, and nothing checked that until this test:
+/// `ApplyMatte` changed twice — the blend moved from display space into
+/// linear light, and the matte stopped being sRGB-decoded on the way in
+/// — so a feathered edge produces different numbers than it used to.
+/// Fully selected and fully excluded pixels would survive either
+/// mistake; the half-selected ones are the point.
+fn secondary_graph() -> klipp_nodes::NodeGraph {
+    use klipp_nodes::{Edge, Node, NodeGraph, NodeId, NodeKind, NodeParams, NodePos};
+    let node = |kind, params| Node {
+        id: NodeId::new_v4(), kind, label: format!("{kind:?}"), enabled: true, params,
+        keyframes: Default::default(), output_link: None, input_links: vec![],
+    };
+    let mut primary = NodeParams::default();
+    primary.temperature = Some(-15.0);
+    primary.contrast = Some(0.04);
+    let mut keyer = NodeParams::default();
+    keyer.qualifier = Some(klipp_core::QualifierSettings {
+        enabled: true,
+        // The warm end of the gradient below, and nothing else.
+        hue_center: 27.0, hue_width: 20.0, hue_soft: 10.0,
+        sat_low: 0.20, sat_high: 0.50, sat_soft: 0.05,
+        lum_low: 0.10, lum_high: 0.85, lum_soft: 0.04,
+        ..Default::default()
+    });
+    let mut branch = NodeParams::default();
+    branch.temperature = Some(-45.0);
+
+    let src = node(NodeKind::Source, NodeParams::default());
+    let prim = node(NodeKind::Corrector, primary);
+    let qual = node(NodeKind::Qualifier, keyer);
+    let cool = node(NodeKind::Corrector, branch);
+    let apply = node(NodeKind::ApplyMatte, NodeParams::default());
+    let out = node(NodeKind::Output, NodeParams::default());
+    let edges = vec![
+        Edge { from_node: src.id, from_port: 0, to_node: prim.id, to_port: 0 },
+        Edge { from_node: prim.id, from_port: 0, to_node: qual.id, to_port: 0 },
+        Edge { from_node: prim.id, from_port: 0, to_node: cool.id, to_port: 0 },
+        Edge { from_node: cool.id, from_port: 0, to_node: apply.id, to_port: 0 },
+        Edge { from_node: qual.id, from_port: 0, to_node: apply.id, to_port: 1 },
+        Edge { from_node: prim.id, from_port: 0, to_node: apply.id, to_port: 2 },
+        Edge { from_node: apply.id, from_port: 0, to_node: out.id, to_port: 0 },
+    ];
+    let output_node_id = out.id;
+    let nodes = vec![src, prim, qual, cool, apply, out];
+    let node_positions = nodes
+        .iter()
+        .enumerate()
+        .map(|(i, n)| (n.id, NodePos { x: i as f32 * 150.0, y: 0.0 }))
+        .collect();
+    NodeGraph { output_node_id, nodes, edges, node_positions, working_space_override: None, frames: vec![], sticky_notes: vec![] }
+}
+
+/// One clip, graded with a secondary, over a source that runs warm on
+/// the left and cool on the right: the key takes the left, leaves the
+/// right, and feathers across the middle, so the three [`POINTS`] sample
+/// selected, feathered and excluded pixels of the same frame.
+fn secondary_timeline() -> Timeline {
+    let g = MediaId::new();
+    let files = HashMap::from([(
+        g,
+        rgb_source("grad.mkv", "170-40*X/W", "130+20*X/W", "95+110*X/W"),
+    )]);
+    let mut clip = media_clip(g, 0, 100, 0);
+    clip.node_graph = secondary_graph();
+    let mut seq = Sequence::new_default();
+    seq.fps = Fps::new(FPS as u32, 1);
+    seq.resolution = Resolution { width: W, height: H };
+    let mut v1 = Track::new("V1", TrackKind::Video);
+    v1.clips = vec![clip];
+    seq.tracks = vec![v1];
+    Timeline { seq, files }
+}
+
+#[test]
+fn a_secondary_grade_exports_as_the_viewer_shows_it() {
+    if !ffmpeg_ok() {
+        eprintln!("skipping: no ffmpeg");
+        return;
+    }
+    let t = secondary_timeline();
+    let out = exported(&t);
+    let viewer = Viewer::start(&t);
+    let mut worst = 0;
+    for n in [10, 40, 80] {
+        let (v, e) = (viewer.frame_at(n), exported_frame(&out, n));
+        worst = worst.max(compare(&format!("secondary frame {n:3}"), &v, &e));
+    }
+    eprintln!("secondary, viewer vs export: worst {worst} levels");
+    assert!(worst <= 3, "the export differs from the viewer by {worst} levels");
+}
+
+/// And the secondary is actually in both pictures. A key that selected
+/// nothing, or an ApplyMatte that passed the graded frame straight
+/// through, would make the test above pass on two identical no-ops.
+#[test]
+fn the_secondary_changes_both_the_viewer_and_the_export() {
+    if !ffmpeg_ok() {
+        eprintln!("skipping: no ffmpeg");
+        return;
+    }
+    let with = secondary_timeline();
+    let mut without = secondary_timeline();
+    // Same graph with the key's own node bypassed: ApplyMatte then has no
+    // matte and passes the graded branch through, so every pixel gets the
+    // secondary instead of the keyed ones.
+    for clip in &mut without.seq.tracks[0].clips {
+        for node in &mut clip.node_graph.nodes {
+            if node.kind == klipp_nodes::NodeKind::Qualifier {
+                node.enabled = false;
+            }
+        }
+    }
+    let (a, b) = (exported(&with), exported(&without));
+    let (fa, fb) = (exported_frame(&a, 40), exported_frame(&b, 40));
+    let d = POINTS
+        .iter()
+        .map(|(_, x, y)| {
+            let (p, q) = (px(&fa, *x, *y), px(&fb, *x, *y));
+            (0..3).map(|c| (p[c] - q[c]).abs()).max().unwrap()
+        })
+        .max()
+        .unwrap();
+    eprintln!("keyed vs unkeyed export: worst {d} levels apart");
+    assert!(d > 5, "the key made no difference to the export ({d} levels)");
 }
