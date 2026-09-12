@@ -1975,17 +1975,9 @@ impl SecondaryChain {
                 Some(NodeKind::Qualifier) => {
                     keys_the_source && matte_params.qualifier.as_ref().is_some_and(|q| q.enabled)
                 }
-                // LumaKey is deliberately not here. Its shader keys
-                // *linear* luma while its CPU twin keys the
-                // display-encoded picture, so the same threshold means
-                // two different brightnesses depending on which path
-                // ran — see `secondary_gpu_parity`, which found it, and
-                // the note in `luma_key_gpu_parity` that feeds both
-                // paths matching numbers precisely to avoid asking the
-                // question. Carrying the shape would make that
-                // inconsistency worse, because the resident path and
-                // the fallback would disagree with each other. Once the
-                // domains are reconciled this is one line.
+                Some(NodeKind::LumaKey) => {
+                    keys_the_source && matte_params.luma_key.as_ref().is_some_and(|k| k.enabled)
+                }
                 Some(NodeKind::Mask) => matte_params
                     .masks
                     .as_ref()
@@ -2096,6 +2088,14 @@ impl GraphExecutor {
                     q.lum_low, q.lum_high, q.lum_soft,
                     q.invert,
                 );
+                return Some(0);
+            }
+            NodeKind::LumaKey => {
+                let k = params.luma_key.as_ref()?;
+                if !k.enabled {
+                    return None;
+                }
+                gpu.luma_key_to_matte_buf_chain(width, height, k.low, k.high, k.soft, k.invert);
                 return Some(0);
             }
             NodeKind::ApplyMatte => {

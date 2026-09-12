@@ -284,16 +284,23 @@ fn worst_diff(a: &[f32], b: &[f32]) -> f32 {
 }
 
 
-/// The matte need not come from a Qualifier: a spatial Mask draws
+/// The matte need not come from a Qualifier. A luminance key is the
+/// simpler keyer and rides the chain the same way; a spatial Mask draws
 /// geometry instead of keying, so it has no input picture to check, and
 /// publishes its matte through its own dispatch rather than the chain
 /// encoder — a submit, but never a readback.
-///
-/// (A LumaKey would belong here too, but its shader and its CPU twin
-/// key different domains; see the note in `SecondaryChain::detect`.)
 #[test]
 fn the_other_matte_sources_ride_the_chain_too() {
-    for (name, matte) in [("mask", MatteSource::Mask)] {
+    // The luma key's tolerance is looser for one reason:
+    // `generate_luma_key_matte`, its CPU twin, takes u8 and so keys a
+    // quantised picture, while the shader keys the full-precision one.
+    // A 1/255 step shifts where the soft falloff lands, which is about
+    // a code and a half at 8 bits. The Qualifier's twin works in float
+    // and needs no such allowance.
+    for (name, matte, tolerance) in [
+        ("luma key", MatteSource::Luma, 0.008f32),
+        ("mask", MatteSource::Mask, 0.001),
+    ] {
         let graph = matte_graph(matte, Some(1.0));
         let (cpu, _) = run(&graph, false);
         let (gpu, stats) = run(&graph, true);
@@ -303,7 +310,7 @@ fn the_other_matte_sources_ride_the_chain_too() {
         }
         let worst = worst_diff(&cpu, &gpu);
         eprintln!("{name}: worst {worst:e}, {stats:?}");
-        assert!(worst < 0.001, "{name} differs by {worst}");
+        assert!(worst < tolerance, "{name} differs by {worst}");
         // The blend and the branch ride the chain. A Mask publishes its
         // matte through its own dispatch rather than the chain encoder,
         // so it costs a submit but never a readback.

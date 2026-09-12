@@ -3210,6 +3210,44 @@ impl GpuEffectsPipeline {
         Self::record_compute_dispatch(enc, &self.qualifier_pipeline, &bind_group, workgroups);
     }
 
+    /// Dispatch-only luminance key: the same as
+    /// [`Self::qualifier_to_matte_buf_chain`] for the simpler keyer —
+    /// reads the kept picture, writes the matte to `matte_buf`.
+    pub fn luma_key_to_matte_buf_chain(
+        &mut self,
+        width: u32,
+        height: u32,
+        low: f32,
+        high: f32,
+        soft: f32,
+        invert: bool,
+    ) {
+        if self.is_device_lost() {
+            return;
+        }
+        let slot = self.next_params_slot();
+        self.write_chain_params(slot, &GpuLumaKeyParams {
+            width, height, low, high, soft,
+            invert: invert as u32,
+            _pad0: 0,
+            _pad1: 0,
+        });
+        let input = self.grade_mix_src.as_ref().expect("keep_chain_input first");
+        let matte = self.matte_buf.as_ref().expect("matte_buf populated by ensure_buffers");
+        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("chain_bg_luma_key_matte"),
+            layout: &self.bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: input.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: matte.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 2, resource: self.params_ring[slot].as_entire_binding() },
+            ],
+        });
+        let workgroups = (width * height).div_ceil(WORKGROUP_SIZE);
+        let enc = self.chain_encoder.as_mut().expect(Self::CHAIN_ENCODER_EXPECT);
+        Self::record_compute_dispatch(enc, &self.luma_key_pipeline, &bind_group, workgroups);
+    }
+
     /// Dispatch-only ApplyMatte: blend the chain's picture (graded) with
     /// the one [`Self::keep_chain_input`] kept (ungraded), through
     /// `matte_buf`. Standard chain conventions — reads the `in_is_a`
@@ -8128,7 +8166,14 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     if idx >= params.width * params.height { return; }
 
     let orig = unpack(input[idx]);
-    let y = 0.2126 * orig.x + 0.7152 * orig.y + 0.0722 * orig.z;
+    // Rec.709 luma of the *display-encoded* picture, which is the axis
+    // the Qualifier's lum window uses (`picture_lum_axis`) and the one
+    // the CPU twin measures, since it quantises to u8 first. Keying
+    // linear luma here instead meant the same threshold picked a
+    // different brightness depending on which path ran: 0.5 is mid-grey
+    // as seen, not a bright highlight.
+    let e = enc3(orig.xyz);
+    let y = 0.2126 * e.x + 0.7152 * e.y + 0.0722 * e.z;
 
     var matte = soft_range(y, params.low, params.high, params.soft);
     if params.invert != 0u { matte = 1.0 - matte; }

@@ -35,17 +35,26 @@ fn gradient_rgba_u8(width: u32, height: u32) -> Vec<u8> {
     out
 }
 
-/// Convert u8 RGBA to f32 RGBA on the SAME numeric curve — i.e.
-/// `byte / 255.0` with no sRGB linearisation. The CPU oracle
-/// normalises u8 bytes the same way (treating them as already-
-/// linear values 0–1 for the purpose of luma weighting), so the
-/// parity test feeds both paths matching numbers. The GPU shader
-/// performs real linear-light luma in production, but for parity
-/// we drive it with whatever interpretation the CPU oracle uses —
-/// what we're testing is "do these two implementations agree on
-/// the same source", not "is the colourspace round-trip correct".
-fn u8_rgba_to_passthrough_f32(rgba: &[u8]) -> Vec<f32> {
-    rgba.iter().map(|&c| c as f32 / 255.0).collect()
+/// The u8 fixture as the linear-light frame the shader is handed in
+/// production: sRGB-decoded, so that the shader's own encode brings it
+/// back to the bytes the CPU oracle reads.
+///
+/// This used to hand the shader `byte / 255.0` unconverted, and said so:
+/// the shader keyed linear luma while the oracle keyed the bytes, and
+/// feeding both the same numbers sidestepped the difference. It also
+/// hid it. The same threshold picked a different brightness depending
+/// on which path ran — a quarter of a frame apart on a real graph,
+/// which `klipp-nodes/tests/secondary_gpu_parity.rs` eventually caught.
+/// The shader now keys the display-encoded picture, as the Qualifier's
+/// lum window does, so the two paths agree on a *picture* and this test
+/// can drive them with one.
+fn u8_rgba_to_linear(rgba: &[u8]) -> Vec<f32> {
+    rgba.iter()
+        .map(|&c| {
+            let v = c as f32 / 255.0;
+            if v <= 0.040_45 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) }
+        })
+        .collect()
 }
 
 /// Inverse of the above — clamp + scale, no sRGB encode.
@@ -130,7 +139,7 @@ fn gpu_matches_cpu_oracle_across_fixtures() {
     let width = 16u32;
     let height = 4u32;
     let rgba_u8 = gradient_rgba_u8(width, height);
-    let linear = u8_rgba_to_passthrough_f32(&rgba_u8);
+    let linear = u8_rgba_to_linear(&rgba_u8);
 
     let mut failures: Vec<String> = Vec::new();
 
