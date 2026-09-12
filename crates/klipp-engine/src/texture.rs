@@ -29,9 +29,15 @@ pub struct FrameBuffer {
     /// compare mode is active, and clears it to an empty Vec when
     /// inactive to free memory.
     pub compare_effect_data: Vec<u8>,
-    /// Pre-grade decoded frame — used by UI thread to re-grade without engine round-trip.
-    /// Shared via Arc to avoid expensive clones on the hot playback path.
-    pub pregrade_data: Arc<Vec<u8>>,
+    /// The pre-grade frame, for the UI thread to re-grade without an engine
+    /// round trip — the "before" picture and the scope preview during a
+    /// grade drag.
+    ///
+    /// The frame, not its bytes: [`crate::engine::Pregrade::display`] makes
+    /// the sRGB picture on first ask and keeps it, so a paused frame nobody
+    /// asks about costs nothing. Ask outside the frame-buffer lock — for an
+    /// HDR source the encode is tens of milliseconds at 4K.
+    pub pregrade: Option<Arc<crate::engine::Pregrade>>,
     /// Tapped node output for scope display (empty = use main data).
     pub scope_data: Vec<u8>,
     /// Fast reduced-resolution graded preview for instant scope feedback.
@@ -136,7 +142,7 @@ impl FrameBuffer {
             original_data: Vec::new(),
             unstab_data: Vec::new(),
             compare_effect_data: Vec::new(),
-            pregrade_data: Arc::new(Vec::new()),
+            pregrade: None,
             scope_data: Vec::new(),
             scope_preview: Vec::new(),
             scope_preview_w: 0,

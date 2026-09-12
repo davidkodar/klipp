@@ -600,7 +600,7 @@ impl PregradePixels {
 /// HDR frame's costs a decode, tone map and sRGB encode — 20-30 ms at 4K —
 /// and it was remade every time a cached frame was shown again.
 #[derive(Clone)]
-struct Pregrade {
+pub struct Pregrade {
     pixels: PregradePixels,
     display: Arc<std::sync::OnceLock<Arc<Vec<u8>>>>,
 }
@@ -614,8 +614,15 @@ impl Pregrade {
         Self::new(PregradePixels::from_frame(frame))
     }
 
-    /// The ungraded picture, sRGB RGBA8.
-    fn display(&self) -> Arc<Vec<u8>> {
+    /// The ungraded picture, sRGB RGBA8 — made on first ask and kept.
+    ///
+    /// Only the UI's scope preview wants this, and only while a grade is
+    /// being dragged, so the engine publishes the [`Pregrade`] and leaves
+    /// the encode to whoever asks. Forcing it on every paused frame instead
+    /// cost an HDR 4K frame 20 to 30 ms — a decode of the stored codes, a
+    /// tone map and an encode — for bytes that were usually dropped
+    /// unread. An SDR frame keeps its own bytes and this is free.
+    pub fn display(&self) -> Arc<Vec<u8>> {
         Arc::clone(self.display.get_or_init(|| {
             PREGRADE_DISPLAYS_MADE.fetch_add(1, Ordering::Relaxed);
             match &self.pixels {
@@ -3259,7 +3266,7 @@ impl PlaybackEngine {
             fb.data.clear();
             fb.width = 0;
             fb.height = 0;
-            fb.pregrade_data = Arc::new(Vec::new());
+            fb.pregrade = None;
             fb.original_data.clear();
             fb.unstab_data.clear();
             fb.scope_data.clear();

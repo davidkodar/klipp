@@ -3287,18 +3287,20 @@ impl KlippApp {
         // Fast UI-thread re-grade at reduced resolution for instant scope feedback.
         let fb_snapshot = {
             let fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
-            if fb.pregrade_data.is_empty() || fb.width == 0 {
-                None
-            } else {
-                // Arc::clone — near-zero cost, no frame data copy
-                Some((std::sync::Arc::clone(&fb.pregrade_data), fb.width, fb.height))
+            match (&fb.pregrade, fb.width) {
+                // The frame, not its picture — `display()` below makes that,
+                // outside this lock and only if a preview is really wanted.
+                (Some(pregrade), w) if w > 0 => {
+                    Some((std::sync::Arc::clone(pregrade), fb.width, fb.height))
+                }
+                _ => None,
             }
         };
 
         // Try to produce a graded scope_preview; fall back to pregrade on any failure
         let mut preview: Option<(Vec<u8>, u32, u32)> = None;
 
-        if let Some((ref pregrade_data, full_w, full_h)) = fb_snapshot {
+        if let Some((ref pregrade, full_w, full_h)) = fb_snapshot {
             if let Some(cid) = self.state.selected_clip {
                 let seq_idx = self.state.active_sequence_idx;
                 if let Some(clip) = self.state.sequences[seq_idx].tracks.iter()
@@ -3306,6 +3308,11 @@ impl KlippApp {
                 {
                     let graph = &clip.node_graph;
                     if !graph.is_identity() {
+                        // Here, and not before: an identity graph gets no
+                        // preview, and for an HDR source this encode is tens
+                        // of milliseconds at 4K. Made once per frame and kept,
+                        // so a drag pays it on its first step only.
+                        let pregrade_data = pregrade.display();
                         let scale = if full_w > 960 { 4u32 } else if full_w > 480 { 2 } else { 1 };
                         let small_w = full_w / scale;
                         let small_h = full_h / scale;
@@ -13074,7 +13081,7 @@ impl KlippApp {
                     return true;
                 };
                 // Source = the clip's pre-grade frame at the playhead.
-                // The engine writes that to `fb.pregrade_data` whenever
+                // The engine publishes that as `fb.pregrade` whenever
                 // `in_node_param_edit` is set OR a compare mode is on.
                 // For a quick first integration we use the displayed
                 // post-grade frame (`fb.data`) as the source — it's
