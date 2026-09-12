@@ -484,11 +484,24 @@ impl ExportDisplay {
                 }
                 _ => ExportPath::AcesRec709,
             },
-            // The legacy escape hatch encodes the working values as they
-            // are, in any working space — the same way it leaves an
-            // AcesCG project in AP1. A BT.2020 project exported this way
-            // is over-saturated, which is what "give me the pre-ACES
-            // pixels" asks for; MatchViewer is the path that converts.
+            // The legacy escape hatch: the sRGB curve over the working
+            // values, converting no primaries, in any working space.
+            //
+            // That is not the same as "the pre-ACES pixels". Skipping the
+            // RRT is a choice about tone; skipping the primaries
+            // conversion is a choice about basis, and this path makes both
+            // where only the first was asked for — so a BT.2020 project
+            // exported this way writes BT.2020 primaries under an sRGB
+            // label. It stays this way because it is byte-identical to
+            // every export written before delivery-target ODTs existed,
+            // which `export_srgb_legacy_path_matches_pre_phase_e_export`
+            // pins, and in a Rec.709 project — the only kind that had such
+            // exports — converting would be a no-op anyway.
+            //
+            // `OdtChoice::suits_working_space` keeps it out of the export
+            // picker for wide-gamut projects, so the only way to reach it
+            // there is a setting saved before the project moved, or a
+            // caller building `ExportSettings` directly.
             OdtChoice::Srgb => ExportPath::ToneMapSrgb(None),
             _ => ExportPath::Odt(crate::primaries::working_space_conversion_matrix(
                 working_space,

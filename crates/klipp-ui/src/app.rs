@@ -28523,8 +28523,17 @@ impl KlippApp {
                         // it fits: the ACES PQ ones write PQ, the others
                         // SDR. Switching the delivery drops one that no
                         // longer fits.
+                        //
+                        // The working space rules some out too: the legacy
+                        // sRGB path converts no primaries, so it is only
+                        // sRGB in a Rec.709 project. A setting saved before
+                        // the project moved to a wide gamut is dropped here
+                        // the same way.
                         let delivery = self.export_dialog.hdr_mode;
-                        if !self.export_dialog.odt.fits(delivery) {
+                        let working = self.state.project_working_colorspace;
+                        if !self.export_dialog.odt.fits(delivery)
+                            || !self.export_dialog.odt.suits_working_space(working)
+                        {
                             self.export_dialog.odt = klipp_core::OdtChoice::MatchViewer;
                         }
 
@@ -28600,7 +28609,10 @@ impl KlippApp {
                         egui::ComboBox::from_id_salt("export_odt")
                             .selected_text(self.export_dialog.odt.label())
                             .show_ui(ui, |ui| {
-                                for choice in klipp_core::OdtChoice::ALL.into_iter().filter(|c| c.fits(delivery)) {
+                                for choice in klipp_core::OdtChoice::ALL
+                                    .into_iter()
+                                    .filter(|c| c.fits(delivery) && c.suits_working_space(working))
+                                {
                                     ui.selectable_value(
                                         &mut self.export_dialog.odt,
                                         choice,

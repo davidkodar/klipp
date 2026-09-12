@@ -225,6 +225,24 @@ impl OdtChoice {
         }
     }
 
+    /// Whether the transform means anything for a project working in `ws`.
+    ///
+    /// Every transform but one converts the working values into the space
+    /// it names. [`OdtChoice::Srgb`] is the legacy escape hatch and
+    /// converts nothing, so it only *is* sRGB when the project already
+    /// works in BT.709 primaries. In a BT.2020 or ACEScg project it would
+    /// write those primaries out under an sRGB label — a file that looks
+    /// over-saturated and carries nothing to say why — so it is not
+    /// offered there. Note this is about the gamut, not the tone curve:
+    /// skipping the ACES RRT and skipping the primaries conversion are
+    /// separate choices, and "sRGB" names a gamut as much as a curve.
+    pub const fn suits_working_space(self, ws: crate::WorkingColorspace) -> bool {
+        match self {
+            OdtChoice::Srgb => matches!(ws, crate::WorkingColorspace::Rec709Linear),
+            _ => true,
+        }
+    }
+
     /// Human-readable label for menus.
     pub const fn label(self) -> &'static str {
         match self {
@@ -233,7 +251,7 @@ impl OdtChoice {
             OdtChoice::Rec2100Pq1000 => "Rec.2100 PQ (1000 nit)",
             OdtChoice::Rec2100Pq4000 => "Rec.2100 PQ (4000 nit)",
             OdtChoice::DciP3D65_48 => "DCI-P3 D65 (48 nit)",
-            OdtChoice::Srgb => "sRGB (legacy)",
+            OdtChoice::Srgb => "sRGB curve only (legacy)",
             OdtChoice::Unknown => "Unknown",
         }
     }
@@ -3215,6 +3233,48 @@ mod odt_choice_tests {
         // separately below.
         for choice in OdtChoice::ALL {
             assert_eq!(OdtChoice::from_u8(choice.as_u8()), choice);
+        }
+    }
+
+    /// The legacy sRGB path converts no primaries, so it only is sRGB in a
+    /// Rec.709 project. Offering it in a wide-gamut one would write those
+    /// primaries under an sRGB label — a file that looks over-saturated and
+    /// carries nothing to say why.
+    #[test]
+    fn the_legacy_srgb_path_is_only_offered_where_it_is_srgb() {
+        use crate::WorkingColorspace as W;
+        assert!(OdtChoice::Srgb.suits_working_space(W::Rec709Linear));
+        assert!(!OdtChoice::Srgb.suits_working_space(W::Bt2020Linear));
+        assert!(!OdtChoice::Srgb.suits_working_space(W::AcesCG));
+    }
+
+    /// Every other transform converts into the space it names, so every
+    /// working space can reach all of them.
+    #[test]
+    fn every_converting_transform_suits_every_working_space() {
+        use crate::WorkingColorspace as W;
+        for odt in OdtChoice::ALL.into_iter().filter(|o| *o != OdtChoice::Srgb) {
+            for ws in [W::Rec709Linear, W::Bt2020Linear, W::AcesCG] {
+                assert!(odt.suits_working_space(ws), "{odt:?} in {ws:?}");
+            }
+        }
+    }
+
+    /// Whatever the project, there is always something to pick — the
+    /// picker filters on both axes at once, so the two must not exclude
+    /// everything between them.
+    #[test]
+    fn some_transform_always_fits() {
+        use crate::WorkingColorspace as W;
+        for delivery in [HdrMode::Sdr, HdrMode::Pq, HdrMode::Hlg] {
+            for ws in [W::Rec709Linear, W::Bt2020Linear, W::AcesCG] {
+                assert!(
+                    OdtChoice::ALL
+                        .into_iter()
+                        .any(|o| o.fits(delivery) && o.suits_working_space(ws)),
+                    "nothing to export a {ws:?} project as {delivery:?}",
+                );
+            }
         }
     }
 
