@@ -195,6 +195,22 @@ impl HdrTransfer {
         matches!(self, Self::Log(_))
     }
 
+    /// Which of [`hdr_display_light`]'s three derivations this transfer
+    /// takes: 0 PQ, 1 HLG, 2 camera log.
+    ///
+    /// A three-way category rather than [`Self::transfer_id`], because
+    /// that is all the arithmetic distinguishes — every camera log has
+    /// already been linearised by the time this runs — and a GPU twin
+    /// branching on it does not have to carry `color_ids`' whole table.
+    /// `display_light_kinds_cover_every_transfer` holds the mapping.
+    pub fn display_light_kind(self) -> u32 {
+        match self {
+            Self::Pq => 0,
+            Self::Hlg => 1,
+            Self::Log(_) => 2,
+        }
+    }
+
     /// Multiplier from the curve's own output to scene-linear.
     ///
     /// PQ/HLG curves return 1.0 = 10 000 nits; this module's convention is
@@ -895,6 +911,22 @@ mod hdr_io_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every transfer has a display-light kind, and the three kinds are
+    /// the three branches — so a GPU twin switching on the kind takes the
+    /// same branch the CPU does.
+    #[test]
+    fn display_light_kinds_cover_every_transfer() {
+        assert_eq!(HdrTransfer::Pq.display_light_kind(), 0);
+        assert_eq!(HdrTransfer::Hlg.display_light_kind(), 1);
+        for t in CAMERA_LOGS {
+            let x = HdrTransfer::Log(*t);
+            assert_eq!(x.display_light_kind(), 2, "{t:?} should be the camera-log branch");
+            // And every camera log shares the branch's other inputs, so
+            // the kind is the whole story.
+            assert_eq!(x.scene_scale(), 1.0, "{t:?}");
+        }
+    }
 
     /// The blob's length is derivable from its first entry.
     ///

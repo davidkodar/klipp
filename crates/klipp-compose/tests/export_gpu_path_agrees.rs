@@ -38,6 +38,7 @@ fn plain_target() -> klipp_effects::gpu::Yuv420Target {
     klipp_effects::gpu::Yuv420Target {
         tone_map_op: 0,
         odt_tag: 0,
+        scene: None,
         gamut_op: 0,
         hdr_op: 0,
         peak_nits: 0.0,
@@ -146,6 +147,7 @@ fn sequence(tracks: Vec<Vec<Clip>>) -> Sequence {
 #[derive(Default)]
 struct Flat {
     colours: HashMap<ClipId, [u8; 3]>,
+    scene: HashMap<ClipId, klipp_color::hdr::HdrTransfer>,
     on_gpu: bool,
 }
 
@@ -156,6 +158,20 @@ impl Flat {
     /// come back a rounding away from the reference.
     fn with(mut self, c: &Clip, srgb: [u8; 3]) -> Self {
         self.colours.insert(c.id, srgb);
+        self
+    }
+
+    /// A scene-referred frame instead: packed 10-bit codes, as a PQ, HLG
+    /// or camera-log decoder hands them over. Exact by construction —
+    /// codes are what both paths start from.
+    ///
+    /// The codes *vary across the frame* rather than being flat, unlike
+    /// the sRGB fixture above. The display-light derivation is per-pixel
+    /// arithmetic with three branches and a highlight roll-off, so a flat
+    /// frame would sample each of them exactly once and agree with almost
+    /// anything.
+    fn scene(mut self, c: &Clip, transfer: klipp_color::hdr::HdrTransfer) -> Self {
+        self.scene.insert(c.id, transfer);
         self
     }
 
@@ -189,6 +205,35 @@ impl klipp_compose::GpuPixels for SeededFlat {
 
 impl FrameSource for Flat {
     fn frame(&mut self, clip: &Clip, _secs: f64, width: u32, height: u32) -> Option<SourceFrame> {
+        if let Some(transfer) = self.scene.get(&clip.id).copied() {
+            // A ramp down the frame with a hue rotation across it, so the
+            // codes span black to peak and no two channels agree — which
+            // the luma-weighted HLG branch needs to be distinguishable
+            // from the per-channel ones.
+            let codes: Vec<u32> = (0..height)
+                .flat_map(|y| {
+                    (0..width).map(move |x| {
+                        let v = (y * 1023 / height.max(1)) as u32;
+                        let t = x * 1023 / width.max(1);
+                        klipp_color::hdr::pack_rgb10(
+                            v.min(1023),
+                            (v * 3 / 4 + t / 4).min(1023),
+                            (v / 2 + t / 2).min(1023),
+                        )
+                    })
+                })
+                .collect();
+            return Some(SourceFrame {
+                pixels: SourcePixels::SceneReferred {
+                    codes: Arc::new(codes),
+                    transfer,
+                    source_to_working: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+                },
+                width,
+                height,
+                pts: None,
+            });
+        }
         let srgb = *self.colours.get(&clip.id)?;
         let n = (width * height) as usize;
         let linear = Arc::new(Flat::linear(srgb, n));
@@ -789,6 +834,116 @@ fn the_acescg_odts_agree_with_the_renderer() {
                 "{a:?} and {b:?} rendered the same picture at every exposure tried, so \
                  this test cannot tell those two deliverables apart",
             );
+        }
+    }
+}
+
+/// A *scene-referred* source through the whole path — which is what a
+/// real HDR export is.
+///
+/// PQ, HLG and log footage ends in its own display pass after the grade:
+/// an HDR delivery's display light, or an SDR delivery's filmic tone map.
+/// That pass had no shader twin, so this was the case the gate refused
+/// even after the PQ and HLG *encodes* were on the GPU — and it is the
+/// one every real HDR export takes, since the source of an HDR master is
+/// HDR footage.
+///
+/// Both deliveries, and all three transfers, because the display-light
+/// derivation is a different expression for each: PQ is a scale, HLG is
+/// a luma-weighted OOTF, and a camera log is the BT.2100 reference OOTF
+/// with a highlight roll-off against the master's peak.
+#[test]
+fn a_scene_referred_source_agrees_with_the_renderer() {
+    use klipp_color::hdr::HdrTransfer;
+    use klipp_core::WorkingColorspace as W;
+
+    let transfers = [
+        ("PQ", HdrTransfer::Pq),
+        ("HLG", HdrTransfer::Hlg),
+        ("S-Log3", HdrTransfer::Log(klipp_core::ColorTransfer::SLog3)),
+    ];
+    for (name, transfer) in transfers {
+        for hdr in [false, true] {
+            let c = graded(0.0, 1.0, 0.5);
+            let seq = sequence(vec![vec![c.clone()]]);
+            let mut src = Flat::default().scene(&c, transfer);
+            let opts = RenderOptions {
+                hdr_peak_nits: hdr.then_some(1000.0),
+                ..Default::default()
+            };
+            let target = if hdr { pq_target(1000.0) } else { plain_target() };
+
+            let mut r = renderer();
+            let Some((planes, light)) =
+                r.render_yuv420_on_gpu(&seq, tc(0.5), W, H, &mut src, opts, target)
+            else {
+                eprintln!("skipping: the GPU path refused (no usable GPU)");
+                return;
+            };
+
+            // The renderer's own frame, encoded as the CPU export encodes it.
+            let mut rr = renderer();
+            let px = rr.render(&seq, tc(0.5), W, H, &mut src, opts);
+            let display = if hdr {
+                klipp_color::display::ExportDisplay::hdr(
+                    W::Rec709Linear,
+                    klipp_core::HdrMode::Pq,
+                    1000.0,
+                )
+            } else {
+                klipp_color::display::ExportDisplay::new(
+                    klipp_core::ToneMapOp::None,
+                    W::Rec709Linear,
+                    klipp_core::OdtChoice::MatchViewer,
+                )
+            };
+            let k = if hdr { [0.2627f32, 0.6780, 0.0593] } else { LUMA_709 };
+            let (scale, top) = if hdr { (4.0f32, 1023.0f32) } else { (1.0, 255.0) };
+            let mut want = Vec::with_capacity((W * H) as usize);
+            let (mut max, mut sum) = (0.0f32, 0.0f64);
+            for p in px.chunks_exact(4) {
+                let (e, nits) = display.encode_light([p[0], p[1], p[2]]);
+                max = max.max(nits);
+                sum += nits as f64;
+                let y = k[0] * e[0] + k[1] * e[1] + k[2] * e[2];
+                want.push(((16.0 + y * 219.0) * scale + 0.5).clamp(0.0, top) as u16);
+            }
+
+            let got: Vec<u16> = if hdr {
+                planes[..want.len() * 2]
+                    .chunks_exact(2)
+                    .map(|b| u16::from_le_bytes([b[0], b[1]]) >> 6)
+                    .collect()
+            } else {
+                planes[..want.len()].iter().map(|v| *v as u16).collect()
+            };
+            let worst = got
+                .iter()
+                .zip(want.iter())
+                .map(|(g, w)| (*g as i32 - *w as i32).abs())
+                .max()
+                .unwrap_or(0);
+            let delivery = if hdr { "PQ" } else { "SDR" };
+            eprintln!("{name} -> {delivery}: worst {worst} of {top}");
+            assert!(worst <= 1, "{name} -> {delivery}: differs by {worst} levels");
+            assert!(
+                got.iter().any(|&v| v as f32 > 16.0 * scale + 8.0),
+                "{name} -> {delivery}: the fixture rendered black",
+            );
+
+            if hdr {
+                let l = light.expect("a PQ delivery comes back with its light");
+                let pixels = (W as u64) * (H as u64);
+                assert!(
+                    (l.max_nits - max).abs() <= max * 1e-4,
+                    "{name}: MaxCLL is {} vs {max}",
+                    l.max_nits,
+                );
+                let (gm, cm) = (l.sum_nits / pixels as f64, sum / pixels as f64);
+                assert!((gm - cm).abs() < 0.01 + cm.abs() * 1e-5, "{name}: MaxFALL {gm} vs {cm}");
+            } else {
+                assert!(light.is_none(), "{name}: an SDR delivery measures no light");
+            }
         }
     }
 }

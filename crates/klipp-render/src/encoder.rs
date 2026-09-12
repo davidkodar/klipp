@@ -967,6 +967,10 @@ impl Encoder {
         Some(klipp_effects::gpu::Yuv420Target {
             tone_map_op: op,
             odt_tag,
+            // The renderer fills this in: only it knows whether the clip
+            // on screen is scene-referred, and the encoder never sees a
+            // source.
+            scene: None,
             gamut_op,
             hdr_op,
             peak_nits,

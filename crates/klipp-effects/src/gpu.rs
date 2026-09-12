@@ -2045,11 +2045,16 @@ impl GpuEffectsPipeline {
             gamut_op,
             hdr_op,
             peak_nits,
+            scene,
             luma_coefs,
             semi_planar,
             bits,
             sample_shift,
         } = target;
+        let (scene_op, scene_kind, scene_scale, scene_exposure) = match scene {
+            Some(s) => (if s.display_light { 2 } else { 1 }, s.kind, s.scale, s.exposure),
+            None => (0, 0, 1.0, 1.0),
+        };
         if self.is_device_lost()
             || width % 8 != 0
             || height % 2 != 0
@@ -2083,7 +2088,10 @@ impl GpuEffectsPipeline {
             self.ensure_aces_data(display_tables);
         } else if gamut_op == 1 && !self.ensure_bt2020_gamut_data(display_tables) {
             return None;
-        } else if hdr_op != 0 && !self.ensure_hdr_encode_data(display_tables) {
+        } else if (hdr_op != 0 || scene_op == 2) && !self.ensure_hdr_encode_data(display_tables) {
+            // The display-light branch reads the working space's luma
+            // weights out of the same blob (the HLG OOTF needs them), so
+            // it wants the blob even when the delivery is SDR.
             return None;
         }
 
@@ -2127,6 +2135,10 @@ impl GpuEffectsPipeline {
             gamut_op,
             hdr_op,
             peak_nits,
+            scene_op,
+            scene_kind,
+            scene_scale,
+            scene_exposure,
             _pad2: 0,
             _pad3: 0,
         });
@@ -2134,7 +2146,7 @@ impl GpuEffectsPipeline {
             &self.aces_rec709_data.as_ref()?.buf
         } else if gamut_op == 1 {
             &self.bt2020_gamut_data.as_ref()?.buf
-        } else if hdr_op != 0 {
+        } else if hdr_op != 0 || scene_op == 2 {
             &self.hdr_encode_data.as_ref()?.buf
         } else {
             &self.no_display_tables
@@ -5653,6 +5665,11 @@ pub struct Yuv420Target {
     pub hdr_op: u32,
     /// The master's peak, cd/m². PQ only — HLG's is the nominal 1000.
     pub peak_nits: f32,
+    /// A scene-referred source's own last step, which runs *before* the
+    /// delivery's transform: 0 none, 1 the SDR display tone map, 2 HDR
+    /// display light. `None` on the field set below for a
+    /// display-referred source, which needs neither.
+    pub scene: Option<SceneReferredEnd>,
     /// 1 brings a BT.2020 frame into BT.709 first, gamut-compressing
     /// what BT.709 cannot hold; 0 leaves the basis alone. Never 1
     /// alongside `tone_map_op == 3`: an ACES ODT maps its own gamut, and
@@ -5694,8 +5711,27 @@ struct Yuv420Params {
     gamut_op: u32,
     hdr_op: u32,
     peak_nits: f32,
+    scene_op: u32,
+    scene_kind: u32,
+    scene_scale: f32,
+    scene_exposure: f32,
     _pad2: u32,
     _pad3: u32,
+}
+
+/// How a scene-referred clip finishes: the step `Renderer::display_render`
+/// runs on the CPU frame after the grade, when there is no GPU path.
+///
+/// `kind` is `klipp_color::hdr::HdrTransfer::display_light_kind`, `scale`
+/// its `scene_scale` and `exposure` its `display_exposure`. This layer
+/// does not interpret them beyond passing them to the shader.
+#[derive(Clone, Copy, Debug)]
+pub struct SceneReferredEnd {
+    /// The SDR display tone map (false) or HDR display light (true).
+    pub display_light: bool,
+    pub kind: u32,
+    pub scale: f32,
+    pub exposure: f32,
 }
 
 /// A table set uploaded to the display-transform binding, with the
@@ -7674,6 +7710,81 @@ fn h_hlg_encode_nits(nits2020: vec3<f32>) -> vec3<f32> {
     return vec3<f32>(h_hlg_oetf(f.x * k), h_hlg_oetf(f.y * k), h_hlg_oetf(f.z * k));
 }
 
+/// `NITS_PER_LINEAR`: what scene-linear 1.0 means for a PQ source.
+const H_NITS_PER_LINEAR: f32 = 100.0;
+/// `LOG_HDR_EXPOSURE` and `LOG_HDR_KNEE`.
+const H_LOG_HDR_EXPOSURE: f32 = 0.03102416;
+const H_LOG_HDR_KNEE: f32 = 0.5;
+
+/// `pq_reference_ootf`: BT.2100's reference OOTF — scene light (1.0 =
+/// its 10 000-nit top) to display light, cd/m². The BT.709 OETF followed
+/// by the BT.1886 EOTF.
+fn h_pq_reference_ootf(e: f32) -> f32 {
+    let x = 59.5208 * max(e, 0.0);
+    var ep = 0.0;
+    if x <= 0.018 {
+        ep = 4.5 * x;
+    } else {
+        ep = 1.099 * pow(x, 0.45) - 0.099;
+    }
+    return 100.0 * pow(ep, 2.4);
+}
+
+/// The OOTF applied odd-symmetrically, so a BT.2020 colour outside the
+/// working gamut arrives negative and survives the trip.
+fn h_signed_ootf(c: f32) -> f32 {
+    let m = h_pq_reference_ootf(abs(c) * H_LOG_HDR_EXPOSURE);
+    return select(-m, m, c >= 0.0);
+}
+
+/// `roll_off`: compress above `knee` so the curve approaches `peak`
+/// without reaching it, with slope 1 at the knee so there is no corner.
+fn h_roll_off(x: f32, knee: f32, peak: f32) -> f32 {
+    if x <= knee {
+        return x;
+    }
+    let t = (x - knee) / (peak - knee);
+    return knee + (peak - knee) * t / (1.0 + t);
+}
+
+/// `hdr_display_light`: a graded scene-linear pixel to HDR display light
+/// (1.0 = 203 cd/m²). `kind` is `HdrTransfer::display_light_kind` — 0 PQ,
+/// 1 HLG, 2 camera log.
+///
+/// A scene-referred clip's last step of its own, which used to happen on
+/// the CPU frame after the grade and is why a real HDR export — one whose
+/// *source* is PQ, HLG or log — could not take this path at all.
+fn hdr_display_light(rgb: vec3<f32>, kind: u32, scene_scale: f32, peak: f32) -> vec3<f32> {
+    var nits = vec3<f32>(0.0);
+    if kind == 0u {
+        nits = rgb * H_NITS_PER_LINEAR;
+    } else if kind == 1u {
+        // Undo the decoder's PQ-sized scale to get HLG scene light, then
+        // the HLG OOTF. Channels stay signed for the same reason as below.
+        let e = rgb / scene_scale;
+        let ys = dot(h_working_luma(), e);
+        var gain = 0.0;
+        if ys > 0.0 {
+            gain = H_HLG_PEAK_NITS * pow(ys, H_HLG_GAMMA - 1.0);
+        }
+        nits = e * gain;
+    } else {
+        let n = vec3<f32>(h_signed_ootf(rgb.x), h_signed_ootf(rgb.y), h_signed_ootf(rgb.z));
+        // Roll off the brightest channel and scale the others with it, so
+        // a highlight keeps its hue as it compresses.
+        let m = max(n.x, max(n.y, n.z));
+        let rolled = h_roll_off(m, H_LOG_HDR_KNEE * peak, peak);
+        var k = 1.0;
+        if m > 0.0 {
+            k = rolled / m;
+        }
+        nits = n * k;
+    }
+    // PQ and HLG sources are display light already and are not rolled
+    // off: the encoder holds the peak.
+    return nits / H_REF_WHITE_NITS;
+}
+
 /// An HDR delivery's signal, and the pixel's light in cd/m² for MaxCLL.
 /// `op` is 1 for PQ, 2 for HLG.
 ///
@@ -8183,6 +8294,16 @@ struct Params {
     hdr_op: u32,
     // The master's peak, cd/m². PQ only; HLG's is the nominal 1000.
     peak_nits: f32,
+    // A scene-referred source's own last step, before any of the above:
+    // 0 none (the frame is already display-referred), 1 the SDR display
+    // tone map, 2 HDR display light. `scene_kind` is
+    // `HdrTransfer::display_light_kind` and `scene_scale` its
+    // `scene_scale`; `scene_exposure` is `display_exposure`, for the
+    // tone map.
+    scene_op: u32,
+    scene_kind: u32,
+    scene_scale: f32,
+    scene_exposure: f32,
     _pad2: u32,
     _pad3: u32,
 }
@@ -8197,6 +8318,12 @@ struct Params {
 // MaxCLL and MaxFALL. The host reduces the pairs; a small dummy is bound
 // when the delivery measures no light.
 @group(0) @binding(4) var<storage, read_write> light: array<f32>;
+
+/// Narkowicz ACES fit; constants shared with `klipp_color::hdr::filmic`.
+/// The SDR display tone map a scene-referred clip ends with.
+fn filmic(x: f32) -> f32 {
+    return clamp((x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14), 0.0, 1.0);
+}
 
 fn hable_curve(x: f32) -> f32 {
     let a = 0.15; let b = 0.50; let c = 0.10;
@@ -8219,7 +8346,17 @@ fn tone_map_c(v: f32) -> f32 {
 ///
 /// `w` is the pixel's light in cd/m², which only a PQ delivery measures
 /// (HDR10's MaxCLL and MaxFALL are made of it); 0 on every other path.
-fn display_encode(px: vec3<f32>) -> vec4<f32> {
+fn display_encode(px_in: vec3<f32>) -> vec4<f32> {
+    // A scene-referred clip's own last step, ahead of the delivery's
+    // transform: `Renderer::display_render`, which for an HDR delivery is
+    // the display light and for an SDR one the filmic tone map.
+    var px = px_in;
+    if params.scene_op == 2u {
+        px = hdr_display_light(px, params.scene_kind, params.scene_scale, params.peak_nits);
+    } else if params.scene_op == 1u {
+        let e = px * params.scene_exposure;
+        px = vec3<f32>(filmic(e.x), filmic(e.y), filmic(e.z));
+    }
     // An HDR delivery is a different tail entirely — the frame is display
     // light, not scene light, and there is no tone map or sRGB encode.
     if params.hdr_op != 0u {

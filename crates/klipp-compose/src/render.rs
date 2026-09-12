@@ -582,9 +582,16 @@ impl Renderer {
         // the same `ExportSettings`, so disagreement is a wiring mistake
         // rather than a user's choice — and it would show as a wrong
         // picture, not an error, so it is checked rather than assumed.
-        if (target.hdr_op != 0) != opts.hdr_peak_nits.is_some() {
+        let hdr_delivery = opts.hdr_peak_nits.is_some();
+        if (target.hdr_op != 0) != hdr_delivery {
             return None;
         }
+        // Set below when the source is scene-referred, which is the one
+        // case with a step of its own after the grade.
+        let mut scene_end: Option<klipp_effects::gpu::SceneReferredEnd> = None;
+        // The peak the display-light pass rolls a camera log's highlights
+        // off against; the target carries it for a PQ delivery already.
+        let peak = opts.hdr_peak_nits.unwrap_or(target.peak_nits);
         let fps = seq.fps.as_f64();
         let stack = stack(seq, time);
         let (track, clip) = match stack.as_slice() {
@@ -658,11 +665,21 @@ impl Renderer {
                 if codes.len() == (width as usize) * (height as usize) =>
             {
                 // A scene-referred clip ends in its own display pass —
-                // `display_render`, the SDR tone map or the HDR display
-                // light — which happens on the CPU frame after the grade.
-                // The shader has neither, so these still go the long way.
-                let _ = (transfer, source_to_working);
-                return None;
+                // `display_render`: the SDR tone map, or an HDR delivery's
+                // display light. The Y'CbCr writer runs that pass itself
+                // now, off the same `HdrTransfer` numbers, so the frame
+                // never has to come down for it. This is what a *real* HDR
+                // export is — PQ, HLG or log footage — and it used to be
+                // refused here for want of that pass.
+                // `grade` seeds the chain from the codes itself, the
+                // same way the viewer's path does.
+                scene_end = Some(klipp_effects::gpu::SceneReferredEnd {
+                    display_light: hdr_delivery,
+                    kind: transfer.display_light_kind(),
+                    scale: transfer.scene_scale(),
+                    exposure: transfer.display_exposure(),
+                });
+                GradeInput::Scene { codes, transfer, source_to_working }
             }
             SourcePixels::Linear(pixels) => GradeInput::Cpu(pixels),
             _ => return None,
@@ -686,6 +703,11 @@ impl Renderer {
             {
                 return None;
             }
+            let target = klipp_effects::gpu::Yuv420Target {
+                scene: scene_end,
+                peak_nits: peak,
+                ..target
+            };
             return self.executor.encode_output_to_yuv420(width, height, target);
         }
 
@@ -701,6 +723,8 @@ impl Renderer {
         if !pixels.is_empty() {
             return None;
         }
+        let target =
+            klipp_effects::gpu::Yuv420Target { scene: scene_end, peak_nits: peak, ..target };
         self.executor.encode_output_to_yuv420(width, height, target)
     }
 

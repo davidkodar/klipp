@@ -118,6 +118,7 @@ fn target(op: ToneMapOp, semi: bool, bits: u32, shift: u32) -> klipp_effects::gp
     klipp_effects::gpu::Yuv420Target {
         tone_map_op: tone_map_id(op),
         odt_tag: 0,
+        scene: None,
         gamut_op: 0,
         hdr_op: 0,
         peak_nits: 0.0,
@@ -545,6 +546,7 @@ fn gpu_yuv_matches_cpu_on_the_aces_path() {
     let t = klipp_effects::gpu::Yuv420Target {
         tone_map_op: ACES_OP,
         odt_tag: 0,
+        scene: None,
         gamut_op: 0,
         hdr_op: 0,
         peak_nits: 0.0,
@@ -635,6 +637,7 @@ fn gpu_yuv_matches_cpu_on_the_bt2020_path() {
             let t = klipp_effects::gpu::Yuv420Target {
                 tone_map_op: tone_map_id(op),
                 odt_tag: 0,
+                scene: None,
                 gamut_op: 1,
                 hdr_op: 0,
                 peak_nits: 0.0,
@@ -763,6 +766,7 @@ fn gpu_yuv_matches_cpu_on_the_hdr_paths() {
         let t = klipp_effects::gpu::Yuv420Target {
             tone_map_op: 0,
             odt_tag: 0,
+            scene: None,
             gamut_op: 0,
             hdr_op,
             peak_nits: peak,
@@ -899,6 +903,7 @@ fn the_hdr_path_on_the_gpu_beats_the_round_trip() {
     let t = klipp_effects::gpu::Yuv420Target {
         tone_map_op: 0,
         odt_tag: 0,
+        scene: None,
         gamut_op: 0,
         hdr_op: 1,
         peak_nits: 1000.0,
