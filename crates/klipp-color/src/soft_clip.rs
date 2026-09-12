@@ -108,7 +108,6 @@ mod tests {
         // With knee>0, values above threshold should be pulled in
         // toward but not equal to threshold, monotonically rising
         // toward 1.0 as x grows.
-        let s = settings(0.8, 0.1);
         let y_at_thresh    = soft_clip_value(0.80, 0.8, 0.1);
         let y_just_above   = soft_clip_value(0.85, 0.8, 0.1);
         let y_far_above    = soft_clip_value(2.00, 0.8, 0.1);

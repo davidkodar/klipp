@@ -235,6 +235,54 @@ fn the_graded_fast_path_is_the_renderers_frame() {
 }
 
 
+/// The same clip in a BT.2020 project. The GPU's display encode is an
+/// sRGB encode alone — no basis change, no gamut map — so the fast path
+/// has to finish a wide-gamut frame through the viewer's own transform
+/// instead. Encoding BT.2020 values as though they were BT.709, which is
+/// what keeping that frame on the GPU does, over-saturates every colour
+/// in the picture; the last assertion measures that difference, so this
+/// test fails if the fast path ever starts taking the shortcut again.
+#[test]
+fn the_graded_fast_path_is_the_renderers_frame_in_a_bt2020_project() {
+    let Some(ctx) = GpuContext::shared() else {
+        eprintln!("skipping: no usable GpuContext");
+        return;
+    };
+    const WS: WorkingColorspace = WorkingColorspace::Bt2020Linear;
+    let bytes = sdr_bytes();
+    let buffer = gpu_buffer(ctx, &bytes);
+    let (seq, clip) = one_clip(keyframed_grade(None));
+    let linear = Arc::new(klipp_effects::srgb_u8_to_linear_f32_rgba(&bytes));
+    let mut src = Frame(Box::new(move || SourcePixels::Linear(Arc::clone(&linear))));
+    let mut r = renderer();
+    r.set_working_colorspace(WS);
+
+    let frame = r.render(&seq, tc(4.0), W, H, &mut src, RenderOptions::default());
+    let want = display_transform_ws(&frame, ToneMapOp::None, WS);
+
+    let (clip_time, frame_number) = klipp_compose::render::grade_time(&clip, tc(4.0), 24.0);
+    let at = GradeAt {
+        graph: &clip.node_graph,
+        clip_time,
+        frame_number,
+        track_points: &clip.track_points,
+        working: WS,
+        lut_tetrahedral: true,
+        solo: None,
+    };
+    let display = |l: &[f32]| display_transform_ws(l, ToneMapOp::None, WS);
+    let got = grade_to_display_on_gpu(r.executor(), GpuSeed::Srgb8(&buffer), W, H, &at, &display)
+        .expect("the fast path takes this frame");
+    let worst = worst_lsb(&got, &want);
+    eprintln!("BT.2020 graded fast path vs renderer: worst {worst} LSB");
+    assert!(worst <= 1, "the graded fast path differs from the renderer by {worst} levels");
+
+    let as_if_709 = display_transform_ws(&frame, ToneMapOp::None, WorkingColorspace::Rec709Linear);
+    let shortcut = worst_lsb(&as_if_709, &want);
+    eprintln!("the GPU's sRGB-only encode would differ by {shortcut} LSB");
+    assert!(shortcut > 8, "this picture cannot tell the two encodes apart; pick a more saturated source");
+}
+
 /// A PQ clip graded on the GPU from the decoder's codes matches the
 /// renderer's frame — scene-linear grade, display tone map — to one level.
 #[test]

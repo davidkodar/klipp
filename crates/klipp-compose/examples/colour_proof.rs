@@ -83,6 +83,10 @@ fn write_png(path: &PathBuf, px: &[f32], map: impl Fn(f32) -> u8) {
     for c in px.chunks_exact(4) {
         out.extend_from_slice(&[map(c[0]), map(c[1]), map(c[2])]);
     }
+    write_rgb8(path, &out);
+}
+
+fn write_rgb8(path: &PathBuf, out: &[u8]) {
     // PNG through a tiny encoder of our own would be another dependency;
     // ffmpeg is already required by the test suite and reads raw frames.
     let status = std::process::Command::new("ffmpeg")
@@ -93,7 +97,7 @@ fn write_png(path: &PathBuf, px: &[f32], map: impl Fn(f32) -> u8) {
         .spawn()
         .and_then(|mut child| {
             use std::io::Write;
-            child.stdin.as_mut().unwrap().write_all(&out)?;
+            child.stdin.as_mut().unwrap().write_all(out)?;
             child.wait()
         });
     if let Err(e) = status {
@@ -110,6 +114,88 @@ fn probes() -> [(&'static str, u32, u32); 4] {
         ("4x red wedge", W / 12, (H as f32 * 0.3) as u32),
         ("ramp, 1.6x white", (W as f32 * 0.8) as u32, (H as f32 * 0.85) as u32),
     ]
+}
+
+/// A saturation ramp per BT.2020 hue: six bands, each running from
+/// neutral at the left to the primary or secondary itself at the right.
+/// Values are BT.2020 linear light — a wide-gamut project's pixels.
+fn gamut_chart() -> Vec<f32> {
+    let hues = [
+        [1.0f32, 0.0, 0.0], [1.0, 1.0, 0.0], [0.0, 1.0, 0.0],
+        [0.0, 1.0, 1.0], [0.0, 0.0, 1.0], [1.0, 0.0, 1.0],
+    ];
+    let mut px = vec![0.0f32; (W * H * 4) as usize];
+    for y in 0..H {
+        let hue = hues[(y as usize * hues.len() / H as usize).min(hues.len() - 1)];
+        for x in 0..W {
+            let s = x as f32 / (W - 1) as f32;
+            let i = ((y * W + x) * 4) as usize;
+            for ch in 0..3 {
+                // Neutral 0.5 at s = 0, the full primary at s = 1.
+                px[i + ch] = 0.5 * (1.0 - s) + hue[ch] * s;
+            }
+            px[i + 3] = 1.0;
+        }
+    }
+    px
+}
+
+/// What the SDR view did before the gamut map: the matrix into BT.709,
+/// negatives clamped away.
+fn clip_to_bt709(px: &[f32]) -> Vec<u8> {
+    let m = klipp_color::primaries::bt2020_to_bt709();
+    let mut out = Vec::with_capacity(px.len());
+    for c in px.chunks_exact(4) {
+        let rgb = klipp_color::primaries::matrix3_mul_vec(m, [c[0], c[1], c[2]]);
+        out.extend_from_slice(&[srgb8(rgb[0]), srgb8(rgb[1]), srgb8(rgb[2]), 255]);
+    }
+    out
+}
+
+/// How much of each saturation ramp is flat — the run of identical pixels
+/// at its bright end. A clip flattens colour onto the BT.709 hull, so the
+/// end of every ramp becomes one colour and the grade cannot be judged
+/// there; the gamut map rolls it off instead and the ramp stays a ramp.
+fn plateau(rgba: &[u8], row: u32) -> f32 {
+    let at = |x: u32| {
+        let i = ((row * W + x) * 4) as usize;
+        [rgba[i], rgba[i + 1], rgba[i + 2]]
+    };
+    let last = at(W - 1);
+    let mut flat = 0;
+    for x in (0..W).rev() {
+        if at(x) != last {
+            break;
+        }
+        flat += 1;
+    }
+    flat as f32 / W as f32 * 100.0
+}
+
+/// The gamut section: the same wide-gamut chart clipped and mapped, as
+/// pictures and as the share of each ramp the clip flattens.
+fn gamut_proof(out_dir: &PathBuf) {
+    let chart = gamut_chart();
+    let clipped = clip_to_bt709(&chart);
+    let mapped = klipp_color::display::display_transform_ws(
+        &chart,
+        klipp_color::display::ToneMapOp::None,
+        klipp_core::WorkingColorspace::Bt2020Linear,
+    );
+    for (name, rgba) in [("20-gamut-clipped", &clipped), ("21-gamut-mapped", &mapped)] {
+        let mut rgb = Vec::with_capacity((W * H * 3) as usize);
+        for c in rgba.chunks_exact(4) {
+            rgb.extend_from_slice(&c[..3]);
+        }
+        write_rgb8(&out_dir.join(format!("{name}.png")), &rgb);
+    }
+    println!("\nBT.2020 saturation ramps, share of each ramp the SDR view renders as one flat colour:");
+    println!("{:<10} {:>10} {:>10}", "hue", "clipped", "mapped");
+    for (i, hue) in ["red", "yellow", "green", "cyan", "blue", "magenta"].iter().enumerate() {
+        let row = (i as u32 * H / 6) + H / 12;
+        println!("{hue:<10} {:>9.1}% {:>9.1}%", plateau(&clipped, row), plateau(&mapped, row));
+    }
+    println!("20-gamut-clipped.png is the old SDR view of a BT.2020 project, 21-gamut-mapped.png the new one.");
 }
 
 fn main() {
@@ -155,6 +241,7 @@ fn main() {
             println!("{name:<16} {label:<18} {r:>10.3} {nits:>9.1} {code:>7.0}  [{r:.2}, {g:.2}, {b:.2}]");
         }
     }
-    println!("\nWrote {} pictures to {}", cases.len() * 2, out_dir.display());
+    gamut_proof(&out_dir);
+    println!("\nWrote {} pictures to {}", cases.len() * 2 + 2, out_dir.display());
     println!("*-sdr.png is the SDR view (the viewer's picture); *-pq.png is the HDR master, PQ-encoded.");
 }

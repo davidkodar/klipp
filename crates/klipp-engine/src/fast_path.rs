@@ -108,7 +108,16 @@ pub fn grade_to_display_on_gpu(
     exec.set_lut_tetrahedral(at.lut_tetrahedral);
     exec.set_current_clip_track_points(at.track_points);
     exec.set_solo_node(at.solo);
-    exec.request_output_on_gpu();
+    // The GPU's display encode is an sRGB encode and nothing else: it
+    // has no basis change and no gamut mapping, so it is only the right
+    // answer for a project already in BT.709. A wider working space
+    // finishes through `display_encode` — the viewer's own transform,
+    // which converts the basis and compresses what BT.709 cannot hold —
+    // at the cost of reading the frame back as floats. The grade still
+    // runs on the GPU either way.
+    if at.working == WorkingColorspace::Rec709Linear {
+        exec.request_output_on_gpu();
+    }
     let result = exec.execute_linear_with_thumbs(
         &[], at.graph, width, height, at.clip_time, at.frame_number, None, None, None,
     );

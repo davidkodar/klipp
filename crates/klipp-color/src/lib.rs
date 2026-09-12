@@ -54,6 +54,7 @@ pub mod curves;
 pub mod denoise;
 pub mod difference_key;
 pub mod display;
+pub mod gamut;
 pub mod hdr;
 pub mod hdr_view;
 pub mod huesat;
