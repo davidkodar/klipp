@@ -695,6 +695,7 @@ unsafe fn download_hw_frame(
 ) -> Option<Vec<u16>> {
     use ffmpeg_next::ffi::*;
 
+    let t_start = std::time::Instant::now();
     let sw_frame = av_frame_alloc();
     if sw_frame.is_null() {
         return None;
@@ -706,6 +707,7 @@ unsafe fn download_hw_frame(
         av_frame_free(&mut (sw_frame as *mut _));
         return None;
     }
+    let t_transfer = t_start.elapsed();
 
     let src_w = (*sw_frame).width as u32;
     let src_h = (*sw_frame).height as u32;
@@ -737,48 +739,85 @@ unsafe fn download_hw_frame(
     }
     *sws_ctx = Some(sws);
 
-    // Allocate output RGBA frame
-    let rgba_frame = av_frame_alloc();
-    if rgba_frame.is_null() {
-        av_frame_free(&mut (sw_frame as *mut _));
-        return None;
-    }
-    (*rgba_frame).width = target_w as i32;
-    (*rgba_frame).height = target_h as i32;
-    (*rgba_frame).format = AVPixelFormat::AV_PIX_FMT_RGBA64LE as i32;
-    if av_frame_get_buffer(rgba_frame, 0) < 0 {
-        av_frame_free(&mut (sw_frame as *mut _));
-        av_frame_free(&mut (rgba_frame as *mut _));
-        return None;
-    }
+    // The scaler writes straight into the buffer this returns: no
+    // AVFrame to allocate, and no second pass copying rows out of one.
+    //
+    // Both of those cost more than they look. A 4K RGBA64 frame is
+    // 66 MB, so the old shape allocated 66 MB, had the scaler fill it,
+    // then allocated another 66 MB and copied — and because the second
+    // allocation was fresh every frame, most of its 18.6 ms was the
+    // kernel faulting in pages rather than any work on pixels.
+    //
+    // The capacity is handed over uninitialised for the same reason:
+    // `vec![0u16; n]` would write 66 MB of zeroes only for the scaler to
+    // overwrite every one of them. `sws_scale` fills the whole plane —
+    // `target_w * 8` bytes on each of `target_h` rows, which is exactly
+    // this buffer with no padding — so every element is initialised
+    // before `set_len` publishes it.
+    let samples = target_w as usize * target_h as usize * 4;
+    let mut out: Vec<u16> = Vec::with_capacity(samples);
+    let dst: [*mut u8; 4] = [
+        out.as_mut_ptr() as *mut u8,
+        std::ptr::null_mut(),
+        std::ptr::null_mut(),
+        std::ptr::null_mut(),
+    ];
+    let dst_stride: [i32; 4] = [(target_w * 8) as i32, 0, 0, 0];
 
-    sws_scale(
+    let rows = sws_scale(
         sws,
         (*sw_frame).data.as_ptr() as *const *const u8,
         (*sw_frame).linesize.as_ptr(),
         0,
         src_h as i32,
-        (*rgba_frame).data.as_ptr(),
-        (*rgba_frame).linesize.as_ptr(),
+        dst.as_ptr(),
+        dst_stride.as_ptr(),
     );
-
     av_frame_free(&mut (sw_frame as *mut _));
+    if rows < target_h as i32 {
+        // Short of a full frame means part of the buffer is still
+        // uninitialised; there is nothing safe to hand back.
+        warn!("HW download: sws_scale wrote {rows} of {target_h} rows");
+        return None;
+    }
+    out.set_len(samples);
 
-    // Extract the RGBA64 samples (handle stride padding).
-    let stride = (*rgba_frame).linesize[0] as usize;
-    let data_slice = std::slice::from_raw_parts((*rgba_frame).data[0], stride * target_h as usize);
-    let rgba_data = rgba64_rows(data_slice, stride, target_w as usize, target_h as usize);
-    av_frame_free(&mut (rgba_frame as *mut _));
-    Some(rgba_data)
+    tracing::debug!(
+        "hw download: transfer {:.1}ms, sws {:?}→RGBA64 {:.1}ms",
+        t_transfer.as_secs_f64() * 1000.0,
+        sw_fmt,
+        (t_start.elapsed() - t_transfer).as_secs_f64() * 1000.0,
+    );
+    Some(out)
 }
 
 /// RGBA64LE rows (`stride` bytes apart) → packed `u16` samples.
+///
+/// A 4K frame is 33 million samples, so how this loop is written is
+/// worth a few milliseconds. Unpadded rows — the common case, since the
+/// scaler allocates its own frame at the target width — are one
+/// contiguous block and copy in a single pass. A padded frame is copied
+/// a row at a time, in parallel: the rows are independent, and doing
+/// them one after another through a byte-pair iterator left a whole core
+/// converting while seven idled.
+///
+/// `pod_collect_to_vec` rather than a cast because an AVFrame's buffer
+/// carries no `u16` alignment guarantee.
 fn rgba64_rows(data: &[u8], stride: usize, w: usize, h: usize) -> Vec<u16> {
-    let mut out = Vec::with_capacity(w * h * 4);
-    for row in 0..h {
-        let r = &data[row * stride..row * stride + w * 8];
-        out.extend(r.chunks_exact(2).map(|b| u16::from_le_bytes([b[0], b[1]])));
+    use rayon::prelude::*;
+    let row_bytes = w * 8;
+    if stride == row_bytes {
+        return bytemuck::pod_collect_to_vec(&data[..row_bytes * h]);
     }
+    let mut out = vec![0u16; w * h * 4];
+    out.par_chunks_exact_mut(w * 4)
+        .enumerate()
+        .for_each(|(row, dst)| {
+            let src = &data[row * stride..row * stride + row_bytes];
+            for (d, b) in dst.iter_mut().zip(src.chunks_exact(2)) {
+                *d = u16::from_le_bytes([b[0], b[1]]);
+            }
+        });
     out
 }
 
