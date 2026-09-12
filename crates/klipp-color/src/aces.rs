@@ -326,15 +326,22 @@ fn rrt_sat_matrix() -> [[f32; 3]; 3] {
 /// the next pipeline stage works in AP1. An end-to-end ODT chain
 /// will fold both conversions into the ODT's first step.
 pub fn apply_rrt(aces: [f32; 3]) -> [f32; 3] {
+    apply_rrt_with(aces, &segmented_spline_c5_fwd)
+}
+
+/// [`apply_rrt`] with the tone curve supplied.
+///
+/// The GPU cannot run the segmented spline — it is a knot search over
+/// coefficient tables — so it reads a [`ToneCurveTable`] baked from
+/// that spline instead. Both callers share this one chain so the only
+/// thing that can differ between them is the curve, which is the thing
+/// the parity test measures.
+fn apply_rrt_with(aces: [f32; 3], curve: &dyn Fn(f32) -> f32) -> [f32; 3] {
     // ─── Sweeteners (glow, red modifier, AP1, desaturation) ────
     let ap1_desat = rrt_sweeteners(aces);
 
     // ─── Per-channel tone curve ────────────────────────────────
-    let rgb_post = [
-        segmented_spline_c5_fwd(ap1_desat[0]),
-        segmented_spline_c5_fwd(ap1_desat[1]),
-        segmented_spline_c5_fwd(ap1_desat[2]),
-    ];
+    let rgb_post = [curve(ap1_desat[0]), curve(ap1_desat[1]), curve(ap1_desat[2])];
 
     // ─── AP1 → AP0 (OCES output) ───────────────────────────────
     matrix3_mul_vec(ap1_to_ap0(), rgb_post)
@@ -615,15 +622,17 @@ fn odt_sat_matrix() -> [[f32; 3]; 3] {
 /// SDR delivery the visual difference is small; for parity vs Resolve
 /// the 100-nit-specific coefs will need to ship alongside.
 pub fn apply_odt_rec709_100_nits_dim(oces: [f32; 3]) -> [f32; 3] {
+    apply_odt_rec709_100_nits_dim_with(oces, &segmented_spline_c9_fwd)
+}
+
+/// [`apply_odt_rec709_100_nits_dim`] with the tone curve supplied —
+/// see [`apply_rrt_with`].
+fn apply_odt_rec709_100_nits_dim_with(oces: [f32; 3], curve: &dyn Fn(f32) -> f32) -> [f32; 3] {
     // OCES → AP1 rendering space.
     let rgb_pre = matrix3_mul_vec(ap0_to_ap1(), oces);
 
     // Per-channel C9 tone scale (OCES → display cd/m²).
-    let rgb_post = [
-        segmented_spline_c9_fwd(rgb_pre[0]),
-        segmented_spline_c9_fwd(rgb_pre[1]),
-        segmented_spline_c9_fwd(rgb_pre[2]),
-    ];
+    let rgb_post = [curve(rgb_pre[0]), curve(rgb_pre[1]), curve(rgb_pre[2])];
 
     // Display-luminance → linear CV (normalise to [0, 1]).
     let lin_cv = [
@@ -669,6 +678,100 @@ pub fn apply_odt_rec709_100_nits_dim(oces: [f32; 3]) -> [f32; 3] {
 pub fn acescg_to_rec709_sdr(acescg: [f32; 3]) -> [f32; 3] {
     let oces = apply_rrt(matrix3_mul_vec(ap1_to_ap0(), acescg));
     apply_odt_rec709_100_nits_dim(oces)
+}
+
+// ─── Tone curves as tables, for the GPU ─────────────────────────────
+//
+// The ACES output transform is not a 3D LUT. That was measured rather
+// than assumed: a shaper plus a 3D LUT baked from this file, sampled
+// trilinearly, is out by up to 51 code values at 33³ and still 22 at
+// 97³ (14.6 MB), and the error tracks *saturation* — the red modifier,
+// the glow and the ODT's gamut limit change too fast in saturated
+// mid-tones for any practical grid. Narrowing the shaper's domain
+// barely moves it.
+//
+// What it *is* is mostly closed-form arithmetic with two per-channel
+// tone curves in the middle. Those two curves are the drift-prone part
+// — knot searches over coefficient tables lifted from the AMPAS CTL —
+// so they are baked here, from this file, and everything else is
+// transcribed. A table generated from the authority cannot drift from
+// it; a hand-copied spline can, which is presumably why the last WGSL
+// copy of this was removed.
+
+/// One of the ACES tone curves, sampled for a consumer that cannot
+/// evaluate the spline itself.
+///
+/// Sampled uniformly in `log10(x)` and storing `log10(y)`, because
+/// that is the space the spline is piecewise-quadratic in — so linear
+/// interpolation between entries is accurate where it matters.
+/// Outside `[log_x_min, log_x_max]` both curves are *constant*
+/// (`SPLINE_SLOPE_LOW` and `SPLINE_SLOPE_HIGH` are zero, and the C9
+/// extrapolations are its anchor values), so clamping the lookup is
+/// not an approximation.
+#[derive(Clone, Debug)]
+pub struct ToneCurveTable {
+    pub log_x_min: f32,
+    pub log_x_max: f32,
+    /// `log10(curve(x))` at `log10(x)` stepping uniformly from
+    /// `log_x_min` to `log_x_max`.
+    pub log_y: Vec<f32>,
+}
+
+impl ToneCurveTable {
+    fn bake(curve: &dyn Fn(f32) -> f32, log_x_min: f32, log_x_max: f32, n: usize) -> Self {
+        let log_y = (0..n)
+            .map(|i| {
+                let t = i as f32 / (n - 1) as f32;
+                let x = 10.0_f32.powf(log_x_min + t * (log_x_max - log_x_min));
+                curve(x).max(1e-10).log10()
+            })
+            .collect();
+        Self { log_x_min, log_x_max, log_y }
+    }
+
+    /// The curve at `x`, by interpolating the table — what the shader
+    /// does, so the CPU can be measured against the same arithmetic.
+    pub fn eval(&self, x: f32) -> f32 {
+        let logx = x.max(HALF_MIN).log10();
+        let span = self.log_x_max - self.log_x_min;
+        let t = ((logx - self.log_x_min) / span).clamp(0.0, 1.0) * (self.log_y.len() - 1) as f32;
+        let i = (t.floor() as usize).min(self.log_y.len() - 2);
+        let f = t - i as f32;
+        let logy = self.log_y[i] * (1.0 - f) + self.log_y[i + 1] * f;
+        10.0_f32.powf(logy)
+    }
+}
+
+/// The RRT's tone curve, over the range it is not constant on.
+pub fn rrt_tone_curve_table(n: usize) -> ToneCurveTable {
+    ToneCurveTable::bake(
+        &segmented_spline_c5_fwd,
+        SPLINE_MIN_POINT[0].log10(),
+        SPLINE_MAX_POINT[0].log10(),
+        n,
+    )
+}
+
+/// The Rec.709 SDR ODT's tone curve, likewise.
+pub fn odt_rec709_tone_curve_table(n: usize) -> ToneCurveTable {
+    ToneCurveTable::bake(
+        &segmented_spline_c9_fwd,
+        odt_c9_min_point()[0].log10(),
+        odt_c9_max_point()[0].log10(),
+        n,
+    )
+}
+
+/// [`acescg_to_rec709_sdr`] with both tone curves read from tables —
+/// the arithmetic the GPU performs, so a parity test can separate "is
+/// the table accurate" from "is the shader faithful".
+pub fn acescg_to_rec709_sdr_tabled(
+    acescg: [f32; 3],
+    rrt: &ToneCurveTable,
+    odt: &ToneCurveTable,
+) -> [f32; 3] {
+    let oces = apply_rrt_with(matrix3_mul_vec(ap1_to_ap0(), acescg), &|x| rrt.eval(x));
+    apply_odt_rec709_100_nits_dim_with(oces, &|x| odt.eval(x))
 }
 
 // ─── ODT — Rec.2100 PQ HDR (ACES 1.1 single-stage output transform) ──
@@ -1808,5 +1911,88 @@ mod tests {
         assert!(drift > 0.05,
             "DCI-P3 and Rec.709 ODTs should diverge on saturated red; \
              P3={p3:?} Rec709={r709:?} (total drift {drift})");
+    }
+}
+
+#[cfg(test)]
+mod tone_curve_table_tests {
+    use super::*;
+
+    /// Pseudo-random AcesCG values across eighteen stops and the full
+    /// saturation range — the same shape of input that defeated a 3D
+    /// LUT, so the comparison is like for like.
+    fn samples(n: usize) -> Vec<[f32; 3]> {
+        let mut st = 0x2545_F491_4F6C_DD1Du64;
+        let mut next = move || {
+            st ^= st << 13;
+            st ^= st >> 7;
+            st ^= st << 17;
+            (st >> 11) as f32 / (1u64 << 53) as f32
+        };
+        (0..n)
+            .map(|_| {
+                let base = 2.0f32.powf(next() * 18.0 - 12.0);
+                [
+                    base * (0.2 + 1.6 * next()),
+                    base * (0.2 + 1.6 * next()),
+                    base * (0.2 + 1.6 * next()),
+                ]
+            })
+            .collect()
+    }
+
+    fn worst_levels(n_entries: usize) -> f32 {
+        let rrt = rrt_tone_curve_table(n_entries);
+        let odt = odt_rec709_tone_curve_table(n_entries);
+        samples(20_000)
+            .iter()
+            .flat_map(|s| {
+                let want = acescg_to_rec709_sdr(*s);
+                let got = acescg_to_rec709_sdr_tabled(*s, &rrt, &odt);
+                (0..3).map(move |c| (got[c] - want[c]).abs() * 255.0).collect::<Vec<_>>()
+            })
+            .fold(0.0f32, f32::max)
+    }
+
+    /// Tabling the two tone curves costs almost nothing, where tabling
+    /// the whole three-dimensional transform cost up to 51 code values.
+    /// That difference is the whole reason for this shape.
+    #[test]
+    fn the_tabled_chain_matches_the_spline_chain() {
+        let worst = worst_levels(1024);
+        eprintln!("1024-entry tables: worst {worst:.3} levels of 255");
+        assert!(worst < 0.5, "tabled chain is out by {worst:.3} levels");
+    }
+
+    /// What the table size buys, so the choice is a measurement and not
+    /// a guess.
+    #[test]
+    fn table_size_against_accuracy() {
+        for n in [64usize, 256, 1024, 4096] {
+            eprintln!("{n:>5} entries: worst {:.3} levels", worst_levels(n));
+        }
+    }
+
+    /// Outside the knots both curves are constant, so the clamped
+    /// lookup is exact there rather than approximate — which is what
+    /// lets the table cover only the interesting range.
+    #[test]
+    fn the_curves_are_flat_outside_the_table() {
+        let rrt = rrt_tone_curve_table(1024);
+        let below = SPLINE_MIN_POINT[0] * 0.5;
+        let far_below = SPLINE_MIN_POINT[0] * 0.001;
+        assert!(
+            (segmented_spline_c5_fwd(below) - segmented_spline_c5_fwd(far_below)).abs() < 1e-9,
+            "the RRT curve is not flat below its first knot",
+        );
+        assert!(
+            (rrt.eval(below) - segmented_spline_c5_fwd(below)).abs() < 1e-6,
+            "the clamped lookup disagrees below the first knot",
+        );
+        let above = SPLINE_MAX_POINT[0] * 2.0;
+        assert!(
+            (rrt.eval(above) - segmented_spline_c5_fwd(above)).abs() < 1e-6,
+            "the clamped lookup disagrees above the last knot",
+        );
     }
 }
