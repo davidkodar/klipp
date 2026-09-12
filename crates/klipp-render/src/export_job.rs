@@ -34,7 +34,7 @@ use klipp_core::ExportSettings;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
-use tracing::info;
+use tracing::{debug, info};
 use uuid::Uuid;
 
 /// Top-level export coordinator. Ties together the renderer, the encoder
@@ -229,6 +229,24 @@ impl ExportJob {
         let mut t_audio = std::time::Duration::ZERO;
         let loop_start = std::time::Instant::now();
 
+        // Whether a frame can be converted to the encoder's planes on the
+        // GPU, and with what. Requires a delivery the shader can finish
+        // (`gpu_yuv420_params`) and a picture that fills the output — a
+        // letterboxed export is padded on the CPU, which needs the frame
+        // there anyway.
+        let mut gpu_yuv = if (fit_w, fit_h) == (out_w, out_h) {
+            encoder.gpu_yuv420_params()
+        } else {
+            None
+        };
+        debug!(
+            "ExportJob {}: GPU frame conversion {} (fit {fit_w}x{fit_h}, out {out_w}x{out_h}, \
+             encoder format {:?})",
+            self.id,
+            if gpu_yuv.is_some() { "available" } else { "unavailable" },
+            encoder.video_format(),
+        );
+
         // ─── THE MAIN RENDER LOOP ─────────────────────────────────
         for frame_num in start_frame..end_frame {
             // Check cancellation
@@ -248,6 +266,55 @@ impl ExportJob {
                 rate: self.snapshot.fps_num,
             };
             let t0 = std::time::Instant::now();
+
+            // The frame converted on the GPU, when the whole render is one
+            // clip's grade and the delivery is one this can finish: then
+            // 12.4 MB of Y'CbCr planes come back instead of a 132 MB
+            // linear frame, and the per-pixel display-and-convert pass on
+            // the CPU does not happen at all.
+            //
+            // `gpu_yuv_frames` latches off after a miss. The gate inside
+            // `render_yuv420_on_gpu` is structural and cheap, but if the
+            // grade itself comes back on the CPU — a node with no GPU
+            // dispatch — then this frame is rendered twice, and without
+            // the latch every remaining frame would be too.
+            let planes = gpu_yuv.and_then(|(op, luma, semi)| {
+                renderer.render_yuv420_on_gpu(
+                    timeline, time, fit_w, fit_h, &mut frames, render_opts, op, luma, semi,
+                )
+            });
+            if let Some(planes) = planes {
+                frames.end_frame();
+                t_render += t0.elapsed();
+                let t2 = std::time::Instant::now();
+                encoder.encode_yuv420_planes(&planes, out_w, out_h)?;
+                t_encode += t2.elapsed();
+
+                let t3 = std::time::Instant::now();
+                let mut audio = audio_mixdown.get_frame_audio(frame_num);
+                if loudness_gain_linear != 1.0 {
+                    for s in &mut audio {
+                        *s *= loudness_gain_linear;
+                    }
+                }
+                encoder.encode_audio_samples(&audio)?;
+                t_audio += t3.elapsed();
+
+                export_frame_num += 1;
+                self.progress.store(export_frame_num, Ordering::Relaxed);
+                continue;
+            }
+            if gpu_yuv.is_some() && export_frame_num > 0 {
+                // It worked and then stopped, which means the miss is not
+                // the gate — it is the grade coming back on the CPU, and
+                // that costs a double render every frame from here.
+                gpu_yuv = None;
+                debug!(
+                    "ExportJob {}: GPU frame conversion off from frame {frame_num}",
+                    self.id
+                );
+            }
+
             let picture = renderer.render(timeline, time, fit_w, fit_h, &mut frames, render_opts);
             frames.end_frame();
             t_render += t0.elapsed();

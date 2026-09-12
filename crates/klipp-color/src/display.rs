@@ -533,6 +533,27 @@ impl ExportDisplay {
         Self { tone_map_op: ToneMapOp::None, odt: OdtChoice::MatchViewer, path }
     }
 
+    /// The tone map, when this transform is *only* a tone map and an sRGB
+    /// encode — no basis change, no gamut map, no ODT.
+    ///
+    /// `None` for everything else, and a caller that has a faster route
+    /// for the simple case then knows not to take it. That is the whole
+    /// purpose: the export's GPU path can reproduce this transform in a
+    /// shader exactly, and cannot reproduce an ACES ODT or the BT.2407
+    /// gamut map at all (no GPU twin exists for either), so it must be
+    /// able to tell the difference rather than assume.
+    ///
+    /// `ToneMapOp::Aces` still answers `Some`: it is separable arithmetic
+    /// like the others. It is up to the caller whether its shader
+    /// implements every operator.
+    #[inline]
+    pub fn tone_map_and_srgb_only(&self) -> Option<ToneMapOp> {
+        match self.path {
+            ExportPath::ToneMapSrgb(None) => Some(self.tone_map_op),
+            _ => None,
+        }
+    }
+
     /// Display-encoded RGB, clamped to `[0, 1]`.
     #[inline]
     pub fn encode(&self, rgb: [f32; 3]) -> [f32; 3] {

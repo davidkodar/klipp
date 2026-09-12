@@ -84,11 +84,6 @@ pub struct RenderDecoder {
     scaler: ffmpeg_next::software::scaling::Context,
     /// HW download scaler (raw sws context for NV12→RGBA after GPU download).
     hw_scaler: Option<*mut ffmpeg_next::ffi::SwsContext>,
-    /// NV12 → linear working-space f32 on the GPU, for hardware-decoded
-    /// display-referred frames. Built on the shared `GpuContext` so its
-    /// output buffer can be bound by the grade chain; `None` for software
-    /// decode, or when there is no usable GPU and swscale has to do it.
-    gpu_nv12: Option<klipp_effects::nv12_gpu::GpuNv12Converter>,
     /// The source's Y'CbCr matrix and range, resolved from its stream tags
     /// the same way the viewer resolves them (untagged HD is BT.709).
     yuv_matrix: klipp_core::ColorMatrix,
@@ -288,18 +283,6 @@ impl RenderDecoder {
             t_rotate: std::time::Duration::ZERO,
             scaler,
             hw_scaler: None,
-            // Only for hardware decode: a software-decoded frame is
-            // already on the CPU, so converting it on the GPU would mean
-            // uploading YUV to save a conversion, and swscale is fine at
-            // that point. `with_context` rather than `new` is load-bearing
-            // — a converter on its own private device produces buffers the
-            // grade chain cannot bind.
-            gpu_nv12: if hw_accel != HwAccel::Software {
-                klipp_effects::gpu_context::GpuContext::shared()
-                    .and_then(klipp_effects::nv12_gpu::GpuNv12Converter::with_context)
-            } else {
-                None
-            },
             yuv_matrix,
             yuv_range,
             scene: SceneSource::for_colourspace(source_cs, klipp_core::WorkingColorspace::Rec709Linear),
@@ -370,53 +353,24 @@ impl RenderDecoder {
     /// The next frame as sRGB RGBA8 (empty for a scene-referred source,
     /// whose frames travel as codes — see [`Self::take_scene_referred`]).
     pub fn next_frame(&mut self) -> Result<Option<Vec<u8>>, RenderError> {
-        let Some((_, pixels)) = self.next_frame_with_pts()? else { return Ok(None) };
+        // No converter, so the frame comes back on the CPU: this is the
+        // convenience accessor for smoke tests and probes, not the
+        // export's path, and handing it a GPU buffer it would only have
+        // to read back again buys nothing.
+        let Some((_, pixels)) = self.next_frame_with_pts(&mut None)? else { return Ok(None) };
         Ok(Some(match pixels {
             DecodedPixels::Rgba64(rgba) => rgba.iter().map(|v| (v >> 8) as u8).collect(),
-            // A GPU frame is linear, so it needs encoding and not just
-            // narrowing. This is the convenience accessor — the export
-            // itself never brings a GPU frame down for this.
-            DecodedPixels::GpuLinear(buf) => {
-                let linear = self.read_back_linear(&buf);
-                klipp_effects::linear_f32_rgba_to_srgb_u8(&linear)
+            DecodedPixels::GpuLinear(_) => {
+                unreachable!("no converter was offered, so no GPU frame can come back")
             }
         }))
-    }
-
-    /// Bring a GPU frame down as linear f32 RGBA.
-    ///
-    /// The fallback for anything that wants the pixels on the CPU after
-    /// the decode put them on the GPU. The export's normal path never
-    /// calls this: the frame goes from here into the grade chain without
-    /// crossing the bus, which is the entire point of the GPU route.
-    fn read_back_linear(&self, buf: &wgpu::Buffer) -> Vec<f32> {
-        let Some(conv) = self.gpu_nv12.as_ref() else { return Vec::new() };
-        let (device, queue) = (conv.device(), conv.queue());
-        let bytes = buf.size();
-        let staging = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("render_gpu_frame_readback"),
-            size: bytes,
-            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-            mapped_at_creation: false,
-        });
-        let mut enc =
-            device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
-        enc.copy_buffer_to_buffer(buf, 0, &staging, 0, bytes);
-        queue.submit(std::iter::once(enc.finish()));
-        let slice = staging.slice(..);
-        slice.map_async(wgpu::MapMode::Read, |_| {});
-        device.poll(wgpu::Maintain::Wait);
-        let data = slice.get_mapped_range();
-        let out = bytemuck::pod_collect_to_vec(&data);
-        drop(data);
-        staging.unmap();
-        out
     }
 
     /// The next frame as sRGB-encoded RGBA64 — the source's full precision
     /// for 10- and 12-bit video — with its source time in seconds.
     pub(crate) fn next_frame_with_pts(
         &mut self,
+        nv12: &mut Option<klipp_effects::nv12_gpu::GpuNv12Converter>,
     ) -> Result<Option<(f64, DecodedPixels)>, RenderError> {
         if self.decoder_eof {
             return Ok(None);
@@ -455,7 +409,7 @@ impl RenderDecoder {
                     }
 
                     // Convert to RGBA
-                    let rgba = self.frame_to_rgba(&decoded)?;
+                    let rgba = self.frame_to_rgba(&decoded, nv12)?;
                     self.frames_decoded += 1;
                     return Ok(Some((frame_pts_secs, rgba)));
                 }
@@ -516,6 +470,7 @@ impl RenderDecoder {
     fn frame_to_rgba(
         &mut self,
         decoded: &ffmpeg_next::util::frame::Video,
+        nv12: &mut Option<klipp_effects::nv12_gpu::GpuNv12Converter>,
     ) -> Result<DecodedPixels, RenderError> {
         // For 90/270 rotation, scale to swapped dimensions first.
         let (scale_w, scale_h) = if self.source_rotation == 90 || self.source_rotation == 270 {
@@ -537,7 +492,7 @@ impl RenderDecoder {
         // take. Skips swscale and the rotation pass both, and uploads
         // 12 MB of planes instead of 66 MB of RGBA64.
         let t_gpu = std::time::Instant::now();
-        if let Some(pixels) = unsafe { self.nv12_frame_on_gpu(decoded) } {
+        if let Some(pixels) = unsafe { self.nv12_frame_on_gpu(decoded, nv12) } {
             self.t_convert += t_gpu.elapsed();
             return Ok(pixels);
         }
@@ -606,10 +561,17 @@ impl RenderDecoder {
     unsafe fn nv12_frame_on_gpu(
         &mut self,
         decoded: &ffmpeg_next::util::frame::Video,
+        nv12: &mut Option<klipp_effects::nv12_gpu::GpuNv12Converter>,
     ) -> Option<DecodedPixels> {
         use ffmpeg_next::ffi::*;
 
-        if self.gpu_nv12.is_none() || self.scene.is_some() || self.log_format.is_some() {
+        // Software decode has the frame on the CPU already, so converting
+        // it on the GPU would mean uploading YUV to save a conversion.
+        if nv12.is_none()
+            || self.hw_accel == HwAccel::Software
+            || self.scene.is_some()
+            || self.log_format.is_some()
+        {
             return None;
         }
         let is_hw = decoded.format() == ffmpeg_next::format::Pixel::CUDA
@@ -671,7 +633,7 @@ impl RenderDecoder {
                 self.working,
             ),
         );
-        let buf = self.gpu_nv12.as_mut()?.convert_nv12_to_linear_on_gpu(
+        let buf = nv12.as_mut()?.convert_nv12_to_linear_on_gpu(
             y,
             uv,
             src_w,

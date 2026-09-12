@@ -54,11 +54,11 @@ struct ClipStream {
 }
 
 impl ClipStream {
-    fn pull(&mut self) -> Option<Decoded> {
+    fn pull(&mut self, nv12: &mut Option<klipp_effects::nv12_gpu::GpuNv12Converter>) -> Option<Decoded> {
         if self.ended {
             return None;
         }
-        match self.decoder.next_frame_with_pts() {
+        match self.decoder.next_frame_with_pts(nv12) {
             Ok(Some((pts, pixels))) => Some(Decoded {
                 pts,
                 pixels: pixels.into(),
@@ -79,13 +79,13 @@ impl ClipStream {
     /// Advance to the last frame at or before `secs` (half a frame of
     /// tolerance). Before the first frame, the first frame; past the end,
     /// the last — a transition holding an edge frame.
-    fn seek_forward(&mut self, secs: f64, half_frame: f64) {
+    fn seek_forward(&mut self, secs: f64, half_frame: f64, nv12: &mut Option<klipp_effects::nv12_gpu::GpuNv12Converter>) {
         if self.current.is_none() {
-            self.current = self.pull();
+            self.current = self.pull(nv12);
         }
         loop {
             if self.next.is_none() {
-                self.next = self.pull();
+                self.next = self.pull(nv12);
             }
             match &self.next {
                 Some(n) if n.pts <= secs + half_frame => self.current = self.next.take(),
@@ -101,6 +101,17 @@ pub(crate) struct ExportFrameSource<'a> {
     working: WorkingColorspace,
     streams: HashMap<ClipId, ClipStream>,
     used: HashSet<ClipId>,
+    /// NV12 → linear working-space f32 on the GPU: one converter for the
+    /// whole export, shared by every clip's decoder.
+    ///
+    /// One *per decoder* is what this was first, and it is the wrong
+    /// shape twice over: a five-clip timeline built five compute
+    /// pipelines with five sets of plane buffers to do the same job, and
+    /// on the shared device that many at once exhausts the descriptor
+    /// pool — which is a segfault, not an error. Built on
+    /// `GpuContext::shared` because the buffers it produces have to be
+    /// bindable by the grade chain.
+    nv12: Option<klipp_effects::nv12_gpu::GpuNv12Converter>,
     /// Time spent pulling frames out of the decoders, and time spent
     /// turning what they hand back into the renderer's linear frames.
     /// Reported by the export's per-frame breakdown, because "render is
@@ -117,6 +128,8 @@ impl<'a> ExportFrameSource<'a> {
             working,
             streams: HashMap::new(),
             used: HashSet::new(),
+            nv12: klipp_effects::gpu_context::GpuContext::shared()
+                .and_then(klipp_effects::nv12_gpu::GpuNv12Converter::with_context),
             t_decode: std::time::Duration::ZERO,
             t_convert: std::time::Duration::ZERO,
         }
@@ -177,8 +190,11 @@ impl FrameSource for ExportFrameSource<'_> {
         }
         let half_frame = 0.5 / self.fps.max(1.0);
         let t0 = std::time::Instant::now();
-        let stream = self.streams.get_mut(&clip.id)?;
-        stream.seek_forward(source_secs, half_frame);
+        // Split the borrow: the stream and the shared converter are
+        // different fields, and the decode needs both at once.
+        let Self { streams, nv12, .. } = self;
+        let stream = streams.get_mut(&clip.id)?;
+        stream.seek_forward(source_secs, half_frame, nv12);
         let to_working = stream.to_working;
         let decoded = stream.current.as_ref();
         self.t_decode += t0.elapsed();
@@ -190,9 +206,10 @@ impl FrameSource for ExportFrameSource<'_> {
 
     /// The decoder's next frame, already pulled by `frame`'s seek.
     fn frame_after(&mut self, clip: &Clip, _source_secs: f64, width: u32, height: u32) -> Option<SourceFrame> {
-        let stream = self.streams.get_mut(&clip.id)?;
+        let Self { streams, nv12, .. } = self;
+        let stream = streams.get_mut(&clip.id)?;
         if stream.next.is_none() {
-            stream.next = stream.pull();
+            stream.next = stream.pull(nv12);
         }
         let to_working = stream.to_working;
         stream.next.as_ref().map(|d| source_frame(d, to_working, width, height))

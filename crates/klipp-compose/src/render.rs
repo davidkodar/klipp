@@ -529,6 +529,150 @@ impl Renderer {
         (out, found)
     }
 
+    /// The render as 8-bit 4:2:0 planes — Y, then Cb, then Cr, tightly
+    /// packed — produced on the GPU, when the whole render is one clip's
+    /// grade and nothing else.
+    ///
+    /// This exists so a render does not have to bring a linear frame back
+    /// across the bus only for the CPU to convert it. At 4K that trade is
+    /// 132 MB and a per-pixel pass against 12.4 MB and no pass at all.
+    ///
+    /// `None` — having rendered nothing, so the caller can render normally
+    /// without having wasted the frame — whenever the grade is *not* the
+    /// whole render. The list is long and deliberately conservative,
+    /// because being wrong here means a wrong picture rather than a slow
+    /// one: anything composited, faded, transformed, masked, blended,
+    /// keyed, plugin-processed, blended between frames, HDR, inspected, or
+    /// synthetic goes the ordinary way. `export_gpu_path_agrees_with_the_renderer`
+    /// holds this against `render` over each of those shapes.
+    ///
+    /// The conditions that are properties of the clip's own effect stack
+    /// are asked of `clip_effects` itself rather than re-derived here, so
+    /// there is no second opinion about what a transform or an opacity
+    /// keyframe amounts to.
+    ///
+    /// One more case declines that is not in the list, because it is not
+    /// a decision made here: a clip with an **identity grade** never
+    /// starts the GPU chain, so there is no GPU-resident result to
+    /// convert. An ungraded timeline therefore exports at the ordinary
+    /// speed. Worth fixing by running the chain as a pass-through, and
+    /// worth knowing about before measuring an export and concluding
+    /// this path does nothing.
+    #[allow(clippy::too_many_arguments)]
+    pub fn render_yuv420_on_gpu(
+        &mut self,
+        seq: &Sequence,
+        time: Timecode,
+        width: u32,
+        height: u32,
+        src: &mut dyn FrameSource,
+        opts: RenderOptions,
+        tone_map_op: u32,
+        luma_coefs: [f32; 3],
+        semi_planar: bool,
+    ) -> Option<Vec<u8>> {
+        // An HDR render finishes with a display-light pass the shader has
+        // no twin for.
+        if opts.hdr_peak_nits.is_some() {
+            return None;
+        }
+        let fps = seq.fps.as_f64();
+        let stack = stack(seq, time);
+        let (track, clip) = match stack.as_slice() {
+            [(_, track, TrackItem::Clip(c))] => (*track, *c),
+            // Nothing, a transition, or more than one layer.
+            _ => return None,
+        };
+        if (track.opacity - 1.0).abs() > 1e-6 {
+            return None;
+        }
+        if !matches!(clip.kind, ClipKind::Media { .. }) {
+            return None;
+        }
+        if !matches!(clip.blend_mode, klipp_core::BlendMode::Normal) {
+            return None;
+        }
+        if clip.consumed_as_matte || clip.matte_source.is_some() || clip.matte_stencil.is_some() {
+            return None;
+        }
+        // OFX plugins run on the CPU frame, and a temporal one wants
+        // neighbouring frames too.
+        if !clip.effects.is_empty() {
+            return None;
+        }
+        // Two frames blended for a speed ramp is a CPU operation on the
+        // source, before the grade even starts.
+        if frame_blends(clip, time) {
+            return None;
+        }
+        if title_motion_blur(clip).is_some() {
+            return None;
+        }
+        // Anything the grade panel asks for is read off the linear frame
+        // or a node's output, neither of which this path produces.
+        let i = &self.inspect;
+        if i.clip.is_some()
+            || i.ungraded
+            || i.thumbs.is_some()
+            || i.scope_tap.is_some()
+            || i.matte_view.is_some()
+            || i.solo.is_some()
+            || i.matte_of.is_some()
+        {
+            return None;
+        }
+        // And the clip's own stack, answered by the code that builds it:
+        // an empty effect list at full opacity means the grade's output is
+        // the clip's output. The transform is in there too — a pan, a
+        // zoom or a rotation arrives as an effect.
+        let mut transforms: HashMap<ClipId, ResolvedTransform> = HashMap::new();
+        let resolved = eval::resolve_clip_transform(
+            clip, seq, time, fps, &mut transforms, &mut self.glyph_cache, &mut self.titles,
+            seq.resolution.width, seq.resolution.height,
+        );
+        let (fx, opacity) = clip_effects(clip, time, fps, Some(resolved));
+        if !fx.is_empty() || (opacity - 1.0).abs() > 1e-6 {
+            return None;
+        }
+
+        // Everything checked. Run the clip's grade with its result left in
+        // the chain, and convert it there.
+        let clip_time = eval_clip_time(clip, time);
+        let at = source_secs(clip, time, fps);
+        let f = src.frame(clip, at, width, height)?;
+        if (f.width, f.height) != (width, height) {
+            return None;
+        }
+        let input = match f.pixels {
+            SourcePixels::Gpu(g) => GradeInput::Gpu(g),
+            SourcePixels::SceneReferred { codes, transfer, source_to_working }
+                if codes.len() == (width as usize) * (height as usize) =>
+            {
+                // A scene-referred source renders display light, which is
+                // the HDR pass this path does not have.
+                let _ = (transfer, source_to_working);
+                return None;
+            }
+            SourcePixels::Linear(pixels) => GradeInput::Cpu(pixels),
+            _ => return None,
+        };
+
+        self.executor.request_output_on_gpu();
+        let pixels = self.grade(clip, input, clip_time, fps, width, height);
+        // The grade kept its result on the GPU exactly when it returns
+        // nothing. Coming back on the CPU instead — a node with no GPU
+        // dispatch, a device that failed — means this frame gets rendered
+        // twice, once here and once by the caller. That is the one case
+        // where taking this path costs something, so a caller in a loop
+        // should stop asking after the first time it happens rather than
+        // pay it on every frame.
+        if !pixels.is_empty() {
+            return None;
+        }
+        self.executor
+            .encode_output_to_yuv420(width, height, tone_map_op, luma_coefs, semi_planar)
+    }
+
     fn render_stack(
         &mut self,
         seq: &Sequence,

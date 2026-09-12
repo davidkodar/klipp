@@ -264,6 +264,10 @@ pub struct GpuEffectsPipeline {
     /// is how a software-decoded export frame reaches the chain, since
     /// its scaler's output does not fit in 8 bits.
     bridge_rgba64_to_linear_pipeline: wgpu::ComputePipeline,
+    /// Graded linear frame → the encoder's Y'CbCr planes: display
+    /// transform, colour matrix and chroma subsampling in one pass, so
+    /// only the planes cross the bus.
+    linear_to_yuv420_pipeline: wgpu::ComputePipeline,
     /// Packed RGB10 HDR code values → scene-linear working-space f32,
     /// written into the chain's `buf_a`. The GPU half of
     /// `klipp_color::hdr::hdr10_codes_to_scene_linear_rgba`.
@@ -888,6 +892,11 @@ impl GpuEffectsPipeline {
         let bridge_rgba64_to_linear_pipeline = create_pipeline(
             &device, &pipeline_layout, "bridge_rgba64_to_linear", SHADER_RGBA64_TO_LINEAR,
         );
+        // The export's last step, on the same 3-binding layout: linear
+        // frame in, packed Y/Cb/Cr planes out.
+        let linear_to_yuv420_pipeline = create_pipeline(
+            &device, &pipeline_layout, "linear_to_yuv420", SHADER_LINEAR_TO_YUV420,
+        );
         // Both HDR kernels share the colourspace prelude with the P010
         // decoder, so the PQ/HLG curves on either side are one definition.
         let hdr10_src = format!(
@@ -1018,6 +1027,7 @@ impl GpuEffectsPipeline {
             bridge_u8_pipeline,
             bridge_u8_to_linear_pipeline,
             bridge_rgba64_to_linear_pipeline,
+            linear_to_yuv420_pipeline,
             bridge_hdr10_pipeline,
             display_u8_pipeline,
             display_u8_staging: None,
@@ -1838,6 +1848,95 @@ impl GpuEffectsPipeline {
         self.queue.submit(std::iter::once(encoder.finish()));
         self.submit_count.fetch_add(1, Ordering::Relaxed);
         true
+    }
+
+    /// The chain's graded frame straight to 8-bit 4:2:0 planes: Y, then
+    /// Cb, then Cr, tightly packed, ready for the encoder.
+    ///
+    /// The whole point is what does *not* happen — the linear frame never
+    /// comes down. At 4K that is 132 MB replaced by 12.4 MB, and the
+    /// per-pixel CPU display-and-convert pass replaced by nothing.
+    ///
+    /// `None` when this is not the right route and the caller must use
+    /// `encode_linear_direct`: no GPU, a device lost, dimensions the
+    /// block layout cannot tile (width not a multiple of 8, height odd),
+    /// or a tone map the shader does not implement. The `tone_map_op`
+    /// encoding is 0 none, 1 Reinhard, 2 Hable; the caller has already
+    /// established that the display transform is a tone map and an sRGB
+    /// encode and nothing more.
+    pub fn encode_chain_to_yuv420(
+        &mut self,
+        slot_a: bool,
+        width: u32,
+        height: u32,
+        tone_map_op: u32,
+        luma_coefs: [f32; 3],
+        semi_planar: bool,
+    ) -> Option<Vec<u8>> {
+        if self.is_device_lost() || width % 8 != 0 || height % 2 != 0 || tone_map_op > 2 {
+            return None;
+        }
+        let pixel_count = (width as u64) * (height as u64);
+        if pixel_count == 0 {
+            return None;
+        }
+        let luma_bytes = pixel_count;
+        let chroma_bytes = pixel_count / 4;
+        let total = luma_bytes + 2 * chroma_bytes;
+
+        let source = if slot_a { self.buf_a.as_ref() } else { self.buf_b.as_ref() };
+        let source = source?;
+        // The planes need their own buffer: `buf_c` is a chain slot and
+        // may hold a frame the graph still wants.
+        let planes = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("yuv420_planes"),
+            size: total,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
+        });
+
+        self.write_params(&Yuv420Params {
+            width,
+            height,
+            tone_map_op,
+            chroma_word_offset: (luma_bytes / 4) as u32,
+            kr: luma_coefs[0],
+            kg: luma_coefs[1],
+            kb: luma_coefs[2],
+            semi_planar: semi_planar as u32,
+        });
+        let bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("linear_to_yuv420_bg"),
+            layout: &self.bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: source.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: planes.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 2, resource: self.params_buf.as_entire_binding() },
+            ],
+        });
+
+        // Ride the open chain encoder when there is one, so the whole
+        // frame is a single submit; NVIDIA's driver charges 5-15 ms for
+        // each one.
+        let mut encoder = self.chain_encoder.take().unwrap_or_else(|| {
+            self.device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("yuv420") })
+        });
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: None,
+                timestamp_writes: None,
+            });
+            pass.set_pipeline(&self.linear_to_yuv420_pipeline);
+            pass.set_bind_group(0, &bg, &[]);
+            pass.dispatch_workgroups((width / 8).div_ceil(8), (height / 2).div_ceil(8), 1);
+        }
+        self.queue.submit(std::iter::once(encoder.finish()));
+        self.submit_count.fetch_add(1, Ordering::Relaxed);
+
+        // `staging_read` is sized for a whole linear frame, which is ten
+        // times these planes, so the chain having run means it fits.
+        self.with_downloaded(&planes, total, |bytes| bytes.to_vec())
     }
 
     /// Put a frame that is already linear working-space f32 on the GPU
@@ -5023,6 +5122,19 @@ struct BridgeU8Params {
 
 #[repr(C)]
 #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+struct Yuv420Params {
+    width: u32,
+    height: u32,
+    tone_map_op: u32,
+    chroma_word_offset: u32,
+    kr: f32,
+    kg: f32,
+    kb: f32,
+    semi_planar: u32,
+}
+
+#[repr(C)]
+#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
 struct Rgba64BridgeParams {
     width: u32,
     height: u32,
@@ -6679,6 +6791,155 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let a = f32(a_u) / 255.0;
     // sRGB transfer on RGB; alpha stays linear per sRGB spec.
     output[idx] = pack(vec4<f32>(srgb_to_linear_c(r), srgb_to_linear_c(g), srgb_to_linear_c(b), a));
+}
+"
+);
+
+// The end of the export: a graded linear frame straight to the encoder's
+// Y'CbCr planes, tone map, display encode, colour matrix and chroma
+// subsampling all in the one pass.
+//
+// This is what stops 132 MB crossing the bus. The frame used to come back
+// as linear f32 so the CPU could apply the display transform and convert
+// to YUV; doing both here means only the planes come down — 12.4 MB for
+// 4:2:0 at 4K, a tenth of the traffic — and the per-pixel CPU pass is
+// gone with it.
+//
+// It must agree with `encode_linear_direct` exactly, which is the CPU
+// twin and the authority; `gpu_yuv_matches_cpu` holds them to a level.
+// That means the same order of operations: negatives clamped, tone map,
+// sRGB encode, clamp to [0,1], luma from the *display-encoded* RGB, and
+// chroma from the mean of the display-encoded RGB over the block — not
+// the mean of the chroma, which is a different number.
+//
+// One invocation per 8x2 pixel block, because WGSL stores `u32` and not
+// bytes: eight pixels wide is two whole words of luma per row, and the
+// four chroma samples they reduce to are one whole word each of Cb and
+// Cr. Every write is word-aligned with no read-modify-write and no
+// atomics. The caller guarantees width % 8 == 0 and height % 2 == 0.
+// `shader_linear_helpers_wgsl` already carries the pixel storage hook.
+const SHADER_LINEAR_TO_YUV420: &str = concat!(
+    shader_linear_helpers_wgsl!(),
+    "
+struct Params {
+    width: u32,
+    height: u32,
+    // 0 none, 1 Reinhard, 2 Hable. Anything else is refused by the host.
+    tone_map_op: u32,
+    // Word offset of the chroma. Planar: the Cb plane, with Cr one plane
+    // further on. Semi-planar: the single interleaved UV plane.
+    chroma_word_offset: u32,
+    kr: f32,
+    kg: f32,
+    kb: f32,
+    // 1 for NV12's interleaved UV, 0 for separate Cb and Cr planes.
+    semi_planar: u32,
+}
+@group(0) @binding(0) var<storage, read> input: array<vec4<f32>>;
+@group(0) @binding(1) var<storage, read_write> output: array<u32>;
+@group(0) @binding(2) var<uniform> params: Params;
+
+fn hable_curve(x: f32) -> f32 {
+    let a = 0.15; let b = 0.50; let c = 0.10;
+    let d = 0.20; let e = 0.02; let f = 0.30;
+    return ((x * (a * x + c * b) + d * e) / (x * (a * x + b) + d * f)) - e / f;
+}
+
+fn tone_map_c(v: f32) -> f32 {
+    if params.tone_map_op == 1u { return v / (1.0 + v); }
+    if params.tone_map_op == 2u {
+        // hable_normalised: the exposure bias and the white point are
+        // part of the curve, not the caller's business.
+        return hable_curve(v * 2.0) / hable_curve(11.2);
+    }
+    return v;
+}
+
+/// One pixel through the display transform: the CPU twin's
+/// `ExportDisplay::encode` on the `ToneMapSrgb(None)` path.
+fn display_encode(px: vec3<f32>) -> vec3<f32> {
+    // Negatives clamped before the tone map, as the twin does.
+    let lin = max(px, vec3<f32>(0.0));
+    let m = vec3<f32>(tone_map_c(lin.x), tone_map_c(lin.y), tone_map_c(lin.z));
+    let e = vec3<f32>(
+        linear_to_srgb_component(m.x),
+        linear_to_srgb_component(m.y),
+        linear_to_srgb_component(m.z),
+    );
+    return clamp(e, vec3<f32>(0.0), vec3<f32>(1.0));
+}
+
+/// `quant` from the CPU twin: offset, scale, round half up, clamp to
+/// eight bits.
+fn quant(v: f32, off: f32, range: f32) -> u32 {
+    return u32(clamp(off + v * range + 0.5, 0.0, 255.0));
+}
+
+fn luma(e: vec3<f32>) -> f32 {
+    return params.kr * e.x + params.kg * e.y + params.kb * e.z;
+}
+
+@compute @workgroup_size(8, 8)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let bx = gid.x;          // 8-pixel column block
+    let by = gid.y;          // 2-pixel row block
+    if bx * 8u >= params.width || by * 2u >= params.height { return; }
+
+    let x0 = bx * 8u;
+    let y0 = by * 2u;
+
+    // The sixteen pixels of the block, display-encoded once and reused
+    // for both luma and chroma.
+    var e: array<vec3<f32>, 16>;
+    for (var r = 0u; r < 2u; r = r + 1u) {
+        for (var c = 0u; c < 8u; c = c + 1u) {
+            let p = unpack(input[(y0 + r) * params.width + x0 + c]);
+            e[r * 8u + c] = display_encode(p.xyz);
+        }
+    }
+
+    // Luma: two words per row, four pixels to a word, low byte first.
+    for (var r = 0u; r < 2u; r = r + 1u) {
+        let row_word = ((y0 + r) * params.width + x0) / 4u;
+        for (var half = 0u; half < 2u; half = half + 1u) {
+            var w = 0u;
+            for (var k = 0u; k < 4u; k = k + 1u) {
+                let v = quant(luma(e[r * 8u + half * 4u + k]), 16.0, 219.0);
+                w = w | (v << (k * 8u));
+            }
+            output[row_word + half] = w;
+        }
+    }
+
+    // Chroma: the block's four 2x2 quads, averaged in display-encoded
+    // RGB before the difference is taken.
+    var cb: array<u32, 4>;
+    var cr: array<u32, 4>;
+    for (var q = 0u; q < 4u; q = q + 1u) {
+        let acc = (e[q * 2u] + e[q * 2u + 1u] + e[8u + q * 2u] + e[8u + q * 2u + 1u]) * 0.25;
+        let l = luma(acc);
+        cb[q] = quant((acc.z - l) / (2.0 * (1.0 - params.kb)), 128.0, 224.0);
+        cr[q] = quant((acc.x - l) / (2.0 * (1.0 - params.kr)), 128.0, 224.0);
+    }
+
+    if params.semi_planar == 1u {
+        // NV12: one plane of Cb,Cr pairs. Four pairs is eight bytes, so
+        // two words, at this block's byte offset in a row `width` wide.
+        let uv_word = (by * params.width + x0) / 4u;
+        output[params.chroma_word_offset + uv_word] =
+            cb[0] | (cr[0] << 8u) | (cb[1] << 16u) | (cr[1] << 24u);
+        output[params.chroma_word_offset + uv_word + 1u] =
+            cb[2] | (cr[2] << 8u) | (cb[3] << 16u) | (cr[3] << 24u);
+    } else {
+        // Separate planes, each half as wide and half as tall as the
+        // picture: four samples is exactly one word.
+        let c_word = (by * (params.width / 2u) + x0 / 2u) / 4u;
+        let plane_words = (params.width / 2u) * (params.height / 2u) / 4u;
+        output[params.chroma_word_offset + c_word] =
+            cb[0] | (cb[1] << 8u) | (cb[2] << 16u) | (cb[3] << 24u);
+        output[params.chroma_word_offset + plane_words + c_word] =
+            cr[0] | (cr[1] << 8u) | (cr[2] << 16u) | (cr[3] << 24u);
+    }
 }
 "
 );
@@ -11128,6 +11389,7 @@ pub fn shader_sources() -> Vec<(&'static str, &'static str)> {
         ("SHADER_LINEAR_TO_U8", SHADER_LINEAR_TO_U8),
         ("SHADER_U8_TO_LINEAR", SHADER_U8_TO_LINEAR),
         ("SHADER_RGBA64_TO_LINEAR", SHADER_RGBA64_TO_LINEAR),
+        ("SHADER_LINEAR_TO_YUV420", SHADER_LINEAR_TO_YUV420),
         ("SHADER_TRANSITION", SHADER_TRANSITION),
         ("SHADER_COLOR_GRADE", SHADER_COLOR_GRADE),
         ("SHADER_HUESAT", SHADER_HUESAT),

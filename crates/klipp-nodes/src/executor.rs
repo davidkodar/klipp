@@ -712,6 +712,34 @@ impl GraphExecutor {
         ok
     }
 
+    /// The last run's GPU-resident result as 8-bit 4:2:0 planes — Y, then
+    /// Cb, then Cr, tightly packed — instead of a linear frame read back.
+    ///
+    /// The render's counterpart to `encode_output_to_display_u8`: the
+    /// export's display transform and colour conversion happen on the
+    /// GPU, so only the planes cross the bus. `None` if the last run did
+    /// not keep its output there, or the GPU cannot take this frame —
+    /// see `GpuEffectsPipeline::encode_chain_to_yuv420` for which frames
+    /// those are — and the caller then converts on the CPU.
+    pub fn encode_output_to_yuv420(
+        &mut self,
+        width: u32,
+        height: u32,
+        tone_map_op: u32,
+        luma_coefs: [f32; 3],
+        semi_planar: bool,
+    ) -> Option<Vec<u8>> {
+        let slot_a = self.output_on_gpu?;
+        self.gpu.as_mut()?.encode_chain_to_yuv420(
+            slot_a,
+            width,
+            height,
+            tone_map_op,
+            luma_coefs,
+            semi_planar,
+        )
+    }
+
     /// Seed the chain from a buffer that is already linear working-space
     /// f32 on the GPU — a frame some other pass converted there, with no
     /// expansion left to do.

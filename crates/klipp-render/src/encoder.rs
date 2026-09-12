@@ -842,6 +842,11 @@ impl Encoder {
         })
     }
 
+    /// The pixel format the encoder takes frames in.
+    pub fn video_format(&self) -> ffmpeg_next::format::Pixel {
+        self.video_encoder.format()
+    }
+
     /// Human-readable hardware info for the video encoder.
     pub fn hw_info(&self) -> &'static str {
         if self.video_codec_name.contains("nvenc") {
@@ -893,6 +898,97 @@ impl Encoder {
         }
         let display_u8 = self.display.frame(linear_rgba, |v| (v.clamp(0.0, 1.0) * 255.0 + 0.5) as u8);
         self.encode_video_frame(&display_u8, width, height)
+    }
+
+    /// What a GPU-produced frame would have to be for this encoder to take
+    /// it: the tone map (0 none, 1 Reinhard, 2 Hable) and the output's
+    /// luma coefficients.
+    ///
+    /// `None` when the frame has to come back as linear floats instead —
+    /// a delivery whose display transform is more than a tone map and an
+    /// sRGB encode (an ACES ODT, a gamut map, PQ or HLG), a format that is
+    /// not 8-bit 4:2:0, a GIF's palette filter, or a PQ delivery, whose
+    /// MaxCLL is measured off the linear frame.
+    ///
+    /// The third value is whether the chroma is interleaved: NVENC takes
+    /// NV12, and a software encoder YUV420P. Both are 8-bit 4:2:0 and
+    /// differ only in how the two chroma planes are laid out.
+    pub fn gpu_yuv420_params(&self) -> Option<(u32, [f32; 3], bool)> {
+        use ffmpeg_next::format::Pixel as P;
+        if self.gif_filter.is_some() || self.hdr_mode == klipp_core::HdrMode::Pq {
+            return None;
+        }
+        let semi = match self.video_encoder.format() {
+            P::YUV420P => false,
+            P::NV12 => true,
+            _ => return None,
+        };
+        let op = match self.display.tone_map_and_srgb_only()? {
+            klipp_color::display::ToneMapOp::None => 0,
+            klipp_color::display::ToneMapOp::Reinhard => 1,
+            klipp_color::display::ToneMapOp::Hable => 2,
+            // The ACES fit is not separable; no shader twin.
+            klipp_color::display::ToneMapOp::Aces => return None,
+        };
+        let (kr, kb) = match self.yuv_matrix {
+            klipp_core::ColorMatrix::Bt2020Ncl | klipp_core::ColorMatrix::Bt2020Cl => (0.2627f32, 0.0593f32),
+            _ => (0.2126, 0.0722),
+        };
+        Some((op, [kr, 1.0 - kr - kb, kb], semi))
+    }
+
+    /// Encode a frame the GPU already converted: 8-bit 4:2:0, luma then
+    /// chroma, tightly packed, in whichever layout
+    /// [`Self::gpu_yuv420_params`] asked for.
+    ///
+    /// Only the row copies into the encoder's frame happen here — the
+    /// display transform and the colour conversion were done on the GPU,
+    /// which is the point. The planes are tightly packed and an AVFrame's
+    /// are not, so each row is copied to its own stride.
+    pub fn encode_yuv420_planes(
+        &mut self,
+        planes: &[u8],
+        width: u32,
+        height: u32,
+    ) -> Result<(), RenderError> {
+        use ffmpeg_next::format::Pixel as P;
+        use rayon::prelude::*;
+        let fmt = self.video_encoder.format();
+        let (wu, hu) = (width as usize, height as usize);
+        let luma = wu * hu;
+        if planes.len() != luma + luma / 2 {
+            return Err(RenderError::Encode(format!(
+                "GPU planes are {} bytes, expected {} for {width}x{height}",
+                planes.len(),
+                luma + luma / 2,
+            )));
+        }
+        let mut frame = ffmpeg_next::frame::Video::new(fmt, width, height);
+        let (y_src, chroma) = planes.split_at(luma);
+        // Y, then either one interleaved plane of the same row width or
+        // two planes of half.
+        let mut rows: Vec<(usize, &[u8], usize, usize)> = vec![(0, y_src, wu, hu)];
+        match fmt {
+            P::NV12 => rows.push((1, chroma, wu, hu / 2)),
+            _ => {
+                let (cb, cr) = chroma.split_at(luma / 4);
+                rows.push((1, cb, wu / 2, hu / 2));
+                rows.push((2, cr, wu / 2, hu / 2));
+            }
+        }
+        for (plane, src, w, h) in rows {
+            let stride = frame.stride(plane);
+            frame.data_mut(plane)[..stride * h]
+                .par_chunks_mut(stride)
+                .zip(src.par_chunks(w))
+                .for_each(|(dst, s)| dst[..w].copy_from_slice(s));
+        }
+        frame.set_pts(Some(self.video_pts));
+        self.video_pts += 1;
+        self.video_encoder
+            .send_frame(&frame)
+            .map_err(|e| RenderError::Encode(format!("send video frame: {e}")))?;
+        self.drain_video_packets()
     }
 
     /// Record a PQ frame's light levels (other deliveries signal none).
