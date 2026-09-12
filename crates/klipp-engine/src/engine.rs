@@ -6552,11 +6552,16 @@ impl PlaybackEngine {
 
         let settings = self.scope_ffmpeg_settings;
         let bloom_enabled = self.scope_bloom_enabled;
+        // The frame is in the project's working space, so that is the basis
+        // its luma and chroma mean anything in.
+        let basis = klipp_color::scopes::ScopeBasis::for_working_space(
+            crate::video_decoder::working_colorspace(),
+        );
         let mut rendered: Vec<(u8, Option<Vec<u8>>)> = Vec::with_capacity(to_render.len());
         for &mode in &to_render {
             let tex = match self
                 .ffmpeg_scope_bank
-                .render_linear(mode, linear_rgba, src_w, src_h, settings)
+                .render_linear(mode, linear_rgba, src_w, src_h, settings, basis)
             {
                 Ok(Some(bytes)) => Some(bytes),
                 Ok(None) => None,

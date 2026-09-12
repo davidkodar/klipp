@@ -68,6 +68,30 @@ impl Default for ScopeBasis {
     }
 }
 
+/// The six target boxes, as `(name, Cb, Cr)`, in the basis the scope is
+/// measuring.
+///
+/// Drawn for 75% bars, which is the amplitude a broadcast graticule's boxes
+/// are for — 100% bars overshoot them, as they do on hardware. Each space
+/// puts its own primaries in a slightly different place, so these follow
+/// the project: a picture that is legal in BT.2020 has to read legal on a
+/// BT.2020 vectorscope.
+pub fn vectorscope_targets(basis: ScopeBasis) -> [(&'static str, f32, f32); 6] {
+    const BARS: [(&str, [f32; 3]); 6] = [
+        ("R", [1.0, 0.0, 0.0]),
+        ("Yl", [1.0, 1.0, 0.0]),
+        ("G", [0.0, 1.0, 0.0]),
+        ("Cy", [0.0, 1.0, 1.0]),
+        ("B", [0.0, 0.0, 1.0]),
+        ("Mg", [1.0, 0.0, 1.0]),
+    ];
+    const AMPLITUDE: f32 = 0.75;
+    BARS.map(|(name, rgb)| {
+        let (cb, cr) = basis.chroma(rgb.map(|c| c * AMPLITUDE));
+        (name, cb, cr)
+    })
+}
+
 /// Waveform data: per-column luma histogram with 256 bins.
 pub struct WaveformData {
     /// One [u32; 256] histogram per display column.

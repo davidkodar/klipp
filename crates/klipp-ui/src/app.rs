@@ -26451,6 +26451,9 @@ impl eframe::App for KlippApp {
                 lufs_target,
                 &spectrum_history,
                 &self.theme,
+                klipp_color::scopes::ScopeBasis::for_working_space(
+                    self.state.project_working_colorspace,
+                ),
             );
         }
 
@@ -30311,6 +30314,9 @@ impl KlippApp {
                                 bottom_scope_cursor,
                                 self.state.scope_cursor_show,
                                 &self.theme,
+                                klipp_color::scopes::ScopeBasis::for_working_space(
+                                    self.state.project_working_colorspace,
+                                ),
                             );
                         });
                     }
@@ -31685,6 +31691,9 @@ impl KlippApp {
                 bottom_scope_cursor,
                 self.state.scope_cursor_show,
                 &self.theme,
+                klipp_color::scopes::ScopeBasis::for_working_space(
+                    self.state.project_working_colorspace,
+                ),
             );
         });
         // U-6: same guard as render_color_ws_bottom_tools. Scopes only

@@ -283,6 +283,17 @@ fn apply_low_pass_filter(image: &mut egui::ColorImage) {
 }
 
 /// Show the complete scope panel with header, scale, and traces.
+/// Screen direction of the skin-tone line at `angle_deg`, measured the way
+/// the standard states it: anticlockwise from the +Cb axis, with Cr up.
+///
+/// Screen y grows downward, so Cr is negated — the one step that puts the
+/// line between Yl and R where it belongs, instead of mirroring it into the
+/// opposite quadrant.
+pub fn skin_line_direction(angle_deg: f32) -> (f32, f32) {
+    let rad = angle_deg.to_radians();
+    (rad.cos(), -rad.sin())
+}
+
 pub fn show_scopes(
     ui: &mut egui::Ui,
     state: &mut ScopeState,
@@ -294,6 +305,7 @@ pub fn show_scopes(
     scope_cursor: Option<crate::state::ScopeCursorData>,
     show_cursor: bool,
     theme: &KlippTheme,
+    basis: klipp_color::scopes::ScopeBasis,
 ) {
     let render_h: usize = 512;
 
@@ -604,9 +616,7 @@ pub fn show_scopes(
             // Yl and R). Stops short of the hue ring so the "I" label
             // sits inside the ring.
             let skin_angle_deg = 123.0_f32;
-            let skin_rad = (skin_angle_deg - 90.0).to_radians();
-            let dx = skin_rad.sin();
-            let dy = -skin_rad.cos();
+            let (dx, dy) = skin_line_direction(skin_angle_deg);
             let i_line_len = r * 0.92;
             let i_color = egui::Color32::from_rgb(220, 170, 80);
             painter.line_segment(
@@ -631,14 +641,7 @@ pub fn show_scopes(
                 label_color.r(), label_color.g(), label_color.b(), 180,
             );
             let box_half = 4.0;
-            for (name, cb, cr) in &[
-                ("R", 0.17_f32, 0.29_f32),
-                ("Mg", 0.28, -0.05),
-                ("B", 0.12, -0.34),
-                ("Cy", -0.17, -0.29),
-                ("G", -0.28, 0.05),
-                ("Yl", -0.12, 0.34),
-            ] {
+            for (name, cb, cr) in &klipp_color::scopes::vectorscope_targets(basis) {
                 let tx = cx + cb * r * 2.0;
                 let ty = cy - cr * r * 2.0;
                 let rect = egui::Rect::from_center_size(

@@ -24,6 +24,7 @@
 use std::collections::HashMap;
 
 use ffmpeg_next::{filter, frame, util::format::Pixel};
+use klipp_color::scopes::ScopeBasis;
 use klipp_core::{ScopeFfmpegSettings, ScopeQuality};
 
 type Result<T> = std::result::Result<T, String>;
@@ -45,6 +46,18 @@ pub enum InputFormat {
     /// `gbrp10le`. Used when the engine taps `result_linear` before
     /// `display_encode()`.
     F32Linear10,
+    /// Linear-light RGBA f32 that the wrapper encodes and converts to
+    /// full-range `yuv444p` **itself**, in the project's working space
+    /// (see [`FfmpegScope::render_linear_f32`]).
+    ///
+    /// Used by the scopes that measure Y′CbCr rather than R′G′B′: the
+    /// vectorscope, and the waveform and parade in luma-only mode.
+    /// Letting `format=yuv444p,` do it instead handed the job to
+    /// libswscale, which converts as Rec.601 limited-range no matter
+    /// what the picture is — so the trace was drawn in a matrix the
+    /// project does not use, at 224/255 of the scale the graticule is
+    /// drawn at.
+    F32Yuv444,
 }
 
 pub struct FfmpegScope {
@@ -98,10 +111,14 @@ impl FfmpegScope {
         self.process_u8(src_rgba, src_w, src_h)
     }
 
-    /// Render one scope frame from a linear-light BT.709 RGBA f32 buffer.
-    /// Wrapper applies sRGB OETF + 10-bit quantise + planar split, feeds
-    /// the filter graph as `gbrp10le`. Same `Ok(None)` semantics as
-    /// [`Self::render`].
+    /// Render one scope frame from a linear-light RGBA f32 buffer, measured
+    /// in `basis` — the project's working space.
+    ///
+    /// R′G′B′ scopes (waveform, parade, histogram) get sRGB OETF + 10-bit
+    /// quantise + planar split as `gbrp10le`. The Y′CbCr scopes get a
+    /// full-range `yuv444p` frame built here, from `basis`, so the trace
+    /// is measured in the same matrix the graticule is drawn from. Same
+    /// `Ok(None)` semantics as [`Self::render`].
     pub fn render_linear_f32(
         &mut self,
         mode: u8,
@@ -109,20 +126,29 @@ impl FfmpegScope {
         src_w: u32,
         src_h: u32,
         settings: ScopeFfmpegSettings,
+        basis: ScopeBasis,
     ) -> Result<Option<Vec<u8>>> {
         if src_w == 0 || src_h == 0 {
             return Ok(None);
         }
+        let format = if measures_chroma(mode, &settings) {
+            InputFormat::F32Yuv444
+        } else {
+            InputFormat::F32Linear10
+        };
         if mode != self.current_mode
             || src_w != self.current_src_w
             || src_h != self.current_src_h
-            || self.current_format != InputFormat::F32Linear10
+            || self.current_format != format
             || self.current_settings != settings
             || self.graph.is_none()
         {
-            self.rebuild(mode, src_w, src_h, InputFormat::F32Linear10, settings)?;
+            self.rebuild(mode, src_w, src_h, format, settings)?;
         }
-        self.process_linear_f32(src_linear_rgba, src_w, src_h)
+        match format {
+            InputFormat::F32Yuv444 => self.process_yuv444(src_linear_rgba, src_w, src_h, basis),
+            _ => self.process_linear_f32(src_linear_rgba, src_w, src_h),
+        }
     }
 
     fn rebuild(
@@ -144,6 +170,7 @@ impl FfmpegScope {
         let pix_fmt = match format {
             InputFormat::U8Srgb => "rgba",
             InputFormat::F32Linear10 => "gbrp10le",
+            InputFormat::F32Yuv444 => "yuv444p",
         };
         let buffer_args = format!(
             "video_size={src_w}x{src_h}:pix_fmt={pix_fmt}:time_base=1/30:pixel_aspect=1/1"
@@ -160,7 +187,7 @@ impl FfmpegScope {
             .add(&sink, "out", "")
             .map_err(|e| format!("graph.add buffersink: {e}"))?;
 
-        let scope_spec = scope_spec_for_mode(mode, &settings)
+        let scope_spec = scope_spec_for_mode(mode, &settings, format)
             .ok_or_else(|| format!("FfmpegScope: no spec for mode {mode}"))?;
 
         // Prepend `format=gbrp,` for BOTH input formats so FFmpeg
@@ -182,7 +209,10 @@ impl FfmpegScope {
         //    pre-quantised 10-bit code-value pack — acceptable trade for
         //    correct visuals while a 10-bit-clean libavfilter path is
         //    investigated as a follow-up.
-        let format_prefix = "format=gbrp,";
+        // …except when the caller already built Y′CbCr planes: forcing
+        // planar RGB there would undo the conversion this path exists to
+        // control, and libswscale would put its own back.
+        let format_prefix = if format == InputFormat::F32Yuv444 { "" } else { "format=gbrp," };
         // Quality preset drives an input downsample. Inserting it as
         // the FIRST filter (before the format conversion for U8 — yes
         // that means scale operates on RGBA u8 there, which FFmpeg
@@ -337,6 +367,72 @@ impl FfmpegScope {
         self.feed_and_pull(input)
     }
 
+    /// Linear working-space RGBA f32 → full-range 8-bit `yuv444p`, in
+    /// `basis`.
+    ///
+    /// Y′CbCr is built on the *encoded* R′G′B′ — the prime is the whole
+    /// point — so the sRGB OETF goes on first, exactly as for the R′G′B′
+    /// scopes, and then the working space's own luminance row and
+    /// colour-difference pair.
+    ///
+    /// Full range, not limited: the vectorscope plots raw code values and
+    /// the UI's graticule is drawn in full-scale Cb/Cr, so a limited-range
+    /// frame would draw every colour at 224/255 of its radius — inside its
+    /// own target box. Code 128 is the neutral axis; `127.5 + C * 255`
+    /// puts Cb = ±0.5 on the edges.
+    fn process_yuv444(
+        &mut self,
+        src_linear_rgba: &[f32],
+        src_w: u32,
+        src_h: u32,
+        basis: ScopeBasis,
+    ) -> Result<Option<Vec<u8>>> {
+        let (width, height) = (src_w as usize, src_h as usize);
+        if src_linear_rgba.len() < width * height * 4 {
+            return Err(format!(
+                "FfmpegScope: linear f32 buffer too small: {} floats, need {}",
+                src_linear_rgba.len(),
+                width * height * 4,
+            ));
+        }
+
+        let mut input = frame::Video::new(Pixel::YUV444P, src_w, src_h);
+        input.set_pts(Some(self.pts));
+        self.pts += 1;
+
+        let strides = [
+            input.stride(0) as usize,
+            input.stride(1) as usize,
+            input.stride(2) as usize,
+        ];
+        let code = |v: f32| (v * 255.0).round().clamp(0.0, 255.0) as u8;
+        let chroma_code = |c: f32| (127.5 + c * 255.0).round().clamp(0.0, 255.0) as u8;
+
+        for plane in 0..3 {
+            let stride = strides[plane];
+            let dst = input.data_mut(plane);
+            for y in 0..height {
+                let row_in = y * width * 4;
+                let row_out = y * stride;
+                for x in 0..width {
+                    let i = row_in + x * 4;
+                    let rgb = [
+                        linear_to_srgb(src_linear_rgba[i]),
+                        linear_to_srgb(src_linear_rgba[i + 1]),
+                        linear_to_srgb(src_linear_rgba[i + 2]),
+                    ];
+                    dst[row_out + x] = match plane {
+                        0 => code(basis.luma(rgb)),
+                        1 => chroma_code(basis.chroma(rgb).0),
+                        _ => chroma_code(basis.chroma(rgb).1),
+                    };
+                }
+            }
+        }
+
+        self.feed_and_pull(input)
+    }
+
     fn feed_and_pull(&mut self, input: frame::Video) -> Result<Option<Vec<u8>>> {
         let graph = self
             .graph
@@ -413,12 +509,13 @@ impl FfmpegScopeBank {
         src_w: u32,
         src_h: u32,
         settings: ScopeFfmpegSettings,
+        basis: ScopeBasis,
     ) -> Result<Option<Vec<u8>>> {
         let scope = self
             .instances
             .entry(mode)
             .or_insert_with(FfmpegScope::new);
-        scope.render_linear_f32(mode, linear_rgba, src_w, src_h, settings)
+        scope.render_linear_f32(mode, linear_rgba, src_w, src_h, settings, basis)
     }
 
     /// Render one mode from a display-encoded sRGB u8 RGBA buffer.
@@ -455,13 +552,30 @@ impl Default for FfmpegScopeBank {
 /// point — replace the constant `2.4` curve with a per-engine choice.
 #[inline]
 fn linear_to_srgb_10bit(v: f32) -> u16 {
+    (linear_to_srgb(v) * 1023.0 + 0.5) as u16
+}
+
+/// The sRGB OETF, in float. The scopes read encoded values, so this is
+/// what "the picture" means to every one of them.
+fn linear_to_srgb(v: f32) -> f32 {
     let v = v.clamp(0.0, 1.0);
-    let encoded = if v <= 0.0031308 {
+    if v <= 0.0031308 {
         12.92 * v
     } else {
         1.055 * v.powf(1.0 / 2.4) - 0.055
-    };
-    (encoded * 1023.0 + 0.5) as u16
+    }
+}
+
+/// Whether this scope measures Y′CbCr rather than R′G′B′, and so needs the
+/// conversion done in the project's basis instead of by libswscale.
+fn measures_chroma(mode: u8, settings: &ScopeFfmpegSettings) -> bool {
+    match mode {
+        // Waveform and parade, but only when showing a single luma trace.
+        0 | 1 => settings.luma_only,
+        // The vectorscope is nothing but chroma.
+        2 => true,
+        _ => false,
+    }
 }
 
 /// Map the UI scope-mode byte → libavfilter spec string (WITHOUT the
@@ -476,7 +590,15 @@ fn linear_to_srgb_10bit(v: f32) -> u16 {
 /// `settings`. `quality` is global (perf preset) and drives the input
 /// downsample (handled in [`FfmpegScope::rebuild`]) + the fallback
 /// intensity when a per-mode `intensity_override` is negative.
-fn scope_spec_for_mode(mode: u8, settings: &ScopeFfmpegSettings) -> Option<String> {
+fn scope_spec_for_mode(
+    mode: u8,
+    settings: &ScopeFfmpegSettings,
+    format: InputFormat,
+) -> Option<String> {
+    // The Y'CbCr scopes need a YUV frame. When the caller built one in the
+    // project's basis it is already in hand; otherwise libswscale still has
+    // to make one, and its Rec.601 limited-range guess is all that path has.
+    let to_yuv = if format == InputFormat::F32Yuv444 { "" } else { "format=yuv444p," };
     /// Pick per-mode override or the quality tier default.
     fn intensity_for(override_val: f32, quality: ScopeQuality) -> f32 {
         if override_val >= 0.0 { override_val } else { quality.ffmpeg_intensity() }
@@ -495,7 +617,7 @@ fn scope_spec_for_mode(mode: u8, settings: &ScopeFfmpegSettings) -> Option<Strin
                 // libavfilter optimiser still has a deterministic
                 // path into the waveform filter.
                 Some(format!(
-                    "format=yuv444p,waveform=mode=column:filter={filter}:intensity={intensity:.3}:display=stack:components=1:envelope={envelope}:graticule=none"
+                    "{to_yuv}waveform=mode=column:filter={filter}:intensity={intensity:.3}:display=stack:components=1:envelope={envelope}:graticule=none"
                 ))
             } else {
                 let components = s.channels.to_components();
@@ -512,7 +634,7 @@ fn scope_spec_for_mode(mode: u8, settings: &ScopeFfmpegSettings) -> Option<Strin
             let envelope = s.envelope.ffmpeg_value();
             if settings.luma_only {
                 Some(format!(
-                    "format=yuv444p,waveform=mode=column:filter={filter}:intensity={intensity:.3}:display=parade:components=1:envelope={envelope}:graticule=none"
+                    "{to_yuv}waveform=mode=column:filter={filter}:intensity={intensity:.3}:display=parade:components=1:envelope={envelope}:graticule=none"
                 ))
             } else {
                 let components = s.channels.to_components();
@@ -542,7 +664,7 @@ fn scope_spec_for_mode(mode: u8, settings: &ScopeFfmpegSettings) -> Option<Strin
             let lo = v.lthreshold.clamp(0.0, 1.0);
             let hi = v.hthreshold.clamp(0.0, 1.0);
             Some(format!(
-                "format=yuv444p,vectorscope=mode={m}:graticule={g}:bgopacity={bg:.3}:lthreshold={lo:.3}:hthreshold={hi:.3}"
+                "{to_yuv}vectorscope=mode={m}:graticule={g}:bgopacity={bg:.3}:lthreshold={lo:.3}:hthreshold={hi:.3}"
             ))
         }
         // 3 = Histogram (R/G/B configurable display + levels mode).

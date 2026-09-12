@@ -116,6 +116,7 @@ pub fn show_scope_window(
     // spectrogram waterfall scope. Collected at the call site.
     spectrum_history: &[Vec<f32>],
     theme: &KlippTheme,
+    basis: klipp_color::scopes::ScopeBasis,
 ) {
     if !state.open {
         return;
@@ -228,7 +229,7 @@ pub fn show_scope_window(
                                 ui.painter().rect_stroke(pane_rect, 0.0,
                                     egui::Stroke::new(0.5_f32, egui::Color32::BLACK));
                                 let mut child = ui.new_child(egui::UiBuilder::new().max_rect(pane_rect));
-                                draw_pane(&mut child, pane_idx, state, scope_ffmpeg, runtime, frame_buffer, skin_tone_angle, is_playing, scope_cursor, spectrum_bins, correlation_samples, lufs_history, lufs_target, spectrum_history, theme);
+                                draw_pane(&mut child, pane_idx, state, scope_ffmpeg, runtime, frame_buffer, skin_tone_angle, is_playing, scope_cursor, spectrum_bins, correlation_samples, lufs_history, lufs_target, spectrum_history, theme, basis);
                             }
                         }
 
@@ -267,6 +268,7 @@ fn draw_pane(
     lufs_target: f32,
     spectrum_history: &[Vec<f32>],
     theme: &KlippTheme,
+    basis: klipp_color::scopes::ScopeBasis,
 ) {
     let pane_rect = ui.max_rect();
     let scope_type = state.panes[pane_idx].scope_type;
@@ -446,7 +448,7 @@ fn draw_pane(
         return;
     }
 
-    render_pane_scope(ui, pane_idx, state, runtime, frame_buffer, skin_tone_angle, is_playing, content_rect, scope_cursor, spectrum_bins, correlation_samples, lufs_history, lufs_target, spectrum_history, theme);
+    render_pane_scope(ui, pane_idx, state, runtime, frame_buffer, skin_tone_angle, is_playing, content_rect, scope_cursor, spectrum_bins, correlation_samples, lufs_history, lufs_target, spectrum_history, theme, basis);
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -466,6 +468,7 @@ fn render_pane_scope(
     lufs_target: f32,
     spectrum_history: &[Vec<f32>],
     theme: &KlippTheme,
+    basis: klipp_color::scopes::ScopeBasis,
 ) {
     let pane = &state.panes[pane_idx];
     let render_h: usize = 256; // Smaller for multi-pane to stay fast
@@ -686,9 +689,7 @@ fn render_pane_scope(
 
                 // 4. Skin-tone I-line at 123° + "I" label.
                 let skin_angle_deg = 123.0_f32;
-                let skin_rad_angle = (skin_angle_deg - 90.0).to_radians();
-                let dx = skin_rad_angle.sin();
-                let dy = -skin_rad_angle.cos();
+                let (dx, dy) = super::scopes::skin_line_direction(skin_angle_deg);
                 let i_line_len = rad * 0.92;
                 let i_color = egui::Color32::from_rgb(220, 170, 80);
                 painter.line_segment(
@@ -711,14 +712,7 @@ fn render_pane_scope(
                     label_color.r(), label_color.g(), label_color.b(), 180,
                 );
                 let box_half = 4.0;
-                for (name, cb, cr) in &[
-                    ("R",  0.17_f32,  0.29_f32),
-                    ("Mg",  0.28, -0.05),
-                    ("B",  0.12, -0.34),
-                    ("Cy", -0.17, -0.29),
-                    ("G",  -0.28,  0.05),
-                    ("Yl", -0.12,  0.34),
-                ] {
+                for (name, cb, cr) in &klipp_color::scopes::vectorscope_targets(basis) {
                     let tx = cx + cb * rad * 2.0;
                     let ty = cy - cr * rad * 2.0;
                     let rect = egui::Rect::from_center_size(

@@ -92,7 +92,7 @@ fn render_waveform_produces_output_of_expected_size() {
     let frame = make_rgb_band_frame(640, 360);
     let mut scope = FfmpegScope::new();
     let bytes = scope
-        .render_linear_f32(0, &frame, 640, 360, default_settings())
+        .render_linear_f32(0, &frame, 640, 360, default_settings(), basis())
         .expect("render ok")
         .expect("filter produced output");
     let expected_len = (SCOPE_OUT_W * SCOPE_OUT_H * 4) as usize;
@@ -114,7 +114,7 @@ fn render_parade_has_per_channel_coloring() {
     let frame = make_rgb_band_frame(640, 360);
     let mut scope = FfmpegScope::new();
     let bytes = scope
-        .render_linear_f32(1, &frame, 640, 360, default_settings())
+        .render_linear_f32(1, &frame, 640, 360, default_settings(), basis())
         .expect("render ok")
         .expect("filter produced output");
     // Parade with components=7 splits the output horizontally into
@@ -149,7 +149,7 @@ fn render_vectorscope_produces_output() {
     let frame = make_rgb_band_frame(640, 360);
     let mut scope = FfmpegScope::new();
     let bytes = scope
-        .render_linear_f32(2, &frame, 640, 360, default_settings())
+        .render_linear_f32(2, &frame, 640, 360, default_settings(), basis())
         .expect("render ok")
         .expect("filter produced output");
     let (rmax, gmax, bmax) = channel_maxima(&bytes);
@@ -163,7 +163,7 @@ fn render_histogram_produces_output() {
     let frame = make_rgb_band_frame(640, 360);
     let mut scope = FfmpegScope::new();
     let bytes = scope
-        .render_linear_f32(3, &frame, 640, 360, default_settings())
+        .render_linear_f32(3, &frame, 640, 360, default_settings(), basis())
         .expect("render ok")
         .expect("filter produced output");
     let (rmax, gmax, bmax) = channel_maxima(&bytes);
@@ -181,7 +181,7 @@ fn flat_filter_works_from_scratch() {
     let mut s = default_settings();
     s.waveform.filter = WaveformFilter::Flat;
     let bytes = scope
-        .render_linear_f32(0, &frame, 640, 360, s)
+        .render_linear_f32(0, &frame, 640, 360, s, basis())
         .expect("render ok")
         .expect("filter produced output");
     assert!(!bytes.is_empty());
@@ -195,14 +195,14 @@ fn filter_change_rebuilds_graph() {
     let mut s1 = default_settings();
     s1.waveform.filter = WaveformFilter::Lowpass;
     let lowpass = scope
-        .render_linear_f32(0, &frame, 640, 360, s1)
+        .render_linear_f32(0, &frame, 640, 360, s1, basis())
         .expect("render ok")
         .expect("filter produced output");
 
     let mut s2 = default_settings();
     s2.waveform.filter = WaveformFilter::Flat;
     let flat = scope
-        .render_linear_f32(0, &frame, 640, 360, s2)
+        .render_linear_f32(0, &frame, 640, 360, s2, basis())
         .expect("render ok")
         .expect("filter produced output");
 
@@ -218,11 +218,11 @@ fn bank_keeps_modes_keyed_separately() {
     let mut bank = FfmpegScopeBank::new();
 
     let waveform = bank
-        .render_linear(0, &frame, 640, 360, default_settings())
+        .render_linear(0, &frame, 640, 360, default_settings(), basis())
         .expect("render ok")
         .expect("filter produced output");
     let parade = bank
-        .render_linear(1, &frame, 640, 360, default_settings())
+        .render_linear(1, &frame, 640, 360, default_settings(), basis())
         .expect("render ok")
         .expect("filter produced output");
 
@@ -243,14 +243,14 @@ fn vectorscope_mode_change_alters_output() {
     let mut s1 = default_settings();
     s1.vectorscope.mode = VectorscopeMode::Color3;
     let m3 = scope
-        .render_linear_f32(2, &frame, 640, 360, s1)
+        .render_linear_f32(2, &frame, 640, 360, s1, basis())
         .expect("render ok")
         .expect("filter produced output");
 
     let mut s2 = default_settings();
     s2.vectorscope.mode = VectorscopeMode::Gray;
     let gray = scope
-        .render_linear_f32(2, &frame, 640, 360, s2)
+        .render_linear_f32(2, &frame, 640, 360, s2, basis())
         .expect("render ok")
         .expect("filter produced output");
 
@@ -265,14 +265,14 @@ fn histogram_levels_change_alters_output() {
     let mut s1 = default_settings();
     s1.histogram.levels = HistogramLevels::Linear;
     let linear = scope
-        .render_linear_f32(3, &frame, 640, 360, s1)
+        .render_linear_f32(3, &frame, 640, 360, s1, basis())
         .expect("render ok")
         .expect("filter produced output");
 
     let mut s2 = default_settings();
     s2.histogram.levels = HistogramLevels::Logarithmic;
     let log = scope
-        .render_linear_f32(3, &frame, 640, 360, s2)
+        .render_linear_f32(3, &frame, 640, 360, s2, basis())
         .expect("render ok")
         .expect("filter produced output");
 
@@ -294,14 +294,14 @@ fn components_mask_drops_red_channel() {
     let mut s1 = default_settings();
     s1.parade.channels = ChannelMask { r: true, g: true, b: true };
     let all = scope
-        .render_linear_f32(1, &frame, 640, 360, s1)
+        .render_linear_f32(1, &frame, 640, 360, s1, basis())
         .expect("render ok")
         .expect("filter produced output");
 
     let mut s2 = default_settings();
     s2.parade.channels = ChannelMask { r: false, g: true, b: true };
     let no_red = scope
-        .render_linear_f32(1, &frame, 640, 360, s2)
+        .render_linear_f32(1, &frame, 640, 360, s2, basis())
         .expect("render ok")
         .expect("filter produced output");
 
@@ -328,14 +328,14 @@ fn histogram_display_mode_choice_changes_output() {
     let mut s1 = default_settings();
     s1.histogram.display_mode = HistogramDisplayMode::Parade;
     let parade = scope
-        .render_linear_f32(3, &frame, 640, 360, s1)
+        .render_linear_f32(3, &frame, 640, 360, s1, basis())
         .expect("render ok")
         .expect("filter produced output");
 
     let mut s2 = default_settings();
     s2.histogram.display_mode = HistogramDisplayMode::Stack;
     let stack = scope
-        .render_linear_f32(3, &frame, 640, 360, s2)
+        .render_linear_f32(3, &frame, 640, 360, s2, basis())
         .expect("render ok")
         .expect("filter produced output");
 
@@ -343,4 +343,10 @@ fn histogram_display_mode_choice_changes_output() {
         parade, stack,
         "histogram display_mode change should produce a different image",
     );
+}
+
+/// The default Rec.709 basis: these are smoke tests of the filter graph,
+/// not of the measurement basis (see tests/scope_basis.rs for that).
+fn basis() -> klipp_color::scopes::ScopeBasis {
+    klipp_color::scopes::ScopeBasis::default()
 }
