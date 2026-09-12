@@ -248,23 +248,43 @@ fn blur_preserves_linear_mean() {
 
 // ---- log footage -----------------------------------------------------
 
+/// Apple Log's mid-grey. The placeholder this replaces asserted 0.384 →
+/// 0.18; the published curve puts 18% grey at 0.4875 and reads 0.384 as
+/// 0.072, which is what Klipp decodes. Both numbers come from Apple's
+/// white paper — `0.08550479 * log2(x + 0.00842546) + 0.69336945` — and
+/// `tests/camera_log_parity.rs` checks the whole curve against
+/// colour-science, so this pins the one value a colourist knows by heart.
+///
+/// The decoder applies it: `klipp_color::camera_log` is the one copy of
+/// every camera curve, and the graph's InputTransform node only records
+/// which curve a clip carries.
 #[test]
-#[ignore = "Phase 4 — apply_input_transform linear"]
 fn apple_log_middle_grey_decodes_to_0_18_linear() {
-    // Per Apple Log whitepaper: the encoded mid-grey (0.384) must
-    // decode to 0.18 linear. Current code decodes, *then* re-encodes
-    // to sRGB before handing off to effects — this test catches that
-    // re-encode going the wrong way.
-    todo!("apply_input_transform on Apple-Log 0.384 → 0.18 linear");
+    let grey = klipp_color::camera_log::apply_inverse_eotf(0.4875, klipp_core::ColorTransfer::AppleLog);
+    assert!((grey - 0.18).abs() < 0.005, "Apple Log 0.4875 decoded to {grey}, expected ~0.18");
+    let low = klipp_color::camera_log::apply_inverse_eotf(0.384, klipp_core::ColorTransfer::AppleLog);
+    assert!((low - 0.072).abs() < 0.005, "Apple Log 0.384 decoded to {low}, expected ~0.072");
 }
 
+/// Every camera curve is non-decreasing over the code range the decoder
+/// feeds it. A kink shows up as a posterised highlight in the grade.
 #[test]
-#[ignore = "Phase 4 — apply_input_transform linear"]
 fn log_to_linear_monotonic() {
-    // For every supported LogFormat, the decoded curve must be
-    // strictly non-decreasing. A kink here shows up as posterised
-    // highlights in the grade.
-    todo!("iterate every LogFormat, verify monotonic curve");
+    use klipp_core::LogFormat as F;
+    let formats = [
+        F::SLog3, F::SLog2, F::VLog, F::LogC3, F::LogC4, F::CanonLog, F::CanonLog3,
+        F::RedLog3G10, F::BmdFilmGen5, F::DJIDLog, F::FLog, F::AppleLog, F::NLog, F::GoProFlat,
+        F::PQ, F::HLG, F::Srgb, F::Linear,
+    ];
+    for format in formats {
+        let mut previous = f32::NEG_INFINITY;
+        for i in 0..=1023u32 {
+            let v = klipp_color::transforms::log_to_linear(i as f32 / 1023.0, format);
+            assert!(v.is_finite(), "{format:?} at code {i} gave {v}");
+            assert!(v >= previous - 1e-6, "{format:?} dips at code {i}: {previous} → {v}");
+            previous = v;
+        }
+    }
 }
 
 // ---- end-to-end round trip -------------------------------------------

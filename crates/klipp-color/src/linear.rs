@@ -611,23 +611,6 @@ pub fn apply_primaries_matrix(rgba: &mut [f32], m: [[f32; 3]; 3]) {
     }
 }
 
-/// Input device transform — convert camera log encoding to linear.
-///
-/// The frame stays linear after the decode: re-encoding here would
-/// defeat every grade downstream of it.
-pub fn apply_input_transform(rgba: &mut [f32], log_format: klipp_core::LogFormat) {
-    use klipp_core::LogFormat;
-    if matches!(log_format, LogFormat::Srgb | LogFormat::Linear) {
-        return;
-    }
-
-    for pixel in rgba.chunks_exact_mut(4) {
-        pixel[0] = crate::transforms::log_to_linear(pixel[0], log_format);
-        pixel[1] = crate::transforms::log_to_linear(pixel[1], log_format);
-        pixel[2] = crate::transforms::log_to_linear(pixel[2], log_format);
-    }
-}
-
 /// Saturation: linear lerp between the pixel colour and its luma.
 ///
 /// `factor == 1.0` is identity; `0.0` collapses to greyscale at the
@@ -1074,41 +1057,6 @@ mod tests {
         apply_global_mix(&mut graded, &original, 0.5);
         for i in 0..3 {
             assert!((graded[i] - 0.5).abs() < 1e-4);
-        }
-    }
-
-    // ─── input transform ──────────────────────────────────────────
-
-    #[test]
-    fn input_transform_srgb_is_identity() {
-        let mut frame = make_frame(&[[0.3, 0.6, 0.9, 1.0]]);
-        let original = frame.clone();
-        apply_input_transform(&mut frame, klipp_core::LogFormat::Srgb);
-        assert_eq!(frame, original);
-    }
-
-    #[test]
-    fn input_transform_linear_is_identity() {
-        let mut frame = make_frame(&[[0.3, 0.6, 0.9, 1.0]]);
-        let original = frame.clone();
-        apply_input_transform(&mut frame, klipp_core::LogFormat::Linear);
-        assert_eq!(frame, original);
-    }
-
-    #[test]
-    fn input_transform_slog3_mid_grey_lands_near_point_18() {
-        // S-Log3's middle-grey is around 0.41 encoded; decodes to
-        // ~0.18 linear. The u8 version then re-encoded to sRGB
-        // (≈118/255), defeating every downstream grade. We now
-        // stay in linear.
-        let mut frame = make_frame(&[[0.41, 0.41, 0.41, 1.0]]);
-        apply_input_transform(&mut frame, klipp_core::LogFormat::SLog3);
-        for i in 0..3 {
-            assert!(
-                (frame[i] - 0.18).abs() < 0.02,
-                "channel {i}: expected ~0.18 linear, got {}",
-                frame[i],
-            );
         }
     }
 

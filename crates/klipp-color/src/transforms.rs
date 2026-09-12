@@ -43,22 +43,6 @@ pub fn log_to_linear(v: f32, format: klipp_core::LogFormat) -> f32 {
     crate::camera_log::log_format_to_linear(v, format)
 }
 
-/// A 256-entry 1D input-device transform, keyed by sRGB code value:
-/// entry `i` decodes `i/255` from `log_format` to scene-linear and
-/// re-encodes it to sRGB. `SHADER_INPUT_TRANSFORM` indexes it by
-/// re-encoding its linear input, and decodes the result back to
-/// linear. The transform is per-channel identical, so one table serves
-/// all three.
-pub fn build_input_transform_lut(log_format: klipp_core::LogFormat) -> [f32; 256] {
-    let mut lut = [0.0f32; 256];
-    for i in 0..256 {
-        let v = i as f32 / 255.0;
-        let linear = log_to_linear(v, log_format);
-        lut[i] = crate::transfer::linear_to_srgb(linear).clamp(0.0, 1.0);
-    }
-    lut
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
