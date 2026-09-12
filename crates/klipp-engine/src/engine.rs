@@ -4063,7 +4063,9 @@ impl PlaybackEngine {
             // viewer: grade it on the GPU and present the result without
             // the float round trips. Falls through to the full pipeline if
             // the frame cannot take this path.
-            if blockers.iter().all(|b| *b == "grade graph is not an identity")
+            if blockers
+                .iter()
+                .all(|b| *b == "grade graph is not an identity" || *b == "ACES working space")
                 && self.present_graded_frame_on_gpu(
                     &frame, final_w, final_h, current_source_secs, q_len,
                 )
@@ -6051,15 +6053,30 @@ impl PlaybackEngine {
                 blockers.push("node param edit in progress");
             }
         }
-        // The two conditions the byte-identity rests on.
-        if !matches!(self.tone_map_op, klipp_color::display::ToneMapOp::None) {
-            blockers.push("tone-map operator active");
-        }
-        if !matches!(
-            crate::video_decoder::working_colorspace(),
-            klipp_core::WorkingColorspace::Rec709Linear
-        ) {
-            blockers.push("wide-gamut working space needs its display transform");
+        // What the byte-identity of *direct present* rests on, and what
+        // the graded path can live with.
+        //
+        // Direct present hands the decoder's own sRGB bytes to the
+        // viewer, so it needs `display_transform_ws` to reduce to the
+        // sRGB encode that inverts the decode: BT.709 and no tone map.
+        //
+        // The graded path only needs a display transform the GPU has.
+        // It has BT.709's and it has ACES', so an AcesCG project gets
+        // its own reason string — one the graded gates tolerate the way
+        // they tolerate a non-identity graph, and direct present does
+        // not, because the ACES render is emphatically not the bytes
+        // the decoder produced.
+        match crate::video_decoder::working_colorspace() {
+            klipp_core::WorkingColorspace::Rec709Linear => {
+                if !matches!(self.tone_map_op, klipp_color::display::ToneMapOp::None) {
+                    blockers.push("tone-map operator active");
+                }
+            }
+            // The ODT carries its own tone curve; `display_transform_ws`
+            // marks the viewer's tone-map operator unused on this path,
+            // so it is not a blocker here.
+            klipp_core::WorkingColorspace::AcesCG => blockers.push("ACES working space"),
+            _ => blockers.push("wide-gamut working space needs its display transform"),
         }
         // Scopes sample the post-grade linear frame, which this path
         // never builds. But they refresh at 10 Hz, so only the frames
@@ -6237,7 +6254,11 @@ impl PlaybackEngine {
     /// having shown nothing, when the frame cannot take this path.
     fn regrade_parked_on_gpu(&mut self) -> bool {
         let Some((pixels, width, height)) = self.cached_pregrade_frame.clone() else { return false };
-        if !self.fast_path_blockers(true).iter().all(|b| *b == "grade graph is not an identity") {
+        if !self
+            .fast_path_blockers(true)
+            .iter()
+            .all(|b| *b == "grade graph is not an identity" || *b == "ACES working space")
+        {
             return false;
         }
         let t_frame = std::time::Instant::now();

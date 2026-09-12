@@ -283,6 +283,104 @@ fn the_graded_fast_path_is_the_renderers_frame_in_a_bt2020_project() {
     assert!(shortcut > 8, "this picture cannot tell the two encodes apart; pick a more saturated source");
 }
 
+/// Direct present must never take an AcesCG project, and this measures
+/// the size of the mistake if it ever does.
+///
+/// That path hands the decoder's own sRGB bytes straight to the viewer,
+/// on the argument that grading nothing and re-encoding lands back on
+/// the bytes it started from. True in BT.709. Emphatically not true
+/// under ACES, where the output transform changes every pixel of an
+/// *ungraded* frame — so the blocker list has to name something for an
+/// AcesCG project, and `fast_path_blockers` pushes "ACES working space"
+/// for exactly that reason while the graded gates tolerate it.
+///
+/// `fast_path_blockers` is private, so this asserts the property the
+/// blocker exists to protect rather than the blocker itself: if the two
+/// ever became interchangeable, this would be the test that stopped
+/// agreeing.
+#[test]
+fn an_ungraded_frame_is_not_its_own_bytes_in_an_aces_project() {
+    let bytes = sdr_bytes();
+    let (seq, _) = one_clip(NodeGraph::default());
+    let linear = Arc::new(klipp_effects::srgb_u8_to_linear_f32_rgba(&bytes));
+    let mut src = Frame(Box::new(move || SourcePixels::Linear(Arc::clone(&linear))));
+    let mut r = renderer();
+    r.set_working_colorspace(WorkingColorspace::AcesCG);
+
+    let frame = r.render(&seq, tc(4.0), W, H, &mut src, RenderOptions::default());
+    let aces = display_transform_ws(&frame, ToneMapOp::None, WorkingColorspace::AcesCG);
+    let worst = worst_lsb(&aces, &bytes);
+    eprintln!("ungraded ACES render vs the decoder's own bytes: worst {worst} LSB");
+    assert!(
+        worst > 8,
+        "an ungraded ACES render came back within {worst} levels of its input, so direct \
+         present would look almost right and this test would not notice it being wrong"
+    );
+}
+
+/// An AcesCG project's graded fast path is the renderer's frame.
+///
+/// The companion to the BT.2020 case above, and its opposite
+/// conclusion: BT.2020 has no GPU display transform yet and must fall
+/// back, while ACES has its whole output transform in a shader
+/// (`SHADER_ACES_REC709_U8`, matched to `acescg_to_rec709_sdr` within a
+/// code value) and so keeps the frame on the GPU. That is worth 88 ms a
+/// 4K frame — the reason an AcesCG project graded and exported six
+/// times slower than a Rec.709 one.
+///
+/// The last assertion is the one that matters: it measures what
+/// encoding AcesCG values as though they were BT.709 would look like.
+/// If the fast path ever loses the ACES branch and takes the plain sRGB
+/// encode instead, the picture goes wrong rather than slow, and this is
+/// what notices.
+#[test]
+fn the_graded_fast_path_is_the_renderers_frame_in_an_aces_project() {
+    let Some(ctx) = GpuContext::shared() else {
+        eprintln!("skipping: no usable GpuContext");
+        return;
+    };
+    const WS: WorkingColorspace = WorkingColorspace::AcesCG;
+    let bytes = sdr_bytes();
+    let buffer = gpu_buffer(ctx, &bytes);
+    let (seq, clip) = one_clip(keyframed_grade(None));
+    let linear = Arc::new(klipp_effects::srgb_u8_to_linear_f32_rgba(&bytes));
+    let mut src = Frame(Box::new(move || SourcePixels::Linear(Arc::clone(&linear))));
+    let mut r = renderer();
+    r.set_working_colorspace(WS);
+
+    let frame = r.render(&seq, tc(4.0), W, H, &mut src, RenderOptions::default());
+    let want = display_transform_ws(&frame, ToneMapOp::None, WS);
+
+    let (clip_time, frame_number) = klipp_compose::render::grade_time(&clip, tc(4.0), 24.0);
+    let at = GradeAt {
+        graph: &clip.node_graph,
+        clip_time,
+        frame_number,
+        track_points: &clip.track_points,
+        working: WS,
+        lut_tetrahedral: true,
+        solo: None,
+    };
+    // Deliberately a tone map the viewer would apply elsewhere: the ACES
+    // path ignores it, on both the CPU and the GPU, and if one of them
+    // ever stopped ignoring it the two would part company here.
+    let display = |l: &[f32]| display_transform_ws(l, ToneMapOp::Hable, WS);
+    let got = grade_to_display_on_gpu(r.executor(), GpuSeed::Srgb8(&buffer), W, H, &at, &display)
+        .expect("the fast path takes this frame");
+    let worst = worst_lsb(&got, &want);
+    eprintln!("ACES graded fast path vs renderer: worst {worst} LSB");
+    assert!(worst <= 1, "the graded fast path differs from the renderer by {worst} levels");
+
+    let as_if_709 = display_transform_ws(&frame, ToneMapOp::None, WorkingColorspace::Rec709Linear);
+    let shortcut = worst_lsb(&as_if_709, &want);
+    eprintln!("the GPU's sRGB-only encode would differ by {shortcut} LSB");
+    assert!(
+        shortcut > 8,
+        "this picture cannot tell the ACES transform from a plain sRGB encode; \
+         pick a source that can"
+    );
+}
+
 /// A PQ clip graded on the GPU from the decoder's codes matches the
 /// renderer's frame — scene-linear grade, display tone map — to one level.
 #[test]

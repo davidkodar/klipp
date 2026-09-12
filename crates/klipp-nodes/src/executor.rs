@@ -735,6 +735,21 @@ impl GraphExecutor {
         true
     }
 
+    /// The last run's GPU-resident result through the ACES Rec.709 SDR
+    /// output transform, as display bytes.
+    ///
+    /// The GPU twin of `display_transform_ws` on an AcesCG project,
+    /// which is `acescg_to_rec709_sdr` per pixel — 88 ms of a 4K frame
+    /// on the CPU. `None` if the last run did not keep its output on
+    /// the GPU, and the caller then takes that CPU path.
+    pub fn encode_output_to_aces_rec709_u8(&mut self, width: u32, height: u32) -> Option<Vec<u8>> {
+        let slot_a = self.output_on_gpu?;
+        // Only built when it is going to be used: a couple of thousand
+        // spline evaluations, and the pipeline keeps the upload.
+        let data = klipp_color::aces::aces_rec709_gpu_data(1024);
+        self.gpu.as_mut()?.encode_chain_to_aces_rec709_u8(slot_a, width, height, &data)
+    }
+
     /// The last run's GPU-resident result as 8-bit 4:2:0 planes — Y, then
     /// Cb, then Cr, tightly packed — instead of a linear frame read back.
     ///

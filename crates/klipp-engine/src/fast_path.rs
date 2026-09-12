@@ -108,14 +108,24 @@ pub fn grade_to_display_on_gpu(
     exec.set_lut_tetrahedral(at.lut_tetrahedral);
     exec.set_current_clip_track_points(at.track_points);
     exec.set_solo_node(at.solo);
-    // The GPU's display encode is an sRGB encode and nothing else: it
-    // has no basis change and no gamut mapping, so it is only the right
-    // answer for a project already in BT.709. A wider working space
-    // finishes through `display_encode` — the viewer's own transform,
-    // which converts the basis and compresses what BT.709 cannot hold —
-    // at the cost of reading the frame back as floats. The grade still
-    // runs on the GPU either way.
-    if at.working == WorkingColorspace::Rec709Linear {
+    // Which display transforms the GPU has. `SHADER_LINEAR_TO_DISPLAY_U8`
+    // is an sRGB encode and nothing else — no basis change, no gamut
+    // mapping — so it is only right for a project already in BT.709.
+    // `SHADER_ACES_REC709_U8` is the whole ACES output transform, and
+    // `display_transform_ws` on an AcesCG project is exactly that
+    // (`acescg_to_rec709_sdr` per pixel, same quantisation), so the two
+    // agree.
+    //
+    // BT.2020 has no twin yet: its transform converts the basis and
+    // gamut-maps what BT.709 cannot hold, which wants the matrix and
+    // two tables on the GPU. It finishes through `display_encode` — the
+    // viewer's own transform — at the cost of reading the frame back as
+    // floats. The grade still runs on the GPU either way.
+    let gpu_display = matches!(
+        at.working,
+        WorkingColorspace::Rec709Linear | WorkingColorspace::AcesCG
+    );
+    if gpu_display {
         exec.request_output_on_gpu();
     }
     let result = exec.execute_linear_with_thumbs(
@@ -125,7 +135,14 @@ pub fn grade_to_display_on_gpu(
     // Typically `CpuSourceRequired`: a node needs CPU pixels.
     let (cpu_result, _, _) = result.ok()?;
     let bytes = if exec.output_on_gpu().is_some() {
-        exec.encode_output_to_display_u8(width, height, transfer.map(|t| t.display_exposure()))?
+        if at.working == WorkingColorspace::AcesCG {
+            // The ACES path has its own tone curve and ignores the
+            // viewer's tone-map operator, exactly as the CPU transform
+            // does (`display_transform_ws` marks it unused there).
+            exec.encode_output_to_aces_rec709_u8(width, height)?
+        } else {
+            exec.encode_output_to_display_u8(width, height, transfer.map(|t| t.display_exposure()))?
+        }
     } else {
         if cpu_result.len() != (width as usize) * (height as usize) * 4 {
             return None;
