@@ -3341,6 +3341,11 @@ impl KlippApp {
         duration: klipp_core::RationalTime,
         video_clip_id: klipp_core::ClipId,
     ) -> Option<LinkedAudioAppend> {
+        // Source patching: with the audio target off, an append puts the
+        // picture down and nothing else. See `append_brings_audio`.
+        if !self.state.append_brings_audio {
+            return None;
+        }
         let item = self.state.media_pool.get(&media_id)?;
         // Audio-only media is already on an audio track, put there by
         // the caller; a silent file has nothing to add.
@@ -19780,6 +19785,15 @@ impl KlippApp {
             }
             AppCommand::SetRippleEnabled(enabled) => {
                 self.state.ripple_enabled = *enabled;
+                true
+            }
+            AppCommand::SetAppendBringsAudio(enabled) => {
+                self.state.append_brings_audio = *enabled;
+                self.state.toast.show(if *enabled {
+                    "Appending brings audio"
+                } else {
+                    "Appending video only"
+                });
                 true
             }
             AppCommand::SetViewerMode(mode) => {

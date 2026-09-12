@@ -1176,6 +1176,18 @@ pub struct AppState {
     /// handlers (and persisted back via `layout_dirty`).
     pub snap: crate::layout_state::SnapConfig,
     pub ripple_enabled: bool,
+    /// Whether appending a clip brings its audio to an audio track.
+    ///
+    /// Source patching, in one boolean. On is right for camera footage
+    /// and is the default; off is what you want cutting to music, where
+    /// forty clips of camera hiss under the track is not a feature.
+    /// Premiere and Avid spell this as per-track targeting; with one
+    /// audio target the useful question is just whether the sound comes
+    /// along.
+    ///
+    /// Session state, like `ripple_enabled` and the snap toggles — it
+    /// goes back to on when the app restarts.
+    pub append_brings_audio: bool,
     /// Default transition duration in frames (synced from prefs).
     pub default_transition_frames: u32,
     /// Timeline visual prefs (synced from prefs as whole struct).
@@ -3197,6 +3209,7 @@ impl Default for AppState {
             viewer_mode: ViewerMode::Program,
             snap: crate::layout_state::SnapConfig::default(),
             ripple_enabled: true,
+            append_brings_audio: true,
             default_transition_frames: 24,
             timeline_prefs: Default::default(),
             viewer_prefs: Default::default(),

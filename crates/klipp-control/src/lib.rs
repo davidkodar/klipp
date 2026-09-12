@@ -410,6 +410,9 @@ fn handle(ctx: &ControlContext, cmd: ControlCommand) -> Result<serde_json::Value
         ControlCommand::AttachAudio { clip_id: c } => {
             send(AppCommand::AttachLinkedAudio { clip_id: existing_clip_id(ctx, &c)? })
         }
+        ControlCommand::SetAppendAudio { enabled } => {
+            send(AppCommand::SetAppendBringsAudio(enabled))
+        }
         ControlCommand::SelectClip { clip_id: c } => {
             let id = match c {
                 Some(s) => Some(existing_clip_id(ctx, &s)?),

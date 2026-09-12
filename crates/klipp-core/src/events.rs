@@ -1621,6 +1621,8 @@ pub enum AppCommand {
     /// `state.multicam_show_angles`.
     SetMulticamShowAngles(bool),
     SetRippleEnabled(bool),
+    /// Whether appending a clip also brings its audio (source patching).
+    SetAppendBringsAudio(bool),
 
     // Filmstrip
     /// Request more filmstrip detail for a time range (progressive refinement on zoom)

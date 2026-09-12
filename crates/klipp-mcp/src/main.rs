@@ -41,7 +41,7 @@ static PENDING_WRITE_GENERATION: std::sync::atomic::AtomicU64 =
 /// next screenshot to wait for a fresh frame.
 const WRITE_TOOLS: &[&str] = &[
     "klipp_play", "klipp_pause", "klipp_stop", "klipp_seek",
-    "klipp_append_clip", "klipp_remove_clip", "klipp_attach_audio", "klipp_select_clip",
+    "klipp_append_clip", "klipp_remove_clip", "klipp_attach_audio", "klipp_set_append_audio", "klipp_select_clip",
     "klipp_add_node", "klipp_remove_node", "klipp_connect_nodes",
     "klipp_set_node_param", "klipp_toggle_node", "klipp_set_log_format",
 ];
@@ -229,6 +229,10 @@ fn call_tool(name: &str, args: &Value) -> Result<Vec<Value>, String> {
         "klipp_attach_audio" => json!({
             "method": "attach_audio", "clip_id": arg_str(args, "clip_id")?,
         }),
+        "klipp_set_append_audio" => json!({
+            "method": "set_append_audio",
+            "enabled": args.get("enabled").and_then(|v| v.as_bool()).unwrap_or(true),
+        }),
         "klipp_select_clip" => json!({
             "method": "select_clip",
             "clip_id": args.get("clip_id").and_then(|v| v.as_str()),
@@ -414,6 +418,13 @@ fn tool_definitions() -> Vec<Value> {
                  "track": { "type": "integer", "description": "Track index; omit for the default track" },
              }),
              vec!["media_id"]),
+        tool("klipp_set_append_audio",
+             "Source patching: whether appending a clip also brings its audio. On suits camera \
+              footage; off is for cutting to music, where every clip would otherwise lay down \
+              room tone. Shows as V+A / V only in the timeline toolbar, and resets to on when \
+              the app restarts.",
+             json!({ "enabled": { "type": "boolean", "description": "true brings audio, false is video only" } }),
+             vec!["enabled"]),
         tool("klipp_attach_audio",
              "Give a clip the audio of its own media file, linked, spanning exactly what the \
               clip spans. Repairs a clip that was added before appending brought the audio \

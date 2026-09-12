@@ -14434,6 +14434,36 @@ impl TimelinePanel {
             cmds.push(AppCommand::SetUseProxies(!state.use_proxies));
         }
         proxy_resp.on_hover_text("Use proxy files for playback (lower quality, faster decode)");
+
+        // Source patching: does an appended clip bring its audio?
+        //
+        // Labelled with what will happen rather than with the setting's
+        // name — "V+A" and "V only" say it without the reader having to
+        // work out which way round "Link audio" points.
+        let patch_w = 48.0;
+        let patch_rect = egui::Rect::from_min_size(
+            egui::pos2(x + (btn_w + 2.0) * 2.0 + follow_w + proxy_w + 8.0, y_offset + 2.0),
+            egui::vec2(patch_w, btn_h),
+        );
+        let patch_resp =
+            ui.interact(patch_rect, ui.id().with("append_audio_toggle"), egui::Sense::click());
+        let patch_col = if state.append_brings_audio { tt.marker_info } else { tt.bg_raised };
+        painter.rect_filled(patch_rect, 2.0, patch_col);
+        painter.text(
+            patch_rect.center(),
+            egui::Align2::CENTER_CENTER,
+            if state.append_brings_audio { "V+A" } else { "V only" },
+            egui::FontId::proportional(8.0),
+            tt.text_primary,
+        );
+        if patch_resp.clicked() {
+            cmds.push(AppCommand::SetAppendBringsAudio(!state.append_brings_audio));
+        }
+        patch_resp.on_hover_text(if state.append_brings_audio {
+            "Appending a clip brings its audio to an audio track. Click for video only."
+        } else {
+            "Appending a clip adds video only. Click to bring its audio too."
+        });
     }
 
     fn draw_overview_bar(

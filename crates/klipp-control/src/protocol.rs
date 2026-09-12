@@ -62,6 +62,10 @@ pub enum ControlCommand {
     /// the audio along — re-appending those clips would get the audio
     /// but throw away their grades.
     AttachAudio { clip_id: String },
+    /// Source patching: whether `append_clip` also brings the media's
+    /// audio. The timeline toolbar's V+A / V only button, and the same
+    /// session-scoped setting, so it shows there when set from here.
+    SetAppendAudio { enabled: bool },
     SelectClip { clip_id: Option<String> },
 
     // ── Colour / grade ─────────────────────────────────────────────
