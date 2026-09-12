@@ -30,10 +30,39 @@ enum HwAccel {
 ///
 /// Tries hardware decode (CUDA NVDEC → VAAPI → software fallback).
 /// Uses Lanczos scaling for maximum export quality.
+/// Lanczos when the frame is being resized, bilinear when it is not.
+///
+/// Lanczos is the right filter for a real resize and worth its cost
+/// there. At 1:1 it resamples nothing — every kernel lands on its own
+/// pixel — so it buys no quality at all, and swscale still walks the
+/// slow filter path for the format conversion. That cost was most of the
+/// export's decode stage: 101 ms a frame on 4K vertical, where the
+/// ffmpeg CLI does the same decode and conversion in 14. A phone clip is
+/// the common case for hitting it, because the timeline resolution comes
+/// from the first clip and so matches the source exactly.
+fn scaler_flags(
+    src_w: u32,
+    src_h: u32,
+    dst_w: u32,
+    dst_h: u32,
+) -> ffmpeg_next::software::scaling::Flags {
+    use ffmpeg_next::software::scaling::Flags;
+    if src_w == dst_w && src_h == dst_h {
+        Flags::BILINEAR
+    } else {
+        Flags::LANCZOS
+    }
+}
+
 pub struct RenderDecoder {
     format_ctx: ffmpeg_next::format::context::Input,
     decoder: ffmpeg_next::codec::decoder::Video,
     video_stream_idx: usize,
+    /// Where a frame's time goes inside this decoder: the download and
+    /// colour conversion, and the rotation. Read by the export's
+    /// per-frame breakdown.
+    t_convert: std::time::Duration,
+    t_rotate: std::time::Duration,
     /// Software scaler for SW decode path or as fallback.
     scaler: ffmpeg_next::software::scaling::Context,
     /// HW download scaler (raw sws context for NV12→RGBA after GPU download).
@@ -190,7 +219,7 @@ impl RenderDecoder {
             ffmpeg_next::format::Pixel::RGBA64LE,
             scale_w,
             scale_h,
-            ffmpeg_next::software::scaling::Flags::LANCZOS,
+            scaler_flags(decoder.width(), decoder.height(), scale_w, scale_h),
         )
         .map_err(RenderError::Decode)?;
         let source_cs = unsafe {
@@ -233,6 +262,8 @@ impl RenderDecoder {
             format_ctx,
             decoder,
             video_stream_idx,
+            t_convert: std::time::Duration::ZERO,
+            t_rotate: std::time::Duration::ZERO,
             scaler,
             hw_scaler: None,
             yuv_matrix,
@@ -400,6 +431,12 @@ impl RenderDecoder {
 
     /// Convert a decoded frame to RGBA. Handles both HW and SW frames.
     /// Applies source rotation (90/180/270) after decode when needed.
+    /// Where a decoded frame's time goes: the GPU→CPU download plus the
+    /// colour conversion, and the rotation. Totals, logged by the export.
+    pub(crate) fn stage_times(&self) -> (std::time::Duration, std::time::Duration) {
+        (self.t_convert, self.t_rotate)
+    }
+
     fn frame_to_rgba(
         &mut self,
         decoded: &ffmpeg_next::util::frame::Video,
@@ -417,6 +454,7 @@ impl RenderDecoder {
                 return Ok(Vec::new());
             }
         }
+        let t0 = std::time::Instant::now();
         let rgba = if self.hw_accel != HwAccel::Software {
             // Try HW download path
             if let Some(rgba) = unsafe {
@@ -439,9 +477,13 @@ impl RenderDecoder {
             self.scale_frame_sw(decoded)?
         };
 
+        self.t_convert += t0.elapsed();
+
         // Apply source rotation if needed (phone/drone videos with container rotation metadata)
         if self.source_rotation != 0 {
+            let t1 = std::time::Instant::now();
             let (rotated, _rw, _rh) = rotate_rgba(&rgba, scale_w, scale_h, self.source_rotation);
+            self.t_rotate += t1.elapsed();
             Ok(rotated)
         } else {
             Ok(rgba)
@@ -669,7 +711,8 @@ unsafe fn download_hw_frame(
     let src_h = (*sw_frame).height as u32;
     let sw_fmt = std::mem::transmute::<i32, AVPixelFormat>((*sw_frame).format);
 
-    // Create or reuse sws context — use Lanczos for export quality
+    // Lanczos when the frame is actually being resized, and a cheap flag
+    // when it is not — see `scaler_flags`.
     let sws = sws_getCachedContext(
         sws_ctx.unwrap_or(std::ptr::null_mut()),
         src_w as i32,
@@ -678,7 +721,7 @@ unsafe fn download_hw_frame(
         target_w as i32,
         target_h as i32,
         AVPixelFormat::AV_PIX_FMT_RGBA64LE,
-        0x200, // SWS_LANCZOS, matching the software path
+        if src_w == target_w && src_h == target_h { 0x2 } else { 0x200 },
         std::ptr::null_mut(),
         std::ptr::null_mut(),
         std::ptr::null(),
@@ -741,53 +784,46 @@ fn rgba64_rows(data: &[u8], stride: usize, w: usize, h: usize) -> Vec<u16> {
 
 /// Rotate an RGBA frame by 0/90/180/270 degrees clockwise.
 /// Returns (rotated_data, new_width, new_height).
-fn rotate_rgba<T: Copy + Default>(rgba: &[T], w: u32, h: u32, degrees: i32) -> (Vec<T>, u32, u32) {
-    match degrees {
-        90 => {
-            let nw = h;
-            let nh = w;
-            let mut out = vec![T::default(); (nw * nh * 4) as usize];
-            for y in 0..h {
-                for x in 0..w {
-                    let src = ((y * w + x) * 4) as usize;
-                    let dx = h - 1 - y;
-                    let dy = x;
-                    let dst = ((dy * nw + dx) * 4) as usize;
-                    out[dst..dst + 4].copy_from_slice(&rgba[src..src + 4]);
-                }
+/// Rotate an interleaved RGBA frame by a multiple of 90°.
+///
+/// Written as one rayon pass per output row, gathering from the source.
+/// It used to be a single-threaded double loop *writing* to the rotated
+/// positions, which is the worst of both worlds at 4K: 8.3 million
+/// eight-byte writes, each landing 17 KB from the last, on one core. It
+/// was 70 ms a frame of the export's 240 — more than the decode and the
+/// colour conversion put together, for a memory shuffle. Gathering
+/// instead of scattering keeps the writes sequential, and the rows are
+/// independent so they parallelise.
+fn rotate_rgba<T: Copy + Default + Send + Sync>(
+    rgba: &[T],
+    w: u32,
+    h: u32,
+    degrees: i32,
+) -> (Vec<T>, u32, u32) {
+    use rayon::prelude::*;
+    let (nw, nh) = match degrees {
+        90 | 270 => (h, w),
+        180 => (w, h),
+        _ => return (rgba.to_vec(), w, h),
+    };
+    let mut out = vec![T::default(); (nw * nh * 4) as usize];
+    let (wi, hi) = (w as usize, h as usize);
+    let nwi = nw as usize;
+    out.par_chunks_exact_mut(nwi * 4)
+        .enumerate()
+        .for_each(|(dy, row)| {
+            for dx in 0..nwi {
+                // Where this output pixel came from.
+                let (sx, sy) = match degrees {
+                    90 => (dy, hi - 1 - dx),
+                    270 => (wi - 1 - dy, dx),
+                    _ => (wi - 1 - dx, hi - 1 - dy),
+                };
+                let src = (sy * wi + sx) * 4;
+                row[dx * 4..dx * 4 + 4].copy_from_slice(&rgba[src..src + 4]);
             }
-            (out, nw, nh)
-        }
-        180 => {
-            let mut out = vec![T::default(); rgba.len()];
-            for y in 0..h {
-                for x in 0..w {
-                    let src = ((y * w + x) * 4) as usize;
-                    let dx = w - 1 - x;
-                    let dy = h - 1 - y;
-                    let dst = ((dy * w + dx) * 4) as usize;
-                    out[dst..dst + 4].copy_from_slice(&rgba[src..src + 4]);
-                }
-            }
-            (out, w, h)
-        }
-        270 => {
-            let nw = h;
-            let nh = w;
-            let mut out = vec![T::default(); (nw * nh * 4) as usize];
-            for y in 0..h {
-                for x in 0..w {
-                    let src = ((y * w + x) * 4) as usize;
-                    let dx = y;
-                    let dy = w - 1 - x;
-                    let dst = ((dy * nw + dx) * 4) as usize;
-                    out[dst..dst + 4].copy_from_slice(&rgba[src..src + 4]);
-                }
-            }
-            (out, nw, nh)
-        }
-        _ => (rgba.to_vec(), w, h),
-    }
+        });
+    (out, nw, nh)
 }
 
 /// Decode a single frame from a media file at the given time, scaled to `max_width`.

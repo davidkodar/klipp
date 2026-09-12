@@ -78,14 +78,40 @@ pub(crate) struct ExportFrameSource<'a> {
     working: WorkingColorspace,
     streams: HashMap<ClipId, ClipStream>,
     used: HashSet<ClipId>,
+    /// Time spent pulling frames out of the decoders, and time spent
+    /// turning what they hand back into the renderer's linear frames.
+    /// Reported by the export's per-frame breakdown, because "render is
+    /// slow" is not actionable and "the source conversion is slow" is.
+    pub(crate) t_decode: std::time::Duration,
+    pub(crate) t_convert: std::time::Duration,
 }
 
 impl<'a> ExportFrameSource<'a> {
     pub(crate) fn new(media: &'a HashMap<MediaId, MediaFile>, fps: f64, working: WorkingColorspace) -> Self {
-        Self { media, fps, working, streams: HashMap::new(), used: HashSet::new() }
+        Self {
+            media,
+            fps,
+            working,
+            streams: HashMap::new(),
+            used: HashSet::new(),
+            t_decode: std::time::Duration::ZERO,
+            t_convert: std::time::Duration::ZERO,
+        }
     }
 
     /// Close the decoders of clips the frame just rendered did not use.
+    /// The decoders' own breakdown: download plus colour conversion, and
+    /// rotation, summed over every stream this export has opened.
+    pub(crate) fn decoder_stage_times(&self) -> (std::time::Duration, std::time::Duration) {
+        self.streams.values().fold(
+            (std::time::Duration::ZERO, std::time::Duration::ZERO),
+            |(c, r), s| {
+                let (sc, sr) = s.decoder.stage_times();
+                (c + sc, r + sr)
+            },
+        )
+    }
+
     pub(crate) fn end_frame(&mut self) {
         let used = std::mem::take(&mut self.used);
         self.streams.retain(|id, _| used.contains(id));
@@ -127,10 +153,16 @@ impl FrameSource for ExportFrameSource<'_> {
             self.streams.insert(clip.id, s);
         }
         let half_frame = 0.5 / self.fps.max(1.0);
+        let t0 = std::time::Instant::now();
         let stream = self.streams.get_mut(&clip.id)?;
         stream.seek_forward(source_secs, half_frame);
         let to_working = stream.to_working;
-        stream.current.as_ref().map(|d| source_frame(d, to_working, width, height))
+        let decoded = stream.current.as_ref();
+        self.t_decode += t0.elapsed();
+        let t1 = std::time::Instant::now();
+        let out = decoded.map(|d| source_frame(d, to_working, width, height));
+        self.t_convert += t1.elapsed();
+        out
     }
 
     /// The decoder's next frame, already pulled by `frame`'s seek.
@@ -157,31 +189,47 @@ fn source_frame(d: &Decoded, to_working: Option<[[f32; 3]; 3]>, width: u32, heig
             transfer: s.transfer,
             source_to_working: s.source_to_working,
         },
-        _ => {
-            let mut linear = rgba64_to_linear(&d.rgba);
-            if let Some(m) = to_working {
-                for px in linear.chunks_exact_mut(4) {
-                    let (r, g, b) = (px[0], px[1], px[2]);
-                    px[0] = m[0][0] * r + m[0][1] * g + m[0][2] * b;
-                    px[1] = m[1][0] * r + m[1][1] * g + m[1][2] * b;
-                    px[2] = m[2][0] * r + m[2][1] * g + m[2][2] * b;
-                }
-            }
-            SourcePixels::Linear(std::sync::Arc::new(linear))
-        }
+        _ => SourcePixels::Linear(std::sync::Arc::new(rgba64_to_linear(&d.rgba, to_working))),
     };
     SourceFrame { pixels, width, height, pts: Some(d.pts) }
 }
 
 /// sRGB-encoded RGBA64 → linear RGBA f32, through a 65536-entry table:
 /// the source's full 10/12-bit precision reaches the grade.
-fn rgba64_to_linear(rgba: &[u16]) -> Vec<f32> {
+/// 16-bit RGBA to the renderer's linear f32, and into the working basis
+/// in the same pass when the source needs one.
+///
+/// One rayon pass over a pre-sized buffer. It used to be a
+/// single-threaded `flat_map().collect()`, with the basis change as a
+/// second single-threaded pass after it: 33 million table lookups and a
+/// 133 MB allocation on one core, at 4K vertical, per frame. That was
+/// 34 ms of the export's 241 ms per frame — on a machine with 32 of
+/// them idle.
+fn rgba64_to_linear(rgba: &[u16], to_working: Option<[[f32; 3]; 3]>) -> Vec<f32> {
+    use rayon::prelude::*;
     use std::sync::OnceLock;
     static LUT: OnceLock<Vec<f32>> = OnceLock::new();
     let lut = LUT.get_or_init(|| {
         (0..=u16::MAX).map(|v| klipp_color::transfer::srgb_to_linear(v as f32 / 65535.0)).collect()
     });
-    rgba.chunks_exact(4)
-        .flat_map(|px| [lut[px[0] as usize], lut[px[1] as usize], lut[px[2] as usize], px[3] as f32 / 65535.0])
-        .collect()
+    let mut out = vec![0.0f32; rgba.len()];
+    out.par_chunks_exact_mut(4)
+        .zip(rgba.par_chunks_exact(4))
+        .for_each(|(dst, px)| {
+            let (r, g, b) = (lut[px[0] as usize], lut[px[1] as usize], lut[px[2] as usize]);
+            match to_working {
+                Some(m) => {
+                    dst[0] = m[0][0] * r + m[0][1] * g + m[0][2] * b;
+                    dst[1] = m[1][0] * r + m[1][1] * g + m[1][2] * b;
+                    dst[2] = m[2][0] * r + m[2][1] * g + m[2][2] * b;
+                }
+                None => {
+                    dst[0] = r;
+                    dst[1] = g;
+                    dst[2] = b;
+                }
+            }
+            dst[3] = px[3] as f32 / 65535.0;
+        });
+    out
 }

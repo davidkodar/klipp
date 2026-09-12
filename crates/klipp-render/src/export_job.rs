@@ -219,6 +219,16 @@ impl ExportJob {
         let codec_label = self.settings.video_codec.label();
         Self::set_stage(&self.render_stage, &format!("Encoding video ({codec_label})\u{2026}"));
 
+        // Where a frame's time goes. The export had no equivalent of the
+        // graph executor's PERF line, so "the render is slow" could not
+        // be turned into "which of the three stages is slow" without
+        // rebuilding with a stopwatch in it.
+        let mut t_render = std::time::Duration::ZERO;
+        let mut t_pad = std::time::Duration::ZERO;
+        let mut t_encode = std::time::Duration::ZERO;
+        let mut t_audio = std::time::Duration::ZERO;
+        let loop_start = std::time::Instant::now();
+
         // ─── THE MAIN RENDER LOOP ─────────────────────────────────
         for frame_num in start_frame..end_frame {
             // Check cancellation
@@ -237,8 +247,10 @@ impl ExportJob {
                 value: frame_num as i64 * self.snapshot.fps_den as i64,
                 rate: self.snapshot.fps_num,
             };
+            let t0 = std::time::Instant::now();
             let picture = renderer.render(timeline, time, fit_w, fit_h, &mut frames, render_opts);
             frames.end_frame();
+            t_render += t0.elapsed();
             if !hw_reported {
                 hw_reported = true;
                 let hw_str = format!(
@@ -251,20 +263,44 @@ impl ExportJob {
                     *hw = hw_str;
                 }
             }
+            let t1 = std::time::Instant::now();
             let picture = pad_linear(picture, fit_w, fit_h, out_w, out_h, fit_x, fit_y);
+            t_pad += t1.elapsed();
+            let t2 = std::time::Instant::now();
             encoder.encode_linear_frame(&picture, out_w, out_h)?;
+            t_encode += t2.elapsed();
 
             // ─── Encode audio (with loudness normalization gain if enabled) ──
+            let t3 = std::time::Instant::now();
             let mut audio = audio_mixdown.get_frame_audio(frame_num);
             if loudness_gain_linear != 1.0 {
                 for s in &mut audio { *s *= loudness_gain_linear; }
             }
             encoder.encode_audio_samples(&audio)?;
+            t_audio += t3.elapsed();
 
             // ─── Update progress ──────────────────────────────────
             export_frame_num += 1;
             self.progress.store(export_frame_num, Ordering::Relaxed);
         }
+
+        let frames_done = export_frame_num.max(1);
+        let per = |d: std::time::Duration| d.as_secs_f64() * 1000.0 / frames_done as f64;
+        info!(
+            "ExportJob {}: {frames_done} frames in {:.1}s ({:.1} fps) | per frame: \
+             render {:.1}ms (decode {:.1}ms, source convert {:.1}ms)  pad {:.1}ms  \
+             encode {:.1}ms  audio {:.1}ms",
+            self.id,
+            loop_start.elapsed().as_secs_f64(),
+            frames_done as f64 / loop_start.elapsed().as_secs_f64().max(0.001),
+            per(t_render), per(frames.t_decode), per(frames.t_convert),
+            per(t_pad), per(t_encode), per(t_audio),
+        );
+        let (dl, rot) = frames.decoder_stage_times();
+        info!(
+            "ExportJob {}: inside decode — download + colour {:.1}ms, rotation {:.1}ms",
+            self.id, per(dl), per(rot),
+        );
 
         Self::set_stage(&self.render_stage, "Finalizing file\u{2026}");
 
