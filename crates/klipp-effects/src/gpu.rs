@@ -6140,8 +6140,29 @@ fn dec_signed(c: f32) -> f32 {
 // carries the scale back out.
 struct PictureHsl {
     h: f32,
+    /// Saturation as a fraction of the brightest channel,
+    /// `(max - min) / max` — the HSV/HSB definition, and what the
+    /// Hue/Sat curves, the Colour Warper and the Qualifier all read.
+    ///
+    /// It used to be the HSL one, `(max - min) / (1 - |2l - 1|)`, which
+    /// is wrong for these three tools in two ways. A near-white pastel
+    /// came back fully saturated — `(1.0, 0.95, 0.95)`, almost no colour
+    /// in it, read 1.000, the same as a vivid red highlight — so the
+    /// qualifier could not tell rich from pale up there and a
+    /// saturation boost had nowhere to go. And it was wrong in range
+    /// too: light pastel pink read 0.497 against a mid saturated red's
+    /// 0.457, which no colourist would agree with. User's choice,
+    /// 2026-09-12.
     s: f32,
+    /// Lightness, `(max + min) / 2`. Kept for `picture_lum_axis` — the
+    /// luminance the lum-driven lookups and the qualifier's luminance
+    /// window use — and *not* what a saturation change holds fixed.
     l: f32,
+    /// The brightest channel, normalised. This is what a saturation
+    /// change holds fixed, so making a colour more saturated deepens it
+    /// rather than brightening it, which is what a saturation control is
+    /// expected to do.
+    v: f32,
     magnitude: f32,
 }
 
@@ -6156,7 +6177,7 @@ fn picture_hsl(c: vec3<f32>) -> PictureHsl {
     var s = 0.0;
     var h = 0.0;
     if delta > 0.0001 {
-        s = clamp(delta / (1.0 - abs(2.0 * l - 1.0)), 0.0, 1.0);
+        s = clamp(delta / max(mx, 0.0001), 0.0, 1.0);
         if mx == n.x {
             h = ((n.y - n.z) / delta) % 6.0;
             if h < 0.0 { h = h + 6.0; }
@@ -6167,15 +6188,17 @@ fn picture_hsl(c: vec3<f32>) -> PictureHsl {
             h = ((n.x - n.y) / delta + 4.0) / 6.0;
         }
     }
-    return PictureHsl(h, s, l, magnitude);
+    return PictureHsl(h, s, l, mx, magnitude);
 }
 
-// HSL back to a normalised encoded RGB.
-fn hsl_rgb_norm(h: f32, s: f32, l: f32) -> vec3<f32> {
-    if s < 0.0001 { return vec3<f32>(l, l, l); }
-    let c = (1.0 - abs(2.0 * l - 1.0)) * s;
+// Hue, max-normalised saturation and value back to a normalised encoded
+// RGB. The partner of `picture_hsl`'s `s`: chroma is `s * v`, so the
+// brightest channel stays where it was and only the others move.
+fn hsv_rgb_norm(h: f32, s: f32, v: f32) -> vec3<f32> {
+    if s < 0.0001 { return vec3<f32>(v, v, v); }
+    let c = s * v;
     let x = c * (1.0 - abs((h * 6.0) % 2.0 - 1.0));
-    let m = l - c * 0.5;
+    let m = v - c;
     var rgb: vec3<f32>;
     switch u32(h * 6.0) {
         case 0u: { rgb = vec3<f32>(c, x, 0.0); }
@@ -6188,9 +6211,11 @@ fn hsl_rgb_norm(h: f32, s: f32, l: f32) -> vec3<f32> {
     return rgb + vec3<f32>(m, m, m);
 }
 
-// The inverse of `picture_hsl`: HSL back to linear light.
-fn picture_rgb(h: f32, s: f32, l: f32, magnitude: f32) -> vec3<f32> {
-    let e = hsl_rgb_norm(h, s, l) * magnitude;
+// The inverse of `picture_hsl`: hue, saturation and value back to
+// linear light. `magnitude` puts a pixel that was brighter than white
+// back where it was.
+fn picture_rgb(h: f32, s: f32, v: f32, magnitude: f32) -> vec3<f32> {
+    let e = hsv_rgb_norm(h, s, v) * magnitude;
     return vec3<f32>(dec_signed(e.x), dec_signed(e.y), dec_signed(e.z));
 }
 
@@ -8526,7 +8551,12 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let lum_axis = picture_lum_axis(hsl);
     var h = hsl.h;
     var s = hsl.s;
-    var l = hsl.l;
+    // The brightness the curves move is the value, not the lightness:
+    // saturation is now a fraction of the brightest channel, so the two
+    // have to be adjusted in the same currency or a lightness curve is
+    // computed and then discarded. For a grey the two are identical; for
+    // a saturated colour a shift here moves the peak channel.
+    var v = hsl.v;
 
     // Curve 0: Hue vs Hue (0.5 = no change)
     if (params.curves_on & 1u) != 0u {
@@ -8544,7 +8574,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // Curve 2: Hue vs Lum (0.5 = no change)
     if (params.curves_on & 4u) != 0u {
         let hvl = lut_lookup(2u, hsl.h);
-        l = clamp(l + (hvl - 0.5), 0.0, 1.0);
+        v = clamp(v + (hvl - 0.5), 0.0, 1.0);
     }
 
     // Curve 3: Lum vs Sat (0.5 = identity)
@@ -8567,7 +8597,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         s = s + (ovs - s) * weight;
     }
 
-    let rgb = picture_rgb(h, s, l, hsl.magnitude);
+    let rgb = picture_rgb(h, s, v, hsl.magnitude);
 
     let mixed = orig.xyz + (rgb - orig.xyz) * params.mix;
     output[idx] = pack(vec4<f32>(mixed, orig.w));
@@ -11123,7 +11153,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let sat_weight = clamp(hsl.s, 0.0, 1.0);
     let new_h = ((h_deg + hue_shift * sat_weight) % 360.0 + 360.0) % 360.0 / 360.0;
     let new_s = clamp(hsl.s + sat_shift * sat_weight, 0.0, 1.0);
-    let rgb = picture_rgb(new_h, new_s, hsl.l, hsl.magnitude);
+    let rgb = picture_rgb(new_h, new_s, hsl.v, hsl.magnitude);
     output[idx] = pack(vec4<f32>(rgb, p.w));
 }
 "

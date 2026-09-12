@@ -315,8 +315,16 @@ pub fn rgb_curves(px: &mut [f32], lut: &[f32; 1024], preserve_luma: bool, mix: f
 #[derive(Clone, Copy)]
 pub struct PictureHsl {
     pub h: f32,
+    /// Saturation as a fraction of the brightest channel,
+    /// `(max - min) / max` — see the shader's `picture_hsl` for why it
+    /// is not the HSL definition.
     pub s: f32,
+    /// Lightness, for `lum_axis`. Not what a saturation change holds
+    /// fixed.
     pub l: f32,
+    /// The brightest channel, normalised — what a saturation change
+    /// holds fixed.
+    pub v: f32,
     pub magnitude: f32,
 }
 
@@ -339,7 +347,7 @@ pub fn picture_hsl(c: [f32; 3]) -> PictureHsl {
     let l = (mx + mn) * 0.5;
     let (mut s, mut h) = (0.0, 0.0);
     if delta > 0.0001 {
-        s = (delta / (1.0 - (2.0 * l - 1.0).abs())).clamp(0.0, 1.0);
+        s = (delta / mx.max(0.0001)).clamp(0.0, 1.0);
         h = if mx == n[0] {
             let mut h = ((n[1] - n[2]) / delta) % 6.0;
             if h < 0.0 {
@@ -352,22 +360,22 @@ pub fn picture_hsl(c: [f32; 3]) -> PictureHsl {
             ((n[0] - n[1]) / delta + 4.0) / 6.0
         };
     }
-    PictureHsl { h, s, l, magnitude }
+    PictureHsl { h, s, l, v: mx, magnitude }
 }
 
-/// `picture_rgb`: HSL back to linear light.
-pub fn picture_rgb(h: f32, s: f32, l: f32, magnitude: f32) -> [f32; 3] {
-    hsl_to_rgb(h, s, l).map(|v| dec_signed(v * magnitude))
+/// `picture_rgb`: hue, saturation and value back to linear light.
+pub fn picture_rgb(h: f32, s: f32, v: f32, magnitude: f32) -> [f32; 3] {
+    hsv_to_rgb(h, s, v).map(|c| dec_signed(c * magnitude))
 }
 
-/// `hsl_rgb_norm`.
-fn hsl_to_rgb(h: f32, s: f32, l: f32) -> [f32; 3] {
+/// `hsv_rgb_norm`.
+fn hsv_to_rgb(h: f32, s: f32, v: f32) -> [f32; 3] {
     if s < 0.0001 {
-        return [l, l, l];
+        return [v, v, v];
     }
-    let c = (1.0 - (2.0 * l - 1.0).abs()) * s;
+    let c = s * v;
     let x = c * (1.0 - ((h * 6.0) % 2.0 - 1.0).abs());
-    let m = l - c * 0.5;
+    let m = v - c;
     let o = match (h * 6.0) as u32 {
         0 => [c, x, 0.0],
         1 => [x, c, 0.0],
@@ -397,7 +405,9 @@ pub fn huesat(px: &mut [f32], lut: &[f32; 1536], mix: f32, active: u32) {
         let orig = [p[0], p[1], p[2]];
         let hsl = picture_hsl(orig);
         let lum_axis = hsl.lum_axis();
-        let (mut h, mut s, mut l) = (hsl.h, hsl.s, hsl.l);
+        // See the shader: the curves move the value, not the lightness,
+        // because saturation is a fraction of the brightest channel.
+        let (mut h, mut s, mut v) = (hsl.h, hsl.s, hsl.v);
         if on(0) {
             let hvh = huesat_lookup(lut, 0, h);
             h = (h + (hvh - 0.5) * 2.0) % 1.0;
@@ -411,7 +421,7 @@ pub fn huesat(px: &mut [f32], lut: &[f32; 1536], mix: f32, active: u32) {
         }
         if on(2) {
             let hvl = huesat_lookup(lut, 2, hsl.h);
-            l = (l + (hvl - 0.5)).clamp(0.0, 1.0);
+            v = (v + (hvl - 0.5)).clamp(0.0, 1.0);
         }
         if on(3) {
             let lvs = huesat_lookup(lut, 3, lum_axis);
@@ -427,7 +437,7 @@ pub fn huesat(px: &mut [f32], lut: &[f32; 1536], mix: f32, active: u32) {
             let weight = (1.0 - orange_dist * 8.0).clamp(0.0, 1.0);
             s += (ovs - s) * weight;
         }
-        let rgb = picture_rgb(h, s, l, hsl.magnitude);
+        let rgb = picture_rgb(h, s, v, hsl.magnitude);
         for c in 0..3 {
             p[c] = orig[c] + (rgb[c] - orig[c]) * mix;
         }
@@ -449,7 +459,7 @@ pub fn color_warper(px: &mut [f32], hue_shifts: &[f32; 12], sat_shifts: &[f32; 1
         let sat_weight = hsl.s.clamp(0.0, 1.0);
         let new_h = ((h_deg + hue_shift * sat_weight) % 360.0 + 360.0) % 360.0 / 360.0;
         let new_s = (hsl.s + sat_shift * sat_weight).clamp(0.0, 1.0);
-        let rgb = picture_rgb(new_h, new_s, hsl.l, hsl.magnitude);
+        let rgb = picture_rgb(new_h, new_s, hsl.v, hsl.magnitude);
         p[..3].copy_from_slice(&rgb);
     });
 }
@@ -533,4 +543,116 @@ pub fn grade_mix(px: &mut [f32], kept: &[f32], mix: f32) {
             p[c] = o[c] + (p[c] - o[c]) * mix;
         }
     });
+}
+
+#[cfg(test)]
+mod saturation_definition_tests {
+    use super::*;
+
+    /// Saturation is a fraction of the brightest channel, so it says
+    /// "how much colour is in this" at any brightness.
+    ///
+    /// The numbers are the decision, so they are written down. The HSL
+    /// definition this replaced (user's choice, 2026-09-12) put the
+    /// third and fourth rows at 0.497 and 1.000 — it called a
+    /// near-white pastel *fully saturated*, and rated a light pastel
+    /// pink above a mid saturated red.
+    #[test]
+    fn saturation_tells_vivid_from_pale_at_every_brightness() {
+        let cases = [
+            ("mid grey", [0.18, 0.18, 0.18], 0.000),
+            ("mid saturated red", [0.40, 0.05, 0.05], 0.627),
+            ("light pastel pink", [0.90, 0.72, 0.72], 0.094),
+            ("near-white pastel", [1.00, 0.95, 0.95], 0.022),
+            ("saturated red highlight", [4.00, 0.50, 0.50], 0.597),
+            ("pastel highlight 4x", [4.00, 3.60, 3.60], 0.044),
+            ("white highlight 4x", [4.00, 4.00, 4.00], 0.000),
+        ];
+        for (name, rgb, want) in cases {
+            let got = picture_hsl(rgb).s;
+            assert!(
+                (got - want).abs() < 0.01,
+                "{name}: saturation {got:.3}, expected {want:.3}",
+            );
+        }
+    }
+
+    /// The two orderings the old definition got backwards.
+    #[test]
+    fn a_vivid_colour_reads_more_saturated_than_a_pale_one() {
+        let red = picture_hsl([0.40, 0.05, 0.05]).s;
+        let pink = picture_hsl([0.90, 0.72, 0.72]).s;
+        assert!(red > pink, "a mid red ({red:.3}) must beat a pale pink ({pink:.3})");
+
+        let vivid_hi = picture_hsl([4.0, 0.5, 0.5]).s;
+        let pale_hi = picture_hsl([4.0, 3.6, 3.6]).s;
+        assert!(
+            vivid_hi > pale_hi * 5.0,
+            "a vivid highlight ({vivid_hi:.3}) must be clearly above a pale one ({pale_hi:.3})",
+        );
+        // Neither is pinned at the ceiling, which is what let a
+        // saturation boost do nothing up there.
+        assert!(vivid_hi < 0.99, "a highlight is reading as fully saturated again");
+    }
+
+    /// Scaling exposure leaves saturation where it was, near enough.
+    ///
+    /// Not exactly: the value is taken from the display-encoded
+    /// picture, and that curve is not linear, so a stop of exposure
+    /// moves it a little. The old definition moved it to 1.0 and
+    /// stayed there.
+    #[test]
+    fn saturation_barely_moves_with_exposure() {
+        let base = [0.30, 0.12, 0.06];
+        let at_1 = picture_hsl(base).s;
+        for stops in [1.0f32, 2.0, 3.0] {
+            let k = 2.0f32.powf(stops);
+            let lifted = picture_hsl([base[0] * k, base[1] * k, base[2] * k]).s;
+            assert!(
+                (lifted - at_1).abs() < 0.12,
+                "{stops} stops up: saturation went {at_1:.3} -> {lifted:.3}",
+            );
+        }
+    }
+
+    /// A saturation change holds the brightest channel, so it deepens a
+    /// colour rather than brightening it — what a saturation control is
+    /// expected to do.
+    #[test]
+    fn saturating_deepens_rather_than_brightens() {
+        let rgb = [0.50, 0.35, 0.30];
+        let hsl = picture_hsl(rgb);
+        let more = picture_rgb(hsl.h, (hsl.s * 1.6).min(1.0), hsl.v, hsl.magnitude);
+        let peak_before = rgb.iter().cloned().fold(f32::MIN, f32::max);
+        let peak_after = more.iter().cloned().fold(f32::MIN, f32::max);
+        assert!(
+            (peak_after - peak_before).abs() < 0.02,
+            "the brightest channel moved from {peak_before:.3} to {peak_after:.3}",
+        );
+        let min_before = rgb.iter().cloned().fold(f32::MAX, f32::min);
+        let min_after = more.iter().cloned().fold(f32::MAX, f32::min);
+        assert!(min_after < min_before, "saturating did not deepen the darkest channel");
+    }
+
+    /// Round trip with nothing changed gives the colour back.
+    #[test]
+    fn the_round_trip_is_lossless() {
+        for rgb in [
+            [0.18, 0.18, 0.18],
+            [0.40, 0.05, 0.05],
+            [0.90, 0.72, 0.72],
+            [4.00, 0.50, 0.50],
+            [4.00, 3.60, 3.60],
+            [0.02, 0.30, 0.70],
+        ] {
+            let h = picture_hsl(rgb);
+            let back = picture_rgb(h.h, h.s, h.v, h.magnitude);
+            for c in 0..3 {
+                assert!(
+                    (back[c] - rgb[c]).abs() < 1e-3,
+                    "{rgb:?} came back as {back:?}",
+                );
+            }
+        }
+    }
 }
