@@ -20,6 +20,17 @@ struct Harness {
     cmd_rx: crossbeam_channel::Receiver<klipp_core::AppCommand>,
     _log: std::path::PathBuf,
     next_id: u64,
+    /// Two clips, each with its own Corrector, and a node nested inside
+    /// a Compound on the first — what the id checks are checked against.
+    ids: Ids,
+}
+
+struct Ids {
+    clip_a: String,
+    corrector_a: String,
+    clip_b: String,
+    corrector_b: String,
+    nested_in_a: String,
 }
 
 impl Harness {
@@ -71,11 +82,17 @@ fn harness() -> Harness {
     fb.data[2] = 30;
     fb.data[3] = 255;
 
+    // Two clips on the timeline, each with its own grade graph. Both
+    // start out as Source, Corrector, Output — which is the point: the
+    // two Correctors are indistinguishable except by id, so a caller
+    // reaching for the wrong one is an easy mistake to make and used to
+    // be an impossible one to notice.
+    let (sequence, ids) = sequence_with_two_clips();
     let frame_buffer = Arc::new(Mutex::new(fb));
     let ctx = ControlContext {
         commands: cmd_tx,
         wake_ui: Arc::new(|| {}),
-        sequence: Arc::new(RwLock::new(klipp_timeline::Sequence::new_default())),
+        sequence: Arc::new(RwLock::new(sequence)),
         media_pool: Arc::new(RwLock::new(klipp_media::MediaPool::new())),
         frame_buffer: frame_buffer.clone(),
         perf_ring: klipp_engine::perf::shared(),
@@ -92,7 +109,7 @@ fn harness() -> Harness {
         match UnixStream::connect(&sock) {
             Ok(stream) => {
                 let reader = BufReader::new(stream.try_clone().expect("clone"));
-                return Harness { stream, frame_buffer, reader, cmd_rx, _log: log, next_id: 0 };
+                return Harness { stream, frame_buffer, reader, cmd_rx, _log: log, next_id: 0, ids };
             }
             Err(e) => {
                 last_err = Some(e);
@@ -101,6 +118,65 @@ fn harness() -> Harness {
         }
     }
     panic!("could not connect to {}: {last_err:?}", sock.display());
+}
+
+/// A sequence holding two graded clips, and the ids to address them by.
+fn sequence_with_two_clips() -> (klipp_timeline::Sequence, Ids) {
+    use klipp_nodes::{Node, NodeGraph, NodeId, NodeKind};
+
+    let clip = |with_compound: bool| {
+        let mut graph = NodeGraph::default();
+        let corrector = graph.ensure_corrector();
+        let nested = NodeId::new_v4();
+        if with_compound {
+            // A Compound's children are addressable too, so the check
+            // has to look inside one rather than only at the top level.
+            let mut sub = NodeGraph::default();
+            sub.nodes.push(Node {
+                id: nested,
+                kind: NodeKind::Exposure,
+                label: "Exposure".into(),
+                enabled: true,
+                params: Default::default(),
+                keyframes: Default::default(),
+                output_link: None,
+                input_links: Vec::new(),
+            });
+            let mut params = klipp_nodes::params::NodeParams::default();
+            params.compound_subgraph = Some(sub);
+            graph.nodes.push(Node {
+                id: NodeId::new_v4(),
+                kind: NodeKind::Compound,
+                label: "Compound".into(),
+                enabled: true,
+                params,
+                keyframes: Default::default(),
+                output_link: None,
+                input_links: Vec::new(),
+            });
+        }
+        let mut c = klipp_timeline::Clip::gap(
+            klipp_core::RationalTime::from_secs_f64(0.0, 24),
+            klipp_core::RationalTime::from_secs_f64(4.0, 24),
+        );
+        c.node_graph = graph;
+        (c, corrector.to_string(), nested.to_string())
+    };
+
+    let (clip_a, corrector_a, nested_in_a) = clip(true);
+    let (clip_b, corrector_b, _) = clip(false);
+    let ids = Ids {
+        clip_a: clip_a.id.0.to_string(),
+        corrector_a,
+        clip_b: clip_b.id.0.to_string(),
+        corrector_b,
+        nested_in_a,
+    };
+    let mut seq = klipp_timeline::Sequence::new_default();
+    let mut track = klipp_timeline::Track::new("V1", klipp_timeline::TrackKind::Video);
+    track.clips = vec![clip_a, clip_b];
+    seq.tracks = vec![track];
+    (seq, ids)
 }
 
 /// One test, not several: the socket path comes from a process-global
@@ -175,8 +251,7 @@ fn control_socket_reads_state_and_forwards_commands() {
         other => panic!("expected SeekTo, got {other:?}"),
     }
 
-    let node = uuid::Uuid::new_v4().to_string();
-    let clip = uuid::Uuid::new_v4().to_string();
+    let (clip, node) = (h.ids.clip_a.clone(), h.ids.corrector_a.clone());
     h.ok(json!({
         "method": "set_node_param",
         "clip_id": clip, "node_id": node,
@@ -189,6 +264,113 @@ fn control_socket_reads_state_and_forwards_commands() {
         }
         other => panic!("expected SetNodeParam, got {other:?}"),
     }
+
+    // ── An id that names nothing is refused, not accepted and dropped ─
+    // A write used to be answered `accepted` whatever the ids were: the
+    // command went down the channel and the UI's `find` quietly failed
+    // to match anything. The grade then read back as identity with no
+    // indication why. These are the four ways to get that wrong.
+    let (clip_a, clip_b) = (h.ids.clip_a.clone(), h.ids.clip_b.clone());
+    let (corr_a, corr_b) = (h.ids.corrector_a.clone(), h.ids.corrector_b.clone());
+    let nested = h.ids.nested_in_a.clone();
+    let refused = |h: &mut Harness, req: Value, expect: &str| {
+        let reply = h.call(req);
+        assert_eq!(reply["ok"], json!(false), "expected a refusal, got {reply}");
+        let msg = reply["error"].as_str().unwrap_or_default();
+        assert!(
+            msg.contains(expect),
+            "error should mention {expect:?} so the caller can fix it; got {msg:?}",
+        );
+        assert!(
+            h.cmd_rx.try_recv().is_err(),
+            "a refused command must not reach the app: it would change the wrong thing or nothing",
+        );
+    };
+
+    // Another clip's node. The bug that prompted this: both clips carry
+    // a Corrector, the ids look alike, and nothing said a word.
+    refused(
+        &mut h,
+        json!({
+            "method": "set_node_param",
+            "clip_id": clip_a, "node_id": corr_b,
+            "param": "temperature", "value": -9.0,
+        }),
+        "has no node",
+    );
+    // The error has to name the nodes the clip does have, or the caller
+    // is left guessing at uuids.
+    let reply = h.call(json!({
+        "method": "set_node_param",
+        "clip_id": clip_a, "node_id": corr_b,
+        "param": "temperature", "value": -9.0,
+    }));
+    let msg = reply["error"].as_str().unwrap_or_default();
+    assert!(msg.contains(corr_a.as_str()), "error lists the clip's own nodes: {msg}");
+    assert!(msg.contains("Corrector"), "error names each node's kind: {msg}");
+    let _ = h.cmd_rx.try_recv();
+
+    // A node id that is no node at all.
+    refused(
+        &mut h,
+        json!({
+            "method": "set_node_param",
+            "clip_id": clip_a, "node_id": uuid::Uuid::new_v4().to_string(),
+            "param": "contrast", "value": 0.1,
+        }),
+        "has no node",
+    );
+    // A clip id that is no clip.
+    refused(
+        &mut h,
+        json!({
+            "method": "set_node_param",
+            "clip_id": uuid::Uuid::new_v4().to_string(), "node_id": corr_a,
+            "param": "contrast", "value": 0.1,
+        }),
+        "no clip with id",
+    );
+    // The same check guards the other node-addressing commands.
+    refused(
+        &mut h,
+        json!({
+            "method": "toggle_node_enabled",
+            "clip_id": clip_a, "node_id": corr_b,
+        }),
+        "has no node",
+    );
+    refused(
+        &mut h,
+        json!({
+            "method": "remove_node",
+            "clip_id": clip_a, "node_id": corr_b,
+        }),
+        "has no node",
+    );
+
+    // ── What the check must NOT refuse ────────────────────────────────
+    // A node inside a Compound is addressable, so the lookup recurses.
+    h.ok(json!({
+        "method": "set_node_param",
+        "clip_id": clip_a, "node_id": nested,
+        "param": "exposure", "value": 0.5,
+    }));
+    assert!(
+        matches!(h.cmd_rx.try_recv(), Ok(klipp_core::AppCommand::SetNodeParam { .. })),
+        "a node nested in a Compound must still be writable",
+    );
+    // The phantom Corrector id is not a node — it is the request to
+    // create one on a clip that has none — so it passes through.
+    h.ok(json!({
+        "method": "set_node_param",
+        "clip_id": clip_b,
+        "node_id": klipp_nodes::PHANTOM_CORRECTOR_ID.to_string(),
+        "param": "saturation", "value": 1.1,
+    }));
+    assert!(
+        matches!(h.cmd_rx.try_recv(), Ok(klipp_core::AppCommand::SetNodeParam { .. })),
+        "the phantom Corrector id must reach the app, which materialises the node",
+    );
 
     // ── Change-then-look waits for the frame that reflects the change ─
     // Writes report the generation current when they were queued.

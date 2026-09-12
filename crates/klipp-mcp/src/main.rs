@@ -450,10 +450,11 @@ fn tool_definitions() -> Vec<Value> {
         tool("klipp_set_node_param",
              "Set one numeric parameter on a grade node, e.g. temperature, tint, hue, \
               global_mix, saturation, contrast. Call klipp_get_grade first to see what \
-              a node currently carries.",
+              a node currently carries: node ids belong to one clip, so the id of \
+              another clip's Corrector is refused rather than applied.",
              json!({
                  "clip_id": { "type": "string" },
-                 "node_id": { "type": "string" },
+                 "node_id": { "type": "string", "description": "From klipp_get_grade for THIS clip" },
                  "param": { "type": "string", "description": "Parameter name, e.g. temperature" },
                  "value": { "type": "number" },
              }),

@@ -157,6 +157,97 @@ fn clip_id(s: &str) -> Result<klipp_core::ClipId, String> {
     Ok(klipp_core::ClipId(parse_uuid(s, "clip_id")?))
 }
 
+/// A clip id that names a clip on the timeline.
+///
+/// Commands that address a clip used to parse the id and send the
+/// command on, so an id that named nothing was answered `accepted` and
+/// then dropped by the UI's `find_clip`. Checking here costs one read of
+/// the sequence and turns a silent no-op into an error the caller can
+/// act on.
+fn existing_clip_id(
+    ctx: &ControlContext,
+    s: &str,
+) -> Result<klipp_core::ClipId, String> {
+    let want = clip_id(s)?;
+    let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
+    if seq.tracks.iter().flat_map(|t| t.clips.iter()).any(|c| c.id == want) {
+        return Ok(want);
+    }
+    let mut have: Vec<String> = seq
+        .tracks
+        .iter()
+        .flat_map(|t| t.clips.iter())
+        .map(|c| c.id.0.to_string())
+        .collect();
+    have.truncate(8);
+    Err(format!(
+        "no clip with id {s} on the timeline. Clips are: {}",
+        if have.is_empty() { "none".to_string() } else { have.join(", ") },
+    ))
+}
+
+/// A node id that names a node in `clip`'s graph.
+///
+/// The same silent no-op as [`existing_clip_id`], and a worse one: node
+/// ids are per clip, so passing the id of *another* clip's node — the
+/// two clips' Correctors look alike, and both graphs start out as
+/// Source, Corrector, Output — was accepted and changed nothing. The
+/// grade read back as identity with no indication why.
+///
+/// Nodes inside a Compound's subgraph count: they are addressable, and
+/// rejecting them here would break a legitimate write. So does
+/// [`klipp_nodes::PHANTOM_CORRECTOR_ID`], which is not a node at all but
+/// the request to materialise a Corrector on a clip that has none.
+fn existing_node_id(
+    ctx: &ControlContext,
+    clip: klipp_core::ClipId,
+    s: &str,
+    what: &str,
+) -> Result<uuid::Uuid, String> {
+    let want = parse_uuid(s, what)?;
+    if want == klipp_nodes::PHANTOM_CORRECTOR_ID {
+        return Ok(want);
+    }
+    let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
+    let graph = seq
+        .tracks
+        .iter()
+        .flat_map(|t| t.clips.iter())
+        .find(|c| c.id == clip)
+        .map(|c| &c.node_graph)
+        .ok_or_else(|| format!("no clip with id {} on the timeline", clip.0))?;
+    if find_node(graph, want) {
+        return Ok(want);
+    }
+    Err(format!(
+        "clip {} has no node {s}. Its nodes are: {}. \
+         Node ids belong to one clip — another clip's Corrector will not do.",
+        clip.0,
+        node_summary(graph).join(", "),
+    ))
+}
+
+/// Whether `id` is anywhere in `graph`, including inside a Compound.
+fn find_node(graph: &klipp_nodes::NodeGraph, id: uuid::Uuid) -> bool {
+    graph.nodes.iter().any(|n| {
+        n.id == id
+            || n.params
+                .compound_subgraph
+                .as_ref()
+                .is_some_and(|sub| find_node(sub, id))
+    })
+}
+
+/// `kind id` for each node, so the error says what the caller could have
+/// meant rather than only what they got wrong.
+fn node_summary(graph: &klipp_nodes::NodeGraph) -> Vec<String> {
+    graph
+        .nodes
+        .iter()
+        .map(|n| format!("{:?} {}", n.kind, n.id))
+        .collect()
+}
+
 /// Every `LogFormat` a client may name, in the spelling the wire uses.
 pub const LOG_FORMAT_NAMES: &[&str] = &[
     "Srgb", "Linear", "LogC3", "LogC4", "SLog2", "SLog3", "CanonLog", "CanonLog3",
@@ -314,11 +405,11 @@ fn handle(ctx: &ControlContext, cmd: ControlCommand) -> Result<serde_json::Value
             }
         }
         ControlCommand::RemoveClip { clip_id: c } => {
-            send(AppCommand::RemoveClip { clip_id: clip_id(&c)? })
+            send(AppCommand::RemoveClip { clip_id: existing_clip_id(ctx, &c)? })
         }
         ControlCommand::SelectClip { clip_id: c } => {
             let id = match c {
-                Some(s) => Some(clip_id(&s)?),
+                Some(s) => Some(existing_clip_id(ctx, &s)?),
                 None => None,
             };
             send(AppCommand::SelectClip(id))
@@ -342,39 +433,45 @@ fn handle(ctx: &ControlContext, cmd: ControlCommand) -> Result<serde_json::Value
         }
 
         ControlCommand::AddNode { clip_id: c, kind, x, y } => {
-            send(AppCommand::AddNode { clip_id: clip_id(&c)?, kind, position: (x, y) })
+            send(AppCommand::AddNode { clip_id: existing_clip_id(ctx, &c)?, kind, position: (x, y) })
         }
-        ControlCommand::RemoveNode { clip_id: c, node_id } => send(AppCommand::RemoveNode {
-            clip_id: clip_id(&c)?,
-            node_id: parse_uuid(&node_id, "node_id")?,
-        }),
+        ControlCommand::RemoveNode { clip_id: c, node_id } => {
+            let clip = existing_clip_id(ctx, &c)?;
+            send(AppCommand::RemoveNode {
+                clip_id: clip,
+                node_id: existing_node_id(ctx, clip, &node_id, "node_id")?,
+            })
+        }
         ControlCommand::ConnectNodes { clip_id: c, from, from_port, to, to_port } => {
+            let clip = existing_clip_id(ctx, &c)?;
             send(AppCommand::ConnectNodes {
-                clip_id: clip_id(&c)?,
-                from: parse_uuid(&from, "from")?,
+                clip_id: clip,
+                from: existing_node_id(ctx, clip, &from, "from")?,
                 from_port,
-                to: parse_uuid(&to, "to")?,
+                to: existing_node_id(ctx, clip, &to, "to")?,
                 to_port,
             })
         }
         ControlCommand::SetNodeParam { clip_id: c, node_id, param, value } => {
+            let clip = existing_clip_id(ctx, &c)?;
             send(AppCommand::SetNodeParam {
-                clip_id: clip_id(&c)?,
-                node_id: parse_uuid(&node_id, "node_id")?,
+                clip_id: clip,
+                node_id: existing_node_id(ctx, clip, &node_id, "node_id")?,
                 param,
                 value,
             })
         }
         ControlCommand::ToggleNodeEnabled { clip_id: c, node_id } => {
+            let clip = existing_clip_id(ctx, &c)?;
             send(AppCommand::ToggleNodeEnabled {
-                clip_id: clip_id(&c)?,
-                node_id: parse_uuid(&node_id, "node_id")?,
+                clip_id: clip,
+                node_id: existing_node_id(ctx, clip, &node_id, "node_id")?,
             })
         }
 
         ControlCommand::SetLogFormat { clip_id: c, format } => {
             let log_format = parse_log_format(&format)?;
-            send(AppCommand::SetClipLogFormat { clip_id: clip_id(&c)?, log_format })
+            send(AppCommand::SetClipLogFormat { clip_id: existing_clip_id(ctx, &c)?, log_format })
         }
 
         ControlCommand::Screenshot { path, max_width, min_generation, timeout_ms } => {
