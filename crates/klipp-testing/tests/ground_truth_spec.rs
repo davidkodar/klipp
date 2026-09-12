@@ -306,7 +306,12 @@ fn scope_bins_match_linear_distribution() {
     // above concentrate counts into the shadow bins because sRGB
     // gamma packs more codes into the dark end; linear scopes don't.
     let frame = linear_ramp(256, 1);
-    let hist = klipp_color::scopes::compute_histogram_linear(&frame, 256, 1);
+    let hist = klipp_color::scopes::compute_histogram_linear(
+        &frame,
+        256,
+        1,
+        klipp_color::scopes::ScopeBasis::default(),
+    );
     // step_by(2) samples 128 pixels. Near-uniform ⇒ most bins are
     // hit and no single bin dominates.
     let populated = hist.r.iter().filter(|&&c| c > 0).count();

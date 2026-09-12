@@ -1,3 +1,73 @@
+use klipp_core::WorkingColorspace;
+
+/// The basis a scope measures in.
+///
+/// Luma and chroma are not properties of a pixel's three numbers alone:
+/// they depend on which primaries those numbers are coordinates of. A
+/// project working in BT.2020 or ACEScg holds the same colour as another
+/// set of numbers than a Rec.709 project does, and reading those numbers
+/// with Rec.709's luminance row measures a picture nobody has.
+///
+/// So each scope takes the basis it is measuring, which carries that
+/// working space's own luminance row and the Y'CbCr construction built
+/// from it: `Cb = (B - Y) / 2(1 - Kb)`, `Cr = (R - Y) / 2(1 - Kr)`, the
+/// same construction BT.709 and BT.2020 are both defined by. Grey lands
+/// at the origin and the space's own primaries land on the graticule in
+/// every working space, which is what makes the targets mean something.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ScopeBasis {
+    ws: WorkingColorspace,
+    luma: [f32; 3],
+    cb_scale: f32,
+    cr_scale: f32,
+}
+
+impl ScopeBasis {
+    pub fn for_working_space(ws: WorkingColorspace) -> Self {
+        let luma = crate::primaries::luminance_weights(ws);
+        Self {
+            ws,
+            luma,
+            cb_scale: 0.5 / (1.0 - luma[2]),
+            cr_scale: 0.5 / (1.0 - luma[0]),
+        }
+    }
+
+    pub fn working_space(&self) -> WorkingColorspace {
+        self.ws
+    }
+
+    /// The basis's name, for the scope to say what it is measuring. A
+    /// reading is only as meaningful as the axes it is read against.
+    pub fn label(&self) -> &'static str {
+        match self.ws {
+            WorkingColorspace::Rec709Linear => "Rec.709",
+            WorkingColorspace::Bt2020Linear => "BT.2020",
+            WorkingColorspace::AcesCG => "ACEScg",
+        }
+    }
+
+    /// The luminance row: `Kr·R + Kg·G + Kb·B`.
+    pub fn luma(&self, rgb: [f32; 3]) -> f32 {
+        self.luma[0] * rgb[0] + self.luma[1] * rgb[1] + self.luma[2] * rgb[2]
+    }
+
+    /// `(Cb, Cr)`, centred at 0 — the colour-difference pair this basis
+    /// defines, not Rec.709's.
+    pub fn chroma(&self, rgb: [f32; 3]) -> (f32, f32) {
+        let y = self.luma(rgb);
+        ((rgb[2] - y) * self.cb_scale, (rgb[0] - y) * self.cr_scale)
+    }
+}
+
+impl Default for ScopeBasis {
+    /// Rec.709 — what every one of these scopes measured before the basis
+    /// was a question anyone asked.
+    fn default() -> Self {
+        Self::for_working_space(WorkingColorspace::Rec709Linear)
+    }
+}
+
 /// Waveform data: per-column luma histogram with 256 bins.
 pub struct WaveformData {
     /// One [u32; 256] histogram per display column.
@@ -216,9 +286,11 @@ pub fn compute_parade_sampled(rgba: &[u8], width: u32, height: u32, display_colu
 // which visibly bunched bins into shadows on a physically-linear
 // source.
 //
-// Luma uses the BT.709 coefficients (0.2126 / 0.7152 / 0.0722)
-// — the values these constants are *defined* for is linear
-// Rec.709 RGB, which is exactly what we now have.
+// Luma and chroma come from the [`ScopeBasis`] the caller passes,
+// because the pixels are coordinates in the project's working
+// space and not necessarily in Rec.709. Passing
+// `ScopeBasis::default()` keeps the Rec.709 reading these
+// functions used to hardcode.
 //
 // Values outside `[0, 1]` (legal in the linear pipeline) are
 // clamped for the purpose of bin assignment only. A future
@@ -226,12 +298,13 @@ pub fn compute_parade_sampled(rgba: &[u8], width: u32, height: u32, display_colu
 // scope for now.
 
 /// Linear-light waveform. One 256-bin luma histogram per display
-/// column; luma binned in linear-space `[0, 1]`.
+/// column; luma binned in linear-space `[0, 1]`, measured in `basis`.
 pub fn compute_waveform_linear(
     rgba: &[f32],
     width: u32,
     height: u32,
     display_columns: u32,
+    basis: ScopeBasis,
 ) -> WaveformData {
     let display_columns = display_columns.max(1).min(width);
     let mut bins = vec![[0u32; 256]; display_columns as usize];
@@ -242,7 +315,8 @@ pub fn compute_waveform_linear(
             if idx + 2 >= rgba.len() {
                 break;
             }
-            let luma = (0.2126 * rgba[idx] + 0.7152 * rgba[idx + 1] + 0.0722 * rgba[idx + 2])
+            let luma = basis
+                .luma([rgba[idx], rgba[idx + 1], rgba[idx + 2]])
                 .clamp(0.0, 1.0);
             let bin = (luma * 255.0) as usize;
             let col = (x as u64 * display_columns as u64 / width as u64) as usize;
@@ -253,9 +327,14 @@ pub fn compute_waveform_linear(
     WaveformData { bins, width: display_columns }
 }
 
-/// Linear-light vectorscope. `(Cb, Cr)` points centred at 0 using
-/// BT.709 coefficients — correct now that the input is linear.
-pub fn compute_vectorscope_linear(rgba: &[f32], width: u32, height: u32) -> VectorscopeData {
+/// Linear-light vectorscope. `(Cb, Cr)` points centred at 0, in the
+/// colour-difference pair `basis` defines.
+pub fn compute_vectorscope_linear(
+    rgba: &[f32],
+    width: u32,
+    height: u32,
+    basis: ScopeBasis,
+) -> VectorscopeData {
     let sample_step = 4usize;
     let estimated = (width as usize / sample_step) * (height as usize / sample_step);
     let mut points = Vec::with_capacity(estimated);
@@ -266,12 +345,7 @@ pub fn compute_vectorscope_linear(rgba: &[f32], width: u32, height: u32) -> Vect
             if idx + 2 >= rgba.len() {
                 break;
             }
-            let r = rgba[idx];
-            let g = rgba[idx + 1];
-            let b = rgba[idx + 2];
-            let cb = -0.1146 * r - 0.3854 * g + 0.5000 * b;
-            let cr = 0.5000 * r - 0.4542 * g - 0.0458 * b;
-            points.push((cb, cr));
+            points.push(basis.chroma([rgba[idx], rgba[idx + 1], rgba[idx + 2]]));
         }
     }
 
@@ -279,8 +353,13 @@ pub fn compute_vectorscope_linear(rgba: &[f32], width: u32, height: u32) -> Vect
 }
 
 /// Linear-light RGB + luma histogram. 256 bins per channel, binned
-/// in linear `[0, 1]`.
-pub fn compute_histogram_linear(rgba: &[f32], width: u32, height: u32) -> HistogramData {
+/// in linear `[0, 1]`; the luma channel measured in `basis`.
+pub fn compute_histogram_linear(
+    rgba: &[f32],
+    width: u32,
+    height: u32,
+    basis: ScopeBasis,
+) -> HistogramData {
     let mut data = HistogramData {
         r: [0u32; 256],
         g: [0u32; 256],
@@ -301,7 +380,7 @@ pub fn compute_histogram_linear(rgba: &[f32], width: u32, height: u32) -> Histog
             data.r[(r * 255.0) as usize] += 1;
             data.g[(g * 255.0) as usize] += 1;
             data.b[(b * 255.0) as usize] += 1;
-            let luma = (0.2126 * r + 0.7152 * g + 0.0722 * b).clamp(0.0, 1.0);
+            let luma = basis.luma([r, g, b]).clamp(0.0, 1.0);
             data.luma[(luma * 255.0) as usize] += 1;
         }
     }
@@ -349,6 +428,7 @@ pub fn compute_waveform_sampled_linear(
     height: u32,
     display_columns: u32,
     step: u32,
+    basis: ScopeBasis,
 ) -> WaveformData {
     let x_step = step.max(1) as usize;
     let display_columns = display_columns.max(1) as usize;
@@ -361,7 +441,8 @@ pub fn compute_waveform_sampled_linear(
             if idx + 2 >= rgba.len() {
                 break;
             }
-            let luma = (0.2126 * rgba[idx] + 0.7152 * rgba[idx + 1] + 0.0722 * rgba[idx + 2])
+            let luma = basis
+                .luma([rgba[idx], rgba[idx + 1], rgba[idx + 2]])
                 .clamp(0.0, 1.0);
             let bin = (luma * 255.0) as usize;
             let col = ((x / x_step) as u64 * display_columns as u64
@@ -384,6 +465,7 @@ pub fn compute_histogram_sampled_linear(
     width: u32,
     height: u32,
     step: u32,
+    basis: ScopeBasis,
 ) -> HistogramData {
     let mut data = HistogramData {
         r: [0u32; 256],
@@ -404,7 +486,7 @@ pub fn compute_histogram_sampled_linear(
             data.r[(r * 255.0) as usize] += 1;
             data.g[(g * 255.0) as usize] += 1;
             data.b[(b * 255.0) as usize] += 1;
-            let luma = (0.2126 * r + 0.7152 * g + 0.0722 * b).clamp(0.0, 1.0);
+            let luma = basis.luma([r, g, b]).clamp(0.0, 1.0);
             data.luma[(luma * 255.0) as usize] += 1;
         }
     }
@@ -521,7 +603,7 @@ mod tests {
     #[test]
     fn waveform_linear_on_flat_grey_hits_one_bin() {
         let frame = solid_linear(0.18, 0.18, 0.18, 8, 8);
-        let wf = compute_waveform_linear(&frame, 8, 8, 8);
+        let wf = compute_waveform_linear(&frame, 8, 8, 8, ScopeBasis::default());
         // Luma = 0.18 → bin index = 0.18 * 255 = 45.9 → bin 45.
         for col in &wf.bins {
             let populated: Vec<usize> = col.iter().enumerate().filter(|(_, &c)| c > 0).map(|(i, _)| i).collect();
@@ -537,7 +619,7 @@ mod tests {
         // would concentrate counts in the shadow bins because the
         // sRGB gamma curve packs more codes into the dark end.
         let frame = linear_ramp_rgba(256, 1);
-        let hist = compute_histogram_linear(&frame, 256, 1);
+        let hist = compute_histogram_linear(&frame, 256, 1, ScopeBasis::default());
         // step_by(2) => 128 samples spread across 0..1 linearly.
         // Expected: each bin hits once, except for end-rounding.
         let populated_count = hist.r.iter().filter(|&&c| c > 0).count();
@@ -553,7 +635,7 @@ mod tests {
     #[test]
     fn vectorscope_linear_on_grey_sits_at_origin() {
         let frame = solid_linear(0.5, 0.5, 0.5, 32, 32);
-        let vs = compute_vectorscope_linear(&frame, 32, 32);
+        let vs = compute_vectorscope_linear(&frame, 32, 32, ScopeBasis::default());
         for (cb, cr) in &vs.points {
             assert!(cb.abs() < 1e-4, "Cb on grey should be ~0, got {cb}");
             assert!(cr.abs() < 1e-4, "Cr on grey should be ~0, got {cr}");
@@ -590,11 +672,122 @@ mod tests {
             2.0_f32, 2.0, 2.0, 1.0, // HDR pixel
             -0.5, -0.5, -0.5, 1.0, // out-of-gamut pixel
         ];
-        let hist = compute_histogram_linear(&frame, 2, 1);
+        let hist = compute_histogram_linear(&frame, 2, 1, ScopeBasis::default());
         assert!(hist.r[255] > 0, "HDR should hit bin 255");
         // (below-zero pixel is the second pixel; step_by(2) means
         // only the first pixel gets sampled in a 2x1 image, so we
         // don't see the negative — use a taller test instead)
+    }
+
+    // ─── the basis a scope measures in ───────────────────────────
+
+    /// The headline claim: luminance belongs to the colour, not to the
+    /// three numbers holding it. One colour, written in each working
+    /// space's own coordinates, must read one luma — which it only does
+    /// if each basis uses its own luminance row.
+    #[test]
+    fn one_colour_reads_one_luma_in_every_working_space() {
+        let rec709 = [0.8_f32, 0.3, 0.1];
+        let want = ScopeBasis::default().luma(rec709);
+
+        let cases = [
+            (WorkingColorspace::Bt2020Linear, crate::primaries::bt709_to_bt2020(), 1e-4),
+            // ACEScg is a D60 space: the adaptation from D65 moves the
+            // primaries' luminance a little, so its row cannot agree to
+            // better than a fraction of a percent. See the tolerance in
+            // `primaries::tests`.
+            (WorkingColorspace::AcesCG, crate::primaries::bt709_to_acescg(), 5e-3),
+        ];
+        for (ws, to_ws, tol) in cases {
+            let basis = ScopeBasis::for_working_space(ws);
+            let got = basis.luma(crate::primaries::matrix3_mul_vec(to_ws, rec709));
+            assert!(
+                (got - want).abs() <= tol,
+                "{} reads luma {got:.6} where Rec.709 reads {want:.6}",
+                basis.label(),
+            );
+            // And the mistake this replaced: the same numbers read with
+            // Rec.709's row are wrong by more than that.
+            let naive = ScopeBasis::default().luma(crate::primaries::matrix3_mul_vec(to_ws, rec709));
+            assert!(
+                (naive - want).abs() > tol * 2.0,
+                "{}: Rec.709's row happens to agree here, so this test proves nothing",
+                basis.label(),
+            );
+        }
+    }
+
+    /// Neutral has no colour in any basis: the vectorscope's centre is
+    /// the one place every working space must agree on exactly.
+    #[test]
+    fn grey_sits_at_the_vectorscope_origin_in_every_working_space() {
+        for ws in [
+            WorkingColorspace::Rec709Linear,
+            WorkingColorspace::Bt2020Linear,
+            WorkingColorspace::AcesCG,
+        ] {
+            let basis = ScopeBasis::for_working_space(ws);
+            for level in [0.0_f32, 0.18, 0.5, 1.0, 4.0] {
+                let (cb, cr) = basis.chroma([level, level, level]);
+                assert!(
+                    cb.abs() < 1e-6 && cr.abs() < 1e-6,
+                    "{} puts grey {level} at ({cb}, {cr})",
+                    basis.label(),
+                );
+            }
+        }
+    }
+
+    /// A bars signal must land on the graticule targets of the space it
+    /// is written in. Measured with Rec.709's matrix instead, BT.2020
+    /// bars sit off their boxes — small, but a vectorscope's whole use
+    /// is telling "on the target" from "near it".
+    #[test]
+    fn bt2020_bars_miss_their_targets_when_measured_as_rec709() {
+        let wide = ScopeBasis::for_working_space(WorkingColorspace::Bt2020Linear);
+        let naive = ScopeBasis::default();
+        // Magenta, the bar furthest from both axes and so the one that
+        // moves most under the wrong matrix.
+        let magenta = [1.0_f32, 0.0, 1.0];
+        let (cb, cr) = wide.chroma(magenta);
+        let (ncb, ncr) = naive.chroma(magenta);
+        let miss = ((cb - ncb).powi(2) + (cr - ncr).powi(2)).sqrt();
+        // A vectorscope target box is about 2% of full scale across.
+        assert!(
+            miss > 0.02,
+            "BT.2020 magenta moves only {miss:.4} under Rec.709's matrix — \
+             if that is within a target box, this scope was never wrong",
+        );
+        // Each space still saturates its own primaries' axes: pure red
+        // is all Cr and pure blue all Cb, by construction, in both.
+        for basis in [wide, naive] {
+            assert!((basis.chroma([1.0, 0.0, 0.0]).1 - 0.5).abs() < 1e-6);
+            assert!((basis.chroma([0.0, 0.0, 1.0]).0 - 0.5).abs() < 1e-6);
+        }
+    }
+
+    /// The waveform of a wide-gamut picture reads its own space's luma,
+    /// not Rec.709's, all the way through the scope and not only in the
+    /// basis maths.
+    #[test]
+    fn a_wide_gamut_waveform_bins_its_own_spaces_luma() {
+        // BT.2020 green: luminance 0.678 of white in its own space,
+        // which Rec.709's row would call 0.7152.
+        let frame = solid_linear(0.0, 1.0, 0.0, 8, 8);
+        let wide = compute_waveform_linear(
+            &frame,
+            8,
+            8,
+            4,
+            ScopeBasis::for_working_space(WorkingColorspace::Bt2020Linear),
+        );
+        let populated = |wf: &WaveformData| -> Vec<usize> {
+            wf.bins[0].iter().enumerate().filter(|(_, &c)| c > 0).map(|(i, _)| i).collect()
+        };
+        assert_eq!(populated(&wide), vec![(0.6780 * 255.0) as usize]);
+        let naive = compute_waveform_linear(&frame, 8, 8, 4, ScopeBasis::default());
+        assert_eq!(populated(&naive), vec![(0.7152 * 255.0) as usize]);
+        assert_ne!(populated(&wide), populated(&naive), "the basis must reach the bins");
     }
 
     #[test]
@@ -603,8 +796,8 @@ mod tests {
         // the same bin counts — otherwise the sampled path has a
         // subtle off-by-one.
         let frame = linear_ramp_rgba(32, 2);
-        let full = compute_waveform_linear(&frame, 32, 2, 16);
-        let sampled = compute_waveform_sampled_linear(&frame, 32, 2, 16, 1);
+        let full = compute_waveform_linear(&frame, 32, 2, 16, ScopeBasis::default());
+        let sampled = compute_waveform_sampled_linear(&frame, 32, 2, 16, 1, ScopeBasis::default());
         for (a, b) in full.bins.iter().zip(sampled.bins.iter()) {
             // Indexing math can differ slightly between paths; allow
             // small drift as long as total counts are equal.
