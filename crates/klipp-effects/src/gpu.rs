@@ -4576,9 +4576,23 @@ impl GpuEffectsPipeline {
     /// scope image buffer) — pixel buffers now hold linear-f32 vec4s
     /// and callers should use [`download_linear_rgba_as_u8`] or
     /// [`download_linear_rgba`] instead.
-    fn download(&self, source: &wgpu::Buffer, byte_size: u64) -> Vec<u8> {
+    /// Map `source` and hand the bytes to `read` once, then unmap.
+    /// `None` when the device is lost or the map failed.
+    ///
+    /// The mapped range cannot outlive the unmap, so a caller has to copy
+    /// what it wants out of it — and this exists so that is the *only*
+    /// copy. Reading a frame as `Vec<u8>` and re-interpreting it into a
+    /// `Vec<f32>` afterwards costs two, and at 4K each one is a 133 MB
+    /// memcpy: together they were the larger half of a 45.7 ms chain
+    /// readback in the export.
+    fn with_downloaded<T>(
+        &self,
+        source: &wgpu::Buffer,
+        byte_size: u64,
+        read: impl FnOnce(&[u8]) -> T,
+    ) -> Option<T> {
         if self.is_device_lost() {
-            return vec![0u8; byte_size as usize];
+            return None;
         }
         let staging = self.staging_read.as_ref().unwrap();
         let mut encoder = self
@@ -4598,10 +4612,10 @@ impl GpuEffectsPipeline {
         let result = match poll_until_mapped(&self.device, &rx) {
             Ok(Ok(())) => {
                 let data = buffer_slice.get_mapped_range();
-                let result = data.to_vec();
+                let result = read(&data);
                 drop(data);
                 staging.unmap();
-                result
+                Some(result)
             }
             other => {
                 // `map_async` signalled an error (or the channel dropped
@@ -4610,11 +4624,16 @@ impl GpuEffectsPipeline {
                 // is on its way out. Flip the lost flag so subsequent
                 // calls short-circuit before they touch the device.
                 self.mark_device_lost(&format!("buffer map_async failed: {other:?}"));
-                vec![0u8; byte_size as usize]
+                None
             }
         };
         mark_gpu_stage(GpuStage::Idle);
         result
+    }
+
+    fn download(&self, source: &wgpu::Buffer, byte_size: u64) -> Vec<u8> {
+        self.with_downloaded(source, byte_size, |bytes| bytes.to_vec())
+            .unwrap_or_else(|| vec![0u8; byte_size as usize])
     }
 
     /// Upload an sRGB u8 RGBA frame to a pixel storage buffer as
@@ -4690,13 +4709,17 @@ impl GpuEffectsPipeline {
         pixel_count: usize,
     ) -> Vec<f32> {
         let byte_size = (pixel_count * 16) as u64;
-        let bytes = self.download(source, byte_size);
-        if bytes.len() < pixel_count * 16 {
-            // Device-lost fallback: `download` returned zero bytes.
-            return vec![0.0f32; pixel_count * 4];
-        }
-        let linear: &[f32] = bytemuck::cast_slice(&bytes);
-        linear.to_vec()
+        // Straight from the mapped range into floats — one copy. Going via
+        // `download`'s `Vec<u8>` and casting afterwards costs a second full
+        // copy of the frame, which at 4K is 133 MB of pure memory traffic.
+        // `pod_collect_to_vec` does not require the mapped range to be
+        // f32-aligned, which `cast_slice` would panic on.
+        self.with_downloaded(source, byte_size, |bytes| {
+            bytemuck::pod_collect_to_vec::<u8, f32>(bytes)
+        })
+        .filter(|linear| linear.len() >= pixel_count * 4)
+        // Device-lost fallback: the map returned nothing usable.
+        .unwrap_or_else(|| vec![0.0f32; pixel_count * 4])
     }
 
     /// Render a transition between two frames on the GPU.
