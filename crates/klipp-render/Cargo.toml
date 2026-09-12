@@ -25,6 +25,7 @@ thiserror      = { workspace = true }
 
 [dev-dependencies]
 klipp-project = { workspace = true }
+tracing-subscriber = { workspace = true }
 klipp-core     = { workspace = true }
 klipp-timeline = { workspace = true }
 klipp-media    = { workspace = true }

@@ -16,7 +16,7 @@
 //! and to be able to do that from a script or a test rather than by
 //! driving the UI.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::sync::Arc;
 
@@ -24,10 +24,21 @@ use klipp_core::{
     EncoderPreset, ExportAudioCodec, ExportFormat, ExportSettings, ExportVideoCodec, HdrMode,
     OdtChoice, RateControl, ToneMapOp, WorkingColorspace,
 };
-use klipp_render::snapshot::{MediaFile, SequenceSnapshot, VideoTimeline};
+use klipp_render::snapshot::SequenceSnapshot;
 use klipp_render::ExportJob;
 
 fn main() {
+    // The export logs what it chose — encoder, decoder, hardware — at
+    // info level. Without a subscriber those go nowhere, and "why is
+    // this slow" becomes guesswork.
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+        )
+        .with_target(false)
+        .init();
+
     let mut args = std::env::args().skip(1);
     let (Some(dir), Some(out)) = (args.next(), args.next()) else {
         eprintln!(
@@ -78,34 +89,6 @@ fn main() {
 
     describe(&seq, w, h, fps, first, last, working);
 
-    let mut video = VideoTimeline::default();
-    video.sequence = seq.clone();
-    video.media = pool
-        .all()
-        .map(|m| {
-            (
-                m.id,
-                MediaFile { path: m.path.clone(), log_format: Some(m.effective_log_format()), source_rotation: m.source_rotation },
-            )
-        })
-        .collect();
-
-    let snapshot = SequenceSnapshot {
-        fps,
-        fps_num: seq.fps.num,
-        fps_den: seq.fps.den,
-        width: w,
-        height: h,
-        sample_rate: 48000,
-        duration_frames: end,
-        export_range: Some((first, last)),
-        video,
-        audio_tracks: vec![],
-        global_lut_path: None,
-        subtitle_tracks: vec![],
-        chapters: vec![],
-        working_colorspace: working,
-    };
     let settings = ExportSettings {
         output_path: out.clone(),
         format: ExportFormat::Mp4,
@@ -116,8 +99,8 @@ fn main() {
         // should not be part of what is being judged.
         crf: 14,
         preset: EncoderPreset::Fast,
-        audio_codec: ExportAudioCodec::Copy,
-        audio_bitrate_kbps: None,
+        audio_codec: ExportAudioCodec::Aac,
+        audio_bitrate_kbps: Some(256),
         video_bitrate_kbps: None,
         rate_control: RateControl::Crf,
         burn_in_subtitles: false,
@@ -130,6 +113,20 @@ fn main() {
         odt: OdtChoice::MatchViewer,
         mastering_peak_nits: klipp_core::DEFAULT_MASTERING_PEAK_NITS,
     };
+
+    // The snapshot the app builds, rather than one assembled here: it
+    // resolves compound clips, carries the audio tracks, decides what
+    // subtitles do, and fills the media map. Hand-rolling it is how this
+    // tool first rendered a silent file — `audio_tracks: vec![]` is easy
+    // to write and impossible to notice until you play the result.
+    let mut snapshot = match SequenceSnapshot::from_sequence(&seq, &pool, &settings, None, false) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("could not snapshot the sequence: {e:?}");
+            std::process::exit(1);
+        }
+    };
+    snapshot.export_range = Some((first, last));
 
     let progress = Arc::new(AtomicU64::new(0));
     let watch = {
