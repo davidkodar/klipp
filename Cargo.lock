@@ -2931,6 +2931,7 @@ dependencies = [
  "klipp-media",
  "klipp-nodes",
  "klipp-plugin",
+ "klipp-project",
  "klipp-timeline",
  "klipp-title",
  "klipp-transitions",
@@ -2939,6 +2940,7 @@ dependencies = [
  "serial_test",
  "thiserror 1.0.69",
  "tracing",
+ "tracing-subscriber",
  "uuid",
  "wgpu",
 ]

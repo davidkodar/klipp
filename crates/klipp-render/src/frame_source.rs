@@ -7,6 +7,7 @@
 //! transition runs into its handle — and advanced frame by frame. A clip's
 //! decoder is closed once a frame renders without it.
 
+use std::sync::Arc;
 use std::collections::{HashMap, HashSet};
 
 use klipp_compose::{FrameSource, SourceFrame, SourcePixels};
@@ -19,8 +20,10 @@ use crate::snapshot::MediaFile;
 
 struct Decoded {
     pts: f64,
-    /// sRGB-encoded RGBA64 (empty for scene-referred frames).
-    rgba: Vec<u16>,
+    /// sRGB-encoded RGBA64 (empty for scene-referred frames). Shared,
+    /// not copied: the renderer seeds the GPU chain from these samples,
+    /// and at 4K the buffer is 66 MB.
+    rgba: Arc<Vec<u16>>,
     scene: Option<SceneReferredFrame>,
 }
 
@@ -40,7 +43,11 @@ impl ClipStream {
             return None;
         }
         match self.decoder.next_frame_with_pts() {
-            Ok(Some((pts, rgba))) => Some(Decoded { pts, rgba, scene: self.decoder.take_scene_referred() }),
+            Ok(Some((pts, rgba))) => Some(Decoded {
+                pts,
+                rgba: Arc::new(rgba),
+                scene: self.decoder.take_scene_referred(),
+            }),
             Ok(None) => {
                 self.ended = true;
                 None
@@ -182,14 +189,77 @@ impl FrameSource for ExportFrameSource<'_> {
     }
 }
 
-fn source_frame(d: &Decoded, to_working: Option<[[f32; 3]; 3]>, width: u32, height: u32) -> SourceFrame {
+/// An export frame left as the scaler produced it, so the grade can
+/// start on the GPU.
+///
+/// The renderer seeds its chain from these samples and a shader expands
+/// them to linear light — the same route the viewer takes from a
+/// hardware-decoded frame. What this replaces is expanding 8.3 million
+/// pixels into a 133 MB f32 buffer on the CPU and uploading *that*:
+/// twice the bus traffic to say the same thing, plus the pass that
+/// builds it.
+///
+/// The samples stay 16 bits wide. An 8-bit source does not yield an
+/// 8-bit RGBA64 buffer — YUV→RGB is a matrix, and measured on real
+/// footage only 27% of samples come back byte-replicated — so narrowing
+/// here to halve the upload again would quantise the delivered frame.
+///
+/// `read` is the way back for anything that needs the pixels on the CPU
+/// — a node with no GPU dispatch, an effect the chain cannot carry.
+struct SeedableFrame {
+    rgba: Arc<Vec<u16>>,
+    to_working: Option<[[f32; 3]; 3]>,
+    linear: std::sync::OnceLock<Arc<Vec<f32>>>,
+}
+
+impl klipp_compose::GpuPixels for SeedableFrame {
+    fn seed(&self, exec: &mut klipp_nodes::GraphExecutor, width: u32, height: u32) -> bool {
+        exec.prime_chain_from_rgba64(&self.rgba, width, height, seed_matrix(self.to_working))
+    }
+
+    fn read(&self) -> Arc<Vec<f32>> {
+        Arc::clone(
+            self.linear
+                .get_or_init(|| Arc::new(rgba64_to_linear(&self.rgba, self.to_working))),
+        )
+    }
+}
+
+/// The shader wants three rows of `vec4`; no basis change is the
+/// identity, not a skipped multiply.
+fn seed_matrix(to_working: Option<[[f32; 3]; 3]>) -> [[f32; 4]; 3] {
+    let m = to_working.unwrap_or([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]);
+    [
+        [m[0][0], m[0][1], m[0][2], 0.0],
+        [m[1][0], m[1][1], m[1][2], 0.0],
+        [m[2][0], m[2][1], m[2][2], 0.0],
+    ]
+}
+
+fn source_frame(
+    d: &Decoded,
+    to_working: Option<[[f32; 3]; 3]>,
+    width: u32,
+    height: u32,
+) -> SourceFrame {
     let pixels = match &d.scene {
         Some(s) if s.width == width && s.height == height => SourcePixels::SceneReferred {
             codes: std::sync::Arc::clone(&s.codes),
             transfer: s.transfer,
             source_to_working: s.source_to_working,
         },
-        _ => SourcePixels::Linear(std::sync::Arc::new(rgba64_to_linear(&d.rgba, to_working))),
+        // Samples for the GPU to expand. The shader folds in the basis
+        // change, so this is not gated on the working space; a frame the
+        // renderer cannot seed from falls back to `read`, which is the
+        // CPU expansion below.
+        _ if d.rgba.len() == (width as usize) * (height as usize) * 4 => {
+            SourcePixels::Gpu(Arc::new(SeedableFrame {
+                rgba: Arc::clone(&d.rgba),
+                to_working,
+                linear: std::sync::OnceLock::new(),
+            }))
+        }
+        _ => SourcePixels::Linear(Arc::new(rgba64_to_linear(&d.rgba, to_working))),
     };
     SourceFrame { pixels, width, height, pts: Some(d.pts) }
 }

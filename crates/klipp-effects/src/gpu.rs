@@ -259,6 +259,11 @@ pub struct GpuEffectsPipeline {
     // slot. Enables phase 4d's GPU-resident decode → grade path —
     // without this bridge the grade chain can only consume CPU data.
     bridge_u8_to_linear_pipeline: wgpu::ComputePipeline,
+    /// The same bridge at 16 bits a sample, with the source primaries
+    /// folded in: sRGB-encoded RGBA64 → linear working-space f32. This
+    /// is how a software-decoded export frame reaches the chain, since
+    /// its scaler's output does not fit in 8 bits.
+    bridge_rgba64_to_linear_pipeline: wgpu::ComputePipeline,
     /// Packed RGB10 HDR code values → scene-linear working-space f32,
     /// written into the chain's `buf_a`. The GPU half of
     /// `klipp_color::hdr::hdr10_codes_to_scene_linear_rgba`.
@@ -878,6 +883,11 @@ impl GpuEffectsPipeline {
         let bridge_u8_to_linear_pipeline = create_pipeline(
             &device, &pipeline_layout, "bridge_u8_to_linear", SHADER_U8_TO_LINEAR,
         );
+        // Same again at 16 bits a sample, for the export's software-decoded
+        // frames — two u32 of input per pixel instead of one.
+        let bridge_rgba64_to_linear_pipeline = create_pipeline(
+            &device, &pipeline_layout, "bridge_rgba64_to_linear", SHADER_RGBA64_TO_LINEAR,
+        );
         // Both HDR kernels share the colourspace prelude with the P010
         // decoder, so the PQ/HLG curves on either side are one definition.
         let hdr10_src = format!(
@@ -1007,6 +1017,7 @@ impl GpuEffectsPipeline {
             transition_pipeline,
             bridge_u8_pipeline,
             bridge_u8_to_linear_pipeline,
+            bridge_rgba64_to_linear_pipeline,
             bridge_hdr10_pipeline,
             display_u8_pipeline,
             display_u8_staging: None,
@@ -1821,6 +1832,71 @@ impl GpuEffectsPipeline {
                 &wgpu::ComputePassDescriptor { label: None, timestamp_writes: None },
             );
             pass.set_pipeline(&self.bridge_u8_to_linear_pipeline);
+            pass.set_bind_group(0, &bg, &[]);
+            pass.dispatch_workgroups(workgroups, 1, 1);
+        }
+        self.queue.submit(std::iter::once(encoder.finish()));
+        self.submit_count.fetch_add(1, Ordering::Relaxed);
+        true
+    }
+
+    /// [`Self::bridge_u8_to_linear_into_chain`] one sample wider:
+    /// sRGB-encoded RGBA64 → linear working-space f32 in `buf_a`, the
+    /// source primaries folded in.
+    ///
+    /// This is the export's input transform. Its scaler produces RGBA64
+    /// even from an 8-bit source — YUV→RGB is a matrix, and its output
+    /// genuinely needs more than 8 bits — so narrowing on the way here
+    /// would quantise the delivered frame. Instead the scaler's own
+    /// buffer is uploaded as it stands and expanded in place: half the
+    /// bus traffic of the linear f32 buffer it replaces, and none of the
+    /// per-pixel CPU pass that used to build it.
+    ///
+    /// `false` when the device is lost or `input` is too small; callers
+    /// fall back to expanding on the CPU.
+    pub fn bridge_rgba64_to_linear_into_chain(
+        &mut self,
+        input_rgba64: &wgpu::Buffer,
+        width: u32,
+        height: u32,
+        source_to_working: [[f32; 4]; 3],
+    ) -> bool {
+        if self.is_device_lost() { return false; }
+        let pixel_count = (width as u64) * (height as u64);
+        if pixel_count == 0 { return true; }
+        self.ensure_buffers(pixel_count * 16);
+
+        // Four u16 per pixel — twice the u8 bridge's input stride.
+        if input_rgba64.size() < pixel_count * 8 { return false; }
+
+        let buf_a = self.buf_a.as_ref().expect("ensure_buffers established buf_a");
+        self.write_params(&Rgba64BridgeParams {
+            width,
+            height,
+            _pad0: 0,
+            _pad1: 0,
+            source_to_working,
+        });
+
+        let bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("bridge_rgba64_to_linear_bg"),
+            layout: &self.bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: input_rgba64.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: buf_a.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 2, resource: self.params_buf.as_entire_binding() },
+            ],
+        });
+
+        let workgroups = (pixel_count as u32).div_ceil(WORKGROUP_SIZE);
+        let mut encoder = self.device.create_command_encoder(
+            &wgpu::CommandEncoderDescriptor { label: Some("bridge_rgba64_to_linear") },
+        );
+        {
+            let mut pass = encoder.begin_compute_pass(
+                &wgpu::ComputePassDescriptor { label: None, timestamp_writes: None },
+            );
+            pass.set_pipeline(&self.bridge_rgba64_to_linear_pipeline);
             pass.set_bind_group(0, &bg, &[]);
             pass.dispatch_workgroups(workgroups, 1, 1);
         }
@@ -4885,6 +4961,17 @@ struct BridgeU8Params {
 
 #[repr(C)]
 #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+struct Rgba64BridgeParams {
+    width: u32,
+    height: u32,
+    _pad0: u32,
+    _pad1: u32,
+    /// Source primaries → working space, 3 rows of vec4 (w unused).
+    source_to_working: [[f32; 4]; 3],
+}
+
+#[repr(C)]
+#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
 struct Hdr10BridgeParams {
     width: u32,
     height: u32,
@@ -6476,6 +6563,60 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let a = f32(a_u) / 255.0;
     // sRGB transfer on RGB; alpha stays linear per sRGB spec.
     output[idx] = pack(vec4<f32>(srgb_to_linear_c(r), srgb_to_linear_c(g), srgb_to_linear_c(b), a));
+}
+"
+);
+
+// The same bridge one sample wider: sRGB-encoded RGBA64 (four u16 per
+// pixel, two per u32) → linear f32, with the source primaries folded in.
+//
+// This is the export's input transform. A software decoder's scaler
+// hands back RGBA64 even for an 8-bit source, because YUV→RGB is a
+// matrix and its output does not fit in 8 bits — measured on real
+// footage, only 27% of samples come back byte-replicated. So the bytes
+// cannot be narrowed on the way to the GPU without quantising the
+// deliverable; they can only be *moved* there unexpanded, which is what
+// this does. Half the traffic of the f32 buffer it replaces, and the
+// per-pixel CPU pass that built it disappears.
+//
+// `source_to_working` is applied in linear light after the curve, so a
+// project whose working space is not the source's still takes this path
+// — the matrix rows are the identity when there is nothing to change.
+const SHADER_RGBA64_TO_LINEAR: &str = concat!(
+    shader_pixel_storage_wgsl!(),
+    "
+struct Params {
+    width: u32, height: u32, _pad0: u32, _pad1: u32,
+    m0: vec4<f32>, m1: vec4<f32>, m2: vec4<f32>,
+}
+@group(0) @binding(0) var<storage, read> input: array<u32>;
+@group(0) @binding(1) var<storage, read_write> output: array<vec4<f32>>;
+@group(0) @binding(2) var<uniform> params: Params;
+
+fn srgb_to_linear_c(c: f32) -> f32 {
+    if (c <= 0.04045) { return c / 12.92; }
+    return pow((c + 0.055) / 1.055, 2.4);
+}
+
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let idx = gid.x;
+    if idx >= params.width * params.height { return; }
+    // RGBA64LE: R,G in the first u32 (low half first), B,A in the second.
+    let lo = input[idx * 2u];
+    let hi = input[idx * 2u + 1u];
+    let r = f32(lo & 0xFFFFu) / 65535.0;
+    let g = f32((lo >> 16u) & 0xFFFFu) / 65535.0;
+    let b = f32(hi & 0xFFFFu) / 65535.0;
+    let a = f32((hi >> 16u) & 0xFFFFu) / 65535.0;
+    let lin = vec3<f32>(srgb_to_linear_c(r), srgb_to_linear_c(g), srgb_to_linear_c(b));
+    // Alpha stays linear, per the sRGB spec.
+    output[idx] = pack(vec4<f32>(
+        dot(params.m0.xyz, lin),
+        dot(params.m1.xyz, lin),
+        dot(params.m2.xyz, lin),
+        a,
+    ));
 }
 "
 );
@@ -10870,6 +11011,7 @@ pub fn shader_sources() -> Vec<(&'static str, &'static str)> {
         ("SHADER_LINEAR_TO_DISPLAY_U8", SHADER_LINEAR_TO_DISPLAY_U8),
         ("SHADER_LINEAR_TO_U8", SHADER_LINEAR_TO_U8),
         ("SHADER_U8_TO_LINEAR", SHADER_U8_TO_LINEAR),
+        ("SHADER_RGBA64_TO_LINEAR", SHADER_RGBA64_TO_LINEAR),
         ("SHADER_TRANSITION", SHADER_TRANSITION),
         ("SHADER_COLOR_GRADE", SHADER_COLOR_GRADE),
         ("SHADER_HUESAT", SHADER_HUESAT),

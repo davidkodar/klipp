@@ -94,6 +94,7 @@ struct UploadedSeed {
 enum SeedPixels {
     Codes(Arc<Vec<u32>>),
     Srgb8(Arc<Vec<u8>>),
+    Rgba64(Arc<Vec<u16>>),
 }
 
 impl SeedPixels {
@@ -101,6 +102,7 @@ impl SeedPixels {
         match self {
             SeedPixels::Codes(c) => bytemuck::cast_slice(c.as_slice()),
             SeedPixels::Srgb8(b) => b.as_slice(),
+            SeedPixels::Rgba64(s) => bytemuck::cast_slice(s.as_slice()),
         }
     }
 
@@ -109,6 +111,7 @@ impl SeedPixels {
         match (self, other) {
             (SeedPixels::Codes(a), SeedPixels::Codes(b)) => Arc::ptr_eq(a, b),
             (SeedPixels::Srgb8(a), SeedPixels::Srgb8(b)) => Arc::ptr_eq(a, b),
+            (SeedPixels::Rgba64(a), SeedPixels::Rgba64(b)) => Arc::ptr_eq(a, b),
             _ => false,
         }
     }
@@ -702,6 +705,45 @@ impl GraphExecutor {
         }
         let (Some(gpu), Some(seed)) = (self.gpu.as_mut(), self.uploaded_seed.as_ref()) else { return false };
         let ok = gpu.bridge_u8_to_linear_into_chain(&seed.buffer, width, height);
+        if ok {
+            self.gpu_chain_preseeded = true;
+            self.gpu_chain_preseed_dims = Some((width, height));
+        }
+        ok
+    }
+
+    /// [`Self::prime_chain_from_srgb8`] from 16-bit samples, with the
+    /// source primaries folded into the expansion.
+    ///
+    /// What the export's scaler hands back, uploaded as it stands. An
+    /// 8-bit source does not make an 8-bit RGBA64 buffer — YUV→RGB is a
+    /// matrix — so this stays 16 bits wide the whole way to the shader
+    /// rather than narrowing and quantising the delivered frame.
+    ///
+    /// `source_to_working` must be the identity when the source is
+    /// already in the working space; pass it and the seed path serves
+    /// any display-referred project, not only a Rec.709 one.
+    pub fn prime_chain_from_rgba64(
+        &mut self,
+        rgba: &Arc<Vec<u16>>,
+        width: u32,
+        height: u32,
+        source_to_working: [[f32; 4]; 3],
+    ) -> bool {
+        if rgba.len() != (width as usize) * (height as usize) * 4
+            || !self.upload_seed(SeedPixels::Rgba64(Arc::clone(rgba)))
+        {
+            return false;
+        }
+        let (Some(gpu), Some(seed)) = (self.gpu.as_mut(), self.uploaded_seed.as_ref()) else {
+            return false;
+        };
+        let ok = gpu.bridge_rgba64_to_linear_into_chain(
+            &seed.buffer,
+            width,
+            height,
+            source_to_working,
+        );
         if ok {
             self.gpu_chain_preseeded = true;
             self.gpu_chain_preseed_dims = Some((width, height));
