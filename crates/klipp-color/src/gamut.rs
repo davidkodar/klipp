@@ -609,3 +609,84 @@ mod tests {
 
 
 
+
+// ─── Everything the GPU needs, as one buffer ────────────────────────
+
+/// Offsets into [`bt2020_to_bt709_gpu_data`], in floats.
+///
+/// The shader reads the same layout; a mismatch is loud rather than
+/// subtle, and `bt2020_gamut_gpu_matches_cpu` is what hears it.
+pub mod gpu_layout {
+    use super::{H_STEPS, L_STEPS};
+    /// `l_steps, h_steps`.
+    pub const HEADER: usize = 0;
+    pub const HEADER_LEN: usize = 2;
+    /// Three 3x3 matrices: BT.709→XYZ, XYZ→BT.709, BT.2020→BT.709.
+    pub const MATRICES: usize = HEADER_LEN;
+    pub const MATRICES_LEN: usize = 27;
+    /// D65 white in XYZ.
+    pub const WHITE: usize = MATRICES + MATRICES_LEN;
+    pub const WHITE_LEN: usize = 3;
+    /// BT.709's reach: `L_STEPS * H_STEPS` levels then `L_STEPS` row
+    /// minima.
+    pub const TARGET: usize = WHITE + WHITE_LEN;
+    pub const REACH_LEN: usize = L_STEPS * H_STEPS + L_STEPS;
+    /// BT.2020's reach, same shape.
+    pub const SOURCE: usize = TARGET + REACH_LEN;
+    /// BT.709's cusps as `(lightness, chroma)` pairs per grid hue.
+    pub const CUSPS: usize = SOURCE + REACH_LEN;
+    pub const CUSPS_LEN: usize = H_STEPS * 2;
+    pub const TOTAL: usize = CUSPS + CUSPS_LEN;
+}
+
+/// The matrices, reach tables and cusps for the BT.2020 → BT.709
+/// mapping, flat, ready to upload.
+///
+/// Same reasoning as the ACES data: these are already *tables*, built
+/// by bisecting each gamut's boundary 24 times per grid point, and the
+/// matrices are derived from chromaticities. None of it should be
+/// transcribed into a shader — only the arithmetic that reads it.
+///
+/// 148 KB, which buys a display transform that costs ~15 ms a 4K frame
+/// on the CPU for ordinary colour and ~32 ms for wholly saturated.
+pub fn bt2020_to_bt709_gpu_data() -> Vec<f32> {
+    let (cusps, target, source) = reaches();
+    let (to_xyz, from_xyz) = bt709_matrices();
+    let basis = crate::primaries::working_space_conversion_matrix(
+        klipp_core::WorkingColorspace::Bt2020Linear,
+        klipp_core::WorkingColorspace::Rec709Linear,
+    )
+    .expect("BT.2020 and BT.709 differ, so the conversion exists");
+
+    let mut out = Vec::with_capacity(gpu_layout::TOTAL);
+    out.extend_from_slice(&[L_STEPS as f32, H_STEPS as f32]);
+    for m in [*to_xyz, *from_xyz, basis] {
+        for row in m {
+            out.extend_from_slice(&row);
+        }
+    }
+    out.extend_from_slice(&WHITE);
+    debug_assert_eq!(out.len(), gpu_layout::TARGET);
+    for r in [target, source] {
+        out.extend_from_slice(&r.level);
+        out.extend_from_slice(&r.row_min);
+    }
+    debug_assert_eq!(out.len(), gpu_layout::CUSPS);
+    for (l, c) in cusps {
+        out.extend_from_slice(&[*l, *c]);
+    }
+    debug_assert_eq!(out.len(), gpu_layout::TOTAL);
+    out
+}
+
+/// [`compress_bt2020_to_bt709`] preceded by the basis change — the
+/// whole of `ToBt709::apply` for a BT.2020 project, which is what the
+/// shader implements.
+pub fn bt2020_linear_to_bt709_compressed(rgb: [f32; 3]) -> [f32; 3] {
+    let basis = crate::primaries::working_space_conversion_matrix(
+        klipp_core::WorkingColorspace::Bt2020Linear,
+        klipp_core::WorkingColorspace::Rec709Linear,
+    )
+    .expect("BT.2020 and BT.709 differ");
+    compress_bt2020_to_bt709(crate::primaries::matrix3_mul_vec(basis, rgb))
+}

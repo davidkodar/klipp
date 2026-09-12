@@ -235,13 +235,17 @@ fn the_graded_fast_path_is_the_renderers_frame() {
 }
 
 
-/// The same clip in a BT.2020 project. The GPU's display encode is an
-/// sRGB encode alone — no basis change, no gamut map — so the fast path
-/// has to finish a wide-gamut frame through the viewer's own transform
-/// instead. Encoding BT.2020 values as though they were BT.709, which is
-/// what keeping that frame on the GPU does, over-saturates every colour
-/// in the picture; the last assertion measures that difference, so this
-/// test fails if the fast path ever starts taking the shortcut again.
+/// The same clip in a BT.2020 project, whose display transform the GPU
+/// now runs itself: the basis change and the BT.2407 compression into
+/// BT.709, off the same reach tables and cusps the CPU bisects.
+///
+/// The last assertion is the one that gives the first its teeth. The
+/// generic sRGB encode — no basis change, no gamut map — is also a
+/// plausible-looking wide-gamut output, and it over-saturates every
+/// colour in the picture. Measuring how far apart the two encodes are on
+/// *this* source proves the fixture can tell them apart, so `worst <= 1`
+/// above means the shader is doing the gamut work and not just the
+/// gamma.
 #[test]
 fn the_graded_fast_path_is_the_renderers_frame_in_a_bt2020_project() {
     let Some(ctx) = GpuContext::shared() else {

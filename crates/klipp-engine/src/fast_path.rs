@@ -114,16 +114,19 @@ pub fn grade_to_display_on_gpu(
     // `SHADER_ACES_REC709_U8` is the whole ACES output transform, and
     // `display_transform_ws` on an AcesCG project is exactly that
     // (`acescg_to_rec709_sdr` per pixel, same quantisation), so the two
-    // agree.
+    // agree. `SHADER_BT2020_DISPLAY_U8` is the BT.2020 one: the basis
+    // change, then the BT.2407 compression into BT.709 reading the same
+    // reach tables and cusps the CPU bisects, then the sRGB encode.
     //
-    // BT.2020 has no twin yet: its transform converts the basis and
-    // gamut-maps what BT.709 cannot hold, which wants the matrix and
-    // two tables on the GPU. It finishes through `display_encode` — the
-    // viewer's own transform — at the cost of reading the frame back as
-    // floats. The grade still runs on the GPU either way.
+    // All three are held to `display_transform_ws` frame by frame in
+    // tests/fast_paths_match_renderer.rs, and the two wide-gamut
+    // shaders pixel by pixel in tests/aces_gpu_matches_cpu.rs and
+    // tests/bt2020_gamut_gpu_matches_cpu.rs.
     let gpu_display = matches!(
         at.working,
-        WorkingColorspace::Rec709Linear | WorkingColorspace::AcesCG
+        WorkingColorspace::Rec709Linear
+            | WorkingColorspace::AcesCG
+            | WorkingColorspace::Bt2020Linear
     );
     if gpu_display {
         exec.request_output_on_gpu();
@@ -135,13 +138,23 @@ pub fn grade_to_display_on_gpu(
     // Typically `CpuSourceRequired`: a node needs CPU pixels.
     let (cpu_result, _, _) = result.ok()?;
     let bytes = if exec.output_on_gpu().is_some() {
-        if at.working == WorkingColorspace::AcesCG {
+        match at.working {
             // The ACES path has its own tone curve and ignores the
             // viewer's tone-map operator, exactly as the CPU transform
             // does (`display_transform_ws` marks it unused there).
-            exec.encode_output_to_aces_rec709_u8(width, height)?
-        } else {
-            exec.encode_output_to_display_u8(width, height, transfer.map(|t| t.display_exposure()))?
+            WorkingColorspace::AcesCG => exec.encode_output_to_aces_rec709_u8(width, height)?,
+            // BT.2020's transform does honour the tone-map operator, and
+            // this shader has none — so `fast_path_blockers` refuses the
+            // path unless the operator is None, and there is nothing to
+            // apply here.
+            WorkingColorspace::Bt2020Linear => {
+                exec.encode_output_to_bt2020_display_u8(width, height)?
+            }
+            WorkingColorspace::Rec709Linear => exec.encode_output_to_display_u8(
+                width,
+                height,
+                transfer.map(|t| t.display_exposure()),
+            )?,
         }
     } else {
         if cpu_result.len() != (width as usize) * (height as usize) * 4 {

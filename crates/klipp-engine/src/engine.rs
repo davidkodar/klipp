@@ -4063,9 +4063,7 @@ impl PlaybackEngine {
             // viewer: grade it on the GPU and present the result without
             // the float round trips. Falls through to the full pipeline if
             // the frame cannot take this path.
-            if blockers
-                .iter()
-                .all(|b| *b == "grade graph is not an identity" || *b == "ACES working space")
+            if Self::only_the_graded_path_handles(&blockers)
                 && self.present_graded_frame_on_gpu(
                     &frame, final_w, final_h, current_source_secs, q_len,
                 )
@@ -6009,6 +6007,25 @@ impl PlaybackEngine {
         self.fast_path_blockers(false)
     }
 
+    /// Whether the only things standing between the decoder and the
+    /// viewer are ones the *graded* GPU path handles itself: a grade to
+    /// run, and a display transform it has a shader for.
+    ///
+    /// Direct present cannot live with any of these — it publishes the
+    /// decoder's own bytes — but `grade_to_display_on_gpu` produces
+    /// exactly the renderer's picture for each, which
+    /// `tests/fast_paths_match_renderer.rs` holds it to. Kept in one
+    /// place because both graded gates ask the same question, and a new
+    /// GPU display transform must reach both.
+    fn only_the_graded_path_handles(blockers: &[&'static str]) -> bool {
+        blockers.iter().all(|b| {
+            matches!(
+                *b,
+                "grade graph is not an identity" | "ACES working space" | "BT.2020 working space"
+            )
+        })
+    }
+
     /// [`Self::direct_present_blockers`], for playback (`parked_drag`
     /// false) or for a slider step on the parked frame (true). A parked
     /// frame's ungraded picture is already made, so a drag needs nothing
@@ -6061,11 +6078,16 @@ impl PlaybackEngine {
         // sRGB encode that inverts the decode: BT.709 and no tone map.
         //
         // The graded path only needs a display transform the GPU has.
-        // It has BT.709's and it has ACES', so an AcesCG project gets
-        // its own reason string — one the graded gates tolerate the way
-        // they tolerate a non-identity graph, and direct present does
-        // not, because the ACES render is emphatically not the bytes
-        // the decoder produced.
+        // It has BT.709's, ACES' and BT.2020's, so each wide-gamut
+        // project gets its own reason string — one the graded gates
+        // tolerate the way they tolerate a non-identity graph, and
+        // direct present does not, because a render through either
+        // display transform is emphatically not the bytes the decoder
+        // produced.
+        //
+        // Matched exhaustively on purpose: a working space added later
+        // must not inherit acceleration it has no GPU transform for, so
+        // this is a compile error rather than a silent wrong picture.
         match crate::video_decoder::working_colorspace() {
             klipp_core::WorkingColorspace::Rec709Linear => {
                 if !matches!(self.tone_map_op, klipp_color::display::ToneMapOp::None) {
@@ -6076,7 +6098,16 @@ impl PlaybackEngine {
             // marks the viewer's tone-map operator unused on this path,
             // so it is not a blocker here.
             klipp_core::WorkingColorspace::AcesCG => blockers.push("ACES working space"),
-            _ => blockers.push("wide-gamut working space needs its display transform"),
+            // BT.2020 changes basis and gamut-maps into BT.709, then
+            // tone-maps — and unlike ACES it does honour the viewer's
+            // operator, which the shader does not carry. So the tone map
+            // is a blocker here as it is for BT.709.
+            klipp_core::WorkingColorspace::Bt2020Linear => {
+                blockers.push("BT.2020 working space");
+                if !matches!(self.tone_map_op, klipp_color::display::ToneMapOp::None) {
+                    blockers.push("tone-map operator active");
+                }
+            }
         }
         // Scopes sample the post-grade linear frame, which this path
         // never builds. But they refresh at 10 Hz, so only the frames
@@ -6254,11 +6285,7 @@ impl PlaybackEngine {
     /// having shown nothing, when the frame cannot take this path.
     fn regrade_parked_on_gpu(&mut self) -> bool {
         let Some((pixels, width, height)) = self.cached_pregrade_frame.clone() else { return false };
-        if !self
-            .fast_path_blockers(true)
-            .iter()
-            .all(|b| *b == "grade graph is not an identity" || *b == "ACES working space")
-        {
+        if !Self::only_the_graded_path_handles(&self.fast_path_blockers(true)) {
             return false;
         }
         let t_frame = std::time::Instant::now();

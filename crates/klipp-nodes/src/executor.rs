@@ -735,6 +735,26 @@ impl GraphExecutor {
         true
     }
 
+    /// The last run's GPU-resident result through a BT.2020 project's
+    /// display transform, as display bytes.
+    ///
+    /// The GPU twin of `display_transform_ws(.., Bt2020Linear)`: the
+    /// basis change and the BT.2407-style gamut compression, which cost
+    /// ~15 ms of a 4K frame on the CPU and ~32 for wholly saturated
+    /// colour. No tone-map curve, so the caller must only take this
+    /// with `ToneMapOp::None`.
+    pub fn encode_output_to_bt2020_display_u8(
+        &mut self,
+        width: u32,
+        height: u32,
+    ) -> Option<Vec<u8>> {
+        let slot_a = self.output_on_gpu?;
+        // 148 KB, built by bisecting two gamut boundaries — only when it
+        // is going to be used, and the pipeline keeps the upload.
+        let data = klipp_color::gamut::bt2020_to_bt709_gpu_data();
+        self.gpu.as_mut()?.encode_chain_to_bt2020_display_u8(slot_a, width, height, &data)
+    }
+
     /// The last run's GPU-resident result through the ACES Rec.709 SDR
     /// output transform, as display bytes.
     ///

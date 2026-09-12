@@ -277,6 +277,10 @@ pub struct GpuEffectsPipeline {
     /// Bound in that slot by a delivery that is not ACES, which never
     /// reads it.
     aces_dummy: wgpu::Buffer,
+    /// BT.2020's reach tables, cusps and matrices — 148 KB, uploaded
+    /// once.
+    bt2020_gamut_data: Option<wgpu::Buffer>,
+    bt2020_display_pipeline: wgpu::ComputePipeline,
     /// Packed RGB10 HDR code values → scene-linear working-space f32,
     /// written into the chain's `buf_a`. The GPU half of
     /// `klipp_color::hdr::hdr10_codes_to_scene_linear_rgba`.
@@ -961,6 +965,10 @@ impl GpuEffectsPipeline {
         let linear_to_yuv420_pipeline = create_pipeline(
             &device, &aces_pl, "linear_to_yuv420", SHADER_LINEAR_TO_YUV420,
         );
+        // Same four-binding shape; its fourth is the gamut tables.
+        let bt2020_display_pipeline = create_pipeline(
+            &device, &aces_pl, "bt2020_display", SHADER_BT2020_DISPLAY_U8,
+        );
         // Bound as the ACES data when the delivery does not need it.
         let aces_dummy = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("aces_dummy"),
@@ -1103,6 +1111,8 @@ impl GpuEffectsPipeline {
             aces_rec709_bgl,
             aces_rec709_data: None,
             aces_dummy,
+            bt2020_gamut_data: None,
+            bt2020_display_pipeline,
             bridge_hdr10_pipeline,
             display_u8_pipeline,
             display_u8_staging: None,
@@ -2125,6 +2135,83 @@ impl GpuEffectsPipeline {
         });
         self.queue.write_buffer(&buf, 0, bytemuck::cast_slice(data));
         self.aces_rec709_data = Some(buf);
+    }
+
+    /// The chain's graded BT.2020 frame → display bytes: the basis
+    /// change, the BT.2407-style gamut compression and the sRGB encode.
+    ///
+    /// Replaces `display_transform_ws(.., Bt2020Linear)` on the CPU,
+    /// which is ~15 ms of a 4K frame for ordinary colour and ~32 for
+    /// wholly saturated. No tone-map curve: the caller only takes this
+    /// with `ToneMapOp::None`, as it does for BT.709.
+    ///
+    /// `gamut_data` is `klipp_color::gamut::bt2020_to_bt709_gpu_data`,
+    /// passed in for the same reason the ACES data is — this crate does
+    /// not depend on `klipp-color` outside its tests.
+    pub fn encode_chain_to_bt2020_display_u8(
+        &mut self,
+        slot_a: bool,
+        width: u32,
+        height: u32,
+        gamut_data: &[f32],
+    ) -> Option<Vec<u8>> {
+        if self.is_device_lost() || gamut_data.is_empty() {
+            return None;
+        }
+        let pixel_count = (width as u64) * (height as u64);
+        if pixel_count == 0 {
+            return None;
+        }
+        if self.bt2020_gamut_data.is_none() {
+            let buf = self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("bt2020_gamut_data"),
+                size: (gamut_data.len() * 4) as u64,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            self.queue.write_buffer(&buf, 0, bytemuck::cast_slice(gamut_data));
+            self.bt2020_gamut_data = Some(buf);
+        }
+
+        let out_bytes = pixel_count * 4;
+        let source = if slot_a { self.buf_a.as_ref() } else { self.buf_b.as_ref() }?;
+        let out = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("bt2020_display_out"),
+            size: out_bytes,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
+        });
+        self.write_params(&BridgeU8Params { width, height, _pad0: 0, _pad1: 0 });
+
+        let data = self.bt2020_gamut_data.as_ref()?;
+        let bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("bt2020_display_bg"),
+            layout: &self.aces_rec709_bgl,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: source.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: out.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 2, resource: self.params_buf.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 3, resource: data.as_entire_binding() },
+            ],
+        });
+
+        let mut encoder = self.chain_encoder.take().unwrap_or_else(|| {
+            self.device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("bt2020") })
+        });
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: None,
+                timestamp_writes: None,
+            });
+            pass.set_pipeline(&self.bt2020_display_pipeline);
+            pass.set_bind_group(0, &bg, &[]);
+            pass.dispatch_workgroups((pixel_count as u32).div_ceil(WORKGROUP_SIZE), 1, 1);
+        }
+        self.queue.submit(std::iter::once(encoder.finish()));
+        self.submit_count.fetch_add(1, Ordering::Relaxed);
+
+        self.with_downloaded(&out, out_bytes, |bytes| bytes.to_vec())
     }
 
     /// Put a frame that is already linear working-space f32 on the GPU
@@ -7065,6 +7152,163 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 // `aces_rec709_matches_the_cpu` is what keeps this honest — the last
 // WGSL copy of ACES in this codebase was removed, and a copy without a
 // parity test is exactly what should be.
+/// The BT.2020 -> BT.709 display mapping, as WGSL.
+///
+/// A BT.2020 project's display transform is a basis change and then the
+/// BT.2407-style gamut compression from `klipp_color::gamut` — ~15 ms a
+/// 4K frame on the CPU for ordinary colour and ~32 for wholly
+/// saturated, which is why the viewer's fast path declined the whole
+/// project.
+///
+/// Same division as ACES: the reach tables and cusps arrive as data,
+/// built by bisecting each gamut's boundary 24 times per grid point,
+/// and only the arithmetic that reads them lives here. The includer
+/// must declare `gamut: array<f32>` as a storage binding.
+macro_rules! shader_bt2020_gamut_wgsl {
+    () => {
+        "
+// Must match `klipp_color::gamut::gpu_layout`.
+const G_MATRICES: u32 = 2u;
+const G_WHITE: u32 = 29u;
+const G_TARGET: u32 = 32u;
+
+const KNEE: f32 = 0.8;
+const CHROMA_FLOOR: f32 = 0.5;
+const MAX_LIGHTNESS_TRADED: f32 = 5.0;
+
+fn g_l_steps() -> u32 { return u32(gamut[0]); }
+fn g_h_steps() -> u32 { return u32(gamut[1]); }
+fn g_reach_len() -> u32 { return g_l_steps() * g_h_steps() + g_l_steps(); }
+fn g_source() -> u32 { return G_TARGET + g_reach_len(); }
+fn g_cusps() -> u32 { return g_source() + g_reach_len(); }
+
+fn g_mat(m: u32, v: vec3<f32>) -> vec3<f32> {
+    let o = G_MATRICES + m * 9u;
+    return vec3<f32>(
+        gamut[o + 0u] * v.x + gamut[o + 1u] * v.y + gamut[o + 2u] * v.z,
+        gamut[o + 3u] * v.x + gamut[o + 4u] * v.y + gamut[o + 5u] * v.z,
+        gamut[o + 6u] * v.x + gamut[o + 7u] * v.y + gamut[o + 8u] * v.z,
+    );
+}
+
+fn g_white() -> vec3<f32> {
+    return vec3<f32>(gamut[G_WHITE], gamut[G_WHITE + 1u], gamut[G_WHITE + 2u]);
+}
+
+fn lab_f(t: f32) -> f32 {
+    if t > 0.008856 { return pow(t, 1.0 / 3.0); }
+    return 7.787 * t + 16.0 / 116.0;
+}
+
+fn lab_g(t: f32) -> f32 {
+    let cube = t * t * t;
+    if cube > 0.008856 { return cube; }
+    return (t - 16.0 / 116.0) / 7.787;
+}
+
+fn xyz_to_lab(xyz: vec3<f32>) -> vec3<f32> {
+    let w = g_white();
+    let fx = lab_f(xyz.x / w.x);
+    let fy = lab_f(xyz.y / w.y);
+    let fz = lab_f(xyz.z / w.z);
+    return vec3<f32>(116.0 * fy - 16.0, 500.0 * (fx - fy), 200.0 * (fy - fz));
+}
+
+fn lab_to_xyz(lab: vec3<f32>) -> vec3<f32> {
+    let fy = (lab.x + 16.0) / 116.0;
+    let fx = fy + lab.y / 500.0;
+    let fz = fy - lab.z / 200.0;
+    let w = g_white();
+    return vec3<f32>(lab_g(fx) * w.x, lab_g(fy) * w.y, lab_g(fz) * w.z);
+}
+
+fn hue_cell(h: f32) -> vec3<f32> {
+    let n = f32(g_h_steps());
+    let hf = (h - floor(h / 360.0) * 360.0) / 360.0 * n;
+    let h0 = floor(hf);
+    return vec3<f32>(h0 - floor(h0 / n) * n, (h0 + 1.0) - floor((h0 + 1.0) / n) * n, hf - h0);
+}
+
+fn lightness_cell(l: f32) -> vec2<f32> {
+    let lf = (clamp(l, 0.0, 100.0) / 100.0) * f32(g_l_steps() - 1u);
+    let l0 = min(floor(lf), f32(g_l_steps() - 2u));
+    return vec2<f32>(l0, lf - l0);
+}
+
+fn reach_at(base: u32, l: f32, h: f32) -> f32 {
+    let lc = lightness_cell(l);
+    let hc = hue_cell(h);
+    let hs = g_h_steps();
+    let r0 = base + u32(lc.x) * hs;
+    let r1 = base + (u32(lc.x) + 1u) * hs;
+    let a = mix(gamut[r0 + u32(hc.x)], gamut[r0 + u32(hc.y)], hc.z);
+    let b = mix(gamut[r1 + u32(hc.x)], gamut[r1 + u32(hc.y)], hc.z);
+    return mix(a, b, lc.y);
+}
+
+fn reach_least_at(base: u32, l: f32) -> f32 {
+    let mins = base + g_l_steps() * g_h_steps();
+    let lc = lightness_cell(l);
+    return min(gamut[mins + u32(lc.x)], gamut[mins + u32(lc.x) + 1u]);
+}
+
+fn cusp_at(h: f32) -> vec2<f32> {
+    let hc = hue_cell(h);
+    let base = g_cusps();
+    let a = vec2<f32>(gamut[base + u32(hc.x) * 2u], gamut[base + u32(hc.x) * 2u + 1u]);
+    let b = vec2<f32>(gamut[base + u32(hc.y) * 2u], gamut[base + u32(hc.y) * 2u + 1u]);
+    return mix(a, b, hc.z);
+}
+
+fn compress_to_bt709(rgb_in: vec3<f32>) -> vec3<f32> {
+    let scale = max(max(max(rgb_in.x, rgb_in.y), rgb_in.z), 1.0);
+    var n = rgb_in;
+    if scale > 1.0 { n = rgb_in / scale; }
+    let lab = xyz_to_lab(g_mat(0u, n));
+    let l = lab.x;
+    let a = lab.y;
+    let b = lab.z;
+    let c = sqrt(a * a + b * b);
+    if c <= CHROMA_FLOOR { return rgb_in; }
+    if c <= reach_least_at(G_TARGET, l) * KNEE { return rgb_in; }
+    let h = degrees(atan2(b, a));
+    let held = reach_at(G_TARGET, l, h);
+    if c <= held * KNEE { return rgb_in; }
+    let cusp = cusp_at(h);
+    var lightness = l;
+    if c > held && l > cusp.x {
+        let want = min(c, cusp.y);
+        let fl = max(cusp.x, l - MAX_LIGHTNESS_TRADED);
+        var lo = fl;
+        var hi = l;
+        for (var i = 0; i < 8; i = i + 1) {
+            let mid = 0.5 * (lo + hi);
+            if reach_at(G_TARGET, mid, h) >= want { lo = mid; } else { hi = mid; }
+        }
+        lightness = lo;
+    }
+    let t = reach_at(G_TARGET, lightness, h);
+    let knee = t * KNEE;
+    let sm = reach_at(g_source(), lightness, h);
+    if sm <= t * (1.0 + 1e-4) && lightness == l { return rgb_in; }
+    var mapped_c: f32;
+    if sm > knee {
+        mapped_c = min(knee + (c - knee) * ((t - knee) / (sm - knee)), t);
+    } else {
+        mapped_c = min(c, t);
+    }
+    let k = max(mapped_c, 0.0) / c;
+    let mapped = g_mat(1u, lab_to_xyz(vec3<f32>(lightness, a * k, b * k)));
+    return mapped * scale;
+}
+
+fn bt2020_to_bt709_display(rgb: vec3<f32>) -> vec3<f32> {
+    return max(compress_to_bt709(g_mat(2u, rgb)), vec3<f32>(0.0));
+}
+"
+    };
+}
+
 /// The ACES Rec.709 SDR output transform, as WGSL for any shader that
 /// needs it.
 ///
@@ -7254,6 +7498,48 @@ fn acescg_to_rec709_sdr(acescg: vec3<f32>) -> vec3<f32> {
 "
     };
 }
+// A BT.2020 project's viewer display transform, on the GPU.
+//
+// `display_transform_ws(.., Bt2020Linear)` is the basis change, the
+// BT.2407-style gamut compression, then the sRGB encode — ~15 ms a 4K
+// frame for ordinary colour, ~32 for wholly saturated. The viewer's
+// fast path declined the whole project for want of this.
+//
+// No tone-map curve here: the fast path only engages with
+// `ToneMapOp::None`, exactly as it does for BT.709, where the operator
+// would otherwise sit between the mapping and the encode. With one
+// active the frame takes the CPU transform.
+// `shader_linear_helpers_wgsl` already carries the pixel storage hook.
+const SHADER_BT2020_DISPLAY_U8: &str = concat!(
+    shader_linear_helpers_wgsl!(),
+    shader_bt2020_gamut_wgsl!(),
+    "
+struct Params { width: u32, height: u32, _pad0: u32, _pad1: u32 }
+@group(0) @binding(0) var<storage, read> input: array<vec4<f32>>;
+@group(0) @binding(1) var<storage, read_write> output: array<u32>;
+@group(0) @binding(2) var<uniform> params: Params;
+@group(0) @binding(3) var<storage, read> gamut: array<f32>;
+
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let idx = gid.x;
+    if idx >= params.width * params.height { return; }
+    let px = unpack(input[idx]);
+    // The CPU's order: to BT.709 and compressed, negatives clamped,
+    // (no tone map), sRGB encode, clamp, quantise.
+    let mapped = max(bt2020_to_bt709_display(px.xyz), vec3<f32>(0.0));
+    let e = vec3<f32>(
+        linear_to_srgb_component(mapped.x),
+        linear_to_srgb_component(mapped.y),
+        linear_to_srgb_component(mapped.z),
+    );
+    let q = clamp(e, vec3<f32>(0.0), vec3<f32>(1.0)) * 255.0 + vec3<f32>(0.5);
+    let a = u32(clamp(px.w, 0.0, 1.0) * 255.0 + 0.5);
+    output[idx] = u32(q.x) | (u32(q.y) << 8u) | (u32(q.z) << 16u) | (a << 24u);
+}
+"
+);
+
 
 const SHADER_ACES_REC709_U8: &str = concat!(
     shader_pixel_storage_wgsl!(),
@@ -11938,6 +12224,7 @@ pub fn shader_sources() -> Vec<(&'static str, &'static str)> {
         ("SHADER_RGBA64_TO_LINEAR", SHADER_RGBA64_TO_LINEAR),
         ("SHADER_LINEAR_TO_YUV420", SHADER_LINEAR_TO_YUV420),
         ("SHADER_ACES_REC709_U8", SHADER_ACES_REC709_U8),
+        ("SHADER_BT2020_DISPLAY_U8", SHADER_BT2020_DISPLAY_U8),
         ("SHADER_TRANSITION", SHADER_TRANSITION),
         ("SHADER_COLOR_GRADE", SHADER_COLOR_GRADE),
         ("SHADER_HUESAT", SHADER_HUESAT),
