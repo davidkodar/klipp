@@ -268,6 +268,12 @@ pub struct GpuEffectsPipeline {
     /// transform, colour matrix and chroma subsampling in one pass, so
     /// only the planes cross the bus.
     linear_to_yuv420_pipeline: wgpu::ComputePipeline,
+    /// AcesCG → display-encoded Rec.709 SDR u8, the ACES output
+    /// transform on the GPU rather than per-pixel on one core.
+    aces_rec709_pipeline: wgpu::ComputePipeline,
+    aces_rec709_bgl: wgpu::BindGroupLayout,
+    /// The matrices and tone curves that shader reads, uploaded once.
+    aces_rec709_data: Option<wgpu::Buffer>,
     /// Packed RGB10 HDR code values → scene-linear working-space f32,
     /// written into the chain's `buf_a`. The GPU half of
     /// `klipp_color::hdr::hdr10_codes_to_scene_linear_rgba`.
@@ -897,6 +903,59 @@ impl GpuEffectsPipeline {
         let linear_to_yuv420_pipeline = create_pipeline(
             &device, &pipeline_layout, "linear_to_yuv420", SHADER_LINEAR_TO_YUV420,
         );
+        // ACES needs a fourth binding for its matrices and tone curves.
+        let aces_rec709_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("aces_rec709_bgl"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: false },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 3,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+            ],
+        });
+        let aces_pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("aces_rec709_pl"),
+            bind_group_layouts: &[&aces_rec709_bgl],
+            push_constant_ranges: &[],
+        });
+        let aces_rec709_pipeline =
+            create_pipeline(&device, &aces_pl, "aces_rec709", SHADER_ACES_REC709_U8);
         // Both HDR kernels share the colourspace prelude with the P010
         // decoder, so the PQ/HLG curves on either side are one definition.
         let hdr10_src = format!(
@@ -1028,6 +1087,9 @@ impl GpuEffectsPipeline {
             bridge_u8_to_linear_pipeline,
             bridge_rgba64_to_linear_pipeline,
             linear_to_yuv420_pipeline,
+            aces_rec709_pipeline,
+            aces_rec709_bgl,
+            aces_rec709_data: None,
             bridge_hdr10_pipeline,
             display_u8_pipeline,
             display_u8_staging: None,
@@ -1947,6 +2009,94 @@ impl GpuEffectsPipeline {
         // `staging_read` is sized for a whole linear frame, which is ten
         // times these planes, so the chain having run means it fits.
         self.with_downloaded(&planes, total, |bytes| bytes.to_vec())
+    }
+
+    /// The chain's graded AcesCG frame → display-encoded Rec.709 SDR
+    /// bytes, the ACES output transform run on the GPU.
+    ///
+    /// Replaces `klipp_color::aces::acescg_to_rec709_sdr` per pixel on
+    /// the CPU, which is 88 ms of a 4K frame — the reason an AcesCG
+    /// project exported six times slower than a Rec.709 one.
+    ///
+    /// `aces_data` is `klipp_color::aces::aces_rec709_gpu_data` — the
+    /// matrices and tone curves. It is passed in rather than built here
+    /// because this crate deliberately does not depend on
+    /// `klipp-color` outside its tests: the colour science lives there,
+    /// and this is the layer that runs things on a GPU. Uploaded once;
+    /// the data is fixed for this ODT.
+    ///
+    /// `None` when there is no GPU or the device is lost; callers keep
+    /// the CPU transform.
+    pub fn encode_chain_to_aces_rec709_u8(
+        &mut self,
+        slot_a: bool,
+        width: u32,
+        height: u32,
+        aces_data: &[f32],
+    ) -> Option<Vec<u8>> {
+        if self.is_device_lost() {
+            return None;
+        }
+        let pixel_count = (width as u64) * (height as u64);
+        if pixel_count == 0 {
+            return None;
+        }
+        self.ensure_aces_data(aces_data);
+        let out_bytes = pixel_count * 4;
+
+        let source = if slot_a { self.buf_a.as_ref() } else { self.buf_b.as_ref() }?;
+        let out = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("aces_rec709_out"),
+            size: out_bytes,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
+        });
+        self.write_params(&BridgeU8Params { width, height, _pad0: 0, _pad1: 0 });
+
+        let data = self.aces_rec709_data.as_ref()?;
+        let bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("aces_rec709_bg"),
+            layout: &self.aces_rec709_bgl,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: source.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: out.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 2, resource: self.params_buf.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 3, resource: data.as_entire_binding() },
+            ],
+        });
+
+        let mut encoder = self.chain_encoder.take().unwrap_or_else(|| {
+            self.device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("aces") })
+        });
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: None,
+                timestamp_writes: None,
+            });
+            pass.set_pipeline(&self.aces_rec709_pipeline);
+            pass.set_bind_group(0, &bg, &[]);
+            pass.dispatch_workgroups((pixel_count as u32).div_ceil(WORKGROUP_SIZE), 1, 1);
+        }
+        self.queue.submit(std::iter::once(encoder.finish()));
+        self.submit_count.fetch_add(1, Ordering::Relaxed);
+
+        self.with_downloaded(&out, out_bytes, |bytes| bytes.to_vec())
+    }
+
+    /// Upload the ACES matrices and tone curves, once.
+    fn ensure_aces_data(&mut self, data: &[f32]) {
+        if self.aces_rec709_data.is_some() {
+            return;
+        }
+        let buf = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("aces_rec709_data"),
+            size: (data.len() * 4) as u64,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        self.queue.write_buffer(&buf, 0, bytemuck::cast_slice(data));
+        self.aces_rec709_data = Some(buf);
     }
 
     /// Put a frame that is already linear working-space f32 on the GPU
@@ -6866,6 +7016,218 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 "
 );
 
+// The ACES Rec.709 SDR output transform, on the GPU.
+//
+// Why this exists: the same 4K timeline exports at 51 fps in a Rec.709
+// project and 8 in an AcesCG one, and essentially all of the difference
+// is this transform running per-pixel on one core. The colour-managed
+// pipeline being the slow one is the wrong way round.
+//
+// Why it is shaped like this: the transform is *not* a 3D LUT. Measured
+// — a shaper plus a 3D LUT baked from `klipp_color::aces` is out by 51
+// code values at 33³ and 22 at 97³/14.6 MB, because the red modifier,
+// the glow and the gamut limit change too fast in saturated mid-tones
+// for any practical grid. But it decomposes: closed-form arithmetic
+// either side of two *per-channel* tone curves. Those curves carry the
+// AMPAS coefficient tables and a knot search, so they arrive as tables
+// baked from the Rust (8 KB, 0.041 levels); the arithmetic here is
+// short enough to read. The derived matrices arrive as data too, since
+// transcribing a computed number is how two implementations drift.
+//
+// `aces_rec709_matches_the_cpu` is what keeps this honest — the last
+// WGSL copy of ACES in this codebase was removed, and a copy without a
+// parity test is exactly what should be.
+const SHADER_ACES_REC709_U8: &str = concat!(
+    shader_pixel_storage_wgsl!(),
+    "
+struct Params { width: u32, height: u32, _pad0: u32, _pad1: u32 }
+@group(0) @binding(0) var<storage, read> input: array<vec4<f32>>;
+@group(0) @binding(1) var<storage, read_write> output: array<u32>;
+@group(0) @binding(2) var<uniform> params: Params;
+@group(0) @binding(3) var<storage, read> aces: array<f32>;
+
+// Must match `klipp_color::aces::gpu_layout`.
+const HEADER_LEN: u32 = 6u;
+const MATRICES: u32 = 6u;
+const CURVES: u32 = 69u;   // MATRICES + 7 * 9
+
+const HALF_MIN: f32 = 6.103515625e-5;
+const HALF_MAX: f32 = 65504.0;
+const RRT_GLOW_GAIN: f32 = 0.05;
+const RRT_GLOW_MID: f32 = 0.08;
+const RRT_RED_SCALE: f32 = 0.82;
+const RRT_RED_PIVOT: f32 = 0.03;
+const RRT_RED_HUE: f32 = 0.0;
+const RRT_RED_WIDTH: f32 = 135.0;
+const CINEMA_WHITE: f32 = 48.0;
+const CINEMA_BLACK: f32 = 0.02;
+const SDR_DISP_GAMMA: f32 = 2.4;
+const DIM_SURROUND_GAMMA: f32 = 0.9811;
+const YC_RADIUS_WEIGHT: f32 = 1.75;
+const TINY: f32 = 1e-10;
+
+fn mat_mul(m: u32, v: vec3<f32>) -> vec3<f32> {
+    let o = MATRICES + m * 9u;
+    return vec3<f32>(
+        aces[o + 0u] * v.x + aces[o + 1u] * v.y + aces[o + 2u] * v.z,
+        aces[o + 3u] * v.x + aces[o + 4u] * v.y + aces[o + 5u] * v.z,
+        aces[o + 6u] * v.x + aces[o + 7u] * v.y + aces[o + 8u] * v.z,
+    );
+}
+
+/// A tone curve from its table: uniform in log10(x), storing log10(y),
+/// clamped at the ends — which is exact, because both curves really are
+/// constant outside their knots.
+fn tone_curve(which: u32, x: f32) -> f32 {
+    let base = select(CURVES, CURVES + u32(aces[2]), which == 1u);
+    let lo = aces[select(0u, 3u, which == 1u)];
+    let hi = aces[select(1u, 4u, which == 1u)];
+    let n = u32(aces[select(2u, 5u, which == 1u)]);
+
+    let logx = log(max(x, HALF_MIN)) / log(10.0);
+    let t = clamp((logx - lo) / (hi - lo), 0.0, 1.0) * f32(n - 1u);
+    let i = min(u32(floor(t)), n - 2u);
+    let f = t - floor(t);
+    let logy = mix(aces[base + i], aces[base + i + 1u], f);
+    return pow(10.0, logy);
+}
+
+fn rgb_2_saturation(rgb: vec3<f32>) -> f32 {
+    let mx = max(max(rgb.x, rgb.y), rgb.z);
+    let mn = min(min(rgb.x, rgb.y), rgb.z);
+    return (max(mx, TINY) - max(mn, TINY)) / max(mx, 1.0e-2);
+}
+
+fn rgb_2_yc(rgb: vec3<f32>) -> f32 {
+    let r = rgb.x; let g = rgb.y; let b = rgb.z;
+    let chroma = sqrt(max(b * (b - g) + g * (g - r) + r * (r - b), 0.0));
+    return (b + g + r + YC_RADIUS_WEIGHT * chroma) / 3.0;
+}
+
+fn rgb_2_hue(rgb: vec3<f32>) -> f32 {
+    if rgb.x == rgb.y && rgb.y == rgb.z { return 0.0; }
+    let y = sqrt(3.0) * (rgb.y - rgb.z);
+    let x = 2.0 * rgb.x - rgb.y - rgb.z;
+    var hue = degrees(atan2(y, x));
+    if hue < 0.0 { hue = hue + 360.0; }
+    return hue;
+}
+
+fn center_hue(hue: f32, center_h: f32) -> f32 {
+    var h = hue - center_h;
+    if h < -180.0 { h = h + 360.0; } else if h > 180.0 { h = h - 360.0; }
+    return h;
+}
+
+fn sigmoid_shaper(x: f32) -> f32 {
+    let t = max(1.0 - abs(x / 2.0), 0.0);
+    return (1.0 + sign(x) * (1.0 - t * t)) / 2.0;
+}
+
+fn glow_fwd(yc_in: f32, glow_gain_in: f32, glow_mid: f32) -> f32 {
+    if yc_in <= (2.0 / 3.0) * glow_mid { return glow_gain_in; }
+    if yc_in >= 2.0 * glow_mid { return 0.0; }
+    return glow_gain_in * (glow_mid / yc_in - 0.5);
+}
+
+/// AMPAS `cubic_basis_shaper`, width `w`, height ~1.5 at zero.
+fn cubic_basis_shaper(x: f32, w: f32) -> f32 {
+    let k0 = -w / 2.0;
+    let k4 = w / 2.0;
+    if !(x > k0 && x < k4) { return 0.0; }
+    let knot_coord = (x - k0) / (k4 - k0) * 4.0;
+    let j = i32(floor(knot_coord));
+    let t = knot_coord - floor(knot_coord);
+    let m = vec4<f32>(t * t * t, t * t, t, 1.0);
+    // The basis columns, reversed as the CTL indexes them.
+    var c: vec4<f32>;
+    if j == 0 { c = vec4<f32>(1.0 / 6.0, 0.0, 0.0, 0.0); }
+    else if j == 1 { c = vec4<f32>(-3.0 / 6.0, 3.0 / 6.0, 3.0 / 6.0, 1.0 / 6.0); }
+    else if j == 2 { c = vec4<f32>(3.0 / 6.0, -6.0 / 6.0, 0.0, 4.0 / 6.0); }
+    else if j == 3 { c = vec4<f32>(-1.0 / 6.0, 3.0 / 6.0, -3.0 / 6.0, 1.0 / 6.0); }
+    else { return 0.0; }
+    return dot(c, m) * 1.5;
+}
+
+fn rrt_sweeteners(aces_in: vec3<f32>) -> vec3<f32> {
+    let saturation = rgb_2_saturation(aces_in);
+    let yc_in = rgb_2_yc(aces_in);
+    let s = sigmoid_shaper((saturation - 0.4) / 0.2);
+    let added_glow = 1.0 + glow_fwd(yc_in, RRT_GLOW_GAIN * s, RRT_GLOW_MID);
+    var a = aces_in * added_glow;
+
+    let centered_hue = center_hue(rgb_2_hue(a), RRT_RED_HUE);
+    let hue_weight = cubic_basis_shaper(centered_hue, RRT_RED_WIDTH);
+    a.x = a.x + hue_weight * saturation * (RRT_RED_PIVOT - a.x) * (1.0 - RRT_RED_SCALE);
+
+    // AP0 negatives clipped before the matrix, or a negative channel is
+    // redistributed into the other two and pure reds go green.
+    a = max(a, vec3<f32>(0.0));
+    var ap1 = mat_mul(1u, a);
+    ap1 = clamp(ap1, vec3<f32>(0.0), vec3<f32>(HALF_MAX));
+    return mat_mul(2u, ap1);
+}
+
+fn dark_surround_to_dim_surround(rec709_lin: vec3<f32>) -> vec3<f32> {
+    let xyz = mat_mul(5u, rec709_lin);
+    let sum = xyz.x + xyz.y + xyz.z;
+    if sum < 1e-12 { return rec709_lin; }
+    let x_chrom = xyz.x / sum;
+    let y_chrom = xyz.y / sum;
+    let big_y = pow(max(xyz.y, 0.0), DIM_SURROUND_GAMMA);
+    var back: vec3<f32>;
+    if y_chrom < 1e-12 {
+        back = vec3<f32>(0.0, big_y, 0.0);
+    } else {
+        let inv_y = 1.0 / y_chrom;
+        back = vec3<f32>(x_chrom * big_y * inv_y, big_y, (1.0 - x_chrom - y_chrom) * big_y * inv_y);
+    }
+    return mat_mul(6u, back);
+}
+
+/// AcesCG (AP1) → display-encoded Rec.709, the CPU chain's
+/// `acescg_to_rec709_sdr`.
+fn acescg_to_rec709_sdr(acescg: vec3<f32>) -> vec3<f32> {
+    // RRT: to AP0, sweeteners, tone curve, back to AP0 as OCES.
+    let ap1_desat = rrt_sweeteners(mat_mul(0u, acescg));
+    let rgb_post = vec3<f32>(
+        tone_curve(0u, ap1_desat.x),
+        tone_curve(0u, ap1_desat.y),
+        tone_curve(0u, ap1_desat.z),
+    );
+    let oces = mat_mul(0u, rgb_post);
+
+    // ODT: to AP1, tone curve to display cd/m2, normalise, desaturate,
+    // to Rec.709, dim surround, clamp, BT.1886 inverse.
+    let pre = mat_mul(1u, oces);
+    let post = vec3<f32>(
+        tone_curve(1u, pre.x),
+        tone_curve(1u, pre.y),
+        tone_curve(1u, pre.z),
+    );
+    let lin_cv = (post - vec3<f32>(CINEMA_BLACK)) / (CINEMA_WHITE - CINEMA_BLACK);
+    let desat = mat_mul(3u, lin_cv);
+    let rec709_lin = mat_mul(4u, desat);
+    let dim = dark_surround_to_dim_surround(rec709_lin);
+    let clamped = clamp(dim, vec3<f32>(0.0), vec3<f32>(1.0));
+    return pow(clamped, vec3<f32>(1.0 / SDR_DISP_GAMMA));
+}
+
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let idx = gid.x;
+    if idx >= params.width * params.height { return; }
+    let px = unpack(input[idx]);
+    let e = acescg_to_rec709_sdr(px.xyz);
+    let r = u32(clamp(e.x * 255.0 + 0.5, 0.0, 255.0));
+    let g = u32(clamp(e.y * 255.0 + 0.5, 0.0, 255.0));
+    let b = u32(clamp(e.z * 255.0 + 0.5, 0.0, 255.0));
+    let a = u32(clamp(px.w * 255.0 + 0.5, 0.0, 255.0));
+    output[idx] = r | (g << 8u) | (b << 16u) | (a << 24u);
+}
+"
+);
+
 // The end of the export: a graded linear frame straight to the encoder's
 // Y'CbCr planes, tone map, display encode, colour matrix and chroma
 // subsampling all in the one pass.
@@ -11511,6 +11873,7 @@ pub fn shader_sources() -> Vec<(&'static str, &'static str)> {
         ("SHADER_U8_TO_LINEAR", SHADER_U8_TO_LINEAR),
         ("SHADER_RGBA64_TO_LINEAR", SHADER_RGBA64_TO_LINEAR),
         ("SHADER_LINEAR_TO_YUV420", SHADER_LINEAR_TO_YUV420),
+        ("SHADER_ACES_REC709_U8", SHADER_ACES_REC709_U8),
         ("SHADER_TRANSITION", SHADER_TRANSITION),
         ("SHADER_COLOR_GRADE", SHADER_COLOR_GRADE),
         ("SHADER_HUESAT", SHADER_HUESAT),

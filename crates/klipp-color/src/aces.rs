@@ -1996,3 +1996,69 @@ mod tone_curve_table_tests {
         );
     }
 }
+
+// ─── Everything the GPU needs, as one buffer ────────────────────────
+
+/// Offsets into [`aces_rec709_gpu_data`], in floats.
+///
+/// The shader reads the same layout. Keeping them here and the shader's
+/// copy adjacent in the source is the best that can be done without
+/// generating the WGSL; a mismatch is not subtle — the parity test goes
+/// from a fraction of a level to visibly wrong.
+pub mod gpu_layout {
+    /// `rrt_log_x_min, rrt_log_x_max, rrt_n, odt_log_x_min, odt_log_x_max, odt_n`.
+    pub const HEADER: usize = 0;
+    pub const HEADER_LEN: usize = 6;
+    /// Seven 3x3 matrices, row-major, in the order the chain applies
+    /// them: ap1→ap0, ap0→ap1, rrt_sat, odt_sat, acescg→bt709,
+    /// bt709→xyz, xyz→bt709.
+    pub const MATRICES: usize = HEADER_LEN;
+    pub const MATRIX_COUNT: usize = 7;
+    pub const MATRICES_LEN: usize = MATRIX_COUNT * 9;
+    /// The two tone curves, RRT first.
+    pub const CURVES: usize = MATRICES + MATRICES_LEN;
+}
+
+/// The matrices and tone curves for the ACES Rec.709 SDR transform,
+/// flat, ready to upload.
+///
+/// The matrices are computed here rather than written into the shader
+/// because they are *derived* — `rrt_sat_matrix` from a saturation
+/// factor and the AP1 luma weights, the primaries conversions from
+/// chromaticities. Transcribing derived numbers is how two
+/// implementations drift; the scalar constants that remain in the
+/// shader are single literals the parity test would catch instantly.
+pub fn aces_rec709_gpu_data(curve_entries: usize) -> Vec<f32> {
+    let rrt = rrt_tone_curve_table(curve_entries);
+    let odt = odt_rec709_tone_curve_table(curve_entries);
+    let mut out = Vec::with_capacity(gpu_layout::CURVES + curve_entries * 2);
+
+    out.extend_from_slice(&[
+        rrt.log_x_min,
+        rrt.log_x_max,
+        rrt.log_y.len() as f32,
+        odt.log_x_min,
+        odt.log_x_max,
+        odt.log_y.len() as f32,
+    ]);
+    debug_assert_eq!(out.len(), gpu_layout::MATRICES);
+
+    for m in [
+        ap1_to_ap0(),
+        ap0_to_ap1(),
+        rrt_sat_matrix(),
+        odt_sat_matrix(),
+        crate::primaries::acescg_to_bt709(),
+        rec709_to_xyz_d65(),
+        xyz_d65_to_rec709(),
+    ] {
+        for row in m {
+            out.extend_from_slice(&row);
+        }
+    }
+    debug_assert_eq!(out.len(), gpu_layout::CURVES);
+
+    out.extend_from_slice(&rrt.log_y);
+    out.extend_from_slice(&odt.log_y);
+    out
+}
