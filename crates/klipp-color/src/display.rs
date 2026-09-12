@@ -576,6 +576,28 @@ impl ExportDisplay {
         }
     }
 
+    /// A PQ or HLG delivery of an HDR render, and the master's peak in
+    /// cd/m² — `ExportDisplay::hdr`'s two HDR paths.
+    ///
+    /// `Some((true, peak))` for PQ, `Some((false, 1000.0))` for HLG. The
+    /// GPU has both (`SHADER_LINEAR_TO_YUV420`'s HDR branch, reading the
+    /// basis matrix and the PQ table `klipp_color::hdr` bakes), so a
+    /// caller with a faster route can take it — including the MaxCLL and
+    /// MaxFALL a PQ delivery needs, which the shader measures while it
+    /// encodes.
+    ///
+    /// `None` for every SDR delivery and for the ACES PQ *ODTs*: those
+    /// are `ExportPath::Odt`, a different transform that reaches PQ
+    /// through the RRT and an SSTS rather than from display light.
+    #[inline]
+    pub fn hdr_transfer_and_peak(&self) -> Option<(bool, f32)> {
+        match self.path {
+            ExportPath::Pq { peak_nits, .. } => Some((true, peak_nits)),
+            ExportPath::Hlg { .. } => Some((false, crate::hdr::HLG_NOMINAL_PEAK_NITS)),
+            _ => None,
+        }
+    }
+
     /// Whether this is the plain ACES Rec.709 SDR output transform —
     /// what an AcesCG project gets from `OdtChoice::MatchViewer`.
     ///

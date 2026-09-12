@@ -277,9 +277,11 @@ pub struct GpuEffectsPipeline {
     /// Bound in that slot by a delivery that is not ACES, which never
     /// reads it.
     no_display_tables: wgpu::Buffer,
+    no_light: wgpu::Buffer,
     /// BT.2020's reach tables, cusps and matrices — 148 KB, uploaded
     /// once.
     bt2020_gamut_data: Option<wgpu::Buffer>,
+    hdr_encode_data: Option<wgpu::Buffer>,
     bt2020_display_pipeline: wgpu::ComputePipeline,
     /// Packed RGB10 HDR code values → scene-linear working-space f32,
     /// written into the chain's `buf_a`. The GPU half of
@@ -953,6 +955,20 @@ impl GpuEffectsPipeline {
                     },
                     count: None,
                 },
+                // Per-workgroup light, for a PQ delivery's MaxCLL and
+                // MaxFALL. Only the Y'CbCr writer declares it; the other
+                // two pipelines bind the dummy and never read it, which
+                // a layout permits.
+                wgpu::BindGroupLayoutEntry {
+                    binding: 4,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: false },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
             ],
         });
         let display_tables_pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -975,6 +991,17 @@ impl GpuEffectsPipeline {
         // tables. Never read; a bind group still has to be complete.
         let no_display_tables = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("no_display_tables"),
+            size: 4,
+            usage: wgpu::BufferUsages::STORAGE,
+            mapped_at_creation: false,
+        });
+        // The same for slot 4, which measures light. A *separate* buffer
+        // and not the one above: slot 3 is read-only and slot 4 writable,
+        // and one buffer bound as both in a single bind group is an
+        // aliasing violation — which wgpu reports as the encode simply
+        // failing, so it looks like "this frame cannot take the GPU path".
+        let no_light = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("no_light"),
             size: 4,
             usage: wgpu::BufferUsages::STORAGE,
             mapped_at_creation: false,
@@ -1114,7 +1141,9 @@ impl GpuEffectsPipeline {
             display_tables_bgl,
             aces_rec709_data: None,
             no_display_tables,
+            no_light,
             bt2020_gamut_data: None,
+            hdr_encode_data: None,
             bt2020_display_pipeline,
             bridge_hdr10_pipeline,
             display_u8_pipeline,
@@ -1967,15 +1996,66 @@ impl GpuEffectsPipeline {
         target: Yuv420Target,
         display_tables: &[f32],
     ) -> Option<Vec<u8>> {
-        let Yuv420Target { tone_map_op, gamut_op, luma_coefs, semi_planar, bits, sample_shift } =
-            target;
+        self.encode_chain_to_yuv420_inner(slot_a, width, height, target, display_tables)
+            .map(|(bytes, _)| bytes)
+    }
+
+    /// [`Self::encode_chain_to_yuv420`], and the frame's light levels —
+    /// what HDR10's MaxCLL and MaxFALL are made of.
+    ///
+    /// A PQ delivery needs them, and they used to be the reason it could
+    /// not take this path at all: the twin measures light per pixel while
+    /// it encodes, off the linear frame this path exists not to download.
+    /// The shader measures the same thing where the pixels are, reducing
+    /// to one `(max, sum)` a workgroup, and the host finishes the
+    /// reduction over those few thousand pairs.
+    ///
+    /// `None` for the same reasons as the unmeasured form, and also when
+    /// the target is not a PQ delivery — the shader writes no light on
+    /// any other path, so a caller asking for it has the wrong one.
+    pub fn encode_chain_to_yuv420_measured(
+        &mut self,
+        slot_a: bool,
+        width: u32,
+        height: u32,
+        target: Yuv420Target,
+        display_tables: &[f32],
+    ) -> Option<(Vec<u8>, GpuFrameLight)> {
+        if target.hdr_op != 1 {
+            return None;
+        }
+        let (bytes, light) =
+            self.encode_chain_to_yuv420_inner(slot_a, width, height, target, display_tables)?;
+        Some((bytes, light?))
+    }
+
+    fn encode_chain_to_yuv420_inner(
+        &mut self,
+        slot_a: bool,
+        width: u32,
+        height: u32,
+        target: Yuv420Target,
+        display_tables: &[f32],
+    ) -> Option<(Vec<u8>, Option<GpuFrameLight>)> {
+        let Yuv420Target {
+            tone_map_op,
+            gamut_op,
+            hdr_op,
+            peak_nits,
+            luma_coefs,
+            semi_planar,
+            bits,
+            sample_shift,
+        } = target;
         if self.is_device_lost()
             || width % 8 != 0
             || height % 2 != 0
             || tone_map_op > 3
             || gamut_op > 1
-            // Both read binding 3, so one transform at a time.
+            || hdr_op > 2
+            // All three read binding 3, so one transform at a time.
             || (gamut_op == 1 && tone_map_op == 3)
+            || (hdr_op != 0 && (gamut_op == 1 || tone_map_op == 3))
             || !matches!(bits, 8 | 10)
         {
             return None;
@@ -1991,8 +2071,8 @@ impl GpuEffectsPipeline {
         let total = luma_bytes + 2 * chroma_bytes;
 
         // Before `source` borrows self: uploading to the fourth binding
-        // needs &mut, and both table sets are cached for the export's
-        // life because neither changes frame to frame.
+        // needs &mut, and every table set is cached for the export's life
+        // because none changes frame to frame.
         if tone_map_op == 3 {
             if display_tables.is_empty() {
                 return None;
@@ -2000,7 +2080,24 @@ impl GpuEffectsPipeline {
             self.ensure_aces_data(display_tables);
         } else if gamut_op == 1 && !self.ensure_bt2020_gamut_data(display_tables) {
             return None;
+        } else if hdr_op != 0 && !self.ensure_hdr_encode_data(display_tables) {
+            return None;
         }
+
+        // One `(max, sum)` pair a workgroup, which only a PQ delivery
+        // writes. The dispatch shape below has to match this exactly, so
+        // both read the same expression.
+        let (wg_x, wg_y) = ((width / 8).div_ceil(8), (height / 2).div_ceil(8));
+        let measuring = hdr_op == 1;
+        let light_floats = (wg_x as u64) * (wg_y as u64) * 2;
+        let light_buf = measuring.then(|| {
+            self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("yuv420_light"),
+                size: light_floats * 4,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+                mapped_at_creation: false,
+            })
+        });
 
         let source = if slot_a { self.buf_a.as_ref() } else { self.buf_b.as_ref() };
         let source = source?;
@@ -2025,12 +2122,17 @@ impl GpuEffectsPipeline {
             bits,
             sample_shift,
             gamut_op,
+            hdr_op,
+            peak_nits,
             _pad2: 0,
+            _pad3: 0,
         });
         let tables: &wgpu::Buffer = if tone_map_op == 3 {
             self.aces_rec709_data.as_ref()?
         } else if gamut_op == 1 {
             self.bt2020_gamut_data.as_ref()?
+        } else if hdr_op != 0 {
+            self.hdr_encode_data.as_ref()?
         } else {
             &self.no_display_tables
         };
@@ -2042,6 +2144,13 @@ impl GpuEffectsPipeline {
                 wgpu::BindGroupEntry { binding: 1, resource: planes.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 2, resource: self.params_buf.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 3, resource: tables.as_entire_binding() },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: light_buf
+                        .as_ref()
+                        .unwrap_or(&self.no_light)
+                        .as_entire_binding(),
+                },
             ],
         });
 
@@ -2059,14 +2168,31 @@ impl GpuEffectsPipeline {
             });
             pass.set_pipeline(&self.linear_to_yuv420_pipeline);
             pass.set_bind_group(0, &bg, &[]);
-            pass.dispatch_workgroups((width / 8).div_ceil(8), (height / 2).div_ceil(8), 1);
+            pass.dispatch_workgroups(wg_x, wg_y, 1);
         }
         self.queue.submit(std::iter::once(encoder.finish()));
         self.submit_count.fetch_add(1, Ordering::Relaxed);
 
         // `staging_read` is sized for a whole linear frame, which is ten
         // times these planes, so the chain having run means it fits.
-        self.with_downloaded(&planes, total, |bytes| bytes.to_vec())
+        let bytes = self.with_downloaded(&planes, total, |bytes| bytes.to_vec())?;
+        let light = match light_buf {
+            // The per-workgroup pairs, finished on the CPU. Summed in f64
+            // the way the twin sums its per-pixel nits, over a few
+            // thousand partials rather than eight million pixels.
+            Some(buf) => self.with_downloaded(&buf, light_floats * 4, |raw| {
+                let pairs: &[f32] = bytemuck::cast_slice(&raw[..(light_floats as usize) * 4]);
+                let mut max_nits = 0.0f32;
+                let mut sum_nits = 0.0f64;
+                for p in pairs.chunks_exact(2) {
+                    max_nits = max_nits.max(p[0]);
+                    sum_nits += p[1] as f64;
+                }
+                GpuFrameLight { max_nits, sum_nits, pixels: pixel_count }
+            }),
+            None => None,
+        };
+        Some((bytes, light))
     }
 
     /// The chain's graded AcesCG frame → display-encoded Rec.709 SDR
@@ -2120,6 +2246,7 @@ impl GpuEffectsPipeline {
                 wgpu::BindGroupEntry { binding: 1, resource: out.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 2, resource: self.params_buf.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 3, resource: data.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 4, resource: self.no_light.as_entire_binding() },
             ],
         });
 
@@ -2195,6 +2322,38 @@ impl GpuEffectsPipeline {
         true
     }
 
+    /// Upload `klipp_color::hdr::hdr_encode_gpu_data` once: the basis
+    /// matrix, the working space's luma weights and the PQ table.
+    ///
+    /// `false` for a buffer the shader would read past the end of. The
+    /// WGSL takes the PQ table's length from the first entry and indexes
+    /// off it, so the length that header implies is checked here — the
+    /// one place the host can. `gpu_hdr_data_length_is_what_the_header_says`
+    /// in `klipp-color` holds the two layouts together, since this crate
+    /// cannot see `hdr::gpu_layout`.
+    fn ensure_hdr_encode_data(&mut self, data: &[f32]) -> bool {
+        if self.hdr_encode_data.is_some() {
+            return true;
+        }
+        // 1 header + 9 matrix + 3 luma = 13 before the table.
+        let entries = match data.first() {
+            Some(&n) if n >= 2.0 && n < 65536.0 => n as usize,
+            _ => return false,
+        };
+        if data.len() < 13 + entries {
+            return false;
+        }
+        let buf = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("hdr_encode_data"),
+            size: (data.len() * 4) as u64,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        self.queue.write_buffer(&buf, 0, bytemuck::cast_slice(data));
+        self.hdr_encode_data = Some(buf);
+        true
+    }
+
     /// The chain's graded BT.2020 frame → display bytes: the basis
     /// change, the BT.2407-style gamut compression and the sRGB encode.
     ///
@@ -2240,6 +2399,7 @@ impl GpuEffectsPipeline {
                 wgpu::BindGroupEntry { binding: 1, resource: out.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 2, resource: self.params_buf.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 3, resource: data.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 4, resource: self.no_light.as_entire_binding() },
             ],
         });
 
@@ -5455,6 +5615,14 @@ pub struct Yuv420Target {
     /// 0 none, 1 Reinhard, 2 Hable. The host has already established
     /// the display transform is a tone map and an sRGB encode.
     pub tone_map_op: u32,
+    /// 0 an SDR delivery, 1 PQ, 2 HLG. An HDR delivery replaces the tone
+    /// map and the sRGB encode entirely: the frame is display light
+    /// (1.0 = 203 cd/m²), and the shader takes it to BT.2020 and the
+    /// delivery's transfer. Exclusive with the two fields above, which
+    /// read the same binding.
+    pub hdr_op: u32,
+    /// The master's peak, cd/m². PQ only — HLG's is the nominal 1000.
+    pub peak_nits: f32,
     /// 1 brings a BT.2020 frame into BT.709 first, gamut-compressing
     /// what BT.709 cannot hold; 0 leaves the basis alone. Never 1
     /// alongside `tone_map_op == 3`: an ACES ODT maps its own gamut, and
@@ -5494,7 +5662,23 @@ struct Yuv420Params {
     bits: u32,
     sample_shift: u32,
     gamut_op: u32,
+    hdr_op: u32,
+    peak_nits: f32,
     _pad2: u32,
+    _pad3: u32,
+}
+
+/// A frame's light levels, in cd/m², as the GPU measured them while it
+/// encoded: what HDR10's MaxCLL (the brightest channel anywhere) and
+/// MaxFALL (the frame's average) are made of.
+///
+/// `sum_nits` is a sum rather than a mean so a caller can weight frames
+/// the way `klipp_color::hdr::FrameLight` does.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct GpuFrameLight {
+    pub max_nits: f32,
+    pub sum_nits: f64,
+    pub pixels: u64,
 }
 
 #[repr(C)]
@@ -7362,6 +7546,120 @@ fn bt2020_to_bt709_display(rgb: vec3<f32>) -> vec3<f32> {
     };
 }
 
+/// A PQ or HLG delivery's encode, as WGSL.
+///
+/// `ExportDisplay::encode` on `ExportPath::Pq` / `Hlg`: HDR display light
+/// in the working basis (1.0 = 203 cd/m², BT.2408) → the delivery's
+/// signal. The basis matrix, the working space's luma weights and the PQ
+/// table come from `klipp_color::hdr::hdr_encode_gpu_data` in the
+/// `tables` binding; everything else here is closed form.
+///
+/// The PQ curve is read from the shipped table rather than evaluated,
+/// because the CPU reads a table too — evaluating ST-2084 properly here
+/// would put the shader 3e-5 away from the twin by being *more* right,
+/// which is not what a parity test can hold.
+macro_rules! shader_hdr_encode_wgsl {
+    () => {
+        "
+// Must match `klipp_color::hdr::gpu_layout`.
+const H_TO_2020: u32 = 1u;
+const H_LUMA: u32 = 10u;
+const H_PQ_TABLE: u32 = 13u;
+
+/// `HDR_REFERENCE_WHITE_NITS`: what display light 1.0 means.
+const H_REF_WHITE_NITS: f32 = 203.0;
+/// `HLG_NOMINAL_PEAK_NITS` and `HLG_GAMMA`.
+const H_HLG_PEAK_NITS: f32 = 1000.0;
+const H_HLG_GAMMA: f32 = 1.2;
+
+fn h_to_bt2020(v: vec3<f32>) -> vec3<f32> {
+    return vec3<f32>(
+        tables[H_TO_2020 + 0u] * v.x + tables[H_TO_2020 + 1u] * v.y + tables[H_TO_2020 + 2u] * v.z,
+        tables[H_TO_2020 + 3u] * v.x + tables[H_TO_2020 + 4u] * v.y + tables[H_TO_2020 + 5u] * v.z,
+        tables[H_TO_2020 + 6u] * v.x + tables[H_TO_2020 + 7u] * v.y + tables[H_TO_2020 + 8u] * v.z,
+    );
+}
+
+fn h_working_luma() -> vec3<f32> {
+    return vec3<f32>(tables[H_LUMA], tables[H_LUMA + 1u], tables[H_LUMA + 2u]);
+}
+
+/// `display_light_to_nits`. Over the peak the pixel scales down as a
+/// whole, so a highlight too bright for the master keeps its hue instead
+/// of turning towards white channel by channel.
+fn h_display_light_to_nits(rgb2020: vec3<f32>, peak: f32) -> vec3<f32> {
+    let n = max(rgb2020 * H_REF_WHITE_NITS, vec3<f32>(0.0));
+    let m = max(n.x, max(n.y, n.z));
+    if m > peak {
+        return n * (peak / m);
+    }
+    return n;
+}
+
+/// `pq_encode_nits`, off the shipped table with the same indexing: the
+/// curve sampled at the eighth root of luminance, where it is nearly
+/// straight, and interpolated.
+fn h_pq_encode_nits(nits: f32) -> f32 {
+    // The header holds the entry count; the CPU's `PQ_TABLE_SIZE` is one
+    // less, because the table carries both ends.
+    let n = u32(tables[0]) - 1u;
+    let x = clamp(nits / 10000.0, 0.0, 1.0);
+    // Three square roots rather than `pow(x, 0.125)`, to land on the
+    // same bits the twin's `.sqrt().sqrt().sqrt()` does.
+    let t = sqrt(sqrt(sqrt(x))) * f32(n);
+    let i = min(u32(t), n - 1u);
+    let f = t - f32(i);
+    let a = tables[H_PQ_TABLE + i];
+    let b = tables[H_PQ_TABLE + i + 1u];
+    return a + (b - a) * f;
+}
+
+/// `hlg_oetf`: scene light [0,1] → signal [0,1].
+fn h_hlg_oetf(e: f32) -> f32 {
+    let a = 0.17883277; let b = 0.28466892; let c = 0.55991073;
+    let x = clamp(e, 0.0, 1.0);
+    if x <= 1.0 / 12.0 {
+        return sqrt(3.0 * x);
+    }
+    return a * log(12.0 * x - b) + c;
+}
+
+/// `hlg_encode_nits`: the inverse HLG OOTF on the nominal display, then
+/// the OETF, so SDR white at 203 nits lands on BT.2408's 75% signal.
+fn h_hlg_encode_nits(nits2020: vec3<f32>) -> vec3<f32> {
+    let f = clamp(nits2020, vec3<f32>(0.0), vec3<f32>(H_HLG_PEAK_NITS)) / H_HLG_PEAK_NITS;
+    let yd = 0.2627 * f.x + 0.6780 * f.y + 0.0593 * f.z;
+    if yd <= 0.0 {
+        return vec3<f32>(0.0);
+    }
+    // Fd = Ys^(g-1) * E with Yd = Ys^g, so E = Fd * Yd^((1-g)/g).
+    let k = pow(yd, (1.0 - H_HLG_GAMMA) / H_HLG_GAMMA);
+    return vec3<f32>(h_hlg_oetf(f.x * k), h_hlg_oetf(f.y * k), h_hlg_oetf(f.z * k));
+}
+
+/// An HDR delivery's signal, and the pixel's light in cd/m² for MaxCLL.
+/// `op` is 1 for PQ, 2 for HLG.
+///
+/// The light is 0 for HLG because the twin measures none there: MaxCLL
+/// and MaxFALL are HDR10 metadata, and an HLG file carries neither.
+fn hdr_encode(px: vec3<f32>, peak: f32, op: u32) -> vec4<f32> {
+    let rgb2020 = h_to_bt2020(px);
+    if op == 2u {
+        let nits = h_display_light_to_nits(rgb2020, H_HLG_PEAK_NITS);
+        return vec4<f32>(h_hlg_encode_nits(nits), 0.0);
+    }
+    let nits = h_display_light_to_nits(rgb2020, peak);
+    return vec4<f32>(
+        h_pq_encode_nits(nits.x),
+        h_pq_encode_nits(nits.y),
+        h_pq_encode_nits(nits.z),
+        max(nits.x, max(nits.y, nits.z)),
+    );
+}
+"
+    };
+}
+
 /// The ACES Rec.709 SDR output transform, as WGSL for any shader that
 /// needs it.
 ///
@@ -7647,6 +7945,7 @@ const SHADER_LINEAR_TO_YUV420: &str = concat!(
     shader_linear_helpers_wgsl!(),
     shader_aces_rec709_wgsl!(),
     shader_bt2020_gamut_wgsl!(),
+    shader_hdr_encode_wgsl!(),
     "
 struct Params {
     width: u32,
@@ -7674,7 +7973,16 @@ struct Params {
     // the same time as `tone_map_op == 3` — an ACES ODT maps its own
     // gamut, and the two would want the same binding.
     gamut_op: u32,
+    // 0 an SDR delivery (the tone map and sRGB encode above), 1 PQ,
+    // 2 HLG. An HDR delivery replaces the whole tail: the frame is
+    // display light already, and `hdr_encode` takes it to the
+    // delivery's signal. Reads binding 3, so likewise exclusive with
+    // the other two.
+    hdr_op: u32,
+    // The master's peak, cd/m². PQ only; HLG's is the nominal 1000.
+    peak_nits: f32,
     _pad2: u32,
+    _pad3: u32,
 }
 @group(0) @binding(0) var<storage, read> input: array<vec4<f32>>;
 @group(0) @binding(1) var<storage, read_write> output: array<u32>;
@@ -7683,6 +7991,10 @@ struct Params {
 // and matrices for `tone_map_op == 3`, BT.2020's gamut reach and cusps
 // for `gamut_op == 1`. A small dummy when it needs neither.
 @group(0) @binding(3) var<storage, read> tables: array<f32>;
+// One `(max, sum)` pair of cd/m² per workgroup, for a PQ delivery's
+// MaxCLL and MaxFALL. The host reduces the pairs; a small dummy is bound
+// when the delivery measures no light.
+@group(0) @binding(4) var<storage, read_write> light: array<f32>;
 
 fn hable_curve(x: f32) -> f32 {
     let a = 0.15; let b = 0.50; let c = 0.10;
@@ -7702,11 +8014,20 @@ fn tone_map_c(v: f32) -> f32 {
 
 /// One pixel through the display transform: the CPU twin's
 /// `ExportDisplay::encode`, on whichever path the host selected.
-fn display_encode(px: vec3<f32>) -> vec3<f32> {
+///
+/// `w` is the pixel's light in cd/m², which only a PQ delivery measures
+/// (HDR10's MaxCLL and MaxFALL are made of it); 0 on every other path.
+fn display_encode(px: vec3<f32>) -> vec4<f32> {
+    // An HDR delivery is a different tail entirely — the frame is display
+    // light, not scene light, and there is no tone map or sRGB encode.
+    if params.hdr_op != 0u {
+        let e = hdr_encode(px, params.peak_nits, params.hdr_op);
+        return vec4<f32>(clamp(e.xyz, vec3<f32>(0.0), vec3<f32>(1.0)), e.w);
+    }
     // The ACES path is a whole output transform and ends
     // display-encoded already, so it returns before the sRGB encode.
     if params.tone_map_op == 3u {
-        return acescg_to_rec709_sdr(px);
+        return vec4<f32>(acescg_to_rec709_sdr(px), 0.0);
     }
     // A wide-gamut basis comes into BT.709 first, gamut-compressing what
     // BT.709 cannot hold — `ToBt709::apply` in the twin, which likewise
@@ -7723,7 +8044,7 @@ fn display_encode(px: vec3<f32>) -> vec3<f32> {
         linear_to_srgb_component(m.y),
         linear_to_srgb_component(m.z),
     );
-    return clamp(e, vec3<f32>(0.0), vec3<f32>(1.0));
+    return vec4<f32>(clamp(e, vec3<f32>(0.0), vec3<f32>(1.0)), 0.0);
 }
 
 /// `quant` from the CPU twin: offset and range are given in 8-bit
@@ -7741,11 +8062,28 @@ fn luma(e: vec3<f32>) -> f32 {
     return params.kr * e.x + params.kg * e.y + params.kb * e.z;
 }
 
+// A workgroup's partial `(max, sum)` of pixel light, one slot per
+// invocation, reduced below.
+var<workgroup> wg_max: array<f32, 64>;
+var<workgroup> wg_sum: array<f32, 64>;
+
 @compute @workgroup_size(8, 8)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+fn main(
+    @builtin(global_invocation_id) gid: vec3<u32>,
+    @builtin(workgroup_id) wid: vec3<u32>,
+    @builtin(num_workgroups) nwg: vec3<u32>,
+    @builtin(local_invocation_index) lidx: u32,
+) {
     let bx = gid.x;          // 8-pixel column block
     let by = gid.y;          // 2-pixel row block
-    if bx * 8u >= params.width || by * 2u >= params.height { return; }
+    // Deliberately *not* an early return. The light reduction below
+    // ends in `workgroupBarrier`, which every invocation of the
+    // workgroup has to reach — a barrier behind a bounds check is
+    // undefined in WGSL, and the last workgroup of a row is partly out
+    // of range whenever `width / 8` is not a multiple of 8. So the
+    // out-of-range invocations run, contribute nothing, and skip only
+    // the writes.
+    let in_frame = bx * 8u < params.width && by * 2u < params.height;
 
     let x0 = bx * 8u;
     let y0 = by * 2u;
@@ -7753,12 +8091,43 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // The sixteen pixels of the block, display-encoded once and reused
     // for both luma and chroma.
     var e: array<vec3<f32>, 16>;
-    for (var r = 0u; r < 2u; r = r + 1u) {
-        for (var c = 0u; c < 8u; c = c + 1u) {
-            let p = unpack(input[(y0 + r) * params.width + x0 + c]);
-            e[r * 8u + c] = display_encode(p.xyz);
+    var lmax = 0.0;
+    var lsum = 0.0;
+    if in_frame {
+        for (var r = 0u; r < 2u; r = r + 1u) {
+            for (var c = 0u; c < 8u; c = c + 1u) {
+                let p = unpack(input[(y0 + r) * params.width + x0 + c]);
+                let d = display_encode(p.xyz);
+                e[r * 8u + c] = d.xyz;
+                lmax = max(lmax, d.w);
+                lsum = lsum + d.w;
+            }
         }
     }
+
+    // Reduce the block partials to one pair a workgroup. Gated on a
+    // uniform value, so the barriers inside stay in uniform control
+    // flow, and skipped entirely for a delivery that measures nothing.
+    if params.hdr_op == 1u {
+        wg_max[lidx] = lmax;
+        wg_sum[lidx] = lsum;
+        workgroupBarrier();
+        for (var stride = 32u; stride > 0u; stride = stride >> 1u) {
+            if lidx < stride {
+                wg_max[lidx] = max(wg_max[lidx], wg_max[lidx + stride]);
+                wg_sum[lidx] = wg_sum[lidx] + wg_sum[lidx + stride];
+            }
+            workgroupBarrier();
+        }
+        if lidx == 0u {
+            let slot = (wid.y * nwg.x + wid.x) * 2u;
+            light[slot] = wg_max[0];
+            light[slot + 1u] = wg_sum[0];
+        }
+    }
+
+    // Past the last barrier, so leaving now is safe.
+    if !in_frame { return; }
 
     // The block's sixteen luma samples and the four chroma sites its
     // 2x2 quads reduce to, quantised. Chroma is the mean of the

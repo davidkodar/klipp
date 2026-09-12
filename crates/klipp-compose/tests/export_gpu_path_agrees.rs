@@ -38,6 +38,8 @@ fn plain_target() -> klipp_effects::gpu::Yuv420Target {
     klipp_effects::gpu::Yuv420Target {
         tone_map_op: 0,
         gamut_op: 0,
+        hdr_op: 0,
+        peak_nits: 0.0,
         luma_coefs: LUMA_709,
         semi_planar: false,
         bits: 8,
@@ -49,6 +51,19 @@ fn plain_target() -> klipp_effects::gpu::Yuv420Target {
 /// BT.2407 compression into BT.709 run on the GPU ahead of the encode.
 fn bt2020_target() -> klipp_effects::gpu::Yuv420Target {
     klipp_effects::gpu::Yuv420Target { gamut_op: 1, ..plain_target() }
+}
+
+/// A PQ delivery: ten bits, P010, BT.2020 luma, mastered to `peak`.
+fn pq_target(peak: f32) -> klipp_effects::gpu::Yuv420Target {
+    klipp_effects::gpu::Yuv420Target {
+        hdr_op: 1,
+        peak_nits: peak,
+        luma_coefs: [0.2627, 0.6780, 0.0593],
+        semi_planar: true,
+        bits: 10,
+        sample_shift: 6,
+        ..plain_target()
+    }
 }
 
 fn tc(secs: f64) -> Timecode {
@@ -194,15 +209,9 @@ fn renderer() -> Renderer {
 
 /// The planes the GPU path makes, or `None` if it refused.
 fn gpu_planes(seq: &Sequence, t: f64, src: &mut Flat) -> Option<Vec<u8>> {
-    renderer().render_yuv420_on_gpu(
-        seq,
-        tc(t),
-        W,
-        H,
-        src,
-        RenderOptions::default(),
-        plain_target(),
-    )
+    renderer()
+        .render_yuv420_on_gpu(seq, tc(t), W, H, src, RenderOptions::default(), plain_target())
+        .map(|(bytes, _)| bytes)
 }
 
 /// [`gpu_planes`] in a given working space, with the matching target.
@@ -216,6 +225,7 @@ fn gpu_planes_ws(
     let mut r = renderer();
     r.set_working_colorspace(ws);
     r.render_yuv420_on_gpu(seq, tc(t), W, H, src, RenderOptions::default(), target)
+        .map(|(bytes, _)| bytes)
 }
 
 /// The same frame through the ordinary render, converted the way the CPU
@@ -484,21 +494,158 @@ fn the_gate_refuses_everything_it_cannot_reproduce() {
     }
 }
 
-/// An HDR delivery renders display light, a pass the shader has no twin
-/// for, so the gate refuses it whatever the timeline looks like.
+/// The render and the encode must be for the same delivery.
+///
+/// The target says whether the *encoder* wants HDR and `RenderOptions`
+/// says whether the *render* is producing display light for one. Both
+/// come from one `ExportSettings`, so a mismatch is a wiring mistake —
+/// and it would show as a wrong picture, not an error, which is why the
+/// gate checks rather than assumes.
 #[test]
-fn an_hdr_render_is_refused() {
+fn a_mismatched_delivery_is_refused() {
     let c = media(0.0, 1.0);
     let seq = sequence(vec![vec![c.clone()]]);
-    let mut src = Flat::default().with(&c, [128, 128, 128]);
-    let refused = renderer().render_yuv420_on_gpu(
+    let hdr = RenderOptions { hdr_peak_nits: Some(1000.0), ..Default::default() };
+    for (what, opts, target) in [
+        ("an HDR render into an SDR encode", hdr, plain_target()),
+        ("an SDR render into a PQ encode", RenderOptions::default(), pq_target(1000.0)),
+    ] {
+        let mut src = Flat::default().with(&c, [128, 128, 128]);
+        let refused =
+            renderer().render_yuv420_on_gpu(&seq, tc(0.5), W, H, &mut src, opts, target);
+        assert!(refused.is_none(), "the GPU path accepted {what}");
+    }
+}
+
+/// A PQ delivery through the whole path, against the renderer.
+///
+/// This is the case that used to be refused twice over: the display-light
+/// pass had no shader twin, and MaxCLL is measured per pixel in cd/m²
+/// off the linear frame. The first refusal still stands for a
+/// *scene-referred* source, which ends in its own display pass — but an
+/// ordinary clip in an HDR delivery has no such pass, and its working
+/// values simply *are* display light, which is what the shader now
+/// encodes.
+#[test]
+fn a_pq_delivery_agrees_with_the_renderer() {
+    let c = graded(0.0, 1.0, 0.5);
+    let seq = sequence(vec![vec![c.clone()]]);
+    let mut src = Flat::default().with(&c, [230, 180, 90]).on_gpu();
+    let opts = RenderOptions { hdr_peak_nits: Some(1000.0), ..Default::default() };
+
+    let Some((planes, light)) =
+        renderer().render_yuv420_on_gpu(&seq, tc(0.5), W, H, &mut src, opts, pq_target(1000.0))
+    else {
+        eprintln!("skipping: the GPU path refused (no usable GPU)");
+        return;
+    };
+
+    // The renderer's own frame, encoded the way the CPU export encodes a
+    // PQ delivery, and its light accumulated the same way.
+    let mut r = renderer();
+    let px = r.render(&seq, tc(0.5), W, H, &mut src, opts);
+    let display = klipp_color::display::ExportDisplay::hdr(
+        klipp_core::WorkingColorspace::Rec709Linear,
+        klipp_core::HdrMode::Pq,
+        1000.0,
+    );
+    let k = [0.2627f32, 0.6780, 0.0593];
+    let mut want = Vec::with_capacity((W * H) as usize);
+    let (mut max, mut sum) = (0.0f32, 0.0f64);
+    for p in px.chunks_exact(4) {
+        let (e, nits) = display.encode_light([p[0], p[1], p[2]]);
+        max = max.max(nits);
+        sum += nits as f64;
+        let y = k[0] * e[0] + k[1] * e[1] + k[2] * e[2];
+        want.push(((16.0 + y * 219.0) * 4.0 + 0.5).clamp(0.0, 1023.0) as u16);
+    }
+
+    // Ten bits, P010, so the luma plane is the first `W*H` u16 with its
+    // ten bits at the top of each.
+    let got: Vec<u16> = planes[..want.len() * 2]
+        .chunks_exact(2)
+        .map(|b| u16::from_le_bytes([b[0], b[1]]) >> 6)
+        .collect();
+    let worst =
+        got.iter().zip(want.iter()).map(|(g, w)| (*g as i32 - *w as i32).abs()).max().unwrap_or(0);
+    eprintln!("PQ export luma vs the renderer: worst {worst} of 1023");
+    assert!(worst <= 1, "PQ luma differs from the renderer by {worst} levels");
+    assert!(got.iter().any(|&v| v > 200), "the fixture rendered black");
+
+    // And the light the file's MaxCLL and MaxFALL are made of.
+    let l = light.expect("a PQ delivery must come back with its light levels");
+    let pixels = (W as u64) * (H as u64);
+    assert_eq!(l.pixels, pixels);
+    eprintln!("PQ light: MaxCLL gpu {:.3} cpu {max:.3} nits", l.max_nits);
+    assert!((l.max_nits - max).abs() <= max * 1e-5, "MaxCLL is {} vs {max}", l.max_nits);
+    let (gm, cm) = (l.sum_nits / pixels as f64, sum / pixels as f64);
+    assert!((gm - cm).abs() < 0.01 + cm.abs() * 1e-5, "MaxFALL is {gm} vs {cm}");
+    assert!(max > 100.0, "the fixture is too dim to measure light with");
+}
+
+/// A project-wide LUT is refused, not ignored.
+///
+/// The global LUT is applied after the composite, on the CPU frame this
+/// path never builds — so an accepted frame would be exported *without*
+/// the timeline's LUT, which is a wrong picture with no error anywhere.
+/// The viewer's fast path has always refused it ("global colour pipeline
+/// active"); this path did not, and exported the ungraded look.
+#[test]
+fn a_global_lut_is_refused() {
+    let c = graded(0.0, 1.0, 0.5);
+    let seq = sequence(vec![vec![c.clone()]]);
+    let mut src = Flat::default().with(&c, [128, 96, 64]).on_gpu();
+
+    // Not an identity LUT: the refusal must not depend on the LUT being
+    // a no-op, since a real one is the case that matters.
+    let size = 2usize;
+    let mut data = Vec::with_capacity(size * size * size * 3);
+    for b in 0..size {
+        for g in 0..size {
+            for r in 0..size {
+                let f = |v: usize| (v as f32 / (size - 1) as f32) * 0.5;
+                data.extend_from_slice(&[f(r), f(g), f(b)]);
+            }
+        }
+    }
+    let lut = klipp_color::lut::LutData {
+        size,
+        data,
+        input_space: klipp_core::WorkingColorspace::Rec709Linear,
+        output_space: klipp_core::WorkingColorspace::Rec709Linear,
+    };
+
+    let mut r = renderer();
+    r.set_global_lut(Some(klipp_compose::GlobalLut { lut, opacity: 1.0 }));
+    let refused = r.render_yuv420_on_gpu(
         &seq,
         tc(0.5),
         W,
         H,
         &mut src,
-        RenderOptions { hdr_peak_nits: Some(1000.0), ..Default::default() },
+        RenderOptions::default(),
         plain_target(),
     );
-    assert!(refused.is_none(), "an HDR render must not take the SDR plane path");
+    assert!(
+        refused.is_none(),
+        "the GPU path accepted a timeline with a global LUT, so the export would have \
+         written the picture without it"
+    );
+
+    // And without the LUT the same frame *is* accepted, so the refusal
+    // above is the LUT and not the fixture.
+    let mut r = renderer();
+    assert!(
+        r.render_yuv420_on_gpu(
+            &seq,
+            tc(0.5),
+            W,
+            H,
+            &mut src,
+            RenderOptions::default(),
+            plain_target(),
+        )
+        .is_some(),
+        "the fixture cannot take the GPU path at all, so this proves nothing"
+    );
 }

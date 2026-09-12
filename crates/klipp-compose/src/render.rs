@@ -567,10 +567,22 @@ impl Renderer {
         src: &mut dyn FrameSource,
         opts: RenderOptions,
         target: klipp_effects::gpu::Yuv420Target,
-    ) -> Option<Vec<u8>> {
-        // An HDR render finishes with a display-light pass the shader has
-        // no twin for.
-        if opts.hdr_peak_nits.is_some() {
+    ) -> Option<(Vec<u8>, Option<klipp_effects::gpu::GpuFrameLight>)> {
+        // The project-wide colour pipeline runs after the composite, on
+        // the CPU frame this path never builds. Refused rather than
+        // applied, the way the viewer's fast path refuses it ("global
+        // colour pipeline active") — without this the GPU path exported
+        // the timeline *without* its global LUT, silently.
+        if self.global_lut.is_some() {
+            return None;
+        }
+        // The render and the encode have to be for the same delivery: the
+        // target says whether the encoder wants HDR, `opts` says whether
+        // the render is producing display light for one. Both come from
+        // the same `ExportSettings`, so disagreement is a wiring mistake
+        // rather than a user's choice — and it would show as a wrong
+        // picture, not an error, so it is checked rather than assumed.
+        if (target.hdr_op != 0) != opts.hdr_peak_nits.is_some() {
             return None;
         }
         let fps = seq.fps.as_f64();
@@ -645,8 +657,10 @@ impl Renderer {
             SourcePixels::SceneReferred { codes, transfer, source_to_working }
                 if codes.len() == (width as usize) * (height as usize) =>
             {
-                // A scene-referred source renders display light, which is
-                // the HDR pass this path does not have.
+                // A scene-referred clip ends in its own display pass —
+                // `display_render`, the SDR tone map or the HDR display
+                // light — which happens on the CPU frame after the grade.
+                // The shader has neither, so these still go the long way.
                 let _ = (transfer, source_to_working);
                 return None;
             }

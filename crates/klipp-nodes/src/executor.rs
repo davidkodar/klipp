@@ -779,26 +779,39 @@ impl GraphExecutor {
     /// not keep its output there, or the GPU cannot take this frame —
     /// see `GpuEffectsPipeline::encode_chain_to_yuv420` for which frames
     /// those are — and the caller then converts on the CPU.
+    /// Also the frame's light levels when the delivery is PQ, which needs
+    /// them for HDR10's MaxCLL and MaxFALL; `None` on every other path,
+    /// where the shader measures nothing.
     pub fn encode_output_to_yuv420(
         &mut self,
         width: u32,
         height: u32,
         target: klipp_effects::gpu::Yuv420Target,
-    ) -> Option<Vec<u8>> {
+    ) -> Option<(Vec<u8>, Option<klipp_effects::gpu::GpuFrameLight>)> {
         let slot_a = self.output_on_gpu?;
         // Whichever tables this delivery's transform reads, baked from
         // `klipp_color`, and only when it actually needs them. Cheap to
         // ask for every frame: the gamut reaches cost 13 ms to bisect but
         // sit behind a `OnceLock` there, so this copies them out in 0.03
-        // ms, and the ACES curves are 0.08. The upload is cached too.
+        // ms, the ACES curves are 0.08, and the PQ table is memoised the
+        // same way. The upload is cached too.
         let tables = if target.tone_map_op == 3 {
             klipp_color::aces::aces_rec709_gpu_data(1024)
         } else if target.gamut_op == 1 {
             klipp_color::gamut::bt2020_to_bt709_gpu_data()
+        } else if target.hdr_op != 0 {
+            klipp_color::hdr::hdr_encode_gpu_data(self.working_colorspace)
         } else {
             Vec::new()
         };
-        self.gpu.as_mut()?.encode_chain_to_yuv420(slot_a, width, height, target, &tables)
+        let gpu = self.gpu.as_mut()?;
+        if target.hdr_op == 1 {
+            return gpu
+                .encode_chain_to_yuv420_measured(slot_a, width, height, target, &tables)
+                .map(|(bytes, light)| (bytes, Some(light)));
+        }
+        gpu.encode_chain_to_yuv420(slot_a, width, height, target, &tables)
+            .map(|bytes| (bytes, None))
     }
 
     /// Seed the chain from a buffer that is already linear working-space

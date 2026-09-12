@@ -407,6 +407,17 @@ pub fn display_light_to_nits(rgb2020: [f32; 3], peak_nits: f32) -> [f32; 3] {
 /// Entries in [`pq_encode_nits`]'s table.
 const PQ_TABLE_SIZE: usize = 1024;
 
+/// [`pq_encode_nits`]'s table: `linear_to_pq` at the eighth root of
+/// luminance, `PQ_TABLE_SIZE + 1` entries.
+fn pq_encode_table() -> &'static [f32] {
+    static TABLE: std::sync::OnceLock<Vec<f32>> = std::sync::OnceLock::new();
+    TABLE.get_or_init(|| {
+        (0..=PQ_TABLE_SIZE)
+            .map(|i| crate::camera_log::linear_to_pq((i as f32 / PQ_TABLE_SIZE as f32).powi(8)))
+            .collect()
+    })
+}
+
 /// Absolute cd/m² → PQ signal (SMPTE ST 2084), `[0, 1]`; above 10 000
 /// nits, 1.
 ///
@@ -416,16 +427,53 @@ const PQ_TABLE_SIZE: usize = 1024;
 /// two `powf`s per channel, which cost a 4K export ~20 ms a frame.
 #[inline]
 pub fn pq_encode_nits(nits: f32) -> f32 {
-    static TABLE: std::sync::OnceLock<Vec<f32>> = std::sync::OnceLock::new();
-    let table = TABLE.get_or_init(|| {
-        (0..=PQ_TABLE_SIZE)
-            .map(|i| crate::camera_log::linear_to_pq((i as f32 / PQ_TABLE_SIZE as f32).powi(8)))
-            .collect()
-    });
+    let table = pq_encode_table();
     let t = (nits / PQ_PEAK_NITS).clamp(0.0, 1.0).sqrt().sqrt().sqrt() * PQ_TABLE_SIZE as f32;
     let i = (t as usize).min(PQ_TABLE_SIZE - 1);
     let f = t - i as f32;
     table[i] + (table[i + 1] - table[i]) * f
+}
+
+/// Offsets into [`hdr_encode_gpu_data`], in floats.
+pub mod gpu_layout {
+    /// `pq_table_entries`.
+    pub const HEADER: usize = 0;
+    pub const HEADER_LEN: usize = 1;
+    /// The working space → BT.2020 matrix, row-major, then the working
+    /// space's luminance weights (for the HLG OOTF), padded to a matrix
+    /// row so the curve below starts at a predictable offset.
+    pub const TO_2020: usize = HEADER_LEN;
+    pub const TO_2020_LEN: usize = 9;
+    pub const LUMA: usize = TO_2020 + TO_2020_LEN;
+    pub const LUMA_LEN: usize = 3;
+    /// [`pq_encode_nits`]'s table.
+    pub const PQ_TABLE: usize = LUMA + LUMA_LEN;
+}
+
+/// The numbers a GPU needs to encode an HDR delivery: the basis matrix,
+/// the working space's luma weights, and [`pq_encode_nits`]'s table.
+///
+/// The table is *shipped* rather than recomputed in the shader for the
+/// same reason the ACES curves are: the CPU already interpolates this
+/// table rather than evaluating ST-2084 directly, so a shader that
+/// evaluated the real curve would differ from the CPU by the table's own
+/// 3e-5 error. Sharing it makes the two agree by construction, and the
+/// GPU skips two `pow`s a channel either way.
+///
+/// HLG needs no table — its OETF is a `sqrt` and a `log`, exactly.
+pub fn hdr_encode_gpu_data(working: klipp_core::WorkingColorspace) -> Vec<f32> {
+    let table = pq_encode_table();
+    let mut out = Vec::with_capacity(gpu_layout::PQ_TABLE + table.len());
+    out.push(table.len() as f32);
+    debug_assert_eq!(out.len(), gpu_layout::TO_2020);
+    for row in crate::primaries::working_to_bt2020(working) {
+        out.extend_from_slice(&row);
+    }
+    debug_assert_eq!(out.len(), gpu_layout::LUMA);
+    out.extend_from_slice(&crate::primaries::luminance_weights(working));
+    debug_assert_eq!(out.len(), gpu_layout::PQ_TABLE);
+    out.extend_from_slice(table);
+    out
 }
 
 /// PQ signal → absolute cd/m².
@@ -847,6 +895,49 @@ mod hdr_io_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The blob's length is derivable from its first entry.
+    ///
+    /// A GPU host cannot see `gpu_layout` — `klipp-effects` does not
+    /// depend on this crate — so it checks the buffer is long enough by
+    /// recomputing the length from the header the shader itself reads
+    /// (`GpuEffectsPipeline::ensure_hdr_encode_data`). That check is only
+    /// a check if this holds.
+    #[test]
+    fn gpu_hdr_data_length_is_what_the_header_says() {
+        for ws in [
+            klipp_core::WorkingColorspace::Rec709Linear,
+            klipp_core::WorkingColorspace::AcesCG,
+            klipp_core::WorkingColorspace::Bt2020Linear,
+        ] {
+            let data = hdr_encode_gpu_data(ws);
+            let entries = data[0] as usize;
+            assert_eq!(entries, PQ_TABLE_SIZE + 1, "the header names the table size");
+            // 1 header + 9 matrix + 3 luma, the arithmetic the host repeats.
+            assert_eq!(data.len(), 13 + entries);
+            assert_eq!(gpu_layout::PQ_TABLE, 13, "the table starts where the host assumes");
+        }
+    }
+
+    /// The shipped table is the one `pq_encode_nits` reads, so a shader
+    /// interpolating it lands on the twin's answer rather than near it.
+    #[test]
+    fn the_shipped_pq_table_is_the_one_the_cpu_uses() {
+        let data = hdr_encode_gpu_data(klipp_core::WorkingColorspace::Rec709Linear);
+        let table = &data[gpu_layout::PQ_TABLE..];
+        // Re-run the CPU's own lookup against the shipped entries.
+        let mut worst = 0.0f32;
+        for i in 0..4096 {
+            let nits = (i as f32 / 4095.0).powi(3) * 10_000.0;
+            let t = (nits / PQ_PEAK_NITS).clamp(0.0, 1.0).sqrt().sqrt().sqrt()
+                * PQ_TABLE_SIZE as f32;
+            let k = (t as usize).min(PQ_TABLE_SIZE - 1);
+            let f = t - k as f32;
+            let from_blob = table[k] + (table[k + 1] - table[k]) * f;
+            worst = worst.max((from_blob - pq_encode_nits(nits)).abs());
+        }
+        assert_eq!(worst, 0.0, "the blob's table is not bit-identical to the CPU's");
+    }
 
     #[test]
     fn fresh_stats_report_zero() {

@@ -261,6 +261,8 @@ fn bt2020_display_on_the_gpu_beats_the_round_trip() {
     let nv12 = klipp_effects::gpu::Yuv420Target {
         tone_map_op: 0,
         gamut_op: 1,
+        hdr_op: 0,
+        peak_nits: 0.0,
         luma_coefs: [0.2627, 0.6780, 0.0593],
         semi_planar: true,
         bits: 8,

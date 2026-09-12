@@ -906,9 +906,8 @@ impl Encoder {
     ///
     /// `None` when the frame has to come back as linear floats instead —
     /// a delivery whose display transform the shader does not have (an
-    /// AcesCG-basis ODT, the ACES tone-map fit, PQ or HLG), a format that
-    /// is not 4:2:0, a GIF's palette filter, or a PQ delivery, whose
-    /// MaxCLL is measured off the linear frame.
+    /// AcesCG-basis ODT, the ACES tone-map fit), a format that is not
+    /// 4:2:0, or a GIF's palette filter.
     ///
     /// Also whether the chroma is interleaved, the sample depth, and the
     /// left shift each stored sample needs. NVENC takes NV12 at eight
@@ -917,7 +916,7 @@ impl Encoder {
     /// u16, hence the shift.
     pub fn gpu_yuv420_params(&self) -> Option<klipp_effects::gpu::Yuv420Target> {
         use ffmpeg_next::format::Pixel as P;
-        if self.gif_filter.is_some() || self.hdr_mode == klipp_core::HdrMode::Pq {
+        if self.gif_filter.is_some() {
             return None;
         }
         let (semi, bits, shift) = match self.video_encoder.format() {
@@ -935,17 +934,26 @@ impl Encoder {
             // different thing from the ODT below; no shader twin.
             klipp_color::display::ToneMapOp::Aces => None,
         };
-        // 3 is the ACES Rec.709 output transform, which the shader has in
-        // full. `gamut_op` 1 puts BT.2407's compression into BT.709 in
-        // front of the tone map, which is what a BT.2020 project's
-        // delivery is; the two are mutually exclusive because an ODT maps
-        // its own gamut. Otherwise a tone map and an sRGB encode.
-        let (op, gamut_op) = if self.display.is_aces_rec709() {
-            (3, 0)
+        // Which of the shader's four tails this delivery is. They are
+        // mutually exclusive — each reads the same binding for its own
+        // baked numbers — so this picks exactly one.
+        //
+        // `tone_map_op` 3 is the ACES Rec.709 output transform, which the
+        // shader has in full. `gamut_op` 1 puts BT.2407's compression
+        // into BT.709 in front of the tone map, which is what a BT.2020
+        // project's SDR delivery is. `hdr_op` replaces the tone map and
+        // the sRGB encode with BT.2020 and PQ or HLG. Otherwise a tone
+        // map and an sRGB encode.
+        let (op, gamut_op, hdr_op, peak_nits) = if let Some((pq, peak)) =
+            self.display.hdr_transfer_and_peak()
+        {
+            (0, 0, if pq { 1 } else { 2 }, peak)
+        } else if self.display.is_aces_rec709() {
+            (3, 0, 0, 0.0)
         } else if let Some(tm) = self.display.bt2020_gamut_then_tone_map_srgb() {
-            (separable(tm)?, 1)
+            (separable(tm)?, 1, 0, 0.0)
         } else {
-            (separable(self.display.tone_map_and_srgb_only()?)?, 0)
+            (separable(self.display.tone_map_and_srgb_only()?)?, 0, 0, 0.0)
         };
         let (kr, kb) = match self.yuv_matrix {
             klipp_core::ColorMatrix::Bt2020Ncl | klipp_core::ColorMatrix::Bt2020Cl => (0.2627f32, 0.0593f32),
@@ -954,6 +962,8 @@ impl Encoder {
         Some(klipp_effects::gpu::Yuv420Target {
             tone_map_op: op,
             gamut_op,
+            hdr_op,
+            peak_nits,
             luma_coefs: [kr, 1.0 - kr - kb, kb],
             semi_planar: semi,
             bits,
@@ -974,9 +984,20 @@ impl Encoder {
         planes: &[u8],
         width: u32,
         height: u32,
+        light: Option<klipp_effects::gpu::GpuFrameLight>,
     ) -> Result<(), RenderError> {
         use ffmpeg_next::format::Pixel as P;
         use rayon::prelude::*;
+        // A PQ delivery's MaxCLL and MaxFALL, measured by the shader that
+        // wrote these planes rather than by a pass over a linear frame
+        // that never came down.
+        if let Some(l) = light {
+            self.count_light(FrameLight {
+                max: l.max_nits,
+                sum: l.sum_nits,
+                pixels: l.pixels,
+            });
+        }
         let fmt = self.video_encoder.format();
         let Some(target) = self.gpu_yuv420_params() else {
             return Err(RenderError::Encode(format!("{fmt:?} takes no GPU planes")));

@@ -283,11 +283,14 @@ impl ExportJob {
                     timeline, time, fit_w, fit_h, &mut frames, render_opts, target,
                 )
             });
-            if let Some(planes) = planes {
+            if let Some((planes, light)) = planes {
                 frames.end_frame();
                 t_render += t0.elapsed();
                 let t2 = std::time::Instant::now();
-                encoder.encode_yuv420_planes(&planes, out_w, out_h)?;
+                // `light` is the frame's MaxCLL/MaxFALL contribution for a
+                // PQ delivery, measured by the shader that wrote these
+                // planes; `None` on every other path.
+                encoder.encode_yuv420_planes(&planes, out_w, out_h, light)?;
                 t_encode += t2.elapsed();
 
                 let t3 = std::time::Instant::now();

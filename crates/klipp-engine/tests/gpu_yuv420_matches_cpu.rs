@@ -118,6 +118,8 @@ fn target(op: ToneMapOp, semi: bool, bits: u32, shift: u32) -> klipp_effects::gp
     klipp_effects::gpu::Yuv420Target {
         tone_map_op: tone_map_id(op),
         gamut_op: 0,
+        hdr_op: 0,
+        peak_nits: 0.0,
         luma_coefs: [KR, 1.0 - KR - KB, KB],
         semi_planar: semi,
         bits,
@@ -285,8 +287,19 @@ fn dimensions_the_block_layout_cannot_tile_are_refused() {
 /// against itself, and produce a picture with 8-bit banding in a 10-bit
 /// file.
 fn cpu_planes_10(display: &ExportDisplay, linear: &[f32]) -> (Vec<u16>, Vec<u16>, Vec<u16>) {
-    let kg = 1.0 - KR - KB;
-    let luma = |e: [f32; 3]| KR * e[0] + kg * e[1] + KB * e[2];
+    cpu_planes_10_with(display, linear, KR, KB)
+}
+
+/// [`cpu_planes_10`] with the output's own luma coefficients, since an
+/// HDR delivery carries BT.2020's rather than BT.709's.
+fn cpu_planes_10_with(
+    display: &ExportDisplay,
+    linear: &[f32],
+    kr: f32,
+    kb: f32,
+) -> (Vec<u16>, Vec<u16>, Vec<u16>) {
+    let kg = 1.0 - kr - kb;
+    let luma = |e: [f32; 3]| kr * e[0] + kg * e[1] + kb * e[2];
     let q = |v: f32, off: f32, range: f32| -> u16 {
         ((off + v * range) * 4.0 + 0.5).clamp(0.0, 1023.0) as u16
     };
@@ -310,8 +323,8 @@ fn cpu_planes_10(display: &ExportDisplay, linear: &[f32]) -> (Vec<u16>, Vec<u16>
             }
             let mean = [acc[0] / 4.0, acc[1] / 4.0, acc[2] / 4.0];
             let l = luma(mean);
-            cb.push(q((mean[2] - l) / (2.0 * (1.0 - KB)), 128.0, 224.0));
-            cr.push(q((mean[0] - l) / (2.0 * (1.0 - KR)), 128.0, 224.0));
+            cb.push(q((mean[2] - l) / (2.0 * (1.0 - kb)), 128.0, 224.0));
+            cr.push(q((mean[0] - l) / (2.0 * (1.0 - kr)), 128.0, 224.0));
         }
     }
     (y, cb, cr)
@@ -531,6 +544,8 @@ fn gpu_yuv_matches_cpu_on_the_aces_path() {
     let t = klipp_effects::gpu::Yuv420Target {
         tone_map_op: ACES_OP,
         gamut_op: 0,
+        hdr_op: 0,
+        peak_nits: 0.0,
         luma_coefs: [KR, 1.0 - KR - KB, KB],
         semi_planar: true,
         bits: 8,
@@ -618,6 +633,8 @@ fn gpu_yuv_matches_cpu_on_the_bt2020_path() {
             let t = klipp_effects::gpu::Yuv420Target {
                 tone_map_op: tone_map_id(op),
                 gamut_op: 1,
+                hdr_op: 0,
+                peak_nits: 0.0,
                 luma_coefs: [KR, 1.0 - KR - KB, KB],
                 semi_planar: semi,
                 bits,
@@ -697,4 +714,238 @@ fn gpu_yuv_matches_cpu_on_the_bt2020_path() {
             y.len(),
         );
     }
+}
+
+/// The HDR deliveries: PQ and HLG, encoded and converted in one shader.
+///
+/// These were the last two on the CPU float route, and PQ was there for a
+/// second reason beyond the encode — HDR10's MaxCLL and MaxFALL are
+/// measured per pixel in cd/m², which the twin does while it encodes, off
+/// the linear frame. So this checks both halves: the planes against
+/// `ExportDisplay`, and the light against the same `encode_light` the
+/// twin accumulates.
+///
+/// Ten bits and P010 rather than eight, because that is what an HDR
+/// delivery actually is; `the_p010_shift_puts_the_bits_at_the_top` covers
+/// the packing separately.
+#[test]
+fn gpu_yuv_matches_cpu_on_the_hdr_paths() {
+    let linear = linear_frame();
+    let tables =
+        klipp_color::hdr::hdr_encode_gpu_data(klipp_core::WorkingColorspace::Rec709Linear);
+
+    let Some(ctx) = GpuContext::new() else {
+        eprintln!("skipping: no GpuContext");
+        return;
+    };
+    let Some(mut pipeline) = GpuEffectsPipeline::with_context(&ctx) else {
+        eprintln!("skipping: no GpuEffectsPipeline");
+        return;
+    };
+    pipeline.ensure_chain_buffers((W as u64) * (H as u64) * 16);
+
+    for (mode, peak, hdr_op) in [
+        (klipp_core::HdrMode::Pq, 1000.0f32, 1u32),
+        (klipp_core::HdrMode::Pq, 4000.0, 1),
+        (klipp_core::HdrMode::Hlg, 1000.0, 2),
+    ] {
+        let display = ExportDisplay::hdr(WorkingColorspace::Rec709Linear, mode, peak);
+        assert_eq!(
+            display.hdr_transfer_and_peak(),
+            Some((hdr_op == 1, if hdr_op == 1 { peak } else { 1000.0 })),
+            "the fixture must be on the {mode:?} path"
+        );
+
+        pipeline.upload_chain_input_linear(&linear);
+        let t = klipp_effects::gpu::Yuv420Target {
+            tone_map_op: 0,
+            gamut_op: 0,
+            hdr_op,
+            peak_nits: peak,
+            // An HDR delivery carries BT.2020's luma coefficients.
+            luma_coefs: [0.2627, 0.6780, 0.0593],
+            semi_planar: true,
+            bits: 10,
+            sample_shift: 6,
+        };
+        // PQ goes through the measuring form, which is the only one that
+        // answers for it; HLG through the plain one.
+        let (planes, light) = if hdr_op == 1 {
+            let (p, l) = pipeline
+                .encode_chain_to_yuv420_measured(true, W, H, t, &tables)
+                .expect("the PQ path was refused");
+            (p, Some(l))
+        } else {
+            assert!(
+                pipeline.encode_chain_to_yuv420_measured(true, W, H, t, &tables).is_none(),
+                "HLG measures no light, so the measuring form must refuse it"
+            );
+            pipeline.upload_chain_input_linear(&linear);
+            (
+                pipeline
+                    .encode_chain_to_yuv420(true, W, H, t, &tables)
+                    .expect("the HLG path was refused"),
+                None,
+            )
+        };
+
+        // The planes, at the output's own depth.
+        let label = format!("{mode:?} {peak:.0} nit");
+        let (kr, kb) = (0.2627f32, 0.0593f32);
+        let (y, cb, cr) = cpu_planes_10_with(&display, &linear, kr, kb);
+        let words: Vec<u16> =
+            planes.chunks_exact(2).map(|b| u16::from_le_bytes([b[0], b[1]]) >> 6).collect();
+        let (g_y, chroma) = words.split_at(y.len());
+        let g_cb: Vec<u16> = chroma.iter().step_by(2).copied().collect();
+        let g_cr: Vec<u16> = chroma.iter().skip(1).step_by(2).copied().collect();
+        for (name, got, want) in
+            [("Y", g_y, &y), ("Cb", g_cb.as_slice(), &cb), ("Cr", g_cr.as_slice(), &cr)]
+        {
+            let worst = got
+                .iter()
+                .zip(want.iter())
+                .map(|(g, w)| (*g as i32 - *w as i32).abs())
+                .max()
+                .unwrap_or(0);
+            eprintln!("{label} {name}: worst {worst} of 1023");
+            assert!(worst <= 1, "{label} {name}: differs by {worst}");
+        }
+
+        // And the light, against the twin's own accumulation.
+        if let Some(l) = light {
+            let mut max = 0.0f32;
+            let mut sum = 0.0f64;
+            for i in 0..(W as usize) * (H as usize) {
+                let (_, nits) =
+                    display.encode_light([linear[i * 4], linear[i * 4 + 1], linear[i * 4 + 2]]);
+                max = max.max(nits);
+                sum += nits as f64;
+            }
+            let pixels = (W as u64) * (H as u64);
+            assert_eq!(l.pixels, pixels, "{label}: the shader counted the wrong pixels");
+            let (gm, cm) = (l.sum_nits / pixels as f64, sum / pixels as f64);
+            eprintln!(
+                "{label} light: max gpu {:.4} cpu {max:.4} nits, mean gpu {gm:.4} cpu {cm:.4}",
+                l.max_nits,
+            );
+
+            // Compared as the *metadata*, which is what the contract
+            // actually is: both numbers go through `HdrLightStats` and
+            // reach the file as whole nits. Comparing the floats directly
+            // is too strict — the matrix multiply is a different
+            // instruction order on each side, so the brightest channel
+            // lands a ULP apart and the peak clamp carries that through.
+            let stats = |max: f32, mean: f32| {
+                let mut s = klipp_color::hdr::LightLevelStats::new();
+                s.add_frame(max, mean);
+                (s.max_cll_nits(), s.max_fall_nits())
+            };
+            let got = stats(l.max_nits, gm as f32);
+            let want = stats(max, cm as f32);
+            assert_eq!(got, want, "{label}: (MaxCLL, MaxFALL) differ");
+            // And they are close as floats too, so a boundary case is the
+            // only thing the quantisation above could be hiding.
+            assert!(
+                (l.max_nits - max).abs() <= max * 1e-5,
+                "{label}: MaxCLL is {} vs {max}", l.max_nits,
+            );
+            assert!(
+                (gm - cm).abs() < 0.01 + cm.abs() * 1e-5,
+                "{label}: MaxFALL differs, gpu {gm} vs cpu {cm}"
+            );
+            assert!(max > 100.0, "{label}: the fixture is too dim to measure light with");
+        }
+    }
+}
+
+/// What the HDR branch is worth, at 4K.
+///
+/// A probe, not a pass/fail test:
+/// `cargo test --release -p klipp-engine --test gpu_yuv420_matches_cpu -- --ignored --nocapture`
+///
+/// Both routes start from the same graded frame in the chain buffer. One
+/// encodes and converts it on the GPU, measuring the light on the way,
+/// and reads back 12.4 MB of P010. The other reads back 132 MB of floats
+/// and runs `encode_light` per pixel — which is what a PQ delivery paid
+/// before, on top of the Y'CbCr conversion this does not even charge for.
+#[test]
+#[ignore = "perf probe: run explicitly"]
+fn the_hdr_path_on_the_gpu_beats_the_round_trip() {
+    let (w, h) = (3840u32, 2160u32);
+    let n = (w as usize) * (h as usize);
+    let Some(ctx) = GpuContext::new() else {
+        eprintln!("skipping: no usable GPU");
+        return;
+    };
+    let mut pipeline = GpuEffectsPipeline::with_context(&ctx).expect("pipeline");
+    let tables =
+        klipp_color::hdr::hdr_encode_gpu_data(klipp_core::WorkingColorspace::Rec709Linear);
+
+    // A frame with real highlight range, so the peak clamp and the table
+    // lookup both do work.
+    let mut linear = Vec::with_capacity(n * 4);
+    for i in 0..n {
+        let t = (i % 4096) as f32 / 4096.0;
+        let v = ((i / 4096) % 1024) as f32 / 1024.0 * 12.0;
+        linear.extend_from_slice(&[v * (0.2 + 0.8 * t), v * (0.9 - 0.4 * t), v * (0.1 + 0.9 * t), 1.0]);
+    }
+    pipeline.ensure_chain_buffers((n as u64) * 16);
+    pipeline.upload_chain_input_linear(&linear);
+
+    let t = klipp_effects::gpu::Yuv420Target {
+        tone_map_op: 0,
+        gamut_op: 0,
+        hdr_op: 1,
+        peak_nits: 1000.0,
+        luma_coefs: [0.2627, 0.6780, 0.0593],
+        semi_planar: true,
+        bits: 10,
+        sample_shift: 6,
+    };
+    let _ = pipeline.encode_chain_to_yuv420_measured(true, w, h, t, &tables);
+    let mut gpu_ms = Vec::new();
+    for _ in 0..5 {
+        let start = std::time::Instant::now();
+        let (planes, light) =
+            pipeline.encode_chain_to_yuv420_measured(true, w, h, t, &tables).expect("encode");
+        gpu_ms.push(start.elapsed().as_secs_f64() * 1000.0);
+        assert_eq!(planes.len(), t.byte_len(w, h));
+        assert!(light.max_nits > 0.0);
+    }
+
+    let display = ExportDisplay::hdr(
+        WorkingColorspace::Rec709Linear,
+        klipp_core::HdrMode::Pq,
+        1000.0,
+    );
+    let mut cpu_ms = Vec::new();
+    for _ in 0..3 {
+        let start = std::time::Instant::now();
+        let floats = pipeline.download_chain_output_linear(true, n);
+        let read_ms = start.elapsed().as_secs_f64() * 1000.0;
+        let t2 = std::time::Instant::now();
+        use rayon::prelude::*;
+        let light: (f32, f64) = floats
+            .par_chunks_exact(4)
+            .map(|p| {
+                let (_, nits) = display.encode_light([p[0], p[1], p[2]]);
+                (nits, nits as f64)
+            })
+            .reduce(|| (0.0, 0.0), |a, b| (a.0.max(b.0), a.1 + b.1));
+        let enc_ms = t2.elapsed().as_secs_f64() * 1000.0;
+        assert!(light.0 > 0.0);
+        eprintln!("  round trip: readback {read_ms:.1} ms + encode_light {enc_ms:.1} ms");
+        cpu_ms.push(read_ms + enc_ms);
+    }
+
+    let median = |mut v: Vec<f64>| {
+        v.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        v[v.len() / 2]
+    };
+    let (g, c) = (median(gpu_ms), median(cpu_ms));
+    eprintln!(
+        "4K PQ delivery: transform, Y'CbCr and MaxCLL on the GPU {g:.1} ms/frame, \
+         against {c:.1} ms/frame for the round trip and the transform alone ({:.1}x)",
+        c / g
+    );
 }
