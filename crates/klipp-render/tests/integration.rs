@@ -43,6 +43,7 @@ fn media_timeline(path: &std::path::Path, from: i64, to: i64, fps: u32, source_i
 
 fn make_export_settings(path: &std::path::Path) -> ExportSettings {
     ExportSettings {
+        pan_law: Default::default(),
         output_path: path.to_path_buf(),
         format: ExportFormat::Mp4,
         video_codec: ExportVideoCodec::H264,

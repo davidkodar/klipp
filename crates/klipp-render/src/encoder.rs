@@ -1713,6 +1713,7 @@ mod tests {
 
     fn make_settings(codec: ExportVideoCodec, path: &str) -> ExportSettings {
         ExportSettings {
+            pan_law: Default::default(),
             output_path: std::path::PathBuf::from(path),
             format: ExportFormat::Mp4,
             video_codec: codec,

@@ -286,6 +286,13 @@ pub struct ExportSettings {
     /// Target integrated loudness in LUFS for EBU R128 normalization.
     /// None = no normalization (pass audio through unchanged).
     pub target_lufs: Option<f32>,
+    /// How a track's pan position becomes left and right gains.
+    ///
+    /// Here alongside `target_lufs` because it is the same kind of
+    /// thing: a mix parameter that decides how loud the delivered file
+    /// is. The export mixdown used to have one law written into it,
+    /// ignoring this preference and coming out 3 dB below playback.
+    pub pan_law: crate::PanLaw,
     /// Embed sequence markers as chapter metadata in the output container.
     /// Only honoured for MP4/MKV/MOV — WebM has no chapter concept.
     pub embed_chapters: bool,
@@ -349,6 +356,7 @@ impl Default for ExportSettings {
             crf: 23,
             preset: EncoderPreset::default(),
             audio_codec: ExportAudioCodec::Aac,
+            pan_law: crate::PanLaw::default(),
             audio_bitrate_kbps: Some(192),
             video_bitrate_kbps: None,
             rate_control: RateControl::default(),

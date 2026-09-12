@@ -19380,7 +19380,7 @@ impl KlippApp {
                 let seq = &self.state.sequences[self.state.active_sequence_idx];
                 // Use current export-dialog settings so users can tweak format/codec
                 // via the normal Export dialog and then dump the equivalent script.
-                let settings = build_export_settings(&self.export_dialog);
+                let settings = build_export_settings(&self.export_dialog, self.prefs.audio.pan_law);
 
                 // Compute output: same basename as script, but with the format's
                 // native extension (mp4 / mkv / mov / webm).
@@ -24712,8 +24712,17 @@ fn dialog_target_lufs(dialog: &ExportDialogState) -> Option<f32> {
 /// Build ExportSettings from the current dialog state. Single source of truth
 /// for all export buttons (Add to Queue, Export, Overwrite) — eliminates the
 /// bug where Export/Overwrite previously hardcoded resolution/fps to None.
-fn build_export_settings(dialog: &ExportDialogState) -> ExportSettings {
+///
+/// `pan_law` comes from Preferences rather than the dialog: it is a
+/// project-wide mix setting, and it is a parameter rather than a lookup
+/// so that every export button has to supply it. The export used to have
+/// one law compiled into it and rendered 3 dB below playback.
+fn build_export_settings(
+    dialog: &ExportDialogState,
+    pan_law: klipp_core::PanLaw,
+) -> ExportSettings {
     ExportSettings {
+        pan_law,
         output_path: PathBuf::from(&dialog.output_path),
         format: dialog.format,
         video_codec: dialog.video_codec,
@@ -29237,7 +29246,7 @@ impl KlippApp {
                     }
                     if ui.button("Add to Queue").clicked() {
                         let path = PathBuf::from(&self.export_dialog.output_path);
-                        let settings = build_export_settings(&self.export_dialog);
+                        let settings = build_export_settings(&self.export_dialog, self.prefs.audio.pan_law);
                         let use_marked = self.export_dialog.range_mode == 1;
                         let mut snapshot = klipp_export::RenderSnapshot::from_sequence_with_all(
                             &self.state.sequences[self.state.active_sequence_idx],
@@ -29282,7 +29291,7 @@ impl KlippApp {
                             self.prefs.export.last_preset_id = self.export_dialog.selected_preset_id.clone();
                             self.prefs_dirty = true;
                             cmds.push(AppCommand::ExportSequence {
-                                settings: build_export_settings(&self.export_dialog),
+                                settings: build_export_settings(&self.export_dialog, self.prefs.audio.pan_law),
                             });
                         }
                     }
@@ -29316,7 +29325,7 @@ impl KlippApp {
                             self.prefs.export.last_preset_id = self.export_dialog.selected_preset_id.clone();
                             self.prefs_dirty = true;
                             cmds.push(AppCommand::ExportSequence {
-                                settings: build_export_settings(&self.export_dialog),
+                                settings: build_export_settings(&self.export_dialog, self.prefs.audio.pan_law),
                             });
                         }
                     });
@@ -36046,6 +36055,7 @@ mod render_script_tests {
         let seq = Sequence::new_default();
         let media_pool = klipp_media::MediaPool::default();
         let settings = ExportSettings {
+            pan_law: Default::default(),
             output_path: std::path::PathBuf::from("out.mp4"),
             format: ExportFormat::Mp4,
             video_codec: ExportVideoCodec::H264,

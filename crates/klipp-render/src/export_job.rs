@@ -716,6 +716,7 @@ mod tests {
             id: Uuid::new_v4(),
             output_path: path.clone(),
             settings: ExportSettings {
+                pan_law: Default::default(),
                 output_path: path.clone(),
                 format: klipp_core::ExportFormat::Mp4,
                 video_codec: klipp_core::ExportVideoCodec::H264,

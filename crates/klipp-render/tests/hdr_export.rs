@@ -61,6 +61,7 @@ fn export_ws(
         working_colorspace: ws,
     };
     let mut settings = ExportSettings {
+        pan_law: Default::default(),
         output_path: out.to_path_buf(), format: ExportFormat::Mp4, video_codec: ExportVideoCodec::H265,
         resolution: None, fps: None, crf: 1, preset: EncoderPreset::Fast, audio_codec: ExportAudioCodec::Copy,
         audio_bitrate_kbps: None, video_bitrate_kbps: None, rate_control: RateControl::Crf,

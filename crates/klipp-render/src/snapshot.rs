@@ -334,7 +334,7 @@ impl SequenceSnapshot {
             export_range,
             video: VideoTimeline { sequence: timeline, media, global_lut_opacity: 1.0 },
             audio_tracks,
-            pan_law: klipp_core::PanLaw::default(),
+            pan_law: settings.pan_law,
             global_lut_path,
             subtitle_tracks,
             chapters,
@@ -647,6 +647,7 @@ mod tests {
 
     fn make_settings() -> ExportSettings {
         ExportSettings {
+            pan_law: Default::default(),
             output_path: PathBuf::from("/tmp/test.mp4"),
             format: ExportFormat::Mp4,
             video_codec: ExportVideoCodec::H264,

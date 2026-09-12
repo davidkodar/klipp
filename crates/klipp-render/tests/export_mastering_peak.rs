@@ -21,6 +21,7 @@ use klipp_core::{
 /// user's chosen peak is the one that counts.
 fn pq_export(peak: f32) -> ExportSettings {
     ExportSettings {
+        pan_law: Default::default(),
         bit_depth: 10,
         hdr_mode: HdrMode::Pq,
         odt: OdtChoice::MatchViewer,

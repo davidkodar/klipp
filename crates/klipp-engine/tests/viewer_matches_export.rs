@@ -186,6 +186,7 @@ fn export(t: &Timeline, out: &Path) {
         working_colorspace: WorkingColorspace::Rec709Linear,
     };
     let settings = ExportSettings {
+        pan_law: Default::default(),
         output_path: out.to_path_buf(), format: ExportFormat::Mp4, video_codec: ExportVideoCodec::H264,
         resolution: None, fps: None, crf: 1, preset: EncoderPreset::Fast, audio_codec: ExportAudioCodec::Copy,
         audio_bitrate_kbps: None, video_bitrate_kbps: None, rate_control: RateControl::Crf,
