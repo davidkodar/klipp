@@ -175,36 +175,14 @@ impl AudioMixer {
     }
 
     /// Calculate L/R gain factors from pan position and current pan law.
+    /// Left and right gains for a pan position, by the configured law.
+    ///
+    /// Delegates to `PanLaw::gains`, which is where the laws live now.
+    /// They used to be written out here, and the export mixdown had the
+    /// constant-power trig written out separately — so a render came out
+    /// 3 dB below what it sounded like.
     fn pan_gains_for(pan: f32, law: klipp_core::PanLaw) -> (f32, f32) {
-        use klipp_core::PanLaw;
-        match law {
-            PanLaw::Linear => {
-                let l = if pan <= 0.0 { 1.0 } else { 1.0 - pan };
-                let r = if pan >= 0.0 { 1.0 } else { 1.0 + pan };
-                (l, r)
-            }
-            PanLaw::ConstantPower => {
-                let angle = (pan + 1.0) * 0.5 * std::f32::consts::FRAC_PI_2;
-                (angle.cos(), angle.sin())
-            }
-            PanLaw::Minus3dB => {
-                let t = (pan + 1.0) * 0.5; // 0..1
-                let l = ((1.0 - t) * 2.0).min(1.0).sqrt();
-                let r = (t * 2.0).min(1.0).sqrt();
-                (l, r)
-            }
-            PanLaw::Minus4_5dB => {
-                let t = (pan + 1.0) * 0.5;
-                let l = ((1.0 - t) * 2.0).min(1.0).powf(0.75);
-                let r = (t * 2.0).min(1.0).powf(0.75);
-                (l, r)
-            }
-            PanLaw::Minus6dB => {
-                let l = (1.0 - pan.max(0.0)).min(1.0);
-                let r = (1.0 + pan.min(0.0)).min(1.0);
-                (l, r)
-            }
-        }
+        law.gains(pan)
     }
 
     /// Add a submix bus and return its index.

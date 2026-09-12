@@ -21,6 +21,9 @@ pub struct AudioMixdown {
     samples_per_frame: usize,
     /// Sequence fps for frame→sample conversion.
     fps: f64,
+    /// How a pan position becomes left and right gains — the project's
+    /// law, so the render mixes the way playback does.
+    pan_law: klipp_core::PanLaw,
 }
 
 struct TrackSettings {
@@ -83,6 +86,7 @@ impl AudioMixdown {
             sample_rate,
             samples_per_frame,
             fps,
+            pan_law: snapshot.pan_law,
         })
     }
 
@@ -144,11 +148,19 @@ impl AudioMixdown {
                 continue;
             }
 
-            // Apply volume and pan, mix into output
-            // Equal-power pan law: left = cos(pan_angle), right = sin(pan_angle)
-            let pan_angle = (settings.pan + 1.0) * std::f32::consts::FRAC_PI_4;
-            let pan_l = pan_angle.cos() * settings.volume;
-            let pan_r = pan_angle.sin() * settings.volume;
+            // Volume and pan, by the project's pan law — the same
+            // `PanLaw::gains` playback uses.
+            //
+            // This used to be the constant-power law, written out here.
+            // That is 0.707 at centre, and the default law is Linear,
+            // which is unity — so every centred stereo track came out
+            // of a render 3 dB below what it sounded like in the viewer,
+            // and the user's choice of law was ignored entirely. An
+            // equal-power law is for panning a *mono* source; a stereo
+            // track at centre has to pass through untouched.
+            let (gain_l, gain_r) = self.pan_law.gains(settings.pan);
+            let pan_l = gain_l * settings.volume;
+            let pan_r = gain_r * settings.volume;
 
             let sample_count = track_samples.len().min(stereo_samples);
             for i in (0..sample_count).step_by(2) {
@@ -416,6 +428,7 @@ mod tests {
             export_range: None,
             video: Default::default(),
             audio_tracks,
+            pan_law: Default::default(),
             global_lut_path: None,
             subtitle_tracks: vec![], chapters: vec![],
             working_colorspace: klipp_core::WorkingColorspace::Rec709Linear,

@@ -135,7 +135,8 @@ fn export_pq(src: &Path, out: &Path) {
     video.media.insert(id, MediaFile { path: src.to_path_buf(), log_format: None, source_rotation: 0 });
     let snapshot = klipp_render::SequenceSnapshot {
         fps: common::FPS as f64, fps_num: common::FPS, fps_den: 1, width: W, height: H, sample_rate: 48000,
-        duration_frames: 12, export_range: None, video, audio_tracks: vec![], global_lut_path: None,
+        duration_frames: 12, export_range: None, video, audio_tracks: vec![],
+        pan_law: Default::default(), global_lut_path: None,
         subtitle_tracks: vec![], chapters: vec![], working_colorspace: WorkingColorspace::Rec709Linear,
     };
     let settings = ExportSettings {

@@ -57,6 +57,7 @@ fn export_ws(
         fps: 25.0, fps_num: 25, fps_den: 1, width: W, height: H, sample_rate: 48000,
         duration_frames: FRAMES, export_range: None, video,
         audio_tracks: vec![], global_lut_path: None, subtitle_tracks: vec![], chapters: vec![],
+        pan_law: Default::default(),
         working_colorspace: ws,
     };
     let mut settings = ExportSettings {

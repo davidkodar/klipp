@@ -79,6 +79,7 @@ fn export_job_empty_sequence() {
         export_range: None,
         video: Default::default(),
         audio_tracks: vec![],
+        pan_law: Default::default(),
         global_lut_path: None,
         subtitle_tracks: vec![], chapters: vec![], working_colorspace: klipp_core::WorkingColorspace::Rec709Linear,
     };
@@ -130,6 +131,7 @@ fn export_job_cancellation_immediate() {
         export_range: None,
         video: Default::default(),
         audio_tracks: vec![],
+        pan_law: Default::default(),
         global_lut_path: None,
         subtitle_tracks: vec![], chapters: vec![], working_colorspace: klipp_core::WorkingColorspace::Rec709Linear,
     };
@@ -172,6 +174,7 @@ fn export_job_cancellation_midway() {
         export_range: None,
         video: Default::default(),
         audio_tracks: vec![],
+        pan_law: Default::default(),
         global_lut_path: None,
         subtitle_tracks: vec![], chapters: vec![], working_colorspace: klipp_core::WorkingColorspace::Rec709Linear,
     };
@@ -242,6 +245,7 @@ fn export_job_progress_advances() {
         export_range: None,
         video: Default::default(),
         audio_tracks: vec![],
+        pan_law: Default::default(),
         global_lut_path: None,
         subtitle_tracks: vec![], chapters: vec![], working_colorspace: klipp_core::WorkingColorspace::Rec709Linear,
     };
@@ -295,6 +299,7 @@ fn export_real_media_h264() {
         duration_frames: 30, // 1 second
         export_range: None,
         video: media_timeline(&media_path, 0, 30, 30, 0.0),
+        pan_law: Default::default(),
         audio_tracks: vec![snapshot::AudioTrackSnapshot {
             volume: 1.0,
             pan: 0.0,
@@ -380,6 +385,7 @@ fn export_real_media_with_color_grade() {
         export_range: None,
         video: media_timeline(&media_path, 0, 15, 30, 1.0),
         audio_tracks: vec![],
+        pan_law: Default::default(),
         global_lut_path: None,
         subtitle_tracks: vec![], chapters: vec![], working_colorspace: klipp_core::WorkingColorspace::Rec709Linear,
     };
@@ -430,6 +436,7 @@ fn export_with_title_and_gap() {
         export_range: None,
         video: one_track(24, vec![clip(ClipKind::Gap, 0, 24, 24), clip(ClipKind::Title(title_data), 24, 48, 24)]),
         audio_tracks: vec![],
+        pan_law: Default::default(),
         global_lut_path: None,
         subtitle_tracks: vec![], chapters: vec![], working_colorspace: klipp_core::WorkingColorspace::Rec709Linear,
     };
@@ -503,6 +510,7 @@ fn export_with_keyframed_opacity() {
             one_track(24, vec![c])
         },
         audio_tracks: vec![],
+        pan_law: Default::default(),
         global_lut_path: None,
         subtitle_tracks: vec![], chapters: vec![], working_colorspace: klipp_core::WorkingColorspace::Rec709Linear,
     };
@@ -556,6 +564,7 @@ fn export_mp4_with_embedded_subtitle_stream() {
         export_range: None,
         video: one_track(24, vec![clip(ClipKind::Title(title_data), 0, 48, 24)]),
         audio_tracks: vec![],
+        pan_law: Default::default(),
         global_lut_path: None,
         subtitle_tracks: vec![snapshot::SubtitleTrackSnapshot {
             clips: vec![
@@ -631,6 +640,7 @@ fn export_without_embed_has_no_subtitle_stream() {
         export_range: None,
         video: one_track(24, vec![clip(ClipKind::Title(title_data), 0, 24, 24)]),
         audio_tracks: vec![],
+        pan_law: Default::default(),
         global_lut_path: None,
         subtitle_tracks: vec![snapshot::SubtitleTrackSnapshot {
             clips: vec![snapshot::SubtitleClipSnapshot {

@@ -696,6 +696,7 @@ mod tests {
             export_range: None,
             video: Default::default(),
             audio_tracks: vec![],
+            pan_law: Default::default(),
             global_lut_path: None,
             subtitle_tracks: vec![], chapters: vec![],
             working_colorspace: klipp_core::WorkingColorspace::Rec709Linear,

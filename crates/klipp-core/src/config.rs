@@ -22,6 +22,60 @@ pub enum PanLaw {
     Minus6dB,
 }
 
+impl PanLaw {
+    /// Left and right gains for a pan position in `[-1, 1]`.
+    ///
+    /// Lives here rather than in the mixer because two places mix: live
+    /// playback and the export. They used different laws — playback
+    /// asked this enum, the export had the constant-power trig written
+    /// into it — so a centred stereo track came out of a render 3 dB
+    /// below what it sounded like, at default settings, in every
+    /// project. One definition, so that cannot drift again.
+    ///
+    /// Note what the default means for stereo material: `Linear` is a
+    /// balance control, unity on both channels at centre, which is what
+    /// passing a stereo track through untouched requires. The
+    /// equal-power laws are for panning a *mono* source, where holding
+    /// perceived loudness across the sweep costs 3 dB in the middle.
+    /// Both gains are in `[0, 1]`. The clamp is not decoration:
+    /// `cos(PI/2)` comes back as -4.4e-8, so the constant-power law at
+    /// hard right produces a *negative* gain, and a negative gain
+    /// inverts the signal's polarity rather than quietening it.
+    pub fn gains(self, pan: f32) -> (f32, f32) {
+        let (l, r) = self.raw_gains(pan.clamp(-1.0, 1.0));
+        (l.clamp(0.0, 1.0), r.clamp(0.0, 1.0))
+    }
+
+    fn raw_gains(self, pan: f32) -> (f32, f32) {
+        match self {
+            PanLaw::Linear => {
+                let l = if pan <= 0.0 { 1.0 } else { 1.0 - pan };
+                let r = if pan >= 0.0 { 1.0 } else { 1.0 + pan };
+                (l, r)
+            }
+            PanLaw::ConstantPower => {
+                let angle = (pan + 1.0) * 0.5 * std::f32::consts::FRAC_PI_2;
+                (angle.cos(), angle.sin())
+            }
+            PanLaw::Minus3dB => {
+                let t = (pan + 1.0) * 0.5;
+                (((1.0 - t) * 2.0).min(1.0).sqrt(), (t * 2.0).min(1.0).sqrt())
+            }
+            PanLaw::Minus4_5dB => {
+                let t = (pan + 1.0) * 0.5;
+                (
+                    ((1.0 - t) * 2.0).min(1.0).powf(0.75),
+                    (t * 2.0).min(1.0).powf(0.75),
+                )
+            }
+            PanLaw::Minus6dB => {
+                let t = (pan + 1.0) * 0.5;
+                (((1.0 - t) * 2.0).min(1.0), (t * 2.0).min(1.0))
+            }
+        }
+    }
+}
+
 /// Audio metering ballistics mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum MeteringBallistics {
@@ -437,4 +491,80 @@ pub enum PlaybackQuality {
     Half,
     /// Quarter resolution.
     Quarter,
+}
+
+#[cfg(test)]
+mod pan_law_tests {
+    use super::PanLaw;
+
+    fn db(g: f32) -> f32 {
+        20.0 * g.log10()
+    }
+
+    /// The default law passes a centred stereo track through untouched.
+    ///
+    /// This is the one that mattered: the export had the constant-power
+    /// law written into it, which is 0.707 at centre, so every render of
+    /// a centred stereo track came out 3 dB below what it sounded like
+    /// in the viewer. Measured on real footage before the fix: source
+    /// peak -29.4 dBFS, rendered peak -32.5.
+    #[test]
+    fn the_default_law_is_unity_at_centre() {
+        let (l, r) = PanLaw::default().gains(0.0);
+        assert_eq!((l, r), (1.0, 1.0), "a centred stereo track is not attenuated");
+    }
+
+    /// And the equal-power laws are not, by design — they hold perceived
+    /// loudness while a *mono* source sweeps, which costs level in the
+    /// middle. The numbers are the point: each law's name is its centre
+    /// gain, so a wrong one is visible here rather than only audible.
+    #[test]
+    fn each_law_has_the_centre_gain_its_name_claims() {
+        for (law, want_db) in [
+            (PanLaw::Linear, 0.0),
+            (PanLaw::ConstantPower, -3.01),
+            (PanLaw::Minus3dB, 0.0),
+            (PanLaw::Minus4_5dB, 0.0),
+            (PanLaw::Minus6dB, 0.0),
+        ] {
+            let (l, r) = law.gains(0.0);
+            assert!((l - r).abs() < 1e-6, "{law:?}: centre is not balanced ({l} vs {r})");
+            assert!(
+                (db(l) - want_db).abs() < 0.05,
+                "{law:?}: centre is {:.2} dB, expected {want_db:.2}",
+                db(l),
+            );
+        }
+    }
+
+    /// Hard left is silence on the right, and the reverse, under every
+    /// law — a pan that cannot reach one side is not a pan.
+    #[test]
+    fn every_law_reaches_both_extremes() {
+        for law in [
+            PanLaw::Linear,
+            PanLaw::ConstantPower,
+            PanLaw::Minus3dB,
+            PanLaw::Minus4_5dB,
+            PanLaw::Minus6dB,
+        ] {
+            let (l, r) = law.gains(-1.0);
+            assert!(l > 0.99 && r < 1e-6, "{law:?}: hard left gave {l}/{r}");
+            let (l, r) = law.gains(1.0);
+            assert!(l < 1e-6 && r > 0.99, "{law:?}: hard right gave {l}/{r}");
+        }
+    }
+
+    /// Out-of-range pan is clamped rather than producing a negative gain,
+    /// which would invert the signal's polarity.
+    #[test]
+    fn pan_past_the_ends_is_clamped() {
+        for law in [PanLaw::Linear, PanLaw::ConstantPower, PanLaw::Minus6dB] {
+            for pan in [-4.0, 4.0, f32::INFINITY, f32::NEG_INFINITY] {
+                let (l, r) = law.gains(pan);
+                assert!(l >= 0.0 && r >= 0.0, "{law:?} at {pan}: negative gain {l}/{r}");
+                assert!(l <= 1.0 && r <= 1.0, "{law:?} at {pan}: gain above unity {l}/{r}");
+            }
+        }
+    }
 }

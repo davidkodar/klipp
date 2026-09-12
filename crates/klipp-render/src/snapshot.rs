@@ -28,6 +28,15 @@ pub struct SequenceSnapshot {
     pub video: VideoTimeline,
     /// Audio tracks.
     pub audio_tracks: Vec<AudioTrackSnapshot>,
+    /// How a track's pan position becomes left and right gains.
+    ///
+    /// Carried so the render mixes the way playback does. The export
+    /// used to have the constant-power law written into it, which is
+    /// 0.707 at centre — so every stereo track came out of a render
+    /// 3 dB below what it sounded like, and the user's choice of law
+    /// was ignored. Defaults to `PanLaw::default()` (Linear, unity at
+    /// centre) for a caller that has no preferences to hand.
+    pub pan_law: klipp_core::PanLaw,
     /// Global 3D LUT path if loaded.
     pub global_lut_path: Option<PathBuf>,
     /// Subtitle tracks (text content + timing, independent of burn-in).
@@ -325,6 +334,7 @@ impl SequenceSnapshot {
             export_range,
             video: VideoTimeline { sequence: timeline, media, global_lut_opacity: 1.0 },
             audio_tracks,
+            pan_law: klipp_core::PanLaw::default(),
             global_lut_path,
             subtitle_tracks,
             chapters,
