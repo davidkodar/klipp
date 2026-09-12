@@ -905,9 +905,9 @@ impl Encoder {
     /// luma coefficients.
     ///
     /// `None` when the frame has to come back as linear floats instead —
-    /// a delivery whose display transform is more than a tone map and an
-    /// sRGB encode (an ACES ODT, a gamut map, PQ or HLG), a format that is
-    /// not 8-bit 4:2:0, a GIF's palette filter, or a PQ delivery, whose
+    /// a delivery whose display transform the shader does not have (an
+    /// AcesCG-basis ODT, the ACES tone-map fit, PQ or HLG), a format that
+    /// is not 4:2:0, a GIF's palette filter, or a PQ delivery, whose
     /// MaxCLL is measured off the linear frame.
     ///
     /// Also whether the chroma is interleaved, the sample depth, and the
@@ -927,19 +927,25 @@ impl Encoder {
             P::P010LE => (true, 10, 6),
             _ => return None,
         };
-        // 3 is the ACES Rec.709 output transform, which the shader has
-        // in full; otherwise a tone map and an sRGB encode.
-        let op = if self.display.is_aces_rec709() {
-            3
+        let separable = |op| match op {
+            klipp_color::display::ToneMapOp::None => Some(0),
+            klipp_color::display::ToneMapOp::Reinhard => Some(1),
+            klipp_color::display::ToneMapOp::Hable => Some(2),
+            // The ACES *tone-map fit* is not separable and is a
+            // different thing from the ODT below; no shader twin.
+            klipp_color::display::ToneMapOp::Aces => None,
+        };
+        // 3 is the ACES Rec.709 output transform, which the shader has in
+        // full. `gamut_op` 1 puts BT.2407's compression into BT.709 in
+        // front of the tone map, which is what a BT.2020 project's
+        // delivery is; the two are mutually exclusive because an ODT maps
+        // its own gamut. Otherwise a tone map and an sRGB encode.
+        let (op, gamut_op) = if self.display.is_aces_rec709() {
+            (3, 0)
+        } else if let Some(tm) = self.display.bt2020_gamut_then_tone_map_srgb() {
+            (separable(tm)?, 1)
         } else {
-            match self.display.tone_map_and_srgb_only()? {
-                klipp_color::display::ToneMapOp::None => 0,
-                klipp_color::display::ToneMapOp::Reinhard => 1,
-                klipp_color::display::ToneMapOp::Hable => 2,
-                // The ACES *tone-map fit* is not separable and is a
-                // different thing from the ODT above; no shader twin.
-                klipp_color::display::ToneMapOp::Aces => return None,
-            }
+            (separable(self.display.tone_map_and_srgb_only()?)?, 0)
         };
         let (kr, kb) = match self.yuv_matrix {
             klipp_core::ColorMatrix::Bt2020Ncl | klipp_core::ColorMatrix::Bt2020Cl => (0.2627f32, 0.0593f32),
@@ -947,6 +953,7 @@ impl Encoder {
         };
         Some(klipp_effects::gpu::Yuv420Target {
             tone_map_op: op,
+            gamut_op,
             luma_coefs: [kr, 1.0 - kr - kb, kb],
             semi_planar: semi,
             bits,

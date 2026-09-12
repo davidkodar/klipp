@@ -786,15 +786,19 @@ impl GraphExecutor {
         target: klipp_effects::gpu::Yuv420Target,
     ) -> Option<Vec<u8>> {
         let slot_a = self.output_on_gpu?;
-        // The ACES curves and matrices, baked from `klipp_color` — only
-        // built when the delivery is actually ACES, since it is a
-        // couple of thousand spline evaluations.
-        let aces = if target.tone_map_op == 3 {
+        // Whichever tables this delivery's transform reads, baked from
+        // `klipp_color`, and only when it actually needs them. Cheap to
+        // ask for every frame: the gamut reaches cost 13 ms to bisect but
+        // sit behind a `OnceLock` there, so this copies them out in 0.03
+        // ms, and the ACES curves are 0.08. The upload is cached too.
+        let tables = if target.tone_map_op == 3 {
             klipp_color::aces::aces_rec709_gpu_data(1024)
+        } else if target.gamut_op == 1 {
+            klipp_color::gamut::bt2020_to_bt709_gpu_data()
         } else {
             Vec::new()
         };
-        self.gpu.as_mut()?.encode_chain_to_yuv420(slot_a, width, height, target, &aces)
+        self.gpu.as_mut()?.encode_chain_to_yuv420(slot_a, width, height, target, &tables)
     }
 
     /// Seed the chain from a buffer that is already linear working-space

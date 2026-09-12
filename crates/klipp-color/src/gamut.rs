@@ -390,6 +390,26 @@ mod tests {
     use super::*;
     use crate::primaries::{matrix3_mul_vec, PRIMARIES_BT2020, PRIMARIES_BT709};
 
+    /// The buffer's length is derivable from its first two entries.
+    ///
+    /// A GPU host cannot see `gpu_layout` — `klipp-effects` deliberately
+    /// does not depend on this crate — so it checks the buffer is long
+    /// enough by recomputing the length from the header the shader itself
+    /// reads (`GpuEffectsPipeline::ensure_bt2020_gamut_data`). That check
+    /// is only a check if this holds.
+    #[test]
+    fn gpu_gamut_data_length_is_what_the_header_says() {
+        let data = bt2020_to_bt709_gpu_data();
+        assert_eq!(data.len(), gpu_layout::TOTAL);
+        let (l, h) = (data[0] as usize, data[1] as usize);
+        assert_eq!((l, h), (L_STEPS, H_STEPS), "the header names the grid");
+        let reach = l * h + l;
+        // 2 header + 27 matrices + 3 white, then both reach tables and
+        // the cusps: the arithmetic the host repeats.
+        assert_eq!(data.len(), 32 + 2 * reach + h * 2);
+        assert_eq!(gpu_layout::TARGET, 32, "the tables start where the host assumes");
+    }
+
     /// A BT.2020 colour in the BT.709 basis — what the display transform
     /// hands the mapping.
     fn as_709(rgb2020: [f32; 3]) -> [f32; 3] {

@@ -252,6 +252,32 @@ fn bt2020_display_on_the_gpu_beats_the_round_trip() {
          via the CPU round trip {c:.1} ms/frame ({:.1}x)",
         c / g
     );
+
+    // And the export's version, which fuses the same transform with the
+    // Y'CbCr conversion: NV12 out, a tenth the bytes of the floats. The
+    // CPU figure above is a *lower* bound on what it replaces — that
+    // route still has the colour conversion and the chroma average to do
+    // on top of the transform it has already paid for.
+    let nv12 = klipp_effects::gpu::Yuv420Target {
+        tone_map_op: 0,
+        gamut_op: 1,
+        luma_coefs: [0.2627, 0.6780, 0.0593],
+        semi_planar: true,
+        bits: 8,
+        sample_shift: 0,
+    };
+    let _ = pipeline.encode_chain_to_yuv420(true, w, h, nv12, &data);
+    let mut fused = Vec::new();
+    for _ in 0..5 {
+        let t = std::time::Instant::now();
+        let planes = pipeline.encode_chain_to_yuv420(true, w, h, nv12, &data).expect("nv12");
+        fused.push(t.elapsed().as_secs_f64() * 1000.0);
+        assert_eq!(planes.len(), nv12.byte_len(w, h));
+    }
+    eprintln!(
+        "4K BT.2020 export: display transform and NV12 in one dispatch, {:.1} ms/frame",
+        median(fused),
+    );
 }
 
 /// Highlights above white, which the mapping scales into range and back

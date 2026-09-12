@@ -554,6 +554,28 @@ impl ExportDisplay {
         }
     }
 
+    /// A tone map and an sRGB encode with the BT.2407 gamut compression
+    /// into BT.709 in front of it, and the operator to apply between the
+    /// two — what a BT.2020 project gets from `OdtChoice::MatchViewer`.
+    ///
+    /// `None` for every other delivery, including a BT.709 project's
+    /// (nothing to compress) and the legacy Srgb escape hatch. The GPU
+    /// has this transform (`SHADER_LINEAR_TO_YUV420`'s gamut branch,
+    /// reading the tables `klipp_color::gamut` bakes), so a caller with a
+    /// faster route can take it.
+    ///
+    /// `ToBt709::for_working_space` sets `compress` only for
+    /// `Bt2020Linear`, so a `Some` here also fixes which matrix and which
+    /// reach tables the caller must supply —
+    /// `bt2020_gamut_is_the_only_compressing_export` holds that.
+    #[inline]
+    pub fn bt2020_gamut_then_tone_map_srgb(&self) -> Option<ToneMapOp> {
+        match self.path {
+            ExportPath::ToneMapSrgb(Some(t)) if t.compress => Some(self.tone_map_op),
+            _ => None,
+        }
+    }
+
     /// Whether this is the plain ACES Rec.709 SDR output transform —
     /// what an AcesCG project gets from `OdtChoice::MatchViewer`.
     ///
@@ -1047,6 +1069,38 @@ mod tests {
             // and it is the less saturated one that stays less saturated.
             let spread = |c: [u8; 3]| c[0] as i32 - c[1].min(c[2]) as i32;
             assert!(spread(ea) + 8 < spread(eb), "{which}: {ea:?} vs {eb:?}");
+        }
+    }
+
+    /// `bt2020_gamut_then_tone_map_srgb` answers `Some` for exactly the
+    /// deliveries whose gamut compression is BT.2020's.
+    ///
+    /// A GPU caller reads that `Some` as licence to bind the BT.2020
+    /// reach tables and BT.2020's matrix, so if some future working space
+    /// also set `ToBt709::compress` it would silently get BT.2020's
+    /// numbers. This is the test that would stop agreeing.
+    #[test]
+    fn bt2020_gamut_is_the_only_compressing_export() {
+        use klipp_core::WorkingColorspace as W;
+        for ws in [W::Rec709Linear, W::AcesCG, W::Bt2020Linear] {
+            for odt in [OdtChoice::MatchViewer, OdtChoice::Srgb, OdtChoice::Unknown] {
+                for op in [ToneMapOp::None, ToneMapOp::Hable] {
+                    let d = ExportDisplay::new(op, ws, odt);
+                    let got = d.bt2020_gamut_then_tone_map_srgb();
+                    // Every SDR choice a BT.2020 project can make, Srgb
+                    // included: no export predates BT.2020 as a working
+                    // space, so there are no legacy bytes to reproduce
+                    // and that choice converts too.
+                    let want = ws == W::Bt2020Linear;
+                    assert_eq!(
+                        got.is_some(), want,
+                        "{ws:?} / {odt:?} / {op:?}: compressing-export accessor said {got:?}",
+                    );
+                    if let Some(returned) = got {
+                        assert_eq!(returned, op, "the operator to apply after the compression");
+                    }
+                }
+            }
         }
     }
 

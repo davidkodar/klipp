@@ -117,6 +117,7 @@ fn cpu_planes(linear: &[f32], display: &ExportDisplay) -> (Vec<u8>, Vec<u8>, Vec
 fn target(op: ToneMapOp, semi: bool, bits: u32, shift: u32) -> klipp_effects::gpu::Yuv420Target {
     klipp_effects::gpu::Yuv420Target {
         tone_map_op: tone_map_id(op),
+        gamut_op: 0,
         luma_coefs: [KR, 1.0 - KR - KB, KB],
         semi_planar: semi,
         bits,
@@ -529,6 +530,7 @@ fn gpu_yuv_matches_cpu_on_the_aces_path() {
     pipeline.upload_chain_input_linear(&linear);
     let t = klipp_effects::gpu::Yuv420Target {
         tone_map_op: ACES_OP,
+        gamut_op: 0,
         luma_coefs: [KR, 1.0 - KR - KB, KB],
         semi_planar: true,
         bits: 8,
@@ -576,4 +578,123 @@ fn gpu_yuv_matches_cpu_on_the_aces_path() {
         "the ACES reference barely differs from the sRGB one ({differing} samples), \
          so this test cannot tell the branches apart"
     );
+}
+
+/// The combined path the export runs for a BT.2020 project: the basis
+/// change and the BT.2407 gamut compression, *then* the tone map, the
+/// sRGB encode and the Y'CbCr conversion, all in one shader.
+///
+/// `bt2020_gamut_gpu_matches_cpu` checks the gamut work alone. This
+/// checks it in its place in the chain, and that place is the point.
+/// `ToBt709::apply` runs before the negatives are clamped and before the
+/// tone map, so an operator other than None is the only thing that can
+/// catch the two being swapped — with None the order is unobservable,
+/// which is why this loops over all three rather than testing the
+/// default and calling it covered.
+#[test]
+fn gpu_yuv_matches_cpu_on_the_bt2020_path() {
+    let linear = linear_frame();
+    let tables = klipp_color::gamut::bt2020_to_bt709_gpu_data();
+
+    let Some(ctx) = GpuContext::new() else {
+        eprintln!("skipping: no GpuContext");
+        return;
+    };
+    let Some(mut pipeline) = GpuEffectsPipeline::with_context(&ctx) else {
+        eprintln!("skipping: no GpuEffectsPipeline");
+        return;
+    };
+    pipeline.ensure_chain_buffers((W as u64) * (H as u64) * 16);
+
+    for op in [ToneMapOp::None, ToneMapOp::Reinhard, ToneMapOp::Hable] {
+        let display = ExportDisplay::new(op, WorkingColorspace::Bt2020Linear, OdtChoice::MatchViewer);
+        assert_eq!(
+            display.bt2020_gamut_then_tone_map_srgb(),
+            Some(op),
+            "the fixture must be on the compressing path with {op:?}"
+        );
+        for (semi, bits, shift) in [(false, 8, 0), (true, 8, 0), (true, 10, 6)] {
+            pipeline.upload_chain_input_linear(&linear);
+            let t = klipp_effects::gpu::Yuv420Target {
+                tone_map_op: tone_map_id(op),
+                gamut_op: 1,
+                luma_coefs: [KR, 1.0 - KR - KB, KB],
+                semi_planar: semi,
+                bits,
+                sample_shift: shift,
+            };
+            let planes = pipeline
+                .encode_chain_to_yuv420(true, W, H, t, &tables)
+                .expect("the BT.2020 path was refused");
+
+            // Compared at the output's own depth, since ten bits is where
+            // a rounding difference has room to show.
+            let label = format!("BT.2020 {op:?} {bits}-bit semi={semi}");
+            if bits == 8 {
+                let (y, cb, cr) = cpu_planes(&linear, &display);
+                let (g_y, chroma) = planes.split_at(y.len());
+                let (g_cb, g_cr): (Vec<u8>, Vec<u8>) = if semi {
+                    (
+                        chroma.iter().step_by(2).copied().collect(),
+                        chroma.iter().skip(1).step_by(2).copied().collect(),
+                    )
+                } else {
+                    let (a, b) = chroma.split_at(cb.len());
+                    (a.to_vec(), b.to_vec())
+                };
+                for (name, got, want) in [
+                    ("Y", g_y, &y),
+                    ("Cb", g_cb.as_slice(), &cb),
+                    ("Cr", g_cr.as_slice(), &cr),
+                ] {
+                    let worst = got
+                        .iter()
+                        .zip(want.iter())
+                        .map(|(g, w)| (*g as i32 - *w as i32).abs())
+                        .max()
+                        .unwrap_or(0);
+                    eprintln!("{label} {name}: worst {worst}");
+                    assert!(worst <= 1, "{label} {name}: differs by {worst}");
+                }
+            } else {
+                let (y, cb, cr) = cpu_planes_10(&display, &linear);
+                let words: Vec<u16> = planes
+                    .chunks_exact(2)
+                    .map(|b| u16::from_le_bytes([b[0], b[1]]) >> shift)
+                    .collect();
+                let (g_y, chroma) = words.split_at(y.len());
+                let g_cb: Vec<u16> = chroma.iter().step_by(2).copied().collect();
+                let g_cr: Vec<u16> = chroma.iter().skip(1).step_by(2).copied().collect();
+                for (name, got, want) in [
+                    ("Y", g_y, &y),
+                    ("Cb", g_cb.as_slice(), &cb),
+                    ("Cr", g_cr.as_slice(), &cr),
+                ] {
+                    let worst = got
+                        .iter()
+                        .zip(want.iter())
+                        .map(|(g, w)| (*g as i32 - *w as i32).abs())
+                        .max()
+                        .unwrap_or(0);
+                    eprintln!("{label} {name}: worst {worst} of 1023");
+                    assert!(worst <= 1, "{label} {name}: differs by {worst}");
+                }
+            }
+        }
+
+        // And the gamut branch is doing something: the same operator
+        // without it is a different picture, so the agreement above is
+        // not the shader having ignored `gamut_op` and the reference
+        // having ignored the basis.
+        let plain = ExportDisplay::new(op, WorkingColorspace::Rec709Linear, OdtChoice::MatchViewer);
+        let (y, ..) = cpu_planes(&linear, &display);
+        let (y_plain, ..) = cpu_planes(&linear, &plain);
+        let differing = y.iter().zip(y_plain.iter()).filter(|(a, b)| a != b).count();
+        assert!(
+            differing > y.len() / 10,
+            "{op:?}: the BT.2020 reference barely differs from the BT.709 one \
+             ({differing} of {} samples), so this cannot tell the branches apart",
+            y.len(),
+        );
+    }
 }

@@ -37,11 +37,18 @@ const LUMA_709: [f32; 3] = [0.2126, 0.7152, 0.0722];
 fn plain_target() -> klipp_effects::gpu::Yuv420Target {
     klipp_effects::gpu::Yuv420Target {
         tone_map_op: 0,
+        gamut_op: 0,
         luma_coefs: LUMA_709,
         semi_planar: false,
         bits: 8,
         sample_shift: 0,
     }
+}
+
+/// The same delivery out of a BT.2020 project: the basis change and the
+/// BT.2407 compression into BT.709 run on the GPU ahead of the encode.
+fn bt2020_target() -> klipp_effects::gpu::Yuv420Target {
+    klipp_effects::gpu::Yuv420Target { gamut_op: 1, ..plain_target() }
 }
 
 fn tc(secs: f64) -> Timecode {
@@ -198,13 +205,39 @@ fn gpu_planes(seq: &Sequence, t: f64, src: &mut Flat) -> Option<Vec<u8>> {
     )
 }
 
+/// [`gpu_planes`] in a given working space, with the matching target.
+fn gpu_planes_ws(
+    seq: &Sequence,
+    t: f64,
+    src: &mut Flat,
+    ws: klipp_core::WorkingColorspace,
+    target: klipp_effects::gpu::Yuv420Target,
+) -> Option<Vec<u8>> {
+    let mut r = renderer();
+    r.set_working_colorspace(ws);
+    r.render_yuv420_on_gpu(seq, tc(t), W, H, src, RenderOptions::default(), target)
+}
+
 /// The same frame through the ordinary render, converted the way the CPU
 /// export converts it: display transform, then luma at 16/219.
 fn cpu_luma(seq: &Sequence, t: f64, src: &mut Flat) -> Vec<u8> {
-    let px = renderer().render(seq, tc(t), W, H, src, RenderOptions::default());
+    cpu_luma_ws(seq, t, src, klipp_core::WorkingColorspace::Rec709Linear)
+}
+
+/// [`cpu_luma`] for a project in `ws`, whose display transform is then
+/// more than a gamma — `ExportDisplay` knows which.
+fn cpu_luma_ws(
+    seq: &Sequence,
+    t: f64,
+    src: &mut Flat,
+    ws: klipp_core::WorkingColorspace,
+) -> Vec<u8> {
+    let mut r = renderer();
+    r.set_working_colorspace(ws);
+    let px = r.render(seq, tc(t), W, H, src, RenderOptions::default());
     let display = klipp_color::display::ExportDisplay::new(
         klipp_core::ToneMapOp::None,
-        klipp_core::WorkingColorspace::Rec709Linear,
+        ws,
         klipp_core::OdtChoice::MatchViewer,
     );
     px.chunks_exact(4)
@@ -288,6 +321,64 @@ fn an_ungraded_clip_agrees_with_the_renderer() {
     assert!(
         got.iter().any(|&v| v > 40),
         "the fixture rendered black, so agreement proves nothing"
+    );
+}
+
+/// A BT.2020 project's delivery, whose display transform is a basis
+/// change and a gamut compression before the encode — all of it on the
+/// GPU now, ahead of the Y'CbCr conversion in the same dispatch.
+///
+/// The second half is what makes the first half mean something. The
+/// generic encode, which is what this path did before the shader had the
+/// gamut tables, is also a plausible-looking answer: it produces a
+/// picture, just an over-saturated one. Measuring how far that answer is
+/// from the right one on *this* fixture proves the luma comparison can
+/// tell them apart.
+#[test]
+fn a_bt2020_project_agrees_with_the_renderer() {
+    use klipp_core::WorkingColorspace::{Bt2020Linear, Rec709Linear};
+    let c = graded(0.0, 1.0, 0.5);
+    let seq = sequence(vec![vec![c.clone()]]);
+    // The fixture is one flat colour, so it samples the difference
+    // between the two transforms exactly once — it has to be a colour
+    // where they diverge. This cyan is the widest of a coarse sweep of
+    // the cube: 110 code values apart in RGB, 20 in luma, because
+    // BT.2020's basis puts it far outside BT.709 with room left in the
+    // gamut to move it rather than simply clipping.
+    let mut src = Flat::default().with(&c, [144, 224, 240]).on_gpu();
+
+    let Some(planes) = gpu_planes_ws(&seq, 0.5, &mut src, Bt2020Linear, bt2020_target()) else {
+        eprintln!("skipping: the GPU path refused (no usable GPU)");
+        return;
+    };
+    let want = cpu_luma_ws(&seq, 0.5, &mut src, Bt2020Linear);
+    let got = &planes[..want.len()];
+    let worst = |a: &[u8], b: &[u8]| {
+        a.iter().zip(b.iter()).map(|(x, y)| (*x as i32 - *y as i32).abs()).max().unwrap_or(0)
+    };
+    let w = worst(got, &want);
+    eprintln!("BT.2020 export luma vs the renderer: worst {w} of 255");
+    assert!(w <= 1, "BT.2020 luma differs from the renderer by {w} levels");
+    assert!(got.iter().any(|&v| v > 40), "the fixture rendered black, so agreement proves nothing");
+
+    // The same shader with the gamut branch off — the mistake this
+    // replaces, and a plausible-looking picture in its own right. Whole
+    // planes, not just luma: a gamut map moves chroma far more than it
+    // moves brightness, so Cb and Cr are where the difference lives and
+    // where a comparison has room to be sure.
+    let ungamuted = gpu_planes_ws(&seq, 0.5, &mut src, Bt2020Linear, plain_target())
+        .expect("the path takes the same frame without the gamut branch");
+    let d = worst(&planes, &ungamuted);
+    eprintln!("the same shader without the gamut branch differs by {d} of 255");
+    assert!(d > 20, "only {d}: this fixture cannot tell the two encodes apart");
+
+
+    // And the CPU agrees about which of the two it wanted, so the
+    // difference above is the gamut map and not some unrelated drift.
+    let as_if_709 = cpu_luma_ws(&seq, 0.5, &mut src, Rec709Linear);
+    assert!(
+        worst(&want, &as_if_709) > worst(got, &want),
+        "the CPU's two transforms differ by less than the GPU matches by"
     );
 }
 

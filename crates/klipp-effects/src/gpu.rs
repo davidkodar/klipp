@@ -271,12 +271,12 @@ pub struct GpuEffectsPipeline {
     /// AcesCG → display-encoded Rec.709 SDR u8, the ACES output
     /// transform on the GPU rather than per-pixel on one core.
     aces_rec709_pipeline: wgpu::ComputePipeline,
-    aces_rec709_bgl: wgpu::BindGroupLayout,
+    display_tables_bgl: wgpu::BindGroupLayout,
     /// The matrices and tone curves that shader reads, uploaded once.
     aces_rec709_data: Option<wgpu::Buffer>,
     /// Bound in that slot by a delivery that is not ACES, which never
     /// reads it.
-    aces_dummy: wgpu::Buffer,
+    no_display_tables: wgpu::Buffer,
     /// BT.2020's reach tables, cusps and matrices — 148 KB, uploaded
     /// once.
     bt2020_gamut_data: Option<wgpu::Buffer>,
@@ -905,11 +905,13 @@ impl GpuEffectsPipeline {
         let bridge_rgba64_to_linear_pipeline = create_pipeline(
             &device, &pipeline_layout, "bridge_rgba64_to_linear", SHADER_RGBA64_TO_LINEAR,
         );
-        // ACES needs a fourth binding for its matrices and tone curves,
-        // and the Y'CbCr writer shares the layout because it can take
-        // the same transform.
-        let aces_rec709_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("aces_rec709_bgl"),
+        // A display transform whose numbers are baked on the CPU — ACES'
+        // matrices and tone curves, BT.2020's gamut reach tables — reads
+        // them from a fourth binding. All three pipelines below share
+        // this layout because each wants that same slot, and the WGSL
+        // calls it `tables` rather than naming one occupant.
+        let display_tables_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("display_tables_bgl"),
             entries: &[
                 wgpu::BindGroupLayoutEntry {
                     binding: 0,
@@ -953,25 +955,26 @@ impl GpuEffectsPipeline {
                 },
             ],
         });
-        let aces_pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("aces_rec709_pl"),
-            bind_group_layouts: &[&aces_rec709_bgl],
+        let display_tables_pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("display_tables_pl"),
+            bind_group_layouts: &[&display_tables_bgl],
             push_constant_ranges: &[],
         });
         let aces_rec709_pipeline =
-            create_pipeline(&device, &aces_pl, "aces_rec709", SHADER_ACES_REC709_U8);
+            create_pipeline(&device, &display_tables_pl, "aces_rec709", SHADER_ACES_REC709_U8);
         // The export's last step: linear frame in, packed Y/Cb/Cr out,
-        // on the same layout so it can reach the ACES data.
+        // on the same layout so it can reach whichever tables its
+        // delivery's display transform needs.
         let linear_to_yuv420_pipeline = create_pipeline(
-            &device, &aces_pl, "linear_to_yuv420", SHADER_LINEAR_TO_YUV420,
+            &device, &display_tables_pl, "linear_to_yuv420", SHADER_LINEAR_TO_YUV420,
         );
-        // Same four-binding shape; its fourth is the gamut tables.
         let bt2020_display_pipeline = create_pipeline(
-            &device, &aces_pl, "bt2020_display", SHADER_BT2020_DISPLAY_U8,
+            &device, &display_tables_pl, "bt2020_display", SHADER_BT2020_DISPLAY_U8,
         );
-        // Bound as the ACES data when the delivery does not need it.
-        let aces_dummy = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("aces_dummy"),
+        // Bound at slot 3 when the delivery's transform needs no baked
+        // tables. Never read; a bind group still has to be complete.
+        let no_display_tables = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("no_display_tables"),
             size: 4,
             usage: wgpu::BufferUsages::STORAGE,
             mapped_at_creation: false,
@@ -1108,9 +1111,9 @@ impl GpuEffectsPipeline {
             bridge_rgba64_to_linear_pipeline,
             linear_to_yuv420_pipeline,
             aces_rec709_pipeline,
-            aces_rec709_bgl,
+            display_tables_bgl,
             aces_rec709_data: None,
-            aces_dummy,
+            no_display_tables,
             bt2020_gamut_data: None,
             bt2020_display_pipeline,
             bridge_hdr10_pipeline,
@@ -1945,23 +1948,34 @@ impl GpuEffectsPipeline {
     /// `None` when this is not the right route and the caller must use
     /// `encode_linear_direct`: no GPU, a device lost, dimensions the
     /// block layout cannot tile (width not a multiple of 8, height odd),
-    /// or a tone map the shader does not implement. The `tone_map_op`
-    /// encoding is 0 none, 1 Reinhard, 2 Hable; the caller has already
-    /// established that the display transform is a tone map and an sRGB
-    /// encode and nothing more.
+    /// or a transform the shader does not implement. The `tone_map_op`
+    /// encoding is 0 none, 1 Reinhard, 2 Hable, 3 the whole ACES Rec.709
+    /// output transform; the caller has already established which of
+    /// those its delivery is.
+    ///
+    /// `display_tables` is whichever baked table set `target` asks for —
+    /// `klipp_color::aces::aces_rec709_gpu_data` for `tone_map_op == 3`,
+    /// `klipp_color::gamut::bt2020_to_bt709_gpu_data` for `gamut_op == 1`
+    /// — and empty when the transform needs none. Passed in rather than
+    /// built here because this crate deliberately does not depend on
+    /// `klipp-color` outside its tests.
     pub fn encode_chain_to_yuv420(
         &mut self,
         slot_a: bool,
         width: u32,
         height: u32,
         target: Yuv420Target,
-        aces_data: &[f32],
+        display_tables: &[f32],
     ) -> Option<Vec<u8>> {
-        let Yuv420Target { tone_map_op, luma_coefs, semi_planar, bits, sample_shift } = target;
+        let Yuv420Target { tone_map_op, gamut_op, luma_coefs, semi_planar, bits, sample_shift } =
+            target;
         if self.is_device_lost()
             || width % 8 != 0
             || height % 2 != 0
             || tone_map_op > 3
+            || gamut_op > 1
+            // Both read binding 3, so one transform at a time.
+            || (gamut_op == 1 && tone_map_op == 3)
             || !matches!(bits, 8 | 10)
         {
             return None;
@@ -1976,13 +1990,16 @@ impl GpuEffectsPipeline {
         let chroma_bytes = (pixel_count / 4) * sample_bytes;
         let total = luma_bytes + 2 * chroma_bytes;
 
-        // Before `source` borrows self: ACES is the one path that reads
-        // the fourth binding, and uploading its data needs &mut.
+        // Before `source` borrows self: uploading to the fourth binding
+        // needs &mut, and both table sets are cached for the export's
+        // life because neither changes frame to frame.
         if tone_map_op == 3 {
-            if aces_data.is_empty() {
+            if display_tables.is_empty() {
                 return None;
             }
-            self.ensure_aces_data(aces_data);
+            self.ensure_aces_data(display_tables);
+        } else if gamut_op == 1 && !self.ensure_bt2020_gamut_data(display_tables) {
+            return None;
         }
 
         let source = if slot_a { self.buf_a.as_ref() } else { self.buf_b.as_ref() };
@@ -2007,21 +2024,24 @@ impl GpuEffectsPipeline {
             semi_planar: semi_planar as u32,
             bits,
             sample_shift,
-            _pad1: 0,
+            gamut_op,
             _pad2: 0,
         });
-        let aces_binding: &wgpu::Buffer = match self.aces_rec709_data.as_ref() {
-            Some(b) if tone_map_op == 3 => b,
-            _ => &self.aces_dummy,
+        let tables: &wgpu::Buffer = if tone_map_op == 3 {
+            self.aces_rec709_data.as_ref()?
+        } else if gamut_op == 1 {
+            self.bt2020_gamut_data.as_ref()?
+        } else {
+            &self.no_display_tables
         };
         let bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("linear_to_yuv420_bg"),
-            layout: &self.aces_rec709_bgl,
+            layout: &self.display_tables_bgl,
             entries: &[
                 wgpu::BindGroupEntry { binding: 0, resource: source.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 1, resource: planes.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 2, resource: self.params_buf.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 3, resource: aces_binding.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 3, resource: tables.as_entire_binding() },
             ],
         });
 
@@ -2094,7 +2114,7 @@ impl GpuEffectsPipeline {
         let data = self.aces_rec709_data.as_ref()?;
         let bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("aces_rec709_bg"),
-            layout: &self.aces_rec709_bgl,
+            layout: &self.display_tables_bgl,
             entries: &[
                 wgpu::BindGroupEntry { binding: 0, resource: source.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 1, resource: out.as_entire_binding() },
@@ -2137,13 +2157,51 @@ impl GpuEffectsPipeline {
         self.aces_rec709_data = Some(buf);
     }
 
+    /// Upload `klipp_color::gamut::bt2020_to_bt709_gpu_data` once. The
+    /// tables are fixed for this gamut pair, so later calls are free.
+    ///
+    /// `false` for a buffer the shader would read past the end of. The
+    /// WGSL takes its grid size from the first two entries and indexes
+    /// the reach and cusp tables off it, so a short or truncated buffer
+    /// is not merely wrong pixels — the length the header implies is
+    /// recomputed here, the one place the host can check it. That header
+    /// arithmetic mirrors `gamut::gpu_layout`, which
+    /// `gpu_gamut_data_length_is_what_the_header_says` in `klipp-color`
+    /// holds the two to.
+    fn ensure_bt2020_gamut_data(&mut self, data: &[f32]) -> bool {
+        if self.bt2020_gamut_data.is_some() {
+            return true;
+        }
+        // HEADER_LEN 2 + MATRICES_LEN 27 + WHITE_LEN 3 = 32 before the
+        // first table; then two reach tables and the cusps.
+        let (l_steps, h_steps) = match (data.first(), data.get(1)) {
+            (Some(&l), Some(&h)) if l >= 1.0 && h >= 1.0 && l < 4096.0 && h < 4096.0 => {
+                (l as usize, h as usize)
+            }
+            _ => return false,
+        };
+        let reach = l_steps * h_steps + l_steps;
+        if data.len() < 32 + 2 * reach + h_steps * 2 {
+            return false;
+        }
+        let buf = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("bt2020_gamut_data"),
+            size: (data.len() * 4) as u64,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        self.queue.write_buffer(&buf, 0, bytemuck::cast_slice(data));
+        self.bt2020_gamut_data = Some(buf);
+        true
+    }
+
     /// The chain's graded BT.2020 frame → display bytes: the basis
     /// change, the BT.2407-style gamut compression and the sRGB encode.
     ///
-    /// Replaces `display_transform_ws(.., Bt2020Linear)` on the CPU,
-    /// which is ~15 ms of a 4K frame for ordinary colour and ~32 for
-    /// wholly saturated. No tone-map curve: the caller only takes this
-    /// with `ToneMapOp::None`, as it does for BT.709.
+    /// Replaces `display_transform_ws(.., Bt2020Linear)` on the CPU: 51 ms
+    /// of a saturated 4K frame, plus 14 ms to bring the floats down, for
+    /// 4.1 ms here. No tone-map curve: the caller only takes this with
+    /// `ToneMapOp::None`, as it does for BT.709.
     ///
     /// `gamut_data` is `klipp_color::gamut::bt2020_to_bt709_gpu_data`,
     /// passed in for the same reason the ACES data is — this crate does
@@ -2155,22 +2213,12 @@ impl GpuEffectsPipeline {
         height: u32,
         gamut_data: &[f32],
     ) -> Option<Vec<u8>> {
-        if self.is_device_lost() || gamut_data.is_empty() {
+        if self.is_device_lost() {
             return None;
         }
         let pixel_count = (width as u64) * (height as u64);
-        if pixel_count == 0 {
+        if pixel_count == 0 || !self.ensure_bt2020_gamut_data(gamut_data) {
             return None;
-        }
-        if self.bt2020_gamut_data.is_none() {
-            let buf = self.device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("bt2020_gamut_data"),
-                size: (gamut_data.len() * 4) as u64,
-                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            });
-            self.queue.write_buffer(&buf, 0, bytemuck::cast_slice(gamut_data));
-            self.bt2020_gamut_data = Some(buf);
         }
 
         let out_bytes = pixel_count * 4;
@@ -2186,7 +2234,7 @@ impl GpuEffectsPipeline {
         let data = self.bt2020_gamut_data.as_ref()?;
         let bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("bt2020_display_bg"),
-            layout: &self.aces_rec709_bgl,
+            layout: &self.display_tables_bgl,
             entries: &[
                 wgpu::BindGroupEntry { binding: 0, resource: source.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 1, resource: out.as_entire_binding() },
@@ -5407,6 +5455,11 @@ pub struct Yuv420Target {
     /// 0 none, 1 Reinhard, 2 Hable. The host has already established
     /// the display transform is a tone map and an sRGB encode.
     pub tone_map_op: u32,
+    /// 1 brings a BT.2020 frame into BT.709 first, gamut-compressing
+    /// what BT.709 cannot hold; 0 leaves the basis alone. Never 1
+    /// alongside `tone_map_op == 3`: an ACES ODT maps its own gamut, and
+    /// both want the same binding for their tables.
+    pub gamut_op: u32,
     /// The output's luma coefficients — BT.709 or BT.2020.
     pub luma_coefs: [f32; 3],
     /// Interleaved chroma (NV12, P010) rather than separate planes.
@@ -5440,7 +5493,7 @@ struct Yuv420Params {
     semi_planar: u32,
     bits: u32,
     sample_shift: u32,
-    _pad1: u32,
+    gamut_op: u32,
     _pad2: u32,
 }
 
@@ -7176,8 +7229,8 @@ const KNEE: f32 = 0.8;
 const CHROMA_FLOOR: f32 = 0.5;
 const MAX_LIGHTNESS_TRADED: f32 = 5.0;
 
-fn g_l_steps() -> u32 { return u32(gamut[0]); }
-fn g_h_steps() -> u32 { return u32(gamut[1]); }
+fn g_l_steps() -> u32 { return u32(tables[0]); }
+fn g_h_steps() -> u32 { return u32(tables[1]); }
 fn g_reach_len() -> u32 { return g_l_steps() * g_h_steps() + g_l_steps(); }
 fn g_source() -> u32 { return G_TARGET + g_reach_len(); }
 fn g_cusps() -> u32 { return g_source() + g_reach_len(); }
@@ -7185,14 +7238,14 @@ fn g_cusps() -> u32 { return g_source() + g_reach_len(); }
 fn g_mat(m: u32, v: vec3<f32>) -> vec3<f32> {
     let o = G_MATRICES + m * 9u;
     return vec3<f32>(
-        gamut[o + 0u] * v.x + gamut[o + 1u] * v.y + gamut[o + 2u] * v.z,
-        gamut[o + 3u] * v.x + gamut[o + 4u] * v.y + gamut[o + 5u] * v.z,
-        gamut[o + 6u] * v.x + gamut[o + 7u] * v.y + gamut[o + 8u] * v.z,
+        tables[o + 0u] * v.x + tables[o + 1u] * v.y + tables[o + 2u] * v.z,
+        tables[o + 3u] * v.x + tables[o + 4u] * v.y + tables[o + 5u] * v.z,
+        tables[o + 6u] * v.x + tables[o + 7u] * v.y + tables[o + 8u] * v.z,
     );
 }
 
 fn g_white() -> vec3<f32> {
-    return vec3<f32>(gamut[G_WHITE], gamut[G_WHITE + 1u], gamut[G_WHITE + 2u]);
+    return vec3<f32>(tables[G_WHITE], tables[G_WHITE + 1u], tables[G_WHITE + 2u]);
 }
 
 fn lab_f(t: f32) -> f32 {
@@ -7241,22 +7294,22 @@ fn reach_at(base: u32, l: f32, h: f32) -> f32 {
     let hs = g_h_steps();
     let r0 = base + u32(lc.x) * hs;
     let r1 = base + (u32(lc.x) + 1u) * hs;
-    let a = mix(gamut[r0 + u32(hc.x)], gamut[r0 + u32(hc.y)], hc.z);
-    let b = mix(gamut[r1 + u32(hc.x)], gamut[r1 + u32(hc.y)], hc.z);
+    let a = mix(tables[r0 + u32(hc.x)], tables[r0 + u32(hc.y)], hc.z);
+    let b = mix(tables[r1 + u32(hc.x)], tables[r1 + u32(hc.y)], hc.z);
     return mix(a, b, lc.y);
 }
 
 fn reach_least_at(base: u32, l: f32) -> f32 {
     let mins = base + g_l_steps() * g_h_steps();
     let lc = lightness_cell(l);
-    return min(gamut[mins + u32(lc.x)], gamut[mins + u32(lc.x) + 1u]);
+    return min(tables[mins + u32(lc.x)], tables[mins + u32(lc.x) + 1u]);
 }
 
 fn cusp_at(h: f32) -> vec2<f32> {
     let hc = hue_cell(h);
     let base = g_cusps();
-    let a = vec2<f32>(gamut[base + u32(hc.x) * 2u], gamut[base + u32(hc.x) * 2u + 1u]);
-    let b = vec2<f32>(gamut[base + u32(hc.y) * 2u], gamut[base + u32(hc.y) * 2u + 1u]);
+    let a = vec2<f32>(tables[base + u32(hc.x) * 2u], tables[base + u32(hc.x) * 2u + 1u]);
+    let b = vec2<f32>(tables[base + u32(hc.y) * 2u], tables[base + u32(hc.y) * 2u + 1u]);
     return mix(a, b, hc.z);
 }
 
@@ -7321,7 +7374,7 @@ fn bt2020_to_bt709_display(rgb: vec3<f32>) -> vec3<f32> {
 /// nothing required of it:
 ///
 /// ```wgsl
-/// @group(0) @binding(3) var<storage, read> aces: array<f32>;
+/// @group(0) @binding(3) var<storage, read> tables: array<f32>;
 /// ```
 ///
 /// `aces` is `klipp_color::aces::aces_rec709_gpu_data` — see there for
@@ -7351,9 +7404,9 @@ const TINY: f32 = 1e-10;
 fn mat_mul(m: u32, v: vec3<f32>) -> vec3<f32> {
     let o = MATRICES + m * 9u;
     return vec3<f32>(
-        aces[o + 0u] * v.x + aces[o + 1u] * v.y + aces[o + 2u] * v.z,
-        aces[o + 3u] * v.x + aces[o + 4u] * v.y + aces[o + 5u] * v.z,
-        aces[o + 6u] * v.x + aces[o + 7u] * v.y + aces[o + 8u] * v.z,
+        tables[o + 0u] * v.x + tables[o + 1u] * v.y + tables[o + 2u] * v.z,
+        tables[o + 3u] * v.x + tables[o + 4u] * v.y + tables[o + 5u] * v.z,
+        tables[o + 6u] * v.x + tables[o + 7u] * v.y + tables[o + 8u] * v.z,
     );
 }
 
@@ -7361,16 +7414,16 @@ fn mat_mul(m: u32, v: vec3<f32>) -> vec3<f32> {
 /// clamped at the ends — which is exact, because both curves really are
 /// constant outside their knots.
 fn tone_curve(which: u32, x: f32) -> f32 {
-    let base = select(CURVES, CURVES + u32(aces[2]), which == 1u);
-    let lo = aces[select(0u, 3u, which == 1u)];
-    let hi = aces[select(1u, 4u, which == 1u)];
-    let n = u32(aces[select(2u, 5u, which == 1u)]);
+    let base = select(CURVES, CURVES + u32(tables[2]), which == 1u);
+    let lo = tables[select(0u, 3u, which == 1u)];
+    let hi = tables[select(1u, 4u, which == 1u)];
+    let n = u32(tables[select(2u, 5u, which == 1u)]);
 
     let logx = log(max(x, HALF_MIN)) / log(10.0);
     let t = clamp((logx - lo) / (hi - lo), 0.0, 1.0) * f32(n - 1u);
     let i = min(u32(floor(t)), n - 2u);
     let f = t - floor(t);
-    let logy = mix(aces[base + i], aces[base + i + 1u], f);
+    let logy = mix(tables[base + i], tables[base + i + 1u], f);
     return pow(10.0, logy);
 }
 
@@ -7518,7 +7571,7 @@ struct Params { width: u32, height: u32, _pad0: u32, _pad1: u32 }
 @group(0) @binding(0) var<storage, read> input: array<vec4<f32>>;
 @group(0) @binding(1) var<storage, read_write> output: array<u32>;
 @group(0) @binding(2) var<uniform> params: Params;
-@group(0) @binding(3) var<storage, read> gamut: array<f32>;
+@group(0) @binding(3) var<storage, read> tables: array<f32>;
 
 @compute @workgroup_size(256)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
@@ -7548,7 +7601,7 @@ struct Params { width: u32, height: u32, _pad0: u32, _pad1: u32 }
 @group(0) @binding(0) var<storage, read> input: array<vec4<f32>>;
 @group(0) @binding(1) var<storage, read_write> output: array<u32>;
 @group(0) @binding(2) var<uniform> params: Params;
-@group(0) @binding(3) var<storage, read> aces: array<f32>;
+@group(0) @binding(3) var<storage, read> tables: array<f32>;
 
 ",
     shader_aces_rec709_wgsl!(),
@@ -7593,6 +7646,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 const SHADER_LINEAR_TO_YUV420: &str = concat!(
     shader_linear_helpers_wgsl!(),
     shader_aces_rec709_wgsl!(),
+    shader_bt2020_gamut_wgsl!(),
     "
 struct Params {
     width: u32,
@@ -7615,15 +7669,20 @@ struct Params {
     // Left shift on each stored sample: 6 for P010, which carries its
     // ten bits at the top of the u16, 0 everywhere else.
     sample_shift: u32,
-    _pad1: u32,
+    // 1 compresses BT.2020 into BT.709 before the tone map, reading the
+    // reach tables at binding 3; 0 leaves the basis alone. Never 1 at
+    // the same time as `tone_map_op == 3` — an ACES ODT maps its own
+    // gamut, and the two would want the same binding.
+    gamut_op: u32,
     _pad2: u32,
 }
 @group(0) @binding(0) var<storage, read> input: array<vec4<f32>>;
 @group(0) @binding(1) var<storage, read_write> output: array<u32>;
 @group(0) @binding(2) var<uniform> params: Params;
-// The ACES curves and matrices, for `tone_map_op == 3`. A small dummy
-// when the delivery does not need them.
-@group(0) @binding(3) var<storage, read> aces: array<f32>;
+// Whichever tables this delivery's display transform needs: ACES' curves
+// and matrices for `tone_map_op == 3`, BT.2020's gamut reach and cusps
+// for `gamut_op == 1`. A small dummy when it needs neither.
+@group(0) @binding(3) var<storage, read> tables: array<f32>;
 
 fn hable_curve(x: f32) -> f32 {
     let a = 0.15; let b = 0.50; let c = 0.10;
@@ -7649,8 +7708,15 @@ fn display_encode(px: vec3<f32>) -> vec3<f32> {
     if params.tone_map_op == 3u {
         return acescg_to_rec709_sdr(px);
     }
+    // A wide-gamut basis comes into BT.709 first, gamut-compressing what
+    // BT.709 cannot hold — `ToBt709::apply` in the twin, which likewise
+    // runs before the negatives are clamped.
+    var v = px;
+    if params.gamut_op == 1u {
+        v = bt2020_to_bt709_display(v);
+    }
     // Negatives clamped before the tone map, as the twin does.
-    let lin = max(px, vec3<f32>(0.0));
+    let lin = max(v, vec3<f32>(0.0));
     let m = vec3<f32>(tone_map_c(lin.x), tone_map_c(lin.y), tone_map_c(lin.z));
     let e = vec3<f32>(
         linear_to_srgb_component(m.x),
