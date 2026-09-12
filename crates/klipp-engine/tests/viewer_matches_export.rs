@@ -177,7 +177,7 @@ fn timeline() -> Timeline {
 fn export(t: &Timeline, out: &Path) {
     let mut video = VideoTimeline::default();
     video.sequence = t.seq.clone();
-    video.media = t.files.iter().map(|(id, p)| (*id, MediaFile { path: p.clone(), log_format: None })).collect();
+    video.media = t.files.iter().map(|(id, p)| (*id, MediaFile { path: p.clone(), log_format: None, source_rotation: 0 })).collect();
     let snapshot = SequenceSnapshot {
         fps: FPS as f64, fps_num: FPS as u32, fps_den: 1, width: W, height: H, sample_rate: 48000,
         duration_frames: LEN as u64, export_range: None, video,

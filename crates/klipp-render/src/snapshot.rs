@@ -79,6 +79,17 @@ pub struct MediaFile {
     /// File tags never say so; the viewer takes it from the media pool,
     /// and export must decode the file the same way.
     pub log_format: Option<klipp_core::LogFormat>,
+    /// The media's own rotation, from its display matrix. Phone footage
+    /// is landscape pixels plus a 90° tag.
+    ///
+    /// A clip carries a rotation too, and export used to read only that
+    /// one. The two are not the same thing: the clip's is a copy each
+    /// clip-creating path has to remember to make, and any that forgets
+    /// leaves a clip that *plays* upright — the viewer's decoder takes
+    /// rotation from the media pool — and *exports* sideways. This is
+    /// the fallback for that, so a clip that never got its copy still
+    /// renders the right way up.
+    pub source_rotation: i32,
 }
 
 /// A media item's camera log format for its export decoder: the same
@@ -211,7 +222,11 @@ impl SequenceSnapshot {
                 let item = media_pool
                     .get(media_id)
                     .ok_or_else(|| RenderError::Snapshot(format!("media {media_id:?} not in pool")))?;
-                media.insert(*media_id, MediaFile { path: item.path.clone(), log_format: camera_log_format(item) });
+                media.insert(*media_id, MediaFile {
+                    path: item.path.clone(),
+                    log_format: camera_log_format(item),
+                    source_rotation: item.source_rotation,
+                });
             }
         }
 
@@ -973,7 +988,7 @@ mod tests {
         assert_eq!(snap.video.sequence.tracks[0].clips[0].id, seq.tracks[0].clips[0].id);
         assert_eq!(
             snap.video.media.get(&media_id),
-            Some(&MediaFile { path: PathBuf::from("/media/clip1.mp4"), log_format: None }),
+            Some(&MediaFile { path: PathBuf::from("/media/clip1.mp4"), log_format: None, source_rotation: 0 }),
         );
     }
 

@@ -24,6 +24,7 @@ rayon          = { workspace = true }
 thiserror      = { workspace = true }
 
 [dev-dependencies]
+klipp-project = { workspace = true }
 klipp-core     = { workspace = true }
 klipp-timeline = { workspace = true }
 klipp-media    = { workspace = true }

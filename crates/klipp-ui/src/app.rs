@@ -10442,6 +10442,20 @@ impl KlippApp {
                             track.map(|t| t.append_clip(*media_id, duration))
                         };
                         if let Some(clip_id) = appended_id {
+                            // The media's rotation belongs on the clip, as the
+                            // drag-and-drop path sets it. Without it a phone
+                            // clip plays upright — the viewer's decoder takes
+                            // rotation from the media item — and exports
+                            // sideways, because export takes it from the clip.
+                            if !is_audio_only {
+                                let rotation = item.source_rotation;
+                                if let Some(c) = self.state.sequences[self.state.active_sequence_idx]
+                                    .tracks[track_index]
+                                    .find_clip_mut(clip_id)
+                                {
+                                    c.source_rotation = rotation;
+                                }
+                            }
                             self.apply_detected_log_format(clip_id, *media_id);
                             let clip = self.state.sequences[self.state.active_sequence_idx].tracks[track_index].find_clip(clip_id).unwrap().clone();
                             self.state.push_history(EditCommand::LegacyAppendClip {
@@ -10496,9 +10510,14 @@ impl KlippApp {
                                     source_in,
                                     source_out,
                                 );
-                                // Auto-apply detected log format
+                                // Auto-apply detected log format, and carry
+                                // the media's rotation (see AppendClip: the
+                                // viewer takes rotation from the media item,
+                                // export from the clip, so a clip without it
+                                // plays upright and exports sideways).
                                 if let Some(item) = self.state.media_pool.get(media_id) {
                                     clip.set_input_log_format(item.detected_log_format);
+                                    clip.source_rotation = item.source_rotation;
                                 }
                                 let result = klipp_timeline::magnetic::MagneticEditor::append_primary(
                                     &mut self.state.sequences[self.state.active_sequence_idx], clip);
@@ -10514,6 +10533,13 @@ impl KlippApp {
                                 let mid = *media_id;
                                 let track = self.state.sequences[self.state.active_sequence_idx].tracks.get_mut(*track_index).unwrap();
                                 let clip_id = track.append_clip(mid, duration);
+                                let rotation = self.state.media_pool.get(&mid).map_or(0, |i| i.source_rotation);
+                                if let Some(c) = self.state.sequences[self.state.active_sequence_idx]
+                                    .tracks[*track_index]
+                                    .find_clip_mut(clip_id)
+                                {
+                                    c.source_rotation = rotation;
+                                }
                                 self.apply_detected_log_format(clip_id, mid);
                                 let clip = self.state.sequences[self.state.active_sequence_idx].tracks[*track_index].find_clip(clip_id).unwrap().clone();
                                 self.state.push_history(EditCommand::LegacyAppendClip {

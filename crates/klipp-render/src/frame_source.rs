@@ -97,7 +97,16 @@ impl<'a> ExportFrameSource<'a> {
     }
 
     fn open(&self, clip: &Clip, file: &MediaFile, secs: f64, width: u32, height: u32) -> Option<ClipStream> {
-        let decoder = RenderDecoder::open(&file.path, secs.max(0.0), f64::INFINITY, width, height, self.fps, clip.source_rotation)
+        // The clip's rotation when it has one, else the media's. A clip
+        // created by a path that did not copy the media's rotation would
+        // otherwise render sideways while playing upright, since the
+        // viewer reads the media pool and this read only the clip.
+        // (A user who deliberately sets a rotated file to 0 gets the
+        // media's value back — distinguishing "unset" from "set to zero"
+        // needs a flag on the clip, as `log_format_user_set` does for
+        // the analogous problem with log formats.)
+        let rotation = if clip.source_rotation != 0 { clip.source_rotation } else { file.source_rotation };
+        let decoder = RenderDecoder::open(&file.path, secs.max(0.0), f64::INFINITY, width, height, self.fps, rotation)
             .map_err(|e| warn!("export: cannot open {:?}: {e}", file.path))
             .ok()?
             .with_log_format(file.log_format)
