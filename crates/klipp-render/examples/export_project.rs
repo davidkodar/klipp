@@ -139,6 +139,12 @@ fn main() {
         }
     };
     snapshot.export_range = Some((first, last));
+    // `from_sequence` defaults this rather than reading it off the
+    // project, and every export path in the app sets it afterwards. A
+    // tool that forgets renders the whole timeline in Rec.709 whatever
+    // the project says — which is exactly what this one did, silently,
+    // until an AcesCG render came out pixel-identical to a Rec.709 one.
+    snapshot.working_colorspace = working;
 
     let progress = Arc::new(AtomicU64::new(0));
     let watch = {
