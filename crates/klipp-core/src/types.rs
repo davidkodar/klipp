@@ -107,9 +107,16 @@ impl LogFormat {
             Self::AppleLog => (T::AppleLog, P::Bt2020),
             Self::NLog => (T::NLog, P::Bt2020),
             Self::GoProFlat => (T::GoProFlat, P::Bt709),
-            // No decoder curve yet for Leica L-Log; sRGB, linear, PQ and
-            // HLG are not camera logs.
-            Self::LeicaLLog | Self::Srgb | Self::Linear | Self::PQ | Self::HLG => return None,
+            // Leica records L-Log in BT.2020 on every current body — SL2,
+            // SL2-S, SL3, SL3-S and Q3 — and in BT.709 on the SL (Typ 601)
+            // alone, per Table 3 of the L-Log Reference Manual v1.6. The
+            // format cannot tell which camera shot it and the container's
+            // own tag is no help, so this takes the five against the one.
+            // Typ 601 footage needs its primaries set by hand; Leica's own
+            // LUTs do not cover that camera either, for the same reason.
+            Self::LeicaLLog => (T::LeicaLLog, P::Bt2020),
+            // sRGB, linear, PQ and HLG are not camera logs.
+            Self::Srgb | Self::Linear | Self::PQ | Self::HLG => return None,
         })
     }
 

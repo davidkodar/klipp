@@ -162,6 +162,7 @@ const CAMERA_LOGS: &[klipp_core::ColorTransfer] = {
     &[
         T::SLog3, T::SLog2, T::VLog, T::LogC3, T::LogC4, T::CanonLog, T::CanonLog3,
         T::RedLog3G10, T::BmdFilmGen5, T::DJIDLog, T::FLog, T::AppleLog, T::NLog, T::GoProFlat,
+        T::LeicaLLog,
     ]
 };
 

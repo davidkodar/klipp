@@ -74,6 +74,7 @@ pub const TRANSFER_FLOG: u32 = 110;
 pub const TRANSFER_APPLE_LOG: u32 = 111;
 pub const TRANSFER_NLOG: u32 = 112;
 pub const TRANSFER_GOPRO_FLAT: u32 = 113;
+pub const TRANSFER_LEICA_LLOG: u32 = 114;
 
 pub fn transfer_id(t: ColorTransfer) -> u32 {
     match t {
@@ -104,6 +105,7 @@ pub fn transfer_id(t: ColorTransfer) -> u32 {
         ColorTransfer::AppleLog => TRANSFER_APPLE_LOG,
         ColorTransfer::NLog => TRANSFER_NLOG,
         ColorTransfer::GoProFlat => TRANSFER_GOPRO_FLAT,
+        ColorTransfer::LeicaLLog => TRANSFER_LEICA_LLOG,
         // SMPTE 240, xvYCC, BT.1361, SMPTE 428 — fall back to
         // BT.709-shape EOTF. Each can become its own ID when a real
         // source appears.

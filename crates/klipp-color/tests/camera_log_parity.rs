@@ -29,7 +29,7 @@ const FORMATS: &[(&str, LogFormat, Option<ColorTransfer>)] = &[
     ("colour_camlog_FLog", LogFormat::FLog, Some(ColorTransfer::FLog)),
     ("colour_camlog_NLog", LogFormat::NLog, Some(ColorTransfer::NLog)),
     ("colour_camlog_GoProFlat", LogFormat::GoProFlat, Some(ColorTransfer::GoProFlat)),
-    ("colour_camlog_LeicaLLog", LogFormat::LeicaLLog, None),
+    ("colour_camlog_LeicaLLog", LogFormat::LeicaLLog, Some(ColorTransfer::LeicaLLog)),
 ];
 
 /// Where there is light to measure: error in stops. Nikon N-Log's two

@@ -57,6 +57,7 @@ const TRANSFER_FLOG: u32 = 110u;
 const TRANSFER_APPLE_LOG: u32 = 111u;
 const TRANSFER_NLOG: u32 = 112u;
 const TRANSFER_GOPRO_FLAT: u32 = 113u;
+const TRANSFER_LEICA_LLOG: u32 = 114u;
 
 // Camera-native gamuts — IDs >= 100.
 const PRIMARIES_S_GAMUT3_CINE: u32 = 100u;
@@ -366,6 +367,17 @@ fn gopro_flat_eotf_scalar(c: f32) -> f32 {
     return (pow(113.0, clamp(c, 0.0, 1.0)) - 1.0) / 112.0;
 }
 
+// Leica L-Log inverse OETF. Equation (2) of the L-Log Reference Manual
+// v1.6: a = 8, b = 0.09, c = 0.27, d = 1.3, e = 0.0115, f = 0.6, with the
+// segments meeting at 0.1380.
+fn leica_llog_eotf_scalar(c: f32) -> f32 {
+    let x = clamp(c, 0.0, 1.0);
+    if x <= 0.138 {
+        return (x - 0.09) / 8.0;
+    }
+    return (pow(10.0, (x - 0.6) / 0.27) - 0.0115) / 1.3;
+}
+
 // Wrap a per-channel log EOTF scalar so its output is clamped to
 // non-negative. Below-foot signals (camera noise floor) otherwise
 // produce small negatives that, after the gamut-conversion matrix
@@ -418,6 +430,9 @@ fn apply_log_eotf(rgb: vec3<f32>, transfer_id: u32) -> vec3<f32> {
     }
     if transfer_id == TRANSFER_GOPRO_FLAT {
         return pos3(vec3<f32>(gopro_flat_eotf_scalar(rgb.x), gopro_flat_eotf_scalar(rgb.y), gopro_flat_eotf_scalar(rgb.z)));
+    }
+    if transfer_id == TRANSFER_LEICA_LLOG {
+        return pos3(vec3<f32>(leica_llog_eotf_scalar(rgb.x), leica_llog_eotf_scalar(rgb.y), leica_llog_eotf_scalar(rgb.z)));
     }
     return rgb;
 }

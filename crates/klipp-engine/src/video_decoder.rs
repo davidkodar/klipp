@@ -198,6 +198,7 @@ fn env_forced_log_format() -> Option<klipp_core::LogFormat> {
             "logc4" => L::LogC4, "redlog3g10" => L::RedLog3G10, "bmdfilmgen5" => L::BmdFilmGen5,
             "dlog" => L::DJIDLog, "flog" => L::FLog, "applelog" => L::AppleLog,
             "nlog" => L::NLog, "goproflat" => L::GoProFlat,
+            "llog" | "leicallog" => L::LeicaLLog,
             _ => return None,
         })
     })

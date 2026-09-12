@@ -314,6 +314,7 @@ pub fn apply_inverse_eotf(c: f32, transfer: ColorTransfer) -> f32 {
         ColorTransfer::DJIDLog => dji_dlog_to_linear(c).max(0.0),
         ColorTransfer::FLog => flog_to_linear(c).max(0.0),
         ColorTransfer::AppleLog => apple_log_to_linear(c).max(0.0),
+        ColorTransfer::LeicaLLog => leica_llog_to_linear(c).max(0.0),
         ColorTransfer::NLog => nlog_to_linear(c).max(0.0),
         ColorTransfer::GoProFlat => gopro_flat_to_linear(c).max(0.0),
         // BT.709 / BT.601 / BT.2020 / sRGB / SMPTE 240 / xvYCC /
@@ -1266,5 +1267,52 @@ mod tests {
         // Neutral is neutral: shared D65, no adaptation.
         let white = crate::primaries::matrix3_mul_vec(m, [1.0, 1.0, 1.0]);
         assert!(white.iter().all(|c| (c - 1.0).abs() < 1e-5), "white moved to {white:?}");
+    }
+
+    /// Leica's own published numbers, against our curve.
+    ///
+    /// Table 1 of the L-Log Reference Manual v1.6 lists the 10-bit code for
+    /// each of eight scene reflectances, from black level to the curve's
+    /// clipping point. Those are the camera maker's figures, arrived at
+    /// independently of the colour-science fixture in
+    /// `tests/camera_log_parity.rs`, so agreeing with both says the curve
+    /// is right rather than merely self-consistent.
+    ///
+    /// Codes are normalised by 1023: L-Log is recorded full range, which is
+    /// what the table's black level of 92 and clipping point of 1023 mean —
+    /// video levels would put them at 64 and 940.
+    #[test]
+    fn leica_llog_matches_the_reference_manuals_table() {
+        // (10-bit digital value, linear scene reflectance, what it is)
+        let table = [
+            (92u32, 0.00_f32, "black level"),
+            (220, 0.02, "2% black"),
+            (445, 0.18, "middle grey"),
+            (634, 0.90, "90% white"),
+            (814, 4.07, "Q3 and SL3 white limit"),
+            (852, 5.59, "SL (Typ 601) white limit"),
+            (897, 8.15, "SL2, SL2-S and SL3-S white limit"),
+            (1023, 23.30, "L-Log white limit"),
+        ];
+        for (code, want, meaning) in table {
+            let got = leica_llog_to_linear(code as f32 / 1023.0);
+            // The table is printed to two decimals, so its own rounding is
+            // the tolerance: half a unit in the last place it states, and
+            // a relative allowance where the values are large.
+            let tol = 0.005_f32.max(want * 0.002);
+            assert!(
+                (got - want).abs() <= tol,
+                "{meaning}: code {code} decodes to {got:.4}, the manual says {want}",
+            );
+        }
+    }
+
+    /// Middle grey is the one point a colourist feels immediately, and the
+    /// manual fixes it at 0 EV — so the curve has to put code 445 there.
+    #[test]
+    fn leica_llog_puts_middle_grey_at_zero_ev() {
+        let grey = leica_llog_to_linear(445.0 / 1023.0);
+        let ev = (grey / 0.18).log2();
+        assert!(ev.abs() < 0.01, "middle grey lands at {ev:+.3} EV, not 0");
     }
 }

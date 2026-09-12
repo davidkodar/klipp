@@ -197,6 +197,8 @@ pub enum ColorTransfer {
     NLog,
     /// GoPro ProTune Flat.
     GoProFlat,
+    /// Leica L-Log.
+    LeicaLLog,
 }
 
 /// All four colourspace tags resolved to a definite value (no
@@ -550,6 +552,7 @@ fn transfer_label(t: ColorTransfer) -> &'static str {
         ColorTransfer::AppleLog => "Apple Log",
         ColorTransfer::NLog => "Nikon N-Log",
         ColorTransfer::GoProFlat => "GoPro ProTune Flat",
+        ColorTransfer::LeicaLLog => "Leica L-Log",
     }
 }
 

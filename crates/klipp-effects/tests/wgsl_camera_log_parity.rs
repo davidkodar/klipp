@@ -36,6 +36,7 @@ const FORMATS: &[(&str, u32)] = &[
     ("colour_camlog_FLog", ids::TRANSFER_FLOG),
     ("colour_camlog_NLog", ids::TRANSFER_NLOG),
     ("colour_camlog_GoProFlat", ids::TRANSFER_GOPRO_FLAT),
+    ("colour_camlog_LeicaLLog", ids::TRANSFER_LEICA_LLOG),
 ];
 
 fn fixture(name: &str) -> Vec<(f32, f32)> {
