@@ -551,13 +551,12 @@ impl Renderer {
     /// there is no second opinion about what a transform or an opacity
     /// keyframe amounts to.
     ///
-    /// One more case declines that is not in the list, because it is not
-    /// a decision made here: a clip with an **identity grade** never
-    /// starts the GPU chain, so there is no GPU-resident result to
-    /// convert. An ungraded timeline therefore exports at the ordinary
-    /// speed. Worth fixing by running the chain as a pass-through, and
-    /// worth knowing about before measuring an export and concluding
-    /// this path does nothing.
+    /// A clip with an **identity grade** takes this path too, without
+    /// running a graph: the source frame is the render, so it is seeded
+    /// into the chain and converted from there. It has to be a special
+    /// case because `grade`'s own identity short-circuit returns
+    /// `input.pixels()`, which for a GPU frame means downloading it —
+    /// the very thing this path exists to avoid.
     #[allow(clippy::too_many_arguments)]
     pub fn render_yuv420_on_gpu(
         &mut self,
@@ -656,6 +655,22 @@ impl Renderer {
             SourcePixels::Linear(pixels) => GradeInput::Cpu(pixels),
             _ => return None,
         };
+
+        // An identity grade has nothing to run: the source frame is the
+        // render. Seed the chain with it and convert that, rather than
+        // going through `grade`, whose identity short-circuit would pull
+        // the frame off the GPU (`input.pixels()`) only to hand it back.
+        if clip.node_graph.is_identity() {
+            let GradeInput::Gpu(g) = &input else { return None };
+            if !g.seed(&mut self.executor, width, height)
+                || !self.executor.take_seeded_input_as_output()
+            {
+                return None;
+            }
+            return self
+                .executor
+                .encode_output_to_yuv420(width, height, tone_map_op, luma_coefs, semi_planar);
+        }
 
         self.executor.request_output_on_gpu();
         let pixels = self.grade(clip, input, clip_time, fps, width, height);

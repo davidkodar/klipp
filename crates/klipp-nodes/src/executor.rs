@@ -712,6 +712,29 @@ impl GraphExecutor {
         ok
     }
 
+    /// Take the frame just seeded into the chain as if a graph had
+    /// produced it, so it can be read with `encode_output_to_yuv420` and
+    /// friends. `false` if nothing is seeded.
+    ///
+    /// For a clip whose grade is an identity: there is no graph to run,
+    /// and the source frame *is* the render. Without this, an ungraded
+    /// clip declines every GPU output path and — worse — gets its frame
+    /// pulled off the GPU by `input.pixels()` only to be handed straight
+    /// back.
+    ///
+    /// Consumes the seed, like a run does, so it cannot be read a second
+    /// time or leak into the next frame.
+    pub fn take_seeded_input_as_output(&mut self) -> bool {
+        if !self.gpu_chain_preseeded {
+            return false;
+        }
+        self.gpu_chain_preseeded = false;
+        self.gpu_chain_preseed_dims = None;
+        // A seed always lands in `buf_a`, which is slot A.
+        self.output_on_gpu = Some(true);
+        true
+    }
+
     /// The last run's GPU-resident result as 8-bit 4:2:0 planes — Y, then
     /// Cb, then Cr, tightly packed — instead of a linear frame read back.
     ///

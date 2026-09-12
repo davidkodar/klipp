@@ -49,10 +49,12 @@ fn media(from: f64, to: f64) -> Clip {
 
 /// A clip with an actual grade on it.
 ///
-/// This matters for the positive case: an identity graph never starts the
-/// GPU chain, so there is no GPU-resident result to convert and the path
-/// declines — correctly, but it would make a test that used one report a
-/// skip instead of an agreement.
+/// This matters for the refusal cases. An identity graph takes a
+/// different route through `render_yuv420_on_gpu` — the pass-through,
+/// which seeds the chain and converts that — so a refusal case built on
+/// an ungraded clip would be testing the wrong branch, and before the
+/// pass-through existed it declined for a reason that had nothing to do
+/// with the gate.
 fn graded(from: f64, to: f64, stops: f32) -> Clip {
     let mut c = media(from, to);
     let node = |kind, params| Node {
@@ -102,28 +104,71 @@ fn sequence(tracks: Vec<Vec<Clip>>) -> Sequence {
     seq
 }
 
-/// Media clips return a flat linear frame, one value per clip, so a
-/// composite of two layers is obvious in the result.
+/// Media clips return a flat frame, one colour per clip, so a composite
+/// of two layers is obvious in the result.
+///
+/// `on_gpu` decides which shape it arrives in, and that matters: the
+/// export's frames are always `SourcePixels::Gpu` now — a hardware
+/// decode seeds from NV12 and a software one from the scaler's samples —
+/// so a CPU-only fixture cannot reach the identity pass-through at all.
 #[derive(Default)]
-struct Flat(HashMap<ClipId, [f32; 3]>);
+struct Flat {
+    colours: HashMap<ClipId, [u8; 3]>,
+    on_gpu: bool,
+}
 
 impl Flat {
-    fn with(mut self, c: &Clip, rgb: [f32; 3]) -> Self {
-        self.0.insert(c.id, rgb);
+    /// The colour is given as an sRGB byte triple rather than a linear
+    /// one so it survives the GPU seed exactly: the seed uploads sRGB
+    /// bytes, and a linear value that is not the image of a byte would
+    /// come back a rounding away from the reference.
+    fn with(mut self, c: &Clip, srgb: [u8; 3]) -> Self {
+        self.colours.insert(c.id, srgb);
         self
+    }
+
+    fn on_gpu(mut self) -> Self {
+        self.on_gpu = true;
+        self
+    }
+
+    fn linear(srgb: [u8; 3], n: usize) -> Vec<f32> {
+        let c = |v: u8| klipp_color::transfer::srgb_to_linear(v as f32 / 255.0);
+        [c(srgb[0]), c(srgb[1]), c(srgb[2]), 1.0].repeat(n)
+    }
+}
+
+/// A frame the decoder left on the GPU, seeded from its sRGB bytes the
+/// way the viewer's hardware-decode path does.
+struct SeededFlat {
+    srgb: Arc<Vec<u8>>,
+    linear: Arc<Vec<f32>>,
+}
+
+impl klipp_compose::GpuPixels for SeededFlat {
+    fn seed(&self, exec: &mut klipp_nodes::GraphExecutor, width: u32, height: u32) -> bool {
+        exec.prime_chain_from_srgb8(&self.srgb, width, height)
+    }
+
+    fn read(&self) -> Arc<Vec<f32>> {
+        Arc::clone(&self.linear)
     }
 }
 
 impl FrameSource for Flat {
     fn frame(&mut self, clip: &Clip, _secs: f64, width: u32, height: u32) -> Option<SourceFrame> {
-        let c = self.0.get(&clip.id)?;
-        let px = [c[0], c[1], c[2], 1.0].repeat((width * height) as usize);
-        Some(SourceFrame {
-            pixels: SourcePixels::Linear(Arc::new(px)),
-            width,
-            height,
-            pts: None,
-        })
+        let srgb = *self.colours.get(&clip.id)?;
+        let n = (width * height) as usize;
+        let linear = Arc::new(Flat::linear(srgb, n));
+        let pixels = if self.on_gpu {
+            SourcePixels::Gpu(Arc::new(SeededFlat {
+                srgb: Arc::new([srgb[0], srgb[1], srgb[2], 255].repeat(n)),
+                linear,
+            }))
+        } else {
+            SourcePixels::Linear(linear)
+        };
+        Some(SourceFrame { pixels, width, height, pts: None })
     }
 }
 
@@ -167,11 +212,58 @@ fn cpu_luma(seq: &Sequence, t: f64, src: &mut Flat) -> Vec<u8> {
 /// A plain single clip is what the path is for, and its luma has to be
 /// the renderer's own picture. Without this the file would only prove the
 /// gate says no, which is easy to do by saying no to everything.
+///
+/// Run from both source shapes. The export's frames arrive on the GPU,
+/// but a grade can also start from CPU pixels and end up resident, and
+/// the two take different arms of `grade`.
 #[test]
 fn a_plain_single_clip_agrees_with_the_renderer() {
-    let c = graded(0.0, 1.0, 0.5);
+    for on_gpu in [false, true] {
+        let c = graded(0.0, 1.0, 0.5);
+        let seq = sequence(vec![vec![c.clone()]]);
+        let mut src = Flat::default().with(&c, [46, 128, 230]);
+        if on_gpu {
+            src = src.on_gpu();
+        }
+
+        let Some(planes) = gpu_planes(&seq, 0.5, &mut src) else {
+            eprintln!("skipping: the GPU path refused (no usable GPU)");
+            return;
+        };
+        let want = cpu_luma(&seq, 0.5, &mut src);
+        let got = &planes[..want.len()];
+
+        let worst = got
+            .iter()
+            .zip(want.iter())
+            .map(|(g, w)| (*g as i32 - *w as i32).abs())
+            .max()
+            .unwrap_or(0);
+        assert!(worst <= 1, "on_gpu={on_gpu}: luma differs from the renderer by {worst} levels");
+
+        // And the frame is not accidentally blank, which would agree
+        // with a blank reference.
+        assert!(
+            got.iter().any(|&v| v > 40),
+            "on_gpu={on_gpu}: the fixture rendered black, so agreement proves nothing"
+        );
+    }
+}
+
+/// An *ungraded* clip takes the path as well, and gives the renderer's
+/// picture.
+///
+/// It is a separate case in the code and so a separate case here:
+/// `grade` short-circuits an identity graph by returning the source
+/// pixels, which for a GPU frame means downloading the 132 MB this path
+/// exists not to download. Before the pass-through it declined, and an
+/// ungraded timeline exported at the old speed.
+#[test]
+fn an_ungraded_clip_agrees_with_the_renderer() {
+    let c = media(0.0, 1.0);
+    assert!(c.node_graph.is_identity(), "the fixture must be ungraded");
     let seq = sequence(vec![vec![c.clone()]]);
-    let mut src = Flat::default().with(&c, [0.18, 0.5, 0.9]);
+    let mut src = Flat::default().with(&c, [46, 128, 230]).on_gpu();
 
     let Some(planes) = gpu_planes(&seq, 0.5, &mut src) else {
         eprintln!("skipping: the GPU path refused (no usable GPU)");
@@ -179,15 +271,13 @@ fn a_plain_single_clip_agrees_with_the_renderer() {
     };
     let want = cpu_luma(&seq, 0.5, &mut src);
     let got = &planes[..want.len()];
-
-    let mut worst = 0i32;
-    for (g, w) in got.iter().zip(want.iter()) {
-        worst = worst.max((*g as i32 - *w as i32).abs());
-    }
-    assert!(worst <= 1, "luma differs from the renderer by {worst} levels");
-
-    // And the frame is not accidentally blank, which would agree with a
-    // blank reference.
+    let worst = got
+        .iter()
+        .zip(want.iter())
+        .map(|(g, w)| (*g as i32 - *w as i32).abs())
+        .max()
+        .unwrap_or(0);
+    assert!(worst <= 1, "ungraded luma differs from the renderer by {worst} levels");
     assert!(
         got.iter().any(|&v| v > 40),
         "the fixture rendered black, so agreement proves nothing"
@@ -205,7 +295,7 @@ fn the_gate_refuses_everything_it_cannot_reproduce() {
     // A second layer to composite.
     let (a, b) = (graded(0.0, 1.0, 0.5), graded(0.0, 1.0, 0.5));
     let overlay = sequence(vec![vec![a.clone()], vec![b.clone()]]);
-    let overlay_src = Flat::default().with(&a, [0.2; 3]).with(&b, [0.8; 3]);
+    let overlay_src = Flat::default().with(&a, [80, 80, 80]).with(&b, [200, 200, 200]);
 
     // A dissolve between two clips.
     let (c, d) = (graded(0.0, 1.0, 0.5), graded(0.5, 1.5, 0.5));
@@ -219,7 +309,7 @@ fn the_gate_refuses_everything_it_cannot_reproduce() {
         user_params: Default::default(),
         alignment: klipp_core::TransitionAlignment::Center,
     }];
-    let transition_src = Flat::default().with(&c, [0.2; 3]).with(&d, [0.8; 3]);
+    let transition_src = Flat::default().with(&c, [80, 80, 80]).with(&d, [200, 200, 200]);
 
     // Track opacity below one.
     let e = graded(0.0, 1.0, 0.5);
@@ -277,12 +367,12 @@ fn the_gate_refuses_everything_it_cannot_reproduce() {
     let cases: Vec<(&str, Sequence, Flat)> = vec![
         ("an overlay layer", overlay, overlay_src),
         ("a dissolve", with_transition, transition_src),
-        ("track opacity 0.5", faded_track, Flat::default().with(&e, [0.5; 3])),
-        ("a clip opacity effect", faded_clip, Flat::default().with(&f, [0.5; 3])),
-        ("a gaussian blur", blurred, Flat::default().with(&g, [0.5; 3])),
-        ("a screen blend", screened, Flat::default().with(&h, [0.5; 3])),
-        ("a matte source", matte_source, Flat::default().with(&i, [0.5; 3])),
-        ("a zoom", zoomed, Flat::default().with(&j, [0.5; 3])),
+        ("track opacity 0.5", faded_track, Flat::default().with(&e, [128, 128, 128])),
+        ("a clip opacity effect", faded_clip, Flat::default().with(&f, [128, 128, 128])),
+        ("a gaussian blur", blurred, Flat::default().with(&g, [128, 128, 128])),
+        ("a screen blend", screened, Flat::default().with(&h, [128, 128, 128])),
+        ("a matte source", matte_source, Flat::default().with(&i, [128, 128, 128])),
+        ("a zoom", zoomed, Flat::default().with(&j, [128, 128, 128])),
         ("a generator", generated, Flat::default()),
         ("nothing on screen", empty, Flat::default()),
     ];
@@ -302,7 +392,7 @@ fn the_gate_refuses_everything_it_cannot_reproduce() {
 fn an_hdr_render_is_refused() {
     let c = media(0.0, 1.0);
     let seq = sequence(vec![vec![c.clone()]]);
-    let mut src = Flat::default().with(&c, [0.5; 3]);
+    let mut src = Flat::default().with(&c, [128, 128, 128]);
     let refused = renderer().render_yuv420_on_gpu(
         &seq,
         tc(0.5),

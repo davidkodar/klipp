@@ -67,11 +67,28 @@ fn source() -> Option<PathBuf> {
     Some(out)
 }
 
-/// Frames the decoder hands over within `wait`, with their epochs.
+/// Frames the decoder hands over within `wait`, with their epochs, and
+/// at least one of them — `wait` is how long to keep collecting *after*
+/// the first frame arrives, not a budget for it to appear in.
+///
+/// The distinction is the difference between a reliable test and a
+/// flaky one. A fixed window assumes the decode thread gets scheduled
+/// and finishes a frame inside it, which is true when this file runs on
+/// its own and not always true during a full workspace run, where every
+/// other test binary is competing for the same cores and GPU. It failed
+/// exactly once that way — "the decoder produced nothing to test with" —
+/// which says nothing about epochs, the thing under test.
 fn drain(dec: &VideoDecoder, wait: Duration) -> Vec<(f64, u64)> {
-    let deadline = Instant::now() + wait;
+    let first_frame_by = Instant::now() + Duration::from_secs(20);
+    let mut deadline = Instant::now() + wait;
     let mut out = Vec::new();
-    while Instant::now() < deadline {
+    while Instant::now() < deadline || (out.is_empty() && Instant::now() < first_frame_by) {
+        // Once something arrives, collect for the caller's window from
+        // that point, so the frames-after-a-seek cases still see a run
+        // of frames rather than just the first.
+        if out.is_empty() {
+            deadline = Instant::now() + wait;
+        }
         {
             let mut q = dec.frame_queue().lock().unwrap();
             while let Some(f) = q.front() {

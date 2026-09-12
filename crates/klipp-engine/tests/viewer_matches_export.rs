@@ -358,7 +358,13 @@ fn the_viewer_shows_the_exported_frame() {
     // Frames: a alone, a under c, a under c and d, the dissolve before and
     // after its cut, b under both, b under c; then back, to catch a stream
     // left on a later frame.
-    let frames = [10, 35, 60, 94, 106, 120, 160, 60, 35];
+    //
+    // 185 is b alone past the end of every overlay, and b carries no
+    // grade — the one frame here that exercises the export's identity
+    // pass-through, where the source frame is seeded into the GPU chain
+    // and converted without a graph running. Nothing else in this file
+    // reaches it: every other frame is graded, composited, or both.
+    let frames = [10, 35, 60, 94, 106, 120, 160, 185, 60, 35];
     let mut worst = 0;
     for n in frames {
         let (v, e) = (viewer.frame_at(n), exported_frame(&out, n));
