@@ -26,6 +26,13 @@ const W: u32 = 640;
 const H: u32 = 360;
 /// Four vertical bands of known luminance, in cd/m².
 const BAND_NITS: [f64; 4] = [5.0, 26.0, 203.0, 1000.0];
+/// A fifth band, saturated: BT.2020 red at this level, green and blue at
+/// the bottom. Its brightest channel is the red one — the same thing the
+/// encoder measures, once the picture is in BT.2020. In a BT.709 project
+/// the working values of this colour are another basis entirely (and its
+/// green and blue are negative), so measuring there reads a different
+/// number.
+const SATURATED_RED_NITS: f64 = 600.0;
 
 fn pq_signal(nits: f64) -> f64 {
     let (m1, m2) = (2610.0 / 16384.0, 2523.0 / 4096.0 * 128.0);
@@ -41,7 +48,8 @@ fn pq_nits(signal: f64) -> f64 {
     10000.0 * ((p - c1).max(0.0) / (c2 - c3 * p)).powf(1.0 / m1)
 }
 
-/// A lossless 10-bit PQ clip of four neutral bands at [`BAND_NITS`].
+/// A lossless 10-bit PQ clip of four neutral bands at [`BAND_NITS`], plus a
+/// saturated fifth at [`SATURATED_RED_NITS`].
 ///
 /// Cached between runs under a name that carries the codes it holds: keyed
 /// on the frame size alone, a file written for other band levels stayed in
@@ -51,8 +59,22 @@ fn pq_bands() -> Option<PathBuf> {
     if std::process::Command::new("ffmpeg").arg("-version").output().is_err() {
         return None;
     }
-    let codes: Vec<u16> = BAND_NITS.iter().map(|n| (64.0 + pq_signal(*n) * 876.0).round() as u16).collect();
-    let name: String = codes.iter().map(|c| format!("-{c}")).collect();
+    let y10 = |signal: f64| (64.0 + signal * 876.0).round() as u16;
+    let c10 = |v: f64| (512.0 + v * 896.0).round().clamp(4.0, 1019.0) as u16;
+    // Four neutral bands, then BT.2020 R'G'B' → Y'CbCr (BT.2020 NCL,
+    // limited range) for the saturated one.
+    let (kr, kb) = (0.2627f64, 0.0593f64);
+    let (r, g, b) = (pq_signal(SATURATED_RED_NITS), pq_signal(1.0), pq_signal(1.0));
+    let luma = kr * r + (1.0 - kr - kb) * g + kb * b;
+    let saturated = [y10(luma), c10((b - luma) / (2.0 * (1.0 - kb))), c10((r - luma) / (2.0 * (1.0 - kr)))];
+    let codes: Vec<[u16; 3]> = BAND_NITS
+        .iter()
+        .map(|n| [y10(pq_signal(*n)), 512, 512])
+        .chain(std::iter::once(saturated))
+        .collect();
+    // Every code in the name, chroma included: the saturated band differs
+    // from a neutral one in chroma alone.
+    let name: String = codes.iter().flatten().map(|c| format!("-{c}")).collect();
     let out = std::env::temp_dir().join(format!("klipp-hdr-monitor-bands-{W}x{H}{name}.mkv"));
     if out.exists() {
         return Some(out);
@@ -61,13 +83,15 @@ fn pq_bands() -> Option<PathBuf> {
     let mut bytes = Vec::new();
     // Two seconds: the harness parks ten frames in.
     for _ in 0..50 {
-        for _ in 0..H {
-            for x in 0..W {
-                bytes.extend_from_slice(&codes[(x * 4 / W) as usize].to_le_bytes());
+        for plane in 0..3 {
+            let pw = if plane == 0 { W } else { W / 2 };
+            let ph = if plane == 0 { H } else { H / 2 };
+            for _ in 0..ph {
+                for x in 0..pw {
+                    let band = (x * W / pw * 5 / W) as usize;
+                    bytes.extend_from_slice(&codes[band.min(4)][plane].to_le_bytes());
+                }
             }
-        }
-        for _ in 0..(W / 2) * (H / 2) * 2 {
-            bytes.extend_from_slice(&512u16.to_le_bytes());
         }
     }
     std::fs::write(&raw, bytes).ok()?;
@@ -129,7 +153,10 @@ fn export_pq(src: &Path, out: &Path) {
     .unwrap();
 }
 
-/// The exported file's luma code at the centre of each band.
+/// The exported file's level at the centre of each neutral band, from its
+/// luma code. Only the neutral ones: for a saturated colour the luma is
+/// not the level its brightest channel carries, and the brightest channel
+/// is what both the encoder's metadata and the viewer's readout measure.
 fn exported_band_nits(path: &Path) -> Vec<f64> {
     let out = std::process::Command::new("ffmpeg")
         .args(["-nostdin", "-v", "error", "-i"]).arg(path)
@@ -137,9 +164,9 @@ fn exported_band_nits(path: &Path) -> Vec<f64> {
         .output()
         .unwrap();
     let y: Vec<u16> = out.stdout.chunks_exact(2).take((W * H) as usize).map(|b| u16::from_le_bytes([b[0], b[1]])).collect();
-    (0..4)
+    (0..BAND_NITS.len() as u32)
         .map(|b| {
-            let x = b * W / 4 + W / 8;
+            let x = b * W / 5 + W / 10;
             let code = y[((H / 2) * W + x) as usize] as f64;
             pq_nits((code - 64.0) / 876.0)
         })
@@ -153,14 +180,13 @@ fn the_viewer_measures_what_the_export_writes() {
         return;
     };
     let parked = common::Parked::start_ungraded(src.clone(), W, H);
-    let sdr_picture = parked.frame();
 
     // HDR monitoring on: the light of each band, as the viewer has it.
     parked.send(AppCommand::SetHdrMonitor(HdrMonitor::Preview));
     std::thread::sleep(Duration::from_millis(700));
-    let measured: Vec<f32> = (0..4)
+    let measured: Vec<f32> = (0..5)
         .map(|b| {
-            let nx = (b as f32 + 0.5) / 4.0;
+            let nx = (b as f32 + 0.5) / 5.0;
             parked.nits_at(nx, 0.5).expect("HDR monitoring publishes the light")
         })
         .collect();
@@ -169,6 +195,17 @@ fn the_viewer_measures_what_the_export_writes() {
         eprintln!("band {b}: source {want} cd/m², viewer {got:.1}");
         assert!((got - want).abs() <= want * 0.02 + 0.5, "band {b}: the viewer reads {got:.1}, source {want}");
     }
+
+    // The saturated band reads its own brightest channel — 600 cd/m² of
+    // BT.2020 red — wherever the project's working space happens to put
+    // that colour. Measured in the working basis instead, a BT.709
+    // project reads well over it.
+    let saturated = measured[4] as f64;
+    eprintln!("saturated band: source {SATURATED_RED_NITS} cd/m² (BT.2020 red), viewer {saturated:.1}");
+    assert!(
+        (saturated - SATURATED_RED_NITS).abs() <= SATURATED_RED_NITS * 0.03,
+        "the saturated band reads {saturated:.1} cd/m², source {SATURATED_RED_NITS}",
+    );
 
     // And the file the export writes carries those same levels.
     let out = std::env::temp_dir().join("klipp-hdr-monitor-export.mp4");
@@ -188,7 +225,7 @@ fn the_viewer_measures_what_the_export_writes() {
     std::thread::sleep(Duration::from_millis(700));
     let painted = parked.frame();
     let at = |b: u32| {
-        let (x, y) = (b * W / 4 + W / 8, H / 2);
+        let (x, y) = (b * W / 5 + W / 10, H / 2);
         let i = ((y * W + x) * 4) as usize;
         [painted[i], painted[i + 1], painted[i + 2]]
     };
@@ -197,7 +234,7 @@ fn the_viewer_measures_what_the_export_writes() {
     // BT.2408 puts them is pinned in `klipp_color::hdr_view`'s own tests,
     // exactly; a band placed on a boundary here lands either side of it
     // by a hair of rounding.
-    let band_of = |nits: f32| klipp_color::hdr_view::false_colour([klipp_color::hdr_view::from_nits(nits); 3]);
+    let band_of = klipp_color::hdr_view::false_colour_of_nits;
     for (b, nominal) in BAND_NITS.iter().enumerate() {
         let (got, expect) = (at(b as u32), band_of(measured[b]));
         eprintln!("band {b} ({nominal} cd/m², measured {:.1}): painted {got:?}, expected {expect:?}", measured[b]);
@@ -208,6 +245,31 @@ fn the_viewer_measures_what_the_export_writes() {
     for b in 1..4 {
         assert_ne!(painted[b], painted[b - 1], "bands {} and {b} are painted the same", b - 1);
     }
+
+    // A BT.2020 project holds the same colours in another basis, and must
+    // measure the same light: the readout is of the picture, not of
+    // whichever numbers the working space keeps it in.
+    parked.send(AppCommand::SetHdrMonitor(HdrMonitor::Off));
+    std::thread::sleep(Duration::from_millis(300));
+    let sdr_picture = parked.frame();
+    drop(parked);
+    klipp_engine::video_decoder::set_working_colorspace(WorkingColorspace::Bt2020Linear);
+    let wide = common::Parked::start_ungraded(src.clone(), W, H);
+    wide.send(AppCommand::SetHdrMonitor(HdrMonitor::Preview));
+    std::thread::sleep(Duration::from_millis(700));
+    for b in 0..5 {
+        let nx = (b as f32 + 0.5) / 5.0;
+        let got = wide.nits_at(nx, 0.5).expect("HDR monitoring publishes the light") as f64;
+        let want = measured[b] as f64;
+        eprintln!("band {b}: BT.709 project {want:.1} cd/m², BT.2020 project {got:.1}");
+        assert!(
+            (got - want).abs() <= want * 0.03 + 0.5,
+            "band {b}: a BT.2020 project reads {got:.1} cd/m² where a BT.709 one reads {want:.1}",
+        );
+    }
+    drop(wide);
+    klipp_engine::video_decoder::set_working_colorspace(WorkingColorspace::Rec709Linear);
+    let parked = common::Parked::start_ungraded(src, W, H);
 
     // Off again: the picture the viewer has always shown.
     parked.send(AppCommand::SetHdrMonitor(HdrMonitor::Off));

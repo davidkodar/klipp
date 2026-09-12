@@ -521,9 +521,12 @@ impl PlaybackEngine {
             return (self.display_encode(linear), None);
         }
         const NIT_MAP_STEP: u32 = 4;
-        let map = klipp_color::hdr_view::nit_map(linear, w, h, NIT_MAP_STEP);
+        // Measured where the encoder measures: BT.2020, whatever the
+        // project works in.
+        let measure = klipp_color::hdr_view::HdrMeasure::for_working_space(crate::video_decoder::working_colorspace());
+        let map = measure.nit_map(linear, w, h, NIT_MAP_STEP);
         let bytes = match self.hdr_monitor {
-            HdrMonitor::FalseColour => klipp_color::hdr_view::false_colour_frame(linear),
+            HdrMonitor::FalseColour => measure.false_colour_frame(linear),
             _ => {
                 let mut preview = linear.to_vec();
                 use rayon::prelude::*;

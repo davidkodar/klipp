@@ -69,13 +69,8 @@ pub const FALSE_COLOUR_BANDS: [(f32, [u8; 3]); 8] = [
     (900.0, [230, 40, 40]),    // at the master's peak, red
 ];
 
-/// The false colour of a pixel, by its brightest channel's light.
-///
-/// The brightest channel, not the luminance: a saturated highlight clips
-/// channel by channel, and that is what the colourist needs to see.
-pub fn false_colour(display_light: [f32; 3]) -> [u8; 3] {
-    let brightest = display_light[0].max(display_light[1]).max(display_light[2]);
-    let nits = nits(brightest);
+/// The false colour of a level, cd/m².
+pub fn false_colour_of_nits(nits: f32) -> [u8; 3] {
     let mut colour = FALSE_COLOUR_BANDS[0].1;
     for (level, band) in FALSE_COLOUR_BANDS {
         if nits >= level {
@@ -85,35 +80,74 @@ pub fn false_colour(display_light: [f32; 3]) -> [u8; 3] {
     colour
 }
 
-/// A frame of HDR display light (RGBA f32) → the false-colour picture,
-/// sRGB RGBA8. Alpha is opaque: the bands are a measurement, not a layer.
-pub fn false_colour_frame(display_light: &[f32]) -> Vec<u8> {
-    use rayon::prelude::*;
-    let mut out = vec![255u8; display_light.len() / 4 * 4];
-    out.par_chunks_exact_mut(4).zip(display_light.par_chunks_exact(4)).for_each(|(o, px)| {
-        let c = false_colour([px[0], px[1], px[2]]);
-        o[..3].copy_from_slice(&c);
-    });
-    out
+/// Measuring an HDR picture, in the basis the file is written in.
+///
+/// A delivery is BT.2020 whatever the project works in, and the encoder
+/// measures each pixel's *brightest channel* there (CTA-861.3's maxRGB,
+/// which is also what MaxCLL is made of). So does this, converting out of
+/// the working space first. Measured in the working basis instead, the
+/// same BT.2020 red at 600 cd/m² reads 1002 in a BT.709 project — 67%
+/// high, because expressing that red in BT.709's narrower basis needs a
+/// red channel 1.66× as large. A colourist would read a highlight as
+/// clipped that the file has well inside its range.
+///
+/// The brightest channel, not the luminance: a saturated highlight runs
+/// out of range channel by channel, and that is what has to be seen.
+#[derive(Clone, Copy)]
+pub struct HdrMeasure {
+    to_2020: [[f32; 3]; 3],
 }
 
-/// A frame of HDR display light → the light of each pixel's brightest
-/// channel, cd/m², at `step`-pixel intervals (a whole-frame map costs
-/// 33 MB at 4K and the readout does not need it). Row-major, of
-/// `width.div_ceil(step)` by `height.div_ceil(step)`.
-pub fn nit_map(display_light: &[f32], width: u32, height: u32, step: u32) -> (Vec<f32>, u32, u32) {
-    let step = step.max(1);
-    let (mw, mh) = (width.div_ceil(step), height.div_ceil(step));
-    let mut out = vec![0.0f32; (mw * mh) as usize];
-    for my in 0..mh {
-        for mx in 0..mw {
-            let (x, y) = ((mx * step).min(width - 1), (my * step).min(height - 1));
-            let i = ((y * width + x) * 4) as usize;
-            let brightest = display_light[i].max(display_light[i + 1]).max(display_light[i + 2]);
-            out[(my * mw + mx) as usize] = nits(brightest);
-        }
+impl HdrMeasure {
+    /// For a project working in `ws`.
+    pub fn for_working_space(ws: klipp_core::WorkingColorspace) -> Self {
+        Self { to_2020: crate::primaries::working_to_bt2020(ws) }
     }
-    (out, mw, mh)
+
+    /// The light of the pixel's brightest channel, cd/m².
+    #[inline]
+    pub fn nits_of(&self, display_light: [f32; 3]) -> f32 {
+        let c = crate::primaries::matrix3_mul_vec(self.to_2020, display_light);
+        nits(c[0].max(c[1]).max(c[2]))
+    }
+
+    /// The false colour of the pixel.
+    #[inline]
+    pub fn false_colour(&self, display_light: [f32; 3]) -> [u8; 3] {
+        false_colour_of_nits(self.nits_of(display_light))
+    }
+
+    /// A frame of HDR display light (RGBA f32) → the false-colour
+    /// picture, sRGB RGBA8. Alpha is opaque: the bands are a
+    /// measurement, not a layer.
+    pub fn false_colour_frame(&self, display_light: &[f32]) -> Vec<u8> {
+        use rayon::prelude::*;
+        let mut out = vec![255u8; display_light.len() / 4 * 4];
+        out.par_chunks_exact_mut(4).zip(display_light.par_chunks_exact(4)).for_each(|(o, px)| {
+            let c = self.false_colour([px[0], px[1], px[2]]);
+            o[..3].copy_from_slice(&c);
+        });
+        out
+    }
+
+    /// A frame of HDR display light → the light of each pixel, cd/m², at
+    /// `step`-pixel intervals (a whole-frame map costs 33 MB at 4K and
+    /// the readout does not need it). Row-major, of
+    /// `width.div_ceil(step)` by `height.div_ceil(step)`.
+    pub fn nit_map(&self, display_light: &[f32], width: u32, height: u32, step: u32) -> (Vec<f32>, u32, u32) {
+        let step = step.max(1);
+        let (mw, mh) = (width.div_ceil(step), height.div_ceil(step));
+        let mut out = vec![0.0f32; (mw * mh) as usize];
+        for my in 0..mh {
+            for mx in 0..mw {
+                let (x, y) = ((mx * step).min(width - 1), (my * step).min(height - 1));
+                let i = ((y * width + x) * 4) as usize;
+                out[(my * mw + mx) as usize] =
+                    self.nits_of([display_light[i], display_light[i + 1], display_light[i + 2]]);
+            }
+        }
+        (out, mw, mh)
+    }
 }
 
 #[cfg(test)]
@@ -147,7 +181,7 @@ mod tests {
     /// BT.2408 levels land on their own bands.
     #[test]
     fn false_colour_bands_follow_the_reference_levels() {
-        let at = |n: f32| false_colour([from_nits(n); 3]);
+        let at = |n: f32| false_colour_of_nits(n);
         assert_eq!(at(0.0), [0, 0, 0], "black");
         assert_eq!(at(1.0), [30, 30, 90], "deep shadow");
         assert_eq!(at(10.0), [0, 110, 160], "shadow");
@@ -165,7 +199,28 @@ mod tests {
         assert_eq!(at(4000.0), [230, 40, 40], "above the peak");
         // The brightest channel decides: a saturated red highlight is at
         // the peak even though its luminance is far below it.
-        assert_eq!(false_colour([from_nits(1000.0), 0.0, 0.0]), [230, 40, 40]);
+        let wide = HdrMeasure::for_working_space(klipp_core::WorkingColorspace::Bt2020Linear);
+        assert_eq!(wide.false_colour([from_nits(1000.0), 0.0, 0.0]), [230, 40, 40]);
+    }
+
+    /// The light of a colour is the same picture whatever basis the
+    /// project keeps it in: a BT.2020 red at 600 cd/m² measures 600 in a
+    /// BT.2020 project and in a BT.709 one, where the same colour needs a
+    /// red channel 1.66x as large.
+    #[test]
+    fn the_light_of_a_colour_does_not_depend_on_the_working_space() {
+        use klipp_core::WorkingColorspace::{Bt2020Linear, Rec709Linear};
+        let in_2020 = [from_nits(600.0), from_nits(1.0), from_nits(1.0)];
+        let to_709 = crate::camera_log::primaries_to_working_matrix(klipp_core::ColorPrimaries::Bt2020, Rec709Linear);
+        let in_709 = crate::primaries::matrix3_mul_vec(to_709, in_2020);
+        assert!(in_709[0] > in_2020[0] * 1.5, "the BT.709 basis needs a larger red: {in_709:?}");
+
+        let wide = HdrMeasure::for_working_space(Bt2020Linear).nits_of(in_2020);
+        let narrow = HdrMeasure::for_working_space(Rec709Linear).nits_of(in_709);
+        assert!((wide - 600.0).abs() < 1.0, "a BT.2020 project reads {wide}");
+        assert!((narrow - 600.0).abs() < 1.0, "a BT.709 project reads {narrow}");
+        // And both land in the same false-colour band.
+        assert_eq!(false_colour_of_nits(wide), false_colour_of_nits(narrow));
     }
 
     #[test]
@@ -179,12 +234,13 @@ mod tests {
         }
         let i = ((1 * w + 2) * 4) as usize;
         frame[i..i + 3].copy_from_slice(&[from_nits(1000.0), 0.0, 0.0]);
-        let (map, mw, mh) = nit_map(&frame, w, h, 1);
+        let m = HdrMeasure::for_working_space(klipp_core::WorkingColorspace::Bt2020Linear);
+        let (map, mw, mh) = m.nit_map(&frame, w, h, 1);
         assert_eq!((mw, mh), (4, 2));
         assert!((map[(1 * mw + 2) as usize] - 1000.0).abs() < 0.01);
         assert!((map[0] - 203.0).abs() < 0.01);
         // Subsampled: fewer samples, still the pixels it names.
-        let (map, mw, mh) = nit_map(&frame, w, h, 2);
+        let (map, mw, mh) = m.nit_map(&frame, w, h, 2);
         assert_eq!((mw, mh), (2, 1));
         assert!((map[0] - 203.0).abs() < 0.01);
     }
@@ -192,7 +248,7 @@ mod tests {
     #[test]
     fn a_false_colour_frame_paints_every_pixel() {
         let frame: Vec<f32> = [[0.0, 0.0, 0.0, 1.0], [1.0, 1.0, 1.0, 1.0]].concat();
-        let out = false_colour_frame(&frame);
+        let out = HdrMeasure::for_working_space(klipp_core::WorkingColorspace::Bt2020Linear).false_colour_frame(&frame);
         assert_eq!(out.len(), 8);
         assert_eq!(&out[..4], &[0, 0, 0, 255]);
         assert_eq!(&out[4..], &[240, 240, 240, 255]);
