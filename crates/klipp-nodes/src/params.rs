@@ -384,9 +384,18 @@ impl NodeParams {
             && self.compound_subgraph.is_none()
     }
 
-    /// Apply a keyframe override by param name.
-    /// Values near 0.0 are stored as None (neutral) to keep is_default() correct.
-    pub fn apply_override(&mut self, param_name: &str, value: f32) {
+    /// Apply a keyframe override by param name. Returns whether the
+    /// name is one this struct carries.
+    ///
+    /// Values near 0.0 are stored as None (neutral) to keep is_default()
+    /// correct.
+    ///
+    /// The return value is what lets a caller that did not come from the
+    /// inspector — the control socket, a script — be told that its
+    /// parameter name went nowhere. Ignoring an unknown name silently is
+    /// indistinguishable from applying it and reads as "the grade did
+    /// not work".
+    pub fn apply_override(&mut self, param_name: &str, value: f32) -> bool {
         // For most params, near-zero means neutral → store None
         let n = if value.abs() < 0.0001 { None } else { Some(value) };
         match param_name {
@@ -474,27 +483,81 @@ impl NodeParams {
                 };
             }
             "mix" => self.mix = n,
+            // The index is part of the name, so a bad one is a bad name
+            // rather than a no-op on a good one.
             p if p.starts_with("warper_hue_") => {
-                if let Ok(idx) = p["warper_hue_".len()..].parse::<usize>() {
-                    if idx < 12 {
+                match p["warper_hue_".len()..].parse::<usize>() {
+                    Ok(idx) if idx < 12 => {
                         let w = self.warper_params.get_or_insert_with(Default::default);
                         w.hue_shifts[idx] = value;
                     }
+                    _ => return false,
                 }
             }
             p if p.starts_with("warper_sat_") => {
-                if let Ok(idx) = p["warper_sat_".len()..].parse::<usize>() {
-                    if idx < 12 {
+                match p["warper_sat_".len()..].parse::<usize>() {
+                    Ok(idx) if idx < 12 => {
                         let w = self.warper_params.get_or_insert_with(Default::default);
                         w.sat_shifts[idx] = value;
                     }
+                    _ => return false,
                 }
             }
             "denoise_luma" => self.denoise_luma = Some(value),
             "denoise_chroma" => self.denoise_chroma = Some(value),
             "denoise_radius" => self.denoise_radius = Some(value as u32),
-            _ => {}
+
+            // ── HSL qualifier (secondary correction) ──────────────────
+            // Touching any of these turns the key on: a caller setting a
+            // hue window means to key on it, and a qualifier that is
+            // configured but disabled passes the whole frame, which
+            // looks like the key failing.
+            p if p.starts_with("qual_") => {
+                let q = self.qualifier.get_or_insert_with(Default::default);
+                match &p["qual_".len()..] {
+                    "enabled" => q.enabled = value != 0.0,
+                    "hue_center" => { q.hue_center = value; q.enabled = true }
+                    "hue_width" => { q.hue_width = value; q.enabled = true }
+                    "hue_soft" => { q.hue_soft = value; q.enabled = true }
+                    "sat_low" => { q.sat_low = value; q.enabled = true }
+                    "sat_high" => { q.sat_high = value; q.enabled = true }
+                    "sat_soft" => { q.sat_soft = value; q.enabled = true }
+                    "lum_low" => { q.lum_low = value; q.enabled = true }
+                    "lum_high" => { q.lum_high = value; q.enabled = true }
+                    "lum_soft" => { q.lum_soft = value; q.enabled = true }
+                    "invert" => q.invert = value != 0.0,
+                    "exposure" => q.exposure = value,
+                    "saturation" => q.saturation = value,
+                    "hue_shift" => q.hue_shift = value,
+                    "temperature" => q.temperature = value,
+                    _ => return false,
+                }
+            }
+
+            // ── Luminance key ────────────────────────────────────────
+            p if p.starts_with("luma_key_") => {
+                let k = self.luma_key.get_or_insert_with(Default::default);
+                match &p["luma_key_".len()..] {
+                    "enabled" => k.enabled = value != 0.0,
+                    "low" => { k.low = value; k.enabled = true }
+                    "high" => { k.high = value; k.enabled = true }
+                    "soft" => { k.soft = value; k.enabled = true }
+                    "invert" => k.invert = value != 0.0,
+                    _ => return false,
+                }
+            }
+            _ => return false,
         }
+        true
+    }
+
+    /// Whether [`Self::apply_override`] carries this parameter name.
+    ///
+    /// Asks `apply_override` itself, on a throwaway struct, so the
+    /// answer cannot drift from the match arms the way a hand-kept list
+    /// of names would.
+    pub fn accepts(param_name: &str) -> bool {
+        Self::default().apply_override(param_name, 0.0)
     }
 }
 
@@ -660,6 +723,56 @@ mod tests {
     /// land on the right enum variant; out-of-range values (notably
     /// `f32::INFINITY`, the inspector's "Use LUT default" sentinel)
     /// map to `None`.
+        /// The qualifier's window is reachable by name, and touching it arms
+    /// the key — a configured-but-disabled qualifier passes the whole
+    /// frame, which reads as the key not working.
+    #[test]
+    fn qualifier_window_is_settable_by_name() {
+        let mut p = NodeParams::default();
+        assert!(p.qualifier.is_none());
+        assert!(p.apply_override("qual_hue_center", 40.0));
+        assert!(p.apply_override("qual_hue_width", 25.0));
+        assert!(p.apply_override("qual_lum_low", 0.1));
+        assert!(p.apply_override("qual_lum_high", 0.4));
+        let q = p.qualifier.as_ref().expect("qualifier materialised on first touch");
+        assert!(q.enabled, "setting a window arms the key");
+        assert_eq!(q.hue_center, 40.0);
+        assert_eq!(q.hue_width, 25.0);
+        assert_eq!((q.lum_low, q.lum_high), (0.1, 0.4));
+        // `enabled` itself stays a plain switch, so a caller can arm and
+        // disarm without the write arming it again.
+        assert!(p.apply_override("qual_enabled", 0.0));
+        assert!(!p.qualifier.as_ref().unwrap().enabled);
+
+        let mut k = NodeParams::default();
+        assert!(k.apply_override("luma_key_low", 0.2));
+        assert!(k.apply_override("luma_key_soft", 0.05));
+        let lk = k.luma_key.as_ref().expect("luma key materialised");
+        assert!(lk.enabled && lk.low == 0.2 && lk.soft == 0.05);
+    }
+
+    /// A name the params do not carry is reported, not swallowed. The
+    /// fall-through used to be silent, which made a typo on the control
+    /// socket indistinguishable from a grade that refused to apply.
+    #[test]
+    fn an_unknown_param_name_is_reported() {
+        let mut p = NodeParams::default();
+        for name in ["", "nonsense", "Temperature", "qual_", "qual_nonsense",
+                     "luma_key_nonsense", "warper_hue_nonsense", "warper_hue_12",
+                     "warper_sat_99"] {
+            assert!(!p.apply_override(name, 1.0), "{name:?} should not be accepted");
+            assert!(!NodeParams::accepts(name), "accepts({name:?}) should be false");
+        }
+        // And the real ones still are, by both routes.
+        for name in ["exposure", "contrast", "temperature", "tint", "saturation",
+                     "vibrance", "clarity", "highlights", "shadows", "whites",
+                     "blacks", "lift_x", "gain_master", "mix", "global_mix",
+                     "warper_hue_0", "qual_sat_low", "luma_key_high"] {
+            assert!(p.apply_override(name, 0.5), "{name:?} should be accepted");
+            assert!(NodeParams::accepts(name), "accepts({name:?}) should be true");
+        }
+    }
+
     #[test]
     fn lut_input_space_param_dispatch() {
         let mut p = NodeParams::default();

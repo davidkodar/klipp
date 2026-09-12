@@ -454,12 +454,20 @@ fn handle(ctx: &ControlContext, cmd: ControlCommand) -> Result<serde_json::Value
         }
         ControlCommand::SetNodeParam { clip_id: c, node_id, param, value } => {
             let clip = existing_clip_id(ctx, &c)?;
-            send(AppCommand::SetNodeParam {
-                clip_id: clip,
-                node_id: existing_node_id(ctx, clip, &node_id, "node_id")?,
-                param,
-                value,
-            })
+            let node_id = existing_node_id(ctx, clip, &node_id, "node_id")?;
+            // A name the params do not carry would be dropped by
+            // `apply_override`'s fall-through and look exactly like a
+            // grade that refused to work.
+            if !klipp_nodes::params::NodeParams::accepts(&param) {
+                return Err(format!(
+                    "no grade parameter called {param:?}. Names are the ones \
+                     klipp_get_grade reports, e.g. exposure, contrast, \
+                     temperature, tint, saturation, vibrance, clarity, \
+                     highlights, shadows, whites, blacks, lift_x, gain_master, \
+                     qual_hue_center, luma_key_low.",
+                ));
+            }
+            send(AppCommand::SetNodeParam { clip_id: clip, node_id, param, value })
         }
         ControlCommand::ToggleNodeEnabled { clip_id: c, node_id } => {
             let clip = existing_clip_id(ctx, &c)?;

@@ -348,7 +348,31 @@ fn control_socket_reads_state_and_forwards_commands() {
         "has no node",
     );
 
+    // A parameter name the grade does not carry is the same silent
+    // no-op one level down: `apply_override` would drop it on its
+    // fall-through and the caller would see a grade that did nothing.
+    refused(
+        &mut h,
+        json!({
+            "method": "set_node_param",
+            "clip_id": clip_a, "node_id": corr_a,
+            "param": "temperatur", "value": -9.0,
+        }),
+        "no grade parameter called",
+    );
+
     // ── What the check must NOT refuse ────────────────────────────────
+    // The qualifier's window, which is how a secondary is built over
+    // this socket.
+    h.ok(json!({
+        "method": "set_node_param",
+        "clip_id": clip_a, "node_id": corr_a,
+        "param": "qual_hue_center", "value": 40.0,
+    }));
+    assert!(matches!(
+        h.cmd_rx.try_recv(),
+        Ok(klipp_core::AppCommand::SetNodeParam { .. })
+    ));
     // A node inside a Compound is addressable, so the lookup recurses.
     h.ok(json!({
         "method": "set_node_param",

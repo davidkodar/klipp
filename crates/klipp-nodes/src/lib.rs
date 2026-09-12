@@ -27,9 +27,11 @@
 //!   node arm; with N nodes on a 4K frame that's N × 32 MB of
 //!   allocations per frame. A `Cow<[u8]>` pipeline is the logical
 //!   improvement.
-//! * [`params::apply_override`] silently ignores unknown param names
-//!   (the `_` match arm). Add a `tracing::warn!` to catch typos during
-//!   inspector work.
+//! * [`params::apply_override`] returns whether it recognised the name,
+//!   and [`params::NodeParams::accepts`] asks the same question without
+//!   writing anything — use one of them on any path where the name did
+//!   not come from the inspector, or a typo reads as "the grade did not
+//!   work".
 
 pub mod graph;
 pub mod kinds;
