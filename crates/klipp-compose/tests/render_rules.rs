@@ -326,6 +326,68 @@ fn temperature_and_tint_balance_every_exposure_alike() {
     }
 }
 
+/// A colour the user authored means the same colour in every working
+/// space. Titles, generators and an effect's colour parameters are
+/// written in BT.709; they used to land in the working space unconverted,
+/// so a "pure red" title in a BT.2020 or ACEScg project was that space's
+/// red — more saturated than the one picked — and a chroma key missed the
+/// green it was pointed at.
+#[test]
+fn an_authored_colour_is_the_same_colour_in_any_working_space() {
+    use klipp_core::WorkingColorspace::*;
+    let red = solid([255, 0, 0], 0.0, 2.0);
+    let seq = sequence(vec![vec![red]]);
+    let in_space = |ws| {
+        [false, true].map(|gpu| {
+            let mut r = Renderer::new(klipp_plugin::OfxHost::new(), klipp_title::TitleRenderer::new());
+            r.set_gpu_enabled(gpu);
+            r.set_working_colorspace(ws);
+            let img = r.render(&seq, tc(1.0), W, H, &mut Flat::default(), RenderOptions::default());
+            px(&img, 16, 9)
+        })
+    };
+    let in_709 = in_space(Rec709Linear);
+    for (ws, name) in [(Bt2020Linear, "BT.2020"), (AcesCG, "ACEScg")] {
+        let converted = klipp_color::primaries::working_space_conversion_matrix(Rec709Linear, ws).unwrap();
+        let want = klipp_color::primaries::matrix3_mul_vec(converted, in_709[0]);
+        for (i, got) in in_space(ws).iter().enumerate() {
+            assert_px(&format!("red in a {name} project, run {i}"), *got, want, 2e-3);
+        }
+    }
+    // And the same colour in the other direction: a BT.2020 project's red
+    // is not BT.2020's own red, which would be more saturated than asked.
+    let wide = in_space(Bt2020Linear)[0];
+    assert!(wide[1] > 0.02 && wide[2] > 0.005, "red in a BT.2020 project came back as BT.2020 red: {wide:?}");
+}
+
+/// An effect's colour parameter follows the same rule: a chroma key keys
+/// the green it was given, whatever the working space.
+#[test]
+fn a_chroma_key_keys_its_colour_in_any_working_space() {
+    use klipp_core::WorkingColorspace::*;
+    let mut green = solid([0, 255, 0], 0.0, 2.0);
+    green.builtin_effects = vec![BuiltinEffect::ChromaKey {
+        key_color: [0, 255, 0],
+        tolerance: 0.15,
+        soft_edge: 0.05,
+        spill_method: klipp_effects::SpillMethod::None,
+        spill_strength: 0.0,
+    }];
+    let seq = sequence(vec![vec![green]]);
+    for (ws, name) in [(Rec709Linear, "BT.709"), (Bt2020Linear, "BT.2020"), (AcesCG, "ACEScg")] {
+        for gpu in [false, true] {
+            let mut r = Renderer::new(klipp_plugin::OfxHost::new(), klipp_title::TitleRenderer::new());
+            r.set_gpu_enabled(gpu);
+            r.set_working_colorspace(ws);
+            let mut opts = RenderOptions::default();
+            opts.keep_alpha = true;
+            let img = r.render(&seq, tc(1.0), W, H, &mut Flat::default(), opts);
+            let alpha = img[((9 * W + 16) * 4 + 3) as usize];
+            assert!(alpha < 0.1, "{name} (gpu {gpu}): the key left alpha at {alpha}");
+        }
+    }
+}
+
 /// Node keyframes are read at clip-relative time, where the UI writes
 /// them. Exposure ramps 0 → 2 stops over the clip's first two seconds;
 /// one second in it is one stop, even though the clip's source starts

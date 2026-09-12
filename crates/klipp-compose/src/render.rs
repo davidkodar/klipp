@@ -748,12 +748,16 @@ impl Renderer {
                 let mut adapter = self.gpu.as_mut().map(crate::synth::GpuAlphaMaskAdapter);
                 let gpu = adapter.as_mut().map(|a| a as &mut dyn klipp_title::AlphaMaskProcessor);
                 let u8s = self.titles.render_with_time(td, width, height, gpu, clip_time as f32);
-                (GradeInput::Cpu(Arc::new(klipp_effects::srgb_u8_to_linear_f32_rgba(&u8s))), None)
+                let mut linear = klipp_effects::srgb_u8_to_linear_f32_rgba(&u8s);
+                self.authored_to_working(&mut linear);
+                (GradeInput::Cpu(Arc::new(linear)), None)
             }
             ClipKind::Generator(g) => {
                 let total = (clip.timeline_out - clip.timeline_in).to_secs_f64();
                 let u8s = crate::synth::render_generator_with_slate(&mut self.titles, g, width, height, clip_time, total);
-                (GradeInput::Cpu(Arc::new(klipp_effects::srgb_u8_to_linear_f32_rgba(&u8s))), None)
+                let mut linear = klipp_effects::srgb_u8_to_linear_f32_rgba(&u8s);
+                self.authored_to_working(&mut linear);
+                (GradeInput::Cpu(Arc::new(linear)), None)
             }
             ClipKind::Gap | ClipKind::Sequence { .. } | ClipKind::AdjustmentLayer => return None,
         };
@@ -769,7 +773,8 @@ impl Renderer {
         if let Some(t) = hdr {
             self.display_render(&mut pixels, t);
         }
-        let (fx, opacity) = clip_effects(clip, time, fps, transforms.get(&clip.id).copied());
+        let (mut fx, opacity) = clip_effects(clip, time, fps, transforms.get(&clip.id).copied());
+        self.authored_colours(&mut fx);
         self.prepare_temporal_effects(clip, &fx, time, fps, height, src);
         let provider = if clip.effects.iter().any(|e| e.enabled && is_temporal_plugin(&e.plugin_name)) {
             src.temporal_frames(clip)
@@ -782,6 +787,68 @@ impl Renderer {
             None => self.effects(&fx, pixels, clip_time, width, height),
         };
         Some((pixels, opacity))
+    }
+
+    /// sRGB-authored pixels — a title, a generator, an OFX plugin's
+    /// output — into the working space. They are written in BT.709
+    /// primaries; in an ACEScg or BT.2020 project the same bytes mean a
+    /// different colour, so a "pure red" title was the working space's
+    /// red, more saturated than the one the user picked.
+    fn authored_to_working(&self, linear: &mut [f32]) {
+        let Some(m) = klipp_color::primaries::working_space_conversion_matrix(
+            WorkingColorspace::Rec709Linear,
+            self.working,
+        ) else {
+            return;
+        };
+        use rayon::prelude::*;
+        linear.par_chunks_exact_mut(4).for_each(|px| {
+            let c = klipp_color::primaries::matrix3_mul_vec(m, [px[0], px[1], px[2]]);
+            px[..3].copy_from_slice(&c);
+        });
+    }
+
+    /// The colours an effect carries as parameters — a chroma key's key
+    /// colour, a fade's colour — are picked in BT.709, like the titles.
+    /// An effect compares them against the picture it is given, so in
+    /// another working space they have to be the same colour expressed
+    /// there, or the key misses the green it was pointed at.
+    fn authored_colours(&self, fx: &mut [BuiltinEffect]) {
+        let Some(m) = klipp_color::primaries::working_space_conversion_matrix(
+            WorkingColorspace::Rec709Linear,
+            self.working,
+        ) else {
+            return;
+        };
+        let convert = |c: &mut [u8]| {
+            let linear = klipp_effects::srgb_u8_to_linear_f32_rgba(&[c[0], c[1], c[2], 255]);
+            let working = klipp_color::primaries::matrix3_mul_vec(m, [linear[0], linear[1], linear[2]]);
+            let bytes = klipp_effects::linear_f32_rgba_to_srgb_u8(&[working[0], working[1], working[2], 1.0]);
+            c[..3].copy_from_slice(&bytes[..3]);
+        };
+        for effect in fx {
+            match effect {
+                BuiltinEffect::ChromaKey { key_color, .. } => convert(key_color),
+                BuiltinEffect::ColorFade { color, .. } => convert(color),
+                _ => {}
+            }
+        }
+    }
+
+    /// The working space's pixels as BT.709, for something that only
+    /// speaks BT.709 — an 8-bit OFX plugin.
+    fn working_to_authored(&self, linear: &mut [f32]) {
+        let Some(m) = klipp_color::primaries::working_space_conversion_matrix(
+            self.working,
+            WorkingColorspace::Rec709Linear,
+        ) else {
+            return;
+        };
+        use rayon::prelude::*;
+        linear.par_chunks_exact_mut(4).for_each(|px| {
+            let c = klipp_color::primaries::matrix3_mul_vec(m, [px[0], px[1], px[2]]);
+            px[..3].copy_from_slice(&c);
+        });
     }
 
     /// A scene-referred clip's last step of its own: the SDR display tone
@@ -987,12 +1054,17 @@ impl Renderer {
             return pixels;
         }
         let t = Instant::now();
-        let u8s = klipp_effects::linear_f32_rgba_to_srgb_u8(&pixels);
+        // An OFX plugin takes 8-bit BT.709, so the frame goes out of the
+        // working space and comes back into it.
+        let mut as_709 = pixels;
+        self.working_to_authored(&mut as_709);
+        let u8s = klipp_effects::linear_f32_rgba_to_srgb_u8(&as_709);
         let out = match frames {
             Some(frames) => self.ofx.apply_effects_chain_temporal(&clip.effects, &u8s, width, height, clip_time, frames),
             None => self.ofx.apply_effects_chain(&clip.effects, &u8s, width, height, clip_time),
         };
-        let out = klipp_effects::srgb_u8_to_linear_f32_rgba(&out);
+        let mut out = klipp_effects::srgb_u8_to_linear_f32_rgba(&out);
+        self.authored_to_working(&mut out);
         self.found.stats.ofx_ms += ms_since(t);
         out
     }

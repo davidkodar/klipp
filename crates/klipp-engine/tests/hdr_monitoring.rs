@@ -42,16 +42,22 @@ fn pq_nits(signal: f64) -> f64 {
 }
 
 /// A lossless 10-bit PQ clip of four neutral bands at [`BAND_NITS`].
+///
+/// Cached between runs under a name that carries the codes it holds: keyed
+/// on the frame size alone, a file written for other band levels stayed in
+/// /tmp and every later run measured it instead — bands 0 and 1 happened
+/// to match, and band 2 read 1004 cd/m² where the test wanted 203.
 fn pq_bands() -> Option<PathBuf> {
-    let out = std::env::temp_dir().join(format!("klipp-hdr-monitor-bands-{W}x{H}.mkv"));
-    if out.exists() {
-        return Some(out);
-    }
     if std::process::Command::new("ffmpeg").arg("-version").output().is_err() {
         return None;
     }
-    let raw = std::env::temp_dir().join("klipp-hdr-monitor-bands.yuv");
     let codes: Vec<u16> = BAND_NITS.iter().map(|n| (64.0 + pq_signal(*n) * 876.0).round() as u16).collect();
+    let name: String = codes.iter().map(|c| format!("-{c}")).collect();
+    let out = std::env::temp_dir().join(format!("klipp-hdr-monitor-bands-{W}x{H}{name}.mkv"));
+    if out.exists() {
+        return Some(out);
+    }
+    let raw = std::env::temp_dir().join(format!("klipp-hdr-monitor-bands{name}.yuv"));
     let mut bytes = Vec::new();
     // Two seconds: the harness parks ten frames in.
     for _ in 0..50 {
@@ -66,16 +72,24 @@ fn pq_bands() -> Option<PathBuf> {
     }
     std::fs::write(&raw, bytes).ok()?;
     let size = format!("{W}x{H}");
+    // Written beside the cache name and moved into place, so a run that
+    // dies mid-encode leaves no half file for the next one to measure.
+    let partial = out.with_extension("partial.mkv");
     let ok = std::process::Command::new("ffmpeg")
         .args(["-nostdin", "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "yuv420p10le", "-s", &size, "-r", "25"])
         .args(["-i", raw.to_str()?, "-vf", &format!("setparams=range=tv:{}", common::PQ_TAGS)])
         .args(["-c:v", "ffv1"])
-        .arg(&out)
+        .arg(&partial)
         .status()
         .ok()?
         .success();
     let _ = std::fs::remove_file(&raw);
-    ok.then_some(out)
+    if !ok {
+        let _ = std::fs::remove_file(&partial);
+        return None;
+    }
+    std::fs::rename(&partial, &out).ok()?;
+    Some(out)
 }
 
 /// The same one clip, exported as 10-bit PQ H.265 through `ExportJob`.
