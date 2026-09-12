@@ -273,15 +273,15 @@ pub struct GpuEffectsPipeline {
     aces_rec709_pipeline: wgpu::ComputePipeline,
     display_tables_bgl: wgpu::BindGroupLayout,
     /// The matrices and tone curves that shader reads, uploaded once.
-    aces_rec709_data: Option<wgpu::Buffer>,
+    aces_rec709_data: Option<CachedTables>,
     /// Bound in that slot by a delivery that is not ACES, which never
     /// reads it.
     no_display_tables: wgpu::Buffer,
     no_light: wgpu::Buffer,
     /// BT.2020's reach tables, cusps and matrices — 148 KB, uploaded
     /// once.
-    bt2020_gamut_data: Option<wgpu::Buffer>,
-    hdr_encode_data: Option<wgpu::Buffer>,
+    bt2020_gamut_data: Option<CachedTables>,
+    hdr_encode_data: Option<CachedTables>,
     bt2020_display_pipeline: wgpu::ComputePipeline,
     /// Packed RGB10 HDR code values → scene-linear working-space f32,
     /// written into the chain's `buf_a`. The GPU half of
@@ -2039,6 +2039,9 @@ impl GpuEffectsPipeline {
     ) -> Option<(Vec<u8>, Option<GpuFrameLight>)> {
         let Yuv420Target {
             tone_map_op,
+            // Names which ODT blob the caller built; nothing here reads
+            // it, and the shader takes the transform from the blob.
+            odt_tag: _,
             gamut_op,
             hdr_op,
             peak_nits,
@@ -2128,11 +2131,11 @@ impl GpuEffectsPipeline {
             _pad3: 0,
         });
         let tables: &wgpu::Buffer = if tone_map_op == 3 {
-            self.aces_rec709_data.as_ref()?
+            &self.aces_rec709_data.as_ref()?.buf
         } else if gamut_op == 1 {
-            self.bt2020_gamut_data.as_ref()?
+            &self.bt2020_gamut_data.as_ref()?.buf
         } else if hdr_op != 0 {
-            self.hdr_encode_data.as_ref()?
+            &self.hdr_encode_data.as_ref()?.buf
         } else {
             &self.no_display_tables
         };
@@ -2237,7 +2240,7 @@ impl GpuEffectsPipeline {
         });
         self.write_params(&BridgeU8Params { width, height, _pad0: 0, _pad1: 0 });
 
-        let data = self.aces_rec709_data.as_ref()?;
+        let data = &self.aces_rec709_data.as_ref()?.buf;
         let bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("aces_rec709_bg"),
             layout: &self.display_tables_bgl,
@@ -2271,17 +2274,46 @@ impl GpuEffectsPipeline {
 
     /// Upload the ACES matrices and tone curves, once.
     fn ensure_aces_data(&mut self, data: &[f32]) {
-        if self.aces_rec709_data.is_some() {
-            return;
+        Self::ensure_tables(
+            &self.device,
+            &self.queue,
+            &mut self.aces_rec709_data,
+            "aces_odt_data",
+            data,
+        );
+    }
+
+    /// Upload `data` to `slot`, reusing what is there when the contents
+    /// are the same.
+    ///
+    /// Keyed on the contents and not merely on "is something uploaded",
+    /// which is how it started: an output transform's numbers are fixed
+    /// for a *deliverable*, not for a pipeline, and the four ACES ODTs
+    /// share one slot. Skipping the second upload rendered the second
+    /// deliverable with the first one's matrices and gammas — the same
+    /// picture, silently, which is how
+    /// `every_acescg_odt_matches_the_cpu` found this. Comparing a few
+    /// thousand floats is nothing beside a frame.
+    fn ensure_tables(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        slot: &mut Option<CachedTables>,
+        label: &'static str,
+        data: &[f32],
+    ) {
+        if let Some(c) = slot {
+            if c.data == data {
+                return;
+            }
         }
-        let buf = self.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("aces_rec709_data"),
+        let buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some(label),
             size: (data.len() * 4) as u64,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        self.queue.write_buffer(&buf, 0, bytemuck::cast_slice(data));
-        self.aces_rec709_data = Some(buf);
+        queue.write_buffer(&buf, 0, bytemuck::cast_slice(data));
+        *slot = Some(CachedTables { buf, data: data.to_vec() });
     }
 
     /// Upload `klipp_color::gamut::bt2020_to_bt709_gpu_data` once. The
@@ -2296,9 +2328,6 @@ impl GpuEffectsPipeline {
     /// `gpu_gamut_data_length_is_what_the_header_says` in `klipp-color`
     /// holds the two to.
     fn ensure_bt2020_gamut_data(&mut self, data: &[f32]) -> bool {
-        if self.bt2020_gamut_data.is_some() {
-            return true;
-        }
         // HEADER_LEN 2 + MATRICES_LEN 27 + WHITE_LEN 3 = 32 before the
         // first table; then two reach tables and the cusps.
         let (l_steps, h_steps) = match (data.first(), data.get(1)) {
@@ -2311,14 +2340,13 @@ impl GpuEffectsPipeline {
         if data.len() < 32 + 2 * reach + h_steps * 2 {
             return false;
         }
-        let buf = self.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("bt2020_gamut_data"),
-            size: (data.len() * 4) as u64,
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        self.queue.write_buffer(&buf, 0, bytemuck::cast_slice(data));
-        self.bt2020_gamut_data = Some(buf);
+        Self::ensure_tables(
+            &self.device,
+            &self.queue,
+            &mut self.bt2020_gamut_data,
+            "bt2020_gamut_data",
+            data,
+        );
         true
     }
 
@@ -2332,9 +2360,6 @@ impl GpuEffectsPipeline {
     /// in `klipp-color` holds the two layouts together, since this crate
     /// cannot see `hdr::gpu_layout`.
     fn ensure_hdr_encode_data(&mut self, data: &[f32]) -> bool {
-        if self.hdr_encode_data.is_some() {
-            return true;
-        }
         // 1 header + 9 matrix + 3 luma = 13 before the table.
         let entries = match data.first() {
             Some(&n) if n >= 2.0 && n < 65536.0 => n as usize,
@@ -2343,14 +2368,13 @@ impl GpuEffectsPipeline {
         if data.len() < 13 + entries {
             return false;
         }
-        let buf = self.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("hdr_encode_data"),
-            size: (data.len() * 4) as u64,
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        self.queue.write_buffer(&buf, 0, bytemuck::cast_slice(data));
-        self.hdr_encode_data = Some(buf);
+        Self::ensure_tables(
+            &self.device,
+            &self.queue,
+            &mut self.hdr_encode_data,
+            "hdr_encode_data",
+            data,
+        );
         true
     }
 
@@ -2390,7 +2414,7 @@ impl GpuEffectsPipeline {
         });
         self.write_params(&BridgeU8Params { width, height, _pad0: 0, _pad1: 0 });
 
-        let data = self.bt2020_gamut_data.as_ref()?;
+        let data = &self.bt2020_gamut_data.as_ref()?.buf;
         let bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("bt2020_display_bg"),
             layout: &self.display_tables_bgl,
@@ -5615,6 +5639,12 @@ pub struct Yuv420Target {
     /// 0 none, 1 Reinhard, 2 Hable. The host has already established
     /// the display transform is a tone map and an sRGB encode.
     pub tone_map_op: u32,
+    /// Which output transform the blob describes, when `tone_map_op` is
+    /// 3 — `klipp_color::aces::GpuOdt`'s wire tag. This layer does not
+    /// interpret it: it names the blob the caller must supply, and 0 (the
+    /// ACES Rec.709 SDR transform) is what an AcesCG project's viewer
+    /// match gives.
+    pub odt_tag: u32,
     /// 0 an SDR delivery, 1 PQ, 2 HLG. An HDR delivery replaces the tone
     /// map and the sRGB encode entirely: the frame is display light
     /// (1.0 = 203 cd/m²), and the shader takes it to BT.2020 and the
@@ -5666,6 +5696,13 @@ struct Yuv420Params {
     peak_nits: f32,
     _pad2: u32,
     _pad3: u32,
+}
+
+/// A table set uploaded to the display-transform binding, with the
+/// floats it was built from so a different set replaces it.
+struct CachedTables {
+    buf: wgpu::Buffer,
+    data: Vec<f32>,
 }
 
 /// A frame's light levels, in cd/m², as the GPU measured them while it
@@ -7681,9 +7718,21 @@ macro_rules! shader_aces_rec709_wgsl {
     () => {
         "
 // Must match `klipp_color::aces::gpu_layout`.
-const HEADER_LEN: u32 = 6u;
-const MATRICES: u32 = 6u;
-const CURVES: u32 = 69u;
+const HEADER_LEN: u32 = 12u;
+const A_VARIANT: u32 = 6u;
+const A_DISP_GAMMA: u32 = 7u;
+const A_DIM_SURROUND: u32 = 8u;
+const A_Y_WHITE: u32 = 9u;
+const A_Y_BLACK: u32 = 10u;
+const MATRICES: u32 = 12u;
+// Derived, not written out: the offsets below shift whenever a matrix
+// slot is added, and two of them written by hand is two chances to
+// forget one. (That mistake reads every curve as a matrix row and turns
+// the picture solid.)
+const MATRIX_COUNT: u32 = 12u;
+const SSTS: u32 = MATRICES + MATRIX_COUNT * 9u;
+const SSTS_LEN: u32 = 21u;
+const CURVES: u32 = SSTS + SSTS_LEN;
 const HALF_MIN: f32 = 6.103515625e-5;
 const HALF_MAX: f32 = 65504.0;
 const RRT_GLOW_GAIN: f32 = 0.05;
@@ -7820,7 +7869,148 @@ fn dark_surround_to_dim_surround(rec709_lin: vec3<f32>) -> vec3<f32> {
 
 /// AcesCG (AP1) → display-encoded Rec.709, the CPU chain's
 /// `acescg_to_rec709_sdr`.
-fn acescg_to_rec709_sdr(acescg: vec3<f32>) -> vec3<f32> {
+/// `camera_log::linear_to_pq` — ST-2084, evaluated exactly.
+///
+/// Deliberately *not* the table `klipp_color::hdr::pq_encode_nits`
+/// interpolates: that one serves the non-ACES PQ delivery, whose CPU
+/// twin reads the same table. The ACES ODT's `Y_2_ST2084` calls the real
+/// curve, so this does too, and the two PQ paths agree with their own
+/// twins rather than with each other.
+fn aces_linear_to_pq(l_norm: f32) -> f32 {
+    let m1 = 0.15930176;
+    let m2 = 78.84375;
+    let c1 = 0.8359375;
+    let c2 = 18.8515625;
+    let c3 = 18.6875;
+    let yp = pow(max(l_norm, 0.0), m1);
+    return pow((c1 + c2 * yp) / (1.0 + c3 * yp), m2);
+}
+
+/// `eval_spline_segment`: the quadratic basis transform from AMPAS
+/// `Tonecurves.h`, written out. M_QUAD_BASIS is
+/// `[[0.5,-1,0.5], [-1,1,0.5], [0.5,0,0]]` and this is its product with
+/// three consecutive coefficients, evaluated at `t`.
+fn quad_spline_segment(cf: vec3<f32>, t: f32) -> f32 {
+    let a = 0.5 * cf.x - cf.y + 0.5 * cf.z;
+    let b = -cf.x + cf.y;
+    let c = 0.5 * cf.x + 0.5 * cf.y;
+    return a * t * t + b * t + c;
+}
+
+/// `ssts`, the single-stage HDR tone scale: an AP1 channel value to
+/// absolute display luminance in cd/m². Three quadratic segments per
+/// side in log-log space, log-linear extrapolation outside.
+///
+/// Evaluated rather than read from a table, unlike the two SDR curves.
+/// Its output feeds `Y_2_linCV`, which subtracts `Y_MIN` from values
+/// that *are* `Y_MIN` near black, so a table's own log round-trip is all
+/// that survives the cancellation — and PQ's slope there turns it into
+/// about two 10-bit code values of lifted black. The numbers that could
+/// drift are `init_TsParams`', and those are what the blob ships.
+fn ssts(x: f32) -> f32 {
+    let min_x = tables[SSTS + 0u];
+    let min_y = tables[SSTS + 1u];
+    let min_slope = tables[SSTS + 2u];
+    let mid_x = tables[SSTS + 3u];
+    let max_x = tables[SSTS + 6u];
+    let max_y = tables[SSTS + 7u];
+    let max_slope = tables[SSTS + 8u];
+
+    // Floored at TINY rather than HALF_MIN, deliberately, as the twin
+    // is: these curves put their min anchor below HALF_MIN, so that
+    // floor would make the low extrapolation unreachable and lift black.
+    let logx = log(max(x, TINY)) / log(10.0);
+    let log_min_x = log(min_x) / log(10.0);
+    let log_mid_x = log(mid_x) / log(10.0);
+    let log_max_x = log(max_x) / log(10.0);
+
+    var logy = 0.0;
+    if logx <= log_min_x {
+        logy = logx * min_slope + (log(min_y) / log(10.0) - min_slope * log_min_x);
+    } else if logx < log_mid_x {
+        let knot = 3.0 * (logx - log_min_x) / (log_mid_x - log_min_x);
+        // Capped at the last segment: float rounding can push `knot` to
+        // exactly 3 at the boundary, where segment 2 at t = 1 is
+        // precisely the mid anchor.
+        let j = min(u32(floor(knot)), 2u);
+        let t = knot - f32(j);
+        let cf = vec3<f32>(
+            tables[SSTS + 9u + j],
+            tables[SSTS + 9u + j + 1u],
+            tables[SSTS + 9u + j + 2u],
+        );
+        logy = quad_spline_segment(cf, t);
+    } else if logx < log_max_x {
+        let knot = 3.0 * (logx - log_mid_x) / (log_max_x - log_mid_x);
+        let j = min(u32(floor(knot)), 2u);
+        let t = knot - f32(j);
+        let cf = vec3<f32>(
+            tables[SSTS + 15u + j],
+            tables[SSTS + 15u + j + 1u],
+            tables[SSTS + 15u + j + 2u],
+        );
+        logy = quad_spline_segment(cf, t);
+    } else {
+        logy = logx * max_slope + (log(max_y) / log(10.0) - max_slope * log_max_x);
+    }
+    return pow(10.0, logy);
+}
+
+/// The ACES 1.1 single-stage output transform for the Rec.2100 PQ
+/// deliverables: sweeteners, the SSTS, then absolute luminance to a PQ
+/// signal via the limiting primaries.
+/// Called with AP1 values: `acescg_to_display` has already walked the
+/// project's basis there.
+fn acescg_to_rec2100_pq(acescg: vec3<f32>) -> vec3<f32> {
+    let y_max = tables[A_Y_WHITE];
+    let y_min = tables[A_Y_BLACK];
+
+    // Sweeteners, shared with the SDR path so the two cannot drift.
+    let pre = rrt_sweeteners(mat_mul(0u, acescg));
+    let post = vec3<f32>(ssts(pre.x), ssts(pre.y), ssts(pre.z));
+    let lin_cv = (post - vec3<f32>(y_min)) / (y_max - y_min);
+
+    // AP1 -> XYZ, still D60-adapted, then gamut-limit to Rec.2020 by
+    // round-tripping through its primaries with a clip on the way.
+    //
+    // The clip happens in a D65-primaries space applied to XYZ that is
+    // still D60-adapted, because the CAT only runs afterwards. That
+    // white-point mismatch is what the reference does; matching it is
+    // the point.
+    var xyz = mat_mul(7u, lin_cv);
+    let limited = clamp(mat_mul(8u, xyz), vec3<f32>(0.0), vec3<f32>(1.0));
+    xyz = mat_mul(9u, limited);
+    xyz = mat_mul(10u, xyz);
+    let rgb = max(mat_mul(8u, xyz), vec3<f32>(0.0));
+
+    // STRETCH_BLACK: the trip back to absolute luminance uses Ymin = 0,
+    // so the darkest values quantise to PQ 0 instead of floating above.
+    let nits = max(rgb * y_max, vec3<f32>(0.0));
+    return vec3<f32>(
+        aces_linear_to_pq(nits.x / 10000.0),
+        aces_linear_to_pq(nits.y / 10000.0),
+        aces_linear_to_pq(nits.z / 10000.0),
+    );
+}
+
+/// An AcesCG frame through whichever output transform the blob
+/// describes: the two-stage SDR chain (RRT then the C9 ODT) or the
+/// single-stage HDR one.
+///
+/// The SDR deliverables — Rec.709 video and DCI-P3 D65 cinema — are one
+/// chain with three numbers changed: the output matrix, the display
+/// gamma, and whether the dim-surround compensation runs. A cinema is a
+/// dark surround, not a dim one, so the cinema ODT applies neither that
+/// nor its saturation partner, and the blob carries an identity in the
+/// saturation slot for it.
+fn acescg_to_display(working: vec3<f32>) -> vec3<f32> {
+    // The project's basis into AP1, which the ODTs are defined on. Its
+    // own slot rather than folded into ap1->ap0, which the chain applies
+    // a second time below to the post-curve values.
+    let acescg = mat_mul(11u, working);
+    if u32(tables[A_VARIANT]) == 1u {
+        return acescg_to_rec2100_pq(acescg);
+    }
     // RRT: to AP0, sweeteners, tone curve, back to AP0 as OCES.
     let ap1_desat = rrt_sweeteners(mat_mul(0u, acescg));
     let rgb_post = vec3<f32>(
@@ -7831,19 +8021,31 @@ fn acescg_to_rec709_sdr(acescg: vec3<f32>) -> vec3<f32> {
     let oces = mat_mul(0u, rgb_post);
 
     // ODT: to AP1, tone curve to display cd/m2, normalise, desaturate,
-    // to Rec.709, dim surround, clamp, BT.1886 inverse.
+    // to the display basis, dim surround, clamp, inverse OETF.
     let pre = mat_mul(1u, oces);
     let post = vec3<f32>(
         tone_curve(1u, pre.x),
         tone_curve(1u, pre.y),
         tone_curve(1u, pre.z),
     );
-    let lin_cv = (post - vec3<f32>(CINEMA_BLACK)) / (CINEMA_WHITE - CINEMA_BLACK);
+    let y_white = tables[A_Y_WHITE];
+    let y_black = tables[A_Y_BLACK];
+    let lin_cv = (post - vec3<f32>(y_black)) / (y_white - y_black);
     let desat = mat_mul(3u, lin_cv);
-    let rec709_lin = mat_mul(4u, desat);
-    let dim = dark_surround_to_dim_surround(rec709_lin);
-    let clamped = clamp(dim, vec3<f32>(0.0), vec3<f32>(1.0));
-    return pow(clamped, vec3<f32>(1.0 / SDR_DISP_GAMMA));
+    var display_lin = mat_mul(4u, desat);
+    if tables[A_DIM_SURROUND] != 0.0 {
+        display_lin = dark_surround_to_dim_surround(display_lin);
+    }
+    let clamped = clamp(display_lin, vec3<f32>(0.0), vec3<f32>(1.0));
+    // BT.1886 inverse at L_W = 1, L_B = 0 collapses to pow(L, 1/gamma),
+    // which is also the DCI gamma-2.6 encode.
+    return pow(clamped, vec3<f32>(1.0 / tables[A_DISP_GAMMA]));
+}
+
+/// The Rec.709 SDR transform by name, for callers that only ever want
+/// that one and whose blob always describes it.
+fn acescg_to_rec709_sdr(acescg: vec3<f32>) -> vec3<f32> {
+    return acescg_to_display(acescg);
 }
 
 "

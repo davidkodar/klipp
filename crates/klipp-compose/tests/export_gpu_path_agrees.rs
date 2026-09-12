@@ -37,6 +37,7 @@ const LUMA_709: [f32; 3] = [0.2126, 0.7152, 0.0722];
 fn plain_target() -> klipp_effects::gpu::Yuv420Target {
     klipp_effects::gpu::Yuv420Target {
         tone_map_op: 0,
+        odt_tag: 0,
         gamut_op: 0,
         hdr_op: 0,
         peak_nits: 0.0,
@@ -648,4 +649,146 @@ fn a_global_lut_is_refused() {
         .is_some(),
         "the fixture cannot take the GPU path at all, so this proves nothing"
     );
+}
+
+/// The AcesCG-basis ODTs through the whole path, against the renderer.
+///
+/// These were the last deliveries `gpu_yuv420_params` refused. They are
+/// four configurations of two chains rather than four transforms, which
+/// is exactly why the end-to-end check matters: a blob built for the
+/// wrong deliverable still renders a plausible picture, just the wrong
+/// one. So each is compared against its own `ExportDisplay`, and then
+/// against the others to show the comparison can tell them apart.
+///
+/// Run from a BT.709 project as well as an AcesCG one, because an ODT is
+/// defined on AP1 and a project in any other basis has to be walked
+/// there first.
+#[test]
+fn the_acescg_odts_agree_with_the_renderer() {
+    use klipp_core::{OdtChoice, WorkingColorspace as W};
+    // Two exposures, because the deliverables do not all differ at one.
+    // The two PQ peaks are identical in mid-tones on purpose — PQ encodes
+    // absolute luminance, so only highlight roll-off moves with the peak
+    // (`pq_mid_grey_is_invariant_to_peak_luminance` in klipp-color pins
+    // that) — so telling those two apart needs a real highlight, while
+    // the SDR pair would be clipped to white by it.
+    let mut seen_apart: Vec<(OdtChoice, OdtChoice)> = Vec::new();
+    for stops in [0.5f32, 5.0] {
+    let c = graded(0.0, 1.0, stops);
+    let seq = sequence(vec![vec![c.clone()]]);
+
+    for working in [W::AcesCG, W::Rec709Linear] {
+        let mut pictures: Vec<(OdtChoice, Vec<u8>)> = Vec::new();
+        for odt in [
+            OdtChoice::Rec709Sdr,
+            OdtChoice::DciP3D65_48,
+            OdtChoice::Rec2100Pq1000,
+            OdtChoice::Rec2100Pq4000,
+        ] {
+            let display = klipp_color::display::ExportDisplay::new(
+                klipp_core::ToneMapOp::None,
+                working,
+                odt,
+            );
+            let tag = display
+                .acescg_basis_odt()
+                .expect("every one of these is an AcesCG-basis ODT")
+                .tag();
+            let target = klipp_effects::gpu::Yuv420Target {
+                tone_map_op: 3,
+                odt_tag: tag,
+                ..plain_target()
+            };
+            let mut src = Flat::default().with(&c, [210, 120, 60]).on_gpu();
+            let mut rg = renderer();
+            rg.set_working_colorspace(working);
+            let Some((planes, light)) = rg.render_yuv420_on_gpu(
+                &seq,
+                tc(0.5),
+                W,
+                H,
+                &mut src,
+                RenderOptions::default(),
+                target,
+            ) else {
+                eprintln!("skipping: the GPU path refused (no usable GPU)");
+                return;
+            };
+            assert!(light.is_none(), "{odt:?}: an ODT delivery measures no light");
+
+            // The renderer's frame through the same ExportDisplay.
+            let mut r = renderer();
+            r.set_working_colorspace(working);
+            let px = r.render(&seq, tc(0.5), W, H, &mut src, RenderOptions::default());
+            let want: Vec<u8> = px
+                .chunks_exact(4)
+                .map(|p| {
+                    let e = display.encode([p[0], p[1], p[2]]);
+                    let y = LUMA_709[0] * e[0] + LUMA_709[1] * e[1] + LUMA_709[2] * e[2];
+                    (16.0 + y * 219.0 + 0.5).clamp(0.0, 255.0) as u8
+                })
+                .collect();
+            let got = &planes[..want.len()];
+            let worst = got
+                .iter()
+                .zip(want.iter())
+                .map(|(g, w)| (*g as i32 - *w as i32).abs())
+                .max()
+                .unwrap_or(0);
+            eprintln!("{odt:?} from {working:?} at {stops:+} stops: worst {worst} of 255");
+            assert!(
+                worst <= 1,
+                "{odt:?} from {working:?} at {stops:+} stops: differs by {worst} levels",
+            );
+            assert!(got.iter().any(|&v| v > 40), "{odt:?}: the fixture rendered black");
+            pictures.push((odt, planes));
+        }
+
+        // Note which pairs this exposure separates.
+        for i in 0..pictures.len() {
+            for j in (i + 1)..pictures.len() {
+                let (a, b) = (&pictures[i], &pictures[j]);
+                let d = a
+                    .1
+                    .iter()
+                    .zip(b.1.iter())
+                    .map(|(x, y)| (*x as i32 - *y as i32).abs())
+                    .max()
+                    .unwrap_or(0);
+                if d > 4 {
+                    seen_apart.push((a.0, b.0));
+                }
+            }
+        }
+    }
+    }
+
+    // Every pair has to be separated by *some* exposure. Without this the
+    // agreement above would also hold for a shader that ignored the
+    // blob's variant and ran one chain for all four.
+    for (i, a) in [
+        OdtChoice::Rec709Sdr,
+        OdtChoice::DciP3D65_48,
+        OdtChoice::Rec2100Pq1000,
+        OdtChoice::Rec2100Pq4000,
+    ]
+    .iter()
+    .enumerate()
+    {
+        for b in [
+            OdtChoice::Rec709Sdr,
+            OdtChoice::DciP3D65_48,
+            OdtChoice::Rec2100Pq1000,
+            OdtChoice::Rec2100Pq4000,
+        ]
+        .iter()
+        .skip(i + 1)
+        {
+            assert!(
+                seen_apart.contains(&(*a, *b)),
+                "{a:?} and {b:?} rendered the same picture at every exposure tried, so \
+                 this test cannot tell those two deliverables apart",
+            );
+        }
+    }
 }

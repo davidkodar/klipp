@@ -598,6 +598,36 @@ impl ExportDisplay {
         }
     }
 
+    /// An AcesCG-basis output transform, when the delivery is one:
+    /// `ExportPath::Odt`, which `OdtChoice` reaches for every choice but
+    /// MatchViewer and the legacy Srgb.
+    ///
+    /// The GPU has all four (`SHADER_ACES_REC709_U8`'s `acescg_to_display`,
+    /// off the blob `aces::aces_odt_gpu_data` bakes), so a caller with a
+    /// faster route can take it. The project's own basis is *not* part of
+    /// the answer: it goes into the blob separately, since the transform
+    /// is defined on AP1.
+    ///
+    /// `None` for the two `ToneMapSrgb` deliveries and for the HDR ones,
+    /// which reach PQ from display light rather than through the RRT.
+    #[inline]
+    pub fn acescg_basis_odt(&self) -> Option<crate::aces::GpuOdt> {
+        use crate::aces::GpuOdt;
+        if !matches!(self.path, ExportPath::Odt(_)) {
+            return None;
+        }
+        Some(match self.odt {
+            OdtChoice::Rec709Sdr => GpuOdt::Rec709Sdr,
+            OdtChoice::Rec2100Pq1000 => GpuOdt::Rec2100Pq1000,
+            OdtChoice::Rec2100Pq4000 => GpuOdt::Rec2100Pq4000,
+            OdtChoice::DciP3D65_48 => GpuOdt::DciP3D65_48,
+            // `ExportPath::Odt` is unreachable for these three — they
+            // take the ToneMapSrgb or AcesRec709 paths — so there is no
+            // ODT to name.
+            OdtChoice::MatchViewer | OdtChoice::Srgb | OdtChoice::Unknown => return None,
+        })
+    }
+
     /// Whether this is the plain ACES Rec.709 SDR output transform —
     /// what an AcesCG project gets from `OdtChoice::MatchViewer`.
     ///

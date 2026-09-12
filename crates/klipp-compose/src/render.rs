@@ -672,6 +672,13 @@ impl Renderer {
         // render. Seed the chain with it and convert that, rather than
         // going through `grade`, whose identity short-circuit would pull
         // the frame off the GPU (`input.pixels()`) only to hand it back.
+        // The executor needs the project's basis whichever branch runs:
+        // the display transform's blob is built from it (an ACES ODT is
+        // defined on AP1 and walks a foreign basis there; an HDR
+        // delivery's matrix goes to BT.2020 from it). `grade` sets it for
+        // a real graph, but the pass-through below never calls `grade`,
+        // and a stale value there is a wrong picture rather than an error.
+        self.executor.set_working_colorspace(self.working);
         if clip.node_graph.is_identity() {
             let GradeInput::Gpu(g) = &input else { return None };
             if !g.seed(&mut self.executor, width, height)

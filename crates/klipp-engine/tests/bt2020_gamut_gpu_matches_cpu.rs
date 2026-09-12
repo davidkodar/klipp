@@ -260,6 +260,7 @@ fn bt2020_display_on_the_gpu_beats_the_round_trip() {
     // on top of the transform it has already paid for.
     let nv12 = klipp_effects::gpu::Yuv420Target {
         tone_map_op: 0,
+        odt_tag: 0,
         gamut_op: 1,
         hdr_op: 0,
         peak_nits: 0.0,

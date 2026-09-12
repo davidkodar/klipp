@@ -16,7 +16,11 @@
 //! inputs that reach the awkward branches — the glow's piecewise
 //! shadow region, the red modifier's hue bell, the gamut clamps.
 
-use klipp_color::aces::{aces_rec709_gpu_data, acescg_to_rec709_sdr};
+use klipp_color::aces::{
+    aces_odt_gpu_data, aces_rec709_gpu_data, acescg_to_display_tabled, acescg_to_rec709_sdr,
+    GpuOdt, OdtCurves,
+};
+use klipp_core::WorkingColorspace;
 use klipp_effects::{gpu::GpuEffectsPipeline, gpu_context::GpuContext};
 
 /// 1024 entries a curve — the size measured at 0.041 code values in
@@ -206,4 +210,204 @@ fn aces_rec709_matches_the_cpu_at_the_extremes() {
         cases.push([v, v * 0.5, v * 0.25]);
     }
     compare("extremes", &cases, 1);
+}
+
+/// The other three AcesCG-basis deliverables, each against its own CPU
+/// transform.
+///
+/// The four are not four transforms but two chains with parameters, and
+/// that is exactly what makes a shared shader risky: a header value read
+/// from the wrong slot, or a matrix slot a variant does not use being
+/// read anyway, produces a picture that looks plausible for the *other*
+/// deliverable. So each is compared against its own twin, and then
+/// against the others to prove the comparison can tell them apart.
+///
+/// The HDR pair carry no tone-curve tables at all: their single-stage
+/// SSTS is evaluated in the shader off the twenty-one numbers the blob
+/// ships, because feeding a tabled SSTS into `Y_2_linCV` leaves nothing
+/// but the table's own log round-trip near black — which PQ turns into
+/// two code values of lifted black.
+#[test]
+fn every_acescg_odt_matches_the_cpu() {
+    let Some(ctx) = GpuContext::new() else {
+        eprintln!("skipping: no usable GPU");
+        return;
+    };
+    let mut pipeline = GpuEffectsPipeline::with_context(&ctx).expect("pipeline");
+
+    // Noise across eighteen stops and the full saturation range, plus
+    // the neutrals and primaries the sweeteners treat specially.
+    let mut colours = noise(8192);
+    for stops in [-8.0f32, -4.0, -1.0, 0.0, 1.0, 4.0, 8.0] {
+        let k = 2.0f32.powf(stops) * 0.18;
+        colours.push([k, k, k]);
+        for axis in [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0], [1.0, 1.0, 0.0]] {
+            colours.push([axis[0] * k, axis[1] * k, axis[2] * k]);
+        }
+    }
+    colours.push([0.0, 0.0, 0.0]);
+
+    let w = colours.len() as u32;
+    let mut linear = Vec::with_capacity(colours.len() * 4);
+    for c in &colours {
+        linear.extend_from_slice(&[c[0], c[1], c[2], 1.0]);
+    }
+    pipeline.ensure_chain_buffers((w as u64) * 16);
+
+    // Each deliverable, and each from an AcesCG project and from a
+    // BT.709 one. The second is the pre-matrix slot: an ODT is defined
+    // on AP1, so a project in any other basis is walked there first or
+    // the transform sees foreign values and shifts hue.
+    let curves = OdtCurves::new(CURVE_ENTRIES);
+    let mut encoded: Vec<(GpuOdt, Vec<[u8; 3]>)> = Vec::new();
+    for working in [WorkingColorspace::AcesCG, WorkingColorspace::Rec709Linear] {
+        for odt in [
+            GpuOdt::Rec709Sdr,
+            GpuOdt::DciP3D65_48,
+            GpuOdt::Rec2100Pq1000,
+            GpuOdt::Rec2100Pq4000,
+        ] {
+            pipeline.upload_chain_input_linear(&linear);
+            let data = aces_odt_gpu_data(odt, working, CURVE_ENTRIES);
+            let bytes = pipeline
+                .encode_chain_to_aces_rec709_u8(true, w, 1, &data)
+                .expect("the ACES pipeline refused");
+            let got: Vec<[u8; 3]> = bytes.chunks_exact(4).map(|p| [p[0], p[1], p[2]]).collect();
+
+            let mut worst = 0i32;
+            let mut worst_at = 0usize;
+            for (i, c) in colours.iter().enumerate() {
+                let e = acescg_to_display_tabled(*c, odt, working, &curves);
+                let want = [0, 1, 2].map(|k| (e[k] * 255.0 + 0.5).clamp(0.0, 255.0) as u8);
+                let d = (0..3).map(|k| (got[i][k] as i32 - want[k] as i32).abs()).max().unwrap();
+                if d > worst {
+                    worst = d;
+                    worst_at = i;
+                }
+            }
+            let c = colours[worst_at];
+            eprintln!(
+                "{odt:?} from {working:?}: worst {worst} of 255 over {} colours, \
+                 at [{:.5}, {:.5}, {:.5}]",
+                colours.len(),
+                c[0],
+                c[1],
+                c[2],
+            );
+            assert!(
+                worst <= 1,
+                "{odt:?} from {working:?}: the shader is out by {worst} code values \
+                 at [{:.5}, {:.5}, {:.5}]",
+                c[0],
+                c[1],
+                c[2],
+            );
+            if working == WorkingColorspace::AcesCG {
+                encoded.push((odt, got));
+            }
+        }
+    }
+
+    // And the four are visibly different pictures, so agreeing with one
+    // twin is not agreeing with all of them. Every pair has to differ
+    // somewhere substantial: if the shader ignored the blob's variant
+    // and ran one chain for all four, this is what would catch it.
+    for i in 0..encoded.len() {
+        for j in (i + 1)..encoded.len() {
+            let (a, b) = (&encoded[i], &encoded[j]);
+            let d = a
+                .1
+                .iter()
+                .zip(b.1.iter())
+                .map(|(x, y)| (0..3).map(|k| (x[k] as i32 - y[k] as i32).abs()).max().unwrap())
+                .max()
+                .unwrap_or(0);
+            eprintln!("{:?} vs {:?}: worst {d} of 255", a.0, b.0);
+            assert!(
+                d > 8,
+                "{:?} and {:?} render within {d} code values of each other, so this test \
+                 cannot tell the variants apart",
+                a.0,
+                b.0,
+            );
+        }
+    }
+}
+
+/// What the ODT branch is worth, at 4K.
+///
+/// A probe, not a pass/fail test:
+/// `cargo test --release -p klipp-engine --test aces_gpu_matches_cpu -- --ignored --nocapture`
+#[test]
+#[ignore = "perf probe: run explicitly"]
+fn the_acescg_odts_on_the_gpu_beat_the_round_trip() {
+    let (w, h) = (3840u32, 2160u32);
+    let n = (w as usize) * (h as usize);
+    let Some(ctx) = GpuContext::new() else {
+        eprintln!("skipping: no usable GPU");
+        return;
+    };
+    let mut pipeline = GpuEffectsPipeline::with_context(&ctx).expect("pipeline");
+
+    let mut linear = Vec::with_capacity(n * 4);
+    for i in 0..n {
+        let t = (i % 4096) as f32 / 4096.0;
+        let v = ((i / 4096) % 1024) as f32 / 1024.0 * 8.0;
+        linear.extend_from_slice(&[v * (0.2 + 0.8 * t), v * (0.9 - 0.4 * t), v * (0.1 + 0.9 * t), 1.0]);
+    }
+    pipeline.ensure_chain_buffers((n as u64) * 16);
+
+    let median = |mut v: Vec<f64>| {
+        v.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        v[v.len() / 2]
+    };
+    for (odt, choice) in [
+        (GpuOdt::DciP3D65_48, klipp_core::OdtChoice::DciP3D65_48),
+        (GpuOdt::Rec2100Pq1000, klipp_core::OdtChoice::Rec2100Pq1000),
+    ] {
+        let display = klipp_color::display::ExportDisplay::new(
+            klipp_core::ToneMapOp::None,
+            WorkingColorspace::AcesCG,
+            choice,
+        );
+        let data = aces_odt_gpu_data(odt, WorkingColorspace::AcesCG, CURVE_ENTRIES);
+        pipeline.upload_chain_input_linear(&linear);
+        let _ = pipeline.encode_chain_to_aces_rec709_u8(true, w, h, &data);
+        let mut gpu_ms = Vec::new();
+        for _ in 0..5 {
+            let start = std::time::Instant::now();
+            let bytes =
+                pipeline.encode_chain_to_aces_rec709_u8(true, w, h, &data).expect("encode");
+            gpu_ms.push(start.elapsed().as_secs_f64() * 1000.0);
+            assert_eq!(bytes.len(), n * 4);
+        }
+
+        let mut cpu_ms = Vec::new();
+        for _ in 0..3 {
+            let start = std::time::Instant::now();
+            let floats = pipeline.download_chain_output_linear(true, n);
+            let read_ms = start.elapsed().as_secs_f64() * 1000.0;
+            let t2 = std::time::Instant::now();
+            use rayon::prelude::*;
+            // `ExportDisplay`, which is what the export ran on this path
+            // before the shader existed — not the tabled reference, whose
+            // job is parity and not speed.
+            let out: Vec<u8> = floats
+                .par_chunks_exact(4)
+                .flat_map_iter(|p| {
+                    let e = display.encode([p[0], p[1], p[2]]);
+                    (0..3).map(move |k| (e[k] * 255.0 + 0.5).clamp(0.0, 255.0) as u8)
+                })
+                .collect();
+            let enc_ms = t2.elapsed().as_secs_f64() * 1000.0;
+            assert_eq!(out.len(), n * 3);
+            cpu_ms.push(read_ms + enc_ms);
+        }
+        let (g, c) = (median(gpu_ms), median(cpu_ms));
+        eprintln!(
+            "4K {odt:?}: on the GPU {g:.1} ms/frame, via the CPU round trip {c:.1} ms/frame \
+             ({:.1}x)",
+            c / g
+        );
+    }
 }

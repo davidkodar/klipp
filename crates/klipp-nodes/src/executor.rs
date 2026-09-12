@@ -796,7 +796,11 @@ impl GraphExecutor {
         // ms, the ACES curves are 0.08, and the PQ table is memoised the
         // same way. The upload is cached too.
         let tables = if target.tone_map_op == 3 {
-            klipp_color::aces::aces_rec709_gpu_data(1024)
+            // Which ODT, from the target's tag: the shader reads the
+            // transform out of the blob, so this is the one place that
+            // has to pick the right blob.
+            let odt = klipp_color::aces::GpuOdt::from_tag(target.odt_tag)?;
+            klipp_color::aces::aces_odt_gpu_data(odt, self.working_colorspace, 1024)
         } else if target.gamut_op == 1 {
             klipp_color::gamut::bt2020_to_bt709_gpu_data()
         } else if target.hdr_op != 0 {

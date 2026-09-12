@@ -944,16 +944,21 @@ impl Encoder {
         // project's SDR delivery is. `hdr_op` replaces the tone map and
         // the sRGB encode with BT.2020 and PQ or HLG. Otherwise a tone
         // map and an sRGB encode.
-        let (op, gamut_op, hdr_op, peak_nits) = if let Some((pq, peak)) =
+        let (op, odt_tag, gamut_op, hdr_op, peak_nits) = if let Some((pq, peak)) =
             self.display.hdr_transfer_and_peak()
         {
-            (0, 0, if pq { 1 } else { 2 }, peak)
+            (0, 0, 0, if pq { 1 } else { 2 }, peak)
         } else if self.display.is_aces_rec709() {
-            (3, 0, 0, 0.0)
+            (3, klipp_color::aces::GpuOdt::Rec709Sdr.tag(), 0, 0, 0.0)
+        } else if let Some(odt) = self.display.acescg_basis_odt() {
+            // The AcesCG-basis deliverables: the same `tone_map_op` as
+            // the viewer match above, since the shader reads which
+            // transform it is from the blob rather than the parameter.
+            (3, odt.tag(), 0, 0, 0.0)
         } else if let Some(tm) = self.display.bt2020_gamut_then_tone_map_srgb() {
-            (separable(tm)?, 1, 0, 0.0)
+            (separable(tm)?, 0, 1, 0, 0.0)
         } else {
-            (separable(self.display.tone_map_and_srgb_only()?)?, 0, 0, 0.0)
+            (separable(self.display.tone_map_and_srgb_only()?)?, 0, 0, 0, 0.0)
         };
         let (kr, kb) = match self.yuv_matrix {
             klipp_core::ColorMatrix::Bt2020Ncl | klipp_core::ColorMatrix::Bt2020Cl => (0.2627f32, 0.0593f32),
@@ -961,6 +966,7 @@ impl Encoder {
         };
         Some(klipp_effects::gpu::Yuv420Target {
             tone_map_op: op,
+            odt_tag,
             gamut_op,
             hdr_op,
             peak_nits,

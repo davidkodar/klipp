@@ -1226,16 +1226,21 @@ const DCI_DISP_GAMMA: f32 = 2.6;
 /// to quantise to 12-bit DCDM (the canonical cinema deliverable
 /// format) or any P3-D65-tagged container.
 pub fn apply_odt_dcip3_d65_48_nits(oces: [f32; 3]) -> [f32; 3] {
+    apply_odt_dcip3_d65_48_nits_with(oces, &segmented_spline_c9_fwd)
+}
+
+/// [`apply_odt_dcip3_d65_48_nits`] with the tone curve supplied — see
+/// [`apply_rrt_with`].
+fn apply_odt_dcip3_d65_48_nits_with(
+    oces: [f32; 3],
+    curve: &dyn Fn(f32) -> f32,
+) -> [f32; 3] {
     // OCES → AP1.
     let rgb_pre = matrix3_mul_vec(ap0_to_ap1(), oces);
 
     // Per-channel C9 tone scale → cinema-range cd/m² (mid 4.8,
     // peak 48 — the 48-nit cinema deliverable's natural range).
-    let rgb_post = [
-        segmented_spline_c9_fwd(rgb_pre[0]),
-        segmented_spline_c9_fwd(rgb_pre[1]),
-        segmented_spline_c9_fwd(rgb_pre[2]),
-    ];
+    let rgb_post = [curve(rgb_pre[0]), curve(rgb_pre[1]), curve(rgb_pre[2])];
 
     // Display Y → linear CV (cinema 0.02 → 48).
     let lin_cv = [
@@ -1915,6 +1920,189 @@ mod tests {
 }
 
 #[cfg(test)]
+mod gpu_odt_data_tests {
+    use super::*;
+
+    /// Each variant's blob is the length its layout says, and the header
+    /// describes it. A GPU host cannot see `gpu_layout` — `klipp-effects`
+    /// does not depend on this crate — so it reads the curve sizes from
+    /// the header and indexes off fixed offsets.
+    #[test]
+    fn every_variant_lays_out_as_the_shader_expects() {
+        for odt in [
+            GpuOdt::Rec709Sdr,
+            GpuOdt::DciP3D65_48,
+            GpuOdt::Rec2100Pq1000,
+            GpuOdt::Rec2100Pq4000,
+        ] {
+            let n = 256;
+            let d = aces_odt_gpu_data(odt, klipp_core::WorkingColorspace::AcesCG, n);
+            let hdr = odt.hdr_peak().is_some();
+            assert_eq!(
+                d.len(),
+                gpu_layout::CURVES + if hdr { 0 } else { n * 2 },
+                "{odt:?}: blob length",
+            );
+            assert_eq!(d[gpu_layout::VARIANT], if hdr { 1.0 } else { 0.0 }, "{odt:?}: variant");
+            // The curve descriptors: sizes the shader reads, zero when
+            // the variant ships no curves.
+            let want_n = if hdr { 0.0 } else { n as f32 };
+            assert_eq!(d[2], want_n, "{odt:?}: rrt entries");
+            assert_eq!(d[5], want_n, "{odt:?}: odt entries");
+            // Only the video ODT compensates for a dim surround.
+            assert_eq!(
+                d[gpu_layout::DIM_SURROUND],
+                if odt == GpuOdt::Rec709Sdr { 1.0 } else { 0.0 },
+                "{odt:?}: dim surround",
+            );
+            assert_eq!(
+                d[gpu_layout::Y_WHITE],
+                odt.hdr_peak().unwrap_or(CINEMA_WHITE),
+                "{odt:?}: linCV white",
+            );
+            // The SSTS block is present exactly for the HDR variants: a
+            // resolved curve has a rising mid anchor, a zeroed one does
+            // not.
+            let mid_y = d[gpu_layout::SSTS + 4];
+            assert_eq!(mid_y > 0.0, hdr, "{odt:?}: SSTS block presence");
+            if hdr {
+                // The mid anchor is 4.8 cd/m² for both peaks — `Y_MID`
+                // (15) is what the two-pass `expShift` derivation aims
+                // mid-grey at, not the anchor itself, which is why PQ
+                // mid-grey lands on the same code value at either peak.
+                assert_eq!(mid_y, 4.8, "{odt:?}: the SSTS mid anchor");
+                assert_eq!(
+                    d[gpu_layout::SSTS + 7],
+                    odt.hdr_peak().unwrap(),
+                    "{odt:?}: the SSTS peak anchor",
+                );
+                // And the peak is the only thing that differs between
+                // the two, which is the claim `GpuOdt` is built on.
+                let other = if odt == GpuOdt::Rec2100Pq1000 {
+                    GpuOdt::Rec2100Pq4000
+                } else {
+                    GpuOdt::Rec2100Pq1000
+                };
+                let o = aces_odt_gpu_data(other, klipp_core::WorkingColorspace::AcesCG, n);
+                assert_ne!(
+                    d[gpu_layout::SSTS..gpu_layout::CURVES],
+                    o[gpu_layout::SSTS..gpu_layout::CURVES],
+                    "{odt:?}: the two peaks resolve to the same SSTS",
+                );
+                assert_eq!(
+                    d[gpu_layout::MATRICES..gpu_layout::SSTS],
+                    o[gpu_layout::MATRICES..gpu_layout::SSTS],
+                    "{odt:?}: the two peaks should share every matrix",
+                );
+            }
+        }
+    }
+
+    /// The wire tags are stable and total.
+    #[test]
+    fn gpu_odt_tags_round_trip() {
+        for odt in [
+            GpuOdt::Rec709Sdr,
+            GpuOdt::DciP3D65_48,
+            GpuOdt::Rec2100Pq1000,
+            GpuOdt::Rec2100Pq4000,
+        ] {
+            assert_eq!(GpuOdt::from_tag(odt.tag()), Some(odt));
+        }
+        assert_eq!(GpuOdt::from_tag(4), None, "an unknown tag must not resolve");
+    }
+
+    /// A non-AcesCG project is walked into AP1 before the ODT, and that
+    /// happens in its own matrix slot.
+    ///
+    /// It cannot be folded into the ap1→ap0 slot the chain starts with,
+    /// because the chain applies that slot a *second* time to the
+    /// post-curve values — where the project's basis has no business.
+    #[test]
+    fn a_foreign_basis_gets_its_own_matrix_slot() {
+        use klipp_core::WorkingColorspace as W;
+        let n = 64;
+        let acescg = aces_odt_gpu_data(GpuOdt::Rec709Sdr, W::AcesCG, n);
+        let rec709 = aces_odt_gpu_data(GpuOdt::Rec709Sdr, W::Rec709Linear, n);
+        let slot = |d: &[f32], i: usize| {
+            d[gpu_layout::MATRICES + i * 9..gpu_layout::MATRICES + i * 9 + 9].to_vec()
+        };
+        // An AcesCG project needs no walk.
+        assert_eq!(slot(&acescg, gpu_layout::SOURCE_TO_AP1), identity3().concat());
+        // A BT.709 one does, and only that slot moves.
+        assert_ne!(slot(&rec709, gpu_layout::SOURCE_TO_AP1), identity3().concat());
+        for i in 0..gpu_layout::SOURCE_TO_AP1 {
+            assert_eq!(slot(&acescg, i), slot(&rec709, i), "matrix slot {i} should not move");
+        }
+        // And the reference agrees: the same working values render
+        // differently once the basis is declared, because they mean a
+        // different colour.
+        let c = [0.6f32, 0.2, 0.1];
+        let curves = OdtCurves::new(1024);
+        let a = acescg_to_display_tabled(c, GpuOdt::Rec709Sdr, W::AcesCG, &curves);
+        let b = acescg_to_display_tabled(c, GpuOdt::Rec709Sdr, W::Rec709Linear, &curves);
+        assert!(
+            (0..3).any(|k| (a[k] - b[k]).abs() > 0.02),
+            "declaring the basis changed nothing: {a:?} vs {b:?}",
+        );
+    }
+
+    /// The tabled reference is the real transform, per deliverable.
+    ///
+    /// `acescg_to_display_tabled` is what a shader parity test measures
+    /// against, so it has to be the deliverable and not a fifth
+    /// transform of its own. 1024 entries a curve, the size
+    /// `table_size_against_accuracy` measures at 0.041 code values.
+    #[test]
+    fn the_tabled_reference_is_the_deliverable() {
+        let exact: [(GpuOdt, fn([f32; 3]) -> [f32; 3]); 4] = [
+            (GpuOdt::Rec709Sdr, acescg_to_rec709_sdr),
+            (GpuOdt::DciP3D65_48, acescg_to_dcip3_d65_48nit),
+            (GpuOdt::Rec2100Pq1000, acescg_to_rec2100_pq_1000_nit),
+            (GpuOdt::Rec2100Pq4000, acescg_to_rec2100_pq_4000_nit),
+        ];
+        let mut st = 0x2545_F491_4F6C_DD1Du64;
+        let mut next = move || {
+            st ^= st << 13;
+            st ^= st >> 7;
+            st ^= st << 17;
+            (st >> 11) as f32 / (1u64 << 53) as f32
+        };
+        let cases: Vec<[f32; 3]> = (0..4096)
+            .map(|_| {
+                let base = 2.0f32.powf(next() * 18.0 - 12.0);
+                [
+                    base * (0.2 + 1.6 * next()),
+                    base * (0.2 + 1.6 * next()),
+                    base * (0.2 + 1.6 * next()),
+                ]
+            })
+            .collect();
+        let curves = OdtCurves::new(1024);
+        for (odt, f) in exact {
+            let mut worst = 0.0f32;
+            for c in &cases {
+                let (a, b) = (
+                    acescg_to_display_tabled(
+                        *c,
+                        odt,
+                        klipp_core::WorkingColorspace::AcesCG,
+                        &curves,
+                    ),
+                    f(*c),
+                );
+                for i in 0..3 {
+                    worst = worst.max((a[i] - b[i]).abs());
+                }
+            }
+            let codes = worst * 1023.0;
+            eprintln!("{odt:?}: tabled vs exact worst {codes:.4} of 1023");
+            assert!(codes < 0.5, "{odt:?}: the tabled reference is {codes:.3} code values out");
+        }
+    }
+}
+
+#[cfg(test)]
 mod tone_curve_table_tests {
     use super::*;
 
@@ -2006,17 +2194,255 @@ mod tone_curve_table_tests {
 /// generating the WGSL; a mismatch is not subtle — the parity test goes
 /// from a fraction of a level to visibly wrong.
 pub mod gpu_layout {
-    /// `rrt_log_x_min, rrt_log_x_max, rrt_n, odt_log_x_min, odt_log_x_max, odt_n`.
+    /// `rrt_log_x_min, rrt_log_x_max, rrt_n, odt_log_x_min, odt_log_x_max,
+    /// odt_n, variant, disp_gamma, dim_surround, y_white, y_black, pad`.
+    ///
+    /// `variant` is 0 for the two-stage SDR tail (RRT then the C9 ODT)
+    /// and 1 for the single-stage HDR one (the SSTS). `disp_gamma` and
+    /// `dim_surround` belong to the SDR tail; `y_white` and `y_black` are
+    /// the luminances `Y_2_linCV` normalises through, which differ per
+    /// deliverable.
     pub const HEADER: usize = 0;
-    pub const HEADER_LEN: usize = 6;
-    /// Seven 3x3 matrices, row-major, in the order the chain applies
-    /// them: ap1→ap0, ap0→ap1, rrt_sat, odt_sat, acescg→bt709,
-    /// bt709→xyz, xyz→bt709.
+    pub const HEADER_LEN: usize = 12;
+    pub const VARIANT: usize = 6;
+    pub const DISP_GAMMA: usize = 7;
+    pub const DIM_SURROUND: usize = 8;
+    pub const Y_WHITE: usize = 9;
+    pub const Y_BLACK: usize = 10;
+    /// Twelve 3x3 matrices, row-major. The first seven are the SDR
+    /// chain's, in the order it applies them — ap1→ap0, ap0→ap1, rrt_sat,
+    /// odt_sat, ap1→display, display→xyz, xyz→display — then four for the
+    /// HDR chain: ap1→xyz, xyz→bt2020, bt2020→xyz, D60→D65. Slots a
+    /// variant does not use carry an identity.
+    ///
+    /// The twelfth is the working space's basis into AP1, applied once at
+    /// the very start. It cannot be folded into the ap1→ap0 slot, which
+    /// the chain applies a second time to the post-curve values.
     pub const MATRICES: usize = HEADER_LEN;
-    pub const MATRIX_COUNT: usize = 7;
+    pub const SOURCE_TO_AP1: usize = 11;
+    pub const MATRIX_COUNT: usize = 12;
     pub const MATRICES_LEN: usize = MATRIX_COUNT * 9;
-    /// The two tone curves, RRT first.
-    pub const CURVES: usize = MATRICES + MATRICES_LEN;
+    /// The SSTS, HDR only: min/mid/max as `(x, y, slope)`, then six
+    /// low-side and six high-side spline coefficients.
+    pub const SSTS: usize = MATRICES + MATRICES_LEN;
+    pub const SSTS_LEN: usize = 21;
+    /// The two tone curves, RRT first. Empty for the HDR variant, whose
+    /// single stage is the SSTS above.
+    pub const CURVES: usize = SSTS + SSTS_LEN;
+}
+
+/// Which output transform a GPU blob describes.
+///
+/// One per deliverable `OdtChoice` offers on the AcesCG basis. They are
+/// four configurations of two chains rather than four transforms: the
+/// SDR pair differ only in their output matrix, their display gamma and
+/// whether the dim-surround compensation runs, and the HDR pair only in
+/// their peak luminance.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum GpuOdt {
+    /// [`acescg_to_rec709_sdr`].
+    Rec709Sdr,
+    /// [`acescg_to_dcip3_d65_48nit`].
+    DciP3D65_48,
+    /// [`acescg_to_rec2100_pq_1000_nit`].
+    Rec2100Pq1000,
+    /// [`acescg_to_rec2100_pq_4000_nit`].
+    Rec2100Pq4000,
+}
+
+impl GpuOdt {
+    /// Wire-stable tag, so a target struct can name an ODT without
+    /// `klipp-effects` having to know what one is. Discriminants are
+    /// pinned: `gpu_odt_tags_round_trip` holds them.
+    pub fn tag(self) -> u32 {
+        match self {
+            Self::Rec709Sdr => 0,
+            Self::DciP3D65_48 => 1,
+            Self::Rec2100Pq1000 => 2,
+            Self::Rec2100Pq4000 => 3,
+        }
+    }
+
+    /// The inverse of [`Self::tag`]; `None` for an unknown tag.
+    pub fn from_tag(tag: u32) -> Option<Self> {
+        Some(match tag {
+            0 => Self::Rec709Sdr,
+            1 => Self::DciP3D65_48,
+            2 => Self::Rec2100Pq1000,
+            3 => Self::Rec2100Pq4000,
+            _ => return None,
+        })
+    }
+
+    /// The peak the HDR deliverables are mastered to, cd/m².
+    fn hdr_peak(self) -> Option<f32> {
+        match self {
+            Self::Rec2100Pq1000 => Some(1000.0),
+            Self::Rec2100Pq4000 => Some(4000.0),
+            _ => None,
+        }
+    }
+}
+
+/// The identity, for a matrix slot this variant does not use.
+fn identity3() -> [[f32; 3]; 3] {
+    [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]
+}
+
+/// The matrices, constants and curves for one output transform, flat,
+/// ready to upload — [`aces_rec709_gpu_data`] generalised to the four
+/// deliverables.
+///
+/// `curve_entries` sizes the two SDR tone curves and is ignored for the
+/// HDR variants, which ship the SSTS's twenty-one resolved numbers
+/// instead of a sampling of it. That difference is deliberate: the SSTS
+/// feeds `Y_2_linCV`, which subtracts `Y_MIN` from values that *are*
+/// `Y_MIN` near black, and a table's own log round-trip is all that
+/// survives the cancellation — about two 10-bit code values of lifted
+/// black once PQ magnifies it, which is what `STRETCH_BLACK` exists to
+/// prevent. The spline is thirty lines of arithmetic; the part that
+/// could drift is `init_TsParams`, and that is what gets shipped.
+pub fn aces_odt_gpu_data(
+    odt: GpuOdt,
+    working: klipp_core::WorkingColorspace,
+    curve_entries: usize,
+) -> Vec<f32> {
+    let hdr = odt.hdr_peak();
+    // The HDR variant's single stage is the SSTS, so it carries no curves.
+    let (rrt, odt_curve) = match hdr {
+        Some(_) => (None, None),
+        None => (
+            Some(rrt_tone_curve_table(curve_entries)),
+            Some(odt_rec709_tone_curve_table(curve_entries)),
+        ),
+    };
+    let desc = |t: &Option<ToneCurveTable>| match t {
+        Some(t) => [t.log_x_min, t.log_x_max, t.log_y.len() as f32],
+        None => [0.0, 0.0, 0.0],
+    };
+
+    let mut out = Vec::with_capacity(gpu_layout::CURVES + curve_entries * 2);
+    out.extend_from_slice(&desc(&rrt));
+    out.extend_from_slice(&desc(&odt_curve));
+    out.push(if hdr.is_some() { 1.0 } else { 0.0 });
+    out.push(match odt {
+        GpuOdt::DciP3D65_48 => DCI_DISP_GAMMA,
+        _ => SDR_DISP_GAMMA,
+    });
+    // Only the video ODT compensates for a dim surround. The cinema one
+    // does not, and neither does its saturation partner — applying one
+    // without the other put positive blue into saturated reds.
+    out.push(if odt == GpuOdt::Rec709Sdr { 1.0 } else { 0.0 });
+    let (y_white, y_black) = match hdr {
+        Some(peak) => (peak, HDR_PQ_Y_MIN),
+        None => (CINEMA_WHITE, CINEMA_BLACK),
+    };
+    out.push(y_white);
+    out.push(y_black);
+    out.push(0.0);
+    debug_assert_eq!(out.len(), gpu_layout::MATRICES);
+
+    let sdr = hdr.is_none();
+    for m in [
+        ap1_to_ap0(),
+        ap0_to_ap1(),
+        rrt_sat_matrix(),
+        // The cinema ODT applies no saturation matrix.
+        if odt == GpuOdt::Rec709Sdr { odt_sat_matrix() } else { identity3() },
+        match odt {
+            GpuOdt::DciP3D65_48 => crate::primaries::acescg_to_p3d65(),
+            _ if sdr => crate::primaries::acescg_to_bt709(),
+            _ => identity3(),
+        },
+        if sdr { rec709_to_xyz_d65() } else { identity3() },
+        if sdr { xyz_d65_to_rec709() } else { identity3() },
+        if sdr { identity3() } else { ap1_to_xyz() },
+        if sdr { identity3() } else { xyz_to_rec2020() },
+        if sdr { identity3() } else { rec2020_to_xyz() },
+        if sdr { identity3() } else { d60_to_d65_cat() },
+        // The project's basis into AP1, which the ODTs are defined on.
+        // An AcesCG project needs nothing; any other walks there first,
+        // or the ODT sees foreign values and shifts hue.
+        crate::primaries::working_space_conversion_matrix(
+            working,
+            klipp_core::WorkingColorspace::AcesCG,
+        )
+        .unwrap_or_else(identity3),
+    ] {
+        for row in m {
+            out.extend_from_slice(&row);
+        }
+    }
+    debug_assert_eq!(out.len(), gpu_layout::SSTS);
+
+    match hdr {
+        Some(peak) => {
+            let p = hdr_pq_params(peak);
+            for pt in [p.min, p.mid, p.max] {
+                out.extend_from_slice(&[pt.x, pt.y, pt.slope]);
+            }
+            out.extend_from_slice(&p.coefs_low);
+            out.extend_from_slice(&p.coefs_high);
+        }
+        None => out.extend_from_slice(&[0.0; gpu_layout::SSTS_LEN]),
+    }
+    debug_assert_eq!(out.len(), gpu_layout::CURVES);
+
+    if let (Some(rrt), Some(odt_curve)) = (rrt, odt_curve) {
+        out.extend_from_slice(&rrt.log_y);
+        out.extend_from_slice(&odt_curve.log_y);
+    }
+    out
+}
+
+/// The CPU answer for `odt`, computed the way the GPU computes it — the
+/// two SDR curves read from tables of `curve_entries`, everything else
+/// exact. The reference a shader parity test measures against, so that
+/// "the table is coarse" and "the shader is wrong" stay separable.
+pub fn acescg_to_display_tabled(
+    working_rgb: [f32; 3],
+    odt: GpuOdt,
+    working: klipp_core::WorkingColorspace,
+    curves: &OdtCurves,
+) -> [f32; 3] {
+    let acescg = match crate::primaries::working_space_conversion_matrix(
+        working,
+        klipp_core::WorkingColorspace::AcesCG,
+    ) {
+        Some(m) => matrix3_mul_vec(m, working_rgb),
+        None => working_rgb,
+    };
+    match odt {
+        // The HDR pair read no table: their SSTS is evaluated, on the
+        // GPU as here, so these *are* the exact transforms.
+        GpuOdt::Rec2100Pq1000 => acescg_to_rec2100_pq_1000_nit(acescg),
+        GpuOdt::Rec2100Pq4000 => acescg_to_rec2100_pq_4000_nit(acescg),
+        GpuOdt::Rec709Sdr => acescg_to_rec709_sdr_tabled(acescg, &curves.rrt, &curves.c9),
+        GpuOdt::DciP3D65_48 => {
+            let oces =
+                apply_rrt_with(matrix3_mul_vec(ap1_to_ap0(), acescg), &|x| curves.rrt.eval(x));
+            apply_odt_dcip3_d65_48_nits_with(oces, &|x| curves.c9.eval(x))
+        }
+    }
+}
+
+/// The two tone curves an SDR ODT reads, baked once.
+///
+/// Passed in rather than built inside [`acescg_to_display_tabled`],
+/// which is a per-pixel call: baking them there cost a 4K frame
+/// twenty-five *seconds*, since each pixel rebuilt two 1024-entry
+/// splines.
+pub struct OdtCurves {
+    pub rrt: ToneCurveTable,
+    pub c9: ToneCurveTable,
+}
+
+impl OdtCurves {
+    /// `entries` a curve — 1024 is the size `table_size_against_accuracy`
+    /// measures at 0.041 code values.
+    pub fn new(entries: usize) -> Self {
+        Self { rrt: rrt_tone_curve_table(entries), c9: odt_rec709_tone_curve_table(entries) }
+    }
 }
 
 /// The matrices and tone curves for the ACES Rec.709 SDR transform,
@@ -2029,36 +2455,5 @@ pub mod gpu_layout {
 /// implementations drift; the scalar constants that remain in the
 /// shader are single literals the parity test would catch instantly.
 pub fn aces_rec709_gpu_data(curve_entries: usize) -> Vec<f32> {
-    let rrt = rrt_tone_curve_table(curve_entries);
-    let odt = odt_rec709_tone_curve_table(curve_entries);
-    let mut out = Vec::with_capacity(gpu_layout::CURVES + curve_entries * 2);
-
-    out.extend_from_slice(&[
-        rrt.log_x_min,
-        rrt.log_x_max,
-        rrt.log_y.len() as f32,
-        odt.log_x_min,
-        odt.log_x_max,
-        odt.log_y.len() as f32,
-    ]);
-    debug_assert_eq!(out.len(), gpu_layout::MATRICES);
-
-    for m in [
-        ap1_to_ap0(),
-        ap0_to_ap1(),
-        rrt_sat_matrix(),
-        odt_sat_matrix(),
-        crate::primaries::acescg_to_bt709(),
-        rec709_to_xyz_d65(),
-        xyz_d65_to_rec709(),
-    ] {
-        for row in m {
-            out.extend_from_slice(&row);
-        }
-    }
-    debug_assert_eq!(out.len(), gpu_layout::CURVES);
-
-    out.extend_from_slice(&rrt.log_y);
-    out.extend_from_slice(&odt.log_y);
-    out
+    aces_odt_gpu_data(GpuOdt::Rec709Sdr, klipp_core::WorkingColorspace::AcesCG, curve_entries)
 }
