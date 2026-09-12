@@ -3613,6 +3613,7 @@ impl GpuEffectsPipeline {
         self.queue.submit(std::iter::once(encoder.finish()));
         self.submit_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
+        let t_submit = std::time::Instant::now();
         let slice = staging.slice(..byte_size);
         let (tx, rx) = std::sync::mpsc::channel();
         slice.map_async(wgpu::MapMode::Read, move |r| { let _ = tx.send(r); });
@@ -3620,9 +3621,15 @@ impl GpuEffectsPipeline {
         mark_gpu_stage(GpuStage::FlushChain);
         let result = match poll_until_mapped(&self.device, &rx) {
             Ok(Ok(())) => {
+                let t_mapped = t_submit.elapsed();
                 let data = slice.get_mapped_range();
-                let linear: &[f32] = bytemuck::cast_slice(&data);
-                let result = linear.to_vec();
+                let result = mapped_bytes_to_f32(&data, pixel_count * 4);
+                tracing::debug!(
+                    "chain flush {} MB: gpu+transfer {:.1}ms, copy out {:.1}ms",
+                    byte_size / 1_000_000,
+                    t_mapped.as_secs_f64() * 1000.0,
+                    (t_submit.elapsed() - t_mapped).as_secs_f64() * 1000.0,
+                );
                 drop(data);
                 staging.unmap();
                 result
@@ -4742,13 +4749,12 @@ impl GpuEffectsPipeline {
         pixel_count: usize,
     ) -> Vec<f32> {
         let byte_size = (pixel_count * 16) as u64;
-        // Straight from the mapped range into floats — one copy. Going via
-        // `download`'s `Vec<u8>` and casting afterwards costs a second full
-        // copy of the frame, which at 4K is 133 MB of pure memory traffic.
-        // `pod_collect_to_vec` does not require the mapped range to be
-        // f32-aligned, which `cast_slice` would panic on.
+        // Straight from the mapped range into floats — one copy, in
+        // parallel, into uninitialised capacity. Going via `download`'s
+        // `Vec<u8>` and casting afterwards costs a second full copy of the
+        // frame, which at 4K is 133 MB of pure memory traffic.
         self.with_downloaded(source, byte_size, |bytes| {
-            bytemuck::pod_collect_to_vec::<u8, f32>(bytes)
+            mapped_bytes_to_f32(bytes, pixel_count * 4)
         })
         .filter(|linear| linear.len() >= pixel_count * 4)
         // Device-lost fallback: the map returned nothing usable.
@@ -5854,6 +5860,52 @@ fn unpack(v: vec4<f32>) -> vec4<f32> { return v; }
 fn pack(v: vec4<f32>) -> vec4<f32> { return v; }
 "
     };
+}
+
+/// A mapped GPU buffer copied into `Vec<f32>`, in parallel, without
+/// zeroing the destination first.
+///
+/// This is the largest single cost in a 4K export, and none of it is
+/// arithmetic. Reading 132 MB out of a mapped staging buffer took 30 ms
+/// the obvious way — `cast_slice(&data).to_vec()` — because that is one
+/// core, reading write-combined memory the GPU driver did not intend to
+/// be read fast, into a freshly allocated buffer whose pages the kernel
+/// faults in as they are first touched, having already zeroed them.
+///
+/// So: the capacity is allocated but never initialised, the copy writes
+/// every byte of it in parallel bands, and `set_len` publishes it
+/// afterwards. Any four bytes are a valid `f32` — there is no invalid
+/// bit pattern to land on — so the only requirement is that the whole
+/// length is written, which `copy_from_slice` on exact-size chunks
+/// guarantees or panics.
+///
+/// Bands of 1 MB rather than `samples / threads`: the point is to have
+/// several loads outstanding against slow memory, and a fixed band keeps
+/// that true whatever the frame size.
+fn mapped_bytes_to_f32(data: &[u8], samples: usize) -> Vec<f32> {
+    use rayon::prelude::*;
+    const BAND: usize = 1 << 20;
+
+    let bytes = samples * 4;
+    if data.len() < bytes {
+        return vec![0.0f32; samples];
+    }
+    let mut out: Vec<f32> = Vec::with_capacity(samples);
+    {
+        let spare = out.spare_capacity_mut();
+        // SAFETY: `spare` is `samples` f32s of uninitialised capacity, so
+        // it is `bytes` addressable bytes; nothing reads them before the
+        // copy below writes all of them.
+        let dst = unsafe {
+            std::slice::from_raw_parts_mut(spare.as_mut_ptr() as *mut u8, bytes)
+        };
+        dst.par_chunks_mut(BAND)
+            .zip(data[..bytes].par_chunks(BAND))
+            .for_each(|(d, s)| d.copy_from_slice(s));
+    }
+    // SAFETY: every byte of the first `samples` f32s was just written.
+    unsafe { out.set_len(samples) };
+    out
 }
 
 /// The pixel storage hook as a string, for a shader assembled at runtime
