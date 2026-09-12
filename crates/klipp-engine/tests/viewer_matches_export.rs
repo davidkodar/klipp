@@ -309,6 +309,12 @@ impl Drop for Viewer {
         if let Some(t) = self.thread.take() {
             let _ = t.join();
         }
+        // Joining the engine thread is not enough: its decoders detach
+        // their own threads rather than block shutdown, and a detached
+        // one still inside ffmpeg's teardown when the test binary calls
+        // `exit()` crashes in libc. That took this file down about one
+        // full-suite run in five.
+        klipp_engine::video_decoder::wait_for_decode_threads(Duration::from_secs(10));
     }
 }
 

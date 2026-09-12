@@ -539,9 +539,14 @@ impl VideoDecoder {
         let last_decode_us = Arc::new(std::sync::atomic::AtomicU32::new(0));
         let last_decode_us_clone = last_decode_us.clone();
 
+        let alive = DecodeThreadToken::new();
         let thread = std::thread::Builder::new()
             .name("klipp-vdec".into())
             .spawn(move || {
+                // Held for the thread's whole life, drop included, so
+                // `wait_for_decode_threads` cannot return while this one
+                // is still inside ffmpeg's teardown.
+                let _alive = alive;
                 crate::thread_guard::catch_panic("klipp-vdec", || {
                     decode_thread_main(path_owned, queue_clone, cmd_rx, hw_flag, stop_flag_clone, source_rotation, last_decode_us_clone);
                 });
@@ -626,6 +631,62 @@ impl VideoDecoder {
 impl Drop for VideoDecoder {
     fn drop(&mut self) {
         self.stop();
+    }
+}
+
+/// How many decode threads are alive, so the process can avoid exiting
+/// out from under one.
+static LIVE_DECODE_THREADS: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
+/// Counts a decode thread as alive for as long as it is held.
+struct DecodeThreadToken;
+
+impl DecodeThreadToken {
+    fn new() -> Self {
+        LIVE_DECODE_THREADS.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+        Self
+    }
+}
+
+impl Drop for DecodeThreadToken {
+    fn drop(&mut self) {
+        LIVE_DECODE_THREADS.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+    }
+}
+
+/// Wait for every decode thread to finish, up to `timeout`. `true` if
+/// they all did.
+///
+/// **Call this before the process exits.** `VideoDecoder::stop` waits
+/// half a second for its thread and then detaches it, and
+/// `stop_detached` does not wait at all — both of which are fine while
+/// the process lives, because a detached thread finishing late harms
+/// nobody. It is not fine at exit: `exit()` runs atexit handlers and
+/// tears down libc while other threads keep running, so a decode thread
+/// still inside ffmpeg's teardown then dereferences state that has gone.
+///
+/// That is a real crash and not a theoretical one. It took down
+/// `viewer_matches_export` about one full-suite run in five, with the
+/// main thread in `exit()` unwinding NVIDIA's EGL teardown and the
+/// decode thread in `av_buffer_unref` → `av_log` → SIGSEGV. It only
+/// showed under load because that is when a thread is slow enough to
+/// still be there when the process leaves.
+pub fn wait_for_decode_threads(timeout: std::time::Duration) -> bool {
+    let start = std::time::Instant::now();
+    loop {
+        if LIVE_DECODE_THREADS.load(std::sync::atomic::Ordering::Acquire) == 0 {
+            return true;
+        }
+        if start.elapsed() >= timeout {
+            warn!(
+                "{} decode thread(s) still running after {:?} — exiting anyway",
+                LIVE_DECODE_THREADS.load(std::sync::atomic::Ordering::Acquire),
+                timeout,
+            );
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(5));
     }
 }
 
@@ -3183,5 +3244,74 @@ mod decoder_linearisation_tests {
         assert!(!should_use_skim_for_playback(0, 1080, 29.97, true));
         assert!(should_use_skim_for_playback(0, 1080, 50.0, true));
         assert!(should_use_skim_for_playback(0, 1080, 59.94, true));
+    }
+}
+
+#[cfg(test)]
+mod decode_thread_barrier_tests {
+    use super::*;
+    use std::sync::atomic::Ordering;
+    use std::time::Duration;
+
+    /// With nothing decoding, the barrier is a no-op.
+    #[test]
+    fn it_returns_at_once_when_nothing_is_decoding() {
+        // Other tests in this binary may hold tokens; take a reading
+        // rather than assuming zero.
+        let held = LIVE_DECODE_THREADS.load(Ordering::Acquire);
+        if held == 0 {
+            let t0 = std::time::Instant::now();
+            assert!(wait_for_decode_threads(Duration::from_secs(5)));
+            assert!(t0.elapsed() < Duration::from_millis(200), "it waited when it need not");
+        }
+    }
+
+    /// A held token keeps the barrier waiting, and releasing it lets the
+    /// barrier through. This is the whole mechanism: the token is held
+    /// for the decode thread's entire life, its `Drop` included, so the
+    /// barrier cannot return while a thread is still inside ffmpeg's
+    /// teardown — which is where it was crashing when the process
+    /// exited underneath it.
+    #[test]
+    fn a_live_thread_holds_the_barrier_and_releases_it() {
+        let token = DecodeThreadToken::new();
+        let before = LIVE_DECODE_THREADS.load(Ordering::Acquire);
+        assert!(before >= 1, "the token did not register");
+
+        // Times out while held.
+        let t0 = std::time::Instant::now();
+        assert!(
+            !wait_for_decode_threads(Duration::from_millis(50)),
+            "the barrier returned while a thread was registered",
+        );
+        assert!(t0.elapsed() >= Duration::from_millis(50), "it did not actually wait");
+
+        // Released on drop, wherever that happens — including a thread
+        // unwinding out of a panic, which is why it is a guard and not a
+        // decrement at the end of the function body.
+        drop(token);
+        assert_eq!(
+            LIVE_DECODE_THREADS.load(Ordering::Acquire),
+            before - 1,
+            "dropping the token did not deregister the thread",
+        );
+    }
+
+    /// Dropped on a panicking thread too, or a decoder that panics
+    /// during teardown would wedge every later shutdown for the full
+    /// timeout.
+    #[test]
+    fn a_panicking_thread_still_deregisters() {
+        let before = LIVE_DECODE_THREADS.load(Ordering::Acquire);
+        let h = std::thread::spawn(|| {
+            let _token = DecodeThreadToken::new();
+            panic!("as a decode thread might");
+        });
+        assert!(h.join().is_err(), "the fixture was supposed to panic");
+        assert_eq!(
+            LIVE_DECODE_THREADS.load(Ordering::Acquire),
+            before,
+            "a panicking thread left itself registered",
+        );
     }
 }

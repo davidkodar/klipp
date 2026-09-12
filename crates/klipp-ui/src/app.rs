@@ -25090,6 +25090,17 @@ impl KlippApp {
                 BUDGET.as_millis(),
             );
         }
+
+        // The engine being down does not mean its decode threads are.
+        // `VideoDecoder::stop` waits half a second and then detaches, and
+        // `stop_detached` does not wait at all — fine while the process
+        // lives, fatal here: `exit` tears down libc under threads that
+        // keep running, and a decode thread still inside ffmpeg's
+        // teardown then crashes in it. Also bounded, for the same reason
+        // the engine wait is.
+        klipp_engine::video_decoder::wait_for_decode_threads(
+            std::time::Duration::from_millis(1000),
+        );
         std::process::exit(0);
     }
 
