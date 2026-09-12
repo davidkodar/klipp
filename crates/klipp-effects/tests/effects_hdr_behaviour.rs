@@ -113,7 +113,7 @@ fn every_effect_survives_a_picture_brighter_than_white() {
                 failures.push(format!("{name} on {input:?}: CPU gave {c:?}"));
             }
             if let Some(gpu) = gpu.as_mut() {
-                let g = centre(&gpu.apply_effects(&[effect.clone()], flat(input), W, H));
+                let g = centre(&gpu.apply_effects(&[effect.clone()], &flat(input), W, H));
                 if g.iter().copied().any(bad) {
                     failures.push(format!("{name} on {input:?}: GPU gave {g:?}"));
                 }

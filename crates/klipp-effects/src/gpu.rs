@@ -1229,7 +1229,7 @@ impl GpuEffectsPipeline {
     #[allow(clippy::too_many_arguments)]
     pub fn apply_color_grade(
         &mut self,
-        linear_rgba: Vec<f32>,
+        linear_rgba: &[f32],
         width: u32,
         height: u32,
         exposure: f32,
@@ -1249,7 +1249,7 @@ impl GpuEffectsPipeline {
         global_mix: f32,
     ) -> Vec<f32> {
         if self.is_device_lost() {
-            return linear_rgba;
+            return linear_rgba.to_vec();
         }
         let byte_size = (width * height * 16) as u64;
         self.ensure_buffers(byte_size);
@@ -1258,7 +1258,7 @@ impl GpuEffectsPipeline {
         let buf_b = self.buf_b.as_ref().unwrap();
 
         self.queue
-            .write_buffer(buf_a, 0, bytemuck::cast_slice(&linear_rgba));
+            .write_buffer(buf_a, 0, bytemuck::cast_slice(linear_rgba));
 
         let pixel_count = width * height;
         let workgroups = pixel_count.div_ceil(WORKGROUP_SIZE);
@@ -1306,7 +1306,7 @@ impl GpuEffectsPipeline {
     /// (`klipp_color::white_balance::white_balance_matrix`).
     pub fn apply_color_balance_gpu(
         &mut self,
-        linear_rgba: Vec<f32>,
+        linear_rgba: &[f32],
         width: u32,
         height: u32,
         white_balance: [[f32; 3]; 3],
@@ -1314,7 +1314,7 @@ impl GpuEffectsPipeline {
         global_mix: f32,
     ) -> Vec<f32> {
         if self.is_device_lost() {
-            return linear_rgba;
+            return linear_rgba.to_vec();
         }
         let byte_size = (width * height * 16) as u64;
         self.ensure_buffers(byte_size);
@@ -1323,7 +1323,7 @@ impl GpuEffectsPipeline {
         let buf_b = self.buf_b.as_ref().unwrap();
 
         self.queue
-            .write_buffer(buf_a, 0, bytemuck::cast_slice(&linear_rgba));
+            .write_buffer(buf_a, 0, bytemuck::cast_slice(linear_rgba));
 
         let pixel_count = width * height;
         let workgroups = pixel_count.div_ceil(WORKGROUP_SIZE);
@@ -1340,7 +1340,7 @@ impl GpuEffectsPipeline {
     /// Apply per-wheel saturation & brightness adjustments on GPU.
     pub fn apply_wheel_sat_bri_gpu(
         &mut self,
-        linear_rgba: Vec<f32>,
+        linear_rgba: &[f32],
         width: u32,
         height: u32,
         lift_sat: f32, lift_bri: f32,
@@ -1349,7 +1349,7 @@ impl GpuEffectsPipeline {
         offset_sat: f32, offset_bri: f32,
     ) -> Vec<f32> {
         if self.is_device_lost() {
-            return linear_rgba;
+            return linear_rgba.to_vec();
         }
         let byte_size = (width * height * 16) as u64;
         self.ensure_buffers(byte_size);
@@ -1358,7 +1358,7 @@ impl GpuEffectsPipeline {
         let buf_b = self.buf_b.as_ref().unwrap();
 
         self.queue
-            .write_buffer(buf_a, 0, bytemuck::cast_slice(&linear_rgba));
+            .write_buffer(buf_a, 0, bytemuck::cast_slice(linear_rgba));
 
         let pixel_count = width * height;
         let workgroups = pixel_count.div_ceil(WORKGROUP_SIZE);
@@ -1381,7 +1381,7 @@ impl GpuEffectsPipeline {
     /// `lut_data` must be 4×256 f32 values (master, red, green, blue).
     pub fn apply_rgb_curves_gpu(
         &mut self,
-        linear_rgba: Vec<f32>,
+        linear_rgba: &[f32],
         width: u32,
         height: u32,
         lut_data: &[f32; 1024], // 4 × 256
@@ -1389,7 +1389,7 @@ impl GpuEffectsPipeline {
         mix: f32,
     ) -> Vec<f32> {
         if self.is_device_lost() {
-            return linear_rgba;
+            return linear_rgba.to_vec();
         }
         let byte_size = (width * height * 16) as u64;
         self.ensure_buffers(byte_size);
@@ -1398,7 +1398,7 @@ impl GpuEffectsPipeline {
         let buf_b = self.buf_b.as_ref().unwrap();
 
         self.queue
-            .write_buffer(buf_a, 0, bytemuck::cast_slice(&linear_rgba));
+            .write_buffer(buf_a, 0, bytemuck::cast_slice(linear_rgba));
 
         // Upload curve LUT data
         self.queue.write_buffer(&self.rgb_curves_lut_buf, 0, bytemuck::cast_slice(lut_data));
@@ -1920,15 +1920,15 @@ impl GpuEffectsPipeline {
         }
     }
 
-    pub fn apply_vibrance_gpu(&mut self, linear_rgba: Vec<f32>, width: u32, height: u32, amount: f32) -> Vec<f32> {
+    pub fn apply_vibrance_gpu(&mut self, linear_rgba: &[f32], width: u32, height: u32, amount: f32) -> Vec<f32> {
         if self.is_device_lost() {
-            return linear_rgba;
+            return linear_rgba.to_vec();
         }
         let byte_size = (width * height * 16) as u64;
         self.ensure_buffers(byte_size);
         let buf_a = self.buf_a.as_ref().unwrap();
         let buf_b = self.buf_b.as_ref().unwrap();
-        self.queue.write_buffer(buf_a, 0, bytemuck::cast_slice(&linear_rgba));
+        self.queue.write_buffer(buf_a, 0, bytemuck::cast_slice(linear_rgba));
         let workgroups = (width * height).div_ceil(WORKGROUP_SIZE);
         self.write_params(&GpuVibranceParams { width, height, amount, _pad: 0, luma_yr: self.luma_coefs[0], luma_yg: self.luma_coefs[1], luma_yb: self.luma_coefs[2], _pad1: 0 });
         self.dispatch(&self.vibrance_pipeline, buf_a, buf_b, workgroups);
@@ -1936,15 +1936,15 @@ impl GpuEffectsPipeline {
     }
 
     /// Apply 12-sector color warper on GPU.
-    pub fn apply_color_warper_gpu(&mut self, linear_rgba: Vec<f32>, width: u32, height: u32, hue_shifts: &[f32; 12], sat_shifts: &[f32; 12]) -> Vec<f32> {
+    pub fn apply_color_warper_gpu(&mut self, linear_rgba: &[f32], width: u32, height: u32, hue_shifts: &[f32; 12], sat_shifts: &[f32; 12]) -> Vec<f32> {
         if self.is_device_lost() {
-            return linear_rgba;
+            return linear_rgba.to_vec();
         }
         let byte_size = (width * height * 16) as u64;
         self.ensure_buffers(byte_size);
         let buf_a = self.buf_a.as_ref().unwrap();
         let buf_b = self.buf_b.as_ref().unwrap();
-        self.queue.write_buffer(buf_a, 0, bytemuck::cast_slice(&linear_rgba));
+        self.queue.write_buffer(buf_a, 0, bytemuck::cast_slice(linear_rgba));
         let workgroups = (width * height).div_ceil(WORKGROUP_SIZE);
         self.write_params(&GpuColorWarperParams {
             width, height, _pad0: 0, _pad1: 0,
@@ -1956,9 +1956,9 @@ impl GpuEffectsPipeline {
 
 
     /// Apply clarity (midtone unsharp mask) on GPU using 3-pass approach.
-    pub fn apply_clarity_gpu(&mut self, linear_rgba: Vec<f32>, width: u32, height: u32, amount: f32) -> Vec<f32> {
+    pub fn apply_clarity_gpu(&mut self, linear_rgba: &[f32], width: u32, height: u32, amount: f32) -> Vec<f32> {
         if self.is_device_lost() {
-            return linear_rgba;
+            return linear_rgba.to_vec();
         }
         let byte_size = (width * height * 16) as u64;
         let _luma_size = (width * height * 4) as u64; // store luma as u32 per pixel
@@ -1976,7 +1976,7 @@ impl GpuEffectsPipeline {
         let buf_b = self.buf_b.as_ref().unwrap();
         let buf_c = self.buf_c.as_ref().unwrap();
 
-        self.queue.write_buffer(buf_a, 0, bytemuck::cast_slice(&linear_rgba));
+        self.queue.write_buffer(buf_a, 0, bytemuck::cast_slice(linear_rgba));
         let workgroups = (width * height).div_ceil(WORKGROUP_SIZE);
         let radius = 20u32;
 
@@ -2016,14 +2016,14 @@ impl GpuEffectsPipeline {
     /// Apply bilateral denoise on GPU. Used by the color grading Denoise node.
     pub fn apply_denoise_gpu(
         &mut self,
-        linear_rgba: Vec<f32>,
+        linear_rgba: &[f32],
         width: u32,
         height: u32,
         spatial_sigma: f32,
         color_sigma: f32,
     ) -> Vec<f32> {
         if self.is_device_lost() {
-            return linear_rgba;
+            return linear_rgba.to_vec();
         }
         let byte_size = (width * height * 16) as u64;
         self.ensure_buffers(byte_size);
@@ -2031,7 +2031,7 @@ impl GpuEffectsPipeline {
         let buf_a = self.buf_a.as_ref().unwrap();
         let buf_b = self.buf_b.as_ref().unwrap();
 
-        self.queue.write_buffer(buf_a, 0, bytemuck::cast_slice(&linear_rgba));
+        self.queue.write_buffer(buf_a, 0, bytemuck::cast_slice(linear_rgba));
 
         let pixel_count = width * height;
         let workgroups = pixel_count.div_ceil(WORKGROUP_SIZE);
@@ -2235,7 +2235,7 @@ impl GpuEffectsPipeline {
     /// `lut_data` must be 6×256 f32 values (6 curves, 256 entries each).
     pub fn apply_huesat_gpu(
         &mut self,
-        linear_rgba: Vec<f32>,
+        linear_rgba: &[f32],
         width: u32,
         height: u32,
         mix: f32,
@@ -2243,7 +2243,7 @@ impl GpuEffectsPipeline {
         active: u32,
     ) -> Vec<f32> {
         if self.is_device_lost() {
-            return linear_rgba;
+            return linear_rgba.to_vec();
         }
         let byte_size = (width * height * 16) as u64;
         self.ensure_buffers(byte_size);
@@ -2251,7 +2251,7 @@ impl GpuEffectsPipeline {
         let buf_a = self.buf_a.as_ref().unwrap();
         let buf_b = self.buf_b.as_ref().unwrap();
 
-        self.queue.write_buffer(buf_a, 0, bytemuck::cast_slice(&linear_rgba));
+        self.queue.write_buffer(buf_a, 0, bytemuck::cast_slice(linear_rgba));
 
         // Upload LUT data
         self.queue.write_buffer(&self.huesat_lut_buf, 0, bytemuck::cast_slice(lut_data));
@@ -2300,7 +2300,7 @@ impl GpuEffectsPipeline {
     /// `lut_data` is RGB triples in B-major order, `lut_size` is the grid dimension (e.g. 33).
     pub fn apply_3d_lut_gpu(
         &mut self,
-        linear_rgba: Vec<f32>,
+        linear_rgba: &[f32],
         width: u32,
         height: u32,
         lut_data: &[f32],
@@ -2309,10 +2309,10 @@ impl GpuEffectsPipeline {
         tetrahedral: bool,
     ) -> Vec<f32> {
         if self.is_device_lost() {
-            return linear_rgba;
+            return linear_rgba.to_vec();
         }
         if opacity <= 0.0 {
-            return linear_rgba;
+            return linear_rgba.to_vec();
         }
 
         let byte_size = (width * height * 16) as u64;
@@ -2321,7 +2321,7 @@ impl GpuEffectsPipeline {
         let buf_a = self.buf_a.as_ref().unwrap();
         let buf_b = self.buf_b.as_ref().unwrap();
 
-        self.queue.write_buffer(buf_a, 0, bytemuck::cast_slice(&linear_rgba));
+        self.queue.write_buffer(buf_a, 0, bytemuck::cast_slice(linear_rgba));
 
         // (Re-)create LUT buffer if needed
         let lut_byte_size = (lut_data.len() * 4) as u64;
@@ -2382,7 +2382,7 @@ impl GpuEffectsPipeline {
     #[allow(clippy::too_many_arguments)]
     pub fn apply_qualifier_gpu(
         &mut self,
-        linear_rgba: Vec<f32>,
+        linear_rgba: &[f32],
         width: u32,
         height: u32,
         hue_center: f32, hue_width: f32, hue_soft: f32,
@@ -2393,7 +2393,7 @@ impl GpuEffectsPipeline {
         matte_preview: bool,
     ) -> Vec<f32> {
         if self.is_device_lost() {
-            return linear_rgba;
+            return linear_rgba.to_vec();
         }
         let byte_size = (width * height * 16) as u64;
         self.ensure_buffers(byte_size);
@@ -2401,7 +2401,7 @@ impl GpuEffectsPipeline {
         let buf_a = self.buf_a.as_ref().unwrap();
         let buf_b = self.buf_b.as_ref().unwrap();
 
-        self.queue.write_buffer(buf_a, 0, bytemuck::cast_slice(&linear_rgba));
+        self.queue.write_buffer(buf_a, 0, bytemuck::cast_slice(linear_rgba));
 
         self.write_params(&GpuQualifierParams {
             width,
@@ -2441,7 +2441,7 @@ impl GpuEffectsPipeline {
     /// consumption.
     pub fn apply_luma_key_gpu(
         &mut self,
-        linear_rgba: Vec<f32>,
+        linear_rgba: &[f32],
         width: u32,
         height: u32,
         low: f32,
@@ -2450,7 +2450,7 @@ impl GpuEffectsPipeline {
         invert: bool,
     ) -> Vec<f32> {
         if self.is_device_lost() {
-            return linear_rgba;
+            return linear_rgba.to_vec();
         }
         let byte_size = (width * height * 16) as u64;
         self.ensure_buffers(byte_size);
@@ -2458,7 +2458,7 @@ impl GpuEffectsPipeline {
         let buf_a = self.buf_a.as_ref().unwrap();
         let buf_b = self.buf_b.as_ref().unwrap();
 
-        self.queue.write_buffer(buf_a, 0, bytemuck::cast_slice(&linear_rgba));
+        self.queue.write_buffer(buf_a, 0, bytemuck::cast_slice(linear_rgba));
 
         self.write_params(&GpuLumaKeyParams {
             width,
@@ -2484,14 +2484,14 @@ impl GpuEffectsPipeline {
     /// buffer layout as the input.
     pub fn apply_soft_clip_gpu(
         &mut self,
-        linear_rgba: Vec<f32>,
+        linear_rgba: &[f32],
         width: u32,
         height: u32,
         threshold: f32,
         knee: f32,
     ) -> Vec<f32> {
         if self.is_device_lost() {
-            return linear_rgba;
+            return linear_rgba.to_vec();
         }
         let byte_size = (width * height * 16) as u64;
         self.ensure_buffers(byte_size);
@@ -2499,7 +2499,7 @@ impl GpuEffectsPipeline {
         let buf_a = self.buf_a.as_ref().unwrap();
         let buf_b = self.buf_b.as_ref().unwrap();
 
-        self.queue.write_buffer(buf_a, 0, bytemuck::cast_slice(&linear_rgba));
+        self.queue.write_buffer(buf_a, 0, bytemuck::cast_slice(linear_rgba));
 
         self.write_params(&GpuSoftClipParams {
             width,
@@ -2520,7 +2520,7 @@ impl GpuEffectsPipeline {
     /// Apply film grain overlay on GPU.
     pub fn apply_grain_gpu(
         &mut self,
-        linear_rgba: Vec<f32>,
+        linear_rgba: &[f32],
         width: u32,
         height: u32,
         amount: f32,
@@ -2531,7 +2531,7 @@ impl GpuEffectsPipeline {
         frame_seed: u32,
     ) -> Vec<f32> {
         if self.is_device_lost() {
-            return linear_rgba;
+            return linear_rgba.to_vec();
         }
         let byte_size = (width * height * 16) as u64;
         self.ensure_buffers(byte_size);
@@ -2539,7 +2539,7 @@ impl GpuEffectsPipeline {
         let buf_a = self.buf_a.as_ref().unwrap();
         let buf_b = self.buf_b.as_ref().unwrap();
 
-        self.queue.write_buffer(buf_a, 0, bytemuck::cast_slice(&linear_rgba));
+        self.queue.write_buffer(buf_a, 0, bytemuck::cast_slice(linear_rgba));
 
         self.write_params(&GpuGrainParams {
             width,
@@ -3335,15 +3335,15 @@ impl GpuEffectsPipeline {
     pub fn apply_effects(
         &mut self,
         effects: &[BuiltinEffect],
-        linear_rgba: Vec<f32>,
+        linear_rgba: &[f32],
         width: u32,
         height: u32,
     ) -> Vec<f32> {
         if self.is_device_lost() {
-            return linear_rgba;
+            return linear_rgba.to_vec();
         }
         if effects.is_empty() {
-            return linear_rgba;
+            return linear_rgba.to_vec();
         }
 
         let byte_size = (width * height * 16) as u64;
@@ -3354,7 +3354,7 @@ impl GpuEffectsPipeline {
 
         // Upload frame data to buf_a (already linear-f32 — direct upload).
         self.queue
-            .write_buffer(buf_a, 0, bytemuck::cast_slice(&linear_rgba));
+            .write_buffer(buf_a, 0, bytemuck::cast_slice(linear_rgba));
 
         // Track which buffer has the current data (true = buf_a, false = buf_b)
         let mut current_in_a = true;

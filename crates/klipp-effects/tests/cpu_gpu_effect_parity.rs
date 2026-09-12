@@ -131,7 +131,7 @@ fn every_effect_matches_between_cpu_and_gpu() {
     for (name, effect) in cases() {
         let fx = [effect];
         let cpu = apply_effects(&fx, input.clone(), W, H);
-        let on_gpu = gpu.apply_effects(&fx, input.clone(), W, H);
+        let on_gpu = gpu.apply_effects(&fx, &input, W, H);
         let (worst, mean) = diff(&cpu, &on_gpu);
         // And each effect does something: a pass-through on one side
         // would match a pass-through on the other.
@@ -229,7 +229,7 @@ fn the_lut_matches_between_cpu_and_gpu() {
     let input = frame();
     for tetrahedral in [false, true] {
         let cpu = klipp_effects::apply_3d_lut(input.clone(), &data, n as u32, 0.7, tetrahedral);
-        let on_gpu = gpu.apply_3d_lut_gpu(input.clone(), W, H, &data, n as u32, 0.7, tetrahedral);
+        let on_gpu = gpu.apply_3d_lut_gpu(&input, W, H, &data, n as u32, 0.7, tetrahedral);
         let (worst, mean) = diff(&cpu, &on_gpu);
         let (_, change) = diff(&input, &on_gpu);
         let how = if tetrahedral { "tetrahedral" } else { "trilinear" };

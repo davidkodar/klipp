@@ -227,7 +227,7 @@ fn main() {
     for (name, fx) in &cases {
         let input = chart();
         let out = match gpu.as_mut() {
-            Some(g) if !fx.is_empty() => g.apply_effects(fx, input, W, H),
+            Some(g) if !fx.is_empty() => g.apply_effects(fx, &input, W, H),
             _ if fx.is_empty() => input,
             _ => klipp_effects::apply_effects(fx, input, W, H),
         };

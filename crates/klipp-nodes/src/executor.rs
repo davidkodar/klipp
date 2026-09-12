@@ -2337,7 +2337,7 @@ impl GraphExecutor {
                 if exp != 0.0 {
                     if let Some(gpu) = &mut self.gpu {
                         gpu.apply_color_grade(
-                            primary_input.to_vec(), width, height,
+                            primary_input, width, height,
                             exp, 0.0, 1.0, NO_WHITE_BALANCE,
                             0.0, 0.0, 0.0, 0.0,
                             (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), None,
@@ -2359,7 +2359,7 @@ impl GraphExecutor {
                     let frame = if con != 0.0 {
                         if let Some(gpu) = &mut self.gpu {
                             gpu.apply_color_grade(
-                                primary_input.to_vec(), width, height,
+                                primary_input, width, height,
                                 0.0, con, 1.0, NO_WHITE_BALANCE,
                                 0.0, 0.0, 0.0, 0.0,
                                 (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), None,
@@ -2374,7 +2374,7 @@ impl GraphExecutor {
                     };
                     if clarity != 0.0 {
                         if let Some(gpu) = &mut self.gpu {
-                            gpu.apply_clarity_gpu(frame, width, height, clarity)
+                            gpu.apply_clarity_gpu(&frame, width, height, clarity)
                         } else {
                             run_stages_cpu(&[GradeStage::Clarity(clarity, klipp_color::linear::luma_coefs(self.working_colorspace))], &frame, width, height)
                         }
@@ -2393,7 +2393,7 @@ impl GraphExecutor {
                     let frame = if sat != 1.0 {
                         if let Some(gpu) = &mut self.gpu {
                             gpu.apply_color_grade(
-                                primary_input.to_vec(), width, height,
+                                primary_input, width, height,
                                 0.0, 0.0, sat, NO_WHITE_BALANCE,
                                 0.0, 0.0, 0.0, 0.0,
                                 (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), None,
@@ -2408,7 +2408,7 @@ impl GraphExecutor {
                     };
                     if vib != 0.0 {
                         if let Some(gpu) = &mut self.gpu {
-                            gpu.apply_vibrance_gpu(frame, width, height, vib)
+                            gpu.apply_vibrance_gpu(&frame, width, height, vib)
                         } else {
                             run_stages_cpu(&[GradeStage::Vibrance(vib, klipp_color::linear::luma_coefs(self.working_colorspace))], &frame, width, height)
                         }
@@ -2428,7 +2428,7 @@ impl GraphExecutor {
                 if hi != 0.0 || sh != 0.0 || wh != 0.0 || bl != 0.0 {
                     if let Some(gpu) = &mut self.gpu {
                         gpu.apply_color_grade(
-                            primary_input.to_vec(), width, height,
+                            primary_input, width, height,
                             0.0, 0.0, 1.0, NO_WHITE_BALANCE,
                             hi, sh, wh, bl,
                             (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), None,
@@ -2447,7 +2447,7 @@ impl GraphExecutor {
                 let grade = self.color_wheels_grade(params);
                 if let Some(gpu) = &mut self.gpu {
                     gpu.apply_color_grade(
-                        primary_input.to_vec(), width, height,
+                        primary_input, width, height,
                         0.0, 0.0, 1.0, NO_WHITE_BALANCE,
                         0.0, 0.0, 0.0, 0.0,
                         grade.lift, grade.gamma, grade.gain, grade.offset, grade.log_wheels,
@@ -2469,7 +2469,7 @@ impl GraphExecutor {
                 let ob = params.offset_bri.unwrap_or(0.0);
                 if let Some(gpu) = &mut self.gpu {
                     gpu.apply_wheel_sat_bri_gpu(
-                        primary_input.to_vec(), width, height,
+                        primary_input, width, height,
                         ls, lb, gs, gb, gas, gab, os, ob,
                     )
                 } else {
@@ -2497,7 +2497,7 @@ impl GraphExecutor {
                     let lut_data = *luts;
                     if let Some(gpu) = &mut self.gpu {
                         gpu.apply_rgb_curves_gpu(
-                            primary_input.to_vec(), width, height,
+                            primary_input, width, height,
                             &lut_data, preserve_luma, mix,
                         )
                     } else {
@@ -2517,7 +2517,7 @@ impl GraphExecutor {
                         let lut_data = build_huesat_lut_data(huesat);
                         let active = huesat_active(huesat);
                         if let Some(gpu) = &mut self.gpu {
-                            gpu.apply_huesat_gpu(primary_input.to_vec(), width, height, mix, &lut_data, active)
+                            gpu.apply_huesat_gpu(primary_input, width, height, mix, &lut_data, active)
                         } else {
                             let stage = GradeStage::HueSat { lut: Box::new(lut_data), mix, active };
                             run_stages_cpu(&[stage], primary_input, width, height)
@@ -2538,7 +2538,7 @@ impl GraphExecutor {
 
                 if let Some(gpu) = &mut self.gpu {
                     gpu.apply_color_balance_gpu(
-                        primary_input.to_vec(), width, height,
+                        primary_input, width, height,
                         white_balance(temp, tint, self.working_colorspace), hue, mix,
                     )
                 } else {
@@ -2553,7 +2553,7 @@ impl GraphExecutor {
                 if let Some(qual) = &params.qualifier {
                     if let Some(gpu) = &mut self.gpu {
                         gpu.apply_qualifier_gpu(
-                            primary_input.to_vec(), width, height,
+                            primary_input, width, height,
                             qual.hue_center, qual.hue_width, qual.hue_soft,
                             qual.sat_low, qual.sat_high, qual.sat_soft,
                             qual.lum_low, qual.lum_high, qual.lum_soft,
@@ -2587,7 +2587,7 @@ impl GraphExecutor {
                         primary_input.to_vec()
                     } else if let Some(gpu) = &mut self.gpu {
                         gpu.apply_soft_clip_gpu(
-                            primary_input.to_vec(),
+                            primary_input,
                             width, height,
                             sc.threshold, sc.knee,
                         )
@@ -2612,7 +2612,7 @@ impl GraphExecutor {
                         vec![1.0f32; (width * height * 4) as usize]
                     } else if let Some(gpu) = &mut self.gpu {
                         gpu.apply_luma_key_gpu(
-                            primary_input.to_vec(),
+                            primary_input,
                             width, height,
                             lk.low, lk.high, lk.soft, lk.invert,
                         )
@@ -3114,7 +3114,7 @@ impl GraphExecutor {
                         // path needs another shader-uniform shape
                         // change tracked separately.
                         gpu.apply_3d_lut_gpu(
-                            primary_input.to_vec(), width, height,
+                            primary_input, width, height,
                             &lut.data, lut.size as u32, opacity, tetrahedral,
                         )
                     } else {
@@ -3143,7 +3143,7 @@ impl GraphExecutor {
                     if grain.enabled && grain.amount > 0.001 {
                         if let Some(gpu) = &mut self.gpu {
                             gpu.apply_grain_gpu(
-                                primary_input.to_vec(), width, height,
+                                primary_input, width, height,
                                 grain.amount, grain.size,
                                 grain.shadows, grain.highlights,
                                 grain.monochrome,
@@ -3175,7 +3175,7 @@ impl GraphExecutor {
                 };
                 if let Some(gpu) = &mut self.gpu {
                     gpu.apply_color_grade(
-                        primary_input.to_vec(), width, height,
+                        primary_input, width, height,
                         s.exposure, 0.0, s.saturation, white_balance(s.temperature, s.tint, self.working_colorspace),
                         0.0, 0.0, 0.0, 0.0,
                         (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), None,
@@ -3198,7 +3198,7 @@ impl GraphExecutor {
                     primary_input.to_vec()
                 } else if let Some(gpu) = &mut self.gpu {
                     gpu.apply_color_warper_gpu(
-                        primary_input.to_vec(), width, height,
+                        primary_input, width, height,
                         &warper.hue_shifts, &warper.sat_shifts,
                     )
                 } else {
@@ -3216,7 +3216,7 @@ impl GraphExecutor {
                         let spatial_sigma = radius as f32;
                         let color_sigma = (luma + chroma) * 0.5;
                         gpu.apply_denoise_gpu(
-                            primary_input.to_vec(), width, height,
+                            primary_input, width, height,
                             spatial_sigma, color_sigma,
                         )
                     } else {

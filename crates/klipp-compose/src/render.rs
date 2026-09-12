@@ -671,7 +671,7 @@ impl Renderer {
             let tetrahedral = self.lut_tetrahedral;
             let above_white = if self.hdr_peak.is_some() { split_above_white(&mut acc) } else { None };
             acc = match self.gpu() {
-                Some(gpu) => gpu.apply_3d_lut_gpu(acc, width, height, &lut.lut.data, lut.lut.size as u32, lut.opacity, tetrahedral),
+                Some(gpu) => gpu.apply_3d_lut_gpu(&acc, width, height, &lut.lut.data, lut.lut.size as u32, lut.opacity, tetrahedral),
                 None => klipp_effects::apply_3d_lut(acc, &lut.lut.data, lut.lut.size as u32, lut.opacity, tetrahedral),
             };
             if let Some(over) = above_white {
@@ -1076,7 +1076,7 @@ impl Renderer {
         let t = Instant::now();
         let gpu_ok = klipp_effects::chain_supports_gpu(fx);
         let out = match self.gpu() {
-            Some(gpu) if gpu_ok => gpu.apply_effects(fx, pixels, width, height),
+            Some(gpu) if gpu_ok => gpu.apply_effects(fx, &pixels, width, height),
             _ => klipp_effects::apply_effects_with_time(fx, pixels, width, height, clip_time),
         };
         self.found.stats.effects_ms += ms_since(t);

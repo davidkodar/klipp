@@ -106,7 +106,7 @@ fn gpu_matches_cpu_oracle_across_fixtures() {
     for fx in fixtures() {
         let cpu_out = apply_soft_clip(&linear, width, height, &fx.settings);
         let gpu_out = gpu.apply_soft_clip_gpu(
-            linear.clone(),
+            &linear,
             width, height,
             fx.settings.threshold,
             fx.settings.knee,

@@ -148,7 +148,7 @@ fn gpu_matches_cpu_oracle_across_fixtures() {
         // GPU path. Returns linear-f32 RGBA; convert back to u8 to
         // compare on the same scale as the CPU oracle.
         let gpu_linear = gpu.apply_luma_key_gpu(
-            linear.clone(),
+            &linear,
             width,
             height,
             fx.settings.low,

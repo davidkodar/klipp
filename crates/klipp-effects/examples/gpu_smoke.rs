@@ -43,7 +43,7 @@ fn main() {
     // sRGB→linear→sRGB round-trip is expected but small).
     let out = gpu.apply_effects(
         &[BuiltinEffect::Opacity { value: 1.0 }],
-        frame.clone(),
+        &frame,
         w,
         h,
     );
@@ -52,7 +52,7 @@ fn main() {
     // Gaussian blur.
     let out = gpu.apply_effects(
         &[BuiltinEffect::GaussianBlur { radius: 1.0 }],
-        frame.clone(),
+        &frame,
         w,
         h,
     );
@@ -61,7 +61,7 @@ fn main() {
     // Invert.
     let out = gpu.apply_effects(
         &[BuiltinEffect::Invert { mix: 1.0 }],
-        frame.clone(),
+        &frame,
         w,
         h,
     );
