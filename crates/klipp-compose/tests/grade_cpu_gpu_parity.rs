@@ -148,6 +148,7 @@ fn cases() -> Vec<(&'static str, NodeKind, NodeParams)> {
         ("Hue/Sat Curves", HueSatCurves, p(|p| p.huesat = Some(huesat()))),
         ("Color Warper", ColorWarper, p(|p| p.warper_params = Some(warper()))),
         ("Qualifier", Qualifier, p(|p| p.qualifier = Some(red_window()))),
+        ("Qualifier off-centre", Qualifier, p(|p| p.qualifier = Some(off_centre_window()))),
     ]
 }
 
@@ -199,6 +200,22 @@ fn red_window() -> klipp_core::QualifierSettings {
         hue_center: 0.0, hue_width: 60.0, hue_soft: 10.0,
         sat_low: 0.2, sat_high: 1.0, sat_soft: 0.1,
         lum_low: 0.0, lum_high: 1.0, lum_soft: 0.1,
+        ..Default::default()
+    }
+}
+
+/// A narrow window away from hue 0, which is the case that pins the
+/// hue *unit*. The window above centres on red, and a hue centre read in
+/// the wrong unit — degrees where the shader wants turns — still lands
+/// at 0 and the two paths agree by luck. Off centre and narrow, they
+/// agree only if both read the centre the same way. (They do: the GPU
+/// entry point divides by 360 before the uniform, the CPU caller divides
+/// before the twin. Worth a case rather than a re-reading.)
+fn off_centre_window() -> klipp_core::QualifierSettings {
+    klipp_core::QualifierSettings {
+        hue_center: 27.0, hue_width: 20.0, hue_soft: 10.0,
+        sat_low: 0.2, sat_high: 0.5, sat_soft: 0.05,
+        lum_low: 0.1, lum_high: 0.85, lum_soft: 0.04,
         ..Default::default()
     }
 }
