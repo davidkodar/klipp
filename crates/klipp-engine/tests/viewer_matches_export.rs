@@ -12,6 +12,30 @@
 //! transition side at the wrong point of its handle) shows up as a colour
 //! difference, not just a position one. Sources come from the ffmpeg CLI;
 //! the test skips without it.
+//!
+//! # Reading a failure
+//!
+//! Each source varies a different channel, so *which* channel is off says
+//! which half of the pipeline is at fault. Worth a minute before reaching
+//! for a debugger:
+//!
+//! * `b` — the dissolve's incoming side — varies **green** and is flat in
+//!   red and blue. Green off with red and blue exact means the mix ratio and
+//!   the outgoing side are right, and only b's source position is wrong: a
+//!   transition side at the wrong point of its handle. That is what an 88 -
+//!   level green-only failure was, and it was a stale frame accepted as the
+//!   landing of a seek (fixed in c5a7467f — see `tests/seek_epoch.rs`).
+//! * `c` — the V2 overlay — varies **red**. Red off at "c only" or "centre"
+//!   but the corner clean means c's stream is on the wrong frame, with V1
+//!   fine.
+//! * `a` and `d` are flat in every channel. All three channels off together
+//!   points at the mix, the grade, or the display transform rather than at
+//!   any stream's position — a stale stream cannot move a channel its source
+//!   holds constant.
+//!
+//! The three [`POINTS`] narrow it further: the corner sees V1 alone, so a
+//! difference there is the dissolve or the grade; the centre sees d over c
+//! over V1, so a difference only there is compositing.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
