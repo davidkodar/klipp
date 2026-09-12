@@ -225,17 +225,24 @@ impl OdtChoice {
         }
     }
 
-    /// Whether the transform means anything for a project working in `ws`.
+    /// Whether the transform is worth offering for a project working in
+    /// `ws`.
     ///
-    /// Every transform but one converts the working values into the space
-    /// it names. [`OdtChoice::Srgb`] is the legacy escape hatch and
-    /// converts nothing, so it only *is* sRGB when the project already
-    /// works in BT.709 primaries. In a BT.2020 or ACEScg project it would
-    /// write those primaries out under an sRGB label — a file that looks
-    /// over-saturated and carries nothing to say why — so it is not
-    /// offered there. Note this is about the gamut, not the tone curve:
-    /// skipping the ACES RRT and skipping the primaries conversion are
-    /// separate choices, and "sRGB" names a gamut as much as a curve.
+    /// Only [`OdtChoice::Srgb`] is ever ruled out, and for two different
+    /// reasons — see `ExportDisplay::new`, which decides what it actually
+    /// does:
+    ///
+    /// * In an **ACEScg** project it leaves AP1 values under an sRGB
+    ///   label. That is what it did before delivery-target ODTs existed
+    ///   and an old export may depend on it, so the pixels stay — but it
+    ///   is not something to offer a colourist in a menu.
+    /// * In a **BT.2020** project it converts, and so gives the same
+    ///   picture Match Viewer does. Nothing wrong with it; there is just
+    ///   no reason to list the same transform twice.
+    ///
+    /// Note this is about the gamut, not the tone curve: skipping the ACES
+    /// RRT and skipping the primaries conversion are separate choices, and
+    /// "sRGB" names a gamut as much as a curve.
     pub const fn suits_working_space(self, ws: crate::WorkingColorspace) -> bool {
         match self {
             OdtChoice::Srgb => matches!(ws, crate::WorkingColorspace::Rec709Linear),
@@ -3236,10 +3243,10 @@ mod odt_choice_tests {
         }
     }
 
-    /// The legacy sRGB path converts no primaries, so it only is sRGB in a
-    /// Rec.709 project. Offering it in a wide-gamut one would write those
-    /// primaries under an sRGB label — a file that looks over-saturated and
-    /// carries nothing to say why.
+    /// The legacy sRGB path is offered only in a Rec.709 project: in an
+    /// ACEScg one it would put AP1 values under an sRGB label, and in a
+    /// BT.2020 one it does exactly what Match Viewer does. Either way
+    /// there is nothing to gain from listing it.
     #[test]
     fn the_legacy_srgb_path_is_only_offered_where_it_is_srgb() {
         use crate::WorkingColorspace as W;

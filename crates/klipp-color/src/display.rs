@@ -485,24 +485,32 @@ impl ExportDisplay {
                 _ => ExportPath::AcesRec709,
             },
             // The legacy escape hatch: the sRGB curve over the working
-            // values, converting no primaries, in any working space.
+            // values, with no ACES RRT. What it exists for is reproducing
+            // an export written before delivery-target ODTs did — so what
+            // it owes byte-identity to is the working spaces that existed
+            // then, and nothing else.
             //
-            // That is not the same as "the pre-ACES pixels". Skipping the
-            // RRT is a choice about tone; skipping the primaries
-            // conversion is a choice about basis, and this path makes both
-            // where only the first was asked for — so a BT.2020 project
-            // exported this way writes BT.2020 primaries under an sRGB
-            // label. It stays this way because it is byte-identical to
-            // every export written before delivery-target ODTs existed,
-            // which `export_srgb_legacy_path_matches_pre_phase_e_export`
-            // pins, and in a Rec.709 project — the only kind that had such
-            // exports — converting would be a no-op anyway.
-            //
-            // `OdtChoice::suits_working_space` keeps it out of the export
-            // picker for wide-gamut projects, so the only way to reach it
-            // there is a setting saved before the project moved, or a
-            // caller building `ExportSettings` directly.
-            OdtChoice::Srgb => ExportPath::ToneMapSrgb(None),
+            // Skipping the RRT is a choice about tone; skipping the
+            // primaries conversion is a choice about basis. This path used
+            // to make both, everywhere, which in a wide-gamut project
+            // wrote those primaries out under an sRGB label.
+            OdtChoice::Srgb => match working_space {
+                // BT.2020 became a working space long after the ODTs, so
+                // no export predating them can have come from a BT.2020
+                // project. There is no old file here to reproduce, and
+                // BT.2020 primaries under an sRGB label have nothing to
+                // recommend them, so this converts — the same picture
+                // MatchViewer gives, which is why the picker does not
+                // offer both (see `OdtChoice::suits_working_space`).
+                WorkingColorspace::Bt2020Linear => ExportPath::ToneMapSrgb(to_709()),
+                // Rec.709, where converting is a no-op, and AcesCG, which
+                // did predate the ODTs — an AcesCG project could have been
+                // exported this way in April 2026, and this is how that
+                // file is reproduced. Both keep the legacy bytes.
+                WorkingColorspace::Rec709Linear | WorkingColorspace::AcesCG => {
+                    ExportPath::ToneMapSrgb(None)
+                }
+            },
             _ => ExportPath::Odt(crate::primaries::working_space_conversion_matrix(
                 working_space,
                 WorkingColorspace::AcesCG,
@@ -1175,17 +1183,17 @@ mod tests {
 
     #[test]
     fn export_srgb_legacy_path_matches_pre_phase_e_export() {
-        // `OdtChoice::Srgb` is the safety net for users who want the
-        // old, pre-ACES export. Must be byte-identical to the
-        // legacy `display_transform` regardless of the project's
-        // working space — by definition the legacy path doesn't
-        // care about working space.
+        // `OdtChoice::Srgb` is the safety net for users who want the old,
+        // pre-ACES export, so it owes byte-identity with the legacy
+        // `display_transform` to the working spaces that could have
+        // produced such an export: Rec.709, and AcesCG, which predates the
+        // delivery-target ODTs by four weeks. BT.2020 came long after and
+        // is covered by `the_legacy_path_still_converts_a_bt2020_project`.
         let frame = small_linear_test_frame();
         let legacy = display_transform(&frame, ToneMapOp::Hable);
         for ws in [
             klipp_core::WorkingColorspace::Rec709Linear,
             klipp_core::WorkingColorspace::AcesCG,
-            klipp_core::WorkingColorspace::Bt2020Linear,
         ] {
             let export = display_transform_for_export(
                 &frame,
@@ -1198,6 +1206,30 @@ mod tests {
                 "Srgb-mode export drifted from legacy display_transform under ws={ws:?}",
             );
         }
+    }
+
+    /// BT.2020 became a working space long after the delivery-target ODTs,
+    /// so there is no pre-ODT export from such a project for the legacy
+    /// path to reproduce — and writing BT.2020 primaries out under an sRGB
+    /// label only makes an over-saturated file. It converts instead, and
+    /// lands on the same picture Match Viewer gives, which is why the
+    /// export picker offers one and not both.
+    #[test]
+    fn the_legacy_path_still_converts_a_bt2020_project() {
+        let frame = small_linear_test_frame();
+        let ws = klipp_core::WorkingColorspace::Bt2020Linear;
+        let unconverted = display_transform(&frame, ToneMapOp::Hable);
+        let export = display_transform_for_export(&frame, ToneMapOp::Hable, ws, OdtChoice::Srgb);
+        assert_ne!(
+            unconverted, export,
+            "a BT.2020 project exported through the legacy path was left in BT.2020",
+        );
+        let match_viewer =
+            display_transform_for_export(&frame, ToneMapOp::Hable, ws, OdtChoice::MatchViewer);
+        assert_eq!(
+            export, match_viewer,
+            "the legacy path and Match Viewer should agree once the primaries are converted",
+        );
     }
 
     #[test]
