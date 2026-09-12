@@ -7,6 +7,21 @@
 //!
 //! Run it with `--nocapture` and read the breakdown; it is a measurement
 //! harness, not an assertion of any particular speed.
+//!
+//! Two costs here are the harness's own and not the viewer's. It hands
+//! the executor a CPU frame, so `gpu_resident_source` is false and the
+//! Source node really does clone it (~10 ms) — in the viewer, a frame
+//! that decoded onto the GPU skips that. And `Output#output` is the
+//! chain flush that reads the result back (~15 ms), which the viewer's
+//! fast path avoids by leaving the output on the GPU
+//! (`request_output_on_gpu`). So a *linear* grade costs far less in the
+//! app than the numbers below suggest.
+//!
+//! What the harness does measure honestly is the shape of a secondary:
+//! a multi-input node means the fast path cannot engage at all, so every
+//! one of those costs is paid for real. `extends=0` with `starts=2` in
+//! the breakdown is the whole story — a fan-out of three and a
+//! three-input node give the chain nothing to carry.
 
 use klipp_nodes::graph::{Edge, Node, NodeGraph, NodeId, NodePos};
 use klipp_nodes::kinds::NodeKind;
