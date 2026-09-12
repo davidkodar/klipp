@@ -1869,19 +1869,25 @@ impl GpuEffectsPipeline {
         slot_a: bool,
         width: u32,
         height: u32,
-        tone_map_op: u32,
-        luma_coefs: [f32; 3],
-        semi_planar: bool,
+        target: Yuv420Target,
     ) -> Option<Vec<u8>> {
-        if self.is_device_lost() || width % 8 != 0 || height % 2 != 0 || tone_map_op > 2 {
+        let Yuv420Target { tone_map_op, luma_coefs, semi_planar, bits, sample_shift } = target;
+        if self.is_device_lost()
+            || width % 8 != 0
+            || height % 2 != 0
+            || tone_map_op > 2
+            || !matches!(bits, 8 | 10)
+        {
             return None;
         }
         let pixel_count = (width as u64) * (height as u64);
         if pixel_count == 0 {
             return None;
         }
-        let luma_bytes = pixel_count;
-        let chroma_bytes = pixel_count / 4;
+        // Two bytes a sample at ten bits, one at eight.
+        let sample_bytes = if bits == 8 { 1 } else { 2 };
+        let luma_bytes = pixel_count * sample_bytes;
+        let chroma_bytes = (pixel_count / 4) * sample_bytes;
         let total = luma_bytes + 2 * chroma_bytes;
 
         let source = if slot_a { self.buf_a.as_ref() } else { self.buf_b.as_ref() };
@@ -1904,6 +1910,10 @@ impl GpuEffectsPipeline {
             kg: luma_coefs[1],
             kb: luma_coefs[2],
             semi_planar: semi_planar as u32,
+            bits,
+            sample_shift,
+            _pad1: 0,
+            _pad2: 0,
         });
         let bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("linear_to_yuv420_bg"),
@@ -5120,6 +5130,38 @@ struct BridgeU8Params {
     _pad1: u32,
 }
 
+/// How a frame has to be laid out for the encoder that will take it.
+///
+/// One value rather than five arguments: it travels from the encoder
+/// that knows the answer, through the renderer, to the shader, and a
+/// five-wide tuple through three layers is five chances to transpose
+/// two of them — `semi_planar` and the depth especially, since both are
+/// small integers that look alike at a call site.
+#[derive(Clone, Copy, Debug)]
+pub struct Yuv420Target {
+    /// 0 none, 1 Reinhard, 2 Hable. The host has already established
+    /// the display transform is a tone map and an sRGB encode.
+    pub tone_map_op: u32,
+    /// The output's luma coefficients — BT.709 or BT.2020.
+    pub luma_coefs: [f32; 3],
+    /// Interleaved chroma (NV12, P010) rather than separate planes.
+    pub semi_planar: bool,
+    /// 8 or 10.
+    pub bits: u32,
+    /// Left shift on each stored sample: 6 for P010, 0 otherwise.
+    pub sample_shift: u32,
+}
+
+impl Yuv420Target {
+    /// The bytes a `width` x `height` frame occupies in this layout.
+    pub fn byte_len(&self, width: u32, height: u32) -> usize {
+        let px = (width as usize) * (height as usize);
+        let sample = if self.bits == 8 { 1 } else { 2 };
+        // Luma plus two chroma planes at a quarter the samples each.
+        (px + px / 2) * sample
+    }
+}
+
 #[repr(C)]
 #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
 struct Yuv420Params {
@@ -5131,6 +5173,10 @@ struct Yuv420Params {
     kg: f32,
     kb: f32,
     semi_planar: u32,
+    bits: u32,
+    sample_shift: u32,
+    _pad1: u32,
+    _pad2: u32,
 }
 
 #[repr(C)]
@@ -6832,8 +6878,16 @@ struct Params {
     kr: f32,
     kg: f32,
     kb: f32,
-    // 1 for NV12's interleaved UV, 0 for separate Cb and Cr planes.
+    // 1 for NV12/P010's interleaved UV, 0 for separate Cb and Cr planes.
     semi_planar: u32,
+    // 8 or 10. At 10 every sample is a u16 rather than a byte, so half
+    // as many fit in a word.
+    bits: u32,
+    // Left shift on each stored sample: 6 for P010, which carries its
+    // ten bits at the top of the u16, 0 everywhere else.
+    sample_shift: u32,
+    _pad1: u32,
+    _pad2: u32,
 }
 @group(0) @binding(0) var<storage, read> input: array<vec4<f32>>;
 @group(0) @binding(1) var<storage, read_write> output: array<u32>;
@@ -6869,10 +6923,15 @@ fn display_encode(px: vec3<f32>) -> vec3<f32> {
     return clamp(e, vec3<f32>(0.0), vec3<f32>(1.0));
 }
 
-/// `quant` from the CPU twin: offset, scale, round half up, clamp to
-/// eight bits.
+/// `quant` from the CPU twin: offset and range are given in 8-bit
+/// units and scaled to the output depth, rounded half up, clamped.
+/// Then shifted into place — P010 puts its ten bits at the top of the
+/// u16, which is what `sample_shift` carries.
 fn quant(v: f32, off: f32, range: f32) -> u32 {
-    return u32(clamp(off + v * range + 0.5, 0.0, 255.0));
+    let scale = f32(1u << (params.bits - 8u));
+    let top = f32((1u << params.bits) - 1u);
+    let q = u32(clamp((off + v * range) * scale + 0.5, 0.0, top));
+    return q << params.sample_shift;
 }
 
 fn luma(e: vec3<f32>) -> f32 {
@@ -6898,21 +6957,14 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         }
     }
 
-    // Luma: two words per row, four pixels to a word, low byte first.
-    for (var r = 0u; r < 2u; r = r + 1u) {
-        let row_word = ((y0 + r) * params.width + x0) / 4u;
-        for (var half = 0u; half < 2u; half = half + 1u) {
-            var w = 0u;
-            for (var k = 0u; k < 4u; k = k + 1u) {
-                let v = quant(luma(e[r * 8u + half * 4u + k]), 16.0, 219.0);
-                w = w | (v << (k * 8u));
-            }
-            output[row_word + half] = w;
-        }
+    // The block's sixteen luma samples and the four chroma sites its
+    // 2x2 quads reduce to, quantised. Chroma is the mean of the
+    // *display-encoded RGB* over each quad, then the difference — not
+    // the mean of the chroma, which is a different number.
+    var ys: array<u32, 16>;
+    for (var i = 0u; i < 16u; i = i + 1u) {
+        ys[i] = quant(luma(e[i]), 16.0, 219.0);
     }
-
-    // Chroma: the block's four 2x2 quads, averaged in display-encoded
-    // RGB before the difference is taken.
     var cb: array<u32, 4>;
     var cr: array<u32, 4>;
     for (var q = 0u; q < 4u; q = q + 1u) {
@@ -6922,23 +6974,62 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         cr[q] = quant((acc.x - l) / (2.0 * (1.0 - params.kr)), 128.0, 224.0);
     }
 
-    if params.semi_planar == 1u {
-        // NV12: one plane of Cb,Cr pairs. Four pairs is eight bytes, so
-        // two words, at this block's byte offset in a row `width` wide.
-        let uv_word = (by * params.width + x0) / 4u;
-        output[params.chroma_word_offset + uv_word] =
-            cb[0] | (cr[0] << 8u) | (cb[1] << 16u) | (cr[1] << 24u);
-        output[params.chroma_word_offset + uv_word + 1u] =
-            cb[2] | (cr[2] << 8u) | (cb[3] << 16u) | (cr[3] << 24u);
+    // Packing, which is the only part the depth changes: a word holds
+    // four 8-bit samples or two 16-bit ones. Every offset below is in
+    // words and lands on a boundary because the caller guarantees the
+    // width is a multiple of eight.
+    if params.bits == 8u {
+        for (var r = 0u; r < 2u; r = r + 1u) {
+            let row_word = ((y0 + r) * params.width + x0) / 4u;
+            for (var half = 0u; half < 2u; half = half + 1u) {
+                var w = 0u;
+                for (var k = 0u; k < 4u; k = k + 1u) {
+                    w = w | (ys[r * 8u + half * 4u + k] << (k * 8u));
+                }
+                output[row_word + half] = w;
+            }
+        }
+        if params.semi_planar == 1u {
+            // NV12: one plane of Cb,Cr pairs, eight bytes for the four.
+            let uv_word = (by * params.width + x0) / 4u;
+            output[params.chroma_word_offset + uv_word] =
+                cb[0] | (cr[0] << 8u) | (cb[1] << 16u) | (cr[1] << 24u);
+            output[params.chroma_word_offset + uv_word + 1u] =
+                cb[2] | (cr[2] << 8u) | (cb[3] << 16u) | (cr[3] << 24u);
+        } else {
+            // Separate planes, half as wide and half as tall: the four
+            // samples are exactly one word.
+            let c_word = (by * (params.width / 2u) + x0 / 2u) / 4u;
+            let plane_words = (params.width / 2u) * (params.height / 2u) / 4u;
+            output[params.chroma_word_offset + c_word] =
+                cb[0] | (cb[1] << 8u) | (cb[2] << 16u) | (cb[3] << 24u);
+            output[params.chroma_word_offset + plane_words + c_word] =
+                cr[0] | (cr[1] << 8u) | (cr[2] << 16u) | (cr[3] << 24u);
+        }
     } else {
-        // Separate planes, each half as wide and half as tall as the
-        // picture: four samples is exactly one word.
-        let c_word = (by * (params.width / 2u) + x0 / 2u) / 4u;
-        let plane_words = (params.width / 2u) * (params.height / 2u) / 4u;
-        output[params.chroma_word_offset + c_word] =
-            cb[0] | (cb[1] << 8u) | (cb[2] << 16u) | (cb[3] << 24u);
-        output[params.chroma_word_offset + plane_words + c_word] =
-            cr[0] | (cr[1] << 8u) | (cr[2] << 16u) | (cr[3] << 24u);
+        // Ten bits: u16 samples, so two to a word and twice the stride.
+        for (var r = 0u; r < 2u; r = r + 1u) {
+            let row_word = ((y0 + r) * params.width + x0) / 2u;
+            for (var k = 0u; k < 4u; k = k + 1u) {
+                let a = ys[r * 8u + k * 2u];
+                let b = ys[r * 8u + k * 2u + 1u];
+                output[row_word + k] = a | (b << 16u);
+            }
+        }
+        if params.semi_planar == 1u {
+            // P010: Cb,Cr pairs as u16, so a word per pair.
+            let uv_word = (by * params.width + x0) / 2u;
+            for (var q = 0u; q < 4u; q = q + 1u) {
+                output[params.chroma_word_offset + uv_word + q] = cb[q] | (cr[q] << 16u);
+            }
+        } else {
+            let c_word = (by * (params.width / 2u) + x0 / 2u) / 2u;
+            let plane_words = (params.width / 2u) * (params.height / 2u) / 2u;
+            output[params.chroma_word_offset + c_word] = cb[0] | (cb[1] << 16u);
+            output[params.chroma_word_offset + c_word + 1u] = cb[2] | (cb[3] << 16u);
+            output[params.chroma_word_offset + plane_words + c_word] = cr[0] | (cr[1] << 16u);
+            output[params.chroma_word_offset + plane_words + c_word + 1u] = cr[2] | (cr[3] << 16u);
+        }
     }
 }
 "

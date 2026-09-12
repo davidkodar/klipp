@@ -92,7 +92,12 @@ fn main() {
     let settings = ExportSettings {
         output_path: out.clone(),
         format: ExportFormat::Mp4,
-        video_codec: ExportVideoCodec::H264,
+        // NVENC has no 10-bit H.264, so a 10-bit delivery is H.265.
+        video_codec: if std::env::var("KLIPP_EXPORT_BITS").as_deref() == Ok("10") {
+            ExportVideoCodec::H265
+        } else {
+            ExportVideoCodec::H264
+        },
         resolution: None,
         fps: None,
         // Near-lossless: the point is judging colour, so the encoder
@@ -109,7 +114,12 @@ fn main() {
         // Linear is the default; the app passes the user's preference.
         pan_law: Default::default(),
         embed_chapters: false,
-        bit_depth: 0,
+        // KLIPP_EXPORT_BITS=10 for a 10-bit delivery, to measure the
+        // slower path against the 8-bit one.
+        bit_depth: std::env::var("KLIPP_EXPORT_BITS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0),
         hdr_mode: HdrMode::Sdr,
         tone_map_op: ToneMapOp::Hable,
         odt: OdtChoice::MatchViewer,

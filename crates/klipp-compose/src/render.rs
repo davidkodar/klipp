@@ -566,9 +566,7 @@ impl Renderer {
         height: u32,
         src: &mut dyn FrameSource,
         opts: RenderOptions,
-        tone_map_op: u32,
-        luma_coefs: [f32; 3],
-        semi_planar: bool,
+        target: klipp_effects::gpu::Yuv420Target,
     ) -> Option<Vec<u8>> {
         // An HDR render finishes with a display-light pass the shader has
         // no twin for.
@@ -667,9 +665,7 @@ impl Renderer {
             {
                 return None;
             }
-            return self
-                .executor
-                .encode_output_to_yuv420(width, height, tone_map_op, luma_coefs, semi_planar);
+            return self.executor.encode_output_to_yuv420(width, height, target);
         }
 
         self.executor.request_output_on_gpu();
@@ -684,8 +680,7 @@ impl Renderer {
         if !pixels.is_empty() {
             return None;
         }
-        self.executor
-            .encode_output_to_yuv420(width, height, tone_map_op, luma_coefs, semi_planar)
+        self.executor.encode_output_to_yuv420(width, height, target)
     }
 
     fn render_stack(

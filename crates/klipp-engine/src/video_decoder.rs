@@ -3253,9 +3253,17 @@ mod decode_thread_barrier_tests {
     use std::sync::atomic::Ordering;
     use std::time::Duration;
 
+    /// These tests read and write a process-global counter, so they
+    /// cannot run alongside each other: one holding a token makes
+    /// another's reading wrong. It caught itself — the panicking-thread
+    /// test failed in a full-suite run with `left: 1` while its sibling
+    /// held a token.
+    static SERIALISE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     /// With nothing decoding, the barrier is a no-op.
     #[test]
     fn it_returns_at_once_when_nothing_is_decoding() {
+        let _guard = SERIALISE.lock().unwrap_or_else(|e| e.into_inner());
         // Other tests in this binary may hold tokens; take a reading
         // rather than assuming zero.
         let held = LIVE_DECODE_THREADS.load(Ordering::Acquire);
@@ -3274,6 +3282,7 @@ mod decode_thread_barrier_tests {
     /// exited underneath it.
     #[test]
     fn a_live_thread_holds_the_barrier_and_releases_it() {
+        let _guard = SERIALISE.lock().unwrap_or_else(|e| e.into_inner());
         let token = DecodeThreadToken::new();
         let before = LIVE_DECODE_THREADS.load(Ordering::Acquire);
         assert!(before >= 1, "the token did not register");
@@ -3302,6 +3311,7 @@ mod decode_thread_barrier_tests {
     /// timeout.
     #[test]
     fn a_panicking_thread_still_deregisters() {
+        let _guard = SERIALISE.lock().unwrap_or_else(|e| e.into_inner());
         let before = LIVE_DECODE_THREADS.load(Ordering::Acquire);
         let h = std::thread::spawn(|| {
             let _token = DecodeThreadToken::new();

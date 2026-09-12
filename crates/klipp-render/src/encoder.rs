@@ -910,17 +910,21 @@ impl Encoder {
     /// not 8-bit 4:2:0, a GIF's palette filter, or a PQ delivery, whose
     /// MaxCLL is measured off the linear frame.
     ///
-    /// The third value is whether the chroma is interleaved: NVENC takes
-    /// NV12, and a software encoder YUV420P. Both are 8-bit 4:2:0 and
-    /// differ only in how the two chroma planes are laid out.
-    pub fn gpu_yuv420_params(&self) -> Option<(u32, [f32; 3], bool)> {
+    /// Also whether the chroma is interleaved, the sample depth, and the
+    /// left shift each stored sample needs. NVENC takes NV12 at eight
+    /// bits and P010 at ten; a software encoder takes the planar forms.
+    /// P010 is the odd one: it carries its ten bits at the *top* of each
+    /// u16, hence the shift.
+    pub fn gpu_yuv420_params(&self) -> Option<klipp_effects::gpu::Yuv420Target> {
         use ffmpeg_next::format::Pixel as P;
         if self.gif_filter.is_some() || self.hdr_mode == klipp_core::HdrMode::Pq {
             return None;
         }
-        let semi = match self.video_encoder.format() {
-            P::YUV420P => false,
-            P::NV12 => true,
+        let (semi, bits, shift) = match self.video_encoder.format() {
+            P::YUV420P => (false, 8, 0),
+            P::NV12 => (true, 8, 0),
+            P::YUV420P10LE => (false, 10, 0),
+            P::P010LE => (true, 10, 6),
             _ => return None,
         };
         let op = match self.display.tone_map_and_srgb_only()? {
@@ -934,7 +938,13 @@ impl Encoder {
             klipp_core::ColorMatrix::Bt2020Ncl | klipp_core::ColorMatrix::Bt2020Cl => (0.2627f32, 0.0593f32),
             _ => (0.2126, 0.0722),
         };
-        Some((op, [kr, 1.0 - kr - kb, kb], semi))
+        Some(klipp_effects::gpu::Yuv420Target {
+            tone_map_op: op,
+            luma_coefs: [kr, 1.0 - kr - kb, kb],
+            semi_planar: semi,
+            bits,
+            sample_shift: shift,
+        })
     }
 
     /// Encode a frame the GPU already converted: 8-bit 4:2:0, luma then
@@ -954,34 +964,41 @@ impl Encoder {
         use ffmpeg_next::format::Pixel as P;
         use rayon::prelude::*;
         let fmt = self.video_encoder.format();
-        let (wu, hu) = (width as usize, height as usize);
-        let luma = wu * hu;
-        if planes.len() != luma + luma / 2 {
+        let Some(target) = self.gpu_yuv420_params() else {
+            return Err(RenderError::Encode(format!("{fmt:?} takes no GPU planes")));
+        };
+        let want = target.byte_len(width, height);
+        if planes.len() != want {
             return Err(RenderError::Encode(format!(
-                "GPU planes are {} bytes, expected {} for {width}x{height}",
+                "GPU planes are {} bytes, expected {want} for {width}x{height} at {} bits",
                 planes.len(),
-                luma + luma / 2,
+                target.bits,
             )));
         }
+        let (wu, hu) = (width as usize, height as usize);
+        // Row widths in *bytes*, which is what a stride is measured in.
+        let sample = if target.bits == 8 { 1 } else { 2 };
+        let luma = wu * hu * sample;
+
         let mut frame = ffmpeg_next::frame::Video::new(fmt, width, height);
         let (y_src, chroma) = planes.split_at(luma);
-        // Y, then either one interleaved plane of the same row width or
-        // two planes of half.
-        let mut rows: Vec<(usize, &[u8], usize, usize)> = vec![(0, y_src, wu, hu)];
+        // Y, then either one interleaved chroma plane of the same row
+        // width or two planes of half.
+        let mut rows: Vec<(usize, &[u8], usize, usize)> = vec![(0, y_src, wu * sample, hu)];
         match fmt {
-            P::NV12 => rows.push((1, chroma, wu, hu / 2)),
+            P::NV12 | P::P010LE => rows.push((1, chroma, wu * sample, hu / 2)),
             _ => {
-                let (cb, cr) = chroma.split_at(luma / 4);
-                rows.push((1, cb, wu / 2, hu / 2));
-                rows.push((2, cr, wu / 2, hu / 2));
+                let (cb, cr) = chroma.split_at(chroma.len() / 2);
+                rows.push((1, cb, (wu / 2) * sample, hu / 2));
+                rows.push((2, cr, (wu / 2) * sample, hu / 2));
             }
         }
-        for (plane, src, w, h) in rows {
+        for (plane, src, row_bytes, h) in rows {
             let stride = frame.stride(plane);
             frame.data_mut(plane)[..stride * h]
                 .par_chunks_mut(stride)
-                .zip(src.par_chunks(w))
-                .for_each(|(dst, s)| dst[..w].copy_from_slice(s));
+                .zip(src.par_chunks(row_bytes))
+                .for_each(|(dst, s)| dst[..row_bytes].copy_from_slice(s));
         }
         frame.set_pts(Some(self.video_pts));
         self.video_pts += 1;

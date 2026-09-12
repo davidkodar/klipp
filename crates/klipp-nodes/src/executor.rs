@@ -748,19 +748,10 @@ impl GraphExecutor {
         &mut self,
         width: u32,
         height: u32,
-        tone_map_op: u32,
-        luma_coefs: [f32; 3],
-        semi_planar: bool,
+        target: klipp_effects::gpu::Yuv420Target,
     ) -> Option<Vec<u8>> {
         let slot_a = self.output_on_gpu?;
-        self.gpu.as_mut()?.encode_chain_to_yuv420(
-            slot_a,
-            width,
-            height,
-            tone_map_op,
-            luma_coefs,
-            semi_planar,
-        )
+        self.gpu.as_mut()?.encode_chain_to_yuv420(slot_a, width, height, target)
     }
 
     /// Seed the chain from a buffer that is already linear working-space

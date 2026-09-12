@@ -278,9 +278,9 @@ impl ExportJob {
             // grade itself comes back on the CPU — a node with no GPU
             // dispatch — then this frame is rendered twice, and without
             // the latch every remaining frame would be too.
-            let planes = gpu_yuv.and_then(|(op, luma, semi)| {
+            let planes = gpu_yuv.and_then(|target| {
                 renderer.render_yuv420_on_gpu(
-                    timeline, time, fit_w, fit_h, &mut frames, render_opts, op, luma, semi,
+                    timeline, time, fit_w, fit_h, &mut frames, render_opts, target,
                 )
             });
             if let Some(planes) = planes {

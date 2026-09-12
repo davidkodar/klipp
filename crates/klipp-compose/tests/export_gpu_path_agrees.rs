@@ -31,9 +31,18 @@ use klipp_timeline::{Clip, ClipKind, Sequence, Track, TrackKind, Transition};
 const W: u32 = 32;
 const H: u32 = 16;
 
-/// BT.709, and no tone map — the plain delivery.
-const TONE_MAP_NONE: u32 = 0;
+/// BT.709, no tone map, 8-bit planar — the plain delivery.
 const LUMA_709: [f32; 3] = [0.2126, 0.7152, 0.0722];
+
+fn plain_target() -> klipp_effects::gpu::Yuv420Target {
+    klipp_effects::gpu::Yuv420Target {
+        tone_map_op: 0,
+        luma_coefs: LUMA_709,
+        semi_planar: false,
+        bits: 8,
+        sample_shift: 0,
+    }
+}
 
 fn tc(secs: f64) -> Timecode {
     RationalTime::from_secs_f64(secs, 24)
@@ -185,9 +194,7 @@ fn gpu_planes(seq: &Sequence, t: f64, src: &mut Flat) -> Option<Vec<u8>> {
         H,
         src,
         RenderOptions::default(),
-        TONE_MAP_NONE,
-        LUMA_709,
-        false,
+        plain_target(),
     )
 }
 
@@ -400,9 +407,7 @@ fn an_hdr_render_is_refused() {
         H,
         &mut src,
         RenderOptions { hdr_peak_nits: Some(1000.0), ..Default::default() },
-        TONE_MAP_NONE,
-        LUMA_709,
-        false,
+        plain_target(),
     );
     assert!(refused.is_none(), "an HDR render must not take the SDR plane path");
 }

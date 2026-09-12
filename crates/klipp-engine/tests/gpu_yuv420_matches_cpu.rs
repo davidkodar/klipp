@@ -114,7 +114,23 @@ fn cpu_planes(linear: &[f32], display: &ExportDisplay) -> (Vec<u8>, Vec<u8>, Vec
     (y, cb, cr)
 }
 
-fn gpu_planes(linear: &[f32], op: ToneMapOp, semi: bool) -> Option<Vec<u8>> {
+fn target(op: ToneMapOp, semi: bool, bits: u32, shift: u32) -> klipp_effects::gpu::Yuv420Target {
+    klipp_effects::gpu::Yuv420Target {
+        tone_map_op: tone_map_id(op),
+        luma_coefs: [KR, 1.0 - KR - KB, KB],
+        semi_planar: semi,
+        bits,
+        sample_shift: shift,
+    }
+}
+
+fn gpu_planes_at(
+    linear: &[f32],
+    op: ToneMapOp,
+    semi: bool,
+    bits: u32,
+    shift: u32,
+) -> Option<Vec<u8>> {
     let Some(ctx) = GpuContext::new() else {
         eprintln!("skipping: no GpuContext");
         return None;
@@ -125,12 +141,15 @@ fn gpu_planes(linear: &[f32], op: ToneMapOp, semi: bool) -> Option<Vec<u8>> {
     };
     pipeline.ensure_chain_buffers((W as u64) * (H as u64) * 16);
     pipeline.upload_chain_input_linear(linear);
-    let planes =
-        pipeline.encode_chain_to_yuv420(true, W, H, tone_map_id(op), [KR, 1.0 - KR - KB, KB], semi);
+    let planes = pipeline.encode_chain_to_yuv420(true, W, H, target(op, semi, bits, shift));
     if planes.is_none() {
-        panic!("encode_chain_to_yuv420 refused a {W}x{H} frame with tone map {op:?}");
+        panic!("encode_chain_to_yuv420 refused {W}x{H}, {op:?}, {bits} bits");
     }
     planes
+}
+
+fn gpu_planes(linear: &[f32], op: ToneMapOp, semi: bool) -> Option<Vec<u8>> {
+    gpu_planes_at(linear, op, semi, 8, 0)
 }
 
 /// Both chroma layouts, against the same reference. NV12's interleaved
@@ -230,7 +249,7 @@ fn an_unimplemented_tone_map_is_refused() {
     pipeline.upload_chain_input_linear(&linear);
     assert!(
         pipeline
-            .encode_chain_to_yuv420(true, W, H, tone_map_id(ToneMapOp::Aces), [KR, 1.0 - KR - KB, KB], false)
+            .encode_chain_to_yuv420(true, W, H, target(ToneMapOp::Aces, false, 8, 0))
             .is_none(),
         "ACES must fall back to the CPU pass, not be approximated"
     );
@@ -246,11 +265,239 @@ fn dimensions_the_block_layout_cannot_tile_are_refused() {
     pipeline.ensure_chain_buffers(64 * 64 * 16);
     pipeline.upload_chain_input_linear(&vec![0.5f32; 64 * 64 * 4]);
     assert!(
-        pipeline.encode_chain_to_yuv420(true, 60, 32, 0, [KR, 1.0 - KR - KB, KB], false).is_none(),
+        pipeline.encode_chain_to_yuv420(true, 60, 32, target(ToneMapOp::None, false, 8, 0)).is_none(),
         "width 60 is not a multiple of 8"
     );
     assert!(
-        pipeline.encode_chain_to_yuv420(true, 64, 31, 0, [KR, 1.0 - KR - KB, KB], false).is_none(),
+        pipeline.encode_chain_to_yuv420(true, 64, 31, target(ToneMapOp::None, false, 8, 0)).is_none(),
         "height 31 is odd"
     );
+}
+
+/// Ten-bit output, against the same reference scaled to ten bits.
+///
+/// `encode_linear_direct`'s `quant` takes its offset and range in 8-bit
+/// units and multiplies by `1 << (bits - 8)`, so the luma range is
+/// 64..940 at ten bits rather than 16..235. Doing that arithmetic here
+/// rather than reusing the 8-bit numbers is the point: a shader that
+/// quantised to eight bits and shifted would pass a test that compared
+/// against itself, and produce a picture with 8-bit banding in a 10-bit
+/// file.
+fn cpu_planes_10(display: &ExportDisplay, linear: &[f32]) -> (Vec<u16>, Vec<u16>, Vec<u16>) {
+    let kg = 1.0 - KR - KB;
+    let luma = |e: [f32; 3]| KR * e[0] + kg * e[1] + KB * e[2];
+    let q = |v: f32, off: f32, range: f32| -> u16 {
+        ((off + v * range) * 4.0 + 0.5).clamp(0.0, 1023.0) as u16
+    };
+    let (wu, hu) = (W as usize, H as usize);
+    let e: Vec<[f32; 3]> = (0..wu * hu)
+        .map(|i| display.encode([linear[i * 4], linear[i * 4 + 1], linear[i * 4 + 2]]))
+        .collect();
+    let y: Vec<u16> = e.iter().map(|p| q(luma(*p), 16.0, 219.0)).collect();
+    let mut cb = Vec::new();
+    let mut cr = Vec::new();
+    for by in 0..hu / 2 {
+        for bx in 0..wu / 2 {
+            let mut acc = [0.0f32; 3];
+            for r in 0..2 {
+                for c in 0..2 {
+                    let p = e[(by * 2 + r) * wu + bx * 2 + c];
+                    for k in 0..3 {
+                        acc[k] += p[k];
+                    }
+                }
+            }
+            let mean = [acc[0] / 4.0, acc[1] / 4.0, acc[2] / 4.0];
+            let l = luma(mean);
+            cb.push(q((mean[2] - l) / (2.0 * (1.0 - KB)), 128.0, 224.0));
+            cr.push(q((mean[0] - l) / (2.0 * (1.0 - KR)), 128.0, 224.0));
+        }
+    }
+    (y, cb, cr)
+}
+
+fn check_10bit(op: ToneMapOp, semi: bool, shift: u32) {
+    let linear = linear_frame();
+    let Some(planes) = gpu_planes_at(&linear, op, semi, 10, shift) else {
+        eprintln!("skipping: no usable GPU");
+        return;
+    };
+    let display = ExportDisplay::new(op, WorkingColorspace::Rec709Linear, OdtChoice::MatchViewer);
+    let (y, cb, cr) = cpu_planes_10(&display, &linear);
+
+    assert_eq!(planes.len(), (y.len() + cb.len() + cr.len()) * 2, "10-bit plane size");
+    let words: Vec<u16> = planes
+        .chunks_exact(2)
+        .map(|b| u16::from_le_bytes([b[0], b[1]]) >> shift)
+        .collect();
+    let (g_y, chroma) = words.split_at(y.len());
+    let (g_cb, g_cr): (Vec<u16>, Vec<u16>) = if semi {
+        (
+            chroma.iter().step_by(2).copied().collect(),
+            chroma.iter().skip(1).step_by(2).copied().collect(),
+        )
+    } else {
+        let (a, b) = chroma.split_at(cb.len());
+        (a.to_vec(), b.to_vec())
+    };
+
+    let layout = if semi { "P010" } else { "YUV420P10" };
+    for (name, got, want) in
+        [("Y", g_y, &y), ("Cb", g_cb.as_slice(), &cb), ("Cr", g_cr.as_slice(), &cr)]
+    {
+        let mut worst = 0i32;
+        let mut worst_at = 0usize;
+        for (i, (g, w)) in got.iter().zip(want.iter()).enumerate() {
+            let d = (*g as i32 - *w as i32).abs();
+            if d > worst {
+                worst = d;
+                worst_at = i;
+            }
+        }
+        assert!(
+            worst <= 1,
+            "{op:?} {layout} {name}: differs by {worst} at {worst_at} (gpu {} vs cpu {})",
+            got[worst_at],
+            want[worst_at],
+        );
+        // Ten bits must actually be used. Quantising to eight and
+        // scaling would still land within a level of nothing here, so
+        // the values themselves have to reach past 255.
+        let top = got.iter().copied().max().unwrap_or(0);
+        assert!(top > 255, "{layout} {name}: nothing above 255, so this is 8-bit data");
+        eprintln!("{op:?} {layout} {name}: worst {worst}, peak {top}");
+    }
+}
+
+#[test]
+fn gpu_yuv_matches_cpu_at_ten_bits_planar() {
+    check_10bit(ToneMapOp::Hable, false, 0);
+}
+
+/// P010, which is what NVENC actually takes for a 10-bit delivery, and
+/// which carries its ten bits at the *top* of each u16.
+#[test]
+fn gpu_yuv_matches_cpu_at_ten_bits_p010() {
+    check_10bit(ToneMapOp::Hable, true, 6);
+}
+
+/// The P010 shift is real: without it the samples sit in the low bits
+/// and the file reads about six stops dark.
+#[test]
+fn the_p010_shift_puts_the_bits_at_the_top() {
+    let linear = linear_frame();
+    let Some(shifted) = gpu_planes_at(&linear, ToneMapOp::None, true, 10, 6) else {
+        eprintln!("skipping: no usable GPU");
+        return;
+    };
+    let plain = gpu_planes_at(&linear, ToneMapOp::None, true, 10, 0).expect("second run");
+    let word = |v: &[u8], i: usize| u16::from_le_bytes([v[i * 2], v[i * 2 + 1]]);
+    // Find a sample that is not zero in the unshifted run, and check the
+    // shifted run has it four-and-sixty times larger.
+    let i = (0..1000).find(|&i| word(&plain, i) > 0).expect("a non-zero sample");
+    assert_eq!(
+        word(&shifted, i),
+        word(&plain, i) << 6,
+        "sample {i} was not shifted into the high bits",
+    );
+}
+
+/// A depth the shader does not implement is refused rather than
+/// approximated — 12-bit would otherwise silently pack as though it
+/// were ten.
+#[test]
+fn an_unsupported_depth_is_refused() {
+    let Some(ctx) = GpuContext::new() else { return };
+    let Some(mut pipeline) = GpuEffectsPipeline::with_context(&ctx) else { return };
+    pipeline.ensure_chain_buffers((W as u64) * (H as u64) * 16);
+    pipeline.upload_chain_input_linear(&linear_frame());
+    for bits in [0, 9, 12, 16] {
+        assert!(
+            pipeline
+                .encode_chain_to_yuv420(true, W, H, target(ToneMapOp::None, true, bits, 0))
+                .is_none(),
+            "{bits} bits was accepted",
+        );
+    }
+}
+
+/// The same agreement on noise rather than ramps, at both depths.
+///
+/// Smooth fixtures are kind to a quantiser: neighbouring samples land on
+/// the same side of a rounding boundary, so a systematic error can hide.
+/// This one is pseudo-random over a wide range, which is the closest
+/// cheap thing to real footage, and it exists because comparing two
+/// *encoded* files of the user's timeline showed differences up to 63
+/// code values and I needed to know whether that was the planes or the
+/// codec. It was the codec: HEVC makes different mode decisions from a
+/// one-level difference and spreads them across a block.
+#[test]
+fn gpu_yuv_matches_cpu_on_noise() {
+    // A cheap deterministic hash, so a failure is reproducible.
+    let mut state = 0x243f_6a88_85a3_08d3_u64;
+    let mut next = move || {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        (state >> 11) as f32 / (1u64 << 53) as f32
+    };
+    let mut linear = vec![0.0f32; (W * H * 4) as usize];
+    for px in linear.chunks_exact_mut(4) {
+        // 0 .. 4x white, plus occasional negatives, as a wide-gamut
+        // colour arrives.
+        for c in 0..3 {
+            let v = next() * 4.0;
+            px[c] = if next() < 0.02 { -v * 0.25 } else { v };
+        }
+        px[3] = 1.0;
+    }
+
+    for (bits, shift, semi) in [(8u32, 0u32, true), (10, 6, true), (10, 0, false)] {
+        let Some(planes) = gpu_planes_at(&linear, ToneMapOp::Hable, semi, bits, shift) else {
+            eprintln!("skipping: no usable GPU");
+            return;
+        };
+        let display = ExportDisplay::new(
+            ToneMapOp::Hable,
+            WorkingColorspace::Rec709Linear,
+            OdtChoice::MatchViewer,
+        );
+        let (worst, n) = if bits == 8 {
+            let (y, cb, cr) = cpu_planes(&linear, &display);
+            let mut want: Vec<u16> = y.iter().map(|v| *v as u16).collect();
+            if semi {
+                for (a, b) in cb.iter().zip(cr.iter()) {
+                    want.push(*a as u16);
+                    want.push(*b as u16);
+                }
+            }
+            let got: Vec<u16> = planes.iter().map(|v| *v as u16).collect();
+            (
+                got.iter().zip(want.iter()).map(|(g, w)| (*g as i32 - *w as i32).abs()).max().unwrap(),
+                want.len(),
+            )
+        } else {
+            let (y, cb, cr) = cpu_planes_10(&display, &linear);
+            let mut want = y.clone();
+            if semi {
+                for (a, b) in cb.iter().zip(cr.iter()) {
+                    want.push(*a);
+                    want.push(*b);
+                }
+            } else {
+                want.extend_from_slice(&cb);
+                want.extend_from_slice(&cr);
+            }
+            let got: Vec<u16> = planes
+                .chunks_exact(2)
+                .map(|b| u16::from_le_bytes([b[0], b[1]]) >> shift)
+                .collect();
+            (
+                got.iter().zip(want.iter()).map(|(g, w)| (*g as i32 - *w as i32).abs()).max().unwrap(),
+                want.len(),
+            )
+        };
+        eprintln!("noise, {bits} bits, semi={semi}: worst {worst} over {n} samples");
+        assert!(worst <= 1, "{bits} bits, semi={semi}: worst {worst} on noise");
+    }
 }
