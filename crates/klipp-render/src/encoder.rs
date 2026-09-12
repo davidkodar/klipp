@@ -927,12 +927,19 @@ impl Encoder {
             P::P010LE => (true, 10, 6),
             _ => return None,
         };
-        let op = match self.display.tone_map_and_srgb_only()? {
-            klipp_color::display::ToneMapOp::None => 0,
-            klipp_color::display::ToneMapOp::Reinhard => 1,
-            klipp_color::display::ToneMapOp::Hable => 2,
-            // The ACES fit is not separable; no shader twin.
-            klipp_color::display::ToneMapOp::Aces => return None,
+        // 3 is the ACES Rec.709 output transform, which the shader has
+        // in full; otherwise a tone map and an sRGB encode.
+        let op = if self.display.is_aces_rec709() {
+            3
+        } else {
+            match self.display.tone_map_and_srgb_only()? {
+                klipp_color::display::ToneMapOp::None => 0,
+                klipp_color::display::ToneMapOp::Reinhard => 1,
+                klipp_color::display::ToneMapOp::Hable => 2,
+                // The ACES *tone-map fit* is not separable and is a
+                // different thing from the ODT above; no shader twin.
+                klipp_color::display::ToneMapOp::Aces => return None,
+            }
         };
         let (kr, kb) = match self.yuv_matrix {
             klipp_core::ColorMatrix::Bt2020Ncl | klipp_core::ColorMatrix::Bt2020Cl => (0.2627f32, 0.0593f32),

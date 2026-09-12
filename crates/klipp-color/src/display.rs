@@ -554,6 +554,18 @@ impl ExportDisplay {
         }
     }
 
+    /// Whether this is the plain ACES Rec.709 SDR output transform —
+    /// what an AcesCG project gets from `OdtChoice::MatchViewer`.
+    ///
+    /// The GPU has this one in full (`SHADER_ACES_REC709_U8`), matched
+    /// to `acescg_to_rec709_sdr` within a code value, so a caller with
+    /// a faster route can take it. The AcesCG-basis ODTs
+    /// (`ExportPath::Odt`) do not have a twin yet and answer `false`.
+    #[inline]
+    pub fn is_aces_rec709(&self) -> bool {
+        matches!(self.path, ExportPath::AcesRec709)
+    }
+
     /// Display-encoded RGB, clamped to `[0, 1]`.
     #[inline]
     pub fn encode(&self, rgb: [f32; 3]) -> [f32; 3] {

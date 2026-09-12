@@ -274,6 +274,9 @@ pub struct GpuEffectsPipeline {
     aces_rec709_bgl: wgpu::BindGroupLayout,
     /// The matrices and tone curves that shader reads, uploaded once.
     aces_rec709_data: Option<wgpu::Buffer>,
+    /// Bound in that slot by a delivery that is not ACES, which never
+    /// reads it.
+    aces_dummy: wgpu::Buffer,
     /// Packed RGB10 HDR code values → scene-linear working-space f32,
     /// written into the chain's `buf_a`. The GPU half of
     /// `klipp_color::hdr::hdr10_codes_to_scene_linear_rgba`.
@@ -898,12 +901,9 @@ impl GpuEffectsPipeline {
         let bridge_rgba64_to_linear_pipeline = create_pipeline(
             &device, &pipeline_layout, "bridge_rgba64_to_linear", SHADER_RGBA64_TO_LINEAR,
         );
-        // The export's last step, on the same 3-binding layout: linear
-        // frame in, packed Y/Cb/Cr planes out.
-        let linear_to_yuv420_pipeline = create_pipeline(
-            &device, &pipeline_layout, "linear_to_yuv420", SHADER_LINEAR_TO_YUV420,
-        );
-        // ACES needs a fourth binding for its matrices and tone curves.
+        // ACES needs a fourth binding for its matrices and tone curves,
+        // and the Y'CbCr writer shares the layout because it can take
+        // the same transform.
         let aces_rec709_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("aces_rec709_bgl"),
             entries: &[
@@ -956,6 +956,18 @@ impl GpuEffectsPipeline {
         });
         let aces_rec709_pipeline =
             create_pipeline(&device, &aces_pl, "aces_rec709", SHADER_ACES_REC709_U8);
+        // The export's last step: linear frame in, packed Y/Cb/Cr out,
+        // on the same layout so it can reach the ACES data.
+        let linear_to_yuv420_pipeline = create_pipeline(
+            &device, &aces_pl, "linear_to_yuv420", SHADER_LINEAR_TO_YUV420,
+        );
+        // Bound as the ACES data when the delivery does not need it.
+        let aces_dummy = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("aces_dummy"),
+            size: 4,
+            usage: wgpu::BufferUsages::STORAGE,
+            mapped_at_creation: false,
+        });
         // Both HDR kernels share the colourspace prelude with the P010
         // decoder, so the PQ/HLG curves on either side are one definition.
         let hdr10_src = format!(
@@ -1090,6 +1102,7 @@ impl GpuEffectsPipeline {
             aces_rec709_pipeline,
             aces_rec709_bgl,
             aces_rec709_data: None,
+            aces_dummy,
             bridge_hdr10_pipeline,
             display_u8_pipeline,
             display_u8_staging: None,
@@ -1932,12 +1945,13 @@ impl GpuEffectsPipeline {
         width: u32,
         height: u32,
         target: Yuv420Target,
+        aces_data: &[f32],
     ) -> Option<Vec<u8>> {
         let Yuv420Target { tone_map_op, luma_coefs, semi_planar, bits, sample_shift } = target;
         if self.is_device_lost()
             || width % 8 != 0
             || height % 2 != 0
-            || tone_map_op > 2
+            || tone_map_op > 3
             || !matches!(bits, 8 | 10)
         {
             return None;
@@ -1951,6 +1965,15 @@ impl GpuEffectsPipeline {
         let luma_bytes = pixel_count * sample_bytes;
         let chroma_bytes = (pixel_count / 4) * sample_bytes;
         let total = luma_bytes + 2 * chroma_bytes;
+
+        // Before `source` borrows self: ACES is the one path that reads
+        // the fourth binding, and uploading its data needs &mut.
+        if tone_map_op == 3 {
+            if aces_data.is_empty() {
+                return None;
+            }
+            self.ensure_aces_data(aces_data);
+        }
 
         let source = if slot_a { self.buf_a.as_ref() } else { self.buf_b.as_ref() };
         let source = source?;
@@ -1977,13 +2000,18 @@ impl GpuEffectsPipeline {
             _pad1: 0,
             _pad2: 0,
         });
+        let aces_binding: &wgpu::Buffer = match self.aces_rec709_data.as_ref() {
+            Some(b) if tone_map_op == 3 => b,
+            _ => &self.aces_dummy,
+        };
         let bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("linear_to_yuv420_bg"),
-            layout: &self.bind_group_layout,
+            layout: &self.aces_rec709_bgl,
             entries: &[
                 wgpu::BindGroupEntry { binding: 0, resource: source.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 1, resource: planes.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 2, resource: self.params_buf.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 3, resource: aces_binding.as_entire_binding() },
             ],
         });
 
@@ -7037,20 +7065,30 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 // `aces_rec709_matches_the_cpu` is what keeps this honest — the last
 // WGSL copy of ACES in this codebase was removed, and a copy without a
 // parity test is exactly what should be.
-const SHADER_ACES_REC709_U8: &str = concat!(
-    shader_pixel_storage_wgsl!(),
-    "
-struct Params { width: u32, height: u32, _pad0: u32, _pad1: u32 }
-@group(0) @binding(0) var<storage, read> input: array<vec4<f32>>;
-@group(0) @binding(1) var<storage, read_write> output: array<u32>;
-@group(0) @binding(2) var<uniform> params: Params;
-@group(0) @binding(3) var<storage, read> aces: array<f32>;
-
+/// The ACES Rec.709 SDR output transform, as WGSL for any shader that
+/// needs it.
+///
+/// A macro rather than a second copy: the export's fused Y'CbCr writer
+/// needs the same transform as the viewer's display encode, and two
+/// hand-written ACES chains is precisely the situation that got the
+/// last one deleted.
+///
+/// The includer must declare these bindings, and a `params` with
+/// nothing required of it:
+///
+/// ```wgsl
+/// @group(0) @binding(3) var<storage, read> aces: array<f32>;
+/// ```
+///
+/// `aces` is `klipp_color::aces::aces_rec709_gpu_data` — see there for
+/// why the curves and matrices are data and the rest is code.
+macro_rules! shader_aces_rec709_wgsl {
+    () => {
+        "
 // Must match `klipp_color::aces::gpu_layout`.
 const HEADER_LEN: u32 = 6u;
 const MATRICES: u32 = 6u;
-const CURVES: u32 = 69u;   // MATRICES + 7 * 9
-
+const CURVES: u32 = 69u;
 const HALF_MIN: f32 = 6.103515625e-5;
 const HALF_MAX: f32 = 65504.0;
 const RRT_GLOW_GAIN: f32 = 0.05;
@@ -7213,7 +7251,22 @@ fn acescg_to_rec709_sdr(acescg: vec3<f32>) -> vec3<f32> {
     return pow(clamped, vec3<f32>(1.0 / SDR_DISP_GAMMA));
 }
 
-@compute @workgroup_size(256)
+"
+    };
+}
+
+const SHADER_ACES_REC709_U8: &str = concat!(
+    shader_pixel_storage_wgsl!(),
+    "
+struct Params { width: u32, height: u32, _pad0: u32, _pad1: u32 }
+@group(0) @binding(0) var<storage, read> input: array<vec4<f32>>;
+@group(0) @binding(1) var<storage, read_write> output: array<u32>;
+@group(0) @binding(2) var<uniform> params: Params;
+@group(0) @binding(3) var<storage, read> aces: array<f32>;
+
+",
+    shader_aces_rec709_wgsl!(),
+    "@compute @workgroup_size(256)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let idx = gid.x;
     if idx >= params.width * params.height { return; }
@@ -7253,11 +7306,14 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 // `shader_linear_helpers_wgsl` already carries the pixel storage hook.
 const SHADER_LINEAR_TO_YUV420: &str = concat!(
     shader_linear_helpers_wgsl!(),
+    shader_aces_rec709_wgsl!(),
     "
 struct Params {
     width: u32,
     height: u32,
-    // 0 none, 1 Reinhard, 2 Hable. Anything else is refused by the host.
+    // 0 none, 1 Reinhard, 2 Hable, and 3 means the ACES Rec.709
+    // output transform instead of a tone map and an sRGB encode —
+    // see `display_encode`. Anything else is refused by the host.
     tone_map_op: u32,
     // Word offset of the chroma. Planar: the Cb plane, with Cr one plane
     // further on. Semi-planar: the single interleaved UV plane.
@@ -7279,6 +7335,9 @@ struct Params {
 @group(0) @binding(0) var<storage, read> input: array<vec4<f32>>;
 @group(0) @binding(1) var<storage, read_write> output: array<u32>;
 @group(0) @binding(2) var<uniform> params: Params;
+// The ACES curves and matrices, for `tone_map_op == 3`. A small dummy
+// when the delivery does not need them.
+@group(0) @binding(3) var<storage, read> aces: array<f32>;
 
 fn hable_curve(x: f32) -> f32 {
     let a = 0.15; let b = 0.50; let c = 0.10;
@@ -7297,8 +7356,13 @@ fn tone_map_c(v: f32) -> f32 {
 }
 
 /// One pixel through the display transform: the CPU twin's
-/// `ExportDisplay::encode` on the `ToneMapSrgb(None)` path.
+/// `ExportDisplay::encode`, on whichever path the host selected.
 fn display_encode(px: vec3<f32>) -> vec3<f32> {
+    // The ACES path is a whole output transform and ends
+    // display-encoded already, so it returns before the sRGB encode.
+    if params.tone_map_op == 3u {
+        return acescg_to_rec709_sdr(px);
+    }
     // Negatives clamped before the tone map, as the twin does.
     let lin = max(px, vec3<f32>(0.0));
     let m = vec3<f32>(tone_map_c(lin.x), tone_map_c(lin.y), tone_map_c(lin.z));

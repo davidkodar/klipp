@@ -141,7 +141,7 @@ fn gpu_planes_at(
     };
     pipeline.ensure_chain_buffers((W as u64) * (H as u64) * 16);
     pipeline.upload_chain_input_linear(linear);
-    let planes = pipeline.encode_chain_to_yuv420(true, W, H, target(op, semi, bits, shift));
+    let planes = pipeline.encode_chain_to_yuv420(true, W, H, target(op, semi, bits, shift), &[]);
     if planes.is_none() {
         panic!("encode_chain_to_yuv420 refused {W}x{H}, {op:?}, {bits} bits");
     }
@@ -249,7 +249,7 @@ fn an_unimplemented_tone_map_is_refused() {
     pipeline.upload_chain_input_linear(&linear);
     assert!(
         pipeline
-            .encode_chain_to_yuv420(true, W, H, target(ToneMapOp::Aces, false, 8, 0))
+            .encode_chain_to_yuv420(true, W, H, target(ToneMapOp::Aces, false, 8, 0), &[])
             .is_none(),
         "ACES must fall back to the CPU pass, not be approximated"
     );
@@ -265,11 +265,11 @@ fn dimensions_the_block_layout_cannot_tile_are_refused() {
     pipeline.ensure_chain_buffers(64 * 64 * 16);
     pipeline.upload_chain_input_linear(&vec![0.5f32; 64 * 64 * 4]);
     assert!(
-        pipeline.encode_chain_to_yuv420(true, 60, 32, target(ToneMapOp::None, false, 8, 0)).is_none(),
+        pipeline.encode_chain_to_yuv420(true, 60, 32, target(ToneMapOp::None, false, 8, 0), &[]).is_none(),
         "width 60 is not a multiple of 8"
     );
     assert!(
-        pipeline.encode_chain_to_yuv420(true, 64, 31, target(ToneMapOp::None, false, 8, 0)).is_none(),
+        pipeline.encode_chain_to_yuv420(true, 64, 31, target(ToneMapOp::None, false, 8, 0), &[]).is_none(),
         "height 31 is odd"
     );
 }
@@ -414,7 +414,7 @@ fn an_unsupported_depth_is_refused() {
     for bits in [0, 9, 12, 16] {
         assert!(
             pipeline
-                .encode_chain_to_yuv420(true, W, H, target(ToneMapOp::None, true, bits, 0))
+                .encode_chain_to_yuv420(true, W, H, target(ToneMapOp::None, true, bits, 0), &[])
                 .is_none(),
             "{bits} bits was accepted",
         );
@@ -500,4 +500,80 @@ fn gpu_yuv_matches_cpu_on_noise() {
         eprintln!("noise, {bits} bits, semi={semi}: worst {worst} over {n} samples");
         assert!(worst <= 1, "{bits} bits, semi={semi}: worst {worst} on noise");
     }
+}
+
+/// The combined path the export actually runs for an AcesCG project:
+/// the ACES output transform *and* the Y'CbCr conversion in one shader.
+///
+/// `aces_gpu_matches_cpu` checks the transform alone against
+/// `acescg_to_rec709_sdr`. This checks it composed with the colour
+/// matrix and the chroma average, against `ExportDisplay` on the
+/// AcesCG path — because the shader picks its display transform by a
+/// parameter, and a wrong branch there would leave the transform
+/// correct and the picture wrong.
+#[test]
+fn gpu_yuv_matches_cpu_on_the_aces_path() {
+    const ACES_OP: u32 = 3;
+    let linear = linear_frame();
+    let aces = klipp_color::aces::aces_rec709_gpu_data(1024);
+
+    let Some(ctx) = GpuContext::new() else {
+        eprintln!("skipping: no GpuContext");
+        return;
+    };
+    let Some(mut pipeline) = GpuEffectsPipeline::with_context(&ctx) else {
+        eprintln!("skipping: no GpuEffectsPipeline");
+        return;
+    };
+    pipeline.ensure_chain_buffers((W as u64) * (H as u64) * 16);
+    pipeline.upload_chain_input_linear(&linear);
+    let t = klipp_effects::gpu::Yuv420Target {
+        tone_map_op: ACES_OP,
+        luma_coefs: [KR, 1.0 - KR - KB, KB],
+        semi_planar: true,
+        bits: 8,
+        sample_shift: 0,
+    };
+    let planes = pipeline
+        .encode_chain_to_yuv420(true, W, H, t, &aces)
+        .expect("the ACES path was refused");
+
+    // The reference: the real ExportDisplay on an AcesCG project.
+    let display = ExportDisplay::new(
+        ToneMapOp::None,
+        WorkingColorspace::AcesCG,
+        OdtChoice::MatchViewer,
+    );
+    assert!(display.is_aces_rec709(), "the fixture is not on the ACES path");
+    let (y, cb, cr) = cpu_planes(&linear, &display);
+
+    let (g_y, chroma) = planes.split_at(y.len());
+    let g_cb: Vec<u8> = chroma.iter().step_by(2).copied().collect();
+    let g_cr: Vec<u8> = chroma.iter().skip(1).step_by(2).copied().collect();
+    for (name, got, want) in
+        [("Y", g_y, &y), ("Cb", g_cb.as_slice(), &cb), ("Cr", g_cr.as_slice(), &cr)]
+    {
+        let worst = got
+            .iter()
+            .zip(want.iter())
+            .map(|(g, w)| (*g as i32 - *w as i32).abs())
+            .max()
+            .unwrap_or(0);
+        eprintln!("ACES {name}: worst {worst}");
+        assert!(worst <= 1, "ACES {name}: differs by {worst}");
+    }
+    // And it is not accidentally the non-ACES path, which would also
+    // agree with itself.
+    let srgb = ExportDisplay::new(
+        ToneMapOp::None,
+        WorkingColorspace::Rec709Linear,
+        OdtChoice::MatchViewer,
+    );
+    let (y_srgb, _, _) = cpu_planes(&linear, &srgb);
+    let differing = y.iter().zip(y_srgb.iter()).filter(|(a, b)| a != b).count();
+    assert!(
+        differing > y.len() / 10,
+        "the ACES reference barely differs from the sRGB one ({differing} samples), \
+         so this test cannot tell the branches apart"
+    );
 }

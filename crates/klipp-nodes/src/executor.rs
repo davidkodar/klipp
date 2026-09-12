@@ -751,7 +751,15 @@ impl GraphExecutor {
         target: klipp_effects::gpu::Yuv420Target,
     ) -> Option<Vec<u8>> {
         let slot_a = self.output_on_gpu?;
-        self.gpu.as_mut()?.encode_chain_to_yuv420(slot_a, width, height, target)
+        // The ACES curves and matrices, baked from `klipp_color` — only
+        // built when the delivery is actually ACES, since it is a
+        // couple of thousand spline evaluations.
+        let aces = if target.tone_map_op == 3 {
+            klipp_color::aces::aces_rec709_gpu_data(1024)
+        } else {
+            Vec::new()
+        };
+        self.gpu.as_mut()?.encode_chain_to_yuv420(slot_a, width, height, target, &aces)
     }
 
     /// Seed the chain from a buffer that is already linear working-space
