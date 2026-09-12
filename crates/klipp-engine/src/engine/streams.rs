@@ -219,21 +219,31 @@ impl ClipStream {
 
     /// Take the frames that are due, keeping the latest.
     fn pump(&mut self, half_frame: f64) {
+        let epoch = self.decoder.requested_seek();
         let mut q = self.decoder.frame_queue().lock().unwrap_or_else(|e| e.into_inner());
         while let Some(f) = q.front() {
+            // Decoded before the seek we are waiting on — the decode thread
+            // clears its queue when it takes a seek, but a frame converted
+            // just before it can still land. Its timestamp says nothing
+            // about that, so the epoch is the only thing that can tell.
+            //
+            // Guessing from the timestamp instead let a frame up to two
+            // seconds from the seek target pass as the frame at it: with a
+            // dissolve's incoming side running into its handle, that put a
+            // side of the transition tens of frames from where the
+            // composite said it was, and the viewer disagreed with the
+            // export by a hundred levels.
+            if f.seek_epoch < epoch {
+                q.pop();
+                continue;
+            }
             if f.is_eof {
                 q.pop();
                 self.ended = true;
                 break;
             }
             let pts = f.pts_secs();
-            if let Some(s) = self.seeking {
-                // The decode thread clears its queue when it takes a seek,
-                // but a frame converted just before can still land.
-                if pts < s - 0.06 || pts > s + 2.0 {
-                    q.pop();
-                    continue;
-                }
+            if self.seeking.is_some() {
                 // The first frame of the seek: the nearest there is.
                 self.seeking = None;
                 self.held = q.pop().map(HeldFrame::from_frame);

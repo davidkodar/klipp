@@ -289,6 +289,7 @@ unsafe fn scene_referred_linear_frame(
         gpu_source: None,
         colorspace: source_cs,
         hdr: Some(hdr),
+        seek_epoch: 0,
     })
 }
 
@@ -461,7 +462,11 @@ fn rgba64_le_to_linear(bytes: &[u8]) -> Vec<f32> {
 
 /// Commands sent to the decode thread.
 pub enum DecodeCommand {
-    SeekTo(f64),
+    /// Seek to a time, under the epoch the caller claimed for it. The
+    /// decode thread stamps every frame it produces afterwards with that
+    /// epoch, so consumers can tell a frame decoded for this seek from one
+    /// converted just before it — see [`LinearFrame::seek_epoch`].
+    SeekTo(f64, u64),
     Pause,
     Resume,
     Stop,
@@ -501,6 +506,10 @@ pub struct VideoDecoder {
     /// queued frame, in microseconds. Written by the decode thread,
     /// read by the engine when building perf-overlay samples.
     last_decode_us: Arc<std::sync::atomic::AtomicU32>,
+    /// Counts seeks asked for. Bumped by [`Self::seek`] before the command
+    /// goes out, so a consumer can read it without having tracked the
+    /// return value of every seek call.
+    seek_epoch: Arc<std::sync::atomic::AtomicU64>,
 }
 
 impl VideoDecoder {
@@ -540,6 +549,7 @@ impl VideoDecoder {
 
         Ok(Self {
             frame_queue,
+            seek_epoch: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             decode_thread: Some(thread),
             decode_cmd_tx: cmd_tx,
             hw_active,
@@ -558,8 +568,23 @@ impl VideoDecoder {
         self.last_decode_us.load(std::sync::atomic::Ordering::Relaxed) as f32 / 1000.0
     }
 
-    pub fn seek(&self, secs: f64) {
-        let _ = self.decode_cmd_tx.send(DecodeCommand::SeekTo(secs));
+    /// Ask the decoder to seek, and claim an epoch for it.
+    ///
+    /// Returns the epoch, which is also readable later through
+    /// [`Self::requested_seek`]: frames stamped with anything lower were
+    /// decoded before this seek and are stale.
+    pub fn seek(&self, secs: f64) -> u64 {
+        let epoch = self.seek_epoch.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+        let _ = self.decode_cmd_tx.send(DecodeCommand::SeekTo(secs, epoch));
+        epoch
+    }
+
+    /// The epoch of the newest seek asked for — 0 if there has been none.
+    ///
+    /// A queued frame whose [`LinearFrame::seek_epoch`] is below this was
+    /// decoded for an older position, whatever its timestamp says.
+    pub fn requested_seek(&self) -> u64 {
+        self.seek_epoch.load(std::sync::atomic::Ordering::SeqCst)
     }
 
     pub fn resume(&self) {
@@ -1759,6 +1784,7 @@ unsafe fn download_hw_frame(
                 gpu_source,
                 colorspace: source_cs,
                 hdr,
+                seek_epoch: 0,
             });
         }
     }
@@ -1876,6 +1902,7 @@ unsafe fn download_hw_frame(
                 gpu_source,
                 colorspace: source_cs,
                 hdr,
+                seek_epoch: 0,
             });
         }
     }
@@ -2022,6 +2049,7 @@ unsafe fn download_hw_frame(
         gpu_source: None,
         colorspace: source_cs,
         hdr: None,
+        seek_epoch: 0,
     })
 }
 
@@ -2268,6 +2296,10 @@ fn decode_thread_main(
     let mut paused = true;
     let mut eof_sent = false;
     let mut seek_target: Option<f64> = None;
+    // The epoch every frame produced from here on is stamped with. Advanced
+    // when a seek is applied, not when it is received, so a frame converted
+    // before the seek keeps the older epoch and consumers can drop it.
+    let mut seek_epoch: u64 = 0;
     let mut packets = format_ctx.packets();
     let mut eof_from_demuxer = false;
 
@@ -2298,12 +2330,13 @@ fn decode_thread_main(
         // HEVC), pinning the CPU and stalling the visible
         // playhead behind the cursor by hundreds of ms. Only the
         // newest scrub target matters.
-        let mut latest_seek: Option<f64> = None;
+        let mut latest_seek: Option<(f64, u64)> = None;
         let mut got_stop = false;
         while let Ok(cmd) = cmd_rx.try_recv() {
             match cmd {
-                DecodeCommand::SeekTo(secs) => {
-                    latest_seek = Some(secs);
+                DecodeCommand::SeekTo(secs, epoch) => {
+                    // Coalesced: the newest seek wins, and its epoch with it.
+                    latest_seek = Some((secs, epoch));
                 }
                 DecodeCommand::Pause => paused = true,
                 DecodeCommand::Resume => {
@@ -2320,9 +2353,10 @@ fn decode_thread_main(
             debug!("decode_thread: stop");
             return;
         }
-        if let Some(secs) = latest_seek {
+        if let Some((secs, epoch)) = latest_seek {
+            seek_epoch = epoch;
             let ts = (secs * 1_000_000.0) as i64;
-            debug!("decode_thread: seek to {secs:.3}s (ts={ts} us)");
+            debug!("decode_thread: seek to {secs:.3}s (ts={ts} us, epoch {epoch})");
             drop(packets);
             let _ = format_ctx.seek(ts, ..ts);
             packets = format_ctx.packets();
@@ -2364,13 +2398,13 @@ fn decode_thread_main(
                 // Re-check commands (seek/stop) while waiting.
                 // Drain the whole queue and coalesce SeekTo to the
                 // latest, same reasoning as the top-of-loop drain.
-                let mut latest_inner_seek: Option<f64> = None;
+                let mut latest_inner_seek: Option<(f64, u64)> = None;
                 let mut inner_break = false;
                 let mut inner_return = false;
                 while let Ok(cmd) = cmd_rx.try_recv() {
                     match cmd {
-                        DecodeCommand::SeekTo(secs) => {
-                            latest_inner_seek = Some(secs);
+                        DecodeCommand::SeekTo(secs, epoch) => {
+                            latest_inner_seek = Some((secs, epoch));
                         }
                         DecodeCommand::Pause => { paused = true; inner_break = true; break; }
                         DecodeCommand::Resume => { paused = false; eof_sent = false; }
@@ -2378,9 +2412,10 @@ fn decode_thread_main(
                     }
                 }
                 if inner_return { return; }
-                if let Some(secs) = latest_inner_seek {
+                if let Some((secs, epoch)) = latest_inner_seek {
+                    seek_epoch = epoch;
                     let ts = (secs * 1_000_000.0) as i64;
-                    debug!("decode_thread: seek to {secs:.3}s (ts={ts} us) (in drain)");
+                    debug!("decode_thread: seek to {secs:.3}s (ts={ts} us, epoch {epoch}) (in drain)");
                     drop(packets);
                     let _ = format_ctx.seek(ts, ..ts);
                     packets = format_ctx.packets();
@@ -2481,6 +2516,10 @@ fn decode_thread_main(
             // [`FrameQueue::pop_u8`] which does the conversion on their
             // side; linear consumers read it directly.
             linear_frame.pts = RationalTime::from_secs_f64(pts_secs, 90000);
+            // Which seek this frame belongs to. Stamped here, at the push,
+            // because this is the only place that knows: a frame already in
+            // flight when a seek arrives was converted under the old epoch.
+            linear_frame.seek_epoch = seek_epoch;
             let (frame_w, frame_h) = (linear_frame.width, linear_frame.height);
 
             let t_queue = std::time::Instant::now();
@@ -2568,7 +2607,11 @@ fn decode_thread_main(
         } else if !drained_any {
             // EOF from demuxer and no frames drained — we're done
             debug!("decode_thread: EOF reached");
-            frame_queue.lock().unwrap_or_else(|e| e.into_inner()).push(LinearFrame::eof());
+            // The end of the stream as it stands after this seek — a newer
+            // seek's consumer must not take it for its own.
+            let mut eof = LinearFrame::eof();
+            eof.seek_epoch = seek_epoch;
+            frame_queue.lock().unwrap_or_else(|e| e.into_inner()).push(eof);
             eof_sent = true;
         }
     }
@@ -2681,6 +2724,7 @@ fn convert_sw_frame(
             gpu_source: None,
             colorspace: source_cs,
             hdr: None,
+            seek_epoch: 0,
         });
     }
 
@@ -2884,6 +2928,7 @@ fn convert_sw_frame(
         gpu_source: None,
         colorspace: source_cs,
         hdr: None,
+        seek_epoch: 0,
     })
 }
 

@@ -83,6 +83,7 @@ impl DecodedFrame {
             // apply post-decode; left at the safe default.
             colorspace: klipp_core::SourceColorspace::default(),
             hdr: None,
+            seek_epoch: 0,
         }
     }
 }
@@ -127,6 +128,19 @@ pub struct LinearFrame {
     /// `data` staying display-referred for everything else. See
     /// [`HdrInput`].
     pub hdr: Option<HdrInput>,
+    /// Which seek this frame was decoded under —
+    /// [`crate::video_decoder::VideoDecoder::requested_seek`] at the time
+    /// the decode thread produced it, and 0 before any seek.
+    ///
+    /// A seek is a command on a channel, so a frame converted just before
+    /// the decode thread takes one can still land in the queue after it has
+    /// been cleared. Consumers used to guess at those from the timestamp —
+    /// "more than a second from the target, so probably stale" — which
+    /// cannot tell a stale frame from a legitimately distant one, and let a
+    /// frame up to two seconds from the seek target be taken for the frame
+    /// at it. Comparing this against the decoder's newest requested seek
+    /// answers the question exactly.
+    pub seek_epoch: u64,
 }
 
 impl LinearFrame {
@@ -160,6 +174,7 @@ impl LinearFrame {
             gpu_source: None,
             colorspace: klipp_core::SourceColorspace::default(),
             hdr: None,
+            seek_epoch: 0,
         }
     }
 
@@ -597,6 +612,7 @@ mod linear_frame_tests {
             gpu_source: None,
             colorspace: klipp_core::SourceColorspace::default(),
             hdr: None,
+            seek_epoch: 0,
         };
         assert_eq!(frame.data[0], 2.5);
         let back = frame.to_srgb_u8();
@@ -816,6 +832,7 @@ mod readback_cost {
             gpu_source: Some(std::sync::Arc::clone(&gpu)),
             colorspace: klipp_core::SourceColorspace::default(),
             hdr: None,
+            seek_epoch: 0,
         };
         frame.ensure_cpu_data();
         assert_eq!(frame.data.len(), byte_len, "CPU mirror must be fully realised");

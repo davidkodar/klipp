@@ -5591,19 +5591,24 @@ impl PlaybackEngine {
         let Some(target) = self.v1_source_secs() else { return true };
         let half = self.fps.frame_duration_secs() * 0.5;
         let Some(dec) = self.v1_decoder.as_ref() else { return true };
+        let epoch = dec.requested_seek();
         let mut queue = dec.frame_queue().lock().unwrap_or_else(|e| e.into_inner());
         while let Some(f) = queue.front() {
+            // From before the seek in flight: the decode thread clears its
+            // queue when it takes one, but a frame already converted can
+            // still land. Which seek a frame was decoded under is recorded
+            // on it; the timestamp only ever allowed a guess — "more than a
+            // second out, so probably stale" — which cannot tell a stale
+            // frame from a legitimately distant one.
+            if f.seek_epoch < epoch {
+                queue.pop();
+                continue;
+            }
             if f.is_eof {
                 queue.pop();
                 return true;
             }
             let pts = f.pts_secs();
-            if (pts - target).abs() > 1.0 {
-                // From before a seek: the decode thread clears its queue
-                // when it takes one, but a frame in flight can still land.
-                queue.pop();
-                continue;
-            }
             if pts > target + half {
                 // Past the playhead. The nearest there is, if nothing came
                 // before it (the media starts after the time, or skips it).
