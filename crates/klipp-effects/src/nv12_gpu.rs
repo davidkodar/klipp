@@ -29,6 +29,9 @@ pub struct GpuNv12Converter {
     /// Bound as the codes output on display-referred frames, which never
     /// write it.
     hdr_dummy_buf: wgpu::Buffer,
+    /// Bound as the linear output whenever the caller wants the sRGB-u8
+    /// hand-off instead, which never writes it.
+    linear_dummy_buf: wgpu::Buffer,
     params_buf: wgpu::Buffer,
     // Cached dimensions to avoid re-creating buffers
     cached_y_size: u64,
@@ -76,7 +79,15 @@ struct Nv12Params {
     matrix_id: u32,
     transfer_id: u32,
     primaries_id: u32,
-    _pad1: u32,
+    /// Write linear working-space f32 to the `linear` binding instead
+    /// of sRGB-u8 to `output`. The shader computes the linear value
+    /// either way — this only decides which of them is thrown away.
+    ///
+    /// The u8 hand-off is right for the viewer, which is showing an
+    /// 8-bit picture anyway. It is wrong for a render: quantising to
+    /// 8-bit RGB here costs real precision, because YUV→RGB is a
+    /// matrix and its output does not fit back into 8 bits.
+    write_linear: u32,
     /// Source-primaries → working-space matrix, packed as 3 rows ×
     /// vec4 (12 floats). Row 0 is dotted against (R, G, B, _) to
     /// produce out.R, etc.
@@ -99,6 +110,9 @@ const SHADER_NV12_BODY: &str = "
 @group(0) @binding(3) var<uniform> params: Params;
 // Packed RGB10 code values for scene-referred sources; dummy otherwise.
 @group(0) @binding(4) var<storage, read_write> hdr_codes: array<u32>;
+// Linear working-space output, for a caller that wants the frame at full
+// precision rather than the sRGB-u8 hand-off; dummy otherwise.
+@group(0) @binding(5) var<storage, read_write> linear: array<vec4<f32>>;
 
 struct Params {
     src_width: u32,
@@ -112,7 +126,7 @@ struct Params {
     matrix_id: u32,
     transfer_id: u32,
     primaries_id: u32,
-    _pad1: u32,
+    write_linear: u32,
     // Source-primaries → working-space matrix (3 rows × vec4; the .w
     // of each row is unused padding for WGSL's vec3 alignment).
     primaries_row0: vec4<f32>,
@@ -172,6 +186,11 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let yuv = yuv_normalise(y_val, u_val, v_val, params.color_range, 255.0);
     let rgb_display = yuv_to_rgb_display(yuv, params.matrix_id);
     var rgb_srgb: vec3<f32>;
+    // The working-space linear value, before the display encode below
+    // throws its precision away. For a scene-referred source this is
+    // scene-linear and *not* tone-mapped: the tone map is a display
+    // step, and a grade wants the scene.
+    var rgb_working_linear: vec3<f32>;
     let is_log = params.transfer_id >= 100u;
     if (params.transfer_id == TRANSFER_PQ || params.transfer_id == TRANSFER_HLG || is_log) {
         // Scene-referred: the same route as the P010 decoder. 8-bit log
@@ -200,6 +219,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             dot(params.primaries_row1.xyz, scene),
             dot(params.primaries_row2.xyz, scene),
         );
+        rgb_working_linear = working;
         rgb_srgb = linear_to_srgb_vec(tone_map_hdr_vec(working, exposure));
     } else {
         let rgb_linear = display_to_linear(rgb_display, params.transfer_id);
@@ -208,7 +228,15 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             dot(params.primaries_row1.xyz, rgb_linear),
             dot(params.primaries_row2.xyz, rgb_linear),
         );
+        rgb_working_linear = rgb_working;
         rgb_srgb = linear_to_srgb_vec(rgb_working);
+    }
+
+    // Full precision for a caller that is grading or rendering; the
+    // sRGB-u8 hand-off below only for one that is showing 8 bits.
+    if params.write_linear != 0u {
+        linear[dy * params.dst_width + dx] = pack(vec4<f32>(rgb_working_linear, 1.0));
+        return;
     }
 
     let ri = u32(clamp(rgb_srgb.x * 255.0 + 0.5, 0.0, 255.0));
@@ -220,15 +248,26 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 }
 ";
 
-/// Full shader source: shared prelude + helpers + NV12-specific body.
+/// Full shader source: shared prelude + helpers + the pixel storage hook
+/// + NV12-specific body.
+///
+/// The storage hook is here because the `linear` output is a frame buffer
+/// in the chain's own format — it gets copied into `buf_a` — so its store
+/// has to go through `pack` like every other pixel write in the codebase.
+/// `pixel_access_goes_through_pack` cannot lint this one: it walks the
+/// `&'static str` shaders in `gpu.rs`, and this source is assembled at
+/// runtime from three pieces. `nv12_gpu_frame_identity` covers it by
+/// running it instead.
 fn nv12_shader_source() -> String {
     let mut s = String::with_capacity(
         crate::color_wgsl::WGSL_PRELUDE.len()
             + crate::color_wgsl::WGSL_HELPERS.len()
-            + SHADER_NV12_BODY.len(),
+            + SHADER_NV12_BODY.len()
+            + 256,
     );
     s.push_str(crate::color_wgsl::WGSL_PRELUDE);
     s.push_str(crate::color_wgsl::WGSL_HELPERS);
+    s.push_str(crate::gpu::shader_pixel_storage_source());
     s.push_str(SHADER_NV12_BODY);
     s
 }
@@ -314,6 +353,17 @@ impl GpuNv12Converter {
                         },
                         count: None,
                     },
+                    // Linear working-space output.
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 5,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: false },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
                 ],
             });
 
@@ -358,6 +408,12 @@ impl GpuNv12Converter {
             usage: wgpu::BufferUsages::STORAGE,
             mapped_at_creation: false,
         });
+        let linear_dummy_buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("nv12_linear_dummy"),
+            size: 16,
+            usage: wgpu::BufferUsages::STORAGE,
+            mapped_at_creation: false,
+        });
 
         info!("NV12 GPU converter initialized");
 
@@ -373,6 +429,7 @@ impl GpuNv12Converter {
             hdr_buf: None,
             hdr_staging_buf: None,
             hdr_dummy_buf,
+            linear_dummy_buf,
             params_buf,
             cached_y_size: 0,
             cached_uv_size: 0,
@@ -519,7 +576,7 @@ impl GpuNv12Converter {
             matrix_id: color_ids[1],
             transfer_id: color_ids[2],
             primaries_id: color_ids[3],
-            _pad1: 0,
+            write_linear: 0,
             primaries_matrix,
         };
         self.queue
@@ -549,6 +606,10 @@ impl GpuNv12Converter {
                 wgpu::BindGroupEntry {
                     binding: 4,
                     resource: hdr_binding.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 5,
+                    resource: self.linear_dummy_buf.as_entire_binding(),
                 },
             ],
         });
@@ -719,7 +780,7 @@ impl GpuNv12Converter {
             matrix_id: color_ids[1],
             transfer_id: color_ids[2],
             primaries_id: color_ids[3],
-            _pad1: 0,
+            write_linear: 0,
             primaries_matrix,
         };
         self.queue
@@ -749,6 +810,10 @@ impl GpuNv12Converter {
                     binding: 4,
                     resource: hdr_binding.as_entire_binding(),
                 },
+                wgpu::BindGroupEntry {
+                    binding: 5,
+                    resource: self.linear_dummy_buf.as_entire_binding(),
+                },
             ],
         });
 
@@ -770,6 +835,102 @@ impl GpuNv12Converter {
         self.queue.submit(std::iter::once(encoder.finish()));
 
         Nv12GpuOutput { rgba: output_buf, hdr_codes }
+    }
+
+    /// [`Self::convert_nv12_on_gpu`] at full precision: the frame lands as
+    /// linear working-space f32 rather than sRGB u8, ready to be a grade
+    /// chain's input slot.
+    ///
+    /// This is the render's route. The u8 hand-off is the right shape for
+    /// the viewer, which is showing eight bits anyway, but it quantises —
+    /// YUV→RGB is a matrix and its output does not fit back into 8 bits —
+    /// and a delivered frame should not pay that. The shader computes the
+    /// linear value either way; `write_linear` only decides which one is
+    /// discarded.
+    ///
+    /// The buffer comes back on **this converter's device**, so a caller
+    /// that means to hand it to the grade chain must have built the
+    /// converter with [`Self::with_context`] on the same context the chain
+    /// uses. Rotation and resize happen here, in the same pass, so the
+    /// caller does not need a separate CPU pass for either.
+    #[allow(clippy::too_many_arguments)]
+    pub fn convert_nv12_to_linear_on_gpu(
+        &mut self,
+        y_data: &[u8],
+        uv_data: &[u8],
+        src_width: u32,
+        src_height: u32,
+        y_stride: u32,
+        uv_stride: u32,
+        dst_width: u32,
+        dst_height: u32,
+        rotation: u32,
+        color_ids: [u32; 4],
+        primaries_matrix: [[f32; 4]; 3],
+    ) -> std::sync::Arc<wgpu::Buffer> {
+        self.ensure_y_buf(y_data.len() as u64);
+        self.ensure_uv_buf(uv_data.len() as u64);
+
+        // 16 bytes a pixel, and the caller takes ownership, so this is
+        // not the internal cache.
+        let linear_buf = std::sync::Arc::new(self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("nv12_linear_gpu_resident"),
+            size: (dst_width as u64) * (dst_height as u64) * 16,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
+        }));
+
+        let y_buf = self.y_buf.as_ref().unwrap();
+        let uv_buf = self.uv_buf.as_ref().unwrap();
+        self.queue.write_buffer(y_buf, 0, y_data);
+        self.queue.write_buffer(uv_buf, 0, uv_data);
+
+        let params = Nv12Params {
+            src_width,
+            src_height,
+            dst_width,
+            dst_height,
+            y_stride,
+            uv_stride,
+            rotation,
+            color_range: color_ids[0],
+            matrix_id: color_ids[1],
+            transfer_id: color_ids[2],
+            primaries_id: color_ids[3],
+            write_linear: 1,
+            primaries_matrix,
+        };
+        self.queue.write_buffer(&self.params_buf, 0, bytemuck::bytes_of(&params));
+
+        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("nv12_to_linear_bg"),
+            layout: &self.bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: y_buf.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: uv_buf.as_entire_binding() },
+                // The u8 output is the one going unwritten this time.
+                wgpu::BindGroupEntry { binding: 2, resource: self.linear_dummy_buf.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 3, resource: self.params_buf.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 4, resource: self.hdr_dummy_buf.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 5, resource: linear_buf.as_entire_binding() },
+            ],
+        });
+
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("nv12_to_linear") });
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: None,
+                timestamp_writes: None,
+            });
+            pass.set_pipeline(&self.pipeline);
+            pass.set_bind_group(0, &bind_group, &[]);
+            pass.dispatch_workgroups(dst_width.div_ceil(16), dst_height.div_ceil(16), 1);
+        }
+        self.queue.submit(std::iter::once(encoder.finish()));
+
+        linear_buf
     }
 
     /// Convert one scene-referred NV12 frame and read back its packed RGB10

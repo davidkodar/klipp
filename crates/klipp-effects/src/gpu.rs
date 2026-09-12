@@ -1840,6 +1840,39 @@ impl GpuEffectsPipeline {
         true
     }
 
+    /// Put a frame that is already linear working-space f32 on the GPU
+    /// into the chain's input slot. A buffer copy, not a conversion —
+    /// there is nothing to expand.
+    ///
+    /// GPU-local, so it is not the kind of copy the bridges exist to
+    /// avoid: 133 MB at 4K moves in well under a millisecond on device
+    /// memory, against ~10 ms for the same bytes over PCIe.
+    ///
+    /// `false` when the device is lost or `input` is too small; callers
+    /// fall back to handing the pixels over on the CPU.
+    pub fn copy_linear_into_chain(
+        &mut self,
+        input: &wgpu::Buffer,
+        width: u32,
+        height: u32,
+    ) -> bool {
+        if self.is_device_lost() { return false; }
+        let pixel_count = (width as u64) * (height as u64);
+        if pixel_count == 0 { return true; }
+        let byte_size = pixel_count * 16;
+        self.ensure_buffers(byte_size);
+        if input.size() < byte_size { return false; }
+
+        let buf_a = self.buf_a.as_ref().expect("ensure_buffers established buf_a");
+        let mut encoder = self.device.create_command_encoder(
+            &wgpu::CommandEncoderDescriptor { label: Some("copy_linear_into_chain") },
+        );
+        encoder.copy_buffer_to_buffer(input, 0, buf_a, 0, byte_size);
+        self.queue.submit(std::iter::once(encoder.finish()));
+        self.submit_count.fetch_add(1, Ordering::Relaxed);
+        true
+    }
+
     /// [`Self::bridge_u8_to_linear_into_chain`] one sample wider:
     /// sRGB-encoded RGBA64 → linear working-space f32 in `buf_a`, the
     /// source primaries folded in.
@@ -5821,6 +5854,14 @@ fn unpack(v: vec4<f32>) -> vec4<f32> { return v; }
 fn pack(v: vec4<f32>) -> vec4<f32> { return v; }
 "
     };
+}
+
+/// The pixel storage hook as a string, for a shader assembled at runtime
+/// rather than by `concat!` — `nv12_gpu`'s, which is built from the
+/// shared colourspace prelude plus its own body and now writes into a
+/// chain-format frame buffer.
+pub(crate) fn shader_pixel_storage_source() -> &'static str {
+    shader_pixel_storage_wgsl!()
 }
 
 macro_rules! shader_linear_helpers_wgsl {

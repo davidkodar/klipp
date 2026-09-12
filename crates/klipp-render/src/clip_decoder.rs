@@ -4,6 +4,23 @@ use tracing::{debug, info, warn};
 
 pub use klipp_core::GpuVendor;
 
+/// What one decoded export frame looks like when it leaves the decoder.
+///
+/// Two shapes, because a hardware-decoded frame never needs to be on the
+/// CPU at all. NVDEC hands back NV12 on the GPU; the grade runs on the
+/// GPU; so the only reason the old path pulled a frame down, converted
+/// it with swscale and pushed 66 MB back up was that there was nowhere
+/// else to put it.
+pub(crate) enum DecodedPixels {
+    /// sRGB-encoded RGBA64 on the CPU. Empty for a scene-referred frame,
+    /// which travels as codes via `take_scene_referred` instead.
+    Rgba64(Vec<u16>),
+    /// Linear working-space f32, already on the GPU, with rotation and
+    /// the source primaries already applied. Ready to be a grade chain's
+    /// input slot with nothing but a device-local copy.
+    GpuLinear(std::sync::Arc<wgpu::Buffer>),
+}
+
 /// Probe for the primary GPU vendor at startup (sysfs-based, no FFmpeg or
 /// Vulkan calls). Thin wrapper kept for backward compatibility with external
 /// callers — the underlying implementation is `klipp_core::GpuVendor::detect()`.
@@ -67,6 +84,11 @@ pub struct RenderDecoder {
     scaler: ffmpeg_next::software::scaling::Context,
     /// HW download scaler (raw sws context for NV12→RGBA after GPU download).
     hw_scaler: Option<*mut ffmpeg_next::ffi::SwsContext>,
+    /// NV12 → linear working-space f32 on the GPU, for hardware-decoded
+    /// display-referred frames. Built on the shared `GpuContext` so its
+    /// output buffer can be bound by the grade chain; `None` for software
+    /// decode, or when there is no usable GPU and swscale has to do it.
+    gpu_nv12: Option<klipp_effects::nv12_gpu::GpuNv12Converter>,
     /// The source's Y'CbCr matrix and range, resolved from its stream tags
     /// the same way the viewer resolves them (untagged HD is BT.709).
     yuv_matrix: klipp_core::ColorMatrix,
@@ -266,6 +288,18 @@ impl RenderDecoder {
             t_rotate: std::time::Duration::ZERO,
             scaler,
             hw_scaler: None,
+            // Only for hardware decode: a software-decoded frame is
+            // already on the CPU, so converting it on the GPU would mean
+            // uploading YUV to save a conversion, and swscale is fine at
+            // that point. `with_context` rather than `new` is load-bearing
+            // — a converter on its own private device produces buffers the
+            // grade chain cannot bind.
+            gpu_nv12: if hw_accel != HwAccel::Software {
+                klipp_effects::gpu_context::GpuContext::shared()
+                    .and_then(klipp_effects::nv12_gpu::GpuNv12Converter::with_context)
+            } else {
+                None
+            },
             yuv_matrix,
             yuv_range,
             scene: SceneSource::for_colourspace(source_cs, klipp_core::WorkingColorspace::Rec709Linear),
@@ -336,12 +370,54 @@ impl RenderDecoder {
     /// The next frame as sRGB RGBA8 (empty for a scene-referred source,
     /// whose frames travel as codes — see [`Self::take_scene_referred`]).
     pub fn next_frame(&mut self) -> Result<Option<Vec<u8>>, RenderError> {
-        Ok(self.next_frame_with_pts()?.map(|(_, rgba)| rgba.iter().map(|v| (v >> 8) as u8).collect()))
+        let Some((_, pixels)) = self.next_frame_with_pts()? else { return Ok(None) };
+        Ok(Some(match pixels {
+            DecodedPixels::Rgba64(rgba) => rgba.iter().map(|v| (v >> 8) as u8).collect(),
+            // A GPU frame is linear, so it needs encoding and not just
+            // narrowing. This is the convenience accessor — the export
+            // itself never brings a GPU frame down for this.
+            DecodedPixels::GpuLinear(buf) => {
+                let linear = self.read_back_linear(&buf);
+                klipp_effects::linear_f32_rgba_to_srgb_u8(&linear)
+            }
+        }))
+    }
+
+    /// Bring a GPU frame down as linear f32 RGBA.
+    ///
+    /// The fallback for anything that wants the pixels on the CPU after
+    /// the decode put them on the GPU. The export's normal path never
+    /// calls this: the frame goes from here into the grade chain without
+    /// crossing the bus, which is the entire point of the GPU route.
+    fn read_back_linear(&self, buf: &wgpu::Buffer) -> Vec<f32> {
+        let Some(conv) = self.gpu_nv12.as_ref() else { return Vec::new() };
+        let (device, queue) = (conv.device(), conv.queue());
+        let bytes = buf.size();
+        let staging = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("render_gpu_frame_readback"),
+            size: bytes,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let mut enc =
+            device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        enc.copy_buffer_to_buffer(buf, 0, &staging, 0, bytes);
+        queue.submit(std::iter::once(enc.finish()));
+        let slice = staging.slice(..);
+        slice.map_async(wgpu::MapMode::Read, |_| {});
+        device.poll(wgpu::Maintain::Wait);
+        let data = slice.get_mapped_range();
+        let out = bytemuck::pod_collect_to_vec(&data);
+        drop(data);
+        staging.unmap();
+        out
     }
 
     /// The next frame as sRGB-encoded RGBA64 — the source's full precision
     /// for 10- and 12-bit video — with its source time in seconds.
-    pub fn next_frame_with_pts(&mut self) -> Result<Option<(f64, Vec<u16>)>, RenderError> {
+    pub(crate) fn next_frame_with_pts(
+        &mut self,
+    ) -> Result<Option<(f64, DecodedPixels)>, RenderError> {
         if self.decoder_eof {
             return Ok(None);
         }
@@ -440,7 +516,7 @@ impl RenderDecoder {
     fn frame_to_rgba(
         &mut self,
         decoded: &ffmpeg_next::util::frame::Video,
-    ) -> Result<Vec<u16>, RenderError> {
+    ) -> Result<DecodedPixels, RenderError> {
         // For 90/270 rotation, scale to swapped dimensions first.
         let (scale_w, scale_h) = if self.source_rotation == 90 || self.source_rotation == 270 {
             (self.target_height, self.target_width)
@@ -451,9 +527,21 @@ impl RenderDecoder {
         if let Some(scene) = self.scene {
             if unsafe { self.scene_referred_frame(decoded, scene) } {
                 // The frame travels as codes (`take_scene_referred`).
-                return Ok(Vec::new());
+                return Ok(DecodedPixels::Rgba64(Vec::new()));
             }
         }
+
+        // The whole conversion on the GPU, for a hardware-decoded
+        // display-referred frame: NV12 down from the decoder, linear
+        // working-space f32 straight into a buffer the grade chain can
+        // take. Skips swscale and the rotation pass both, and uploads
+        // 12 MB of planes instead of 66 MB of RGBA64.
+        let t_gpu = std::time::Instant::now();
+        if let Some(pixels) = unsafe { self.nv12_frame_on_gpu(decoded) } {
+            self.t_convert += t_gpu.elapsed();
+            return Ok(pixels);
+        }
+
         let t0 = std::time::Instant::now();
         let rgba = if self.hw_accel != HwAccel::Software {
             // Try HW download path
@@ -484,10 +572,123 @@ impl RenderDecoder {
             let t1 = std::time::Instant::now();
             let (rotated, _rw, _rh) = rotate_rgba(&rgba, scale_w, scale_h, self.source_rotation);
             self.t_rotate += t1.elapsed();
-            Ok(rotated)
+            Ok(DecodedPixels::Rgba64(rotated))
         } else {
-            Ok(rgba)
+            Ok(DecodedPixels::Rgba64(rgba))
         }
+    }
+
+    /// A hardware-decoded NV12 frame converted to linear working-space
+    /// f32 on the GPU, resized and rotated in the same pass.
+    ///
+    /// `None` whenever this is not the right route, and the caller falls
+    /// back to downloading and converting with swscale: no converter (no
+    /// usable GPU, or software decode), a frame that does not download as
+    /// NV12, a resize (see below), or a scene-referred source — camera
+    /// log and PQ/HLG have their own tested path through
+    /// `scene_referred_frame` and packed codes, and this shader's code
+    /// output is not wired up here.
+    ///
+    /// **This changes the export's chroma upsampling.** The shader takes
+    /// 4:2:0 chroma nearest-neighbour; swscale interpolated it. On the
+    /// user's footage that is a median difference of 0 levels and a worst
+    /// of 21, on the 0.01% of samples that sit on a sharp saturated edge.
+    /// It is a deliberate trade and arguably the right way round: the
+    /// viewer has always shown this shader's nearest-neighbour chroma, so
+    /// before this the viewer and the export disagreed, and now they do
+    /// not. Proper bilinear chroma would be better than either, but it
+    /// belongs in the shader *and* its CPU twin together —
+    /// `sw_decode_parity` holds them to one code of each other — so it is
+    /// a change to the viewer's picture, not to the export's, and it is
+    /// not this function's to make.
+    ///
+    /// SAFETY: `decoded` must be a valid decoded frame.
+    unsafe fn nv12_frame_on_gpu(
+        &mut self,
+        decoded: &ffmpeg_next::util::frame::Video,
+    ) -> Option<DecodedPixels> {
+        use ffmpeg_next::ffi::*;
+
+        if self.gpu_nv12.is_none() || self.scene.is_some() || self.log_format.is_some() {
+            return None;
+        }
+        let is_hw = decoded.format() == ffmpeg_next::format::Pixel::CUDA
+            || decoded.format() == ffmpeg_next::format::Pixel::VAAPI;
+        if !is_hw {
+            return None;
+        }
+
+        let sw_frame = av_frame_alloc();
+        if sw_frame.is_null() {
+            return None;
+        }
+        if av_hwframe_transfer_data(sw_frame, decoded.as_ptr(), 0) < 0 {
+            av_frame_free(&mut (sw_frame as *mut _));
+            return None;
+        }
+        let fmt = std::mem::transmute::<i32, AVPixelFormat>((*sw_frame).format);
+        if fmt != AVPixelFormat::AV_PIX_FMT_NV12 {
+            // P010 and friends: 10-bit, and this shader reads bytes.
+            av_frame_free(&mut (sw_frame as *mut _));
+            return None;
+        }
+
+        let (src_w, src_h) = ((*sw_frame).width as u32, (*sw_frame).height as u32);
+
+        // Only at 1:1. The shader maps each output pixel back to a single
+        // source pixel, which is exact for a straight conversion and for
+        // a 90/180/270 rotation — both are permutations — but is
+        // nearest-neighbour for a real resize, and that aliases. A
+        // timeline whose resolution differs from the source keeps
+        // swscale's Lanczos, which is the same line `scaler_flags` draws.
+        let (want_w, want_h) = if self.source_rotation == 90 || self.source_rotation == 270 {
+            (self.target_height, self.target_width)
+        } else {
+            (self.target_width, self.target_height)
+        };
+        if (src_w, src_h) != (want_w, want_h) {
+            av_frame_free(&mut (sw_frame as *mut _));
+            return None;
+        }
+
+        let (y_stride, uv_stride) =
+            ((*sw_frame).linesize[0] as u32, (*sw_frame).linesize[1] as u32);
+        // The planes as they came down, strides and all — the shader
+        // indexes by stride, so there is nothing to repack.
+        let y = std::slice::from_raw_parts(
+            (*sw_frame).data[0],
+            (y_stride as usize) * (src_h as usize),
+        );
+        let uv = std::slice::from_raw_parts(
+            (*sw_frame).data[1],
+            (uv_stride as usize) * (src_h as usize / 2),
+        );
+
+        let ids = klipp_core::color_ids::ids(self.source_cs);
+        let primaries = klipp_effects::color_wgsl::pack_primaries_matrix(
+            klipp_color::camera_log::primaries_to_working_matrix(
+                self.source_cs.primaries,
+                self.working,
+            ),
+        );
+        let buf = self.gpu_nv12.as_mut()?.convert_nv12_to_linear_on_gpu(
+            y,
+            uv,
+            src_w,
+            src_h,
+            y_stride,
+            uv_stride,
+            // Post-rotation dimensions: the shader maps each output pixel
+            // back through the rotation itself, so this is the frame the
+            // renderer asked for and no separate pass is needed.
+            self.target_width,
+            self.target_height,
+            self.source_rotation as u32,
+            ids,
+            primaries,
+        );
+        av_frame_free(&mut (sw_frame as *mut _));
+        Some(DecodedPixels::GpuLinear(buf))
     }
 
     /// A scene-referred frame the way the viewer decodes it: 10-bit codes

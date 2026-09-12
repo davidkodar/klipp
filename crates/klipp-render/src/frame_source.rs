@@ -15,16 +15,32 @@ use klipp_core::{ClipId, MediaId, WorkingColorspace};
 use klipp_timeline::{Clip, ClipKind};
 use tracing::warn;
 
-use crate::clip_decoder::{RenderDecoder, SceneReferredFrame};
+use crate::clip_decoder::{DecodedPixels, RenderDecoder, SceneReferredFrame};
 use crate::snapshot::MediaFile;
 
 struct Decoded {
     pts: f64,
-    /// sRGB-encoded RGBA64 (empty for scene-referred frames). Shared,
-    /// not copied: the renderer seeds the GPU chain from these samples,
-    /// and at 4K the buffer is 66 MB.
-    rgba: Arc<Vec<u16>>,
+    /// The frame as the decoder produced it — RGBA64 on the CPU, or
+    /// linear f32 already on the GPU. The CPU one is shared rather than
+    /// copied: the renderer seeds the chain from those samples, and at
+    /// 4K the buffer is 66 MB.
+    pixels: DecodedFrame,
     scene: Option<SceneReferredFrame>,
+}
+
+/// [`DecodedPixels`] with the CPU case made shareable.
+enum DecodedFrame {
+    Rgba64(Arc<Vec<u16>>),
+    GpuLinear(Arc<wgpu::Buffer>),
+}
+
+impl From<DecodedPixels> for DecodedFrame {
+    fn from(p: DecodedPixels) -> Self {
+        match p {
+            DecodedPixels::Rgba64(v) => DecodedFrame::Rgba64(Arc::new(v)),
+            DecodedPixels::GpuLinear(b) => DecodedFrame::GpuLinear(b),
+        }
+    }
 }
 
 struct ClipStream {
@@ -43,9 +59,9 @@ impl ClipStream {
             return None;
         }
         match self.decoder.next_frame_with_pts() {
-            Ok(Some((pts, rgba))) => Some(Decoded {
+            Ok(Some((pts, pixels))) => Some(Decoded {
                 pts,
-                rgba: Arc::new(rgba),
+                pixels: pixels.into(),
                 scene: self.decoder.take_scene_referred(),
             }),
             Ok(None) => {
@@ -242,26 +258,105 @@ fn source_frame(
     width: u32,
     height: u32,
 ) -> SourceFrame {
-    let pixels = match &d.scene {
-        Some(s) if s.width == width && s.height == height => SourcePixels::SceneReferred {
+    let pixels = match (&d.scene, &d.pixels) {
+        (Some(s), _) if s.width == width && s.height == height => SourcePixels::SceneReferred {
             codes: std::sync::Arc::clone(&s.codes),
             transfer: s.transfer,
             source_to_working: s.source_to_working,
         },
+        // Already linear, already on the GPU, already in the working
+        // space — the decoder's shader did the colour. Nothing to do but
+        // hand it to the chain.
+        (_, DecodedFrame::GpuLinear(buf)) => SourcePixels::Gpu(Arc::new(GpuLinearFrame {
+            buf: Arc::clone(buf),
+            width,
+            height,
+            linear: std::sync::OnceLock::new(),
+        })),
         // Samples for the GPU to expand. The shader folds in the basis
         // change, so this is not gated on the working space; a frame the
         // renderer cannot seed from falls back to `read`, which is the
         // CPU expansion below.
-        _ if d.rgba.len() == (width as usize) * (height as usize) * 4 => {
+        (_, DecodedFrame::Rgba64(rgba))
+            if rgba.len() == (width as usize) * (height as usize) * 4 =>
+        {
             SourcePixels::Gpu(Arc::new(SeedableFrame {
-                rgba: Arc::clone(&d.rgba),
+                rgba: Arc::clone(rgba),
                 to_working,
                 linear: std::sync::OnceLock::new(),
             }))
         }
-        _ => SourcePixels::Linear(Arc::new(rgba64_to_linear(&d.rgba, to_working))),
+        (_, DecodedFrame::Rgba64(rgba)) => {
+            SourcePixels::Linear(Arc::new(rgba64_to_linear(rgba, to_working)))
+        }
     };
     SourceFrame { pixels, width, height, pts: Some(d.pts) }
+}
+
+/// A frame the decoder converted on the GPU, waiting to become a grade
+/// chain's input slot.
+///
+/// This is the end of the road the export has been walking all session:
+/// NVDEC decodes on the GPU, the NV12 shader converts there, the grade
+/// runs there. Nothing crosses the bus between the decoder's 12 MB of
+/// planes going up and the finished frame coming down.
+///
+/// `read` exists for the cases that still need pixels on the CPU — an
+/// effect with no GPU dispatch, a node the chain cannot carry — and is
+/// memoised, because a graph with two such nodes would otherwise pull
+/// the same 133 MB down twice.
+struct GpuLinearFrame {
+    buf: Arc<wgpu::Buffer>,
+    width: u32,
+    height: u32,
+    linear: std::sync::OnceLock<Arc<Vec<f32>>>,
+}
+
+impl klipp_compose::GpuPixels for GpuLinearFrame {
+    fn seed(&self, exec: &mut klipp_nodes::GraphExecutor, width: u32, height: u32) -> bool {
+        (self.width, self.height) == (width, height)
+            && exec.prime_chain_from_gpu_linear_buffer(&self.buf, width, height)
+    }
+
+    fn read(&self) -> Arc<Vec<f32>> {
+        Arc::clone(
+            self.linear
+                .get_or_init(|| Arc::new(download_linear(&self.buf, self.width, self.height))),
+        )
+    }
+}
+
+/// Bring a linear f32 frame down from the shared GPU context.
+///
+/// Zeroes if there is no context, which cannot happen for a buffer that
+/// came *from* it, but the renderer gets a correctly-sized frame rather
+/// than a panic either way.
+fn download_linear(buf: &wgpu::Buffer, width: u32, height: u32) -> Vec<f32> {
+    let samples = (width as usize) * (height as usize) * 4;
+    let Some(ctx) = klipp_effects::gpu_context::GpuContext::shared() else {
+        warn!("export: a GPU frame needs reading back and the shared context is gone");
+        return vec![0.0; samples];
+    };
+    let bytes = (samples * 4) as u64;
+    let staging = ctx.device().create_buffer(&wgpu::BufferDescriptor {
+        label: Some("export_gpu_frame_readback"),
+        size: bytes,
+        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+        mapped_at_creation: false,
+    });
+    let mut enc = ctx
+        .device()
+        .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+    enc.copy_buffer_to_buffer(buf, 0, &staging, 0, bytes.min(buf.size()));
+    ctx.queue().submit(std::iter::once(enc.finish()));
+    let slice = staging.slice(..);
+    slice.map_async(wgpu::MapMode::Read, |_| {});
+    ctx.device().poll(wgpu::Maintain::Wait);
+    let data = slice.get_mapped_range();
+    let out = bytemuck::pod_collect_to_vec(&data);
+    drop(data);
+    staging.unmap();
+    out
 }
 
 /// sRGB-encoded RGBA64 → linear RGBA f32, through a 65536-entry table:

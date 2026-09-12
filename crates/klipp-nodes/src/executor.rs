@@ -712,6 +712,36 @@ impl GraphExecutor {
         ok
     }
 
+    /// Seed the chain from a buffer that is already linear working-space
+    /// f32 on the GPU — a frame some other pass converted there, with no
+    /// expansion left to do.
+    ///
+    /// This is how a hardware-decoded export frame arrives: the NV12
+    /// converter turns the decoder's planes straight into linear light on
+    /// the GPU (`convert_nv12_to_linear_on_gpu`), and the only thing left
+    /// is to put them in the chain's input slot. `input` must be on the
+    /// same device as this executor's pipeline, which means the converter
+    /// was built from the same `GpuContext`; a buffer from a private
+    /// device cannot be bound here and wgpu will say so.
+    ///
+    /// `false` if there is no GPU or the buffer is too small, and the
+    /// caller then takes the CPU route.
+    pub fn prime_chain_from_gpu_linear_buffer(
+        &mut self,
+        input: &wgpu::Buffer,
+        width: u32,
+        height: u32,
+    ) -> bool {
+        self.ensure_gpu();
+        let Some(gpu) = self.gpu.as_mut() else { return false };
+        let ok = gpu.copy_linear_into_chain(input, width, height);
+        if ok {
+            self.gpu_chain_preseeded = true;
+            self.gpu_chain_preseed_dims = Some((width, height));
+        }
+        ok
+    }
+
     /// [`Self::prime_chain_from_srgb8`] from 16-bit samples, with the
     /// source primaries folded into the expansion.
     ///
