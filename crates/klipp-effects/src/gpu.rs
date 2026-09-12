@@ -186,6 +186,10 @@ pub struct GpuEffectsPipeline {
     color_grade_pipeline: wgpu::ComputePipeline,
     huesat_pipeline: wgpu::ComputePipeline,
     huesat_bgl: wgpu::BindGroupLayout,
+    /// Five bindings, for the one node that needs three pictures at
+    /// once: input (the graded frame), output, params, the kept
+    /// pre-secondary frame, and the matte.
+    apply_matte_bgl: wgpu::BindGroupLayout,
     huesat_lut_buf: wgpu::Buffer,
     // Compute pipeline — 3D LUT (reuses huesat_bgl: input, output, params, lut storage)
     lut3d_pipeline: wgpu::ComputePipeline,
@@ -218,6 +222,7 @@ pub struct GpuEffectsPipeline {
     /// A grade's result mixed with the picture it started from (the
     /// Corrector's mix over all its stages), and that picture's copy.
     grade_mix_pipeline: wgpu::ComputePipeline,
+    apply_matte_pipeline: wgpu::ComputePipeline,
     grade_mix_src: Option<wgpu::Buffer>,
     // Compute pipeline — qualifier (secondary color correction)
     qualifier_pipeline: wgpu::ComputePipeline,
@@ -724,6 +729,44 @@ impl GpuEffectsPipeline {
             push_constant_ranges: &[],
         });
 
+        // ApplyMatte needs the graded frame, the frame before the
+        // secondary, and the matte, all three at once — one binding
+        // more than any other chain op.
+        let storage = |binding: u32, read_only: bool| wgpu::BindGroupLayoutEntry {
+            binding,
+            visibility: wgpu::ShaderStages::COMPUTE,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Storage { read_only },
+                has_dynamic_offset: false,
+                min_binding_size: None,
+            },
+            count: None,
+        };
+        let apply_matte_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("apply_matte_bgl"),
+            entries: &[
+                storage(0, true),
+                storage(1, false),
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                storage(3, true),
+                storage(4, true),
+            ],
+        });
+        let apply_matte_pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("apply_matte_pl"),
+            bind_group_layouts: &[&apply_matte_bgl],
+            push_constant_ranges: &[],
+        });
+
         // Mask v2 bind group layout — purpose-built for the
         // storage-buffer mask architecture. 4 bindings:
         //   0: output (storage, write) — the matte vec4<f32> buffer
@@ -795,6 +838,7 @@ impl GpuEffectsPipeline {
         let clarity_apply_pipeline = create_pipeline(&device, &huesat_pl, "clarity_apply", SHADER_CLARITY_APPLY);
         let mask_cutout_pipeline = create_pipeline(&device, &huesat_pl, "mask_cutout", SHADER_MASK_CUTOUT);
         let grade_mix_pipeline = create_pipeline(&device, &huesat_pl, "grade_mix", SHADER_GRADE_MIX);
+        let apply_matte_pipeline = create_pipeline(&device, &apply_matte_pl, "apply_matte", SHADER_APPLY_MATTE_CHAIN);
         let mask_pipeline = create_pipeline(&device, &mask_v2_pl, "mask_v2", SHADER_MASK_V2);
         let color_balance_pipeline = create_pipeline(&device, &pipeline_layout, "color_balance", SHADER_COLOR_BALANCE);
         let wheel_sat_bri_pipeline = create_pipeline(&device, &pipeline_layout, "wheel_sat_bri", SHADER_WHEEL_SAT_BRI);
@@ -934,6 +978,7 @@ impl GpuEffectsPipeline {
             color_grade_pipeline,
             huesat_pipeline,
             huesat_bgl,
+            apply_matte_bgl,
             huesat_lut_buf,
             lut3d_pipeline,
             lut3d_buf: None,
@@ -945,6 +990,7 @@ impl GpuEffectsPipeline {
             clarity_apply_pipeline,
             mask_cutout_pipeline,
             grade_mix_pipeline,
+            apply_matte_pipeline,
             grade_mix_src: None,
             mask_pipeline,
             color_balance_pipeline,
@@ -3092,6 +3138,112 @@ impl GpuEffectsPipeline {
         let workgroups = (width * height).div_ceil(WORKGROUP_SIZE);
         let enc = self.chain_encoder.as_mut().expect(Self::CHAIN_ENCODER_EXPECT);
         Self::record_compute_dispatch(enc, &self.grade_mix_pipeline, &bind_group, workgroups);
+    }
+
+    /// Dispatch-only qualifier: key the picture
+    /// [`Self::keep_chain_input`] kept, writing the HSL matte into
+    /// `matte_buf` for [`Self::apply_matte_chain`].
+    ///
+    /// It reads the kept copy rather than a chain slot on purpose. A
+    /// secondary keys the picture *before* its grade branch, and the
+    /// branch may well have run first — the execution order among the
+    /// two is not ours to choose — by which point the slot holds the
+    /// branch's output. The kept buffer always holds the right frame.
+    ///
+    /// Unlike [`Self::apply_qualifier_gpu`] this neither uploads nor
+    /// downloads — the picture is already in a chain slot and the matte
+    /// never needs to reach the CPU. That is the whole point: a
+    /// secondary used to cost an upload, a full pipeline stall and a
+    /// download for this one node.
+    ///
+    /// Hue values are degrees here, as everywhere the caller sees them;
+    /// the shader's are turns.
+    #[allow(clippy::too_many_arguments)]
+    pub fn qualifier_to_matte_buf_chain(
+        &mut self,
+        width: u32,
+        height: u32,
+        hue_center: f32, hue_width: f32, hue_soft: f32,
+        sat_low: f32, sat_high: f32, sat_soft: f32,
+        lum_low: f32, lum_high: f32, lum_soft: f32,
+        invert: bool,
+    ) {
+        if self.is_device_lost() {
+            return;
+        }
+        let slot = self.next_params_slot();
+        self.write_chain_params(slot, &GpuQualifierParams {
+            width,
+            height,
+            hue_center: hue_center / 360.0,
+            hue_width: hue_width / 360.0,
+            hue_soft: hue_soft / 360.0,
+            sat_low,
+            sat_high,
+            sat_soft,
+            lum_low,
+            lum_high,
+            lum_soft,
+            invert: invert as u32,
+            sec_exposure: 0.0,
+            sec_saturation: 1.0,
+            sec_hue_shift: 0.0,
+            sec_temperature: 0.0,
+            matte_preview: 1,
+            _pad0: 0,
+            _pad1: 0,
+            _pad2: 0,
+        });
+        let input = self.grade_mix_src.as_ref().expect("keep_chain_input first");
+        let matte = self.matte_buf.as_ref().expect("matte_buf populated by ensure_buffers");
+        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("chain_bg_qualifier_matte"),
+            layout: &self.bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: input.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: matte.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 2, resource: self.params_ring[slot].as_entire_binding() },
+            ],
+        });
+        let workgroups = (width * height).div_ceil(WORKGROUP_SIZE);
+        let enc = self.chain_encoder.as_mut().expect(Self::CHAIN_ENCODER_EXPECT);
+        Self::record_compute_dispatch(enc, &self.qualifier_pipeline, &bind_group, workgroups);
+    }
+
+    /// Dispatch-only ApplyMatte: blend the chain's picture (graded) with
+    /// the one [`Self::keep_chain_input`] kept (ungraded), through
+    /// `matte_buf`. Standard chain conventions — reads the `in_is_a`
+    /// slot, writes the opposite.
+    ///
+    /// The caller must have called `keep_chain_input` before the
+    /// secondary's nodes ran, and written the matte to `matte_buf`.
+    pub fn apply_matte_chain(&mut self, in_is_a: bool, width: u32, height: u32, mix: f32) {
+        if self.is_device_lost() {
+            return;
+        }
+        let slot = self.next_params_slot();
+        self.write_chain_params(slot, &GpuGradeMixParams { width, height, mix, _pad: 0 });
+        let (a, b) = (
+            self.buf_a.as_ref().expect(Self::CHAIN_BG_EXPECT),
+            self.buf_b.as_ref().expect(Self::CHAIN_BG_EXPECT),
+        );
+        let (input, output) = if in_is_a { (a, b) } else { (b, a) };
+        let kept = self.grade_mix_src.as_ref().expect("keep_chain_input first");
+        let matte = self.matte_buf.as_ref().expect("matte_buf populated by ensure_buffers");
+        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("chain_bg_apply_matte"),
+            layout: &self.apply_matte_bgl,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: input.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: output.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 2, resource: self.params_ring[slot].as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 3, resource: kept.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 4, resource: matte.as_entire_binding() },
+            ],
+        });
+        let workgroups = (width * height).div_ceil(WORKGROUP_SIZE);
+        let enc = self.chain_encoder.as_mut().expect(Self::CHAIN_ENCODER_EXPECT);
+        Self::record_compute_dispatch(enc, &self.apply_matte_pipeline, &bind_group, workgroups);
     }
 
     /// Dispatch-only bilateral denoise pass.
@@ -10334,6 +10486,42 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
 // Grade mix — a grade's result mixed with the picture it started from,
 // kept in binding 3: the Corrector's mix, over all its stages.
+/// ApplyMatte as a chain dispatch: the graded frame where the matte
+/// selects, the frame kept from before the secondary where it does not.
+///
+/// `mix` scales the whole matte, so a secondary can be dialled back
+/// without touching the key. The matte is its red channel clamped to
+/// [0, 1], and alpha is left at 1.0 — the same conventions the CPU twin
+/// in `klipp_nodes::executor` follows, because the two are compared
+/// against each other.
+const SHADER_APPLY_MATTE_CHAIN: &str = concat!(
+    "
+struct Params { width: u32, height: u32, mix: f32, _pad: u32, }
+@group(0) @binding(0) var<storage, read> input: array<vec4<f32>>;
+@group(0) @binding(1) var<storage, read_write> output: array<vec4<f32>>;
+@group(0) @binding(2) var<uniform> params: Params;
+@group(0) @binding(3) var<storage, read> kept: array<vec4<f32>>;
+@group(0) @binding(4) var<storage, read> matte: array<vec4<f32>>;
+",
+    shader_linear_helpers_wgsl!(),
+    "
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let idx = gid.x;
+    if idx >= params.width * params.height { return; }
+    let graded = unpack(input[idx]);
+    let plain = unpack(kept[idx]);
+    let k = clamp(unpack(matte[idx]).x * params.mix, 0.0, 1.0);
+    output[idx] = pack(vec4<f32>(
+        plain.x + (graded.x - plain.x) * k,
+        plain.y + (graded.y - plain.y) * k,
+        plain.z + (graded.z - plain.z) * k,
+        1.0,
+    ));
+}
+"
+);
+
 const SHADER_GRADE_MIX: &str = concat!(
     "
 struct Params { width: u32, height: u32, mix: f32, _pad: u32, }
@@ -10598,6 +10786,7 @@ mod shader_validation_tests {
         ("SHADER_CLARITY_BLUR_V", SHADER_CLARITY_BLUR_V),
         ("SHADER_MASK_CUTOUT", SHADER_MASK_CUTOUT),
         ("SHADER_GRADE_MIX", SHADER_GRADE_MIX),
+        ("SHADER_APPLY_MATTE_CHAIN", SHADER_APPLY_MATTE_CHAIN),
         ("SHADER_CLARITY_APPLY", SHADER_CLARITY_APPLY),
         ];
         let mut failures = Vec::new();

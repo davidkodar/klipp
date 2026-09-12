@@ -185,6 +185,12 @@ pub struct GraphExecutor {
     /// chain buffer — in which case the returned Vec is empty and the
     /// caller reads the result from the GPU (`encode_output_to_display_u8`).
     output_on_gpu: Option<bool>,
+    /// The last run's chain shape: dispatches that extended a live
+    /// chain, flushes back to the CPU, and nodes that ran per-node on the
+    /// CPU. Published because whether a graph stayed GPU-resident is
+    /// invisible in its output — only in its speed — and a test should be
+    /// able to assert it directly rather than infer it from a stopwatch.
+    last_run_chain_stats: ChainStats,
     /// The seed, scoped to one `execute_linear*` run. Taken from
     /// `gpu_chain_preseed_dims` at entry, which is cleared at the same
     /// moment: a seed the run does not consume must not survive into the
@@ -504,6 +510,7 @@ impl GraphExecutor {
             keep_output_on_gpu: false,
             run_gpu_output_node: None,
             output_on_gpu: None,
+            last_run_chain_stats: ChainStats::default(),
             run_seed_dims: None,
             last_chain_final_slot: None,
             compound_depth: 0,
@@ -556,6 +563,7 @@ impl GraphExecutor {
             keep_output_on_gpu: false,
             run_gpu_output_node: None,
             output_on_gpu: None,
+            last_run_chain_stats: ChainStats::default(),
             run_seed_dims: None,
             last_chain_final_slot: None,
             compound_depth: 0,
@@ -755,6 +763,14 @@ impl GraphExecutor {
     /// reads it; check `output_on_gpu` after the run.
     pub fn request_output_on_gpu(&mut self) {
         self.keep_output_on_gpu = true;
+    }
+
+    /// How much of the last run the GPU chain carried. A graph that
+    /// round-trips every node produces the same picture as one that
+    /// stays resident, only far slower, so this is the only way a test
+    /// can hold the difference.
+    pub fn last_run_chain_stats(&self) -> ChainStats {
+        self.last_run_chain_stats
     }
 
     /// `Some(slot_a)` if the last run left its final result in the chain
@@ -1007,6 +1023,14 @@ impl GraphExecutor {
             *fan_out.entry(edge.from_node).or_insert(0) += 1;
         }
 
+        // A qualifier-driven secondary, if this graph is one. Recognising
+        // the shape is what lets it stay on the GPU: the picture is kept
+        // in a side buffer, the matte goes to `matte_buf`, and ApplyMatte
+        // blends them without the frame ever crossing the bus. Without
+        // it the same graph pays five round trips a frame — an upload, a
+        // stall and a download for the qualifier alone.
+        let secondary = SecondaryChain::detect(graph, &order, &fan_out);
+
         // Output-on-GPU is single-shot, like the seed: take the request
         // here so a run that cannot honour it does not leave it set. The
         // final node qualifies only when Output is its sole reader and no
@@ -1116,7 +1140,15 @@ impl GraphExecutor {
             // past it (more consumers would need a CPU copy anyway, so
             // extending only delays the inevitable download).
             let chain_tail_fan_out_one = chain_tail
-                .map(|id| fan_out.get(&id).copied().unwrap_or(0) <= 1)
+                .map(|id| {
+                    fan_out.get(&id).copied().unwrap_or(0) <= 1
+                        // The one tail whose extra consumers the chain
+                        // itself serves: a secondary's source keeps its
+                        // picture in a side buffer for ApplyMatte and
+                        // hands the Qualifier a slot to read, so no
+                        // consumer needs a CPU copy.
+                        || secondary.is_some_and(|sec| sec.source == id)
+                })
                 .unwrap_or(true);
             // Visible nodes (those the V2 canvas wants thumbnails for)
             // keep the chain when their thumbnail can be taken on the GPU
@@ -1139,10 +1171,26 @@ impl GraphExecutor {
             } else {
                 true
             };
+            // The Qualifier and ApplyMatte of a recognised secondary are
+            // chain ops for this graph even though the kinds are not
+            // chainable in general: one writes `matte_buf`, the other
+            // reads it alongside the kept picture.
+            let secondary_chain_node = secondary
+                .is_some_and(|sec| sec.qualifier == node_id || sec.apply == node_id);
+            // The secondary's Qualifier keys the kept copy of its
+            // source, not the chain's current picture, so it does not
+            // need to be looking at the tail — the grade branch may
+            // already have moved it on.
+            let secondary_qualifier_ready = secondary.is_some_and(|sec| {
+                sec.qualifier == node_id
+                    && chain_tail.is_some()
+                    && primary_input_id == Some(sec.source)
+            });
             let can_extend_chain = !bypass
-                && primary_is_chain_tail
+                && (primary_is_chain_tail || secondary_qualifier_ready)
                 && chain_tail_fan_out_one
-                && self.node_supports_gpu_chain(&node.kind, &node.params)
+                && (secondary_chain_node
+                    || self.node_supports_gpu_chain(&node.kind, &node.params))
                 && mask_cutout_matte_ready
                 && Some(node_id) != matte_preview_node
                 && Some(node_id) != matte_tap
@@ -1270,7 +1318,7 @@ impl GraphExecutor {
             // params — a keyframe may have flipped ColorWheels into
             // log-mode (CPU-only), which we can't dispatch.
             if can_extend_chain
-                && self.node_supports_gpu_chain(&node.kind, params)
+                && (secondary_chain_node || self.node_supports_gpu_chain(&node.kind, params))
                 && self.gpu.is_some()
             {
                 // Current input lives in the slot named by chain_slot_a.
@@ -1283,12 +1331,38 @@ impl GraphExecutor {
                     node_id, &node.kind, params, width, height, frame_number,
                     /* in_is_a = */ chain_slot_a,
                 ) {
+                    // Zero flips means the node wrote something other
+                    // than the picture — a secondary's Qualifier filling
+                    // `matte_buf`. The chain's tail and slot are
+                    // unchanged: the picture is still the source's.
+                    Some(0) => {
+                        matte_in_buf = Some(node_id);
+                        node_outputs.insert(node_id, Arc::new(Vec::new()));
+                        chain_extend_count += 1;
+                        per_node_ms.push((
+                            format!("{node_kind_name}#chain_matte"),
+                            t_node.elapsed().as_secs_f64() * 1000.0,
+                        ));
+                        continue;
+                    }
                     Some(n) if n >= 1 => {
                         for _ in 0..n {
                             chain_slot_a = !chain_slot_a;
                         }
                         chain_tail = Some(node_id);
                         node_outputs.insert(node_id, Arc::new(Vec::new()));
+                        // A secondary's source has to survive its own
+                        // fan-out: keep the picture where ApplyMatte can
+                        // still find it once the branch has overwritten
+                        // the other slot.
+                        if secondary.is_some_and(|sec| sec.source == node_id) {
+                            if let Some(gpu) = self.gpu.as_mut() {
+                                gpu.keep_chain_input(chain_slot_a, width, height);
+                            }
+                        }
+                        if secondary.is_some_and(|sec| sec.apply == node_id) {
+                            matte_in_buf = None;
+                        }
                         if node_is_visible_for_thumbs {
                             if let Some(i) = take_thumb(self, chain_slot_a) {
                                 gpu_thumb_of.insert(node_id, i);
@@ -1368,6 +1442,13 @@ impl GraphExecutor {
                     chain_tail = Some(node_id);
                     chain_slot_a = n % 2 == 0;
                     node_outputs.insert(node_id, Arc::new(Vec::new()));
+                    // As in the extend path: a secondary's source keeps
+                    // its picture for ApplyMatte to blend against.
+                    if secondary.is_some_and(|sec| sec.source == node_id) {
+                        if let Some(gpu) = self.gpu.as_mut() {
+                            gpu.keep_chain_input(chain_slot_a, width, height);
+                        }
+                    }
                     if node_is_visible_for_thumbs {
                         if let Some(i) = take_thumb(self, chain_slot_a) {
                             gpu_thumb_of.insert(node_id, i);
@@ -1553,6 +1634,11 @@ impl GraphExecutor {
             chain_flush_count += 1;
         }
 
+        self.last_run_chain_stats = ChainStats {
+            extends: chain_extend_count,
+            flushes: chain_flush_count,
+            cpu_nodes: cpu_fallback_count,
+        };
         let total_ms = t_total.elapsed().as_secs_f64() * 1000.0;
         if total_ms > 5.0 {
             // Roll up per-node timings: kind#path → total ms across this frame.
@@ -1799,6 +1885,119 @@ impl GraphExecutor {
         dispatches
     }
 
+}
+
+/// How much of a run the GPU chain carried.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ChainStats {
+    /// Dispatches that extended a live chain — work that cost no
+    /// transfer.
+    pub extends: u32,
+    /// Times the chain was read back to the CPU.
+    pub flushes: u32,
+    /// Nodes that ran through the per-node CPU path.
+    pub cpu_nodes: u32,
+}
+
+/// A secondary correction the GPU chain can carry end to end: one
+/// node's picture keyed by a Qualifier, graded down one branch, and the
+/// two recombined by an ApplyMatte.
+///
+/// ```text
+///   source ─┬─────────────► ApplyMatte port 2 (ungraded)
+///           ├─► Qualifier ─► ApplyMatte port 1 (matte)
+///           └─► branch ────► ApplyMatte port 0 (graded)
+/// ```
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct SecondaryChain {
+    /// The node whose output is kept and keyed. Its fan-out is three,
+    /// which normally breaks the chain; this shape is the exception.
+    source: NodeId,
+    qualifier: NodeId,
+    apply: NodeId,
+}
+
+impl SecondaryChain {
+    /// The shape, or `None` — in which case nothing changes and the
+    /// graph runs exactly as it did.
+    ///
+    /// Every condition here is load-bearing. The three ApplyMatte ports
+    /// have to come from the right places, the qualifier's matte must go
+    /// nowhere else, and the four nodes have to be *consecutive* in the
+    /// execution order: a foreign node in between could flush the chain
+    /// after the matte was written but before it was used, leaving the
+    /// matte in GPU memory and the picture on the CPU.
+    fn detect(
+        graph: &NodeGraph,
+        order: &[NodeId],
+        fan_out: &HashMap<NodeId, usize>,
+    ) -> Option<Self> {
+        let kind_of = |id: NodeId| graph.nodes.iter().find(|n| n.id == id).map(|n| n.kind);
+        let enabled = |id: NodeId| {
+            graph.nodes.iter().find(|n| n.id == id).is_some_and(|n| n.enabled)
+        };
+        for node in &graph.nodes {
+            if node.kind != NodeKind::ApplyMatte || !node.enabled {
+                continue;
+            }
+            let apply = node.id;
+            let (graded, matte, plain) = (
+                graph.input_of(apply, 0)?,
+                graph.input_of(apply, 1)?,
+                graph.input_of(apply, 2)?,
+            );
+            // The matte comes from a Qualifier that is switched on, keys
+            // the same picture the ungraded port carries, and feeds
+            // nothing but this node.
+            if kind_of(matte) != Some(NodeKind::Qualifier) || !enabled(matte) {
+                continue;
+            }
+            let keyed = graph.input_of(matte, 0);
+            if keyed != Some(plain) || fan_out.get(&matte).copied().unwrap_or(0) != 1 {
+                continue;
+            }
+            let qualifier_armed = graph
+                .nodes
+                .iter()
+                .find(|n| n.id == matte)
+                .and_then(|n| n.params.qualifier.as_ref())
+                .is_some_and(|q| q.enabled);
+            if !qualifier_armed {
+                continue;
+            }
+            // The graded branch is one node deep, fed by the same
+            // picture. A longer branch would work too, but each node in
+            // it would need checking, and one is the shape a secondary
+            // actually builds.
+            if graded == plain || graph.input_of(graded, 0) != Some(plain) {
+                continue;
+            }
+            if fan_out.get(&graded).copied().unwrap_or(0) != 1 || !enabled(graded) {
+                continue;
+            }
+            // Exactly the three consumers this shape accounts for.
+            if fan_out.get(&plain).copied().unwrap_or(0) != 3 {
+                continue;
+            }
+            // Consecutive in the execution order, in some order among
+            // the middle two.
+            let at = |id: NodeId| order.iter().position(|n| *n == id);
+            let (i_plain, i_apply) = (at(plain)?, at(apply)?);
+            let (i_qual, i_graded) = (at(matte)?, at(graded)?);
+            let middle = [i_qual, i_graded];
+            if i_apply != i_plain + 3
+                || !middle.contains(&(i_plain + 1))
+                || !middle.contains(&(i_plain + 2))
+            {
+                continue;
+            }
+            return Some(Self { source: plain, qualifier: matte, apply });
+        }
+        None
+    }
+}
+
+impl GraphExecutor {
     /// Dispatch-only chain step with explicit slot selection.
     ///
     /// Returns `None` when the dispatch could not run (device lost,
@@ -1827,6 +2026,30 @@ impl GraphExecutor {
             Some(g) => g,
             None => return None,
         };
+        // A recognised secondary's two nodes. The caller has checked the
+        // shape; here we only dispatch. The Qualifier reports zero slot
+        // flips because it writes the matte, not the picture.
+        match kind {
+            NodeKind::Qualifier => {
+                let q = params.qualifier.as_ref()?;
+                if !q.enabled {
+                    return None;
+                }
+                gpu.qualifier_to_matte_buf_chain(
+                    width, height,
+                    q.hue_center, q.hue_width, q.hue_soft,
+                    q.sat_low, q.sat_high, q.sat_soft,
+                    q.lum_low, q.lum_high, q.lum_soft,
+                    q.invert,
+                );
+                return Some(0);
+            }
+            NodeKind::ApplyMatte => {
+                gpu.apply_matte_chain(in_is_a, width, height, params.mix.unwrap_or(1.0));
+                return Some(1);
+            }
+            _ => {}
+        }
         if gpu.is_device_lost() {
             return None;
         }
