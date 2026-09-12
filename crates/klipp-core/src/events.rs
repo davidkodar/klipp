@@ -759,6 +759,9 @@ pub enum AppCommand {
         timeline_in: Timecode,
     },
     RemoveClip { clip_id: ClipId },
+    /// Give an existing video clip the audio of its own media file,
+    /// linked, spanning exactly what the clip spans.
+    AttachLinkedAudio { clip_id: ClipId },
     MoveClip { clip_id: ClipId, new_timeline_in: Timecode },
     MoveClipToTrack { clip_id: ClipId, new_timeline_in: Timecode, from_track: usize, to_track: usize },
     /// Exchange two adjacent clips on the same track, preserving the

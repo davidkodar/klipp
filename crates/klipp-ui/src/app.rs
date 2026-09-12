@@ -52,6 +52,74 @@ struct LinkedAudioAppend {
     clips_after: Vec<klipp_timeline::Clip>,
 }
 
+/// Give an existing video clip the audio it should have come with,
+/// linked, at its own position on the timeline.
+///
+/// The repair for a timeline built before appending brought the audio
+/// along: those clips have no partner, and re-appending them to get one
+/// would throw away the grades on them. Unlike
+/// [`append_linked_audio_to_sequence`] this mirrors the clip exactly —
+/// the same timeline span *and* the same source range — so a clip that
+/// has been trimmed gets the sound that belongs under what is left of
+/// it, rather than the file from the top.
+///
+/// `None` when there is nothing to do or it cannot be done: no such
+/// clip, not on a video track, already linked to something, or no audio
+/// track and none could be made.
+fn attach_linked_audio_to_clip(
+    seq: &mut klipp_timeline::Sequence,
+    clip_id: klipp_core::ClipId,
+) -> Option<LinkedAudioAppend> {
+    let video = seq
+        .tracks
+        .iter()
+        .find(|t| t.kind == klipp_timeline::TrackKind::Video && t.find_clip(clip_id).is_some())?
+        .find_clip(clip_id)?
+        .clone();
+    if video.linked_clip_id.is_some() {
+        return None;
+    }
+    let klipp_timeline::ClipKind::Media { media_id } = video.kind else { return None };
+
+    let (track_index, created_track_at) = match seq
+        .tracks
+        .iter()
+        .position(|t| t.kind == klipp_timeline::TrackKind::Audio)
+    {
+        Some(i) => (i, None),
+        None => {
+            let n = seq.tracks.iter().filter(|t| t.kind == klipp_timeline::TrackKind::Audio).count();
+            seq.add_audio_track(format!("Audio {}", n + 1));
+            let i = seq.tracks.iter().position(|t| t.kind == klipp_timeline::TrackKind::Audio)?;
+            (i, Some(i))
+        }
+    };
+
+    let mut audio = klipp_timeline::Clip::media(
+        media_id,
+        video.timeline_in,
+        video.timeline_out,
+        video.source_in,
+        video.source_out,
+    );
+    audio.linked_clip_id = Some(clip_id);
+    let audio_id = audio.id;
+
+    let clips_before = seq.tracks[track_index].clips.clone();
+    KlippApp::overwrite_insert_clip_on_track(&mut seq.tracks[track_index], audio);
+    let clips_after = seq.tracks[track_index].clips.clone();
+
+    for track in seq.tracks.iter_mut() {
+        if let Some(vc) = track.find_clip_mut(clip_id) {
+            vc.linked_clip_id = Some(audio_id);
+            break;
+        }
+    }
+
+    let clip = seq.tracks[track_index].find_clip(audio_id)?.clone();
+    Some(LinkedAudioAppend { clip, track_index, created_track_at, clips_before, clips_after })
+}
+
 /// Append `media_id`'s audio to an audio track of `seq`, linked to the
 /// video clip that was just appended.
 ///
@@ -62,13 +130,25 @@ struct LinkedAudioAppend {
 /// built from the control socket was silent and every render made from
 /// one had no sound.
 ///
-/// `None` only if there is no audio track and none can be made.
+/// `None` if there is no audio track and none can be made, or if the
+/// clip is not on a video track — an audio clip has no audio partner,
+/// and a caller appending straight to an audio track (which
+/// `AppendClipToTrack` can be asked to do) would otherwise get its clip
+/// and then a second copy of it.
 fn append_linked_audio_to_sequence(
     seq: &mut klipp_timeline::Sequence,
     media_id: klipp_core::MediaId,
     duration: klipp_core::RationalTime,
     video_clip_id: klipp_core::ClipId,
 ) -> Option<LinkedAudioAppend> {
+    let on_video_track = seq
+        .tracks
+        .iter()
+        .any(|t| t.kind == klipp_timeline::TrackKind::Video && t.find_clip(video_clip_id).is_some());
+    if !on_video_track {
+        return None;
+    }
+
     // The first audio track, or a new one, as `ImportMediaLinked` does
     // when a project has none.
     let (track_index, created_track_at) = match seq
@@ -10581,6 +10661,43 @@ impl KlippApp {
                             self.sync_sequence_to_engine();
                             self.state.selected_clip = Some(clip_id);
                             self.state.dirty = true;
+                        }
+                    }
+                    true
+                }
+                AppCommand::AttachLinkedAudio { clip_id } => {
+                    let seq_idx = self.state.active_sequence_idx;
+                    // Only for media that has sound to attach; asking
+                    // for it on a silent file would otherwise lay down a
+                    // clip of nothing.
+                    let has_audio = self.state.sequences[seq_idx]
+                        .all_clips()
+                        .find(|c| c.id == *clip_id)
+                        .and_then(|c| match c.kind {
+                            klipp_timeline::ClipKind::Media { media_id } => Some(media_id),
+                            _ => None,
+                        })
+                        .and_then(|m| self.state.media_pool.get(&m))
+                        .is_some_and(|i| i.has_audio);
+                    if !has_audio {
+                        self.state.toast.show("That clip's media has no audio");
+                        return true;
+                    }
+                    match attach_linked_audio_to_clip(&mut self.state.sequences[seq_idx], *clip_id) {
+                        Some(a) => {
+                            self.state.push_history(EditCommand::LinkedImport {
+                                video: None,
+                                audio: Some((a.clip, a.track_index)),
+                                created_video_track_at: None,
+                                created_audio_track_at: a.created_track_at,
+                                autoset: None,
+                            });
+                            self.sync_sequence_to_engine();
+                            self.state.dirty = true;
+                            self.state.toast.show("Audio attached");
+                        }
+                        None => {
+                            self.state.toast.show("That clip already has its audio");
                         }
                     }
                     true
@@ -38230,5 +38347,168 @@ mod linked_audio_append_tests {
             .expect("added");
         assert_eq!(added.clips_before.len(), 0, "the audio track was empty before");
         assert_eq!(added.clips_after.len(), 1, "and holds the new clip after");
+    }
+}
+
+#[cfg(test)]
+mod linked_audio_guard_tests {
+    use super::*;
+    use klipp_timeline::{Sequence, TrackKind};
+
+    fn dur(secs: i64) -> klipp_core::RationalTime {
+        klipp_core::RationalTime { value: secs * 30, rate: 30 }
+    }
+
+    /// A clip appended straight to an audio track must not grow an audio
+    /// partner of its own.
+    ///
+    /// `AppendClipToTrack` takes the track from its caller, so the
+    /// control socket can be asked to append to A1. Without this guard
+    /// that call put the clip on A1 and then appended a second copy
+    /// after it — one clip's worth of sound, played twice, the second
+    /// time over the following clip.
+    #[test]
+    fn a_clip_on_an_audio_track_gets_no_partner() {
+        let mut seq = Sequence::new_default();
+        let media_id = klipp_core::MediaId::new();
+        let ai = seq
+            .tracks
+            .iter()
+            .position(|t| t.kind == TrackKind::Audio)
+            .expect("a default sequence has an audio track");
+        let clip_id = seq.tracks[ai].append_clip(media_id, dur(4));
+
+        assert!(
+            append_linked_audio_to_sequence(&mut seq, media_id, dur(4), clip_id).is_none(),
+            "an audio clip has no audio partner to add"
+        );
+        assert_eq!(seq.tracks[ai].clips.len(), 1, "and nothing was added after it");
+    }
+
+    /// The guard keys off the clip's track, not the caller's intent, so
+    /// an unknown clip id adds nothing either.
+    #[test]
+    fn an_unknown_clip_gets_no_partner() {
+        let mut seq = Sequence::new_default();
+        let media_id = klipp_core::MediaId::new();
+        let before: usize = seq.tracks.iter().map(|t| t.clips.len()).sum();
+        assert!(
+            append_linked_audio_to_sequence(&mut seq, media_id, dur(4), klipp_core::ClipId::new())
+                .is_none()
+        );
+        let after: usize = seq.tracks.iter().map(|t| t.clips.len()).sum();
+        assert_eq!(before, after, "no clip was added for a clip that is not there");
+    }
+}
+
+#[cfg(test)]
+mod attach_linked_audio_tests {
+    use super::*;
+    use klipp_timeline::{Sequence, TrackKind};
+
+    fn t(secs: i64) -> klipp_core::RationalTime {
+        klipp_core::RationalTime { value: secs * 30, rate: 30 }
+    }
+
+    fn video_track(seq: &Sequence) -> usize {
+        seq.tracks.iter().position(|tr| tr.kind == TrackKind::Video).unwrap()
+    }
+
+    fn audio_track(seq: &Sequence) -> Option<usize> {
+        seq.tracks.iter().position(|tr| tr.kind == TrackKind::Audio)
+    }
+
+    /// The repair case: a clip already on the timeline, with a grade on
+    /// it, gets its audio without being rebuilt.
+    #[test]
+    fn an_existing_clip_gets_audio_at_its_own_position() {
+        let mut seq = Sequence::new_default();
+        let media_id = klipp_core::MediaId::new();
+        let vi = video_track(&seq);
+        // Two clips, so the second does not start at zero.
+        let _first = seq.tracks[vi].append_clip(media_id, t(4));
+        let second = seq.tracks[vi].append_clip(media_id, t(4));
+        let want = seq.tracks[vi].find_clip(second).unwrap().clone();
+        assert!(want.timeline_in > t(0), "the fixture's second clip must not start at zero");
+
+        let added = attach_linked_audio_to_clip(&mut seq, second).expect("attached");
+        let audio = &seq.tracks[added.track_index].clips[0];
+        assert_eq!(audio.timeline_in, want.timeline_in, "under the clip, not at the start");
+        assert_eq!(audio.timeline_out, want.timeline_out);
+        assert_eq!(audio.linked_clip_id, Some(second));
+        let video = seq.all_clips().find(|c| c.id == second).unwrap();
+        assert_eq!(video.linked_clip_id, Some(audio.id), "linked both ways");
+    }
+
+    /// A trimmed clip gets the sound under what is left of it. Taking
+    /// the media from the top instead would put the audio out of sync by
+    /// however much was trimmed off the front — the kind of error that
+    /// looks fine until someone listens.
+    #[test]
+    fn a_trimmed_clip_gets_the_matching_stretch_of_sound() {
+        let mut seq = Sequence::new_default();
+        let media_id = klipp_core::MediaId::new();
+        let vi = video_track(&seq);
+        let id = seq.tracks[vi].append_clip(media_id, t(10));
+        if let Some(c) = seq.tracks[vi].find_clip_mut(id) {
+            c.source_in = t(3);
+            c.source_out = t(7);
+            c.timeline_in = t(0);
+            c.timeline_out = t(4);
+        }
+
+        attach_linked_audio_to_clip(&mut seq, id).expect("attached");
+        let ai = audio_track(&seq).unwrap();
+        let audio = &seq.tracks[ai].clips[0];
+        assert_eq!(audio.source_in, t(3), "the same point in the file");
+        assert_eq!(audio.source_out, t(7));
+        assert_eq!(audio.timeline_out - audio.timeline_in, t(4), "and the same length");
+    }
+
+    /// Asking twice must not stack two copies of the sound.
+    #[test]
+    fn a_clip_that_already_has_audio_is_left_alone() {
+        let mut seq = Sequence::new_default();
+        let media_id = klipp_core::MediaId::new();
+        let vi = video_track(&seq);
+        let id = seq.tracks[vi].append_clip(media_id, t(4));
+
+        attach_linked_audio_to_clip(&mut seq, id).expect("the first attach works");
+        let ai = audio_track(&seq).unwrap();
+        assert_eq!(seq.tracks[ai].clips.len(), 1);
+        assert!(
+            attach_linked_audio_to_clip(&mut seq, id).is_none(),
+            "the second attach is refused"
+        );
+        assert_eq!(seq.tracks[ai].clips.len(), 1, "and adds nothing");
+    }
+
+    /// Repairing every clip of a silent timeline leaves the audio track
+    /// laid out like the video track, which is the whole point.
+    #[test]
+    fn repairing_a_whole_timeline_mirrors_the_video_track() {
+        let mut seq = Sequence::new_default();
+        let media_id = klipp_core::MediaId::new();
+        let vi = video_track(&seq);
+        let ids: Vec<_> = (0..3).map(|_| seq.tracks[vi].append_clip(media_id, t(4))).collect();
+        let spans: Vec<_> = ids
+            .iter()
+            .map(|id| {
+                let c = seq.tracks[vi].find_clip(*id).unwrap();
+                (c.timeline_in, c.timeline_out)
+            })
+            .collect();
+
+        for id in &ids {
+            attach_linked_audio_to_clip(&mut seq, *id).expect("attached");
+        }
+        let ai = audio_track(&seq).unwrap();
+        assert_eq!(seq.tracks[ai].clips.len(), 3, "one audio clip per video clip");
+        let mut got: Vec<_> =
+            seq.tracks[ai].clips.iter().map(|c| (c.timeline_in, c.timeline_out)).collect();
+        got.sort();
+        let mut want = spans;
+        want.sort();
+        assert_eq!(got, want, "the audio track matches the video track's layout");
     }
 }

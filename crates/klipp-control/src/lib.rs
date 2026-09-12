@@ -407,6 +407,9 @@ fn handle(ctx: &ControlContext, cmd: ControlCommand) -> Result<serde_json::Value
         ControlCommand::RemoveClip { clip_id: c } => {
             send(AppCommand::RemoveClip { clip_id: existing_clip_id(ctx, &c)? })
         }
+        ControlCommand::AttachAudio { clip_id: c } => {
+            send(AppCommand::AttachLinkedAudio { clip_id: existing_clip_id(ctx, &c)? })
+        }
         ControlCommand::SelectClip { clip_id: c } => {
             let id = match c {
                 Some(s) => Some(existing_clip_id(ctx, &s)?),

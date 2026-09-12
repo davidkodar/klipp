@@ -57,6 +57,11 @@ pub enum ControlCommand {
         track: Option<usize>,
     },
     RemoveClip { clip_id: String },
+    /// Give a clip the audio it should have come with, linked, at its
+    /// own position. Repairs a timeline built before appending brought
+    /// the audio along — re-appending those clips would get the audio
+    /// but throw away their grades.
+    AttachAudio { clip_id: String },
     SelectClip { clip_id: Option<String> },
 
     // ── Colour / grade ─────────────────────────────────────────────

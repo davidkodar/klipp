@@ -41,7 +41,7 @@ static PENDING_WRITE_GENERATION: std::sync::atomic::AtomicU64 =
 /// next screenshot to wait for a fresh frame.
 const WRITE_TOOLS: &[&str] = &[
     "klipp_play", "klipp_pause", "klipp_stop", "klipp_seek",
-    "klipp_append_clip", "klipp_remove_clip", "klipp_select_clip",
+    "klipp_append_clip", "klipp_remove_clip", "klipp_attach_audio", "klipp_select_clip",
     "klipp_add_node", "klipp_remove_node", "klipp_connect_nodes",
     "klipp_set_node_param", "klipp_toggle_node", "klipp_set_log_format",
 ];
@@ -225,6 +225,9 @@ fn call_tool(name: &str, args: &Value) -> Result<Vec<Value>, String> {
         }
         "klipp_remove_clip" => json!({
             "method": "remove_clip", "clip_id": arg_str(args, "clip_id")?,
+        }),
+        "klipp_attach_audio" => json!({
+            "method": "attach_audio", "clip_id": arg_str(args, "clip_id")?,
         }),
         "klipp_select_clip" => json!({
             "method": "select_clip",
@@ -411,6 +414,12 @@ fn tool_definitions() -> Vec<Value> {
                  "track": { "type": "integer", "description": "Track index; omit for the default track" },
              }),
              vec!["media_id"]),
+        tool("klipp_attach_audio",
+             "Give a clip the audio of its own media file, linked, spanning exactly what the \
+              clip spans. Repairs a clip that was added before appending brought the audio \
+              along; refused if the clip already has its audio.",
+             json!({ "clip_id": { "type": "string", "description": "From klipp_list_clips" } }),
+             vec!["clip_id"]),
         tool("klipp_remove_clip", "Remove a clip from the timeline.",
              json!({ "clip_id": { "type": "string", "description": "From klipp_list_clips" } }),
              vec!["clip_id"]),
