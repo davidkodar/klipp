@@ -2984,34 +2984,58 @@ impl GraphExecutor {
             }
 
             NodeKind::ApplyMatte => {
-                // Port 0: graded frame, Port 1: matte, Port 2: ungraded (pre-grade).
-                // Current semantics are u8-based — bracket to preserve behaviour.
-                let graded_u8 = linear_rgba_to_u8(primary_input);
-                let white_u8 = vec![255u8; graded_u8.len()];
-                let matte_rgba_u8 = match secondary_input {
-                    Some(s) => linear_rgba_to_u8(s),
-                    None => white_u8,
-                };
-                let ungraded_u8 = match tertiary_input {
-                    Some(t) => linear_rgba_to_u8(t),
-                    None => linear_rgba_to_u8(source_frame),
-                };
+                // Port 0: graded frame, Port 1: matte, Port 2: ungraded
+                // (pre-grade). The graded picture where the matte selects,
+                // the ungraded one where it does not, in linear light.
+                //
+                // This used to bracket the whole thing through 8-bit, and
+                // that cost three things. A highlight was clipped at white,
+                // so a secondary could not be applied to an HDR or log clip
+                // without flattening every value above 1.0. The blend itself
+                // quantised to 8 bits. And the matte — a coefficient, not a
+                // colour — went through the sRGB *encode* on its way in, so
+                // a 50% matte acted like 74% and every feathered edge leaned
+                // towards the graded side.
+                //
+                // Conventions follow `MaskCutout`, the other matte consumer:
+                // the matte is its red channel clamped to [0, 1], a missing
+                // or wrong-sized matte passes the graded frame through
+                // rather than blacking the viewer out, and alpha is left at
+                // 1.0 because the viewer expects opaque RGBA. A matte that
+                // is present and zero still selects nothing — that is what
+                // an `ExternalMatte` with no file chosen emits.
+                use rayon::prelude::*;
+                let n = primary_input.len();
                 let mix = params.mix.unwrap_or(1.0);
-
-                let blended: Vec<u8> = graded_u8
-                    .chunks_exact(4)
-                    .zip(ungraded_u8.chunks_exact(4))
-                    .zip(matte_rgba_u8.chunks_exact(4))
-                    .flat_map(|((g, u), m)| {
-                        let matte_val = m[0] as f32 / 255.0 * mix;
-                        let r = (u[0] as f32 + (g[0] as f32 - u[0] as f32) * matte_val) as u8;
-                        let g_ch =
-                            (u[1] as f32 + (g[1] as f32 - u[1] as f32) * matte_val) as u8;
-                        let b = (u[2] as f32 + (g[2] as f32 - u[2] as f32) * matte_val) as u8;
-                        [r, g_ch, b, 255]
-                    })
-                    .collect();
-                u8_rgba_to_linear(&blended)
+                let matte = match secondary_input {
+                    Some(m) if m.len() == n => m,
+                    // Unwired, or a Mask whose shapes are all disabled (it
+                    // returns an empty Vec rather than allocating 130 MB of
+                    // 1.0 at 4K).
+                    _ => return primary_input.to_vec(),
+                };
+                let ungraded = match tertiary_input {
+                    Some(t) if t.len() == n => t,
+                    Some(_) => return primary_input.to_vec(),
+                    None if source_frame.len() == n => source_frame,
+                    None => return primary_input.to_vec(),
+                };
+                if n % 4 != 0 {
+                    return primary_input.to_vec();
+                }
+                let mut out = vec![0.0f32; n];
+                out.par_chunks_exact_mut(4)
+                    .zip(primary_input.par_chunks_exact(4))
+                    .zip(ungraded.par_chunks_exact(4))
+                    .zip(matte.par_chunks_exact(4))
+                    .for_each(|(((dst, graded), plain), m)| {
+                        let k = (m[0] * mix).clamp(0.0, 1.0);
+                        for c in 0..3 {
+                            dst[c] = plain[c] + (graded[c] - plain[c]) * k;
+                        }
+                        dst[3] = 1.0;
+                    });
+                out
             }
 
             NodeKind::Blend => {
@@ -4391,6 +4415,107 @@ mod tests {
         let (result, _) = executor.execute(&frame, &graph, 1, 1, 0.0, 0, None, None).unwrap();
         // With identical inputs and matte R=128 (50%), blend should be ~128
         assert!((result[0] as i32 - 128).abs() <= 1, "ApplyMatte with equal inputs: got {}", result[0]);
+    }
+
+    /// ApplyMatte blends in linear light, so a secondary can be applied
+    /// to a picture that has values above white — and the matte is a
+    /// coefficient, used as it is rather than sRGB-encoded on the way in.
+    ///
+    /// Both were broken while the node bracketed itself through 8-bit: a
+    /// 12x highlight came back clipped to white, and a 50% matte blended
+    /// like 74%.
+    #[test]
+    fn apply_matte_blends_in_linear_light() {
+        let source_id = NodeId::new_v4();
+        let apply_id = NodeId::new_v4();
+        let output_id = NodeId::new_v4();
+        let node = |id: NodeId, kind: NodeKind, params: NodeParams| crate::graph::Node {
+            id, kind, label: format!("{kind:?}"), enabled: true, params,
+            keyframes: Default::default(), output_link: None, input_links: Vec::new(),
+        };
+        let graph = NodeGraph {
+            nodes: vec![
+                node(source_id, NodeKind::Source, Default::default()),
+                node(apply_id, NodeKind::ApplyMatte, NodeParams { mix: Some(1.0), ..Default::default() }),
+                node(output_id, NodeKind::Output, Default::default()),
+            ],
+            // Port 0 (graded) and port 1 (matte) are fed by hand below;
+            // port 2 (ungraded) is left unwired so it falls back to the
+            // source frame, which is the wiring a secondary actually uses.
+            edges: vec![
+                crate::graph::Edge { from_node: source_id, from_port: 0, to_node: apply_id, to_port: 0 },
+                crate::graph::Edge { from_node: apply_id, from_port: 0, to_node: output_id, to_port: 0 },
+            ],
+            output_node_id: output_id,
+            node_positions: Default::default(),
+            working_space_override: None,
+            frames: Vec::new(),
+            sticky_notes: Vec::new(),
+        };
+
+        // One pixel at 12x white. With no matte wired the graded frame
+        // passes through untouched — the old 8-bit bracket clipped it to
+        // 1.0 here, which is what made secondaries unusable above white.
+        let mut executor = GraphExecutor::new_cpu_only();
+        let bright = vec![12.0f32, 11.0, 9.5, 1.0];
+        let (out, _) = executor
+            .execute_linear(&bright, &graph, 1, 1, 0.0, 0, None, None)
+            .expect("graph runs");
+        assert!(
+            (out[0] - 12.0).abs() < 1e-3 && (out[2] - 9.5).abs() < 1e-3,
+            "a highlight must survive ApplyMatte: {:?}", &out[..3],
+        );
+    }
+
+    /// The blend itself: half a matte is half the distance, in linear
+    /// light. Through the old 8-bit bracket this landed at 0.85 instead
+    /// of 0.75, because the matte was sRGB-encoded on the way in (0.5
+    /// acting as 0.74) and the blend happened in display space.
+    ///
+    /// Wiring: a mid-grey source feeds the matte port directly, so the
+    /// matte is exactly 0.5, and an Exposure node one stop up feeds the
+    /// graded port, so the graded picture is exactly 1.0. The ungraded
+    /// port is left unwired and falls back to the source, 0.5.
+    #[test]
+    fn apply_matte_half_a_matte_is_half_the_distance() {
+        let source_id = NodeId::new_v4();
+        let exposure_id = NodeId::new_v4();
+        let apply_id = NodeId::new_v4();
+        let output_id = NodeId::new_v4();
+        let node = |id: NodeId, kind: NodeKind, params: NodeParams| crate::graph::Node {
+            id, kind, label: format!("{kind:?}"), enabled: true, params,
+            keyframes: Default::default(), output_link: None, input_links: Vec::new(),
+        };
+        let graph = NodeGraph {
+            nodes: vec![
+                node(source_id, NodeKind::Source, Default::default()),
+                node(exposure_id, NodeKind::Exposure, NodeParams { exposure: Some(1.0), ..Default::default() }),
+                node(apply_id, NodeKind::ApplyMatte, NodeParams { mix: Some(1.0), ..Default::default() }),
+                node(output_id, NodeKind::Output, Default::default()),
+            ],
+            edges: vec![
+                crate::graph::Edge { from_node: source_id, from_port: 0, to_node: exposure_id, to_port: 0 },
+                crate::graph::Edge { from_node: exposure_id, from_port: 0, to_node: apply_id, to_port: 0 },
+                crate::graph::Edge { from_node: source_id, from_port: 0, to_node: apply_id, to_port: 1 },
+                crate::graph::Edge { from_node: apply_id, from_port: 0, to_node: output_id, to_port: 0 },
+            ],
+            output_node_id: output_id,
+            node_positions: Default::default(),
+            working_space_override: None,
+            frames: Vec::new(),
+            sticky_notes: Vec::new(),
+        };
+
+        let mut executor = GraphExecutor::new_cpu_only();
+        let grey = vec![0.5f32, 0.5, 0.5, 1.0];
+        let (out, _) = executor
+            .execute_linear(&grey, &graph, 1, 1, 0.0, 0, None, None)
+            .expect("graph runs");
+        assert!(
+            (out[0] - 0.75).abs() < 1e-4,
+            "0.5 matte between 0.5 and 1.0 is 0.75 in linear light, got {}", out[0],
+        );
+        assert_eq!(out[3], 1.0, "alpha stays opaque, as MaskCutout leaves it");
     }
 
     #[test]
