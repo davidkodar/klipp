@@ -792,7 +792,7 @@ pub fn yuv420p10le_to_linear(
             // from them. Vertical taps are per-row, so they are resolved
             // once out here rather than per pixel.
             let (cy0, cy1, ty) =
-                chroma_taps(sy, 1, (src_h_us + 1) / 2, ChromaAxis::Between);
+                chroma_taps(sy, 1, src_h_us.div_ceil(2), ChromaAxis::Between);
             let u_row0 = cy0 * u_stride;
             let u_row1 = cy1 * u_stride;
             let v_row0 = cy0 * v_stride;
@@ -800,7 +800,7 @@ pub fn yuv420p10le_to_linear(
             for dx in 0..dst_w_us {
                 let sx = (dx * src_w_us / dst_w_us).min(src_w_us - 1);
                 let (cx0, cx1, tx) =
-                    chroma_taps(sx, 1, (src_w_us + 1) / 2, ChromaAxis::CoSited);
+                    chroma_taps(sx, 1, src_w_us.div_ceil(2), ChromaAxis::CoSited);
                 let yo = y_row_off + sx * 2;
                 let y_raw = u16::from_le_bytes([y_data[yo], y_data[yo + 1]]) & 0x3FF;
                 // Bilinear over the four taps, per plane.
