@@ -21,6 +21,38 @@ pub(crate) enum DecodedPixels {
     GpuLinear(std::sync::Arc<wgpu::Buffer>),
 }
 
+/// The GPU converters a frame source owns, one of each, shared by every
+/// decoder it drives.
+///
+/// One struct rather than two threaded arguments: they travel together
+/// through `pull` and `next_frame_with_pts`, and a second `&mut Option`
+/// alongside the first is two chances to pass the wrong one. Building a
+/// converter per decoder is also what exhausted the shared device's
+/// descriptor pool once, which arrives as SIGSEGV rather than an error.
+#[derive(Default)]
+pub struct GpuConverters {
+    /// Eight-bit 4:2:0 (NV12), what an SDR hardware decode hands back.
+    pub nv12: Option<klipp_effects::nv12_gpu::GpuNv12Converter>,
+    /// Ten-bit 4:2:0 (P010), what a 10-bit one does. Without this a
+    /// 10-bit frame is scaled to RGBA64 by swscale, at 42 ms a 4K frame.
+    pub p010: Option<klipp_effects::p010_gpu::GpuP010Converter>,
+}
+
+impl GpuConverters {
+    /// Both converters on the process-wide context — the same one the
+    /// grade chain uses, which is required for the chain to be able to
+    /// bind the buffers they return.
+    pub fn shared() -> Self {
+        let Some(ctx) = klipp_effects::gpu_context::GpuContext::shared() else {
+            return Self::default();
+        };
+        Self {
+            nv12: klipp_effects::nv12_gpu::GpuNv12Converter::with_context(ctx),
+            p010: klipp_effects::p010_gpu::GpuP010Converter::with_context(ctx),
+        }
+    }
+}
+
 /// Probe for the primary GPU vendor at startup (sysfs-based, no FFmpeg or
 /// Vulkan calls). Thin wrapper kept for backward compatibility with external
 /// callers — the underlying implementation is `klipp_core::GpuVendor::detect()`.
@@ -357,7 +389,9 @@ impl RenderDecoder {
         // convenience accessor for smoke tests and probes, not the
         // export's path, and handing it a GPU buffer it would only have
         // to read back again buys nothing.
-        let Some((_, pixels)) = self.next_frame_with_pts(&mut None)? else { return Ok(None) };
+        let Some((_, pixels)) = self.next_frame_with_pts(&mut GpuConverters::default())? else {
+            return Ok(None);
+        };
         Ok(Some(match pixels {
             DecodedPixels::Rgba64(rgba) => rgba.iter().map(|v| (v >> 8) as u8).collect(),
             DecodedPixels::GpuLinear(_) => {
@@ -370,7 +404,7 @@ impl RenderDecoder {
     /// for 10- and 12-bit video — with its source time in seconds.
     pub(crate) fn next_frame_with_pts(
         &mut self,
-        nv12: &mut Option<klipp_effects::nv12_gpu::GpuNv12Converter>,
+        gpu: &mut GpuConverters,
     ) -> Result<Option<(f64, DecodedPixels)>, RenderError> {
         if self.decoder_eof {
             return Ok(None);
@@ -409,7 +443,7 @@ impl RenderDecoder {
                     }
 
                     // Convert to RGBA
-                    let rgba = self.frame_to_rgba(&decoded, nv12)?;
+                    let rgba = self.frame_to_rgba(&decoded, gpu)?;
                     self.frames_decoded += 1;
                     return Ok(Some((frame_pts_secs, rgba)));
                 }
@@ -470,7 +504,7 @@ impl RenderDecoder {
     fn frame_to_rgba(
         &mut self,
         decoded: &ffmpeg_next::util::frame::Video,
-        nv12: &mut Option<klipp_effects::nv12_gpu::GpuNv12Converter>,
+        gpu: &mut GpuConverters,
     ) -> Result<DecodedPixels, RenderError> {
         // For 90/270 rotation, scale to swapped dimensions first.
         let (scale_w, scale_h) = if self.source_rotation == 90 || self.source_rotation == 270 {
@@ -492,7 +526,7 @@ impl RenderDecoder {
         // take. Skips swscale and the rotation pass both, and uploads
         // 12 MB of planes instead of 66 MB of RGBA64.
         let t_gpu = std::time::Instant::now();
-        if let Some(pixels) = unsafe { self.nv12_frame_on_gpu(decoded, nv12) } {
+        if let Some(pixels) = unsafe { self.hw_frame_on_gpu(decoded, gpu) } {
             self.t_convert += t_gpu.elapsed();
             return Ok(pixels);
         }
@@ -533,8 +567,8 @@ impl RenderDecoder {
         }
     }
 
-    /// A hardware-decoded NV12 frame converted to linear working-space
-    /// f32 on the GPU, resized and rotated in the same pass.
+    /// A hardware-decoded frame converted to linear working-space f32 on
+    /// the GPU, resized and rotated in the same pass.
     ///
     /// `None` whenever this is not the right route, and the caller falls
     /// back to downloading and converting with swscale: no converter (no
@@ -558,17 +592,16 @@ impl RenderDecoder {
     /// not this function's to make.
     ///
     /// SAFETY: `decoded` must be a valid decoded frame.
-    unsafe fn nv12_frame_on_gpu(
+    unsafe fn hw_frame_on_gpu(
         &mut self,
         decoded: &ffmpeg_next::util::frame::Video,
-        nv12: &mut Option<klipp_effects::nv12_gpu::GpuNv12Converter>,
+        gpu: &mut GpuConverters,
     ) -> Option<DecodedPixels> {
         use ffmpeg_next::ffi::*;
 
         // Software decode has the frame on the CPU already, so converting
         // it on the GPU would mean uploading YUV to save a conversion.
-        if nv12.is_none()
-            || self.hw_accel == HwAccel::Software
+        if self.hw_accel == HwAccel::Software
             || self.scene.is_some()
             || self.log_format.is_some()
         {
@@ -588,9 +621,18 @@ impl RenderDecoder {
             av_frame_free(&mut (sw_frame as *mut _));
             return None;
         }
+        // Eight bits or ten; the two shaders differ only in how they read
+        // a sample. Anything else falls back to swscale.
         let fmt = std::mem::transmute::<i32, AVPixelFormat>((*sw_frame).format);
-        if fmt != AVPixelFormat::AV_PIX_FMT_NV12 {
-            // P010 and friends: 10-bit, and this shader reads bytes.
+        let ten_bit = match fmt {
+            AVPixelFormat::AV_PIX_FMT_NV12 => false,
+            AVPixelFormat::AV_PIX_FMT_P010LE => true,
+            _ => {
+                av_frame_free(&mut (sw_frame as *mut _));
+                return None;
+            }
+        };
+        if (ten_bit && gpu.p010.is_none()) || (!ten_bit && gpu.nv12.is_none()) {
             av_frame_free(&mut (sw_frame as *mut _));
             return None;
         }
@@ -633,22 +675,38 @@ impl RenderDecoder {
                 self.working,
             ),
         );
-        let buf = nv12.as_mut()?.convert_nv12_to_linear_on_gpu(
-            y,
-            uv,
-            src_w,
-            src_h,
-            y_stride,
-            uv_stride,
-            // Post-rotation dimensions: the shader maps each output pixel
-            // back through the rotation itself, so this is the frame the
-            // renderer asked for and no separate pass is needed.
-            self.target_width,
-            self.target_height,
-            self.source_rotation as u32,
-            ids,
-            primaries,
-        );
+        // Post-rotation dimensions: the shader maps each output pixel back
+        // through the rotation itself, so this is the frame the renderer
+        // asked for and no separate pass is needed.
+        let buf = if ten_bit {
+            gpu.p010.as_mut()?.convert_p010_to_linear_on_gpu(
+                y,
+                uv,
+                src_w,
+                src_h,
+                y_stride,
+                uv_stride,
+                self.target_width,
+                self.target_height,
+                self.source_rotation as u32,
+                ids,
+                primaries,
+            )
+        } else {
+            gpu.nv12.as_mut()?.convert_nv12_to_linear_on_gpu(
+                y,
+                uv,
+                src_w,
+                src_h,
+                y_stride,
+                uv_stride,
+                self.target_width,
+                self.target_height,
+                self.source_rotation as u32,
+                ids,
+                primaries,
+            )
+        };
         av_frame_free(&mut (sw_frame as *mut _));
         Some(DecodedPixels::GpuLinear(buf))
     }
@@ -1227,5 +1285,61 @@ mod tests {
             count >= expected / 2 && count <= expected * 2,
             "expected ~{expected} frames for {duration_secs}s, got {count}"
         );
+    }
+
+    /// What a 10-bit source costs on the way in, before and after the GPU
+    /// conversion.
+    ///
+    /// A probe, not a pass/fail test:
+    /// `KLIPP_TENBIT=<file.mp4> cargo test --release -p klipp-render \
+    ///     clip_decoder::tests::tenbit_decode_cost -- --ignored --nocapture`
+    ///
+    /// It also proves the path is *taken*, which a timing number alone
+    /// would not: with the converters present the decoder answers
+    /// `GpuLinear`, and without them `Rgba64`. A wrong format gate would
+    /// return the same variant both times and the timings would match.
+    #[test]
+    #[ignore = "perf probe: needs KLIPP_TENBIT"]
+    fn tenbit_decode_cost() {
+        let Ok(path) = std::env::var("KLIPP_TENBIT") else {
+            eprintln!("skipping: set KLIPP_TENBIT to a 10-bit file");
+            return;
+        };
+        let path = std::path::PathBuf::from(path);
+        for (label, mut gpu) in [
+            ("swscale (no converters)", GpuConverters::default()),
+            ("GPU", GpuConverters::shared()),
+        ] {
+            let mut dec = match RenderDecoder::open(&path, 0.0, 3.0, 3840, 2160, 30.0, 0) {
+                Ok(d) => d,
+                Err(e) => {
+                    eprintln!("could not open: {e:?}");
+                    return;
+                }
+            };
+            let mut resident = 0;
+            let mut on_cpu = 0;
+            let t = std::time::Instant::now();
+            let mut frames = 0;
+            while frames < 20 {
+                match dec.next_frame_with_pts(&mut gpu) {
+                    Ok(Some((_, DecodedPixels::GpuLinear(_)))) => resident += 1,
+                    Ok(Some((_, DecodedPixels::Rgba64(_)))) => on_cpu += 1,
+                    Ok(None) => break,
+                    Err(e) => {
+                        eprintln!("decode error: {e:?}");
+                        break;
+                    }
+                }
+                frames += 1;
+            }
+            let ms = t.elapsed().as_secs_f64() * 1000.0;
+            eprintln!(
+                "{label} ({}): {frames} frames, {:.1} ms/frame \
+                 ({resident} GPU-resident, {on_cpu} on the CPU)",
+                dec.hw_accel_name(),
+                ms / frames.max(1) as f64,
+            );
+        }
     }
 }

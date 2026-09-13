@@ -54,11 +54,11 @@ struct ClipStream {
 }
 
 impl ClipStream {
-    fn pull(&mut self, nv12: &mut Option<klipp_effects::nv12_gpu::GpuNv12Converter>) -> Option<Decoded> {
+    fn pull(&mut self, gpu: &mut crate::clip_decoder::GpuConverters) -> Option<Decoded> {
         if self.ended {
             return None;
         }
-        match self.decoder.next_frame_with_pts(nv12) {
+        match self.decoder.next_frame_with_pts(gpu) {
             Ok(Some((pts, pixels))) => Some(Decoded {
                 pts,
                 pixels: pixels.into(),
@@ -79,13 +79,13 @@ impl ClipStream {
     /// Advance to the last frame at or before `secs` (half a frame of
     /// tolerance). Before the first frame, the first frame; past the end,
     /// the last — a transition holding an edge frame.
-    fn seek_forward(&mut self, secs: f64, half_frame: f64, nv12: &mut Option<klipp_effects::nv12_gpu::GpuNv12Converter>) {
+    fn seek_forward(&mut self, secs: f64, half_frame: f64, gpu: &mut crate::clip_decoder::GpuConverters) {
         if self.current.is_none() {
-            self.current = self.pull(nv12);
+            self.current = self.pull(gpu);
         }
         loop {
             if self.next.is_none() {
-                self.next = self.pull(nv12);
+                self.next = self.pull(gpu);
             }
             match &self.next {
                 Some(n) if n.pts <= secs + half_frame => self.current = self.next.take(),
@@ -111,7 +111,7 @@ pub(crate) struct ExportFrameSource<'a> {
     /// pool — which is a segfault, not an error. Built on
     /// `GpuContext::shared` because the buffers it produces have to be
     /// bindable by the grade chain.
-    nv12: Option<klipp_effects::nv12_gpu::GpuNv12Converter>,
+    gpu: crate::clip_decoder::GpuConverters,
     /// Time spent pulling frames out of the decoders, and time spent
     /// turning what they hand back into the renderer's linear frames.
     /// Reported by the export's per-frame breakdown, because "render is
@@ -128,8 +128,7 @@ impl<'a> ExportFrameSource<'a> {
             working,
             streams: HashMap::new(),
             used: HashSet::new(),
-            nv12: klipp_effects::gpu_context::GpuContext::shared()
-                .and_then(klipp_effects::nv12_gpu::GpuNv12Converter::with_context),
+            gpu: crate::clip_decoder::GpuConverters::shared(),
             t_decode: std::time::Duration::ZERO,
             t_convert: std::time::Duration::ZERO,
         }
@@ -192,9 +191,9 @@ impl FrameSource for ExportFrameSource<'_> {
         let t0 = std::time::Instant::now();
         // Split the borrow: the stream and the shared converter are
         // different fields, and the decode needs both at once.
-        let Self { streams, nv12, .. } = self;
+        let Self { streams, gpu, .. } = self;
         let stream = streams.get_mut(&clip.id)?;
-        stream.seek_forward(source_secs, half_frame, nv12);
+        stream.seek_forward(source_secs, half_frame, gpu);
         let to_working = stream.to_working;
         let decoded = stream.current.as_ref();
         self.t_decode += t0.elapsed();
@@ -206,10 +205,10 @@ impl FrameSource for ExportFrameSource<'_> {
 
     /// The decoder's next frame, already pulled by `frame`'s seek.
     fn frame_after(&mut self, clip: &Clip, _source_secs: f64, width: u32, height: u32) -> Option<SourceFrame> {
-        let Self { streams, nv12, .. } = self;
+        let Self { streams, gpu, .. } = self;
         let stream = streams.get_mut(&clip.id)?;
         if stream.next.is_none() {
-            stream.next = stream.pull(nv12);
+            stream.next = stream.pull(gpu);
         }
         let to_working = stream.to_working;
         stream.next.as_ref().map(|d| source_frame(d, to_working, width, height))

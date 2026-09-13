@@ -47,6 +47,8 @@ pub struct GpuP010Converter {
     /// Bound as the HDR output on SDR frames, which never write it. A
     /// binding has to exist; a real frame-sized buffer would be waste.
     hdr_dummy_buf: wgpu::Buffer,
+    /// The same for the linear output, on the u8 route.
+    linear_dummy_buf: wgpu::Buffer,
     params_buf: wgpu::Buffer,
     cached_y_size: u64,
     cached_uv_size: u64,
@@ -112,7 +114,7 @@ struct P010Params {
     matrix_id: u32,
     transfer_id: u32,
     primaries_id: u32,
-    _pad1: u32,
+    write_linear: u32,
     primaries_matrix: [[f32; 4]; 3],
 }
 
@@ -130,6 +132,10 @@ const SHADER_P010_BODY: &str = r#"
 // Packed RGB10 HDR code values (source primaries, still PQ/HLG-encoded).
 // Written only for HDR transfers; bound to a dummy on SDR frames.
 @group(0) @binding(4) var<storage, read_write> hdr_codes: array<u32>;
+// Linear working-space f32, for a caller that is grading or rendering
+// rather than showing eight bits. Written only when `write_linear` is
+// set; bound to a dummy otherwise.
+@group(0) @binding(5) var<storage, read_write> linear: array<vec4<f32>>;
 
 struct Params {
     src_width: u32,
@@ -143,7 +149,7 @@ struct Params {
     matrix_id: u32,
     transfer_id: u32,
     primaries_id: u32,
-    _pad1: u32,
+    write_linear: u32,
     primaries_row0: vec4<f32>,
     primaries_row1: vec4<f32>,
     primaries_row2: vec4<f32>,
@@ -228,6 +234,11 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let yuv = yuv_normalise(y_10, u_10, v_10, params.color_range, 1023.0);
     let rgb_display = yuv_to_rgb_display(yuv, params.matrix_id);
     var rgb_srgb: vec3<f32>;
+    // The linear working-space value the u8 hand-off below throws its
+    // precision away on. For a scene-referred source this is
+    // scene-linear and *not* tone-mapped: the tone map is a display step,
+    // and a grade wants the scene.
+    var rgb_working_linear: vec3<f32>;
     let is_log = params.transfer_id >= 100u;
     if (params.transfer_id == TRANSFER_PQ || params.transfer_id == TRANSFER_HLG || is_log) {
         // Camera log curves are published over CV / 1023, the raw 10-bit
@@ -262,6 +273,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             dot(params.primaries_row1.xyz, scene),
             dot(params.primaries_row2.xyz, scene),
         );
+        rgb_working_linear = working;
         rgb_srgb = linear_to_srgb_vec(tone_map_hdr_vec(working, exposure));
     } else {
         let rgb_linear = display_to_linear(rgb_display, params.transfer_id);
@@ -270,7 +282,15 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             dot(params.primaries_row1.xyz, rgb_linear),
             dot(params.primaries_row2.xyz, rgb_linear),
         );
+        rgb_working_linear = rgb_working;
         rgb_srgb = linear_to_srgb_vec(rgb_working);
+    }
+
+    // Full precision for a caller that is grading or rendering; the
+    // sRGB-u8 hand-off below only for one that is showing eight bits.
+    if params.write_linear != 0u {
+        linear[dy * params.dst_width + dx] = vec4<f32>(rgb_working_linear, 1.0);
+        return;
     }
 
     let r_b = u32(clamp(rgb_srgb.x * 255.0 + 0.5, 0.0, 255.0));
@@ -345,6 +365,14 @@ impl GpuP010Converter {
                         has_dynamic_offset: false, min_binding_size: None,
                     }, count: None,
                 },
+                // Linear working-space f32, for the render's route.
+                wgpu::BindGroupLayoutEntry {
+                    binding: 5, visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: false },
+                        has_dynamic_offset: false, min_binding_size: None,
+                    }, count: None,
+                },
             ],
         });
 
@@ -383,6 +411,15 @@ impl GpuP010Converter {
             usage: wgpu::BufferUsages::STORAGE,
             mapped_at_creation: false,
         });
+        // A *separate* dummy for the linear slot. One buffer bound twice
+        // as writable storage in a single bind group is an aliasing
+        // violation, which wgpu reports by failing the dispatch.
+        let linear_dummy_buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("p010_linear_dummy"),
+            size: 16,
+            usage: wgpu::BufferUsages::STORAGE,
+            mapped_at_creation: false,
+        });
 
         info!("P010 GPU converter initialized");
 
@@ -391,7 +428,7 @@ impl GpuP010Converter {
             queue,
             pipeline, bind_group_layout,
             y_buf: None, uv_buf: None, output_buf: None, staging_buf: None,
-            hdr_buf: None, hdr_staging_buf: None, hdr_dummy_buf,
+            hdr_buf: None, hdr_staging_buf: None, hdr_dummy_buf, linear_dummy_buf,
             params_buf,
             cached_y_size: 0, cached_uv_size: 0, cached_output_size: 0, cached_hdr_size: 0,
         })
@@ -502,7 +539,7 @@ impl GpuP010Converter {
             matrix_id: color_ids[1],
             transfer_id: color_ids[2],
             primaries_id: color_ids[3],
-            _pad1: 0,
+            write_linear: 0,
             primaries_matrix,
         };
         self.queue.write_buffer(&self.params_buf, 0, bytemuck::bytes_of(&params));
@@ -516,6 +553,11 @@ impl GpuP010Converter {
                 wgpu::BindGroupEntry { binding: 2, resource: output_buf.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 3, resource: self.params_buf.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 4, resource: hdr_binding.as_entire_binding() },
+                // The linear output is the one going unwritten this time.
+                wgpu::BindGroupEntry {
+                    binding: 5,
+                    resource: self.linear_dummy_buf.as_entire_binding(),
+                },
             ],
         });
 
@@ -674,7 +716,7 @@ impl GpuP010Converter {
             matrix_id: color_ids[1],
             transfer_id: color_ids[2],
             primaries_id: color_ids[3],
-            _pad1: 0,
+            write_linear: 0,
             primaries_matrix,
         };
         self.queue.write_buffer(&self.params_buf, 0, bytemuck::bytes_of(&params));
@@ -688,6 +730,11 @@ impl GpuP010Converter {
                 wgpu::BindGroupEntry { binding: 2, resource: output_buf.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 3, resource: self.params_buf.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 4, resource: hdr_binding.as_entire_binding() },
+                // The linear output is the one going unwritten this time.
+                wgpu::BindGroupEntry {
+                    binding: 5,
+                    resource: self.linear_dummy_buf.as_entire_binding(),
+                },
             ],
         });
 
@@ -717,6 +764,112 @@ impl GpuP010Converter {
     ///
     /// Returns `None` for a non-HDR transfer or a failed readback, so the
     /// caller can fall back to `convert_p010_to_rgba`.
+    #[allow(clippy::too_many_arguments)]
+    /// [`Self::convert_p010_on_gpu`] at full precision: the frame lands
+    /// as linear working-space f32 rather than sRGB u8, ready to be a
+    /// grade chain's input slot.
+    ///
+    /// This is the render's route, and the reason it exists is a
+    /// measurement: a 10-bit frame that cannot take this path is scaled
+    /// to RGBA64 by swscale instead, which costs **42 ms** a 4K frame.
+    /// The shader computes the linear value either way — `write_linear`
+    /// only decides which one is discarded — so the whole conversion,
+    /// rotation and resize included, replaces that.
+    ///
+    /// The buffer comes back on **this converter's device**, so a caller
+    /// meaning to hand it to the grade chain must have built the converter
+    /// with [`Self::with_context`] on the same context the chain uses.
+    #[allow(clippy::too_many_arguments)]
+    pub fn convert_p010_to_linear_on_gpu(
+        &mut self,
+        y_data: &[u8],
+        uv_data: &[u8],
+        src_width: u32,
+        src_height: u32,
+        y_stride: u32,
+        uv_stride: u32,
+        dst_width: u32,
+        dst_height: u32,
+        rotation: u32,
+        color_ids: [u32; 4],
+        primaries_matrix: [[f32; 4]; 3],
+    ) -> std::sync::Arc<wgpu::Buffer> {
+        Self::ensure_buf(
+            &mut self.y_buf, &mut self.cached_y_size, y_data.len() as u64,
+            "p010_y", wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            &self.device,
+        );
+        Self::ensure_buf(
+            &mut self.uv_buf, &mut self.cached_uv_size, uv_data.len() as u64,
+            "p010_uv", wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            &self.device,
+        );
+
+        // 16 bytes a pixel, and the caller takes ownership, so this is not
+        // one of the internal caches.
+        let linear_buf = std::sync::Arc::new(self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("p010_linear_gpu_resident"),
+            size: (dst_width as u64) * (dst_height as u64) * 16,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
+        }));
+
+        let y_buf = self.y_buf.as_ref().unwrap();
+        let uv_buf = self.uv_buf.as_ref().unwrap();
+        self.queue.write_buffer(y_buf, 0, y_data);
+        self.queue.write_buffer(uv_buf, 0, uv_data);
+
+        let params = P010Params {
+            src_width,
+            src_height,
+            dst_width,
+            dst_height,
+            y_stride,
+            uv_stride,
+            rotation,
+            color_range: color_ids[0],
+            matrix_id: color_ids[1],
+            transfer_id: color_ids[2],
+            primaries_id: color_ids[3],
+            write_linear: 1,
+            primaries_matrix,
+        };
+        self.queue.write_buffer(&self.params_buf, 0, bytemuck::bytes_of(&params));
+
+        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("p010_to_linear_bg"),
+            layout: &self.bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: y_buf.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: uv_buf.as_entire_binding() },
+                // The u8 and code outputs are the ones going unwritten.
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: self.linear_dummy_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry { binding: 3, resource: self.params_buf.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 4, resource: self.hdr_dummy_buf.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 5, resource: linear_buf.as_entire_binding() },
+            ],
+        });
+
+        let mut encoder = self.device.create_command_encoder(
+            &wgpu::CommandEncoderDescriptor { label: Some("p010_to_linear") },
+        );
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: None,
+                timestamp_writes: None,
+            });
+            pass.set_pipeline(&self.pipeline);
+            pass.set_bind_group(0, &bind_group, &[]);
+            pass.dispatch_workgroups(dst_width.div_ceil(16), dst_height.div_ceil(16), 1);
+        }
+        self.queue.submit(std::iter::once(encoder.finish()));
+
+        linear_buf
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn convert_p010_hdr_codes(
         &mut self,
