@@ -1603,6 +1603,65 @@ mod tests {
         }
     }
 
+    /// The converse of the test below, and the one the shortcut actually
+    /// rests on: a config that *offers* a table has to be genuinely
+    /// per-channel.
+    ///
+    /// The sibling test enumerates the configs expected to decline. That
+    /// is a list, not a property — it says nothing about whether the
+    /// configs that accept are separable. And `the_u8_table_is_the_float_
+    /// path` checks the accepting ones on a *neutral* frame, where
+    /// `r == g == b` makes any cross-channel step invisible by
+    /// construction. So this feeds colour, where a 3x3 or a gamut hop
+    /// cannot hide, and requires each output channel to be the table
+    /// applied to that channel's own input byte — which is the only thing
+    /// a 256-entry byte LUT can express.
+    #[test]
+    fn a_config_with_a_table_really_is_per_channel() {
+        use klipp_core::WorkingColorspace::*;
+        // Saturated primaries, then mixtures: a matrix leaks between
+        // channels most on the primaries and a gamut compression bites
+        // hardest on the saturated ones.
+        const CODES: [[u8; 3]; 7] = [
+            [255, 0, 0], [0, 255, 0], [0, 0, 255],
+            [200, 40, 90], [30, 180, 240], [10, 10, 250], [250, 250, 8],
+        ];
+        let mut checked = 0usize;
+        for ws in [Rec709Linear, Bt2020Linear, AcesCG] {
+            for op in TONE_MAP_OPS_ALL {
+                let Some(lut) = display_transform_u8_lut(op, ws) else { continue };
+                let linear: Vec<f32> = CODES
+                    .iter()
+                    .flat_map(|c| {
+                        [
+                            crate::transfer::srgb_to_linear(c[0] as f32 / 255.0),
+                            crate::transfer::srgb_to_linear(c[1] as f32 / 255.0),
+                            crate::transfer::srgb_to_linear(c[2] as f32 / 255.0),
+                            1.0,
+                        ]
+                    })
+                    .collect();
+                let want = display_transform_ws(&linear, op, ws);
+                for (i, c) in CODES.iter().enumerate() {
+                    for ch in 0..3 {
+                        assert_eq!(
+                            want[i * 4 + ch], lut[c[ch] as usize],
+                            "{ws:?}/{op:?} is not per-channel: {c:?} channel {ch} is {} \
+                             through the transform and {} through the table, so the \
+                             cache-hit path would show a different picture",
+                            want[i * 4 + ch], lut[c[ch] as usize],
+                        );
+                    }
+                }
+                checked += 1;
+            }
+        }
+        // If nothing offers a table there is no shortcut to protect, and
+        // this test would be passing on an empty loop.
+        assert!(checked > 0, "no config offered a table, so nothing was checked");
+        eprintln!("{checked} table-offering configs verified separable on colour");
+    }
+
     /// A transform that mixes channels cannot be a per-channel table, and
     /// says so rather than returning a wrong one.
     #[test]

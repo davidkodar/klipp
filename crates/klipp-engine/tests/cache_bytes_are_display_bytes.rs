@@ -53,10 +53,35 @@ fn probe_values() -> Vec<f32> {
     v
 }
 
+/// The probe values as pixels, each channel offset from the others so no
+/// pixel is neutral.
+///
+/// The sweep above is exhaustive over the cache table's grid, which is
+/// what makes it worth having — but laid out as `[v, v, v]` every pixel
+/// was grey, and the comparison below then read only the red channel. Two
+/// blind spots at once: a difference in how either encoder treats green or
+/// blue was unobservable, and so was any cross-channel step. Rotating the
+/// channels keeps the exhaustive sweep and removes both.
+fn probe_pixels(values: &[f32]) -> Vec<f32> {
+    let n = values.len();
+    values
+        .iter()
+        .enumerate()
+        .flat_map(|(i, &v)| {
+            let g = values[(i + n / 3) % n];
+            let b = values[(i + 2 * n / 3) % n];
+            // Alpha varies too: the cache copies it and the transform
+            // leaves it alone, and a constant could not tell either apart
+            // from a channel that had been overwritten.
+            [v, g, b, (i % 256) as f32 / 255.0]
+        })
+        .collect()
+}
+
 #[test]
 fn the_cached_bytes_are_not_the_screens_bytes() {
     let values = probe_values();
-    let linear: Vec<f32> = values.iter().flat_map(|&v| [v, v, v, 1.0]).collect();
+    let linear = probe_pixels(&values);
 
     let cached = cache_encode(&linear);
     let shown = klipp_color::display::display_transform_ws(
@@ -68,20 +93,32 @@ fn the_cached_bytes_are_not_the_screens_bytes() {
 
     let mut differing = 0usize;
     let mut worst = 0u8;
-    let mut worst_at = 0.0f32;
-    for (i, &v) in values.iter().enumerate() {
-        let (c, s) = (cached[i * 4], shown[i * 4]);
-        if c != s {
-            differing += 1;
-            if c.abs_diff(s) > worst {
-                worst = c.abs_diff(s);
-                worst_at = v;
+    let mut worst_at = (0.0f32, 0usize);
+    // All three colour channels, not just red.
+    for i in 0..values.len() {
+        for ch in 0..3 {
+            let (c, s) = (cached[i * 4 + ch], shown[i * 4 + ch]);
+            if c != s {
+                differing += 1;
+                if c.abs_diff(s) > worst {
+                    worst = c.abs_diff(s);
+                    worst_at = (linear[i * 4 + ch], ch);
+                }
             }
         }
+        // Alpha is copied by the cache and untouched by the transform, so
+        // the two must agree on it exactly — a code of difference here
+        // would not be quantisation, it would be one of them encoding it.
+        assert_eq!(
+            cached[i * 4 + 3], shown[i * 4 + 3],
+            "alpha differs at probe {i}: cache {} vs transform {}",
+            cached[i * 4 + 3], shown[i * 4 + 3],
+        );
     }
     eprintln!(
-        "{differing} of {} probes differ; worst {worst} code value(s), at linear {worst_at}",
-        values.len(),
+        "{differing} of {} channel probes differ; worst {worst} code value(s), \
+         at linear {} in channel {}",
+        values.len() * 3, worst_at.0, worst_at.1,
     );
     assert!(
         differing > 0,
