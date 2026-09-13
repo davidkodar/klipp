@@ -108,15 +108,19 @@ pub struct LinearFrame {
     /// `width * height * 4`.
     pub data: Vec<f32>,
     pub is_eof: bool,
-    /// GPU-resident mirror of `data`, attached by the decoder when
-    /// the GPU-resident decode path is active (`KLIPP_GPU_FRAMES=1`
-    /// today; default when phase 4d consumes it directly).
+    /// GPU-resident mirror of `data`, attached by the decoder on a
+    /// hardware decode unless `KLIPP_GPU_FRAMES=0` turns that off.
     ///
-    /// When `Some`, the grade chain (phase 4d) can bind the
-    /// underlying `wgpu::Buffer` as a compute-shader input without
-    /// re-uploading `data`. When `None`, downstream consumers MUST
-    /// use `data` — every current consumer already does, so `None`
-    /// is the backwards-compatible default.
+    /// When `Some`, the grade chain binds the underlying `wgpu::Buffer`
+    /// as a compute-shader input without re-uploading `data`, and `data`
+    /// stays empty until something asks for it
+    /// ([`LinearFrame::ensure_cpu_data`]). The viewer's graded fast path
+    /// needs this: `present_graded_frame_on_gpu` declines a frame that has
+    /// neither a `gpu_source` nor GPU-resident HDR codes.
+    ///
+    /// `None` on a software decode, on a frame the hardware path could not
+    /// hand over, and with the fallback flag set — downstream consumers
+    /// then use `data`, which every one of them can.
     pub gpu_source: Option<std::sync::Arc<crate::frame::GpuFrame>>,
     /// Resolved source colourspace from the AVFrame's tagged range /
     /// matrix / primaries / transfer fields, with sensible heuristic
@@ -202,7 +206,7 @@ impl LinearFrame {
     /// RGBA in place.
     ///
     /// No-op when `data` is already populated (the SW decode path,
-    /// the `KLIPP_GPU_FRAMES=0` legacy path, or a previous call to
+    /// the `KLIPP_GPU_FRAMES=0` fallback path, or a previous call to
     /// this method on the same frame).
     pub fn ensure_cpu_data(&mut self) {
         if !self.data.is_empty() || self.gpu_source.is_none() || self.is_eof {

@@ -7559,7 +7559,7 @@ impl PlaybackEngine {
         }
         let frame_pts = frame.pts_secs();
         let (w, h) = (frame.width, frame.height);
-        // GPU-resident decode (KLIPP_GPU_FRAMES=1) ships with empty
+        // GPU-resident decode ships with empty
         // `frame.data` until ensure_cpu_data() is called — without
         // this the source viewer writes empty buffers, the upload
         // path bails on the size mismatch, and the viewer stays on

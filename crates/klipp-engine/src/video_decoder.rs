@@ -62,14 +62,40 @@ use tracing::{debug, info, warn};
 /// pipelined with other engine work instead of serialising the
 /// decoder behind `device.poll(Wait)`.
 ///
+/// **On by default** since the viewer's GPU paths came to depend on it:
+/// without it `LinearFrame.gpu_source` is never populated, and
+/// `present_graded_frame_on_gpu` declines every frame — so the grade, the
+/// ACES and BT.2020 display transforms and HDR monitoring's preview all
+/// fall back to the CPU pipeline, at 15.6 fps against 59.9 on a 4K HDR10
+/// clip. It was opt-in while the path was being built.
+///
+/// `KLIPP_GPU_FRAMES=0` forces the readback back onto the decode thread,
+/// which is the way to check whether a suspected picture problem comes
+/// from the GPU-resident hand-off — the same shape as
+/// `KLIPP_DIRECT_PRESENT=0`.
+///
+/// Nothing to weigh up on a slow machine: both call sites sit inside the
+/// hardware-decode branch with a live converter, so a box with no usable
+/// GPU decode never reaches them and takes the software path either way.
+///
 /// Read once per process via `OnceLock` so the env check doesn't
 /// poke syscalls on the decode hot path.
 fn should_attach_gpu_source() -> bool {
     use std::sync::OnceLock;
     static GATE: OnceLock<bool> = OnceLock::new();
-    *GATE.get_or_init(|| {
-        std::env::var("KLIPP_GPU_FRAMES").ok().as_deref() == Some("1")
-    })
+    *GATE.get_or_init(|| gpu_frames_from_env(std::env::var("KLIPP_GPU_FRAMES").ok().as_deref()))
+}
+
+/// The decision [`should_attach_gpu_source`] caches, as a function of the
+/// variable alone.
+///
+/// Split out so it can be tested: the `OnceLock` above is read once per
+/// process, so a test cannot flip it, and the polarity is the part that
+/// would rot unnoticed now that the default is on — every test run and
+/// every launch takes the enabled branch, and nothing else would say if
+/// `=0` stopped disabling it.
+fn gpu_frames_from_env(var: Option<&str>) -> bool {
+    var != Some("0")
 }
 
 /// Detect whether the decoded source pixel format carries more than
@@ -1540,6 +1566,32 @@ fn hw_transfer_cap_dimensions(src_w: u32, src_h: u32) -> (u32, u32) {
 }
 
 #[cfg(test)]
+mod gpu_frames_gate_tests {
+    use super::gpu_frames_from_env;
+
+    /// `KLIPP_GPU_FRAMES=0` disables the GPU-resident hand-off, and
+    /// nothing else does.
+    ///
+    /// Worth a test precisely because the default is now on: every launch
+    /// and every test run takes the enabled branch, so a polarity slip
+    /// here would leave the escape hatch silently broken — and the escape
+    /// hatch is what someone reaches for when a picture looks wrong. The
+    /// two branches producing the same pixels is covered separately, by
+    /// `nv12_gpu_frame_identity` and `p010_gpu_frame_identity`.
+    #[test]
+    fn only_zero_turns_it_off() {
+        assert!(gpu_frames_from_env(None), "unset means on");
+        assert!(!gpu_frames_from_env(Some("0")), "0 means off");
+        assert!(gpu_frames_from_env(Some("1")), "1 means on");
+        // Anything else is on, rather than off-by-accident: a typo should
+        // not quietly cost the viewer its GPU paths.
+        for v in ["", "true", "yes", "00", "0 ", "2", "false", "off"] {
+            assert!(gpu_frames_from_env(Some(v)), "{v:?} should leave it on");
+        }
+    }
+}
+
+#[cfg(test)]
 mod log_format_registry_tests {
     use super::*;
     use klipp_core::LogFormat;
@@ -2118,7 +2170,8 @@ unsafe fn download_hw_frame(
 /// One-shot info log per delivery mode so the operator can confirm
 /// whether the decoder actually delivered a GPU-resident `gpu_source`
 /// or fell through to CPU `data`. Helps validate
-/// `KLIPP_GPU_FRAMES=1` end-to-end without sifting per-frame trace.
+/// the GPU-resident decode path end-to-end without sifting per-frame
+/// trace.
 /// `mode` is a short tag distinguishing which path produced the
 /// frame (e.g. `p010_cuvid`, `nv12_cuvid`, `swscale_cpu`).
 fn log_first_resident_delivery(gpu_resident: bool, mode: &'static str) {
