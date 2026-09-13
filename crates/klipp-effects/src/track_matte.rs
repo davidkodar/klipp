@@ -12,11 +12,15 @@
 //! `klipp-compose`'s render calls it with the binding's real setting
 //! before feathering.
 //!
-//! Domain note for luma extraction: BT.709 weights `(0.2126, 0.7152,
-//! 0.0722)` come from the linear-light spec, but in practice both NLE
-//! conventions exist. We apply the same weights in both code paths so
-//! a luma matte derived in playback and the same matte exported to file
-//! agree to within sRGB-encode rounding (sub-1 byte at 8-bit).
+//! Domain note for luma extraction: the linear extractors take the
+//! working space's own luminance row (`klipp_color::linear::luma_coefs`)
+//! rather than Rec.709's, because the pixels they weigh are in the
+//! project's primaries. Hardcoding Rec.709, as these used to,
+//! under-weighted green by a fifth on every ACEScg project — the same
+//! defect the luma key and the difference key carried until it was
+//! fixed there. `extract_mask_srgb_u8` keeps Rec.709: its input is
+//! display-encoded bytes, which are Rec.709-primaried whatever the
+//! working space.
 
 use crate::blur;
 
@@ -67,6 +71,7 @@ pub fn extract_mask_linear(
     channel: MatteChannel,
     invert: bool,
     source_premultiplied: bool,
+    luma: [f32; 3],
 ) -> Vec<f32> {
     if rgba.len() % 4 != 0 {
         return Vec::new();
@@ -86,8 +91,8 @@ pub fn extract_mask_linear(
         }
         let raw = match channel {
             MatteChannel::Alpha => a,
-            // BT.709 luminance weights — applied to linear values.
-            MatteChannel::Luminance => 0.2126 * r + 0.7152 * g + 0.0722 * b,
+            // The working space's luminance row, applied to linear values.
+            MatteChannel::Luminance => luma[0] * r + luma[1] * g + luma[2] * b,
             MatteChannel::Red => r,
             MatteChannel::Green => g,
             MatteChannel::Blue => b,
@@ -129,9 +134,18 @@ pub fn extract_mask_srgb_u8(
         }
         let raw = match channel {
             MatteChannel::Alpha => a,
-            // BT.709 weights on sRGB byte values — gives Y' (perceptual
-            // luma), the historical NLE convention. Slight delta against
-            // the linear extractor but invisible at 8-bit.
+            // Rec.709 weights on sRGB byte values — Y' (perceptual
+            // luma), the historical NLE convention. Rec.709's row is
+            // right here and stays: these bytes are display-encoded, and
+            // the display transform converts to Rec.709 primaries
+            // whatever the working space. Unlike the linear extractor
+            // above, which weighs the project's own primaries and so
+            // needs the project's own row.
+            //
+            // Nothing in the render path calls this today — the
+            // compositor uses the linear extractors — so it carries no
+            // working-space parameter rather than one that would always
+            // be ignored.
             MatteChannel::Luminance => 0.2126 * r + 0.7152 * g + 0.0722 * b,
             MatteChannel::Red => r,
             MatteChannel::Green => g,
@@ -165,6 +179,7 @@ pub fn apply_matte_fused_linear(
     channel: MatteChannel,
     invert: bool,
     source_premultiplied: bool,
+    luma: [f32; 3],
 ) {
     debug_assert_eq!(consumer_rgba.len(), source_rgba.len());
     debug_assert!(consumer_rgba.len() % 4 == 0);
@@ -194,13 +209,13 @@ pub fn apply_matte_fused_linear(
         // Straight-alpha branches (no un-premultiply).
         (MatteChannel::Luminance, false, false) => {
             for (c, s) in con.zip(src) {
-                let l = 0.2126 * s[0] + 0.7152 * s[1] + 0.0722 * s[2];
+                let l = luma[0] * s[0] + luma[1] * s[1] + luma[2] * s[2];
                 c[3] *= l.clamp(0.0, 1.0);
             }
         }
         (MatteChannel::Luminance, true, false) => {
             for (c, s) in con.zip(src) {
-                let l = 0.2126 * s[0] + 0.7152 * s[1] + 0.0722 * s[2];
+                let l = luma[0] * s[0] + luma[1] * s[1] + luma[2] * s[2];
                 c[3] *= 1.0 - l.clamp(0.0, 1.0);
             }
         }
@@ -246,7 +261,7 @@ pub fn apply_matte_fused_linear(
                     let r = (s[0] * inv).clamp(0.0, 1.0);
                     let g = (s[1] * inv).clamp(0.0, 1.0);
                     let b = (s[2] * inv).clamp(0.0, 1.0);
-                    0.2126 * r + 0.7152 * g + 0.0722 * b
+                    luma[0] * r + luma[1] * g + luma[2] * b
                 } else {
                     0.0
                 };
@@ -261,7 +276,7 @@ pub fn apply_matte_fused_linear(
                     let r = (s[0] * inv).clamp(0.0, 1.0);
                     let g = (s[1] * inv).clamp(0.0, 1.0);
                     let b = (s[2] * inv).clamp(0.0, 1.0);
-                    0.2126 * r + 0.7152 * g + 0.0722 * b
+                    luma[0] * r + luma[1] * g + luma[2] * b
                 } else {
                     0.0
                 };
@@ -587,6 +602,11 @@ pub fn apply_mask_to_alpha_srgb_u8(rgba: &mut [u8], mask: &[f32]) {
 
 #[cfg(test)]
 mod tests {
+    /// These tests fix the axis to Rec.709 so the numbers read as the
+    /// published weights. The per-working-space behaviour is asserted
+    /// separately in `a_wide_gamut_row_changes_the_matte`.
+    const REC709: [f32; 3] = [0.2126, 0.7152, 0.0722];
+
     use super::*;
 
     fn approx(a: f32, b: f32) -> bool {
@@ -599,7 +619,7 @@ mod tests {
     fn linear_alpha_passthrough() {
         // Two pixels: alpha 0.0, alpha 1.0 → mask [0.0, 1.0]
         let rgba = vec![1.0, 0.0, 0.0, 0.0,  0.0, 1.0, 0.0, 1.0];
-        let m = extract_mask_linear(&rgba, MatteChannel::Alpha, false, false);
+        let m = extract_mask_linear(&rgba, MatteChannel::Alpha, false, false, REC709);
         assert_eq!(m.len(), 2);
         assert!(approx(m[0], 0.0));
         assert!(approx(m[1], 1.0));
@@ -608,7 +628,7 @@ mod tests {
     #[test]
     fn linear_alpha_inverted() {
         let rgba = vec![1.0, 0.0, 0.0, 0.25,  0.0, 1.0, 0.0, 0.75];
-        let m = extract_mask_linear(&rgba, MatteChannel::Alpha, true, false);
+        let m = extract_mask_linear(&rgba, MatteChannel::Alpha, true, false, REC709);
         assert!(approx(m[0], 0.75));
         assert!(approx(m[1], 0.25));
     }
@@ -617,15 +637,15 @@ mod tests {
     fn linear_luma_uses_bt709() {
         // Pure red linear 1.0 → 0.2126
         let red = vec![1.0, 0.0, 0.0, 1.0];
-        let m = extract_mask_linear(&red, MatteChannel::Luminance, false, false);
+        let m = extract_mask_linear(&red, MatteChannel::Luminance, false, false, REC709);
         assert!(approx(m[0], 0.2126), "got {}", m[0]);
         // Pure green 1.0 → 0.7152
         let green = vec![0.0, 1.0, 0.0, 1.0];
-        let m = extract_mask_linear(&green, MatteChannel::Luminance, false, false);
+        let m = extract_mask_linear(&green, MatteChannel::Luminance, false, false, REC709);
         assert!(approx(m[0], 0.7152));
         // Pure blue 1.0 → 0.0722
         let blue = vec![0.0, 0.0, 1.0, 1.0];
-        let m = extract_mask_linear(&blue, MatteChannel::Luminance, false, false);
+        let m = extract_mask_linear(&blue, MatteChannel::Luminance, false, false, REC709);
         assert!(approx(m[0], 0.0722));
     }
 
@@ -638,7 +658,7 @@ mod tests {
             (MatteChannel::Blue, 0.8),
             (MatteChannel::Alpha, 1.0),
         ] {
-            let m = extract_mask_linear(&rgba, ch, false, false);
+            let m = extract_mask_linear(&rgba, ch, false, false, REC709);
             assert!(approx(m[0], expected), "channel {ch:?} got {}", m[0]);
         }
     }
@@ -647,17 +667,57 @@ mod tests {
     fn linear_clamps_negative_and_oversaturated() {
         // HDR / out-of-gamut input shouldn't poison the mask.
         let rgba = vec![-0.5, 1.5, 2.0, 1.0];
-        let m = extract_mask_linear(&rgba, MatteChannel::Red, false, false);
+        let m = extract_mask_linear(&rgba, MatteChannel::Red, false, false, REC709);
         assert!(approx(m[0], 0.0));
-        let m = extract_mask_linear(&rgba, MatteChannel::Green, false, false);
+        let m = extract_mask_linear(&rgba, MatteChannel::Green, false, false, REC709);
         assert!(approx(m[0], 1.0));
     }
 
     #[test]
     fn linear_rejects_non_multiple_of_four_length() {
         let bad = vec![1.0, 0.0, 0.0]; // only 3 floats
-        let m = extract_mask_linear(&bad, MatteChannel::Alpha, false, false);
+        let m = extract_mask_linear(&bad, MatteChannel::Alpha, false, false, REC709);
         assert!(m.is_empty());
+    }
+
+    /// The luminance row is actually consulted, and a wide-gamut one
+    /// gives a different matte.
+    ///
+    /// Every other test here passes Rec.709 explicitly, so all of them
+    /// would keep passing if these functions went back to hardcoding it.
+    /// This is the one that would not: AP1 weighs green at 0.674 where
+    /// Rec.709 weighs it at 0.715, so a saturated green source reads
+    /// four percent less matte on an ACEScg timeline — which is the
+    /// whole point of threading the row through.
+    #[test]
+    fn a_wide_gamut_row_changes_the_matte() {
+        const AP1: [f32; 3] = [0.272_228_72, 0.674_081_77, 0.053_689_52];
+        // Saturated green: the channel the two rows disagree about most.
+        let green = vec![0.0f32, 1.0, 0.0, 1.0];
+
+        let m709 = extract_mask_linear(&green, MatteChannel::Luminance, false, false, REC709);
+        let map1 = extract_mask_linear(&green, MatteChannel::Luminance, false, false, AP1);
+        assert!(approx(m709[0], 0.7152), "Rec.709 green luma, got {}", m709[0]);
+        assert!(approx(map1[0], 0.674_081_77), "AP1 green luma, got {}", map1[0]);
+        assert!(
+            (m709[0] - map1[0]).abs() > 0.03,
+            "the two rows must give different mattes: {} vs {}",
+            m709[0], map1[0],
+        );
+
+        // And the fused path, which is the one the compositor actually
+        // takes when choke and feather are both off — i.e. the default.
+        let mut c709 = vec![1.0f32, 1.0, 1.0, 1.0];
+        let mut cap1 = vec![1.0f32, 1.0, 1.0, 1.0];
+        apply_matte_fused_linear(&mut c709, &green, MatteChannel::Luminance, false, false, REC709);
+        apply_matte_fused_linear(&mut cap1, &green, MatteChannel::Luminance, false, false, AP1);
+        assert!(approx(c709[3], 0.7152), "fused Rec.709, got {}", c709[3]);
+        assert!(approx(cap1[3], 0.674_081_77), "fused AP1, got {}", cap1[3]);
+        assert!(
+            (c709[3] - cap1[3]).abs() > 0.03,
+            "the fused path must honour the row too: {} vs {}",
+            c709[3], cap1[3],
+        );
     }
 
     // ── extract_mask_srgb_u8 ─────────────────────────────────────────
@@ -689,13 +749,13 @@ mod tests {
         let premult:  Vec<f32> = vec![0.5, 0.5, 0.5, 0.5];
 
         // Without the flag: each encoding reports its raw luma.
-        let m_straight_off = extract_mask_linear(&straight, MatteChannel::Luminance, false, false);
-        let m_premult_off  = extract_mask_linear(&premult,  MatteChannel::Luminance, false, false);
+        let m_straight_off = extract_mask_linear(&straight, MatteChannel::Luminance, false, false, REC709);
+        let m_premult_off  = extract_mask_linear(&premult,  MatteChannel::Luminance, false, false, REC709);
         assert!(approx(m_straight_off[0], 1.0), "straight off: got {}", m_straight_off[0]);
         assert!(approx(m_premult_off[0],  0.5), "premult off: got {}", m_premult_off[0]);
 
         // With the flag: premult un-darkens to match straight.
-        let m_premult_on = extract_mask_linear(&premult, MatteChannel::Luminance, false, true);
+        let m_premult_on = extract_mask_linear(&premult, MatteChannel::Luminance, false, true, REC709);
         assert!(approx(m_premult_on[0], 1.0),
             "premult-on should un-premult to luma 1.0, got {}", m_premult_on[0]);
     }
@@ -730,10 +790,10 @@ mod tests {
     fn linear_per_channel_un_premultiplies_when_flagged() {
         let premult_green: Vec<f32> = vec![0.0, 0.5, 0.0, 0.5];
 
-        let m_off = extract_mask_linear(&premult_green, MatteChannel::Green, false, false);
+        let m_off = extract_mask_linear(&premult_green, MatteChannel::Green, false, false, REC709);
         assert!(approx(m_off[0], 0.5), "off: got {}", m_off[0]);
 
-        let m_on = extract_mask_linear(&premult_green, MatteChannel::Green, false, true);
+        let m_on = extract_mask_linear(&premult_green, MatteChannel::Green, false, true, REC709);
         assert!(approx(m_on[0], 1.0), "on: should un-premult to 1.0, got {}", m_on[0]);
     }
 
@@ -743,8 +803,8 @@ mod tests {
     #[test]
     fn linear_alpha_unaffected_by_premult_flag() {
         let pixel: Vec<f32> = vec![0.5, 0.5, 0.5, 0.5];
-        let m_off = extract_mask_linear(&pixel, MatteChannel::Alpha, false, false);
-        let m_on  = extract_mask_linear(&pixel, MatteChannel::Alpha, false, true);
+        let m_off = extract_mask_linear(&pixel, MatteChannel::Alpha, false, false, REC709);
+        let m_on  = extract_mask_linear(&pixel, MatteChannel::Alpha, false, true, REC709);
         assert!(approx(m_off[0], 0.5));
         assert!(approx(m_on[0], 0.5));
     }
@@ -757,7 +817,7 @@ mod tests {
         // the divide must be skipped (otherwise 0.001/0.00001 = 100,
         // which would clamp to 1.0 = bogus mask hit for an invisible pixel).
         let near_zero_alpha: Vec<f32> = vec![0.001, 0.001, 0.001, 1e-5];
-        let m = extract_mask_linear(&near_zero_alpha, MatteChannel::Luminance, false, true);
+        let m = extract_mask_linear(&near_zero_alpha, MatteChannel::Luminance, false, true, REC709);
         // Without divide, raw RGB ≈ 0.001 → luma ≈ 0.001 (clamps to itself).
         assert!(m[0] < 0.01, "near-zero alpha must skip divide, got {}", m[0]);
     }
@@ -922,10 +982,10 @@ mod tests {
             let v = if (4..=6).contains(&i) { 1.0 } else { 0.0 };
             [v, v, v, 1.0_f32]
         }).collect();
-        let mut a = extract_mask_linear(&rgba, MatteChannel::Red, false, false);
+        let mut a = extract_mask_linear(&rgba, MatteChannel::Red, false, false, REC709);
         apply_choke_mask(&mut a, 16, 1, 1.0);
         let inverted: Vec<f32> = a.iter().map(|v| 1.0 - v).collect();
-        let mut b = extract_mask_linear(&rgba, MatteChannel::Red, true, false);
+        let mut b = extract_mask_linear(&rgba, MatteChannel::Red, true, false, REC709);
         apply_choke_mask(&mut b, 16, 1, 1.0);
         // `b` choked the inverted signal — that's ERODING zeros, i.e.
         // dilating the bright-area, the opposite of `inverted`. They
@@ -977,8 +1037,8 @@ mod tests {
                 for premult in [false, true] {
                     consumer_fused.fill(0.5);
                     consumer_kernel.fill(0.5);
-                    apply_matte_fused_linear(&mut consumer_fused, &source, ch, invert, premult);
-                    let mask = extract_mask_linear(&source, ch, invert, premult);
+                    apply_matte_fused_linear(&mut consumer_fused, &source, ch, invert, premult, REC709);
+                    let mask = extract_mask_linear(&source, ch, invert, premult, REC709);
                     apply_mask_to_alpha_linear(&mut consumer_kernel, &mask);
                     for i in 0..pixels * 4 {
                         let f = consumer_fused[i];
@@ -1005,13 +1065,13 @@ mod tests {
         let source = vec![0.5f32; pixels * 4];
         let mut consumer = vec![0.5f32; pixels * 4];
         // Warmup
-        apply_matte_fused_linear(&mut consumer, &source, MatteChannel::Luminance, false, false);
+        apply_matte_fused_linear(&mut consumer, &source, MatteChannel::Luminance, false, false, REC709);
         // Measure best-of-3 to dampen noise.
         let mut best_ms = f64::INFINITY;
         for _ in 0..3 {
             consumer.fill(0.5);
             let t = std::time::Instant::now();
-            apply_matte_fused_linear(&mut consumer, &source, MatteChannel::Luminance, false, false);
+            apply_matte_fused_linear(&mut consumer, &source, MatteChannel::Luminance, false, false, REC709);
             let ms = t.elapsed().as_secs_f64() * 1000.0;
             if ms < best_ms { best_ms = ms; }
         }

@@ -877,7 +877,8 @@ impl Renderer {
                     feather_px: s.feather_px,
                     choke_px: s.choke_px,
                 };
-                apply_matte(&mut layer.pixels, &rendered, &binding, width, height);
+                apply_matte(&mut layer.pixels, &rendered, &binding, width, height,
+                    klipp_color::linear::luma_coefs(self.working));
             }
             if let TrackItem::Clip(c) = item {
                 if let Some(b) = &c.matte_source {
@@ -890,9 +891,11 @@ impl Renderer {
                         choke_px: klipp_core::keyframe::evaluate(&c.matte_choke_keyframes, t, b.choke_px),
                     };
                     if self.inspect.matte_of == Some(c.id) {
-                        self.found.matte_mask = matte_mask(&rendered, &binding, width, height);
+                        self.found.matte_mask = matte_mask(&rendered, &binding, width, height,
+                            klipp_color::linear::luma_coefs(self.working));
                     }
-                    apply_matte(&mut layer.pixels, &rendered, &binding, width, height);
+                    apply_matte(&mut layer.pixels, &rendered, &binding, width, height,
+                    klipp_color::linear::luma_coefs(self.working));
                 }
             }
             match &mut acc {
@@ -1681,6 +1684,10 @@ pub fn apply_matte(
     binding: &klipp_timeline::MatteBinding,
     width: u32,
     height: u32,
+    // The project's luminance row. A Luminance-channel matte weighs the
+    // source clip's pixels in the project's own primaries, so Rec.709's
+    // row would under-weight green by a fifth on an ACEScg timeline.
+    luma: [f32; 3],
 ) {
     use klipp_effects::track_matte as tm;
     let Some(source) = rendered.get(&binding.source_clip_id).filter(|s| s.len() == consumer.len()) else {
@@ -1689,10 +1696,10 @@ pub fn apply_matte(
     };
     let channel = matte_channel(binding.channel);
     if binding.choke_px < 0.5 && binding.feather_px < 0.25 {
-        tm::apply_matte_fused_linear(consumer, source, channel, binding.invert, true);
+        tm::apply_matte_fused_linear(consumer, source, channel, binding.invert, true, luma);
         return;
     }
-    let mut mask = tm::extract_mask_linear(source, channel, binding.invert, true);
+    let mut mask = tm::extract_mask_linear(source, channel, binding.invert, true, luma);
     tm::apply_choke_mask(&mut mask, width, height, binding.choke_px);
     tm::feather_mask(&mut mask, width, height, binding.feather_px);
     tm::apply_mask_to_alpha_linear(consumer, &mask);
@@ -1847,10 +1854,11 @@ fn matte_mask(
     binding: &klipp_timeline::MatteBinding,
     width: u32,
     height: u32,
+    luma: [f32; 3],
 ) -> Option<Vec<f32>> {
     use klipp_effects::track_matte as tm;
     let source = rendered.get(&binding.source_clip_id)?;
-    let mut mask = tm::extract_mask_linear(source, matte_channel(binding.channel), binding.invert, true);
+    let mut mask = tm::extract_mask_linear(source, matte_channel(binding.channel), binding.invert, true, luma);
     tm::apply_choke_mask(&mut mask, width, height, binding.choke_px);
     tm::feather_mask(&mut mask, width, height, binding.feather_px);
     Some(mask)
