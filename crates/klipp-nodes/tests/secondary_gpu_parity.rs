@@ -410,3 +410,129 @@ fn matte_graph(source: MatteSource, mix: Option<f32>) -> NodeGraph {
         sticky_notes: Vec::new(),
     }
 }
+
+/// A second qualifier-driven window on the same clip — the shape a
+/// colourist builds without thinking about it — matches the CPU and
+/// rides the same chain as the first.
+///
+/// The detector used to stop at the first shape it found, so the second
+/// keyer and blend fell back to the per-node CPU path and cost a flush
+/// and an upload: at 1214x2160 two secondaries ran 41.3 ms against
+/// 19.5 ms for one. Recognising both brought that to 21.8 ms.
+///
+/// No extra GPU buffers were needed, and the reason is worth stating
+/// because it is what makes the change safe: the shapes are sequential,
+/// not concurrent. The second one's ungraded port is the first one's
+/// ApplyMatte, so by the time it wants the kept picture and `matte_buf`,
+/// the first shape has finished with both. If they ever overlapped, one
+/// kept buffer and one matte buffer would not be enough and this test
+/// would show it as a wrong picture rather than as a slow one.
+fn two_secondary_graph(second_mix: Option<f32>) -> NodeGraph {
+    let (src, corr) = (NodeId::new_v4(), NodeId::new_v4());
+    let (q1, c1, a1) = (NodeId::new_v4(), NodeId::new_v4(), NodeId::new_v4());
+    let (q2, c2, a2) = (NodeId::new_v4(), NodeId::new_v4(), NodeId::new_v4());
+    let out = NodeId::new_v4();
+    // A second window somewhere else in hue, so the two mattes select
+    // different pixels and a swapped or stale matte shows up.
+    let other = klipp_core::QualifierSettings {
+        enabled: true,
+        hue_center: 200.0,
+        hue_width: 60.0,
+        hue_soft: 15.0,
+        sat_low: 0.05,
+        sat_high: 1.0,
+        sat_soft: 0.05,
+        lum_low: 0.05,
+        lum_high: 1.0,
+        lum_soft: 0.05,
+        ..Default::default()
+    };
+    let nodes = vec![
+        node(src, NodeKind::Source, Default::default()),
+        node(corr, NodeKind::Corrector, NodeParams { contrast: Some(0.04), ..Default::default() }),
+        node(q1, NodeKind::Qualifier, NodeParams { qualifier: Some(window()), ..Default::default() }),
+        node(c1, NodeKind::Corrector, NodeParams { temperature: Some(-40.0), ..Default::default() }),
+        node(a1, NodeKind::ApplyMatte, NodeParams { mix: Some(1.0), ..Default::default() }),
+        node(q2, NodeKind::Qualifier, NodeParams { qualifier: Some(other), ..Default::default() }),
+        node(c2, NodeKind::Corrector, NodeParams { saturation: Some(0.4), ..Default::default() }),
+        node(a2, NodeKind::ApplyMatte, NodeParams { mix: second_mix, ..Default::default() }),
+        node(out, NodeKind::Output, Default::default()),
+    ];
+    let edges = vec![
+        Edge { from_node: src, from_port: 0, to_node: corr, to_port: 0 },
+        Edge { from_node: corr, from_port: 0, to_node: q1, to_port: 0 },
+        Edge { from_node: corr, from_port: 0, to_node: c1, to_port: 0 },
+        Edge { from_node: c1, from_port: 0, to_node: a1, to_port: 0 },
+        Edge { from_node: q1, from_port: 0, to_node: a1, to_port: 1 },
+        Edge { from_node: corr, from_port: 0, to_node: a1, to_port: 2 },
+        Edge { from_node: a1, from_port: 0, to_node: q2, to_port: 0 },
+        Edge { from_node: a1, from_port: 0, to_node: c2, to_port: 0 },
+        Edge { from_node: c2, from_port: 0, to_node: a2, to_port: 0 },
+        Edge { from_node: q2, from_port: 0, to_node: a2, to_port: 1 },
+        Edge { from_node: a1, from_port: 0, to_node: a2, to_port: 2 },
+        Edge { from_node: a2, from_port: 0, to_node: out, to_port: 0 },
+    ];
+    let node_positions = nodes
+        .iter()
+        .enumerate()
+        .map(|(i, n)| (n.id, NodePos { x: i as f32 * 160.0, y: 0.0 }))
+        .collect();
+    NodeGraph {
+        nodes,
+        edges,
+        output_node_id: out,
+        node_positions,
+        working_space_override: None,
+        frames: Vec::new(),
+        sticky_notes: Vec::new(),
+    }
+}
+
+#[test]
+fn two_stacked_secondaries_match_the_cpu_and_both_ride_the_chain() {
+    let graph = two_secondary_graph(Some(1.0));
+    let (cpu, cpu_stats) = run(&graph, false);
+    let (gpu, gpu_stats) = run(&graph, true);
+
+    if gpu_stats.extends == 0 && gpu_stats.flushes == 0 {
+        eprintln!("skipping: no usable GPU");
+        return;
+    }
+    assert_eq!(cpu_stats.extends, 0, "the CPU executor cannot extend a chain");
+
+    // Residency is the point. Two keyers, two branch grades and two
+    // blends are all chain dispatches, so the frame is still read back
+    // exactly once and only the Source takes the per-node CPU path.
+    // Before this, the second shape forced flushes=2, starts=2, cpu=3.
+    eprintln!("two secondaries: {gpu_stats:?}");
+    assert!(
+        gpu_stats.extends >= 6,
+        "both secondaries should ride one chain; stats {gpu_stats:?}",
+    );
+    assert_eq!(
+        gpu_stats.flushes, 1,
+        "one readback for two secondaries, at the end: {gpu_stats:?}",
+    );
+    assert!(
+        gpu_stats.cpu_nodes <= 1,
+        "only the Source should touch the per-node CPU path: {gpu_stats:?}",
+    );
+
+    // And the picture, against the separate CPU implementations of both
+    // keys and both blends.
+    assert_eq!(cpu.len(), gpu.len());
+    let worst = worst_diff(&cpu, &gpu);
+    eprintln!("two secondaries CPU vs GPU: worst {worst:e} linear");
+    assert!(worst < 0.001, "CPU and GPU disagree by {worst}");
+
+    // Both secondaries must be doing something, or the comparison above
+    // would be two matching no-ops. Dialling only the *second* one out
+    // has to change the picture — which is also what catches the second
+    // matte being stale, swapped for the first, or dropped.
+    let (second_off, _) = run(&two_secondary_graph(Some(0.0)), true);
+    let changed = worst_diff(&second_off, &gpu);
+    assert!(
+        changed > 0.01,
+        "the second secondary changed nothing; its matte may be stale or dropped ({changed})",
+    );
+}
