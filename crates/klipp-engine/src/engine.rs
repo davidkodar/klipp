@@ -2477,6 +2477,18 @@ impl PlaybackEngine {
                 if self.hdr_monitor != mode {
                     self.hdr_monitor = mode;
                     info!("HDR monitoring: {mode:?}");
+                    // The reference output carries the display light the
+                    // render only produces for monitoring, so switching
+                    // monitoring off stops the publishing. Let go of the
+                    // shared frame when that happens: keeping it open
+                    // would leave a reference monitor showing the last
+                    // frame for ever, which reads as "the grade is fine"
+                    // long after the grade stopped arriving. The output
+                    // stays *enabled*, so it picks up again when
+                    // monitoring comes back.
+                    if !mode.renders_hdr() {
+                        self.hdr_writer = None;
+                    }
                     // The picture changes; the frame on screen was made
                     // the other way.
                     self.regrade_cached_frame();

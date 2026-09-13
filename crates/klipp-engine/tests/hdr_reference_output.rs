@@ -135,6 +135,38 @@ fn the_published_frame_is_hdr_display_light() {
          this is the SDR picture, not display light",
     );
 
+    // Switching *monitoring* off also lets go of the shared frame, even
+    // though the output is still enabled. The render stops producing
+    // display light at that point, and a presenter holding an open frame
+    // nobody updates shows the last picture for ever — which on a
+    // reference monitor reads as the grade being fine long after it
+    // stopped arriving.
+    parked.send(AppCommand::SetHdrMonitor(HdrMonitor::Off));
+    std::thread::sleep(Duration::from_millis(600));
+    assert!(
+        !reader.writer_present(),
+        "monitoring went off and the engine kept the shared frame open, so the reference \
+         output would sit on a stale frame",
+    );
+    // And it comes back when monitoring does, without touching the output
+    // toggle.
+    parked.send(AppCommand::SetHdrMonitor(HdrMonitor::Preview));
+    std::thread::sleep(Duration::from_millis(900));
+    let mut again = match FrameReader::open(&path) {
+        Ok(r) => r,
+        Err(e) => panic!("publishing did not resume: {e:?}"),
+    };
+    let mut buf = Vec::new();
+    let mut resumed = false;
+    for _ in 0..100 {
+        if again.read_latest(&mut buf) {
+            resumed = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(resumed, "monitoring came back and nothing was published");
+
     // Turning it off stops the publishing, so a presenter does not sit on
     // a frame nothing is updating.
     parked.send(AppCommand::SetHdrReferenceOutput(false));

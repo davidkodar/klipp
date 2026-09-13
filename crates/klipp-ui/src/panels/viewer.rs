@@ -92,6 +92,17 @@ struct ViewerFrameState {
 
 #[derive(Default)]
 pub struct ViewerPanel {
+    /// Set when the window could not be started. The output is still on
+    /// and still publishing — only the convenience of opening a viewer for
+    /// it failed — so the button says so rather than claiming success.
+    pub hdr_output_unopened: bool,
+    /// The HDR reference-output window, when this panel launched it.
+    ///
+    /// Owned here so toggling the output off closes the window it opened,
+    /// rather than leaving one behind that a user has to hunt down. A
+    /// presenter the user started themselves is not in here and is left
+    /// alone — it attaches and detaches on its own.
+    pub hdr_output_child: Option<std::process::Child>,
     pub video_texture: Option<egui::TextureHandle>,
     /// Separate texture for title overlay — rendered on UI thread for instant preview.
     /// Drawn on top of video_texture with alpha blending. Cleared when title is deselected.
@@ -120,6 +131,19 @@ pub struct ViewerPanel {
     /// after `renderer.free_texture(old_id)` releases egui-wgpu's
     /// internal BindGroup so storage cleanup is well-ordered.
     pub gpu_texture_view: Option<wgpu::TextureView>,
+}
+
+impl Drop for ViewerPanel {
+    /// Take the reference-output window with us.
+    ///
+    /// Best effort: a process that exits through `std::process::exit` runs
+    /// no destructors, and the presenter is built to cope with that — it
+    /// sees the shared frame's magic gone and says the viewer stopped
+    /// publishing rather than freezing on the last picture. This is so the
+    /// ordinary case does not leave a window behind for the user to find.
+    fn drop(&mut self) {
+        self.close_hdr_output_window();
+    }
 }
 
 impl ViewerPanel {
@@ -1701,6 +1725,58 @@ impl ViewerPanel {
     /// pointer, and false colour says it for the whole frame at once. The
     /// levels to judge against are 26 (an 18% grey card), 203 (diffuse
     /// white) and 1000 (the master's peak).
+    /// Open the HDR reference-output window.
+    ///
+    /// Looked for beside the running executable first, because that is
+    /// where a built or installed Klipp keeps its own binaries, then on
+    /// `PATH`. If neither has it the output still turns *on* — publishing
+    /// is the engine's job and works regardless — so someone running the
+    /// presenter themselves is not blocked by this convenience failing.
+    fn open_hdr_output_window(&mut self) {
+        self.hdr_output_unopened = false;
+        if self.hdr_output_child.is_some() {
+            return;
+        }
+        const BIN: &str = "klipp-hdr-out";
+        let beside = std::env::current_exe()
+            .ok()
+            .and_then(|p| p.parent().map(|d| d.join(BIN)))
+            .filter(|p| p.is_file());
+        let program = beside.unwrap_or_else(|| std::path::PathBuf::from(BIN));
+        match std::process::Command::new(&program).spawn() {
+            Ok(child) => {
+                tracing::info!("HDR reference output: opened {}", program.display());
+                self.hdr_output_child = Some(child);
+            }
+            Err(e) => {
+                // Naming the build command, because the likeliest reason
+                // is that only `klipp-app` was built: the presenter is a
+                // separate binary and `cargo build -p klipp-app` does not
+                // produce it.
+                tracing::warn!(
+                    "could not open {} ({e}). The picture is still being published — build \
+                     the window with `cargo build --release -p klipp-hdr-out` and run it, or \
+                     run an installed `klipp-hdr-out`.",
+                    program.display(),
+                );
+                // Said on the button, not only logged: the output *is* on
+                // and publishing, and the only thing missing is the window.
+                self.hdr_output_unopened = true;
+            }
+        }
+    }
+
+    /// Close the window this panel opened, if it opened one.
+    fn close_hdr_output_window(&mut self) {
+        if let Some(mut child) = self.hdr_output_child.take() {
+            // Asked to go, then reaped: without the wait it becomes a
+            // zombie for as long as Klipp runs.
+            let _ = child.kill();
+            let _ = child.wait();
+            tracing::info!("HDR reference output: closed the window");
+        }
+    }
+
     fn draw_hdr_monitor(
         &mut self,
         ui: &mut egui::Ui,
@@ -1747,6 +1823,52 @@ impl ViewerPanel {
              white 203, peak 1000 cd/m². The readout below gives the light under the pointer.",
         );
 
+        // The reference output, and only while monitoring is on: the engine
+        // publishes the display light the render produces, and it only
+        // produces display light for monitoring. Offering the toggle when
+        // nothing would be published would be a switch that does nothing.
+        if on {
+            let out = egui::Rect::from_min_size(
+                egui::pos2(btn.min.x, btn.max.y + 4.0),
+                egui::vec2(width, H),
+            );
+            let resp = ui.interact(out, ui.id().with("hdr_reference_output"), egui::Sense::click());
+            let live = state.hdr_reference_output;
+            let bg = if live { theme.accent } else { theme.bg_raised.gamma_multiply(0.9) };
+            ui.painter().rect_filled(out, 4.0, bg);
+            ui.painter().text(
+                out.center(),
+                egui::Align2::CENTER_CENTER,
+                match (live, self.hdr_output_unopened) {
+                    (true, true) => "Ref out: no window",
+                    (true, false) => "Ref out: on",
+                    (false, _) => "Ref out: off",
+                },
+                egui::FontId::proportional(11.0),
+                if live { theme.text_on_accent } else { theme.text_secondary },
+            );
+            if resp.clicked() {
+                state.hdr_reference_output = !state.hdr_reference_output;
+                cmds.push(AppCommand::SetHdrReferenceOutput(state.hdr_reference_output));
+                if state.hdr_reference_output {
+                    self.open_hdr_output_window();
+                } else {
+                    self.close_hdr_output_window();
+                    self.hdr_output_unopened = false;
+                }
+            }
+            resp.on_hover_text(
+                "Send the HDR picture to a separate window whose surface can \
+                 carry it: linear, sixteen bits, highlights above reference \
+                 white intact. That window is where an HDR reference monitor \
+                 should look — this one is showing you an SDR stand-in for \
+                 it.\n\nThe display has to be in HDR too for the picture to \
+                 arrive as HDR; on Hyprland that is the monitor's `cm` and \
+                 `bitdepth, 10`.\n\nCosts a frame readback, so playback is \
+                 slower while it is on.",
+            );
+        }
+
         // The readout: the picture's light where the pointer is.
         if on {
             let text = match state.hdr_nits_under_pointer {
@@ -1756,7 +1878,7 @@ impl ViewerPanel {
                 None => "— cd/m²".to_string(),
             };
             let row = egui::Rect::from_min_size(
-                egui::pos2(btn.min.x, btn.max.y + 4.0),
+                egui::pos2(btn.min.x, btn.max.y + 8.0 + H),
                 egui::vec2(width, H),
             );
             ui.painter().rect_filled(row, 4.0, theme.bg_raised.gamma_multiply(0.9));

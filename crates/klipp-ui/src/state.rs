@@ -1710,6 +1710,9 @@ pub struct AppState {
     pub scope_cursor_show: bool,
     /// What the viewer shows while grading for an HDR delivery.
     pub hdr_monitor: klipp_core::HdrMonitor,
+    /// Whether the HDR picture is being published for the reference-output
+    /// window. Separate from `hdr_monitor`, which is about *this* screen.
+    pub hdr_reference_output: bool,
     /// The light under the pointer, cd/m², while HDR monitoring is on —
     /// read from the frame buffer's map each frame.
     pub hdr_nits_under_pointer: Option<f32>,
@@ -3389,6 +3392,7 @@ impl Default for AppState {
             scope_cursor_sample_radius: 2,
             scope_cursor_show: true,
             hdr_monitor: klipp_core::HdrMonitor::Off,
+            hdr_reference_output: false,
             hdr_nits_under_pointer: None,
             eyedropper_mode: EyedropperMode::None,
             wb_sample_request: None,
