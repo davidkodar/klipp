@@ -44,7 +44,7 @@ pub use graph::{Edge, Node, NodeFrame, NodeFrameId, NodeGraph, NodeId, NodePos, 
 pub use auto_layout::auto_layout;
 pub use kinds::{NodeKind, PortRole};
 pub use params::{
-    LayerMixerParams, MatteChannel, NodeKeyframeTrack, NodeKeyframeTracks, NodeParams,
+    LayerMixerParams, MatteChannel, MatteCombineOp, NodeKeyframeTrack, NodeKeyframeTracks, NodeParams,
 };
 // Re-exported from klipp_core; surfaced here so callers writing to
 // node params don't need to reach across crates.

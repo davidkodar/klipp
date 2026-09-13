@@ -2109,7 +2109,36 @@ impl NodeInspectorPanel {
             NodeKind::ColorWarper => {
                 self.show_warper_widget(ui, node_id, params, clip_id, cmds, theme);
             }
-            NodeKind::CombineMattes => { ui.label("Multiplies two matte inputs"); }
+            NodeKind::CombineMattes => {
+                let current = params.matte_combine_op.unwrap_or_default();
+                let mut chosen = current;
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new("Combine").small().color(theme.text_dim));
+                    egui::ComboBox::from_id_salt(("matte_combine_op", node_id))
+                        .selected_text(chosen.display_name())
+                        .show_ui(ui, |ui| {
+                            for &candidate in &klipp_nodes::MatteCombineOp::ALL {
+                                if ui
+                                    .selectable_label(chosen == candidate, candidate.display_name())
+                                    .clicked()
+                                {
+                                    chosen = candidate;
+                                }
+                            }
+                        });
+                });
+                if chosen != current {
+                    params.matte_combine_op = Some(chosen);
+                    cmds.push(AppCommand::SetMatteCombineOp {
+                        clip_id,
+                        node_id,
+                        op: klipp_nodes::MatteCombineOp::ALL
+                            .iter()
+                            .position(|c| *c == chosen)
+                            .unwrap_or(0) as u8,
+                    });
+                }
+            }
             NodeKind::ExternalMatte => {
                 self.show_external_matte_widget(ui, node_id, params, clip_id, cmds, theme);
             }

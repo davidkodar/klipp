@@ -236,6 +236,14 @@ pub struct NodeParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub matte_invert: Option<bool>,
 
+    // CombineMattes
+    /// How a `CombineMattes` node combines its two inputs. `None` is
+    /// [`MatteCombineOp::Intersect`], which is what the node did before
+    /// it could do anything else — so a project saved without this field
+    /// keeps the picture it had.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub matte_combine_op: Option<MatteCombineOp>,
+
     // Compound
     /// Sub-graph executed by a `NodeKind::Compound` node. The
     /// compound's input feeds the sub-graph's Source, the sub-
@@ -247,6 +255,64 @@ pub struct NodeParams {
     /// thanks to `skip_serializing_if`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub compound_subgraph: Option<crate::graph::NodeGraph>,
+}
+
+/// How a `CombineMattes` node combines its two matte inputs.
+///
+/// Mattes are *coverage*, so the operators are the ones that make sense
+/// on a value in [0, 1] rather than the ones that make sense on a
+/// colour, and they are evaluated in linear light — see the executor for
+/// why that distinction is not academic.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum MatteCombineOp {
+    /// Both: `a * b`. The only thing the node used to do, so it stays
+    /// the default and old projects keep their picture.
+    #[default]
+    Intersect,
+    /// Either: `a + b - a*b`. The complement of intersecting the
+    /// inverses, which is what keeps it inside [0, 1] — plain `a + b`
+    /// would clip and flatten every overlap to solid.
+    Union,
+    /// A without B: `a * (1 - b)`. The one a colourist reaches for most
+    /// after Intersect — qualify a face, then subtract the eyes.
+    Subtract,
+}
+
+impl MatteCombineOp {
+    pub fn display_name(&self) -> &'static str {
+        match self {
+            Self::Intersect => "Intersect (A and B)",
+            Self::Union => "Union (A or B)",
+            Self::Subtract => "Subtract (A minus B)",
+        }
+    }
+
+    pub const ALL: [Self; 3] = [Self::Intersect, Self::Union, Self::Subtract];
+
+    /// The B value that makes this operator a no-op, for an unwired or
+    /// wrong-sized second input. White is the identity for Intersect
+    /// only: as a Union it would select the whole frame and as a
+    /// Subtract it would select none of it, so an unwired input has to
+    /// ask the operator rather than assume.
+    #[inline]
+    pub fn identity_b(self) -> f32 {
+        match self {
+            Self::Intersect => 1.0,
+            Self::Union | Self::Subtract => 0.0,
+        }
+    }
+
+    /// Combine two coverage values. Inputs are assumed already clamped
+    /// to [0, 1]; every operator here maps that range onto itself, so
+    /// the result needs no clamp of its own.
+    #[inline]
+    pub fn apply(self, a: f32, b: f32) -> f32 {
+        match self {
+            Self::Intersect => a * b,
+            Self::Union => a + b - a * b,
+            Self::Subtract => a * (1.0 - b),
+        }
+    }
 }
 
 /// Which source channel of an ExternalMatte image becomes the matte.
@@ -812,5 +878,105 @@ mod tests {
         p.lut_input_space = Some(klipp_core::WorkingColorspace::AcesCG);
         assert!(!p.is_default(),
             "an explicit LUT colorspace tag should mark the params as non-default");
+    }
+}
+
+#[cfg(test)]
+mod matte_combine_op_tests {
+    use super::*;
+
+    /// Coverage in, coverage out: every operator maps [0, 1] onto
+    /// itself, so nothing downstream has to clamp after one.
+    #[test]
+    fn every_operator_stays_inside_the_unit_range() {
+        let vals = [0.0, 0.01, 0.25, 0.5, 0.75, 0.99, 1.0];
+        for op in MatteCombineOp::ALL {
+            for a in vals {
+                for b in vals {
+                    let k = op.apply(a, b);
+                    assert!(
+                        (0.0..=1.0).contains(&k),
+                        "{op:?}({a}, {b}) = {k}, outside [0, 1]",
+                    );
+                }
+            }
+        }
+    }
+
+    /// The operators mean what their names say, on the cases a colourist
+    /// would predict without doing arithmetic.
+    #[test]
+    fn the_operators_do_what_they_are_called() {
+        use MatteCombineOp::*;
+        // Fully inside both, either, or A-not-B.
+        assert_eq!(Intersect.apply(1.0, 1.0), 1.0);
+        assert_eq!(Intersect.apply(1.0, 0.0), 0.0);
+        assert_eq!(Union.apply(1.0, 0.0), 1.0);
+        assert_eq!(Union.apply(0.0, 0.0), 0.0);
+        assert_eq!(Subtract.apply(1.0, 1.0), 0.0);
+        assert_eq!(Subtract.apply(1.0, 0.0), 1.0);
+        // Half of each: the intersect is a quarter, and the union is
+        // three quarters — not 1.0, which is what a plain `a + b` would
+        // give and why Union is not a sum.
+        assert_eq!(Intersect.apply(0.5, 0.5), 0.25);
+        assert_eq!(Union.apply(0.5, 0.5), 0.75);
+        assert_eq!(Subtract.apply(0.5, 0.5), 0.25);
+    }
+
+    /// Intersect and Union are symmetric; Subtract deliberately is not.
+    /// Swapping the inputs of a Subtract is a different selection, which
+    /// is the whole point of having it.
+    #[test]
+    fn only_subtract_cares_which_input_is_which() {
+        for (a, b) in [(0.3f32, 0.7f32), (0.1, 0.9), (0.25, 0.5)] {
+            assert!((MatteCombineOp::Intersect.apply(a, b) - MatteCombineOp::Intersect.apply(b, a)).abs() < 1e-6);
+            assert!((MatteCombineOp::Union.apply(a, b) - MatteCombineOp::Union.apply(b, a)).abs() < 1e-6);
+            assert_ne!(
+                MatteCombineOp::Subtract.apply(a, b),
+                MatteCombineOp::Subtract.apply(b, a),
+                "Subtract({a}, {b}) should differ from Subtract({b}, {a})",
+            );
+        }
+    }
+
+    /// An unwired B leaves the matte alone, whichever operator is
+    /// selected. White is the identity for Intersect only — used blindly
+    /// it would make a Union select the whole frame.
+    #[test]
+    fn an_unwired_second_input_is_a_no_op() {
+        for op in MatteCombineOp::ALL {
+            for a in [0.0, 0.2, 0.5, 0.8, 1.0] {
+                let k = op.apply(a, op.identity_b());
+                assert!(
+                    (k - a).abs() < 1e-6,
+                    "{op:?} with an unwired B moved {a} to {k}",
+                );
+            }
+        }
+    }
+
+    /// A project saved before the operator existed keeps its picture:
+    /// the field is absent, and absent means Intersect.
+    #[test]
+    fn a_project_without_the_field_intersects() {
+        let json = r#"{"mix":1.0}"#;
+        let p: NodeParams = serde_json::from_str(json).expect("old params still parse");
+        assert_eq!(p.matte_combine_op, None, "no field should stay None");
+        assert_eq!(p.matte_combine_op.unwrap_or_default(), MatteCombineOp::Intersect);
+    }
+
+    /// And the field round-trips once set, without disturbing the
+    /// absent-is-Intersect shape for everyone else.
+    #[test]
+    fn the_operator_round_trips() {
+        for op in MatteCombineOp::ALL {
+            let p = NodeParams { matte_combine_op: Some(op), ..Default::default() };
+            let s = serde_json::to_string(&p).expect("serialise");
+            let back: NodeParams = serde_json::from_str(&s).expect("deserialise");
+            assert_eq!(back.matte_combine_op, Some(op));
+        }
+        // Default params must not write the key at all.
+        let s = serde_json::to_string(&NodeParams::default()).expect("serialise");
+        assert!(!s.contains("matte_combine_op"), "default params wrote the key: {s}");
     }
 }

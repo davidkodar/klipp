@@ -13114,6 +13114,23 @@ impl KlippApp {
                 self.state.dirty = true;
                 true
             }
+            AppCommand::SetMatteCombineOp { clip_id, node_id, op } => {
+                // Out-of-range falls back to the default rather than
+                // refusing the command, matching the channel handler
+                // above: a bad discriminant should not wedge the node.
+                let chosen = klipp_nodes::MatteCombineOp::ALL
+                    .get(*op as usize)
+                    .copied()
+                    .unwrap_or_default();
+                let node_id = *node_id;
+                self.with_current_clip_graph_mut(*clip_id, needs_refresh, |graph| {
+                    if let Some(node) = graph.nodes.iter_mut().find(|n| n.id == node_id) {
+                        node.params.matte_combine_op = Some(chosen);
+                    }
+                });
+                self.state.dirty = true;
+                true
+            }
             AppCommand::SetNodeLayerMixerInput { clip_id, node_id, port, input } => {
                 let node_id = *node_id;
                 let port = *port;

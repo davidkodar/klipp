@@ -3476,23 +3476,51 @@ impl GraphExecutor {
             }
 
             NodeKind::CombineMattes => {
-                // Mattes are alpha-like values; combine in u8 to preserve
-                // the existing multiplication semantics.
-                let white_u8 = vec![255u8; (width * height * 4) as usize];
-                let matte_a_u8 = linear_rgba_to_u8(primary_input);
-                let matte_b_u8 = match secondary_input {
-                    Some(s) => linear_rgba_to_u8(s),
-                    None => white_u8,
+                // A matte is coverage — a coefficient, not a colour — so
+                // it combines in linear light, at full precision, like
+                // `ApplyMatte` and `MaskCutout` already read it.
+                //
+                // This used to sRGB-encode both mattes into u8, multiply
+                // the *encoded* bytes, and decode the result. That is the
+                // same mistake ApplyMatte was carrying (see its comment:
+                // "a 50% matte acted like 74%"), and it is at its worst
+                // exactly where feathered edges live, because the encode
+                // lifts small values hardest. Intersecting two mattes of
+                // equal coverage came back this far over the true value:
+                //
+                //     coverage  0.50   0.25   0.10   0.05   0.02
+                //     error    +1.7%  +6.6% +37.0% +91.1% +279.4%
+                //
+                // So every soft edge read far more solid than it was, and
+                // 256 levels was all the feather had to live in.
+                //
+                // An unwired B input is the identity for the operator
+                // rather than a hardcoded white frame: white is only the
+                // identity for Intersect, and would make Union select
+                // everything and Subtract select nothing.
+                use rayon::prelude::*;
+                let op = params.matte_combine_op.unwrap_or_default();
+                let n = primary_input.len();
+                let b = match secondary_input {
+                    Some(s) if s.len() == n => Some(s),
+                    // Wrong-sized matte: treated as absent rather than
+                    // sampled wrongly, matching the other matte consumers.
+                    _ => None,
                 };
-                let combined: Vec<u8> = matte_a_u8
-                    .chunks_exact(4)
-                    .zip(matte_b_u8.chunks_exact(4))
-                    .flat_map(|(a, b)| {
-                        let combined = (a[0] as u16 * b[0] as u16 / 255) as u8;
-                        [combined, combined, combined, 255]
-                    })
-                    .collect();
-                u8_rgba_to_linear(&combined)
+                let mut out = vec![0.0f32; n];
+                out.par_chunks_exact_mut(4).enumerate().for_each(|(i, px)| {
+                    let a = primary_input[i * 4].clamp(0.0, 1.0);
+                    let bv = match b {
+                        Some(s) => s[i * 4].clamp(0.0, 1.0),
+                        None => op.identity_b(),
+                    };
+                    let k = op.apply(a, bv);
+                    px[0] = k;
+                    px[1] = k;
+                    px[2] = k;
+                    px[3] = 1.0;
+                });
+                out
             }
 
             NodeKind::MaskCutout => {
@@ -5078,6 +5106,87 @@ mod tests {
         assert_eq!(out[3], 1.0, "alpha stays opaque, as MaskCutout leaves it");
     }
 
+    /// CombineMattes combines coverage in linear light, so intersecting
+    /// two half mattes is a quarter — exactly, not 0.2542.
+    ///
+    /// The node used to sRGB-encode both inputs into u8, multiply the
+    /// bytes and decode: the same mistake ApplyMatte carried, and worse
+    /// at the low coverages a feather is made of (+37% at 0.10, +91% at
+    /// 0.05, +279% at 0.02). Both matte ports are fed from the one
+    /// source, so A and B are identical by construction and the expected
+    /// value is just `op(v, v)`.
+    #[test]
+    fn combine_mattes_combines_coverage_in_linear_light() {
+        let run = |op: Option<crate::params::MatteCombineOp>, v: f32| -> f32 {
+            let source_id = NodeId::new_v4();
+            let combine_id = NodeId::new_v4();
+            let output_id = NodeId::new_v4();
+            let graph = NodeGraph {
+                nodes: vec![
+                    crate::graph::Node {
+                        id: source_id, kind: NodeKind::Source, label: "S".into(), enabled: true,
+                        params: Default::default(), keyframes: Default::default(),
+                        output_link: None, input_links: Vec::new(),
+                    },
+                    crate::graph::Node {
+                        id: combine_id, kind: NodeKind::CombineMattes, label: "C".into(), enabled: true,
+                        params: NodeParams { matte_combine_op: op, ..Default::default() },
+                        keyframes: Default::default(), output_link: None, input_links: Vec::new(),
+                    },
+                    crate::graph::Node {
+                        id: output_id, kind: NodeKind::Output, label: "O".into(), enabled: true,
+                        params: Default::default(), keyframes: Default::default(),
+                        output_link: None, input_links: Vec::new(),
+                    },
+                ],
+                // The same source into both matte ports.
+                edges: vec![
+                    crate::graph::Edge { from_node: source_id, from_port: 0, to_node: combine_id, to_port: 0 },
+                    crate::graph::Edge { from_node: source_id, from_port: 0, to_node: combine_id, to_port: 1 },
+                    crate::graph::Edge { from_node: combine_id, from_port: 0, to_node: output_id, to_port: 0 },
+                ],
+                output_node_id: output_id,
+                node_positions: Default::default(),
+                working_space_override: None,
+                frames: Vec::new(),
+                sticky_notes: Vec::new(),
+            };
+            let mut executor = GraphExecutor::new_cpu_only();
+            let src = vec![v, v, v, 1.0];
+            let (out, _) = executor
+                .execute_linear(&src, &graph, 1, 1, 0.0, 0, None, None)
+                .expect("graph runs");
+            out[0]
+        };
+
+        use crate::params::MatteCombineOp::*;
+        // The headline: a half-and-half intersect. The 8-bit bracket put
+        // this at 0.2542, which is outside this tolerance by 40x.
+        let got = run(Some(Intersect), 0.5);
+        assert!((got - 0.25).abs() < 1e-4, "0.5 AND 0.5 is 0.25, got {got}");
+
+        // And where it hurt most: 2% coverage intersected with itself is
+        // 0.0004. The old path returned roughly 0.0015.
+        let got = run(Some(Intersect), 0.02);
+        assert!(
+            (got - 0.0004).abs() < 1e-5,
+            "0.02 AND 0.02 is 0.0004, got {got} — a feather's worth of error",
+        );
+
+        // The new operators, through the real node rather than only the
+        // arithmetic.
+        let got = run(Some(Union), 0.5);
+        assert!((got - 0.75).abs() < 1e-4, "0.5 OR 0.5 is 0.75, got {got}");
+        let got = run(Some(Subtract), 0.5);
+        assert!((got - 0.25).abs() < 1e-4, "0.5 minus 0.5 is 0.25, got {got}");
+
+        // A project saved before the operator existed: no field, and the
+        // picture it had.
+        let legacy = run(None, 0.5);
+        let explicit = run(Some(Intersect), 0.5);
+        assert_eq!(legacy, explicit, "an absent operator must intersect");
+    }
+
     #[test]
     fn blend_node_interpolates() {
         let source_id = NodeId::new_v4();
@@ -5125,8 +5234,17 @@ mod tests {
         assert!((result[2] as i32 - 50).abs() <= 1, "b: got {}", result[2]);
     }
 
+    /// The same node through the u8 entry point, where the old
+    /// behaviour was written down as the contract.
+    ///
+    /// This asserted `128 * 128 / 255 = 64` — the product of two
+    /// *sRGB-encoded bytes*, which is what the node used to compute and
+    /// is not the intersection of two coverages. A u8 128 is 0.2159
+    /// coverage; intersected with itself that is 0.0466, which encodes
+    /// back to 61. The old 64 was the sRGB round-trip leaking into the
+    /// arithmetic, and at lower coverages the same leak reached +279%.
     #[test]
-    fn combine_mattes_multiplies() {
+    fn combine_mattes_intersects_coverage_through_the_u8_path() {
         let source_id = NodeId::new_v4();
         let combine_id = NodeId::new_v4();
         let output_id = NodeId::new_v4();
@@ -5159,12 +5277,16 @@ mod tests {
         };
 
         let mut executor = GraphExecutor::new_cpu_only();
-        // Source = 128 grey → CombineMattes multiplies R channels: 128*128/255 ≈ 64
+        // Source = 128 grey, which is 0.2159 coverage in linear light.
+        // Intersected with itself: 0.0466, which encodes back to 61.
         let frame = vec![128, 128, 128, 255];
         let (result, _) = executor.execute(&frame, &graph, 1, 1, 0.0, 0, None, None).unwrap();
-        let expected = (128u16 * 128 / 255) as u8; // 64
-        assert!((result[0] as i32 - expected as i32).abs() <= 1,
-            "CombineMattes 128*128/255 = {expected}, got {}", result[0]);
+        assert!(
+            (result[0] as i32 - 61).abs() <= 1,
+            "u8 128 intersected with itself is 61, got {} (64 would be the \
+             old encoded-byte multiply)",
+            result[0],
+        );
     }
 
     #[test]

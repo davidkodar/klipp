@@ -56,7 +56,10 @@ pub enum NodeKind {
     SoftClip,
     /// Spatial masks (circle, rectangle, gradient) — generates a matte.
     Mask,
-    /// Multiply two matte inputs (port 0 × port 1) for matte intersection.
+    /// Combine two matte inputs by `params.matte_combine_op` —
+    /// intersect (the default, and what this node did when multiplying
+    /// was all it could do), union, or A-minus-B. Coverage is combined
+    /// in linear light, not as encoded bytes.
     CombineMattes,
     /// External image loaded from disk as a matte source (alpha or
     /// luminance / per-channel). No inputs; its only output is a matte
@@ -212,7 +215,7 @@ impl NodeKind {
             // Blend: two equal-weight inputs.
             (NodeKind::Blend, 0) => PortRole::Primary,
             (NodeKind::Blend, 1) => PortRole::Secondary,
-            // CombineMattes: two mattes intersected.
+            // CombineMattes: two mattes combined by its operator.
             (NodeKind::CombineMattes, _) => PortRole::Matte,
             // ColorMatch: source + reference frame.
             (NodeKind::ColorMatch, 0) => PortRole::Primary,

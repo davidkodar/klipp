@@ -1522,6 +1522,10 @@ pub enum AppCommand {
     /// matte signal (Alpha / Luminance / Red / Green / Blue) and
     /// whether the output is inverted.
     SetExternalMatteChannel { clip_id: ClipId, node_id: uuid::Uuid, channel: u8, invert: bool },
+    /// Set how a `CombineMattes` node combines its two inputs. `op` is
+    /// the discriminant index into `MatteCombineOp::ALL`, same shape as
+    /// `SetExternalMatteChannel` above.
+    SetMatteCombineOp { clip_id: ClipId, node_id: uuid::Uuid, op: u8 },
     /// Update one input slot on a `LayerMixer` node (port = index into
     /// `LayerMixerParams.inputs`). The handler grows the params Vec as
     /// needed so a fresh slot can be set without an explicit AddPort
