@@ -27,6 +27,7 @@ members = [
     "crates/klipp-perf",
     "crates/klipp-smoke",
     "crates/klipp-control",
+    "crates/klipp-hdr-out",
     "crates/klipp-mcp",
 ]
 resolver = "2"
@@ -159,6 +160,7 @@ klipp-ml-ort     = { path = "crates/klipp-ml-ort" }
 klipp-ui      = { path = "crates/klipp-ui" }
 klipp-testing = { path = "crates/klipp-testing" }
 klipp-control = { path = "crates/klipp-control" }
+klipp-hdr-out = { path = "crates/klipp-hdr-out" }
 klipp-mcp = { path = "crates/klipp-mcp" }
 
 # ─── Workspace-wide profile settings ────────────────────────────────────────

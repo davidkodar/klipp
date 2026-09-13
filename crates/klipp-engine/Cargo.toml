@@ -13,6 +13,7 @@ klipp-timeline = { workspace = true }
 klipp-nodes = { workspace = true }
 klipp-audio = { workspace = true }
 klipp-color = { workspace = true }
+klipp-hdr-out = { workspace = true }
 klipp-plugin = { workspace = true }
 klipp-title = { workspace = true }
 klipp-jobs = { path = "../klipp-jobs" }

@@ -2733,6 +2733,7 @@ dependencies = [
  "klipp-compose",
  "klipp-core",
  "klipp-effects",
+ "klipp-hdr-out",
  "klipp-jobs",
  "klipp-media",
  "klipp-nodes",
@@ -2776,6 +2777,20 @@ dependencies = [
  "serde_json",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "klipp-hdr-out"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "half",
+ "memmap2",
+ "pollster 0.3.0",
+ "tracing",
+ "tracing-subscriber",
+ "wgpu",
+ "winit",
 ]
 
 [[package]]

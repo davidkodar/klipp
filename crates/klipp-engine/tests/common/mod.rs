@@ -231,3 +231,105 @@ impl Drop for Parked {
         }
     }
 }
+
+// ─── The PQ band fixture ──────────────────────────────────────────────
+//
+// Shared because two tests measure it — HDR monitoring's readout and the
+// HDR reference output — and a second copy of the band levels is exactly
+// the mistake the cache-key comment below was written about.
+
+/// The band fixture's frame size.
+pub const BANDS_W: u32 = 640;
+pub const BANDS_H: u32 = 360;
+/// Four vertical bands of known luminance, in cd/m².
+pub const BAND_NITS: [f64; 4] = [5.0, 26.0, 203.0, 1000.0];
+/// A fifth band, saturated: BT.2020 red at this level, green and blue at
+/// the bottom. Its brightest channel is the red one — the same thing the
+/// encoder measures, once the picture is in BT.2020. In a BT.709 project
+/// the working values of this colour are another basis entirely (and its
+/// green and blue are negative), so measuring there reads a different
+/// number.
+pub const SATURATED_RED_NITS: f64 = 600.0;
+
+pub fn pq_signal(nits: f64) -> f64 {
+    let (m1, m2) = (2610.0 / 16384.0, 2523.0 / 4096.0 * 128.0);
+    let (c1, c2, c3) = (3424.0 / 4096.0, 2413.0 / 4096.0 * 32.0, 2392.0 / 4096.0 * 32.0);
+    let y = (nits / 10000.0f64).powf(m1);
+    ((c1 + c2 * y) / (1.0 + c3 * y)).powf(m2)
+}
+
+pub fn pq_nits(signal: f64) -> f64 {
+    let (m1, m2) = (2610.0 / 16384.0, 2523.0 / 4096.0 * 128.0);
+    let (c1, c2, c3) = (3424.0 / 4096.0, 2413.0 / 4096.0 * 32.0, 2392.0 / 4096.0 * 32.0);
+    let p = signal.powf(1.0 / m2);
+    10000.0 * ((p - c1).max(0.0) / (c2 - c3 * p)).powf(1.0 / m1)
+}
+
+/// A lossless 10-bit PQ clip of four neutral bands at [`BAND_NITS`], plus a
+/// saturated fifth at [`SATURATED_RED_NITS`].
+///
+/// Cached between runs under a name that carries the codes it holds: keyed
+/// on the frame size alone, a file written for other band levels stayed in
+/// /tmp and every later run measured it instead — bands 0 and 1 happened
+/// to match, and band 2 read 1004 cd/m² where the test wanted 203.
+pub fn pq_bands() -> Option<PathBuf> {
+    if std::process::Command::new("ffmpeg").arg("-version").output().is_err() {
+        return None;
+    }
+    let y10 = |signal: f64| (64.0 + signal * 876.0).round() as u16;
+    let c10 = |v: f64| (512.0 + v * 896.0).round().clamp(4.0, 1019.0) as u16;
+    // Four neutral bands, then BT.2020 R'G'B' → Y'CbCr (BT.2020 NCL,
+    // limited range) for the saturated one.
+    let (kr, kb) = (0.2627f64, 0.0593f64);
+    let (r, g, b) = (pq_signal(SATURATED_RED_NITS), pq_signal(1.0), pq_signal(1.0));
+    let luma = kr * r + (1.0 - kr - kb) * g + kb * b;
+    let saturated = [y10(luma), c10((b - luma) / (2.0 * (1.0 - kb))), c10((r - luma) / (2.0 * (1.0 - kr)))];
+    let codes: Vec<[u16; 3]> = BAND_NITS
+        .iter()
+        .map(|n| [y10(pq_signal(*n)), 512, 512])
+        .chain(std::iter::once(saturated))
+        .collect();
+    // Every code in the name, chroma included: the saturated band differs
+    // from a neutral one in chroma alone.
+    let name: String = codes.iter().flatten().map(|c| format!("-{c}")).collect();
+    let out = std::env::temp_dir().join(format!("klipp-hdr-monitor-bands-{BANDS_W}x{BANDS_H}{name}.mkv"));
+    if out.exists() {
+        return Some(out);
+    }
+    let raw = std::env::temp_dir().join(format!("klipp-hdr-monitor-bands{name}.yuv"));
+    let mut bytes = Vec::new();
+    // Two seconds: the harness parks ten frames in.
+    for _ in 0..50 {
+        for plane in 0..3 {
+            let pw = if plane == 0 { BANDS_W } else { BANDS_W / 2 };
+            let ph = if plane == 0 { BANDS_H } else { BANDS_H / 2 };
+            for _ in 0..ph {
+                for x in 0..pw {
+                    let band = (x * BANDS_W / pw * 5 / BANDS_W) as usize;
+                    bytes.extend_from_slice(&codes[band.min(4)][plane].to_le_bytes());
+                }
+            }
+        }
+    }
+    std::fs::write(&raw, bytes).ok()?;
+    let size = format!("{BANDS_W}x{BANDS_H}");
+    // Written beside the cache name and moved into place, so a run that
+    // dies mid-encode leaves no half file for the next one to measure.
+    let partial = out.with_extension("partial.mkv");
+    let ok = std::process::Command::new("ffmpeg")
+        .args(["-nostdin", "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "yuv420p10le", "-s", &size, "-r", "25"])
+        .args(["-i", raw.to_str()?, "-vf", &format!("setparams=range=tv:{}", PQ_TAGS)])
+        .args(["-c:v", "ffv1"])
+        .arg(&partial)
+        .status()
+        .ok()?
+        .success();
+    let _ = std::fs::remove_file(&raw);
+    if !ok {
+        let _ = std::fs::remove_file(&partial);
+        return None;
+    }
+    std::fs::rename(&partial, &out).ok()?;
+    Some(out)
+}
+

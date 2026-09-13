@@ -594,6 +594,57 @@ impl PlaybackEngine {
         )
     }
 
+    /// Hand the HDR picture to `klipp-hdr-out`, which shows it on a
+    /// surface that can carry it.
+    ///
+    /// HDR display light, exactly as the export writes it — 1.0 = 203
+    /// cd/m² — so the reference output and the delivered file are the same
+    /// numbers. No conversion happens here and none should: the presenter
+    /// puts these values on a linear surface unchanged.
+    ///
+    /// Only when the render is *producing* display light, which is what
+    /// HDR monitoring switches on. Publishing the SDR picture instead
+    /// would give a reference monitor something that looks like a picture
+    /// and is not the one being delivered — worse than publishing nothing.
+    ///
+    /// The writer is created on the first frame and re-created when the
+    /// geometry changes, because a resize means a different mapping and a
+    /// presenter is better off re-attaching than reading a stale one.
+    fn publish_hdr_reference(&mut self, linear: &[f32], w: u32, h: u32) {
+        if !self.hdr_reference_output || !self.hdr_monitor.renders_hdr() || w == 0 || h == 0 {
+            return;
+        }
+        let stale = self.hdr_writer.as_ref().is_none_or(|x| (x.width(), x.height()) != (w, h));
+        if stale {
+            let path = klipp_hdr_out::default_path();
+            match klipp_hdr_out::FrameWriter::create(&path, w, h) {
+                Ok(writer) => {
+                    tracing::info!(
+                        "HDR reference output: publishing {w}x{h} to {}",
+                        path.display(),
+                    );
+                    self.hdr_writer = Some(writer);
+                }
+                Err(e) => {
+                    // A broken output is not a broken render: report it
+                    // once, turn it off, and keep showing the viewer.
+                    tracing::warn!("HDR reference output unavailable ({}): {e}", path.display());
+                    self.hdr_reference_output = false;
+                    return;
+                }
+            }
+        }
+        if let Some(writer) = self.hdr_writer.as_mut() {
+            writer.set_peak_nits(klipp_color::hdr::DEFAULT_MASTERING_MAX_LUMA_CD_M2);
+            if !writer.publish(linear) {
+                tracing::warn!(
+                    "HDR reference output: a {}-sample frame does not fit {w}x{h}",
+                    linear.len(),
+                );
+            }
+        }
+    }
+
     fn encode_for_screen(&self, linear: &[f32], w: u32, h: u32) -> (Vec<u8>, Option<(Vec<f32>, u32, u32, u32)>) {
         use klipp_core::HdrMonitor;
         if !self.hdr_monitor.renders_hdr() {
@@ -651,6 +702,12 @@ impl PlaybackEngine {
                         }
                     }
                 }
+                // The reference output carries this same picture. Done
+                // here rather than in `encode_for_screen` because creating
+                // the shared frame needs `&mut self`, and because this is
+                // the one place the HDR frame exists on the CPU as a whole
+                // — which is what another process needs.
+                self.publish_hdr_reference(&linear, w, h);
                 self.encode_for_screen(&linear, w, h)
             }
         };

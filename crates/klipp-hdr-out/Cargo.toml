@@ -1,0 +1,27 @@
+[package]
+name = "klipp-hdr-out"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "klipp_hdr_out"
+path = "src/lib.rs"
+
+[[bin]]
+name = "klipp-hdr-out"
+path = "src/main.rs"
+
+[dependencies]
+bytemuck = { workspace = true }
+memmap2 = "0.9"
+half = "2"
+tracing = { workspace = true }
+
+# Presenter only.
+wgpu = { workspace = true }
+winit = "0.30"
+pollster = "0.3"
+tracing-subscriber = { workspace = true }
+
+[dev-dependencies]
+half = "2"

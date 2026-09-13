@@ -1006,6 +1006,12 @@ pub struct PlaybackEngine {
     /// What the viewer shows while grading for an HDR delivery
     /// (`AppCommand::SetHdrMonitor`). Off renders the SDR picture.
     hdr_monitor: klipp_core::HdrMonitor,
+    /// Whether the HDR picture is being published for `klipp-hdr-out`
+    /// (`AppCommand::SetHdrReferenceOutput`).
+    hdr_reference_output: bool,
+    /// The shared frame, created on the first published frame and dropped
+    /// when the output is turned off or the geometry changes.
+    hdr_writer: Option<klipp_hdr_out::FrameWriter>,
     /// Phase 4C — Inspector's currently-displayed matte consumer.
     /// While set, after each composited frame the engine emits an
     /// `AppEvent::MatteMaskReady` with the resolved single-channel
@@ -1474,6 +1480,8 @@ impl PlaybackEngine {
             compare_effect_is_ofx: false,
             matte_preview: false,
             hdr_monitor: klipp_core::HdrMonitor::default(),
+            hdr_reference_output: false,
+            hdr_writer: None,
             inspector_matte_preview_target: None,
             scope_tap_node: None,
             solo_node: None,
@@ -2446,6 +2454,23 @@ impl PlaybackEngine {
                     self.compare_effect_active, self.compare_effect_clip_id,
                     self.compare_effect_index, self.compare_effect_is_ofx,
                 );
+            }
+
+            AppCommand::SetHdrReferenceOutput(on) => {
+                if self.hdr_reference_output != on {
+                    self.hdr_reference_output = on;
+                    if !on {
+                        // Dropping the writer clears the shared frame's
+                        // magic, so a presenter stops showing a picture
+                        // nothing is updating rather than freezing on it.
+                        self.hdr_writer = None;
+                    }
+                    info!("HDR reference output: {}", if on { "on" } else { "off" });
+                    // The fast paths stand aside while this is on, so the
+                    // frame on screen has to be remade the long way for
+                    // the first published one to exist.
+                    self.regrade_cached_frame();
+                }
             }
 
             AppCommand::SetHdrMonitor(mode) => {
@@ -6151,6 +6176,14 @@ impl PlaybackEngine {
             klipp_core::HdrMonitor::Off => {}
             klipp_core::HdrMonitor::Preview => blockers.push("HDR preview"),
             klipp_core::HdrMonitor::FalseColour => blockers.push("HDR false colour"),
+        }
+        // Feeding a reference output means the HDR frame has to reach
+        // another process, which means it has to reach the CPU. Neither
+        // fast path produces it there, so this is the one case where
+        // keeping the frame on the GPU is not what we want — and paying a
+        // readback for a reference monitor is the right trade.
+        if self.hdr_reference_output {
+            blockers.push("HDR reference output active");
         }
         if self.compare_stabilization || self.compare_effect_active {
             blockers.push("compare mode active");

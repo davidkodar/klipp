@@ -1516,6 +1516,15 @@ pub enum AppCommand {
     /// What the viewer shows while grading for an HDR delivery — see
     /// [`HdrMonitor`]. Off is the SDR picture the viewer has always shown.
     SetHdrMonitor(HdrMonitor),
+    /// Publish the HDR picture for `klipp-hdr-out` to show on a real HDR
+    /// surface, or stop.
+    ///
+    /// Separate from [`Self::SetHdrMonitor`]: that decides what the
+    /// *viewer's own* screen shows, and this whether a reference output is
+    /// being fed. Both can be on — a colourist watches the preview while
+    /// the reference monitor carries the real thing — and the picture
+    /// published is the same HDR display light either way.
+    SetHdrReferenceOutput(bool),
 
     /// Phase 4C — Inspector requests track-matte preview thumbnails for
     /// the given consumer clip. `None` clears the request. Engine emits
