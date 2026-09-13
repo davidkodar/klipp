@@ -245,6 +245,23 @@ fn display_transform_from(
     tone_map_op: ToneMapOp,
     to_709: Option<ToBt709>,
 ) -> Vec<u8> {
+    display_transform_from_pre(linear_rgba, tone_map_op, to_709, |v| v)
+}
+
+/// [`display_transform_from`] with a per-channel function applied to the
+/// linear light first.
+///
+/// A hook rather than a caller-side pass, because the caller-side version
+/// needs somewhere to put the result: HDR monitoring used to copy the
+/// frame (`linear.to_vec()`), map it in place and encode that, and at 4K
+/// the copy alone measured **30 ms** — more than the encode it fed. The
+/// hook reads each pixel once and writes bytes.
+fn display_transform_from_pre(
+    linear_rgba: &[f32],
+    tone_map_op: ToneMapOp,
+    to_709: Option<ToBt709>,
+    pre: impl Fn(f32) -> f32 + Sync + Send,
+) -> Vec<u8> {
     use rayon::prelude::*;
     assert!(
         linear_rgba.len() % 4 == 0,
@@ -261,9 +278,10 @@ fn display_transform_from(
             // positives (the 1.60475 coefficient in the output matrix
             // amplifies anything it sees). The other operators already
             // guard against negatives on their own.
+            let src = [pre(chunk[0]), pre(chunk[1]), pre(chunk[2])];
             let rgb = match to_709 {
-                Some(c) => c.apply([chunk[0], chunk[1], chunk[2]]),
-                None => [chunk[0], chunk[1], chunk[2]],
+                Some(c) => c.apply(src),
+                None => src,
             };
             let mapped = tone_map_rgb(
                 [rgb[0].max(0.0), rgb[1].max(0.0), rgb[2].max(0.0)],
@@ -313,6 +331,22 @@ pub fn display_transform_ws(
     tone_map_op: ToneMapOp,
     working_space: klipp_core::WorkingColorspace,
 ) -> Vec<u8> {
+    display_transform_ws_pre(linear_rgba, tone_map_op, working_space, |v| v)
+}
+
+/// [`display_transform_ws`] with a per-channel function applied to the
+/// linear light first, in the same pass.
+///
+/// What HDR monitoring's preview needs: the roll-off
+/// ([`crate::hdr_view::hdr_to_sdr_preview`]) belongs on the light before
+/// the display encode, and doing it as a separate pass costs a copy of
+/// the frame — 30 ms at 4K, which is more than the encode.
+pub fn display_transform_ws_pre(
+    linear_rgba: &[f32],
+    tone_map_op: ToneMapOp,
+    working_space: klipp_core::WorkingColorspace,
+    pre: impl Fn(f32) -> f32 + Sync + Send + Copy,
+) -> Vec<u8> {
     use klipp_core::WorkingColorspace;
     use rayon::prelude::*;
     assert!(
@@ -320,7 +354,12 @@ pub fn display_transform_ws(
         "display_transform_ws requires RGBA-packed input",
     );
     if let WorkingColorspace::Rec709Linear | WorkingColorspace::Bt2020Linear = working_space {
-        return display_transform_from(linear_rgba, tone_map_op, ToBt709::for_working_space(working_space));
+        return display_transform_from_pre(
+            linear_rgba,
+            tone_map_op,
+            ToBt709::for_working_space(working_space),
+            pre,
+        );
     }
     // AcesCG: ACES Output Device Transform path.
     let mut out = vec![0u8; linear_rgba.len()];
@@ -331,7 +370,7 @@ pub fn display_transform_ws(
             // and BT.1886 inverse — output is `[0, 1]` display-encoded
             // Rec.709. Quantise to u8 here at the same precision as
             // the legacy path.
-            let acescg = [chunk[0], chunk[1], chunk[2]];
+            let acescg = [pre(chunk[0]), pre(chunk[1]), pre(chunk[2])];
             let encoded = crate::aces::acescg_to_rec709_sdr(acescg);
             dst[0] = (encoded[0].clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
             dst[1] = (encoded[1].clamp(0.0, 1.0) * 255.0 + 0.5) as u8;

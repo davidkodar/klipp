@@ -606,16 +606,15 @@ impl PlaybackEngine {
         let map = measure.nit_map(linear, w, h, NIT_MAP_STEP);
         let bytes = match self.hdr_monitor {
             HdrMonitor::FalseColour => measure.false_colour_frame(linear),
-            _ => {
-                let mut preview = linear.to_vec();
-                use rayon::prelude::*;
-                preview.par_chunks_exact_mut(4).for_each(|px| {
-                    for c in 0..3 {
-                        px[c] = klipp_color::hdr_view::hdr_to_sdr_preview(px[c]);
-                    }
-                });
-                self.display_encode(&preview)
-            }
+            // One pass, reading the frame once. This used to copy it
+            // (`linear.to_vec()`), roll the copy off in place and encode
+            // that; at 4K the copy alone measured 30 ms — more than the
+            // encode it fed — so the roll-off is a hook on the transform.
+            _ => klipp_color::hdr_view::preview_frame(
+                linear,
+                self.tone_map_op,
+                crate::video_decoder::working_colorspace(),
+            ),
         };
         (bytes, Some((map.0, map.1, map.2, NIT_MAP_STEP)))
     }

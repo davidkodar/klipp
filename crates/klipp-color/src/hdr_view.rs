@@ -52,6 +52,27 @@ pub fn hdr_to_sdr_preview(display_light: f32) -> f32 {
 /// with its colour. A sample takes the colour of the highest band it
 /// reaches.
 ///
+/// A frame of HDR display light → the SDR preview, as display bytes.
+///
+/// The grade's mid-tones stay where they are and the light above
+/// reference white rolls into the top, so its structure is visible on
+/// a screen that cannot show it. One pass: the roll-off is a hook on
+/// the display transform rather than a pass of its own, because a pass
+/// of its own needs a copy of the frame and that copy measured 30 ms
+/// at 4K — more than the encode it fed.
+pub fn preview_frame(
+    display_light: &[f32],
+    tone_map_op: klipp_core::ToneMapOp,
+    working_space: klipp_core::WorkingColorspace,
+) -> Vec<u8> {
+    crate::display::display_transform_ws_pre(
+        display_light,
+        tone_map_op,
+        working_space,
+        hdr_to_sdr_preview,
+    )
+}
+
 /// The levels HDR is judged against (ITU-R BT.2408) — 26 cd/m² for an 18%
 /// grey card, 203 for diffuse white — get a band *around* them, not a
 /// boundary *at* them: a face lit to grey or a white shirt authored at
