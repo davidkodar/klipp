@@ -99,11 +99,21 @@ impl ToastState {
                         ),
                     })
                     .show(ui, |ui| {
-                        ui.label(
+                        // Without an explicit width cap, egui's Area
+                        // collapses to a sliver and wraps the label one
+                        // word per line. Cap to a readable column and
+                        // let multi-line messages wrap at that width.
+                        // The longest toast reaches ~91 characters
+                        // ("Recording saved. Drag from media pool onto a
+                        // track, then use Audio Sync to align if
+                        // needed."), so wrapping has to work, not just
+                        // not crash.
+                        ui.set_max_width(560.0);
+                        ui.add(egui::Label::new(
                             egui::RichText::new(msg.as_str())
                                 .size(12.0)
                                 .color(text_color),
-                        );
+                        ));
                     });
             });
 
