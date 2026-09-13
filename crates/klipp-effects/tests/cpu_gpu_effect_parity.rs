@@ -245,3 +245,107 @@ fn the_lut_matches_between_cpu_and_gpu() {
     eprintln!("trilinear vs tetrahedral: worst {worst} mean {mean:.3}");
     assert!(worst > 0, "the two interpolations gave the same picture");
 }
+
+/// The brightness-gated effects follow the *working space's* luminance
+/// weights, on both paths.
+///
+/// The test above cannot catch this: both sides default to BT.709, so it
+/// would pass just as well if the weights were ignored entirely. This one
+/// runs the same effects under BT.2020's weights and AP1's, and asserts
+/// two things — that CPU and GPU still agree, and that the picture
+/// actually *moved*, which is what proves the numbers are being read.
+///
+/// Why it matters: an effect that gates on brightness mis-estimates it in
+/// any other basis, and the weights differ materially. BT.2020's green is
+/// 0.678 against BT.709's 0.715, AP1's 0.674. Before this the *grade*
+/// tools read the working space's luma and the effects did not.
+#[test]
+fn the_brightness_gated_effects_follow_the_working_space() {
+    use BuiltinEffect::*;
+    let Some(mut gpu) = GpuEffectsPipeline::new() else {
+        eprintln!("skipping: no GPU");
+        return;
+    };
+    let input = frame();
+
+    // BT.709, BT.2020 and ACES AP1. The first is the default, so it also
+    // pins that installing weights explicitly changes nothing.
+    const BT709: [f32; 3] = [0.2126, 0.7152, 0.0722];
+    const BT2020: [f32; 3] = [0.2627, 0.6780, 0.0593];
+    const AP1: [f32; 3] = [0.2722, 0.6741, 0.0537];
+
+    // The effects that touch the luma, and whether the weights can reach
+    // the picture. Glow is the interesting `false`: its screen blend
+    // desaturates the layer *towards* the luma, and Glow passes
+    // desaturation 0, so the luma term cancels exactly. Keeping it here
+    // with the expectation inverted says that out loud — if Glow ever
+    // starts moving with the working space, something has changed about
+    // what it means.
+    //
+    // LightRays keeps the parameters the test above uses. With a shorter
+    // ray and a higher intensity its CPU and GPU accumulations diverge by
+    // three levels, which is pre-existing — the BT.709 column is the
+    // arithmetic this change replaced, byte for byte — and not this
+    // test's to chase.
+    let cases: Vec<(&str, BuiltinEffect, bool)> = vec![
+        ("Bloom", Bloom { threshold: 0.5, radius: 4.0, intensity: 0.8 }, true),
+        ("Glow", Glow { radius: 4.0, intensity: 0.6 }, false),
+        ("Diffusion", Diffusion { threshold: 0.45, radius: 5.0, amount: 0.7, desaturation: 0.3 }, true),
+        ("LightRays", LightRays {
+            center_x: 0.5, center_y: 0.3, threshold: 0.6,
+            samples: 32, decay: 0.95, intensity: 0.5,
+        }, true),
+        ("AnamorphicStreak", AnamorphicStreak {
+            threshold: 0.5, length: 20.0, intensity: 0.8, tint: 0.4,
+        }, true),
+        ("FilmHalation", FilmHalation {
+            threshold: 0.5, radius: 5.0, intensity: 0.8, hue: 0.05,
+        }, true),
+        ("EdgeDetect", EdgeDetect { strength: 1.0, mix: 0.8 }, true),
+        ("Denoise", Denoise { spatial_sigma: 2.0, color_sigma: 0.2, iterations: 1 }, true),
+        ("Vibrance", Vibrance { amount: 0.8 }, true),
+    ];
+
+    let mut failures = Vec::new();
+    for (name, effect, reads_luma) in cases {
+        let fx = [effect];
+        let mut pictures = Vec::new();
+        for (space, luma) in [("BT.709", BT709), ("BT.2020", BT2020), ("AP1", AP1)] {
+            gpu.set_luma_coefs(luma);
+            let on_gpu = gpu.apply_effects(&fx, &input, W, H);
+            let cpu = klipp_effects::apply_effects_with_luma(
+                &fx,
+                input.clone(),
+                W,
+                H,
+                0.0,
+                luma,
+            );
+            let (worst, mean) = diff(&cpu, &on_gpu);
+            eprintln!("{name:18} {space:8} CPU vs GPU worst {worst:3} mean {mean:6.3}");
+            if worst > 1 {
+                failures.push(format!("{name} under {space}: CPU and GPU differ by {worst}"));
+            }
+            pictures.push((space, on_gpu));
+        }
+
+        // The weights have to reach the arithmetic. Comparing BT.709
+        // against AP1 — the widest separation of the three — the picture
+        // must move somewhere, or the effect is ignoring them and every
+        // agreement above is agreement about a constant.
+        let (worst, _) = diff(&pictures[0].1, &pictures[2].1);
+        eprintln!("{name:18} BT.709 vs AP1: worst {worst} levels");
+        if reads_luma && worst == 0 {
+            failures.push(format!(
+                "{name}: identical under BT.709 and AP1, so it is not reading the weights"
+            ));
+        }
+        if !reads_luma && worst != 0 {
+            failures.push(format!(
+                "{name} moved by {worst} levels with the weights, but its luma term \
+                 should cancel — has what it means changed?"
+            ));
+        }
+    }
+    assert!(failures.is_empty(), "{failures:#?}");
+}

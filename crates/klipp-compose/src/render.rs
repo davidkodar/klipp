@@ -1274,9 +1274,23 @@ impl Renderer {
         }
         let t = Instant::now();
         let gpu_ok = klipp_effects::chain_supports_gpu(fx);
+        // The working space's luminance weights, for the effects that gate
+        // on brightness — a bright pass, a denoise threshold, an edge
+        // measure. Both arms get the same numbers, which is what
+        // `cpu_gpu_effect_parity` checks; before this they both assumed
+        // BT.709 and mis-estimated brightness in any other basis. This
+        // renderer owns its own effects pipeline, separate from the
+        // executor's, so the executor's `set_luma_coefs` does not cover
+        // it.
+        let luma = klipp_color::linear::luma_coefs(self.working);
         let out = match self.gpu() {
-            Some(gpu) if gpu_ok => gpu.apply_effects(fx, &pixels, width, height),
-            _ => klipp_effects::apply_effects_with_time(fx, pixels, width, height, clip_time),
+            Some(gpu) if gpu_ok => {
+                gpu.set_luma_coefs(luma);
+                gpu.apply_effects(fx, &pixels, width, height)
+            }
+            _ => klipp_effects::apply_effects_with_luma(
+                fx, pixels, width, height, clip_time, luma,
+            ),
         };
         self.found.stats.effects_ms += ms_since(t);
         out

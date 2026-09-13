@@ -31,8 +31,16 @@ pub(crate) fn decode(c: f32) -> f32 {
     if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
 }
 
-fn luma(p: Px) -> f32 {
-    0.2126 * p[0] + 0.7152 * p[1] + 0.0722 * p[2]
+/// The picture's brightness, by the *working space's* luminance weights.
+///
+/// Not BT.709's, which is what every caller here used to assume. An
+/// effect that gates on brightness — a bright pass, a denoise threshold,
+/// an edge measure — mis-estimates it in any other basis, and the weights
+/// differ materially: BT.2020's green is 0.678 against BT.709's 0.715,
+/// and AP1's is 0.674. The GPU twins read the same numbers out of their
+/// params, which `cpu_gpu_effect_parity` holds them to.
+fn luma(p: Px, yw: [f32; 3]) -> f32 {
+    yw[0] * p[0] + yw[1] * p[1] + yw[2] * p[2]
 }
 
 fn mix(a: Px, b: Px, t: f32) -> Px {
@@ -127,9 +135,9 @@ fn gaussian(p: &[f32], w: u32, h: u32, sigma: f32, skip_zero: bool) -> Vec<f32> 
 }
 
 /// Bright parts above `threshold`, scaled by how far above.
-fn bright(p: &[f32], threshold: f32) -> Vec<f32> {
+fn bright(p: &[f32], threshold: f32, yw: [f32; 3]) -> Vec<f32> {
     each_value(p.to_vec(), |c| {
-        let l = luma(c);
+        let l = luma(c, yw);
         if l > threshold {
             // A weight, not a ramp: normalising by `1 - threshold` gave a
             // factor of 34 to a 12x highlight, so bloom and halation grew
@@ -144,10 +152,10 @@ fn bright(p: &[f32], threshold: f32) -> Vec<f32> {
 
 /// Screen `layer` × `intensity` over `base`, the layer first desaturated
 /// by `desat`.
-fn screen(base: &[f32], layer: &[f32], intensity: f32, desat: f32) -> Vec<f32> {
+fn screen(base: &[f32], layer: &[f32], intensity: f32, desat: f32, yw: [f32; 3]) -> Vec<f32> {
     let mut out = base.to_vec();
     out.par_chunks_exact_mut(4).zip(layer.par_chunks_exact(4)).for_each(|(o, b)| {
-        let l = luma([b[0], b[1], b[2], 0.0]);
+        let l = luma([b[0], b[1], b[2], 0.0], yw);
         for c in 0..3 {
             let v = (b[c] + (l - b[c]) * desat) * intensity;
             o[c] = screen_at_ceiling(o[c], v);
@@ -168,7 +176,13 @@ pub(crate) fn screen_at_ceiling(o: f32, v: f32) -> f32 {
 /// 8-bit frames: see `apply_effects_with_time`); stabilisation, rolling-
 /// shutter correction and speed ramps need data only the GPU path or the
 /// renderer has, and pass through.
-pub(crate) fn apply(effect: &BuiltinEffect, p: Vec<f32>, w: u32, h: u32) -> Vec<f32> {
+pub(crate) fn apply(
+    effect: &BuiltinEffect,
+    p: Vec<f32>,
+    w: u32,
+    h: u32,
+    yw: [f32; 3],
+) -> Vec<f32> {
     use BuiltinEffect::*;
     let (wf, hf) = (w as f32, h as f32);
     match *effect {
@@ -326,14 +340,14 @@ pub(crate) fn apply(effect: &BuiltinEffect, p: Vec<f32>, w: u32, h: u32) -> Vec<
             })
         }
         Bloom { threshold, radius, intensity } => {
-            let blurred = gaussian(&bright(&p, threshold), w, h, radius, false);
+            let blurred = gaussian(&bright(&p, threshold, yw), w, h, radius, false);
             let mut out = p;
             out.par_chunks_exact_mut(4).zip(blurred.par_chunks_exact(4)).for_each(|(o, b)| {
                 (0..3).for_each(|c| o[c] += b[c] * intensity);
             });
             out
         }
-        Glow { radius, intensity } => screen(&p, &gaussian(&p, w, h, radius, false), intensity, 0.0),
+        Glow { radius, intensity } => screen(&p, &gaussian(&p, w, h, radius, false), intensity, 0.0, yw),
         LightRays { center_x, center_y, threshold, samples, decay, intensity } => {
             let samples = samples.clamp(4, 128);
             let (cx, cy) = (center_x * wf, center_y * hf);
@@ -350,7 +364,7 @@ pub(crate) fn apply(effect: &BuiltinEffect, p: Vec<f32>, w: u32, h: u32) -> Vec<
                     let sx = ((xf - dx * t) as u32).min(w - 1);
                     let sy = ((yf - dy * t) as u32).min(h - 1);
                     let q = f.at(sx as usize, sy as usize);
-                    if luma(q) > threshold {
+                    if luma(q, yw) > threshold {
                         (0..3).for_each(|c| ray[c] += q[c] * weight);
                     }
                     weight *= per;
@@ -373,7 +387,7 @@ pub(crate) fn apply(effect: &BuiltinEffect, p: Vec<f32>, w: u32, h: u32) -> Vec<
             })
         }
         Diffusion { amount, radius, threshold, desaturation } => {
-            screen(&p, &gaussian(&bright(&p, threshold), w, h, radius, false), amount, desaturation)
+            screen(&p, &gaussian(&bright(&p, threshold, yw), w, h, radius, false), amount, desaturation, yw)
         }
         LensFlare { position_x, position_y, brightness, flare_size, ghost_count, ghost_intensity, chromatic_aberration } => {
             let (fx, fy) = (position_x * wf, position_y * hf);
@@ -406,7 +420,7 @@ pub(crate) fn apply(effect: &BuiltinEffect, p: Vec<f32>, w: u32, h: u32) -> Vec<
             })
         }
         LightWrap { width: wrap, intensity, softness } => {
-            screen(&p, &gaussian(&p, w, h, wrap * softness, false), intensity, 0.0)
+            screen(&p, &gaussian(&p, w, h, wrap * softness, false), intensity, 0.0, yw)
         }
         AnamorphicStreak { threshold, length, intensity, tint } => {
             let half = (length * 0.5) as u32;
@@ -417,7 +431,7 @@ pub(crate) fn apply(effect: &BuiltinEffect, p: Vec<f32>, w: u32, h: u32) -> Vec<
                 let mut s = [0.0f32; 3];
                 for sx in start..end {
                     let q = f.at(sx as usize, y);
-                    let l = luma(q);
+                    let l = luma(q, yw);
                     if l > threshold {
                         let k = ((l - threshold) / (1.0 - threshold + 1e-6)).clamp(0.0, 1.0);
                         (0..3).for_each(|c| s[c] += q[c] * k);
@@ -433,10 +447,10 @@ pub(crate) fn apply(effect: &BuiltinEffect, p: Vec<f32>, w: u32, h: u32) -> Vec<
             // The spread light takes the halation's colour — deep red to
             // warm yellow — whatever colour the highlight was.
             let tint = [1.0, hue * 0.6, hue * hue * 0.2];
-            let blurred = gaussian(&bright(&p, threshold), w, h, radius, false);
+            let blurred = gaussian(&bright(&p, threshold, yw), w, h, radius, false);
             let mut out = p;
             out.par_chunks_exact_mut(4).zip(blurred.par_chunks_exact(4)).for_each(|(o, b)| {
-                let l = luma([b[0], b[1], b[2], 0.0]);
+                let l = luma([b[0], b[1], b[2], 0.0], yw);
                 for c in 0..3 {
                     o[c] = screen_at_ceiling(o[c], l * tint[c] * intensity);
                 }
@@ -476,7 +490,7 @@ pub(crate) fn apply(effect: &BuiltinEffect, p: Vec<f32>, w: u32, h: u32) -> Vec<
         }
         EdgeDetect { strength, mix: m } => each_pixel(&p, w, h, |x, y, f| {
             let (x, y) = (x as i32, y as i32);
-            let l = |dx: i32, dy: i32| luma(f.clamped(x + dx, y + dy));
+            let l = |dx: i32, dy: i32| luma(f.clamped(x + dx, y + dy), yw);
             let gx = -l(-1, -1) + l(1, -1) - 2.0 * l(-1, 0) + 2.0 * l(1, 0) - l(-1, 1) + l(1, 1);
             let gy = -l(-1, -1) - 2.0 * l(0, -1) - l(1, -1) + l(-1, 1) + 2.0 * l(0, 1) + l(1, 1);
             let edge = ((gx * gx + gy * gy).sqrt() * strength).clamp(0.0, 1.0);
@@ -576,13 +590,13 @@ pub(crate) fn apply(effect: &BuiltinEffect, p: Vec<f32>, w: u32, h: u32) -> Vec<
             for _ in 0..iterations.clamp(1, 3) {
                 out = each_pixel(&out, w, h, |x, y, f| {
                     let c = f.at(x, y);
-                    let cl = luma(c);
+                    let cl = luma(c, yw);
                     let mut s = [0.0f32; 3];
                     let mut total = 0.0f32;
                     for dy in -k..=k {
                         for dx in -k..=k {
                             let n = f.clamped(x as i32 + dx, y as i32 + dy);
-                            let d = cl - luma(n);
+                            let d = cl - luma(n, yw);
                             let wgt = (-((dx * dx + dy * dy) as f32) / sd).exp() * (-d * d / cd).exp();
                             (0..3).for_each(|ch| s[ch] += n[ch] * wgt);
                             total += wgt;
@@ -609,7 +623,7 @@ pub(crate) fn apply(effect: &BuiltinEffect, p: Vec<f32>, w: u32, h: u32) -> Vec<
         }
         Vibrance { amount } => each_value(p, |c| {
             let sat = c[0].max(c[1]).max(c[2]) - c[0].min(c[1]).min(c[2]);
-            let l = luma(c);
+            let l = luma(c, yw);
             let boost = 1.0 + amount * (1.0 - sat.clamp(0.0, 1.0));
             [l + (c[0] - l) * boost, l + (c[1] - l) * boost, l + (c[2] - l) * boost, c[3]]
         }),

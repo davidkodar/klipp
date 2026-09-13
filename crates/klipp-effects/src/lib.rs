@@ -707,13 +707,45 @@ pub fn linear_f32_rgba_to_srgb_u8(linear: &[f32]) -> Vec<u8> {
     out
 }
 
+/// BT.709's luminance weights, for a caller with no working space to
+/// speak of.
+///
+/// A project has one and should pass it (see
+/// [`apply_effects_with_luma`]); an effect *thumbnail* or a unit test
+/// genuinely does not, and BT.709 is the right answer there rather than a
+/// placeholder.
+pub const BT709_LUMA_WEIGHTS: [f32; 3] = [0.2126, 0.7152, 0.0722];
+
 /// Apply a chain of built-in effects to a linear-f32 RGBA frame, on the
 /// CPU: each effect computed as its GPU shader computes it (see [`cpu`]),
 /// so the picture does not depend on which one ran. Frei0r plugins take
 /// 8-bit frames; each is bridged on its own, the rest of the chain stays
 /// in float.
+///
+/// Uses BT.709's luminance weights. A caller inside a project should use
+/// [`apply_effects_with_luma`] instead: the effects that gate on
+/// brightness mis-estimate it in any other basis.
 pub fn apply_effects(effects: &[BuiltinEffect], linear_rgba: Vec<f32>, width: u32, height: u32) -> Vec<f32> {
     apply_effects_with_time(effects, linear_rgba, width, height, 0.0)
+}
+
+/// [`apply_effects_with_time`] with the working space's luminance
+/// weights, which is what a render should call.
+///
+/// `luma` is `klipp_color::primaries::luminance_weights(working_space)` —
+/// passed in rather than derived, because this crate does not depend on
+/// `klipp-color` outside its tests. The GPU pipeline takes the same
+/// numbers through `set_luma_coefs`, and `cpu_gpu_effect_parity` holds the
+/// two together.
+pub fn apply_effects_with_luma(
+    effects: &[BuiltinEffect],
+    linear_rgba: Vec<f32>,
+    width: u32,
+    height: u32,
+    clip_time_secs: f64,
+    luma: [f32; 3],
+) -> Vec<f32> {
+    apply_chain(effects, linear_rgba, width, height, clip_time_secs, luma)
 }
 
 /// Time-aware sibling of [`apply_effects`]. `clip_time_secs` is forwarded
@@ -728,6 +760,17 @@ pub fn apply_effects_with_time(
     height: u32,
     clip_time_secs: f64,
 ) -> Vec<f32> {
+    apply_chain(effects, linear_rgba, width, height, clip_time_secs, BT709_LUMA_WEIGHTS)
+}
+
+fn apply_chain(
+    effects: &[BuiltinEffect],
+    linear_rgba: Vec<f32>,
+    width: u32,
+    height: u32,
+    clip_time_secs: f64,
+    luma: [f32; 3],
+) -> Vec<f32> {
     let mut frame = linear_rgba;
     for effect in effects {
         frame = match effect {
@@ -735,7 +778,7 @@ pub fn apply_effects_with_time(
                 let u8s = linear_f32_rgba_to_srgb_u8(&frame);
                 srgb_u8_to_linear_f32_rgba(&frei0r_effect::apply(type_id, params, u8s, width, height, clip_time_secs))
             }
-            e => cpu::apply(e, frame, width, height),
+            e => cpu::apply(e, frame, width, height, luma),
         };
     }
     frame

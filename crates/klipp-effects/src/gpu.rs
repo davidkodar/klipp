@@ -2811,6 +2811,7 @@ impl GpuEffectsPipeline {
 
         self.write_params(&DenoiseParams {
             width, height, spatial_sigma, color_sigma,
+            luma_yr: self.luma_coefs[0], luma_yg: self.luma_coefs[1], luma_yb: self.luma_coefs[2], _pad_luma: 0,
         });
         self.dispatch(&self.denoise_pipeline, buf_a, buf_b, workgroups);
 
@@ -3323,6 +3324,7 @@ impl GpuEffectsPipeline {
             highlights,
             frame_seed,
             monochrome: if monochrome { 1 } else { 0 },
+            luma_yr: self.luma_coefs[0], luma_yg: self.luma_coefs[1], luma_yb: self.luma_coefs[2], _pad_luma: 0,
         });
 
         let pixel_count = width * height;
@@ -4024,7 +4026,7 @@ impl GpuEffectsPipeline {
             return;
         }
         let slot = self.next_params_slot();
-        self.write_chain_params(slot, &DenoiseParams { width, height, spatial_sigma, color_sigma });
+        self.write_chain_params(slot, &DenoiseParams { width, height, spatial_sigma, color_sigma, luma_yr: self.luma_coefs[0], luma_yg: self.luma_coefs[1], luma_yb: self.luma_coefs[2], _pad_luma: 0 });
         let workgroups = (width * height).div_ceil(WORKGROUP_SIZE);
         let bind_group = self.chain_bg_3binding[slot * 4 + Self::chain_cfg_3b_ab(in_is_a)]
             .as_ref()
@@ -4151,6 +4153,7 @@ impl GpuEffectsPipeline {
         self.write_chain_params(slot, &GpuGrainParams {
             width, height, amount, size, shadows, highlights, frame_seed,
             monochrome: if monochrome { 1 } else { 0 },
+            luma_yr: self.luma_coefs[0], luma_yg: self.luma_coefs[1], luma_yb: self.luma_coefs[2], _pad_luma: 0,
         });
         let workgroups = (width * height).div_ceil(WORKGROUP_SIZE);
         let bind_group = self.chain_bg_3binding[slot * 4 + Self::chain_cfg_3b_ab(in_is_a)]
@@ -4508,6 +4511,7 @@ impl GpuEffectsPipeline {
                         width, height,
                         threshold: *threshold,
                         _pad: 0,
+                        luma_yr: self.luma_coefs[0], luma_yg: self.luma_coefs[1], luma_yb: self.luma_coefs[2], _pad_luma: 0,
                     });
                     self.dispatch(&self.bloom_threshold_pipeline, input, buf_c, workgroups);
 
@@ -4525,6 +4529,7 @@ impl GpuEffectsPipeline {
                         width, height,
                         intensity: *intensity,
                         desat: 0.0,
+                        luma_yr: self.luma_coefs[0], luma_yg: self.luma_coefs[1], luma_yb: self.luma_coefs[2], _pad_luma: 0,
                     });
                     // bloom_blend reads input + buf_c, writes output
                     self.dispatch_bloom_blend(input, buf_c, output, workgroups, *intensity, width, height);
@@ -4565,6 +4570,7 @@ impl GpuEffectsPipeline {
                         samples: (*samples).clamp(4, 128),
                         decay: *decay,
                         intensity: *intensity,
+                        luma_yr: self.luma_coefs[0], luma_yg: self.luma_coefs[1], luma_yb: self.luma_coefs[2], _pad_luma: 0,
                     });
                     self.dispatch(&self.light_rays_pipeline, input, output, workgroups);
                     current_in_a = !current_in_a;
@@ -4581,7 +4587,7 @@ impl GpuEffectsPipeline {
                 BuiltinEffect::Diffusion { amount, radius, threshold, desaturation } => {
                     // Same as bloom: threshold → blur → screen blend
                     let buf_c = self.buf_c.as_ref().unwrap();
-                    self.write_params(&BloomThresholdParams { width, height, threshold: *threshold, _pad: 0 });
+                    self.write_params(&BloomThresholdParams { width, height, threshold: *threshold, _pad: 0, luma_yr: self.luma_coefs[0], luma_yg: self.luma_coefs[1], luma_yb: self.luma_coefs[2], _pad_luma: 0 });
                     self.dispatch(&self.bloom_threshold_pipeline, input, buf_c, workgroups);
                     let boxes = crate::blur::boxes_for_gaussian(*radius);
                     for &box_r in &boxes {
@@ -4635,6 +4641,7 @@ impl GpuEffectsPipeline {
                         intensity: *intensity,
                         tint: *tint,
                         _pad: 0, _pad2: 0,
+                        luma_yr: self.luma_coefs[0], luma_yg: self.luma_coefs[1], luma_yb: self.luma_coefs[2], _pad_luma: 0,
                     });
                     self.dispatch(&self.anamorphic_streak_pipeline, input, output, workgroups);
                     current_in_a = !current_in_a;
@@ -4646,7 +4653,7 @@ impl GpuEffectsPipeline {
                     let hal_g = *hue * 0.6;
                     let hal_b = *hue * *hue * 0.2;
                     // Use bloom threshold to extract brights (with color tint applied after)
-                    self.write_params(&BloomThresholdParams { width, height, threshold: *threshold, _pad: 0 });
+                    self.write_params(&BloomThresholdParams { width, height, threshold: *threshold, _pad: 0, luma_yr: self.luma_coefs[0], luma_yg: self.luma_coefs[1], luma_yb: self.luma_coefs[2], _pad_luma: 0 });
                     self.dispatch(&self.bloom_threshold_pipeline, input, buf_c, workgroups);
                     let boxes = crate::blur::boxes_for_gaussian(*radius);
                     for &box_r in &boxes {
@@ -4659,6 +4666,7 @@ impl GpuEffectsPipeline {
                     self.write_params(&FilmHalationBlendParams {
                         width, height, threshold: *threshold, intensity: *intensity,
                         hal_r, hal_g, hal_b, _pad: 0,
+                        luma_yr: self.luma_coefs[0], luma_yg: self.luma_coefs[1], luma_yb: self.luma_coefs[2], _pad_luma: 0,
                     });
                     let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
                         label: Some("halation_bg"),
@@ -4720,6 +4728,7 @@ impl GpuEffectsPipeline {
                         width, height,
                         strength: *strength,
                         mix: *mix,
+                        luma_yr: self.luma_coefs[0], luma_yg: self.luma_coefs[1], luma_yb: self.luma_coefs[2], _pad_luma: 0,
                     });
                     self.dispatch(&self.edge_detect_pipeline, input, output, workgroups);
                     current_in_a = !current_in_a;
@@ -4816,6 +4825,7 @@ impl GpuEffectsPipeline {
                         width, height,
                         spatial_sigma: *spatial_sigma,
                         color_sigma: *color_sigma,
+                        luma_yr: self.luma_coefs[0], luma_yg: self.luma_coefs[1], luma_yb: self.luma_coefs[2], _pad_luma: 0,
                     });
                     // Multi-pass: ping-pong between buffers
                     for _iter in 0..iters {
@@ -5553,7 +5563,7 @@ impl GpuEffectsPipeline {
         &self, input: &wgpu::Buffer, bright: &wgpu::Buffer, output: &wgpu::Buffer,
         workgroups: u32, intensity: f32, width: u32, height: u32,
     ) {
-        self.write_params(&BloomBlendParams { width, height, intensity, desat: 0.0 });
+        self.write_params(&BloomBlendParams { width, height, intensity, desat: 0.0, luma_yr: self.luma_coefs[0], luma_yg: self.luma_coefs[1], luma_yb: self.luma_coefs[2], _pad_luma: 0 });
         let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("bloom_blend_bg"),
             layout: &self.transition_bgl,
@@ -5583,7 +5593,7 @@ impl GpuEffectsPipeline {
         &self, input: &wgpu::Buffer, blurred: &wgpu::Buffer, output: &wgpu::Buffer,
         workgroups: u32, intensity: f32, desat: f32, width: u32, height: u32,
     ) {
-        self.write_params(&BloomBlendParams { width, height, intensity, desat });
+        self.write_params(&BloomBlendParams { width, height, intensity, desat, luma_yr: self.luma_coefs[0], luma_yg: self.luma_coefs[1], luma_yb: self.luma_coefs[2], _pad_luma: 0 });
         let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("glow_blend_bg"),
             layout: &self.transition_bgl,
@@ -5867,6 +5877,13 @@ struct BloomThresholdParams {
     height: u32,
     threshold: f32,
     _pad: u32,
+    /// Working-space luminance weights, for the brightness this effect
+    /// gates on. `GpuEffectsPipeline::set_luma_coefs` installs them; the
+    /// CPU twin reads the same numbers.
+    luma_yr: f32,
+    luma_yg: f32,
+    luma_yb: f32,
+    _pad_luma: u32,
 }
 
 #[repr(C)]
@@ -5877,6 +5894,13 @@ struct BloomBlendParams {
     intensity: f32,
     /// Desaturation of the blended layer (screen blend only; Diffusion).
     desat: f32,
+    /// Working-space luminance weights, for the brightness this effect
+    /// gates on. `GpuEffectsPipeline::set_luma_coefs` installs them; the
+    /// CPU twin reads the same numbers.
+    luma_yr: f32,
+    luma_yg: f32,
+    luma_yb: f32,
+    _pad_luma: u32,
 }
 
 #[repr(C)]
@@ -5890,6 +5914,13 @@ struct LightRaysParams {
     samples: u32,
     decay: f32,
     intensity: f32,
+    /// Working-space luminance weights, for the brightness this effect
+    /// gates on. `GpuEffectsPipeline::set_luma_coefs` installs them; the
+    /// CPU twin reads the same numbers.
+    luma_yr: f32,
+    luma_yg: f32,
+    luma_yb: f32,
+    _pad_luma: u32,
 }
 
 #[repr(C)]
@@ -5933,6 +5964,13 @@ struct AnamorphicStreakParams {
     tint: f32,
     _pad: u32,
     _pad2: u32,
+    /// Working-space luminance weights, for the brightness this effect
+    /// gates on. `GpuEffectsPipeline::set_luma_coefs` installs them; the
+    /// CPU twin reads the same numbers.
+    luma_yr: f32,
+    luma_yg: f32,
+    luma_yb: f32,
+    _pad_luma: u32,
 }
 
 #[repr(C)]
@@ -5946,6 +5984,13 @@ struct FilmHalationBlendParams {
     hal_g: f32,
     hal_b: f32,
     _pad: u32,
+    /// Working-space luminance weights, for the brightness this effect
+    /// gates on. `GpuEffectsPipeline::set_luma_coefs` installs them; the
+    /// CPU twin reads the same numbers.
+    luma_yr: f32,
+    luma_yg: f32,
+    luma_yb: f32,
+    _pad_luma: u32,
 }
 
 #[repr(C)]
@@ -6254,6 +6299,13 @@ struct GpuGrainParams {
     highlights: f32,
     frame_seed: u32,
     monochrome: u32,
+    /// Working-space luminance weights, for the brightness this effect
+    /// gates on. `GpuEffectsPipeline::set_luma_coefs` installs them; the
+    /// CPU twin reads the same numbers.
+    luma_yr: f32,
+    luma_yg: f32,
+    luma_yb: f32,
+    _pad_luma: u32,
 }
 // 8 fields × 4 bytes = 32 bytes
 
@@ -6309,6 +6361,13 @@ struct EdgeDetectParams {
     height: u32,
     strength: f32,
     mix: f32,
+    /// Working-space luminance weights, for the brightness this effect
+    /// gates on. `GpuEffectsPipeline::set_luma_coefs` installs them; the
+    /// CPU twin reads the same numbers.
+    luma_yr: f32,
+    luma_yg: f32,
+    luma_yb: f32,
+    _pad_luma: u32,
 }
 
 #[repr(C)]
@@ -6394,6 +6453,13 @@ struct DenoiseParams {
     height: u32,
     spatial_sigma: f32,
     color_sigma: f32,
+    /// Working-space luminance weights, for the brightness this effect
+    /// gates on. `GpuEffectsPipeline::set_luma_coefs` installs them; the
+    /// CPU twin reads the same numbers.
+    luma_yr: f32,
+    luma_yg: f32,
+    luma_yb: f32,
+    _pad_luma: u32,
 }
 // 4 fields x 4 bytes = 16 bytes
 
@@ -10377,6 +10443,7 @@ struct Params {
     highlights: f32,
     frame_seed: u32,
     monochrome: u32,
+    luma_yr: f32, luma_yg: f32, luma_yb: f32, _pad_luma: u32,
 }
 
 @group(0) @binding(0) var<storage, read> input: array<vec4<f32>>;
@@ -10401,7 +10468,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     if idx >= params.width * params.height { return; }
 
     let p = unpack(input[idx]);
-    let luma = 0.2126 * p.x + 0.7152 * p.y + 0.0722 * p.z;
+    let luma = dot(vec3<f32>(params.luma_yr, params.luma_yg, params.luma_yb), p.xyz);
 
     // Pixel coordinates (for grain size variation)
     let px = idx % params.width;
@@ -10551,7 +10618,10 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 // in linear gives a physically-meaningful "light above N nits".
 const SHADER_BLOOM_THRESHOLD: &str = concat!(
     "
-struct Params { width: u32, height: u32, threshold: f32, _pad: u32 }
+struct Params {
+    width: u32, height: u32, threshold: f32, _pad: u32,
+    luma_yr: f32, luma_yg: f32, luma_yb: f32, _pad_luma: u32,
+}
 @group(0) @binding(0) var<storage, read> input: array<vec4<f32>>;
 @group(0) @binding(1) var<storage, read_write> output: array<vec4<f32>>;
 @group(0) @binding(2) var<uniform> params: Params;
@@ -10563,7 +10633,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let idx = gid.x;
     if idx >= params.width * params.height { return; }
     let px = unpack(input[idx]);
-    let luma = 0.2126 * px.x + 0.7152 * px.y + 0.0722 * px.z;
+    let luma = dot(vec3<f32>(params.luma_yr, params.luma_yg, params.luma_yb), px.xyz);
     if luma > params.threshold {
         // A weight, not a ramp: normalising by 1 - threshold handed a 12x
         // highlight a factor of 34, so the bloom grew the light it spread.
@@ -10608,7 +10678,10 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 // curve match how real light stacks rather than how sRGB bytes add.
 const SHADER_GLOW_BLEND: &str = concat!(
     "
-struct Params { width: u32, height: u32, intensity: f32, desat: f32 }
+struct Params {
+    width: u32, height: u32, intensity: f32, desat: f32,
+    luma_yr: f32, luma_yg: f32, luma_yb: f32, _pad_luma: u32,
+}
 @group(0) @binding(0) var<storage, read> original: array<vec4<f32>>;
 @group(0) @binding(1) var<storage, read> blurred: array<vec4<f32>>;
 @group(0) @binding(2) var<storage, read_write> output: array<vec4<f32>>;
@@ -10622,7 +10695,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     if idx >= params.width * params.height { return; }
     let o = unpack(original[idx]);
     let bl = unpack(blurred[idx]).xyz;
-    let l = 0.2126 * bl.x + 0.7152 * bl.y + 0.0722 * bl.z;
+    let l = dot(vec3<f32>(params.luma_yr, params.luma_yg, params.luma_yb), bl.xyz);
     let b = (bl + (vec3<f32>(l) - bl) * params.desat) * params.intensity;
     output[idx] = pack(vec4<f32>(screen3_at_ceiling(o.xyz, b), o.w));
 }
@@ -10640,6 +10713,7 @@ struct Params {
     center_x: f32, center_y: f32,
     threshold: f32, samples: u32,
     decay: f32, intensity: f32,
+    luma_yr: f32, luma_yg: f32, luma_yb: f32, _pad_luma: u32,
 }
 @group(0) @binding(0) var<storage, read> input: array<vec4<f32>>;
 @group(0) @binding(1) var<storage, read_write> output: array<vec4<f32>>;
@@ -10668,7 +10742,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         let sx = clamp(u32(x - dx * t), 0u, params.width - 1u);
         let sy = clamp(u32(y - dy * t), 0u, params.height - 1u);
         let sample = unpack(input[sy * params.width + sx]);
-        let luma = 0.2126 * sample.x + 0.7152 * sample.y + 0.0722 * sample.z;
+        let luma = dot(vec3<f32>(params.luma_yr, params.luma_yg, params.luma_yb), sample.xyz);
         if luma > params.threshold {
             ray = ray + sample.xyz * weight;
         }
@@ -10781,7 +10855,11 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 // is physically what anamorphic lenses produce.
 const SHADER_ANAMORPHIC_STREAK: &str = concat!(
     "
-struct Params { width: u32, height: u32, threshold: f32, half_len: u32, intensity: f32, tint: f32, _pad: u32, _pad2: u32 }
+struct Params {
+    width: u32, height: u32, threshold: f32, half_len: u32,
+    intensity: f32, tint: f32, _pad: u32, _pad2: u32,
+    luma_yr: f32, luma_yg: f32, luma_yb: f32, _pad_luma: u32,
+}
 @group(0) @binding(0) var<storage, read> input: array<vec4<f32>>;
 @group(0) @binding(1) var<storage, read_write> output: array<vec4<f32>>;
 @group(0) @binding(2) var<uniform> params: Params;
@@ -10802,7 +10880,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let count = f32(x_end - u32(x_start));
     for (var sx: u32 = u32(x_start); sx < x_end; sx = sx + 1u) {
         let px = unpack(input[y * params.width + sx]);
-        let luma = 0.2126 * px.x + 0.7152 * px.y + 0.0722 * px.z;
+        let luma = dot(vec3<f32>(params.luma_yr, params.luma_yg, params.luma_yb), px.xyz);
         if luma > params.threshold {
             let factor = clamp((luma - params.threshold) / (1.0 - params.threshold + 1e-6), 0.0, 1.0);
             streak = streak + px.xyz * factor;
@@ -10827,7 +10905,11 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 // emulsion — additive glow that asymptotes at diffuse white.
 const SHADER_FILM_HALATION: &str = concat!(
     "
-struct Params { width: u32, height: u32, threshold: f32, intensity: f32, hal_r: f32, hal_g: f32, hal_b: f32, _pad: u32 }
+struct Params {
+    width: u32, height: u32, threshold: f32, intensity: f32,
+    hal_r: f32, hal_g: f32, hal_b: f32, _pad: u32,
+    luma_yr: f32, luma_yg: f32, luma_yb: f32, _pad_luma: u32,
+}
 @group(0) @binding(0) var<storage, read> original: array<vec4<f32>>;
 @group(0) @binding(1) var<storage, read> halation: array<vec4<f32>>;
 @group(0) @binding(2) var<storage, read_write> output: array<vec4<f32>>;
@@ -10841,7 +10923,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     if idx >= params.width * params.height { return; }
     let o = unpack(original[idx]);
     let bl = unpack(halation[idx]).xyz;
-    let l = 0.2126 * bl.x + 0.7152 * bl.y + 0.0722 * bl.z;
+    let l = dot(vec3<f32>(params.luma_yr, params.luma_yg, params.luma_yb), bl.xyz);
     let h = vec3<f32>(params.hal_r, params.hal_g, params.hal_b) * l * params.intensity;
     output[idx] = pack(vec4<f32>(screen3_at_ceiling(o.xyz, h), o.w));
 }
@@ -11092,6 +11174,7 @@ struct Params {
     height: u32,
     strength: f32,
     mix_val: f32,
+    luma_yr: f32, luma_yg: f32, luma_yb: f32, _pad_luma: u32,
 }
 
 @group(0) @binding(0) var<storage, read> input: array<vec4<f32>>;
@@ -11104,7 +11187,7 @@ fn get_lum(x: i32, y: i32) -> f32 {
     let cx = clamp(x, 0, i32(params.width) - 1);
     let cy = clamp(y, 0, i32(params.height) - 1);
     let p = unpack(input[u32(cy) * params.width + u32(cx)]);
-    return 0.2126 * p.x + 0.7152 * p.y + 0.0722 * p.z;
+    return dot(vec3<f32>(params.luma_yr, params.luma_yg, params.luma_yb), p.xyz);
 }
 
 @compute @workgroup_size(256)
@@ -11453,6 +11536,7 @@ struct Params {
     height: u32,
     spatial_sigma: f32,
     color_sigma: f32,
+    luma_yr: f32, luma_yg: f32, luma_yb: f32, _pad_luma: u32,
 }
 
 @group(0) @binding(0) var<storage, read> input: array<vec4<f32>>;
@@ -11471,7 +11555,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let y = i32(idx / w);
 
     let center = unpack(input[idx]);
-    let center_luma = 0.2126 * center.x + 0.7152 * center.y + 0.0722 * center.z;
+    let center_luma = dot(vec3<f32>(params.luma_yr, params.luma_yg, params.luma_yb), center.xyz);
 
     let kernel_size = min(i32(ceil(params.spatial_sigma * 2.0)), 10);
     let spatial_denom = 2.0 * params.spatial_sigma * params.spatial_sigma;
@@ -11485,7 +11569,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             let sx = u32(clamp(x + dx, 0, i32(w) - 1));
             let sy = u32(clamp(y + dy, 0, i32(h) - 1));
             let n = unpack(input[sy * w + sx]);
-            let n_luma = 0.2126 * n.x + 0.7152 * n.y + 0.0722 * n.z;
+            let n_luma = dot(vec3<f32>(params.luma_yr, params.luma_yg, params.luma_yb), n.xyz);
 
             let spatial_dist = f32(dx * dx + dy * dy);
             let spatial_w = exp(-spatial_dist / spatial_denom);
