@@ -29,11 +29,17 @@
 //!
 //! # ODT coverage
 //!
-//! At time of writing only the SDR Rec.709 100-nit-dim ODT is
-//! shipped — by far the most-used display target. HDR PQ and
-//! DCI-P3 D65 ODTs are tracked as separate follow-up sessions so
-//! each gets its own quality + parity pass; they share the C9
-//! tone-curve infrastructure landed here.
+//! Four output transforms ship: the SDR Rec.709 100-nit-dim one, the
+//! DCI-P3 D65 48-nit cinema one, and the Rec.2100 PQ pair at 1000 and
+//! 4000 nits. All four are checked against OpenColorIO's ACES 1.3
+//! transforms in `tests/ocio_parity.rs` — 190 samples each, a 5x5x5
+//! lattice plus a grey ramp, worst 5.0e-4 — so the numbers here are
+//! verified against an independent implementation of the spec and not
+//! only against themselves.
+//!
+//! All four are also on the GPU, off data baked by
+//! [`aces_odt_gpu_data`]: `klipp-engine`'s `aces_gpu_matches_cpu` holds
+//! the shader to these functions within a code value.
 
 use crate::primaries::{ap0_to_ap1, ap1_to_ap0, matrix3_mul_vec};
 
@@ -615,12 +621,21 @@ fn odt_sat_matrix() -> [[f32; 3]; 3] {
 /// gamut. Ready to be quantised to 8-bit / 10-bit / etc. for the
 /// destination signal carrier.
 ///
-/// **Caveat:** This implementation uses the AMPAS `ODT_48nits` C9
-/// tone-curve coefficients — cinema-style 48-nit peak. The proper
-/// `ODT_100nits` coefficient set (different curve targeting 100 cd/m²
-/// peak directly) is deferred to a follow-up session. For everyday
-/// SDR delivery the visual difference is small; for parity vs Resolve
-/// the 100-nit-specific coefs will need to ship alongside.
+/// **On the tone curve, which used to be flagged here as wrong:** this
+/// uses the AMPAS `ODT_48nits` C9 coefficients with `CINEMA_WHITE` 48
+/// and `CINEMA_BLACK` 0.02, and that is what the reference
+/// `ODT.Academy.Rec709_100nits_dim` does — the "100 nits" names the
+/// display the transform is *for*, not a separate coefficient set. The
+/// dim-surround compensation below is what accounts for the viewing
+/// environment.
+///
+/// This docstring previously called that a caveat and said a
+/// "100-nit-specific" curve was still owed. It is not: `ocio_parity.rs`
+/// puts this function within **5.0e-4** of OpenColorIO's ACES 1.3
+/// Rec.709 output over 190 samples, an eighth of a 255 code value. A
+/// wrong tone curve could not agree with an independent implementation
+/// to eight decimal places of a code value, so swapping the
+/// coefficients would break verified parity rather than restore it.
 pub fn apply_odt_rec709_100_nits_dim(oces: [f32; 3]) -> [f32; 3] {
     apply_odt_rec709_100_nits_dim_with(oces, &segmented_spline_c9_fwd)
 }
