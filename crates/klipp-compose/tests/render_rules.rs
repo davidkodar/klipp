@@ -79,6 +79,16 @@ impl Flat {
         self.0.insert(c.id, Box::new(move || SourcePixels::Linear(Arc::new([v, v, v, 1.0].repeat((W * H) as usize)))));
         self
     }
+    /// A flat colour rather than a flat grey. Needed wherever the
+    /// transform under test mixes channels: on a grey, `r == g == b`, so
+    /// only the *row sums* of a 3x3 are observable and its columns are
+    /// not.
+    fn linear(mut self, c: &Clip, rgb: [f32; 3]) -> Self {
+        self.0.insert(c.id, Box::new(move || {
+            SourcePixels::Linear(Arc::new([rgb[0], rgb[1], rgb[2], 1.0].repeat((W * H) as usize)))
+        }));
+        self
+    }
     fn slog3(self, c: &Clip, code: u32) -> Self {
         self.scene(c, klipp_color::hdr::HdrTransfer::Log(klipp_core::ColorTransfer::SLog3), code)
     }
@@ -301,11 +311,17 @@ fn an_hdr_delivery_renders_display_light() {
     }
 }
 
-/// Temperature and tint are a white balance: they scale the channels, so a
+/// Temperature and tint are a white balance: a chromatic adaptation, so a
 /// grey four times brighter is balanced exactly as the dim one, black stays
 /// black, and it is the same on the CPU and the GPU, in the Corrector and
 /// the Color Balance node. They used to add a fixed amount, which tinted
 /// blacks and did next to nothing to scene-linear highlights.
+///
+/// It is a matrix, not a per-channel gain — at 40/-15 the green term
+/// contributes 0.113 to red — so the grey cases below can only see its
+/// *row sums*. The coloured cases see its columns, and
+/// `a_grey_cannot_see_the_white_balance_columns` states why they have to
+/// exist.
 #[test]
 fn temperature_and_tint_balance_every_exposure_alike() {
     for kind in [NodeKind::Corrector, NodeKind::ColorBalance] {
@@ -323,7 +339,78 @@ fn temperature_and_tint_balance_every_exposure_alike() {
                 assert_px(&format!("{kind:?}, grey {grey}, run {i}"), px(img, 16, 9), expect, tol);
             }
         }
+
+        // Colour, so the matrix's columns are observable. Each of these
+        // leans hard on one input channel, which is what makes a
+        // cross-channel mix-up — the red term applied to green, say —
+        // show up; on a grey it cannot. Kept off the pure primaries
+        // because two of the columns carry small negatives and a pure
+        // primary would drive the result under zero, which is a different
+        // argument than the one this test is making.
+        for rgb in [[0.8f32, 0.1, 0.1], [0.1, 0.8, 0.1], [0.1, 0.1, 0.8]] {
+            let mut c = media(0.0, 2.0);
+            c.node_graph = graph(kind, p.clone(), Default::default());
+            let mut src = Flat::default().linear(&c, rgb);
+            // The real matrix multiply, not a row sum.
+            let expect = want.map(|row| row[0] * rgb[0] + row[1] * rgb[1] + row[2] * rgb[2]);
+            for (i, img) in render(&sequence(vec![vec![c]]), 1.0, &mut src).iter().enumerate() {
+                assert_px(
+                    &format!("{kind:?}, colour {rgb:?}, run {i}"),
+                    px(img, 16, 9),
+                    expect,
+                    2e-4,
+                );
+            }
+        }
     }
+}
+
+/// Why the test above needs its coloured cases, stated as an assertion
+/// rather than left in a comment.
+///
+/// Permuting a 3x3's columns permutes which input channel each term
+/// applies to — the shape of a cross-channel mix-up. It leaves every row
+/// *sum* untouched, so a grey sees nothing: the two matrices balance a
+/// grey identically to within float summation order, far inside the
+/// tolerance that test uses. A colour sees it immediately.
+///
+/// If this ever starts failing because the matrix went diagonal, the
+/// coloured cases above stop being load-bearing and can go.
+#[test]
+fn a_grey_cannot_see_the_white_balance_columns() {
+    let m = klipp_color::white_balance::white_balance_matrix(40.0, -15.0, Default::default()).unwrap();
+    let permuted = m.map(|r| [r[2], r[0], r[1]]);
+    let apply = |x: [[f32; 3]; 3], v: [f32; 3]| {
+        x.map(|row| row[0] * v[0] + row[1] * v[1] + row[2] * v[2])
+    };
+
+    // The matrix has to actually mix channels, or there is nothing here.
+    let off_diagonal = (m[0][1].abs() + m[0][2].abs() + m[1][0].abs()
+        + m[1][2].abs() + m[2][0].abs() + m[2][1].abs())
+        / 6.0;
+    assert!(
+        off_diagonal > 0.01,
+        "the white balance is nearly diagonal ({off_diagonal:.4}); the coloured cases are moot",
+    );
+
+    // Grey: blind. Both matrices land within the grey cases' tolerance.
+    let grey = [0.18f32; 3];
+    let (a, b) = (apply(m, grey), apply(permuted, grey));
+    let grey_gap = (0..3).map(|i| (a[i] - b[i]).abs()).fold(0.0f32, f32::max);
+    assert!(
+        grey_gap < 1e-4,
+        "a grey distinguishes the permutation by {grey_gap:e}, so it is not blind after all",
+    );
+
+    // Colour: not blind. Orders of magnitude outside the same tolerance.
+    let colour = [0.8f32, 0.1, 0.1];
+    let (a, b) = (apply(m, colour), apply(permuted, colour));
+    let colour_gap = (0..3).map(|i| (a[i] - b[i]).abs()).fold(0.0f32, f32::max);
+    assert!(
+        colour_gap > 0.1,
+        "a colour only distinguishes the permutation by {colour_gap:e}; pick a stronger fixture",
+    );
+    eprintln!("grey sees {grey_gap:e}, colour sees {colour_gap:e} — ratio {:.0}x", colour_gap / grey_gap.max(1e-12));
 }
 
 /// A colour the user authored means the same colour in every working

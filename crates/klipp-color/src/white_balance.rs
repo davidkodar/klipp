@@ -266,6 +266,42 @@ mod tests {
         [(116.0 * fy - 16.0) as f32, (500.0 * (fx - fy)) as f32, (200.0 * (fy - fz)) as f32]
     }
 
+    /// `apply_white_balance` multiplies by the matrix it is given —
+    /// checked on a *colour*, because the matrix is not diagonal.
+    ///
+    /// The function had no test at all. Everything else in this module
+    /// checks `white_balance_matrix`, the construction; this checks the
+    /// application, which is where a cross-channel mix-up lives. On a
+    /// grey it would be untestable: `r == g == b` makes only the row
+    /// sums observable, and permuting the columns leaves those alone.
+    #[test]
+    fn apply_white_balance_multiplies_by_the_whole_matrix() {
+        let m = white_balance_matrix(40.0, -15.0, Rec709Linear).unwrap();
+        // Leaning on one channel at a time, so each column is visible.
+        for colour in [[0.8f32, 0.1, 0.1], [0.1, 0.8, 0.1], [0.1, 0.1, 0.8]] {
+            let mut px = vec![colour[0], colour[1], colour[2], 0.42];
+            apply_white_balance(&mut px, &m);
+            let want = apply(&m, colour);
+            for c in 0..3 {
+                assert!(
+                    (px[c] - want[c]).abs() < 1e-6,
+                    "channel {c} of {colour:?}: got {}, want {}", px[c], want[c],
+                );
+            }
+            assert_eq!(px[3], 0.42, "alpha must be left alone");
+        }
+
+        // And the colours above can actually see a column permutation,
+        // which is the bug this is for. Stated so the fixture cannot
+        // quietly become a grey later.
+        let permuted = m.map(|r| [r[2], r[0], r[1]]);
+        let colour = [0.8f32, 0.1, 0.1];
+        let gap = (0..3)
+            .map(|i| (apply(&m, colour)[i] - apply(&permuted, colour)[i]).abs())
+            .fold(0.0f32, f32::max);
+        assert!(gap > 0.1, "the fixture cannot see the matrix's columns (gap {gap:e})");
+    }
+
     #[test]
     fn zero_is_identity() {
         assert!(white_balance_matrix(0.0, 0.0, Rec709Linear).is_none());
