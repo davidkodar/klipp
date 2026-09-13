@@ -10,12 +10,19 @@ use klipp_core::LumaKeySettings;
 /// Generate a luminance-threshold matte (0.0–1.0 per pixel) from
 /// `[low, high]` with `soft` falloff.
 ///
-/// **Colorspace note:** uses Rec.709 luma weights
-/// `0.2126 R + 0.7152 G + 0.0722 B`. Technically wrong for AP1
-/// (ACEScg working colorspace) where the correct weights are
-/// approximately `0.272 / 0.674 / 0.054`. Matches
-/// `klipp_effects::cpu_grade::qualifier_matte`'s behaviour; both will
-/// be re-tuned per working_colorspace in a post-Phase-E follow-up.
+/// **Colorspace note:** `luma` is the working space's own luminance
+/// row, from [`crate::linear::luma_coefs`] — Rec.709's
+/// `0.2126/0.7152/0.0722` in a Rec.709 project, AP1's
+/// `0.272/0.674/0.054` in an ACEScg one. Hardcoding Rec.709 here, as
+/// this used to, under-weighted green by a fifth on every ACEScg
+/// project: the threshold selected a different set of pixels than the
+/// brightness the colourist was aiming at.
+///
+/// The weights are applied to the *encoded* picture, not the linear
+/// one, which is the BT.709 luma (Y') definition and the same order the
+/// scopes use — so a threshold set here means what the waveform shows.
+/// The shader does the identical thing with the identical coefficients;
+/// `luma_key_gpu_parity` holds them together.
 ///
 /// Returns an `Vec<f32>` with one matte value per pixel (NOT one
 /// per RGBA component) — same shape as the qualifier helper, so
@@ -26,6 +33,7 @@ pub fn generate_luma_key_matte(
     width: u32,
     height: u32,
     k: &LumaKeySettings,
+    luma: [f32; 3],
 ) -> Vec<f32> {
     let pixel_count = (width * height) as usize;
     let mut matte = vec![0.0f32; pixel_count];
@@ -41,7 +49,7 @@ pub fn generate_luma_key_matte(
         let r = chunk[0] as f32 / 255.0;
         let g = chunk[1] as f32 / 255.0;
         let b = chunk[2] as f32 / 255.0;
-        let y = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+        let y = luma[0] * r + luma[1] * g + luma[2] * b;
 
         let mut m = soft_range(y, k.low, k.high, k.soft);
         if k.invert {
@@ -73,6 +81,11 @@ fn soft_range(val: f32, lo: f32, hi: f32, soft: f32) -> f32 {
 
 #[cfg(test)]
 mod tests {
+    /// These tests fix the axis to Rec.709 so they read as the
+    /// published luma weights; the per-working-space behaviour is
+    /// covered by `luma_key_gpu_parity`.
+    const REC709: [f32; 3] = [0.2126, 0.7152, 0.0722];
+
     use super::*;
 
     fn settings(low: f32, high: f32, soft: f32, invert: bool) -> LumaKeySettings {
@@ -83,7 +96,7 @@ mod tests {
     fn pure_white_selected_at_high() {
         // White (Rec.709 luma = 1.0). Range [0.5..1.0]. Inside → 1.0.
         let rgba = [255u8, 255, 255, 255];
-        let m = generate_luma_key_matte(&rgba, 1, 1, &settings(0.5, 1.0, 0.05, false));
+        let m = generate_luma_key_matte(&rgba, 1, 1, &settings(0.5, 1.0, 0.05, false), REC709);
         assert!((m[0] - 1.0).abs() < 1e-3, "got {}", m[0]);
     }
 
@@ -92,7 +105,7 @@ mod tests {
         // Black (Rec.709 luma = 0.0). Range [0.5..1.0] with soft=0.05.
         // 0.0 is far below `low - soft = 0.45`, so matte = 0.0.
         let rgba = [0u8, 0, 0, 255];
-        let m = generate_luma_key_matte(&rgba, 1, 1, &settings(0.5, 1.0, 0.05, false));
+        let m = generate_luma_key_matte(&rgba, 1, 1, &settings(0.5, 1.0, 0.05, false), REC709);
         assert!(m[0] < 1e-3, "got {}", m[0]);
     }
 
@@ -102,7 +115,7 @@ mod tests {
         // 0.5 sits 0.2 below `low`; soft=0.4 → matte ≈ 1 - 0.2/0.4 = 0.5.
         let mid = 128u8;
         let rgba = [mid, mid, mid, 255];
-        let m = generate_luma_key_matte(&rgba, 1, 1, &settings(0.7, 1.0, 0.4, false));
+        let m = generate_luma_key_matte(&rgba, 1, 1, &settings(0.7, 1.0, 0.4, false), REC709);
         // Allow a generous tolerance — the actual mid-luma value
         // depends on Rec.709 weights, not exactly 0.5 from u8 mid.
         assert!((m[0] - 0.5).abs() < 0.1, "got {}", m[0]);
@@ -113,8 +126,8 @@ mod tests {
         // White, range [0.5..1.0], invert=true. Without invert → 1.0;
         // with invert → 0.0.
         let rgba = [255u8, 255, 255, 255];
-        let normal = generate_luma_key_matte(&rgba, 1, 1, &settings(0.5, 1.0, 0.05, false));
-        let inverted = generate_luma_key_matte(&rgba, 1, 1, &settings(0.5, 1.0, 0.05, true));
+        let normal = generate_luma_key_matte(&rgba, 1, 1, &settings(0.5, 1.0, 0.05, false), REC709);
+        let inverted = generate_luma_key_matte(&rgba, 1, 1, &settings(0.5, 1.0, 0.05, true), REC709);
         assert!((normal[0] - 1.0).abs() < 1e-3);
         assert!(inverted[0] < 1e-3, "got {}", inverted[0]);
     }
@@ -126,7 +139,7 @@ mod tests {
         // black out the viewer downstream.
         let rgba = [0u8, 0, 0, 255]; // any colour
         let s = LumaKeySettings::default();
-        let m = generate_luma_key_matte(&rgba, 1, 1, &s);
+        let m = generate_luma_key_matte(&rgba, 1, 1, &s, REC709);
         assert!((m[0] - 1.0).abs() < 1e-6);
     }
 
@@ -136,7 +149,7 @@ mod tests {
         // White (luma=1.0) → 1.0; black (luma=0.0) → 0.0. Verifies
         // the per-pixel iteration writes to the correct matte slot.
         let rgba = [255u8, 255, 255, 255, 0, 0, 0, 255];
-        let m = generate_luma_key_matte(&rgba, 2, 1, &settings(0.9, 1.0, 0.05, false));
+        let m = generate_luma_key_matte(&rgba, 2, 1, &settings(0.9, 1.0, 0.05, false), REC709);
         assert_eq!(m.len(), 2);
         assert!((m[0] - 1.0).abs() < 1e-3, "white: {}", m[0]);
         assert!(m[1] < 1e-3, "black: {}", m[1]);

@@ -3330,8 +3330,11 @@ impl GraphExecutor {
                     } else {
                         // CPU fallback. `generate_luma_key_matte` still
                         // speaks u8, so the key is measured on the
-                        // display-encoded picture — which is the domain
-                        // the shader keys in too, so the two agree.
+                        // encoded picture — which is the domain the
+                        // shader keys in too, so the two agree. Both take
+                        // the working space's luma row, so they also
+                        // agree on an ACEScg project, where Rec.709's
+                        // row under-weights green by a fifth.
                         //
                         // The matte itself comes back as it is. It is a
                         // blend coefficient and not a colour: running it
@@ -3342,7 +3345,11 @@ impl GraphExecutor {
                         // `secondary_gpu_parity` caught.
                         let primary_u8 = linear_rgba_to_u8(primary_input);
                         let matte = klipp_color::luma_key::generate_luma_key_matte(
-                            &primary_u8, width, height, lk,
+                            &primary_u8,
+                            width,
+                            height,
+                            lk,
+                            klipp_color::linear::luma_coefs(self.working_colorspace),
                         );
                         matte.iter().flat_map(|&v| [v, v, v, 1.0]).collect()
                     }
@@ -3376,7 +3383,12 @@ impl GraphExecutor {
                 };
 
                 let matte = klipp_color::difference_key::generate_difference_key_matte(
-                    primary_input, &plate_resized, width, height, dk,
+                    primary_input,
+                    &plate_resized,
+                    width,
+                    height,
+                    dk,
+                    klipp_color::linear::luma_coefs(self.working_colorspace),
                 );
                 // Expand matte → RGBA (R=G=B=matte, A=1) in linear.
                 let mut out = vec![0.0f32; pixel_count * 4];

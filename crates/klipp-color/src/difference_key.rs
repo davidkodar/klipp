@@ -29,6 +29,7 @@ pub fn generate_difference_key_matte(
     width: u32,
     height: u32,
     settings: &DifferenceKeySettings,
+    luma: [f32; 3],
 ) -> Vec<f32> {
     let pixel_count = (width * height) as usize;
 
@@ -81,11 +82,17 @@ pub fn generate_difference_key_matte(
                 dr.max(dg).max(db)
             }
             DifferenceKeyMatchSpace::Luminance => {
-                // Rec.709 weighted luma difference. Faster, more
-                // forgiving of plate chroma drift; suits security-cam
-                // style fixed-camera shots.
-                let yl = 0.2126 * lr + 0.7152 * lg + 0.0722 * lb;
-                let yp = 0.2126 * pr + 0.7152 * pg + 0.0722 * pb;
+                // Weighted luma difference. Faster, more forgiving of
+                // plate chroma drift; suits security-cam style
+                // fixed-camera shots.
+                //
+                // The working space's own luminance row, not Rec.709's:
+                // both sides of this comparison are linear working-space
+                // values, so an ACEScg project needs AP1's weights or the
+                // tolerance means a different distance than the
+                // colourist set.
+                let yl = luma[0] * lr + luma[1] * lg + luma[2] * lb;
+                let yp = luma[0] * pr + luma[1] * pg + luma[2] * pb;
                 (yl - yp).abs()
             }
         };
@@ -120,6 +127,11 @@ fn soft_step(val: f32, lo: f32, hi: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// These tests fix the axis to Rec.709 so the numbers read as the
+    /// published weights; the per-working-space behaviour is covered
+    /// by the GPU parity test.
+    const REC709: [f32; 3] = [0.2126, 0.7152, 0.0722];
     use std::path::PathBuf;
 
     fn settings(tolerance: f32, soft: f32, invert: bool, space: DifferenceKeyMatchSpace) -> DifferenceKeySettings {
@@ -164,7 +176,7 @@ mod tests {
         let live = live_pixel(255, 0, 0);
         let plate = plate_pixel_srgb(0, 255, 0);
         let s = DifferenceKeySettings::default();
-        let m = generate_difference_key_matte(&live, &plate, 1, 1, &s);
+        let m = generate_difference_key_matte(&live, &plate, 1, 1, &s, REC709);
         assert!(m[0] < 1e-6);
     }
 
@@ -177,7 +189,7 @@ mod tests {
         let plate = plate_pixel_srgb(0, 255, 0);
         let mut s = settings(0.05, 0.02, false, DifferenceKeyMatchSpace::Rgb);
         s.plate_path = None;
-        let m = generate_difference_key_matte(&live, &plate, 1, 1, &s);
+        let m = generate_difference_key_matte(&live, &plate, 1, 1, &s, REC709);
         assert!(m[0] < 1e-6);
     }
 
@@ -188,7 +200,7 @@ mod tests {
         let live = live_pixel(128, 64, 200);
         let plate = plate_pixel_srgb(128, 64, 200);
         let s = settings(0.05, 0.02, false, DifferenceKeyMatchSpace::Rgb);
-        let m = generate_difference_key_matte(&live, &plate, 1, 1, &s);
+        let m = generate_difference_key_matte(&live, &plate, 1, 1, &s, REC709);
         assert!(m[0] < 1e-6, "got {}", m[0]);
     }
 
@@ -199,7 +211,7 @@ mod tests {
         let live = live_pixel(255, 255, 255);
         let plate = plate_pixel_srgb(0, 0, 0);
         let s = settings(0.05, 0.02, false, DifferenceKeyMatchSpace::Rgb);
-        let m = generate_difference_key_matte(&live, &plate, 1, 1, &s);
+        let m = generate_difference_key_matte(&live, &plate, 1, 1, &s, REC709);
         assert!((m[0] - 1.0).abs() < 1e-3, "got {}", m[0]);
     }
 
@@ -210,13 +222,13 @@ mod tests {
         let live_close = live_pixel(130, 130, 130);
         let plate_close = plate_pixel_srgb(128, 128, 128); // tiny diff
         let s_strict = settings(0.10, 0.0, false, DifferenceKeyMatchSpace::Rgb);
-        let m_close = generate_difference_key_matte(&live_close, &plate_close, 1, 1, &s_strict);
+        let m_close = generate_difference_key_matte(&live_close, &plate_close, 1, 1, &s_strict, REC709);
         assert!(m_close[0] < 1e-6, "small diff under tolerance: got {}", m_close[0]);
 
         // Big jump well past tolerance.
         let live_far = live_pixel(255, 255, 255);
         let plate_far = plate_pixel_srgb(0, 0, 0);
-        let m_far = generate_difference_key_matte(&live_far, &plate_far, 1, 1, &s_strict);
+        let m_far = generate_difference_key_matte(&live_far, &plate_far, 1, 1, &s_strict, REC709);
         assert!((m_far[0] - 1.0).abs() < 1e-3, "huge diff over tolerance: got {}", m_far[0]);
     }
 
@@ -231,7 +243,7 @@ mod tests {
         // Find an sRGB byte whose linear value is ≈ 0.3.
         let live = live_pixel(149, 0, 0); // 149/255 in sRGB ≈ 0.30 linear
         let s = settings(0.1, 0.4, false, DifferenceKeyMatchSpace::Rgb);
-        let m = generate_difference_key_matte(&live, &plate, 1, 1, &s);
+        let m = generate_difference_key_matte(&live, &plate, 1, 1, &s, REC709);
         // Generous tolerance — the linear-light midpoint is approximate.
         assert!((m[0] - 0.5).abs() < 0.2, "got {} (expected ~0.5)", m[0]);
     }
@@ -243,9 +255,9 @@ mod tests {
         let live = live_pixel(128, 64, 200);
         let plate = plate_pixel_srgb(128, 64, 200);
         let normal = generate_difference_key_matte(&live, &plate, 1, 1,
-            &settings(0.05, 0.02, false, DifferenceKeyMatchSpace::Rgb));
+            &settings(0.05, 0.02, false, DifferenceKeyMatchSpace::Rgb), REC709);
         let inverted = generate_difference_key_matte(&live, &plate, 1, 1,
-            &settings(0.05, 0.02, true, DifferenceKeyMatchSpace::Rgb));
+            &settings(0.05, 0.02, true, DifferenceKeyMatchSpace::Rgb), REC709);
         assert!(normal[0] < 1e-6, "normal: {}", normal[0]);
         assert!((inverted[0] - 1.0).abs() < 1e-6, "inverted: {}", inverted[0]);
     }
@@ -266,9 +278,9 @@ mod tests {
         // Not perfectly equal but within ~0.14. Loose tolerance for
         // Luminance space catches this as match-ish; RGB sees big diff.
         let s_lum = settings(0.2, 0.0, false, DifferenceKeyMatchSpace::Luminance);
-        let m_lum = generate_difference_key_matte(&live, &plate, 1, 1, &s_lum);
+        let m_lum = generate_difference_key_matte(&live, &plate, 1, 1, &s_lum, REC709);
         let s_rgb = settings(0.2, 0.0, false, DifferenceKeyMatchSpace::Rgb);
-        let m_rgb = generate_difference_key_matte(&live, &plate, 1, 1, &s_rgb);
+        let m_rgb = generate_difference_key_matte(&live, &plate, 1, 1, &s_rgb, REC709);
         // Luminance: under tolerance → matte 0
         assert!(m_lum[0] < 0.5, "Luminance should ~match yellow vs cyan: {}", m_lum[0]);
         // RGB: big delta on R and B channels → matte 1
@@ -293,7 +305,7 @@ mod tests {
             plate_b[0], plate_b[1], plate_b[2], plate_b[3],
         ];
         let s = settings(0.05, 0.02, false, DifferenceKeyMatchSpace::Rgb);
-        let m = generate_difference_key_matte(&live, &plate, 2, 1, &s);
+        let m = generate_difference_key_matte(&live, &plate, 2, 1, &s, REC709);
         assert_eq!(m.len(), 2);
         assert!(m[0] < 1e-6, "pixel 0 matches plate: {}", m[0]);
         assert!((m[1] - 1.0).abs() < 1e-3, "pixel 1 differs hugely: {}", m[1]);
@@ -306,7 +318,7 @@ mod tests {
         let live = vec![0.0f32; 16]; // 4 pixels
         let plate = vec![0.0f32; 8]; // 2 pixels
         let s = settings(0.05, 0.02, false, DifferenceKeyMatchSpace::Rgb);
-        let m = generate_difference_key_matte(&live, &plate, 4, 1, &s);
+        let m = generate_difference_key_matte(&live, &plate, 4, 1, &s, REC709);
         assert_eq!(m.len(), 4);
         assert!(m.iter().all(|&v| v < 1e-6));
     }

@@ -3432,6 +3432,7 @@ impl GpuEffectsPipeline {
             invert: if invert { 1 } else { 0 },
             _pad0: 0,
             _pad1: 0,
+            luma: [self.luma_coefs[0], self.luma_coefs[1], self.luma_coefs[2], 0.0],
         });
 
         let workgroups = (width * height).div_ceil(WORKGROUP_SIZE);
@@ -4205,6 +4206,7 @@ impl GpuEffectsPipeline {
             match_space: luminance_match as u32,
             _pad0: 0,
             _pad1: 0,
+            luma: [self.luma_coefs[0], self.luma_coefs[1], self.luma_coefs[2], 0.0],
         });
         let input = self.grade_mix_src.as_ref().expect("keep_chain_input first");
         let matte = self.matte_buf.as_ref().expect("matte_buf populated by ensure_buffers");
@@ -4243,6 +4245,7 @@ impl GpuEffectsPipeline {
             invert: invert as u32,
             _pad0: 0,
             _pad1: 0,
+            luma: [self.luma_coefs[0], self.luma_coefs[1], self.luma_coefs[2], 0.0],
         });
         let input = self.grade_mix_src.as_ref().expect("keep_chain_input first");
         let matte = self.matte_buf.as_ref().expect("matte_buf populated by ensure_buffers");
@@ -6575,8 +6578,11 @@ struct GpuLumaKeyParams {
     invert: u32,
     _pad0: u32,
     _pad1: u32,
+    /// Working-space luma coefficients, `klipp_color::linear::luma_coefs`.
+    /// A vec4 because WGSL aligns vec3 to 16 bytes anyway; `.w` unused.
+    luma: [f32; 4],
 }
-// 8 fields × 4 bytes = 32 bytes (well under 256-byte PARAMS_SIZE)
+// 8 u32 + vec4 = 48 bytes (well under 256-byte PARAMS_SIZE)
 
 #[repr(C)]
 #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
@@ -6586,11 +6592,15 @@ struct GpuDifferenceKeyParams {
     tolerance: f32,
     soft: f32,
     invert: u32,
-    /// 0 = RGB (Chebyshev), 1 = Rec.709 luminance. Matches
+    /// 0 = RGB (Chebyshev), 1 = weighted luminance. Matches
     /// `klipp_core::DifferenceKeyMatchSpace`'s order; the host converts.
     match_space: u32,
     _pad0: u32,
     _pad1: u32,
+    /// Working-space luminance row; `.w` unused. Both sides of the
+    /// comparison are linear working-space values, so Rec.709's row
+    /// would mis-weight an ACEScg project.
+    luma: [f32; 4],
 }
 
 #[repr(C)]
@@ -10781,6 +10791,7 @@ struct Params {
     match_space: u32,
     _pad0: u32,
     _pad1: u32,
+    luma: vec4<f32>,
 }
 
 @group(0) @binding(0) var<storage, read> input: array<vec4<f32>>;
@@ -10812,10 +10823,11 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
     var d: f32;
     if params.match_space == 1u {
-        // Rec.709 weighted luma difference — forgiving of plate chroma
-        // drift.
-        let yl = 0.2126 * live.x + 0.7152 * live.y + 0.0722 * live.z;
-        let yp = 0.2126 * ref_px.x + 0.7152 * ref_px.y + 0.0722 * ref_px.z;
+        // Weighted luminance difference — forgiving of plate chroma
+        // drift. The working space's own row, since both sides are
+        // linear working-space values.
+        let yl = dot(live.xyz, params.luma.xyz);
+        let yp = dot(ref_px.xyz, params.luma.xyz);
         d = abs(yl - yp);
     } else {
         // Chebyshev / L-infinity, per channel, so a colour-only
@@ -10843,6 +10855,7 @@ struct Params {
     invert: u32,
     _pad0: u32,
     _pad1: u32,
+    luma: vec4<f32>,
 }
 
 @group(0) @binding(0) var<storage, read> input: array<vec4<f32>>;
@@ -10867,14 +10880,22 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     if idx >= params.width * params.height { return; }
 
     let orig = unpack(input[idx]);
-    // Rec.709 luma of the *display-encoded* picture, which is the axis
-    // the Qualifier's lum window uses (`picture_lum_axis`) and the one
-    // the CPU twin measures, since it quantises to u8 first. Keying
-    // linear luma here instead meant the same threshold picked a
-    // different brightness depending on which path ran: 0.5 is mid-grey
-    // as seen, not a bright highlight.
+    // Luma of the *encoded* picture, which is the axis the Qualifier's
+    // lum window uses (`picture_lum_axis`) and the one the CPU twin
+    // measures, since it quantises to u8 first. Keying linear luma here
+    // instead meant the same threshold picked a different brightness
+    // depending on which path ran: 0.5 is mid-grey as seen, not a bright
+    // highlight. Weighting the encoded values rather than the linear
+    // ones is the BT.709 luma (Y') definition, and the same order the
+    // scopes use, so a threshold here means what the waveform shows.
+    //
+    // The coefficients come from the working space, not from Rec.709:
+    // this picture is in the project's own primaries, so an ACEScg
+    // project needs AP1's row (0.272/0.674/0.054) and Rec.709's
+    // under-weights green. They arrive via `set_luma_coefs`, which the
+    // executor installs from the loaded project.
     let e = enc3(orig.xyz);
-    let y = 0.2126 * e.x + 0.7152 * e.y + 0.0722 * e.z;
+    let y = dot(e, params.luma.xyz);
 
     var matte = soft_range(y, params.low, params.high, params.soft);
     if params.invert != 0u { matte = 1.0 - matte; }

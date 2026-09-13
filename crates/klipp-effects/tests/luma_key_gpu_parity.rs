@@ -23,12 +23,25 @@ use klipp_effects::gpu::GpuEffectsPipeline;
 /// is the default; 16 pixels still hits the skip-tail branch).
 fn gradient_rgba_u8(width: u32, height: u32) -> Vec<u8> {
     let mut out = Vec::with_capacity((width * height * 4) as usize);
-    for _y in 0..height {
+    for y in 0..height {
         for x in 0..width {
             let v = ((x as f32 / (width - 1).max(1) as f32) * 255.0).round() as u8;
-            out.push(v);
-            out.push(v);
-            out.push(v);
+            // Row 0 is the neutral ramp; the rest push the value into one
+            // channel at a time. A neutral ramp cannot test luma weights
+            // at all — on r == g == b every set of coefficients summing
+            // to one gives the same luma — and that is exactly why a
+            // hardcoded Rec.709 row survived here while the shader took
+            // its coefficients from the working space. Saturated rows
+            // make the weighting observable.
+            let (r, g, b) = match y % 4 {
+                0 => (v, v, v),
+                1 => (v, v / 4, v / 4),
+                2 => (v / 4, v, v / 4),
+                _ => (v / 4, v / 4, v),
+            };
+            out.push(r);
+            out.push(g);
+            out.push(b);
             out.push(255);
         }
     }
@@ -143,10 +156,24 @@ fn gpu_matches_cpu_oracle_across_fixtures() {
 
     let mut failures: Vec<String> = Vec::new();
 
+    // Every working space, because the luma axis is primaries-dependent
+    // and this test used to cover only the one where Rec.709's row
+    // happens to be right. The shader took its coefficients from
+    // `set_luma_coefs` while the CPU twin hardcoded Rec.709, so an
+    // ACEScg project keyed a fifth less green on the GPU than on the
+    // CPU and nothing here could see it.
+    for ws in [
+        klipp_core::WorkingColorspace::Rec709Linear,
+        klipp_core::WorkingColorspace::AcesCG,
+        klipp_core::WorkingColorspace::Bt2020Linear,
+    ] {
+    let luma = klipp_color::linear::luma_coefs(ws);
+    gpu.set_luma_coefs(luma);
+
     for fx in fixtures() {
         // CPU oracle. Returns one f32 per pixel; expand to u8 RGBA
         // matching the GPU's output convention (R=G=B=matte, A=255).
-        let cpu_matte = generate_luma_key_matte(&rgba_u8, width, height, &fx.settings);
+        let cpu_matte = generate_luma_key_matte(&rgba_u8, width, height, &fx.settings, luma);
         let cpu_rgba: Vec<u8> = cpu_matte.iter()
             .flat_map(|&v| {
                 let b = (v.clamp(0.0, 1.0) * 255.0).round() as u8;
@@ -172,8 +199,9 @@ fn gpu_matches_cpu_oracle_across_fixtures() {
         // budget since it's a pure threshold function — every pixel
         // should agree.
         if let Some(reason) = pixel_mismatch(&cpu_rgba, &gpu_rgba, 2, 0.0) {
-            failures.push(format!("{}: {}", fx.name, reason));
+            failures.push(format!("{ws:?} / {}: {}", fx.name, reason));
         }
+    }
     }
 
     assert!(
