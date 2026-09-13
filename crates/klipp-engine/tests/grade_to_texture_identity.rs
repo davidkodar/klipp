@@ -19,19 +19,73 @@ use klipp_effects::{
 const W: u32 = 64;
 const H: u32 = 32;
 
-/// Synthetic linear-f32 RGBA — varied so the sRGB encode's
-/// piecewise transfer exercises both branches, plus above-one
-/// highlights that must clamp at the u8 boundary.
+/// Synthetic linear-f32 RGBA, varied in every channel the encode
+/// touches — including alpha, which the encode treats differently from
+/// the other three.
+///
+/// This fixture used to hold `let a = if col == 0 && row == 0 { 1.0 }
+/// else { 1.0 }` — both arms the same, so alpha was constant across the
+/// frame and its handling was untested. The comment above it ("one
+/// highlight pixel to force clamp") had drifted off the line below,
+/// which is the one that actually forces a clamp. Blue was a constant
+/// 0.5, and only red ever left [0, 1], so the clamp was tested on one
+/// channel of four.
+///
+/// What each part is for:
+/// * the two ramps span [0, 1] so the sRGB curve's piecewise split is
+///   crossed, with an explicit band of small values around the knee at
+///   0.0031308 — a ramp over 64 columns steps straight past it;
+/// * each of R, G and B exceeds 1.0 somewhere and goes negative
+///   somewhere, so the clamp is checked per channel rather than on red
+///   alone. Negatives are real here: a wide-gamut colour outside the
+///   display gamut arrives below zero;
+/// * alpha varies, and is deliberately pushed out of range too. The
+///   encode clamps alpha but must *not* put it through the sRGB curve —
+///   it is a coefficient, not a colour — so a constant alpha could not
+///   tell the two treatments apart.
 fn test_linear(width: u32, height: u32) -> Vec<f32> {
     let mut v = Vec::with_capacity((width * height * 4) as usize);
+    let last_col = (width - 1).max(1);
+    let last_row = (height - 1).max(1);
     for row in 0..height {
         for col in 0..width {
-            let r = (col as f32) / ((width - 1).max(1) as f32);
-            let g = (row as f32) / ((height - 1).max(1) as f32);
-            let b = 0.5;
-            // One highlight pixel to force clamp.
-            let a = if col == 0 && row == 0 { 1.0 } else { 1.0 };
-            let r = if col == width - 1 { 1.5 } else { r };
+            let fx = (col as f32) / (last_col as f32);
+            let fy = (row as f32) / (last_row as f32);
+            let mut r = fx;
+            let mut g = fy;
+            // Blue varies rather than sitting at 0.5, so it exercises the
+            // curve like the other two.
+            let mut b = 1.0 - (fx + fy) * 0.5;
+            // Alpha varies independently of the colour channels, so a
+            // shader that derived it from one of them would show up.
+            let mut a = 0.25 + 0.75 * (1.0 - fy);
+
+            // Row 0: the knee. Values either side of 0.0031308, where the
+            // sRGB curve changes from linear to a power.
+            if row == 0 {
+                let knee = [0.0, 0.001, 0.003, 0.0031308, 0.0032, 0.004, 0.01, 0.05];
+                let k = knee[(col as usize) % knee.len()];
+                r = k;
+                g = k;
+                b = k;
+            }
+
+            // Last column: above one in every channel, so the top clamp
+            // is checked on each.
+            if col == last_col {
+                r = 1.5;
+                g = 2.2;
+                b = 8.0;
+                a = 1.4;
+            }
+            // Last row: below zero in every channel, so the bottom clamp
+            // is too.
+            if row == last_row {
+                r = -0.3;
+                g = -0.01;
+                b = -2.0;
+                a = -0.5;
+            }
             v.extend_from_slice(&[r, g, b, a]);
         }
     }
