@@ -138,6 +138,13 @@ pub struct GraphExecutor {
     /// when the path changes; editing the image on disk is an
     /// acknowledged rough edge.
     matte_image_cache: HashMap<PathBuf, Arc<(Vec<f32>, u32, u32)>>,
+    /// The same plate already resized to the frame, keyed by path and
+    /// target size. `matte_image_cache` above saves the *decode*; this
+    /// saves the resize, which is a full-frame write — 33 MB at 4K — and
+    /// was being redone every frame for a plate and a resolution that
+    /// never change. Both keys matter: the same plate at two timeline
+    /// resolutions is two different resized buffers.
+    plate_resize_cache: HashMap<(PathBuf, u32, u32), Arc<Vec<f32>>>,
     /// Per-Mask-node matte cache. Static masks (no keyframes) produce
     /// the same RGBA matte every frame, which previously cost a full
     /// rasterize + RGBA-expand pass per frame (the dominant CPU cost
@@ -505,6 +512,7 @@ impl GraphExecutor {
             lut_cache: HashMap::new(),
             curve_lut_cache: HashMap::new(),
             matte_image_cache: HashMap::new(),
+            plate_resize_cache: HashMap::new(),
             matte_cache: HashMap::new(),
             gpu_chain_preseeded: false,
             gpu_chain_preseed_dims: None,
@@ -558,6 +566,7 @@ impl GraphExecutor {
             lut_cache: HashMap::new(),
             curve_lut_cache: HashMap::new(),
             matte_image_cache: HashMap::new(),
+            plate_resize_cache: HashMap::new(),
             matte_cache: HashMap::new(),
             gpu_chain_preseeded: false,
             gpu_chain_preseed_dims: None,
@@ -3247,35 +3256,65 @@ impl GraphExecutor {
                         }
                     },
                 };
-                let (src, sw, sh) = (&cached.0, cached.1, cached.2);
-
-                // Nearest-neighbour resize plate → live-frame dims.
-                let mut plate_resized = vec![0.0f32; pixel_count * 4];
-                for y in 0..height {
-                    let sy = ((y as u64 * sh as u64) / height as u64).min(sh as u64 - 1) as u32;
-                    for x in 0..width {
-                        let sx = ((x as u64 * sw as u64) / width as u64).min(sw as u64 - 1) as u32;
-                        let si = ((sy * sw + sx) as usize) * 4;
-                        let oi = ((y * width + x) as usize) * 4;
-                        plate_resized[oi]     = src[si];
-                        plate_resized[oi + 1] = src[si + 1];
-                        plate_resized[oi + 2] = src[si + 2];
-                        plate_resized[oi + 3] = src[si + 3];
+                // Nearest-neighbour resize plate → live-frame dims,
+                // kept for as long as the plate and the frame size do.
+                // A fixed plate at a fixed resolution resizes to the same
+                // buffer every time, and that is a full-frame write to
+                // redo per frame.
+                let key = (path.clone(), width, height);
+                let plate_resized = match self.plate_resize_cache.get(&key) {
+                    Some(p) => Arc::clone(p),
+                    None => {
+                        let (src, sw, sh) = (&cached.0, cached.1, cached.2);
+                        let mut resized = vec![0.0f32; pixel_count * 4];
+                        use rayon::prelude::*;
+                        resized
+                            .par_chunks_exact_mut(width as usize * 4)
+                            .enumerate()
+                            .for_each(|(y, row)| {
+                                let sy = ((y as u64 * sh as u64) / height as u64)
+                                    .min(sh as u64 - 1) as u32;
+                                for x in 0..width as usize {
+                                    let sx = ((x as u64 * sw as u64) / width as u64)
+                                        .min(sw as u64 - 1) as u32;
+                                    let si = ((sy * sw + sx) as usize) * 4;
+                                    let oi = x * 4;
+                                    row[oi] = src[si];
+                                    row[oi + 1] = src[si + 1];
+                                    row[oi + 2] = src[si + 2];
+                                    row[oi + 3] = src[si + 3];
+                                }
+                            });
+                        let arc = Arc::new(resized);
+                        // Bounded rather than cleared on every miss: two
+                        // DifferenceKey nodes with different plates would
+                        // evict each other every frame, which costs more
+                        // than not caching at all. Four full-frame plates
+                        // is 133 MB at 4K, which is the point to let go
+                        // of them — a resolution change leaves stale
+                        // entries behind otherwise.
+                        if self.plate_resize_cache.len() >= 4 {
+                            self.plate_resize_cache.clear();
+                        }
+                        self.plate_resize_cache.insert(key, Arc::clone(&arc));
+                        arc
                     }
-                }
+                };
 
                 let matte = klipp_color::difference_key::generate_difference_key_matte(
                     primary_input, &plate_resized, width, height, dk,
                 );
                 // Expand matte → RGBA (R=G=B=matte, A=1) in linear.
                 let mut out = vec![0.0f32; pixel_count * 4];
-                for (i, &m) in matte.iter().enumerate() {
-                    let o = i * 4;
-                    out[o]     = m;
-                    out[o + 1] = m;
-                    out[o + 2] = m;
-                    out[o + 3] = 1.0;
-                }
+                use rayon::prelude::*;
+                out.par_chunks_exact_mut(4)
+                    .zip(matte.par_iter())
+                    .for_each(|(px, &m)| {
+                        px[0] = m;
+                        px[1] = m;
+                        px[2] = m;
+                        px[3] = 1.0;
+                    });
                 out
             }
 
