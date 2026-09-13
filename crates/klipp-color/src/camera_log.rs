@@ -14,6 +14,7 @@
 //! vendor doesn't publish a closed-form curve (Blackmagic, GoPro)
 //! we use a reasonable approximation flagged in the docstring.
 
+use crate::hdr::{chroma_taps, ChromaAxis};
 use klipp_core::{
     ColorMatrix, ColorPrimaries, ColorRange, ColorTransfer, SourceColorspace,
     WorkingColorspace,
@@ -784,22 +785,39 @@ pub fn yuv420p10le_to_linear(
         .for_each(|(dy, row_out)| {
             // Nearest-neighbour resize: map output row to source row.
             let sy = (dy * src_h_us / dst_h_us).min(src_h_us - 1);
-            let cy = sy / 2; // chroma is at half resolution.
             let y_row_off = sy * y_stride;
-            let u_row_off = cy * u_stride;
-            let v_row_off = cy * v_stride;
+            // Chroma is reconstructed at H.264 4:2:0 siting, through the
+            // same `chroma_taps` the scene-referred converter and the
+            // decode shaders use — one definition, so this cannot drift
+            // from them. Vertical taps are per-row, so they are resolved
+            // once out here rather than per pixel.
+            let (cy0, cy1, ty) =
+                chroma_taps(sy, 1, (src_h_us + 1) / 2, ChromaAxis::Between);
+            let u_row0 = cy0 * u_stride;
+            let u_row1 = cy1 * u_stride;
+            let v_row0 = cy0 * v_stride;
+            let v_row1 = cy1 * v_stride;
             for dx in 0..dst_w_us {
                 let sx = (dx * src_w_us / dst_w_us).min(src_w_us - 1);
-                let cx = sx / 2;
+                let (cx0, cx1, tx) =
+                    chroma_taps(sx, 1, (src_w_us + 1) / 2, ChromaAxis::CoSited);
                 let yo = y_row_off + sx * 2;
-                let uo = u_row_off + cx * 2;
-                let vo = v_row_off + cx * 2;
                 let y_raw = u16::from_le_bytes([y_data[yo], y_data[yo + 1]]) & 0x3FF;
-                let u_raw = u16::from_le_bytes([u_data[uo], u_data[uo + 1]]) & 0x3FF;
-                let v_raw = u16::from_le_bytes([v_data[vo], v_data[vo + 1]]) & 0x3FF;
+                // Bilinear over the four taps, per plane.
+                let tap = |plane: &[u8], row: usize, cx: usize| -> f32 {
+                    let o = row + cx * 2;
+                    (u16::from_le_bytes([plane[o], plane[o + 1]]) & 0x3FF) as f32
+                };
+                let lerp2 = |plane: &[u8], r0: usize, r1: usize| -> f32 {
+                    let top = tap(plane, r0, cx0) + (tap(plane, r0, cx1) - tap(plane, r0, cx0)) * tx;
+                    let bot = tap(plane, r1, cx0) + (tap(plane, r1, cx1) - tap(plane, r1, cx0)) * tx;
+                    top + (bot - top) * ty
+                };
+                let u_raw = lerp2(u_data, u_row0, u_row1);
+                let v_raw = lerp2(v_data, v_row0, v_row1);
                 let y = (y_raw as f32 - y_off) * y_inv_div;
-                let u = (u_raw as f32 - uv_off) * uv_inv_div;
-                let v = (v_raw as f32 - uv_off) * uv_inv_div;
+                let u = (u_raw - uv_off) * uv_inv_div;
+                let v = (v_raw - uv_off) * uv_inv_div;
                 let r_disp = y + cv_r * v;
                 let g_disp = y + cu_g * u + cv_g * v;
                 let b_disp = y + cu_b * u;
@@ -820,6 +838,127 @@ pub fn yuv420p10le_to_linear(
                 row_out[o + 1] = g_out;
                 row_out[o + 2] = b_out;
                 row_out[o + 3] = 1.0;
+            }
+        });
+    out
+}
+
+/// Display-referred Y'CbCr → linear working space, for **any** software
+/// YUV format: any subsampling, any bit depth, planar or semi-planar,
+/// resized and rotated in the one pass.
+///
+/// This replaces swscale on the software-decode path, and the reason is
+/// chroma siting rather than speed. swscale reconstructs subsampled
+/// chroma at a different phase from Klipp's decode shaders, and it cannot
+/// be told otherwise: `src_h_chr_pos` / `src_v_chr_pos` only reach its
+/// *scaling* filters, so at 1:1 — what `playback_dimensions` returns for
+/// any source inside the playback budget — they are ignored outright
+/// (measured: xpos=0/ypos=128 and xpos=255/ypos=0 give byte-identical
+/// output). A clip therefore changed appearance depending on whether
+/// NVDEC took it, which is not a thing a colourist can be asked to
+/// reason about.
+///
+/// Going through [`YuvSamples`] is what makes this general: the samples
+/// have already been read at native depth by
+/// `klipp_media::yuv_samples::read_yuv_samples`, which uses the pixel
+/// format's own descriptor, so 4:2:2 ProRes, 4:4:4, 12-bit and the rest
+/// need no per-format code here. Chroma goes through
+/// [`chroma_taps`], the same siting the shaders and
+/// [`YuvSamples::chroma_at`] use.
+///
+/// Scene-referred sources (PQ, HLG, camera log) do **not** come here —
+/// they need code values for the grade, and take
+/// [`crate::hdr::yuv_to_hdr_codes`] instead.
+pub fn yuv_to_linear_display(
+    s: &crate::hdr::YuvSamples,
+    dst_w: u32,
+    dst_h: u32,
+    rotation: u32,
+    cs: SourceColorspace,
+    ws: WorkingColorspace,
+) -> Vec<f32> {
+    use rayon::prelude::*;
+
+    let (src_w, src_h) = (s.width.max(1), s.height.max(1));
+    let (dst_w, dst_h) = (dst_w.max(1), dst_h.max(1));
+    let (cw, ch) = (s.chroma_width() as usize, s.chroma_height() as usize);
+
+    // Range constants, general over bit depth. Limited range is 16/219
+    // luma and 128/224 chroma *scaled* to the depth, which is what the
+    // 10-bit converter's 64/876/512/896 are at four times 8-bit.
+    let max = ((1u32 << s.bit_depth) - 1) as f32;
+    let (y_off, y_inv, uv_off, uv_inv) = match cs.range {
+        ColorRange::Limited => {
+            let k = (max + 1.0) / 256.0;
+            (16.0 * k, 1.0 / (219.0 * k), 128.0 * k, 1.0 / (224.0 * k))
+        }
+        ColorRange::Full => (0.0, 1.0 / max, max * 0.5 + 0.5, 1.0 / max),
+    };
+    let (cv_r, cu_b, cu_g, cv_g) = matrix_coefficients(cs.matrix);
+    let eotf = EotfLut::new(cs.transfer);
+    let pm = primaries_to_working_matrix(cs.primaries, ws);
+    let identity = matches!(ws, WorkingColorspace::Rec709Linear)
+        && matches!(
+            cs.primaries,
+            ColorPrimaries::Bt709
+                | ColorPrimaries::Bt470M
+                | ColorPrimaries::Smpte428
+                | ColorPrimaries::Ebu3213
+        );
+
+    let n = (dst_w as usize) * (dst_h as usize);
+    let mut out = vec![0.0f32; n * 4];
+    out.par_chunks_exact_mut(dst_w as usize * 4)
+        .enumerate()
+        .for_each(|(dy, row)| {
+            let dy = dy as u32;
+            for dx in 0..dst_w {
+                // Rotation folded into the source lookup, the same
+                // expressions `yuv_to_hdr_codes` uses so the two agree on
+                // which source pixel a destination pixel is.
+                let (sx, sy) = match rotation {
+                    90 => (dy * src_w / dst_h, (dst_w - 1 - dx) * src_h / dst_w),
+                    180 => (
+                        (dst_w - 1 - dx) * src_w / dst_w,
+                        (dst_h - 1 - dy) * src_h / dst_h,
+                    ),
+                    270 => ((dst_h - 1 - dy) * src_w / dst_h, dx * src_h / dst_w),
+                    _ => (dx * src_w / dst_w, dy * src_h / dst_h),
+                };
+                let (sx, sy) = (
+                    (sx.min(src_w - 1)) as usize,
+                    (sy.min(src_h - 1)) as usize,
+                );
+                let (x0, x1, tx) = chroma_taps(sx, s.chroma_shift_w, cw, ChromaAxis::CoSited);
+                let (y0, y1, ty) = chroma_taps(sy, s.chroma_shift_h, ch, ChromaAxis::Between);
+                let lerp2 = |p: &[u16]| {
+                    let at = |x: usize, yy: usize| p[yy * cw + x] as f32;
+                    let top = at(x0, y0) + (at(x1, y0) - at(x0, y0)) * tx;
+                    let bot = at(x0, y1) + (at(x1, y1) - at(x0, y1)) * tx;
+                    top + (bot - top) * ty
+                };
+                let yv = (s.y[sy * src_w as usize + sx] as f32 - y_off) * y_inv;
+                let u = (lerp2(s.u) - uv_off) * uv_inv;
+                let v = (lerp2(s.v) - uv_off) * uv_inv;
+                let (r, g, b) = (
+                    eotf.lookup(yv + cv_r * v),
+                    eotf.lookup(yv + cu_g * u + cv_g * v),
+                    eotf.lookup(yv + cu_b * u),
+                );
+                let (r, g, b) = if identity {
+                    (r, g, b)
+                } else {
+                    (
+                        pm[0][0] * r + pm[0][1] * g + pm[0][2] * b,
+                        pm[1][0] * r + pm[1][1] * g + pm[1][2] * b,
+                        pm[2][0] * r + pm[2][1] * g + pm[2][2] * b,
+                    )
+                };
+                let o = dx as usize * 4;
+                row[o] = r;
+                row[o + 1] = g;
+                row[o + 2] = b;
+                row[o + 3] = 1.0;
             }
         });
     out

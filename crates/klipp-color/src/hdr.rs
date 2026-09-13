@@ -644,19 +644,8 @@ impl YuvSamples<'_> {
     /// weights collapse onto the one sample.
     pub fn chroma_at(&self, sx: usize, sy: usize) -> (f32, f32) {
         let (cw, ch) = (self.chroma_width() as usize, self.chroma_height() as usize);
-        let fx = (sx as f32) / (1u32 << self.chroma_shift_w) as f32;
-        let fy = if self.chroma_shift_h == 0 {
-            sy as f32
-        } else {
-            (sy as f32 + 0.5) / (1u32 << self.chroma_shift_h) as f32 - 0.5
-        };
-        // Clamped before the floor, so the half-row offset cannot walk
-        // off the top of the plane at sy = 0 (where fy is negative).
-        let fx = fx.clamp(0.0, (cw - 1) as f32);
-        let fy = fy.clamp(0.0, (ch - 1) as f32);
-        let (x0, y0) = (fx.floor() as usize, fy.floor() as usize);
-        let (x1, y1) = ((x0 + 1).min(cw - 1), (y0 + 1).min(ch - 1));
-        let (tx, ty) = (fx - x0 as f32, fy - y0 as f32);
+        let (x0, x1, tx) = chroma_taps(sx, self.chroma_shift_w, cw, ChromaAxis::CoSited);
+        let (y0, y1, ty) = chroma_taps(sy, self.chroma_shift_h, ch, ChromaAxis::Between);
         let at = |p: &[u16], x: usize, y: usize| p[y * cw + x] as f32;
         let lerp2 = |p: &[u16]| {
             let top = at(p, x0, y0) + (at(p, x1, y0) - at(p, x0, y0)) * tx;
@@ -665,6 +654,59 @@ impl YuvSamples<'_> {
         };
         (lerp2(self.u), lerp2(self.v))
     }
+}
+
+/// Where a chroma sample sits relative to the luma samples it covers,
+/// along one axis.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChromaAxis {
+    /// The chroma sample shares its coordinate with the even luma sample
+    /// — 4:2:0's and 4:2:2's horizontal axis.
+    CoSited,
+    /// The chroma sample sits midway *between* the luma samples it
+    /// covers — 4:2:0's vertical axis.
+    Between,
+}
+
+/// The two chroma samples to blend along one axis, and the weight of the
+/// second, for a luma coordinate `s` on an axis subsampled by
+/// `2^shift` into `extent` samples.
+///
+/// This is the one definition of Klipp's chroma siting, and every
+/// converter goes through it — [`YuvSamples::chroma_at`] for the
+/// scene-referred path, `camera_log`'s direct 10-bit converter, and the
+/// decode shaders transcribe it. Four implementations of the same
+/// arithmetic is how they drift apart, and a drift here is a colour
+/// shift of half a chroma sample that looks like fringing rather than
+/// like a bug.
+///
+/// Siting is H.264/HEVC `chroma_sample_loc_type = 0`, confirmed against
+/// ffmpeg's own `av_chroma_location_enum_to_pos`, which puts
+/// `AVCHROMA_LOC_LEFT` at xpos=0, ypos=128 in 1/256-luma units: no
+/// horizontal offset, half a *luma* sample vertically — which is the
+/// quarter of a *chroma* sample that [`ChromaAxis::Between`] applies.
+///
+/// An unsubsampled axis (`shift == 0`) returns both taps on the same
+/// sample with weight 0, so 4:2:2 and 4:4:4 need no special case.
+#[inline]
+pub fn chroma_taps(s: usize, shift: u32, extent: usize, axis: ChromaAxis) -> (usize, usize, f32) {
+    debug_assert!(extent > 0, "a chroma plane with no samples");
+    let f = if shift == 0 {
+        // Exact, and `Between` is meaningless without subsampling: there
+        // is nothing to sit between.
+        s as f32
+    } else {
+        let scale = (1u32 << shift) as f32;
+        match axis {
+            ChromaAxis::CoSited => s as f32 / scale,
+            ChromaAxis::Between => (s as f32 + 0.5) / scale - 0.5,
+        }
+    };
+    // Clamped before the floor, so `Between`'s offset cannot walk off
+    // the start of the plane at s = 0, where `f` is negative.
+    let f = f.clamp(0.0, (extent - 1) as f32);
+    let i0 = f.floor() as usize;
+    (i0, (i0 + 1).min(extent - 1), f - i0 as f32)
 }
 
 /// Scene-referred Y'CbCr → packed 10-bit R'G'B' code values: the CPU twin

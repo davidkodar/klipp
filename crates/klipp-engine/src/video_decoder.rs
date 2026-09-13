@@ -2847,6 +2847,64 @@ fn convert_sw_frame(
         });
     }
 
+    // Every other YUV format: converted here rather than by swscale, so
+    // that subsampled chroma is reconstructed at the same siting the
+    // decode shaders use. swscale reconstructs it at a different phase
+    // and cannot be told otherwise (see the flags below), so a clip used
+    // to change appearance depending on whether NVDEC took it.
+    //
+    // `read_yuv_samples` reads the planes at native depth using the pixel
+    // format's own descriptor, so this covers 4:2:0, 4:2:2 ProRes, 4:4:4,
+    // 8 through 16 bits, planar and semi-planar alike. What still falls
+    // through to swscale below is what it returns `None` for: the
+    // RGB-family, palette, bitstream and hardware formats, greyscale
+    // (fewer than three components), and the exotic case of a YUV format
+    // whose planes disagree on bit depth or exceed 16 bits. Only that
+    // last one could carry subsampled chroma, and nothing Klipp decodes
+    // in practice hits it.
+    {
+        let source_cs = unsafe {
+            let avf = received_frame.as_ptr();
+            apply_log_override(klipp_core::SourceColorspace::resolve_with_baseline(
+                (*avf).color_range as i32,
+                (*avf).colorspace as i32,
+                (*avf).color_primaries as i32,
+                (*avf).color_trc as i32,
+                cs_baseline,
+            ))
+        };
+        if let Some(yuv) = unsafe { klipp_media::yuv_samples::read_yuv_samples(received_frame.as_ptr()) } {
+            let rot = source_rotation.rem_euclid(360) as u32;
+            let (dst_w, dst_h) = playback_dimensions(
+                received_frame.width(),
+                received_frame.height(),
+                source_rotation,
+            );
+            // `playback_dimensions` already returns the rotated extent,
+            // and the converter rotates as it samples, so the frame it
+            // hands back is the right way up at the right size.
+            let linear = klipp_color::camera_log::yuv_to_linear_display(
+                &yuv.samples(),
+                dst_w,
+                dst_h,
+                rot,
+                source_cs,
+                working_colorspace(),
+            );
+            return Some(LinearFrame {
+                pts: RationalTime::zero(),
+                width: dst_w,
+                height: dst_h,
+                data: linear,
+                is_eof: false,
+                gpu_source: None,
+                colorspace: source_cs,
+                hdr: None,
+                seek_epoch: 0,
+            });
+        }
+    }
+
     // Bit-depth-aware swscale target: 8-bit sources go through RGBA (1 byte
     // per channel); 10+-bit sources go through RGBA64LE (2 bytes per channel)
     // so the extra precision survives the YUV→RGB conversion and reaches the
