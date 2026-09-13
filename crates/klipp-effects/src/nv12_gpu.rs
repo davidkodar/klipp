@@ -166,16 +166,43 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let y_shift = (y_byte_idx % 4u) * 8u;
     let y_val = f32((y_word >> y_shift) & 0xFFu);
 
-    let uv_x = (sx / 2u) * 2u;
-    let uv_y = sy / 2u;
-    let u_byte_idx = uv_y * params.uv_stride + uv_x;
-    let u_word = uv_plane[u_byte_idx / 4u];
-    let u_shift = (u_byte_idx % 4u) * 8u;
-    let u_val = f32((u_word >> u_shift) & 0xFFu);
-    let v_byte_idx = u_byte_idx + 1u;
-    let v_word = uv_plane[v_byte_idx / 4u];
-    let v_shift = (v_byte_idx % 4u) * 8u;
-    let v_val = f32((v_word >> v_shift) & 0xFFu);
+    // Chroma is reconstructed, not repeated. See
+    // `YuvSamples::chroma_at`, the CPU twin, for why the vertical
+    // coordinate carries a quarter-sample offset and the horizontal one
+    // does not: NV12 is 4:2:0 sited per H.264 `chroma_sample_loc_type =
+    // 0`, co-sited horizontally and centred between luma rows. These two
+    // must stay identical or `sw_decode_parity` fails.
+    let cw = (params.src_width + 1u) / 2u;
+    let ch = (params.src_height + 1u) / 2u;
+    let fx = clamp(f32(sx) * 0.5, 0.0, f32(cw - 1u));
+    let fy = clamp(f32(sy) * 0.5 - 0.25, 0.0, f32(ch - 1u));
+    let x0 = u32(floor(fx));
+    let y0 = u32(floor(fy));
+    let x1 = min(x0 + 1u, cw - 1u);
+    let y1 = min(y0 + 1u, ch - 1u);
+    let tx = fx - floor(fx);
+    let ty = fy - floor(fy);
+    // Interleaved plane: the U/V pair for chroma column x starts at byte
+    // 2x, so a horizontal neighbour is two bytes away, not one.
+    var u_acc = 0.0;
+    var v_acc = 0.0;
+    for (var j = 0u; j < 2u; j = j + 1u) {
+        let cy = select(y0, y1, j == 1u);
+        let wy = select(1.0 - ty, ty, j == 1u);
+        for (var i = 0u; i < 2u; i = i + 1u) {
+            let cx = select(x0, x1, i == 1u);
+            let wx = select(1.0 - tx, tx, i == 1u);
+            let w = wx * wy;
+            let ub = cy * params.uv_stride + cx * 2u;
+            let uw = uv_plane[ub / 4u];
+            u_acc = u_acc + f32((uw >> ((ub % 4u) * 8u)) & 0xFFu) * w;
+            let vb = ub + 1u;
+            let vw = uv_plane[vb / 4u];
+            v_acc = v_acc + f32((vw >> ((vb % 4u) * 8u)) & 0xFFu) * w;
+        }
+    }
+    let u_val = u_acc;
+    let v_val = v_acc;
 
     // Four-stage colourspace pipeline from the shared WGSL helpers:
     // 1. Range normalise (limited 16/235 vs full 0/255).

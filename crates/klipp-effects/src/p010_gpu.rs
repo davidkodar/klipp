@@ -215,14 +215,39 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // Upper 10 bits hold the sample; lower 6 are padding zeros.
     let y_10 = f32(y_word16 >> 6u);
 
-    let uv_x = sx / 2u;
-    let uv_y = sy / 2u;
-    let u_byte_idx = uv_y * params.uv_stride + uv_x * 4u;
-    let v_byte_idx = u_byte_idx + 2u;
-    let u_word16 = load_u16_le_uv(u_byte_idx);
-    let v_word16 = load_u16_le_uv(v_byte_idx);
-    let u_10 = f32(u_word16 >> 6u);
-    let v_10 = f32(v_word16 >> 6u);
+    // Chroma is reconstructed, not repeated — the same sited bilinear as
+    // `YuvSamples::chroma_at` and the NV12 shader. P010 is 4:2:0 with
+    // H.264 `chroma_sample_loc_type = 0` siting: co-sited horizontally,
+    // centred between luma rows, hence the quarter-sample vertical
+    // offset and none horizontally. `sw_decode_parity` holds this
+    // identical to the CPU twin.
+    let cw = (params.src_width + 1u) / 2u;
+    let ch = (params.src_height + 1u) / 2u;
+    let fx = clamp(f32(sx) * 0.5, 0.0, f32(cw - 1u));
+    let fy = clamp(f32(sy) * 0.5 - 0.25, 0.0, f32(ch - 1u));
+    let x0 = u32(floor(fx));
+    let y0 = u32(floor(fy));
+    let x1 = min(x0 + 1u, cw - 1u);
+    let y1 = min(y0 + 1u, ch - 1u);
+    let tx = fx - floor(fx);
+    let ty = fy - floor(fy);
+    var u_acc = 0.0;
+    var v_acc = 0.0;
+    for (var j = 0u; j < 2u; j = j + 1u) {
+        let cy = select(y0, y1, j == 1u);
+        let wy = select(1.0 - ty, ty, j == 1u);
+        for (var i = 0u; i < 2u; i = i + 1u) {
+            let cx = select(x0, x1, i == 1u);
+            let wx = select(1.0 - tx, tx, i == 1u);
+            let w = wx * wy;
+            // Interleaved u16 pairs: four bytes per chroma column.
+            let ub = cy * params.uv_stride + cx * 4u;
+            u_acc = u_acc + f32(load_u16_le_uv(ub) >> 6u) * w;
+            v_acc = v_acc + f32(load_u16_le_uv(ub + 2u) >> 6u) * w;
+        }
+    }
+    let u_10 = u_acc;
+    let v_10 = v_acc;
 
     // Five-stage colourspace pipeline (HDR adds the tone-map step):
     //   1. Range-aware normalise (limited 64/940 vs full 0/1023).

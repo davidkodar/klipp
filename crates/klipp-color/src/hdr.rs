@@ -616,6 +616,55 @@ impl YuvSamples<'_> {
     pub fn chroma_width(&self) -> u32 {
         (self.width + (1 << self.chroma_shift_w) - 1) >> self.chroma_shift_w
     }
+
+    pub fn chroma_height(&self) -> u32 {
+        (self.height + (1 << self.chroma_shift_h) - 1) >> self.chroma_shift_h
+    }
+
+    /// Chroma at a luma position, reconstructed rather than repeated.
+    ///
+    /// A subsampled chroma plane is a *sampled* signal. Taking the
+    /// nearest sample repeats one value across the whole 2x2 luma block,
+    /// which puts a hard colour step wherever chroma changes: measured
+    /// against swscale on a red/blue edge, the nearest path crossed in
+    /// zero pixels where an interpolating one ramped over two.
+    /// Interpolating reconstructs what the encoder sampled.
+    ///
+    /// Siting follows H.264/HEVC `chroma_sample_loc_type = 0`, the
+    /// default for everything Klipp decodes: a chroma sample sits on the
+    /// same column as the even luma sample, and vertically *between* the
+    /// two luma rows. So the horizontal coordinate divides exactly while
+    /// the vertical one carries a quarter-sample offset. Dropping that
+    /// offset shifts chroma half a sample up the frame, which reads as
+    /// colour fringing along one side of every horizontal edge — the
+    /// failure this is easiest to introduce and hardest to see.
+    ///
+    /// 4:2:2 (`chroma_shift_h == 0`) and 4:4:4 fall out of the same
+    /// arithmetic: a shift of zero makes the coordinate exact and both
+    /// weights collapse onto the one sample.
+    pub fn chroma_at(&self, sx: usize, sy: usize) -> (f32, f32) {
+        let (cw, ch) = (self.chroma_width() as usize, self.chroma_height() as usize);
+        let fx = (sx as f32) / (1u32 << self.chroma_shift_w) as f32;
+        let fy = if self.chroma_shift_h == 0 {
+            sy as f32
+        } else {
+            (sy as f32 + 0.5) / (1u32 << self.chroma_shift_h) as f32 - 0.5
+        };
+        // Clamped before the floor, so the half-row offset cannot walk
+        // off the top of the plane at sy = 0 (where fy is negative).
+        let fx = fx.clamp(0.0, (cw - 1) as f32);
+        let fy = fy.clamp(0.0, (ch - 1) as f32);
+        let (x0, y0) = (fx.floor() as usize, fy.floor() as usize);
+        let (x1, y1) = ((x0 + 1).min(cw - 1), (y0 + 1).min(ch - 1));
+        let (tx, ty) = (fx - x0 as f32, fy - y0 as f32);
+        let at = |p: &[u16], x: usize, y: usize| p[y * cw + x] as f32;
+        let lerp2 = |p: &[u16]| {
+            let top = at(p, x0, y0) + (at(p, x1, y0) - at(p, x0, y0)) * tx;
+            let bot = at(p, x0, y1) + (at(p, x1, y1) - at(p, x0, y1)) * tx;
+            top + (bot - top) * ty
+        };
+        (lerp2(self.u), lerp2(self.v))
+    }
 }
 
 /// Scene-referred Y'CbCr → packed 10-bit R'G'B' code values: the CPU twin
@@ -648,7 +697,6 @@ pub fn yuv_to_hdr_codes(
     let is_log = transfer >= ids::FIRST_CAMERA_LOG;
     let max = ((1u32 << s.bit_depth) - 1) as f32;
     let (src_w, src_h) = (s.width.max(1), s.height.max(1));
-    let cw = s.chroma_width() as usize;
 
     let normalise = |y: f32, u: f32, v: f32| -> [f32; 3] {
         if range == ids::COLOR_RANGE_FULL {
@@ -684,12 +732,8 @@ pub fn yuv_to_hdr_codes(
                 _ => (dx * src_w / dst_w, dy * src_h / dst_h),
             };
             let (sx, sy) = (sx.min(src_w - 1) as usize, sy.min(src_h - 1) as usize);
-            let ci = (sy >> s.chroma_shift_h) * cw + (sx >> s.chroma_shift_w);
-            let rgb = to_rgb(normalise(
-                s.y[sy * src_w as usize + sx] as f32,
-                s.u[ci] as f32,
-                s.v[ci] as f32,
-            ));
+            let (cu, cv) = s.chroma_at(sx, sy);
+            let rgb = to_rgb(normalise(s.y[sy * src_w as usize + sx] as f32, cu, cv));
             let code = rgb.map(|c| {
                 let signal = if is_log && range != ids::COLOR_RANGE_FULL {
                     (64.0 + c * 876.0) / 1023.0
@@ -1004,6 +1048,89 @@ mod tests {
             // 1.0 exactly), so allow equality. Anything above 1.0 is
             // non-physical.
             assert!(x + y <= 1.0, "({x}, {y}) lies outside the xy triangle");
+        }
+    }
+}
+
+#[cfg(test)]
+mod chroma_siting_tests {
+    use super::*;
+
+    fn flat_luma(n: usize) -> Vec<u16> {
+        vec![512u16; n]
+    }
+
+    /// 4:2:0 chroma is co-sited *horizontally*: a chroma sample shares a
+    /// column with the even luma sample. So even columns read a sample
+    /// exactly and the blend lands on the odd ones. A centre-sited
+    /// implementation would blend on the even columns instead, moving
+    /// every colour edge half a pixel sideways.
+    #[test]
+    fn horizontal_siting_blends_on_the_odd_columns() {
+        let y = flat_luma(4);
+        let (u, v) = (vec![0u16, 400], vec![0u16, 400]);
+        let s = YuvSamples {
+            y: &y, u: &u, v: &v, width: 4, height: 1,
+            chroma_shift_w: 1, chroma_shift_h: 0, bit_depth: 10,
+        };
+        let at = |x| s.chroma_at(x, 0).0;
+        assert_eq!(at(0), 0.0, "x=0 sits on chroma column 0");
+        assert_eq!(at(1), 200.0, "x=1 sits halfway between the columns");
+        assert_eq!(at(2), 400.0, "x=2 sits on chroma column 1");
+        assert_eq!(at(3), 400.0, "x=3 has no column to its right and clamps");
+    }
+
+    /// 4:2:0 chroma sits *between* luma rows, so the weights are 3:1 and
+    /// 1:3, never even. This is the number that is easiest to get wrong
+    /// and hardest to see: dropping the quarter-sample offset makes them
+    /// 1:1 and slides chroma half a sample up the frame, which shows up
+    /// as colour fringing along one side of every horizontal edge rather
+    /// than as anything obviously broken.
+    #[test]
+    fn vertical_siting_carries_the_quarter_sample_offset() {
+        let y = flat_luma(4);
+        let (u, v) = (vec![0u16, 400], vec![0u16, 400]);
+        let s = YuvSamples {
+            y: &y, u: &u, v: &v, width: 1, height: 4,
+            chroma_shift_w: 0, chroma_shift_h: 1, bit_depth: 10,
+        };
+        let at = |row| s.chroma_at(0, row).0;
+        assert_eq!(at(0), 0.0, "row 0 is above the first chroma centre and clamps");
+        assert_eq!(at(1), 100.0, "row 1 is 3/4 chroma row 0 and 1/4 row 1");
+        assert_eq!(at(2), 300.0, "row 2 is 1/4 chroma row 0 and 3/4 row 1");
+        assert_eq!(at(3), 400.0, "row 3 is below the last chroma centre and clamps");
+    }
+
+    /// The reconstruction is the whole point. Nearest sampling repeats
+    /// one chroma value across the block and leaves *nothing* between the
+    /// two samples, so this fails the moment the interpolation is lost.
+    #[test]
+    fn chroma_is_reconstructed_not_repeated() {
+        let y = flat_luma(4);
+        let (u, v) = (vec![0u16, 400], vec![0u16, 400]);
+        let s = YuvSamples {
+            y: &y, u: &u, v: &v, width: 4, height: 1,
+            chroma_shift_w: 1, chroma_shift_h: 0, bit_depth: 10,
+        };
+        let vals: Vec<f32> = (0..4).map(|x| s.chroma_at(x, 0).0).collect();
+        let between = vals.iter().filter(|c| **c > 1.0 && **c < 399.0).count();
+        assert!(between > 0, "no value between the two chroma samples — still nearest: {vals:?}");
+    }
+
+    /// An unsubsampled axis reads its sample exactly: 4:4:4 has no blend
+    /// to introduce, and 4:2:2 keeps every chroma row its own. Same
+    /// arithmetic, no special case — which is what makes the shift of
+    /// zero worth asserting rather than assuming.
+    #[test]
+    fn an_unsubsampled_axis_reads_exactly() {
+        let y = flat_luma(4);
+        let (u, v) = (vec![10u16, 20, 30, 40], vec![40u16, 30, 20, 10]);
+        let s = YuvSamples {
+            y: &y, u: &u, v: &v, width: 4, height: 1,
+            chroma_shift_w: 0, chroma_shift_h: 0, bit_depth: 10,
+        };
+        for x in 0..4 {
+            assert_eq!(s.chroma_at(x, 0), (u[x] as f32, v[x] as f32), "x={x} must be exact");
         }
     }
 }
