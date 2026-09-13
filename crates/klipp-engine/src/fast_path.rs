@@ -46,6 +46,14 @@ pub struct GradeAt<'a> {
     /// node looks the same here as through the renderer.
     pub lut_tetrahedral: bool,
     pub solo: Option<NodeId>,
+    /// HDR monitoring's preview: the frame is display light and the light
+    /// above reference white rolls into the top. `false` is the ordinary
+    /// SDR encode. False colour is not here — it is a different picture
+    /// entirely and stays on the CPU.
+    pub hdr_preview: bool,
+    /// The master's peak, cd/m² — what a camera log's highlights roll off
+    /// against in the display-light pass. Only read when `hdr_preview`.
+    pub hdr_peak_nits: f32,
 }
 
 /// Grade `seed` and encode it for display on the GPU. `display_encode`
@@ -122,12 +130,23 @@ pub fn grade_to_display_on_gpu(
     // tests/fast_paths_match_renderer.rs, and the two wide-gamut
     // shaders pixel by pixel in tests/aces_gpu_matches_cpu.rs and
     // tests/bt2020_gamut_gpu_matches_cpu.rs.
-    let gpu_display = matches!(
-        at.working,
-        WorkingColorspace::Rec709Linear
-            | WorkingColorspace::AcesCG
-            | WorkingColorspace::Bt2020Linear
-    );
+    // HDR monitoring's preview is a mode on the BT.709 display encode
+    // only: the ACES and BT.2020 shaders end display-encoded and have
+    // nowhere to put a roll-off on the light. Those fall back to the CPU
+    // twin, which does.
+    let gpu_display = match at.working {
+        WorkingColorspace::Rec709Linear => true,
+        WorkingColorspace::AcesCG | WorkingColorspace::Bt2020Linear => !at.hdr_preview,
+    };
+    // A scene-referred clip's own last step. Monitoring wants the HDR
+    // display light the export writes; without monitoring the SDR tone map
+    // below is what the renderer does.
+    let scene_step = match (at.hdr_preview, transfer) {
+        (true, Some(t)) => {
+            Some((t.display_light_kind(), t.scene_scale(), at.hdr_peak_nits))
+        }
+        _ => None,
+    };
     if gpu_display {
         exec.request_output_on_gpu();
     }
@@ -150,10 +169,15 @@ pub fn grade_to_display_on_gpu(
             WorkingColorspace::Bt2020Linear => {
                 exec.encode_output_to_bt2020_display_u8(width, height)?
             }
-            WorkingColorspace::Rec709Linear => exec.encode_output_to_display_u8(
+            WorkingColorspace::Rec709Linear => exec.encode_output_to_display_u8_view(
                 width,
                 height,
-                transfer.map(|t| t.display_exposure()),
+                // The SDR tone map and the display-light pass are the same
+                // clip's last step done two ways; monitoring takes the
+                // second, so the first must not also run.
+                if at.hdr_preview { None } else { transfer.map(|t| t.display_exposure()) },
+                at.hdr_preview,
+                scene_step,
             )?,
         }
     } else {
@@ -162,7 +186,18 @@ pub fn grade_to_display_on_gpu(
         }
         let mut linear = cpu_result;
         if let Some(t) = transfer {
-            klipp_color::hdr::apply_hdr_display_tonemap(&mut linear, t);
+            if at.hdr_preview {
+                // The same substitution the GPU branch makes: monitoring
+                // shows the HDR display light, not the SDR tone map.
+                klipp_color::hdr::apply_hdr_display_light(
+                    &mut linear,
+                    t,
+                    klipp_color::primaries::luminance_weights(at.working),
+                    at.hdr_peak_nits,
+                );
+            } else {
+                klipp_color::hdr::apply_hdr_display_tonemap(&mut linear, t);
+            }
         }
         display_encode(&linear)
     };

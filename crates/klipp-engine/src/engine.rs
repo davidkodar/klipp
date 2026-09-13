@@ -876,6 +876,15 @@ pub fn seq_write_holder_name(v: u64) -> &'static str {
     }
 }
 
+/// How coarse HDR monitoring's light map is: one sample every this many
+/// pixels, in both directions.
+///
+/// Shared because both paths that fill it — the full render's
+/// `encode_for_screen` and the graded fast path — must agree, and the
+/// readout maps the pointer's position through it. A whole-frame map is
+/// 33 MB at 4K and the readout does not need one.
+pub(crate) const NIT_MAP_STEP: u32 = 4;
+
 pub struct PlaybackEngine {
     cmd_rx: Receiver<AppCommand>,
     event_tx: Sender<AppEvent>,
@@ -6021,7 +6030,10 @@ impl PlaybackEngine {
         blockers.iter().all(|b| {
             matches!(
                 *b,
-                "grade graph is not an identity" | "ACES working space" | "BT.2020 working space"
+                "grade graph is not an identity"
+                    | "ACES working space"
+                    | "BT.2020 working space"
+                    | "HDR preview"
             )
         })
     }
@@ -6126,11 +6138,19 @@ impl PlaybackEngine {
         if self.matte_preview_node.is_some() {
             blockers.push("matte preview active");
         }
-        // Both fast paths render the SDR picture and encode it for the
-        // display; HDR monitoring renders display light and shows it
-        // another way entirely.
-        if self.hdr_monitor.renders_hdr() {
-            blockers.push("HDR monitoring active");
+        // Direct present hands over the decoder's own bytes, which is
+        // emphatically not an HDR picture, so both modes stop it. The
+        // *graded* path has monitoring's preview as a mode on its display
+        // encode, so that one gets a reason string the graded gates
+        // tolerate — the same arrangement ACES and BT.2020 have.
+        //
+        // False colour does not: it replaces the picture with flat bands
+        // off a table, which no shader here has, and it is a mode you flip
+        // to for a moment rather than grade under.
+        match self.hdr_monitor {
+            klipp_core::HdrMonitor::Off => {}
+            klipp_core::HdrMonitor::Preview => blockers.push("HDR preview"),
+            klipp_core::HdrMonitor::FalseColour => blockers.push("HDR false colour"),
         }
         if self.compare_stabilization || self.compare_effect_active {
             blockers.push("compare mode active");
@@ -6247,7 +6267,7 @@ impl PlaybackEngine {
 
         self.publish_fast_path_frame(
             bytes, width, height, t_frame, 0.0, readback_ms, "direct_present",
-            current_source_secs, q_len,
+            current_source_secs, q_len, None,
         );
     }
 
@@ -6313,9 +6333,23 @@ impl PlaybackEngine {
             working: crate::video_decoder::working_colorspace(),
             lut_tetrahedral: self.color_pipeline.use_tetrahedral,
             solo: self.solo_node,
+            // Monitoring's preview. False colour is a different picture
+            // and stays on the CPU, so `fast_path_blockers` refuses it.
+            hdr_preview: self.hdr_monitor == klipp_core::HdrMonitor::Preview,
+            // The same peak `view.rs` renders monitoring at.
+            hdr_peak_nits: klipp_color::hdr::DEFAULT_MASTERING_MAX_LUMA_CD_M2,
         };
-        let (tone_map, working) = (self.tone_map_op, at.working);
-        let display = |linear: &[f32]| klipp_color::display::display_transform_ws(linear, tone_map, working);
+        let (tone_map, working, preview) = (self.tone_map_op, at.working, at.hdr_preview);
+        // The frame the fallback gets is display light when monitoring is
+        // on, so it takes the preview encode — the same substitution the
+        // GPU branch makes.
+        let display = move |linear: &[f32]| {
+            if preview {
+                klipp_color::hdr_view::preview_frame(linear, tone_map, working)
+            } else {
+                klipp_color::display::display_transform_ws(linear, tone_map, working)
+            }
+        };
         mark_stage(EngineStage::PostProcessInnerGradeExecute);
         let Some(mut bytes) =
             crate::fast_path::grade_to_display_on_gpu(self.renderer.executor(), seed, width, height, &at, &display)
@@ -6402,9 +6436,23 @@ impl PlaybackEngine {
             working: crate::video_decoder::working_colorspace(),
             lut_tetrahedral: self.color_pipeline.use_tetrahedral,
             solo: self.solo_node,
+            // Monitoring's preview. False colour is a different picture
+            // and stays on the CPU, so `fast_path_blockers` refuses it.
+            hdr_preview: self.hdr_monitor == klipp_core::HdrMonitor::Preview,
+            // The same peak `view.rs` renders monitoring at.
+            hdr_peak_nits: klipp_color::hdr::DEFAULT_MASTERING_MAX_LUMA_CD_M2,
         };
-        let (tone_map, working) = (self.tone_map_op, at.working);
-        let display = |linear: &[f32]| klipp_color::display::display_transform_ws(linear, tone_map, working);
+        let (tone_map, working, preview) = (self.tone_map_op, at.working, at.hdr_preview);
+        // The frame the fallback gets is display light when monitoring is
+        // on, so it takes the preview encode — the same substitution the
+        // GPU branch makes.
+        let display = move |linear: &[f32]| {
+            if preview {
+                klipp_color::hdr_view::preview_frame(linear, tone_map, working)
+            } else {
+                klipp_color::display::display_transform_ws(linear, tone_map, working)
+            }
+        };
         mark_stage(EngineStage::PostProcessInnerGradeExecute);
         let t_grade = std::time::Instant::now();
         let Some(bytes) =
@@ -6412,13 +6460,23 @@ impl PlaybackEngine {
         else {
             return false;
         };
+        // Monitoring's readout needs the picture's light. The display
+        // encode wrote to its own buffer and left the chain's linear frame
+        // where it is, so this measures it in place — the whole reason
+        // monitoring can take this path instead of bringing 132 MB down.
+        let nits = at.hdr_preview.then(|| {
+            let to_2020 = klipp_effects::color_wgsl::pack_primaries_matrix(
+                klipp_color::primaries::working_to_bt2020(at.working),
+            );
+            self.renderer.executor().nit_map_of_output(width, height, NIT_MAP_STEP, to_2020)
+        });
         // The grade and its display readback run as one submission; the
         // time is reported as the grade's.
         let grade_ms = t_grade.elapsed().as_secs_f64() * 1000.0;
         let readback_ms = 0.0;
         self.publish_fast_path_frame(
             bytes, width, height, t_frame, grade_ms, readback_ms, "graded_gpu_present",
-            current_source_secs, q_len,
+            current_source_secs, q_len, nits.flatten(),
         );
         true
     }
@@ -6439,12 +6497,27 @@ impl PlaybackEngine {
         path: &str,
         current_source_secs: f64,
         q_len: usize,
+        nits: Option<(Vec<f32>, u32, u32)>,
     ) {
         let t_fb = std::time::Instant::now();
         {
             let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
             fb.write_frame_swap(&mut bytes, width, height);
             fb.set_presented(self.playhead);
+            // HDR monitoring's light map, for the readout under the
+            // pointer. Cleared when there is none, or the readout would
+            // report a stale frame's levels.
+            match nits {
+                Some((map, mw, mh)) => {
+                    fb.nit_map = map;
+                    (fb.nit_map_w, fb.nit_map_h, fb.nit_map_step) = (mw, mh, NIT_MAP_STEP);
+                }
+                None if !fb.nit_map.is_empty() => {
+                    fb.nit_map = Vec::new();
+                    (fb.nit_map_w, fb.nit_map_h) = (0, 0);
+                }
+                None => {}
+            }
         }
         // `write_frame_swap` handed back the previous buffer — keep it as
         // the u8 scratch so the next frame reuses the allocation.

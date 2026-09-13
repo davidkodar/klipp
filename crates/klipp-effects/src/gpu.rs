@@ -291,6 +291,9 @@ pub struct GpuEffectsPipeline {
     /// tone map applied first when asked. Lets a graded frame leave the
     /// GPU as 4 bytes a pixel instead of 16.
     display_u8_pipeline: wgpu::ComputePipeline,
+    hdr_nit_map_pipeline: wgpu::ComputePipeline,
+    hdr_nit_buf: Option<wgpu::Buffer>,
+    hdr_nit_staging: Option<wgpu::Buffer>,
     /// Map-readable copy of `bridge_u8_out_buf` for the display readback.
     display_u8_staging: Option<wgpu::Buffer>,
     // Bind group layouts
@@ -1020,6 +1023,12 @@ impl GpuEffectsPipeline {
         let display_u8_pipeline = create_pipeline(
             &device, &pipeline_layout, "linear_to_display_u8", SHADER_LINEAR_TO_DISPLAY_U8,
         );
+        // Same three-binding shape as every effect — in, out, params —
+        // so it needs no layout of its own; its `out` is f32 rather than
+        // packed bytes, which a bind group layout does not distinguish.
+        let hdr_nit_map_pipeline = create_pipeline(
+            &device, &pipeline_layout, "hdr_nit_map", SHADER_HDR_NIT_MAP,
+        );
 
         let pipeline_count = 63;
         info!(
@@ -1147,6 +1156,9 @@ impl GpuEffectsPipeline {
             bt2020_display_pipeline,
             bridge_hdr10_pipeline,
             display_u8_pipeline,
+            hdr_nit_map_pipeline,
+            hdr_nit_buf: None,
+            hdr_nit_staging: None,
             display_u8_staging: None,
             bridge_u8_out_buf: None,
             bridge_u8_out_size: 0,
@@ -2210,6 +2222,86 @@ impl GpuEffectsPipeline {
         Some((bytes, light))
     }
 
+    /// The chain's graded frame → HDR monitoring's light map: the
+    /// brightest channel of every `step`-th pixel, in cd/m². Row-major,
+    /// `width.div_ceil(step)` by `height.div_ceil(step)`.
+    ///
+    /// `to_2020` is the working space's basis into BT.2020, packed by
+    /// `color_wgsl::pack_primaries_matrix` — a delivery is BT.2020
+    /// whatever the project works in, and measured in a narrower basis the
+    /// same BT.2020 red reads 67% high.
+    ///
+    /// This is the piece that lets HDR monitoring keep the fast path: the
+    /// readout needs the light, and the light needs the linear frame, so
+    /// without it the frame has to come down. A quarter-resolution map is
+    /// 2 MB at 4K against the frame's 132.
+    pub fn nit_map_of_chain(
+        &mut self,
+        slot_a: bool,
+        width: u32,
+        height: u32,
+        step: u32,
+        to_2020: [[f32; 4]; 3],
+    ) -> Option<(Vec<f32>, u32, u32)> {
+        if self.is_device_lost() || width == 0 || height == 0 {
+            return None;
+        }
+        let step = step.max(1);
+        let (mw, mh) = (width.div_ceil(step), height.div_ceil(step));
+        let bytes = (mw as u64) * (mh as u64) * 4;
+        if self.hdr_nit_buf.as_ref().map_or(true, |b| b.size() < bytes) {
+            self.hdr_nit_buf = Some(self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("hdr_nit_map"),
+                size: bytes,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+                mapped_at_creation: false,
+            }));
+            self.hdr_nit_staging = Some(self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("hdr_nit_staging"),
+                size: bytes,
+                usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            }));
+        }
+        self.write_params(&NitMapParams { width, height, step, map_width: mw, to_2020 });
+        let src = if slot_a { self.buf_a.as_ref() } else { self.buf_b.as_ref() }?;
+        let out = self.hdr_nit_buf.as_ref()?;
+        let staging = self.hdr_nit_staging.as_ref()?;
+        let bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("hdr_nit_map_bg"),
+            layout: &self.bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: src.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: out.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 2, resource: self.params_buf.as_entire_binding() },
+            ],
+        });
+        let mut enc = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("hdr_nit_map") });
+        {
+            let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: None,
+                timestamp_writes: None,
+            });
+            pass.set_pipeline(&self.hdr_nit_map_pipeline);
+            pass.set_bind_group(0, &bg, &[]);
+            pass.dispatch_workgroups((mw * mh).div_ceil(WORKGROUP_SIZE), 1, 1);
+        }
+        enc.copy_buffer_to_buffer(out, 0, staging, 0, bytes);
+        self.queue.submit(std::iter::once(enc.finish()));
+        self.submit_count.fetch_add(1, Ordering::Relaxed);
+
+        let slice = staging.slice(..bytes);
+        slice.map_async(wgpu::MapMode::Read, |_| {});
+        self.device.poll(wgpu::Maintain::Wait);
+        let data = slice.get_mapped_range();
+        let map: Vec<f32> = bytemuck::cast_slice(&data).to_vec();
+        drop(data);
+        staging.unmap();
+        Some((map, mw, mh))
+    }
+
     /// The chain's graded AcesCG frame → display-encoded Rec.709 SDR
     /// bytes, the ACES output transform run on the GPU.
     ///
@@ -2623,6 +2715,46 @@ impl GpuEffectsPipeline {
         height: u32,
         tonemap_exposure: Option<f32>,
     ) -> Option<Vec<u8>> {
+        self.encode_chain_to_display_u8_view(slot_a, width, height, tonemap_exposure, false)
+    }
+
+    /// [`Self::encode_chain_to_display_u8`], and for `hdr_preview` the
+    /// frame is HDR display light rather than SDR linear: the light above
+    /// reference white rolls into the top so its structure survives a
+    /// screen that cannot show it.
+    ///
+    /// That is HDR monitoring's `Preview` mode, and it exists here so
+    /// turning monitoring on does not cost the frame its place on the GPU.
+    /// `klipp_color::hdr_view::preview_frame` is the twin.
+    pub fn encode_chain_to_display_u8_view(
+        &mut self,
+        slot_a: bool,
+        width: u32,
+        height: u32,
+        tonemap_exposure: Option<f32>,
+        hdr_preview: bool,
+    ) -> Option<Vec<u8>> {
+        self.encode_chain_to_display_u8_monitor(
+            slot_a, width, height, tonemap_exposure, hdr_preview, None,
+        )
+    }
+
+    /// [`Self::encode_chain_to_display_u8_view`], and for a
+    /// scene-referred clip the display-light pass it ends with — which is
+    /// what HDR monitoring wants to see rather than the SDR tone map.
+    ///
+    /// `scene` is `(HdrTransfer::display_light_kind, scene_scale,
+    /// peak_nits, working luma weights)`; `None` for a display-referred
+    /// clip, which has no such pass.
+    pub fn encode_chain_to_display_u8_monitor(
+        &mut self,
+        slot_a: bool,
+        width: u32,
+        height: u32,
+        tonemap_exposure: Option<f32>,
+        hdr_preview: bool,
+        scene: Option<(u32, f32, f32, [f32; 3])>,
+    ) -> Option<Vec<u8>> {
         if self.is_device_lost() { return None; }
         let pixel_count = (width as u64) * (height as u64);
         if pixel_count == 0 { return Some(Vec::new()); }
@@ -2652,6 +2784,14 @@ impl GpuEffectsPipeline {
             height,
             hdr_tonemap: tonemap_exposure.is_some() as u32,
             exposure: tonemap_exposure.unwrap_or(0.0),
+            view_op: hdr_preview as u32,
+            // 3 means "no display-light pass"; the kinds are 0, 1, 2.
+            scene_kind: scene.map_or(3, |s| s.0),
+            scene_scale: scene.map_or(1.0, |s| s.1),
+            peak_nits: scene.map_or(0.0, |s| s.2),
+            luma: scene.map_or([0.2126, 0.7152, 0.0722, 0.0], |s| {
+                [s.3[0], s.3[1], s.3[2], 0.0]
+            }),
         });
         let bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("linear_to_display_u8_bg"),
@@ -5795,6 +5935,27 @@ struct DisplayU8Params {
     hdr_tonemap: u32,
     /// Exposure ahead of the tone map (`HdrTransfer::display_exposure`).
     exposure: f32,
+    /// 0 the ordinary SDR encode, 1 HDR monitoring's preview roll-off.
+    view_op: u32,
+    /// `HdrTransfer::display_light_kind` for a scene-referred clip, whose
+    /// own last step runs before the preview roll-off; 3 or more for a
+    /// display-referred one, which has none.
+    scene_kind: u32,
+    scene_scale: f32,
+    peak_nits: f32,
+    /// The working space's luma weights, for the HLG branch of the
+    /// display-light pass. `w` is padding: a uniform `vec4` needs it.
+    luma: [f32; 4],
+}
+
+#[repr(C)]
+#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+struct NitMapParams {
+    width: u32,
+    height: u32,
+    step: u32,
+    map_width: u32,
+    to_2020: [[f32; 4]; 3],
 }
 
 #[repr(C)]
@@ -6707,6 +6868,109 @@ fn mapped_bytes_to_f32(data: &[u8], samples: usize) -> Vec<f32> {
     out
 }
 
+/// A scene-referred clip's display-light pass, as WGSL.
+///
+/// `klipp_color::hdr::hdr_display_light`: a graded scene-linear pixel to
+/// HDR display light, 1.0 = 203 cd/m². Its own macro because two shaders
+/// need it — the export's fused Y'CbCr writer and the viewer's display
+/// encode, for HDR monitoring — and two hand-written copies of a
+/// three-branch derivation with a highlight roll-off is how they drift.
+///
+/// The includer must supply, as its own function:
+///
+/// ```wgsl
+/// fn h_working_luma() -> vec3<f32>   // the working space's luma weights
+/// ```
+///
+/// which the export reads out of its baked table and the viewer out of its
+/// params. Everything else here is closed form.
+macro_rules! shader_hdr_display_light_wgsl {
+    () => {
+        "
+/// `HDR_REFERENCE_WHITE_NITS`: what display light 1.0 means.
+const H_REF_WHITE_NITS: f32 = 203.0;
+/// `HLG_NOMINAL_PEAK_NITS` and `HLG_GAMMA`.
+const H_HLG_PEAK_NITS: f32 = 1000.0;
+const H_HLG_GAMMA: f32 = 1.2;
+
+/// `NITS_PER_LINEAR`: what scene-linear 1.0 means for a PQ source.
+const H_NITS_PER_LINEAR: f32 = 100.0;
+/// `LOG_HDR_EXPOSURE` and `LOG_HDR_KNEE`.
+const H_LOG_HDR_EXPOSURE: f32 = 0.03102416;
+const H_LOG_HDR_KNEE: f32 = 0.5;
+
+/// `pq_reference_ootf`: BT.2100's reference OOTF — scene light (1.0 =
+/// its 10 000-nit top) to display light, cd/m². The BT.709 OETF followed
+/// by the BT.1886 EOTF.
+fn h_pq_reference_ootf(e: f32) -> f32 {
+    let x = 59.5208 * max(e, 0.0);
+    var ep = 0.0;
+    if x <= 0.018 {
+        ep = 4.5 * x;
+    } else {
+        ep = 1.099 * pow(x, 0.45) - 0.099;
+    }
+    return 100.0 * pow(ep, 2.4);
+}
+
+/// The OOTF applied odd-symmetrically, so a BT.2020 colour outside the
+/// working gamut arrives negative and survives the trip.
+fn h_signed_ootf(c: f32) -> f32 {
+    let m = h_pq_reference_ootf(abs(c) * H_LOG_HDR_EXPOSURE);
+    return select(-m, m, c >= 0.0);
+}
+
+/// `roll_off`: compress above `knee` so the curve approaches `peak`
+/// without reaching it, with slope 1 at the knee so there is no corner.
+fn h_roll_off(x: f32, knee: f32, peak: f32) -> f32 {
+    if x <= knee {
+        return x;
+    }
+    let t = (x - knee) / (peak - knee);
+    return knee + (peak - knee) * t / (1.0 + t);
+}
+
+/// `hdr_display_light`: a graded scene-linear pixel to HDR display light
+/// (1.0 = 203 cd/m²). `kind` is `HdrTransfer::display_light_kind` — 0 PQ,
+/// 1 HLG, 2 camera log.
+///
+/// A scene-referred clip's last step of its own, which used to happen on
+/// the CPU frame after the grade and is why a real HDR export — one whose
+/// *source* is PQ, HLG or log — could not take this path at all.
+fn hdr_display_light(rgb: vec3<f32>, kind: u32, scene_scale: f32, peak: f32) -> vec3<f32> {
+    var nits = vec3<f32>(0.0);
+    if kind == 0u {
+        nits = rgb * H_NITS_PER_LINEAR;
+    } else if kind == 1u {
+        // Undo the decoder's PQ-sized scale to get HLG scene light, then
+        // the HLG OOTF. Channels stay signed for the same reason as below.
+        let e = rgb / scene_scale;
+        let ys = dot(h_working_luma(), e);
+        var gain = 0.0;
+        if ys > 0.0 {
+            gain = H_HLG_PEAK_NITS * pow(ys, H_HLG_GAMMA - 1.0);
+        }
+        nits = e * gain;
+    } else {
+        let n = vec3<f32>(h_signed_ootf(rgb.x), h_signed_ootf(rgb.y), h_signed_ootf(rgb.z));
+        // Roll off the brightest channel and scale the others with it, so
+        // a highlight keeps its hue as it compresses.
+        let m = max(n.x, max(n.y, n.z));
+        let rolled = h_roll_off(m, H_LOG_HDR_KNEE * peak, peak);
+        var k = 1.0;
+        if m > 0.0 {
+            k = rolled / m;
+        }
+        nits = n * k;
+    }
+    // PQ and HLG sources are display light already and are not rolled
+    // off: the encoder holds the peak.
+    return nits / H_REF_WHITE_NITS;
+}
+"
+    };
+}
+
 /// The pixel storage hook as a string, for a shader assembled at runtime
 /// rather than by `concat!` — `nv12_gpu`'s, which is built from the
 /// shared colourspace prelude plus its own body and now writes into a
@@ -7353,6 +7617,56 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 "
 );
 
+/// HDR monitoring's light measurement: display light → the brightest
+/// channel's level in cd/m², on a coarse grid.
+///
+/// `klipp_color::hdr_view::HdrMeasure::nit_map`'s twin. The brightest
+/// *channel* and not the luminance, measured in BT.2020 whatever the
+/// project works in — a saturated highlight runs out of range channel by
+/// channel, and measured in a narrower basis the same BT.2020 red reads
+/// 67% high. The matrix comes in as data for that reason.
+///
+/// Coarse on purpose: the readout under the pointer does not need a value
+/// per pixel, and a whole-frame map is 33 MB at 4K where a
+/// quarter-resolution one is 2.
+const SHADER_HDR_NIT_MAP: &str = concat!(
+    shader_pixel_storage_wgsl!(),
+    "
+struct Params {
+    width: u32, height: u32, step: u32, map_width: u32,
+    to_2020_row0: vec4<f32>,
+    to_2020_row1: vec4<f32>,
+    to_2020_row2: vec4<f32>,
+}
+@group(0) @binding(0) var<storage, read> input: array<vec4<f32>>;
+@group(0) @binding(1) var<storage, read_write> nits: array<f32>;
+@group(0) @binding(2) var<uniform> params: Params;
+
+/// `HDR_REFERENCE_WHITE_NITS`: what display light 1.0 means.
+const REF_WHITE_NITS: f32 = 203.0;
+
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let map_height = (params.height + params.step - 1u) / params.step;
+    let idx = gid.x;
+    if idx >= params.map_width * map_height { return; }
+    let mx = idx % params.map_width;
+    let my = idx / params.map_width;
+    // The same sample the twin takes: the top-left pixel of each cell,
+    // clamped to the frame, not an average of it.
+    let x = min(mx * params.step, params.width - 1u);
+    let y = min(my * params.step, params.height - 1u);
+    let px = unpack(input[y * params.width + x]).xyz;
+    let c = vec3<f32>(
+        dot(params.to_2020_row0.xyz, px),
+        dot(params.to_2020_row1.xyz, px),
+        dot(params.to_2020_row2.xyz, px),
+    );
+    nits[idx] = max(c.x, max(c.y, c.z)) * REF_WHITE_NITS;
+}
+"
+);
+
 // Linear-f32 RGBA → sRGB-u8 RGBA encode. One workgroup-thread per
 // output pixel. Output buffer is `array<u32>` where each u32 packs
 // RGBA bytes in little-endian order (R = byte 0, A = byte 3),
@@ -7403,11 +7717,39 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 // SHADER_LINEAR_TO_U8.
 const SHADER_LINEAR_TO_DISPLAY_U8: &str = concat!(
     shader_pixel_storage_wgsl!(),
+    shader_hdr_display_light_wgsl!(),
     "
-struct Params { width: u32, height: u32, hdr_tonemap: u32, exposure: f32 }
+// `view_op` 1 is HDR monitoring's preview: the frame is display light
+// (1.0 = 203 cd/m²) rather than SDR linear, and the light above reference
+// white rolls into the top so its structure survives a screen that cannot
+// show it. `klipp_color::hdr_view::hdr_to_sdr_preview` is the twin.
+struct Params {
+    width: u32, height: u32, hdr_tonemap: u32, exposure: f32,
+    view_op: u32, scene_kind: u32, scene_scale: f32, peak_nits: f32,
+    luma: vec4<f32>,
+}
 @group(0) @binding(0) var<storage, read> input: array<vec4<f32>>;
 @group(0) @binding(1) var<storage, read_write> output: array<u32>;
 @group(0) @binding(2) var<uniform> params: Params;
+
+/// The hook `shader_hdr_display_light_wgsl` asks for. Here the weights
+/// travel in the params rather than a baked table: this shader's layout
+/// has three bindings and every effect shares it.
+fn h_working_luma() -> vec3<f32> {
+    return params.luma.xyz;
+}
+
+/// `hdr_to_sdr_preview`: identity to the knee, then a shoulder that
+/// approaches 1 without reaching it.
+fn hdr_to_sdr_preview(display_light: f32) -> f32 {
+    let knee = 0.75;
+    let v = max(display_light, 0.0);
+    if v <= knee {
+        return v;
+    }
+    let t = (v - knee) / (1.0 - knee);
+    return knee + (1.0 - knee) * (t / (1.0 + t));
+}
 
 fn linear_to_srgb_c(c: f32) -> f32 {
     let x = clamp(c, 0.0, 1.0);
@@ -7428,6 +7770,21 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     var rgb = max(px.xyz, vec3<f32>(0.0));
     if (params.hdr_tonemap != 0u) {
         rgb = vec3<f32>(filmic(rgb.x * params.exposure), filmic(rgb.y * params.exposure), filmic(rgb.z * params.exposure));
+    }
+    if (params.view_op == 1u) {
+        // A scene-referred clip's own last step first, where the ordinary
+        // SDR path would have tone-mapped it: monitoring wants the HDR
+        // display light the export writes, not the SDR picture.
+        if (params.scene_kind < 3u) {
+            rgb = hdr_display_light(
+                rgb, params.scene_kind, params.scene_scale, params.peak_nits,
+            );
+        }
+        rgb = vec3<f32>(
+            hdr_to_sdr_preview(rgb.x),
+            hdr_to_sdr_preview(rgb.y),
+            hdr_to_sdr_preview(rgb.z),
+        );
     }
     let r = u32(clamp(linear_to_srgb_c(rgb.x) * 255.0 + 0.5, 0.0, 255.0));
     let g = u32(clamp(linear_to_srgb_c(rgb.y) * 255.0 + 0.5, 0.0, 255.0));
@@ -7705,22 +8062,12 @@ const H_TO_2020: u32 = 1u;
 const H_LUMA: u32 = 10u;
 const H_PQ_TABLE: u32 = 13u;
 
-/// `HDR_REFERENCE_WHITE_NITS`: what display light 1.0 means.
-const H_REF_WHITE_NITS: f32 = 203.0;
-/// `HLG_NOMINAL_PEAK_NITS` and `HLG_GAMMA`.
-const H_HLG_PEAK_NITS: f32 = 1000.0;
-const H_HLG_GAMMA: f32 = 1.2;
-
 fn h_to_bt2020(v: vec3<f32>) -> vec3<f32> {
     return vec3<f32>(
         tables[H_TO_2020 + 0u] * v.x + tables[H_TO_2020 + 1u] * v.y + tables[H_TO_2020 + 2u] * v.z,
         tables[H_TO_2020 + 3u] * v.x + tables[H_TO_2020 + 4u] * v.y + tables[H_TO_2020 + 5u] * v.z,
         tables[H_TO_2020 + 6u] * v.x + tables[H_TO_2020 + 7u] * v.y + tables[H_TO_2020 + 8u] * v.z,
     );
-}
-
-fn h_working_luma() -> vec3<f32> {
-    return vec3<f32>(tables[H_LUMA], tables[H_LUMA + 1u], tables[H_LUMA + 2u]);
 }
 
 /// `display_light_to_nits`. Over the peak the pixel scales down as a
@@ -7774,81 +8121,6 @@ fn h_hlg_encode_nits(nits2020: vec3<f32>) -> vec3<f32> {
     // Fd = Ys^(g-1) * E with Yd = Ys^g, so E = Fd * Yd^((1-g)/g).
     let k = pow(yd, (1.0 - H_HLG_GAMMA) / H_HLG_GAMMA);
     return vec3<f32>(h_hlg_oetf(f.x * k), h_hlg_oetf(f.y * k), h_hlg_oetf(f.z * k));
-}
-
-/// `NITS_PER_LINEAR`: what scene-linear 1.0 means for a PQ source.
-const H_NITS_PER_LINEAR: f32 = 100.0;
-/// `LOG_HDR_EXPOSURE` and `LOG_HDR_KNEE`.
-const H_LOG_HDR_EXPOSURE: f32 = 0.03102416;
-const H_LOG_HDR_KNEE: f32 = 0.5;
-
-/// `pq_reference_ootf`: BT.2100's reference OOTF — scene light (1.0 =
-/// its 10 000-nit top) to display light, cd/m². The BT.709 OETF followed
-/// by the BT.1886 EOTF.
-fn h_pq_reference_ootf(e: f32) -> f32 {
-    let x = 59.5208 * max(e, 0.0);
-    var ep = 0.0;
-    if x <= 0.018 {
-        ep = 4.5 * x;
-    } else {
-        ep = 1.099 * pow(x, 0.45) - 0.099;
-    }
-    return 100.0 * pow(ep, 2.4);
-}
-
-/// The OOTF applied odd-symmetrically, so a BT.2020 colour outside the
-/// working gamut arrives negative and survives the trip.
-fn h_signed_ootf(c: f32) -> f32 {
-    let m = h_pq_reference_ootf(abs(c) * H_LOG_HDR_EXPOSURE);
-    return select(-m, m, c >= 0.0);
-}
-
-/// `roll_off`: compress above `knee` so the curve approaches `peak`
-/// without reaching it, with slope 1 at the knee so there is no corner.
-fn h_roll_off(x: f32, knee: f32, peak: f32) -> f32 {
-    if x <= knee {
-        return x;
-    }
-    let t = (x - knee) / (peak - knee);
-    return knee + (peak - knee) * t / (1.0 + t);
-}
-
-/// `hdr_display_light`: a graded scene-linear pixel to HDR display light
-/// (1.0 = 203 cd/m²). `kind` is `HdrTransfer::display_light_kind` — 0 PQ,
-/// 1 HLG, 2 camera log.
-///
-/// A scene-referred clip's last step of its own, which used to happen on
-/// the CPU frame after the grade and is why a real HDR export — one whose
-/// *source* is PQ, HLG or log — could not take this path at all.
-fn hdr_display_light(rgb: vec3<f32>, kind: u32, scene_scale: f32, peak: f32) -> vec3<f32> {
-    var nits = vec3<f32>(0.0);
-    if kind == 0u {
-        nits = rgb * H_NITS_PER_LINEAR;
-    } else if kind == 1u {
-        // Undo the decoder's PQ-sized scale to get HLG scene light, then
-        // the HLG OOTF. Channels stay signed for the same reason as below.
-        let e = rgb / scene_scale;
-        let ys = dot(h_working_luma(), e);
-        var gain = 0.0;
-        if ys > 0.0 {
-            gain = H_HLG_PEAK_NITS * pow(ys, H_HLG_GAMMA - 1.0);
-        }
-        nits = e * gain;
-    } else {
-        let n = vec3<f32>(h_signed_ootf(rgb.x), h_signed_ootf(rgb.y), h_signed_ootf(rgb.z));
-        // Roll off the brightest channel and scale the others with it, so
-        // a highlight keeps its hue as it compresses.
-        let m = max(n.x, max(n.y, n.z));
-        let rolled = h_roll_off(m, H_LOG_HDR_KNEE * peak, peak);
-        var k = 1.0;
-        if m > 0.0 {
-            k = rolled / m;
-        }
-        nits = n * k;
-    }
-    // PQ and HLG sources are display light already and are not rolled
-    // off: the encoder holds the peak.
-    return nits / H_REF_WHITE_NITS;
 }
 
 /// An HDR delivery's signal, and the pixel's light in cd/m² for MaxCLL.
@@ -8324,6 +8596,14 @@ const SHADER_LINEAR_TO_YUV420: &str = concat!(
     shader_linear_helpers_wgsl!(),
     shader_aces_rec709_wgsl!(),
     shader_bt2020_gamut_wgsl!(),
+    // The hook `shader_hdr_display_light_wgsl` asks for: this shader has
+    // the working space's luma weights in its baked table.
+    "
+fn h_working_luma() -> vec3<f32> {
+    return vec3<f32>(tables[10u], tables[11u], tables[12u]);
+}
+",
+    shader_hdr_display_light_wgsl!(),
     shader_hdr_encode_wgsl!(),
     "
 struct Params {
@@ -13077,6 +13357,7 @@ pub fn shader_sources() -> Vec<(&'static str, &'static str)> {
         ("SHADER_TRANSFORM", SHADER_TRANSFORM),
         ("SHADER_CHROMA_KEY", SHADER_CHROMA_KEY),
         ("SHADER_LINEAR_TO_DISPLAY_U8", SHADER_LINEAR_TO_DISPLAY_U8),
+        ("SHADER_HDR_NIT_MAP", SHADER_HDR_NIT_MAP),
         ("SHADER_LINEAR_TO_U8", SHADER_LINEAR_TO_U8),
         ("SHADER_U8_TO_LINEAR", SHADER_U8_TO_LINEAR),
         ("SHADER_RGBA64_TO_LINEAR", SHADER_RGBA64_TO_LINEAR),

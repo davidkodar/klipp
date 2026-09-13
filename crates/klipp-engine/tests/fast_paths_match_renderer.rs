@@ -142,9 +142,31 @@ fn fast(r: &mut Renderer, clip: &Clip, t: f64, seed: GpuSeed<'_>) -> Vec<u8> {
         working: WORKING,
         lut_tetrahedral: true,
         solo: None,
+        hdr_preview: false,
+        hdr_peak_nits: 1000.0,
     };
     let display = |l: &[f32]| display_transform_ws(l, ToneMapOp::None, WORKING);
     grade_to_display_on_gpu(r.executor(), seed, W, H, &at, &display).expect("the fast path takes this frame")
+}
+
+/// [`fast`] with HDR monitoring's preview on: the frame is display light
+/// and the light above reference white rolls into the top.
+fn fast_monitoring(r: &mut Renderer, clip: &Clip, t: f64, seed: GpuSeed<'_>, peak: f32) -> Vec<u8> {
+    let (clip_time, frame_number) = klipp_compose::render::grade_time(clip, tc(t), 24.0);
+    let at = GradeAt {
+        graph: &clip.node_graph,
+        clip_time,
+        frame_number,
+        track_points: &clip.track_points,
+        working: WORKING,
+        lut_tetrahedral: true,
+        solo: None,
+        hdr_preview: true,
+        hdr_peak_nits: peak,
+    };
+    let display = |l: &[f32]| klipp_color::hdr_view::preview_frame(l, ToneMapOp::None, WORKING);
+    grade_to_display_on_gpu(r.executor(), seed, W, H, &at, &display)
+        .expect("the fast path takes this frame under monitoring")
 }
 
 fn worst_lsb(a: &[u8], b: &[u8]) -> i32 {
@@ -228,6 +250,8 @@ fn the_graded_fast_path_is_the_renderers_frame() {
         working: WORKING,
         lut_tetrahedral: true,
         solo: None,
+        hdr_preview: false,
+        hdr_peak_nits: 1000.0,
     };
     let display = |l: &[f32]| display_transform_ws(l, ToneMapOp::None, WORKING);
     let wrong = grade_to_display_on_gpu(r.executor(), GpuSeed::Srgb8(&buffer), W, H, &at_source_time, &display).unwrap();
@@ -273,6 +297,8 @@ fn the_graded_fast_path_is_the_renderers_frame_in_a_bt2020_project() {
         working: WS,
         lut_tetrahedral: true,
         solo: None,
+        hdr_preview: false,
+        hdr_peak_nits: 1000.0,
     };
     let display = |l: &[f32]| display_transform_ws(l, ToneMapOp::None, WS);
     let got = grade_to_display_on_gpu(r.executor(), GpuSeed::Srgb8(&buffer), W, H, &at, &display)
@@ -364,6 +390,8 @@ fn the_graded_fast_path_is_the_renderers_frame_in_an_aces_project() {
         working: WS,
         lut_tetrahedral: true,
         solo: None,
+        hdr_preview: false,
+        hdr_peak_nits: 1000.0,
     };
     // Deliberately a tone map the viewer would apply elsewhere: the ACES
     // path ignores it, on both the CPU and the GPU, and if one of them
@@ -567,4 +595,95 @@ fn a_parked_frame_seeded_from_memory_is_the_renderers_frame() {
         let seeded = rendered(&mut r, &seq, 4.0, &mut src);
         assert!(worst_lsb(&seeded, &want) <= 1, "the renderer's own GPU seed is off");
     }
+}
+
+/// The same PQ clip under HDR monitoring's preview.
+///
+/// This is the link the other tests do not cover. `hdr_monitoring.rs`
+/// drives the real engine but does it *parked*, which takes the full
+/// render — so it proves the CPU route works and says nothing about the
+/// fast path. `hdr_monitor_gpu_matches_cpu` checks the shader against its
+/// twin on a synthetic frame, which says nothing about the frame being
+/// the renderer's. This closes the gap: the same clip, the same monitoring
+/// mode, through the renderer and through the fast path.
+///
+/// A scene-referred clip is the case that matters, because monitoring's
+/// substitution is on *its* last step: the renderer's `display_render`
+/// gives display light instead of the SDR tone map when
+/// `hdr_peak_nits` is set, and the shader has to make the same swap.
+#[test]
+fn the_graded_fast_path_is_the_renderers_frame_under_hdr_monitoring() {
+    const PEAK: f32 = 1000.0;
+    let Some(mut conv) = GpuP010Converter::new() else {
+        eprintln!("skipping: P010 GPU converter unavailable");
+        return;
+    };
+    // The same PQ fixture the SDR monitoring-off test uses.
+    let mut y = Vec::new();
+    for row in 0..H {
+        for col in 0..W {
+            let v: u32 = 64 + ((col * 37 + row * 11) % 877);
+            y.extend_from_slice(&(((v & 0x3FF) << 6) as u16).to_le_bytes());
+        }
+    }
+    let mut uv = Vec::new();
+    for row in 0..(H / 2) {
+        for col in 0..(W / 2) {
+            let u = 512 + (((col as i32 - row as i32) * 23).rem_euclid(300)) as u32 - 150;
+            let v = 512 + (((col as i32 + row as i32) * 29).rem_euclid(300)) as u32 - 150;
+            uv.extend_from_slice(&(((u & 0x3FF) << 6) as u16).to_le_bytes());
+            uv.extend_from_slice(&(((v & 0x3FF) << 6) as u16).to_le_bytes());
+        }
+    }
+    let m = primaries_to_working_matrix(ColorPrimaries::Bt2020, WORKING);
+    let matrix4 = klipp_effects::color_wgsl::pack_primaries_matrix(m);
+    let ids = [
+        color_ids::COLOR_RANGE_LIMITED,
+        color_ids::MATRIX_BT2020_NCL,
+        color_ids::TRANSFER_PQ,
+        color_ids::PRIMARIES_BT2020,
+    ];
+    let codes =
+        conv.convert_p010_hdr_codes(&y, &uv, W, H, W * 2, W * 2, W, H, 0, ids, matrix4).expect("codes");
+    let gpu_codes = conv
+        .convert_p010_on_gpu(&y, &uv, W, H, W * 2, W * 2, W, H, 0, ids, matrix4)
+        .hdr_codes
+        .expect("GPU codes");
+
+    let (seq, clip) = one_clip(keyframed_grade(Some(LogFormat::PQ)));
+    let codes = Arc::new(codes);
+    let mut src = Frame(Box::new(move || SourcePixels::SceneReferred {
+        codes: Arc::clone(&codes),
+        transfer: HdrTransfer::Pq,
+        source_to_working: m,
+    }));
+
+    // The renderer under monitoring: display light, then the preview
+    // encode — exactly what `view.rs` does.
+    let mut r = renderer();
+    let linear = r.render(
+        &seq,
+        tc(4.0),
+        W,
+        H,
+        &mut src,
+        RenderOptions { hdr_peak_nits: Some(PEAK), ..Default::default() },
+    );
+    let want = klipp_color::hdr_view::preview_frame(&linear, ToneMapOp::None, WORKING);
+
+    let seed =
+        GpuSeed::SceneReferred { buffer: &gpu_codes, transfer: HdrTransfer::Pq, source_to_working: m };
+    let got = fast_monitoring(&mut r, &clip, 4.0, seed, PEAK);
+    let worst = worst_lsb(&got, &want);
+    eprintln!("PQ under HDR monitoring: fast path vs renderer worst {worst} LSB");
+    assert!(worst <= 1, "monitoring's fast path differs from the renderer by {worst} levels");
+
+    // And monitoring is actually showing something else: the same clip
+    // with monitoring off is a different picture. Without this the test
+    // would pass for a fast path that ignored `hdr_preview` — and so would
+    // a renderer that ignored `hdr_peak_nits`.
+    let sdr = rendered(&mut r, &seq, 4.0, &mut src);
+    let d = worst_lsb(&want, &sdr);
+    eprintln!("monitoring's picture vs the SDR one: worst {d} LSB");
+    assert!(d > 8, "only {d}: monitoring is not changing the picture, so this proves nothing");
 }

@@ -735,6 +735,25 @@ impl GraphExecutor {
         true
     }
 
+    /// HDR monitoring's light map over the last run's GPU-resident
+    /// result: the brightest channel of every `step`-th pixel, cd/m².
+    ///
+    /// Read *after* the display encode, which writes to its own buffer and
+    /// leaves the chain's linear frame where it is. That ordering is why
+    /// monitoring can keep the fast path at all: the readout needs the
+    /// light, the light needs the linear frame, and this measures it in
+    /// place instead of bringing 132 MB down for it.
+    pub fn nit_map_of_output(
+        &mut self,
+        width: u32,
+        height: u32,
+        step: u32,
+        to_2020: [[f32; 4]; 3],
+    ) -> Option<(Vec<f32>, u32, u32)> {
+        let slot_a = self.output_on_gpu?;
+        self.gpu.as_mut()?.nit_map_of_chain(slot_a, width, height, step, to_2020)
+    }
+
     /// Run the timeline's global LUT over the last run's GPU-resident
     /// result, leaving it on the GPU.
     ///
@@ -1007,8 +1026,36 @@ impl GraphExecutor {
         height: u32,
         tonemap_exposure: Option<f32>,
     ) -> Option<Vec<u8>> {
+        self.encode_output_to_display_u8_view(width, height, tonemap_exposure, false, None)
+    }
+
+    /// [`Self::encode_output_to_display_u8`], and for `hdr_preview` HDR
+    /// monitoring's preview instead of the SDR encode: the light above
+    /// reference white rolled into the top.
+    ///
+    /// `scene` is a scene-referred clip's `(display_light_kind,
+    /// scene_scale, peak_nits)`; the working space's luma weights come
+    /// from the executor's own colourspace, since the HLG branch of the
+    /// display-light pass needs them.
+    pub fn encode_output_to_display_u8_view(
+        &mut self,
+        width: u32,
+        height: u32,
+        tonemap_exposure: Option<f32>,
+        hdr_preview: bool,
+        scene: Option<(u32, f32, f32)>,
+    ) -> Option<Vec<u8>> {
         let slot_a = self.output_on_gpu?;
-        self.gpu.as_mut()?.encode_chain_to_display_u8(slot_a, width, height, tonemap_exposure)
+        let luma = klipp_color::linear::luma_coefs(self.working_colorspace);
+        let scene = scene.map(|(kind, scale, peak)| (kind, scale, peak, luma));
+        self.gpu.as_mut()?.encode_chain_to_display_u8_monitor(
+            slot_a,
+            width,
+            height,
+            tonemap_exposure,
+            hdr_preview,
+            scene,
+        )
     }
 
     /// True iff the executor owns a GPU pipeline. When false, every

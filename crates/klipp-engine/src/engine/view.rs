@@ -599,11 +599,10 @@ impl PlaybackEngine {
         if !self.hdr_monitor.renders_hdr() {
             return (self.display_encode(linear), None);
         }
-        const NIT_MAP_STEP: u32 = 4;
         // Measured where the encoder measures: BT.2020, whatever the
         // project works in.
         let measure = klipp_color::hdr_view::HdrMeasure::for_working_space(crate::video_decoder::working_colorspace());
-        let map = measure.nit_map(linear, w, h, NIT_MAP_STEP);
+        let map = measure.nit_map(linear, w, h, super::NIT_MAP_STEP);
         let bytes = match self.hdr_monitor {
             HdrMonitor::FalseColour => measure.false_colour_frame(linear),
             // One pass, reading the frame once. This used to copy it
@@ -616,7 +615,7 @@ impl PlaybackEngine {
                 crate::video_decoder::working_colorspace(),
             ),
         };
-        (bytes, Some((map.0, map.1, map.2, NIT_MAP_STEP)))
+        (bytes, Some((map.0, map.1, map.2, super::NIT_MAP_STEP)))
     }
 
     /// Show a rendered frame: scopes, the perf overlay, the GPU viewer
