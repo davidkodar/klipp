@@ -2885,6 +2885,26 @@ fn convert_sw_frame(
             // default fixed-point YUV→RGB reads colours up to four levels
             // low (a saturated blue 180 as 176), which export — converting
             // accurately — does not.
+            //
+            // Known difference, and don't try to configure it away: the
+            // decode shaders and `YuvSamples::chroma_at` reconstruct 4:2:0
+            // chroma at H.264's `AVCHROMA_LOC_LEFT` siting (co-sited
+            // horizontally, half a luma sample down), so on a hard chroma
+            // edge they ramp across the odd luma column while swscale ramps
+            // one sample later. Telling swscale the siting does not fix it.
+            // `src_h_chr_pos` / `src_v_chr_pos` feed the *scaling* filters
+            // only, so at 1:1 — which `playback_dimensions` returns for any
+            // source inside the playback budget — they are ignored
+            // outright: measured, xpos=0/ypos=128 and xpos=255/ypos=0 give
+            // byte-identical output, and setting them before
+            // `sws_init_context` rather than after changes nothing.
+            //
+            // Closing it means doing the YUV→RGB here instead of in
+            // swscale, against `chroma_at`, the way
+            // `camera_log::yuv420p10le_to_linear` already bypasses swscale
+            // for YUV420P10LE. Scene-referred sources and 10-bit 4:2:0
+            // already take that route, so what remains on this path is
+            // display-referred 8-bit.
             ffmpeg_next::software::scaling::Flags::FAST_BILINEAR
                 | ffmpeg_next::software::scaling::Flags::ACCURATE_RND
                 | ffmpeg_next::software::scaling::Flags::FULL_CHR_H_INT,

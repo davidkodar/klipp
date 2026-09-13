@@ -7,12 +7,10 @@
 //! current u8 path). Both produce a normalised `[0.0, 1.0]` mask so the
 //! downstream `apply_mask_*` helpers stay domain-agnostic.
 //!
-//! Choke (negative-feather / erosion) is intentionally deferred to a
-//! later slice — the wire format already carries `choke_px`, but the
-//! Phase 2 mask pipeline applies feather only. A no-op on `choke_px > 0`
-//! is fine for ship: the user's edge stays where it was rather than
-//! moving the wrong direction. The `apply_choke_mask` stub below is a
-//! visible TODO so future work has an obvious entry point.
+//! Choke (negative-feather / erosion) is implemented: [`apply_choke_mask`]
+//! erodes the mask by `choke_px` with a separable min-pool, and
+//! `klipp-compose`'s render calls it with the binding's real setting
+//! before feathering.
 //!
 //! Domain note for luma extraction: BT.709 weights `(0.2126, 0.7152,
 //! 0.0722)` come from the linear-light spec, but in practice both NLE
@@ -431,10 +429,19 @@ fn box_blur_v_f32(src: &[f32], dst: &mut [f32], w: usize, h: usize, r: usize) {
     }
 }
 
-/// Erosion / "choke" — intentionally a no-op for Phase 2. The wire
-/// format already carries `choke_px` so user-saved bindings round-trip
-/// cleanly; once a per-pixel min-pool kernel lands here in Phase 4 the
-/// existing data renders correctly without any project-format change.
+/// Erosion / "choke": shrinks the mask by `radius_px`, pulling the matte
+/// edge inwards so a key that spills past the subject can be pulled back
+/// before the feather softens it.
+///
+/// A separable min-pool over Lemire's monotonic deque, so the cost is
+/// O(pixels) and independent of the radius — the same shape as the box
+/// blur above it. Radii round to whole pixels: sub-pixel choke is not
+/// meaningful on a discrete grid, and the feather kernel owns the
+/// soft-edge geometry.
+///
+/// A zero or sub-half-pixel radius, an empty mask, or a mask whose
+/// length disagrees with `width * height` all return untouched, so a
+/// caller cannot silently erode the wrong buffer.
 pub fn apply_choke_mask(mask: &mut Vec<f32>, width: u32, height: u32, radius_px: f32) {
     if radius_px < 0.5 || mask.is_empty() {
         return;
