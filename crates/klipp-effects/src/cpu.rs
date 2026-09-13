@@ -674,7 +674,7 @@ pub(crate) fn apply(
                         let scale = amount / 100.0;
                         (round(xf + dx * t * scale), round(yf + dy * t * scale))
                     } else {
-                        let ang = t * (amount * 3.14159265 / 180.0 * 0.5);
+                        let ang = t * (amount * std::f32::consts::PI / 180.0 * 0.5);
                         let (sin_a, cos_a) = ang.sin_cos();
                         (round(cx + dx * cos_a - dy * sin_a), round(cy + dx * sin_a + dy * cos_a))
                     };

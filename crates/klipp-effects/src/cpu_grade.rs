@@ -10,6 +10,11 @@
 //! linear RGBA f32 in place.
 
 use rayon::prelude::*;
+// The WGSL twins spell this `3.14159265`, and that literal rounds to
+// exactly this f32 — 0x40490fdb, the same bits — so the twins agree
+// despite reading differently. WGSL has no PI constant of its own,
+// which is why only this side changed.
+use std::f32::consts::PI;
 
 /// The unified grade's controls, as `GpuEffectsPipeline::apply_color_grade`
 /// takes them.
@@ -75,7 +80,7 @@ pub fn color_grade(px: &mut [f32], g: &ColorGrade) {
             None => {
                 let lift_w = (1.0 - luma2).max(0.0);
                 let gain_w = luma2.max(0.0);
-                let gamma_w = (luma2.clamp(0.0, 1.0) * 3.141_592_65).sin().max(0.0);
+                let gamma_w = (luma2.clamp(0.0, 1.0) * PI).sin().max(0.0);
                 r = r + g.lift.0 * lift_w + g.gamma.0 * gamma_w + g.gain.0 * gain_w + g.offset.0;
                 gr = gr + g.lift.1 * lift_w + g.gamma.1 * gamma_w + g.gain.1 * gain_w + g.offset.1;
                 b = b + g.lift.2 * lift_w + g.gamma.2 * gamma_w + g.gain.2 * gain_w + g.offset.2;
@@ -231,7 +236,7 @@ pub fn wheel_sat_bri(
     px.par_chunks_exact_mut(4).for_each(|p| {
         let y = luma(l, p);
         let lift_w = (1.0 - y).max(0.0);
-        let gamma_w = (y.clamp(0.0, 1.0) * 3.141_592_65).sin().max(0.0);
+        let gamma_w = (y.clamp(0.0, 1.0) * PI).sin().max(0.0);
         let gain_w = y;
         let bri_adj = lift_bri * lift_w + gamma_bri * gamma_w + gain_bri * gain_w + offset_bri;
         for c in &mut p[..3] {
@@ -453,7 +458,7 @@ pub fn color_warper(px: &mut [f32], hue_shifts: &[f32; 12], sat_shifts: &[f32; 1
         let sector_low = (sector_f.floor() as u32 % 12) as usize;
         let sector_high = (sector_low + 1) % 12;
         let t = sector_f - sector_f.floor();
-        let blend = (1.0 - (t * 3.141_592_65).cos()) * 0.5;
+        let blend = (1.0 - (t * PI).cos()) * 0.5;
         let hue_shift = hue_shifts[sector_low] * (1.0 - blend) + hue_shifts[sector_high] * blend;
         let sat_shift = sat_shifts[sector_low] * (1.0 - blend) + sat_shifts[sector_high] * blend;
         let sat_weight = hsl.s.clamp(0.0, 1.0);
