@@ -80,13 +80,33 @@ pub struct Encoder {
 /// Returns (encoder_name, is_hw_accelerated).
 /// Tries NVENC (NVIDIA) → AMF (AMD) → software fallback.
 /// NVENC requires minimum 128x128 resolution.
-fn pick_video_encoder(codec: &ExportVideoCodec, width: u32, height: u32) -> (&'static str, bool) {
+///
+/// `want_10bit` matters for H.264 and only H.264: **no hardware H.264
+/// encoder does ten bits.** NVENC's and AMF's H.264 blocks are 8-bit
+/// 4:2:0, while their HEVC and AV1 blocks are not. FFmpeg is no help in
+/// telling them apart — all three nvenc encoders advertise one shared
+/// pixel-format list with `p010le` in it, and the real capability check
+/// happens inside `avcodec_open2`, which answers "No capable devices
+/// found" and `AVERROR_EXTERNAL`. That surfaces to the user as "encoder
+/// error: open video encoder: Generic error in an external library" on a
+/// render that had every reason to work, which is what this parameter
+/// exists to prevent: a 10-bit H.264 export goes to `libx264`, whose High
+/// 10 profile does it.
+///
+/// Since the export UI only offers HDR at ten bits, every HDR H.264
+/// render hit this.
+fn pick_video_encoder(
+    codec: &ExportVideoCodec,
+    width: u32,
+    height: u32,
+    want_10bit: bool,
+) -> (&'static str, bool) {
     // NVENC/AMF have minimum resolution requirements (~128x128)
     let hw_eligible = width >= 128 && height >= 128;
 
     match codec {
         ExportVideoCodec::H264 => {
-            if hw_eligible {
+            if hw_eligible && !want_10bit {
                 if ffmpeg_next::encoder::find_by_name("h264_nvenc").is_some() {
                     return ("h264_nvenc", true);
                 }
@@ -257,11 +277,25 @@ impl Encoder {
         // Try GPU-accelerated encoder first (NVENC for NVIDIA, AMF for AMD),
         // fall back to software (libx264/libx265).
         let (video_codec_name, is_hw_encoder) =
-            pick_video_encoder(&settings.video_codec, snapshot.width, snapshot.height);
+            pick_video_encoder(
+                &settings.video_codec,
+                snapshot.width,
+                snapshot.height,
+                settings.bit_depth == 10,
+            );
         let video_codec = ffmpeg_next::encoder::find_by_name(video_codec_name)
             .ok_or_else(|| RenderError::Encode(format!("codec not found: {video_codec_name}")))?;
 
         info!("Video encoder: {} (hw={})", video_codec_name, is_hw_encoder);
+        // A 4K HDR H.264 render is much slower on libx264 than the user's
+        // last 8-bit one was on NVENC, so say why rather than leaving them
+        // to wonder. HEVC keeps the hardware path at ten bits.
+        if settings.bit_depth == 10 && matches!(settings.video_codec, ExportVideoCodec::H264) {
+            info!(
+                "10-bit H.264 encodes in software: no hardware H.264 encoder does ten bits. \
+                 H.265 would encode on the GPU at this depth."
+            );
+        }
 
         // Create encoder context
         let mut video_ctx = ffmpeg_next::codec::context::Context::new_with_codec(video_codec)
@@ -472,7 +506,17 @@ impl Encoder {
         // Open the video encoder
         let video_encoder = video_ctx
             .open_as_with(video_codec, video_opts)
-            .map_err(|e| RenderError::Encode(format!("open video encoder: {e}")))?;
+            .map_err(|e| {
+                // Naming the combination, because the library's own message
+                // for a configuration the hardware cannot do is
+                // "Generic error in an external library" and nothing else.
+                RenderError::Encode(format!(
+                    "open video encoder: {e} ({video_codec_name}, {pix_fmt:?}, {}x{}{})",
+                    snapshot.width,
+                    snapshot.height,
+                    if settings.bit_depth == 10 { ", 10-bit" } else { "" },
+                ))
+            })?;
 
         let video_time_base = video_encoder.time_base();
 
@@ -1766,6 +1810,38 @@ impl Encoder {
 
 #[cfg(test)]
 mod tests {
+
+    /// A 10-bit H.264 export never goes to a hardware encoder.
+    ///
+    /// No hardware H.264 encoder does ten bits — NVENC's and AMF's H.264
+    /// blocks are 8-bit 4:2:0 — and asking one to anyway fails inside
+    /// `avcodec_open2` with "No capable devices found", which reaches the
+    /// user as "Generic error in an external library" on a render that
+    /// looked perfectly reasonable. Since the export UI only offers HDR at
+    /// ten bits, that was every HDR H.264 render.
+    ///
+    /// Asserted as "not hardware" rather than "is libx264", so the test
+    /// says the same thing on a machine with no NVENC at all.
+    #[test]
+    fn ten_bit_h264_never_uses_a_hardware_encoder() {
+        let (name, hw) = pick_video_encoder(&ExportVideoCodec::H264, 3840, 2160, true);
+        assert!(!hw, "10-bit H.264 picked the hardware encoder {name}, which cannot do it");
+        // And 8-bit is left alone: the point is not to give up hardware
+        // H.264, only to stop asking it for what it cannot do. Guarded on
+        // the encoder existing, so this says something real on a machine
+        // with NVENC and nothing false on one without.
+        if ffmpeg_next::encoder::find_by_name("h264_nvenc").is_some() {
+            let (name8, hw8) = pick_video_encoder(&ExportVideoCodec::H264, 3840, 2160, false);
+            assert!(hw8, "8-bit H.264 stopped using hardware; it picked {name8}");
+        }
+
+        // HEVC and AV1 hardware *do* ten bits, so they keep it.
+        for codec in [ExportVideoCodec::H265, ExportVideoCodec::Av1] {
+            let (a, _) = pick_video_encoder(&codec, 3840, 2160, true);
+            let (b, _) = pick_video_encoder(&codec, 3840, 2160, false);
+            assert_eq!(a, b, "{codec:?} changed encoder for 10-bit, but its hardware can do it");
+        }
+    }
     use super::*;
     use crate::snapshot::SequenceSnapshot;
     use klipp_core::{

@@ -28762,6 +28762,24 @@ impl KlippApp {
                                     );
                                 });
                                 ui.end_row();
+
+                                // No hardware H.264 encoder does ten bits,
+                                // so an HDR H.264 render is software and a
+                                // 4K one is slow. Said here rather than
+                                // discovered after the wait — and H.265 is
+                                // the same delivery on the GPU.
+                                if matches!(self.export_dialog.video_codec, ExportVideoCodec::H264)
+                                    && self.export_dialog.hdr_mode != klipp_core::HdrMode::Sdr
+                                {
+                                    ui.label("");
+                                    ui.label(
+                                        egui::RichText::new("HDR H.264 encodes in software — H.265 is faster")
+                                            .small()
+                                            .weak(),
+                                    )
+                                    .on_hover_text("No GPU H.264 encoder supports 10-bit, so this render uses libx264. H.265 delivers the same HLG or PQ file and keeps hardware encoding.");
+                                    ui.end_row();
+                                }
                             } else {
                                 // Keep state consistent: no 10-bit → SDR.
                                 self.export_dialog.hdr_mode = klipp_core::HdrMode::Sdr;

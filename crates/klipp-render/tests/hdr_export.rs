@@ -246,6 +246,41 @@ fn sdr_white_lands_on_the_bt2408_reference_level() {
     assert!(!side.contains("max_content"), "HLG export signals MaxCLL: {side}");
 }
 
+/// H.264 at 10 bits delivers HDR. This is the combination the export
+/// dialog offers and that nothing here covered: every HDR case above is
+/// H.265 or ProRes, and every H.264 case elsewhere is 8-bit SDR, so the
+/// one cell a user actually clicked — "H.264" plus "HDR" — was the hole in
+/// the matrix. It failed at `avcodec_open2` with nothing but "Generic
+/// error in an external library", because the 10-bit request went to
+/// `h264_nvenc`, whose H.264 block is 8-bit only.
+///
+/// Both transfers, because the fallback has to survive the choice of
+/// curve, and the codes are checked rather than just `run()` returning
+/// Ok: dropping to a software encoder must still deliver HDR, not a
+/// silently 8-bit picture under HDR tags.
+#[test]
+fn h264_delivers_hdr_at_ten_bits() {
+    if !ffmpeg_ok() {
+        return;
+    }
+    for (mode, want, label) in [
+        (HdrMode::Pq, y10(pq_signal(203.0)), "PQ"),
+        (HdrMode::Hlg, y10(0.75), "HLG"),
+    ] {
+        let out = tmp(&format!("white_h264_{label}.mp4"));
+        export(white(), None, &out, |s| {
+            s.video_codec = ExportVideoCodec::H264;
+            s.hdr_mode = mode;
+        });
+        assert_codes(&format!("white, {label} H.264"), codes_at(&out, W / 2, H / 2), [want, 512, 512], 2);
+        // And the file really is 10-bit: an 8-bit encoder that accepted
+        // the job would put reference white at the same *fraction*, so
+        // the codes above would pass while the delivery lost two bits.
+        let fmt = probe(&out, &["-show_entries", "stream=pix_fmt", "-of", "default=nw=1"]);
+        assert!(fmt.contains("10"), "{label} H.264 export is not 10-bit: {fmt}");
+    }
+}
+
 fn slog3_to_linear(code: f64) -> f64 {
     if code >= 171.210_294_692_9 {
         10f64.powf((code - 420.0) / 261.5) * 0.19 - 0.01
