@@ -218,6 +218,56 @@ fn two_secondaries() -> NodeGraph {
     )
 }
 
+/// A difference-key secondary: a clean plate off disk instead of a
+/// qualifier window. Same shape otherwise.
+fn difference_key_secondary() -> NodeGraph {
+    let dir = std::env::temp_dir().join(format!("klipp-dkcost-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let plate = dir.join("plate.png");
+    if !plate.exists() {
+        let mut img = image::RgbaImage::new(W / 2, H / 2);
+        for (x, _y, px) in img.enumerate_pixels_mut() {
+            let v = (x * 255 / (W / 2 - 1)) as u8;
+            *px = image::Rgba([v, 128, 255 - v, 255]);
+        }
+        img.save(&plate).unwrap();
+    }
+    let (src, corr, dk, cool, apply, out) = (
+        NodeId::new_v4(), NodeId::new_v4(), NodeId::new_v4(),
+        NodeId::new_v4(), NodeId::new_v4(), NodeId::new_v4(),
+    );
+    graph(
+        vec![
+            node(src, NodeKind::Source, Default::default()),
+            node(corr, NodeKind::Corrector, primary()),
+            node(dk, NodeKind::DifferenceKey, NodeParams {
+                difference_key: Some(klipp_core::DifferenceKeySettings {
+                    enabled: true,
+                    plate_path: Some(plate),
+                    tolerance: 0.02,
+                    soft: 0.12,
+                    invert: false,
+                    match_space: klipp_core::DifferenceKeyMatchSpace::Rgb,
+                }),
+                ..Default::default()
+            }),
+            node(cool, NodeKind::Corrector, NodeParams { temperature: Some(-45.0), ..Default::default() }),
+            node(apply, NodeKind::ApplyMatte, Default::default()),
+            node(out, NodeKind::Output, Default::default()),
+        ],
+        vec![
+            Edge { from_node: src, from_port: 0, to_node: corr, to_port: 0 },
+            Edge { from_node: corr, from_port: 0, to_node: dk, to_port: 0 },
+            Edge { from_node: corr, from_port: 0, to_node: cool, to_port: 0 },
+            Edge { from_node: cool, from_port: 0, to_node: apply, to_port: 0 },
+            Edge { from_node: dk, from_port: 0, to_node: apply, to_port: 1 },
+            Edge { from_node: corr, from_port: 0, to_node: apply, to_port: 2 },
+            Edge { from_node: apply, from_port: 0, to_node: out, to_port: 0 },
+        ],
+        out,
+    )
+}
+
 fn graph(nodes: Vec<Node>, edges: Vec<Edge>, output: NodeId) -> NodeGraph {
     let node_positions = nodes
         .iter()
@@ -269,6 +319,7 @@ fn where_a_secondarys_frame_time_goes() {
         ("primary + qualifier", primary_and_qualifier()),
         ("full secondary", full_secondary()),
         ("two secondaries", two_secondaries()),
+        ("difference-key secondary", difference_key_secondary()),
     ] {
         // One run to warm caches and compile pipelines, then measure.
         let _ = exec.execute_linear(&src, &g, W, H, 0.0, 0, None, None);

@@ -300,6 +300,10 @@ fn the_other_matte_sources_ride_the_chain_too() {
     for (name, matte, tolerance) in [
         ("luma key", MatteSource::Luma, 0.008f32),
         ("mask", MatteSource::Mask, 0.001),
+        // The difference key's twins both work in linear float on the
+        // same plate, so the only slack needed is the float order of the
+        // picture that reaches them.
+        ("difference key", MatteSource::Difference, 0.002),
     ] {
         let graph = matte_graph(matte, Some(1.0));
         let (cpu, _) = run(&graph, false);
@@ -327,6 +331,32 @@ fn the_other_matte_sources_ride_the_chain_too() {
 enum MatteSource {
     Luma,
     Mask,
+    Difference,
+}
+
+/// A clean plate on disk, written once. The difference key needs a real
+/// file because the node's plate pipeline is the thing under test as
+/// much as the shader is: decode, resize to the frame, then key.
+///
+/// Deliberately not the frame's size, so the resize runs.
+fn plate_path() -> &'static std::path::Path {
+    static PLATE: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+    PLATE.get_or_init(|| {
+        let dir = std::env::temp_dir().join(format!("klipp-dk-parity-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let path = dir.join("plate.png");
+        // A horizontal ramp: it matches the frame nowhere exactly, so
+        // the matte has real structure and a phase or addressing error
+        // in the resize shows up as a shifted matte.
+        let mut img = image::RgbaImage::new(W / 2, H / 2);
+        for (x, _y, px) in img.enumerate_pixels_mut() {
+            let v = (x * 255 / (W / 2 - 1)) as u8;
+            *px = image::Rgba([v, 128, 255 - v, 255]);
+        }
+        img.save(&path).expect("write plate");
+        path
+    })
+    .as_path()
 }
 
 /// The same secondary, with the matte from a luma key or a spatial mask.
@@ -345,6 +375,20 @@ fn matte_graph(source: MatteSource, mix: Option<f32>) -> NodeGraph {
                     high: 0.75,
                     soft: 0.08,
                     invert: false,
+                }),
+                ..Default::default()
+            },
+        ),
+        MatteSource::Difference => (
+            NodeKind::DifferenceKey,
+            NodeParams {
+                difference_key: Some(klipp_core::DifferenceKeySettings {
+                    enabled: true,
+                    plate_path: Some(plate_path().to_path_buf()),
+                    tolerance: 0.02,
+                    soft: 0.12,
+                    invert: false,
+                    match_space: klipp_core::DifferenceKeyMatchSpace::Rgb,
                 }),
                 ..Default::default()
             },
@@ -390,7 +434,7 @@ fn matte_graph(source: MatteSource, mix: Option<f32>) -> NodeGraph {
         Edge { from_node: apply, from_port: 0, to_node: out, to_port: 0 },
     ];
     // A keyer looks at the picture; a mask does not.
-    if matches!(source, MatteSource::Luma) {
+    if matches!(source, MatteSource::Luma | MatteSource::Difference) {
         edges.push(Edge { from_node: primary, from_port: 0, to_node: matte, to_port: 0 });
     }
     let node_positions = nodes

@@ -2272,6 +2272,15 @@ impl SecondaryChain {
                     .masks
                     .as_ref()
                     .is_some_and(|ms| ms.masks.iter().any(|m| m.enabled)),
+                Some(NodeKind::DifferenceKey) => {
+                    keys_the_source
+                        && matte_params.difference_key.as_ref().is_some_and(|d| {
+                            // A plate is required: without one the node
+                            // selects nothing, and there would be no
+                            // buffer for the shader to compare against.
+                            d.enabled && d.plate_path.is_some()
+                        })
+                }
                 _ => false,
             };
             if !matte_armed {
@@ -2350,6 +2359,102 @@ impl GraphExecutor {
     /// keeps the chain GPU-resident instead of breaking mid-grade into
     /// separate segments, saving one upload + one download fence per
     /// extra segment (~20 ms each on scrubbing workloads).
+    /// The difference key's clean plate, decoded and resized to the
+    /// frame, cached at both steps.
+    ///
+    /// One pipeline for both the CPU arm and the GPU chain dispatch, so
+    /// the two cannot key against differently-built plates. `None` means
+    /// the plate could not be read and the caller should select nothing.
+    ///
+    /// The decode is cached by path; the resize by path *and* frame size,
+    /// because the same plate at two timeline resolutions is two
+    /// different buffers and a size-blind key hands the keyer a
+    /// wrong-length plate.
+    fn resized_plate(
+        &mut self,
+        path: &std::path::Path,
+        width: u32,
+        height: u32,
+    ) -> Option<Arc<Vec<f32>>> {
+        let pixel_count = (width as usize) * (height as usize);
+        let key = (path.to_path_buf(), width, height);
+        if let Some(p) = self.plate_resize_cache.get(&key) {
+            return Some(Arc::clone(p));
+        }
+        let cached = match self.matte_image_cache.get(path).cloned() {
+            Some(c) => c,
+            None => match image::open(path) {
+                Ok(img) => {
+                    let rgba = img.to_rgba8();
+                    let (iw, ih) = (rgba.width(), rgba.height());
+                    let mut linear = vec![0.0f32; (iw * ih * 4) as usize];
+                    for (i, px) in rgba.pixels().enumerate() {
+                        let o = i * 4;
+                        linear[o] = klipp_color::transfer::srgb_to_linear(px[0] as f32 / 255.0);
+                        linear[o + 1] = klipp_color::transfer::srgb_to_linear(px[1] as f32 / 255.0);
+                        linear[o + 2] = klipp_color::transfer::srgb_to_linear(px[2] as f32 / 255.0);
+                        linear[o + 3] = px[3] as f32 / 255.0;
+                    }
+                    let arc = Arc::new((linear, iw, ih));
+                    self.matte_image_cache.insert(path.to_path_buf(), Arc::clone(&arc));
+                    arc
+                }
+                Err(e) => {
+                    tracing::warn!("DifferenceKey: failed to load {:?}: {e}", path);
+                    return None;
+                }
+            },
+        };
+        // Nearest-neighbour resize plate → live-frame dims, kept for as
+        // long as the plate and the frame size do. A fixed plate at a
+        // fixed resolution resizes to the same buffer every time, and
+        // that is a full-frame write — 35.5 ms at 4K — to redo per frame.
+        let (src, sw, sh) = (&cached.0, cached.1, cached.2);
+        if sw == 0 || sh == 0 {
+            return None;
+        }
+        let mut resized = vec![0.0f32; pixel_count * 4];
+        use rayon::prelude::*;
+        resized
+            .par_chunks_exact_mut(width as usize * 4)
+            .enumerate()
+            .for_each(|(y, row)| {
+                let sy = ((y as u64 * sh as u64) / height as u64).min(sh as u64 - 1) as u32;
+                for x in 0..width as usize {
+                    let sx = ((x as u64 * sw as u64) / width as u64).min(sw as u64 - 1) as u32;
+                    let si = ((sy * sw + sx) as usize) * 4;
+                    let oi = x * 4;
+                    row[oi] = src[si];
+                    row[oi + 1] = src[si + 1];
+                    row[oi + 2] = src[si + 2];
+                    row[oi + 3] = src[si + 3];
+                }
+            });
+        let arc = Arc::new(resized);
+        // Bounded rather than cleared on every miss: two DifferenceKey
+        // nodes with different plates would evict each other every frame,
+        // which costs more than not caching at all. Four full-frame
+        // plates is 133 MB at 4K, which is the point to let go of them —
+        // a resolution change leaves stale entries behind otherwise.
+        if self.plate_resize_cache.len() >= 4 {
+            self.plate_resize_cache.clear();
+        }
+        self.plate_resize_cache.insert(key, Arc::clone(&arc));
+        Some(arc)
+    }
+
+    /// A stable identity for a plate at a frame size, for the GPU's
+    /// upload cache. Hashing the path rather than the pixels: comparing
+    /// 33 MB to decide whether to upload 33 MB defeats the purpose, and
+    /// the path plus size is exactly what `resized_plate` keys on, so
+    /// the two caches agree on what "the same plate" means.
+    fn plate_gpu_key(path: &std::path::Path, width: u32, height: u32) -> (u64, u32, u32) {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        path.hash(&mut h);
+        (h.finish(), width, height)
+    }
+
     fn dispatch_chain_node_slots(
         &mut self,
         node_id: NodeId,
@@ -2360,6 +2465,40 @@ impl GraphExecutor {
         frame_number: u64,
         in_is_a: bool,
     ) -> Option<u32> {
+        // DifferenceKey first, because it needs the plate caches on
+        // `self` and the `gpu` borrow below would rule them out. The
+        // plate is resolved and uploaded here; the dispatch reads it from
+        // VRAM like any other binding.
+        if let NodeKind::DifferenceKey = kind {
+            let dk = params.difference_key.as_ref()?;
+            if !dk.enabled {
+                return None;
+            }
+            let path = dk.plate_path.as_ref()?.clone();
+            let key = Self::plate_gpu_key(&path, width, height);
+            // Resident already: skip the resize entirely, not just the
+            // upload. This is the steady state during playback.
+            let resident = self.gpu.as_ref().is_some_and(|g| g.has_difference_key_plate(key));
+            if !resident {
+                let plate = self.resized_plate(&path, width, height)?;
+                let gpu = self.gpu.as_mut()?;
+                gpu.upload_difference_key_plate(&plate, key);
+            }
+            let gpu = self.gpu.as_mut()?;
+            let luminance = matches!(
+                dk.match_space,
+                klipp_core::DifferenceKeyMatchSpace::Luminance
+            );
+            // A plate that failed to upload leaves the node to the CPU
+            // path rather than keying against nothing.
+            if !gpu.difference_key_to_matte_buf_chain(
+                width, height, dk.tolerance, dk.soft, dk.invert, luminance,
+            ) {
+                return None;
+            }
+            return Some(0);
+        }
+
         let gpu = match &mut self.gpu {
             Some(g) => g,
             None => return None,
@@ -3232,73 +3371,8 @@ impl GraphExecutor {
                     return vec![0.0f32; pixel_count * 4];
                 };
 
-                let cached = match self.matte_image_cache.get(path).cloned() {
-                    Some(c) => c,
-                    None => match image::open(path) {
-                        Ok(img) => {
-                            let rgba = img.to_rgba8();
-                            let (iw, ih) = (rgba.width(), rgba.height());
-                            let mut linear = vec![0.0f32; (iw * ih * 4) as usize];
-                            for (i, px) in rgba.pixels().enumerate() {
-                                let o = i * 4;
-                                linear[o]     = klipp_color::transfer::srgb_to_linear(px[0] as f32 / 255.0);
-                                linear[o + 1] = klipp_color::transfer::srgb_to_linear(px[1] as f32 / 255.0);
-                                linear[o + 2] = klipp_color::transfer::srgb_to_linear(px[2] as f32 / 255.0);
-                                linear[o + 3] = px[3] as f32 / 255.0;
-                            }
-                            let arc = Arc::new((linear, iw, ih));
-                            self.matte_image_cache.insert(path.clone(), Arc::clone(&arc));
-                            arc
-                        }
-                        Err(e) => {
-                            tracing::warn!("DifferenceKey: failed to load {:?}: {e}", path);
-                            return vec![0.0f32; pixel_count * 4];
-                        }
-                    },
-                };
-                // Nearest-neighbour resize plate → live-frame dims,
-                // kept for as long as the plate and the frame size do.
-                // A fixed plate at a fixed resolution resizes to the same
-                // buffer every time, and that is a full-frame write to
-                // redo per frame.
-                let key = (path.clone(), width, height);
-                let plate_resized = match self.plate_resize_cache.get(&key) {
-                    Some(p) => Arc::clone(p),
-                    None => {
-                        let (src, sw, sh) = (&cached.0, cached.1, cached.2);
-                        let mut resized = vec![0.0f32; pixel_count * 4];
-                        use rayon::prelude::*;
-                        resized
-                            .par_chunks_exact_mut(width as usize * 4)
-                            .enumerate()
-                            .for_each(|(y, row)| {
-                                let sy = ((y as u64 * sh as u64) / height as u64)
-                                    .min(sh as u64 - 1) as u32;
-                                for x in 0..width as usize {
-                                    let sx = ((x as u64 * sw as u64) / width as u64)
-                                        .min(sw as u64 - 1) as u32;
-                                    let si = ((sy * sw + sx) as usize) * 4;
-                                    let oi = x * 4;
-                                    row[oi] = src[si];
-                                    row[oi + 1] = src[si + 1];
-                                    row[oi + 2] = src[si + 2];
-                                    row[oi + 3] = src[si + 3];
-                                }
-                            });
-                        let arc = Arc::new(resized);
-                        // Bounded rather than cleared on every miss: two
-                        // DifferenceKey nodes with different plates would
-                        // evict each other every frame, which costs more
-                        // than not caching at all. Four full-frame plates
-                        // is 133 MB at 4K, which is the point to let go
-                        // of them — a resolution change leaves stale
-                        // entries behind otherwise.
-                        if self.plate_resize_cache.len() >= 4 {
-                            self.plate_resize_cache.clear();
-                        }
-                        self.plate_resize_cache.insert(key, Arc::clone(&arc));
-                        arc
-                    }
+                let Some(plate_resized) = self.resized_plate(path, width, height) else {
+                    return vec![0.0f32; pixel_count * 4];
                 };
 
                 let matte = klipp_color::difference_key::generate_difference_key_matte(

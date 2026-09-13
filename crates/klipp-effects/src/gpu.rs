@@ -229,6 +229,14 @@ pub struct GpuEffectsPipeline {
     // Compute pipeline — standalone luminance-threshold key (matte
     // producer, simpler than qualifier — luma in, matte out).
     luma_key_pipeline: wgpu::ComputePipeline,
+    difference_key_pipeline: wgpu::ComputePipeline,
+    difference_key_bgl: wgpu::BindGroupLayout,
+    /// The difference key's clean plate, resized to the frame on the
+    /// host and uploaded once. Keyed by the host's own cache generation
+    /// rather than by contents: comparing 33 MB to decide whether to
+    /// upload 33 MB would defeat the purpose.
+    plate_buf: Option<wgpu::Buffer>,
+    plate_key: Option<(u64, u32, u32)>,
     // Compute pipeline — standalone soft-clip / hard-clip transform
     // (per-channel Reinhard rolloff above threshold). Value
     // transform, not a matte producer.
@@ -794,6 +802,43 @@ impl GpuEffectsPipeline {
             push_constant_ranges: &[],
         });
 
+        // Difference key: the effects layout plus the clean plate.
+        //   0: input  (storage, read)  — the kept picture, linear
+        //   1: output (storage, write) — the matte
+        //   2: params (uniform)
+        //   3: plate  (storage, read)  — the plate, already resized to
+        //                                the frame on the host and
+        //                                linear like the input
+        let difference_key_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("difference_key_bgl"),
+            entries: &[
+                storage(0, true),
+                storage(1, false),
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                storage(3, true),
+            ],
+        });
+        let difference_key_pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("difference_key_pl"),
+            bind_group_layouts: &[&difference_key_bgl],
+            push_constant_ranges: &[],
+        });
+        let difference_key_pipeline = create_pipeline(
+            &device,
+            &difference_key_pl,
+            "difference_key",
+            SHADER_DIFFERENCE_KEY,
+        );
+
         // Mask v2 bind group layout — purpose-built for the
         // storage-buffer mask architecture. 4 bindings:
         //   0: output (storage, write) — the matte vec4<f32> buffer
@@ -1136,6 +1181,10 @@ impl GpuEffectsPipeline {
             rgb_curves_lut_buf,
             qualifier_pipeline,
             luma_key_pipeline,
+            difference_key_pipeline,
+            difference_key_bgl,
+            plate_buf: None,
+            plate_key: None,
             soft_clip_pipeline,
             grain_pipeline,
             alpha_blur_h_pipeline,
@@ -4082,6 +4131,100 @@ impl GpuEffectsPipeline {
     /// Dispatch-only luminance key: the same as
     /// [`Self::qualifier_to_matte_buf_chain`] for the simpler keyer —
     /// reads the kept picture, writes the matte to `matte_buf`.
+    /// Upload the difference key's clean plate, already resized to the
+    /// frame and in linear light, unless the same one is already there.
+    ///
+    /// `key` identifies the plate to the *host*: its resize-cache
+    /// generation plus the frame size. Contents are not compared, since
+    /// reading 33 MB to decide whether to write 33 MB is the cost this
+    /// avoids. A host that reuses a generation for different pixels
+    /// would show a stale plate, so the executor derives it from the
+    /// plate path and dimensions it already keys its own cache on.
+    pub fn upload_difference_key_plate(
+        &mut self,
+        plate_linear: &[f32],
+        key: (u64, u32, u32),
+    ) {
+        if self.is_device_lost() {
+            return;
+        }
+        let bytes = std::mem::size_of_val(plate_linear) as u64;
+        let needs_alloc = self.plate_buf.as_ref().map_or(true, |b| b.size() < bytes);
+        if needs_alloc {
+            self.plate_buf = Some(self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("difference_key_plate"),
+                size: bytes,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            }));
+            // A fresh buffer holds nothing, so whatever was keyed before
+            // is no longer in it.
+            self.plate_key = None;
+        }
+        if self.plate_key == Some(key) {
+            return;
+        }
+        if let Some(buf) = self.plate_buf.as_ref() {
+            self.queue.write_buffer(buf, 0, bytemuck::cast_slice(plate_linear));
+            self.plate_key = Some(key);
+        }
+    }
+
+    /// Whether a plate matching `key` is already resident, so the
+    /// executor can skip building the resized plate at all.
+    pub fn has_difference_key_plate(&self, key: (u64, u32, u32)) -> bool {
+        self.plate_buf.is_some() && self.plate_key == Some(key)
+    }
+
+    /// Dispatch-only difference key: read the kept picture, compare it
+    /// against the uploaded plate, write the matte to `matte_buf`.
+    ///
+    /// Same shape as [`Self::luma_key_to_matte_buf_chain`] — the keyer
+    /// reads the *kept* copy of its source, not the chain's current
+    /// picture, because the graded branch may already have moved that
+    /// on.
+    pub fn difference_key_to_matte_buf_chain(
+        &mut self,
+        width: u32,
+        height: u32,
+        tolerance: f32,
+        soft: f32,
+        invert: bool,
+        luminance_match: bool,
+    ) -> bool {
+        if self.is_device_lost() || self.plate_buf.is_none() {
+            return false;
+        }
+        let slot = self.next_params_slot();
+        self.write_chain_params(slot, &GpuDifferenceKeyParams {
+            width,
+            height,
+            tolerance,
+            soft,
+            invert: invert as u32,
+            match_space: luminance_match as u32,
+            _pad0: 0,
+            _pad1: 0,
+        });
+        let input = self.grade_mix_src.as_ref().expect("keep_chain_input first");
+        let matte = self.matte_buf.as_ref().expect("matte_buf populated by ensure_buffers");
+        let plate = self.plate_buf.as_ref().expect("checked above");
+        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("chain_bg_difference_key_matte"),
+            layout: &self.difference_key_bgl,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: input.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: matte.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 2, resource: self.params_ring[slot].as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 3, resource: plate.as_entire_binding() },
+            ],
+        });
+        let workgroups = (width * height).div_ceil(WORKGROUP_SIZE);
+        let enc = self.chain_encoder.as_mut().expect(Self::CHAIN_ENCODER_EXPECT);
+        Self::record_compute_dispatch(enc, &self.difference_key_pipeline, &bind_group, workgroups);
+        true
+    }
+
     pub fn luma_key_to_matte_buf_chain(
         &mut self,
         width: u32,
@@ -6434,6 +6577,21 @@ struct GpuLumaKeyParams {
     _pad1: u32,
 }
 // 8 fields × 4 bytes = 32 bytes (well under 256-byte PARAMS_SIZE)
+
+#[repr(C)]
+#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+struct GpuDifferenceKeyParams {
+    width: u32,
+    height: u32,
+    tolerance: f32,
+    soft: f32,
+    invert: u32,
+    /// 0 = RGB (Chebyshev), 1 = Rec.709 luminance. Matches
+    /// `klipp_core::DifferenceKeyMatchSpace`'s order; the host converts.
+    match_space: u32,
+    _pad0: u32,
+    _pad1: u32,
+}
 
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -10602,6 +10760,78 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 // for AP1 (ACEScg working colorspace) — should be ~0.272/0.674/0.054
 // there. Matches Qualifier's behaviour; both will be re-tuned
 // post-Phase-E.
+// ─── Difference Key GPU Shader ──────────────────────────────────────────────
+//
+// The CPU twin is `klipp_color::difference_key::generate_difference_key_matte`.
+// Change one, change the other; `difference_key_gpu_parity` holds them
+// together.
+//
+// Unlike the luma key, this keys *linear* light on both sides, because
+// the CPU function is handed the linear frame and the linear plate and
+// compares them directly. Encoding either here would make the same
+// tolerance mean a different distance depending on which path ran.
+const SHADER_DIFFERENCE_KEY: &str = concat!(
+    "
+struct Params {
+    width: u32,
+    height: u32,
+    tolerance: f32,
+    soft: f32,
+    invert: u32,
+    match_space: u32,
+    _pad0: u32,
+    _pad1: u32,
+}
+
+@group(0) @binding(0) var<storage, read> input: array<vec4<f32>>;
+@group(0) @binding(1) var<storage, read_write> output: array<vec4<f32>>;
+@group(0) @binding(2) var<uniform> params: Params;
+@group(0) @binding(3) var<storage, read> plate: array<vec4<f32>>;
+",
+    shader_pixel_storage_wgsl!(),
+    "
+
+// `soft_step` from the CPU twin: 0 below `lo`, a linear ramp to 1 across
+// [lo, hi], 1 above, collapsing to a hard step when the band is empty.
+// The 1e-4 floor is the CPU's, not a rounding guard — without it a zero
+// `soft` divides by zero instead of keying hard.
+fn diff_soft_step(val: f32, lo: f32, hi: f32) -> f32 {
+    if val <= lo { return 0.0; }
+    if hi - lo <= 0.0001 { return 1.0; }
+    if val >= hi { return 1.0; }
+    return clamp((val - lo) / (hi - lo), 0.0, 1.0);
+}
+
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let idx = gid.x;
+    if idx >= params.width * params.height { return; }
+
+    let live = unpack(input[idx]);
+    let ref_px = plate[idx];
+
+    var d: f32;
+    if params.match_space == 1u {
+        // Rec.709 weighted luma difference — forgiving of plate chroma
+        // drift.
+        let yl = 0.2126 * live.x + 0.7152 * live.y + 0.0722 * live.z;
+        let yp = 0.2126 * ref_px.x + 0.7152 * ref_px.y + 0.0722 * ref_px.z;
+        d = abs(yl - yp);
+    } else {
+        // Chebyshev / L-infinity, per channel, so a colour-only
+        // difference registers even when luminance matches.
+        let e = abs(live.xyz - ref_px.xyz);
+        d = max(e.x, max(e.y, e.z));
+    }
+
+    var matte = diff_soft_step(d, params.tolerance, params.tolerance + params.soft);
+    if params.invert != 0u { matte = 1.0 - matte; }
+
+    output[idx] = pack(vec4<f32>(matte, matte, matte, live.w));
+}
+"
+);
+
 const SHADER_LUMA_KEY: &str = concat!(
     "
 struct Params {
