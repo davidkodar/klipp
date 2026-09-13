@@ -568,12 +568,24 @@ impl Renderer {
         opts: RenderOptions,
         target: klipp_effects::gpu::Yuv420Target,
     ) -> Option<(Vec<u8>, Option<klipp_effects::gpu::GpuFrameLight>)> {
-        // The project-wide colour pipeline runs after the composite, on
-        // the CPU frame this path never builds. Refused rather than
-        // applied, the way the viewer's fast path refuses it ("global
-        // colour pipeline active") — without this the GPU path exported
-        // the timeline *without* its global LUT, silently.
-        if self.global_lut.is_some() {
+        // The project-wide colour pipeline runs after the composite. A
+        // single-clip render has no composite, so it can run as one more
+        // chain pass — but only where its *position* is unambiguous, and
+        // the two cases below are where it is not:
+        //
+        //  * An HDR delivery splits the light above SDR white out before
+        //    the LUT and adds it back after, because a LUT only knows the
+        //    0..1 range. That split has no chain pass.
+        //  * A scene-referred clip ends in a display pass of its own, and
+        //    the LUT goes *after* it. The fused writer does that pass
+        //    inside `display_encode`, which is last, so a chain LUT would
+        //    land on the wrong side of it.
+        //
+        // Either way the answer is to decline, not to apply it anyway:
+        // before this gate existed at all the GPU path exported the
+        // timeline *without* its global LUT, silently.
+        let global_lut_here = self.global_lut.is_some();
+        if global_lut_here && opts.hdr_peak_nits.is_some() {
             return None;
         }
         // The render and the encode have to be for the same delivery: the
@@ -673,6 +685,11 @@ impl Renderer {
                 // refused here for want of that pass.
                 // `grade` seeds the chain from the codes itself, the
                 // same way the viewer's path does.
+                // The LUT would have to follow this clip's display pass,
+                // and the fused writer runs that last.
+                if global_lut_here {
+                    return None;
+                }
                 scene_end = Some(klipp_effects::gpu::SceneReferredEnd {
                     display_light: hdr_delivery,
                     kind: transfer.display_light_kind(),
@@ -708,6 +725,9 @@ impl Renderer {
                 peak_nits: peak,
                 ..target
             };
+            if !self.global_lut_on_chain(width, height) {
+                return None;
+            }
             return self.executor.encode_output_to_yuv420(width, height, target);
         }
 
@@ -725,7 +745,28 @@ impl Renderer {
         }
         let target =
             klipp_effects::gpu::Yuv420Target { scene: scene_end, peak_nits: peak, ..target };
+        if !self.global_lut_on_chain(width, height) {
+            return None;
+        }
         self.executor.encode_output_to_yuv420(width, height, target)
+    }
+
+    /// Run the timeline's global LUT over the chain's graded frame, if
+    /// there is one. `false` if there is one and it could not run, which
+    /// sends the frame down the ordinary path rather than exporting it
+    /// ungraded by the look.
+    fn global_lut_on_chain(&mut self, width: u32, height: u32) -> bool {
+        let Some(lut) = self.global_lut.take() else { return true };
+        let ok = self.executor.apply_global_lut_to_output(
+            width,
+            height,
+            &lut.lut.data,
+            lut.lut.size as u32,
+            lut.opacity,
+            self.lut_tetrahedral,
+        );
+        self.global_lut = Some(lut);
+        ok
     }
 
     fn render_stack(

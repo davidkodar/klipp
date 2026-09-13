@@ -629,41 +629,25 @@ fn a_pq_delivery_agrees_with_the_renderer() {
     assert!(max > 100.0, "the fixture is too dim to measure light with");
 }
 
-/// A project-wide LUT is refused, not ignored.
+/// A project-wide LUT is *applied*, and the picture matches the renderer.
 ///
-/// The global LUT is applied after the composite, on the CPU frame this
-/// path never builds — so an accepted frame would be exported *without*
-/// the timeline's LUT, which is a wrong picture with no error anywhere.
-/// The viewer's fast path has always refused it ("global colour pipeline
-/// active"); this path did not, and exported the ungraded look.
+/// It runs as one more chain pass, so the frame stays on the GPU — before
+/// this a project with a look LUT exported at the float route's speed,
+/// and before the refusal that preceded that, without its LUT at all.
+///
+/// The second half is what makes the first mean something: the same
+/// fixture with no LUT has to come out *different*. A LUT that silently
+/// did nothing would match a renderer that also did nothing.
 #[test]
-fn a_global_lut_is_refused() {
+fn a_global_lut_is_applied_and_agrees_with_the_renderer() {
     let c = graded(0.0, 1.0, 0.5);
     let seq = sequence(vec![vec![c.clone()]]);
-    let mut src = Flat::default().with(&c, [128, 96, 64]).on_gpu();
-
-    // Not an identity LUT: the refusal must not depend on the LUT being
-    // a no-op, since a real one is the case that matters.
-    let size = 2usize;
-    let mut data = Vec::with_capacity(size * size * size * 3);
-    for b in 0..size {
-        for g in 0..size {
-            for r in 0..size {
-                let f = |v: usize| (v as f32 / (size - 1) as f32) * 0.5;
-                data.extend_from_slice(&[f(r), f(g), f(b)]);
-            }
-        }
-    }
-    let lut = klipp_color::lut::LutData {
-        size,
-        data,
-        input_space: klipp_core::WorkingColorspace::Rec709Linear,
-        output_space: klipp_core::WorkingColorspace::Rec709Linear,
-    };
+    let mut src = Flat::default().with(&c, [190, 110, 70]).on_gpu();
+    let lut = strong_lut();
 
     let mut r = renderer();
-    r.set_global_lut(Some(klipp_compose::GlobalLut { lut, opacity: 1.0 }));
-    let refused = r.render_yuv420_on_gpu(
+    r.set_global_lut(Some(klipp_compose::GlobalLut { lut: lut.clone(), opacity: 1.0 }));
+    let Some((planes, _)) = r.render_yuv420_on_gpu(
         &seq,
         tc(0.5),
         W,
@@ -671,18 +655,39 @@ fn a_global_lut_is_refused() {
         &mut src,
         RenderOptions::default(),
         plain_target(),
-    );
-    assert!(
-        refused.is_none(),
-        "the GPU path accepted a timeline with a global LUT, so the export would have \
-         written the picture without it"
-    );
+    ) else {
+        eprintln!("skipping: the GPU path refused (no usable GPU)");
+        return;
+    };
 
-    // And without the LUT the same frame *is* accepted, so the refusal
-    // above is the LUT and not the fixture.
-    let mut r = renderer();
-    assert!(
-        r.render_yuv420_on_gpu(
+    // The renderer's own frame, with the same LUT, encoded the same way.
+    let mut rr = renderer();
+    rr.set_global_lut(Some(klipp_compose::GlobalLut { lut: lut.clone(), opacity: 1.0 }));
+    let px = rr.render(&seq, tc(0.5), W, H, &mut src, RenderOptions::default());
+    let display = klipp_color::display::ExportDisplay::new(
+        klipp_core::ToneMapOp::None,
+        klipp_core::WorkingColorspace::Rec709Linear,
+        klipp_core::OdtChoice::MatchViewer,
+    );
+    let want: Vec<u8> = px
+        .chunks_exact(4)
+        .map(|p| {
+            let e = display.encode([p[0], p[1], p[2]]);
+            let y = LUMA_709[0] * e[0] + LUMA_709[1] * e[1] + LUMA_709[2] * e[2];
+            (16.0 + y * 219.0 + 0.5).clamp(0.0, 255.0) as u8
+        })
+        .collect();
+    let got = &planes[..want.len()];
+    let worst =
+        got.iter().zip(want.iter()).map(|(g, w)| (*g as i32 - *w as i32).abs()).max().unwrap_or(0);
+    eprintln!("global LUT export luma vs the renderer: worst {worst} of 255");
+    assert!(worst <= 1, "the LUT'd frame differs from the renderer by {worst} levels");
+
+    // The LUT reached the picture. Without this the test would pass for a
+    // chain pass that did nothing at all.
+    let mut plain = renderer();
+    let no_lut = plain
+        .render_yuv420_on_gpu(
             &seq,
             tc(0.5),
             W,
@@ -691,10 +696,111 @@ fn a_global_lut_is_refused() {
             RenderOptions::default(),
             plain_target(),
         )
+        .expect("the same frame without a LUT")
+        .0;
+    // Whole planes, not just luma: a look LUT moves chroma more than it
+    // moves brightness, so Cb and Cr are where the difference lives.
+    let d = planes
+        .iter()
+        .zip(no_lut.iter())
+        .map(|(a, b)| (*a as i32 - *b as i32).abs())
+        .max()
+        .unwrap_or(0);
+    eprintln!("with the LUT vs without: worst {d} of 255 over the whole planes");
+    assert!(d > 20, "only {d}: the LUT is not reaching the exported picture");
+}
+
+/// Where the LUT's position is ambiguous, the path declines instead of
+/// putting it on the wrong side of something.
+#[test]
+fn a_global_lut_is_refused_where_its_position_is_ambiguous() {
+    use klipp_color::hdr::HdrTransfer;
+    let c = graded(0.0, 1.0, 0.5);
+    let seq = sequence(vec![vec![c.clone()]]);
+    let lut = strong_lut();
+
+    // An HDR delivery splits the light above SDR white around the LUT,
+    // and that split has no chain pass.
+    let mut src = Flat::default().with(&c, [190, 110, 70]).on_gpu();
+    let mut r = renderer();
+    r.set_global_lut(Some(klipp_compose::GlobalLut { lut: lut.clone(), opacity: 1.0 }));
+    assert!(
+        r.render_yuv420_on_gpu(
+            &seq,
+            tc(0.5),
+            W,
+            H,
+            &mut src,
+            RenderOptions { hdr_peak_nits: Some(1000.0), ..Default::default() },
+            pq_target(1000.0),
+        )
+        .is_none(),
+        "an HDR delivery with a global LUT must decline",
+    );
+
+    // A scene-referred clip ends in a display pass the LUT goes after,
+    // and the fused writer runs that pass last.
+    let mut scene_src = Flat::default().scene(&c, HdrTransfer::Pq);
+    let mut r2 = renderer();
+    r2.set_global_lut(Some(klipp_compose::GlobalLut { lut, opacity: 1.0 }));
+    assert!(
+        r2.render_yuv420_on_gpu(
+            &seq,
+            tc(0.5),
+            W,
+            H,
+            &mut scene_src,
+            RenderOptions::default(),
+            plain_target(),
+        )
+        .is_none(),
+        "a scene-referred clip with a global LUT must decline",
+    );
+
+    // And both shapes are accepted without the LUT, so the refusals above
+    // are the LUT and not the fixtures.
+    let mut ok1 = renderer();
+    assert!(
+        ok1.render_yuv420_on_gpu(
+            &seq,
+            tc(0.5),
+            W,
+            H,
+            &mut scene_src,
+            RenderOptions::default(),
+            plain_target(),
+        )
         .is_some(),
-        "the fixture cannot take the GPU path at all, so this proves nothing"
+        "the scene-referred fixture cannot take the path at all",
     );
 }
+
+/// A LUT with real cross-talk, so trilinear and tetrahedral differ and a
+/// pass-through is obvious.
+fn strong_lut() -> klipp_color::lut::LutData {
+    let size = 5usize;
+    let step = 1.0 / (size - 1) as f32;
+    let mut data = Vec::with_capacity(size * size * size * 3);
+    for b in 0..size {
+        for g in 0..size {
+            for r in 0..size {
+                let (rv, gv, bv) = (r as f32 * step, g as f32 * step, b as f32 * step);
+                data.extend_from_slice(&[
+                    (rv * 0.5 + 0.4 * gv * bv).clamp(0.0, 1.0),
+                    (gv * 0.7 + 0.2 * rv).clamp(0.0, 1.0),
+                    (bv * 0.45 + 0.3 * rv * gv).clamp(0.0, 1.0),
+                ]);
+            }
+        }
+    }
+    klipp_color::lut::LutData {
+        size,
+        data,
+        input_space: klipp_core::WorkingColorspace::Rec709Linear,
+        output_space: klipp_core::WorkingColorspace::Rec709Linear,
+    }
+}
+
 
 /// The AcesCG-basis ODTs through the whole path, against the renderer.
 ///

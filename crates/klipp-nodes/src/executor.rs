@@ -735,6 +735,45 @@ impl GraphExecutor {
         true
     }
 
+    /// Run the timeline's global LUT over the last run's GPU-resident
+    /// result, leaving it on the GPU.
+    ///
+    /// The project-wide colour pipeline is applied after the composite, on
+    /// the CPU frame the render normally builds. A single-clip render has
+    /// no composite to speak of, so the LUT can run as one more chain pass
+    /// and the frame never has to come down — which is the difference
+    /// between a project with a look LUT exporting at the fast path's speed
+    /// and at the float route's.
+    ///
+    /// `false` when the last run did not keep its output on the GPU, or
+    /// there is no GPU; the caller then renders the ordinary way. The
+    /// caller is responsible for the *ordering* question this cannot see:
+    /// the LUT belongs after any display pass a scene-referred clip ends
+    /// with, and after the highlight split an HDR delivery needs, so
+    /// `render_yuv420_on_gpu` only asks for this when neither applies.
+    pub fn apply_global_lut_to_output(
+        &mut self,
+        width: u32,
+        height: u32,
+        lut_data: &[f32],
+        lut_size: u32,
+        opacity: f32,
+        tetrahedral: bool,
+    ) -> bool {
+        let Some(slot_a) = self.output_on_gpu else { return false };
+        let Some(gpu) = self.gpu.as_mut() else { return false };
+        // The graded run already submitted its chain, so this opens a
+        // fresh one for the single pass. `begin_chain` resets the params
+        // ring, which the LUT dispatch draws a slot from.
+        gpu.begin_chain();
+        gpu.apply_3d_lut_chain(slot_a, width, height, lut_data, lut_size, opacity, tetrahedral);
+        gpu.submit_chain();
+        // The pass reads one slot and writes the other.
+        self.output_on_gpu = Some(!slot_a);
+        self.last_chain_final_slot = self.output_on_gpu;
+        true
+    }
+
     /// The last run's GPU-resident result through a BT.2020 project's
     /// display transform, as display bytes.
     ///
