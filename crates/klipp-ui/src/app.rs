@@ -28700,7 +28700,7 @@ impl KlippApp {
                         ui.label("");
                         ui.colored_label(
                             self.theme.text_dim,
-                            self.export_dialog.video_codec.hint(),
+                            self.export_dialog.video_codec.hint_at_depth(self.export_dialog.bit_depth),
                         );
                         ui.end_row();
 
@@ -28763,21 +28763,36 @@ impl KlippApp {
                                 });
                                 ui.end_row();
 
-                                // No hardware H.264 encoder does ten bits,
-                                // so an HDR H.264 render is software and a
-                                // 4K one is slow. Said here rather than
-                                // discovered after the wait — and H.265 is
-                                // the same delivery on the GPU.
-                                if matches!(self.export_dialog.video_codec, ExportVideoCodec::H264)
-                                    && self.export_dialog.hdr_mode != klipp_core::HdrMode::Sdr
+                                // A codec that will encode this delivery
+                                // but should not be the one chosen. Said
+                                // where the choice is made rather than
+                                // discovered after the render, and the fix
+                                // is offered instead of only named: the
+                                // user who hit this picked H.264 from a
+                                // dropdown that called it "universal".
+                                if let Some(advice) = self
+                                    .export_dialog
+                                    .video_codec
+                                    .hdr_advice(self.export_dialog.hdr_mode)
                                 {
                                     ui.label("");
-                                    ui.label(
-                                        egui::RichText::new("HDR H.264 encodes in software — H.265 is faster")
-                                            .small()
-                                            .weak(),
-                                    )
-                                    .on_hover_text("No GPU H.264 encoder supports 10-bit, so this render uses libx264. H.265 delivers the same HLG or PQ file and keeps hardware encoding.");
+                                    ui.horizontal(|ui| {
+                                        ui.label(
+                                            egui::RichText::new(format!("\u{26A0} {}", advice.headline))
+                                                .small()
+                                                .color(ui.visuals().warn_fg_color),
+                                        )
+                                        .on_hover_text(advice.detail);
+                                        if let Some(to) = advice.suggest {
+                                            if ui
+                                                .small_button(format!("Use {}", to.label()))
+                                                .on_hover_text(advice.detail)
+                                                .clicked()
+                                            {
+                                                self.export_dialog.video_codec = to;
+                                            }
+                                        }
+                                    });
                                     ui.end_row();
                                 }
                             } else {

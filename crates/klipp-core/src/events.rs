@@ -503,6 +503,23 @@ impl ExportFormat {
     }
 }
 
+/// A codec/delivery pairing that will encode but should not be chosen,
+/// with the codec to offer instead.
+///
+/// Separate from [`ExportVideoCodec::hint`] because that describes a
+/// codec on its own, and the thing worth saying here only exists for a
+/// *pair*: H.264 is the right answer for an SDR web file and the wrong
+/// one for the same delivery in HDR.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HdrAdvice {
+    /// One line, short enough to sit in the export dialog.
+    pub headline: &'static str,
+    /// The reasoning, for a tooltip.
+    pub detail: &'static str,
+    /// The codec to switch to, when there is one worth offering.
+    pub suggest: Option<ExportVideoCodec>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ExportVideoCodec {
     H264,
@@ -559,6 +576,75 @@ impl ExportVideoCodec {
             Self::Av1 => "CPU — next-gen, best compression, slow encode",
             Self::Vp9 => "CPU — web video (YouTube, WebM)",
             Self::Gif => "CPU only — animated GIF, 256-colour palette",
+        }
+    }
+
+    /// [`hint`](Self::hint) for the depth actually chosen.
+    ///
+    /// H.264's hint is a promise it cannot keep at ten bits: "GPU
+    /// accelerated — fast, universal" is wrong on all three counts for
+    /// High 10, which no NVENC encodes and little hardware decodes. It
+    /// stays wrong for 10-bit SDR, so this turns on the depth rather
+    /// than on the delivery.
+    pub fn hint_at_depth(&self, bit_depth: u8) -> &'static str {
+        match (self, bit_depth) {
+            (Self::H264, 10) => {
+                "CPU only at 10-bit — High 10 profile, limited playback support"
+            }
+            _ => self.hint(),
+        }
+    }
+
+    /// What to say about delivering `mode` with this codec, and what to
+    /// offer instead. `None` when the pairing is a good fit.
+    ///
+    /// The one case that matters is H.264, and it is worse than it looks.
+    /// A 10-bit H.264 HDR file out of Klipp is *correct* — full BT.2020
+    /// tags, ST 2084 transfer, mastering display luminance, MaxCLL and
+    /// MaxFALL all present — but it is High 10, a profile consumer
+    /// hardware skipped. On this machine NVENC will not encode it and
+    /// NVDEC will not decode it ("Failed setup for format cuda"), so it
+    /// is software-only to make *and* software-only to play, while
+    /// HDR10 as a delivery format is specified on HEVC Main 10. The
+    /// codec's own [`hint`](Self::hint) — "fast, universal" — is wrong
+    /// on both counts once the depth goes to ten.
+    pub fn hdr_advice(&self, mode: HdrMode) -> Option<HdrAdvice> {
+        if mode == HdrMode::Sdr {
+            return None;
+        }
+        match self {
+            Self::H264 => Some(HdrAdvice {
+                headline: "H.264 is a poor fit for HDR",
+                detail:
+                    "10-bit H.264 is High 10 profile: no GPU encodes it and most \
+                     players and TVs cannot decode it, so the file is slow to write \
+                     and may not play as HDR. H.265 delivers the same HLG or PQ \
+                     picture, encodes on the GPU, and is what HDR10 is specified on.",
+                suggest: Some(Self::H265),
+            }),
+            // The standard HDR deliveries, and ProRes the standard HDR
+            // mastering format. Nothing to warn about.
+            Self::H265 | Self::Av1 | Self::ProRes422 | Self::ProRes422HQ | Self::ProRes4444 => None,
+            // Not offered an HDR delivery by the export dialog today —
+            // DNxHD 115/145 are 8-bit, GIF is palettised. Answered
+            // anyway so the advice does not depend on the UI's gating.
+            Self::DNxHD115 | Self::DNxHD145 => Some(HdrAdvice {
+                headline: "DNxHD cannot carry HDR",
+                detail: "These DNxHD bitrates are 8-bit 4:2:2, which has nowhere to put \
+                         an HDR signal. ProRes 422 HQ is the 10-bit equivalent.",
+                suggest: Some(Self::ProRes422HQ),
+            }),
+            Self::Vp9 => Some(HdrAdvice {
+                headline: "VP9 HDR has thin support",
+                detail: "VP9 Profile 2 can carry 10-bit HDR, but player support is \
+                         patchy. AV1 is the web HDR codec that succeeded it.",
+                suggest: Some(Self::Av1),
+            }),
+            Self::Gif => Some(HdrAdvice {
+                headline: "GIF cannot carry HDR",
+                detail: "A 256-colour palette has no HDR representation.",
+                suggest: None,
+            }),
         }
     }
 
@@ -3444,6 +3530,147 @@ mod delivery_tests {
             assert_eq!(odt.fits(HdrMode::Sdr), !odt.is_pq(), "{odt:?}");
             assert_eq!(odt.fits(HdrMode::Hlg), odt == OdtChoice::MatchViewer, "{odt:?}");
             assert_eq!(odt.fits(HdrMode::Pq), odt == OdtChoice::MatchViewer || odt.is_pq(), "{odt:?}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod hdr_advice_tests {
+    use super::*;
+
+    const CODECS: [ExportVideoCodec; 10] = [
+        ExportVideoCodec::H264,
+        ExportVideoCodec::H265,
+        ExportVideoCodec::ProRes422,
+        ExportVideoCodec::ProRes422HQ,
+        ExportVideoCodec::ProRes4444,
+        ExportVideoCodec::DNxHD115,
+        ExportVideoCodec::DNxHD145,
+        ExportVideoCodec::Av1,
+        ExportVideoCodec::Vp9,
+        ExportVideoCodec::Gif,
+    ];
+
+    /// An SDR export is never second-guessed. H.264 is the right answer
+    /// for an SDR web file; the advice exists for the pairing, not the
+    /// codec.
+    #[test]
+    fn sdr_is_never_advised_against() {
+        for c in CODECS {
+            assert_eq!(c.hdr_advice(HdrMode::Sdr), None, "{c:?} advised against for SDR");
+        }
+    }
+
+    /// H.264 is steered to H.265 for both HDR transfers — the case the
+    /// user hit, where the render failed outright and the dialog had
+    /// offered the combination anyway.
+    #[test]
+    fn h264_hdr_suggests_h265() {
+        for mode in [HdrMode::Hlg, HdrMode::Pq] {
+            let a = ExportVideoCodec::H264.hdr_advice(mode).expect("H.264 HDR needs advice");
+            assert_eq!(a.suggest, Some(ExportVideoCodec::H265), "{mode:?}");
+        }
+    }
+
+    /// The standard HDR deliveries and the standard HDR mastering codec
+    /// pass without comment. A dialog that warned about everything would
+    /// train the user to ignore it.
+    #[test]
+    fn the_good_hdr_codecs_say_nothing() {
+        for c in [
+            ExportVideoCodec::H265,
+            ExportVideoCodec::Av1,
+            ExportVideoCodec::ProRes422,
+            ExportVideoCodec::ProRes422HQ,
+            ExportVideoCodec::ProRes4444,
+        ] {
+            for mode in [HdrMode::Hlg, HdrMode::Pq] {
+                assert_eq!(c.hdr_advice(mode), None, "{c:?} warns for {mode:?}");
+            }
+        }
+    }
+
+    /// Taking the suggestion has to end the conversation: whatever a
+    /// codec points at must itself be clean for that delivery. Otherwise
+    /// the dialog can send the user in a circle, or to a second warning,
+    /// which is worse than the first one.
+    #[test]
+    fn a_suggestion_lands_somewhere_clean() {
+        for c in CODECS {
+            for mode in [HdrMode::Hlg, HdrMode::Pq] {
+                let Some(a) = c.hdr_advice(mode) else { continue };
+                let Some(to) = a.suggest else { continue };
+                assert_ne!(to, c, "{c:?} suggests itself for {mode:?}");
+                assert_eq!(
+                    to.hdr_advice(mode),
+                    None,
+                    "{c:?} sends {mode:?} to {to:?}, which is itself advised against",
+                );
+            }
+        }
+    }
+
+    /// Every codec that cannot deliver HDR says so. The gap this closes
+    /// is silence: a codec the dialog might one day offer for HDR, with
+    /// no opinion recorded here, reads as approval.
+    #[test]
+    fn every_codec_has_an_answer_for_hdr() {
+        for c in CODECS {
+            let ten_bit_capable = matches!(
+                c,
+                ExportVideoCodec::H264
+                    | ExportVideoCodec::H265
+                    | ExportVideoCodec::Av1
+                    | ExportVideoCodec::Vp9
+                    | ExportVideoCodec::ProRes422
+                    | ExportVideoCodec::ProRes422HQ
+                    | ExportVideoCodec::ProRes4444
+            );
+            let advice = c.hdr_advice(HdrMode::Pq);
+            if !ten_bit_capable {
+                assert!(advice.is_some(), "{c:?} cannot carry HDR and the dialog is not told");
+            }
+            if let Some(a) = advice {
+                assert!(!a.headline.is_empty() && !a.detail.is_empty(), "{c:?} has empty advice");
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod codec_hint_tests {
+    use super::*;
+
+    /// The dropdown hint stops promising what 10-bit H.264 cannot
+    /// deliver. It sat directly above the HDR warning and contradicted
+    /// it, which is how the codec got picked in the first place.
+    #[test]
+    fn the_h264_hint_stops_claiming_gpu_at_ten_bits() {
+        let eight = ExportVideoCodec::H264.hint_at_depth(0);
+        let ten = ExportVideoCodec::H264.hint_at_depth(10);
+        assert_eq!(eight, ExportVideoCodec::H264.hint(), "8-bit H.264 should keep its hint");
+        assert_ne!(ten, eight, "10-bit H.264 shows the same hint as 8-bit");
+        assert!(!ten.contains("GPU") && !ten.contains('\u{26A1}'), "still claims GPU: {ten}");
+        assert!(!ten.contains("universal"), "still claims universal: {ten}");
+    }
+
+    /// Every other codec keeps one hint. Only H.264 changes character
+    /// with the depth; inventing differences elsewhere would be noise.
+    #[test]
+    fn no_other_codec_changes_with_depth() {
+        for c in [
+            ExportVideoCodec::H265,
+            ExportVideoCodec::Av1,
+            ExportVideoCodec::Vp9,
+            ExportVideoCodec::ProRes422,
+            ExportVideoCodec::ProRes422HQ,
+            ExportVideoCodec::ProRes4444,
+            ExportVideoCodec::DNxHD115,
+            ExportVideoCodec::DNxHD145,
+            ExportVideoCodec::Gif,
+        ] {
+            assert_eq!(c.hint_at_depth(0), c.hint(), "{c:?} at 8-bit");
+            assert_eq!(c.hint_at_depth(10), c.hint(), "{c:?} at 10-bit");
         }
     }
 }
