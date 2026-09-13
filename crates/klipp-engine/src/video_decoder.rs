@@ -1903,8 +1903,12 @@ unsafe fn download_hw_frame(
         }
     }
 
-    // GPU NV12 fast path is 8-bit-only. For 10-bit sources (P010 etc.)
-    // fall through to the CPU swscale path that knows about RGBA64LE.
+    // The 8-bit branch. P010 was taken on the GPU above, so what falls
+    // through here is a 10-bit format that is *not* P010 — those go to the
+    // CPU swscale path, which knows about RGBA64LE. Said explicitly
+    // because the earlier wording ("the GPU fast path is 8-bit-only")
+    // read as though no 10-bit source ever reached the GPU, which has not
+    // been true since the P010 converter landed above.
     if !is_hi_bit_depth && sw_fmt == AVPixelFormat::AV_PIX_FMT_NV12 {
         if let Some(converter) = gpu_converter {
             let y_stride = (*sw_frame).linesize[0] as u32;
