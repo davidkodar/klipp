@@ -131,20 +131,19 @@ fn main() {
     // subtitles do, and fills the media map. Hand-rolling it is how this
     // tool first rendered a silent file — `audio_tracks: vec![]` is easy
     // to write and impossible to notice until you play the result.
-    let mut snapshot = match SequenceSnapshot::from_sequence(&seq, &pool, &settings, None, false) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("could not snapshot the sequence: {e:?}");
-            std::process::exit(1);
-        }
-    };
+    // The working colourspace is a parameter and not a field to patch
+    // afterwards, because this tool is the one that forgot: it printed
+    // "AcesCG" and rendered Rec.709, silently, until an ACES render came
+    // out pixel-identical to a Rec.709 one.
+    let mut snapshot =
+        match SequenceSnapshot::from_sequence(&seq, &pool, &settings, None, false, working) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("could not snapshot the sequence: {e:?}");
+                std::process::exit(1);
+            }
+        };
     snapshot.export_range = Some((first, last));
-    // `from_sequence` defaults this rather than reading it off the
-    // project, and every export path in the app sets it afterwards. A
-    // tool that forgets renders the whole timeline in Rec.709 whatever
-    // the project says — which is exactly what this one did, silently,
-    // until an AcesCG render came out pixel-identical to a Rec.709 one.
-    snapshot.working_colorspace = working;
 
     let progress = Arc::new(AtomicU64::new(0));
     let watch = {

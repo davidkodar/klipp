@@ -158,14 +158,31 @@ impl SequenceSnapshot {
         settings: &ExportSettings,
         global_lut_path: Option<PathBuf>,
         use_marked_range: bool,
+        working_colorspace: klipp_core::WorkingColorspace,
     ) -> Result<Self, RenderError> {
-        Self::from_sequence_with_all(seq, &[], media_pool, settings, global_lut_path, use_marked_range)
+        Self::from_sequence_with_all(
+            seq,
+            &[],
+            media_pool,
+            settings,
+            global_lut_path,
+            use_marked_range,
+            working_colorspace,
+        )
     }
 
     /// Freeze the sequence, resolving compound clips (nested sequences) by
     /// flattening their inner clips into the parent timeline. `all_sequences`
     /// must contain every sequence in the project so that
     /// `ClipKind::Sequence { sequence_id }` can be resolved.
+    /// `working_colorspace` is the project's, and it is a parameter rather
+    /// than a field the caller patches afterwards because every render
+    /// decision downstream reads it: the display transform, the ACES ODT's
+    /// input basis, an HDR delivery's matrix. It used to default here and
+    /// be overwritten by each caller, which worked until one forgot — the
+    /// headless export tool printed "AcesCG" and rendered Rec.709, and
+    /// nothing anywhere said so. Now forgetting is a compile error.
+    #[allow(clippy::too_many_arguments)]
     pub fn from_sequence_with_all(
         seq: &Sequence,
         all_sequences: &[Sequence],
@@ -173,6 +190,7 @@ impl SequenceSnapshot {
         settings: &ExportSettings,
         global_lut_path: Option<PathBuf>,
         use_marked_range: bool,
+        working_colorspace: klipp_core::WorkingColorspace,
     ) -> Result<Self, RenderError> {
         let fps = seq.fps.as_f64();
         let burn_in = settings.burn_in_subtitles;
@@ -338,12 +356,7 @@ impl SequenceSnapshot {
             global_lut_path,
             subtitle_tracks,
             chapters,
-            // Default; the caller layer (klipp-app's export-job
-            // dispatch) overrides this to match the project's active
-            // working colorspace before kicking the job. Doing it
-            // there keeps the snapshot construction free of any
-            // dependency on the engine's atomic.
-            working_colorspace: klipp_core::WorkingColorspace::default(),
+            working_colorspace,
         })
     }
 
@@ -685,7 +698,7 @@ mod tests {
         seq.out_point = Some(make_rational(120, 24)); // 5 seconds in
 
         let settings = make_settings();
-        let snap = SequenceSnapshot::from_sequence(&seq, &pool, &settings, None, true).unwrap();
+        let snap = SequenceSnapshot::from_sequence(&seq, &pool, &settings, None, true, klipp_core::WorkingColorspace::Rec709Linear).unwrap();
 
         assert_eq!(snap.export_range, Some((24, 120)));
         assert_eq!(snap.frames_to_export(), 96);
@@ -706,7 +719,7 @@ mod tests {
         settings.embed_chapters = true;
 
         let pool = MediaPool::new();
-        let snap = SequenceSnapshot::from_sequence(&seq, &pool, &settings, None, false).unwrap();
+        let snap = SequenceSnapshot::from_sequence(&seq, &pool, &settings, None, false, klipp_core::WorkingColorspace::Rec709Linear).unwrap();
 
         assert_eq!(snap.chapters.len(), 3, "three markers → three chapters");
         assert_eq!(snap.chapters[0].start_ms, 0);
@@ -734,7 +747,7 @@ mod tests {
         settings.embed_chapters = true;
 
         let pool = MediaPool::new();
-        let snap = SequenceSnapshot::from_sequence(&seq, &pool, &settings, None, true).unwrap();
+        let snap = SequenceSnapshot::from_sequence(&seq, &pool, &settings, None, true, klipp_core::WorkingColorspace::Rec709Linear).unwrap();
 
         assert_eq!(
             snap.chapters.len(),
@@ -756,7 +769,7 @@ mod tests {
         settings.embed_chapters = true;
 
         let pool = MediaPool::new();
-        let snap = SequenceSnapshot::from_sequence(&seq, &pool, &settings, None, false).unwrap();
+        let snap = SequenceSnapshot::from_sequence(&seq, &pool, &settings, None, false, klipp_core::WorkingColorspace::Rec709Linear).unwrap();
 
         assert!(snap.chapters.is_empty());
     }
@@ -771,7 +784,7 @@ mod tests {
         let settings = make_settings(); // embed_chapters: false by default
 
         let pool = MediaPool::new();
-        let snap = SequenceSnapshot::from_sequence(&seq, &pool, &settings, None, false).unwrap();
+        let snap = SequenceSnapshot::from_sequence(&seq, &pool, &settings, None, false, klipp_core::WorkingColorspace::Rec709Linear).unwrap();
 
         assert!(snap.chapters.is_empty());
     }
@@ -812,7 +825,7 @@ mod tests {
         settings.embed_chapters = true;
 
         let pool = MediaPool::new();
-        let snap = SequenceSnapshot::from_sequence(&seq, &pool, &settings, None, false).unwrap();
+        let snap = SequenceSnapshot::from_sequence(&seq, &pool, &settings, None, false, klipp_core::WorkingColorspace::Rec709Linear).unwrap();
 
         assert_eq!(
             snap.chapters.len(),
@@ -850,7 +863,7 @@ mod tests {
         seq.tracks[1].pan = -0.5;
 
         let settings = make_settings();
-        let snap = SequenceSnapshot::from_sequence(&seq, &pool, &settings, None, false).unwrap();
+        let snap = SequenceSnapshot::from_sequence(&seq, &pool, &settings, None, false, klipp_core::WorkingColorspace::Rec709Linear).unwrap();
 
         assert_eq!(snap.audio_tracks.len(), 1);
         let at = &snap.audio_tracks[0];
@@ -909,7 +922,7 @@ mod tests {
         seq.tracks.push(sub_track);
 
         let settings = make_settings();
-        let snap = SequenceSnapshot::from_sequence(&seq, &pool, &settings, None, false).unwrap();
+        let snap = SequenceSnapshot::from_sequence(&seq, &pool, &settings, None, false, klipp_core::WorkingColorspace::Rec709Linear).unwrap();
 
         assert_eq!(snap.subtitle_tracks.len(), 1);
         assert_eq!(snap.subtitle_tracks[0].clips.len(), 2);
@@ -957,7 +970,7 @@ mod tests {
         // burn_in OFF — subtitle data should still be in subtitle_tracks
         let mut settings = make_settings();
         settings.burn_in_subtitles = false;
-        let snap = SequenceSnapshot::from_sequence(&seq, &pool, &settings, None, false).unwrap();
+        let snap = SequenceSnapshot::from_sequence(&seq, &pool, &settings, None, false, klipp_core::WorkingColorspace::Rec709Linear).unwrap();
 
         assert_eq!(snap.subtitle_tracks.len(), 1, "subtitle_tracks should be populated even without burn-in");
         assert_eq!(snap.subtitle_tracks[0].clips[0].text, "Test");
@@ -968,7 +981,7 @@ mod tests {
         let pool = MediaPool::new();
         let seq = make_sequence();
         let settings = make_settings();
-        let snap = SequenceSnapshot::from_sequence(&seq, &pool, &settings, None, false).unwrap();
+        let snap = SequenceSnapshot::from_sequence(&seq, &pool, &settings, None, false, klipp_core::WorkingColorspace::Rec709Linear).unwrap();
         assert!(snap.subtitle_tracks.is_empty());
     }
 
@@ -993,7 +1006,7 @@ mod tests {
         pool.add(make_media_item(media_id, "/media/clip1.mp4"));
         let mut seq = make_sequence();
         seq.tracks[0].clips.push(media_clip(media_id, 0, 48));
-        let snap = SequenceSnapshot::from_sequence(&seq, &pool, &make_settings(), None, false).unwrap();
+        let snap = SequenceSnapshot::from_sequence(&seq, &pool, &make_settings(), None, false, klipp_core::WorkingColorspace::Rec709Linear).unwrap();
         let flat = klipp_timeline::flatten::flatten_sequence(&seq, &[]);
         assert_eq!(snap.video.sequence.tracks.len(), flat.tracks.len());
         assert_eq!(snap.video.sequence.tracks[0].clips[0].id, seq.tracks[0].clips[0].id);
@@ -1025,7 +1038,7 @@ mod tests {
             pool.add(item);
             let mut seq = make_sequence();
             seq.tracks[0].clips.push(media_clip(media_id, 0, 24));
-            let snap = SequenceSnapshot::from_sequence(&seq, &pool, &make_settings(), None, false).unwrap();
+            let snap = SequenceSnapshot::from_sequence(&seq, &pool, &make_settings(), None, false, klipp_core::WorkingColorspace::Rec709Linear).unwrap();
             assert_eq!(
                 snap.video.media[&media_id].log_format, want,
                 "chosen {chosen:?} (user set {user_set}), detected {detected:?}",
@@ -1043,7 +1056,7 @@ mod tests {
         for burn in [true, false] {
             let mut settings = make_settings();
             settings.burn_in_subtitles = burn;
-            let snap = SequenceSnapshot::from_sequence(&seq, &pool, &settings, None, false).unwrap();
+            let snap = SequenceSnapshot::from_sequence(&seq, &pool, &settings, None, false, klipp_core::WorkingColorspace::Rec709Linear).unwrap();
             let sub = snap.video.sequence.tracks.iter().find(|t| t.kind == TrackKind::Subtitle).unwrap();
             assert_eq!(sub.visible, burn);
         }
@@ -1054,6 +1067,6 @@ mod tests {
     fn missing_media_is_an_error() {
         let mut seq = make_sequence();
         seq.tracks[0].clips.push(media_clip(MediaId::new(), 0, 24));
-        assert!(SequenceSnapshot::from_sequence(&seq, &MediaPool::new(), &make_settings(), None, false).is_err());
+        assert!(SequenceSnapshot::from_sequence(&seq, &MediaPool::new(), &make_settings(), None, false, klipp_core::WorkingColorspace::Rec709Linear).is_err());
     }
 }
