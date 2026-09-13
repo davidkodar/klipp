@@ -11,6 +11,30 @@
 //! output *cannot* reproduce the linear one. That is the whole reason
 //! the render needs this path, so it is pinned rather than asserted in
 //! a commit message.
+//!
+//! **Scope: two outputs of one shader.** Both values compared here come
+//! from the same converter, so the colour maths — the YUV→RGB matrix,
+//! range handling, transfer — is shared and a wrong one is reproduced on
+//! both sides and passes. That maths is checked against *independent* CPU
+//! implementations elsewhere, and that is where to look when a picture is
+//! wrong rather than merely imprecise:
+//!
+//! * 10-bit 4:2:0 — `yuv420p10_cpu_matches_gpu`, the P010 shader against
+//!   `camera_log::yuv420p10le_to_linear`;
+//! * 8-bit 4:2:0 — `display_yuv_cpu_matches_gpu`, the NV12 shader against
+//!   `camera_log::yuv_to_linear_display`;
+//! * scene-referred — `sw_decode_parity`, both shaders against
+//!   `hdr::yuv_to_hdr_codes`.
+//!
+//! What these two tests *do* establish is the precision argument the
+//! linear path is paid for, and the assertion below has more teeth than
+//! it looks: it reads like arithmetic, but its job is to detect the case
+//! where the two routes **stop** differing. A shader that quantised to
+//! eight bits and expanded again would make them agree exactly, and the
+//! threshold drops to zero and fires. Verified by doing precisely that —
+//! it went to "0 of 1023 on 0 of 24576 samples". Do not soften it into a
+//! distinct-value count or an off-grid ratio; both are weaker, because
+//! both depend on which transfer curve the shader happened to use.
 
 use klipp_effects::color_wgsl::IDENTITY_PRIMARIES_MATRIX_PACKED;
 use klipp_effects::nv12_gpu::GpuNv12Converter;
