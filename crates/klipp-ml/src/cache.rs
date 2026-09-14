@@ -59,8 +59,8 @@ pub enum CacheError {
 }
 
 /// Filesystem cache for downloaded models. Cheap to construct; opens
-/// no files until [`ModelCache::is_cached`] / [`open_for_write`] is
-/// called.
+/// no files until [`ModelCache::is_cached`] hashes one or a download
+/// writes into it.
 #[derive(Debug, Clone)]
 pub struct ModelCache {
     root: PathBuf,
@@ -116,7 +116,7 @@ impl ModelCache {
     ///
     /// Returns [`CachedStatus::Missing`] when the file isn't there.
     /// Returns [`CachedStatus::Mismatch`] when it is but its hash is
-    /// wrong (corrupted / partial / tampered with). [`Verified`] is
+    /// wrong (corrupted / partial / tampered with). [`CachedStatus::Verified`] is
     /// the only "good to load" case.
     pub fn is_cached(&self, entry: &ModelEntry) -> Result<CachedStatus, CacheError> {
         let path = self.path_for(entry);

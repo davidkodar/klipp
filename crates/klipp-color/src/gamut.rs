@@ -26,7 +26,7 @@
 //! 3. Lightness is held, except where holding it would cost the colour
 //!    nearly all its chroma, and then only by as much as the chroma
 //!    needs and never more than a few units — see
-//!    [`MAX_LIGHTNESS_TRADED`].
+//!    `MAX_LIGHTNESS_TRADED`.
 //!
 //! That third point is the one departure from a plain reading of
 //! BT.2407 Annex 2, and it is there for the light saturated colours.

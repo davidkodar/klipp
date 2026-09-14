@@ -13,13 +13,13 @@
 //! output and must travel with the project file. Two editors on the same
 //! `.klipp` must see the same colors.
 //!
-//! Default is [`Self::Rec709Linear`] — matches the pipeline's behaviour
+//! Default is [`WorkingColorspace::Rec709Linear`] — matches the pipeline's behaviour
 //! before Phase E and means existing projects deserialize unchanged via
 //! `#[serde(default)]`.
 //!
-//! Wide-gamut / HDR delivery uses [`Self::AcesCG`] (linear ACES AP1) —
+//! Wide-gamut / HDR delivery uses [`WorkingColorspace::AcesCG`] (linear ACES AP1) —
 //! the industry-standard interchange space for ACES workflows.
-//! [`Self::Bt2020Linear`] is exposed for HDR-only pipelines that don't
+//! [`WorkingColorspace::Bt2020Linear`] is exposed for HDR-only pipelines that don't
 //! want the ACES tone curve, but the well-tested path is ACEScg.
 
 use serde::{Deserialize, Serialize};

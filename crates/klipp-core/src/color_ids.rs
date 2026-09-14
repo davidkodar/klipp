@@ -1,4 +1,4 @@
-//! Stable u32 IDs for [`klipp_core::SourceColorspace`] enums, used as
+//! Stable u32 IDs for [`crate::SourceColorspace`] enums, used as
 //! shader uniforms.
 //!
 //! WGSL has no enum types, so each axis (range / matrix / transfer /

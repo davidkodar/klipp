@@ -24,7 +24,7 @@ pub struct MotionParams {
 pub struct StabilizationData {
     /// Frame-to-frame affine transforms. Length = frame_count - 1.
     pub frame_transforms: Vec<Homography>,
-    /// Accumulated absolute trajectory. Length = frame_count. accumulated[0] = identity.
+    /// Accumulated absolute trajectory. Length = frame_count. `accumulated[0]` = identity.
     pub accumulated: Vec<Homography>,
     /// Decomposed motion params for each accumulated frame.
     pub trajectory: Vec<MotionParams>,
@@ -36,7 +36,7 @@ pub struct StabilizationData {
 #[derive(Debug, Clone)]
 pub struct SmoothedTrajectory {
     pub smoothed: Vec<MotionParams>,
-    /// correction[i] = recompose(smoothed[i]) * inverse(accumulated[i])
+    /// `correction[i] = recompose(smoothed[i]) * inverse(accumulated[i])`
     pub corrections: Vec<Homography>,
     /// Tracks which smoothing window produced this (for lazy re-smooth detection).
     pub smoothing_window_secs: f64,

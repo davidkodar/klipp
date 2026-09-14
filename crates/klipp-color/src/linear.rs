@@ -54,7 +54,7 @@
 //! New `_ws` variants accept a [`klipp_core::WorkingColorspace`] and
 //! pick the appropriate luma vector via [`luma_coefs`]. The
 //! BT.709-named functions are retained as thin wrappers so existing
-//! callers stay byte-identical until [`klipp_engine`] flips them on
+//! callers stay byte-identical until `klipp_engine` flips them on
 //! the active project's working space (a separate session — wiring
 //! through the executor is bigger than fits here).
 
@@ -515,7 +515,7 @@ pub fn apply_wheel_sat_bri(
 ///
 /// Hue rotation lives in a chromaticity space — doing it in RGB
 /// (linear *or* sRGB) is a convention. The current implementation
-/// converts linear RGB → HSL on clamped-to-[0,1] values, rotates,
+/// converts linear RGB → HSL on clamped-to-`[0,1]` values, rotates,
 /// and converts back. Values above 1.0 keep their magnitude via a
 /// scale factor. Clamping inside the HSL calculation is required
 /// because HSL's `delta / (1 - |2L-1|)` formula diverges at L > 1.

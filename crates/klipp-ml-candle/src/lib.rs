@@ -22,11 +22,11 @@
 //!
 //! ## Build matrix
 //!
-//! Today the crate compiles standalone with no candle dependency —
-//! the actual SAM pipeline lands behind the `candle` feature flag in
-//! a follow-up commit. With no flag, [`MobileSam::generate`] returns
-//! [`klipp_ml::MaskError::BackendInit`] so callers see an actionable
-//! error.
+//! The SAM pipeline sits behind the `candle` feature flag. Without
+//! it the crate still compiles, and [`klipp_ml::MaskGenerator::generate`]
+//! on [`MobileSam`] returns [`klipp_ml::MaskError::BackendInit`] telling
+//! the caller to rebuild with the flag, so the error is actionable
+//! rather than a missing symbol.
 //!
 //! ## Public surface
 //!

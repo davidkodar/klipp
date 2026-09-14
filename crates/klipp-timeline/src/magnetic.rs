@@ -797,7 +797,7 @@ impl MagneticEditor {
     /// * **Primary track** (magnetic / gapless): `new_timeline_in` is
     ///   used to compute `delta` (for the source_in shift), but the
     ///   post-trim position is then **overwritten** by
-    ///   [`repack_primary`] which re-packs all primary clips head-to-
+    ///   `repack_primary` which re-packs all primary clips head-to-
     ///   tail from zero. The effective input is therefore the DELTA,
     ///   not the target position; two different `new_timeline_in`
     ///   values that produce the same delta on a primary track
@@ -807,7 +807,7 @@ impl MagneticEditor {
     /// duration change should still pass `old_timeline_in + delta` for
     /// `new_timeline_in` — the arithmetic inside this function only
     /// looks at `delta`, and the signature keeps symmetry with
-    /// [`trim_tail`].
+    /// [`Self::trim_tail`].
     pub fn trim_head(
         sequence: &mut Sequence,
         clip_id: ClipId,

@@ -43,7 +43,7 @@
 //! # Scopes
 //!
 //! [`scopes`] computes waveform / vectorscope / parade / histogram on
-//! CPU for small previews; [`klipp_effects::gpu_scopes`] does the
+//! CPU for small previews; `klipp_effects::gpu_scopes` does the
 //! full-resolution GPU pass. Both use BT.709 coefficients on sRGB code
 //! values, matching Resolve's non-linear scope convention.
 

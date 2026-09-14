@@ -281,7 +281,7 @@ impl PerfRing {
     }
 
     /// Mark the start of a recording session. Subsequent calls to
-    /// [`Self::snapshot_recorded`] export only samples from this
+    /// [`Self::end_recording`] export only samples from this
     /// point forward.
     pub fn begin_recording(&mut self) {
         self.record_start = Some((self.head, Instant::now()));
@@ -336,7 +336,7 @@ pub struct PerfAverages {
 }
 
 /// Shared handle — `Arc<Mutex<PerfRing>>`. Passed from
-/// [`PlaybackEngine`] to the UI thread via `KlippApp::new`.
+/// [`crate::PlaybackEngine`] to the UI thread via `KlippApp::new`.
 pub type SharedPerfRing = Arc<Mutex<PerfRing>>;
 
 pub fn shared() -> SharedPerfRing {

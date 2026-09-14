@@ -53,7 +53,7 @@ pub enum HdrMode {
 /// where 1.0 is 203 cd/m² — and differ in how that reaches an SDR screen,
 /// which cannot show it directly:
 ///
-/// * `Preview` — as an SDR picture ([`klipp_color::hdr_view`]): the grade's
+/// * `Preview` — as an SDR picture (`klipp_color::hdr_view`): the grade's
 ///   mid-tones where they are, the light above reference white rolled into
 ///   the top so its structure stays visible.
 /// * `FalseColour` — the standard levels as flat colours, for reading
@@ -81,7 +81,7 @@ impl HdrMonitor {
 /// Picked by the user as a viewer / export "colour science" option.
 /// Lives in `klipp-core` so `ExportSettings` can carry it without
 /// pulling in `klipp-color`; the actual curves live in
-/// [`klipp_color::display`] and match one-to-one on these variants.
+/// `klipp_color::display` and match one-to-one on these variants.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum ToneMapOp {
     /// Identity — no tone mapping. Values above 1.0 clip at display
@@ -104,8 +104,8 @@ pub enum ToneMapOp {
 /// Picks which display-encoded colour space the rendered file lands
 /// in. Lives in `klipp-core` next to [`ExportSettings`] so the
 /// runtime export type can carry it without pulling in `klipp-color`;
-/// the actual ODT curves live in [`klipp_color::aces`] and the
-/// dispatch in [`klipp_color::display::display_transform_for_export`].
+/// the actual ODT curves live in `klipp_color::aces` and the
+/// dispatch in `klipp_color::display::display_transform_for_export`.
 ///
 /// # When each variant is right
 ///

@@ -10,7 +10,7 @@
 //!
 //! Every `unsafe { }` block in this file either (a) calls an EGL or GL
 //! function-pointer that was loaded from a live `libloading::Library`
-//! kept alive by the enclosing [`EglApi`] / [`GlApi`] (held by
+//! kept alive by the enclosing `EglApi` / `GlApi` (held by
 //! [`OpenGlRuntime`] for the process lifetime), or (b) dereferences a
 //! texture/FBO id that the plugin owns and has not yet released.
 //!
@@ -18,7 +18,7 @@
 //!   the runtime outlives the call, which is enforced by having every
 //!   caller thread through an `&OpenGlRuntime` reference. The runtime
 //!   stays alive via `Arc<OpenGlRuntime>` stored in
-//!   [`GL_RUNTIME_STORE`] during render, and the host's own
+//!   `GL_RUNTIME_STORE` during render, and the host's own
 //!   `OfxHostRuntime` owns a second `Arc` that can't drop mid-render.
 //! * **Texture/FBO dereferences** (`glBindTexture`, `glDeleteTextures`,
 //!   `glFramebufferTexture2D`, …) take a `GLuint` id from a prior

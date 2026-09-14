@@ -3,7 +3,7 @@
 //! `~/.config/klipp/hyperzoom_presets/`, load it back to populate
 //! the inspector's scratch slot for any clip.
 //!
-//! # Why a separate module from [`effect_presets`]
+//! # Why a separate module from [`crate::effect_presets`]
 //!
 //! `EffectPreset` is shaped around video-effect parameters
 //! (`effect_key + Option<BuiltinEffect> + ofx_params: HashMap`).
@@ -67,7 +67,7 @@ pub struct HyperzoomPreset {
     pub duration_secs: f64,
     pub max_scale: f32,
     /// Easing wire-format tag: 0 = Linear, 1 = Bezier. Round-trips
-    /// through [`HyperzoomEasing::as_u8`] / [`from_u8`].
+    /// through [`HyperzoomEasing::as_u8`] / [`HyperzoomEasing::from_u8`].
     pub easing: u8,
     pub hold_secs: f64,
     pub add_radial_blur: bool,

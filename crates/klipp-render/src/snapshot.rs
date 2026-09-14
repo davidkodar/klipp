@@ -49,7 +49,7 @@ pub struct SequenceSnapshot {
     /// Project working colorspace at the moment of snapshot. Read
     /// alongside `ExportSettings.odt` by the encoder's display
     /// transform to dispatch the right linear → display path.
-    /// Defaults to [`Rec709Linear`] for back-compat with snapshot
+    /// Defaults to [`klipp_core::WorkingColorspace::Rec709Linear`] for back-compat with snapshot
     /// constructors that pre-date the field.
     #[doc(hidden)]
     pub working_colorspace: klipp_core::WorkingColorspace,

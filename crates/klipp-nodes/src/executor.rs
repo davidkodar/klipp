@@ -643,7 +643,7 @@ impl GraphExecutor {
 
     /// Read the executor's current working colorspace. Mostly useful
     /// for tests; production code should rely on
-    /// [`set_working_colorspace`] keeping it in sync with the project.
+    /// [`Self::set_working_colorspace`] keeping it in sync with the project.
     #[inline]
     pub fn working_colorspace(&self) -> klipp_core::WorkingColorspace {
         self.working_colorspace
@@ -1111,8 +1111,8 @@ impl GraphExecutor {
     /// Returns (final graded frame, optional tapped node output for scopes).
     ///
     /// Accepts and returns sRGB u8 RGBA. Converts to linear at the entry,
-    /// delegates to [`execute_linear`], converts back at the exit. Callers
-    /// that already hold linear data should call [`execute_linear`] directly
+    /// delegates to [`Self::execute_linear`], converts back at the exit. Callers
+    /// that already hold linear data should call [`Self::execute_linear`] directly
     /// to avoid the extra round-trip.
     #[allow(clippy::too_many_arguments)]
     pub fn execute(

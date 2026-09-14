@@ -1597,7 +1597,7 @@ impl Clip {
     /// range — caller should treat that as "no source time at this
     /// position".
     ///
-    /// Inverse of [`sequence_time_for_source_time`]. The two map cleanly
+    /// Inverse of [`Self::sequence_time_for_source_time`]. The two map cleanly
     /// in both directions for monotonic speed curves; the round-trip
     /// drift is bounded by the integration step (~1 frame at the
     /// project framerate).
@@ -1616,7 +1616,7 @@ impl Clip {
     }
 
     /// Map a source time on this clip's media back to its sequence
-    /// time. Inverse of [`source_time_for_sequence_time`]. Returns
+    /// time. Inverse of [`Self::source_time_for_sequence_time`]. Returns
     /// `None` if `source_time` falls outside `[clip.source_in,
     /// clip.source_out)`.
     ///

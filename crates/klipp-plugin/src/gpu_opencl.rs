@@ -12,9 +12,9 @@
 //! 1. **Driver-API call** (the common case): `unsafe {
 //!    api.cl_create_buffer(ctx, flags, size, host_ptr, &mut err) }`
 //!    etc. Sound because:
-//!    * [`OpenClApi`] holds an `Arc<libloading::Library>` that
+//!    * `OpenClApi` holds an `Arc<libloading::Library>` that
 //!      outlives every derived function pointer, stored on
-//!      [`OpenClRuntime::api`] for the process lifetime.
+//!      `OpenClRuntime::api` for the process lifetime.
 //!    * `cl_context` / `cl_command_queue` / `cl_mem` are opaque
 //!      driver-managed handles; the driver validates them on every
 //!      entry and returns an error code on invalid arguments.
@@ -25,9 +25,9 @@
 //!    `dlsym`s a void pointer for each named entry point and
 //!    transmutes to a typed fn pointer. Sound by the same
 //!    function-pointer / void-pointer ABI equivalence rationale as
-//!    [`gpu_cuda`] / [`gpu_opengl`].
+//!    [`crate::gpu_cuda`] / [`crate::gpu_opengl`].
 //!
-//! 3. **`unsafe impl Send` / `Sync`** on [`OpenClApi`] and
+//! 3. **`unsafe impl Send` / `Sync`** on `OpenClApi` and
 //!    [`OpenClRuntime`] — the wrappers wouldn't be auto-traited as
 //!    Send/Sync because of their `*mut c_void` members. They are safe
 //!    to send across threads because the underlying OpenCL ICD is

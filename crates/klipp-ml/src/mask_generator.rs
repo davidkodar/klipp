@@ -97,7 +97,7 @@ impl MaskBuffer {
     }
 }
 
-/// Axis-aligned bounding box in normalised [0,1] image coordinates.
+/// Axis-aligned bounding box in normalised `[0,1]` image coordinates.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct BBox {
     pub x: f32,
@@ -107,7 +107,7 @@ pub struct BBox {
 }
 
 /// Single positive / negative click prompt. Coordinates in
-/// normalised [0,1] image space so the same prompt applies across
+/// normalised `[0,1]` image space so the same prompt applies across
 /// resolutions.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ClickPrompt {
@@ -133,7 +133,7 @@ pub struct BoxPrompt {
 /// supports this as a refinement on top of an initial click.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ScribblePrompt {
-    /// Points in normalised [0,1] image coordinates, ordered by
+    /// Points in normalised `[0,1]` image coordinates, ordered by
     /// stroke time.
     pub points: Vec<(f32, f32)>,
     /// Same semantics as `ClickPrompt::positive`.
@@ -214,7 +214,7 @@ pub struct MaskRequest<'a> {
 #[derive(Debug, Clone)]
 pub struct MaskCandidate {
     pub mask: MaskBuffer,
-    /// Confidence in [0,1]. Some models output IoU predictions
+    /// Confidence in `[0,1]`. Some models output IoU predictions
     /// (SAM); others output detection score (RF-DETR / YOLO). Both
     /// expose as a `confidence` here for uniform UI.
     pub confidence: f32,

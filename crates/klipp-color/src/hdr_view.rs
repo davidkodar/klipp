@@ -10,7 +10,7 @@
 //!   and the light above it rolls off into the top instead of clipping.
 //!   Highlight *structure* stays visible; the absolute levels are the
 //!   readout's and the false colours' job.
-//! * [`false_colour`] — the standard levels as flat colours, so a glance
+//! * [`false_colour_of_nits`] — the standard levels as flat colours, so a glance
 //!   says which part of the picture sits at diffuse white, which is in the
 //!   specular range and which has reached the master's peak.
 //!
@@ -48,7 +48,7 @@ pub fn hdr_to_sdr_preview(display_light: f32) -> f32 {
     KNEE + (1.0 - KNEE) * (t / (1.0 + t))
 }
 
-/// The bands [`false_colour`] paints: the lower bound of each, in cd/m²,
+/// The bands [`false_colour_of_nits`] paints: the lower bound of each, in cd/m²,
 /// with its colour. A sample takes the colour of the highest band it
 /// reaches.
 ///

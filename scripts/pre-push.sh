@@ -1,5 +1,6 @@
 #!/bin/sh
-# Run the workspace's tests before anything leaves this machine.
+# Run clippy, rustdoc and the workspace's tests before anything leaves
+# this machine.
 #
 # This is the project's only automated gate. There is no CI — the repo is
 # private and cloud runners were ruled out — so without this, nothing ever
@@ -16,15 +17,24 @@
 #     ok. `klipp-effects`' `gpu_pipelines_build` canary turns that into a
 #     failure, but only if something runs it.
 #
+# Clippy and rustdoc run first, with warnings as errors. Both were taken
+# to zero across the workspace in September 2026, and a warning count that
+# is allowed to drift back up stops meaning anything: the last pass found
+# two undefined transmutes, a dropped video packet and three UI bugs in a
+# list that had twice been written off as style. Lints the project has
+# decided against are declined in Cargo.toml, each with its reason, so a
+# new warning here is a new decision to make, not noise to wave through.
+#
 # Kept in the repo rather than only in .git/hooks so it is versioned and
 # survives a fresh clone. Install with:
 #
 #     scripts/install-hooks.sh
 #
-# Timing, warm, on this machine: about 140 s for the whole workspace, of
-# which klipp-engine is 54 s — it builds GPU devices and its HDR
-# reference-output tests wait on real timers. A cold build is longer, but
-# that build was needed anyway.
+# Timing, warm, on this machine: clippy about 15 s, rustdoc about 8 s,
+# then about 140 s of tests for the whole workspace, of which klipp-engine
+# is 54 s — it builds GPU devices and its HDR reference-output tests wait
+# on real timers. A cold build is longer, but that build was needed
+# anyway.
 #
 # To bypass for a genuine reason (pushing a work-in-progress branch,
 # mid-bisect, a machine with no GPU):
@@ -32,7 +42,8 @@
 #     KLIPP_SKIP_TESTS=1 git push
 #
 # `git push --no-verify` also works and skips the LFS hook too, which is
-# why the explicit variable exists — it skips the tests and nothing else.
+# why the explicit variable exists — it skips these checks and nothing
+# else.
 
 set -e
 
@@ -40,7 +51,7 @@ ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || exit 0
 cd "$ROOT" || exit 0
 
 if [ "$KLIPP_SKIP_TESTS" = "1" ]; then
-    printf '\n  pre-push: KLIPP_SKIP_TESTS=1 set — tests NOT run for this push.\n\n' >&2
+    printf '\n  pre-push: KLIPP_SKIP_TESTS=1 set — checks NOT run for this push.\n\n' >&2
     exit 0
 fi
 
@@ -51,8 +62,23 @@ if ! command -v cargo >/dev/null 2>&1; then
     exit 1
 fi
 
-printf '\n  pre-push: running the workspace tests (~140 s warm).\n'
+printf '\n  pre-push: clippy, rustdoc, then the workspace tests (~165 s warm).\n'
 printf '            KLIPP_SKIP_TESTS=1 git push   to bypass.\n\n'
+
+if ! cargo clippy --workspace --all-targets -- -D warnings; then
+    printf '\n  pre-push: clippy warned — push refused.\n' >&2
+    printf '            Fix it, or if the lint is wrong for this code, decline\n' >&2
+    printf '            it with a reason: in place with #[allow], or for the\n' >&2
+    printf '            whole workspace under [workspace.lints.clippy].\n\n' >&2
+    exit 1
+fi
+
+if ! RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps; then
+    printf '\n  pre-push: rustdoc warned — push refused.\n' >&2
+    printf '            Usually a [`link`] to something renamed or private, or a\n' >&2
+    printf '            bare [0,1] or Vec<T> in prose that needs backticks.\n\n' >&2
+    exit 1
+fi
 
 if cargo test --workspace; then
     printf '\n  pre-push: tests pass.\n\n'

@@ -17,19 +17,18 @@
 //! 2. **[`clip_decoder`]** — one [`RenderDecoder`] per active clip,
 //!    with HW decode negotiation (CUDA → VAAPI → software). Same
 //!    two-phase decode invariant as the engine.
-//! 3. **[`pipeline`] / [`stage`]** — per-frame effect chain:
-//!    [`ColorGradeStage`] → [`OFXEffectsStage`] → [`BuiltinEffectsStage`].
-//!    Stage order is fixed; a reorder-able variant is a future item.
-//! 4. **[`compositor`]** — multi-layer alpha composite
-//!    ([`FrameCompositor`]).
-//! 5. **[`audio_mixdown`]** — [`AudioMixdown`] decodes each audio clip
+//! 3. **[`klipp_compose`]** — the per-frame grade, effects and
+//!    multi-layer composite. Export and the viewer share this one
+//!    definition of how a timeline frame is rendered, so what the user
+//!    saw is what the file contains.
+//! 4. **[`audio_mixdown`]** — [`AudioMixdown`] decodes each audio clip
 //!    in full (bounded by one clip at a time for export), sums tracks,
 //!    applies per-clip fade curves, and produces interleaved f32
 //!    stereo for the encoder.
-//! 6. **[`encoder`]** — wraps `ffmpeg-next` output contexts. Handles
+//! 5. **[`encoder`]** — wraps `ffmpeg-next` output contexts. Handles
 //!    video (NVENC / software h264/h265/ProRes/AV1), audio (AAC / PCM
 //!    / Opus), subtitles (mov_text), and chapter metadata.
-//! 7. **[`export_job`]** — orchestrates the whole thing behind a
+//! 6. **[`export_job`]** — orchestrates the whole thing behind a
 //!    cancel flag + progress counter.
 //!
 //! # Conventions

@@ -10,7 +10,7 @@
 //! # Trust boundary
 //!
 //! * **Trusted input** — our own `.klipp` files. Written by
-//!   [`save`], so paths, FPS, resolutions are known-good. The load path
+//!   `save`, so paths, FPS, resolutions are known-good. The load path
 //!   uses [`path_util::resolve_media_path`] (no traversal check; we
 //!   trust ourselves).
 //! * **Untrusted input** — MLT / FCPXML / OTIO. External editors or
@@ -21,12 +21,12 @@
 //!
 //! # Robustness primitives ([`path_util`])
 //!
-//! * [`atomic_write`] — write to `.<file>.tmp.<pid>.<nanos>` then
+//! * [`path_util::atomic_write`] — write to `.<file>.tmp.<pid>.<nanos>` then
 //!   rename. Collision-proof even under concurrent saves.
-//! * [`read_to_string_capped`] / [`read_capped`] — size-checked file
+//! * [`path_util::read_to_string_capped`] — size-checked file
 //!   reads (64 MiB default cap) so a 10 GB crafted `.fcpxml` can't OOM
 //!   the process before parsing even begins.
-//! * [`parse_xml_safe`] — roxmltree parse with `allow_dtd: false` and
+//! * [`path_util::parse_xml_safe`] — roxmltree parse with `allow_dtd: false` and
 //!   a 1M-node limit, defending against entity-bomb DoS.
 //!
 //! # Consolidate

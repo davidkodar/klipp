@@ -254,7 +254,7 @@ pub fn matrix3_mul(lhs: [[f32; 3]; 3], rhs: [[f32; 3]; 3]) -> [[f32; 3]; 3] {
 /// `AP1_2_REC2020_MAT` constant that does not exist anywhere in
 /// aces-dev. They survived because their rows still summed to 1, so
 /// neutral round-tripped and nothing looked obviously broken — which is
-/// exactly why [`tests::bt2020_matrix_matches_published_values`] pins
+/// exactly why the `bt2020_matrix_matches_published_values` test pins
 /// the off-diagonals and not just the neutral axis.
 #[inline]
 #[allow(clippy::excessive_precision)]

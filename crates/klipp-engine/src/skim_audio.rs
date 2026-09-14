@@ -161,7 +161,7 @@ impl SkimAudioSession {
     /// haven't been imported into the media pool.
     ///
     /// Internally this just decodes the entire source file into the same
-    /// 48 kHz stereo f32 PCM format the existing [`skim_feeder_thread`]
+    /// 48 kHz stereo f32 PCM format the existing `skim_feeder_thread`
     /// already consumes — that way we get all of its sophistication
     /// (linear interpolation, jump crossfading, drift-aware seek skipping)
     /// for free without writing a parallel live-decode feeder.

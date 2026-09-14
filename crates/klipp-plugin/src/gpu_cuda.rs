@@ -12,10 +12,10 @@
 //!
 //! 1. **Driver-API call** (the common case):
 //!    `unsafe { api.cu_mem_alloc(&mut ptr, size) }` etc. Sound because:
-//!    * The [`CudaApi`] function pointer is alive — [`CudaApi`] holds
+//!    * The `CudaApi` function pointer is alive — `CudaApi` holds
 //!      an `Arc<libloading::Library>` that outlives every derived
 //!      function pointer and is held for the process lifetime by
-//!      [`CudaRuntime::api`].
+//!      `CudaRuntime::api`.
 //!    * The calling thread has pushed the CUDA context via
 //!      `push_context()` (mirrored by `pop_context()` on return). All
 //!      public methods on [`CudaRuntime`] wrap their body in this

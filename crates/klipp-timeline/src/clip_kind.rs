@@ -1190,7 +1190,7 @@ pub struct TextExtrusion {
     /// Soft-disable: see [`TitleShadow::enabled`].
     #[serde(default = "default_true")]
     pub enabled: bool,
-    /// Front face color (if [0,0,0,0] uses title.color)
+    /// Front face color (if `[0,0,0,0]` uses title.color)
     pub face_color: [u8; 4],
     /// Extruded side color
     pub side_color: [u8; 4],

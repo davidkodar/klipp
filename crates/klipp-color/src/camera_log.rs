@@ -523,7 +523,7 @@ fn matrix_coefficients(matrix: ColorMatrix) -> (f32, f32, f32, f32) {
 ///
 /// For [`WorkingColorspace::Rec709Linear`] (the long-standing
 /// pipeline default) this returns exactly the same matrix as
-/// [`primaries_to_bt709_matrix`] — i.e. behaviour is byte-identical
+/// `primaries_to_bt709_matrix` — i.e. behaviour is byte-identical
 /// to the pre-upgrade decoder.
 ///
 /// For [`WorkingColorspace::AcesCG`] the source-primaries → BT.709
@@ -868,13 +868,13 @@ pub fn yuv420p10le_to_linear(
 /// NVDEC took it, which is not a thing a colourist can be asked to
 /// reason about.
 ///
-/// Going through [`YuvSamples`] is what makes this general: the samples
+/// Going through [`crate::hdr::YuvSamples`] is what makes this general: the samples
 /// have already been read at native depth by
 /// `klipp_media::yuv_samples::read_yuv_samples`, which uses the pixel
 /// format's own descriptor, so 4:2:2 ProRes, 4:4:4, 12-bit and the rest
 /// need no per-format code here. Chroma goes through
 /// [`chroma_taps`], the same siting the shaders and
-/// [`YuvSamples::chroma_at`] use.
+/// [`crate::hdr::YuvSamples::chroma_at`] use.
 ///
 /// Scene-referred sources (PQ, HLG, camera log) do **not** come here —
 /// they need code values for the grade, and take

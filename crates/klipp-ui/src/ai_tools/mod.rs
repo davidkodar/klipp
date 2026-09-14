@@ -133,7 +133,7 @@ pub struct AiToolsState {
     pub last_picked_model_per_task: std::collections::HashMap<AiTask, String>,
     /// User-added custom models. Each was pasted as a URL, downloaded,
     /// hashed + size-checked, then confirmed by the user. Persisted
-    /// to ~/.config/klipp/ai_tools.toml under [[custom_model]] so the
+    /// to ~/.config/klipp/ai_tools.toml under `[[custom_model]]` so the
     /// next launch can re-register them without re-downloading. The
     /// shared registry holds the matching factory closures.
     pub custom_models: Vec<persistence::CustomModelEntry>,

@@ -433,7 +433,7 @@ pub fn display_transform_u8_lut(
 ///   same project working colorspace + tone-map operator.
 /// * [`OdtChoice::Rec709Sdr`] — explicit Rec.709 SDR cinema (RRT +
 ///   Rec.709 ODT + BT.1886 inverse), regardless of working space.
-///   When `working_space` is [`Rec709Linear`], the input is converted
+///   When `working_space` is [`klipp_core::WorkingColorspace::Rec709Linear`], the input is converted
 ///   to AcesCG (BT.709 → AP1 in linear) before the ODT — the ODT
 ///   chain assumes AcesCG-basis input. This is documented loud rather
 ///   than silent.

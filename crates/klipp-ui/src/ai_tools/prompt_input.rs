@@ -6,7 +6,7 @@
 //! and transport interaction, normalises the cursor position into
 //! `[0,1]` image space, and feeds those samples into a
 //! [`PromptCapture`]. The capture accumulates user-intent prompts
-//! until the user hits "Generate", at which point [`build`] emits a
+//! until the user hits "Generate", at which point [`PromptCapture::build`] emits a
 //! `klipp_ml::MaskPrompts` ready to ship into a `MaskRequest`.
 //!
 //! ## Why a pure-data type
@@ -78,7 +78,7 @@ pub enum PromptMode {
 /// `inference.rs::INTEGRATION_NOTES`). The viewer mutates it in
 /// response to pointer events, the AI Tools panel reads it for a
 /// summary ("3 clicks, 1 box"), and the inference dispatcher snapshots
-/// it via [`build`] when the user hits "Generate".
+/// it via [`Self::build`] when the user hits "Generate".
 #[derive(Debug, Clone, Default)]
 pub struct PromptCapture {
     /// Active mode — fresh gestures append to the matching collection.

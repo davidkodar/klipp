@@ -13,7 +13,7 @@
 //!   fingerprint. Lets the engine skim & scrub audio at zero decode cost.
 //! * [`disk_cache`] — shared disk-cache primitive (LZ4 + FNV keys) used
 //!   by thumbnail / waveform / render pipelines.
-//! * [`thumbnail`] — [`ThumbnailCache`] + [`FilmstripFrame`] for the
+//! * `thumbnail` — [`ThumbnailCache`] + [`FilmstripFrame`] for the
 //!   browser grid and timeline filmstrip.
 //! * [`waveform`] — mono waveform generation for clip audio visualisation.
 //!

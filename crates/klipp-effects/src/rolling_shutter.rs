@@ -419,7 +419,7 @@ impl Homography {
     }
 
     /// Compute homography from 4 point correspondences using DLT.
-    /// Solves 8x8 system (setting h[2][2] = 1).
+    /// Solves 8x8 system (setting `h[2][2] = 1`).
     pub fn from_4_points(src: &[(f64, f64); 4], dst: &[(f64, f64); 4]) -> Option<Self> {
         // Build 8x8 matrix A and 8x1 vector b, where A * [h00,h01,h02,h10,h11,h12,h20,h21]^T = b
         // with h22 = 1.

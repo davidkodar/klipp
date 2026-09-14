@@ -64,7 +64,7 @@ fn blend_pixel(from: &[u8], to: &[u8], t: f32, out: &mut [u8]) {
     out[3] = (from[3] as f32 * inv + to[3] as f32 * t + 0.5) as u8;
 }
 
-/// Remap a linear [0,1] `t` through an easing curve selected by `curve` (0..=4).
+/// Remap a linear `[0,1]` `t` through an easing curve selected by `curve` (0..=4).
 /// Used by CrossDissolve for user-selectable easing. Exposed so the engine's
 /// GPU path can reshape progress before dispatching the shader.
 pub fn apply_easing(t: f32, curve: f32) -> f32 {

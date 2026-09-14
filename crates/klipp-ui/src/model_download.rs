@@ -5,7 +5,7 @@
 //! through `ureq`). We run it on a `std::thread::spawn`-spawned
 //! worker and communicate with the UI thread via a
 //! `crossbeam-channel`. The UI thread polls the channel each frame
-//! in [`ModelDownload::poll`] and updates its own counters.
+//! in [`poll_download`] and updates its own counters.
 //!
 //! The state machine has five states:
 //!
@@ -126,12 +126,12 @@ pub fn spawn_download(entry: ModelEntry, ctx: egui::Context) -> DownloadHandle {
 /// is `Idle`; transitions are driven by:
 ///
 /// - User action: open consent dialog → [`ModelDownloadState::Consenting`]
-/// - User confirms: spawn worker → [`Downloading`]
-/// - Worker progress: stays in [`Downloading`] with updated counters
-/// - Worker finish: → [`Completed`] (with toast hint) → back to [`Idle`]
-/// - Worker error: → [`Failed`]
+/// - User confirms: spawn worker → [`ModelDownloadState::Downloading`]
+/// - Worker progress: stays in [`ModelDownloadState::Downloading`] with updated counters
+/// - Worker finish: → [`ModelDownloadState::Completed`] (with toast hint) → back to [`ModelDownloadState::Idle`]
+/// - Worker error: → [`ModelDownloadState::Failed`]
 /// - User cancel: set `cancel`, wait for worker to surface
-///   `Cancelled` → goes through the [`Failed`] path
+///   `Cancelled` → goes through the [`ModelDownloadState::Failed`] path
 #[derive(Default)]
 pub enum ModelDownloadState {
     #[default]

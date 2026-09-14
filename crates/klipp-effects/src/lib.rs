@@ -28,7 +28,7 @@
 //! # Stabilisation
 //!
 //! [`stabilization`] uses a sequential-frame analyse pass
-//! ([`klipp_engine::SequentialFrameDecoder`]) to compute per-frame
+//! (`klipp_engine::SequentialFrameDecoder`) to compute per-frame
 //! motion vectors, then applies the inverse as a warp during playback
 //! and export. Analyse went from 10–15 min to ~18 s on 4K through the
 //! decoder optimisation.
@@ -716,7 +716,7 @@ pub fn linear_f32_rgba_to_srgb_u8(linear: &[f32]) -> Vec<u8> {
 pub const BT709_LUMA_WEIGHTS: [f32; 3] = [0.2126, 0.7152, 0.0722];
 
 /// Apply a chain of built-in effects to a linear-f32 RGBA frame, on the
-/// CPU: each effect computed as its GPU shader computes it (see [`cpu`]),
+/// CPU: each effect computed as its GPU shader computes it (see the `cpu` module),
 /// so the picture does not depend on which one ran. Frei0r plugins take
 /// 8-bit frames; each is bridged on its own, the rest of the chain stays
 /// in float.

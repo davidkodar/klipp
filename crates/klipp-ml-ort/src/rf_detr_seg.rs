@@ -12,7 +12,7 @@
 //!
 //! Outputs (per the upstream ONNX export):
 //!
-//! 1. `boxes` — `(1, N, 4)` xyxy in normalised [0,1] image coords
+//! 1. `boxes` — `(1, N, 4)` xyxy in normalised `[0,1]` image coords
 //! 2. `scores` — `(1, N)` confidence per detection
 //! 3. `labels` — `(1, N)` class id index into COCO-80
 //! 4. `mask_coefficients` — `(1, N, 32)` per-detection mask

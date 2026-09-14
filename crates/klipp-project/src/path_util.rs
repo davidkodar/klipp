@@ -108,9 +108,6 @@ pub fn read_to_string_capped(path: &Path, max_bytes: u64) -> Result<String, std:
     Ok(s)
 }
 
-/// Read a binary file into a Vec<u8>, rejecting files larger than `max_bytes`.
-///
-/// Same as `read_to_string_capped` but for non-UTF-8 formats (e.g. OTIO).
 /// Maximum node count for untrusted XML imports (1M nodes ≈ 1GB of
 /// in-memory parse structure). roxmltree defaults to `u32::MAX`, which
 /// would accept a degenerate input with billions of tiny nodes and OOM

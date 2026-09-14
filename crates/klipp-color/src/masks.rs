@@ -1,7 +1,7 @@
 use klipp_core::{MaskShape, MaskStack};
 
 /// Generate a combined mask matte from a stack of masks.
-/// Returns a Vec<f32> with one value per pixel (0.0 = outside, 1.0 = inside).
+/// Returns a `Vec<f32>` with one value per pixel (0.0 = outside, 1.0 = inside).
 /// Coordinates are normalized: x in 0..1 (left to right), y in 0..1 (top to bottom).
 /// Aspect ratio correction: radius and distances are in frame-width units.
 pub fn generate_mask_matte(

@@ -155,7 +155,7 @@ pub enum HitTest {
 /// `frame_to_screen` projects glyph frame-pixel coords (from
 /// `CharPosition`) to the same screen-pixel space as `pointer_screen`.
 /// Caller is the inspector preview, so this is
-/// [`crate::panels::viewer::viewer_frame_px_to_screen`] partially
+/// `crate::panels::viewer::viewer_frame_px_to_screen` partially
 /// applied with the preview's image rect + frame dimensions.
 ///
 /// Bbox-priority: if the pointer is INSIDE any glyph's rect, that

@@ -26,7 +26,7 @@ pub fn glow_intensity_key(idx: usize) -> String {
 }
 
 /// Parse `glow.{index}.{field}` and return `(index, field)`. Returns
-/// `None` for legacy unindexed `glow.radius` (those route to glows[0]
+/// `None` for legacy unindexed `glow.radius` (those route to `glows[0]`
 /// via the prefix branch).
 pub fn parse_glow_param_key(key: &str) -> Option<(usize, &str)> {
     let rest = key.strip_prefix("glow.")?;
@@ -63,7 +63,7 @@ pub fn shadow_blur_key(idx: usize) -> String {
 /// Parse `shadow.{index}.{field}` and return `(index, field)`. Used
 /// by the keyframe router to resolve indexed shadow keys. Returns
 /// `None` for legacy unindexed `shadow.offset_x` (those are routed
-/// to shadows[0] by the prefix branch directly).
+/// to `shadows[0]` by the prefix branch directly).
 pub fn parse_shadow_param_key(key: &str) -> Option<(usize, &str)> {
     let rest = key.strip_prefix("shadow.")?;
     let (idx_str, field) = rest.split_once('.')?;

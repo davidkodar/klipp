@@ -2,7 +2,7 @@ use crate::keyframe::{self, Keyframe};
 use serde::{Deserialize, Serialize};
 
 /// Per-channel RGB curves. Each channel is a list of control points [x, y] in 0..1.
-/// Default has endpoints [[0,0],[1,1]] (identity).
+/// Default has endpoints `[[0,0],[1,1]]` (identity).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CurveSet {
     #[serde(default = "default_curve_points")]
@@ -286,7 +286,7 @@ pub enum MaskShape {
 }
 
 /// Keyframe tracks for animating mask parameters over time.
-/// Each Vec<Keyframe> is empty by default (static mask). When non-empty,
+/// Each `Vec<Keyframe>` is empty by default (static mask). When non-empty,
 /// the keyframes override the corresponding static parameter at render time.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct MaskKeyframes {

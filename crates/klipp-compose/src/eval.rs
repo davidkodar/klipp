@@ -222,7 +222,7 @@ pub fn resolve_clip_transform_depth(
     result
 }
 
-/// Resolve a [`FocalRef`] to a clip-space `(focal_x, focal_y)` in
+/// Resolve a [`klipp_effects::FocalRef`] to a clip-space `(focal_x, focal_y)` in
 /// `[0, 1]` for use as the effective anchor on the clip carrying
 /// the reference. `None` return means resolution failed — caller
 /// falls back to the clip's static `anchor_x` / `anchor_y`.

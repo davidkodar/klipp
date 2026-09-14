@@ -5,7 +5,7 @@
 //! emits [`klipp_core::AppEvent`]s back. It drives video decode
 //! ([`video_decoder`]), audio decode ([`audio_decoder`], [`pcm_reader`]),
 //! multi-track audio mixing ([`mix_thread`]), audio output
-//! ([`audio_output`]), compositing ([`composite`]), effects application,
+//! ([`audio_output`]), compositing ([`klipp_compose`]), effects application,
 //! and the render cache ([`render_cache`]).
 //!
 //! # Threading model

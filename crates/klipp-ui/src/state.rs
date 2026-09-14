@@ -1626,7 +1626,7 @@ pub struct AppState {
     /// or there are no current hits — that's intended (the entry is
     /// a power-user convenience, not a force-open).
     pub timeline_search_next: bool,
-    /// Mirror of [`timeline_search_next`] for the previous-match
+    /// Mirror of [`Self::timeline_search_next`] for the previous-match
     /// direction. Set by the palette's "Find Previous" entry.
     pub timeline_search_prev: bool,
     /// In-memory clipboard for grade-node copy/paste between clips.
@@ -2008,7 +2008,7 @@ pub struct AppState {
     /// AI Model uninstall confirmation. `Some` when the user has
     /// clicked Uninstall on a row in the AI Models dialog and we're
     /// awaiting confirmation. The dialog renders a modal asking
-    /// "Delete <X>? Frees N MB"; on confirm we remove the file from
+    /// `"Delete <X>? Frees N MB"`; on confirm we remove the file from
     /// the cache + drop the cached generator instance through the
     /// shared registry's `clear_instance`.
     pub show_ai_model_uninstall_confirm: Option<klipp_ml::manifest::ModelEntry>,

@@ -772,7 +772,7 @@ impl EffectRegistry {
         self.filtered_full(category, search, favorite_names, &[])
     }
 
-    /// Like [`filtered_with_favorites`] but also accepts a `recent_names`
+    /// Like [`Self::filtered_with_favorites`] but also accepts a `recent_names`
     /// slice that backs the [`EffectCategory::Recent`] pseudo-category.
     /// MRU order is preserved when `category == Recent`; every other
     /// category keeps the alphabetical sort the rest of the UI expects.

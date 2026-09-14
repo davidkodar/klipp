@@ -5756,7 +5756,7 @@ impl GpuEffectsPipeline {
     }
 
     /// Linear-f32 input/output transition. Identical shader work to
-    /// [`render_transition`] but skips the sRGB encode on the output
+    /// [`Self::render_transition`] but skips the sRGB encode on the output
     /// path *and* the linear decode on the input path — callers
     /// already speaking linear (the engine compositor + display
     /// chain) hand off and pick up linear-f32 buffers directly,

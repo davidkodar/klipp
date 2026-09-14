@@ -462,7 +462,7 @@ pub mod gpu_layout {
     pub const TO_2020_LEN: usize = 9;
     pub const LUMA: usize = TO_2020 + TO_2020_LEN;
     pub const LUMA_LEN: usize = 3;
-    /// [`pq_encode_nits`]'s table.
+    /// [`super::pq_encode_nits`]'s table.
     pub const PQ_TABLE: usize = LUMA + LUMA_LEN;
 }
 
