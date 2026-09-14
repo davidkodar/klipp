@@ -76,6 +76,20 @@ pub struct QualifierSettings {
     pub saturation: f32,
     pub hue_shift: f32,
     pub temperature: f32,
+    /// Matte finesse, applied after the key in this order. Clean black:
+    /// matte at or below this is 0 and the rest rescaled (0..1).
+    #[serde(default)]
+    pub clean_black: f32,
+    /// Clean white: matte at or above `1 − clean_white` is 1, the rest
+    /// rescaled (0..1).
+    #[serde(default)]
+    pub clean_white: f32,
+    /// Pixels: negative shrinks the matte, positive grows it.
+    #[serde(default)]
+    pub shrink_grow: f32,
+    /// Blur radius in pixels, after shrink/grow.
+    #[serde(default)]
+    pub blur: f32,
 }
 
 impl Default for QualifierSettings {
@@ -96,6 +110,10 @@ impl Default for QualifierSettings {
             saturation: 1.0,
             hue_shift: 0.0,
             temperature: 0.0,
+            clean_black: 0.0,
+            clean_white: 0.0,
+            shrink_grow: 0.0,
+            blur: 0.0,
         }
     }
 }

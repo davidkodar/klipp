@@ -149,6 +149,9 @@ fn cases() -> Vec<(&'static str, NodeKind, NodeParams)> {
         ("Color Warper", ColorWarper, p(|p| p.warper_params = Some(warper()))),
         ("Qualifier", Qualifier, p(|p| p.qualifier = Some(red_window()))),
         ("Qualifier off-centre", Qualifier, p(|p| p.qualifier = Some(off_centre_window()))),
+        ("Qualifier with matte finesse", Qualifier, p(|p| {
+            p.qualifier = Some(klipp_core::QualifierSettings { clean_black: 0.1, clean_white: 0.1, shrink_grow: 1.0, blur: 2.0, ..red_window() })
+        })),
     ]
 }
 

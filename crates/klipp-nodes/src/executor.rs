@@ -3270,9 +3270,8 @@ impl GraphExecutor {
             }
 
             NodeKind::Qualifier => {
-                // Output is a matte (greyscale RGBA: R=G=B=matte value, A=1.0).
                 if let Some(qual) = &params.qualifier {
-                    if let Some(gpu) = &mut self.gpu {
+                    let mut frame = if let Some(gpu) = &mut self.gpu {
                         gpu.apply_qualifier_gpu(
                             primary_input, width, height,
                             qual.hue_center, qual.hue_width, qual.hue_soft,
@@ -3283,7 +3282,6 @@ impl GraphExecutor {
                             true, // always matte_preview for Qualifier node (outputs matte)
                         )
                     } else {
-                        // The CPU twin of the qualifier shader's window.
                         let mut frame = primary_input.to_vec();
                         klipp_effects::cpu_grade::qualifier_matte(
                             &mut frame,
@@ -3293,7 +3291,16 @@ impl GraphExecutor {
                             qual.invert,
                         );
                         frame
+                    };
+                    // The matte comes back to the CPU on both paths; the
+                    // finesse — clean, shrink/grow, blur — is one code.
+                    if qual.clean_black != 0.0 || qual.clean_white != 0.0 || qual.shrink_grow != 0.0 || qual.blur != 0.0 {
+                        klipp_effects::cpu_grade::matte_finesse(
+                            &mut frame, width, height,
+                            qual.clean_black, qual.clean_white, qual.shrink_grow, qual.blur,
+                        );
                     }
+                    frame
                 } else {
                     vec![1.0f32; (width * height * 4) as usize]
                 }

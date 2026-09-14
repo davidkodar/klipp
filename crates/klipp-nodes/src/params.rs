@@ -591,6 +591,10 @@ impl NodeParams {
                     "saturation" => q.saturation = value,
                     "hue_shift" => q.hue_shift = value,
                     "temperature" => q.temperature = value,
+                    "clean_black" => q.clean_black = value,
+                    "clean_white" => q.clean_white = value,
+                    "shrink_grow" => q.shrink_grow = value,
+                    "blur" => q.blur = value,
                     _ => return false,
                 }
             }

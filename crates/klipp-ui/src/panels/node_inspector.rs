@@ -2004,6 +2004,16 @@ impl NodeInspectorPanel {
                     let mut ls = qual.lum_soft;
                     if grade_slider(ui, "Lum Soft", &mut ls, 0.0..=1.0, "", cmds, clip_id, theme) { qual.lum_soft = ls; }
                     ui.checkbox(&mut qual.invert, "Invert");
+                    ui.add_space(4.0);
+                    ui.label(egui::RichText::new("Matte Finesse").size(10.0).color(theme.text_dim));
+                    let mut cb = qual.clean_black;
+                    if grade_slider(ui, "Clean Black", &mut cb, 0.0..=1.0, "", cmds, clip_id, theme) { qual.clean_black = cb; }
+                    let mut cw = qual.clean_white;
+                    if grade_slider(ui, "Clean White", &mut cw, 0.0..=1.0, "", cmds, clip_id, theme) { qual.clean_white = cw; }
+                    let mut sg = qual.shrink_grow;
+                    if grade_slider(ui, "Shrink / Grow", &mut sg, -20.0..=20.0, "px", cmds, clip_id, theme) { qual.shrink_grow = sg; }
+                    let mut bl = qual.blur;
+                    if grade_slider(ui, "Blur", &mut bl, 0.0..=50.0, "px", cmds, clip_id, theme) { qual.blur = bl; }
                     cmds.push(AppCommand::SetNodeQualifier { clip_id, node_id, qualifier: qual.clone() });
                 }
             }

@@ -532,6 +532,79 @@ pub fn qualifier_matte(
     });
 }
 
+/// Matte finesse on a qualifier's matte (the same value in R, G and B):
+/// clean black and clean white clip and rescale the matte, shrink/grow
+/// erodes or dilates it by a square of `|shrink_grow|` pixels, and blur
+/// is two box passes of `blur` pixels — a near-Gaussian softening. This
+/// runs on the CPU for both paths: the qualifier's matte comes back to
+/// the CPU either way, so both are the same code.
+///
+/// A key without these is unusable in practice: every real key needs at
+/// least its noise cleaned and its edge softened.
+pub fn matte_finesse(px: &mut [f32], width: u32, height: u32, clean_black: f32, clean_white: f32, shrink_grow: f32, blur: f32) {
+    let (w, h) = (width as usize, height as usize);
+    if w == 0 || h == 0 || px.len() < w * h * 4 {
+        return;
+    }
+    let lo = clean_black.clamp(0.0, 0.99);
+    let hi = (1.0 - clean_white).clamp(lo + 0.01, 1.0);
+    let mut m: Vec<f32> = px.chunks_exact(4).take(w * h).map(|p| ((p[0] - lo) / (hi - lo)).clamp(0.0, 1.0)).collect();
+    let r = shrink_grow.abs().round() as usize;
+    if r > 0 {
+        let grow = shrink_grow > 0.0;
+        let op = move |acc: f32, v: f32| if grow { acc.max(v) } else { acc.min(v) };
+        let seed = if grow { 0.0 } else { 1.0 };
+        m = separable(&m, w, h, r, seed, op, |acc, _| acc);
+    }
+    let br = blur.round() as usize;
+    if br > 0 {
+        for _ in 0..2 {
+            m = separable(&m, w, h, br, 0.0, |acc, v| acc + v, |acc, n| acc / n as f32);
+        }
+    }
+    px.par_chunks_exact_mut(4).zip(m.par_iter()).for_each(|(p, v)| {
+        p[0] = *v;
+        p[1] = *v;
+        p[2] = *v;
+    });
+}
+
+/// A separable window filter: `fold` accumulates the `2r + 1` samples
+/// around each pixel (edge-clamped), `finish` turns the accumulator and
+/// count into the output; rows first, then columns.
+fn separable(m: &[f32], w: usize, h: usize, r: usize, seed: f32, fold: impl Fn(f32, f32) -> f32 + Sync, finish: impl Fn(f32, usize) -> f32 + Sync) -> Vec<f32> {
+    let pass = |src: &[f32], len: usize, count: usize| -> Vec<f32> {
+        // `src` holds `count` lines of `len` samples; filter along each.
+        let mut out = vec![0.0f32; src.len()];
+        out.par_chunks_mut(len).zip(src.par_chunks(len)).for_each(|(o, line)| {
+            for i in 0..len {
+                let (a, b) = (i.saturating_sub(r), (i + r).min(len - 1));
+                let mut acc = seed;
+                for v in &line[a..=b] {
+                    acc = fold(acc, *v);
+                }
+                o[i] = finish(acc, b - a + 1);
+            }
+        });
+        let _ = count;
+        out
+    };
+    let rows = pass(m, w, h);
+    let t = transpose(&rows, w, h);
+    let cols = pass(&t, h, w);
+    transpose(&cols, h, w)
+}
+
+fn transpose(m: &[f32], w: usize, h: usize) -> Vec<f32> {
+    let mut t = vec![0.0f32; w * h];
+    t.par_chunks_mut(h).enumerate().for_each(|(x, col)| {
+        for (y, v) in col.iter_mut().enumerate() {
+            *v = m[y * w + x];
+        }
+    });
+    t
+}
+
 /// `SHADER_GRADE_MIX`: `kept + (current - kept) * mix`.
 pub fn grade_mix(px: &mut [f32], kept: &[f32], mix: f32) {
     px.par_chunks_exact_mut(4).zip(kept.par_chunks_exact(4)).for_each(|(p, o)| {
@@ -650,5 +723,61 @@ mod saturation_definition_tests {
                 );
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod matte_finesse_tests {
+    use super::matte_finesse;
+
+    /// An 11×11 matte with one full pixel in the middle.
+    fn dot() -> Vec<f32> {
+        let mut m = vec![0.0f32; 11 * 11 * 4];
+        let c = (5 * 11 + 5) * 4;
+        m[c] = 1.0;
+        m[c + 1] = 1.0;
+        m[c + 2] = 1.0;
+        m
+    }
+    fn at(m: &[f32], x: usize, y: usize) -> f32 {
+        m[(y * 11 + x) * 4]
+    }
+    fn count_on(m: &[f32]) -> usize {
+        m.chunks_exact(4).filter(|p| p[0] > 0.999).count()
+    }
+
+    #[test]
+    fn grow_dilates_and_shrink_erodes() {
+        let mut m = dot();
+        matte_finesse(&mut m, 11, 11, 0.0, 0.0, 2.0, 0.0);
+        assert_eq!(count_on(&m), 25, "a dot grown by 2 px is a 5×5 square");
+        matte_finesse(&mut m, 11, 11, 0.0, 0.0, -2.0, 0.0);
+        assert_eq!(count_on(&m), 1, "shrunk back by 2 px it is the dot again");
+        assert_eq!(at(&m, 5, 5), 1.0);
+    }
+
+    #[test]
+    fn blur_spreads_the_matte_and_keeps_its_sum() {
+        let mut m = dot();
+        matte_finesse(&mut m, 11, 11, 0.0, 0.0, 0.0, 1.0);
+        assert!(at(&m, 5, 5) < 1.0 && at(&m, 5, 5) > 0.0);
+        assert!(at(&m, 6, 5) > 0.0 && at(&m, 7, 5) > 0.0 && at(&m, 8, 5) == 0.0, "two box passes of 1 px reach 2 px");
+        let sum: f32 = m.chunks_exact(4).map(|p| p[0]).sum();
+        assert!((sum - 1.0).abs() < 1e-4, "a blur moves matte, it does not make or lose it: {sum}");
+    }
+
+    #[test]
+    fn clean_black_and_white_clip_and_rescale() {
+        let mut m = vec![0.0f32; 4 * 4];
+        for (i, v) in [0.05f32, 0.5, 0.95, 1.0].iter().enumerate() {
+            m[i * 4] = *v;
+            m[i * 4 + 1] = *v;
+            m[i * 4 + 2] = *v;
+        }
+        matte_finesse(&mut m, 4, 1, 0.1, 0.1, 0.0, 0.0);
+        assert_eq!(m[0], 0.0, "noise under clean black goes to 0");
+        assert!((m[4] - 0.5).abs() < 1e-6, "the middle stays the middle");
+        assert_eq!(m[8], 1.0, "above clean white is solid");
+        assert_eq!(m[12], 1.0);
     }
 }
