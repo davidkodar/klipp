@@ -2251,9 +2251,9 @@ impl KlippApp {
     /// the frame (or an empty one on failure) clears it.
     fn request_skim_frame(&mut self, media_id: MediaId, time_secs: f64, target: klipp_core::ViewerMode) {
         let Some(item) = self.state.media_pool.get(&media_id) else { return };
-        let decode_path = match item.skim_file.as_ref().filter(|p| p.exists()) {
-            Some(skim) => skim.clone(),
-            None => item.path.clone(),
+        let (decode_path, fallback_path) = match item.skim_file.as_ref().filter(|p| p.exists()) {
+            Some(skim) => (skim.clone(), Some(item.path.clone())),
+            None => (item.path.clone(), None),
         };
         let rotation = item.effective_rotation_for(&decode_path);
         let source_height = item.resolution.height.max(240);
@@ -2262,6 +2262,7 @@ impl KlippApp {
         self.state.skim_decode_started_at = Some(std::time::Instant::now());
         self.skim_worker.request(klipp_engine::skim::SkimJob {
             path: decode_path,
+            fallback_path,
             rotation,
             secs: time_secs,
             max_height,
@@ -2325,7 +2326,7 @@ impl KlippApp {
             // `.partial` name and renamed on success, so this mostly
             // guards files from before that; it is one header probe.
             let probed = klipp_engine::probe_media_header(&proxy_path).ok().and_then(|h| h.duration_secs);
-            if proxy_is_complete(probed, item.duration.to_secs_f64()) {
+            if transcode_is_complete(probed, item.duration.to_secs_f64()) {
                 let file_size = std::fs::metadata(&proxy_path).map(|m| m.len()).unwrap_or(0);
                 tracing::info!(
                     "Proxy already exists for {}: {} ({:.1} MB)",
@@ -23021,7 +23022,11 @@ impl KlippApp {
                             if let Some(key) = skim_cache_key_for(item) {
                                 let skim_path = klipp_media::disk_cache::skim_transcode_path(&key);
                                 if skim_path.exists() {
-                                    skim_updates.push((item.id, skim_path));
+                                    if skim_file_is_complete(&skim_path, item.duration.to_secs_f64()) {
+                                        skim_updates.push((item.id, skim_path));
+                                    } else {
+                                        let _ = std::fs::remove_file(&skim_path);
+                                    }
                                 }
                             }
                         }
@@ -27621,13 +27626,21 @@ impl KlippApp {
             return;
         }
         if let Some(item) = self.state.media_pool.get(&media_id) {
-            if item.skim_file.as_ref().is_some_and(|p| p.exists()) {
-                return;
+            let duration_secs = item.duration.to_secs_f64();
+            if let Some(existing) = item.skim_file.as_ref().filter(|p| p.exists()) {
+                if skim_file_is_complete(existing, duration_secs) {
+                    return;
+                }
+                // Cut short by an older version or a crash: made again.
+                let _ = std::fs::remove_file(existing);
+                if let Some(item) = self.state.media_pool.get_mut(&media_id) {
+                    item.skim_file = None;
+                }
             }
+            let Some(item) = self.state.media_pool.get(&media_id) else { return };
             // Dedupe by output path is done after `skim_path` is
             // computed below — see the `skim_in_flight_paths` check.
             let source_path = item.path.clone();
-            let duration_secs = item.duration.to_secs_f64();
             let filename = item.filename.clone();
             // Skim transcode resolution: target = source height (capped at
             // 1080 for ≥4K sources so the file stays bounded on disk). For
@@ -27683,12 +27696,15 @@ impl KlippApp {
             let cache_key = klipp_media::disk_cache::skim_cache_key(&base_key, is_hdr_source, source_rotation);
             let skim_path = klipp_media::disk_cache::skim_transcode_path(&cache_key);
             if skim_path.exists() {
-                tracing::info!("Skim cache hit for {:?}", source_path);
-                if let Some(item) = self.state.media_pool.get_mut(&media_id) {
-                    item.skim_file = Some(skim_path);
+                if skim_file_is_complete(&skim_path, duration_secs) {
+                    tracing::info!("Skim cache hit for {:?}", source_path);
+                    if let Some(item) = self.state.media_pool.get_mut(&media_id) {
+                        item.skim_file = Some(skim_path);
+                    }
+                    self.sync_media_pool_to_engine();
+                    return;
                 }
-                self.sync_media_pool_to_engine();
-                return;
+                let _ = std::fs::remove_file(&skim_path);
             }
 
             // Already in-flight for this output path? Register as a
@@ -38653,10 +38669,26 @@ fn partial_proxy_path(proxy: &Path) -> PathBuf {
 /// seconds or two percent of its duration, whichever is more (the proxy
 /// encode may drop or pad a few frames at the end). `None` — the file
 /// does not even probe — is not a proxy.
-fn proxy_is_complete(proxy_secs: Option<f64>, source_secs: f64) -> bool {
+fn transcode_is_complete(proxy_secs: Option<f64>, source_secs: f64) -> bool {
     let Some(p) = proxy_secs else { return false };
     let slack = (source_secs * 0.02).max(2.0);
     p + slack >= source_secs
+}
+
+/// Whether the skim transcode at `path` covers a source `source_secs`
+/// long (see [`transcode_is_complete`]). One header probe. A skim that
+/// ends before its media plays as a shorter clip when playback
+/// substitutes it, and every hover past its end fails.
+fn skim_file_is_complete(path: &Path, source_secs: f64) -> bool {
+    let probed = klipp_engine::probe_media_header(path).ok().and_then(|h| h.duration_secs);
+    let complete = transcode_is_complete(probed, source_secs);
+    if !complete {
+        tracing::warn!(
+            "Skim transcode {} is incomplete ({probed:?} s of {source_secs:.2} s); discarding it",
+            path.display()
+        );
+    }
+    complete
 }
 
 /// The skim cache key for a media item, as the transcode names it.
@@ -38668,14 +38700,14 @@ fn skim_cache_key_for(item: &klipp_media::MediaItem) -> Option<String> {
 
 #[cfg(test)]
 mod proxy_completeness_tests {
-    use super::proxy_is_complete;
+    use super::transcode_is_complete;
 
     #[test]
-    fn a_truncated_proxy_is_not_a_proxy() {
-        assert!(proxy_is_complete(Some(120.0), 120.0));
-        assert!(proxy_is_complete(Some(118.5), 120.0), "a few frames short at the end is the encoder");
-        assert!(proxy_is_complete(Some(590.0), 600.0), "two percent on a long clip");
-        assert!(!proxy_is_complete(Some(60.0), 120.0), "half the clip is a cut-short generation");
-        assert!(!proxy_is_complete(None, 120.0), "a file that does not probe is not a proxy");
+    fn a_truncated_transcode_is_not_one() {
+        assert!(transcode_is_complete(Some(120.0), 120.0));
+        assert!(transcode_is_complete(Some(118.5), 120.0), "a few frames short at the end is the encoder");
+        assert!(transcode_is_complete(Some(590.0), 600.0), "two percent on a long clip");
+        assert!(!transcode_is_complete(Some(60.0), 120.0), "half the clip is a cut-short generation");
+        assert!(!transcode_is_complete(None, 120.0), "a file that does not probe is not one");
     }
 }

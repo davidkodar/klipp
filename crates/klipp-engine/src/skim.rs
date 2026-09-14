@@ -163,6 +163,10 @@ fn halve_rgba(rgba: &[u8], w: u32, h: u32) -> (Vec<u8>, u32, u32) {
 #[derive(Clone, Debug)]
 pub struct SkimJob<T: Clone + Send + 'static> {
     pub path: PathBuf,
+    /// The original media, when `path` is its skim transcode: tried when
+    /// the transcode has no frame at the time (it ends early, or is
+    /// damaged), so the skim shows the picture rather than nothing.
+    pub fallback_path: Option<PathBuf>,
     pub rotation: i32,
     pub secs: f64,
     pub max_height: u32,
@@ -201,9 +205,17 @@ impl<T: Clone + Send + 'static> SkimWorker<T> {
                 let t0 = Instant::now();
                 let result = decoders
                     .frame_at(&job.path, job.rotation, job.secs, job.max_height, Duration::from_millis(400))
+                    .or_else(|e| match &job.fallback_path {
+                        Some(original) => {
+                            tracing::debug!("skim: {:?} @ {:.3}s failed ({e}); from the original", job.path, job.secs);
+                            decoders.frame_at(original, job.rotation, job.secs, job.max_height, Duration::from_millis(600))
+                        }
+                        None => Err(e),
+                    })
                     .or_else(|e| {
-                        tracing::debug!("skim: decoder path failed for {:?} @ {:.3}s ({e}); software fallback", job.path, job.secs);
-                        crate::generate_thumbnail_at_size_with_rotation(&job.path, job.secs, job.max_height.max(240), job.rotation)
+                        let source = job.fallback_path.as_deref().unwrap_or(&job.path);
+                        tracing::debug!("skim: decoder path failed for {:?} @ {:.3}s ({e}); software fallback", source, job.secs);
+                        crate::generate_thumbnail_at_size_with_rotation(source, job.secs, job.max_height.max(240), job.rotation)
                             .map(|(rgba, width, height)| SkimFrame { rgba, width, height, reused_decoder: false })
                     });
                 tracing::trace!("skim: {:?} @ {:.3}s in {:.1} ms", job.path.file_name().unwrap_or_default(), job.secs, t0.elapsed().as_secs_f64() * 1000.0);
