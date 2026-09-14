@@ -192,7 +192,16 @@ impl SequenceSnapshot {
         use_marked_range: bool,
         working_colorspace: klipp_core::WorkingColorspace,
     ) -> Result<Self, RenderError> {
-        let fps = seq.fps.as_f64();
+        // The delivery frame rate. When the export overrides the
+        // sequence's, every frame count below is at the override:
+        // the render loop asks the timeline for frame `n` at
+        // `n / fps`, so a 24 fps sequence delivered at 12 fps renders
+        // every other frame and stays two seconds long. It used to set
+        // only the container's rate, so the same file carried all 48
+        // frames tagged 12 fps — four seconds of slow motion with the
+        // audio, still at two seconds, running away from it.
+        let out_fps = settings.fps.unwrap_or(seq.fps);
+        let fps = out_fps.as_f64();
         let burn_in = settings.burn_in_subtitles;
 
         // With both flags on, subtitles are composited into the video AND
@@ -343,8 +352,8 @@ impl SequenceSnapshot {
 
         Ok(Self {
             fps,
-            fps_num: seq.fps.num,
-            fps_den: seq.fps.den,
+            fps_num: out_fps.num,
+            fps_den: out_fps.den,
             width: seq.resolution.width,
             height: seq.resolution.height,
             sample_rate: 48000, // Standard NLE audio rate
@@ -674,6 +683,34 @@ mod tests {
             bit_depth: 0, hdr_mode: klipp_core::HdrMode::Sdr, tone_map_op: klipp_core::ToneMapOp::Hable,
             odt: klipp_core::OdtChoice::MatchViewer,
             mastering_peak_nits: klipp_core::DEFAULT_MASTERING_PEAK_NITS }
+    }
+
+    /// The export dialog's frame-rate override has to change how many
+    /// frames are rendered, not just the rate written on the container.
+    /// A 10 s sequence at 24 fps delivered at 12 fps is 120 frames of
+    /// 10 s — and its audio clips, marked range and subtitles are
+    /// placed at 12 fps too, or they would land at the wrong time.
+    #[test]
+    fn a_frame_rate_override_renders_at_that_rate() {
+        let media_id = MediaId::new();
+        let mut pool = MediaPool::new();
+        pool.add(make_media_item(media_id, "/media/clip1.mp4"));
+        let mut seq = make_sequence();
+        let mut clip = Clip::media(media_id, make_rational(24, 24), make_rational(240, 24), make_rational(0, 24), make_rational(216, 24));
+        clip.id = ClipId::new();
+        seq.tracks[0].clips.push(clip.clone());
+        seq.tracks[1].clips.push(clip);
+        seq.in_point = Some(make_rational(48, 24));
+        seq.out_point = Some(make_rational(144, 24));
+        let mut settings = make_settings();
+        settings.fps = Some(Fps::new(12, 1));
+
+        let snap = SequenceSnapshot::from_sequence(&seq, &pool, &settings, None, true, klipp_core::WorkingColorspace::Rec709Linear).unwrap();
+        assert_eq!((snap.fps_num, snap.fps_den), (12, 1));
+        assert_eq!(snap.duration_frames, 120, "10 s at 12 fps");
+        assert_eq!(snap.export_range, Some((24, 72)), "the marked range, at 12 fps");
+        let a = &snap.audio_tracks[0].clips[0];
+        assert_eq!((a.timeline_start_frame, a.timeline_end_frame), (12, 120), "the audio clip, at 12 fps");
     }
 
     #[test]

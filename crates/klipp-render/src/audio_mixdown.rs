@@ -17,10 +17,13 @@ pub struct AudioMixdown {
     any_solo: bool,
     /// Output sample rate.
     sample_rate: u32,
-    /// Samples per video frame (= sample_rate / fps), mono count.
-    samples_per_frame: usize,
-    /// Sequence fps for frame→sample conversion.
-    fps: f64,
+    /// The export frame rate as a ratio. Frame `n` starts at sample
+    /// `n * sample_rate * fps_den / fps_num`, computed exactly — a
+    /// rounded "samples per frame" would put NTSC audio 0.4 samples
+    /// further behind the picture every frame, a quarter second by the
+    /// end of a ten-minute render.
+    fps_num: u64,
+    fps_den: u64,
     /// How a pan position becomes left and right gains — the project's
     /// law, so the render mixes the way playback does.
     pan_law: klipp_core::PanLaw,
@@ -38,10 +41,12 @@ struct TrackAudioState {
     clips: Vec<AudioClipSnapshot>,
     /// Index into clips vec — which clip we're currently decoding.
     current_clip_idx: usize,
-    /// Decoded audio buffer for the current clip (interleaved stereo f32).
+    /// Decoded audio for the current clip (interleaved stereo f32),
+    /// starting at the clip's source in point. A frame reads from it at
+    /// the offset its timeline position implies, never "wherever the
+    /// last read stopped": a ranged export begins mid-clip, and the
+    /// old read cursor started every clip from its first sample.
     buffer: Vec<f32>,
-    /// Read position within buffer.
-    buffer_pos: usize,
 }
 
 impl AudioMixdown {
@@ -49,7 +54,6 @@ impl AudioMixdown {
     pub fn new(snapshot: &SequenceSnapshot) -> Result<Self, RenderError> {
         let sample_rate = snapshot.sample_rate;
         let fps = snapshot.fps;
-        let samples_per_frame = (sample_rate as f64 / fps).round() as usize;
 
         let any_solo = snapshot.audio_tracks.iter().any(|t| t.solo);
 
@@ -61,7 +65,6 @@ impl AudioMixdown {
                 clips: track.clips.clone(),
                 current_clip_idx: usize::MAX,
                 buffer: Vec::new(),
-                buffer_pos: 0,
             });
             track_settings.push(TrackSettings {
                 volume: track.volume,
@@ -72,11 +75,12 @@ impl AudioMixdown {
         }
 
         debug!(
-            "AudioMixdown: {} tracks, {}Hz, {:.1}fps, {} samples/frame",
+            "AudioMixdown: {} tracks, {}Hz, {:.3}fps ({}/{})",
             track_decoders.len(),
             sample_rate,
             fps,
-            samples_per_frame
+            snapshot.fps_num,
+            snapshot.fps_den,
         );
 
         Ok(Self {
@@ -84,15 +88,17 @@ impl AudioMixdown {
             track_settings,
             any_solo,
             sample_rate,
-            samples_per_frame,
-            fps,
+            fps_num: snapshot.fps_num.max(1) as u64,
+            fps_den: snapshot.fps_den.max(1) as u64,
             pan_law: snapshot.pan_law,
         })
     }
 
-    /// Get the interleaved stereo f32 audio samples for one video frame.
-    /// Returns exactly `samples_per_frame * 2` floats (stereo), clamped
-    /// to `[-1.0, 1.0]` so the encoder gets legal values.
+    /// Get the interleaved stereo f32 audio samples for one video frame:
+    /// the samples between the frame's start and the next frame's start
+    /// (see [`Self::frame_sample_range`]), clamped to `[-1.0, 1.0]` so
+    /// the encoder gets legal values. Frames may be called in any order;
+    /// each is placed by its timeline position.
     ///
     /// Use [`Self::get_frame_audio_unclamped`] instead for loudness
     /// measurement — LUFS metering expects the raw summed mix, and
@@ -121,7 +127,8 @@ impl AudioMixdown {
     }
 
     fn mix_frame(&mut self, frame_num: u64) -> Vec<f32> {
-        let stereo_samples = self.samples_per_frame * 2;
+        let (first, end) = self.frame_sample_range(frame_num);
+        let stereo_samples = (end - first) as usize * 2;
         let mut mixed = vec![0.0f32; stereo_samples];
 
         for (track_idx, track_state) in self.track_decoders.iter_mut().enumerate() {
@@ -139,9 +146,11 @@ impl AudioMixdown {
             let track_samples = get_track_samples(
                 track_state,
                 frame_num,
-                self.samples_per_frame,
+                first,
+                end,
                 self.sample_rate,
-                self.fps,
+                self.fps_num,
+                self.fps_den,
             );
 
             if track_samples.is_empty() {
@@ -180,21 +189,35 @@ impl AudioMixdown {
         mixed
     }
 
-    /// Number of mono samples per video frame.
-    pub fn samples_per_frame(&self) -> usize {
-        self.samples_per_frame
+    /// The mono sample index at which frame `frame_num` starts, and the
+    /// one at which the next frame starts: `[first, end)`. Exact, so the
+    /// counts of consecutive frames sum to the true sample position and
+    /// audio cannot drift against the picture.
+    pub fn frame_sample_range(&self, frame_num: u64) -> (u64, u64) {
+        (
+            first_sample_of_frame(frame_num, self.sample_rate, self.fps_num, self.fps_den),
+            first_sample_of_frame(frame_num + 1, self.sample_rate, self.fps_num, self.fps_den),
+        )
     }
 }
 
+/// `floor(frame * sample_rate / fps)` in integer arithmetic.
+fn first_sample_of_frame(frame: u64, sample_rate: u32, fps_num: u64, fps_den: u64) -> u64 {
+    (frame as u128 * sample_rate as u128 * fps_den as u128 / fps_num as u128) as u64
+}
+
 /// Get interleaved stereo f32 samples for one video frame from a track.
+/// `first..end` is the frame's mono sample range on the timeline.
 fn get_track_samples(
     state: &mut TrackAudioState,
     frame_num: u64,
-    samples_per_frame: usize,
+    first: u64,
+    end: u64,
     sample_rate: u32,
-    _fps: f64,
+    fps_num: u64,
+    fps_den: u64,
 ) -> Vec<f32> {
-    let stereo_count = samples_per_frame * 2;
+    let stereo_count = (end - first) as usize * 2;
 
     // Find clip that covers this frame
     let clip_idx = state
@@ -232,29 +255,32 @@ fn get_track_samples(
                     chain.process(&mut buf, &ctx);
                 }
                 state.buffer = buf;
-                state.buffer_pos = 0;
                 state.current_clip_idx = clip_idx;
             }
             Err(e) => {
                 warn!("AudioMixdown: failed to decode {:?}: {e}", clip.path);
                 state.buffer.clear();
-                state.buffer_pos = 0;
                 state.current_clip_idx = clip_idx;
                 return vec![0.0; stereo_count];
             }
         }
     }
 
-    // Read samples_per_frame stereo samples from the buffer
-    let available = state.buffer.len() - state.buffer_pos;
+    // The frame's place in the clip: how far past the clip's start on
+    // the timeline it begins, in samples. The buffer starts at the
+    // clip's source in point, which is what plays at that timeline
+    // start.
+    let clip_first =
+        first_sample_of_frame(state.clips[clip_idx].timeline_start_frame, sample_rate, fps_num, fps_den);
+    let offset = first.saturating_sub(clip_first) as usize * 2;
+    let available = state.buffer.len().saturating_sub(offset);
     let to_read = stereo_count.min(available);
 
     if to_read == 0 {
         return vec![0.0; stereo_count];
     }
 
-    let mut output = state.buffer[state.buffer_pos..state.buffer_pos + to_read].to_vec();
-    state.buffer_pos += to_read;
+    let mut output = state.buffer[offset..offset + to_read].to_vec();
 
     // Pad with silence if the decoded clip buffer ran short of the expected
     // frame's worth of samples. This happens when the source file is shorter
@@ -289,6 +315,7 @@ fn decode_clip_audio(
         .ok_or_else(|| RenderError::NoAudioStream(path.to_path_buf()))?;
 
     let audio_stream_idx = audio_stream.index();
+    let stream_time_base = audio_stream.time_base();
 
     let codec_ctx =
         ffmpeg_next::codec::context::Context::from_parameters(audio_stream.parameters())
@@ -341,13 +368,17 @@ fn decode_clip_audio(
     )
     .map_err(RenderError::Decode)?;
 
-    // Seek to source start
+    // Seek to source start. This lands on the last packet at or before
+    // it — for AAC, FLAC or Opus that can be tens of milliseconds early
+    // — so the first decoded frame's timestamp says where the buffer
+    // really begins, and the lead-in is trimmed below.
     if source_start_secs > 0.0 {
         let ts = (source_start_secs * 1_000_000.0) as i64;
         let _ = format_ctx.seek(ts, ..ts);
     }
 
     let mut buffer = Vec::new();
+    let mut first_pts: Option<i64> = None;
 
     // Decode using packets() iterator
     for (stream, packet) in format_ctx.packets() {
@@ -359,12 +390,32 @@ fn decode_clip_audio(
             continue;
         }
 
-        drain_audio_frames(&mut decoder, &mut resampler, &mut buffer);
+        drain_audio_frames(&mut decoder, &mut resampler, &mut buffer, &mut first_pts);
     }
 
     // Flush decoder
     let _ = decoder.send_eof();
-    drain_audio_frames(&mut decoder, &mut resampler, &mut buffer);
+    drain_audio_frames(&mut decoder, &mut resampler, &mut buffer, &mut first_pts);
+
+    // Line the buffer up so its first sample is `source_start_secs`:
+    // drop what the seek delivered before the in point, or pad with
+    // silence if it overshot. The viewer's decoder discards by PTS the
+    // same way; without this the export played every trimmed clip from
+    // up to a packet before its in point, and everything after that
+    // came late by the same amount.
+    if let Some(pts) = first_pts {
+        let first_secs = pts as f64 * f64::from(stream_time_base);
+        let lead = ((source_start_secs - first_secs) * output_rate as f64).round() as i64;
+        let lead_floats = lead.unsigned_abs() as usize * 2;
+        if lead > 0 {
+            let n = lead_floats.min(buffer.len());
+            buffer.drain(..n);
+            debug!("AudioMixdown: trimmed {} samples of lead-in before {source_start_secs:.3}s", n / 2);
+        } else if lead < 0 {
+            buffer.splice(0..0, std::iter::repeat_n(0.0, lead_floats));
+            debug!("AudioMixdown: seek overshot by {} samples, padded", lead_floats / 2);
+        }
+    }
 
     debug!(
         "AudioMixdown: decoded {} stereo samples from {:?}",
@@ -375,14 +426,21 @@ fn decode_clip_audio(
     Ok(buffer)
 }
 
-/// Drain all available audio frames from the decoder, resample, and append to buffer.
+/// Drain all available audio frames from the decoder, resample, and
+/// append to buffer. `first_pts` records the first decoded frame's
+/// timestamp, in the stream's time base, so the caller knows where the
+/// buffer starts.
 fn drain_audio_frames(
     decoder: &mut ffmpeg_next::codec::decoder::Audio,
     resampler: &mut ffmpeg_next::software::resampling::Context,
     buffer: &mut Vec<f32>,
+    first_pts: &mut Option<i64>,
 ) {
     let mut frame = ffmpeg_next::frame::Audio::empty();
     while decoder.receive_frame(&mut frame).is_ok() {
+        if first_pts.is_none() {
+            *first_pts = frame.pts().or_else(|| frame.timestamp());
+        }
         let mut resampled = ffmpeg_next::frame::Audio::empty();
         if resampler.run(&frame, &mut resampled).is_ok() {
             let nb_samples = resampled.samples();
@@ -471,7 +529,8 @@ mod tests {
     fn samples_per_frame_calculation() {
         let snapshot = make_empty_snapshot(0);
         let mixdown = AudioMixdown::new(&snapshot).unwrap();
-        assert_eq!(mixdown.samples_per_frame(), 2000);
+        assert_eq!(mixdown.frame_sample_range(0), (0, 2000));
+        assert_eq!(mixdown.frame_sample_range(7), (14000, 16000));
     }
 
     #[test]
@@ -481,7 +540,25 @@ mod tests {
         snapshot.fps_num = 30;
         snapshot.fps_den = 1;
         let mixdown = AudioMixdown::new(&snapshot).unwrap();
-        assert_eq!(mixdown.samples_per_frame(), 1600);
+        assert_eq!(mixdown.frame_sample_range(0), (0, 1600));
+    }
+
+    /// 48000 / 29.97 is 1601.6 samples: a rounded 1602 per frame runs
+    /// 0.4 samples ahead every frame. Over 100 s that is 25 ms of drift
+    /// — a lip-sync error by the end of every NTSC export. The frames
+    /// must tile the true sample count instead.
+    #[test]
+    fn ntsc_frames_tile_the_exact_sample_count() {
+        let mut snapshot = make_empty_snapshot(1);
+        snapshot.fps = 30000.0 / 1001.0;
+        snapshot.fps_num = 30000;
+        snapshot.fps_den = 1001;
+        let mut mixdown = AudioMixdown::new(&snapshot).unwrap();
+        let frames = 3000u64;
+        let total: usize = (0..frames).map(|f| mixdown.get_frame_audio(f).len() / 2).sum();
+        assert_eq!(total as u64, frames * 48000 * 1001 / 30000, "the frames' audio does not add up to the time they cover");
+        let lengths: std::collections::BTreeSet<usize> = (0..frames).map(|f| mixdown.get_frame_audio(f).len() / 2).collect();
+        assert_eq!(lengths, [1601, 1602].into_iter().collect());
     }
 
     #[test]
