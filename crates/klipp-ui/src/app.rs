@@ -314,6 +314,16 @@ pub struct KlippApp {
     last_heartbeat: std::time::Instant,
     frame_count: u64,
     last_heartbeat_frame: u64,
+    /// Input events winit delivered since the last heartbeat, and the
+    /// most that arrived in one frame. A frame that comes after seconds
+    /// of silence carrying dozens of events means input was queued while
+    /// nothing painted; one carrying none means the compositor delivered
+    /// nothing. The two need different fixes, and a log that shows only
+    /// fps cannot tell them apart — 2026-09-14, "the app is not
+    /// responding" with the UI thread idle in the event loop.
+    hb_input_events: u64,
+    hb_max_batch: usize,
+    last_frame_at: std::time::Instant,
     /// Throttle for `refresh_scope_preview_fast`. The UI-thread scope
     /// preview re-grade is ~10 ms at 1080p/4 on a simple grade, which
     /// saturates the UI thread when a slider emits 60–120 SetNodeParam
@@ -582,6 +592,9 @@ impl KlippApp {
             last_heartbeat: std::time::Instant::now(),
             frame_count: 0,
             last_heartbeat_frame: 0,
+            hb_input_events: 0,
+            hb_max_batch: 0,
+            last_frame_at: std::time::Instant::now(),
             last_scope_preview_refresh: std::time::Instant::now()
                 - std::time::Duration::from_secs(1),
             last_sent_scope_mode: None,
@@ -25649,15 +25662,31 @@ impl eframe::App for KlippApp {
         // can see the UI thread redraw rate in real time (separate from
         // the engine tick rate). An idle paused UI should be near 0 fps.
         self.frame_count = self.frame_count.wrapping_add(1);
+        let events_this_frame = ctx.input(|i| i.events.len());
+        self.hb_input_events += events_this_frame as u64;
+        self.hb_max_batch = self.hb_max_batch.max(events_this_frame);
+        let since_last_frame = self.last_frame_at.elapsed();
+        self.last_frame_at = std::time::Instant::now();
+        if events_this_frame >= 24 && since_last_frame >= std::time::Duration::from_secs(1) {
+            // Input piled up while no frame was painted: the user was
+            // acting and the UI was not answering.
+            tracing::warn!(
+                "INPUT_BURST {events_this_frame} input events in one frame after {:.1}s without a frame",
+                since_last_frame.as_secs_f64(),
+            );
+        }
         if self.last_heartbeat.elapsed() >= std::time::Duration::from_secs(2) {
             let elapsed = self.last_heartbeat.elapsed().as_secs_f64();
             let frames_in_interval =
                 self.frame_count.saturating_sub(self.last_heartbeat_frame);
             let ui_fps = frames_in_interval as f64 / elapsed.max(0.001);
             tracing::info!(
-                "UI_HEARTBEAT fps={:.1} frames={} state={:?} viewer_mode={:?} elapsed={:.2}s show_scopes={} show_color={}",
+                "UI_HEARTBEAT fps={:.1} frames={} events={} max_batch={} focused={} state={:?} viewer_mode={:?} elapsed={:.2}s show_scopes={} show_color={}",
                 ui_fps,
                 frames_in_interval,
+                self.hb_input_events,
+                self.hb_max_batch,
+                ctx.input(|i| i.focused),
                 self.state.playback,
                 self.state.viewer_mode,
                 elapsed,
@@ -25666,6 +25695,8 @@ impl eframe::App for KlippApp {
             );
             self.last_heartbeat = std::time::Instant::now();
             self.last_heartbeat_frame = self.frame_count;
+            self.hb_input_events = 0;
+            self.hb_max_batch = 0;
         }
 
         // Consume any menu / toolbar request to toggle the perf
