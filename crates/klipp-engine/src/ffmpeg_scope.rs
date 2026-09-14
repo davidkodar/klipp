@@ -283,7 +283,7 @@ impl FfmpegScope {
         input.set_pts(Some(self.pts));
         self.pts += 1;
 
-        let stride = input.stride(0) as usize;
+        let stride = input.stride(0);
         let row_bytes = (src_w * 4) as usize;
         let height = src_h as usize;
         if src_rgba.len() < row_bytes * height {
@@ -338,9 +338,9 @@ impl FfmpegScope {
         //
         // Stride values are reported in bytes; we write u16 so step by
         // `stride/2` pixels per row in the destination plane.
-        let stride_g = input.stride(0) as usize / 2;
-        let stride_b = input.stride(1) as usize / 2;
-        let stride_r = input.stride(2) as usize / 2;
+        let stride_g = input.stride(0) / 2;
+        let stride_b = input.stride(1) / 2;
+        let stride_r = input.stride(2) / 2;
 
         // Borrow each plane individually — `data_mut` returns a `&mut [u8]`
         // for the requested plane and there's no multi-plane accessor, so
@@ -418,9 +418,9 @@ impl FfmpegScope {
         self.pts += 1;
 
         let strides = [
-            input.stride(0) as usize,
-            input.stride(1) as usize,
-            input.stride(2) as usize,
+            input.stride(0),
+            input.stride(1),
+            input.stride(2),
         ];
         let code = |v: f32| (v * 255.0).round().clamp(0.0, 255.0) as u8;
         let chroma_code = |c: f32| (127.5 + c * 255.0).round().clamp(0.0, 255.0) as u8;
@@ -472,7 +472,7 @@ impl FfmpegScope {
             Ok(()) => {
                 let w = output.width();
                 let h = output.height();
-                let stride = output.stride(0) as usize;
+                let stride = output.stride(0);
                 let row_bytes = (w * 4) as usize;
                 let height = h as usize;
                 let mut data = Vec::with_capacity(row_bytes * height);
@@ -531,7 +531,7 @@ impl FfmpegScopeBank {
         let scope = self
             .instances
             .entry(mode)
-            .or_insert_with(FfmpegScope::new);
+            .or_default();
         scope.render_linear_f32(mode, linear_rgba, src_w, src_h, settings, basis)
     }
 
@@ -551,7 +551,7 @@ impl FfmpegScopeBank {
         let scope = self
             .instances
             .entry(mode)
-            .or_insert_with(FfmpegScope::new);
+            .or_default();
         scope.render(mode, rgba, src_w, src_h, settings)
     }
 }

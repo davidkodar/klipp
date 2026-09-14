@@ -4170,20 +4170,20 @@ impl KlippApp {
                         tracing::debug!("SetTrackOpacity: track[{}]={} name={}", track_index, track.opacity, track.name);
                     }
                     self.sync_sequence_to_engine();
-                    return true;
+                    true
                 }
                 AppCommand::SetTrackVisibility { track_index, visible } => {
                     if let Some(track) = self.state.sequences[self.state.active_sequence_idx].tracks.get_mut(*track_index) {
                         track.visible = *visible;
                     }
-                    return true;
+                    true
                 }
                 AppCommand::SetTrackVolume { track_index, volume } => {
                     if let Some(track) = self.state.sequences[self.state.active_sequence_idx].tracks.get_mut(*track_index) {
                         track.volume = volume.clamp(0.0, 2.0);
                     }
                     let _ = self.cmd_tx.send(cmd.clone());
-                    return true;
+                    true
                     // Fall through to forward to engine (updates AudioMixer)
                 }
                 AppCommand::SetTrackMute { track_index, muted } => {
@@ -4191,7 +4191,7 @@ impl KlippApp {
                         track.muted = *muted;
                     }
                     let _ = self.cmd_tx.send(cmd.clone());
-                    return true;
+                    true
                     // Fall through to forward to engine
                 }
                 AppCommand::SetTrackSolo { track_index, solo } => {
@@ -4208,7 +4208,7 @@ impl KlippApp {
                         }
                     }
                     let _ = self.cmd_tx.send(cmd.clone());
-                    return true;
+                    true
                     // Fall through to forward to engine
                 }
                 AppCommand::SetTrackPan { track_index, pan } => {
@@ -4216,7 +4216,7 @@ impl KlippApp {
                         track.pan = pan.clamp(-1.0, 1.0);
                     }
                     let _ = self.cmd_tx.send(cmd.clone());
-                    return true;
+                    true
                     // Fall through to forward to engine
                 }
                 // Subtitles/FCPXML/EDL — handled by handle_export_commands
@@ -4253,11 +4253,11 @@ impl KlippApp {
                     self.state.toast.show("Adjustment layer created".to_string());
                     self.state.dirty = true;
                     self.sync_sequence_to_engine();
-                    return true;
+                    true
                 }
                 AppCommand::InsertFreezeFrame { duration_secs } => {
                     self.insert_freeze_frame(*duration_secs);
-                    return true;
+                    true
                 }
                 AppCommand::CreateGeneratorClip { track_index, data } => {
                     let fps_rate = self.state.sequences[self.state.active_sequence_idx].fps.rate();
@@ -4306,12 +4306,12 @@ impl KlippApp {
                     self.state.toast.show(format!("{label} generator created"));
                     self.state.dirty = true;
                     self.sync_sequence_to_engine();
-                    return true;
+                    true
                 }
                 // Create compound clip: move selected clips into a new nested sequence
                 AppCommand::CreateCompoundClip { name } => {
                     self.create_compound_clip_impl(name.clone());
-                    return true;
+                    true
                 }
                 // Open compound clip: drill into nested sequence
                 AppCommand::OpenCompoundClip { clip_id } => {
@@ -4350,7 +4350,7 @@ impl KlippApp {
                             self.sync_sequence_to_engine();
                         }
                     }
-                    return true;
+                    true
                 }
                 // Close compound clip: navigate back to parent sequence
                 AppCommand::CloseCompoundClip => {
@@ -4363,7 +4363,7 @@ impl KlippApp {
                             self.sync_sequence_to_engine();
                         }
                     }
-                    return true;
+                    true
                 }
                 // Decompose a compound clip — restore its inner clips to the
                 // parent timeline at their original positions, remove the
@@ -4371,7 +4371,7 @@ impl KlippApp {
                 // sequence. Inverse of CreateCompoundClip.
                 AppCommand::DecomposeCompoundClip { clip_id } => {
                     self.decompose_compound_clip_impl(*clip_id);
-                    return true;
+                    true
                 }
                 // Create multicam clip: group clips at playhead across tracks as angles
                 AppCommand::CreateMulticamClip => {
@@ -4409,7 +4409,7 @@ impl KlippApp {
                     self.state.toast.show(format!("Created multicam group with {} angles", angle_clips.len()));
                     self.state.dirty = true;
                     self.sync_sequence_to_engine();
-                    return true;
+                    true
                 }
                 // Switch multicam angle: record a cut in the multicam cut list
                 AppCommand::SwitchMulticamAngle { angle } => {
@@ -4439,10 +4439,10 @@ impl KlippApp {
                         self.state.toast.show(format!("Cut to angle {}", angle));
                         self.state.dirty = true;
                     }
-                    return true;
+                    true
                 }
                 // Fit timeline zoom to show all clips
-                _ => return false,
+                _ => false,
         }
     }
 
@@ -4465,7 +4465,7 @@ impl KlippApp {
                         self.state.timeline_zoom = clamped;
                         self.state.timeline_scroll_x = 0.0;
                     }
-                    return true;
+                    true
                 }
                 AppCommand::SetTimelineZoom { zoom, scroll_x } => {
                     let clamped = zoom.clamp(0.1, 2000.0);
@@ -4487,7 +4487,7 @@ impl KlippApp {
                     let content_w = self.state.last_timeline_content_width.max(1.0);
                     let max_scroll = (total_secs * clamped - content_w).max(0.0);
                     self.state.timeline_scroll_x = target_scroll.clamp(0.0, max_scroll);
-                    return true;
+                    true
                 }
                 AppCommand::ZoomTimelineToFit => {
                     let dur = self.state.sequence_duration().to_secs_f64() as f32;
@@ -4502,7 +4502,7 @@ impl KlippApp {
                         self.state.timeline_zoom = clamped;
                         self.state.timeline_scroll_x = 0.0;
                     }
-                    return true;
+                    true
                 }
                 // Apply motion preset (Ken Burns, PiP)
                 AppCommand::ApplyMotionPreset { clip_id, preset } => {
@@ -4572,7 +4572,7 @@ impl KlippApp {
                         self.state.dirty = true;
                     }
                     self.sync_sequence_to_engine();
-                    return true;
+                    true
                 }
                 // Next edit point: jump playhead to the nearest clip boundary after current position
                 AppCommand::NextEditPoint => {
@@ -4590,7 +4590,7 @@ impl KlippApp {
                         self.state.playhead = next;
                         let _ = self.cmd_tx.send(AppCommand::SeekTo(next));
                     }
-                    return true;
+                    true
                 }
                 // Previous edit point: jump playhead to the nearest clip boundary before current position
                 AppCommand::PrevEditPoint => {
@@ -4608,7 +4608,7 @@ impl KlippApp {
                         self.state.playhead = prev;
                         let _ = self.cmd_tx.send(AppCommand::SeekTo(prev));
                     }
-                    return true;
+                    true
                 }
                 // Close gap: remove empty space on a track by shifting downstream clips left
                 AppCommand::CloseGap { track_index, gap_start, gap_end } => {
@@ -4633,31 +4633,31 @@ impl KlippApp {
                         self.state.dirty = true;
                     }
                     self.sync_sequence_to_engine();
-                    return true;
+                    true
                 }
                 // Phase 4: Sequence markers
                 AppCommand::SetSequenceInPoint(tc) => {
                     self.state.sequences[self.state.active_sequence_idx].in_point = Some(*tc);
                     self.sync_sequence_to_engine();
-                    return true;
+                    true
                 }
                 AppCommand::SetSequenceOutPoint(tc) => {
                     self.state.sequences[self.state.active_sequence_idx].out_point = Some(*tc);
                     self.sync_sequence_to_engine();
-                    return true;
+                    true
                 }
                 AppCommand::ClearSequenceInPoint => {
                     self.state.sequences[self.state.active_sequence_idx].in_point = None;
                     self.sync_sequence_to_engine();
-                    return true;
+                    true
                 }
                 AppCommand::ClearSequenceOutPoint => {
                     self.state.sequences[self.state.active_sequence_idx].out_point = None;
                     self.sync_sequence_to_engine();
-                    return true;
+                    true
                 }
                 // Phase 4: Source monitor
-                _ => return false,
+                _ => false,
         }
     }
 
@@ -4727,7 +4727,7 @@ impl KlippApp {
                         }
                     }
                     self.start_source_frame_decode_at(*media_id, 0.0);
-                    return true;
+                    true
                 }
                 AppCommand::SeekSource(tc) => {
                     let Some(mid) = self.state.source_media_id else {
@@ -4757,19 +4757,19 @@ impl KlippApp {
                     let _ = self.cmd_tx.send(AppCommand::SeekSource(
                         Timecode::from_secs_f64(clamped_secs, tc.rate),
                     ));
-                    return true;
+                    true
                 }
                 AppCommand::MatchFrameProgramToSource => {
                     self.run_match_frame_program_to_source();
-                    return true;
+                    true
                 }
                 AppCommand::MatchFrameSourceToProgram => {
                     self.run_match_frame_source_to_program();
-                    return true;
+                    true
                 }
                 AppCommand::OpenModelDownloadDialog { model_id } => {
                     self.request_model_download(model_id);
-                    return true;
+                    true
                 }
                 AppCommand::SetSourceInPoint(tc) => {
                     if let Some(mid) = self.state.source_media_id {
@@ -4777,7 +4777,7 @@ impl KlippApp {
                             item.default_source_in = Some(*tc);
                         }
                     }
-                    return true;
+                    true
                 }
                 AppCommand::SetSourceOutPoint(tc) => {
                     if let Some(mid) = self.state.source_media_id {
@@ -4785,11 +4785,11 @@ impl KlippApp {
                             item.default_source_out = Some(*tc);
                         }
                     }
-                    return true;
+                    true
                 }
                 AppCommand::CreateSubclipFromZone { source_media_id, name } => {
                     self.create_subclip_from_zone(*source_media_id, name.clone());
-                    return true;
+                    true
                 }
                 AppCommand::InsertSourceAtPlayhead | AppCommand::OverwriteEdit => {
                     if let Some(mid) = self.state.source_media_id {
@@ -4877,7 +4877,7 @@ impl KlippApp {
                             self.sync_sequence_to_engine();
                         }
                     }
-                    return true;
+                    true
                 }
                 AppCommand::InsertEdit => {
                     // Ripple insert: push existing clips right, then insert source clip
@@ -4976,7 +4976,7 @@ impl KlippApp {
                             self.sync_sequence_to_engine();
                         }
                     }
-                    return true;
+                    true
                 }
                 AppCommand::LiftEdit => {
                     // Remove content between sequence in/out, leave gap
@@ -4999,7 +4999,7 @@ impl KlippApp {
                     }
                     self.state.dirty = true;
                     self.sync_sequence_to_engine();
-                    return true;
+                    true
                 }
                 AppCommand::ExtractEdit => {
                     // Remove content between sequence in/out, ripple left to close gap
@@ -5030,7 +5030,7 @@ impl KlippApp {
                     }
                     self.state.dirty = true;
                     self.sync_sequence_to_engine();
-                    return true;
+                    true
                 }
                 // Magnetic: Ripple trim head to playhead
                 AppCommand::RippleTrimHead { clip_id } => {
@@ -5079,7 +5079,7 @@ impl KlippApp {
                             self.sync_sequence_to_engine();
                         }
                     }
-                    return true;
+                    true
                 }
                 // Magnetic: Ripple trim tail to playhead
                 AppCommand::RippleTrimTail { clip_id } => {
@@ -5128,17 +5128,17 @@ impl KlippApp {
                             self.sync_sequence_to_engine();
                         }
                     }
-                    return true;
+                    true
                 }
                 // Q — trim OUT edge of nearest clip at/before playhead.
                 AppCommand::TrimOutToPlayhead => {
                     self.trim_to_playhead_dispatch(TrimToPlayheadDir::Out);
-                    return true;
+                    true
                 }
                 // W — trim IN edge of nearest clip at/after playhead.
                 AppCommand::TrimInToPlayhead => {
                     self.trim_to_playhead_dispatch(TrimToPlayheadDir::In);
-                    return true;
+                    true
                 }
                 // Insert silence / gap on a specific track at the playhead.
                 // Distinct from InsertGapAtPlayhead which routes through the
@@ -5168,8 +5168,8 @@ impl KlippApp {
                     let mut shifted = 0usize;
                     for clip in &mut track.clips {
                         if clip.timeline_in >= playhead {
-                            clip.timeline_in = clip.timeline_in + delta;
-                            clip.timeline_out = clip.timeline_out + delta;
+                            clip.timeline_in += delta;
+                            clip.timeline_out += delta;
                             shifted += 1;
                         }
                     }
@@ -5179,7 +5179,7 @@ impl KlippApp {
                     ));
                     self.state.dirty = true;
                     self.sync_sequence_to_engine();
-                    return true;
+                    true
                 }
                 // Magnetic: Insert 1-second gap at playhead
                 AppCommand::InsertGapAtPlayhead => {
@@ -5203,9 +5203,9 @@ impl KlippApp {
                     self.state.push_history(EditCommand::Magnetic(result.command));
                     self.state.dirty = true;
                     self.sync_sequence_to_engine();
-                    return true;
+                    true
                 }
-            _ => return false,
+            _ => false,
         }
     }
 
@@ -5869,8 +5869,8 @@ impl KlippApp {
             let seq = &mut self.state.sequences[seq_idx];
             for c in seq.tracks[track_idx].clips.iter_mut() {
                 if c.timeline_in >= ph {
-                    c.timeline_in = c.timeline_in + duration;
-                    c.timeline_out = c.timeline_out + duration;
+                    c.timeline_in += duration;
+                    c.timeline_out += duration;
                 }
             }
         }
@@ -6050,7 +6050,7 @@ impl KlippApp {
                 // ImportMediaLinked — handled by handle_media_commands
                 AppCommand::RemoveClip { clip_id } => {
                     self.remove_clip_impl(*clip_id);
-                    return true;
+                    true
                 }
                 AppCommand::MoveClip {
                     clip_id,
@@ -6154,7 +6154,7 @@ impl KlippApp {
 
                     self.sync_sequence_to_engine();
                     self.state.dirty = true;
-                    return true;
+                    true
                 }
                 AppCommand::MoveClipToTrack { clip_id, new_timeline_in, from_track, to_track } => {
                     if self.clip_track_is_locked(clip_id) { return true; }
@@ -6222,7 +6222,7 @@ impl KlippApp {
                             self.state.dirty = true;
                         }
                     }
-                    return true;
+                    true
                 }
                 AppCommand::SwapAdjacentClips { clip_a, clip_b } => {
                     if self.try_swap_adjacent_clips(*clip_a, *clip_b) {
@@ -6230,7 +6230,7 @@ impl KlippApp {
                         let _ = self.cmd_tx.send(AppCommand::SeekTo(self.state.playhead));
                         self.state.dirty = true;
                     }
-                    return true;
+                    true
                 }
                 AppCommand::ReplaceClipMedia { clip_id, new_media_id } => {
                     if self.try_replace_clip_media(*clip_id, *new_media_id) {
@@ -6238,7 +6238,7 @@ impl KlippApp {
                         let _ = self.cmd_tx.send(AppCommand::SeekTo(self.state.playhead));
                         self.state.dirty = true;
                     }
-                    return true;
+                    true
                 }
                 AppCommand::TrimClip {
                     clip_id,
@@ -6345,7 +6345,7 @@ impl KlippApp {
                     }
                     self.sync_sequence_to_engine();
                     self.state.dirty = true;
-                    return true;
+                    true
                 }
                 AppCommand::RollTrimClip {
                     clip_a_id,
@@ -6418,7 +6418,7 @@ impl KlippApp {
 
                     self.sync_sequence_to_engine();
                     self.state.dirty = true;
-                    return true;
+                    true
                 }
                 AppCommand::SlipClip { clip_id, new_source_in: _, new_source_out: _ } => {
                     if self.clip_track_is_locked(clip_id) { return true; }
@@ -6426,7 +6426,7 @@ impl KlippApp {
                     // Just sync the engine.
                     self.sync_sequence_to_engine();
                     self.state.dirty = true;
-                    return true;
+                    true
                 }
                 AppCommand::SlideClip {
                     clip_id,
@@ -6439,12 +6439,12 @@ impl KlippApp {
                     // Just sync the engine.
                     self.sync_sequence_to_engine();
                     self.state.dirty = true;
-                    return true;
+                    true
                 }
                 // Undo/Redo/RubberBand/SequenceUpdated — handled by handle_playback_commands
                 // Export/RenderQueue/Preferences — handled by handle_export_commands
                 // SetSpeed — handled by handle_playback_commands (forwards to engine)
-                _ => return false,
+                _ => false,
         }
     }
 
@@ -6468,7 +6468,7 @@ impl KlippApp {
                         let target = (secs * zoom) - LEFT_INSET_PX;
                         self.state.timeline_scroll_x = target.max(0.0);
                     }
-                    return true;
+                    true
                 }
                 AppCommand::SelectClip(id) => {
                     self.state.selected_clip = *id;
@@ -6489,7 +6489,7 @@ impl KlippApp {
                             }
                         }
                     }
-                    return true;
+                    true
                 }
                 // Node graph, color grading, keyframes, LUT — handled by handle_color_commands
                 AppCommand::SetClipRole { clip_id, role } => {
@@ -6500,7 +6500,7 @@ impl KlippApp {
                         }
                     }
                     self.state.dirty = true;
-                    return true;
+                    true
                 }
                 // Speed keyframes, audio/video/effect keyframes, keyframe drag,
                 // clip audio params, audio drag — handled by handle_keyframe_commands
@@ -6514,9 +6514,9 @@ impl KlippApp {
                 // Phase 4: Blade
                 AppCommand::BladeClip { track_index, clip_id, cut_at } => {
                     self.blade_clip_at(*track_index, *clip_id, *cut_at);
-                    return true;
+                    true
                 }
-                _ => return false,
+                _ => false,
         }
     }
 
@@ -6555,7 +6555,7 @@ impl KlippApp {
                         }
                     }
                     self.sync_sequence_to_engine();
-                    return true;
+                    true
                 }
                 AppCommand::CopyClip { clip_id } => {
                     let cid = *clip_id;
@@ -6572,7 +6572,7 @@ impl KlippApp {
                             }
                         }
                     }
-                    return true;
+                    true
                 }
                 AppCommand::PasteClip => {
                     if let Some(ref cb) = self.state.clipboard.clone() {
@@ -6651,7 +6651,7 @@ impl KlippApp {
                         }
                     }
                     self.sync_sequence_to_engine();
-                    return true;
+                    true
                 }
                 // Ctrl+D — Duplicate selected clip (place immediately after original)
                 // Copy Attributes: snapshot a clip's effects/audio/transform/speed
@@ -6688,7 +6688,7 @@ impl KlippApp {
                         });
                         self.state.toast.show("Attributes copied".to_string());
                     }
-                    return true;
+                    true
                 }
                 // Paste Attributes: apply selected attribute categories to target clip(s)
                 AppCommand::PasteAttributes { effects, color_grade, audio, transform, speed } => {
@@ -6743,7 +6743,7 @@ impl KlippApp {
                         self.state.dirty = true;
                     }
                     self.sync_sequence_to_engine();
-                    return true;
+                    true
                 }
                 AppCommand::DuplicateClip { clip_id } => {
                     let cid = *clip_id;
@@ -6824,7 +6824,7 @@ impl KlippApp {
                         self.state.dirty = true;
                     }
                     self.sync_sequence_to_engine();
-                    return true;
+                    true
                 }
                 // Toggle clip enabled/disabled
                 AppCommand::SetClipEnabled { clip_id, enabled } => {
@@ -6836,7 +6836,7 @@ impl KlippApp {
                     }
                     self.state.dirty = true;
                     self.sync_sequence_to_engine();
-                    return true;
+                    true
                 }
                 AppCommand::SetClipSolo { clip_id, solo } => {
                     let cid = *clip_id;
@@ -6847,7 +6847,7 @@ impl KlippApp {
                     }
                     self.state.dirty = true;
                     self.sync_sequence_to_engine();
-                    return true;
+                    true
                 }
 
                 // ── Track matte / blend mode (Phase 1 data-model handlers) ────
@@ -6860,7 +6860,7 @@ impl KlippApp {
                     }
                     self.state.dirty = true;
                     self.sync_sequence_to_engine();
-                    return true;
+                    true
                 }
                 AppCommand::SetClipMatte {
                     clip_id, source_clip_id, channel, invert, feather_px, choke_px,
@@ -6913,7 +6913,7 @@ impl KlippApp {
                     }
                     self.state.dirty = true;
                     self.sync_sequence_to_engine();
-                    return true;
+                    true
                 }
                 AppCommand::ClearClipMatte { clip_id } => {
                     let consumer_id = *clip_id;
@@ -6945,7 +6945,7 @@ impl KlippApp {
                     }
                     self.state.dirty = true;
                     self.sync_sequence_to_engine();
-                    return true;
+                    true
                 }
                 AppCommand::SetClipTransformLink {
                     clip_id, target, mode, inherit_scale, inherit_position, inherit_rotation, inherit_anchor,
@@ -7000,7 +7000,7 @@ impl KlippApp {
                     }
                     self.state.dirty = true;
                     self.sync_sequence_to_engine();
-                    return true;
+                    true
                 }
                 AppCommand::SetClipTransformLinkTracker {
                     clip_id, host_clip_id, point_index, mode,
@@ -7057,7 +7057,7 @@ impl KlippApp {
                     }
                     self.state.dirty = true;
                     self.sync_sequence_to_engine();
-                    return true;
+                    true
                 }
                 AppCommand::ClearClipTransformLink { clip_id } => {
                     let cid = *clip_id;
@@ -7067,7 +7067,7 @@ impl KlippApp {
                     }
                     self.state.dirty = true;
                     self.sync_sequence_to_engine();
-                    return true;
+                    true
                 }
                 AppCommand::AutoLinkClipsBeneathSource {
                     source_clip_id, ramp_secs, mode,
@@ -7115,7 +7115,7 @@ impl KlippApp {
                     );
                     self.state.dirty = true;
                     self.sync_sequence_to_engine();
-                    return true;
+                    true
                 }
                 AppCommand::ApplyHyperzoom {
                     source_clip_id, target_clip_id, focal_x_norm, focal_y_norm,
@@ -7251,7 +7251,7 @@ impl KlippApp {
 
                     self.state.dirty = true;
                     self.sync_sequence_to_engine();
-                    return true;
+                    true
                 }
                 AppCommand::OpenSaveHyperzoomPresetDialog { source_clip } => {
                     // Pin the source clip so the dialog reads the
@@ -7262,7 +7262,7 @@ impl KlippApp {
                     self.state.save_hyperzoom_preset_source_clip = Some(*source_clip);
                     self.state.save_hyperzoom_preset_name.clear();
                     self.state.save_hyperzoom_preset_error = None;
-                    return true;
+                    true
                 }
                 AppCommand::SetClipConsumedAsMatte { clip_id, consumed } => {
                     let cid = *clip_id;
@@ -7273,7 +7273,7 @@ impl KlippApp {
                     }
                     self.state.dirty = true;
                     self.sync_sequence_to_engine();
-                    return true;
+                    true
                 }
                 AppCommand::SetClipStencil { clip_id, channel, invert, feather_px, choke_px } => {
                     let cid = *clip_id;
@@ -7289,7 +7289,7 @@ impl KlippApp {
                     }
                     self.state.dirty = true;
                     self.sync_sequence_to_engine();
-                    return true;
+                    true
                 }
                 AppCommand::ClearClipStencil { clip_id } => {
                     let cid = *clip_id;
@@ -7299,7 +7299,7 @@ impl KlippApp {
                     }
                     self.state.dirty = true;
                     self.sync_sequence_to_engine();
-                    return true;
+                    true
                 }
                 AppCommand::UseClipAboveAsMatte { clip_id, channel } => {
                     let cid = *clip_id;
@@ -7325,7 +7325,7 @@ impl KlippApp {
                     } else {
                         self.state.toast.show("No clip above to use as matte. Stack a clip on a higher track first.");
                     }
-                    return true;
+                    true
                 }
                 AppCommand::ToggleClipStencil { clip_id } => {
                     let cid = *clip_id;
@@ -7344,7 +7344,7 @@ impl KlippApp {
                         }
                     };
                     let _ = self.cmd_tx.send(next_cmd);
-                    return true;
+                    true
                 }
 
                 // Grade versions — handled by handle_color_commands
@@ -7360,7 +7360,7 @@ impl KlippApp {
                         self.state.selected_clip = Some(first);
                     }
                     self.state.selected_clips = all_ids;
-                    return true;
+                    true
                 }
                 // Select all clips that start after playhead
                 AppCommand::SelectClipsForward => {
@@ -7375,7 +7375,7 @@ impl KlippApp {
                         self.state.selected_clip = Some(first);
                     }
                     self.state.selected_clips = ids;
-                    return true;
+                    true
                 }
                 // Select all clips that end before or at playhead
                 AppCommand::SelectClipsBackward => {
@@ -7390,7 +7390,7 @@ impl KlippApp {
                         self.state.selected_clip = Some(first);
                     }
                     self.state.selected_clips = ids;
-                    return true;
+                    true
                 }
                 // Frame grab: save current viewer frame as PNG
                 AppCommand::FrameGrab => {
@@ -7424,7 +7424,7 @@ impl KlippApp {
                     } else {
                         self.state.toast.show("No frame available".to_string());
                     }
-                    return true;
+                    true
                 }
                 // Extract frame to bin: save PNG + import as still — no file dialog.
                 AppCommand::ExtractFrameToBin => {
@@ -7473,9 +7473,9 @@ impl KlippApp {
                             self.state.toast.show(format!("Failed to extract frame: {e}"));
                         }
                     }
-                    return true;
+                    true
                 }
-            _ => return false,
+            _ => false,
         }
     }
 
@@ -11146,7 +11146,7 @@ impl KlippApp {
                             }
                         }
                     }
-                    scan_dir(&directory, &mut file_map, 0);
+                    scan_dir(directory, &mut file_map, 0);
 
                     let mut relinked = 0;
                     for (media_id, filename) in &offline {
@@ -11507,7 +11507,7 @@ impl KlippApp {
                 AppCommand::OpenBatchRenameDialog { media_ids } => {
                     self.state.batch_rename_ids = media_ids.clone();
                     self.state.show_batch_rename_dialog = true;
-                    return true;
+                    true
                 }
                 AppCommand::RenameMediaItem { media_id, new_filename } => {
                     if let Some(item) = self.state.media_pool.get_mut(media_id) {
@@ -11527,7 +11527,7 @@ impl KlippApp {
                             self.state.dirty = true;
                         }
                     }
-                    return true;
+                    true
                 }
                 AppCommand::BatchRenameMediaItems { changes } => {
                     // Snapshot old names, apply new ones, push a single undo
@@ -11555,7 +11555,7 @@ impl KlippApp {
                         ));
                         self.state.dirty = true;
                     }
-                    return true;
+                    true
                 }
                 AppCommand::RenameBin { old_name, new_name } => {
                     // Rename the Bin record itself
@@ -12686,7 +12686,7 @@ impl KlippApp {
                             let t = s.trim();
                             if t.is_empty() { None } else { Some(t.to_string()) }
                         });
-                        while node.input_links.last().map_or(false, |l| l.is_none()) {
+                        while node.input_links.last().is_some_and(|l| l.is_none()) {
                             node.input_links.pop();
                         }
                     }
@@ -14124,7 +14124,7 @@ impl KlippApp {
                 // egui TextEdit floating in the bounding box owns
                 // the visible text from now until exit.
                 self.render_title_to_viewer(*clip_id);
-                return true;
+                true
             }
             AppCommand::EndTitleEdit => {
                 let clip_id = self.state.viewer_text_edit_clip;
@@ -14137,7 +14137,7 @@ impl KlippApp {
                 if let Some(cid) = clip_id {
                     self.render_title_to_viewer(cid);
                 }
-                return true;
+                true
             }
             AppCommand::CreateTitleClip { track_index, timeline_in, duration_frames } => {
                 let ti = *track_index;
@@ -23574,7 +23574,7 @@ impl KlippApp {
             let paste_clip_pressed = kb.is_action_pressed("paste_clip", i);
             let paste_color_pressed = kb.is_action_pressed("paste_color_nodes", i);
             let color_clipboard_ready = self.state.grade_node_clipboard.as_ref()
-                .map_or(false, |c| !c.nodes.is_empty());
+                .is_some_and(|c| !c.nodes.is_empty());
             match (paste_color_pressed, paste_clip_pressed) {
                 (true, true) => {
                     if in_color_panel && color_clipboard_ready {
@@ -26153,7 +26153,7 @@ impl eframe::App for KlippApp {
         self.state.browser_skim_active_this_frame = false;
 
         // Process pending skim transcodes (queued during drain_events)
-        let pending_skims: Vec<MediaId> = self.state.pending_skim_transcodes.drain(..).collect();
+        let pending_skims: Vec<MediaId> = std::mem::take(&mut self.state.pending_skim_transcodes);
         for mid in pending_skims {
             // Re-use the command processing path
             self.handle_skim_transcode(mid);
@@ -26661,9 +26661,9 @@ impl eframe::App for KlippApp {
                                             .unwrap_or("")
                                             .to_string();
                                         let mut dialog = rfd::FileDialog::new()
-                                            .set_title(&format!("Locate {}", filename));
+                                            .set_title(format!("Locate {}", filename));
                                         if !ext.is_empty() {
-                                            dialog = dialog.add_filter(&ext.to_uppercase(), &[ext.as_str()]);
+                                            dialog = dialog.add_filter(ext.to_uppercase(), &[ext.as_str()]);
                                         }
                                         if let Some(new_path) = dialog.pick_file() {
                                             all_cmds.push(AppCommand::RelinkMedia {
@@ -29926,9 +29926,7 @@ impl KlippApp {
                     .resizable(false)
                     .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
                     .show(ctx, |ui| {
-                        ui.label(format!(
-                            "The export target is the same file as a clip in this project:"
-                        ));
+                        ui.label("The export target is the same file as a clip in this project:".to_string());
                         ui.add_space(2.0);
                         ui.label(format!("  \u{2022} {}", filename));
                         ui.add_space(6.0);
@@ -32798,10 +32796,10 @@ fn title_edit_clip_id(cmd: &AppCommand) -> Option<klipp_core::ClipId> {
 /// TextBox when `target` is `None` (the historical single-text
 /// behaviour). Used by every per-property title command so an
 /// Inspector edit follows the active per-object selection.
-fn target_textbox_mut<'a>(
-    td: &'a mut klipp_timeline::TitleData,
+fn target_textbox_mut(
+    td: &mut klipp_timeline::TitleData,
     target: Option<klipp_timeline::TitleObjectId>,
-) -> Option<&'a mut klipp_timeline::TextBox> {
+) -> Option<&mut klipp_timeline::TextBox> {
     // Resolve which index in `td.objects` the request targets. Done
     // up-front (immutable scan) so the subsequent mutable borrow is
     // a single, simple iter that the borrow checker accepts without
@@ -33867,7 +33865,7 @@ fn build_whoosh_media_item(
     // arithmetic uses the same rate as the underlying audio.
     let duration = klipp_core::RationalTime {
         value: (dur_secs * SAMPLE_RATE as f64).round() as i64,
-        rate: SAMPLE_RATE as u32,
+        rate: SAMPLE_RATE,
     };
     let label = match variant {
         klipp_audio::WhooshVariant::Short => "Whoosh (short)",
@@ -34507,7 +34505,7 @@ fn generate_render_script(
     let mut s = String::new();
     s.push_str("#!/usr/bin/env bash\n");
     s.push_str("set -euo pipefail\n");
-    s.push_str("\n");
+    s.push('\n');
     s.push_str("# =============================================================================\n");
     s.push_str("# WARNING: Klipp headless render script — CUTS ONLY.\n");
     s.push_str("#\n");
@@ -34527,9 +34525,9 @@ fn generate_render_script(
     s.push_str("# This script is intended for headless / CI / batch pipelines where only\n");
     s.push_str("# rough-cut output is needed.\n");
     s.push_str("# =============================================================================\n");
-    s.push_str("\n");
+    s.push('\n');
     s.push_str(&format!("OUTPUT={}\n", output_q));
-    s.push_str("\n");
+    s.push('\n');
 
     if segs.is_empty() {
         s.push_str("echo \"Error: no media clips on the first video track — nothing to render.\" >&2\n");
@@ -34548,17 +34546,17 @@ fn generate_render_script(
         s.push_str(&format!("  -vf {} \\\n", shell_single_quote(&vf)));
         s.push_str(&format!("  -c:v {}", video_codec));
         if !preset_args.is_empty() {
-            s.push_str(" ");
+            s.push(' ');
             s.push_str(&preset_args);
         }
         if !quality_args.is_empty() {
-            s.push_str(" ");
+            s.push(' ');
             s.push_str(&quality_args);
         }
         s.push_str(" \\\n");
         s.push_str(&format!("  {} \\\n", audio_args));
         s.push_str("  \"$OUTPUT\"\n");
-        s.push_str("\n");
+        s.push('\n');
         s.push_str("echo \"Done: $OUTPUT\"\n");
         return s;
     }
@@ -34571,7 +34569,7 @@ fn generate_render_script(
     s.push_str("trap 'rm -rf \"$TMPDIR\"' EXIT\n");
     s.push_str("LIST=\"$TMPDIR/concat.txt\"\n");
     s.push_str(": > \"$LIST\"\n");
-    s.push_str("\n");
+    s.push('\n');
 
     for (i, seg) in segs.iter().enumerate() {
         let src_q = shell_single_quote(&seg.source_path);
@@ -34585,23 +34583,23 @@ fn generate_render_script(
         s.push_str(&format!("  -vf {} \\\n", shell_single_quote(&vf)));
         s.push_str(&format!("  -c:v {}", video_codec));
         if !preset_args.is_empty() {
-            s.push_str(" ");
+            s.push(' ');
             s.push_str(&preset_args);
         }
         if !quality_args.is_empty() {
-            s.push_str(" ");
+            s.push(' ');
             s.push_str(&quality_args);
         }
         s.push_str(" \\\n");
         s.push_str(&format!("  {} \\\n", audio_args));
         s.push_str("  \"$SEG\"\n");
         s.push_str("printf \"file '%s'\\n\" \"$SEG\" >> \"$LIST\"\n");
-        s.push_str("\n");
+        s.push('\n');
     }
 
     s.push_str("# Concat pass (stream copy — no re-encode).\n");
     s.push_str("ffmpeg -y -f concat -safe 0 -i \"$LIST\" -c copy \"$OUTPUT\"\n");
-    s.push_str("\n");
+    s.push('\n');
     s.push_str("echo \"Done: $OUTPUT\"\n");
     s
 }
@@ -34638,7 +34636,7 @@ fn generate_ass(subs: &[SubtitleEntry]) -> String {
     out.push_str("ScaledBorderAndShadow: yes\n");
     out.push_str("PlayResX: 1920\n");
     out.push_str("PlayResY: 1080\n");
-    out.push_str("\n");
+    out.push('\n');
 
     // [V4+ Styles]
     out.push_str("[V4+ Styles]\n");
@@ -34648,7 +34646,7 @@ StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, \
 Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n");
     out.push_str("Style: Default,Arial,48,&H00FFFFFF,&H000000FF,\
 &H00000000,&H64000000,0,0,0,0,100,100,0,0,1,2,0,2,10,10,20,1\n");
-    out.push_str("\n");
+    out.push('\n');
 
     // [Events]
     out.push_str("[Events]\n");
@@ -36561,7 +36559,7 @@ mod compound_clip_cycle_tests {
     #[test]
     fn direct_cycle_a_contains_b_then_b_into_a_detected() {
         let mut a = make_seq("a");
-        let mut b = make_seq("b");
+        let b = make_seq("b");
         let a_id = a.id;
         let b_id = b.id;
         // a contains b
@@ -37121,7 +37119,7 @@ mod hyperzoom_handler_tests {
 
         let clip = seq.tracks.iter().flat_map(|t| t.clips.iter()).find(|c| c.id == cid).unwrap();
         let (rotation, fr_out) = clip.builtin_effects.iter().find_map(|e| match e {
-            BuiltinEffect::Transform { rotation, focal_ref, .. } => Some((*rotation, focal_ref.clone())),
+            BuiltinEffect::Transform { rotation, focal_ref, .. } => Some((*rotation, *focal_ref)),
             _ => None,
         }).unwrap();
         assert!((rotation - 30.0).abs() < 1e-6, "baseline rotation preserved");
@@ -37183,7 +37181,7 @@ mod hyperzoom_handler_tests {
         });
         let clip = seq.tracks.iter().flat_map(|t| t.clips.iter()).find(|c| c.id == cid).unwrap();
         let fr = clip.builtin_effects.iter().find_map(|e| match e {
-            BuiltinEffect::Transform { focal_ref, .. } => focal_ref.clone(),
+            BuiltinEffect::Transform { focal_ref, .. } => *focal_ref,
             _ => None,
         }).unwrap();
         match fr {
@@ -37278,7 +37276,7 @@ mod hyperzoom_handler_tests {
         // The first-apply lays in the chromatic at focal=(0.5,0.5);
         // the second apply at focal=(0.2,0.8) must overwrite, not
         // leave the old center stale.
-        let mut c = fresh_clip();
+        let c = fresh_clip();
         let cid = c.id;
         let mut seq = seq_with_clips(vec![c]);
         let red = vec![kf(0.0, 0.0), kf(0.5, -6.0)];

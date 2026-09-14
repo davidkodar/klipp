@@ -583,17 +583,14 @@ pub fn parse_fcpxml(xml: &str) -> Result<ImportResult, FcpxmlImportError> {
     for child in spine.children().filter(|n| n.is_element()) {
         match child.tag_name().name() {
             "asset-clip" | "clip" => {
-                match parse_clip_element(
+                if let Some(clip) = parse_clip_element(
                     child,
                     &assets,
                     &mut media_pool,
                     &mut media_cache,
                     seq_fps,
                     &mut warnings,
-                )? {
-                    Some(clip) => track.clips.push(clip),
-                    None => {}
-                }
+                )? { track.clips.push(clip) }
             }
             "gap" => {
                 // Gaps in FCPXML are explicit on the spine. Klipp's timeline

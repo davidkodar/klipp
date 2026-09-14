@@ -40,45 +40,42 @@ pub enum EffectCategory {
 /// single segmented control. "Hide unsupported" remains a separate
 /// AppState bool — its toggle UI lands in a follow-up.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Default)]
 pub enum SourceFilter {
+    #[default]
     All,
     Builtin,
     Ofx,
 }
 
-impl Default for SourceFilter {
-    fn default() -> Self { SourceFilter::All }
-}
 
 /// Effects-grid layout mode. Grid renders 2-column thumbnail cards;
 /// List would render a denser one-row-per-effect list. List rendering
 /// itself is out of scope for the current pass — the toggle exists so
 /// the segmented icon-button state has a real binding to flip.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Default)]
 pub enum EffectViewMode {
+    #[default]
     Grid,
     List,
 }
 
-impl Default for EffectViewMode {
-    fn default() -> Self { EffectViewMode::Grid }
-}
 
 /// Sort mode for the effects grid. Drives the result strip's sort
 /// dropdown. `Name` is the alphabetical default; `Category` and
 /// `Source` group entries before sorting alphabetically within each
 /// group.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Default)]
 pub enum EffectSort {
+    #[default]
     NameAsc,
     NameDesc,
     Category,
     Source,
 }
 
-impl Default for EffectSort {
-    fn default() -> Self { EffectSort::NameAsc }
-}
 
 impl EffectSort {
     pub fn label(self) -> &'static str {

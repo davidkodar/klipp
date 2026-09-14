@@ -74,7 +74,7 @@ fn finished(pid: u32, dir: &Path) -> bool {
     // pile up.
     dir.metadata()
         .and_then(|m| m.modified())
-        .and_then(|t| t.elapsed().map_err(|e| std::io::Error::other(e)))
+        .and_then(|t| t.elapsed().map_err(std::io::Error::other))
         .is_ok_and(|age| age.as_secs() > 3600)
 }
 

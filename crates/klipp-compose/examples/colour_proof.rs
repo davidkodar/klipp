@@ -223,7 +223,7 @@ fn main() {
 
     let mut gpu = klipp_effects::gpu::GpuEffectsPipeline::new();
     println!("{}", if gpu.is_some() { "GPU available: rendering the GPU path" } else { "no GPU: rendering the CPU path" });
-    println!("\n{:<16} {:<18} {:>10} {:>9} {:>7}  {}", "case", "probe", "linear R", "cd/m²", "PQ 10b", "RGB");
+    println!("\n{:<16} {:<18} {:>10} {:>9} {:>7}  RGB", "case", "probe", "linear R", "cd/m²", "PQ 10b");
     for (name, fx) in &cases {
         let input = chart();
         let out = match gpu.as_mut() {

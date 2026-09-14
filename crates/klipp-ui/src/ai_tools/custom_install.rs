@@ -88,9 +88,11 @@ pub enum CustomDownloadEvent {
 
 /// Top-level state machine. AppState carries one of these.
 #[derive(Debug)]
+#[derive(Default)]
 pub enum CustomInstallState {
     /// Modal closed — the dialog footer's Add custom model… button
     /// transitions Idle → Form.
+    #[default]
     Idle,
     /// Modal open with the form fields. Submit transitions to
     /// Downloading; Cancel returns to Idle.
@@ -112,11 +114,6 @@ pub enum CustomInstallState {
     },
 }
 
-impl Default for CustomInstallState {
-    fn default() -> Self {
-        Self::Idle
-    }
-}
 
 impl CustomInstallState {
     /// Drain any pending events from the worker thread and update

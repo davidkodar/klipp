@@ -164,18 +164,17 @@ pub enum FocalRef {
 /// Direction of a `BuiltinEffect::ColorFade` region.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum ColorFadeMode {
     /// Fade FROM colour at the start of the clip — first
     /// `duration_secs` of the clip's playable range.
+    #[default]
     In,
     /// Fade TO colour at the end of the clip — last
     /// `duration_secs` of the clip's playable range.
     Out,
 }
 
-impl Default for ColorFadeMode {
-    fn default() -> Self { Self::In }
-}
 
 /// Spill-suppression algorithm used by `BuiltinEffect::ChromaKey` to
 /// reduce the key colour cast on the foreground RGB after the alpha
@@ -634,11 +633,11 @@ pub enum BuiltinEffect {
     /// Resolution behaviour:
     ///   - ≤ 2048 × 2048 with 8-aligned dims → straight render.
     ///   - > 2048 with NON-temporal plugin → tiled render (1024×1024
-    ///     tiles, 64-px overlap; spatial-filter seams may show for
-    ///     wide kernels).
+    ///     > tiles, 64-px overlap; spatial-filter seams may show for
+    ///     > wide kernels).
     ///   - > 2048 with TEMPORAL plugin (delay0r, baltan, …) → input
-    ///     is passed through unchanged. The inspector blocks this
-    ///     case at apply time with a toast.
+    ///     > is passed through unchanged. The inspector blocks this
+    ///     > case at apply time with a toast.
     ///
     /// CPU-only; `chain_supports_gpu` returns false on any chain
     /// containing a Frei0r entry.
@@ -926,7 +925,7 @@ mod tests {
         // Blurring a uniform image should produce the same image (constant signal is its own blur)
         let w = 8u32;
         let h = 8u32;
-        let rgba = vec![120, 80, 200, 255].repeat((w * h) as usize);
+        let rgba = [120, 80, 200, 255].repeat((w * h) as usize);
         let result = apply_effects(
             &[BuiltinEffect::GaussianBlur { radius: 3.0 }],
             rgba.clone(), w, h,
@@ -947,7 +946,7 @@ mod tests {
         // Sharpening a uniform image: no edges to enhance, result should match input
         let w = 8u32;
         let h = 8u32;
-        let rgba = vec![100, 150, 200, 255].repeat((w * h) as usize);
+        let rgba = [100, 150, 200, 255].repeat((w * h) as usize);
         let result = apply_effects(
             &[BuiltinEffect::Sharpen { amount: 1.0 }],
             rgba.clone(), w, h,
@@ -967,7 +966,7 @@ mod tests {
         // 4x4 image, crop left 50%: left 2 columns become transparent
         let w = 4u32;
         let h = 4u32;
-        let rgba = vec![180, 90, 45, 255].repeat((w * h) as usize);
+        let rgba = [180, 90, 45, 255].repeat((w * h) as usize);
         let result = apply_effects(
             &[BuiltinEffect::Crop { left: 0.5, right: 0.0, top: 0.0, bottom: 0.0, feather: 0.0 }],
             rgba, w, h,
@@ -1233,7 +1232,7 @@ mod tests {
         // Apply multiple effects; output should always have same dimensions as input
         let w = 8u32;
         let h = 8u32;
-        let rgba = vec![128, 64, 32, 255].repeat((w * h) as usize);
+        let rgba = [128, 64, 32, 255].repeat((w * h) as usize);
         let effects = vec![
             BuiltinEffect::Opacity { value: 0.8 },
             BuiltinEffect::GaussianBlur { radius: 2.0 },
@@ -1260,7 +1259,7 @@ mod tests {
             BuiltinEffect::Levels { in_black: 0.0, in_white: 1.0, gamma: 1.0, out_black: 0.0, out_white: 1.0 },
         ];
         for effect in &effects {
-            let r = apply_effects(&[effect.clone()], rgba.clone(), 1, 1);
+            let r = apply_effects(std::slice::from_ref(effect), rgba.clone(), 1, 1);
             assert_eq!(r.len(), 4, "1x1 output should be 4 bytes for {:?}", effect);
         }
     }

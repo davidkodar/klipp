@@ -40,8 +40,8 @@ fn make_p010(width: u32, height: u32) -> (Vec<u8>, Vec<u8>, u32, u32) {
     let mut uv = Vec::with_capacity((uv_stride * (height / 2)) as usize);
     for row in 0..(height / 2) {
         for col in 0..(width / 2) {
-            let u10: u32 = 128 + (col as u32 + row as u32) % 768;
-            let v10: u32 = 128 + (col as u32 * 2 + row as u32) % 768;
+            let u10: u32 = 128 + (col + row) % 768;
+            let v10: u32 = 128 + (col * 2 + row) % 768;
             let pu: u16 = ((u10 & 0x3FF) << 6) as u16;
             let pv: u16 = ((v10 & 0x3FF) << 6) as u16;
             uv.extend_from_slice(&pu.to_le_bytes());

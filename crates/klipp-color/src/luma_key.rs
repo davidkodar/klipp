@@ -74,9 +74,9 @@ fn soft_range(val: f32, lo: f32, hi: f32, soft: f32) -> f32 {
         return 0.0;
     }
     if val < lo {
-        return ((1.0 - (lo - val) / soft).clamp(0.0, 1.0)) as f32;
+        return (1.0 - (lo - val) / soft).clamp(0.0, 1.0);
     }
-    ((1.0 - (val - hi) / soft).clamp(0.0, 1.0)) as f32
+    (1.0 - (val - hi) / soft).clamp(0.0, 1.0)
 }
 
 #[cfg(test)]

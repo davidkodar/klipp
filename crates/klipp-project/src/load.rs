@@ -524,7 +524,7 @@ fn load_sequence_from_json(seq_json: &SequenceJson, project_dir: &Path) -> Resul
                 let pre = clip.track_points.len();
                 clip.track_points.retain(|tp| match tp.linked_mask {
                     None => true,
-                    Some((nid, mi)) => mask_counts.get(&nid).map_or(false, |&n| mi < n),
+                    Some((nid, mi)) => mask_counts.get(&nid).is_some_and(|&n| mi < n),
                 });
                 let dropped = pre - clip.track_points.len();
                 if dropped > 0 {
@@ -860,7 +860,7 @@ pub fn load_looks(dir: &Path) -> Vec<Look> {
     let mut out = Vec::new();
     for entry in entries.flatten() {
         let path = entry.path();
-        if path.extension().map_or(true, |e| e != "json") { continue; }
+        if path.extension().is_none_or(|e| e != "json") { continue; }
         match read_to_string_capped(&path, MAX_INPUT_FILE_BYTES) {
             Ok(text) => match serde_json::from_str::<Look>(&text) {
                 Ok(look) => out.push(look),
@@ -871,6 +871,6 @@ pub fn load_looks(dir: &Path) -> Vec<Look> {
     }
     // Stable order — UUIDs sort lexicographically. Avoids the UI list
     // jumping around between loads on the same project.
-    out.sort_by(|a, b| a.id.cmp(&b.id));
+    out.sort_by_key(|a| a.id);
     out
 }

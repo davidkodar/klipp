@@ -213,7 +213,7 @@ impl FrameSource for Flat {
             let codes: Vec<u32> = (0..height)
                 .flat_map(|y| {
                     (0..width).map(move |x| {
-                        let v = (y * 1023 / height.max(1)) as u32;
+                        let v = y * 1023 / height.max(1);
                         let t = x * 1023 / width.max(1);
                         klipp_color::hdr::pack_rgb10(
                             v.min(1023),

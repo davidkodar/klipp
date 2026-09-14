@@ -850,6 +850,6 @@ mod live_decode_tests {
             pcm.len(),
             duration_secs
         );
-        assert!(pcm.len() > 0);
+        assert!(!pcm.is_empty());
     }
 }

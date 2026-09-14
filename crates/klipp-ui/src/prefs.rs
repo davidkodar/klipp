@@ -183,7 +183,7 @@ pub struct PlaybackPrefs {
     /// resolution (4K60 etc.). Mirrors DaVinci's "Optimized Media"
     /// and FCP's "Proxy" toggle. Auto = swap when source > 1080p OR
     /// > 30 fps AND skim is on disk; AlwaysOriginal = never swap;
-    /// AlwaysOptimized = swap whenever a skim exists.
+    /// > AlwaysOptimized = swap whenever a skim exists.
     #[serde(default)]
     pub optimised_playback: OptimisedPlayback,
     /// Pre-roll duration in seconds before playback starts.
@@ -751,6 +751,7 @@ impl Default for ExportPrefs {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Default)]
 pub struct ProxyPrefs {
     pub auto_generate_on_import: bool,
     /// Automatically switch to proxy files during timeline scrubbing for speed.
@@ -798,16 +799,6 @@ impl Default for PlaybackPrefs {
     }
 }
 
-impl Default for ProxyPrefs {
-    fn default() -> Self {
-        Self {
-            auto_generate_on_import: false,
-            auto_switch_during_scrub: false,
-            proxy_resolution: ProxyResolution::default(),
-            proxy_cache_dir: None,
-        }
-    }
-}
 
 impl Preferences {
     /// Returns the config file path: ~/.config/klipp/preferences.json
@@ -1209,16 +1200,13 @@ impl Default for AudioHardwarePrefs {
 /// On load, a present `theme_mode` is translated to a `theme_name`
 /// via [`AppearancePrefs::migrate_theme_mode`] then dropped.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Default)]
 pub enum ThemeMode {
+    #[default]
     Dark,
     Light,
 }
 
-impl Default for ThemeMode {
-    fn default() -> Self {
-        Self::Dark
-    }
-}
 
 /// Appearance / theme preferences.
 #[derive(Debug, Clone, Serialize, Deserialize)]

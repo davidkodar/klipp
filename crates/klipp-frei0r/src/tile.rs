@@ -83,8 +83,8 @@ where
         return rgba_in.to_vec();
     }
 
-    if width % F0R_DIM_ALIGN != 0
-        || height % F0R_DIM_ALIGN != 0
+    if !width.is_multiple_of(F0R_DIM_ALIGN)
+        || !height.is_multiple_of(F0R_DIM_ALIGN)
         || width < F0R_DIM_ALIGN
         || height < F0R_DIM_ALIGN
     {
@@ -322,9 +322,9 @@ mod tests {
     #[test]
     fn tile_dim_constants_satisfy_frei0r_constraints() {
         assert!(TILE_DIM <= F0R_MAX_DIM, "tile must fit in one frei0r call");
-        assert!(TILE_DIM % F0R_DIM_ALIGN == 0);
+        assert!(TILE_DIM.is_multiple_of(F0R_DIM_ALIGN));
         assert!((TILE_DIM + 2 * TILE_OVERLAP) <= F0R_MAX_DIM,
             "tile + both-sided overlap must still fit in one call");
-        assert!(TILE_OVERLAP % F0R_DIM_ALIGN == 0);
+        assert!(TILE_OVERLAP.is_multiple_of(F0R_DIM_ALIGN));
     }
 }

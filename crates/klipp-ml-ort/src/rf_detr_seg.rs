@@ -303,7 +303,7 @@ impl RfDetrSeg {
         // try the raw path before changing anything else.)
         let src_w = req.frame.width as usize;
         let src_h = req.frame.height as usize;
-        let model_size = RF_DETR_INPUT_SIZE as u32;
+        let model_size = RF_DETR_INPUT_SIZE;
         let resized = bilinear_resize_rgba(
             req.frame.linear_rgba,
             req.frame.width,

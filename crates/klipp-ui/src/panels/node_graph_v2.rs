@@ -664,7 +664,7 @@ impl NodeGraphV2Panel {
             self.minimap_visible = !self.minimap_visible;
         }
         let used: Vec<u8> = self.view_bookmarks.iter().enumerate()
-            .filter_map(|(i, b)| b.is_some().then(|| (i + 1) as u8))
+            .filter(|&(_i, b)| b.is_some()).map(|(i, _b)| (i + 1) as u8)
             .collect();
         let hint = if used.is_empty() {
             "Bookmarks  ·  no slots set yet".to_string()
@@ -4147,15 +4147,14 @@ impl NodeGraphV2Panel {
                     // on multi-selection), so right-clicking a
                     // compound always gets Ungroup regardless of
                     // how many other nodes happen to be selected.
-                    if kind == NodeKind::Compound {
-                        if ui.button("Ungroup Compound").clicked() {
+                    if kind == NodeKind::Compound
+                        && ui.button("Ungroup Compound").clicked() {
                             cmds.push(AppCommand::UngroupCompound {
                                 clip_id,
                                 node_id,
                             });
                             close = true;
                         }
-                    }
 
                     // Wireless-link controls: a sender label on the
                     // primary output (one per node) and per-input-port
@@ -4208,20 +4207,19 @@ impl NodeGraphV2Panel {
                                         close = true;
                                     }
                                 }
-                                if cur.is_some() {
-                                    if ui.button("Clear").clicked() {
+                                if cur.is_some()
+                                    && ui.button("Clear").clicked() {
                                         cmds.push(AppCommand::SetNodeInputLink {
                                             clip_id, node_id, port, label: None,
                                         });
                                         ui.close_menu();
                                         close = true;
                                     }
-                                }
                                 ui.separator();
                             }
                         });
-                    } else if can_receive && current_receives.iter().any(|s| s.is_some()) {
-                        if ui.button("Wireless: clear all receives").clicked() {
+                    } else if can_receive && current_receives.iter().any(|s| s.is_some())
+                        && ui.button("Wireless: clear all receives").clicked() {
                             for (port, _) in current_receives.iter().enumerate()
                                 .filter(|(_, s)| s.is_some())
                             {
@@ -4231,7 +4229,6 @@ impl NodeGraphV2Panel {
                             }
                             close = true;
                         }
-                    }
                     let multi_label = if in_set && selected_set.len() > 1 {
                         format!("Delete {} selected", selected_set.len())
                     } else {

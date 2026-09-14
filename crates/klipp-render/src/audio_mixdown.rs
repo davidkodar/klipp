@@ -519,7 +519,7 @@ mod tests {
         let path2 = std::env::var("TEST_MEDIA_FILE").map(std::path::PathBuf::from).unwrap();
         let buf = decode_clip_audio(&path2, 0.0, 48000).unwrap();
         assert!(
-            buf.len() > 0,
+            !buf.is_empty(),
             "decode_clip_audio should produce samples"
         );
         assert!(

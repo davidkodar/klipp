@@ -12,3 +12,6 @@ ffmpeg-next = { workspace = true }
 bytemuck = { workspace = true }
 tracing = { workspace = true }
 dirs = { workspace = true }
+
+[lints]
+workspace = true

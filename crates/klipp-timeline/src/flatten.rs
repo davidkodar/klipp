@@ -404,7 +404,7 @@ mod tests {
         let parent = make_seq("parent");
         let bogus = SequenceId::new();
         let compound = Clip::sequence(bogus, t(0), t(24));
-        let result = flatten_clip(&compound, bogus, &[parent.clone()], 0);
+        let result = flatten_clip(&compound, bogus, std::slice::from_ref(&parent), 0);
         assert!(result.is_empty());
     }
 

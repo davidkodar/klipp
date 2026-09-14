@@ -300,7 +300,7 @@ fn parse_geometry_keyframes(
             .ok_or_else(|| format!("malformed geometry stop '{stop}' (expected 'time=x y w h a')"))?;
         // Strip MLT interpolation-hint suffixes on the time key (e.g. "0~",
         // "0|", "0!"). We map all to Linear — the hint is informational.
-        let key = key.trim().trim_end_matches(|c: char| matches!(c, '~' | '|' | '!'));
+        let key = key.trim().trim_end_matches(['~', '|', '!']);
         let frames = parse_mlt_time(key, fps)
             .ok_or_else(|| format!("invalid geometry time '{key}'"))?;
         let time_secs = frames as f64 / fps.as_f64();
@@ -1689,7 +1689,7 @@ mod tests {
 
     // ── Producer classification ─────────────────────────────────────
 
-    fn first_producer_of_fixture(xml: &str) -> roxmltree::Document {
+    fn first_producer_of_fixture(xml: &str) -> roxmltree::Document<'_> {
         roxmltree::Document::parse(xml).expect("fixture parse")
     }
 

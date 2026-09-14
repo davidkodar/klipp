@@ -19,3 +19,6 @@ pathdiff = { workspace = true }
 roxmltree = "0.20"
 zip = { version = "2", default-features = false }
 image = { version = "0.25", default-features = false, features = ["png"] }
+
+[lints]
+workspace = true

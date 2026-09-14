@@ -253,7 +253,7 @@ pub fn fast9_detect(
     }
 
     // Sort descending by score and truncate.
-    corners.sort_unstable_by(|a, b| b.score.cmp(&a.score));
+    corners.sort_unstable_by_key(|c| std::cmp::Reverse(c.score));
     corners.truncate(max_corners);
     corners
 }

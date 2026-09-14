@@ -275,7 +275,7 @@ fn cpu_section() -> ReportSection {
         .and_then(|s| {
             s.lines()
                 .find_map(|l| l.strip_prefix("MemTotal:"))
-                .and_then(|rest| rest.trim().split_whitespace().next())
+                .and_then(|rest| rest.split_whitespace().next())
                 .and_then(|kb| kb.parse::<u64>().ok())
         })
         .map(|kb| format!("{:.1} GB", kb as f64 / (1024.0 * 1024.0)))
@@ -329,8 +329,7 @@ fn gpu_section() -> ReportSection {
                 .split("Kernel Module")
                 .nth(1)
                 .map(|rest| {
-                    rest.trim()
-                        .split_whitespace()
+                    rest.split_whitespace()
                         .next()
                         .unwrap_or("")
                         .to_string()

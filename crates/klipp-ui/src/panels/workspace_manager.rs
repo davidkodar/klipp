@@ -151,7 +151,7 @@ pub fn show_workspace_manager_dialog(
                                 if let Some(path) = rfd::FileDialog::new()
                                     .set_title("Export Workspace")
                                     .add_filter("Klipp workspace (JSON)", &["json"])
-                                    .set_file_name(&format!("{}.json", sanitize(&ws.name)))
+                                    .set_file_name(format!("{}.json", sanitize(&ws.name)))
                                     .save_file()
                                 {
                                     match serde_json::to_string_pretty(ws) {

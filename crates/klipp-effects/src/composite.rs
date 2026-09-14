@@ -694,7 +694,7 @@ mod tests {
     // ═══════════════════════════════════════════════════════════════════
 
     fn solid_frame(r: u8, g: u8, b: u8, a: u8, w: u32, h: u32) -> Vec<u8> {
-        vec![r, g, b, a].repeat((w * h) as usize)
+        [r, g, b, a].repeat((w * h) as usize)
     }
 
     /// Test bridge: u8-in, u8-out wrapper around the post-refactor

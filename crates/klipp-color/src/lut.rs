@@ -587,8 +587,6 @@ pub fn apply_3d_lut_linear_ws(
 ///
 /// Pass `lut.input_space` / `lut.output_space` directly to recover
 /// the un-overridden behaviour.
-#[allow(clippy::too_many_arguments)]
-#[allow(clippy::too_many_arguments)]
 pub fn apply_3d_lut_linear_ws_with_overrides(
     rgba_linear: &mut [f32],
     lut: &LutData,
@@ -944,7 +942,7 @@ mod tests {
         for line in &data_lines {
             for val_str in line.split_whitespace() {
                 let v: f32 = val_str.parse().unwrap();
-                assert!(v >= 0.0 && v <= 1.0,
+                assert!((0.0..=1.0).contains(&v),
                     "LUT value out of range: {v} in line '{line}'");
             }
         }

@@ -33,6 +33,60 @@ members = [
 resolver = "2"
 
 # ─── Shared dependency versions across all crates ───────────────────────────
+# Lints the workspace deliberately declines, each with the reason.
+#
+# The point of this table is that clippy's output should be empty, so the
+# *next* warning is visible. Everything here was read individually before
+# being allowed — none of it is a blanket silence, and a few of clippy's
+# suggestions would actively make this code worse.
+[workspace.lints.clippy]
+# 182 hits, nearly all in klipp-color. These are published constants —
+# ACES coefficients, primaries matrices, transfer curve terms — written to
+# their full documented precision. f32 cannot hold all of it, which is
+# exactly what the lint says, but truncating them to what f32 *can* hold
+# destroys the provenance of the number and makes the source
+# unverifiable against the spec it came from.
+excessive_precision = "allow"
+# `chunks_exact(4)` over interleaved RGBA is the clearest possible
+# spelling of "one pixel at a time". The suggested `as_chunks::<4>().0
+# .iter()` is harder to read, and applying it mechanically rewrote 71
+# sites in hot pixel loops for an unmeasured benefit.
+chunks_exact_to_as_chunks = "allow"
+# A colour pipeline's functions genuinely take many parameters — planes,
+# strides, dimensions, rotation, colour ids, a matrix. "Fixing" this means
+# introducing parameter structs in the hottest code in the project, for no
+# behavioural gain.
+too_many_arguments = "allow"
+# Indexing by hand is clearer than an iterator when a loop indexes
+# *several* slices at once, which is most of the per-pixel code here.
+needless_range_loop = "allow"
+# These are deliberate guards pinning a constant, with messages saying so
+# ("cap must stay bounded so a buggy plugin can't hang the host"). Clippy
+# flags them because it can evaluate them at compile time — which is
+# precisely why they work.
+assertions_on_constants = "allow"
+# `drop(x)` on a non-Drop type to end a borrow before the borrowed buffer
+# is reused. Commented at the site; the call is doing real work even
+# though the type has no destructor.
+drop_non_drop = "allow"
+# `AVCOL_*_UNSPECIFIED | _ => fallback` in the ffmpeg tag decoders. The
+# named arm is redundant and documents that an unspecified tag maps to the
+# fallback on purpose rather than by omission.
+wildcard_in_or_patterns = "allow"
+# `(1 * w + 2)` in a test, written as `(y * w + x)` so the coordinate
+# reads as row 1, column 2.
+identity_op = "allow"
+# `!(nits > 0.0)` is a NaN guard: true for NaN, zero and negatives.
+# Clippy's suggested `nits <= 0.0` is *false* for NaN and would let it
+# through, so taking this suggestion would be a regression.
+neg_cmp_op_on_partial_ord = "allow"
+# Factoring a closure-heavy signature into `type` aliases moves the
+# information away from where it is read.
+type_complexity = "allow"
+# Renaming a public `as_mut` would be an API break for a naming
+# preference.
+should_implement_trait = "allow"
+
 [workspace.dependencies]
 
 # Fast compression for render cache

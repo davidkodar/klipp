@@ -87,11 +87,11 @@ pub fn downsample_linear_box(
     // that rectangle (typically 2×2 = 4).
     for dy in 0..dst_h {
         let sy0 = ((dy as u64 * src_h as u64) / dst_h as u64) as usize;
-        let sy1 = ((((dy + 1) as u64 * src_h as u64) + dst_h as u64 - 1) / dst_h as u64) as usize;
+        let sy1 = ((dy + 1) as u64 * src_h as u64).div_ceil(dst_h as u64) as usize;
         let sy1 = sy1.min(src_h_us);
         for dx in 0..dst_w {
             let sx0 = ((dx as u64 * src_w as u64) / dst_w as u64) as usize;
-            let sx1 = ((((dx + 1) as u64 * src_w as u64) + dst_w as u64 - 1) / dst_w as u64) as usize;
+            let sx1 = ((dx + 1) as u64 * src_w as u64).div_ceil(dst_w as u64) as usize;
             let sx1 = sx1.min(src_w_us);
             let mut acc = [0.0f32; 4];
             let mut count = 0u32;

@@ -133,11 +133,10 @@ fn pick_video_encoder(
         ExportVideoCodec::DNxHD115 | ExportVideoCodec::DNxHD145 => ("dnxhd", false),
         ExportVideoCodec::Av1 => {
             // Try NVENC AV1 first, then SVT-AV1
-            if hw_eligible {
-                if ffmpeg_next::encoder::find_by_name("av1_nvenc").is_some() {
+            if hw_eligible
+                && ffmpeg_next::encoder::find_by_name("av1_nvenc").is_some() {
                     return ("av1_nvenc", true);
                 }
-            }
             ("libsvtav1", false)
         }
         ExportVideoCodec::Vp9 => ("libvpx-vp9", false),
@@ -1901,7 +1900,7 @@ mod tests {
         let mut enc = Encoder::open(&path, &settings, &snapshot).unwrap();
 
         // Encode 10 red frames
-        let rgba = vec![255u8, 0, 0, 255].repeat(320 * 240);
+        let rgba = [255u8, 0, 0, 255].repeat(320 * 240);
         for _ in 0..10 {
             enc.encode_video_frame(&rgba, 320, 240).unwrap();
         }
@@ -1945,7 +1944,7 @@ mod tests {
 
         let mut enc = Encoder::open(&path, &settings, &snapshot).unwrap();
 
-        let rgba = vec![128u8, 128, 128, 255].repeat(320 * 240);
+        let rgba = [128u8, 128, 128, 255].repeat(320 * 240);
         for _ in 0..10 {
             enc.encode_video_frame(&rgba, 320, 240).unwrap();
         }
@@ -1977,7 +1976,7 @@ mod tests {
 
         let mut enc = Encoder::open(&path, &settings, &snapshot).unwrap();
 
-        let rgba = vec![0u8, 255, 0, 255].repeat(320 * 240); // green
+        let rgba = [0u8, 255, 0, 255].repeat(320 * 240); // green
         for _ in 0..5 {
             enc.encode_video_frame(&rgba, 320, 240).unwrap();
         }

@@ -856,8 +856,7 @@ mod tests {
         // Plugin v2 reordered the ports — same symbols, different
         // indices. Index-based deserialisation would confuse gain and
         // tone here.
-        let v2_reordered = vec![
-            Lv2ControlPort {
+        let v2_reordered = [Lv2ControlPort {
                 symbol: "tone".into(),
                 name: "Tone".into(),
                 default: 0.5,
@@ -872,8 +871,7 @@ mod tests {
                 min: Some(0.0),
                 max: Some(1.0),
                 index: 1,
-            },
-        ];
+            }];
         let _ = original_v1;
         let symbol_to_idx: HashMap<String, usize> = v2_reordered
             .iter()

@@ -256,7 +256,7 @@ mod tests {
     /// Pin the alignment guarantee: with three tracks at differing
     /// latency, applying the per-track compensation aligns their
     /// output streams sample-for-sample. Synthesised here as silence
-    /// + an impulse on each track at frame 0; the compensated streams
+    /// plus an impulse on each track at frame 0; the compensated streams
     /// must put their impulses at the same global frame offset
     /// (= max_latency).
     #[test]

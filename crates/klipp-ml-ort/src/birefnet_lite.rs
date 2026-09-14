@@ -229,7 +229,7 @@ impl BiRefNetLite {
 
         // Output shape is typically (1, 1, H, W). Some exports drop
         // the leading channel dim. Pick H, W defensively.
-        let dims: &[i64] = &out_shape;
+        let dims: &[i64] = out_shape;
         let (out_h, out_w) = match dims {
             [1, 1, h, w] | [1, h, w] => (*h as u32, *w as u32),
             other => {

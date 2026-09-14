@@ -26,3 +26,6 @@ klipp-color = { workspace = true }
 klipp-core = { workspace = true }
 klipp-effects = { workspace = true }
 klipp-engine = { workspace = true }
+
+[lints]
+workspace = true

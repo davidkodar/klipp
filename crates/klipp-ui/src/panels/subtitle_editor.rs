@@ -645,7 +645,7 @@ fn flush_text_edit(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use klipp_timeline::{Clip, ClipKind, Sequence, TitleData, Track, TrackKind};
+    use klipp_timeline::{Clip, ClipKind, Sequence, Track, TrackKind};
 
     fn make_title_clip(text: &str, start_frames: i64, end_frames: i64) -> Clip {
         let ti = Timecode::from_frames(start_frames, 24);
@@ -655,8 +655,8 @@ mod tests {
             kind: ClipKind::Title({
     let mut tb = klipp_timeline::TextBox::default();
     tb.text = text.to_string();
-    let mut td = klipp_timeline::TitleData::single_text(tb);
-    td
+    
+    klipp_timeline::TitleData::single_text(tb)
 }),
             timeline_in: ti,
             timeline_out: to,

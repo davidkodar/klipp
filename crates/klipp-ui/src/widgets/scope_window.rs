@@ -502,7 +502,7 @@ fn render_pane_scope(
     );
     let scope_image = if is_audio_only {
         let throttled = runtime.last_render[pane_idx]
-            .map_or(false, |t| t.elapsed().as_millis() < 33);
+            .is_some_and(|t| t.elapsed().as_millis() < 33);
         if throttled {
             None
         } else {
@@ -546,7 +546,7 @@ fn render_pane_scope(
                 || runtime.frame_gens[pane_idx] != gen;
 
             let throttled = is_playing && runtime.last_render[pane_idx]
-                .map_or(false, |t| t.elapsed().as_millis() < 80);
+                .is_some_and(|t| t.elapsed().as_millis() < 80);
 
             if stale && !throttled {
                 // FFmpeg path is the only video-scope renderer now. Lift
@@ -1061,8 +1061,8 @@ fn draw_pane_settings(
                 }
             });
             let floor = state.panes[pane_idx].settings.spectrogram_db_floor;
-            ui.small(format!("Scrolling FFT waterfall — ~10 s of history."));
-            ui.small(format!("x = time (oldest left), y = freq (log)."));
+            ui.small("Scrolling FFT waterfall — ~10 s of history.".to_string());
+            ui.small("x = time (oldest left), y = freq (log).".to_string());
             ui.small(format!("colour = dB magnitude, {floor:.0} … 0 dBFS."));
         }
     }

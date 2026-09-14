@@ -919,7 +919,7 @@ impl GpuP010Converter {
         );
         let codes = out.hdr_codes?;
         let size = codes.size();
-        if self.hdr_staging_buf.as_ref().map_or(true, |b| b.size() < size) {
+        if self.hdr_staging_buf.as_ref().is_none_or(|b| b.size() < size) {
             self.hdr_staging_buf = Some(self.device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("p010_hdr_staging"),
                 size,
@@ -1048,7 +1048,7 @@ mod tests {
         // the upper midtones — somewhere in [80, 240]. Anything far
         // outside that range means the tone-mapping math is broken.
         for c in [r, g, b] {
-            assert!(c >= 80 && c <= 240,
+            assert!((80..=240).contains(&c),
                 "HDR PQ diffuse white tone-mapped channel = {c}, expected 80-240");
         }
         // Neutral chroma → channels should be approximately equal.

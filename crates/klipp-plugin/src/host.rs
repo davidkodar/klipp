@@ -198,7 +198,7 @@ impl Drop for OfxPlugin {
                 if let Some(main_entry) = raw.main_entry {
                     let _ = unsafe {
                         main_entry(
-                            b"OfxActionUnload\0".as_ptr() as *const c_char,
+                            c"OfxActionUnload".as_ptr(),
                             std::ptr::null(),
                             std::ptr::null(),
                             std::ptr::null_mut(),

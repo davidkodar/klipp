@@ -957,10 +957,10 @@ impl TitleData {
         self.primary_text().and_then(|tb| tb.motion_blur.clone())
     }
     pub fn underline(&self) -> bool {
-        self.primary_text().map_or(false, |tb| tb.underline)
+        self.primary_text().is_some_and(|tb| tb.underline)
     }
     pub fn strikethrough(&self) -> bool {
-        self.primary_text().map_or(false, |tb| tb.strikethrough)
+        self.primary_text().is_some_and(|tb| tb.strikethrough)
     }
     pub fn case_transform(&self) -> TextCase {
         self.primary_text().map_or(TextCase::None, |tb| tb.case_transform)

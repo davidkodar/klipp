@@ -566,7 +566,7 @@ impl LaunchScreen {
                 // Already sorted most-recent-first from prefs
             }
             SortMode::Name => {
-                filtered.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+                filtered.sort_by_key(|a| a.name.to_lowercase());
             }
             SortMode::Size => {
                 filtered.sort_by(|a, b| b.total_size_bytes.unwrap_or(0).cmp(&a.total_size_bytes.unwrap_or(0)));

@@ -22,6 +22,7 @@ use crate::theme::KlippTheme;
 use klipp_core::{AppCommand, ClipId};
 use klipp_timeline::Look;
 
+#[derive(Default)]
 pub struct LooksPanelState {
     /// Buffer for the "save as" inline text field. Not stored in
     /// `AppState` because the panel is the only consumer.
@@ -33,15 +34,6 @@ pub struct LooksPanelState {
     pub save_field_open: bool,
 }
 
-impl Default for LooksPanelState {
-    fn default() -> Self {
-        Self {
-            new_look_name: String::new(),
-            renaming: None,
-            save_field_open: false,
-        }
-    }
-}
 
 pub fn show(
     ui: &mut egui::Ui,

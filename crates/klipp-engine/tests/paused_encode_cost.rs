@@ -25,7 +25,7 @@ fn paused_4k_stage_costs() {
     let parked = common::Parked::start(src, 3840, 2160);
     let tc = |f: i64| RationalTime::from_frames(f, common::FPS);
 
-    let mut report = |label: &str, cmd: AppCommand| {
+    let report = |label: &str, cmd: AppCommand| {
         let before = parked.perf().len();
         let g = parked.generation();
         parked.send(cmd);

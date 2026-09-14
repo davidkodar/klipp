@@ -361,7 +361,7 @@ fn probe_plugin_metadata(
                     default: info.default_value as f32,
                     min: info.min_value as f32,
                     max: info.max_value as f32,
-                    flags: info.flags.bits() as u32,
+                    flags: info.flags.bits(),
                 });
             }
         }
@@ -1163,8 +1163,7 @@ mod tests {
     /// a future plugin version reordering its param list.
     #[test]
     fn control_values_round_trip_by_param_id_not_index() {
-        let v1 = vec![
-            ClapParamInfo {
+        let v1 = [ClapParamInfo {
                 id: 0x10,
                 name: "Gain".into(),
                 default: 0.5,
@@ -1179,13 +1178,12 @@ mod tests {
                 min: 0.0,
                 max: 1.0,
                 flags: 0,
-            },
-        ];
+            }];
         let saved: Vec<(String, f32)> = vec![
             (v1[0].key(), 0.9),
             (v1[1].key(), 0.1),
         ];
-        let v2_reordered = vec![v1[1].clone(), v1[0].clone()];
+        let v2_reordered = [v1[1].clone(), v1[0].clone()];
         let id_to_idx: std::collections::HashMap<String, usize> = v2_reordered
             .iter()
             .enumerate()

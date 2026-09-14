@@ -508,7 +508,7 @@ mod tests {
         let original = HyperzoomPreset::from_scratch("My signature".into(), &tweaked_scratch());
         reg.save(original.clone()).expect("save");
         // Force a reload from disk.
-        let mut reg2 = HyperzoomPresetRegistry::for_test(dir);
+        let reg2 = HyperzoomPresetRegistry::for_test(dir);
         let presets = reg2.presets();
         assert_eq!(presets.len(), 1);
         assert_eq!(presets[0], original);
@@ -617,7 +617,7 @@ mod tests {
         let presets = reg2.presets();
         assert_eq!(presets.len(), 1, "good preset loaded, garbage skipped");
         assert_eq!(presets[0].name, "Good");
-        let _ = reg2.refresh_from_disk(); // exercise the public refresh path too
+        reg2.refresh_from_disk(); // exercise the public refresh path too
     }
 
     #[test]

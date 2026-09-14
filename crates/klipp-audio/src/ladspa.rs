@@ -1177,7 +1177,7 @@ mod tests {
     #[test]
     fn find_descriptor_returns_first_match_and_short_circuits() {
         // Plugin returns labels "a", "b", "c", "target", "more" then null.
-        let labels = vec!["a", "b", "c", "target", "more"];
+        let labels = ["a", "b", "c", "target", "more"];
         let mut visited = 0usize;
         let result = find_descriptor_index_by_label(
             LADSPA_DESCRIPTOR_CAP,
@@ -1195,7 +1195,7 @@ mod tests {
     fn find_descriptor_returns_not_found_when_plugin_terminates() {
         // Plugin returns labels "a", "b", "c" then null at index 3.
         // Cap is huge but null arrives first — we should NOT report cap-hit.
-        let labels = vec!["a", "b", "c"];
+        let labels = ["a", "b", "c"];
         let result = find_descriptor_index_by_label(
             LADSPA_DESCRIPTOR_CAP,
             "missing",
@@ -1377,12 +1377,12 @@ mod tests {
         std::fs::create_dir_all(&dir_b).unwrap();
 
         let plugins = vec![fixture_plugin(42, "stable")];
-        ladspa_cache::save(&base, &[dir_a.clone()], &plugins).expect("save");
+        ladspa_cache::save(&base, std::slice::from_ref(&dir_a), &plugins).expect("save");
 
-        let same = ladspa_cache::load(&base, &[dir_a.clone()]);
+        let same = ladspa_cache::load(&base, std::slice::from_ref(&dir_a));
         assert!(same.is_some(), "same-dir load should hit");
 
-        let different = ladspa_cache::load(&base, &[dir_b.clone()]);
+        let different = ladspa_cache::load(&base, std::slice::from_ref(&dir_b));
         assert!(
             different.is_none(),
             "different-dir signature should miss the cache"
@@ -1395,7 +1395,7 @@ mod tests {
     fn cache_load_missing_file_returns_none() {
         let tmp = unique_tmp("missing");
         // Don't create the dir — cache file definitely doesn't exist.
-        let result = ladspa_cache::load(&tmp, &[tmp.clone()]);
+        let result = ladspa_cache::load(&tmp, std::slice::from_ref(&tmp));
         assert!(result.is_none(), "missing cache file → None");
     }
 
@@ -1405,7 +1405,7 @@ mod tests {
         std::fs::create_dir_all(&tmp).unwrap();
         std::fs::write(tmp.join("ladspa_registry.json"), "{not valid json").unwrap();
 
-        let result = ladspa_cache::load(&tmp, &[tmp.clone()]);
+        let result = ladspa_cache::load(&tmp, std::slice::from_ref(&tmp));
         assert!(result.is_none(), "corrupt cache → None, not panic");
 
         let _ = std::fs::remove_dir_all(&tmp);

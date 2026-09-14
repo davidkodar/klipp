@@ -94,8 +94,8 @@ struct Nv12Params {
     primaries_matrix: [[f32; 4]; 3],
 }
 
-/// Per-shader code that runs after the shared colourspace prelude
-/// + helpers ([`crate::color_wgsl::WGSL_PRELUDE`] +
+/// Per-shader code that runs after the shared colourspace prelude and
+/// helpers ([`crate::color_wgsl::WGSL_PRELUDE`] plus
 /// [`crate::color_wgsl::WGSL_HELPERS`]). Reads NV12 (8-bit) Y/UV
 /// planes, dispatches the colourspace stages from the shared
 /// helpers, re-encodes as sRGB-u8 for the existing CPU/GPU
@@ -572,7 +572,7 @@ impl GpuNv12Converter {
         // Scene-referred sources write codes too; give them a real buffer
         // so nothing is written out of bounds.
         let hdr = crate::p010_gpu::is_hdr_transfer(color_ids[2]);
-        if hdr && self.hdr_buf.as_ref().map_or(true, |b| b.size() < output_size) {
+        if hdr && self.hdr_buf.as_ref().is_none_or(|b| b.size() < output_size) {
             self.hdr_buf = Some(self.device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("nv12_hdr"),
                 size: output_size,
@@ -987,7 +987,7 @@ impl GpuNv12Converter {
         );
         let codes = out.hdr_codes?;
         let size = codes.size();
-        if self.hdr_staging_buf.as_ref().map_or(true, |b| b.size() < size) {
+        if self.hdr_staging_buf.as_ref().is_none_or(|b| b.size() < size) {
             self.hdr_staging_buf = Some(self.device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("nv12_hdr_staging"),
                 size,

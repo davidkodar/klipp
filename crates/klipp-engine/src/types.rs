@@ -446,7 +446,7 @@ fn readback_buffer(
     // deadlocks on a UI-shared device. Falls back to a zero-filled
     // buffer if the map times out (engine treats as device-lost-
     // equivalent and the next frame retries).
-    match klipp_effects::gpu::poll_until_mapped(&gpu.device, &rx) {
+    match klipp_effects::gpu::poll_until_mapped(gpu.device, &rx) {
         Ok(Ok(())) => {
             let mapped = slice.get_mapped_range();
             let v = mapped.to_vec();

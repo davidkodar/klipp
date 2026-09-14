@@ -203,7 +203,7 @@ impl<'a> MaskGeneratorGuard<'a> {
 mod tests {
     use super::*;
     use crate::mask_generator::{
-        DevicePreference, InputFrame, MaskBuffer, MaskCandidate, MaskRequest, MaskResponse,
+        DevicePreference, MaskBuffer, MaskCandidate, MaskRequest, MaskResponse,
     };
 
     /// Trivial test impl — counts how often `generate` is called so

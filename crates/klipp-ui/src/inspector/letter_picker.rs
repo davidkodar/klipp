@@ -64,11 +64,11 @@ pub const SNAP_RADIUS_LOGICAL_PX: f32 = 12.0;
 ///
 /// Returns the clip itself so the caller can pull `title_data()`
 /// + `id` without re-walking the sequence.
-pub fn picker_target_for_clip<'a>(
-    seq: &'a Sequence,
+pub fn picker_target_for_clip(
+    seq: &Sequence,
     selected_clip_id: ClipId,
     playhead: Timecode,
-) -> Option<&'a Clip> {
+) -> Option<&Clip> {
     let selected = seq
         .tracks
         .iter()

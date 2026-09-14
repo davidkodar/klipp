@@ -540,12 +540,10 @@ mod tests {
 
     #[test]
     fn keyframe_sort_with_nan_time_does_not_panic() {
-        let mut kfs = vec![
-            kf_linear(2.0, 0.0),
+        let mut kfs = [kf_linear(2.0, 0.0),
             kf_linear(f64::NAN, 0.0),
             kf_linear(0.5, 0.0),
-            kf_linear(1.0, 0.0),
-        ];
+            kf_linear(1.0, 0.0)];
         // Same closure as the sort sites in klipp-ui/src/app.rs. The
         // assertion is implicit: control reaches the line below.
         kfs.sort_by(|a, b| a.time_secs.partial_cmp(&b.time_secs).unwrap_or(std::cmp::Ordering::Equal));
@@ -571,12 +569,10 @@ mod tests {
         // Sanity: when no NaN is present the closure DOES sort
         // ascending, so the rest of the codebase's reliance on the
         // sort's correctness in the normal case is preserved.
-        let mut kfs = vec![
-            kf_linear(3.0, 0.0),
+        let mut kfs = [kf_linear(3.0, 0.0),
             kf_linear(1.0, 0.0),
             kf_linear(2.5, 0.0),
-            kf_linear(0.5, 0.0),
-        ];
+            kf_linear(0.5, 0.0)];
         kfs.sort_by(|a, b| a.time_secs.partial_cmp(&b.time_secs).unwrap_or(std::cmp::Ordering::Equal));
         let times: Vec<f64> = kfs.iter().map(|k| k.time_secs).collect();
         assert_eq!(times, vec![0.5, 1.0, 2.5, 3.0]);

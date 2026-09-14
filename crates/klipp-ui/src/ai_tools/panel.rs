@@ -1463,7 +1463,7 @@ fn paint_checker_bg(
         let mut x = rect.min.x;
         let mut col = 0u32;
         while x < rect.max.x {
-            let c = if (row + col) % 2 == 0 { bg_a } else { bg_b };
+            let c = if (row + col).is_multiple_of(2) { bg_a } else { bg_b };
             let cell = egui::Rect::from_min_max(
                 egui::pos2(x, y),
                 egui::pos2((x + tile).min(rect.max.x), (y + tile).min(rect.max.y)),

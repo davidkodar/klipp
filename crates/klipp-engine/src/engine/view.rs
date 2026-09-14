@@ -324,8 +324,8 @@ impl PlaybackEngine {
             && !self.compare_effect_active
             && width >= 480
             && height >= 480
-            && width % 2 == 0
-            && height % 2 == 0;
+            && width.is_multiple_of(2)
+            && height.is_multiple_of(2);
         if self.in_node_param_edit {
             self.drag_grade_count = self.drag_grade_count.saturating_add(1);
         }
@@ -480,7 +480,7 @@ impl PlaybackEngine {
         let alt_render = |this: &mut Self, edit: &dyn Fn(&mut Clip) -> bool, clip: Option<ClipId>| -> Vec<u8> {
             let Some(id) = clip else { return Vec::new() };
             let mut alt = seq.clone();
-            let changed = alt.tracks.iter_mut().flat_map(|t| t.clips.iter_mut()).filter(|c| c.id == id).any(|c| edit(c));
+            let changed = alt.tracks.iter_mut().flat_map(|t| t.clips.iter_mut()).filter(|c| c.id == id).any(edit);
             if !changed {
                 return Vec::new();
             }
@@ -585,7 +585,7 @@ impl PlaybackEngine {
         if self.hdr_monitor.renders_hdr() || self.should_render_scope() {
             return None;
         }
-        if super::should_publish_gpu_viewer() && (w * 4) % 256 == 0 {
+        if super::should_publish_gpu_viewer() && (w * 4).is_multiple_of(256) {
             return None;
         }
         klipp_color::display::display_transform_u8_lut(

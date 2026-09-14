@@ -264,7 +264,7 @@ fn display_transform_from_pre(
 ) -> Vec<u8> {
     use rayon::prelude::*;
     assert!(
-        linear_rgba.len() % 4 == 0,
+        linear_rgba.len().is_multiple_of(4),
         "display_transform requires RGBA-packed input",
     );
     // Pre-allocate the output buffer so each rayon worker writes directly
@@ -350,7 +350,7 @@ pub fn display_transform_ws_pre(
     use klipp_core::WorkingColorspace;
     use rayon::prelude::*;
     assert!(
-        linear_rgba.len() % 4 == 0,
+        linear_rgba.len().is_multiple_of(4),
         "display_transform_ws requires RGBA-packed input",
     );
     if let WorkingColorspace::Rec709Linear | WorkingColorspace::Bt2020Linear = working_space {
@@ -762,7 +762,7 @@ impl ExportDisplay {
     pub fn frame<T: Copy + Default + Send + Sync>(&self, linear_rgba: &[f32], q: impl Fn(f32) -> T + Sync) -> Vec<T> {
         use rayon::prelude::*;
         assert!(
-            linear_rgba.len() % 4 == 0,
+            linear_rgba.len().is_multiple_of(4),
             "display_transform_for_export requires RGBA-packed input",
         );
         let d = *self;
@@ -875,7 +875,7 @@ mod tests {
             let y = tone_map(x, ToneMapOp::Hable);
             assert!(y.is_finite(), "Hable({x}) = {y}");
             assert!(
-                y >= -1e-5 && y < 1.3,
+                (-1e-5..1.3).contains(&y),
                 "Hable({x}) = {y} is wildly out of range",
             );
         }
@@ -935,7 +935,24 @@ mod tests {
         let pix = [5.0_f32, 5.0, 5.0, 1.0];
         let out = display_transform(&pix, ToneMapOp::Hable);
         for &v in &out[..3] {
-            assert!(v < 255 || v == 255, "channel overflowed u8: {v}");
+            // `v <= 255` was the assertion here, and `v` is a u8 — true of
+            // every possible value, so the test could not fail. Worse, it
+            // could not tell Hable apart from no tone map at all: the
+            // sibling test below asserts that path gives exactly 255.
+            //
+            // Rolling off rather than clipping is the whole claim, so say
+            // it: a 5.0 pixel lands high but strictly under the clipping
+            // point. Measured at 252.
+            assert!(
+                v > 200,
+                "a 5.0 linear pixel should still read as a bright highlight, got {v} — \
+                 a low value here would be the u8 wrap-around this test is named for",
+            );
+            assert!(
+                v < 255,
+                "Hable clipped at {v} instead of rolling off; that is what \
+                 ToneMapOp::None does, so the tone map is not being applied",
+            );
         }
     }
 

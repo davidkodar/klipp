@@ -170,8 +170,8 @@ impl Frei0rEffect {
     ) -> Result<Self, String> {
         if width < F0R_DIM_ALIGN
             || height < F0R_DIM_ALIGN
-            || width % F0R_DIM_ALIGN != 0
-            || height % F0R_DIM_ALIGN != 0
+            || !width.is_multiple_of(F0R_DIM_ALIGN)
+            || !height.is_multiple_of(F0R_DIM_ALIGN)
         {
             return Err(format!(
                 "frei0r requires 8-aligned dimensions, got {width}×{height}"
@@ -374,7 +374,7 @@ pub mod temporal {
     ];
 
     pub fn is_temporal(plugin_name: &str) -> bool {
-        TEMPORAL_PLUGINS.iter().any(|n| *n == plugin_name)
+        TEMPORAL_PLUGINS.contains(&plugin_name)
     }
 }
 

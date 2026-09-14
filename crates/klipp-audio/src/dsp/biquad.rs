@@ -281,7 +281,7 @@ impl BiquadCascade {
             4 => vec![0.5412, 1.3065],      // 4th order Butterworth
             6 => vec![0.5176, std::f32::consts::FRAC_1_SQRT_2, 1.9319], // 6th order Butterworth
             8 => vec![0.5098, 0.6013, 0.8999, 2.5629], // 8th order Butterworth
-            _ => vec![std::f32::consts::FRAC_1_SQRT_2; (order + 1) / 2],
+            _ => vec![std::f32::consts::FRAC_1_SQRT_2; order.div_ceil(2)],
         }
     }
 

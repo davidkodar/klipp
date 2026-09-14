@@ -745,7 +745,7 @@ pub fn render_transition_with_params(
                         .fract()
                         .abs();
                     let scan_line: f32 =
-                        if (y / line_h.max(1)) % 2 == 0 { 1.0 } else { 0.75 };
+                        if (y / line_h.max(1)).is_multiple_of(2) { 1.0 } else { 0.75 };
                     let static_val = hash * 255.0 * envelope * scan_line;
                     let band = y / line_h.max(1);
                     let band_hash = ((band as f32 * 127.1 + p * 311.7).sin() * 43758.545)
@@ -1382,7 +1382,7 @@ pub fn render_transition_with_params(
                     let col = fx as usize;
                     let row = fy as usize;
                     let local_x = fx.fract();
-                    let is_even = (col + row) % 2 == 0;
+                    let is_even = (col + row).is_multiple_of(2);
                     let local_pos = if is_even { local_x } else { 1.0 - local_x };
                     // Reveal `to` where local_pos < threshold (same pattern as BarnDoorOpen).
                     let s_val = smoothstep_f32(

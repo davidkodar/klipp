@@ -171,8 +171,10 @@ impl AudioEffectChain {
     /// `keyframes_by_key` is the same shape as `clip.audio_effect_keyframes`:
     /// keyed `"{effect_index}:{param_name}"`, where `effect_index` matches
     /// the position in `instances`. Reserved param names:
-    ///   - `"__bypass"` → bypass-keyframe track (0 = off, 1 = on)
-    ///   - `"__wetdry"` → wet/dry-keyframe track (0..1)
+    ///
+    /// - `"__bypass"` → bypass-keyframe track (0 = off, 1 = on)
+    /// - `"__wetdry"` → wet/dry-keyframe track (0..1)
+    ///
     /// Any other name routes to the slot's `param_kfs[name]` track and is
     /// applied via `effect.set_param` at evaluation time.
     pub fn from_instances_with_kfs(

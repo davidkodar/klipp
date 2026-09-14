@@ -167,7 +167,7 @@ mod tests {
         assert_eq!(mask.alpha.len(), 16);
         for &a in &mask.alpha {
             // Allow ±1 for round-to-nearest.
-            assert!(a >= 127 && a <= 129, "expected ~128, got {a}");
+            assert!((127..=129).contains(&a), "expected ~128, got {a}");
         }
     }
 
@@ -177,7 +177,7 @@ mod tests {
         let logits = vec![1.0986123_f32; 4];
         let mask = postprocess(&logits, 2, 2, 2, 2);
         for &a in &mask.alpha {
-            assert!(a >= 190 && a <= 192, "expected ~191, got {a}");
+            assert!((190..=192).contains(&a), "expected ~191, got {a}");
         }
     }
 

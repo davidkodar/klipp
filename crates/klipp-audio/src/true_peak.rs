@@ -345,7 +345,7 @@ mod tests {
         // peak-normalised — the exact response peak depends on the
         // window. Anywhere in [0.4, 1.2] is fine; outside means the
         // FIR has lost its calibration.
-        assert!(peak >= 0.4 && peak <= 1.2,
+        assert!((0.4..=1.2).contains(&peak),
             "impulse response peak {} should be near unity (range 0.4..1.2)", peak);
     }
 

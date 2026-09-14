@@ -7,3 +7,6 @@ edition = "2021"
 klipp-core     = { workspace = true }
 klipp-timeline = { workspace = true }
 rayon          = "1.10"
+
+[lints]
+workspace = true

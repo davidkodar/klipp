@@ -1270,7 +1270,7 @@ mod tests {
         let mut b = make_frame(&pixels);
         apply_tone_controls_ws(&mut a, 0.5, 0.0, 0.0, 0.0, WorkingColorspace::Rec709Linear);
         apply_tone_controls_ws(&mut b, 0.5, 0.0, 0.0, 0.0, WorkingColorspace::AcesCG);
-        assert!(approx_eq(a[0], b[0], 1e-6) == false || approx_eq(a[1], b[1], 1e-6) == false,
+        assert!(!approx_eq(a[0], b[0], 1e-6) || !approx_eq(a[1], b[1], 1e-6),
             "tone_controls should differ: Rec709={a:?} AcesCG={b:?}");
 
         // lift_gamma_gain — same idea (luma drives lift/gamma/gain band weights)

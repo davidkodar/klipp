@@ -253,7 +253,7 @@ pub fn generate_mlt_xml(seq: &Sequence, media_pool: &MediaPool) -> String {
         ));
         xml.push_str("  </tractor>\n");
 
-        track_tractor_ids.push((tractor_id, track.kind.clone()));
+        track_tractor_ids.push((tractor_id, track.kind));
     }
 
     // ── Root tractor (MUST be last) ───────────────────────────────────────

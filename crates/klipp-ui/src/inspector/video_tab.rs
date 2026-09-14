@@ -1351,11 +1351,10 @@ fn show_tracking_section(ui: &mut egui::Ui, theme: &KlippTheme, state: &AppState
                                 remove_idx = Some(*idx);
                             }
                             // Analyze button
-                            if !tracking_active {
-                                if ui.add(egui::Button::new(egui::RichText::new("Analyze").size(9.0)).frame(true)).clicked() {
+                            if !tracking_active
+                                && ui.add(egui::Button::new(egui::RichText::new("Analyze").size(9.0)).frame(true)).clicked() {
                                     analyze_idx = Some(*idx);
                                 }
-                            }
                         });
                     });
 
@@ -1542,11 +1541,10 @@ fn show_compositing_section(
                         .width(160.0);
                     combo.show_ui(ui, |ui| {
                         for &mode in &klipp_core::BlendMode::ALL {
-                            if ui.selectable_value(&mut current, mode, mode.display_name()).clicked() {
-                                if mode != clip.blend_mode {
+                            if ui.selectable_value(&mut current, mode, mode.display_name()).clicked()
+                                && mode != clip.blend_mode {
                                     cmds.push(AppCommand::SetClipBlendMode { clip_id, mode });
                                 }
-                            }
                         }
                     });
                 });
@@ -1680,16 +1678,15 @@ fn show_compositing_section(
                         .show_ui(ui, |ui| {
                             // "(none)" entry — clears any existing binding.
                             let none_selected = clip.matte_source.is_none();
-                            if ui.selectable_label(none_selected, "(none)").clicked() {
-                                if !none_selected {
+                            if ui.selectable_label(none_selected, "(none)").clicked()
+                                && !none_selected {
                                     cmds.push(AppCommand::ClearClipMatte { clip_id });
                                 }
-                            }
                             for (cand_id, label) in &candidates {
                                 let selected = clip.matte_source.as_ref()
                                     .is_some_and(|b| b.source_clip_id == *cand_id);
-                                if ui.selectable_label(selected, label).clicked() {
-                                    if !selected {
+                                if ui.selectable_label(selected, label).clicked()
+                                    && !selected {
                                         // Inherit existing channel/invert/feather/choke
                                         // when re-pointing at a different source, default
                                         // to the easy-path Luma binding otherwise.
@@ -1711,7 +1708,6 @@ fn show_compositing_section(
                                             choke_px,
                                         });
                                     }
-                                }
                             }
                         });
                 });
@@ -2075,7 +2071,7 @@ fn show_transform_link_section(
                     // list; for `Tracker { ... }` we enumerate
                     // tracker targets and find the matching one.
                     let tracker_candidates = state.sequences.get(active_idx)
-                        .map(|seq| crate::inspector::tracker_picker::enumerate_tracker_targets(seq))
+                        .map(crate::inspector::tracker_picker::enumerate_tracker_targets)
                         .unwrap_or_default();
                     let current_label = match clip.transform_link.as_ref() {
                         None => "(none)".to_string(),
@@ -2099,11 +2095,10 @@ fn show_transform_link_section(
                         .width(260.0)
                         .show_ui(ui, |ui| {
                             let none_selected = clip.transform_link.is_none();
-                            if ui.selectable_label(none_selected, "(none)").clicked() {
-                                if !none_selected {
+                            if ui.selectable_label(none_selected, "(none)").clicked()
+                                && !none_selected {
                                     cmds.push(AppCommand::ClearClipTransformLink { clip_id });
                                 }
-                            }
                             // ── Clips section ──
                             // Headline only when there's something to
                             // show beneath it; same for the Trackers
@@ -2117,8 +2112,8 @@ fn show_transform_link_section(
                                         klipp_timeline::TransformLinkTarget::Clip(id) => id == cand_id,
                                         _ => false,
                                     });
-                                if ui.selectable_label(selected, label).clicked() {
-                                    if !selected {
+                                if ui.selectable_label(selected, label).clicked()
+                                    && !selected {
                                         // Re-pointing at a new target: keep the
                                         // existing mode + flag set so the user
                                         // doesn't lose their per-axis tuning.
@@ -2145,7 +2140,6 @@ fn show_transform_link_section(
                                             inherit_anchor: ian,
                                         });
                                     }
-                                }
                             }
                             // ── Trackers section ──
                             // (HZ-MATTE-NEXT-TRACKER-DRIVER) — bind
@@ -2487,11 +2481,10 @@ fn show_hyperzoom_section(
                             // binding so Apply falls back to focal
                             // X/Y or the glyph snap.
                             let off_selected = tracker_target.is_none();
-                            if ui.selectable_label(off_selected, "(static focal — no tracker)").clicked() {
-                                if !off_selected {
+                            if ui.selectable_label(off_selected, "(static focal — no tracker)").clicked()
+                                && !off_selected {
                                     ui.ctx().data_mut(|d| d.insert_temp::<Option<(klipp_core::ClipId, u32)>>(tracker_focal_id, None));
                                 }
-                            }
                             if let Some(seq) = state.sequences.get(state.active_sequence_idx) {
                                 let trackers = crate::inspector::tracker_picker::enumerate_tracker_targets(seq);
                                 if !trackers.is_empty() {

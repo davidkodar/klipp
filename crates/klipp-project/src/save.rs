@@ -593,7 +593,7 @@ fn prune_stale_looks(looks_dir: &Path, kept_ids: &[String]) {
     let Ok(entries) = std::fs::read_dir(looks_dir) else { return };
     for entry in entries.flatten() {
         let path = entry.path();
-        if path.extension().map_or(true, |e| e != "json") { continue; }
+        if path.extension().is_none_or(|e| e != "json") { continue; }
         let stem = match path.file_stem().and_then(|s| s.to_str()) {
             Some(s) => s,
             None => continue,

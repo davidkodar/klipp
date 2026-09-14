@@ -1,10 +1,12 @@
-/// Color match between shots using CIE Lab colour space statistics.
-///
-/// The algorithm:
-/// 1. Convert both source and reference frames to Lab
-/// 2. Compute mean and standard deviation of L, a, b channels
-/// 3. Map Lab statistics to grade adjustments (exposure, temperature, tint, saturation)
-/// 4. Return adjustments as regular grade parameters (undoable)
+//! Color match between shots using CIE Lab colour space statistics.
+//!
+//! The algorithm:
+//!
+//!   1. Convert both source and reference frames to Lab
+//!   2. Compute mean and standard deviation of L, a, b channels
+//!   3. Map Lab statistics to grade adjustments (exposure, temperature,
+//!      tint, saturation)
+//!   4. Return adjustments as regular grade parameters (undoable)
 
 /// Result of a color match analysis — grade adjustments to apply.
 #[derive(Debug, Clone)]

@@ -77,7 +77,7 @@ impl CurveParam {
                 // don't construct effects on hot UI paths). Fall back to
                 // a generous default — the inspector's diamond rows
                 // already enforce min/max via the descriptor.
-                match key.split(':').last() {
+                match key.split(':').next_back() {
                     Some("__bypass") => (0.0, 1.0, 1.0),
                     Some("__wetdry") => (0.0, 1.0, 1.0),
                     _ => (-30.0, 30.0, 0.0),

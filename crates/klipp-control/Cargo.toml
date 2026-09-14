@@ -31,3 +31,6 @@ png = "0.18"
 
 [dev-dependencies]
 klipp-timeline = { workspace = true }
+
+[lints]
+workspace = true

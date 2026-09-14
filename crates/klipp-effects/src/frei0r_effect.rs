@@ -165,7 +165,7 @@ pub fn registry_snapshot() -> Vec<Frei0rPluginInfo> {
 /// whether to surface a "this plugin can't run at this size" toast
 /// before dispatching the apply.
 pub fn supports_resolution(plugin_name: &str, width: u32, height: u32) -> bool {
-    if width % 8 != 0 || height % 8 != 0 {
+    if !width.is_multiple_of(8) || !height.is_multiple_of(8) {
         return false;
     }
     if width > F0R_MAX_DIM || height > F0R_MAX_DIM {

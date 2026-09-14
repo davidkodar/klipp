@@ -227,7 +227,7 @@ pub fn compute_waveform_sampled(rgba: &[u8], width: u32, height: u32, display_co
     let x_step = step.max(1) as usize;
     let display_columns = display_columns.max(1) as usize;
     let mut bins = vec![[0u32; 256]; display_columns];
-    let sampled_w = (width as usize + x_step - 1) / x_step;
+    let sampled_w = (width as usize).div_ceil(x_step);
 
     // Process ALL rows — only subsample columns
     for y in 0..height as usize {
@@ -280,7 +280,7 @@ pub fn compute_parade_sampled(rgba: &[u8], width: u32, height: u32, display_colu
     let mut red   = vec![[0u32; 256]; display_columns];
     let mut green = vec![[0u32; 256]; display_columns];
     let mut blue  = vec![[0u32; 256]; display_columns];
-    let sampled_w = (width as usize + x_step - 1) / x_step;
+    let sampled_w = (width as usize).div_ceil(x_step);
 
     // Process ALL rows — only subsample columns
     for y in 0..height as usize {

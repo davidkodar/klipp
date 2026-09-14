@@ -80,7 +80,7 @@ pub fn load_tool_presets(tool: &ToolScope) -> Vec<ToolPreset> {
     let Ok(entries) = std::fs::read_dir(&dir) else { return vec![] };
     let mut presets: Vec<ToolPreset> = entries
         .filter_map(|e| e.ok())
-        .filter(|e| e.path().extension().map_or(false, |x| x == "json"))
+        .filter(|e| e.path().extension().is_some_and(|x| x == "json"))
         .filter_map(|e| {
             let text = std::fs::read_to_string(e.path()).ok()?;
             serde_json::from_str(&text).ok()

@@ -59,8 +59,10 @@ impl ClickButton {
 /// `PointPrompt` to `BoxPrompt` does not drop the clicks the user
 /// already placed. Use [`PromptCapture::clear`] to wipe.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Default)]
 pub enum PromptMode {
     /// Standard click: left = positive, right = negative.
+    #[default]
     PointPrompt,
     /// Drag a rectangle from one corner to the other.
     BoxPrompt,
@@ -69,11 +71,6 @@ pub enum PromptMode {
     Scribble,
 }
 
-impl Default for PromptMode {
-    fn default() -> Self {
-        PromptMode::PointPrompt
-    }
-}
 
 /// Accumulated user prompts ready to ship to a `MaskGenerator`.
 ///

@@ -18,7 +18,7 @@ const W: u32 = 48;
 const H: u32 = 32;
 
 fn flat(v: [f32; 3]) -> Vec<f32> {
-    vec![v[0], v[1], v[2], 1.0].repeat((W * H) as usize)
+    [v[0], v[1], v[2], 1.0].repeat((W * H) as usize)
 }
 
 fn centre(px: &[f32]) -> [f32; 3] {
@@ -105,7 +105,7 @@ fn every_effect_survives_a_picture_brighter_than_white() {
     for (name, effect, highlights) in cases() {
         let mut out_cpu = Vec::new();
         for input in INPUTS {
-            let cpu = apply_effects(&[effect.clone()], flat(input), W, H);
+            let cpu = apply_effects(std::slice::from_ref(&effect), flat(input), W, H);
             let c = centre(&cpu);
             out_cpu.push(c);
             let bad = |v: f32| !v.is_finite() || v < -0.001;
@@ -113,7 +113,7 @@ fn every_effect_survives_a_picture_brighter_than_white() {
                 failures.push(format!("{name} on {input:?}: CPU gave {c:?}"));
             }
             if let Some(gpu) = gpu.as_mut() {
-                let g = centre(&gpu.apply_effects(&[effect.clone()], &flat(input), W, H));
+                let g = centre(&gpu.apply_effects(std::slice::from_ref(&effect), &flat(input), W, H));
                 if g.iter().copied().any(bad) {
                     failures.push(format!("{name} on {input:?}: GPU gave {g:?}"));
                 }

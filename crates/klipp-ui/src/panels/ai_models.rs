@@ -215,7 +215,7 @@ fn filter_and_sort<'m>(
         .models
         .iter()
         .filter(|e| match_task_filter(prompt_kinds_to_capabilities(e.prompts), state))
-        .filter(|e| match_installed_filter(*e, cache, state))
+        .filter(|e| match_installed_filter(e, cache, state))
         .filter(|e| {
             match_search(
                 &state.search,
@@ -831,8 +831,7 @@ pub fn show_ai_models_dialog(ctx: &egui::Context, state: &mut AppState, theme: &
                                 .frame(false),
                             )
                             .clicked()
-                        {
-                            if matches!(
+                            && matches!(
                                 state.custom_model_add,
                                 crate::ai_tools::custom_install::CustomInstallState::Idle
                             ) {
@@ -841,7 +840,6 @@ pub fn show_ai_models_dialog(ctx: &egui::Context, state: &mut AppState, theme: &
                                         Default::default(),
                                     );
                             }
-                        }
                         if ui
                             .add(
                                 egui::Button::new(

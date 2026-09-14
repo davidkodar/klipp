@@ -642,8 +642,8 @@ impl ToolbarPanel {
                     .find(|c| c.id == state.selected_clip.unwrap())
                     .map(|c| !c.track_points.is_empty())
                     .unwrap_or(false);
-                if has_tracks {
-                    if ui.button("Analyze Track Points").clicked() {
+                if has_tracks
+                    && ui.button("Analyze Track Points").clicked() {
                         let cid = state.selected_clip.unwrap();
                         let count = state.sequence().all_clips()
                             .find(|c| c.id == cid)
@@ -654,7 +654,6 @@ impl ToolbarPanel {
                         }
                         ui.close_menu();
                     }
-                }
             }
             ui.separator();
             if ui.add_enabled(has_clip, egui::Button::new("Reveal in Browser")).clicked() {

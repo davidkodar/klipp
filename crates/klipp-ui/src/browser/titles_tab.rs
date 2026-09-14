@@ -16,33 +16,27 @@ use klipp_timeline::{
 /// surfaces (black footage, white footage, gradient sky, warm wood,
 /// green chroma).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Default)]
 pub enum TitlesPreviewBg {
     Black,
     White,
+    #[default]
     BlueGradient,
     OrangeWood,
     GreenPattern,
 }
 
-impl Default for TitlesPreviewBg {
-    fn default() -> Self {
-        TitlesPreviewBg::BlueGradient
-    }
-}
 
 /// Built-in vs user-imported source filter for the Titles tab.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Default)]
 pub enum TitlesSourceFilter {
+    #[default]
     All,
     Builtin,
     User,
 }
 
-impl Default for TitlesSourceFilter {
-    fn default() -> Self {
-        TitlesSourceFilter::All
-    }
-}
 
 pub(crate) struct TitleTemplate {
     pub name: &'static str,
@@ -591,8 +585,8 @@ fn sty_outline() -> TitleData {
     let mut tb = klipp_timeline::TextBox::default();
     tb.outlines.insert(0, TextOutline { color: [255, 255, 255, 255], width: 3.0, enabled: true, width_keyframes: Vec::new() });
     tb.color = [255, 255, 255, 80];
-    let td = klipp_timeline::TitleData::single_text(tb);
-    td
+    
+    klipp_timeline::TitleData::single_text(tb)
 }
 }
 fn sty_handwritten() -> TitleData {
@@ -1552,7 +1546,7 @@ pub fn show(
             .collect();
         match *sort_mode {
             EffectSort::NameAsc => {
-                filtered.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+                filtered.sort_by_key(|a| a.name.to_lowercase());
             }
             EffectSort::NameDesc => {
                 filtered.sort_by(|a, b| b.name.to_lowercase().cmp(&a.name.to_lowercase()));
@@ -1566,7 +1560,7 @@ pub fn show(
                 });
             }
             EffectSort::Source => {
-                filtered.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+                filtered.sort_by_key(|a| a.name.to_lowercase());
             }
         }
 
@@ -2932,7 +2926,7 @@ fn animation_transform(
     // animations, we hold at "fully arrived" pose.
     let segments: Vec<(&str, f32)> = anim
         .split('+')
-        .map(|seg| parse_segment(seg))
+        .map(parse_segment)
         .collect();
     let mut t = t_loop;
     for (name, dur) in &segments {

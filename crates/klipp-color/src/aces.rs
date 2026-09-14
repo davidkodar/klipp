@@ -1625,7 +1625,7 @@ mod tests {
         let oces = apply_rrt([0.0, 0.0, 0.0]);
         let display = apply_odt_rec709_100_nits_dim(oces);
         for c in display {
-            assert!(c >= 0.0 && c < 0.05,
+            assert!((0.0..0.05).contains(&c),
                 "scene black → ODT should be near display black, got {display:?}");
         }
     }
@@ -1858,7 +1858,7 @@ mod tests {
         let oces = apply_rrt([0.0, 0.0, 0.0]);
         let display = apply_odt_dcip3_d65_48_nits(oces);
         for c in display {
-            assert!(c >= 0.0 && c < 0.05,
+            assert!((0.0..0.05).contains(&c),
                 "scene black → DCI-P3 should be near display black, got {display:?}");
         }
     }

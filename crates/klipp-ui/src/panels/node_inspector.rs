@@ -79,7 +79,7 @@ impl NodeInspectorPanel {
                 if let Some(sel_id) = *selected_node {
                     if let Some(node) = graph.nodes.iter_mut().find(|n| n.id == sel_id) {
                         let node_id = node.id;
-                        let node_kind = node.kind.clone();
+                        let node_kind = node.kind;
                         let node_enabled = &mut node.enabled;
                         let params = &mut node.params;
                         let keyframes = &mut node.keyframes;
@@ -279,7 +279,7 @@ impl NodeInspectorPanel {
                     let mut scratch_enabled = true;
                     let mut scratch_keyframes = klipp_nodes::NodeKeyframeTracks::default();
                     for target_kind in &target_kinds {
-                        let node_kind = target_kind.clone();
+                        let node_kind = *target_kind;
                         self.show_inspector_layout(
                             ui,
                             klipp_nodes::PHANTOM_CORRECTOR_ID,
@@ -309,7 +309,7 @@ impl NodeInspectorPanel {
                         // node's kind, so a Corrector-backed Wheels tab
                         // still renders the wheels widgets (which read
                         // the same fields off the Corrector's params).
-                        let node_kind = target_kind.clone();
+                        let node_kind = *target_kind;
                         // Don't overwrite the user's canvas selection.
                         // The tabs always write to the Corrector
                         // regardless of which node is highlighted in
@@ -691,13 +691,13 @@ impl NodeInspectorPanel {
                 let mask = &masks.masks[mask_idx];
                 let static_val = mask.param_value(param_name).unwrap_or(0.0);
                 let track = mask.keyframes.track(param_name);
-                let has_keyframes = track.map_or(false, |t| !t.is_empty());
+                let has_keyframes = track.is_some_and(|t| !t.is_empty());
                 let display_val = if has_keyframes {
                     klipp_core::keyframe::evaluate(track.unwrap(), clip_time_secs, static_val)
                 } else {
                     static_val
                 };
-                let has_kf_at_playhead = track.map_or(false, |t| {
+                let has_kf_at_playhead = track.is_some_and(|t| {
                     t.iter().any(|k| (k.time_secs - clip_time_secs).abs() < 1e-3)
                 });
                 let range = match param_name {
@@ -979,8 +979,8 @@ impl NodeInspectorPanel {
             let (track_has_kfs, kf_at_playhead, effective_on) = {
                 let node = graph.nodes.iter().find(|n| n.id == target_id);
                 let track = node.and_then(|n| n.keyframes.tracks.iter().find(|t| t.param_name == klipp_nodes::ENABLED_TRACK));
-                let has_kfs = track.map_or(false, |t| !t.keyframes.is_empty());
-                let at_ph = track.map_or(false, |t| t.keyframes.iter().any(|k| (k.time_secs - clip_time_secs).abs() < 1e-3));
+                let has_kfs = track.is_some_and(|t| !t.keyframes.is_empty());
+                let at_ph = track.is_some_and(|t| t.keyframes.iter().any(|k| (k.time_secs - clip_time_secs).abs() < 1e-3));
                 let on = track.and_then(|t| t.evaluate(clip_time_secs))
                     .map(|v| v >= 0.5)
                     .unwrap_or(target_enabled);
@@ -1383,8 +1383,8 @@ impl NodeInspectorPanel {
         wide_layout: bool,
     ) {
         let enabled_track = keyframes.tracks.iter().find(|t| t.param_name == klipp_nodes::ENABLED_TRACK);
-        let bypass_track_has_kfs = enabled_track.map_or(false, |t| !t.keyframes.is_empty());
-        let bypass_kf_at_playhead = enabled_track.map_or(false, |t| {
+        let bypass_track_has_kfs = enabled_track.is_some_and(|t| !t.keyframes.is_empty());
+        let bypass_kf_at_playhead = enabled_track.is_some_and(|t| {
             t.keyframes.iter().any(|k| (k.time_secs - clip_time_secs).abs() < 1e-3)
         });
         let effective_on = enabled_track

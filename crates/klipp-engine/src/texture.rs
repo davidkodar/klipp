@@ -204,10 +204,7 @@ impl FrameBuffer {
         if width == 0 || height == 0 {
             return None;
         }
-        let reuse = matches!(
-            &self.gpu_output,
-            Some(_) if self.gpu_output_width == width && self.gpu_output_height == height
-        );
+        let reuse = self.gpu_output.is_some() && (self.gpu_output_width == width && self.gpu_output_height == height);
         if !reuse {
             let tex = device.create_texture(&wgpu::TextureDescriptor {
                 label: Some("klipp_gpu_viewer_output"),

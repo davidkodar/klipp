@@ -255,7 +255,7 @@ mod tests {
 
     fn make_pool(items: Vec<(MediaId, klipp_media::MediaItem)>) -> MediaPool {
         let mut pool = MediaPool::new();
-        for (_, mut item) in items {
+        for (_, item) in items {
             pool.add(item);
         }
         pool
@@ -777,7 +777,7 @@ mod tests {
         let mut trans = make_transition(24, 24, TransitionAlignment::Center);
         trans.clip_a_id = clip_a.id;
         trans.clip_b_id = clip_b.id;
-        let seq = make_sequence_with_clips(vec![clip_a, clip_b], vec![trans.clone()]);
+        let seq = make_sequence_with_clips(vec![clip_a, clip_b], vec![trans]);
 
         let result = compute_for_transition(&trans, &seq, &pool);
         assert!(result.is_some());
@@ -797,7 +797,7 @@ mod tests {
         let mut trans = make_transition(24, 24, TransitionAlignment::Center);
         trans.clip_a_id = clip_a.id;
         trans.clip_b_id = clip_b.id;
-        let seq = make_sequence_with_clips(vec![clip_a, clip_b], vec![trans.clone()]);
+        let seq = make_sequence_with_clips(vec![clip_a, clip_b], vec![trans]);
 
         let ha = compute_for_transition(&trans, &seq, &pool).unwrap();
         assert!(ha.has_shortfall());
@@ -816,7 +816,7 @@ mod tests {
         let mut trans = make_transition(24, 24, TransitionAlignment::Center);
         trans.clip_a_id = ClipId::new(); // doesn't exist in sequence
         trans.clip_b_id = clip_b.id;
-        let seq = make_sequence_with_clips(vec![clip_b], vec![trans.clone()]);
+        let seq = make_sequence_with_clips(vec![clip_b], vec![trans]);
 
         assert!(compute_for_transition(&trans, &seq, &pool).is_none());
     }
@@ -833,7 +833,7 @@ mod tests {
         let mut trans = make_transition(24, 24, TransitionAlignment::Center);
         trans.clip_a_id = clip_a.id;
         trans.clip_b_id = clip_b.id;
-        let seq = make_sequence_with_clips(vec![clip_a, clip_b], vec![trans.clone()]);
+        let seq = make_sequence_with_clips(vec![clip_a, clip_b], vec![trans]);
 
         let ha = compute_for_transition(&trans, &seq, &pool).unwrap();
         assert!(ha.has_unknown());

@@ -495,7 +495,7 @@ fn handle(ctx: &ControlContext, cmd: ControlCommand) -> Result<serde_json::Value
                 {
                     let fb = ctx.frame_buffer.lock().map_err(|_| "frame buffer lock poisoned")?;
                     let (d, w, h, g) = fb.latest_frame();
-                    if min_generation.map_or(true, |m| g >= m) {
+                    if min_generation.is_none_or(|m| g >= m) {
                         break (d.to_vec(), w, h, g);
                     }
                     if std::time::Instant::now() >= deadline {

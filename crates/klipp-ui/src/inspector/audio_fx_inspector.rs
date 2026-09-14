@@ -329,7 +329,7 @@ fn add_effect_picker(
                         || p.uri.to_lowercase().contains(&search_lower)
                 })
                 .collect();
-            visible_lv2.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+            visible_lv2.sort_by_key(|a| a.name.to_lowercase());
 
             if !visible_lv2.is_empty() {
                 if !builtins.is_empty() || !visible_ladspa.is_empty() {
@@ -362,7 +362,7 @@ fn add_effect_picker(
                         || p.vendor.to_lowercase().contains(&search_lower)
                 })
                 .collect();
-            visible_clap.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+            visible_clap.sort_by_key(|a| a.name.to_lowercase());
 
             if !visible_clap.is_empty() {
                 if !builtins.is_empty() || !visible_ladspa.is_empty() || !visible_lv2.is_empty() {

@@ -69,3 +69,6 @@ libc = "0.2"
 # Tiny crate, no transitive deps, maintained by matklad — same
 # trust profile as anyhow / thiserror.
 expect-test = "1.5"
+
+[lints]
+workspace = true

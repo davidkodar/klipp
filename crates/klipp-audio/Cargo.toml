@@ -34,3 +34,6 @@ clack-extensions = { version = "0.1", features = [
 ] }
 tracing = { workspace = true }
 dirs = { workspace = true }
+
+[lints]
+workspace = true

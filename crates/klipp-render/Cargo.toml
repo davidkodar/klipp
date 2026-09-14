@@ -33,3 +33,6 @@ klipp-media    = { workspace = true }
 klipp-nodes    = { workspace = true }
 serial_test    = "3"
 serde_json     = { workspace = true }
+
+[lints]
+workspace = true

@@ -9,17 +9,14 @@ use klipp_core::{AppCommand, FourPointGradient, GeneratorData};
 /// Mirrors `TitlesSourceFilter` / `TransitionsSourceFilter` so the
 /// segmented control reads the same across the Library tabs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Default)]
 pub enum GeneratorsSourceFilter {
+    #[default]
     All,
     Builtin,
     User,
 }
 
-impl Default for GeneratorsSourceFilter {
-    fn default() -> Self {
-        GeneratorsSourceFilter::All
-    }
-}
 
 struct GeneratorTemplate {
     name: &'static str,
@@ -333,13 +330,13 @@ pub fn show(
             })
             .collect();
         match *sort_mode {
-            EffectSort::NameAsc => filtered.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase())),
+            EffectSort::NameAsc => filtered.sort_by_key(|a| a.name.to_lowercase()),
             EffectSort::NameDesc => filtered.sort_by(|a, b| b.name.to_lowercase().cmp(&a.name.to_lowercase())),
             EffectSort::Category => filtered.sort_by(|a, b| {
                 a.category.to_lowercase().cmp(&b.category.to_lowercase())
                     .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
             }),
-            EffectSort::Source => filtered.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase())),
+            EffectSort::Source => filtered.sort_by_key(|a| a.name.to_lowercase()),
         }
 
         // Result strip: count + sort dropdown

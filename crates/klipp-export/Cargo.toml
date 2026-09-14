@@ -11,3 +11,6 @@ klipp-render = { workspace = true }
 uuid = { workspace = true }
 tracing = { workspace = true }
 crossbeam-channel = { workspace = true }
+
+[lints]
+workspace = true

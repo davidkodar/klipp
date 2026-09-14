@@ -220,6 +220,24 @@ pub fn atomic_write(path: &Path, data: &[u8]) -> std::io::Result<()> {
     Ok(())
 }
 
+pub fn read_capped(path: &Path, max_bytes: u64) -> Result<Vec<u8>, std::io::Error> {
+    use std::io::Read;
+    let file = std::fs::File::open(path)?;
+    let size = file.metadata()?.len();
+    if size > max_bytes {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!(
+                "file too large ({} bytes, max {} bytes): {}",
+                size, max_bytes, path.display()
+            ),
+        ));
+    }
+    let mut buf = Vec::with_capacity(size as usize);
+    file.take(max_bytes).read_to_end(&mut buf)?;
+    Ok(buf)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -450,22 +468,4 @@ mod tests {
         assert_eq!(sanitize_resolution(3840, 2160),
             klipp_core::Resolution { width: 3840, height: 2160 });
     }
-}
-
-pub fn read_capped(path: &Path, max_bytes: u64) -> Result<Vec<u8>, std::io::Error> {
-    use std::io::Read;
-    let file = std::fs::File::open(path)?;
-    let size = file.metadata()?.len();
-    if size > max_bytes {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            format!(
-                "file too large ({} bytes, max {} bytes): {}",
-                size, max_bytes, path.display()
-            ),
-        ));
-    }
-    let mut buf = Vec::with_capacity(size as usize);
-    file.take(max_bytes).read_to_end(&mut buf)?;
-    Ok(buf)
 }

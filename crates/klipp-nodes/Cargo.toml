@@ -21,3 +21,6 @@ tracing-subscriber = { workspace = true }
 # Serde round-trips for node params: a project saved before a field
 # existed has to keep its picture, and that is only checkable as JSON.
 serde_json = { workspace = true }
+
+[lints]
+workspace = true

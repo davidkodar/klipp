@@ -1671,7 +1671,6 @@ impl MagneticEditor {
                 track_index,
                 old_role,
                 old_clip_anchors,
-                first_clip_absolute_pos: _,
                 ..
             } => {
                 sequence.tracks[*track_index].magnetic_role = old_role.clone();

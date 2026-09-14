@@ -34,3 +34,6 @@ anyhow = { workspace = true }
 ffmpeg-next = { workspace = true }
 png = "0.18"
 libc = "0.2"
+
+[lints]
+workspace = true

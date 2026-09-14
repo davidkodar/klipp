@@ -1511,9 +1511,7 @@ fn multicam_angle<'a>(track: &'a Track, clip: &'a Clip, time: Timecode) -> &'a C
     let rel = (time - primary.timeline_in).to_secs_f64();
     let angle = primary
         .multicam_cuts
-        .iter()
-        .filter(|(at, _)| *at <= rel + 1e-9)
-        .last()
+        .iter().rfind(|(at, _)| *at <= rel + 1e-9)
         .map(|(_, a)| *a)
         .unwrap_or(0);
     track.clips.iter().filter(in_group).find(|c| c.multicam_angle == angle).unwrap_or(primary)

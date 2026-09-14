@@ -3132,7 +3132,7 @@ fn show_title_effects_group(
                 // dispatches SetTitleTexturePreset, swapping the
                 // source while preserving every other param.
                 let preset_text = cur_preset
-                    .map(|p| preset_display_name(p))
+                    .map(preset_display_name)
                     .unwrap_or("Preset\u{2026}");
                 egui::ComboBox::from_id_salt("title_texture_preset")
                     .selected_text(preset_text)
@@ -4300,7 +4300,7 @@ fn show_title_editor(
 
     {
         let style_runs_n = td.style_runs().len() as u32;
-        let _grp_count = (td.tracking() != 0.0) as u32 + ((td.line_spacing() - 1.0).abs() > 1e-6) as u32 + (td.baseline_shift() != 0.0) as u32 + (td.case_transform() != klipp_timeline::TextCase::None) as u32 + (td.drop_cap_scale() >= 1.0) as u32 + td.primary_text().map_or(0u32, |tb| { (tb.columns != 1) as u32 + tb.vertical_layout as u32 + ((tb.text_direction == klipp_timeline::TextDirection::Rtl)) as u32 + tb.underline as u32 + tb.strikethrough as u32 }) + (style_runs_n > 0) as u32;
+        let _grp_count = (td.tracking() != 0.0) as u32 + ((td.line_spacing() - 1.0).abs() > 1e-6) as u32 + (td.baseline_shift() != 0.0) as u32 + (td.case_transform() != klipp_timeline::TextCase::None) as u32 + (td.drop_cap_scale() >= 1.0) as u32 + td.primary_text().map_or(0u32, |tb| { (tb.columns != 1) as u32 + tb.vertical_layout as u32 + (tb.text_direction == klipp_timeline::TextDirection::Rtl) as u32 + tb.underline as u32 + tb.strikethrough as u32 }) + (style_runs_n > 0) as u32;
         let status = crate::widgets::inspector_group::GroupStatus {
             count: if _grp_count > 0 { Some(_grp_count) } else { None },
             active: td.tracking() != 0.0 || (td.line_spacing() - 1.0).abs() > 1e-6 || td.baseline_shift() != 0.0 || td.case_transform() != klipp_timeline::TextCase::None || td.drop_cap_scale() >= 1.0 || td.primary_text().is_some_and(|tb| tb.columns != 1 || tb.vertical_layout || tb.text_direction == klipp_timeline::TextDirection::Rtl || tb.underline || tb.strikethrough) || style_runs_n > 0,
@@ -4342,7 +4342,7 @@ fn show_title_editor(
         ).changed() {
             cmds.push(AppCommand::SetTitleColumns { clip_id, columns: cols.clamp(1, 8) as u8 });
         }
-        let mut vertical = td.primary_text().map_or(false, |tb| tb.vertical_layout);
+        let mut vertical = td.primary_text().is_some_and(|tb| tb.vertical_layout);
         if ui.checkbox(&mut vertical, "Vertical").changed() {
             cmds.push(AppCommand::SetTitleVerticalLayout { clip_id, vertical });
         }
@@ -4589,7 +4589,7 @@ fn show_title_editor(
         // out of the box on a typical 3-5s title clip.
         let kind_defaults = |k: u8| -> (f32, f32) {
             match k {
-                1 | 2 | 3 | 4 => (0.0, 0.0),     // scroll/crawl: Auto
+                1..=4 => (0.0, 0.0),     // scroll/crawl: Auto
                 5 => (15.0, 0.0),                // Typewriter chars/sec
                 6 | 7 => (0.5, 0.0),             // FadeIn/Out 0.5s
                 8 => (0.5, 0.0),                 // FadeInOut fade_secs
@@ -4598,7 +4598,7 @@ fn show_title_editor(
                 11 => (1.0, 0.4),                // Pulse 1 Hz, min_op 0.4
                 12 => (0.5, 1.5),                // ZoomIn 0.5s from 1.5x
                 13 => (0.5, 1.5),                // ZoomOut 0.5s to 1.5x
-                14 | 15 | 16 | 17 => (0.5, 0.0), // Slide 0.5s
+                14..=17 => (0.5, 0.0), // Slide 0.5s
                 18 => (0.5, -180.0),             // SpinIn 0.5s, from -180°
                 19 => (0.5, 0.0),                // BounceIn 0.5s
                 20 => (20.0, 1.0),               // Wave 20px @ 1Hz

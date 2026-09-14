@@ -36,8 +36,8 @@ fn make_nv12(width: u32, height: u32) -> (Vec<u8>, Vec<u8>) {
     let mut uv = Vec::with_capacity((width * height / 2) as usize);
     for row in 0..(height / 2) {
         for col in 0..(width / 2) {
-            uv.push(((col as u32 * 2 + row as u32 + 80) & 0xFF) as u8); // U
-            uv.push(((col as u32 + row as u32 * 5 + 160) & 0xFF) as u8); // V
+            uv.push(((col * 2 + row + 80) & 0xFF) as u8); // U
+            uv.push(((col + row * 5 + 160) & 0xFF) as u8); // V
         }
     }
     (y, uv)
@@ -55,8 +55,8 @@ fn make_p010(width: u32, height: u32) -> (Vec<u8>, Vec<u8>) {
     let mut uv = Vec::with_capacity((width * height) as usize);
     for row in 0..(height / 2) {
         for col in 0..(width / 2) {
-            let u: u32 = 128 + (col as u32 + row as u32 * 3) % 768;
-            let v: u32 = 128 + (col as u32 * 2 + row as u32) % 768;
+            let u: u32 = 128 + (col + row * 3) % 768;
+            let v: u32 = 128 + (col * 2 + row) % 768;
             let pu: u16 = ((u & 0x3FF) << 6) as u16;
             let pv: u16 = ((v & 0x3FF) << 6) as u16;
             uv.extend_from_slice(&pu.to_le_bytes());

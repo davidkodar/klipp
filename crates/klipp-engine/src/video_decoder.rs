@@ -2211,7 +2211,7 @@ fn maybe_log_hw_download_stats(
     cpu_path: &std::sync::atomic::AtomicU64,
 ) {
     use std::sync::atomic::Ordering;
-    if count % 60 != 0 {
+    if !count.is_multiple_of(60) {
         return;
     }
     let hw_us = hw_dl.swap(0, Ordering::Relaxed);
@@ -2684,7 +2684,7 @@ fn decode_thread_main(
         if let Some(mut pkt) = pending_packet.take() {
             let send_result = if let Some(bsf) = bsf_ctx.as_ref() {
                 unsafe { bsf_route_packet_to_decoder(bsf, &mut decoder, &mut pkt) }
-                    .map_err(|rc| ffmpeg_next::Error::from(rc))
+                    .map_err(ffmpeg_next::Error::from)
             } else {
                 decoder.send_packet(&pkt)
             };
@@ -2704,7 +2704,7 @@ fn decode_thread_main(
                     if stream.index() == stream_index {
                         let send_result = if let Some(bsf) = bsf_ctx.as_ref() {
                             unsafe { bsf_route_packet_to_decoder(bsf, &mut decoder, &mut packet) }
-                                .map_err(|rc| ffmpeg_next::Error::from(rc))
+                                .map_err(ffmpeg_next::Error::from)
                         } else {
                             decoder.send_packet(&packet)
                         };
@@ -2811,9 +2811,9 @@ fn convert_sw_frame(
         let src_w = received_frame.width();
         let src_h = received_frame.height();
         let (dst_w, dst_h) = playback_dimensions(src_w, src_h, 0);
-        let y_stride = received_frame.stride(0) as usize;
-        let u_stride = received_frame.stride(1) as usize;
-        let v_stride = received_frame.stride(2) as usize;
+        let y_stride = received_frame.stride(0);
+        let u_stride = received_frame.stride(1);
+        let v_stride = received_frame.stride(2);
         let y_data = received_frame.data(0);
         let u_data = received_frame.data(1);
         let v_data = received_frame.data(2);

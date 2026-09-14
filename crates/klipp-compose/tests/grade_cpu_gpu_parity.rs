@@ -157,7 +157,7 @@ struct Flat([f32; 3]);
 
 impl FrameSource for Flat {
     fn frame(&mut self, _c: &Clip, _secs: f64, w: u32, h: u32) -> Option<SourceFrame> {
-        let px = vec![self.0[0], self.0[1], self.0[2], 1.0].repeat((w * h) as usize);
+        let px = [self.0[0], self.0[1], self.0[2], 1.0].repeat((w * h) as usize);
         Some(SourceFrame { pixels: SourcePixels::Linear(Arc::new(px)), width: w, height: h, pts: None })
     }
 }

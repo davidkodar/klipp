@@ -723,11 +723,11 @@ mod tests {
                 let pan = i as f32 / 10.0;
                 let (l, r) = AudioMixer::pan_gains_for(pan, *law);
                 assert!(
-                    l >= -EPS && l <= 1.0 + EPS,
+                    (-EPS..=1.0 + EPS).contains(&l),
                     "{law:?} L={l} out of range at pan={pan}"
                 );
                 assert!(
-                    r >= -EPS && r <= 1.0 + EPS,
+                    (-EPS..=1.0 + EPS).contains(&r),
                     "{law:?} R={r} out of range at pan={pan}"
                 );
             }

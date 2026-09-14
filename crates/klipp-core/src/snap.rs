@@ -67,9 +67,11 @@ impl SnapConfig {
 /// ruler's tick density at the current zoom, `Frame` derives from the
 /// active sequence fps. Other variants resolve to fixed seconds.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Default)]
 pub enum GridInterval {
     /// Grid snap disabled. Default — preserves byte-identical behaviour
     /// for users who never toggle grid snap on.
+    #[default]
     Off,
     /// Snap to whatever interval the ruler is currently displaying as
     /// major ticks at the current zoom level. "Snap to what I see."
@@ -90,11 +92,6 @@ pub enum GridInterval {
     Custom(f64),
 }
 
-impl Default for GridInterval {
-    fn default() -> Self {
-        Self::Off
-    }
-}
 
 impl GridInterval {
     /// Short label for menu / dropdown rendering.

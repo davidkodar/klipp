@@ -572,13 +572,13 @@ mod raw_preview_tests {
             out.extend_from_slice(&[0xFF, 0xD8, 0xFF, 0xE1]);
             // Filler bytes — use 0xAA so they don't accidentally form
             // valid markers. Number of filler bytes = len - 6 (4 SOI + 2 EOI).
-            out.extend(std::iter::repeat(0xAA).take(len - 6));
+            out.extend(std::iter::repeat_n(0xAA, len - 6));
             // EOI: FF D9
             out.extend_from_slice(&[0xFF, 0xD9]);
             markers.push((start, len));
             // Some inter-JPEG padding (raw bayer-ish data — random-looking
             // bytes that contain neither FF D8 FF nor FF D9).
-            out.extend(std::iter::repeat(0x55).take(64));
+            out.extend(std::iter::repeat_n(0x55, 64));
         }
         (out, markers)
     }
@@ -632,7 +632,7 @@ mod raw_preview_tests {
         let (mut bytes, markers) = build_synthetic_raw(&[2048]);
         // Append a truncated JPEG: SOI but no EOI.
         bytes.extend_from_slice(&[0xFF, 0xD8, 0xFF, 0xE1]);
-        bytes.extend(std::iter::repeat(0xAA).take(500));
+        bytes.extend(std::iter::repeat_n(0xAA, 500));
         // No EOI — file ends here.
 
         let result = find_largest_jpeg(&bytes);

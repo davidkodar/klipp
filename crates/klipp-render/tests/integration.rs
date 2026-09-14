@@ -221,7 +221,7 @@ fn export_job_cancellation_midway() {
     // Progress should be between 5 and 1000 (cancelled partway)
     let final_progress = progress.load(Ordering::Relaxed);
     assert!(
-        final_progress >= 5 && final_progress < 1000,
+        (5..1000).contains(&final_progress),
         "expected partial progress, got {final_progress}"
     );
 

@@ -50,7 +50,7 @@ impl HumRemoval {
     }
 
     fn recompute(&mut self) {
-        let n = self.harmonics.min(MAX_HARMONICS).max(1);
+        let n = self.harmonics.clamp(1, MAX_HARMONICS);
         for ch in 0..MAX_CHANNELS {
             for h in 0..MAX_HARMONICS {
                 let freq = self.fundamental_hz * (h as f32 + 1.0);

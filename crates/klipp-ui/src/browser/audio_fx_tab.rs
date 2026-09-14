@@ -10,7 +10,9 @@ use klipp_core::AppCommand;
 /// but with an `Ladspa` segment in place of `Ofx` — the audio side has no
 /// OpenFX plugins, only built-ins and LADSPA.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Default)]
 pub enum AudioSourceFilter {
+    #[default]
     All,
     Builtin,
     Ladspa,
@@ -18,11 +20,6 @@ pub enum AudioSourceFilter {
     Clap,
 }
 
-impl Default for AudioSourceFilter {
-    fn default() -> Self {
-        AudioSourceFilter::All
-    }
-}
 
 /// One entry in the audition source dropdown — derived from the
 /// timeline's current selection (one entry per selected clip with a
@@ -462,7 +459,7 @@ pub fn show(
         // Sort
         match *sort_mode {
             EffectSort::NameAsc => {
-                filtered.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+                filtered.sort_by_key(|a| a.name.to_lowercase());
             }
             EffectSort::NameDesc => {
                 filtered.sort_by(|a, b| b.name.to_lowercase().cmp(&a.name.to_lowercase()));

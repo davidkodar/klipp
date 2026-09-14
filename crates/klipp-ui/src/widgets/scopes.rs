@@ -332,7 +332,7 @@ pub fn show_scopes(
             let settings_diff = state.last_settings_generation != state.settings_generation;
             let stale = tex_none || gen_diff || size_diff || settings_diff;
             let throttled = is_playing && state.last_render_time
-                .map_or(false, |t| t.elapsed().as_millis() < 80);
+                .is_some_and(|t| t.elapsed().as_millis() < 80);
             if stale && !throttled {
                 let map_entry = fb.scope_textures.get(&(mi as u8));
                 let mode_tex = map_entry.filter(|e| !e.data.is_empty() && e.w > 0);
@@ -377,9 +377,7 @@ pub fn show_scopes(
             if idx != mi { state.frame_generations[idx] = u64::MAX; }
         }
 
-        let mut image = match scope_img {
-            ScopeImage::Ready(img) => img,
-        };
+        let ScopeImage::Ready(mut image) = scope_img;
         state.render_sizes[mi] = (image.size[0], image.size[1]);
 
         // Post-processing: threshold bloom (extract bright → gaussian blur → additive blend).
@@ -972,6 +970,325 @@ fn draw_ire_lines(pixels: &mut [egui::Color32], w: usize, h: usize) {
     }
 }
 
+/// Render an audio spectrum (frequency-magnitude) scope from pre-computed
+/// log-frequency dBFS bins (`bins[i]` clamped to −96..0). Produces the same
+/// kind of amber-on-dark ColorImage as the video scopes so it drops into the
+/// existing texture pipeline with no special casing.
+///
+/// Each column maps to one output bin (nearest-neighbour); bars rise from
+/// the bottom with a gradient from the grid amber at the base to near-white
+/// at the peak. Horizontal guide lines mark −12, −24, −48 and −72 dBFS.
+pub(crate) fn render_audio_spectrum(bins: &[f32], rw: usize, rh: usize) -> egui::ColorImage {
+    use egui::Color32;
+    let w = rw.max(1);
+    let h = rh.max(1);
+    let mut pixels = vec![Color32::from_rgb(4, 4, 7); w * h];
+
+    // Helper to index into the pixels buffer.
+    let idx = |x: usize, y: usize| y * w + x;
+
+    // Background gridlines at fixed dB thresholds, faint amber.
+    let grid_color = Color32::from_rgba_unmultiplied(245, 180, 60, 32);
+    let label_db = [-12.0f32, -24.0, -48.0, -72.0];
+    for &db in &label_db {
+        let t = ((db + 96.0) / 96.0).clamp(0.0, 1.0);
+        let y = (h - 1).saturating_sub((t * (h - 1) as f32) as usize);
+        if y < h {
+            for x in 0..w {
+                pixels[idx(x, y)] = grid_color;
+            }
+        }
+    }
+
+    // Bars.
+    let num_bins = bins.len().max(1);
+    for x in 0..w {
+        let bin_i = (x * num_bins / w).min(num_bins - 1);
+        let db = bins[bin_i].clamp(-96.0, 0.0);
+        let t = (db + 96.0) / 96.0;
+        let bar_h = (t * h as f32) as usize;
+        if bar_h == 0 { continue; }
+        for y_from_bottom in 0..bar_h {
+            let y = h - 1 - y_from_bottom;
+            // Gradient: amber near the base → warm white at the peak. `k` is
+            // distance from the clip column base to the pixel, normalised by
+            // bar height.
+            let k = (y_from_bottom as f32 / bar_h as f32).clamp(0.0, 1.0);
+            let r = (180.0 * (1.0 - k) + 245.0 * k) as u8;
+            let g = (140.0 * (1.0 - k) + 220.0 * k) as u8;
+            let b = (40.0 * (1.0 - k) + 180.0 * k) as u8;
+            pixels[idx(x, y)] = Color32::from_rgb(r, g, b);
+        }
+    }
+
+    egui::ColorImage { size: [w, h], pixels }
+}
+
+/// Render an audio-correlation (Lissajous / goniometer) scope plus a
+/// correlation-coefficient strip meter along the bottom edge.
+///
+/// Input is interleaved stereo PCM (`LRLRLR…`). Each sample pair is
+/// plotted at `(x = (L+R)/2, y = (L-R)/2)` in a 45°-rotated coordinate
+/// system — the classic broadcast goniometer convention, where a mono
+/// signal collapses to a vertical line and a hard-panned signal splays
+/// to a diagonal.
+///
+/// The bottom 8 rows paint a Pearson correlation strip:
+/// `r = Σ(L·R) / sqrt(Σ L² · Σ R²)`, mapped to [-1, +1]. The filled
+/// region is green (>+0.5), yellow (0..+0.5), or red (negative — phase
+/// issues that will cancel on mono downmix).
+pub(crate) fn render_audio_correlation(
+    interleaved: &[f32],
+    width: usize,
+    height: usize,
+) -> egui::ColorImage {
+    use egui::Color32;
+    let w = width.max(1);
+    let h = height.max(1);
+    let mut pixels = vec![Color32::from_rgb(14, 14, 18); w * h];
+
+    // Discard the optional trailing odd sample so we always work with
+    // complete stereo pairs.
+    let samples: Vec<(f32, f32)> = interleaved
+        .chunks_exact(2)
+        .map(|c| (c[0], c[1]))
+        .collect();
+
+    // ── Lissajous plot ──
+    // Goniometer convention: x = (L+R)/√2, y = (L-R)/√2. We use 0.5 as
+    // the scaling factor (slightly under √2/2) so loud-but-not-clipping
+    // signals still fit inside the canvas.
+    for (l, r) in &samples {
+        let x_norm = (l + r) * 0.5 + 0.5; // [-1,1] → [0,1]
+        let y_norm = (l - r) * 0.5 + 0.5;
+        let px = (x_norm.clamp(0.0, 1.0) * (w - 1) as f32) as usize;
+        // Y axis flipped so +(L-R) plots upward.
+        let py = ((1.0 - y_norm.clamp(0.0, 1.0)) * (h - 1) as f32) as usize;
+        if px < w && py < h {
+            pixels[py * w + px] = Color32::from_rgb(60, 220, 100);
+        }
+    }
+
+    // ── Correlation-coefficient strip (bottom 8px) ──
+    let (sum_lr, sum_l2, sum_r2) = samples.iter().fold(
+        (0f32, 0f32, 0f32),
+        |(lr, l2, r2), (l, r)| (lr + l * r, l2 + l * l, r2 + r * r),
+    );
+    let corr = if sum_l2 > 0.0 && sum_r2 > 0.0 {
+        (sum_lr / (sum_l2.sqrt() * sum_r2.sqrt())).clamp(-1.0, 1.0)
+    } else {
+        0.0
+    };
+
+    let bar_y_start = h.saturating_sub(8);
+    let corr_x = (((corr + 1.0) * 0.5) * (w - 1) as f32) as usize;
+    let center_x = w / 2;
+    let fill_color = if corr > 0.5 {
+        Color32::from_rgb(60, 200, 80)
+    } else if corr > 0.0 {
+        Color32::from_rgb(200, 180, 40)
+    } else {
+        Color32::from_rgb(200, 60, 60)
+    };
+    for y in bar_y_start..h {
+        for x in 0..w {
+            let color = if x == center_x {
+                Color32::from_gray(180)
+            } else if (corr >= 0.0 && x >= center_x && x <= corr_x)
+                || (corr < 0.0 && x <= center_x && x >= corr_x)
+            {
+                fill_color
+            } else {
+                Color32::from_rgb(30, 30, 36)
+            };
+            pixels[y * w + x] = color;
+        }
+    }
+
+    egui::ColorImage { size: [w, h], pixels }
+}
+
+/// Render a rolling short-term-LUFS history graph with the user's
+/// loudness target drawn as a horizontal reference line plus a ±1 LU
+/// tolerance band.
+///
+/// `history` is oldest-first (natural `VecDeque::iter()` order), so the
+/// newest sample lands on the right edge. Values outside the
+/// [`lufs_min`, `lufs_max`] display range are clamped.
+pub(crate) fn render_lufs_history(
+    history: &[f32],
+    target_lufs: f32,
+    width: usize,
+    height: usize,
+) -> egui::ColorImage {
+    use egui::Color32;
+    let w = width.max(1);
+    let h = height.max(1);
+    let mut pixels = vec![Color32::from_rgb(14, 14, 18); w * h];
+
+    // Display range chosen to cover the practical band: streaming targets
+    // cluster around -14..-23, broadcast targets at -23..-27, and
+    // near-silence bottoms out around -36.
+    let lufs_max = -9.0f32;
+    let lufs_min = -36.0f32;
+    let lufs_range = lufs_max - lufs_min;
+
+    // Map a LUFS value to a Y pixel (top = loud).
+    let lufs_to_y = |lufs: f32| -> usize {
+        let clamped = lufs.clamp(lufs_min, lufs_max);
+        let norm = (lufs_max - clamped) / lufs_range;
+        (norm * (h - 1) as f32) as usize
+    };
+
+    // ── Target line + ±1 LU tolerance band ──
+    let target_y = lufs_to_y(target_lufs);
+    let band_top = lufs_to_y((target_lufs + 1.0).min(lufs_max));
+    let band_bot = lufs_to_y((target_lufs - 1.0).max(lufs_min));
+    for x in 0..w {
+        for y in band_top..=band_bot.min(h - 1) {
+            pixels[y * w + x] = Color32::from_rgba_unmultiplied(40, 120, 40, 60);
+        }
+        if target_y < h {
+            pixels[target_y * w + x] = Color32::from_rgb(60, 200, 60);
+        }
+    }
+
+    if history.is_empty() {
+        return egui::ColorImage { size: [w, h], pixels };
+    }
+
+    // ── History line ──
+    // Finite-only filter: the LUFS meter publishes f32::NEG_INFINITY for
+    // ungated early samples. Plotting them would anchor the line at the
+    // bottom edge and swamp the visible band.
+    let n = history.len();
+    for (i, &lufs) in history.iter().enumerate() {
+        if !lufs.is_finite() {
+            continue;
+        }
+        let x = if n > 1 {
+            (i as f32 / (n - 1) as f32 * (w - 1) as f32) as usize
+        } else {
+            w - 1
+        };
+        let y = lufs_to_y(lufs);
+
+        let delta = (lufs - target_lufs).abs();
+        let color = if delta <= 0.5 {
+            Color32::from_rgb(60, 220, 80)
+        } else if delta <= 1.0 {
+            Color32::from_rgb(200, 180, 40)
+        } else {
+            Color32::from_rgb(200, 80, 60)
+        };
+
+        if x < w && y < h {
+            pixels[y * w + x] = color;
+            if y + 1 < h {
+                pixels[(y + 1) * w + x] = color;
+            }
+        }
+    }
+
+    egui::ColorImage { size: [w, h], pixels }
+}
+
+/// Render a scrolling FFT waterfall (spectrogram): x = time, y = frequency
+/// (bin 0 = lowest at the bottom, bin N-1 = highest at the top), colour =
+/// magnitude via a 5-stop heat-map gradient.
+///
+/// `history` is oldest-first — the most recent slice lands on the right
+/// edge. Each slice is a `Vec<f32>` of per-bin dBFS values (clamped to
+/// `[-96.0, 0.0]` by the app-side FFT). `db_floor` sets the lower bound
+/// of the displayed dynamic range; anything softer renders as the
+/// darkest colour. Passing `db_floor = -72.0` reproduces the old
+/// hardcoded behaviour.
+///
+/// Empty `history` returns a background-only image at the requested size.
+pub fn render_audio_spectrogram(
+    history: &[Vec<f32>],
+    width: usize,
+    height: usize,
+    db_floor: f32,
+) -> egui::ColorImage {
+    use egui::Color32;
+    let w = width.max(1);
+    let h = height.max(1);
+    let bg = Color32::from_rgb(10, 10, 14);
+    let mut pixels = vec![bg; w * h];
+
+    if history.is_empty() {
+        return egui::ColorImage { size: [w, h], pixels };
+    }
+
+    // Clamp the floor to a usable range so a pref set to 0 or positive
+    // doesn't produce a divide-by-zero. Upper bound always 0 dBFS.
+    let floor = db_floor.min(-1.0).max(-96.0);
+    let db_range = -floor;
+
+    let n_slices = history.len();
+    for (slice_idx, slice) in history.iter().enumerate() {
+        if slice.is_empty() {
+            continue;
+        }
+        // Map oldest→newest onto left→right. Naive mapping; see function
+        // docstring for the n_slices-vs-width aliasing caveat.
+        let x = if n_slices > 1 {
+            (slice_idx as f32 / (n_slices - 1) as f32 * (w - 1) as f32) as usize
+        } else {
+            w - 1
+        };
+        let n_bins = slice.len();
+        for (bin_idx, &db) in slice.iter().enumerate() {
+            // Normalise dB → [0, 1] per the configured floor.
+            let mag = ((db - floor) / db_range).clamp(0.0, 1.0);
+            // bin 0 = lowest freq, render at the bottom → invert Y.
+            let y_frac = if n_bins > 1 {
+                bin_idx as f32 / (n_bins - 1) as f32
+            } else {
+                0.0
+            };
+            let y = (h - 1).saturating_sub((y_frac * (h - 1) as f32) as usize);
+            if x < w && y < h {
+                pixels[y * w + x] = magnitude_to_color(mag);
+            }
+        }
+    }
+
+    egui::ColorImage { size: [w, h], pixels }
+}
+
+/// Map a normalized magnitude `[0.0, 1.0]` to an RGB heat-map colour via
+/// a 5-stop gradient: dark-blue → blue → cyan → yellow-green → white.
+/// Values outside the range clamp to the endpoints.
+pub(crate) fn magnitude_to_color(mag: f32) -> egui::Color32 {
+    // Five evenly-spaced stops (t = 0.0, 0.25, 0.5, 0.75, 1.0).
+    let stops: [(u8, u8, u8); 5] = [
+        (10, 10, 40),     // dark blue  — near-silence
+        (20, 80, 180),    // blue       — quiet
+        (20, 180, 180),   // cyan       — mid
+        (180, 200, 20),   // yellow-green — loud
+        (255, 255, 255),  // white      — peak
+    ];
+    let m = mag.clamp(0.0, 1.0);
+    // Figure out which of the four segments we're in.
+    let seg_f = m * 4.0;
+    let seg = (seg_f as usize).min(3);
+    let t = seg_f - seg as f32;
+    let (r, g, b) = lerp_rgb(stops[seg], stops[seg + 1], t);
+    egui::Color32::from_rgb(r, g, b)
+}
+
+/// Linear interpolation between two RGB triples. `t` is clamped to
+/// `[0.0, 1.0]` by the callers above, but rounding uses `as u8` so the
+/// result is tolerant of slight overshoot.
+pub(crate) fn lerp_rgb(a: (u8, u8, u8), b: (u8, u8, u8), t: f32) -> (u8, u8, u8) {
+    let lerp = |x: u8, y: u8, t: f32| -> u8 {
+        (x as f32 + (y as f32 - x as f32) * t).round() as u8
+    };
+    (lerp(a.0, b.0, t), lerp(a.1, b.1, t), lerp(a.2, b.2, t))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1537,323 +1854,4 @@ mod tests {
         assert_eq!(image.pixels[16].r(), 100);    // y=4
     }
 
-}
-
-/// Render an audio spectrum (frequency-magnitude) scope from pre-computed
-/// log-frequency dBFS bins (`bins[i]` clamped to −96..0). Produces the same
-/// kind of amber-on-dark ColorImage as the video scopes so it drops into the
-/// existing texture pipeline with no special casing.
-///
-/// Each column maps to one output bin (nearest-neighbour); bars rise from
-/// the bottom with a gradient from the grid amber at the base to near-white
-/// at the peak. Horizontal guide lines mark −12, −24, −48 and −72 dBFS.
-pub(crate) fn render_audio_spectrum(bins: &[f32], rw: usize, rh: usize) -> egui::ColorImage {
-    use egui::Color32;
-    let w = rw.max(1);
-    let h = rh.max(1);
-    let mut pixels = vec![Color32::from_rgb(4, 4, 7); w * h];
-
-    // Helper to index into the pixels buffer.
-    let idx = |x: usize, y: usize| y * w + x;
-
-    // Background gridlines at fixed dB thresholds, faint amber.
-    let grid_color = Color32::from_rgba_unmultiplied(245, 180, 60, 32);
-    let label_db = [-12.0f32, -24.0, -48.0, -72.0];
-    for &db in &label_db {
-        let t = ((db + 96.0) / 96.0).clamp(0.0, 1.0);
-        let y = (h - 1).saturating_sub((t * (h - 1) as f32) as usize);
-        if y < h {
-            for x in 0..w {
-                pixels[idx(x, y)] = grid_color;
-            }
-        }
-    }
-
-    // Bars.
-    let num_bins = bins.len().max(1);
-    for x in 0..w {
-        let bin_i = (x * num_bins / w).min(num_bins - 1);
-        let db = bins[bin_i].clamp(-96.0, 0.0);
-        let t = (db + 96.0) / 96.0;
-        let bar_h = (t * h as f32) as usize;
-        if bar_h == 0 { continue; }
-        for y_from_bottom in 0..bar_h {
-            let y = h - 1 - y_from_bottom;
-            // Gradient: amber near the base → warm white at the peak. `k` is
-            // distance from the clip column base to the pixel, normalised by
-            // bar height.
-            let k = (y_from_bottom as f32 / bar_h as f32).clamp(0.0, 1.0);
-            let r = (180.0 * (1.0 - k) + 245.0 * k) as u8;
-            let g = (140.0 * (1.0 - k) + 220.0 * k) as u8;
-            let b = (40.0 * (1.0 - k) + 180.0 * k) as u8;
-            pixels[idx(x, y)] = Color32::from_rgb(r, g, b);
-        }
-    }
-
-    egui::ColorImage { size: [w, h], pixels }
-}
-
-/// Render an audio-correlation (Lissajous / goniometer) scope plus a
-/// correlation-coefficient strip meter along the bottom edge.
-///
-/// Input is interleaved stereo PCM (`LRLRLR…`). Each sample pair is
-/// plotted at `(x = (L+R)/2, y = (L-R)/2)` in a 45°-rotated coordinate
-/// system — the classic broadcast goniometer convention, where a mono
-/// signal collapses to a vertical line and a hard-panned signal splays
-/// to a diagonal.
-///
-/// The bottom 8 rows paint a Pearson correlation strip:
-/// `r = Σ(L·R) / sqrt(Σ L² · Σ R²)`, mapped to [-1, +1]. The filled
-/// region is green (>+0.5), yellow (0..+0.5), or red (negative — phase
-/// issues that will cancel on mono downmix).
-pub(crate) fn render_audio_correlation(
-    interleaved: &[f32],
-    width: usize,
-    height: usize,
-) -> egui::ColorImage {
-    use egui::Color32;
-    let w = width.max(1);
-    let h = height.max(1);
-    let mut pixels = vec![Color32::from_rgb(14, 14, 18); w * h];
-
-    // Discard the optional trailing odd sample so we always work with
-    // complete stereo pairs.
-    let samples: Vec<(f32, f32)> = interleaved
-        .chunks_exact(2)
-        .map(|c| (c[0], c[1]))
-        .collect();
-
-    // ── Lissajous plot ──
-    // Goniometer convention: x = (L+R)/√2, y = (L-R)/√2. We use 0.5 as
-    // the scaling factor (slightly under √2/2) so loud-but-not-clipping
-    // signals still fit inside the canvas.
-    for (l, r) in &samples {
-        let x_norm = (l + r) * 0.5 + 0.5; // [-1,1] → [0,1]
-        let y_norm = (l - r) * 0.5 + 0.5;
-        let px = (x_norm.clamp(0.0, 1.0) * (w - 1) as f32) as usize;
-        // Y axis flipped so +(L-R) plots upward.
-        let py = ((1.0 - y_norm.clamp(0.0, 1.0)) * (h - 1) as f32) as usize;
-        if px < w && py < h {
-            pixels[py * w + px] = Color32::from_rgb(60, 220, 100);
-        }
-    }
-
-    // ── Correlation-coefficient strip (bottom 8px) ──
-    let (sum_lr, sum_l2, sum_r2) = samples.iter().fold(
-        (0f32, 0f32, 0f32),
-        |(lr, l2, r2), (l, r)| (lr + l * r, l2 + l * l, r2 + r * r),
-    );
-    let corr = if sum_l2 > 0.0 && sum_r2 > 0.0 {
-        (sum_lr / (sum_l2.sqrt() * sum_r2.sqrt())).clamp(-1.0, 1.0)
-    } else {
-        0.0
-    };
-
-    let bar_y_start = h.saturating_sub(8);
-    let corr_x = (((corr + 1.0) * 0.5) * (w - 1) as f32) as usize;
-    let center_x = w / 2;
-    let fill_color = if corr > 0.5 {
-        Color32::from_rgb(60, 200, 80)
-    } else if corr > 0.0 {
-        Color32::from_rgb(200, 180, 40)
-    } else {
-        Color32::from_rgb(200, 60, 60)
-    };
-    for y in bar_y_start..h {
-        for x in 0..w {
-            let color = if x == center_x {
-                Color32::from_gray(180)
-            } else if (corr >= 0.0 && x >= center_x && x <= corr_x)
-                || (corr < 0.0 && x <= center_x && x >= corr_x)
-            {
-                fill_color
-            } else {
-                Color32::from_rgb(30, 30, 36)
-            };
-            pixels[y * w + x] = color;
-        }
-    }
-
-    egui::ColorImage { size: [w, h], pixels }
-}
-
-/// Render a rolling short-term-LUFS history graph with the user's
-/// loudness target drawn as a horizontal reference line plus a ±1 LU
-/// tolerance band.
-///
-/// `history` is oldest-first (natural `VecDeque::iter()` order), so the
-/// newest sample lands on the right edge. Values outside the
-/// [`lufs_min`, `lufs_max`] display range are clamped.
-pub(crate) fn render_lufs_history(
-    history: &[f32],
-    target_lufs: f32,
-    width: usize,
-    height: usize,
-) -> egui::ColorImage {
-    use egui::Color32;
-    let w = width.max(1);
-    let h = height.max(1);
-    let mut pixels = vec![Color32::from_rgb(14, 14, 18); w * h];
-
-    // Display range chosen to cover the practical band: streaming targets
-    // cluster around -14..-23, broadcast targets at -23..-27, and
-    // near-silence bottoms out around -36.
-    let lufs_max = -9.0f32;
-    let lufs_min = -36.0f32;
-    let lufs_range = lufs_max - lufs_min;
-
-    // Map a LUFS value to a Y pixel (top = loud).
-    let lufs_to_y = |lufs: f32| -> usize {
-        let clamped = lufs.clamp(lufs_min, lufs_max);
-        let norm = (lufs_max - clamped) / lufs_range;
-        (norm * (h - 1) as f32) as usize
-    };
-
-    // ── Target line + ±1 LU tolerance band ──
-    let target_y = lufs_to_y(target_lufs);
-    let band_top = lufs_to_y((target_lufs + 1.0).min(lufs_max));
-    let band_bot = lufs_to_y((target_lufs - 1.0).max(lufs_min));
-    for x in 0..w {
-        for y in band_top..=band_bot.min(h - 1) {
-            pixels[y * w + x] = Color32::from_rgba_unmultiplied(40, 120, 40, 60);
-        }
-        if target_y < h {
-            pixels[target_y * w + x] = Color32::from_rgb(60, 200, 60);
-        }
-    }
-
-    if history.is_empty() {
-        return egui::ColorImage { size: [w, h], pixels };
-    }
-
-    // ── History line ──
-    // Finite-only filter: the LUFS meter publishes f32::NEG_INFINITY for
-    // ungated early samples. Plotting them would anchor the line at the
-    // bottom edge and swamp the visible band.
-    let n = history.len();
-    for (i, &lufs) in history.iter().enumerate() {
-        if !lufs.is_finite() {
-            continue;
-        }
-        let x = if n > 1 {
-            (i as f32 / (n - 1) as f32 * (w - 1) as f32) as usize
-        } else {
-            w - 1
-        };
-        let y = lufs_to_y(lufs);
-
-        let delta = (lufs - target_lufs).abs();
-        let color = if delta <= 0.5 {
-            Color32::from_rgb(60, 220, 80)
-        } else if delta <= 1.0 {
-            Color32::from_rgb(200, 180, 40)
-        } else {
-            Color32::from_rgb(200, 80, 60)
-        };
-
-        if x < w && y < h {
-            pixels[y * w + x] = color;
-            if y + 1 < h {
-                pixels[(y + 1) * w + x] = color;
-            }
-        }
-    }
-
-    egui::ColorImage { size: [w, h], pixels }
-}
-
-/// Render a scrolling FFT waterfall (spectrogram): x = time, y = frequency
-/// (bin 0 = lowest at the bottom, bin N-1 = highest at the top), colour =
-/// magnitude via a 5-stop heat-map gradient.
-///
-/// `history` is oldest-first — the most recent slice lands on the right
-/// edge. Each slice is a `Vec<f32>` of per-bin dBFS values (clamped to
-/// `[-96.0, 0.0]` by the app-side FFT). `db_floor` sets the lower bound
-/// of the displayed dynamic range; anything softer renders as the
-/// darkest colour. Passing `db_floor = -72.0` reproduces the old
-/// hardcoded behaviour.
-///
-/// Empty `history` returns a background-only image at the requested size.
-pub fn render_audio_spectrogram(
-    history: &[Vec<f32>],
-    width: usize,
-    height: usize,
-    db_floor: f32,
-) -> egui::ColorImage {
-    use egui::Color32;
-    let w = width.max(1);
-    let h = height.max(1);
-    let bg = Color32::from_rgb(10, 10, 14);
-    let mut pixels = vec![bg; w * h];
-
-    if history.is_empty() {
-        return egui::ColorImage { size: [w, h], pixels };
-    }
-
-    // Clamp the floor to a usable range so a pref set to 0 or positive
-    // doesn't produce a divide-by-zero. Upper bound always 0 dBFS.
-    let floor = db_floor.min(-1.0).max(-96.0);
-    let db_range = -floor;
-
-    let n_slices = history.len();
-    for (slice_idx, slice) in history.iter().enumerate() {
-        if slice.is_empty() {
-            continue;
-        }
-        // Map oldest→newest onto left→right. Naive mapping; see function
-        // docstring for the n_slices-vs-width aliasing caveat.
-        let x = if n_slices > 1 {
-            (slice_idx as f32 / (n_slices - 1) as f32 * (w - 1) as f32) as usize
-        } else {
-            w - 1
-        };
-        let n_bins = slice.len();
-        for (bin_idx, &db) in slice.iter().enumerate() {
-            // Normalise dB → [0, 1] per the configured floor.
-            let mag = ((db - floor) / db_range).clamp(0.0, 1.0);
-            // bin 0 = lowest freq, render at the bottom → invert Y.
-            let y_frac = if n_bins > 1 {
-                bin_idx as f32 / (n_bins - 1) as f32
-            } else {
-                0.0
-            };
-            let y = (h - 1).saturating_sub((y_frac * (h - 1) as f32) as usize);
-            if x < w && y < h {
-                pixels[y * w + x] = magnitude_to_color(mag);
-            }
-        }
-    }
-
-    egui::ColorImage { size: [w, h], pixels }
-}
-
-/// Map a normalized magnitude `[0.0, 1.0]` to an RGB heat-map colour via
-/// a 5-stop gradient: dark-blue → blue → cyan → yellow-green → white.
-/// Values outside the range clamp to the endpoints.
-pub(crate) fn magnitude_to_color(mag: f32) -> egui::Color32 {
-    // Five evenly-spaced stops (t = 0.0, 0.25, 0.5, 0.75, 1.0).
-    let stops: [(u8, u8, u8); 5] = [
-        (10, 10, 40),     // dark blue  — near-silence
-        (20, 80, 180),    // blue       — quiet
-        (20, 180, 180),   // cyan       — mid
-        (180, 200, 20),   // yellow-green — loud
-        (255, 255, 255),  // white      — peak
-    ];
-    let m = mag.clamp(0.0, 1.0);
-    // Figure out which of the four segments we're in.
-    let seg_f = m * 4.0;
-    let seg = (seg_f as usize).min(3);
-    let t = seg_f - seg as f32;
-    let (r, g, b) = lerp_rgb(stops[seg], stops[seg + 1], t);
-    egui::Color32::from_rgb(r, g, b)
-}
-
-/// Linear interpolation between two RGB triples. `t` is clamped to
-/// `[0.0, 1.0]` by the callers above, but rounding uses `as u8` so the
-/// result is tolerant of slight overshoot.
-pub(crate) fn lerp_rgb(a: (u8, u8, u8), b: (u8, u8, u8), t: f32) -> (u8, u8, u8) {
-    let lerp = |x: u8, y: u8, t: f32| -> u8 {
-        (x as f32 + (y as f32 - x as f32) * t).round() as u8
-    };
-    (lerp(a.0, b.0, t), lerp(a.1, b.1, t), lerp(a.2, b.2, t))
 }

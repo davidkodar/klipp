@@ -62,7 +62,7 @@ pub fn note_active_panel(
 ) {
     let pressed_inside = ctx.input(|i| {
         i.pointer.any_pressed()
-            && i.pointer.interact_pos().map_or(false, |p| panel_rect.contains(p))
+            && i.pointer.interact_pos().is_some_and(|p| panel_rect.contains(p))
     });
     if pressed_inside {
         state.active_panel = Some(kind);
@@ -4310,7 +4310,7 @@ mod grade_node_clipboard_tests {
         let corrector_id = NodeId::new_v4();
         let output_id = NodeId::new_v4();
         let wheels_id = NodeId::new_v4();
-        let mut graph = NodeGraph {
+        let graph = NodeGraph {
             nodes: vec![
                 Node { id: source_id, kind: NodeKind::Source, label: "Src".into(), enabled: true, params: Default::default(), keyframes: Default::default(), output_link: None, input_links: Vec::new() },
                 Node { id: corrector_id, kind: NodeKind::Corrector, label: "Corr".into(), enabled: true, params: Default::default(), keyframes: Default::default(), output_link: None, input_links: Vec::new() },

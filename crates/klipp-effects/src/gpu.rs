@@ -1887,7 +1887,7 @@ impl GpuEffectsPipeline {
         // would silently corrupt the copy under the release-build
         // validation disable. Reject up front.
         let bytes_per_row = width * 4;
-        if bytes_per_row % wgpu::COPY_BYTES_PER_ROW_ALIGNMENT != 0 {
+        if !bytes_per_row.is_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT) {
             tracing::warn!(
                 "encode_grade_to_texture: width {width} (pitch {bytes_per_row} B) \
                  not a multiple of COPY_BYTES_PER_ROW_ALIGNMENT={}. \
@@ -2117,8 +2117,8 @@ impl GpuEffectsPipeline {
             None => (0, 0, 1.0, 1.0),
         };
         if self.is_device_lost()
-            || width % 8 != 0
-            || height % 2 != 0
+            || !width.is_multiple_of(8)
+            || !height.is_multiple_of(2)
             || tone_map_op > 3
             || gamut_op > 1
             || hdr_op > 2
@@ -2298,7 +2298,7 @@ impl GpuEffectsPipeline {
         let step = step.max(1);
         let (mw, mh) = (width.div_ceil(step), height.div_ceil(step));
         let bytes = (mw as u64) * (mh as u64) * 4;
-        if self.hdr_nit_buf.as_ref().map_or(true, |b| b.size() < bytes) {
+        if self.hdr_nit_buf.as_ref().is_none_or(|b| b.size() < bytes) {
             self.hdr_nit_buf = Some(self.device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("hdr_nit_map"),
                 size: bytes,
@@ -2515,7 +2515,7 @@ impl GpuEffectsPipeline {
     fn ensure_hdr_encode_data(&mut self, data: &[f32]) -> bool {
         // 1 header + 9 matrix + 3 luma = 13 before the table.
         let entries = match data.first() {
-            Some(&n) if n >= 2.0 && n < 65536.0 => n as usize,
+            Some(&n) if (2.0..65536.0).contains(&n) => n as usize,
             _ => return false,
         };
         if data.len() < 13 + entries {
@@ -2817,7 +2817,7 @@ impl GpuEffectsPipeline {
             }));
             self.bridge_u8_out_size = out_bytes;
         }
-        if self.display_u8_staging.as_ref().map_or(true, |b| b.size() < out_bytes) {
+        if self.display_u8_staging.as_ref().is_none_or(|b| b.size() < out_bytes) {
             self.display_u8_staging = Some(self.device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("display_u8_staging"),
                 size: out_bytes,
@@ -3084,7 +3084,7 @@ impl GpuEffectsPipeline {
         let records_bytes = records_bytes.max(48);  // one MaskRecord
         let points_bytes = points_bytes.max(8);     // one vec2<f32>
         let need_records = self.mask_records_buf.as_ref()
-            .map_or(true, |b| b.size() < records_bytes);
+            .is_none_or(|b| b.size() < records_bytes);
         if need_records {
             self.mask_records_buf = Some(self.device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("mask_records_buf"),
@@ -3094,7 +3094,7 @@ impl GpuEffectsPipeline {
             }));
         }
         let need_points = self.mask_points_buf.as_ref()
-            .map_or(true, |b| b.size() < points_bytes);
+            .is_none_or(|b| b.size() < points_bytes);
         if need_points {
             self.mask_points_buf = Some(self.device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("mask_points_buf"),
@@ -4019,7 +4019,7 @@ impl GpuEffectsPipeline {
             return;
         }
         let size = (width * height * 16) as u64;
-        if self.grade_mix_src.as_ref().map_or(true, |b| b.size() < size) {
+        if self.grade_mix_src.as_ref().is_none_or(|b| b.size() < size) {
             self.grade_mix_src = Some(self.device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("grade_mix_src"),
                 size,
@@ -4150,7 +4150,7 @@ impl GpuEffectsPipeline {
             return;
         }
         let bytes = std::mem::size_of_val(plate_linear) as u64;
-        let needs_alloc = self.plate_buf.as_ref().map_or(true, |b| b.size() < bytes);
+        let needs_alloc = self.plate_buf.as_ref().is_none_or(|b| b.size() < bytes);
         if needs_alloc {
             self.plate_buf = Some(self.device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("difference_key_plate"),
@@ -5490,8 +5490,8 @@ impl GpuEffectsPipeline {
     }
 
     pub fn upload_rsc_row_transforms(&mut self, row_transforms: &[crate::rolling_shutter::RowTransform]) {
-        let byte_size = (row_transforms.len() * std::mem::size_of::<crate::rolling_shutter::RowTransform>()) as u64;
-        if self.rsc_row_buf.as_ref().map_or(true, |_| self.rsc_row_buf_size < byte_size) {
+        let byte_size = std::mem::size_of_val(row_transforms) as u64;
+        if self.rsc_row_buf.as_ref().is_none_or(|_| self.rsc_row_buf_size < byte_size) {
             self.rsc_row_buf = Some(self.device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("rsc_row_transforms"),
                 size: byte_size,

@@ -148,7 +148,7 @@ fn main() -> Result<()> {
     // (codec-init details, container probe noise) while real
     // problems still come through.
     unsafe {
-        ffmpeg_next::ffi::av_log_set_level(ffmpeg_next::ffi::AV_LOG_WARNING as i32);
+        ffmpeg_next::ffi::av_log_set_level(ffmpeg_next::ffi::AV_LOG_WARNING);
         ffmpeg_next::ffi::av_log_set_callback(Some(klipp_engine::ffmpeg_log_to_tracing));
     }
 

@@ -9,3 +9,6 @@ libloading = { workspace = true }
 tracing = { workspace = true }
 dirs = { workspace = true }
 serde = { workspace = true }
+
+[lints]
+workspace = true

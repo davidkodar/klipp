@@ -719,7 +719,7 @@ mod tests {
         ps.set_string("test", 0, "value");
         let handle = register_propset(ps);
 
-        assert!(handle != std::ptr::null_mut());
+        assert!(!handle.is_null());
 
         let val = with_propset(handle, |ps| ps.get_string_lossy("test", 0));
         assert_eq!(val.unwrap().as_deref(), Some("value"));

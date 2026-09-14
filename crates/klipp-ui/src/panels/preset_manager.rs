@@ -151,7 +151,7 @@ pub fn show_preset_manager_dialog(
                                 if let Some(path) = rfd::FileDialog::new()
                                     .set_title("Export Preset")
                                     .add_filter("Klipp preset (JSON)", &["json"])
-                                    .set_file_name(&format!("{}.json", sanitize(&preset.name)))
+                                    .set_file_name(format!("{}.json", sanitize(&preset.name)))
                                     .save_file()
                                 {
                                     match serde_json::to_string_pretty(preset) {

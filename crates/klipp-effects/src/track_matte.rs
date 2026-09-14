@@ -28,19 +28,16 @@ use crate::blur;
 /// `klipp_nodes::params::MatteChannel` so callers can convert by enum
 /// pattern match without touching this crate's public surface.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Default)]
 pub enum MatteChannel {
     Alpha,
+    #[default]
     Luminance,
     Red,
     Green,
     Blue,
 }
 
-impl Default for MatteChannel {
-    fn default() -> Self {
-        MatteChannel::Luminance
-    }
-}
 
 /// Threshold below which we don't divide RGB by alpha — un-premultiply
 /// at near-zero alpha amplifies quantisation noise and produces wild
@@ -73,7 +70,7 @@ pub fn extract_mask_linear(
     source_premultiplied: bool,
     luma: [f32; 3],
 ) -> Vec<f32> {
-    if rgba.len() % 4 != 0 {
+    if !rgba.len().is_multiple_of(4) {
         return Vec::new();
     }
     let pixels = rgba.len() / 4;
@@ -116,7 +113,7 @@ pub fn extract_mask_srgb_u8(
     invert: bool,
     source_premultiplied: bool,
 ) -> Vec<f32> {
-    if rgba.len() % 4 != 0 {
+    if !rgba.len().is_multiple_of(4) {
         return Vec::new();
     }
     let pixels = rgba.len() / 4;
@@ -182,7 +179,7 @@ pub fn apply_matte_fused_linear(
     luma: [f32; 3],
 ) {
     debug_assert_eq!(consumer_rgba.len(), source_rgba.len());
-    debug_assert!(consumer_rgba.len() % 4 == 0);
+    debug_assert!(consumer_rgba.len().is_multiple_of(4));
     // Hoist the channel match out of the per-pixel loop so the
     // optimizer sees a vectorisable straight-line body. With the
     // match inside, LLVM emits a 5-way branch per pixel and
@@ -339,7 +336,7 @@ pub fn apply_matte_fused_linear(
 /// an 8.3 MB RGBA u8 packing buffer + run a 4-channel blur + unpack;
 /// this version touches just the 4 MB f32 buffer + one scratch.
 pub fn feather_mask(
-    mask: &mut Vec<f32>,
+    mask: &mut [f32],
     width: u32,
     height: u32,
     radius_px: f32,
@@ -457,7 +454,7 @@ fn box_blur_v_f32(src: &[f32], dst: &mut [f32], w: usize, h: usize, r: usize) {
 /// A zero or sub-half-pixel radius, an empty mask, or a mask whose
 /// length disagrees with `width * height` all return untouched, so a
 /// caller cannot silently erode the wrong buffer.
-pub fn apply_choke_mask(mask: &mut Vec<f32>, width: u32, height: u32, radius_px: f32) {
+pub fn apply_choke_mask(mask: &mut [f32], width: u32, height: u32, radius_px: f32) {
     if radius_px < 0.5 || mask.is_empty() {
         return;
     }
@@ -577,7 +574,7 @@ fn min_pool_v(src: &[f32], dst: &mut [f32], w: usize, h: usize, r: usize) {
 /// matte to the consumer's resolution before calling, but the guard
 /// is cheap).
 pub fn apply_mask_to_alpha_linear(rgba: &mut [f32], mask: &[f32]) {
-    if rgba.len() % 4 != 0 || mask.len() * 4 != rgba.len() {
+    if !rgba.len().is_multiple_of(4) || mask.len() * 4 != rgba.len() {
         return;
     }
     for (i, &m) in mask.iter().enumerate() {
@@ -590,7 +587,7 @@ pub fn apply_mask_to_alpha_linear(rgba: &mut [f32], mask: &[f32]) {
 /// place. Mask is f32 `[0.0, 1.0]`; we round to nearest u8 for the
 /// modified alpha. Same length-mismatch policy as the linear variant.
 pub fn apply_mask_to_alpha_srgb_u8(rgba: &mut [u8], mask: &[f32]) {
-    if rgba.len() % 4 != 0 || mask.len() * 4 != rgba.len() {
+    if !rgba.len().is_multiple_of(4) || mask.len() * 4 != rgba.len() {
         return;
     }
     for (i, &m) in mask.iter().enumerate() {

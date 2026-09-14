@@ -2971,7 +2971,7 @@ impl TimelinePanel {
             let boundary_secs = a.timeline_in.to_secs_f64() as f32 + a.duration().to_secs_f64() as f32;
             let boundary_x = content_rect.left() + boundary_secs * zoom - scroll;
             let dist = (hover_pos.x - boundary_x).abs();
-            if dist < 40.0 && best.map_or(true, |(_, d)| dist < d) {
+            if dist < 40.0 && best.is_none_or(|(_, d)| dist < d) {
                 best = Some((i, dist));
             }
         }
@@ -3014,7 +3014,7 @@ impl TimelinePanel {
                 .any(|t| t.clip_a_id == clip_a_id && t.clip_b_id == clip_b_id);
             if let Some(crate::drag_drop::DragPayload::Transition { name, .. }) = state.drag_drop.end() {
                 if already {
-                    state.toast.show(format!("Transition already exists at this cut"));
+                    state.toast.show("Transition already exists at this cut".to_string());
                 } else {
                     cmds.push(AppCommand::AddTransition {
                         track_index: track_idx,
@@ -8114,12 +8114,11 @@ impl TimelinePanel {
                         let resp = ui.add_enabled(false, egui::Button::new("\u{2702} Use clip above as matte"));
                         resp.on_hover_text("No clip on a higher track at this time-range. Stack a clip above first, or pick a source via the Inspector → Compositing section.");
                     }
-                    if already_has_matte {
-                        if ui.button("Clear matte").clicked() {
+                    if already_has_matte
+                        && ui.button("Clear matte").clicked() {
                             cmds.push(AppCommand::ClearClipMatte { clip_id });
                             ui.close_menu();
                         }
-                    }
                     ui.separator();
 
                     let is_ref = state.color_match_reference_clip == Some(clip_id);
@@ -8284,12 +8283,11 @@ impl TimelinePanel {
                             && state.playhead > c.timeline_in
                             && state.playhead < c.timeline_out
                     });
-                if can_freeze {
-                    if ui.button("Freeze Frame Here").clicked() {
+                if can_freeze
+                    && ui.button("Freeze Frame Here").clicked() {
                         cmds.push(AppCommand::InsertFreezeFrame { duration_secs: 2.0 });
                         ui.close_menu();
                     }
-                }
 
                 // Scene detection: only valid on Media clips whose source file
                 // exists. Suppressed for title/compound/sequence clips and for
@@ -10430,7 +10428,7 @@ impl TimelinePanel {
                 }
 
                 if !found_roll_junction {
-                    if let Some((cr, hit_clip, edge)) = self.hit_test_edge(&clips, content_rect, track_rect, zoom, scroll, track_height, pos) {
+                    if let Some((cr, hit_clip, edge)) = self.hit_test_edge(clips, content_rect, track_rect, zoom, scroll, track_height, pos) {
                         // Check if pointer is in the fade handle zone (top corner) — skip trim highlight there
                         let at_top = pos.y - cr.top() < 12.0;
                         let at_near_edge = match edge {
@@ -10504,7 +10502,7 @@ impl TimelinePanel {
                     } else if state.active_tool == Tool::Trim {
                         // Tool::Trim: no junction, no edge — if pointer is over a clip body,
                         // show horizontal resize cursor as a slip-available indicator.
-                        if self.hit_test_clip_body(&clips, content_rect, track_rect, zoom, scroll, track_height, pos).is_some() {
+                        if self.hit_test_clip_body(clips, content_rect, track_rect, zoom, scroll, track_height, pos).is_some() {
                             ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
                         }
                     }
@@ -14351,7 +14349,7 @@ impl TimelinePanel {
                     ui.layer_id(),
                     ui.id().with(("pool_thumb", item.id)),
                     |ui: &mut egui::Ui| {
-                        ui.label(format!("{} (drag to track)", &item.filename));
+                        ui.label(format!("{} (drag to track)", item.filename));
                     },
                 );
             }

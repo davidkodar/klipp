@@ -372,7 +372,7 @@ impl TitleRenderer {
                 });
                 sub_layout.append(&[font], &TextStyle::new(&ch_str, font_px, 0));
                 for g in sub_layout.glyphs() {
-                    let mut g_owned = g.clone();
+                    let mut g_owned = *g;
                     g_owned.byte_offset += byte_offset;
                     vertical_glyphs.push(g_owned);
                 }
@@ -401,7 +401,7 @@ impl TitleRenderer {
             // forward to the next whitespace after each chunk's
             // ideal endpoint so words aren't cut.
             let total_chars = resolved_text.chars().count();
-            let chunk_chars = (total_chars + columns_n - 1) / columns_n;
+            let chunk_chars = total_chars.div_ceil(columns_n);
             let mut chunks: Vec<String> = Vec::new();
             let mut buffer = String::new();
             let mut chunk_count = 0usize;
@@ -437,7 +437,7 @@ impl TitleRenderer {
                 });
                 col_layout.append(&[font], &TextStyle::new(chunk, font_px, 0));
                 for g in col_layout.glyphs() {
-                    let mut g_owned = g.clone();
+                    let mut g_owned = *g;
                     g_owned.byte_offset += byte_offset;
                     columns_glyphs.push(g_owned);
                 }
@@ -3103,7 +3103,7 @@ fn paint_alpha_mask_stripe(
         let row_start = y * mask_w;
         for x in x_lo..x_hi {
             let idx = row_start + x;
-            mask[idx] = mask[idx].max(255);
+            mask[idx] = 255;
         }
     }
 }
@@ -3834,8 +3834,8 @@ mod tests {
     tb.text = "S".to_string();
     tb.font_size = 100.0;
     tb.shadows.clear();
-    let mut td = klipp_timeline::TitleData::single_text(tb);
-    td
+    
+    klipp_timeline::TitleData::single_text(tb)
 };
         let with_shadow = {
     let mut td = no_shadow.clone();
@@ -3867,8 +3867,8 @@ mod tests {
     let mut tb = klipp_timeline::TextBox::default();
     tb.text = "O".to_string();
     tb.font_size = 100.0;
-    let mut td = klipp_timeline::TitleData::single_text(tb);
-    td
+    
+    klipp_timeline::TitleData::single_text(tb)
 };
         let with_outline = {
     let mut td = no_outline.clone();
@@ -3896,8 +3896,8 @@ mod tests {
     let mut tb = klipp_timeline::TextBox::default();
     tb.text = "G".to_string();
     tb.font_size = 100.0;
-    let mut td = klipp_timeline::TitleData::single_text(tb);
-    td
+    
+    klipp_timeline::TitleData::single_text(tb)
 };
         let with_glow = {
     let mut td = no_glow.clone();
@@ -3932,8 +3932,8 @@ mod tests {
         bottom_color: [0, 0, 255, 255],
         enabled: true,
     });
-    let mut td = klipp_timeline::TitleData::single_text(tb);
-    td
+    
+    klipp_timeline::TitleData::single_text(tb)
 };
         let buf = renderer.render(&title, 640, 480);
         // Should have both reddish and bluish pixels
@@ -3962,8 +3962,8 @@ mod tests {
     let mut tb = klipp_timeline::TextBox::default();
     tb.text = "3D".to_string();
     tb.font_size = 100.0;
-    let mut td = klipp_timeline::TitleData::single_text(tb);
-    td
+    
+    klipp_timeline::TitleData::single_text(tb)
 };
         let with_ext = {
     let mut td = no_ext.clone();
@@ -3996,8 +3996,8 @@ mod tests {
     let mut tb = klipp_timeline::TextBox::default();
     tb.text = "Hello".to_string();
     tb.font_size = 72.0;
-    let mut td = klipp_timeline::TitleData::single_text(tb);
-    td
+    
+    klipp_timeline::TitleData::single_text(tb)
 };
         let positions = renderer.compute_char_positions(&td, 1920, 1080);
         // Should have 6 entries: 5 chars + 1 end-of-text cursor position
@@ -4020,8 +4020,8 @@ mod tests {
     let mut tb = klipp_timeline::TextBox::default();
     tb.text = "Line1\nLine2".to_string();
     tb.font_size = 72.0;
-    let mut td = klipp_timeline::TitleData::single_text(tb);
-    td
+    
+    klipp_timeline::TitleData::single_text(tb)
 };
         let positions = renderer.compute_char_positions(&td, 1920, 1080);
         let char_count = "Line1\nLine2".chars().count(); // 11
@@ -4382,8 +4382,8 @@ mod tests {
         tb.text = "X".to_string();
         tb.font_size = 80.0;
         let td_full = {
-            let td = klipp_timeline::TitleData::single_text(tb.clone());
-            td
+            
+            klipp_timeline::TitleData::single_text(tb.clone())
         };
         let td_half = {
             let mut td = klipp_timeline::TitleData::single_text(tb.clone());
@@ -4642,8 +4642,8 @@ mod tests {
                 StyleRun { start: 0, end: 5, font_size: Some(100.0), color: None, font_name: None, font_style: None, tracking: None, baseline_offset: None },
                 StyleRun { start: 6, end: 11, font_size: Some(50.0), color: None, font_name: None, font_style: None, tracking: None, baseline_offset: None },
             ];
-    let mut td = klipp_timeline::TitleData::single_text(tb);
-    td
+    
+    klipp_timeline::TitleData::single_text(tb)
 };
         let positions = renderer.compute_char_positions(&td, 1920, 1080);
         let char_count = "Hello World".chars().count(); // 11
@@ -4662,8 +4662,8 @@ mod tests {
     let mut tb = klipp_timeline::TextBox::default();
     tb.text = text.to_string();
     tb.font_size = 72.0;
-    let mut td = klipp_timeline::TitleData::single_text(tb);
-    td
+    
+    klipp_timeline::TitleData::single_text(tb)
 };
         let positions = renderer.compute_char_positions(&td, 1920, 1080);
         // Every non-end position should have a byte_offset that points to the right character
@@ -4689,8 +4689,8 @@ mod tests {
                 StyleRun { start: 3, end: 7, font_size: Some(50.0), color: None, font_name: None, font_style: None, tracking: None, baseline_offset: None },  // DEFG
                 StyleRun { start: 7, end: 10, font_size: Some(72.0), color: None, font_name: None, font_style: None, tracking: None, baseline_offset: None }, // HIJ
             ];
-    let mut td = klipp_timeline::TitleData::single_text(tb);
-    td
+    
+    klipp_timeline::TitleData::single_text(tb)
 };
         let positions = renderer.compute_char_positions(&td, 1920, 1080);
         // All ASCII so byte_offset == char_index
@@ -4716,7 +4716,7 @@ mod tests {
         for ci in 0..=char_count {
             let byte_pos = text.char_indices().nth(ci).map(|(b, _)| b).unwrap_or(text.len());
             let mut modified = text.to_string();
-            modified.insert_str(byte_pos, "X");
+            modified.insert(byte_pos, 'X');
 
             // Verify insertion at position ci puts X after the ci-th character
             let chars: Vec<char> = modified.chars().collect();
@@ -5820,9 +5820,9 @@ mod tests {
         // Scanlines: rows vary, columns within a row are uniform.
         let (scan, _, _) = generate_preset_texture(TexturePresetId::Scanlines, 64, 64);
         let row0_first = scan[0];
-        let row0_last = scan[(63 * 4)];
+        let row0_last = scan[63 * 4];
         assert_eq!(row0_first, row0_last, "scanlines row should be uniform across x");
-        let row3_first = scan[(3 * 64 * 4)];
+        let row3_first = scan[3 * 64 * 4];
         assert_ne!(
             row0_first, row3_first,
             "scanline rows {} and {} should differ",
@@ -5840,7 +5840,7 @@ mod tests {
         // identical within a row.
         let (grad, _, _) = generate_preset_texture(TexturePresetId::GradientSweep, 64, 64);
         let top = grad[0];
-        let bottom = grad[(63 * 64 * 4)];
+        let bottom = grad[63 * 64 * 4];
         assert!(top > bottom, "gradient sweep top should be brighter than bottom: {top} vs {bottom}");
     }
 

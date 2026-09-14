@@ -324,7 +324,7 @@ fn apply_fix(action: &FixAction, cmds: &mut Vec<AppCommand>) {
                 .map(|s| s.to_string_lossy().into_owned())
                 .unwrap_or_else(|| "media file".to_string());
             if let Some(new_path) = rfd::FileDialog::new()
-                .set_title(&format!("Relink: {original_name}"))
+                .set_title(format!("Relink: {original_name}"))
                 .set_directory(start_dir)
                 .pick_file()
             {

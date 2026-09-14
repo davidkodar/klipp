@@ -10,7 +10,7 @@
 //! - [`ffi`]      — raw `repr(C)` bindings to `frei0r.h`.
 //! - [`host`]     — discovery + on-disk cache (mirrors LADSPA pattern).
 //! - [`instance`] — per-instance lifecycle, parameter dispatch,
-//!                  color-model adapter, temporal-plugin allowlist.
+//!   color-model adapter, temporal-plugin allowlist.
 //! - [`tile`]     — tiling renderer for resolutions above 2048.
 //!
 //! ## Safety

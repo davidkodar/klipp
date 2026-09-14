@@ -588,8 +588,10 @@ pub enum SmartBinFilter {
 /// `enumerate_metadata_filter_values`). Combines with `SmartBinFilter`
 /// + the rating + colour-label filters using AND semantics.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Default)]
 pub enum MetadataFilter {
     /// Disable the filter — every item passes.
+    #[default]
     Any,
     /// Only show items whose `MediaItem.video_codec` (case-insensitive
     /// equal) matches the chosen value (e.g. "h264", "hevc").
@@ -604,9 +606,6 @@ pub enum MetadataFilter {
     Camera(String),
 }
 
-impl Default for MetadataFilter {
-    fn default() -> Self { Self::Any }
-}
 
 /// Thumbnail size for the Files tab. Controls row height, thumb box size,
 /// and where the filename is positioned. Persisted in FileBrowserPrefs.
@@ -3572,14 +3571,13 @@ impl BrowserPanel {
                     }
 
                     // ── Open with Default Application (only for files) ──
-                    if !menu_is_dir {
-                        if ui.button("Open with Default Application").clicked() {
+                    if !menu_is_dir
+                        && ui.button("Open with Default Application").clicked() {
                             let _ = std::process::Command::new("xdg-open")
                                 .arg(&menu_path)
                                 .spawn();
                             ui.close_menu();
                         }
-                    }
 
                     // ── Pin / Unpin Favorites (directories only) ──
                     if menu_is_dir {
@@ -3628,12 +3626,11 @@ impl BrowserPanel {
                     {
                         let single = menu_count <= 1;
                         let renameable = single && !is_system_path(&menu_path) && !is_recents_view;
-                        if renameable {
-                            if ui.button("Rename").clicked() {
+                        if renameable
+                            && ui.button("Rename").clicked() {
                                 pending_start_rename = Some(menu_path.clone());
                                 ui.close_menu();
                             }
-                        }
                     }
 
                     ui.separator();
@@ -3648,12 +3645,11 @@ impl BrowserPanel {
 
                     // ── New folder ──
                     // Not available in the virtual Recents view.
-                    if !is_recents_view {
-                        if ui.button("New Folder").clicked() {
+                    if !is_recents_view
+                        && ui.button("New Folder").clicked() {
                             pending_new_folder = true;
                             ui.close_menu();
                         }
-                    }
 
                     // ── Refresh folder ──
                     if ui.button("Refresh Folder").clicked() {
@@ -3686,12 +3682,11 @@ impl BrowserPanel {
                     egui::Sense::click(),
                 );
                 empty_resp.context_menu(|ui| {
-                    if !is_recents_view {
-                        if ui.button("New Folder").clicked() {
+                    if !is_recents_view
+                        && ui.button("New Folder").clicked() {
                             pending_new_folder = true;
                             ui.close_menu();
                         }
-                    }
                     if ui.button("Refresh Folder").clicked() {
                         pending_refresh = true;
                         ui.close_menu();
@@ -5779,11 +5774,10 @@ mod tests {
             .into_iter()
             .filter_map(|e| e.ok())
         {
-            if entry.file_type().is_file() {
-                if klipp_core::media_extensions::path_is_media(entry.path()) {
+            if entry.file_type().is_file()
+                && klipp_core::media_extensions::path_is_media(entry.path()) {
                     files.push(entry.path().to_path_buf());
                 }
-            }
         }
         files
     }

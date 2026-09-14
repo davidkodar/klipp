@@ -477,7 +477,7 @@ fn fader_strip(
     let db_color = if *muted { theme.text_dim } else { theme.text_secondary };
     painter.text(
         egui::pos2(rect.center().x, y + 5.0), egui::Align2::CENTER_CENTER,
-        &format!("{} dB", format_db(db)), egui::FontId::monospace(8.0), db_color,
+        format!("{} dB", format_db(db)), egui::FontId::monospace(8.0), db_color,
     );
     y += 16.0;
 
@@ -671,12 +671,12 @@ fn master_strip(
     // Row 1: dB | Integrated
     painter.text(
         egui::pos2(col1_x, y + 4.0), egui::Align2::LEFT_CENTER,
-        &format!("{} dB", format_db(vol_to_db(*master_volume))),
+        format!("{} dB", format_db(vol_to_db(*master_volume))),
         egui::FontId::monospace(8.0), theme.text_secondary,
     );
     painter.text(
         egui::pos2(col2_x, y + 4.0), egui::Align2::LEFT_CENTER,
-        &format!("I:{}", format_lufs(lufs_integrated)),
+        format!("I:{}", format_lufs(lufs_integrated)),
         egui::FontId::monospace(8.0), lufs_text_color(lufs_integrated, lufs_target, theme),
     );
     y += 11.0;
@@ -686,12 +686,12 @@ fn master_strip(
     let peak_color = if peak_db > -1.0 { theme.marker_error } else { theme.text_dim };
     painter.text(
         egui::pos2(col1_x, y + 4.0), egui::Align2::LEFT_CENTER,
-        &format!("Pk{}", format_db(peak_db)),
+        format!("Pk{}", format_db(peak_db)),
         egui::FontId::monospace(7.0), peak_color,
     );
     painter.text(
         egui::pos2(col2_x, y + 4.0), egui::Align2::LEFT_CENTER,
-        &format!("S:{}", format_lufs(lufs_short_term)),
+        format!("S:{}", format_lufs(lufs_short_term)),
         egui::FontId::monospace(7.0), theme.text_dim,
     );
     y += 10.0;
@@ -721,7 +721,7 @@ fn master_strip(
     tp_hover_resp.on_hover_text(tp_tip);
     painter.text(
         egui::pos2(col2_x, y + 4.0), egui::Align2::LEFT_CENTER,
-        &format!("M:{}", format_lufs(lufs_momentary)),
+        format!("M:{}", format_lufs(lufs_momentary)),
         egui::FontId::monospace(7.0), theme.text_dim,
     );
     y += 10.0;
@@ -729,7 +729,7 @@ fn master_strip(
     // Row 4: LRA
     painter.text(
         egui::pos2(col1_x, y + 4.0), egui::Align2::LEFT_CENTER,
-        &format!("LRA {:.1} LU", lufs_lra),
+        format!("LRA {:.1} LU", lufs_lra),
         egui::FontId::monospace(7.0), theme.text_dim,
     );
     y += 12.0;
@@ -788,7 +788,7 @@ pub fn show(
             // Video tracks with linked audio clips should show meters
             let has_audio = t.kind == klipp_timeline::TrackKind::Audio
                 || t.clips.iter().any(|c| c.linked_clip_id.is_some());
-            (t.name.clone(), t.id, t.kind.clone(), t.volume, t.pan, t.muted, t.solo, has_audio)
+            (t.name.clone(), t.id, t.kind, t.volume, t.pan, t.muted, t.solo, has_audio)
         })
         .collect();
     let mut master_vol = state.master_volume;
@@ -941,13 +941,13 @@ pub fn draw_inspector_meter(
     let ry = bar_bottom + READOUT_GAP;
     painter.text(
         egui::pos2(rect.min.x + 6.0, ry + 5.0), egui::Align2::LEFT_CENTER,
-        &format!("I: {} LUFS", format_lufs(state.lufs_integrated)),
+        format!("I: {} LUFS", format_lufs(state.lufs_integrated)),
         egui::FontId::monospace(10.0),
         lufs_text_color(state.lufs_integrated, state.lufs_target, theme),
     );
     painter.text(
         egui::pos2(rect.min.x + 6.0, ry + 19.0), egui::Align2::LEFT_CENTER,
-        &format!("S: {}   M: {}   TP: {} dB",
+        format!("S: {}   M: {}   TP: {} dB",
             format_lufs(state.lufs_short_term),
             format_lufs(state.lufs_momentary),
             format_lufs(state.lufs_true_peak_dbfs)),
@@ -956,7 +956,7 @@ pub fn draw_inspector_meter(
     );
     painter.text(
         egui::pos2(rect.min.x + 6.0, ry + 33.0), egui::Align2::LEFT_CENTER,
-        &format!("LRA: {:.1} LU", state.lufs_lra),
+        format!("LRA: {:.1} LU", state.lufs_lra),
         egui::FontId::monospace(9.0),
         theme.text_dim,
     );

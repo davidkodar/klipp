@@ -181,7 +181,7 @@ mod tests {
         let mut out = vec![0.0f32; 64];
         compute_spectrum(&ring, sr, fft_size, 64, &mut out);
         for (i, &v) in out.iter().enumerate() {
-            assert!(v >= -96.0 && v <= 0.0,
+            assert!((-96.0..=0.0).contains(&v),
                 "bin {} out of range: {}", i, v);
         }
     }

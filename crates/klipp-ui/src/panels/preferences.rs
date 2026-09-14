@@ -3529,7 +3529,7 @@ impl PreferencesPanel {
         let current_name = prefs.viewer.false_color_palette.name.clone();
 
         // Determine if current palette matches a built-in
-        let is_built_in = built_ins.iter().any(|p| *p == prefs.viewer.false_color_palette);
+        let is_built_in = built_ins.contains(&prefs.viewer.false_color_palette);
         let display_name = if is_built_in { current_name.as_str() } else { "Custom" };
 
         // Preset dropdown
@@ -3682,7 +3682,7 @@ impl PreferencesPanel {
         if any_changed {
             // Sort stops and mark as custom if no longer matching a preset
             prefs.viewer.false_color_palette.sort_stops();
-            if !FalseColorPalette::built_ins().iter().any(|p| *p == prefs.viewer.false_color_palette) {
+            if !FalseColorPalette::built_ins().contains(&prefs.viewer.false_color_palette) {
                 prefs.viewer.false_color_palette.name = "Custom".into();
             }
             *dirty = true;

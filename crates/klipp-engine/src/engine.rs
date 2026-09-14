@@ -2557,11 +2557,11 @@ impl PlaybackEngine {
             }
             AppCommand::SetScopeTapNode { clip_id, node_id } => {
                 self.inspect_clip = Some(clip_id);
-                self.scope_tap_node = node_id.clone();
+                self.scope_tap_node = node_id;
                 debug!("Scope tap node: {:?}", self.scope_tap_node);
             }
             AppCommand::SetNodeSolo { node_id } => {
-                self.solo_node = node_id.clone();
+                self.solo_node = node_id;
                 debug!("Solo node: {:?}", self.solo_node);
             }
             AppCommand::SetVisibleNodeThumbs { clip_id, node_ids } => {
@@ -7059,8 +7059,8 @@ impl PlaybackEngine {
                                 .and_then(|ctx| ctx.decoder().audio());
                             if let Ok(dec) = decoder {
                                 audio_codec = format!("{:?}", dec.id());
-                                sample_rate = Some(dec.rate() as u32);
-                                audio_channels = Some(dec.channels() as u16);
+                                sample_rate = Some(dec.rate());
+                                audio_channels = Some(dec.channels());
                             }
                         }
                         _ => {}
@@ -7097,7 +7097,7 @@ impl PlaybackEngine {
 
                 // Try to extract creation_time from container metadata (camera shoot date)
                 let media_created_at = format_ctx.metadata().get("creation_time")
-                    .and_then(|s| parse_iso8601_timestamp(s));
+                    .and_then(parse_iso8601_timestamp);
 
                 // Extract extended metadata from container and stream tags
                 let fmt_meta = &format_ctx.metadata();
@@ -7836,7 +7836,7 @@ fn parse_iso8601_timestamp(s: &str) -> Option<u64> {
     for y in 1970..year {
         days += if y % 4 == 0 && (y % 100 != 0 || y % 400 == 0) { 366 } else { 365 };
     }
-    let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+    let leap = year.is_multiple_of(4) && (!year.is_multiple_of(100) || year.is_multiple_of(400));
     let mdays = [31, if leap { 29 } else { 28 }, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
     for m in 0..(month.saturating_sub(1) as usize).min(11) {
         days += mdays[m];

@@ -78,8 +78,8 @@ fn make_nv12(width: u32, height: u32) -> (Vec<u8>, Vec<u8>, u32, u32) {
     let mut uv = Vec::with_capacity((uv_stride * (height / 2)) as usize);
     for row in 0..(height / 2) {
         for col in 0..(width / 2) {
-            uv.push(((col as u32 + row as u32 + 64) & 0xFF) as u8); // U
-            uv.push(((col as u32 * 2 + row as u32 + 128) & 0xFF) as u8); // V
+            uv.push(((col + row + 64) & 0xFF) as u8); // U
+            uv.push(((col * 2 + row + 128) & 0xFF) as u8); // V
         }
     }
     (y, uv, y_stride, uv_stride)

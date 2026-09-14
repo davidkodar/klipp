@@ -20,7 +20,7 @@ pub fn first_exact_mismatch(
     tol: f32,
 ) -> Option<(usize, usize, f32)> {
     assert_eq!(a.len(), b.len(), "image buffers must be the same size");
-    assert!(a.len() % 4 == 0, "buffers must be RGBA-packed");
+    assert!(a.len().is_multiple_of(4), "buffers must be RGBA-packed");
     for (px_idx, (pa, pb)) in a.chunks_exact(4).zip(b.chunks_exact(4)).enumerate() {
         for ch in 0..4 {
             let diff = (pa[ch] - pb[ch]).abs();

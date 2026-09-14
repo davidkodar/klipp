@@ -5813,7 +5813,7 @@ mod text_editor_tests {
 
         // Click on second line
         let idx = find_nearest_char_index(&positions, 105.0, 100.0);
-        assert!(idx >= 6 && idx <= 7, "Click on line 2 should give index 6-7, got {}", idx);
+        assert!((6..=7).contains(&idx), "Click on line 2 should give index 6-7, got {}", idx);
     }
 
     // ── Full editor simulation with char_positions ──
@@ -5829,8 +5829,8 @@ mod text_editor_tests {
     let mut tb = klipp_timeline::TextBox::default();
     tb.text = text.clone();
     tb.font_size = 72.0;
-    let mut td = klipp_timeline::TitleData::single_text(tb);
-    td
+    
+    klipp_timeline::TitleData::single_text(tb)
 };
         let positions = renderer.compute_char_positions(&td, 1920, 1080);
 
@@ -5874,8 +5874,8 @@ mod text_editor_tests {
     let mut tb = klipp_timeline::TextBox::default();
     tb.text = text.clone();
     tb.font_size = 72.0;
-    let mut td = klipp_timeline::TitleData::single_text(tb);
-    td
+    
+    klipp_timeline::TitleData::single_text(tb)
 };
 
             // Recompute char positions (as upload_title_overlay would)
@@ -5929,8 +5929,8 @@ mod text_editor_tests {
     let mut tb = klipp_timeline::TextBox::default();
     tb.text = text.clone();
     tb.font_size = 72.0;
-    let mut td = klipp_timeline::TitleData::single_text(tb);
-    td
+    
+    klipp_timeline::TitleData::single_text(tb)
 };
             let positions = renderer.compute_char_positions(&td, 1920, 1080);
 
@@ -5966,10 +5966,10 @@ mod text_editor_tests {
             ("text_a", true), // Event::Text("a") — should insert
         ];
 
-        for (event_type, should_insert) in events {
-            if event_type.starts_with("text_") {
+        for (event_type, _should_insert) in events {
+            if let Some(ch) = event_type.strip_prefix("text_") {
                 // Process Event::Text
-                let ch = &event_type[5..]; // "a"
+                // "a"
                 let bp = char_to_byte(&text, cursor);
                 text.insert_str(bp, ch);
                 cursor += ch.chars().count();
@@ -6004,8 +6004,8 @@ mod text_editor_tests {
     let mut tb = klipp_timeline::TextBox::default();
     tb.text = text.to_string();
     tb.font_size = 72.0;
-    let mut td = klipp_timeline::TitleData::single_text(tb);
-    td
+    
+    klipp_timeline::TitleData::single_text(tb)
 };
         let positions = renderer.compute_char_positions(&td, 1920, 1080);
 

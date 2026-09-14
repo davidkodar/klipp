@@ -145,11 +145,13 @@ impl Default for LumaKeySettings {
 /// Which colour metric the difference-key uses to compare a live
 /// pixel against the clean plate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Default)]
 pub enum DifferenceKeyMatchSpace {
     /// Per-pixel `d = max(|R_live − R_plate|, |G_live − G_plate|,
     /// |B_live − B_plate|)` (Chebyshev / L∞ norm). Catches subjects
     /// that share luminance with the plate but differ in colour
     /// (red shirt against grey wall). More discriminating; default.
+    #[default]
     Rgb,
     /// Per-pixel `d = |Y_live − Y_plate|` with Rec.709 weights.
     /// Faster, more forgiving of plate-noise chroma drift; suits
@@ -158,11 +160,6 @@ pub enum DifferenceKeyMatchSpace {
     Luminance,
 }
 
-impl Default for DifferenceKeyMatchSpace {
-    fn default() -> Self {
-        Self::Rgb
-    }
-}
 
 /// Standalone difference-key matte producer. Compares each live-frame
 /// pixel against a clean-plate reference image loaded from disk;

@@ -11,3 +11,6 @@ tracing = { workspace = true }
 [dev-dependencies]
 klipp-testing = { path = "../klipp-testing" }
 serde_json = "1"
+
+[lints]
+workspace = true

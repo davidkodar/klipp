@@ -7,15 +7,14 @@ use klipp_core::AppCommand;
 
 /// Source filter for the Transitions tab — built-in vs OpenFX.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Default)]
 pub enum TransitionsSourceFilter {
+    #[default]
     All,
     Builtin,
     Ofx,
 }
 
-impl Default for TransitionsSourceFilter {
-    fn default() -> Self { TransitionsSourceFilter::All }
-}
 
 /// Public alias of the category enum so the BrowserPanel can hold the
 /// active selection.
@@ -2619,7 +2618,7 @@ fn paint_kind_motion_overlay(
             let stagger = ((i as f32 * 0.27 + t * 4.0).sin() * 0.5 + 0.5).clamp(0.0, 1.0);
             if stagger > 1.0 - t {
                 let y = rect.min.y + i as f32 * bh;
-                let off = (((i as f32 * 1.13 + t * 6.0).sin()) * rect.width() * 0.08) as f32;
+                let off = ((i as f32 * 1.13 + t * 6.0).sin()) * rect.width() * 0.08;
                 let band = egui::Rect::from_min_size(
                     egui::pos2(rect.min.x + off, y),
                     egui::vec2(rect.width(), bh - 0.5),
@@ -2629,7 +2628,7 @@ fn paint_kind_motion_overlay(
         }
     };
     let glitch_rgb_split = || {
-        let off = ((t * 12.0).sin() * 8.0) as f32;
+        let off = (t * 12.0).sin() * 8.0;
         p.rect_filled(
             rect.translate(egui::vec2(off, 0.0)).intersect(rect),
             r,

@@ -252,7 +252,7 @@ pub fn build(state: &AppState) -> Vec<PaletteEntry> {
     e.push(PaletteEntry { label: Cow::Borrowed("Deselect All"), shortcut: Cow::Borrowed("Ctrl+Shift+A"),
         action: PaletteAction::Cmd(AppCommand::SelectClip(None)), enabled: true });
     if !state.selected_clips.is_empty() {
-        let cids: Vec<_> = state.selected_clips.iter().copied().collect();
+        let cids: Vec<_> = state.selected_clips.to_vec();
         e.push(PaletteEntry { label: Cow::Borrowed("Group Clips"), shortcut: Cow::Borrowed("Ctrl+G"),
             action: PaletteAction::Cmd(AppCommand::GroupClips { clip_ids: cids }),
             enabled: state.selected_clips.len() >= 2 });
@@ -432,7 +432,7 @@ pub fn build(state: &AppState) -> Vec<PaletteEntry> {
             }
         }),
         enabled: state.selected_clip.is_some()
-            && state.grade_node_clipboard.as_ref().map_or(false, |c| !c.nodes.is_empty()) });
+            && state.grade_node_clipboard.as_ref().is_some_and(|c| !c.nodes.is_empty()) });
     // Bake Grade — closure form because we need the selected clip + chosen
     // size + a synchronous save-file dialog, none of which fits the simple
     // Cmd / ToggleState shapes.

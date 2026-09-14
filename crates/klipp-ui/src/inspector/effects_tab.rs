@@ -1542,7 +1542,7 @@ fn show_builtin_effect_params(
                         klipp_effects::ColorFadeMode::Out => "Fade To",
                     })
                     .show_ui(ui, |ui| {
-                        if ui.selectable_value(&mut m, klipp_effects::ColorFadeMode::In, "Fade From").clicked() {}
+                        ui.selectable_value(&mut m, klipp_effects::ColorFadeMode::In, "Fade From").clicked();
                         if ui.selectable_value(&mut m, klipp_effects::ColorFadeMode::Out, "Fade To").clicked() {}
                     });
                 if m != *mode { *mode = m; changed = true; }
@@ -2413,7 +2413,7 @@ fn show_builtin_effect_params(
                     project_w,
                     project_h,
                 ) {
-                    let why = if project_w % 8 != 0 || project_h % 8 != 0 {
+                    let why = if !project_w.is_multiple_of(8) || !project_h.is_multiple_of(8) {
                         format!(
                             "frei0r requires 8-aligned dimensions; project is {}×{}",
                             project_w, project_h

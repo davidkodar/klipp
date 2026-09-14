@@ -29,3 +29,6 @@ tracing     = { workspace = true }
 candle-core = { version = "0.8", optional = true, default-features = false }
 candle-nn = { version = "0.8", optional = true, default-features = false }
 candle-transformers = { version = "0.8", optional = true, default-features = false }
+
+[lints]
+workspace = true

@@ -80,7 +80,7 @@ pub fn passes_metadata_filter(
             item.fps.num == *num && item.fps.den == *den
         }
         MetadataFilter::Camera(c) => item.camera_make.as_deref()
-            .map_or(false, |m| m.eq_ignore_ascii_case(c)),
+            .is_some_and(|m| m.eq_ignore_ascii_case(c)),
     }
 }
 
@@ -236,13 +236,13 @@ pub fn show(
 
     // Sort
     match sort_by {
-        SortBy::Name => items.sort_by(|a, b| a.filename.to_lowercase().cmp(&b.filename.to_lowercase())),
-        SortBy::Duration => items.sort_by(|a, b| a.duration.value.cmp(&b.duration.value)),
+        SortBy::Name => items.sort_by_key(|a| a.filename.to_lowercase()),
+        SortBy::Duration => items.sort_by_key(|a| a.duration.value),
         SortBy::Rating => items.sort_by(|a, b| b.rating.cmp(&a.rating)),
         SortBy::Codec => items.sort_by(|a, b| a.codec.cmp(&b.codec)),
-        SortBy::FileSize => items.sort_by(|a, b| a.file_size_bytes.cmp(&b.file_size_bytes)),
-        SortBy::DateAdded => items.sort_by(|a, b| a.added_at.cmp(&b.added_at)),
-        SortBy::ShootDate => items.sort_by(|a, b| a.shoot_date.cmp(&b.shoot_date)),
+        SortBy::FileSize => items.sort_by_key(|a| a.file_size_bytes),
+        SortBy::DateAdded => items.sort_by_key(|a| a.added_at),
+        SortBy::ShootDate => items.sort_by_key(|a| a.shoot_date),
     }
     if !*sort_ascending {
         items.reverse();
@@ -1905,7 +1905,7 @@ fn show_context_menu(
             let mut dialog = rfd::FileDialog::new()
                 .set_title(format!("Locate {}", filename));
             if !ext.is_empty() {
-                dialog = dialog.add_filter(&ext.to_uppercase(), &[ext.as_str()]);
+                dialog = dialog.add_filter(ext.to_uppercase(), &[ext.as_str()]);
             }
             if let Some(new_path) = dialog.pick_file() {
                 cmds.push(AppCommand::RelinkMedia { media_id, new_path });
@@ -1922,15 +1922,14 @@ fn show_context_menu(
     // Create Subclip from Zone — only for non-subclips with a zone set.
     // The handler rejects subclip-of-subclip defensively; this gate just
     // avoids offering it when it would toast an error.
-    if !is_subclip && has_zone {
-        if ui.button("Create Subclip from Zone").clicked() {
+    if !is_subclip && has_zone
+        && ui.button("Create Subclip from Zone").clicked() {
             ui.close_menu();
             cmds.push(AppCommand::CreateSubclipFromZone {
                 source_media_id: media_id,
                 name: None,
             });
         }
-    }
     ui.separator();
     if ui.button("Load in Source").clicked() {
         cmds.push(AppCommand::LoadSourceMedia { media_id });

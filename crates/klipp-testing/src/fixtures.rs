@@ -95,7 +95,7 @@ pub fn color_checker_24_linear() -> [[f32; 4]; 24] {
 /// Encode a linear RGBA frame to sRGB u8 (for comparison against the
 /// current u8 pipeline's outputs).
 pub fn encode_linear_to_srgb_u8(linear: &[f32]) -> Vec<u8> {
-    assert!(linear.len() % 4 == 0, "linear buffer must be RGBA-packed");
+    assert!(linear.len().is_multiple_of(4), "linear buffer must be RGBA-packed");
     let mut out = Vec::with_capacity(linear.len());
     for chunk in linear.chunks_exact(4) {
         let px = linear_to_srgb_u8([chunk[0], chunk[1], chunk[2], chunk[3]]);
