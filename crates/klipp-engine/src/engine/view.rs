@@ -465,7 +465,11 @@ impl PlaybackEngine {
         // a grade, an effect, a LUT, a tone map, a scope tap, node
         // thumbnails — still takes the full path.
         if let Some(p) = primary.as_ref() {
-            if self.fast_path_blockers_for(super::FastPath::PausedIdentity).is_empty() {
+            let blockers = self.fast_path_blockers_for(super::FastPath::PausedPresent);
+            if !blockers.is_empty() {
+                tracing::debug!("paused present: full path because {}", blockers.join(", "));
+            }
+            if blockers.is_empty() {
                 if let super::PregradePixels::Srgb8(bytes) = &p.pregrade().pixels {
                     if bytes.len() == (w as usize) * (h as usize) * 4 {
                         let picture = Picture::Display(bytes.as_ref().clone());
@@ -473,6 +477,14 @@ impl PlaybackEngine {
                         return;
                     }
                 }
+            } else if !progress
+                && super::PlaybackEngine::only_the_graded_path_handles(&blockers)
+                && self.regrade_parked_on_gpu_for(super::FastPath::PausedPresent)
+            {
+                // Only the clip's own graph stands between the decoded
+                // frame and the screen: graded on the GPU from the
+                // pre-grade captured above, the way a slider step is.
+                return;
             }
         }
 

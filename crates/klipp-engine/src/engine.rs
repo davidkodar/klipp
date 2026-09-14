@@ -507,8 +507,11 @@ pub(crate) enum FastPath {
     Playing,
     /// A slider step on the parked frame, graded on the GPU.
     ParkedDrag,
-    /// A paused present of a frame the renderer would only pass through.
-    PausedIdentity,
+    /// A paused present — a seek, a scrub step, a skim — of one clip alone:
+    /// shown as its decoded bytes when the renderer would only pass it
+    /// through, graded on the GPU from its pre-grade when only the graph
+    /// stands between.
+    PausedPresent,
 }
 
 fn direct_present_enabled() -> bool {
@@ -6183,7 +6186,7 @@ impl PlaybackEngine {
     }
 
     /// [`Self::fast_path_blockers`] for one of the three uses of the fast
-    /// path. `PausedIdentity` is a paused present — a seek, a scrub step,
+    /// path. `PausedPresent` is a paused present — a seek, a scrub step,
     /// a skim — of a frame the renderer would only pass through: the
     /// decoded sRGB bytes, which the pre-grade capture has already read
     /// back, are the picture, and the full path's expansion to linear
@@ -6211,7 +6214,7 @@ impl PlaybackEngine {
         let mut blockers: Vec<&'static str> = Vec::new();
 
         match mode {
-            FastPath::ParkedDrag | FastPath::PausedIdentity => {
+            FastPath::ParkedDrag | FastPath::PausedPresent => {
                 // What the grade tools read off the linear frame while paused.
                 if self.scope_tap_node.is_some() {
                     blockers.push("scope tap on a node");
@@ -6219,7 +6222,7 @@ impl PlaybackEngine {
                 if self.inspector_matte_preview_target.is_some() {
                     blockers.push("inspector matte preview");
                 }
-                if mode == FastPath::PausedIdentity {
+                if mode == FastPath::PausedPresent {
                     if self.in_node_param_edit {
                         blockers.push("node param edit in progress");
                     }
@@ -6475,12 +6478,26 @@ impl PlaybackEngine {
     /// the renderer would have done no more than this. Returns `false`,
     /// having shown nothing, when the frame cannot take this path.
     fn regrade_parked_on_gpu(&mut self) -> bool {
-        let Some((pixels, width, height)) = self.parked_pregrade().cloned() else { return false };
-        if !Self::only_the_graded_path_handles(&self.fast_path_blockers(true)) {
+        self.regrade_parked_on_gpu_for(FastPath::ParkedDrag)
+    }
+
+    /// [`Self::regrade_parked_on_gpu`] gated for `mode`: a slider drag, or
+    /// a paused present of a graded clip — a seek, a scrub step, a skim —
+    /// whose pre-grade the present has just captured. Through the renderer
+    /// such a present cost a 1080p frame 41 ms, the grade on the CPU and
+    /// the linear floats encoded after it; here it is the graph on the GPU
+    /// and display bytes back.
+    fn regrade_parked_on_gpu_for(&mut self, mode: FastPath) -> bool {
+        let Some((pixels, width, height)) = self.parked_pregrade().cloned() else {
+            debug!("gpu regrade ({mode:?}): no parked pre-grade");
+            return false;
+        };
+        if !Self::only_the_graded_path_handles(&self.fast_path_blockers_for(mode)) {
             return false;
         }
         let t_frame = std::time::Instant::now();
         let Some((graph, clip_time_secs, frame_number, track_points)) = self.v1_graph_setup() else {
+            debug!("gpu regrade ({mode:?}): no graph setup for the primary clip");
             return false;
         };
         let seed = match &pixels.pixels {
@@ -6525,6 +6542,7 @@ impl PlaybackEngine {
         let Some(mut bytes) =
             crate::fast_path::grade_to_display_on_gpu(self.renderer.executor(), seed, width, height, &at, &display)
         else {
+            debug!("gpu regrade ({mode:?}): the graph did not run on the GPU");
             return false;
         };
         let grade_ms = t_frame.elapsed().as_secs_f64() * 1000.0;
