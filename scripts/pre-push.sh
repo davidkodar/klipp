@@ -30,11 +30,12 @@
 #
 #     scripts/install-hooks.sh
 #
-# Timing, warm, on this machine: clippy about 15 s, rustdoc about 8 s,
-# then about 140 s of tests for the whole workspace, of which klipp-engine
-# is 54 s — it builds GPU devices and its HDR reference-output tests wait
-# on real timers. A cold build is longer, but that build was needed
-# anyway.
+# Timing, warm, on this machine: about 75 s for the lot — clippy 15 s,
+# rustdoc 8 s, the tests the rest, of which klipp-engine is the largest
+# share because it builds GPU devices and drives a real engine. It was
+# 165 s until the engine tests stopped sleeping on fixed timers and
+# started waiting for the frame buffer to settle. A cold build is longer,
+# but that build was needed anyway.
 #
 # To bypass for a genuine reason (pushing a work-in-progress branch,
 # mid-bisect, a machine with no GPU):
@@ -62,7 +63,7 @@ if ! command -v cargo >/dev/null 2>&1; then
     exit 1
 fi
 
-printf '\n  pre-push: clippy, rustdoc, then the workspace tests (~165 s warm).\n'
+printf '\n  pre-push: clippy, rustdoc, then the workspace tests (~75 s warm).\n'
 printf '            KLIPP_SKIP_TESTS=1 git push   to bypass.\n\n'
 
 if ! cargo clippy --workspace --all-targets -- -D warnings; then
