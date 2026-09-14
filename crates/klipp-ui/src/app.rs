@@ -14092,13 +14092,27 @@ impl KlippApp {
     }
 
     fn handle_title_commands(&mut self, cmd: &AppCommand, needs_refresh: &mut bool) -> bool {
-        let handled = if self.handle_title_lifecycle(cmd, needs_refresh) { true }
-            else if self.handle_title_content(cmd, needs_refresh) { true }
-            else if self.handle_title_layout(cmd, needs_refresh) { true }
-            else if self.handle_title_styling(cmd, needs_refresh) { true }
-            else if self.handle_title_effects(cmd, needs_refresh) { true }
-            else if self.handle_title_animation(cmd, needs_refresh) { false }
-            else { false };
+        // Short-circuiting `||` rather than a chain of
+        // `if h(..) { true } else if ..`, because that chain had a bug in
+        // it: the animation arm returned `false`, so a handled animation
+        // command was reported as *unhandled*. The propagation below was
+        // skipped, and the caller's
+        // `if handle_title_commands(..) { continue; }` let the command fall
+        // through to the rest of the dispatch. Animation was the only kind
+        // of title edit that never reached its linked Project Asset.
+        //
+        // `clippy::needless_bool` caught it, but only because the faulty
+        // arm happened to sit next to the closing `else { false }` — the
+        // same mistake in a middle arm would have been invisible. Written
+        // as `||` the mistake cannot be made: the semantics and the
+        // short-circuit order are identical, and there is no per-arm
+        // boolean to get wrong.
+        let handled = self.handle_title_lifecycle(cmd, needs_refresh)
+            || self.handle_title_content(cmd, needs_refresh)
+            || self.handle_title_layout(cmd, needs_refresh)
+            || self.handle_title_styling(cmd, needs_refresh)
+            || self.handle_title_effects(cmd, needs_refresh)
+            || self.handle_title_animation(cmd, needs_refresh);
         // Edit propagation: any title edit on a clip linked to a
         // Project Asset is the source-of-truth update for that
         // asset. Snapshot the edited clip's `TitleData` into the
