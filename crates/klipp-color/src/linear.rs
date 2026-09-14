@@ -107,27 +107,25 @@ pub fn apply_exposure(rgba: &mut [f32], stops: f32) {
     }
 }
 
-/// Contrast: S-curve pivoting at 18 % perceptual mid-grey (0.18
-/// linear).
+/// Contrast about mid grey, in the grade encoding (see
+/// [`crate::grade_model`]): `(e − mid) · (1 + factor) + mid`, mid grey
+/// being 0.18 linear. Symmetric in stops — a stop over and a stop under
+/// move the same encoded distance — and white lands above white rather
+/// than at a clip. `factor == 0.0` is the identity.
 ///
-/// `factor > 0.0` steepens the curve (higher contrast); `factor < 0.0`
-/// flattens it. `factor == 0.0` is identity. The pivot sits at 0.18
-/// so perceptual mid-grey stays put as the slider moves; a pivot at
-/// 0.5 linear would visibly shift it.
-///
-/// No clamp — highlights that cross 1.0 through contrast expansion
-/// are preserved for later stages (tone-mapping at display,
-/// colour-space encode at export).
+/// This was `(x − 0.18) · s + 0.18` on linear values, which at +0.5 sent
+/// everything under 3 % linear negative and white to 1.4.
 pub fn apply_contrast(rgba: &mut [f32], factor: f32) {
+    use crate::grade_model::{contrast_channel, grade_decode, grade_encode};
     if factor == 0.0 {
         return;
     }
-    let scale = 1.0 + factor;
-    const PIVOT: f32 = 0.18;
+    // About mid grey in the grade encoding (see `grade_model`): symmetric
+    // in stops, and neither end clips.
     for pixel in rgba.chunks_exact_mut(4) {
-        pixel[0] = (pixel[0] - PIVOT) * scale + PIVOT;
-        pixel[1] = (pixel[1] - PIVOT) * scale + PIVOT;
-        pixel[2] = (pixel[2] - PIVOT) * scale + PIVOT;
+        for c in &mut pixel[..3] {
+            *c = grade_decode(contrast_channel(grade_encode(*c), factor));
+        }
     }
 }
 
@@ -275,14 +273,12 @@ pub fn apply_temperature_tint(rgba: &mut [f32], temperature: f32, tint: f32, ws:
     }
 }
 
-/// Tone controls — highlights, shadows, whites, blacks.
-///
-/// Each parameter is an adjustment in `−1.0..+1.0`; `0.0` is identity.
-/// Weights are computed from linear luma; band centres at
-/// `highlights=0.21`, `whites=0.52`, `shadows=0.21`, `blacks=0.032`
-/// — the linear-light equivalents of the sRGB 0.5 / 0.8 / 0.2
-/// thresholds the sliders were calibrated against, so a given slider
-/// position still lands on the tonal band the label promises.
+/// Tone controls — highlights, shadows, whites, blacks — as offsets in
+/// the grade encoding, each weighted by the band it names on the encoded
+/// luma ([`crate::grade_model::tone_weights`]): whites and blacks at the
+/// ends, highlights and shadows the broader bands either side of mid
+/// grey. Each parameter is an adjustment in `−1.0..+1.0`; `0.0` is the
+/// identity.
 pub fn apply_tone_controls_ws(
     rgba: &mut [f32],
     highlights: f32,
@@ -291,31 +287,20 @@ pub fn apply_tone_controls_ws(
     blacks: f32,
     ws: WorkingColorspace,
 ) {
+    use crate::grade_model::{grade_decode, grade_encode, tone_weights};
     if highlights == 0.0 && shadows == 0.0 && whites == 0.0 && blacks == 0.0 {
         return;
     }
-    // sRGB thresholds converted to linear via srgb_to_linear:
-    //   0.5 → ≈ 0.2140
-    //   0.8 → ≈ 0.6038
-    //   0.2 → ≈ 0.0331
-    const HI_CENTRE: f32 = 0.214;
-    const WHITE_CENTRE: f32 = 0.604;
-    const SHADOW_CENTRE: f32 = 0.214;
-    const BLACK_CENTRE: f32 = 0.033;
+    // Offsets in the grade encoding, weighted by the band each control
+    // names on the encoded luma (see `grade_model::tone_weights`).
     let c = luma_coefs(ws);
-
     for pixel in rgba.chunks_exact_mut(4) {
         let luma = c[0] * pixel[0] + c[1] * pixel[1] + c[2] * pixel[2];
-
-        let hi_w = (luma - HI_CENTRE).max(0.0) * (1.0 / (1.0 - HI_CENTRE));
-        let lo_w = (SHADOW_CENTRE - luma).max(0.0) * (1.0 / SHADOW_CENTRE);
-        let white_w = (luma - WHITE_CENTRE).max(0.0) * (1.0 / (1.0 - WHITE_CENTRE));
-        let black_w = (BLACK_CENTRE - luma).max(0.0) * (1.0 / BLACK_CENTRE);
-
+        let [hi_w, lo_w, white_w, black_w] = tone_weights(grade_encode(luma));
         let adj = highlights * hi_w + shadows * lo_w + whites * white_w + blacks * black_w;
-        pixel[0] += adj;
-        pixel[1] += adj;
-        pixel[2] += adj;
+        for ch in &mut pixel[..3] {
+            *ch = grade_decode(grade_encode(*ch) + adj);
+        }
     }
 }
 
@@ -333,12 +318,9 @@ pub fn apply_tone_controls(
         WorkingColorspace::Rec709Linear)
 }
 
-/// Lift / gamma / gain colour-wheel adjustments, weighted by tonal band.
-///
-/// Lift affects shadows (weight `1 − luma`), gamma affects midtones
-/// (weight `sin(π·luma)`), gain affects highlights (weight `luma`).
-/// Each parameter is a pre-converted `(r, g, b)` shift from
-/// `wheel_offset_to_rgb`.
+/// Lift / gamma / gain colour wheels: [`apply_lift_gamma_gain_offset_ws`]
+/// with no offset. Each parameter is a per-channel `(r, g, b)` amount
+/// from `wheel_offset_to_rgb`.
 pub fn apply_lift_gamma_gain_ws(
     rgba: &mut [f32],
     lift: (f32, f32, f32),
@@ -346,20 +328,7 @@ pub fn apply_lift_gamma_gain_ws(
     gain: (f32, f32, f32),
     ws: WorkingColorspace,
 ) {
-    let is_zero = |v: (f32, f32, f32)| v.0.abs() < 0.0001 && v.1.abs() < 0.0001 && v.2.abs() < 0.0001;
-    if is_zero(lift) && is_zero(gamma) && is_zero(gain) {
-        return;
-    }
-    let c = luma_coefs(ws);
-    for pixel in rgba.chunks_exact_mut(4) {
-        let luma = c[0] * pixel[0] + c[1] * pixel[1] + c[2] * pixel[2];
-        let lift_w = (1.0 - luma).max(0.0);
-        let gain_w = luma;
-        let gamma_w = (luma * std::f32::consts::PI).sin().max(0.0);
-        pixel[0] += lift.0 * lift_w + gamma.0 * gamma_w + gain.0 * gain_w;
-        pixel[1] += lift.1 * lift_w + gamma.1 * gamma_w + gain.1 * gain_w;
-        pixel[2] += lift.2 * lift_w + gamma.2 * gamma_w + gain.2 * gain_w;
-    }
+    apply_lift_gamma_gain_offset_ws(rgba, lift, gamma, gain, (0.0, 0.0, 0.0), ws)
 }
 
 /// Back-compat wrapper for [`apply_lift_gamma_gain_ws`] pinned to
@@ -374,8 +343,14 @@ pub fn apply_lift_gamma_gain(
     apply_lift_gamma_gain_ws(rgba, lift, gamma, gain, WorkingColorspace::Rec709Linear)
 }
 
-/// [`apply_lift_gamma_gain_ws`] plus a uniform offset applied to every
-/// channel regardless of luma.
+/// The colour wheels as the ASC CDL, per channel in the grade encoding
+/// ([`crate::grade_model::cdl_channel`]): lift pins white and raises
+/// black, gain pins black and scales, gamma is a power about the ends,
+/// offset is an offset. Each parameter is a per-channel `(r, g, b)`
+/// amount from `wheel_offset_to_rgb`; `0` is neutral for all four.
+///
+/// These used to add luma-weighted amounts to the linear values, which
+/// gave mid grey 82 % of a lift and made gain a multiply by luma.
 pub fn apply_lift_gamma_gain_offset_ws(
     rgba: &mut [f32],
     lift: (f32, f32, f32),
@@ -384,19 +359,22 @@ pub fn apply_lift_gamma_gain_offset_ws(
     offset: (f32, f32, f32),
     ws: WorkingColorspace,
 ) {
+    use crate::grade_model::{cdl_channel, grade_decode, grade_encode};
     let is_zero = |v: (f32, f32, f32)| v.0.abs() < 0.0001 && v.1.abs() < 0.0001 && v.2.abs() < 0.0001;
     if is_zero(lift) && is_zero(gamma) && is_zero(gain) && is_zero(offset) {
         return;
     }
-    let c = luma_coefs(ws);
+    // The ASC CDL per channel in the grade encoding (see `grade_model`).
+    // The working space no longer enters: the wheels are per channel.
+    let _ = ws;
+    let l = [lift.0, lift.1, lift.2];
+    let ga = [gamma.0, gamma.1, gamma.2];
+    let gn = [gain.0, gain.1, gain.2];
+    let o = [offset.0, offset.1, offset.2];
     for pixel in rgba.chunks_exact_mut(4) {
-        let luma = c[0] * pixel[0] + c[1] * pixel[1] + c[2] * pixel[2];
-        let lift_w = (1.0 - luma).max(0.0);
-        let gain_w = luma;
-        let gamma_w = (luma * std::f32::consts::PI).sin().max(0.0);
-        pixel[0] += lift.0 * lift_w + gamma.0 * gamma_w + gain.0 * gain_w + offset.0;
-        pixel[1] += lift.1 * lift_w + gamma.1 * gamma_w + gain.1 * gain_w + offset.1;
-        pixel[2] += lift.2 * lift_w + gamma.2 * gamma_w + gain.2 * gain_w + offset.2;
+        for (i, ch) in pixel[..3].iter_mut().enumerate() {
+            *ch = grade_decode(cdl_channel(grade_encode(*ch), l[i], ga[i], gn[i], o[i]));
+        }
     }
 }
 
@@ -413,9 +391,11 @@ pub fn apply_lift_gamma_gain_offset(
         WorkingColorspace::Rec709Linear)
 }
 
-/// Log-domain colour wheels — Low / Mid / High with Gaussian weights
-/// in log space. Smoother overlap than linear lift/gamma/gain wheels;
-/// matches how colourists think about HDR and log-encoded footage.
+/// Log wheels — low / mid / high — as offsets in the grade encoding, in
+/// Gaussian bands about the shadows, mid grey and the highlights of the
+/// encoded luma ([`crate::grade_model::log_wheel_weights`]). The mid
+/// band peaks at 0.18 linear; the old bands, on scaled log2 luma, put
+/// "mid" at 3 %.
 pub fn apply_log_wheels_ws(
     rgba: &mut [f32],
     low: (f32, f32, f32),
@@ -423,23 +403,25 @@ pub fn apply_log_wheels_ws(
     high: (f32, f32, f32),
     ws: WorkingColorspace,
 ) {
+    use crate::grade_model::{grade_decode, grade_encode, log_wheel_weights};
     let is_zero = |v: (f32, f32, f32)| v.0.abs() < 0.0001 && v.1.abs() < 0.0001 && v.2.abs() < 0.0001;
     if is_zero(low) && is_zero(mid) && is_zero(high) {
         return;
     }
+    // Offsets in the grade encoding, in Gaussian bands about the
+    // shadows, mid grey and the highlights of the encoded luma. The old
+    // bands were on log2 luma scaled so that "mid" centred on 3 % linear,
+    // two and a half stops under mid grey.
     let c = luma_coefs(ws);
+    let lo = [low.0, low.1, low.2];
+    let mi = [mid.0, mid.1, mid.2];
+    let hi = [high.0, high.1, high.2];
     for pixel in rgba.chunks_exact_mut(4) {
-        let luma = (c[0] * pixel[0] + c[1] * pixel[1] + c[2] * pixel[2]).max(0.001);
-        // Map ~0.001..1.0 linear → ~0..1 via log2.
-        let log_luma = ((luma + 0.001).log2() + 10.0) / 10.0;
-
-        let low_w = (-(log_luma - 0.15).powi(2) / (2.0 * 0.15_f32.powi(2))).exp();
-        let mid_w = (-(log_luma - 0.50).powi(2) / (2.0 * 0.20_f32.powi(2))).exp();
-        let high_w = (-(log_luma - 0.85).powi(2) / (2.0 * 0.15_f32.powi(2))).exp();
-
-        pixel[0] += low.0 * low_w + mid.0 * mid_w + high.0 * high_w;
-        pixel[1] += low.1 * low_w + mid.1 * mid_w + high.1 * high_w;
-        pixel[2] += low.2 * low_w + mid.2 * mid_w + high.2 * high_w;
+        let luma = c[0] * pixel[0] + c[1] * pixel[1] + c[2] * pixel[2];
+        let [low_w, mid_w, high_w] = log_wheel_weights(grade_encode(luma));
+        for (i, ch) in pixel[..3].iter_mut().enumerate() {
+            *ch = grade_decode(grade_encode(*ch) + lo[i] * low_w + mi[i] * mid_w + hi[i] * high_w);
+        }
     }
 }
 
@@ -735,14 +717,23 @@ mod tests {
 
     #[test]
     fn contrast_expansion_pushes_highlights_past_one() {
-        // 0.8 linear with +1.0 contrast factor (scale 2.0) around 0.18
-        // pivot: (0.8 - 0.18) * 2.0 + 0.18 = 1.42. Not clipped.
+        // Twice the encoded distance from mid grey: 0.8 is 0.911 in the
+        // grade encoding, mid grey 0.489, so 1.333 → 1.99 linear. Not clipped.
         let mut frame = make_frame(&[[0.8, 0.8, 0.8, 1.0]]);
         apply_contrast(&mut frame, 1.0);
         for i in 0..3 {
             assert!(frame[i] > 1.0, "channel {i}: contrast did not exceed 1.0");
-            assert!(approx_eq(frame[i], 1.42, 1e-4));
+            assert!(approx_eq(frame[i], 1.9925, 1e-3), "got {}", frame[i]);
         }
+    }
+
+    /// Contrast in the grade encoding scales the shadows' distance from
+    /// mid grey; in linear it drove them negative.
+    #[test]
+    fn contrast_keeps_deep_shadows_above_black() {
+        let mut frame = make_frame(&[[0.03, 0.03, 0.03, 1.0]]);
+        apply_contrast(&mut frame, 0.5);
+        assert!(frame[0] > 0.0 && frame[0] < 0.03, "got {}", frame[0]);
     }
 
     // ─── saturation ────────────────────────────────────────────────
@@ -920,14 +911,29 @@ mod tests {
         let mut bright = make_frame(&[[0.95, 0.95, 0.95, 1.0]]);
         apply_lift_gamma_gain(&mut dark, (0.2, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0));
         apply_lift_gamma_gain(&mut bright, (0.2, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0));
-        assert!(dark[0] - 0.05 > 0.15, "lift should raise shadows: {}", dark[0]);
-        assert!(bright[0] - 0.95 < 0.05, "lift should not raise highlights much: {}", bright[0]);
+        let (dark_delta, bright_delta) = (dark[0] - 0.05, bright[0] - 0.95);
+        assert!(dark_delta > 0.05, "lift should raise shadows: {}", dark[0]);
+        assert!(bright_delta.abs() < 0.02, "lift should barely move the highlights: {}", bright[0]);
+        assert!(dark_delta > 4.0 * bright_delta.abs());
+        // And white itself is pinned.
+        let mut white = make_frame(&[[1.0, 1.0, 1.0, 1.0]]);
+        apply_lift_gamma_gain(&mut white, (0.2, 0.2, 0.2), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0));
+        assert!(approx_eq(white[0], 1.0, 1e-5), "lift moved white to {}", white[0]);
+    }
+
+    #[test]
+    fn gain_pins_black_and_scales_white() {
+        let mut black = make_frame(&[[0.0, 0.0, 0.0, 1.0]]);
+        let mut white = make_frame(&[[1.0, 1.0, 1.0, 1.0]]);
+        apply_lift_gamma_gain(&mut black, (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.5, 0.5, 0.5));
+        apply_lift_gamma_gain(&mut white, (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.5, 0.5, 0.5));
+        assert!(approx_eq(black[0], 0.0, 1e-6), "gain moved black to {}", black[0]);
+        assert!(approx_eq(white[0], 1.5f32.powf(2.4), 1e-4), "white × 1.5 in the encoding: {}", white[0]);
     }
 
     #[test]
     fn lift_gamma_gain_offset_uniform_offset_moves_all_tones() {
-        // Offset of +0.1 should raise every channel of every pixel
-        // by exactly 0.1, irrespective of its tonal band.
+        // Offset of +0.1 raises every tone by 0.1 in the grade encoding.
         let mut frame = make_frame(&[[0.1, 0.5, 0.9, 1.0]]);
         apply_lift_gamma_gain_offset(
             &mut frame,
@@ -936,9 +942,11 @@ mod tests {
             (0.0, 0.0, 0.0),
             (0.1, 0.1, 0.1),
         );
-        assert!((frame[0] - 0.2).abs() < 1e-4);
-        assert!((frame[1] - 0.6).abs() < 1e-4);
-        assert!((frame[2] - 1.0).abs() < 1e-4);
+        use crate::grade_model::{grade_decode, grade_encode};
+        for (i, x) in [0.1f32, 0.5, 0.9].iter().enumerate() {
+            let want = grade_decode(grade_encode(*x) + 0.1);
+            assert!((frame[i] - want).abs() < 1e-4, "channel {i}: {} vs {want}", frame[i]);
+        }
     }
 
     // ─── log wheels ────────────────────────────────────────────────
@@ -953,31 +961,27 @@ mod tests {
 
     #[test]
     fn log_wheels_bands_peak_at_expected_log_luma() {
-        // The Gaussian bands live in log-luma space with centres at
-        // 0.15 / 0.5 / 0.85. Linearly those correspond to roughly
-        // 0.003 / 0.031 / 0.354 linear. Test that each wheel change
-        // peaks at its own band — dark pixel for low, very-dark
-        // midtone for mid, near-diffuse-white for high. This
-        // preserves the sRGB u8 behaviour (which was calibrated for
-        // log-encoded footage) bit-for-bit in linear domain.
-        let mut low_target = make_frame(&[[0.003, 0.003, 0.003, 1.0]]);
-        let mut mid_target = make_frame(&[[0.031, 0.031, 0.031, 1.0]]);
-        let mut high_target = make_frame(&[[0.354, 0.354, 0.354, 1.0]]);
-        apply_log_wheels(
-            &mut low_target,
-            (0.2, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0),
-        );
-        apply_log_wheels(
-            &mut mid_target,
-            (0.0, 0.0, 0.0), (0.2, 0.0, 0.0), (0.0, 0.0, 0.0),
-        );
-        apply_log_wheels(
-            &mut high_target,
-            (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.2, 0.0, 0.0),
-        );
-        assert!(low_target[0] > 0.003 + 0.15, "low band missed: {}", low_target[0]);
-        assert!(mid_target[0] > 0.031 + 0.15, "mid band missed: {}", mid_target[0]);
-        assert!(high_target[0] > 0.354 + 0.15, "high band missed: {}", high_target[0]);
+        use crate::grade_model::{grade_decode, grade_encode};
+        // Each band's wheel raises the grey at that band's centre by
+        // nearly its full amount in the grade encoding — the shadows
+        // band two and a quarter stops under mid grey, the mid band at
+        // mid grey, the highlights band one and a half stops over — and
+        // the mid band barely touches the ends.
+        let centres = [grade_decode(0.20), 0.18, grade_decode(0.78)];
+        let wheels = [
+            ((0.2, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0)),
+            ((0.0, 0.0, 0.0), (0.2, 0.0, 0.0), (0.0, 0.0, 0.0)),
+            ((0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.2, 0.0, 0.0)),
+        ];
+        for (grey, (low, mid, high)) in centres.iter().zip(wheels) {
+            let mut frame = make_frame(&[[*grey, *grey, *grey, 1.0]]);
+            apply_log_wheels(&mut frame, low, mid, high);
+            let rise = grade_encode(frame[0]) - grade_encode(*grey);
+            assert!(rise > 0.19, "band at {grey} rose by only {rise}");
+        }
+        let mut black = make_frame(&[[0.001, 0.001, 0.001, 1.0]]);
+        apply_log_wheels(&mut black, (0.0, 0.0, 0.0), (0.2, 0.0, 0.0), (0.0, 0.0, 0.0));
+        assert!(grade_encode(black[0]) - grade_encode(0.001) < 0.02, "the mid wheel reached black");
     }
 
     // ─── wheel sat/bri ────────────────────────────────────────────
@@ -1273,15 +1277,15 @@ mod tests {
         assert!(!approx_eq(a[0], b[0], 1e-6) || !approx_eq(a[1], b[1], 1e-6),
             "tone_controls should differ: Rec709={a:?} AcesCG={b:?}");
 
-        // lift_gamma_gain — same idea (luma drives lift/gamma/gain band weights)
+        // lift_gamma_gain is per channel now (the ASC CDL): the working
+        // space does not enter, so both agree.
         let mut a = make_frame(&pixels);
         let mut b = make_frame(&pixels);
         apply_lift_gamma_gain_ws(&mut a, (0.1, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0),
             WorkingColorspace::Rec709Linear);
         apply_lift_gamma_gain_ws(&mut b, (0.1, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0),
             WorkingColorspace::AcesCG);
-        assert!((a[0] - b[0]).abs() > 1e-4 || (a[1] - b[1]).abs() > 1e-4 || (a[2] - b[2]).abs() > 1e-4,
-            "lift_gamma_gain should differ: Rec709={a:?} AcesCG={b:?}");
+        assert_eq!(a, b, "the wheels are per channel and do not depend on the working space");
 
         // wheel_sat_bri — saturation applied via luma
         let mut a = make_frame(&pixels);

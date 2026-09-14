@@ -10408,6 +10408,47 @@ struct Params {
 ",
     shader_linear_helpers_wgsl!(),
     "
+// The grade model, transcribed from klipp_color::grade_model. Change
+// one, change the other; the parity tests hold them equal.
+const GRADE_GAMMA: f32 = 2.4;
+const MID_GREY_ENCODED: f32 = 0.4894371;
+fn grade_encode(x: f32) -> f32 {
+    let e = pow(abs(x), 1.0 / GRADE_GAMMA);
+    return select(e, -e, x < 0.0);
+}
+fn grade_decode(e: f32) -> f32 {
+    let x = pow(abs(e), GRADE_GAMMA);
+    return select(x, -x, e < 0.0);
+}
+fn cdl_channel(e: f32, lift: f32, gamma: f32, gain: f32, offset: f32) -> f32 {
+    let slope = (1.0 + gain) * (1.0 - lift);
+    let t = e * slope + lift + offset;
+    let power = 1.0 / max(1.0 + gamma, 0.05);
+    return select(t, pow(t, power), t > 0.0);
+}
+fn contrast_channel(e: f32, amount: f32) -> f32 {
+    return (e - MID_GREY_ENCODED) * (1.0 + amount) + MID_GREY_ENCODED;
+}
+fn grade_smoothstep(lo: f32, hi: f32, x: f32) -> f32 {
+    let t = clamp((x - lo) / (hi - lo), 0.0, 1.0);
+    return t * t * (3.0 - 2.0 * t);
+}
+// (highlights, shadows, whites, blacks)
+fn tone_weights(l: f32) -> vec4<f32> {
+    return vec4<f32>(
+        grade_smoothstep(0.45, 0.85, l),
+        1.0 - grade_smoothstep(0.30, 0.65, l),
+        grade_smoothstep(0.65, 0.95, l),
+        1.0 - grade_smoothstep(0.10, 0.40, l),
+    );
+}
+fn grade_gauss(l: f32, centre: f32, sigma: f32) -> f32 {
+    return exp(-((l - centre) * (l - centre)) / (2.0 * sigma * sigma));
+}
+// (low, mid, high)
+fn log_wheel_weights(l: f32) -> vec3<f32> {
+    return vec3<f32>(grade_gauss(l, 0.20, 0.14), grade_gauss(l, MID_GREY_ENCODED, 0.16), grade_gauss(l, 0.78, 0.14));
+}
 @compute @workgroup_size(256)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let idx = gid.x;
@@ -10419,69 +10460,47 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     var b = orig.z;
 
     // 1. Exposure (2^stops) — physically correct in linear.
+    // 1. Exposure and white balance in linear light.
     let exp_factor = pow(2.0, params.exposure);
     r = r * exp_factor;
     g = g * exp_factor;
     b = b * exp_factor;
-
-    // 2. Tone controls. Band centres in linear: highlights 0.214,
-    //    whites 0.604, shadows 0.214, blacks 0.033. Luma uses the
-    //    project's working-space coefficients (BT.709 for Rec709Linear,
-    //    AP1 for AcesCG).
-    let luma1 = params.luma_yr * r + params.luma_yg * g + params.luma_yb * b;
-    let hi_w = max(luma1 - 0.214, 0.0) * (1.0 / (1.0 - 0.214));
-    let lo_w = max(0.214 - luma1, 0.0) * (1.0 / 0.214);
-    let white_w = max(luma1 - 0.604, 0.0) * (1.0 / (1.0 - 0.604));
-    let black_w = max(0.033 - luma1, 0.0) * (1.0 / 0.033);
-    let tone_adj = params.highlights * hi_w + params.shadows * lo_w + params.whites * white_w + params.blacks * black_w;
-    r = r + tone_adj;
-    g = g + tone_adj;
-    b = b + tone_adj;
-
-    // 3. Colour wheels — band weighting via working-space luma.
-    //    Lift/Gamma/Gain/Offset, or in log mode Low/Mid/High with
-    //    Gaussian weights on log2 luma.
-    let luma2 = params.luma_yr * r + params.luma_yg * g + params.luma_yb * b;
-    if params.log_mode != 0u {
-        let log_luma = (log2(max(luma2, 0.001) + 0.001) + 10.0) / 10.0;
-        let low_w = exp(-((log_luma - 0.15) * (log_luma - 0.15)) / (2.0 * 0.15 * 0.15));
-        let mid_w = exp(-((log_luma - 0.50) * (log_luma - 0.50)) / (2.0 * 0.20 * 0.20));
-        let high_w = exp(-((log_luma - 0.85) * (log_luma - 0.85)) / (2.0 * 0.15 * 0.15));
-        r = r + params.log_low_r * low_w + params.log_mid_r * mid_w + params.log_high_r * high_w;
-        g = g + params.log_low_g * low_w + params.log_mid_g * mid_w + params.log_high_g * high_w;
-        b = b + params.log_low_b * low_w + params.log_mid_b * mid_w + params.log_high_b * high_w;
-    } else {
-        let lift_w = max(1.0 - luma2, 0.0);
-        let gain_w = max(luma2, 0.0);
-        let gamma_w = max(sin(clamp(luma2, 0.0, 1.0) * 3.14159265), 0.0);
-        r = r + params.lift_r * lift_w + params.gamma_r * gamma_w + params.gain_r * gain_w + params.offset_r;
-        g = g + params.lift_g * lift_w + params.gamma_g * gamma_w + params.gain_g * gain_w + params.offset_g;
-        b = b + params.lift_b * lift_w + params.gamma_b * gamma_w + params.gain_b * gain_w + params.offset_b;
-    }
-
-    // 4. Contrast — pivots at 0.18 linear mid-grey.
-    let cs = 1.0 + params.contrast;
-    r = (r - 0.18) * cs + 0.18;
-    g = (g - 0.18) * cs + 0.18;
-    b = (b - 0.18) * cs + 0.18;
-
-    // 5. Saturation — working-space luma lerp.
-    let luma3 = params.luma_yr * r + params.luma_yg * g + params.luma_yb * b;
-    r = luma3 + (r - luma3) * params.saturation;
-    g = luma3 + (g - luma3) * params.saturation;
-    b = luma3 + (b - luma3) * params.saturation;
-
-    // 6. Temperature / Tint: a white balance, the matrix
-    //    `klipp_color::white_balance` builds. It scales, so it acts the
-    //    same at every exposure.
     let wb_r = params.wb0 * r + params.wb1 * g + params.wb2 * b;
     let wb_g = params.wb3 * r + params.wb4 * g + params.wb5 * b;
     let wb_b = params.wb6 * r + params.wb7 * g + params.wb8 * b;
     r = wb_r;
     g = wb_g;
     b = wb_b;
-
-    // 7. Hue rotation, in HSL.
+    // 2. In the grade encoding (klipp_color::grade_model, the CPU twin):
+    //    the tone bands, the wheels as the ASC CDL, contrast about mid grey.
+    let luma1 = params.luma_yr * r + params.luma_yg * g + params.luma_yb * b;
+    let l_enc = grade_encode(luma1);
+    let tw = tone_weights(l_enc);
+    let tone_adj = params.highlights * tw.x + params.shadows * tw.y + params.whites * tw.z + params.blacks * tw.w;
+    var er = grade_encode(r) + tone_adj;
+    var eg = grade_encode(g) + tone_adj;
+    var eb = grade_encode(b) + tone_adj;
+    if params.log_mode != 0u {
+        let lw = log_wheel_weights(l_enc);
+        er = er + params.log_low_r * lw.x + params.log_mid_r * lw.y + params.log_high_r * lw.z;
+        eg = eg + params.log_low_g * lw.x + params.log_mid_g * lw.y + params.log_high_g * lw.z;
+        eb = eb + params.log_low_b * lw.x + params.log_mid_b * lw.y + params.log_high_b * lw.z;
+    } else {
+        er = cdl_channel(er, params.lift_r, params.gamma_r, params.gain_r, params.offset_r);
+        eg = cdl_channel(eg, params.lift_g, params.gamma_g, params.gain_g, params.offset_g);
+        eb = cdl_channel(eb, params.lift_b, params.gamma_b, params.gain_b, params.offset_b);
+    }
+    er = contrast_channel(er, params.contrast);
+    eg = contrast_channel(eg, params.contrast);
+    eb = contrast_channel(eb, params.contrast);
+    r = grade_decode(er);
+    g = grade_decode(eg);
+    b = grade_decode(eb);
+    // 3. Back in linear light: saturation about the working space's luma.
+    let luma3 = params.luma_yr * r + params.luma_yg * g + params.luma_yb * b;
+    r = luma3 + (r - luma3) * params.saturation;
+    g = luma3 + (g - luma3) * params.saturation;
+    b = luma3 + (b - luma3) * params.saturation;
     if abs(params.hue) >= 0.01 {
         let rot = hue_rotate_hsl(vec3<f32>(r, g, b), params.hue);
         r = rot.x;

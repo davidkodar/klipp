@@ -2643,6 +2643,7 @@ name = "klipp-color"
 version = "0.1.0"
 dependencies = [
  "klipp-core",
+ "klipp-grade-model",
  "klipp-testing",
  "rayon",
  "serde_json",
@@ -2703,6 +2704,7 @@ dependencies = [
  "klipp-color",
  "klipp-core",
  "klipp-frei0r",
+ "klipp-grade-model",
  "klipp-testing",
  "naga",
  "pollster 0.4.0",
@@ -2776,6 +2778,10 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
 ]
+
+[[package]]
+name = "klipp-grade-model"
+version = "0.1.0"
 
 [[package]]
 name = "klipp-hdr-out"

@@ -9,6 +9,7 @@
 //! Each function takes what its GPU entry point takes and works on
 //! linear RGBA f32 in place.
 
+use klipp_grade_model::{cdl_channel, contrast_channel, grade_decode, grade_encode, log_wheel_weights, tone_weights};
 use rayon::prelude::*;
 // The WGSL twins spell this `3.14159265`, and that literal rounds to
 // exactly this f32 — 0x40490fdb, the same bits — so the twins agree
@@ -49,65 +50,55 @@ pub fn color_grade(px: &mut [f32], g: &ColorGrade) {
         let (mut r, mut gr, mut b) = (orig[0], orig[1], orig[2]);
 
         // 1. Exposure.
+        // 1. Exposure and white balance: linear light, where a stop is a
+        //    doubling and a balance is a matrix.
         let exp_factor = 2f32.powf(g.exposure);
         r *= exp_factor;
         gr *= exp_factor;
         b *= exp_factor;
-
-        // 2. Tone controls.
-        let luma1 = l[0] * r + l[1] * gr + l[2] * b;
-        let hi_w = (luma1 - 0.214).max(0.0) * (1.0 / (1.0 - 0.214));
-        let lo_w = (0.214 - luma1).max(0.0) * (1.0 / 0.214);
-        let white_w = (luma1 - 0.604).max(0.0) * (1.0 / (1.0 - 0.604));
-        let black_w = (0.033 - luma1).max(0.0) * (1.0 / 0.033);
-        let tone_adj = g.highlights * hi_w + g.shadows * lo_w + g.whites * white_w + g.blacks * black_w;
-        r += tone_adj;
-        gr += tone_adj;
-        b += tone_adj;
-
-        // 3. Colour wheels.
-        let luma2 = l[0] * r + l[1] * gr + l[2] * b;
-        match g.log_wheels {
-            Some([low, mid, high]) => {
-                let log_luma = ((luma2.max(0.001) + 0.001).log2() + 10.0) / 10.0;
-                let low_w = (-((log_luma - 0.15) * (log_luma - 0.15)) / (2.0 * 0.15 * 0.15)).exp();
-                let mid_w = (-((log_luma - 0.50) * (log_luma - 0.50)) / (2.0 * 0.20 * 0.20)).exp();
-                let high_w = (-((log_luma - 0.85) * (log_luma - 0.85)) / (2.0 * 0.15 * 0.15)).exp();
-                r = r + low.0 * low_w + mid.0 * mid_w + high.0 * high_w;
-                gr = gr + low.1 * low_w + mid.1 * mid_w + high.1 * high_w;
-                b = b + low.2 * low_w + mid.2 * mid_w + high.2 * high_w;
-            }
-            None => {
-                let lift_w = (1.0 - luma2).max(0.0);
-                let gain_w = luma2.max(0.0);
-                let gamma_w = (luma2.clamp(0.0, 1.0) * PI).sin().max(0.0);
-                r = r + g.lift.0 * lift_w + g.gamma.0 * gamma_w + g.gain.0 * gain_w + g.offset.0;
-                gr = gr + g.lift.1 * lift_w + g.gamma.1 * gamma_w + g.gain.1 * gain_w + g.offset.1;
-                b = b + g.lift.2 * lift_w + g.gamma.2 * gamma_w + g.gain.2 * gain_w + g.offset.2;
-            }
-        }
-
-        // 4. Contrast, pivoting on 0.18.
-        let cs = 1.0 + g.contrast;
-        r = (r - 0.18) * cs + 0.18;
-        gr = (gr - 0.18) * cs + 0.18;
-        b = (b - 0.18) * cs + 0.18;
-
-        // 5. Saturation.
-        let luma3 = l[0] * r + l[1] * gr + l[2] * b;
-        r = luma3 + (r - luma3) * g.saturation;
-        gr = luma3 + (gr - luma3) * g.saturation;
-        b = luma3 + (b - luma3) * g.saturation;
-
-        // 6. White balance.
         let (wr, wg, wbl) = (
             wb[0][0] * r + wb[0][1] * gr + wb[0][2] * b,
             wb[1][0] * r + wb[1][1] * gr + wb[1][2] * b,
             wb[2][0] * r + wb[2][1] * gr + wb[2][2] * b,
         );
         (r, gr, b) = (wr, wg, wbl);
-
-        // 7. Hue.
+        // 2. In the grade encoding (klipp_color::grade_model): the tone
+        //    bands, the wheels as the ASC CDL, and contrast about mid grey.
+        let luma1 = l[0] * r + l[1] * gr + l[2] * b;
+        let l_enc = grade_encode(luma1);
+        let [hi_w, lo_w, white_w, black_w] = tone_weights(l_enc);
+        let tone_adj = g.highlights * hi_w + g.shadows * lo_w + g.whites * white_w + g.blacks * black_w;
+        let mut e = [grade_encode(r) + tone_adj, grade_encode(gr) + tone_adj, grade_encode(b) + tone_adj];
+        match g.log_wheels {
+            Some([low, mid, high]) => {
+                let [low_w, mid_w, high_w] = log_wheel_weights(l_enc);
+                let lo = [low.0, low.1, low.2];
+                let mi = [mid.0, mid.1, mid.2];
+                let hi = [high.0, high.1, high.2];
+                for i in 0..3 {
+                    e[i] += lo[i] * low_w + mi[i] * mid_w + hi[i] * high_w;
+                }
+            }
+            None => {
+                let lift = [g.lift.0, g.lift.1, g.lift.2];
+                let gamma = [g.gamma.0, g.gamma.1, g.gamma.2];
+                let gain = [g.gain.0, g.gain.1, g.gain.2];
+                let offset = [g.offset.0, g.offset.1, g.offset.2];
+                for i in 0..3 {
+                    e[i] = cdl_channel(e[i], lift[i], gamma[i], gain[i], offset[i]);
+                }
+            }
+        }
+        for v in &mut e {
+            *v = contrast_channel(*v, g.contrast);
+        }
+        (r, gr, b) = (grade_decode(e[0]), grade_decode(e[1]), grade_decode(e[2]));
+        // 3. Back in linear light: saturation about the working space's
+        //    luma, then the hue rotation.
+        let luma3 = l[0] * r + l[1] * gr + l[2] * b;
+        r = luma3 + (r - luma3) * g.saturation;
+        gr = luma3 + (gr - luma3) * g.saturation;
+        b = luma3 + (b - luma3) * g.saturation;
         if g.hue.abs() >= 0.01 {
             [r, gr, b] = hue_rotate_hsl([r, gr, b], g.hue);
         }

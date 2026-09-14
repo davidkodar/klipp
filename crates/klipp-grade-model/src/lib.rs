@@ -1,0 +1,226 @@
+//! The primary grade's model: what lift, gamma, gain, offset, contrast,
+//! the tone controls and the log wheels do to a pixel.
+//!
+//! The controls act in the *grade encoding*: the working-space linear
+//! values taken through the BT.1886 power 2.4 curve, sign-preserving and
+//! unclamped, so a value above white keeps its headroom and one below
+//! black keeps its sign. It is the encoding of a Rec.709 grading
+//! monitor, which is where these controls were designed: mid grey sits
+//! at 0.49, white at 1.0. In it the wheels are the ASC CDL —
+//!
+//! ```text
+//!   slope  = gain · (1 − lift)
+//!   offset = lift + offset
+//!   power  = 1 / gamma
+//!   out    = (in · slope + offset) ^ power
+//! ```
+//!
+//! — so lift pins white and raises black, gain pins black and scales,
+//! gamma is a power about the ends, and offset is an offset; every
+//! grading system a colourist has used behaves this way, and a grade can
+//! be handed on as a CDL. Contrast pivots on mid grey in the encoding,
+//! which is symmetric in stops and clips nothing.
+//!
+//! The controls used to add luma-weighted amounts to the *linear* values.
+//! Linear luma puts mid grey at 0.18, so lift — weighted by 1 − luma —
+//! gave mid grey 82 % of what it gave black and was nearly an offset,
+//! gain was a plain multiply by luma, and contrast about a linear pivot
+//! sent shadows negative and white to 1.4 at +0.5.
+//!
+//! `klipp_effects::cpu_grade` and the `SHADER_COLOR_GRADE` shader spell
+//! these out per pixel and must agree with the functions here; the
+//! parity tests hold them to it.
+
+/// The grade encoding's exponent: BT.1886's display gamma.
+pub const GRADE_GAMMA: f32 = 2.4;
+
+/// Linear working-space value → grade encoding. Sign-preserving,
+/// unclamped: 2.0 encodes to 1.335, −0.1 to −0.383.
+#[inline]
+pub fn grade_encode(x: f32) -> f32 {
+    let e = x.abs().powf(1.0 / GRADE_GAMMA);
+    if x < 0.0 { -e } else { e }
+}
+
+/// Grade encoding → linear working-space value; the inverse of
+/// [`grade_encode`].
+#[inline]
+pub fn grade_decode(e: f32) -> f32 {
+    let x = e.abs().powf(GRADE_GAMMA);
+    if e < 0.0 { -x } else { x }
+}
+
+/// Mid grey, 0.18 linear, in the grade encoding: where contrast pivots
+/// and the log wheels' mid band centres.
+pub const MID_GREY_ENCODED: f32 = 0.489_437_1;
+
+/// One channel of the CDL in the grade encoding. `lift`, `gain`, `gamma`
+/// and `offset` are the wheel amounts: 0 is neutral for all four, so
+/// `gain` and `gamma` are `1 + amount`.
+#[inline]
+pub fn cdl_channel(e: f32, lift: f32, gamma: f32, gain: f32, offset: f32) -> f32 {
+    let slope = (1.0 + gain) * (1.0 - lift);
+    let t = e * slope + lift + offset;
+    let power = 1.0 / (1.0 + gamma).max(0.05);
+    if t > 0.0 { t.powf(power) } else { t }
+}
+
+/// The ASC CDL a wheel setting is: `(slope, offset, power)` per channel,
+/// for interchange. `lift`, `gamma`, `gain` and `offset` are wheel
+/// amounts as [`cdl_channel`] takes them.
+pub fn cdl_of(lift: [f32; 3], gamma: [f32; 3], gain: [f32; 3], offset: [f32; 3]) -> ([f32; 3], [f32; 3], [f32; 3]) {
+    let mut slope = [0.0; 3];
+    let mut off = [0.0; 3];
+    let mut power = [0.0; 3];
+    for i in 0..3 {
+        slope[i] = (1.0 + gain[i]) * (1.0 - lift[i]);
+        off[i] = lift[i] + offset[i];
+        power[i] = 1.0 / (1.0 + gamma[i]).max(0.05);
+    }
+    (slope, off, power)
+}
+
+/// Contrast about mid grey in the grade encoding: `amount` 0 is neutral,
+/// +1 doubles the distance from mid grey.
+#[inline]
+pub fn contrast_channel(e: f32, amount: f32) -> f32 {
+    (e - MID_GREY_ENCODED) * (1.0 + amount) + MID_GREY_ENCODED
+}
+
+/// A ramp from 0 at `lo` to 1 at `hi`, smooth at both ends.
+#[inline]
+fn smoothstep(lo: f32, hi: f32, x: f32) -> f32 {
+    let t = ((x - lo) / (hi - lo)).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
+/// The tone controls' band weights at encoded luma `l`: (highlights,
+/// shadows, whites, blacks). Whites and blacks are the ends, highlights
+/// and shadows the broader bands either side of mid grey; each control
+/// adds `amount × weight` to the encoding.
+#[inline]
+pub fn tone_weights(l: f32) -> [f32; 4] {
+    [
+        smoothstep(0.45, 0.85, l),
+        1.0 - smoothstep(0.30, 0.65, l),
+        smoothstep(0.65, 0.95, l),
+        1.0 - smoothstep(0.10, 0.40, l),
+    ]
+}
+
+/// The log wheels' band weights at encoded luma `l`: (low, mid, high),
+/// Gaussian bands about the shadows, mid grey and the highlights. Each
+/// wheel adds `amount × weight` to the encoding.
+#[inline]
+pub fn log_wheel_weights(l: f32) -> [f32; 3] {
+    let g = |centre: f32, sigma: f32| (-((l - centre) * (l - centre)) / (2.0 * sigma * sigma)).exp();
+    [g(0.20, 0.14), g(MID_GREY_ENCODED, 0.16), g(0.78, 0.14)]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn close(a: f32, b: f32, tol: f32) -> bool {
+        (a - b).abs() <= tol
+    }
+
+    #[test]
+    fn the_encoding_round_trips_and_keeps_headroom_and_sign() {
+        for x in [-0.2, 0.0, 0.001, 0.18, 1.0, 2.0, 40.0] {
+            assert!(close(grade_decode(grade_encode(x)), x, 1e-5 * x.abs().max(1.0)), "{x}");
+        }
+        assert!(close(grade_encode(0.18), MID_GREY_ENCODED, 1e-6), "mid grey sits at {}", grade_encode(0.18));
+        assert!(close(grade_encode(1.0), 1.0, 1e-7), "white is 1.0");
+        assert!(grade_encode(2.0) > 1.0, "a value above white stays above it");
+        assert!(grade_encode(-0.1) < 0.0, "a value below black keeps its sign");
+    }
+
+    /// Each wheel alone does what its name says, at the ends of the range.
+    #[test]
+    fn lift_pins_white_gain_pins_black_gamma_bends_the_middle_offset_moves_all() {
+        let (black, mid, white) = (0.0, MID_GREY_ENCODED, 1.0);
+        // Lift 0.1: black to 0.1, white stays, mid rises.
+        assert!(close(cdl_channel(black, 0.1, 0.0, 0.0, 0.0), 0.1, 1e-6));
+        assert!(close(cdl_channel(white, 0.1, 0.0, 0.0, 0.0), 1.0, 1e-6), "lift pins white");
+        assert!(cdl_channel(mid, 0.1, 0.0, 0.0, 0.0) > mid);
+        // Gain +0.5: black stays, white to 1.5, mid scales.
+        assert!(close(cdl_channel(black, 0.0, 0.0, 0.5, 0.0), 0.0, 1e-6), "gain pins black");
+        assert!(close(cdl_channel(white, 0.0, 0.0, 0.5, 0.0), 1.5, 1e-6));
+        assert!(close(cdl_channel(mid, 0.0, 0.0, 0.5, 0.0), mid * 1.5, 1e-6));
+        // Gamma +0.5 (gamma 1.5, power 1/1.5): ends stay, the middle rises.
+        assert!(close(cdl_channel(black, 0.0, 0.5, 0.0, 0.0), 0.0, 1e-6));
+        assert!(close(cdl_channel(white, 0.0, 0.5, 0.0, 0.0), 1.0, 1e-6), "gamma pins both ends");
+        assert!(close(cdl_channel(mid, 0.0, 0.5, 0.0, 0.0), mid.powf(1.0 / 1.5), 1e-6));
+        // Offset 0.1: everything moves by 0.1.
+        for e in [black, mid, white] {
+            assert!(close(cdl_channel(e, 0.0, 0.0, 0.0, 0.1), e + 0.1, 1e-6));
+        }
+        // Neutral is the identity.
+        for e in [black, mid, white, 1.4] {
+            assert!(close(cdl_channel(e, 0.0, 0.0, 0.0, 0.0), e, 1e-6));
+        }
+    }
+
+    /// The composition is the ASC CDL: slope, offset, power. A grade can
+    /// therefore be written out as one.
+    #[test]
+    fn the_wheels_compose_as_a_cdl() {
+        let (lift, gamma, gain, offset) = (0.05, 0.2, 0.3, -0.02);
+        let slope = (1.0 + gain) * (1.0 - lift);
+        let cdl_offset = lift + offset;
+        let power = 1.0 / (1.0 + gamma);
+        for e in [0.0, 0.2, MID_GREY_ENCODED, 0.8, 1.0, 1.3] {
+            let want = (e * slope + cdl_offset).max(0.0).powf(power);
+            assert!(close(cdl_channel(e, lift, gamma, gain, offset), want, 1e-6), "at {e}");
+        }
+    }
+
+    /// What `cdl_of` reports is what `cdl_channel` applies.
+    #[test]
+    fn the_reported_cdl_is_the_applied_one() {
+        let (lift, gamma, gain, offset) = ([0.05, 0.0, -0.02], [0.2, 0.1, 0.0], [0.3, 0.0, 0.1], [-0.02, 0.01, 0.0]);
+        let (slope, off, power) = cdl_of(lift, gamma, gain, offset);
+        for i in 0..3 {
+            for e in [0.0, 0.3, MID_GREY_ENCODED, 0.9, 1.2] {
+                let t = e * slope[i] + off[i];
+                let want = if t > 0.0 { t.powf(power[i]) } else { t };
+                assert!(close(cdl_channel(e, lift[i], gamma[i], gain[i], offset[i]), want, 1e-6));
+            }
+        }
+        let (s, o, p) = cdl_of([0.0; 3], [0.0; 3], [0.0; 3], [0.0; 3]);
+        assert_eq!((s, o, p), ([1.0; 3], [0.0; 3], [1.0; 3]), "neutral wheels are the identity CDL");
+    }
+
+    /// Contrast leaves mid grey where it is and moves a stop up and a
+    /// stop down by the same encoded amount.
+    #[test]
+    fn contrast_is_symmetric_about_mid_grey_and_clips_nothing() {
+        assert!(close(contrast_channel(MID_GREY_ENCODED, 0.5), MID_GREY_ENCODED, 1e-6));
+        let up = grade_encode(0.36);
+        let down = grade_encode(0.09);
+        let (up2, down2) = (contrast_channel(up, 0.5), contrast_channel(down, 0.5));
+        assert!(close(up2 - MID_GREY_ENCODED, (up - MID_GREY_ENCODED) * 1.5, 1e-6));
+        assert!(close(MID_GREY_ENCODED - down2, (MID_GREY_ENCODED - down) * 1.5, 1e-6));
+        // Two stops under mid grey stays above black; white lands above
+        // white rather than at a clip. (Far below black, past about four
+        // stops under at +0.5, a pivoted contrast does reach zero — as on
+        // every grading system; the old linear one got there at one.)
+        assert!(grade_decode(contrast_channel(grade_encode(0.045), 0.5)) > 0.0);
+        assert!(grade_decode(contrast_channel(1.0, 0.5)) > 1.0);
+    }
+
+    /// The bands sit where their names say on the encoding.
+    #[test]
+    fn the_bands_sit_on_the_tones_they_name() {
+        let [hi, sh, wh, bl] = tone_weights(grade_encode(0.0));
+        assert!((hi, sh, wh, bl) == (0.0, 1.0, 0.0, 1.0), "black: {:?}", (hi, sh, wh, bl));
+        let [hi, sh, wh, bl] = tone_weights(1.0);
+        assert!((hi, sh, wh, bl) == (1.0, 0.0, 1.0, 0.0), "white: {:?}", (hi, sh, wh, bl));
+        let [hi, sh, wh, bl] = tone_weights(MID_GREY_ENCODED);
+        assert!(hi < 0.1 && sh < 0.5 && wh == 0.0 && bl == 0.0, "mid grey: {:?}", (hi, sh, wh, bl));
+        let [low, mid, high] = log_wheel_weights(MID_GREY_ENCODED);
+        assert!(close(mid, 1.0, 1e-6) && low < 0.2 && high < 0.2, "the mid band peaks at mid grey");
+        assert!(log_wheel_weights(0.20)[0] > 0.99 && log_wheel_weights(0.78)[2] > 0.99);
+    }
+}

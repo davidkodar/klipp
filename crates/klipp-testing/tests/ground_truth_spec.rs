@@ -162,7 +162,8 @@ fn contrast_does_not_shift_mid_grey() {
     let mut frame = solid_linear(2, 2, MID_GREY_LINEAR);
     klipp_color::linear::apply_contrast(&mut frame, 0.5);
     let expected = solid_linear(2, 2, MID_GREY_LINEAR);
-    assert_exact(&expected, &frame, 1e-6);
+    // Through the grade encoding and back: a float round trip.
+    assert_exact(&expected, &frame, 1e-5);
 }
 
 // ---- saturation ------------------------------------------------------

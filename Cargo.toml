@@ -6,6 +6,7 @@ members = [
     "crates/klipp-media",
     "crates/klipp-audio",
     "crates/klipp-color",
+    "crates/klipp-grade-model",
     "crates/klipp-engine",
     "crates/klipp-plugin",
     "crates/klipp-frei0r",
@@ -203,6 +204,7 @@ klipp-validation  = { path = "crates/klipp-validation" }
 klipp-media   = { path = "crates/klipp-media" }
 klipp-audio   = { path = "crates/klipp-audio" }
 klipp-color   = { path = "crates/klipp-color" }
+klipp-grade-model = { path = "crates/klipp-grade-model" }
 klipp-engine  = { path = "crates/klipp-engine" }
 klipp-plugin  = { path = "crates/klipp-plugin" }
 klipp-frei0r = { path = "crates/klipp-frei0r" }
