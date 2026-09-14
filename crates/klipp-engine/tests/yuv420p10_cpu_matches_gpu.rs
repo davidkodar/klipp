@@ -15,6 +15,7 @@
 //! reconstruction.
 
 use klipp_color::camera_log::{primaries_to_working_matrix, yuv420p10le_to_linear};
+use klipp_color::hdr::YuvSamples;
 use klipp_core::{color_ids, ColorPrimaries, SourceColorspace, WorkingColorspace};
 use klipp_effects::color_wgsl::pack_primaries_matrix;
 use klipp_effects::p010_gpu::GpuP010Converter;
@@ -147,4 +148,75 @@ fn the_planar_10bit_converter_matches_the_p010_shader() {
         "CPU and GPU 10-bit 4:2:0 differ by {:.2}% — check chroma siting first",
         worst * 100.0,
     );
+}
+
+/// This fixture can actually see a chroma-siting regression.
+///
+/// The parity test above compares two implementations of the same
+/// conversion. If the fixture's chroma were flat, both would agree
+/// whatever siting they used, and the comparison would prove nothing —
+/// which is exactly how nearest-neighbour chroma survived in four places
+/// until it was found. The comment up there records that forcing the CPU
+/// side back to nearest read 100% worst; that was a manual experiment,
+/// and a manual experiment is not a test. This is.
+///
+/// Stated as a fixture property rather than by mutating the converter:
+/// over this frame, reconstructing chroma and taking the nearest sample
+/// have to give materially different answers. If they stop doing so, the
+/// fixture has gone flat and the parity assertion above is no longer
+/// load-bearing, whatever it still says.
+///
+/// Both chroma planes are checked separately rather than together. A
+/// combined `max` would let one varying plane cover for a flattened
+/// other one — which it did on the first attempt at this, when only U
+/// was flattened and V alone kept the assertion satisfied.
+#[test]
+fn the_fixture_can_see_a_siting_regression() {
+    let (y, u, v) = samples();
+    let s = YuvSamples {
+        y: &y, u: &u, v: &v, width: W, height: H,
+        chroma_shift_w: 1, chroma_shift_h: 1, bit_depth: 10,
+    };
+    let cw = s.chroma_width() as usize;
+
+    for (plane, name) in [(0usize, "Cb"), (1, "Cr")] {
+        let mut differing = 0usize;
+        let mut total = 0usize;
+        let mut worst = 0.0f32;
+        for sy in 0..H as usize {
+            for sx in 0..W as usize {
+                // Reconstructed, as the converter does it now.
+                let recon = {
+                    let (cu, cv) = s.chroma_at(sx, sy);
+                    if plane == 0 { cu } else { cv }
+                };
+                // Nearest, as it did before — the regression this guards.
+                let ci = (sy >> 1) * cw + (sx >> 1);
+                let near = if plane == 0 { u[ci] as f32 } else { v[ci] as f32 };
+                // A whole 10-bit code, so float noise cannot pass for a
+                // discrimination.
+                let d = (recon - near).abs();
+                worst = worst.max(d);
+                total += 1;
+                if d > 1.0 {
+                    differing += 1;
+                }
+            }
+        }
+        eprintln!(
+            "{name}: {differing} of {total} positions read differently under nearest \
+             chroma; worst {worst:.1} of 1023"
+        );
+        assert!(
+            differing * 2 > total,
+            "{name}: only {differing} of {total} positions distinguish reconstructed \
+             chroma from nearest — this fixture is too flat for the parity test above \
+             to be detecting a siting regression",
+        );
+        assert!(
+            worst > 50.0,
+            "{name}: the largest difference between the two sitings is {worst:.1} of \
+             1023, which a parity tolerance could swallow",
+        );
+    }
 }
