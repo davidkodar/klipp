@@ -19,6 +19,44 @@ fn fnv1a(data: &[u8]) -> u64 {
     h
 }
 
+/// A hash of the render environment a cached frame was made under —
+/// everything that changes the pixels without changing the clip: the
+/// working colour space the grade runs in, LUT interpolation, whether
+/// the proxy or the original was decoded, and the camera log format the
+/// decoder converts the media with. None of these was in the key, so a
+/// switch of working space or a log-format correction showed the old
+/// frame back from the cache.
+pub fn render_environment_hash(
+    lut_tetrahedral: bool,
+    working: klipp_core::WorkingColorspace,
+    use_proxies: bool,
+    log_format: Option<klipp_core::LogFormat>,
+) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    lut_tetrahedral.hash(&mut h);
+    (working as u8).hash(&mut h);
+    use_proxies.hash(&mut h);
+    log_format.map(|f| f as u8).hash(&mut h);
+    h.finish()
+}
+
+#[cfg(test)]
+mod environment_hash_tests {
+    use super::render_environment_hash;
+    use klipp_core::{LogFormat, WorkingColorspace};
+
+    #[test]
+    fn every_environment_change_changes_the_key() {
+        let base = render_environment_hash(true, WorkingColorspace::Rec709Linear, false, None);
+        assert_eq!(base, render_environment_hash(true, WorkingColorspace::Rec709Linear, false, None));
+        assert_ne!(base, render_environment_hash(false, WorkingColorspace::Rec709Linear, false, None), "LUT interpolation");
+        assert_ne!(base, render_environment_hash(true, WorkingColorspace::AcesCG, false, None), "working space");
+        assert_ne!(base, render_environment_hash(true, WorkingColorspace::Rec709Linear, true, None), "proxy decode");
+        assert_ne!(base, render_environment_hash(true, WorkingColorspace::Rec709Linear, false, Some(LogFormat::SLog3)), "log format");
+    }
+}
+
 /// Compute a deterministic hash of a clip's grade state.
 /// Uses sorted JSON serialization to ensure HashMap order doesn't affect the hash.
 pub fn compute_grade_hash(

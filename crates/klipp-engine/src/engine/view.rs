@@ -269,9 +269,16 @@ impl PlaybackEngine {
     }
 
     /// The render cache's hash for a clip's frames: the clip, the global
-    /// LUT, its track's opacity.
+    /// LUT, its track's opacity, and the render environment (working
+    /// space, LUT interpolation, proxy decode, the media's log format).
     pub(super) fn render_key_hash(&mut self, clip: &Clip, track_opacity: f32) -> u64 {
-        self.clip_render_hash(clip) ^ self.lut_hash() ^ (track_opacity.to_bits() as u64).rotate_left(17)
+        let environment = crate::render_cache::render_environment_hash(
+            self.color_pipeline.use_tetrahedral,
+            crate::video_decoder::working_colorspace(),
+            self.use_proxies,
+            self.current_file.as_deref().and_then(crate::video_decoder::registered_log_format),
+        );
+        self.clip_render_hash(clip) ^ self.lut_hash() ^ (track_opacity.to_bits() as u64).rotate_left(17) ^ environment.rotate_left(29)
     }
 
     /// A hash of everything about a clip that its rendered frames depend
@@ -388,9 +395,15 @@ impl PlaybackEngine {
             .as_ref()
             .zip(self.cached_pregrade_frame.as_ref())
             .is_some_and(|(p, (c, cw, ch))| (*cw, *ch) == (p.width, p.height) && p.is_pregrade(c));
-        if let Some(p) = primary.as_ref().filter(|_| !parked && self.pregrade_encode_needed()) {
+        // A progress frame — one short of the playhead, shown while a
+        // slow seek is still decoding — is not this playhead's frame and
+        // is kept out of both caches, or a slider drag would regrade it
+        // and the render cache would serve it as the playhead's.
+        let progress = self.presenting_progress;
+        if let Some(p) = primary.as_ref().filter(|_| !parked && !progress && self.pregrade_encode_needed()) {
             let pregrade = p.pregrade();
             self.cached_pregrade_frame = Some((pregrade.clone(), w, h));
+            self.cached_pregrade_at = Some(self.playhead);
             let published = std::sync::Arc::new(pregrade.clone());
             self.frame_cache.insert(self.playhead.value, pregrade, w, h);
             // The frame, not its picture: only the UI's scope preview reads
@@ -400,7 +413,7 @@ impl PlaybackEngine {
             self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner()).pregrade = Some(published);
         }
 
-        let cache_key = self.render_cache_key(&seq, primary_clip);
+        let cache_key = if progress { None } else { self.render_cache_key(&seq, primary_clip) };
         if let Some(key) = &cache_key {
             // The cached frame is 8-bit, so the display transform over it is
             // a table: no expansion to float on the way to the same bytes.

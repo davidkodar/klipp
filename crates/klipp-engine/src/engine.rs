@@ -1191,6 +1191,14 @@ pub struct PlaybackEngine {
     // Cached pre-grade frame for instant parameter updates when paused.
     // Stored after decode, before color grading. Re-graded when sequence changes.
     cached_pregrade_frame: Option<(Pregrade, u32, u32)>, // (pixels, width, height)
+    /// The playhead `cached_pregrade_frame` was captured at. The frame is
+    /// only the parked frame while the playhead is still there; after a
+    /// seek it is a frame of somewhere else, and regrading it would show
+    /// the old picture under the new position's grade.
+    cached_pregrade_at: Option<Timecode>,
+    /// A frame short of the playhead is being presented — a slow seek's
+    /// progress — and must not be cached as the playhead's frame.
+    presenting_progress: bool,
     /// Reasons the direct-present fast path declined the previous frame,
     /// so they can be logged when the set *changes* rather than once per
     /// frame. Empty means the last frame took the fast path.
@@ -1526,6 +1534,8 @@ impl PlaybackEngine {
             last_scope_render: std::time::Instant::now() - std::time::Duration::from_secs(1),
             matte_preview_node: None,
             cached_pregrade_frame: None,
+            cached_pregrade_at: None,
+            presenting_progress: false,
             last_direct_present_blockers: Vec::new(),
             frame_cache: FrameCache::new(120), // ~5s at 24fps (backward history + forward prefetch)
             render_cache_hot: crate::render_cache::HotCache::new(30),
@@ -1770,7 +1780,7 @@ impl PlaybackEngine {
 
             if applied > 0
                 && matches!(self.state, PlaybackState::Idle | PlaybackState::Stopped)
-                && self.cached_pregrade_frame.is_none()
+                && self.parked_pregrade().is_none()
             {
                 // Safety net: a slider drag is landing in the
                 // engine while we're still in Idle / Stopped (user
@@ -2162,7 +2172,7 @@ impl PlaybackEngine {
                 // state other than Paused falls through to the real seek.
                 if self.state == PlaybackState::Paused
                     && tc == self.playhead
-                    && self.cached_pregrade_frame.is_some()
+                    && self.parked_pregrade().is_some()
                 {
                     self.regrade_cached_frame();
                     return false;
@@ -2337,6 +2347,9 @@ impl PlaybackEngine {
             AppCommand::MediaDecodeChanged => {
                 info!("Engine: media decode settings changed; re-decoding at the playhead");
                 self.cached_pregrade_frame = None;
+                // Rendered from pixels decoded the old way. (The disk
+                // cache misses on its own: the log format is in the key.)
+                self.render_cache_hot.clear();
                 // Decoded with the old settings: every stream reopens.
                 self.streams.clear();
                 // Idle / stopped has nothing on screen to refresh; the next
@@ -5745,7 +5758,9 @@ impl PlaybackEngine {
             self.paused_refresh_best = Some(frame);
             return false;
         }
+        self.presenting_progress = !settled;
         self.present_frame(Some(streams::HeldFrame::from_frame(frame)));
+        self.presenting_progress = false;
         if !settled {
             // Shown, but a closer frame is still coming: keep draining.
             return false;
@@ -6354,7 +6369,7 @@ impl PlaybackEngine {
     /// the renderer would have done no more than this. Returns `false`,
     /// having shown nothing, when the frame cannot take this path.
     fn regrade_parked_on_gpu(&mut self) -> bool {
-        let Some((pixels, width, height)) = self.cached_pregrade_frame.clone() else { return false };
+        let Some((pixels, width, height)) = self.parked_pregrade().cloned() else { return false };
         if !Self::only_the_graded_path_handles(&self.fast_path_blockers(true)) {
             return false;
         }
@@ -6681,15 +6696,42 @@ impl PlaybackEngine {
         ((self.playhead.rate as f64 / fps.as_f64()).round() as i64).max(1)
     }
 
+    /// The pregrade of the frame at the playhead, if that is what the
+    /// cached one is.
+    fn parked_pregrade(&self) -> Option<&(Pregrade, u32, u32)> {
+        if self.cached_pregrade_at == Some(self.playhead) {
+            self.cached_pregrade_frame.as_ref()
+        } else {
+            None
+        }
+    }
+
+    /// Whether the primary clip frame-blends at the playhead.
+    fn parked_clip_frame_blends(&self) -> bool {
+        let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
+        seq.tracks
+            .get(self.current_track_index)
+            .and_then(|t| t.clips.get(self.current_clip_index))
+            .is_some_and(|clip| klipp_compose::frame_blends(clip, self.playhead))
+    }
+
     fn regrade_cached_frame(&mut self) {
         mark_stage(EngineStage::PausedRegrade);
         // A slider step on a frame the renderer would only grade.
         if self.in_node_param_edit && self.regrade_parked_on_gpu() {
             return;
         }
+        // A frame that blends with the next one (a slowed speed ramp)
+        // cannot be regraded from the parked pregrade alone: the partner
+        // is not in it, and the blend was silently dropped. Decode it
+        // again, the way the first render did.
+        if self.parked_clip_frame_blends() {
+            let ph = self.playhead;
+            self.seek_in_sequence(ph);
+            return;
+        }
         let primary = self
-            .cached_pregrade_frame
-            .as_ref()
+            .parked_pregrade()
             .map(|(pixels, w, h)| streams::HeldFrame::from_pregrade(pixels, *w, *h));
         // A primary decoder whose first frame has not arrived yet: nothing
         // to show until it does (the paused refresh paints it).

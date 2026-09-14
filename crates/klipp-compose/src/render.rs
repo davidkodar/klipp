@@ -1817,7 +1817,7 @@ fn to_linear(f: SourceFrame, width: u32, height: u32) -> (Arc<Vec<f32>>, Option<
 
 /// Whether `clip` frame-blends at `time`: a `SpeedRamp` in blend mode 1,
 /// not frozen, with the clip running below real time.
-fn frame_blends(clip: &Clip, time: Timecode) -> bool {
+pub fn frame_blends(clip: &Clip, time: Timecode) -> bool {
     let enabled = |i: usize| clip.builtin_effects_enabled.get(i).copied().unwrap_or(true);
     let blend = clip.builtin_effects.iter().enumerate().any(|(i, e)| {
         enabled(i) && matches!(e, BuiltinEffect::SpeedRamp { blend_mode: 1, freeze: false, .. })
