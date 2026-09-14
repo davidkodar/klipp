@@ -26,27 +26,33 @@ fn scratch(name: &str) -> PathBuf {
 /// container, and FFV1 reports a destroyed frame as a decode error
 /// instead of concealing it.
 fn ffv1_avi() -> Option<PathBuf> {
-    if std::process::Command::new("ffmpeg").arg("-version").output().is_err() {
-        return None;
-    }
-    let (w, h) = (64usize, 64usize);
-    let mut bytes = Vec::with_capacity(N * w * h * 3 / 2);
-    for i in 0..N {
-        bytes.extend(std::iter::repeat_n((16 + i * 219 / (N - 1)) as u8, w * h));
-        bytes.extend(std::iter::repeat_n(128u8, w * h / 2));
-    }
-    let raw = scratch("ramp.yuv");
-    let out = scratch("ramp.avi");
-    std::fs::write(&raw, bytes).ok()?;
-    let ok = std::process::Command::new("ffmpeg")
-        .args(["-nostdin", "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "yuv420p", "-s", "64x64", "-r", "25", "-i"])
-        .arg(&raw)
-        .args(["-c:v", "ffv1"])
-        .arg(&out)
-        .status()
-        .ok()?
-        .success();
-    ok.then_some(out)
+    // Written once per process: both tests run at the same time, and one
+    // re-encoding the file while the other reads it is a torn fixture.
+    static RAMP: std::sync::OnceLock<Option<PathBuf>> = std::sync::OnceLock::new();
+    RAMP.get_or_init(|| {
+        if std::process::Command::new("ffmpeg").arg("-version").output().is_err() {
+            return None;
+        }
+        let (w, h) = (64usize, 64usize);
+        let mut bytes = Vec::with_capacity(N * w * h * 3 / 2);
+        for i in 0..N {
+            bytes.extend(std::iter::repeat_n((16 + i * 219 / (N - 1)) as u8, w * h));
+            bytes.extend(std::iter::repeat_n(128u8, w * h / 2));
+        }
+        let raw = scratch("ramp.yuv");
+        let out = scratch("ramp.avi");
+        std::fs::write(&raw, bytes).ok()?;
+        let ok = std::process::Command::new("ffmpeg")
+            .args(["-nostdin", "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "yuv420p", "-s", "64x64", "-r", "25", "-i"])
+            .arg(&raw)
+            .args(["-c:v", "ffv1"])
+            .arg(&out)
+            .status()
+            .ok()?
+            .success();
+        ok.then_some(out)
+    })
+    .clone()
 }
 
 /// `src` with the data of every `00dc` chunk from the `from`-th on
