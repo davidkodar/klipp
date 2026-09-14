@@ -472,7 +472,7 @@ mod tests {
         // Test property suite extern "C" functions directly
         let mut ps = crate::property::PropertySet::default();
         ps.set_string("test", 0, "hello");
-        ps.set_double("pi", 0, 3.14159);
+        ps.set_double("pi", 0, std::f64::consts::PI);
         ps.set_int("count", 0, 42);
 
         let handle = crate::property::register_propset(ps);
@@ -498,7 +498,7 @@ mod tests {
                 &mut dval,
             );
             assert_eq!(status, K_OFX_STAT_OK);
-            assert!((dval - 3.14159).abs() < 1e-10);
+            assert!((dval - std::f64::consts::PI).abs() < 1e-10);
 
             let mut ival: c_int = 0;
             let status = (crate::property::PROPERTY_SUITE_V1.prop_get_int)(

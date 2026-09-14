@@ -684,8 +684,8 @@ mod tests {
         ps.set_string("name", 0, "hello");
         assert_eq!(ps.get_string_lossy("name", 0).as_deref(), Some("hello"));
 
-        ps.set_double("radius", 0, 3.14);
-        assert_eq!(ps.get_double("radius", 0), Some(3.14));
+        ps.set_double("radius", 0, 2.5);
+        assert_eq!(ps.get_double("radius", 0), Some(2.5));
 
         ps.set_int("count", 0, 42);
         assert_eq!(ps.get_int("count", 0), Some(42));

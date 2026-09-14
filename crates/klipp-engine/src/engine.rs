@@ -9151,14 +9151,32 @@ impl SequentialFrameDecoder {
                         continue;
                     }
                     if self.decoder.send_packet(&packet).is_err() {
-                        // EAGAIN — drain before retry (stabilize / analysis
-                        // path processes thousands of sequential frames; a
-                        // lost packet here subtly corrupts motion vectors)
-                        while self.decoder.receive_frame(&mut decoded).is_ok() {
-                            return self.convert(&decoded);
-                        }
+                        // EAGAIN: the decoder's output queue is full, so it
+                        // will not take another packet until one frame is
+                        // collected. Take one, *then* retry the packet, and
+                        // only then hand the frame back.
+                        //
+                        // The order is the whole point. This used to read
+                        // `while receive_frame().is_ok() { return ... }`,
+                        // which returned on the first frame and so never
+                        // reached the retry — the packet was dropped and its
+                        // frame never decoded. That is exactly the corruption
+                        // the comment warned about, in the code meant to
+                        // prevent it: this decoder walks every frame in order
+                        // for stabilisation and analysis, and a hole in that
+                        // sequence corrupts motion vectors downstream.
+                        // `clippy::never_loop` found it — the `while` could
+                        // only ever run once.
+                        let drained = if self.decoder.receive_frame(&mut decoded).is_ok() {
+                            self.convert(&decoded)
+                        } else {
+                            None
+                        };
                         if self.decoder.send_packet(&packet).is_err() {
                             tracing::warn!("SequentialFrameDecoder: packet lost after drain+retry");
+                        }
+                        if drained.is_some() {
+                            return drained;
                         }
                     }
                 }

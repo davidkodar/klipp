@@ -76,6 +76,10 @@ wildcard_in_or_patterns = "allow"
 # `(1 * w + 2)` in a test, written as `(y * w + x)` so the coordinate
 # reads as row 1, column 2.
 identity_op = "allow"
+# The same habit at the other end: `result[0 * 4 + 1]` reads as "pixel 0,
+# channel green" and sits next to `result[7 * 4 + 1]`. Clippy is right
+# that the product is zero; that is not the point of writing it.
+erasing_op = "allow"
 # `!(nits > 0.0)` is a NaN guard: true for NaN, zero and negatives.
 # Clippy's suggested `nits <= 0.0` is *false* for NaN and would let it
 # through, so taking this suggestion would be a regression.

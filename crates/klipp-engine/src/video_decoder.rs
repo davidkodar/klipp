@@ -452,17 +452,20 @@ fn rgba_u8_to_linear(rgba: &[u8]) -> Vec<f32> {
     let srgb_lut = srgb_u8_to_linear_lut();
     let a_lut = u8_linear_div255_lut();
     let n_pixels = rgba.len() / 4;
+    // Capacity reserved once and filled by appending. `set_len` over
+    // uninitialised memory is what `clippy::uninit_vec` denies, and the
+    // same change in `klipp_color::camera_log` measured *faster* than the
+    // unsafe version it replaced, so there is nothing to trade away here.
     let mut out = Vec::with_capacity(n_pixels * 4);
-    // SAFETY: we're writing exactly n_pixels * 4 values below.
-    unsafe { out.set_len(n_pixels * 4); }
     // Unrolled RGB+A path per pixel. Compiler auto-vectorises this on
     // x86_64 with AVX2 or better enabled by the default `cargo` profile.
-    for (i, chunk) in rgba.chunks_exact(4).enumerate() {
-        let o = i * 4;
-        out[o]     = srgb_lut[chunk[0] as usize];
-        out[o + 1] = srgb_lut[chunk[1] as usize];
-        out[o + 2] = srgb_lut[chunk[2] as usize];
-        out[o + 3] = a_lut[chunk[3] as usize];
+    for chunk in rgba.chunks_exact(4) {
+        out.extend_from_slice(&[
+            srgb_lut[chunk[0] as usize],
+            srgb_lut[chunk[1] as usize],
+            srgb_lut[chunk[2] as usize],
+            a_lut[chunk[3] as usize],
+        ]);
     }
     out
 }

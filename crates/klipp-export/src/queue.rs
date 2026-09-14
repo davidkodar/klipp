@@ -556,7 +556,6 @@ mod tests {
         let mut q = RenderQueue::new();
         let mut j = fake_job(RenderJobStatus::Queued);
         let id = j.id;
-        j.id = id;
         q.jobs.push(j);
 
         q.cancel_job(id);
@@ -579,7 +578,6 @@ mod tests {
         let mut q = RenderQueue::new();
         let mut queued = fake_job(RenderJobStatus::Queued);
         let queued_id = queued.id;
-        queued.id = queued_id;
         q.jobs.push(queued);
         q.jobs.push(fake_job(RenderJobStatus::Complete));
 
@@ -596,7 +594,6 @@ mod tests {
         let mut q = RenderQueue::new();
         let mut rendering = fake_job(RenderJobStatus::Rendering);
         let rid = rendering.id;
-        rendering.id = rid;
         q.jobs.push(rendering);
 
         q.remove_job(rid);
