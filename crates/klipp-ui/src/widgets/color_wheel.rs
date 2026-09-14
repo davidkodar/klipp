@@ -114,7 +114,30 @@ pub fn color_wheel_sized(
     drag_started |= wheel_resp.drag_started();
     drag_ended |= wheel_resp.drag_stopped();
 
-    if wheel_resp.dragged() || wheel_resp.clicked() {
+    // A drag moves the puck from where it is, at half the wheel's scale
+    // (a full radius of travel is half the range) and a tenth of that
+    // with Shift held: grading moves are small — a lift of 0.01 is a
+    // third of a pixel at the wheel's own scale — and the puck must not
+    // jump to the pointer on the first press. A click still places it.
+    let fine = ui.input(|i| i.modifiers.shift);
+    let wheel_resp = wheel_resp.on_hover_text("Drag to adjust, Shift for fine steps.\nClick to place, double-click to reset.");
+    if wheel_resp.dragged() {
+        let d = wheel_resp.drag_delta();
+        if d != egui::Vec2::ZERO {
+            let rate = 1.0 / wheel_radius * if fine { 0.1 } else { 1.0 };
+            let mut ox = offset[0] + d.x * rate;
+            let mut oy = offset[1] + d.y * rate;
+            // Clamp to full wheel radius (offset 2.0 = outer edge)
+            let mag = (ox * ox + oy * oy).sqrt();
+            if mag > 2.0 {
+                ox = ox / mag * 2.0;
+                oy = oy / mag * 2.0;
+            }
+            offset[0] = ox;
+            offset[1] = oy;
+            changed = true;
+        }
+    } else if wheel_resp.clicked() {
         if let Some(pos) = wheel_resp.interact_pointer_pos() {
             let dx = pos.x - wc.x;
             let dy = pos.y - wc.y;
@@ -122,7 +145,6 @@ pub fn color_wheel_sized(
             let scale = 1.0 / (wheel_radius * 0.5);
             let mut ox = dx * scale;
             let mut oy = dy * scale;
-            // Clamp to full wheel radius (offset 2.0 = outer edge)
             let mag = (ox * ox + oy * oy).sqrt();
             if mag > 2.0 {
                 ox = ox / mag * 2.0;
@@ -196,7 +218,8 @@ pub fn color_wheel_sized(
         painter.text(
             pill_rect.center(),
             egui::Align2::CENTER_CENTER,
-            format!("{val:+.2}"),
+            // Three decimals where they fit: a fine step is 0.001.
+            if pill_w >= 32.0 { format!("{val:+.3}") } else { format!("{val:+.2}") },
             egui::FontId::monospace(pill_font_size),
             text,
         );
@@ -236,7 +259,16 @@ pub fn color_wheel_sized(
     drag_started |= master_resp.drag_started();
     drag_ended |= master_resp.drag_stopped();
 
-    if master_resp.dragged() || master_resp.clicked() {
+    // The same as the wheel: a drag moves the thumb from where it is,
+    // half the track's scale and a tenth with Shift; a click places it.
+    if master_resp.dragged() {
+        let dx = master_resp.drag_delta().x;
+        if dx != 0.0 {
+            let rate = 1.0 / track_w * if fine { 0.1 } else { 1.0 };
+            *master = (*master + dx * rate).clamp(-1.0, 1.0);
+            changed = true;
+        }
+    } else if master_resp.clicked() {
         if let Some(pos) = master_resp.interact_pointer_pos() {
             let t = ((pos.x - track_left) / track_w).clamp(0.0, 1.0);
             *master = t * 2.0 - 1.0; // map 0..1 to -1..1
@@ -260,7 +292,7 @@ pub fn color_wheel_sized(
     painter.text(
         egui::pos2(center_x + pills_total / 2.0, track_y),
         egui::Align2::RIGHT_CENTER,
-        format!("{master:+.2}"),
+        format!("{master:+.3}"),
         egui::FontId::monospace(master_font),
         val_color,
     );
