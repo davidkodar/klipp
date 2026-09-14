@@ -423,6 +423,17 @@ pub struct KlippApp {
     job_scheduler: Arc<klipp_jobs::JobScheduler>,
 }
 
+/// What came of asking the user to save: the result a close, an open or a
+/// quit is allowed to proceed on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SaveOutcome {
+    Saved,
+    /// The save-as picker was dismissed.
+    Cancelled,
+    /// Writing failed; the user has been told.
+    Failed,
+}
+
 impl KlippApp {
     pub fn new(
         cc: &eframe::CreationContext<'_>,
@@ -16779,18 +16790,7 @@ impl KlippApp {
                 true
             }
             AppCommand::SaveProject => {
-                if let Some(ref path) = self.state.project_path.clone() {
-                    self.do_save_project(path);
-                } else {
-                    // Trigger Save As
-                    if let Some(path) = rfd::FileDialog::new()
-                        .set_title("Save Project")
-                        .pick_folder()
-                    {
-                        let path = ensure_klipp_extension(path);
-                        self.do_save_project(&path);
-                    }
-                }
+                let _ = self.save_project_interactively();
                 true
             }
             AppCommand::SaveProjectAs { path } => {
@@ -22670,7 +22670,10 @@ impl KlippApp {
         });
     }
 
-    fn do_save_project(&mut self, path: &std::path::Path) {
+    /// Write the project to `path`. `true` when it is on disk; a failure
+    /// is shown to the user, not just logged — the caller may be about to
+    /// close the project on the strength of this.
+    fn do_save_project(&mut self, path: &std::path::Path) -> bool {
         let color = klipp_project::ColorSettings {
             global_lut_path: self.state.global_lut_path.clone(),
             global_lut_opacity: self.state.global_lut_opacity,
@@ -22722,11 +22725,28 @@ impl KlippApp {
                     let _ = std::fs::remove_dir_all(&autosave);
                     tracing::info!("Removed autosave {:?}", autosave);
                 }
+                true
             }
             Err(e) => {
                 tracing::error!("Failed to save project: {e}");
+                self.state.toast.show(format!("Could not save the project: {e}"));
+                false
             }
         }
+    }
+
+    /// Save the project, asking where if it has never been saved. Runs to
+    /// completion before returning — the native picker blocks — so a
+    /// caller can act on the outcome: close, open another, quit.
+    fn save_project_interactively(&mut self) -> SaveOutcome {
+        let path = match self.state.project_path.clone() {
+            Some(p) => p,
+            None => match rfd::FileDialog::new().set_title("Save Project").pick_folder() {
+                Some(p) => ensure_klipp_extension(p),
+                None => return SaveOutcome::Cancelled,
+            },
+        };
+        if self.do_save_project(&path) { SaveOutcome::Saved } else { SaveOutcome::Failed }
     }
 
     fn do_open_project(&mut self, path: &std::path::Path) {
@@ -22983,7 +23003,7 @@ impl KlippApp {
     }
 
     fn show_unsaved_dialog(&mut self, ctx: &egui::Context) -> Vec<AppCommand> {
-        let mut cmds = Vec::new();
+        let cmds = Vec::new();
         if !self.state.show_unsaved_dialog {
             return cmds;
         }
@@ -23062,42 +23082,52 @@ impl KlippApp {
                         self.state.unsaved_dialog_action = UnsavedAction::None;
                     }
                     if ui.button("Save").clicked() {
-                        eprintln!("unsaved dialog: Save clicked");
                         tracing::info!("unsaved dialog: Save clicked");
-                        self.state.show_unsaved_dialog = false;
-                        cmds.push(AppCommand::SaveProject);
-                        let action = self.state.unsaved_dialog_action.clone();
-                        self.state.unsaved_dialog_action = UnsavedAction::None;
-                        match action {
-                            UnsavedAction::NewProject => self.do_new_project(),
-                            UnsavedAction::OpenNewProjectDialog => {
-                                self.new_project_dialog.reset(
-                                    self.prefs.general.default_project_dir.as_ref(),
-                                );
-                                self.state.show_new_project_dialog = true;
+                        // The save happens here, now, and the action
+                        // follows only if it succeeded. It used to be
+                        // queued as a command and the action taken at
+                        // once: Quit exited before the queue was
+                        // drained, so nothing was saved; New and Open
+                        // replaced the project first, so the save wrote
+                        // the *new* one. Either way the edits the user
+                        // had just chosen to keep were gone.
+                        match self.save_project_interactively() {
+                            SaveOutcome::Saved => {
+                                self.state.show_unsaved_dialog = false;
+                                let action = self.state.unsaved_dialog_action.clone();
+                                self.state.unsaved_dialog_action = UnsavedAction::None;
+                                match action {
+                                    UnsavedAction::NewProject => self.do_new_project(),
+                                    UnsavedAction::OpenNewProjectDialog => {
+                                        self.new_project_dialog.reset(
+                                            self.prefs.general.default_project_dir.as_ref(),
+                                        );
+                                        self.state.show_new_project_dialog = true;
+                                    }
+                                    UnsavedAction::OpenProject(p) => self.do_open_project(&p),
+                                    UnsavedAction::CloseProject => self.do_close_project(),
+                                    UnsavedAction::Quit => {
+                                        // Saved; the same hard exit as Don't
+                                        // Save (see there for why).
+                                        eprintln!("Klipp: Save → saved, exit(0)");
+                                        self.kill_children_for_exit();
+                                        self.layout.save();
+                                        self.exit_after_engine_shutdown();
+                                    }
+                                    UnsavedAction::None => {}
+                                }
                             }
-                            UnsavedAction::OpenProject(p) => self.do_open_project(&p),
-                            UnsavedAction::CloseProject => self.do_close_project(),
-                            UnsavedAction::Quit => {
-                                // Save just got pushed via SaveProject
-                                // cmd above; the engine processes it
-                                // synchronously enough that we can
-                                // safely exit. Same hard-exit as
-                                // Don't Save.
-                                eprintln!(
-                                    "Klipp: Save → exit(0) after SaveProject command queued"
-                                );
-                                self.kill_children_for_exit();
-                                self.layout.save();
-                                // Drain any pending engine command —
-                                // best-effort, give SaveProject a
-                                // chance to actually serialise to disk
-                                // before we exit.
-                                let _ = self.cmd_tx.send(AppCommand::SaveProject);
-                                std::thread::sleep(std::time::Duration::from_millis(200));
-                                self.exit_after_engine_shutdown();
+                            // The picker was dismissed: the user changed
+                            // their mind about the whole thing. Nothing
+                            // closes.
+                            SaveOutcome::Cancelled => {
+                                self.state.show_unsaved_dialog = false;
+                                self.state.unsaved_dialog_action = UnsavedAction::None;
                             }
-                            UnsavedAction::None => {}
+                            // The save failed and said so in a toast; the
+                            // question is still open, and so is the
+                            // project.
+                            SaveOutcome::Failed => {}
                         }
                     }
                 });
@@ -26912,7 +26942,7 @@ impl eframe::App for KlippApp {
         // the app keeps running races eframe's wgpu state (shutdown
         // SIGSEGV). The dialog's Don't Save / Save buttons hard-exit
         // the process themselves, so the engine never needs this Quit.
-        if has_quit && self.state.dirty && self.state.project_path.is_some() {
+        if has_quit && self.state.dirty {
             all_cmds.retain(|c| !matches!(c, AppCommand::Quit));
         }
 
@@ -27221,12 +27251,16 @@ impl eframe::App for KlippApp {
                 self.state.dirty,
                 self.state.show_unsaved_dialog,
             );
-            if self.state.dirty && self.state.project_path.is_some() && !self.state.show_unsaved_dialog {
+            // A dirty project is asked about whether it has been saved
+            // before or not. Gating on a path made a never-saved project —
+            // the state every first session is in — close in silence with
+            // everything in it.
+            if self.state.dirty && !self.state.show_unsaved_dialog {
                 tracing::info!("→ raising unsaved-changes dialog, sending CancelClose");
                 ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
                 self.state.show_unsaved_dialog = true;
                 self.state.unsaved_dialog_action = UnsavedAction::Quit;
-            } else if !self.state.dirty || self.state.project_path.is_none() {
+            } else if !self.state.dirty {
                 eprintln!("Klipp: clean close → exit(0)");
                 if let Some(path) = self.state.project_path.clone() {
                     let autosave = autosave_path_for(&path);
@@ -27254,7 +27288,7 @@ impl eframe::App for KlippApp {
         }
 
         if has_quit {
-            if self.state.dirty && self.state.project_path.is_some() {
+            if self.state.dirty {
                 self.state.show_unsaved_dialog = true;
                 self.state.unsaved_dialog_action = UnsavedAction::Quit;
             } else {
