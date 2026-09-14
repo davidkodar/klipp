@@ -40,7 +40,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex, OnceLock, RwLock};
 use std::time::{Duration, Instant};
 
 use klipp_core::*;
@@ -131,6 +131,7 @@ fn exposure(stops: f32) -> klipp_nodes::NodeGraph {
     NodeGraph { output_node_id: nodes[2].id, nodes, edges, node_positions, working_space_override: None, frames: vec![], sticky_notes: vec![] }
 }
 
+#[derive(Clone)]
 struct Timeline {
     seq: Sequence,
     files: HashMap<MediaId, PathBuf>,
@@ -369,11 +370,33 @@ fn compare(label: &str, v: &[u8], e: &[u8]) -> i32 {
     worst
 }
 
-/// The export, made once for both tests.
+/// The timeline exported to a fresh file.
 fn exported(t: &Timeline) -> PathBuf {
     let out = tmp(&format!("export-{}.mp4", uuid::Uuid::new_v4()));
     export(t, &out);
     out
+}
+
+/// [`timeline`] and its export, made once for the tests that compare
+/// against them. The export is 200 frames through the real `ExportJob`;
+/// two tests each made their own, at the same time, on the same GPU.
+fn main_fixture() -> &'static (Timeline, PathBuf) {
+    static FIXTURE: OnceLock<(Timeline, PathBuf)> = OnceLock::new();
+    FIXTURE.get_or_init(|| {
+        let t = timeline();
+        let out = exported(&t);
+        (t, out)
+    })
+}
+
+/// [`secondary_timeline`] and its export, likewise.
+fn secondary_fixture() -> &'static (Timeline, PathBuf) {
+    static FIXTURE: OnceLock<(Timeline, PathBuf)> = OnceLock::new();
+    FIXTURE.get_or_init(|| {
+        let t = secondary_timeline();
+        let out = exported(&t);
+        (t, out)
+    })
 }
 
 #[test]
@@ -382,9 +405,8 @@ fn the_viewer_shows_the_exported_frame() {
         eprintln!("skipping: no ffmpeg");
         return;
     }
-    let t = timeline();
-    let out = exported(&t);
-    let viewer = Viewer::start(&t);
+    let (t, out) = main_fixture();
+    let viewer = Viewer::start(t);
 
     // Frames: a alone, a under c, a under c and d, the dissolve before and
     // after its cut, b under both, b under c; then back, to catch a stream
@@ -398,7 +420,7 @@ fn the_viewer_shows_the_exported_frame() {
     let frames = [10, 35, 60, 94, 106, 120, 160, 185, 60, 35];
     let mut worst = 0;
     for n in frames {
-        let (v, e) = (viewer.frame_at(n), exported_frame(&out, n));
+        let (v, e) = (viewer.frame_at(n), exported_frame(out, n));
         worst = worst.max(compare(&format!("frame {n:3}"), &v, &e));
     }
     eprintln!("viewer vs export, parked: worst {worst} levels");
@@ -415,9 +437,8 @@ fn playing_through_a_dissolve_shows_the_exported_frames() {
         eprintln!("skipping: no ffmpeg");
         return;
     }
-    let t = timeline();
-    let out = exported(&t);
-    let viewer = Viewer::start(&t);
+    let (t, out) = main_fixture();
+    let viewer = Viewer::start(t);
     let mut worst = 0;
     for (from, play_ms) in [(80, 800), (90, 700), (70, 1500)] {
         viewer.frame_at(from);
@@ -426,7 +447,7 @@ fn playing_through_a_dissolve_shows_the_exported_frames() {
         viewer.cmd.send(AppCommand::Pause).unwrap();
         let (v, n) = viewer.settled_frame_at();
         assert!(n > from, "playback did not move: from {from}, at {n}");
-        worst = worst.max(compare(&format!("played {from}->{n:3}"), &v, &exported_frame(&out, n)));
+        worst = worst.max(compare(&format!("played {from}->{n:3}"), &v, &exported_frame(out, n)));
     }
     eprintln!("viewer vs export, after playing: worst {worst} levels");
     assert!(worst <= 3, "the viewer differs from the export by {worst} levels");
@@ -522,12 +543,11 @@ fn a_secondary_grade_exports_as_the_viewer_shows_it() {
         eprintln!("skipping: no ffmpeg");
         return;
     }
-    let t = secondary_timeline();
-    let out = exported(&t);
-    let viewer = Viewer::start(&t);
+    let (t, out) = secondary_fixture();
+    let viewer = Viewer::start(t);
     let mut worst = 0;
     for n in [10, 40, 80] {
-        let (v, e) = (viewer.frame_at(n), exported_frame(&out, n));
+        let (v, e) = (viewer.frame_at(n), exported_frame(out, n));
         worst = worst.max(compare(&format!("secondary frame {n:3}"), &v, &e));
     }
     eprintln!("secondary, viewer vs export: worst {worst} levels");
@@ -543,8 +563,8 @@ fn the_secondary_changes_both_the_viewer_and_the_export() {
         eprintln!("skipping: no ffmpeg");
         return;
     }
-    let with = secondary_timeline();
-    let mut without = secondary_timeline();
+    let (with, a) = secondary_fixture();
+    let mut without = with.clone();
     // Same graph with the key's own node bypassed: ApplyMatte then has no
     // matte and passes the graded branch through, so every pixel gets the
     // secondary instead of the keyed ones.
@@ -555,8 +575,8 @@ fn the_secondary_changes_both_the_viewer_and_the_export() {
             }
         }
     }
-    let (a, b) = (exported(&with), exported(&without));
-    let (fa, fb) = (exported_frame(&a, 40), exported_frame(&b, 40));
+    let b = exported(&without);
+    let (fa, fb) = (exported_frame(a, 40), exported_frame(&b, 40));
     let d = POINTS
         .iter()
         .map(|(_, x, y)| {
