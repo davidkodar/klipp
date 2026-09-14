@@ -45,6 +45,7 @@
 
 mod clip_kind;
 pub mod flatten;
+pub mod insert_edit;
 pub mod magnetic;
 pub mod magnetic_commands;
 mod marker;

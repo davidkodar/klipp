@@ -847,15 +847,28 @@ impl Track {
         }
     }
 
-    /// Split a clip at the given timeline position into two clips.
-    /// Returns (clip_a, clip_b) if successful.
+    /// The blade tool: [`Self::split_at`], refusing a cut within a frame of
+    /// either edge. That is a click-tolerance rule — a blade landing a
+    /// hair inside a clip is almost always meant for the edge — and it
+    /// belongs to the tool, not to the split.
     pub fn blade_at(&mut self, clip_id: ClipId, cut_at: Timecode) -> Option<(Clip, Clip)> {
-        let pos = self.clips.iter().position(|c| c.id == clip_id)?;
-        let clip = self.clips[pos].clone();
-
-        // Validate cut position
+        let clip = self.clips.iter().find(|c| c.id == clip_id)?;
         let one_frame = Timecode { value: 1, rate: clip.timeline_in.rate };
         if cut_at <= clip.timeline_in + one_frame || cut_at >= clip.timeline_out - one_frame {
+            return None;
+        }
+        self.split_at(clip_id, cut_at)
+    }
+
+    /// Split a clip at `cut_at`, which must lie strictly inside it, into
+    /// two clips that replace it in place: the left keeps the clip's head
+    /// of source and the keyframes, markers and effect keyframes before
+    /// the cut; the right takes the rest, re-timed from its own start.
+    /// Both get new ids. Returns `(left, right)`.
+    pub fn split_at(&mut self, clip_id: ClipId, cut_at: Timecode) -> Option<(Clip, Clip)> {
+        let pos = self.clips.iter().position(|c| c.id == clip_id)?;
+        let clip = self.clips[pos].clone();
+        if cut_at <= clip.timeline_in || cut_at >= clip.timeline_out {
             return None;
         }
 

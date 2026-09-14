@@ -4957,30 +4957,20 @@ impl KlippApp {
                                     source_out,
                                     klipp_timeline::magnetic::EditMode::Insert,
                                 );
-                            } else if let Some(track) = self.state.sequences[seq_idx].tracks.iter_mut()
-                                .find(|t| t.kind == target_kind)
-                            {
-                                // Legacy ripple: shift clips at/after timeline_in right by dur.
-                                // NOTE: legacy straddle handling is a known pre-existing bug —
-                                // straddle is shifted rather than split. Magnetic path above
-                                // handles it correctly.
-                                #[allow(clippy::if_same_then_else)]
-                                for clip in &mut track.clips {
-                                    if clip.timeline_in >= timeline_in {
-                                        clip.timeline_in += dur;
-                                        clip.timeline_out += dur;
-                                    } else if clip.timeline_out > timeline_in {
-                                        // The straddle case, kept separate on
-                                        // purpose: it should split the clip,
-                                        // and shifting it is the known bug
-                                        // noted above. Merging the branches
-                                        // would erase where the fix goes.
-                                        clip.timeline_in += dur;
-                                        clip.timeline_out += dur;
-                                    }
-                                }
-                                track.clips.push(new_clip);
-                                track.sort_clips();
+                            } else {
+                                // Free tracks: the track-based insert. Every
+                                // unlocked track is cut at the point and
+                                // rippled by the clip's length, so they stay
+                                // in sync; a straddling clip is split. See
+                                // klipp_timeline::insert_edit.
+                                let target = self.state.sequences[seq_idx].tracks.iter()
+                                    .position(|t| t.kind == target_kind)
+                                    .expect("checked above");
+                                let Some(edit) = self.state.sequences[seq_idx].insert_edit(target, new_clip, timeline_in) else {
+                                    self.state.toast.show("Target track is locked");
+                                    return true;
+                                };
+                                self.state.push_history(EditCommand::LegacyInsertEdit(edit));
                             }
                             self.state.selected_clip = Some(new_id);
                             self.state.dirty = true;
@@ -21345,6 +21335,9 @@ impl KlippApp {
                     track.sort_clips();
                 }
             }
+            EditCommand::LegacyInsertEdit(edit) => {
+                self.state.sequences[self.state.active_sequence_idx].undo_insert_edit(edit);
+            }
             EditCommand::LegacyPasteClip { clip, track_index } => {
                 // Undo paste = remove the pasted clip
                 if let Some(track) = self.state.sequences[self.state.active_sequence_idx].tracks.get_mut(*track_index) {
@@ -21853,6 +21846,9 @@ impl KlippApp {
                 {
                     track.ripple_remove(clip.id);
                 }
+            }
+            EditCommand::LegacyInsertEdit(edit) => {
+                self.state.sequences[self.state.active_sequence_idx].redo_insert_edit(edit);
             }
             EditCommand::LegacyPasteClip { clip, track_index } => {
                 // Redo paste = re-insert

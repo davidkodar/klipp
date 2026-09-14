@@ -263,6 +263,10 @@ pub enum EditCommand {
         clip: Clip,
         track_index: usize,
     },
+    /// An insert edit on free tracks: the clip, every split it made,
+    /// every clip it moved, and the transitions and links it re-pointed.
+    /// The timeline crate owns the operation and its inverse.
+    LegacyInsertEdit(klipp_timeline::insert_edit::InsertEdit),
     LegacyMoveClipToTrack {
         clip: Clip,
         old_timeline_in: RationalTime,
@@ -571,6 +575,7 @@ impl EditCommand {
             EditCommand::LegacySplitAtSceneMarkers { .. } => "Split at Scene Markers",
             EditCommand::LegacyCutClip { .. } => "Cut Clip",
             EditCommand::LegacyPasteClip { .. } => "Paste Clip",
+            EditCommand::LegacyInsertEdit(..) => "Insert Edit",
             EditCommand::Magnetic(cmd) => cmd.label(),
             EditCommand::SourceLinkedInsert { video_command, .. } => video_command.label(),
             EditCommand::AddMediaToPool { .. } => "Import Media",
