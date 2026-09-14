@@ -9097,6 +9097,33 @@ pub struct SequentialFrameDecoder {
     eof_reached: bool,
     drained: bool,
     colour: ThumbColour,
+    /// Frames handed back so far — names the frame in an error.
+    frames_out: usize,
+    /// How many frames the container says the stream has, or 0 when it
+    /// does not say (Matroska usually does not; MP4 does).
+    declared_frames: i64,
+}
+
+/// An error in words. ffmpeg-next's `Display` is blank for the codes that
+/// matter most here — `InvalidData` among them — and "decode error: "
+/// followed by nothing, or by `Error(1094995529: )`, tells nobody what
+/// happened to their file.
+fn describe(e: &ffmpeg_next::Error) -> String {
+    use ffmpeg_next::Error as E;
+    match e {
+        E::InvalidData => "the data is not valid for this codec".into(),
+        E::Eof => "end of file".into(),
+        E::External => "the hardware decoder failed".into(),
+        E::BufferTooSmall => "buffer too small".into(),
+        E::Other { errno } => {
+            let os = std::io::Error::from_raw_os_error(*errno).to_string();
+            if os.trim().is_empty() { format!("os error {errno}") } else { os }
+        }
+        other => {
+            let text = other.to_string();
+            if text.trim().is_empty() { format!("{other:?}") } else { text }
+        }
+    }
 }
 
 impl SequentialFrameDecoder {
@@ -9127,8 +9154,10 @@ impl SequentialFrameDecoder {
             decode_h
         );
         let colour = ThumbColour::new(path, &format_ctx, stream_index);
+        let declared_frames = format_ctx.stream(stream_index).map(|s| s.frames()).unwrap_or(0);
         Ok(Self {
             colour,
+            declared_frames,
             format_ctx,
             decoder,
             stream_index,
@@ -9139,7 +9168,23 @@ impl SequentialFrameDecoder {
             sws_cache: None,
             eof_reached: false,
             drained: false,
+            frames_out: 0,
         })
+    }
+
+    /// The walk reached the end of the file. If the container declared
+    /// how many frames it holds and fewer came out, that is an error, not
+    /// a shorter clip: a demuxer that resyncs past a damaged block drops
+    /// the packet without a word, and a file cut short ends cleanly.
+    fn finished(&mut self) -> Result<Option<(Vec<u8>, u32, u32)>, String> {
+        self.drained = true;
+        if self.declared_frames > 0 && (self.frames_out as i64) < self.declared_frames {
+            return Err(format!(
+                "the file declares {} frames and the decoder produced {}",
+                self.declared_frames, self.frames_out
+            ));
+        }
+        Ok(None)
     }
 
     /// Whether frames are being decoded on the GPU. A hardware decoder that
@@ -9149,24 +9194,34 @@ impl SequentialFrameDecoder {
         self.is_hw
     }
 
-    /// Decode and return the next frame in source order, or `None` at EOF.
-    pub fn next_frame(&mut self) -> Option<(Vec<u8>, u32, u32)> {
+    /// Decode and return the next frame in source order; `Ok(None)` at EOF.
+    ///
+    /// Anything else that ends the walk is an `Err`, never a quiet `None`:
+    /// a packet the container could not read, a packet the decoder refused
+    /// twice, a frame it could not decode, or one that could not be
+    /// converted. The callers walk every frame for stabilisation and motion
+    /// analysis, where a frame missing from the middle corrupts the motion
+    /// of everything after it, and a walk that stops early is
+    /// indistinguishable from a shorter clip. All four used to come back as
+    /// `None`, and a decode error was mistaken for "needs more input" and
+    /// the frame skipped. After an `Err` the walk is over: later calls
+    /// return `Ok(None)`.
+    pub fn next_frame(&mut self) -> Result<Option<(Vec<u8>, u32, u32)>, String> {
         if self.drained {
-            return None;
+            return Ok(None);
         }
         let mut decoded = ffmpeg_next::frame::Video::empty();
 
-        if self.decoder.receive_frame(&mut decoded).is_ok() {
-            return self.convert(&decoded);
+        if let Some(f) = self.receive(&mut decoded)? {
+            return Ok(Some(f));
         }
 
         loop {
             if self.eof_reached {
-                if self.decoder.receive_frame(&mut decoded).is_ok() {
-                    return self.convert(&decoded);
+                if let Some(f) = self.receive(&mut decoded)? {
+                    return Ok(Some(f));
                 }
-                self.drained = true;
-                return None;
+                return self.finished();
             }
 
             let mut packet = ffmpeg_next::codec::packet::Packet::empty();
@@ -9175,7 +9230,7 @@ impl SequentialFrameDecoder {
                     if packet.stream() != self.stream_index {
                         continue;
                     }
-                    if self.decoder.send_packet(&packet).is_err() {
+                    if let Err(first) = self.decoder.send_packet(&packet) {
                         // EAGAIN: the decoder's output queue is full, so it
                         // will not take another packet until one frame is
                         // collected. Take one, *then* retry the packet, and
@@ -9185,23 +9240,24 @@ impl SequentialFrameDecoder {
                         // `while receive_frame().is_ok() { return ... }`,
                         // which returned on the first frame and so never
                         // reached the retry — the packet was dropped and its
-                        // frame never decoded. That is exactly the corruption
-                        // the comment warned about, in the code meant to
-                        // prevent it: this decoder walks every frame in order
-                        // for stabilisation and analysis, and a hole in that
-                        // sequence corrupts motion vectors downstream.
-                        // `clippy::never_loop` found it — the `while` could
-                        // only ever run once.
-                        let drained = if self.decoder.receive_frame(&mut decoded).is_ok() {
-                            self.convert(&decoded)
-                        } else {
-                            None
-                        };
-                        if self.decoder.send_packet(&packet).is_err() {
-                            tracing::warn!("SequentialFrameDecoder: packet lost after drain+retry");
+                        // frame never decoded. `clippy::never_loop` found it.
+                        //
+                        // In practice this branch is defensive: the walk
+                        // drains before every send, which is the condition
+                        // under which libavcodec takes a packet, so a
+                        // refusal here is something other than EAGAIN. A
+                        // second refusal means the packet's frame is lost,
+                        // and that is an error, not a warning.
+                        let drained = self.receive(&mut decoded)?;
+                        if let Err(again) = self.decoder.send_packet(&packet) {
+                            self.drained = true;
+                            return Err(format!(
+                                "after frame {}: the decoder refused a packet twice ({}; then {})",
+                                self.frames_out, describe(&first), describe(&again)
+                            ));
                         }
                         if drained.is_some() {
-                            return drained;
+                            return Ok(drained);
                         }
                     }
                 }
@@ -9211,14 +9267,37 @@ impl SequentialFrameDecoder {
                     continue;
                 }
                 Err(e) => {
-                    tracing::warn!("SequentialFrameDecoder: packet read error: {e}");
                     self.drained = true;
-                    return None;
+                    return Err(format!("after frame {}: packet read error: {}", self.frames_out, describe(&e)));
                 }
             }
 
-            if self.decoder.receive_frame(&mut decoded).is_ok() {
-                return self.convert(&decoded);
+            if let Some(f) = self.receive(&mut decoded)? {
+                return Ok(Some(f));
+            }
+        }
+    }
+
+    /// One frame from the decoder if it has one ready: `Ok(None)` when it
+    /// needs more input or is flushed, `Err` for a frame it could not
+    /// decode or convert. The distinction is the point — a decode error
+    /// used to look like "needs more input", and the broken frame was
+    /// skipped without a word.
+    fn receive(&mut self, decoded: &mut ffmpeg_next::frame::Video) -> Result<Option<(Vec<u8>, u32, u32)>, String> {
+        match self.decoder.receive_frame(decoded) {
+            Ok(()) => {
+                let Some(frame) = self.convert(decoded) else {
+                    self.drained = true;
+                    return Err(format!("frame {}: could not be converted to RGBA", self.frames_out));
+                };
+                self.frames_out += 1;
+                Ok(Some(frame))
+            }
+            Err(ffmpeg_next::Error::Other { errno }) if errno == ffmpeg_next::util::error::EAGAIN => Ok(None),
+            Err(ffmpeg_next::Error::Eof) => Ok(None),
+            Err(e) => {
+                self.drained = true;
+                Err(format!("frame {}: decode error: {}", self.frames_out, describe(&e)))
             }
         }
     }

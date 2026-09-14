@@ -351,11 +351,12 @@ fn main() -> Result<()> {
         let t_decode = std::time::Instant::now();
         let (rgba, width, height) = match sequential.as_mut() {
             Some(dec) => match dec.next_frame() {
-                Some(f) => f,
-                None => {
+                Ok(Some(f)) => f,
+                Ok(None) => {
                     tracing::warn!("stream ended after {i} frame(s)");
                     break;
                 }
+                Err(e) => return Err(anyhow!("decoding frame {i}: {e}")),
             },
             None => klipp_engine::generate_thumbnail_at_size(
                 &args.clip,

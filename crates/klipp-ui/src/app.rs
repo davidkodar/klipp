@@ -17481,6 +17481,13 @@ impl KlippApp {
                         let (frame_tx, frame_rx) = std::sync::mpsc::sync_channel::<(Vec<u8>, u32, u32)>(3);
                         let path_for_producer = path.clone();
                         let event_tx_open = event_tx.clone();
+                        // Why the walk stopped, if it stopped on an error.
+                        // The consumer sees only a closed channel, and would
+                        // otherwise report "failed to decode frame N" for a
+                        // packet the container could not read or a frame the
+                        // decoder could not.
+                        let decode_error = std::sync::Arc::new(std::sync::Mutex::new(None::<String>));
+                        let decode_error_producer = std::sync::Arc::clone(&decode_error);
                         let producer = std::thread::Builder::new()
                             .name("klipp-stab-decode".to_string())
                             .spawn(move || -> std::time::Duration {
@@ -17497,7 +17504,7 @@ impl KlippApp {
                                     let frame = walker.next_frame();
                                     decode_wall += t0.elapsed();
                                     match frame {
-                                        Some(f) => {
+                                        Ok(Some(f)) => {
                                             // send blocks if consumer is behind — that's
                                             // exactly the backpressure we want.
                                             if frame_tx.send(f).is_err() {
@@ -17505,7 +17512,11 @@ impl KlippApp {
                                                 break;
                                             }
                                         }
-                                        None => break, // EOF or decode error
+                                        Ok(None) => break, // EOF
+                                        Err(e) => {
+                                            *decode_error_producer.lock().unwrap_or_else(|p| p.into_inner()) = Some(e);
+                                            break;
+                                        }
                                     }
                                 }
                                 decode_wall
@@ -17570,7 +17581,8 @@ impl KlippApp {
                                 let _ = event_tx.send(AppEvent::StabilizationComplete { clip_id });
                             }
                             Err(e) => {
-                                let _ = event_tx.send(AppEvent::StabilizationFailed { clip_id, error: e });
+                                let error = decode_error.lock().unwrap_or_else(|p| p.into_inner()).take().unwrap_or(e);
+                                let _ = event_tx.send(AppEvent::StabilizationFailed { clip_id, error });
                             }
                         }
                     });
@@ -17621,6 +17633,10 @@ impl KlippApp {
                         let (frame_tx, frame_rx) = std::sync::mpsc::sync_channel::<(Vec<u8>, u32, u32)>(3);
                         let path_for_producer = path.clone();
                         let event_tx_open = event_tx.clone();
+                        // A walk that stops on an error must not come back
+                        // as the cuts of a shorter clip.
+                        let decode_error = std::sync::Arc::new(std::sync::Mutex::new(None::<String>));
+                        let decode_error_producer = std::sync::Arc::clone(&decode_error);
                         let producer = std::thread::Builder::new()
                             .name("klipp-scene-detect".to_string())
                             .spawn(move || {
@@ -17631,9 +17647,18 @@ impl KlippApp {
                                         return;
                                     }
                                 };
-                                while let Some(f) = walker.next_frame() {
-                                    if frame_tx.send(f).is_err() {
-                                        break;
+                                loop {
+                                    match walker.next_frame() {
+                                        Ok(Some(f)) => {
+                                            if frame_tx.send(f).is_err() {
+                                                break;
+                                            }
+                                        }
+                                        Ok(None) => break,
+                                        Err(e) => {
+                                            *decode_error_producer.lock().unwrap_or_else(|p| p.into_inner()) = Some(e);
+                                            break;
+                                        }
                                     }
                                 }
                             });
@@ -17657,6 +17682,11 @@ impl KlippApp {
                         );
                         drop(frame_rx);
                         let _ = producer.join();
+                        if let Some(error) = decode_error.lock().unwrap_or_else(|p| p.into_inner()).take() {
+                            tracing::warn!("Scene detect: clip={:?} stopped: {error}", clip_id);
+                            let _ = event_tx.send(AppEvent::SceneDetectFailed { clip_id, error });
+                            return;
+                        }
                         tracing::info!(
                             "Scene detect: finished clip={:?} cuts={} elapsed={:.2}s",
                             clip_id, cuts.len(), t0.elapsed().as_secs_f64()
