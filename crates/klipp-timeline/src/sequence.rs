@@ -2469,7 +2469,7 @@ mod tests {
         assert_eq!(a_gain.len(), 2, "clip_a gets the two pre-cut kfs");
         assert!((a_gain[0].time_secs - 0.25).abs() < 1e-9);
         assert!((a_gain[1].time_secs - 0.75).abs() < 1e-9);
-        assert!(track.clips[0].audio_effect_keyframes.get("0:__bypass").is_none(),
+        assert!(!track.clips[0].audio_effect_keyframes.contains_key("0:__bypass"),
             "clip_a must not carry the bypass kf (it sits past the cut)");
 
         // clip_b: the third gain kf, with time shifted back by 1.0s

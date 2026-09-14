@@ -318,19 +318,14 @@ impl MatteCombineOp {
 /// Which source channel of an ExternalMatte image becomes the matte.
 /// Alpha is the natural choice for images painted with transparency;
 /// Luminance is the practical fallback for opaque grayscale masks.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum MatteChannel {
     Alpha,
+    #[default]
     Luminance,
     Red,
     Green,
     Blue,
-}
-
-impl Default for MatteChannel {
-    fn default() -> Self {
-        MatteChannel::Luminance
-    }
 }
 
 impl MatteChannel {
@@ -517,14 +512,14 @@ impl NodeParams {
                 // f32. NaN/negative/very-large values fall back to
                 // `None` (use the LUT's own tag) — defensive against
                 // a corrupted dispatch from somewhere upstream.
-                self.lut_input_space = if value.is_finite() && value >= 0.0 && value < 256.0 {
+                self.lut_input_space = if value.is_finite() && (0.0..256.0).contains(&value) {
                     Some(klipp_core::WorkingColorspace::from_u8(value as u8))
                 } else {
                     None
                 };
             }
             "lut_output_space" => {
-                self.lut_output_space = if value.is_finite() && value >= 0.0 && value < 256.0 {
+                self.lut_output_space = if value.is_finite() && (0.0..256.0).contains(&value) {
                     Some(klipp_core::WorkingColorspace::from_u8(value as u8))
                 } else {
                     None
@@ -535,14 +530,14 @@ impl NodeParams {
                 // f32. Out-of-range / non-finite → None (= the node
                 // becomes a passthrough). Mirrors lut_input_space
                 // dispatch.
-                self.primaries_from = if value.is_finite() && value >= 0.0 && value < 256.0 {
+                self.primaries_from = if value.is_finite() && (0.0..256.0).contains(&value) {
                     Some(klipp_core::WorkingColorspace::from_u8(value as u8))
                 } else {
                     None
                 };
             }
             "primaries_to" => {
-                self.primaries_to = if value.is_finite() && value >= 0.0 && value < 256.0 {
+                self.primaries_to = if value.is_finite() && (0.0..256.0).contains(&value) {
                     Some(klipp_core::WorkingColorspace::from_u8(value as u8))
                 } else {
                     None

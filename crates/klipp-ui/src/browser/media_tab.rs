@@ -426,6 +426,7 @@ fn is_media_used(state: &AppState, media_id: MediaId) -> bool {
 ///     the thumbnail. Red because it must read instantly against any
 ///     thumbnail content; the accent amber is reserved for selection /
 ///     focus signalling so red carves out its own meaning ("in use").
+///
 /// Both can be visible at once. Drawn in this order so the bottom 3px
 /// of the source-loaded border is overpainted by the red bar — desired,
 /// because the bar is the higher-information signal at that edge.

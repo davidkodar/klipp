@@ -36,14 +36,9 @@ fn paused_4k_pq_seek() {
         };
         let mut last = first;
         let mut gen = parked.generation();
-        loop {
-            match parked.wait_new(gen, Duration::from_millis(400)) {
-                Some(_) => {
-                    last = t0.elapsed();
-                    gen = parked.generation();
-                }
-                None => break,
-            }
+        while parked.wait_new(gen, Duration::from_millis(400)).is_some() {
+            last = t0.elapsed();
+            gen = parked.generation();
         }
         eprintln!(
             "{label:24} first frame {:6.1} ms, settled {:6.1} ms",

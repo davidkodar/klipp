@@ -177,6 +177,7 @@ fn dispatch_audio_kf_response(
 ///   - Search box (filters by name; for LADSPA also matches maker + label)
 ///   - "BUILT-IN" section with the 13 built-in audio effects
 ///   - "LADSPA" section grouped by maker (alphabetical)
+///
 /// Calls `on_select(effect_type)` when the user picks an item; the caller
 /// is responsible for pushing the right `AppCommand::AddAudioEffect`.
 /// `popup_anchor_id` keys the search-query memory so each popup keeps its

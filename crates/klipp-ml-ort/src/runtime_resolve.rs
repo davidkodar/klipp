@@ -34,8 +34,8 @@
 
 use std::path::{Path, PathBuf};
 
-/// Coarse GPU vendor classification used by the runtime resolver
-/// + the AI Tools UI. Doesn't try to distinguish specific GPU
+/// Coarse GPU vendor classification used by the runtime resolver +
+/// the AI Tools UI. Doesn't try to distinguish specific GPU
 /// models within a vendor — Klipp's runtime selection is per
 /// vendor (one libonnxruntime build per vendor), not per model.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -425,7 +425,7 @@ mod tests {
     }
 
     #[test]
-    fn classifies_intel_iGPU_3d_controller() {
+    fn classifies_intel_igpu_3d_controller() {
         let out = "00:02.0 3D controller [0302]: Intel Corporation Alder Lake-P \
                    GT2 [Iris Xe Graphics] (rev 0c)";
         assert_eq!(classify_lspci_output(out), Some(GpuVendor::Intel));

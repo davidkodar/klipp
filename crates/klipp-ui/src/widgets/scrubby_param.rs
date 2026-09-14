@@ -1,7 +1,8 @@
-/// FCP-style scrubby slider parameter row for the inspector.
-///
-/// The core feature: dragging the **label** left/right changes the value.
-/// This provides a compact, precise control without a traditional slider track.
+//! FCP-style scrubby slider parameter row for the inspector.
+//!
+//! The core feature: dragging the **label** left/right changes the value.
+//! This provides a compact, precise control without a traditional slider
+//! track.
 
 use crate::icons::Icon;
 

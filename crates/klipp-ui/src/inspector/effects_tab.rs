@@ -1169,7 +1169,6 @@ fn builtin_effect_name(effect: &klipp_effects::BuiltinEffect) -> std::borrow::Co
 
 /// Returns the default (identity) version of the same effect variant.
 #[allow(dead_code)]
-#[allow(dead_code)]
 fn builtin_effect_default(effect: &klipp_effects::BuiltinEffect) -> klipp_effects::BuiltinEffect {
     use klipp_effects::BuiltinEffect;
     match effect {
@@ -1294,7 +1293,6 @@ fn builtin_effect_default(effect: &klipp_effects::BuiltinEffect) -> klipp_effect
 }
 
 #[allow(dead_code)]
-#[allow(dead_code)]
 fn builtin_effect_has_multi_params(effect: &klipp_effects::BuiltinEffect) -> bool {
     use klipp_effects::BuiltinEffect;
     matches!(effect, BuiltinEffect::Crop { .. } | BuiltinEffect::Transform { .. } | BuiltinEffect::ChromaKey { .. } | BuiltinEffect::Bloom { .. } | BuiltinEffect::LightRays { .. }
@@ -1308,7 +1306,6 @@ fn builtin_effect_has_multi_params(effect: &klipp_effects::BuiltinEffect) -> boo
         | BuiltinEffect::Letterbox { .. } | BuiltinEffect::ChromaticAberration { .. })
 }
 
-#[allow(dead_code)]
 #[allow(dead_code)]
 fn builtin_effect_is_default(effect: &klipp_effects::BuiltinEffect) -> bool {
     let def = builtin_effect_default(effect);

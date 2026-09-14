@@ -104,7 +104,7 @@ pub(crate) fn correlation_at_offset(a: &[f32], b: &[f32], offset: i64, n_a: i64,
     // tiny high-correlation tails can't outrank a long, equally-correlated
     // alignment. We use the full-buffer length (capped to CORR_WINDOW) as
     // the denominator so identical-length inputs never hit the cap.
-    let max_possible = n_a.min(n_b).min(CORR_WINDOW).max(1) as f64;
+    let max_possible = n_a.min(n_b).clamp(1, CORR_WINDOW) as f64;
     let weight = (n as f64 / max_possible).min(1.0);
     pearson * weight
 }

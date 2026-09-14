@@ -21,8 +21,8 @@
 /// Direction-aware linear-light resampler. Picks the right primitive
 /// for the (src, dst) ratio:
 /// * Identical dimensions → return the input unchanged (zero copy).
-/// * Both axes shrink → `downsample_linear_box` (proper anti-aliasing
-///   + ~3× faster than bilinear at 2:1 because it averages 2×2 blocks
+/// * Both axes shrink → `downsample_linear_box` (proper anti-aliasing +
+///   ~3× faster than bilinear at 2:1 because it averages 2×2 blocks
 ///   in a tight loop instead of doing 4 weighted-bilinear taps).
 /// * Anything else → `upsample_linear_bilinear` (the generic path —
 ///   handles upsamples and asymmetric ratios).

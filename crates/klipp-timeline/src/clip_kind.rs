@@ -362,6 +362,11 @@ fn default_true() -> bool { true }
 /// `Shape` for primitives like the bar in a lower-third. New layer
 /// kinds (image, mask, sub-title, etc.) extend this enum without
 /// disturbing existing instances.
+// TextBox is 696 bytes against Shape's few dozen. A title holds a
+// handful of layers, so the waste is kilobytes per title clip; boxing
+// would move every text layer behind a pointer in the layout and render
+// hot paths to save that. Left flat deliberately.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum TitleObjectContent {
     TextBox(TextBox),

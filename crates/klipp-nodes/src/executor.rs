@@ -368,10 +368,10 @@ impl GradeStage {
     }
 
     /// Run the CPU twin on `frame`; `kept` holds what `Keep` kept.
-    fn run_cpu(&self, frame: &mut Vec<f32>, kept: &mut Option<Vec<f32>>, width: u32, height: u32) {
+    fn run_cpu(&self, frame: &mut [f32], kept: &mut Option<Vec<f32>>, width: u32, height: u32) {
         use klipp_effects::cpu_grade as cg;
         match self {
-            GradeStage::Keep => *kept = Some(frame.clone()),
+            GradeStage::Keep => *kept = Some(frame.to_vec()),
             GradeStage::Grade(g) => cg::color_grade(frame, g),
             GradeStage::Clarity(a, l) => cg::clarity(frame, width, height, *a, *l),
             GradeStage::Vibrance(a, l) => cg::vibrance(frame, *a, *l),
@@ -494,6 +494,12 @@ fn linear_rgba_to_u8(linear: &[f32]) -> Vec<u8> {
         out.push((chunk[3].clamp(0.0, 1.0) * 255.0 + 0.5) as u8);
     }
     out
+}
+
+impl Default for GraphExecutor {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl GraphExecutor {
@@ -3688,7 +3694,7 @@ impl GraphExecutor {
                     None => return primary_input.to_vec(),
                 };
                 let n = primary_input.len();
-                if matte.len() != n || n % 4 != 0 {
+                if matte.len() != n || !n.is_multiple_of(4) {
                     return primary_input.to_vec();
                 }
                 let mut out = vec![0.0f32; n];
@@ -3752,7 +3758,7 @@ impl GraphExecutor {
                     None if source_frame.len() == n => source_frame,
                     None => return primary_input.to_vec(),
                 };
-                if n % 4 != 0 {
+                if !n.is_multiple_of(4) {
                     return primary_input.to_vec();
                 }
                 let mut out = vec![0.0f32; n];
@@ -4956,8 +4962,8 @@ mod tests {
         );
     }
 
-    /// Smoke test: a Source → Corrector → Output graph with exposure
-    /// + saturation set on the Corrector applies both stages on the
+    /// Smoke test: a Source → Corrector → Output graph with exposure +
+    /// saturation set on the Corrector applies both stages on the
     /// CPU fallback path. Verifies the bundled-node executor wiring
     /// matches the per-kind nodes (same `apply_*` functions, same
     /// canonical order).

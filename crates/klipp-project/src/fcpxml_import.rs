@@ -87,7 +87,7 @@ struct FormatInfo {
 impl FormatInfo {
     /// Convert `frameDuration` into a Klipp `Fps`. `1/25s` → 25/1 fps,
     /// `1001/24000s` → 24000/1001 fps.
-    fn to_fps(&self) -> Fps {
+    fn to_fps(self) -> Fps {
         // fps = 1 / frame_duration_secs = den / num (seconds)
         let (fd_num, fd_den) = self.frame_duration;
         if fd_num <= 0 || fd_den <= 0 {

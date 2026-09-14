@@ -42,6 +42,10 @@ use klipp_core::events::AiToolsTaskTag;
 use crate::state::AppState;
 
 /// What to do when the user activates a palette entry.
+// 224 bytes, carried by the AppCommand variant. The palette rebuilds its
+// entry list as the user types, so boxing would trade a few kilobytes of
+// stack for one heap allocation per entry per keystroke.
+#[allow(clippy::large_enum_variant)]
 pub enum PaletteAction {
     /// Push this command to the app's command bus. Normal case.
     Cmd(AppCommand),

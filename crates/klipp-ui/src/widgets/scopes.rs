@@ -1223,6 +1223,9 @@ pub fn render_audio_spectrogram(
 
     // Clamp the floor to a usable range so a pref set to 0 or positive
     // doesn't produce a divide-by-zero. Upper bound always 0 dBFS.
+    // min/max, not clamp: a NaN preference yields -1.0 here, so
+    // db_range stays finite and the scope still draws.
+    #[allow(clippy::manual_clamp)]
     let floor = db_floor.min(-1.0).max(-96.0);
     let db_range = -floor;
 

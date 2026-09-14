@@ -38,7 +38,9 @@ impl OwnedYuv {
 /// and the rest need no per-format code. `None` for RGB, palette,
 /// bitstream and hardware formats; callers fall back to their old path.
 ///
-/// SAFETY: `frame` must be a valid, allocated software AVFrame.
+/// # Safety
+///
+/// `frame` must be a valid, allocated software AVFrame.
 pub unsafe fn read_yuv_samples(frame: *const ffmpeg_next::ffi::AVFrame) -> Option<OwnedYuv> {
     use ffmpeg_next::ffi::*;
     use rayon::prelude::*;
@@ -50,6 +52,11 @@ pub unsafe fn read_yuv_samples(frame: *const ffmpeg_next::ffi::AVFrame) -> Optio
     const FLAG_RGB: u64 = 1 << 5;
 
     let f = &*frame;
+    // AVPixelFormat is a repr(i32) enum; transmuting a format value from
+    // outside its range would be undefined, so range check first.
+    if !(-1..AVPixelFormat::AV_PIX_FMT_NB as i32).contains(&f.format) {
+        return None;
+    }
     let desc = av_pix_fmt_desc_get(std::mem::transmute::<i32, AVPixelFormat>(f.format));
     if desc.is_null() {
         return None;

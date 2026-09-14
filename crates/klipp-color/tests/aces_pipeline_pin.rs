@@ -363,13 +363,13 @@ fn dcip3_diverges_from_rec709_on_saturated_red() {
 ///
 /// - Patches 1-6: skin / sky / foliage / blue-sky reference colours
 /// - Patches 7-12: orange / purplish-blue / moderate red / purple /
-///                 yellow / magenta-ish primaries
+///   yellow / magenta-ish primaries
 /// - Patches 13-18: blue / green / red / yellow / magenta / cyan
 /// - Patches 19-24: greyscale ramp from white (#19) to black (#24)
 ///
 /// What this exercises that the 6-patch tests don't: a **broad**
 /// sweep through chroma + value space, including patches that should
-/// in-gamut for both Rec.709 and P3 (no clipping anywhere). Failures
+/// be in-gamut for both Rec.709 and P3 (no clipping anywhere). Failures
 /// here typically mean the RRT or ODT shifted character on a
 /// non-extreme input — exactly the kind of regression that's hard to
 /// notice on synthetic primaries.

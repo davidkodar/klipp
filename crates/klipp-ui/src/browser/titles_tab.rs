@@ -2561,7 +2561,12 @@ fn paint_char_animated(
                 // glyph being painted ~3× the cell size and disappearing
                 // under siblings.
                 entrance_alpha = local_t;
-                entrance_scale = (2.0 - local_t).max(1.0).min(2.0);
+                // max/min, not clamp: a NaN t collapses to scale 1.0
+                // (no entrance) instead of a glyph with a NaN transform.
+                #[allow(clippy::manual_clamp)]
+                {
+                    entrance_scale = (2.0 - local_t).max(1.0).min(2.0);
+                }
             }
             CharEntrance::Pop => {
                 entrance_alpha = local_t;

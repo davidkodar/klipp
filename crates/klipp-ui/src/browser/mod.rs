@@ -4563,7 +4563,7 @@ impl BrowserPanel {
                     &mut self.audio_fx_auditioning,
                     &mut self.audio_fx_hide_unsupported,
                     &mut self.favorite_effects,
-                    &mut self.recent_effects,
+                    &self.recent_effects,
                 )
             }
             LibraryCategory::Titles => {

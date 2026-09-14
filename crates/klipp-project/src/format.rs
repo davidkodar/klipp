@@ -385,6 +385,10 @@ pub struct ClipMarkerJson {
     pub comment: String,
 }
 
+// 560 bytes in the Title variant, but this is the on-disk DTO: one
+// exists at a time while a clip is being written or read, never in a
+// collection. Boxing would buy nothing and add an allocation per clip.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ClipKindJson {

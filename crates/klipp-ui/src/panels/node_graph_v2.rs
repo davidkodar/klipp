@@ -195,8 +195,8 @@ struct DragFrame {
     start_cursor_y: f32,
 }
 
-/// Sticky-note drag state. Same emitted-delta pattern as DragNode
-/// + DragFrame so streaming MoveStickyNote per tick doesn't drift
+/// Sticky-note drag state. Same emitted-delta pattern as DragNode +
+/// DragFrame so streaming MoveStickyNote per tick doesn't drift
 /// from cursor motion across many frames.
 #[derive(Clone, Copy)]
 struct DragSticky {

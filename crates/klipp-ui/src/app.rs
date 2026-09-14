@@ -1694,7 +1694,7 @@ impl KlippApp {
         // at 500 as a safety ceiling; with the widened interval above
         // the expected count only approaches 500 on short clips where
         // the 0.2 s floor drives it up.
-        let expected_frames = (((duration_secs / interval).ceil() as u32).min(500)).max(1);
+        let expected_frames = ((duration_secs / interval).ceil() as u32).clamp(1, 500);
         self.state.filmstrip_progress.insert(media_id, (0, expected_frames));
         // Wrap in a ThreadJob so the JobScheduler can pause us when
         // foreground playback / scrubbing kicks in. The pause check
@@ -14801,7 +14801,7 @@ impl KlippApp {
                     if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
                         if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
                             if let Some(tb) = target_textbox_mut(td, target_oid) {
-                                tb.columns = (*columns).max(1).min(8);
+                                tb.columns = (*columns).clamp(1, 8);
                             }
                         }
                     }
@@ -14863,7 +14863,13 @@ impl KlippApp {
                     if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
                         if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
                             if let Some(tb) = target_textbox_mut(td, target_oid) {
-                                tb.chromatic_aberration_px = (*offset_px).max(0.0).min(40.0);
+                                // max/min, not clamp: a NaN offset lands on 0.0
+                                // here, where clamp would propagate it into a
+                                // saved title and render nothing.
+                                #[allow(clippy::manual_clamp)]
+                                {
+                                    tb.chromatic_aberration_px = (*offset_px).max(0.0).min(40.0);
+                                }
                             }
                         }
                     }
@@ -32362,7 +32368,7 @@ impl KlippApp {
                                     .unwrap_or(std::cmp::Ordering::Equal)
                             }) {
                                 Ok(i) => i,
-                                Err(i) if i == 0 => 0,
+                                Err(0) => 0,
                                 Err(i) if i >= frames.len() => frames.len() - 1,
                                 Err(i) => {
                                     let before = (src_time - frames[i - 1].time_secs).abs();
@@ -36439,15 +36445,16 @@ mod node_param_undo_tests {
         // Simulated command stream produced by a single "reset" click:
         let clip_id = ClipId::new();
         let node_id = NodeId::new_v4();
-        let mut cmds: Vec<AppCommand> = Vec::new();
-        cmds.push(AppCommand::BeginNodeParamEdit { clip_id });
-        cmds.push(AppCommand::SetNodeParam {
-            clip_id,
-            node_id,
-            param: "exposure".into(),
-            value: 0.0,
-        });
-        cmds.push(AppCommand::EndNodeParamEdit { clip_id });
+        let cmds: Vec<AppCommand> = vec![
+            AppCommand::BeginNodeParamEdit { clip_id },
+            AppCommand::SetNodeParam {
+                clip_id,
+                node_id,
+                param: "exposure".into(),
+                value: 0.0,
+            },
+            AppCommand::EndNodeParamEdit { clip_id },
+        ];
 
         // The stream must contain exactly one Begin and one End bracketing
         // the SetNodeParam. That's the contract a handler needs to produce a
@@ -36477,17 +36484,16 @@ mod node_param_undo_tests {
 
         let clip_id = ClipId::new();
         let node_id = NodeId::new_v4();
-        let mut cmds: Vec<AppCommand> = Vec::new();
-
-        // First atomic edit
-        cmds.push(AppCommand::BeginNodeParamEdit { clip_id });
-        cmds.push(AppCommand::SetNodeParam { clip_id, node_id, param: "exposure".into(), value: 0.5 });
-        cmds.push(AppCommand::EndNodeParamEdit { clip_id });
-
-        // Second atomic edit
-        cmds.push(AppCommand::BeginNodeParamEdit { clip_id });
-        cmds.push(AppCommand::SetNodeParam { clip_id, node_id, param: "contrast".into(), value: 0.3 });
-        cmds.push(AppCommand::EndNodeParamEdit { clip_id });
+        let cmds: Vec<AppCommand> = vec![
+            // First atomic edit
+            AppCommand::BeginNodeParamEdit { clip_id },
+            AppCommand::SetNodeParam { clip_id, node_id, param: "exposure".into(), value: 0.5 },
+            AppCommand::EndNodeParamEdit { clip_id },
+            // Second atomic edit
+            AppCommand::BeginNodeParamEdit { clip_id },
+            AppCommand::SetNodeParam { clip_id, node_id, param: "contrast".into(), value: 0.3 },
+            AppCommand::EndNodeParamEdit { clip_id },
+        ];
 
         let begin_count = cmds.iter().filter(|c| matches!(c, AppCommand::BeginNodeParamEdit { .. })).count();
         let end_count = cmds.iter().filter(|c| matches!(c, AppCommand::EndNodeParamEdit { .. })).count();

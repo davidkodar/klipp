@@ -570,9 +570,9 @@ fn apply_ofx_visual_proxy(frame: &ReferenceFrame, plugin_name: &str) -> Vec<u8> 
     // Clamp: crush blacks and whites
     if n.contains("clamp") {
         for px in out.chunks_exact_mut(4) {
-            px[0] = px[0].max(30).min(220);
-            px[1] = px[1].max(30).min(220);
-            px[2] = px[2].max(30).min(220);
+            px[0] = px[0].clamp(30, 220);
+            px[1] = px[1].clamp(30, 220);
+            px[2] = px[2].clamp(30, 220);
         }
         return out;
     }

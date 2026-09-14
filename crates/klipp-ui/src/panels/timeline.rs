@@ -7230,8 +7230,8 @@ impl TimelinePanel {
                 })
             };
 
-            if let Some((cmd_clip_id, target)) = end_data {
-                if let Some((g, v, p, fi, fo)) = target {
+            if let Some((cmd_clip_id, Some((g, v, p, fi, fo)))) = end_data {
+                {
                     // Canonical drag key: must match
                     // UpdateClipAudio's `is_dragging` check
                     // (`"{:?}:audio"`) so per-tick history pushes
@@ -10790,7 +10790,7 @@ impl TimelinePanel {
         let tt = theme();
         let spd_color = tt.marker_info;
         let spd_fill_color = egui::Color32::from_rgba_unmultiplied(spd_color.r(), spd_color.g(), spd_color.b(), 25);
-        let num_spd_pts = (clip_rect.width() as usize / 3).max(2).min(120);
+        let num_spd_pts = (clip_rect.width() as usize / 3).clamp(2, 120);
         let mut spd_points: Vec<egui::Pos2> = Vec::with_capacity(num_spd_pts);
         for i in 0..num_spd_pts {
             let t = (i as f64 / (num_spd_pts - 1) as f64) * spd_clip_dur;

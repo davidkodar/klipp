@@ -1319,8 +1319,8 @@ unsafe fn apply_thread_count(
     }
 }
 
-/// Open the video decoder for `stream`, walking the cuvid → standard
-/// + CUDA → standard + VAAPI → software ladder. Each tier is
+/// Open the video decoder for `stream`, walking the cuvid → standard +
+/// CUDA → standard + VAAPI → software ladder. Each tier is
 /// attempted; if its `decoder.video()` open fails (codec / profile
 /// not supported, hwaccel init failed, …), we drop the half-built
 /// context and try the next tier.

@@ -554,7 +554,7 @@ mod tests {
     #[test]
     fn cancel_queued_job_marks_cancelled() {
         let mut q = RenderQueue::new();
-        let mut j = fake_job(RenderJobStatus::Queued);
+        let j = fake_job(RenderJobStatus::Queued);
         let id = j.id;
         q.jobs.push(j);
 
@@ -576,7 +576,7 @@ mod tests {
     #[test]
     fn remove_queued_job_drops_it() {
         let mut q = RenderQueue::new();
-        let mut queued = fake_job(RenderJobStatus::Queued);
+        let queued = fake_job(RenderJobStatus::Queued);
         let queued_id = queued.id;
         q.jobs.push(queued);
         q.jobs.push(fake_job(RenderJobStatus::Complete));
@@ -592,7 +592,7 @@ mod tests {
         // Rendering jobs must be cancelled first — remove_job is a no-op
         // on a live render to avoid orphaning the worker thread.
         let mut q = RenderQueue::new();
-        let mut rendering = fake_job(RenderJobStatus::Rendering);
+        let rendering = fake_job(RenderJobStatus::Rendering);
         let rid = rendering.id;
         q.jobs.push(rendering);
 

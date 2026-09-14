@@ -253,14 +253,6 @@ mod tests {
         }
     }
 
-    fn make_pool(items: Vec<(MediaId, klipp_media::MediaItem)>) -> MediaPool {
-        let mut pool = MediaPool::new();
-        for (_, item) in items {
-            pool.add(item);
-        }
-        pool
-    }
-
     fn make_pool_with_id(id: MediaId, item: klipp_media::MediaItem) -> MediaPool {
         let mut pool = MediaPool::new();
         // We need to set the item's id to match what the clip references

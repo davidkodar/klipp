@@ -81,8 +81,8 @@ struct RegistryEntry {
 /// `~/.config/klipp/themes/*.toml`.
 #[derive(Debug, Clone, Default)]
 pub struct ThemeRegistry {
-    /// BTreeMap so the iteration order in the picker is alphabetical
-    /// + stable across runs (matters for the keyboard-driven cmd-K
+    /// BTreeMap so the iteration order in the picker is alphabetical +
+    /// stable across runs (matters for the keyboard-driven cmd-K
     /// fuzzy picker we'll likely add later).
     entries: BTreeMap<ThemeId, RegistryEntry>,
 }

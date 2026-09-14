@@ -101,7 +101,9 @@ pub fn init_ffmpeg() -> Result<(), ffmpeg_next::Error> {
 /// `av_log_format_line` does the printf-style formatting for us so
 /// we never touch a `va_list` directly from Rust.
 ///
-/// SAFETY: Called from arbitrary ffmpeg-internal threads. We use a
+/// # Safety
+///
+/// Called from arbitrary ffmpeg-internal threads. We use a
 /// stack-allocated buffer (no heap from the callback) and make zero
 /// assumptions about the `avcl` pointer's lifetime — only its name
 /// is read for context, then we drop the reference.

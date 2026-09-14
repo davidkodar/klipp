@@ -42,8 +42,8 @@ pub struct NodeGraph {
     /// behind a set of nodes for organisation. Distinct from the
     /// `Compound` NodeKind, which is a *collapsible sub-graph* with
     /// executor recursion. Frames are pure UI: the frame's visible
-    /// rectangle each frame is computed from `union(member_rects)`
-    /// + padding, so dragging a frame moves its members and the
+    /// rectangle each frame is computed from `union(member_rects)` +
+    /// padding, so dragging a frame moves its members and the
     /// frame stretches/shrinks to follow them. Save/load round-trips
     /// via the existing NodeGraph serde derive — no format work.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -675,7 +675,7 @@ impl NodeGraph {
         new_graph.node_positions = self
             .node_positions
             .iter()
-            .map(|(old_id, pos)| (id_map[old_id], pos.clone()))
+            .map(|(old_id, pos)| (id_map[old_id], *pos))
             .collect();
         new_graph
     }

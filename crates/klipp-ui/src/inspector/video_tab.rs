@@ -3747,9 +3747,9 @@ fn show_sequence_properties(ui: &mut egui::Ui, theme: &KlippTheme, state: &AppSt
         });
 
         info_row(ui, theme, pad, row_h, w, "Aspect ratio", |ui, rx, cy| {
-            let (aw, ah) = {
-                let g = gcd(seq.resolution.width, seq.resolution.height);
-                if g > 0 { (seq.resolution.width / g, seq.resolution.height / g) } else { (0, 0) }
+            let (aw, ah) = match gcd(seq.resolution.width, seq.resolution.height) {
+                0 => (0, 0),
+                g => (seq.resolution.width / g, seq.resolution.height / g),
             };
             let text = format!("{}:{}", aw, ah);
             ui.painter().text(

@@ -576,7 +576,6 @@ fn slider_row(
 
 /// Simple slider row without keyframe support (for duck settings etc.)
 #[allow(clippy::too_many_arguments)]
-#[allow(clippy::too_many_arguments)]
 fn show_clip_audio(
     ui: &mut egui::Ui,
     theme: &KlippTheme,

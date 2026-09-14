@@ -174,7 +174,7 @@ fn assign_layers(graph: &NodeGraph, topo: &[NodeId]) -> HashMap<NodeId, usize> {
 /// sits near the median position of its connected nodes in the
 /// previous (top-down sweep) or next (bottom-up sweep) layer.
 /// Disconnected nodes anchor at the end (median = +infinity).
-fn reduce_crossings(layers: &mut Vec<Vec<NodeId>>, edges: &[crate::graph::Edge]) {
+fn reduce_crossings(layers: &mut [Vec<NodeId>], edges: &[crate::graph::Edge]) {
     if layers.len() < 2 {
         return;
     }

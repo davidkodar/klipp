@@ -1221,8 +1221,8 @@ pub struct PlaybackEngine {
     /// regrade so the viewer recovers from any drag-time downsampled
     /// frame. Cleared after the recovery tick consumes it.
     force_full_res_regrade: bool,
-    /// Drag-window telemetry. Set on `BeginNodeParamEdit`, summarised
-    /// + cleared on `EndNodeParamEdit`. Counts the grade frames run
+    /// Drag-window telemetry. Set on `BeginNodeParamEdit`, summarised +
+    /// cleared on `EndNodeParamEdit`. Counts the grade frames run
     /// during the gesture and how many of them were downsampled, so
     /// the closing log line tells us at a glance whether the
     /// optimisation engaged.
@@ -2027,11 +2027,11 @@ impl PlaybackEngine {
                     if let Some(dec) = &self.v1_decoder {
                         let queue_has_target = {
                             let q = dec.frame_queue().lock().unwrap_or_else(|e| e.into_inner());
-                            match q.front() {
+                            matches!(
+                                q.front(),
                                 Some(f) if !f.is_eof
-                                    && (f.pts_secs() - source_secs).abs() < 0.1 => true,
-                                _ => false,
-                            }
+                                    && (f.pts_secs() - source_secs).abs() < 0.1
+                            )
                         };
                         if !queue_has_target {
                             dec.seek(source_secs);
@@ -3232,8 +3232,6 @@ impl PlaybackEngine {
         }
     }
 
-    /// Stop and drop all audio sources, mix thread, and the output.
-
     /// Wipe all engine-side state to a clean slate.
     /// Called on `AppCommand::ResetEngine` (new project / close project).
     /// After this returns the engine holds no decoders, no cached frames,
@@ -3340,8 +3338,8 @@ impl PlaybackEngine {
 
     /// Compute a fingerprint of audio-relevant state at the current playhead.
     /// Includes: which media clips are active, their speed, audio effect
-    /// chain (types + enabled), and audio_effect_keyframes (track count
-    /// + per-track length + per-kf time/value/interpolation bits). Any
+    /// chain (types + enabled), and audio_effect_keyframes (track count +
+    /// per-track length + per-kf time/value/interpolation bits). Any
     /// change here triggers a chain rebuild on `SequenceUpdated`.
     /// Title/generator clips are excluded (they don't produce audio).
     ///
@@ -7145,12 +7143,26 @@ impl PlaybackEngine {
                             unsafe {
                                 let par = params.as_ptr();
                                 if !par.is_null() {
-                                    // Bit depth from pixel format
-                                    let pix_fmt = (*par).format;
-                                    let desc = ffmpeg_next::ffi::av_pix_fmt_desc_get(std::mem::transmute::<_, ffmpeg_next::ffi::AVPixelFormat>(pix_fmt));
+                                    // Bit depth from pixel format.
+                                    // `format` is a bare c_int from the
+                                    // container; AVPixelFormat is a repr(i32)
+                                    // enum, so transmuting an out-of-range
+                                    // value into it would be undefined. Range
+                                    // check first, and build the enum once.
+                                    let raw_fmt = (*par).format;
+                                    let pix_fmt = (-1..ffmpeg_next::ffi::AVPixelFormat::AV_PIX_FMT_NB as i32)
+                                        .contains(&raw_fmt)
+                                        .then(|| {
+                                            std::mem::transmute::<i32, ffmpeg_next::ffi::AVPixelFormat>(
+                                                raw_fmt,
+                                            )
+                                        });
+                                    let desc = pix_fmt
+                                        .map_or(std::ptr::null(), |f| ffmpeg_next::ffi::av_pix_fmt_desc_get(f));
                                     if !desc.is_null() {
                                         bit_depth = Some((*desc).comp[0].depth as u8);
-                                        let name_ptr = ffmpeg_next::ffi::av_get_pix_fmt_name(std::mem::transmute::<_, ffmpeg_next::ffi::AVPixelFormat>(pix_fmt));
+                                        let name_ptr = pix_fmt
+                                            .map_or(std::ptr::null(), |f| ffmpeg_next::ffi::av_get_pix_fmt_name(f));
                                         if !name_ptr.is_null() {
                                             pixel_format_name = Some(std::ffi::CStr::from_ptr(name_ptr).to_string_lossy().to_string());
                                         }

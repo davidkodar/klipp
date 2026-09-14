@@ -30,7 +30,7 @@ pub fn show_color_and_luts(
                 .and_then(|seq| seq.tracks.iter()
                     .flat_map(|t| t.clips.iter())
                     .find(|c| c.id == clip_id)
-                    .map(|c| {
+                    .and_then(|c| {
                         let clip_time = (state.playhead_smooth_secs
                             - c.timeline_in.to_secs_f64()).max(0.0);
                         let mask_node = c.node_graph.nodes.iter()
@@ -48,8 +48,7 @@ pub fn show_color_and_luts(
                                 .collect();
                             (nid, n.params.masks.clone().unwrap_or_default(), clip_time, tracked)
                         })
-                    })
-                    .flatten());
+                    }));
             if let Some((node_id, mut masks, clip_time_secs, tracked)) = mask_entry {
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {

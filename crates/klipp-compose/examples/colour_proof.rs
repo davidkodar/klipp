@@ -19,7 +19,7 @@
 //! cd/m², and the 10-bit PQ code a delivery would carry. Those numbers
 //! are the check; the pictures show what they mean.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use klipp_effects::BuiltinEffect;
 
@@ -174,7 +174,7 @@ fn plateau(rgba: &[u8], row: u32) -> f32 {
 
 /// The gamut section: the same wide-gamut chart clipped and mapped, as
 /// pictures and as the share of each ramp the clip flattens.
-fn gamut_proof(out_dir: &PathBuf) {
+fn gamut_proof(out_dir: &Path) {
     let chart = gamut_chart();
     let clipped = clip_to_bt709(&chart);
     let mapped = klipp_color::display::display_transform_ws(

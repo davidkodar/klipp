@@ -1689,10 +1689,6 @@ mod tests {
 
     // ── Producer classification ─────────────────────────────────────
 
-    fn first_producer_of_fixture(xml: &str) -> roxmltree::Document<'_> {
-        roxmltree::Document::parse(xml).expect("fixture parse")
-    }
-
     /// Helper: wrap a producer snippet in a minimal MLT envelope and parse it.
     fn wrap_and_parse(producer_inner: &str) -> String {
         format!(

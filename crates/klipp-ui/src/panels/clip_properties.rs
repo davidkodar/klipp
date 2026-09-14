@@ -599,23 +599,11 @@ mod tests {
         }
     }
 
+    /// OpenClipProperties resets the tab to the default, so the panel
+    /// always opens on Info rather than wherever it was last left.
     #[test]
-    fn open_clip_properties_sets_state() {
-        // Mirrors the OpenClipProperties handler logic from app.rs: when
-        // the command fires we set the media_id, reset the tab to the
-        // default, and flip the visibility flag.
-        let media_id = klipp_core::MediaId::new();
-        let mut media_id_opt: Option<klipp_core::MediaId> = None;
-        let mut tab = ClipPropertiesTab::Streams;
-        let mut visible = false;
-
-        media_id_opt = Some(media_id);
-        tab = ClipPropertiesTab::default();
-        visible = true;
-
-        assert_eq!(media_id_opt, Some(media_id));
-        assert_eq!(tab, ClipPropertiesTab::Info);
-        assert!(visible);
+    fn the_default_tab_is_info() {
+        assert_eq!(ClipPropertiesTab::default(), ClipPropertiesTab::Info);
     }
 
     #[test]

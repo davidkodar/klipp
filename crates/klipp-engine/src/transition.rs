@@ -1,66 +1,9 @@
-/// CPU fallback transition rendering and transition state tracking.
+/// CPU fallback transition rendering.
 ///
-/// GPU path in gpu.rs is preferred for pixel math; this module also owns
-/// the transition frame-result contract: every frame produced during a
-/// transition is tagged as `Fresh` (live decoder output) or `Frozen`
-/// (held copy because the decoder hit EOF — the clip ran out of source
-/// material). The `Frozen` tag is the signal that a transition is
-/// exceeding the handle frames available on that side.
+/// The GPU path in gpu.rs is preferred for pixel math; this module is the
+/// fallback when no adapter is available, and the reference the GPU path
+/// is checked against.
 use klipp_timeline::TransitionKind;
-
-/// Result of pulling a frame for one side of a transition.
-///
-/// `Fresh` means the frame came from live decoder output or a valid cache
-/// entry — the decoder has not signaled EOF for this clip.
-///
-/// `Frozen` means the decoder signaled EOF and we are serving a held copy
-/// of the last valid frame because there is no more source material.
-/// This is the explicit freeze-frame path. It is the signal that a
-/// transition is exceeding the handle frames available on this side.
-///
-/// `Frozen` must NEVER be returned for transient cache reuse (partner
-/// decoder priming, seeking, buffer underrun). EOF is the only trigger.
-#[derive(Debug, Clone)]
-pub enum TransitionFrameResult {
-    Fresh(Vec<u8>),
-    Frozen(Vec<u8>),
-}
-
-impl TransitionFrameResult {
-    /// Get the frame bytes regardless of variant.
-    pub fn bytes(&self) -> &[u8] {
-        match self {
-            Self::Fresh(b) | Self::Frozen(b) => b,
-        }
-    }
-
-    /// Consume into bytes.
-    pub fn into_bytes(self) -> Vec<u8> {
-        match self {
-            Self::Fresh(b) | Self::Frozen(b) => b,
-        }
-    }
-
-    pub fn is_frozen(&self) -> bool {
-        matches!(self, Self::Frozen(_))
-    }
-}
-
-/// Per-transition degradation tracking, reset when a new transition begins.
-#[derive(Debug, Clone, Copy, Default)]
-pub struct TransitionDegradation {
-    /// Number of frames served as `Frozen` on the A side during the
-    /// current transition.
-    pub frozen_a_count: u32,
-    /// Same for B side.
-    pub frozen_b_count: u32,
-}
-
-impl TransitionDegradation {
-    pub fn is_degraded(&self) -> bool {
-        self.frozen_a_count > 0 || self.frozen_b_count > 0
-    }
-}
 
 /// Map TransitionKind to the GPU shader's kind_id.
 pub fn transition_kind_to_id(kind: TransitionKind) -> u32 {
@@ -1997,82 +1940,5 @@ mod tests {
         // (with possible minor deviations for effects like LightLeak/Flash)
         let result = render_transition(TransitionKind::CrossDissolve, &frame, &frame, 0.5, W, H);
         assert_approx_rgb(&result, 100, 150, 200, TOLERANCE);
-    }
-
-    // ========================================================================
-    // TransitionFrameResult
-    // ========================================================================
-
-    #[test]
-    fn frame_result_fresh_is_not_frozen() {
-        let r = TransitionFrameResult::Fresh(vec![1, 2, 3, 4]);
-        assert!(!r.is_frozen());
-        assert_eq!(r.bytes(), &[1, 2, 3, 4]);
-    }
-
-    #[test]
-    fn frame_result_frozen_is_frozen() {
-        let r = TransitionFrameResult::Frozen(vec![5, 6, 7, 8]);
-        assert!(r.is_frozen());
-        assert_eq!(r.bytes(), &[5, 6, 7, 8]);
-    }
-
-    #[test]
-    fn frame_result_into_bytes_fresh() {
-        let r = TransitionFrameResult::Fresh(vec![10, 20]);
-        let b = r.into_bytes();
-        assert_eq!(b, vec![10, 20]);
-    }
-
-    #[test]
-    fn frame_result_into_bytes_frozen() {
-        let r = TransitionFrameResult::Frozen(vec![30, 40]);
-        let b = r.into_bytes();
-        assert_eq!(b, vec![30, 40]);
-    }
-
-    // ========================================================================
-    // TransitionDegradation
-    // ========================================================================
-
-    #[test]
-    fn degradation_default_is_clean() {
-        let d = TransitionDegradation::default();
-        assert_eq!(d.frozen_a_count, 0);
-        assert_eq!(d.frozen_b_count, 0);
-        assert!(!d.is_degraded());
-    }
-
-    #[test]
-    fn degradation_a_side_only() {
-        let mut d = TransitionDegradation::default();
-        d.frozen_a_count = 3;
-        assert!(d.is_degraded());
-    }
-
-    #[test]
-    fn degradation_b_side_only() {
-        let mut d = TransitionDegradation::default();
-        d.frozen_b_count = 1;
-        assert!(d.is_degraded());
-    }
-
-    #[test]
-    fn degradation_both_sides() {
-        let mut d = TransitionDegradation::default();
-        d.frozen_a_count = 2;
-        d.frozen_b_count = 5;
-        assert!(d.is_degraded());
-    }
-
-    #[test]
-    fn degradation_reset_clears_counts() {
-        let mut d = TransitionDegradation::default();
-        d.frozen_a_count = 10;
-        d.frozen_b_count = 20;
-        d = TransitionDegradation::default();
-        assert!(!d.is_degraded());
-        assert_eq!(d.frozen_a_count, 0);
-        assert_eq!(d.frozen_b_count, 0);
     }
 }

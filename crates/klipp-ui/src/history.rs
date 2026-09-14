@@ -1690,7 +1690,7 @@ mod audio_effect_kf_ops_tests {
 
     /// Mirror the Reverse handler's mutation: reflect kf times around
     /// the max time, swap tangent_in / tangent_out with x-negation.
-    fn reverse_kfs_in_place(kfs: &mut Vec<Keyframe>) {
+    fn reverse_kfs_in_place(kfs: &mut [Keyframe]) {
         if kfs.len() < 2 { return; }
         let max_time = kfs.last().map(|k| k.time_secs).unwrap_or(0.0);
         for k in kfs.iter_mut() {

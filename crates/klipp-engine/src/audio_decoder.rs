@@ -196,7 +196,6 @@ impl std::fmt::Display for AudioDecoderError {
 }
 
 #[allow(clippy::too_many_arguments, clippy::drop_non_drop)]
-#[allow(clippy::too_many_arguments)]
 fn audio_decode_thread(
     path: PathBuf,
     output_rate: u32,

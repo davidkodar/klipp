@@ -219,7 +219,7 @@ pub fn show(
     auditioning: &mut Option<String>,
     hide_unsupported: &mut bool,
     favorite_effects: &mut Vec<String>,
-    recent_effects: &mut Vec<String>,
+    recent_effects: &[String],
 ) -> Vec<AppCommand> {
     let mut cmds = Vec::new();
     let avail = ui.available_rect_before_wrap();
@@ -1206,6 +1206,10 @@ fn audition_source_pill(
     let pad_x = 10.0;
     let caret_w = 14.0;
     let h = 24.0;
+    // min/max, not clamp: a non-finite available width settles on a
+    // usable number here, where clamp would propagate a NaN into every
+    // width derived from it below.
+    #[allow(clippy::manual_clamp)]
     let max_w = ui.available_width().min(220.0).max(60.0);
     let label_inner_w = (max_w - pad_x * 2.0 - caret_w).max(20.0);
     let truncated_label = truncate_to_width(

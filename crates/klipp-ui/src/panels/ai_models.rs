@@ -120,8 +120,8 @@ fn description_for(id: &str) -> &'static str {
 }
 
 /// Per-frame UI state for the AI Models dialog. Carried on AppState
-/// because the dialog needs to remember the user's filter + sort
-/// + search across renders. Resets on each app launch (intentional
+/// because the dialog needs to remember the user's filter + sort +
+/// search across renders. Resets on each app launch (intentional
 /// — a fresh dialog should be unfiltered).
 #[derive(Debug, Clone, Default)]
 pub struct AiModelsDialogState {
@@ -1214,8 +1214,8 @@ fn verify_all(
     }
 }
 
-/// Bulk-uninstall confirmation modal. Lists every installed model
-/// + the total disk space freed; on confirm, loops file delete +
+/// Bulk-uninstall confirmation modal. Lists every installed model +
+/// the total disk space freed; on confirm, loops file delete +
 /// clear_instance for each.
 fn show_bulk_uninstall_confirm(
     ctx: &egui::Context,

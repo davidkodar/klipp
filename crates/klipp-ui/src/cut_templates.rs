@@ -131,22 +131,22 @@ pub fn plan_template(kind: &TemplateKind, ctx: &TemplateContext) -> Vec<AppComma
 fn plan_hyperzoom_letter_transition(ctx: &TemplateContext) -> Vec<AppCommand> {
     let Some(consumer_id) = ctx.selected_clip_id else { return Vec::new(); };
     let Some(matte_source_id) = find_matte_candidate(ctx.seq, consumer_id) else { return Vec::new(); };
-    let mut cmds = Vec::with_capacity(4);
+    vec![
     // 1. Bind matte (channel 0 = Alpha; same wire format as
     //    SetClipMatte and the right-click "Use clip above as
     //    matte → Alpha" menu).
-    cmds.push(AppCommand::SetClipMatte {
+    AppCommand::SetClipMatte {
         clip_id: consumer_id,
         source_clip_id: matte_source_id,
         channel: 0,
         invert: false,
         feather_px: 0.0,
         choke_px: 0.0,
-    });
+    },
     // 2. Link matte source's transform → consumer. Mode 0 =
     //    Absolute, all four inherit flags on (the canonical
     //    "fly with parent" defaults).
-    cmds.push(AppCommand::SetClipTransformLink {
+    AppCommand::SetClipTransformLink {
         clip_id: matte_source_id,
         target: consumer_id,
         mode: 0,
@@ -154,11 +154,11 @@ fn plan_hyperzoom_letter_transition(ctx: &TemplateContext) -> Vec<AppCommand> {
         inherit_position: true,
         inherit_rotation: true,
         inherit_anchor: true,
-    });
+    },
     // 3. Auto-link clips beneath the consumer's track within the
     //    ramp window (so V1 / underlying clips fly with the
     //    consumer too).
-    cmds.push(AppCommand::AutoLinkClipsBeneathSource {
+    AppCommand::AutoLinkClipsBeneathSource {
         source_clip_id: consumer_id,
         ramp_secs: 0.5,
         mode: 0,
@@ -166,11 +166,11 @@ fn plan_hyperzoom_letter_transition(ctx: &TemplateContext) -> Vec<AppCommand> {
         inherit_position: true,
         inherit_rotation: true,
         inherit_anchor: true,
-    });
+    },
     // 4. Apply hyperzoom — `target_clip_id: None` resolves to the
     //    next clip on the consumer's track (the gating predicate
     //    already verified that one exists).
-    cmds.push(AppCommand::ApplyHyperzoom {
+    AppCommand::ApplyHyperzoom {
         source_clip_id: consumer_id,
         target_clip_id: None,
         focal_x_norm: 0.5,
@@ -196,8 +196,8 @@ fn plan_hyperzoom_letter_transition(ctx: &TemplateContext) -> Vec<AppCommand> {
         chromatic_aberration_amount: 0.0,
         add_light_leak: false,
         light_leak_intensity: 0.0,
-    });
-    cmds
+    },
+    ]
 }
 
 /// Track Matte Reveal — bind clip-above as alpha matte, fade in
@@ -206,33 +206,33 @@ fn plan_hyperzoom_letter_transition(ctx: &TemplateContext) -> Vec<AppCommand> {
 fn plan_track_matte_reveal(ctx: &TemplateContext) -> Vec<AppCommand> {
     let Some(consumer_id) = ctx.selected_clip_id else { return Vec::new(); };
     let Some(matte_source_id) = find_matte_candidate(ctx.seq, consumer_id) else { return Vec::new(); };
-    let mut cmds = Vec::with_capacity(3);
+    vec![
     // Bind alpha matte (no feather, no choke — the keyframe pair
     // below provides the reveal animation).
-    cmds.push(AppCommand::SetClipMatte {
+    AppCommand::SetClipMatte {
         clip_id: consumer_id,
         source_clip_id: matte_source_id,
         channel: 0, // Alpha
         invert: false,
         feather_px: 0.0,
         choke_px: 0.0,
-    });
+    },
     // Feather reveal: 50 px → 0 px over 0.5 s at clip start.
     // Soft initial edge melts into a hard mask. Same keyframe
     // primitive the inspector's matte-feather slider uses.
-    cmds.push(AppCommand::AddVideoKeyframe {
+    AppCommand::AddVideoKeyframe {
         clip_id: consumer_id,
         param: VideoParam::MatteFeather,
         time_secs: 0.0,
         value: 50.0,
-    });
-    cmds.push(AppCommand::AddVideoKeyframe {
+    },
+    AppCommand::AddVideoKeyframe {
         clip_id: consumer_id,
         param: VideoParam::MatteFeather,
         time_secs: 0.5,
         value: 0.0,
-    });
-    cmds
+    },
+    ]
 }
 
 /// Cross-Dissolve with Hyperzoom Bridge — gentle hyperzoom
