@@ -273,6 +273,10 @@ pub enum EditCommand {
         audio: Option<(Clip, usize)>,
         created_audio_track_at: Option<usize>,
     },
+    /// Several edits made by one gesture — a multi-selection dropped on
+    /// a track — undone and redone as one. Undo applies the inverses in
+    /// reverse order; redo the forwards in order.
+    Batch(Vec<EditCommand>),
     LegacyMoveClipToTrack {
         clip: Clip,
         old_timeline_in: RationalTime,
@@ -610,6 +614,7 @@ impl EditCommand {
             EditCommand::LegacyCutClip { .. } => "Cut Clip",
             EditCommand::LegacyPasteClip { .. } => "Paste Clip",
             EditCommand::LegacyInsertEdit { .. } => "Insert Edit",
+            EditCommand::Batch(..) => "Add Clips",
             EditCommand::Magnetic(cmd) => cmd.label(),
             EditCommand::SourceLinkedInsert { video_command, .. } => video_command.label(),
             EditCommand::AddMediaToPool { .. } => "Import Media",
@@ -670,6 +675,10 @@ pub struct CommandHistory {
     /// undo entry. Cleared whenever a non-text-edit push happens (so
     /// intervening edits cleanly break the burst).
     last_title_text_edit: Option<(ClipId, Instant)>,
+
+    /// While a batch is open, pushes collect here instead of landing on
+    /// the stack; `end_batch` pushes them as one `Batch` entry.
+    batch: Option<Vec<EditCommand>>,
 }
 
 impl CommandHistory {
@@ -681,6 +690,25 @@ impl CommandHistory {
             pending_coalesce_key: None,
             pending_old_entry: None,
             last_title_text_edit: None,
+            batch: None,
+        }
+    }
+
+    /// Collect every push until `end_batch` into one undo entry. A
+    /// gesture that makes several edits — a multi-selection dropped on a
+    /// track — should take one ctrl+z, not one per clip.
+    pub fn begin_batch(&mut self) {
+        self.batch = Some(Vec::new());
+    }
+
+    /// Close the batch: nothing collected pushes nothing, one edit pushes
+    /// itself, more push a `Batch`.
+    pub fn end_batch(&mut self) {
+        let Some(mut commands) = self.batch.take() else { return };
+        match commands.len() {
+            0 => {}
+            1 => self.push(HistoryEntry { command: commands.pop().unwrap() }),
+            _ => self.push(HistoryEntry { command: EditCommand::Batch(commands) }),
         }
     }
 
@@ -690,6 +718,10 @@ impl CommandHistory {
     }
 
     pub fn push(&mut self, entry: HistoryEntry) {
+        if let Some(batch) = self.batch.as_mut() {
+            batch.push(entry.command);
+            return;
+        }
         // Any non-text-edit push terminates a typing burst — the next
         // keystroke after this becomes a fresh undo entry.
         let breaks_burst = !matches!(
@@ -2377,5 +2409,49 @@ mod insert_edit_with_audio_tests {
 
         apply_insert_edit_inverse(&mut seq, &edit, &audio_rec, Some(ai));
         assert_eq!(shape(&seq), before);
+    }
+}
+
+#[cfg(test)]
+mod batch_tests {
+    use super::*;
+    use klipp_core::MediaId;
+    use klipp_timeline::Clip;
+
+    fn append(i: usize) -> EditCommand {
+        let t = klipp_core::RationalTime::from_frames(i as i64 * 10, 25);
+        EditCommand::LegacyAppendClip { clip: Clip::media(MediaId::new(), t, t, t, t), track_index: 0 }
+    }
+
+    #[test]
+    fn a_batch_of_several_pushes_is_one_entry_in_order() {
+        let mut h = CommandHistory::new();
+        h.begin_batch();
+        for i in 0..3 {
+            h.push(HistoryEntry { command: append(i) });
+        }
+        assert!(h.undo().is_none(), "nothing lands on the stack while the batch is open");
+        h.end_batch();
+        let entry = h.undo().expect("one entry");
+        assert_eq!(entry.label(), "Add Clips");
+        let EditCommand::Batch(commands) = &entry.command else { panic!("not a batch: {:?}", entry.command) };
+        assert_eq!(commands.len(), 3);
+        for (i, c) in commands.iter().enumerate() {
+            let EditCommand::LegacyAppendClip { clip, .. } = c else { panic!() };
+            assert_eq!(clip.timeline_in.value, i as i64 * 10, "the batch keeps the order of the pushes");
+        }
+        assert!(h.undo().is_none(), "the three were one entry");
+    }
+
+    #[test]
+    fn a_batch_of_one_is_that_entry_and_of_none_is_nothing() {
+        let mut h = CommandHistory::new();
+        h.begin_batch();
+        h.push(HistoryEntry { command: append(0) });
+        h.end_batch();
+        assert!(matches!(h.undo().map(|e| e.command), Some(EditCommand::LegacyAppendClip { .. })));
+        h.begin_batch();
+        h.end_batch();
+        assert!(h.undo().is_none());
     }
 }

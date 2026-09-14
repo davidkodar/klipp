@@ -71,3 +71,70 @@ impl DragDropState {
         self.started = false;
     }
 }
+
+/// Which items travel with a drag from the media browser: the dragged one
+/// alone, unless it is part of a multi-selection — then every selected
+/// item, in the order the browser shows them.
+///
+/// Browser order, not selection order, because it is what Premiere,
+/// Resolve, Avid and Final Cut all do, and what the user can see: sort
+/// the browser, select, drag, and the timeline reads like the browser.
+/// (The selection is a set; it has no order to honour anyway.) Dragging
+/// an item that is not in the selection drags that item alone, which is
+/// the rule everywhere.
+pub fn drag_group(displayed: &[MediaId], selected: &std::collections::HashSet<MediaId>, dragged: MediaId) -> Vec<MediaId> {
+    if selected.len() > 1 && selected.contains(&dragged) {
+        displayed.iter().copied().filter(|id| selected.contains(id)).collect()
+    } else {
+        vec![dragged]
+    }
+}
+
+/// Whether a media item can go on a track of this kind: audio-only media
+/// on audio tracks, anything with a picture on video tracks, synthetic
+/// titles on text and subtitle tracks only.
+pub fn media_fits_track(item: &klipp_media::MediaItem, kind: klipp_timeline::TrackKind) -> bool {
+    use klipp_timeline::TrackKind;
+    let is_title = matches!(item.kind, klipp_media::MediaItemKind::SyntheticTitle);
+    if is_title {
+        return matches!(kind, TrackKind::Text | TrackKind::Subtitle);
+    }
+    let is_audio_only = item.video_codec.is_empty();
+    match kind {
+        TrackKind::Audio => is_audio_only,
+        TrackKind::Text | TrackKind::Subtitle => false,
+        _ => !is_audio_only,
+    }
+}
+
+#[cfg(test)]
+mod drag_group_tests {
+    use super::*;
+    use std::collections::HashSet;
+
+    #[test]
+    fn a_multi_selection_drags_in_browser_order_whatever_the_selection_order() {
+        let ids: Vec<MediaId> = (0..5).map(|_| MediaId::new()).collect();
+        // Selected 3, 1 and 4 — in that order, which a set forgets.
+        let selected: HashSet<MediaId> = [ids[3], ids[1], ids[4]].into_iter().collect();
+        assert_eq!(drag_group(&ids, &selected, ids[3]), vec![ids[1], ids[3], ids[4]]);
+        // Re-sorting the browser re-orders the drag.
+        let reversed: Vec<MediaId> = ids.iter().rev().copied().collect();
+        assert_eq!(drag_group(&reversed, &selected, ids[3]), vec![ids[4], ids[3], ids[1]]);
+    }
+
+    #[test]
+    fn dragging_an_item_outside_the_selection_drags_it_alone() {
+        let ids: Vec<MediaId> = (0..4).map(|_| MediaId::new()).collect();
+        let selected: HashSet<MediaId> = [ids[0], ids[1]].into_iter().collect();
+        assert_eq!(drag_group(&ids, &selected, ids[3]), vec![ids[3]]);
+    }
+
+    #[test]
+    fn a_single_selection_is_not_a_group() {
+        let ids: Vec<MediaId> = (0..3).map(|_| MediaId::new()).collect();
+        let selected: HashSet<MediaId> = [ids[1]].into_iter().collect();
+        assert_eq!(drag_group(&ids, &selected, ids[1]), vec![ids[1]]);
+        assert_eq!(drag_group(&ids, &HashSet::new(), ids[2]), vec![ids[2]]);
+    }
+}

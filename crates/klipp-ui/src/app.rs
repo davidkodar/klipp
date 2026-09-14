@@ -10427,6 +10427,107 @@ impl KlippApp {
         }
     }
 
+    /// Append one media item to the end of a track with its linked audio,
+    /// on the magnetic or the free path as the track calls for. The
+    /// framerate prompt has already been answered or skipped by the caller.
+    fn append_media_to_track(&mut self, media_id: &klipp_core::MediaId, track_index: &usize) {
+                    if let Some(item) = self.state.media_pool.get(media_id) {
+                        let duration = item.duration;
+                        // Auto-set sequence resolution + FPS from first video clip
+                        if !item.video_codec.is_empty() && item.resolution.width > 0 && item.resolution.height > 0 {
+                            let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+                            let has_video_clips = seq.tracks.iter()
+                                .filter(|t| t.kind == klipp_timeline::TrackKind::Video)
+                                .any(|t| !t.clips.is_empty());
+                            if !has_video_clips {
+                                seq.resolution = item.resolution;
+                                seq.fps = item.fps;
+                                self.state.fps = item.fps;
+                            }
+                        }
+                        if let Some(track) = self.state.sequences[self.state.active_sequence_idx].tracks.get(*track_index) {
+                            if track.magnetic_role == klipp_timeline::TrackRole::Primary {
+                                // Magnetic path: append via MagneticEditor
+                                let source_in = klipp_core::RationalTime { value: 0, rate: duration.rate };
+                                let source_out = duration;
+                                let mut clip = klipp_timeline::Clip::media(
+                                    *media_id,
+                                    klipp_core::RationalTime::ZERO, // will be set by append_primary
+                                    klipp_core::RationalTime::ZERO,
+                                    source_in,
+                                    source_out,
+                                );
+                                // Auto-apply detected log format, and carry
+                                // the media's rotation (see AppendClip: the
+                                // viewer takes rotation from the media item,
+                                // export from the clip, so a clip without it
+                                // plays upright and exports sideways).
+                                if let Some(item) = self.state.media_pool.get(media_id) {
+                                    clip.set_input_log_format(item.detected_log_format);
+                                    clip.source_rotation = item.source_rotation;
+                                }
+                                let result = klipp_timeline::magnetic::MagneticEditor::append_primary(
+                                    &mut self.state.sequences[self.state.active_sequence_idx], clip);
+                                // Get the clip id from the result
+                                let mut appended_id = None;
+                                if let klipp_timeline::magnetic_commands::MagneticEditCommand::AppendPrimary { ref appended_clip, .. } = result.command {
+                                    self.state.selected_clip = Some(appended_clip.id);
+                                    appended_id = Some(appended_clip.id);
+                                }
+                                // The file's audio, linked to it.
+                                // `SourceLinkedInsert` is the entry that
+                                // carries a magnetic video edit plus an
+                                // audio track's before and after, so the
+                                // pair is still one undo.
+                                let audio = appended_id.and_then(|id| self.append_linked_audio(*media_id, id));
+                                match audio {
+                                    Some(a) => self.state.push_history(EditCommand::SourceLinkedInsert {
+                                        video_command: result.command,
+                                        audio_track_index: a.track_index,
+                                        audio_clips_before: a.clips_before,
+                                        audio_clips_after: a.clips_after,
+                                    }),
+                                    None => self.state.push_history(EditCommand::Magnetic(result.command)),
+                                }
+                                self.sync_sequence_to_engine();
+                                self.state.dirty = true;
+                            } else {
+                                // Legacy path for Free tracks
+                                let mid = *media_id;
+                                let track = self.state.sequences[self.state.active_sequence_idx].tracks.get_mut(*track_index).unwrap();
+                                let clip_id = track.append_clip(mid, duration);
+                                let rotation = self.state.media_pool.get(&mid).map_or(0, |i| i.source_rotation);
+                                if let Some(c) = self.state.sequences[self.state.active_sequence_idx]
+                                    .tracks[*track_index]
+                                    .find_clip_mut(clip_id)
+                                {
+                                    c.source_rotation = rotation;
+                                }
+                                self.apply_detected_log_format(clip_id, mid);
+                                // The file's audio, linked to it.
+                                let audio = self.append_linked_audio(mid, clip_id);
+                                let clip = self.state.sequences[self.state.active_sequence_idx].tracks[*track_index].find_clip(clip_id).unwrap().clone();
+                                match audio {
+                                    Some(a) => self.state.push_history(EditCommand::LinkedImport {
+                                        video: Some((clip, *track_index)),
+                                        audio: Some((a.clip, a.track_index)),
+                                        created_video_track_at: None,
+                                        created_audio_track_at: a.created_track_at,
+                                        autoset: None,
+                                    }),
+                                    None => self.state.push_history(EditCommand::LegacyAppendClip {
+                                        clip,
+                                        track_index: *track_index,
+                                    }),
+                                }
+                                self.sync_sequence_to_engine();
+                                self.state.selected_clip = Some(clip_id);
+                                self.state.dirty = true;
+                            }
+                        }
+                    }
+    }
+
     /// If placing `media_id` onto the active sequence would introduce a
     /// video clip whose fps differs from the sequence's, opens the
     /// "Change Project Frame Rate?" modal and stashes `pending_cmd` for
@@ -10681,6 +10782,41 @@ impl KlippApp {
                     }
                     true
                 }
+                AppCommand::AppendMediaBatchToTrack { media_ids, track_index } => {
+                    let Some(kind) = self.state.sequences[self.state.active_sequence_idx].tracks.get(*track_index).map(|t| t.kind) else {
+                        return true;
+                    };
+                    let (fit, skipped): (Vec<_>, Vec<_>) = media_ids.iter().partition(|id| {
+                        self.state.media_pool.get(id).is_some_and(|item| crate::drag_drop::media_fits_track(item, kind))
+                    });
+                    if fit.is_empty() {
+                        self.state.toast.show(format!("None of the {} clips can go on that track", media_ids.len()));
+                        return true;
+                    }
+                    // One prompt for the batch, on its first video clip; answered,
+                    // the batch comes back with the prompt suppressed.
+                    if let Some(first) = fit.iter().find(|id| self.state.media_pool.get(id).is_some_and(|i| !i.video_codec.is_empty())) {
+                        if self.maybe_prompt_framerate_mismatch(first, cmd.clone()) {
+                            return true;
+                        }
+                    }
+                    self.suppress_fps_prompt = false;
+                    self.state.active_history_mut().begin_batch();
+                    for id in &fit {
+                        self.append_media_to_track(id, track_index);
+                    }
+                    self.state.active_history_mut().end_batch();
+                    if !skipped.is_empty() {
+                        self.state.toast.show(format!(
+                            "Added {} clip(s); {} skipped — {} on a {} track",
+                            fit.len(),
+                            skipped.len(),
+                            if matches!(kind, klipp_timeline::TrackKind::Audio) { "video" } else { "audio-only" },
+                            match kind { klipp_timeline::TrackKind::Audio => "audio", klipp_timeline::TrackKind::Video => "video", _ => "text" },
+                        ));
+                    }
+                    true
+                }
                 AppCommand::AppendClipToTrack { media_id, track_index } => {
                     // Synthetic title asset path — read-only fork
                     // before any framerate-prompt logic. Creates a
@@ -10696,101 +10832,7 @@ impl KlippApp {
                         return true;
                     }
                     self.suppress_fps_prompt = false;
-                    if let Some(item) = self.state.media_pool.get(media_id) {
-                        let duration = item.duration;
-                        // Auto-set sequence resolution + FPS from first video clip
-                        if !item.video_codec.is_empty() && item.resolution.width > 0 && item.resolution.height > 0 {
-                            let seq = &mut self.state.sequences[self.state.active_sequence_idx];
-                            let has_video_clips = seq.tracks.iter()
-                                .filter(|t| t.kind == klipp_timeline::TrackKind::Video)
-                                .any(|t| !t.clips.is_empty());
-                            if !has_video_clips {
-                                seq.resolution = item.resolution;
-                                seq.fps = item.fps;
-                                self.state.fps = item.fps;
-                            }
-                        }
-                        if let Some(track) = self.state.sequences[self.state.active_sequence_idx].tracks.get(*track_index) {
-                            if track.magnetic_role == klipp_timeline::TrackRole::Primary {
-                                // Magnetic path: append via MagneticEditor
-                                let source_in = klipp_core::RationalTime { value: 0, rate: duration.rate };
-                                let source_out = duration;
-                                let mut clip = klipp_timeline::Clip::media(
-                                    *media_id,
-                                    klipp_core::RationalTime::ZERO, // will be set by append_primary
-                                    klipp_core::RationalTime::ZERO,
-                                    source_in,
-                                    source_out,
-                                );
-                                // Auto-apply detected log format, and carry
-                                // the media's rotation (see AppendClip: the
-                                // viewer takes rotation from the media item,
-                                // export from the clip, so a clip without it
-                                // plays upright and exports sideways).
-                                if let Some(item) = self.state.media_pool.get(media_id) {
-                                    clip.set_input_log_format(item.detected_log_format);
-                                    clip.source_rotation = item.source_rotation;
-                                }
-                                let result = klipp_timeline::magnetic::MagneticEditor::append_primary(
-                                    &mut self.state.sequences[self.state.active_sequence_idx], clip);
-                                // Get the clip id from the result
-                                let mut appended_id = None;
-                                if let klipp_timeline::magnetic_commands::MagneticEditCommand::AppendPrimary { ref appended_clip, .. } = result.command {
-                                    self.state.selected_clip = Some(appended_clip.id);
-                                    appended_id = Some(appended_clip.id);
-                                }
-                                // The file's audio, linked to it.
-                                // `SourceLinkedInsert` is the entry that
-                                // carries a magnetic video edit plus an
-                                // audio track's before and after, so the
-                                // pair is still one undo.
-                                let audio = appended_id.and_then(|id| self.append_linked_audio(*media_id, id));
-                                match audio {
-                                    Some(a) => self.state.push_history(EditCommand::SourceLinkedInsert {
-                                        video_command: result.command,
-                                        audio_track_index: a.track_index,
-                                        audio_clips_before: a.clips_before,
-                                        audio_clips_after: a.clips_after,
-                                    }),
-                                    None => self.state.push_history(EditCommand::Magnetic(result.command)),
-                                }
-                                self.sync_sequence_to_engine();
-                                self.state.dirty = true;
-                            } else {
-                                // Legacy path for Free tracks
-                                let mid = *media_id;
-                                let track = self.state.sequences[self.state.active_sequence_idx].tracks.get_mut(*track_index).unwrap();
-                                let clip_id = track.append_clip(mid, duration);
-                                let rotation = self.state.media_pool.get(&mid).map_or(0, |i| i.source_rotation);
-                                if let Some(c) = self.state.sequences[self.state.active_sequence_idx]
-                                    .tracks[*track_index]
-                                    .find_clip_mut(clip_id)
-                                {
-                                    c.source_rotation = rotation;
-                                }
-                                self.apply_detected_log_format(clip_id, mid);
-                                // The file's audio, linked to it.
-                                let audio = self.append_linked_audio(mid, clip_id);
-                                let clip = self.state.sequences[self.state.active_sequence_idx].tracks[*track_index].find_clip(clip_id).unwrap().clone();
-                                match audio {
-                                    Some(a) => self.state.push_history(EditCommand::LinkedImport {
-                                        video: Some((clip, *track_index)),
-                                        audio: Some((a.clip, a.track_index)),
-                                        created_video_track_at: None,
-                                        created_audio_track_at: a.created_track_at,
-                                        autoset: None,
-                                    }),
-                                    None => self.state.push_history(EditCommand::LegacyAppendClip {
-                                        clip,
-                                        track_index: *track_index,
-                                    }),
-                                }
-                                self.sync_sequence_to_engine();
-                                self.state.selected_clip = Some(clip_id);
-                                self.state.dirty = true;
-                            }
-                        }
-                    }
+                    self.append_media_to_track(media_id, track_index);
                     true
                 }
                 AppCommand::InsertAudioMediaClip { media_id, track_index, timeline_in } => {
@@ -21017,6 +21059,7 @@ impl KlippApp {
         self.state.selected_clips.clear();
         self.state.hovered_clip = None;
         self.state.dragging_media = None;
+        self.state.dragging_media_group.clear();
         self.state.dragging_audio_keyframe = None;
         self.state.dragging_video_keyframe = None;
         self.state.dragging_rubber_band = None;
@@ -21089,6 +21132,11 @@ impl KlippApp {
 
     fn apply_edit_inverse(&mut self, cmd: &EditCommand) {
         match cmd {
+            EditCommand::Batch(commands) => {
+                for c in commands.iter().rev() {
+                    self.apply_edit_inverse(c);
+                }
+            }
             EditCommand::AddTitleClip { clip, track_index, created_track } => {
                 let seq = &mut self.state.sequences[self.state.active_sequence_idx];
                 if *created_track {
@@ -21609,6 +21657,11 @@ impl KlippApp {
 
     fn apply_edit_forward(&mut self, cmd: &EditCommand) {
         match cmd {
+            EditCommand::Batch(commands) => {
+                for c in commands {
+                    self.apply_edit_forward(c);
+                }
+            }
             EditCommand::AddTitleClip { clip, track_index, created_track } => {
                 let seq = &mut self.state.sequences[self.state.active_sequence_idx];
                 if *created_track {

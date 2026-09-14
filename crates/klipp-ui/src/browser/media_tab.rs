@@ -931,6 +931,7 @@ fn render_list_view(
                         bin: bin.clone(),
                     });
                     state.dragging_media = None;
+                    state.dragging_media_group.clear();
                 }
             }
         }
@@ -1185,18 +1186,9 @@ fn render_list_view(
                 cmds.push(AppCommand::ImportMediaLinked { media_id: item.id, on_new_tracks });
             }
             if resp.dragged() {
-                // Single item, whatever the selection. `dragging_media` is
-                // one `Option<MediaId>` and the timeline's drop handler
-                // reads only that — it never consults
-                // `state.selected_media_ids` — so dragging a multi-selection
-                // drops one clip.
-                //
-                // This used to be an `if selected.contains(id) && len > 1`
-                // with identical arms, under a comment claiming "drag all
-                // selected items". Nothing implemented it. Left unimplemented
-                // rather than guessed at: where several clips land on a drop
-                // (end to end on one track? one per track?) is a design
-                // decision, not a fix.
+                // The item, or the multi-selection it is part of, in
+                // browser order: the timeline lays a group end to end.
+                state.dragging_media_group = crate::drag_drop::drag_group(all_ordered_ids, &state.selected_media_ids, item.id);
                 state.dragging_media = Some(item.id);
             }
             resp.context_menu(|ui| {
@@ -1574,6 +1566,7 @@ fn render_grid_view(
                                 egui::Color32::from_rgba_premultiplied(theme.accent.r(), theme.accent.g(), theme.accent.b(), 60),
                             );
                         } else if dx > 8.0 {
+                            state.dragging_media_group = crate::drag_drop::drag_group(all_ordered_ids, &state.selected_media_ids, item.id);
                             state.dragging_media = Some(item.id);
                         }
                     }

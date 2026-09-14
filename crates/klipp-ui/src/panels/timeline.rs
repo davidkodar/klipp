@@ -2644,26 +2644,18 @@ impl TimelinePanel {
             let any_down = ui.input(|i| i.pointer.any_down());
             if let Some(pos) = hover_pos {
                 if track_rect.contains(pos) {
-                    let media_item_kind = state.media_pool.get(&drag_media_id).map(|i| i.kind.clone());
-                    let is_synth_title = matches!(
-                        media_item_kind,
-                        Some(klipp_media::MediaItemKind::SyntheticTitle)
-                    );
-                    let is_audio_only = state.media_pool.get(&drag_media_id)
-                        .map(|item| item.video_codec.is_empty() && !is_synth_title)
-                        .unwrap_or(false);
-                    // Synthetic titles only compatible with Text /
-                    // Subtitle tracks. File-backed media keeps its
-                    // existing video-vs-audio split.
-                    let compatible = if is_synth_title {
-                        matches!(track_kind, TrackKind::Text | TrackKind::Subtitle)
+                    // The whole group travels; the track takes the ones
+                    // that fit it. A group is accepted when any of it fits
+                    // — the rest is counted in a toast, as a multi-file
+                    // drop from the FILES tab is.
+                    let group: Vec<klipp_core::MediaId> = if state.dragging_media_group.is_empty() {
+                        vec![drag_media_id]
                     } else {
-                        match track_kind {
-                            TrackKind::Audio => is_audio_only,
-                            TrackKind::Text | TrackKind::Subtitle => false,
-                            _ => !is_audio_only,
-                        }
+                        state.dragging_media_group.clone()
                     };
+                    let compatible = group.iter().any(|id| {
+                        state.media_pool.get(id).is_some_and(|item| crate::drag_drop::media_fits_track(item, track_kind))
+                    });
                     if compatible {
                         painter.rect_stroke(
                             track_rect,
@@ -2672,11 +2664,19 @@ impl TimelinePanel {
                         );
                         if !any_down {
                             state.dragging_media = None;
-                            tracing::info!("Media drop: {:?} -> track {} ({})", drag_media_id, track_idx, track_name);
-                            cmds.push(AppCommand::AppendClipToTrack {
-                                media_id: drag_media_id,
-                                track_index: track_idx,
-                            });
+                            state.dragging_media_group.clear();
+                            tracing::info!("Media drop: {} item(s) ({:?}) -> track {} ({})", group.len(), drag_media_id, track_idx, track_name);
+                            if group.len() == 1 {
+                                cmds.push(AppCommand::AppendClipToTrack {
+                                    media_id: drag_media_id,
+                                    track_index: track_idx,
+                                });
+                            } else {
+                                cmds.push(AppCommand::AppendMediaBatchToTrack {
+                                    media_ids: group,
+                                    track_index: track_idx,
+                                });
+                            }
                         }
                     } else {
                         painter.rect_stroke(
@@ -3431,6 +3431,17 @@ impl TimelinePanel {
         if let Some(drag_media_id) = state.dragging_media {
             if !ui.input(|i| i.pointer.any_down()) {
                 let mut handled = false;
+                // The dragged item decides which kind of track to make;
+                // the whole group then goes on it (what does not fit is
+                // skipped with a toast).
+                let group = state.dragging_media_group.clone();
+                let append_group = |track_index: usize| -> AppCommand {
+                    if group.len() > 1 {
+                        AppCommand::AppendMediaBatchToTrack { media_ids: group.clone(), track_index }
+                    } else {
+                        AppCommand::AppendClipToTrack { media_id: drag_media_id, track_index }
+                    }
+                };
                 if state.auto_create_tracks {
                     if let Some(cursor_pos) = ui.input(|i| i.pointer.hover_pos()) {
                         let is_audio_only = state.media_pool.get(&drag_media_id)
@@ -3451,10 +3462,7 @@ impl TimelinePanel {
                                 // It's the topmost video track (index 0 after insertion)
                                 0
                             };
-                            cmds.push(AppCommand::AppendClipToTrack {
-                                media_id: drag_media_id,
-                                track_index: track_idx,
-                            });
+                            cmds.push(append_group(track_idx));
                             handled = true;
                             tracing::info!("Auto-created video track for media drop above timeline");
                         } else if below_all && is_audio_only {
@@ -3462,10 +3470,7 @@ impl TimelinePanel {
                             let name = state.sequence().next_track_name(TrackKind::Audio);
                             state.sequence_mut().add_audio_track(name);
                             let track_idx = state.sequence().tracks.len() - 1;
-                            cmds.push(AppCommand::AppendClipToTrack {
-                                media_id: drag_media_id,
-                                track_index: track_idx,
-                            });
+                            cmds.push(append_group(track_idx));
                             handled = true;
                             tracing::info!("Auto-created audio track for media drop below timeline");
                         } else if below_all && !is_audio_only {
@@ -3476,10 +3481,7 @@ impl TimelinePanel {
                             let track_idx = state.sequence().tracks.iter()
                                 .rposition(|t| t.kind == TrackKind::Video)
                                 .unwrap_or(0);
-                            cmds.push(AppCommand::AppendClipToTrack {
-                                media_id: drag_media_id,
-                                track_index: track_idx,
-                            });
+                            cmds.push(append_group(track_idx));
                             handled = true;
                             tracing::info!("Auto-created video track for media drop below timeline");
                         } else if above_all && is_audio_only {
@@ -3487,10 +3489,7 @@ impl TimelinePanel {
                             let name = state.sequence().next_track_name(TrackKind::Audio);
                             state.sequence_mut().add_audio_track(name);
                             let track_idx = state.sequence().tracks.len() - 1;
-                            cmds.push(AppCommand::AppendClipToTrack {
-                                media_id: drag_media_id,
-                                track_index: track_idx,
-                            });
+                            cmds.push(append_group(track_idx));
                             handled = true;
                             tracing::info!("Auto-created audio track for media drop above timeline");
                         }
@@ -3501,6 +3500,7 @@ impl TimelinePanel {
                     cmds.push(AppCommand::SequenceUpdated);
                 }
                 state.dragging_media = None;
+                state.dragging_media_group.clear();
             }
         }
     }
@@ -3891,6 +3891,17 @@ impl TimelinePanel {
                     egui::Color32::from_rgba_unmultiplied(60, 80, 140, 200));
                 ghost_painter.rect_stroke(ghost_rect, 4.0,
                     egui::Stroke::new(1.5_f32, egui::Color32::from_rgba_unmultiplied(120, 160, 240, 220)));
+                // A group shows its size: "+2" for three clips travelling.
+                if state.dragging_media_group.len() > 1 {
+                    let badge = format!("+{}", state.dragging_media_group.len() - 1);
+                    ghost_painter.text(
+                        ghost_rect.right_top() + egui::vec2(-4.0, 2.0),
+                        egui::Align2::RIGHT_TOP,
+                        badge,
+                        egui::FontId::proportional(11.0),
+                        egui::Color32::WHITE,
+                    );
+                }
 
                 // Thumbnail if available
                 if let Some(tex) = state.thumbnail_textures.get(&drag_media_id) {
@@ -14334,6 +14345,7 @@ impl TimelinePanel {
             // Drag: start dragging media to a track
             if resp.drag_started() {
                 state.dragging_media = Some(item.id);
+                state.dragging_media_group.clear();
             }
             if resp.hovered() && state.dragging_media.is_none() {
                 egui::show_tooltip_at_pointer(

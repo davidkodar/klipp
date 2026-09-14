@@ -1306,6 +1306,10 @@ pub struct AppState {
 
     // Phase 4: Media pool drag-and-drop
     pub dragging_media: Option<MediaId>,
+    /// Every item travelling with the drag, in browser order — the
+    /// dragged one alone, or the whole multi-selection it belongs to
+    /// (see `drag_drop::drag_group`). Cleared with `dragging_media`.
+    pub dragging_media_group: Vec<MediaId>,
 
     // GUI redesign
     pub skimming_enabled: bool,
@@ -3259,6 +3263,7 @@ impl Default for AppState {
             fullscreen_overlay_visible: false,
             fullscreen_overlay_timer: 0.0,
             dragging_media: None,
+            dragging_media_group: Vec::new(),
             skimming_enabled: true,
             file_browser_video_skim_enabled: true,
             file_browser_audio_skim_enabled: true,

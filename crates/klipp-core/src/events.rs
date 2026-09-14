@@ -835,6 +835,11 @@ pub enum AppCommand {
     SetSpeed(f64),
     AppendClip { media_id: MediaId },
     AppendClipToTrack { media_id: MediaId, track_index: usize },
+    /// Several media items dropped on a track together: appended end to
+    /// end in the order given (the browser's order), each with its linked
+    /// audio, as one undo step. Items that cannot go on the track's kind
+    /// are skipped and counted in a toast.
+    AppendMediaBatchToTrack { media_ids: Vec<MediaId>, track_index: usize },
     /// Insert an existing audio media item as a clip at a specific
     /// timeline position. Building block for opt-in audio
     /// sweetener layers (hyperzoom whoosh today; transition
