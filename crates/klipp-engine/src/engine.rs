@@ -9142,6 +9142,13 @@ impl SequentialFrameDecoder {
         })
     }
 
+    /// Whether frames are being decoded on the GPU. A hardware decoder that
+    /// declines the file falls back to software silently, so a caller — or
+    /// a test meaning to cover that path — cannot tell from the frames.
+    pub fn is_hardware(&self) -> bool {
+        self.is_hw
+    }
+
     /// Decode and return the next frame in source order, or `None` at EOF.
     pub fn next_frame(&mut self) -> Option<(Vec<u8>, u32, u32)> {
         if self.drained {
