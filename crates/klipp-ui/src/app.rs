@@ -292,6 +292,10 @@ pub struct KlippApp {
     proxy_children: Vec<Arc<std::sync::atomic::AtomicU32>>,
     /// Channel for proxy generation events (started/complete/failed)
     proxy_event_tx: Sender<AppEvent>,
+    /// The thread that makes skim frames, from decoders it keeps open
+    /// per skimmed file. Both the media browser's hover and the timeline's
+    /// skimmer ask it.
+    skim_worker: klipp_engine::skim::SkimWorker<(MediaId, klipp_core::ViewerMode)>,
     proxy_event_rx: Receiver<AppEvent>,
     // Export dialog state
     export_dialog: ExportDialogState,
@@ -583,6 +587,21 @@ impl KlippApp {
             audio_conform_tx,
             audio_conform_rx,
             proxy_children: Vec::new(),
+            skim_worker: {
+                let tx = proxy_event_tx.clone();
+                klipp_engine::skim::SkimWorker::spawn(3, move |job, result| {
+                    let (media_id, target) = job.tag;
+                    let event = match result {
+                        Ok(f) => AppEvent::BrowserSkimFrameReady { media_id, rgba: f.rgba, width: f.width, height: f.height, target },
+                        Err(e) => {
+                            tracing::warn!("skim decode failed for {media_id:?} @ {:.3}s: {e}", job.secs);
+                            // An empty frame resets the requester's in-flight flag.
+                            AppEvent::BrowserSkimFrameReady { media_id, rgba: Vec::new(), width: 0, height: 0, target }
+                        }
+                    };
+                    let _ = tx.send(event);
+                })
+            },
             proxy_event_tx,
             proxy_event_rx,
             export_dialog: ExportDialogState::default(),
@@ -2227,6 +2246,29 @@ impl KlippApp {
     /// Only an offline item used to be re-probed; relinking an online
     /// clip to a different file kept the old duration, frame rate and
     /// resolution.
+    /// Ask the skim worker for `media_id`'s frame at `time_secs`, from
+    /// the skim transcode when there is one. Marks the request in flight;
+    /// the frame (or an empty one on failure) clears it.
+    fn request_skim_frame(&mut self, media_id: MediaId, time_secs: f64, target: klipp_core::ViewerMode) {
+        let Some(item) = self.state.media_pool.get(&media_id) else { return };
+        let decode_path = match item.skim_file.as_ref().filter(|p| p.exists()) {
+            Some(skim) => skim.clone(),
+            None => item.path.clone(),
+        };
+        let rotation = item.effective_rotation_for(&decode_path);
+        let source_height = item.resolution.height.max(240);
+        let max_height = self.prefs.playback.skim_resolution.max(source_height.min(1080));
+        self.state.skim_decode_in_flight = true;
+        self.state.skim_decode_started_at = Some(std::time::Instant::now());
+        self.skim_worker.request(klipp_engine::skim::SkimJob {
+            path: decode_path,
+            rotation,
+            secs: time_secs,
+            max_height,
+            tag: (media_id, target),
+        });
+    }
+
     fn relink_media(&mut self, media_id: MediaId, new_path: &Path) {
         let Some(item) = self.state.media_pool.get_mut(&media_id) else { return };
         let changed = item.path != new_path;
@@ -18458,53 +18500,7 @@ impl KlippApp {
                 true
             }
             AppCommand::BrowserSkimFrame { media_id, time_secs, target } => {
-                if let Some(item) = self.state.media_pool.get(media_id) {
-                    // Prefer skim file (all keyframes, fast seek), fall back to source
-                    let decode_path = if let Some(skim_path) = item.skim_file.as_ref().filter(|p| p.exists()) {
-                        skim_path.clone()
-                    } else {
-                        item.path.clone()
-                    };
-                    // Path-aware rotation: ffmpeg's skim transcode runs
-                    // autorotate on input AND keeps the displaymatrix on
-                    // the output stream, so auto-detecting from the skim
-                    // file would double-rotate. effective_rotation_for
-                    // returns 0 for skim/proxy, source_rotation otherwise.
-                    let rotation = item.effective_rotation_for(&decode_path);
-                    let mid = *media_id;
-                    let t = *time_secs;
-                    let dst = *target;
-                    let source_height = item.resolution.height.max(240);
-                    let skim_res = self.prefs.playback.skim_resolution
-                        .max(source_height.min(1080));
-                    let event_tx = self.proxy_event_tx.clone();
-                    self.state.skim_decode_in_flight = true;
-                    self.state.skim_decode_started_at = Some(std::time::Instant::now());
-                    std::thread::spawn(move || {
-                        match klipp_engine::generate_thumbnail_at_size_with_rotation(&decode_path, t, skim_res, rotation) {
-                            Ok((rgba, w, h)) => {
-                                let _ = event_tx.send(AppEvent::BrowserSkimFrameReady {
-                                    media_id: mid,
-                                    rgba,
-                                    width: w,
-                                    height: h,
-                                    target: dst,
-                                });
-                            }
-                            Err(e) => {
-                                tracing::warn!("skim decode failed for {mid:?} @ {t:.3}s: {e}");
-                                // Send empty frame to unconditionally reset skim_decode_in_flight
-                                let _ = event_tx.send(AppEvent::BrowserSkimFrameReady {
-                                    media_id: mid,
-                                    rgba: Vec::new(),
-                                    width: 0,
-                                    height: 0,
-                                    target: dst,
-                                });
-                            }
-                        }
-                    });
-                }
+                self.request_skim_frame(*media_id, *time_secs, *target);
                 true
             }
             AppCommand::BrowserSkimAudioStart { media_id, source_path, time_secs } => {
@@ -26068,47 +26064,7 @@ impl eframe::App for KlippApp {
         // If a skim decode just finished and there's a queued request, dispatch it immediately
         if !self.state.skim_decode_in_flight {
             if let Some((mid, time, target)) = self.state.skim_queued_request.take() {
-                if let Some(item) = self.state.media_pool.get(&mid) {
-                    let decode_path = if let Some(skim_path) = item.skim_file.as_ref().filter(|p| p.exists()) {
-                        skim_path.clone()
-                    } else {
-                        item.path.clone()
-                    };
-                    // Decode at source-height (capped 1080) rather than the
-                    // flat 480/720 skim_resolution pref, so 1080p+ skim files
-                    // render at their native resolution instead of being
-                    // downsampled. See matching logic in the BrowserSkimFrame
-                    // command handler above.
-                    let source_height = item.resolution.height.max(240);
-                    let skim_res = self.prefs.playback.skim_resolution
-                        .max(source_height.min(1080));
-                    let event_tx = self.proxy_event_tx.clone();
-                    self.state.skim_decode_in_flight = true;
-                    self.state.skim_decode_started_at = Some(std::time::Instant::now());
-                    std::thread::spawn(move || {
-                        match klipp_engine::generate_thumbnail_at_size(&decode_path, time, skim_res) {
-                            Ok((rgba, w, h)) => {
-                                let _ = event_tx.send(AppEvent::BrowserSkimFrameReady {
-                                    media_id: mid,
-                                    rgba,
-                                    width: w,
-                                    height: h,
-                                    target,
-                                });
-                            }
-                            Err(e) => {
-                                tracing::warn!("skim decode failed for {mid:?} @ {time:.3}s: {e}");
-                                let _ = event_tx.send(AppEvent::BrowserSkimFrameReady {
-                                    media_id: mid,
-                                    rgba: Vec::new(),
-                                    width: 0,
-                                    height: 0,
-                                    target,
-                                });
-                            }
-                        }
-                    });
-                }
+                self.request_skim_frame(mid, time, target);
             }
         }
         self.drain_thumbnails();

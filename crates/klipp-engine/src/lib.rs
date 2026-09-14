@@ -63,6 +63,7 @@ pub mod mix_thread;
 pub mod perf;
 pub mod render_cache;
 pub mod pcm_reader;
+pub mod skim;
 pub mod skim_audio;
 pub mod sync;
 pub mod texture;
