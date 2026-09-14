@@ -227,6 +227,46 @@ fn direct_present_is_the_renderers_frame() {
 
 /// An SDR clip graded on the GPU from the decoder's buffer matches the
 /// renderer's frame to one level.
+/// A node left in the graph without a path to the output does nothing
+/// to the picture. The GPU chain used to refuse such a graph outright
+/// (a node with no input asked for the CPU source), so every seek and
+/// scrub step of the clip paid the full render — while the renderer
+/// itself ignored the node. Both now agree, and the fast path takes it.
+#[test]
+fn a_node_not_wired_to_the_output_does_not_force_the_full_path() {
+    let Some(ctx) = GpuContext::shared() else {
+        eprintln!("skipping: no usable GpuContext");
+        return;
+    };
+    let bytes = sdr_bytes();
+    let buffer = gpu_buffer(ctx, &bytes);
+    let mut g = keyframed_grade(None);
+    g.nodes.push(Node {
+        id: NodeId::new_v4(),
+        kind: NodeKind::Exposure,
+        label: "stray".into(),
+        enabled: true,
+        params: NodeParams { exposure: Some(3.0), ..Default::default() },
+        keyframes: NodeKeyframeTracks::default(),
+        output_link: None,
+        input_links: vec![],
+    });
+    let (seq, clip) = one_clip(g);
+    let linear = Arc::new(klipp_effects::srgb_u8_to_linear_f32_rgba(&bytes));
+    let mut src = Frame(Box::new(move || SourcePixels::Linear(Arc::clone(&linear))));
+    let mut r = renderer();
+    let want = rendered(&mut r, &seq, 4.0, &mut src);
+    let got = fast(&mut r, &clip, 4.0, GpuSeed::Srgb8(&buffer));
+    let worst = worst_lsb(&got, &want);
+    assert!(worst <= 1, "with a stray node the fast path differs from the renderer by {worst} levels");
+    // And the stray node did not grade the picture: the same as without it.
+    let (seq_plain, _) = one_clip(keyframed_grade(None));
+    let linear2 = Arc::new(klipp_effects::srgb_u8_to_linear_f32_rgba(&bytes));
+    let mut src2 = Frame(Box::new(move || SourcePixels::Linear(Arc::clone(&linear2))));
+    let plain = rendered(&mut r, &seq_plain, 4.0, &mut src2);
+    assert!(worst_lsb(&plain, &want) <= 1, "a stray node changed the render");
+}
+
 #[test]
 fn the_graded_fast_path_is_the_renderers_frame() {
     let Some(ctx) = GpuContext::shared() else {

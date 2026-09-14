@@ -499,6 +499,37 @@ fn should_publish_gpu_viewer() -> bool {
 /// `KLIPP_DIRECT_PRESENT=0` to force every frame through the full
 /// grade + composite pipeline, which is the way to check whether a
 /// suspected display problem comes from the fast path.
+/// What the pre-grade frame cache depends on: which media plays at each
+/// playhead position, and how it is read. A grade is not in it — the
+/// cache holds frames before the grade — so grading leaves the cache
+/// standing.
+fn timeline_layout_fingerprint(seq: &klipp_timeline::Sequence) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    seq.fps.num.hash(&mut h);
+    seq.fps.den.hash(&mut h);
+    for (ti, track) in seq.tracks.iter().enumerate() {
+        if track.kind != klipp_timeline::TrackKind::Video {
+            continue;
+        }
+        ti.hash(&mut h);
+        track.visible.hash(&mut h);
+        for clip in &track.clips {
+            clip.id.hash(&mut h);
+            clip.media_id().hash(&mut h);
+            clip.enabled.hash(&mut h);
+            (clip.timeline_in.value, clip.timeline_in.rate).hash(&mut h);
+            (clip.timeline_out.value, clip.timeline_out.rate).hash(&mut h);
+            (clip.source_in.value, clip.source_in.rate).hash(&mut h);
+            clip.speed.to_bits().hash(&mut h);
+            clip.speed_keyframes.len().hash(&mut h);
+            clip.source_rotation.hash(&mut h);
+            std::mem::discriminant(&clip.kind).hash(&mut h);
+        }
+    }
+    h.finish()
+}
+
 /// Which use of the direct-present fast path is being gated; see
 /// [`PlaybackEngine::fast_path_blockers_for`].
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -660,32 +691,74 @@ impl Pregrade {
 /// `tests/pregrade_made_once.rs`.
 pub static PREGRADE_DISPLAYS_MADE: AtomicU64 = AtomicU64::new(0);
 
-/// Bidirectional frame cache for instant backward stepping.
-/// Stores pre-grade frames keyed by frame number.
+/// The pre-grade frames the viewer has shown or read ahead, keyed by
+/// playhead position: a step or a seek back onto one is shown without
+/// decoding. Bounded by an entry count and by bytes, oldest out first —
+/// a 4K frame is 33 MB, and the old fixed ring of 120 slots could hold
+/// 4 GB of them.
+///
+/// Kept across seeks. It used to be cleared on every seek, so scrubbing
+/// back over frames just shown decoded them all again; only stepping
+/// gained from it.
 struct FrameCache {
-    entries: Vec<Option<FrameCacheEntry>>,
+    entries: HashMap<i64, FrameCacheEntry>,
+    /// Insertion order, oldest first, for eviction.
+    order: std::collections::VecDeque<i64>,
     capacity: usize,
+    budget_bytes: usize,
+    bytes: usize,
 }
 
 struct FrameCacheEntry {
-    frame_number: i64,   // playhead.value at this frame
     pixels: Pregrade,    // pre-grade pixels (Arc-shared either way)
     width: u32,
     height: u32,
+    bytes: usize,
+}
+
+/// How much CPU memory the pre-grade cache may hold.
+const FRAME_CACHE_BUDGET_BYTES: usize = 768 * 1024 * 1024;
+
+fn pregrade_bytes(p: &Pregrade) -> usize {
+    match &p.pixels {
+        PregradePixels::Srgb8(b) => b.len(),
+        PregradePixels::Hdr(h) => match &h.codes {
+            crate::types::HdrCodes::Cpu(c) => c.len() * 4,
+            crate::types::HdrCodes::Gpu { .. } => 0,
+        },
+    }
 }
 
 impl FrameCache {
     fn new(capacity: usize) -> Self {
         Self {
-            entries: (0..capacity).map(|_| None).collect(),
-            capacity,
+            entries: HashMap::new(),
+            order: std::collections::VecDeque::new(),
+            capacity: capacity.max(1),
+            budget_bytes: FRAME_CACHE_BUDGET_BYTES,
+            bytes: 0,
         }
     }
 
-    /// Insert a frame into the cache. Uses frame_number as hash key.
+    /// Insert a frame into the cache, replacing what the key held.
     fn insert(&mut self, frame_number: i64, pixels: Pregrade, width: u32, height: u32) {
-        let slot = (frame_number.unsigned_abs() as usize) % self.capacity;
-        self.entries[slot] = Some(FrameCacheEntry { frame_number, pixels, width, height });
+        self.remove(frame_number);
+        let bytes = pregrade_bytes(&pixels);
+        self.entries.insert(frame_number, FrameCacheEntry { pixels, width, height, bytes });
+        self.order.push_back(frame_number);
+        self.bytes += bytes;
+        while (self.entries.len() > self.capacity || self.bytes > self.budget_bytes) && self.order.len() > 1 {
+            if let Some(oldest) = self.order.front().copied() {
+                self.remove(oldest);
+            }
+        }
+    }
+
+    fn remove(&mut self, frame_number: i64) {
+        if let Some(e) = self.entries.remove(&frame_number) {
+            self.bytes -= e.bytes;
+            self.order.retain(|f| *f != frame_number);
+        }
     }
 
     /// Insert unless this frame is already held. Pre-grade pixels of a
@@ -694,32 +767,29 @@ impl FrameCache {
     /// (`Pregrade::display`), which the decode-ahead paths did to every
     /// frame the viewer had just shown.
     fn insert_if_absent(&mut self, frame_number: i64, pixels: Pregrade, width: u32, height: u32) {
-        let slot = (frame_number.unsigned_abs() as usize) % self.capacity;
-        if self.entries[slot].as_ref().is_some_and(|e| e.frame_number == frame_number) {
+        if self.entries.contains_key(&frame_number) {
             return;
         }
-        self.entries[slot] = Some(FrameCacheEntry { frame_number, pixels, width, height });
+        self.insert(frame_number, pixels, width, height);
     }
 
     /// Look up a frame by number. Returns (pixels, width, height) if found.
     fn get(&self, frame_number: i64) -> Option<(Pregrade, u32, u32)> {
-        let slot = (frame_number.unsigned_abs() as usize) % self.capacity;
-        self.entries[slot].as_ref()
-            .filter(|e| e.frame_number == frame_number)
-            .map(|e| (e.pixels.clone(), e.width, e.height))
+        self.entries.get(&frame_number).map(|e| (e.pixels.clone(), e.width, e.height))
     }
 
     /// Frame numbers currently held — the only frames that can be graded
     /// without decoding.
     fn frame_numbers(&self) -> impl Iterator<Item = i64> + '_ {
-        self.entries.iter().flatten().map(|e| e.frame_number)
+        self.entries.keys().copied()
     }
 
-    /// Clear the entire cache (on clip change, seek, etc.)
+    /// Clear the entire cache: the timeline changed under it, or the
+    /// media decodes differently now.
     fn clear(&mut self) {
-        for entry in &mut self.entries {
-            *entry = None;
-        }
+        self.entries.clear();
+        self.order.clear();
+        self.bytes = 0;
     }
 }
 
@@ -1214,6 +1284,9 @@ pub struct PlaybackEngine {
     /// A frame short of the playhead is being presented — a slow seek's
     /// progress — and must not be cached as the playhead's frame.
     presenting_progress: bool,
+    /// What the pre-grade cache was filled under (see
+    /// [`timeline_layout_fingerprint`]); a different layout empties it.
+    layout_fingerprint: u64,
     /// Reasons the direct-present fast path declined the previous frame,
     /// so they can be logged when the set *changes* rather than once per
     /// frame. Empty means the last frame took the fast path.
@@ -1554,6 +1627,7 @@ impl PlaybackEngine {
             cached_pregrade_frame: None,
             cached_pregrade_at: None,
             presenting_progress: false,
+            layout_fingerprint: 0,
             last_direct_present_blockers: Vec::new(),
             last_grab_wait: Duration::ZERO,
             frame_cache: FrameCache::new(120), // ~5s at 24fps (backward history + forward prefetch)
@@ -2361,6 +2435,8 @@ impl PlaybackEngine {
             AppCommand::MediaDecodeChanged => {
                 info!("Engine: media decode settings changed; re-decoding at the playhead");
                 self.cached_pregrade_frame = None;
+                // Pre-grades decoded the old way.
+                self.frame_cache.clear();
                 // Rendered from pixels decoded the old way. (The disk
                 // cache misses on its own: the log format is in the key.)
                 self.render_cache_hot.clear();
@@ -2656,6 +2732,18 @@ impl PlaybackEngine {
                 // so a fresh snapshot must be built on the next `post_process_rgba_inner`.
                 self.current_grade_hash = 0;
                 self.current_graph_arc = None;
+                // The pre-grade cache is keyed by playhead position: valid
+                // only while the same media plays at each position. A
+                // grade change leaves it alone; a cut, move, trim, speed
+                // or rotation change empties it.
+                let layout = {
+                    let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
+                    timeline_layout_fingerprint(&seq)
+                };
+                if layout != self.layout_fingerprint {
+                    self.layout_fingerprint = layout;
+                    self.frame_cache.clear();
+                }
                 // The project's frame rate may be what changed.
                 self.sync_fps_to_sequence();
                 // Sync per-clip volume/pan to active audio sources
@@ -5111,8 +5199,8 @@ impl PlaybackEngine {
         self.sync_fps_to_sequence();
         // A frame held back for the previous seek is not this one's.
         self.paused_refresh_best = None;
-        // Clear frame cache on explicit seek (cache is only valid for sequential stepping)
-        self.frame_cache.clear();
+        // The pre-grade cache stays: a seek back onto a frame shown before
+        // is answered from it below, without the decoder.
         self.last_synth_frame_rendered = None;
         // No media clip on any video track at this time: nothing to
         // decode. A title or generator there becomes the clip playback
@@ -5259,7 +5347,21 @@ impl PlaybackEngine {
             self.sync_streams();
 
             if !was_playing {
-                let got_frame = self.grab_single_frame_timeout(grab_timeout);
+                // Shown before and still held: the picture is at hand, and
+                // the decoder — already sent after it above, for the
+                // frames around it — can idle until the next position.
+                let cached = self.frame_cache.get(tc.value);
+                let got_frame = match cached {
+                    Some((pixels, cw, ch)) if !self.presenting_progress => {
+                        self.present_frame(Some(streams::HeldFrame::from_pregrade(&pixels, cw, ch)));
+                        if let Some(dec) = &self.v1_decoder {
+                            dec.pause();
+                        }
+                        self.last_grab_wait = Duration::ZERO;
+                        true
+                    }
+                    _ => self.grab_single_frame_timeout(grab_timeout),
+                };
                 let total = t_seek.elapsed();
                 // Where a seek's time goes. Only seeks worth noticing are
                 // logged at info; a scrub is a stream of these.

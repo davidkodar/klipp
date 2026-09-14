@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -401,8 +401,36 @@ pub struct NodePos {
 pub struct CycleError;
 
 impl NodeGraph {
-    /// Returns true if the graph has no active processing nodes.
+    /// The nodes with a path to the output node, over drawn edges and
+    /// wireless links: the grade. A node left in the graph without a way
+    /// to the output — dragged in and never wired, or cut out of a chain —
+    /// does nothing to the picture, and is not part of what the renderer
+    /// or the GPU chain runs.
+    pub fn nodes_feeding_output(&self) -> HashSet<NodeId> {
+        self.nodes_feeding([self.output_node_id])
+    }
+
+    /// The nodes with a path to any of `roots`, the roots included: what
+    /// has to run for those to be evaluated. The executor's roots are the
+    /// output and any node being tapped for a scope, previewed as a
+    /// matte, or thumbnailed — those are looked at even when unwired.
+    pub fn nodes_feeding(&self, roots: impl IntoIterator<Item = NodeId>) -> HashSet<NodeId> {
+        let mut feeding = HashSet::new();
+        let mut stack: Vec<NodeId> = roots.into_iter().collect();
+        while let Some(id) = stack.pop() {
+            if !feeding.insert(id) {
+                continue;
+            }
+            stack.extend(self.iter_dependencies().filter(|(_, to)| *to == id).map(|(from, _)| from));
+        }
+        feeding
+    }
+
+    /// Returns true if the graph has no active processing nodes on the
+    /// way to its output. A node not feeding the output is not counted:
+    /// it does nothing to the picture, whatever its settings.
     pub fn is_identity(&self) -> bool {
+        let feeding = self.nodes_feeding_output();
         // A keyframed node is not an identity even when its static params
         // are neutral: an exposure ramp starting at 0 or a fade-in grade
         // animates *from* default. Checking static params alone let every
@@ -411,6 +439,7 @@ impl NodeGraph {
         self.nodes
             .iter()
             .all(|n| !n.enabled
+                || !feeding.contains(&n.id)
                 || matches!(n.kind, NodeKind::Source | NodeKind::Output | NodeKind::InputTransform)
                 || (n.params.is_default() && n.keyframes.tracks.iter().all(|t| t.keyframes.is_empty())))
     }
@@ -746,6 +775,30 @@ mod tests {
         n.keyframes.tracks.push(crate::params::NodeKeyframeTrack { param_name: "exposure".into(), keyframes: keys });
         assert!(n.params.is_default(), "static params stay neutral");
         assert!(!g.is_identity(), "a node animating from neutral must still run");
+    }
+
+    /// A node left unwired does nothing to the picture: the graph is still
+    /// an identity, and the node is not among those feeding the output.
+    /// It used to count, so a stray node with a setting sent every frame
+    /// of the clip through the full render path — and the GPU chain,
+    /// finding a node with no input, refused the graph altogether.
+    #[test]
+    fn a_node_not_wired_to_the_output_is_not_part_of_the_grade() {
+        let mut g = default_graph();
+        let mut stray = g.nodes.iter().find(|n| n.kind == NodeKind::Corrector).expect("a Corrector").clone();
+        stray.id = NodeId::new_v4();
+        stray.params.exposure = Some(1.0);
+        g.nodes.push(stray.clone());
+        assert!(!g.nodes_feeding_output().contains(&stray.id));
+        assert!(g.is_identity(), "a stray node with a setting is not a grade");
+        // Wired in, it is.
+        let output = g.output_node_id;
+        let into_output = g.edges.iter().position(|e| e.to_node == output).expect("something feeds the output");
+        let before = g.edges[into_output].from_node;
+        g.edges[into_output].from_node = stray.id;
+        g.edges.push(Edge { from_node: before, from_port: 0, to_node: stray.id, to_port: 0 });
+        assert!(g.nodes_feeding_output().contains(&stray.id));
+        assert!(!g.is_identity());
     }
 
     #[test]

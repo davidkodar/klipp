@@ -1292,6 +1292,14 @@ impl GraphExecutor {
 
         // 1. Topological sort
         let order = graph.topo_sort()?;
+        // Only the nodes on the way to the output run. A node without a
+        // path there does nothing to the picture; run, one with no input
+        // asked for the CPU source and made the GPU chain refuse.
+        let roots = std::iter::once(graph.output_node_id)
+            .chain(matte_tap)
+            .chain(matte_preview_node)
+            .chain(visible_nodes.into_iter().flat_map(|v| v.iter().copied()));
+        let feeding = graph.nodes_feeding(roots);
 
         // Pre-compute fan-out count per source node. A node whose output
         // is consumed more than once can't be absorbed into a chain (its
@@ -1365,6 +1373,9 @@ impl GraphExecutor {
                 Some(n) => n,
                 None => continue,
             };
+            if !feeding.contains(&node_id) && !matches!(node.kind, NodeKind::Source | NodeKind::Output) {
+                continue;
+            }
             let node_kind_name = format!("{:?}", node.kind);
 
             // Bypassed nodes — and single-input filter nodes whose params
