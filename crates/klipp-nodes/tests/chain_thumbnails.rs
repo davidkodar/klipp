@@ -63,6 +63,44 @@ fn gpu_chain_thumbnails_are_the_cpu_thumbnails() {
     let (want_out, _, want) = cpu.execute_linear_with_thumbs(&linear, &graph, W, H, 0.0, 0, None, None, Some(&visible)).unwrap();
     assert_eq!(want.len(), visible.len(), "the CPU run thumbnails every visible node");
 
+    // The thumbnails have to be each node's own picture. Everything below
+    // compares the GPU's to the CPU's, and would pass just as happily if
+    // the thumbnail machinery handed back the *Source's* picture for every
+    // node — both paths would do it identically. So pin the shape of the
+    // chain first, on the CPU reference, which the GPU is then held to.
+    //
+    // The graph is Source → Exposure(0.7) → Contrast(bypassed) →
+    // Saturation(1.4), which gives three relationships worth stating:
+    // each enabled node changes the picture, and the disabled one does
+    // not. Measured: 48, 0 and 167 levels.
+    {
+        let at = |i: usize| &want[&graph.nodes[i].id];
+        let (source, exposure, bypassed, saturation) = (at(0), at(1), at(2), at(3));
+
+        let d = worst(source, exposure);
+        assert!(
+            d > 16,
+            "the Exposure thumbnail is only {d} levels from the Source's, so these \
+             thumbnails may not be each node's own picture",
+        );
+
+        // A bypassed node passes its input through, so its thumbnail is
+        // its input's — exactly, not approximately.
+        let d = worst(exposure, bypassed);
+        assert_eq!(
+            d, 0,
+            "the bypassed Contrast node's thumbnail is {d} levels from its input's, \
+             but a disabled node should tunnel the picture unchanged",
+        );
+
+        let d = worst(bypassed, saturation);
+        assert!(
+            d > 16,
+            "the Saturation thumbnail is only {d} levels from the node before it, so \
+             a later node's effect is not reaching its thumbnail",
+        );
+    }
+
     let mut gpu = GraphExecutor::new();
     // From CPU pixels, and from pixels seeded onto the GPU.
     let from_cpu = gpu.execute_linear_with_thumbs(&linear, &graph, W, H, 0.0, 0, None, None, Some(&visible)).unwrap();
