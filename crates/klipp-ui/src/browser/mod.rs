@@ -1895,7 +1895,9 @@ impl BrowserPanel {
             .spawn(move || {
                 let interval = duration / n as f64;
                 let mut frames: Vec<(Vec<u8>, u32, u32)> = Vec::with_capacity(n);
-                let _ = klipp_engine::generate_filmstrip_incremental(
+                // A hole or two in a browser preview is cosmetic; a
+                // preview with nothing in it is worth a line in the log.
+                let outcome = klipp_engine::generate_filmstrip_incremental(
                     &path,
                     duration,
                     interval,
@@ -1905,6 +1907,13 @@ impl BrowserPanel {
                     },
                     None, // small browser preview — not worth scheduler overhead
                 );
+                match &outcome {
+                    Err(e) => tracing::warn!("File filmstrip failed for {:?}: {e}", path),
+                    Ok(o) if o.tiles == 0 && !o.skipped.is_empty() => {
+                        tracing::warn!("File filmstrip made no tiles for {:?}: {}", path, o.skipped[0].1)
+                    }
+                    Ok(_) => {}
+                }
                 let _ = tx.send(FileFilmstripResult {
                     path,
                     frames,

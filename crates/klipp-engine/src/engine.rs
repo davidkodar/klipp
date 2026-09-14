@@ -8049,7 +8049,7 @@ fn frame_to_rgba(
     _is_hw: bool,
     sws_cache: &mut Option<*mut ffmpeg_next::ffi::SwsContext>,
     colour: &ThumbColour,
-) -> Option<Vec<u8>> {
+) -> Result<Vec<u8>, String> {
     // Detect actual frame format — CUDA init may "succeed" but format negotiation
     // can fall back to software. Check the real pixel format per-frame.
     let actual_hw = unsafe {
@@ -8073,18 +8073,18 @@ unsafe fn hw_frame_to_rgba(
     dst_h: u32,
     sws_cache: &mut Option<*mut ffmpeg_next::ffi::SwsContext>,
     colour: &ThumbColour,
-) -> Option<Vec<u8>> {
+) -> Result<Vec<u8>, String> {
     use ffmpeg_next::ffi::*;
 
     let sw_frame = av_frame_alloc();
     if sw_frame.is_null() {
-        return None;
+        return Err("out of memory allocating a frame".into());
     }
 
     let ret = av_hwframe_transfer_data(sw_frame, hw_frame.as_ptr(), 0);
     if ret < 0 {
         av_frame_free(&mut (sw_frame as *mut _));
-        return None;
+        return Err(format!("downloading the frame from the GPU failed: {}", describe(&ffmpeg_next::Error::from(ret))));
     }
     // The download drops most colour tags; take them from the HW frame.
     (*sw_frame).color_range = (*hw_frame.as_ptr()).color_range;
@@ -8093,7 +8093,7 @@ unsafe fn hw_frame_to_rgba(
     (*sw_frame).color_trc = (*hw_frame.as_ptr()).color_trc;
     if let Some(rgba) = colour.scene_referred_rgba8(sw_frame, dst_w, dst_h) {
         av_frame_free(&mut (sw_frame as *mut _));
-        return Some(rgba);
+        return Ok(rgba);
     }
 
     let src_w = (*sw_frame).width as u32;
@@ -8115,14 +8115,14 @@ unsafe fn hw_frame_to_rgba(
     );
     if sws.is_null() {
         av_frame_free(&mut (sw_frame as *mut _));
-        return None;
+        return Err(format!("swscale has no path from {sw_fmt:?} {src_w}x{src_h} to RGBA {dst_w}x{dst_h}"));
     }
     *sws_cache = Some(sws);
 
     let rgba_frame = av_frame_alloc();
     if rgba_frame.is_null() {
         av_frame_free(&mut (sw_frame as *mut _));
-        return None;
+        return Err("out of memory allocating a frame".into());
     }
     (*rgba_frame).width = dst_w as i32;
     (*rgba_frame).height = dst_h as i32;
@@ -8130,7 +8130,7 @@ unsafe fn hw_frame_to_rgba(
     if av_frame_get_buffer(rgba_frame, 0) < 0 {
         av_frame_free(&mut (sw_frame as *mut _));
         av_frame_free(&mut (rgba_frame as *mut _));
-        return None;
+        return Err(format!("out of memory for an RGBA frame of {dst_w}x{dst_h}"));
     }
 
     sws_scale(
@@ -8161,35 +8161,32 @@ unsafe fn hw_frame_to_rgba(
     };
 
     av_frame_free(&mut (rgba_frame as *mut _));
-    Some(rgba)
+    Ok(rgba)
 }
 
-/// Convert a software-decoded frame to RGBA at target dimensions.
+/// Convert a software-decoded frame to RGBA at target dimensions. The
+/// error says what could not be done — which format, which size — so a
+/// thumbnail or a walk that fails on it fails with a reason.
 fn sw_frame_to_rgba(
     frame: &ffmpeg_next::frame::Video,
     dst_w: u32,
     dst_h: u32,
     colour: &ThumbColour,
-) -> Option<Vec<u8>> {
+) -> Result<Vec<u8>, String> {
     use ffmpeg_next::software::scaling;
 
     if let Some(rgba) = unsafe { colour.scene_referred_rgba8(frame.as_ptr(), dst_w, dst_h) } {
-        return Some(rgba);
+        return Ok(rgba);
     }
 
-    let mut scaler = scaling::Context::get(
-        frame.format(),
-        frame.width(),
-        frame.height(),
-        ffmpeg_next::format::Pixel::RGBA,
-        dst_w,
-        dst_h,
-        scaling::Flags::FAST_BILINEAR,
-    )
-    .ok()?;
+    let (fmt, w, h) = (frame.format(), frame.width(), frame.height());
+    let mut scaler = scaling::Context::get(fmt, w, h, ffmpeg_next::format::Pixel::RGBA, dst_w, dst_h, scaling::Flags::FAST_BILINEAR)
+        .map_err(|e| format!("swscale has no path from {fmt:?} {w}x{h} to RGBA {dst_w}x{dst_h}: {}", describe(&e)))?;
 
     let mut rgba_frame = ffmpeg_next::frame::Video::empty();
-    scaler.run(frame, &mut rgba_frame).ok()?;
+    scaler
+        .run(frame, &mut rgba_frame)
+        .map_err(|e| format!("swscale failed converting {fmt:?} {w}x{h} to RGBA: {}", describe(&e)))?;
 
     let stride = rgba_frame.stride(0);
     let expected = dst_w as usize * 4;
@@ -8203,7 +8200,7 @@ fn sw_frame_to_rgba(
         }
         buf
     };
-    Some(rgba)
+    Ok(rgba)
 }
 
 /// Open a software-only video decoder (no GPU). Used for thumbnails where
@@ -8486,7 +8483,7 @@ pub fn generate_thumbnail(
 
     let colour = ThumbColour::new(path, &format_ctx, stream_index);
     let rgba = sw_frame_to_rgba(&decoded_frame, dst_w, dst_h, &colour)
-        .ok_or("Failed to convert frame to RGBA")?;
+        .map_err(|e| format!("converting the frame to RGBA: {e}"))?;
 
     // Apply source rotation if needed (phone videos)
     if rotation != 0 {
@@ -8557,7 +8554,7 @@ pub fn generate_thumbnail_at_size(
 
     let colour = ThumbColour::new(path, &format_ctx, stream_index);
     let rgba = sw_frame_to_rgba(&decoded_frame, dst_w, dst_h, &colour)
-        .ok_or("Failed to convert frame to RGBA")?;
+        .map_err(|e| format!("converting the frame to RGBA: {e}"))?;
 
     // Apply source rotation if needed (phone videos)
     if rotation != 0 {
@@ -8621,7 +8618,7 @@ pub fn generate_thumbnail_at_size_with_rotation(
 
     let colour = ThumbColour::new(path, &format_ctx, stream_index);
     let rgba = sw_frame_to_rgba(&decoded_frame, dst_w, dst_h, &colour)
-        .ok_or("Failed to convert frame to RGBA")?;
+        .map_err(|e| format!("converting the frame to RGBA: {e}"))?;
 
     if rotation != 0 {
         let (rotated, rw, rh) = rotate_rgba(&rgba, dst_w, dst_h, rotation);
@@ -8634,6 +8631,13 @@ pub fn generate_thumbnail_at_size_with_rotation(
 /// Cached frame decoder — keeps the ffmpeg context open for fast temporal access.
 /// Optimized for sequential and near-sequential access patterns (common in Retime).
 /// Only seeks when the requested time is far from the current position.
+///
+/// This is what an OFX plugin gets when it asks for frames at arbitrary
+/// times (`FrameSource::temporal_frames`): a frame it cannot have comes
+/// back as `None`, never as the frame before it. A temporal effect — a
+/// frame blend, an echo, optical flow — given a stale frame in place of
+/// the one it asked for produces a picture that is wrong and looks
+/// plausible, which is worse than a frame it knows it does not have.
 struct CachedFrameDecoder {
     format_ctx: ffmpeg_next::format::context::Input,
     decoder: ffmpeg_next::decoder::Video,
@@ -8700,10 +8704,10 @@ impl CachedFrameDecoder {
             self.current_pts = seek_secs - 1.0; // approximate
         }
 
-        // Read frames until we reach or pass the target time
-        let _target_us = (seek_secs * 1_000_000.0) as i64;
-        let mut best_frame: Option<(Vec<u8>, u32, u32, f64)> = None;
-
+        // Read frames until we reach or pass the target time. Only the
+        // frame that reaches it is handed back: a frame before it is not
+        // the one asked for, and one that could not be converted is not a
+        // frame at all.
         for (stream, packet) in self.format_ctx.packets() {
             if stream.index() != self.stream_index {
                 continue;
@@ -8719,86 +8723,29 @@ impl CachedFrameDecoder {
                 let time_base = stream.time_base();
                 let frame_secs = pts as f64 * time_base.numerator() as f64 / time_base.denominator() as f64;
                 self.current_pts = frame_secs;
-
-                let w = self.frame.width();
-                let h = self.frame.height();
-
-                if let Some(rgba) = sw_frame_to_rgba(&self.frame, w, h, &self.colour) {
-                    best_frame = Some((rgba, w, h, frame_secs));
+                if frame_secs < seek_secs - self.frame_duration * 0.5 {
+                    continue;
                 }
-
-                // If we've reached or passed the target, stop
-                if frame_secs >= seek_secs - self.frame_duration * 0.5 {
-                    if let Some((rgba, w, h, t)) = best_frame {
+                let (w, h) = (self.frame.width(), self.frame.height());
+                match sw_frame_to_rgba(&self.frame, w, h, &self.colour) {
+                    Ok(rgba) => {
                         // Cache this frame (keep last 8 frames for Retime interpolation)
                         if self.cache.len() >= 8 {
                             self.cache.remove(0);
                         }
-                        self.cache.push((t, rgba.clone(), w, h));
+                        self.cache.push((frame_secs, rgba.clone(), w, h));
                         return Some((rgba, w, h));
+                    }
+                    Err(e) => {
+                        tracing::warn!("CachedFrameDecoder: the frame at {frame_secs:.3}s could not be converted: {e}");
+                        return None;
                     }
                 }
             }
         }
-
-        // Return whatever we decoded last
-        best_frame.map(|(rgba, w, h, t)| {
-            if self.cache.len() >= 8 { self.cache.remove(0); }
-            self.cache.push((t, rgba.clone(), w, h));
-            (rgba, w, h)
-        })
+        // The file ended before the time asked for.
+        None
     }
-}
-
-/// Decode a single full-resolution frame from a video file at the given time.
-/// Used for OFX temporal clip access — plugins that need frames at arbitrary times.
-pub fn decode_frame_at_time(
-    path: &std::path::Path,
-    seek_secs: f64,
-) -> Result<(Vec<u8>, u32, u32), String> {
-    let mut format_ctx = ffmpeg_next::format::input(path)
-        .map_err(|e| format!("ffmpeg open: {e}"))?;
-
-    let (mut decoder, stream_index) = open_sw_decoder(&format_ctx)?;
-
-    if seek_secs > 0.01 {
-        let ts = (seek_secs * 1_000_000.0) as i64;
-        format_ctx.seek(ts, ..ts).map_err(|e| format!("seek: {e}"))?;
-    }
-
-    let mut decoded_frame = ffmpeg_next::frame::Video::empty();
-    let mut got_frame = false;
-
-    for (stream, packet) in format_ctx.packets() {
-        if stream.index() != stream_index {
-            continue;
-        }
-        if decoder.send_packet(&packet).is_err() {
-            // EAGAIN — drain pending frames, then retry once
-            if decoder.receive_frame(&mut decoded_frame).is_ok() {
-                got_frame = true;
-                break;
-            }
-            if decoder.send_packet(&packet).is_err() {
-                tracing::warn!("decode_frame_at_time: packet lost after drain+retry");
-            }
-        }
-        if decoder.receive_frame(&mut decoded_frame).is_ok() {
-            got_frame = true;
-            break;
-        }
-    }
-
-    if !got_frame {
-        return Err("No frame decoded".to_string());
-    }
-
-    let w = decoded_frame.width();
-    let h = decoded_frame.height();
-    let colour = ThumbColour::new(path, &format_ctx, stream_index);
-    let rgba = sw_frame_to_rgba(&decoded_frame, w, h, &colour)
-        .ok_or("Failed to convert frame to RGBA")?;
-    Ok((rgba, w, h))
 }
 
 /// Check if an RGBA frame is effectively black (< 5% average brightness).
@@ -8915,8 +8862,23 @@ fn keyframe_at_or_before_us(
     Some((unsafe { (*entry).timestamp } as i128 * num * 1_000_000 / den) as i64)
 }
 
+/// What a filmstrip run made, and what it could not.
+#[derive(Debug, Default)]
+pub struct FilmstripOutcome {
+    /// Tiles handed to `on_frame`.
+    pub tiles: usize,
+    /// Tiles that could not be made — the time each was wanted at, and
+    /// why. A strip with a hole in it is still a strip; a strip with no
+    /// tiles at all is not, and a caller must not cache it as one.
+    pub skipped: Vec<(f64, String)>,
+}
+
 /// Generate filmstrip thumbnails incrementally with GPU acceleration (CUDA → VAAPI → CPU fallback).
-/// Calls `on_frame` for each generated frame. Returns the total number of frames generated.
+/// Calls `on_frame` for each generated frame. Returns what was made and
+/// what was not: a tile the decoder could not reach, seek to, or convert
+/// is reported with its reason rather than left out in silence — before
+/// this, a strip that lost every tile came back as `Ok(0)` and was
+/// written to the disk cache as complete.
 ///
 /// Optional `pause_token` (when callers integrate with the global
 /// [`klipp_jobs::JobScheduler`]) is checked between frames so the
@@ -8930,7 +8892,7 @@ pub fn generate_filmstrip_incremental(
     target_height: u32,
     mut on_frame: impl FnMut(f64, Vec<u8>, u32, u32),
     pause_token: Option<Arc<klipp_jobs::PauseToken>>,
-) -> Result<usize, String> {
+) -> Result<FilmstripOutcome, String> {
     let mut format_ctx = ffmpeg_next::format::input(path)
         .map_err(|e| format!("ffmpeg open: {e}"))?;
 
@@ -8977,7 +8939,7 @@ pub fn generate_filmstrip_incremental(
         }
     }
     let mut sws_cache = SwsCacheGuard(None);
-    let mut count = 0;
+    let mut outcome = FilmstripOutcome::default();
 
     let num_frames = ((duration_secs / interval_secs).ceil() as usize).min(500);
     let accel_label = if is_hw { "GPU" } else { "CPU" };
@@ -8986,6 +8948,10 @@ pub fn generate_filmstrip_incremental(
     // Timestamp of the last frame the decoder produced, for deciding
     // whether a tile needs a seek at all.
     let mut decoded_to_us: Option<i64> = None;
+    let tb = format_ctx.stream(stream_index).map(|s| s.time_base()).unwrap_or_else(|| ffmpeg_next::Rational::new(1, 1));
+    let frame_us_of = |frame: &ffmpeg_next::frame::Video| -> i64 {
+        frame.timestamp().unwrap_or(0) * 1_000_000 * tb.numerator() as i64 / tb.denominator() as i64
+    };
     for i in 0..=num_frames {
         let seek_secs = i as f64 * interval_secs;
         if seek_secs > duration_secs {
@@ -9025,7 +8991,8 @@ pub fn generate_filmstrip_incremental(
             pos < ts && keyframe_at_or_before_us(&format_ctx, stream_index, ts).is_some_and(|kf| kf <= pos)
         });
         if !forward {
-            if format_ctx.seek(ts, ..ts).is_err() {
+            if let Err(e) = format_ctx.seek(ts, ..ts) {
+                outcome.skipped.push((seek_secs, format!("seek failed: {}", describe(&e))));
                 continue;
             }
             decoder.flush();
@@ -9046,9 +9013,7 @@ pub fn generate_filmstrip_incremental(
                 }
             }
             while decoder.receive_frame(&mut decoded_frame).is_ok() {
-                let frame_ts = decoded_frame.timestamp().unwrap_or(0);
-                let tb = stream.time_base();
-                let frame_us = frame_ts * 1_000_000 * tb.numerator() as i64 / tb.denominator() as i64;
+                let frame_us = frame_us_of(&decoded_frame);
                 decoded_to_us = Some(frame_us);
                 if frame_us >= target_pts - 100_000 {
                     got_frame = true;
@@ -9059,21 +9024,53 @@ pub fn generate_filmstrip_incremental(
         }
 
         if !got_frame {
+            // The packets ran out with frames still inside the decoder: a
+            // B-frame pyramid, or frame threads, hold the last of a file
+            // until told there is no more input — fifteen or more frames
+            // in the software decoder. Without this flush the tile at the
+            // end of every strip was missing, and nothing said so.
+            let _ = decoder.send_eof();
+            while decoder.receive_frame(&mut decoded_frame).is_ok() {
+                let frame_us = frame_us_of(&decoded_frame);
+                if frame_us >= target_pts - 100_000 {
+                    got_frame = true;
+                    break;
+                }
+            }
+            // Drained, the decoder takes no more packets: the next tile
+            // has to seek and flush, whatever its position.
+            decoded_to_us = None;
+        }
+
+        if !got_frame {
+            outcome.skipped.push((
+                seek_secs,
+                "no frame reached this time: the file ends before it, or nothing here could be decoded".into(),
+            ));
             continue;
         }
 
-        if let Some(rgba) = frame_to_rgba(&decoded_frame, decode_w, decode_h, is_hw, &mut sws_cache.0, &colour) {
-            if rotation != 0 {
-                let (rotated, rw, rh) = rotate_rgba(&rgba, decode_w, decode_h, rotation);
-                on_frame(seek_secs, rotated, rw, rh);
-            } else {
-                on_frame(seek_secs, rgba, final_w, final_h);
+        match frame_to_rgba(&decoded_frame, decode_w, decode_h, is_hw, &mut sws_cache.0, &colour) {
+            Ok(rgba) => {
+                if rotation != 0 {
+                    let (rotated, rw, rh) = rotate_rgba(&rgba, decode_w, decode_h, rotation);
+                    on_frame(seek_secs, rotated, rw, rh);
+                } else {
+                    on_frame(seek_secs, rgba, final_w, final_h);
+                }
+                outcome.tiles += 1;
             }
-            count += 1;
+            Err(e) => outcome.skipped.push((seek_secs, e)),
         }
     }
 
-    Ok(count)
+    if !outcome.skipped.is_empty() {
+        tracing::warn!(
+            "Filmstrip: {} of {} tiles could not be made for {:?}; first at {:.2}s: {}",
+            outcome.skipped.len(), outcome.tiles + outcome.skipped.len(), path, outcome.skipped[0].0, outcome.skipped[0].1,
+        );
+    }
+    Ok(outcome)
 }
 
 /// Sequential frame walker for analysis passes (e.g. video stabilization).
@@ -9286,9 +9283,12 @@ impl SequentialFrameDecoder {
     fn receive(&mut self, decoded: &mut ffmpeg_next::frame::Video) -> Result<Option<(Vec<u8>, u32, u32)>, String> {
         match self.decoder.receive_frame(decoded) {
             Ok(()) => {
-                let Some(frame) = self.convert(decoded) else {
-                    self.drained = true;
-                    return Err(format!("frame {}: could not be converted to RGBA", self.frames_out));
+                let frame = match self.convert(decoded) {
+                    Ok(f) => f,
+                    Err(e) => {
+                        self.drained = true;
+                        return Err(format!("frame {}: could not be converted to RGBA: {e}", self.frames_out));
+                    }
                 };
                 self.frames_out += 1;
                 Ok(Some(frame))
@@ -9302,13 +9302,13 @@ impl SequentialFrameDecoder {
         }
     }
 
-    fn convert(&mut self, decoded: &ffmpeg_next::frame::Video) -> Option<(Vec<u8>, u32, u32)> {
+    fn convert(&mut self, decoded: &ffmpeg_next::frame::Video) -> Result<(Vec<u8>, u32, u32), String> {
         let rgba = frame_to_rgba(decoded, self.decode_w, self.decode_h, self.is_hw, &mut self.sws_cache, &self.colour)?;
         if self.rotation != 0 {
             let (rotated, rw, rh) = rotate_rgba(&rgba, self.decode_w, self.decode_h, self.rotation);
-            Some((rotated, rw, rh))
+            Ok((rotated, rw, rh))
         } else {
-            Some((rgba, self.decode_w, self.decode_h))
+            Ok((rgba, self.decode_w, self.decode_h))
         }
     }
 }

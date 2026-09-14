@@ -372,3 +372,126 @@ pub fn pq_bands() -> Option<PathBuf> {
     Some(out)
 }
 
+// ─── The grey ramp fixture ────────────────────────────────────────────
+//
+// `RAMP_N` solid grey frames whose luma climbs from black to white in
+// equal steps, so frame `i` is the `i`-th brightest and a walk or a strip
+// can be checked frame by frame. Shared by the sequential-decoder and
+// filmstrip tests.
+
+use std::path::Path;
+use std::process::Command;
+
+/// NVDEC declines anything under 144 pixels a side and falls back to
+/// software, which would quietly leave the hardware path unwalked.
+pub const RAMP_W: u32 = 160;
+pub const RAMP_H: u32 = 160;
+/// Enough frames for a B-frame pyramid to reorder across, and for the
+/// decoder to hold several at EOF.
+pub const RAMP_N: usize = 40;
+
+/// The source: `N` solid grey frames whose luma climbs from black to white
+/// in equal steps, so frame `i` is the `i`-th brightest. Written as raw
+/// 10-bit 4:2:0 and encoded with `codec` into `ext`. `None` without ffmpeg;
+/// an encode that fails with ffmpeg present is a broken test, and panics.
+pub fn ramp(name: &str, codec: &[&str], ext: &str) -> Option<PathBuf> {
+    if Command::new("ffmpeg").arg("-version").output().is_err() {
+        return None;
+    }
+    let out = std::env::temp_dir().join(format!("klipp-seq-ramp-{name}-{RAMP_W}x{RAMP_H}x{RAMP_N}.{ext}"));
+    if out.exists() {
+        return Some(out);
+    }
+    let mut bytes = Vec::new();
+    for i in 0..RAMP_N {
+        // Limited range, 64..=940, evenly spaced.
+        let y = 64 + (i as u32 * 876 / (RAMP_N as u32 - 1)) as u16;
+        let (pw, ph) = (RAMP_W as usize / 2, RAMP_H as usize / 2);
+        for _ in 0..(RAMP_W * RAMP_H) {
+            bytes.extend_from_slice(&y.to_le_bytes());
+        }
+        for _ in 0..(2 * pw * ph) {
+            bytes.extend_from_slice(&512u16.to_le_bytes());
+        }
+    }
+    let raw = out.with_extension("yuv");
+    std::fs::write(&raw, bytes).ok()?;
+    let partial = out.with_extension(format!("partial.{ext}"));
+    let ok = Command::new("ffmpeg")
+        .args(["-nostdin", "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "yuv420p10le"])
+        .args(["-s", &format!("{RAMP_W}x{RAMP_H}"), "-r", "25", "-i"])
+        .arg(&raw)
+        .args(["-vf", "setparams=range=tv:colorspace=bt709:color_primaries=bt709:color_trc=bt709"])
+        .args(codec)
+        .arg(&partial)
+        .status()
+        .ok()?
+        .success();
+    let _ = std::fs::remove_file(&raw);
+    if !ok {
+        let _ = std::fs::remove_file(&partial);
+        panic!("ffmpeg could not encode the {name} ramp");
+    }
+    std::fs::rename(&partial, &out).ok()?;
+    Some(out)
+}
+
+/// HEVC with four B-frames and a long GOP, `moov` at the front so a
+/// truncated copy still opens.
+pub fn hevc_ramp() -> Option<PathBuf> {
+    ramp("hevc-faststart", &["-c:v", "libx265", "-preset", "ultrafast", "-x265-params", "bframes=4:keyint=250:log-level=error", "-movflags", "+faststart"], "mp4")
+}
+
+/// FFV1 in AVI: every frame is a `00dc` chunk, so a frame's data can be
+/// found and damaged without touching the container.
+pub fn ffv1_avi_ramp() -> Option<PathBuf> {
+    ramp("ffv1-avi", &["-c:v", "ffv1"], "avi")
+}
+
+/// `src` with `len` bytes of `fill` written from `at`, as a new file.
+pub fn damaged(src: &Path, name: &str, at: usize, len: usize, fill: u8) -> PathBuf {
+    let mut bytes = std::fs::read(src).expect("read source");
+    let end = (at + len).min(bytes.len());
+    for b in &mut bytes[at..end] {
+        *b = fill;
+    }
+    let out = std::env::temp_dir().join(format!("klipp-seq-ramp-{name}-{}", src.file_name().unwrap().to_string_lossy()));
+    std::fs::write(&out, bytes).expect("write damaged copy");
+    out
+}
+
+/// `src` cut exactly where its `n`-th video packet ends (the demuxer says
+/// where), so a demuxer meets a clean end of file rather than a torn
+/// sample. Written beside the source under `name`.
+pub fn cut_after_packet(src: &Path, n: usize, name: &str) -> PathBuf {
+    let mut input = ffmpeg_next::format::input(src).expect("open the source with ffmpeg");
+    let video = input.streams().best(ffmpeg_next::media::Type::Video).expect("a video stream").index();
+    let mut ends = Vec::new();
+    for (stream, packet) in input.packets() {
+        if stream.index() == video {
+            ends.push((packet.position() as usize) + packet.size());
+        }
+    }
+    let bytes = std::fs::read(src).unwrap();
+    let out = std::env::temp_dir().join(format!("klipp-seq-ramp-{name}.{}", src.extension().unwrap().to_string_lossy()));
+    std::fs::write(&out, &bytes[..ends[n]]).unwrap();
+    out
+}
+
+/// The data of every `00dc` chunk in an AVI's `movi` list overwritten, so
+/// no frame in it can be decoded while the container reads fine.
+pub fn every_frame_damaged(src: &Path, name: &str) -> PathBuf {
+    let mut bytes = std::fs::read(src).unwrap();
+    let movi = bytes.windows(4).position(|w| w == b"movi").expect("an AVI movi list");
+    let chunks: Vec<usize> = bytes[movi..].windows(4).enumerate().filter(|(_, w)| *w == b"00dc").map(|(i, _)| movi + i).collect();
+    for chunk in chunks {
+        let size = u32::from_le_bytes(bytes[chunk + 4..chunk + 8].try_into().unwrap()) as usize;
+        let end = (chunk + 8 + size).min(bytes.len());
+        for b in &mut bytes[chunk + 8..end] {
+            *b = 0xff;
+        }
+    }
+    let out = std::env::temp_dir().join(format!("klipp-seq-ramp-{name}-{}", src.file_name().unwrap().to_string_lossy()));
+    std::fs::write(&out, bytes).unwrap();
+    out
+}

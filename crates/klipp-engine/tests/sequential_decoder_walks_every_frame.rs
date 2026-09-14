@@ -22,88 +22,16 @@
 //! counting frames for motion analysis, a quiet `None` is the end of a
 //! shorter clip, and the analysis would simply be of that.
 
-use std::path::{Path, PathBuf};
-use std::process::Command;
+mod common;
+
+use std::path::Path;
 
 use klipp_engine::SequentialFrameDecoder;
 
-/// NVDEC declines anything under 144 pixels a side and falls back to
-/// software, which would quietly leave the hardware path unwalked.
-const W: u32 = 160;
-const H: u32 = 160;
-/// Enough frames for a B-frame pyramid to reorder across, and for the
-/// decoder to hold several at EOF.
-const N: usize = 40;
-
-/// The source: `N` solid grey frames whose luma climbs from black to white
-/// in equal steps, so frame `i` is the `i`-th brightest. Written as raw
-/// 10-bit 4:2:0 and encoded with `codec` into `ext`. `None` without ffmpeg;
-/// an encode that fails with ffmpeg present is a broken test, and panics.
-fn ramp(name: &str, codec: &[&str], ext: &str) -> Option<PathBuf> {
-    if Command::new("ffmpeg").arg("-version").output().is_err() {
-        return None;
-    }
-    let out = std::env::temp_dir().join(format!("klipp-seq-ramp-{name}-{W}x{H}x{N}.{ext}"));
-    if out.exists() {
-        return Some(out);
-    }
-    let mut bytes = Vec::new();
-    for i in 0..N {
-        // Limited range, 64..=940, evenly spaced.
-        let y = 64 + (i as u32 * 876 / (N as u32 - 1)) as u16;
-        let (pw, ph) = (W as usize / 2, H as usize / 2);
-        for _ in 0..(W * H) {
-            bytes.extend_from_slice(&y.to_le_bytes());
-        }
-        for _ in 0..(2 * pw * ph) {
-            bytes.extend_from_slice(&512u16.to_le_bytes());
-        }
-    }
-    let raw = out.with_extension("yuv");
-    std::fs::write(&raw, bytes).ok()?;
-    let partial = out.with_extension(format!("partial.{ext}"));
-    let ok = Command::new("ffmpeg")
-        .args(["-nostdin", "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "yuv420p10le"])
-        .args(["-s", &format!("{W}x{H}"), "-r", "25", "-i"])
-        .arg(&raw)
-        .args(["-vf", "setparams=range=tv:colorspace=bt709:color_primaries=bt709:color_trc=bt709"])
-        .args(codec)
-        .arg(&partial)
-        .status()
-        .ok()?
-        .success();
-    let _ = std::fs::remove_file(&raw);
-    if !ok {
-        let _ = std::fs::remove_file(&partial);
-        panic!("ffmpeg could not encode the {name} ramp");
-    }
-    std::fs::rename(&partial, &out).ok()?;
-    Some(out)
-}
-
-/// HEVC with four B-frames and a long GOP, `moov` at the front so a
-/// truncated copy still opens.
-fn hevc_ramp() -> Option<PathBuf> {
-    ramp("hevc-faststart", &["-c:v", "libx265", "-preset", "ultrafast", "-x265-params", "bframes=4:keyint=250:log-level=error", "-movflags", "+faststart"], "mp4")
-}
-
-/// FFV1 in AVI: every frame is a `00dc` chunk, so a frame's data can be
-/// found and damaged without touching the container.
-fn ffv1_avi_ramp() -> Option<PathBuf> {
-    ramp("ffv1-avi", &["-c:v", "ffv1"], "avi")
-}
-
-/// `src` with `len` bytes of `fill` written from `at`, as a new file.
-fn damaged(src: &Path, name: &str, at: usize, len: usize, fill: u8) -> PathBuf {
-    let mut bytes = std::fs::read(src).expect("read source");
-    let end = (at + len).min(bytes.len());
-    for b in &mut bytes[at..end] {
-        *b = fill;
-    }
-    let out = std::env::temp_dir().join(format!("klipp-seq-ramp-{name}-{}", src.file_name().unwrap().to_string_lossy()));
-    std::fs::write(&out, bytes).expect("write damaged copy");
-    out
-}
+const W: u32 = common::RAMP_W;
+const H: u32 = common::RAMP_H;
+const N: usize = common::RAMP_N;
+use common::{damaged, ffv1_avi_ramp, hevc_ramp, ramp};
 
 /// Walk until the decoder stops, however it stops.
 fn walk_to_the_end(path: &Path) -> (usize, Result<(), String>) {
@@ -228,20 +156,7 @@ fn a_file_with_fewer_frames_than_it_declares_is_an_error() {
     // a clean end of file rather than a torn sample. A torn sample is a
     // decode error at the cut — also an error, but the wrong one to pin
     // here: this is about the walk that ends *cleanly* and short.
-    let cut = {
-        let mut input = ffmpeg_next::format::input(&src).expect("open the source with ffmpeg");
-        let video = input.streams().best(ffmpeg_next::media::Type::Video).expect("a video stream").index();
-        let mut ends = Vec::new();
-        for (stream, packet) in input.packets() {
-            if stream.index() == video {
-                ends.push((packet.position() as usize) + packet.size());
-            }
-        }
-        ends[27]
-    };
-    let bytes = std::fs::read(&src).unwrap();
-    let path = std::env::temp_dir().join("klipp-seq-ramp-truncated.mp4");
-    std::fs::write(&path, &bytes[..cut]).unwrap();
+    let path = common::cut_after_packet(&src, 27, "truncated");
 
     let (n, end) = walk_to_the_end(&path);
     eprintln!("cut after packet 27: {n} frames, then {end:?}");

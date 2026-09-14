@@ -1769,7 +1769,8 @@ impl KlippApp {
                     },
                     Some(pause_token),
                 ) {
-                    Ok(count) => {
+                    Ok(outcome) => {
+                        let count = outcome.tiles;
                         // Skip the cache write when the generator
                         // exited early due to cancellation — partial
                         // caches would otherwise pose as complete on
@@ -1777,6 +1778,20 @@ impl KlippApp {
                         if pause_token_for_check.is_cancelled() {
                             tracing::info!(
                                 "Filmstrip: cancelled at {count} frames for {:?} — skipping partial cache write",
+                                path,
+                            );
+                            let _ = tx.send(FilmstripResult::Done { media_id });
+                            return;
+                        }
+                        // The same for a strip with no tiles: the decoder
+                        // opened the file and then could not make a single
+                        // one. Cached, that would be a clip with no
+                        // filmstrip for ever; not cached, the next launch
+                        // tries again.
+                        if count == 0 && !outcome.skipped.is_empty() {
+                            let (t, why) = &outcome.skipped[0];
+                            tracing::warn!(
+                                "Filmstrip: no tiles at all for {:?} (first at {t:.2}s: {why}) — not caching",
                                 path,
                             );
                             let _ = tx.send(FilmstripResult::Done { media_id });
@@ -18561,7 +18576,7 @@ impl KlippApp {
                     std::thread::Builder::new()
                         .name("klipp-filmstrip-refine".into())
                         .spawn(move || {
-                            let _ = klipp_engine::generate_filmstrip_incremental(
+                            let outcome = klipp_engine::generate_filmstrip_incremental(
                                 &path,
                                 e,
                                 iv,
@@ -18581,6 +18596,9 @@ impl KlippApp {
                                 },
                                 None, // refine path — not yet wrapped in a ThreadJob
                             );
+                            if let Err(err) = outcome {
+                                tracing::warn!("Filmstrip refine failed for {:?}: {err}", path);
+                            }
                         })
                         .ok();
                 }
