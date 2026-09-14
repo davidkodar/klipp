@@ -14,8 +14,7 @@ use klipp_core::{AppCommand, Fps};
 
 fn settle(parked: &common::Parked) {
     let g = parked.generation();
-    parked.wait_new(g, Duration::from_secs(5));
-    std::thread::sleep(Duration::from_millis(400));
+    parked.settle_after(g, Duration::from_secs(5));
 }
 
 #[test]

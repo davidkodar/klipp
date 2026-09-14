@@ -76,7 +76,7 @@ fn thumbnails_wait_for_the_release() {
         clip_id: parked.clip_id,
         node_ids: vec![parked.source_node, parked.exposure_node],
     });
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    parked.settle();
     parked.begin_drag();
     parked.step(1.0).expect("a drag step showed no frame");
     let s = parked.perf().last().cloned().unwrap();

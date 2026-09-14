@@ -176,7 +176,10 @@ fn frames_from_before_a_seek_stay_on_the_older_epoch() {
 
     // Let the queue fill from the head of the file, then seek away without
     // draining: everything already queued belongs to the epoch before it.
-    std::thread::sleep(Duration::from_millis(300));
+    let filled_by = Instant::now() + Duration::from_secs(20);
+    while dec.frame_queue().lock().unwrap().front().is_none() && Instant::now() < filled_by {
+        std::thread::sleep(Duration::from_millis(5));
+    }
     let claimed = dec.seek(9.0);
 
     let frames = drain(&dec, Duration::from_millis(600));

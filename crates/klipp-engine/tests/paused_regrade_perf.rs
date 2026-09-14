@@ -12,7 +12,6 @@
 
 mod common;
 
-use std::time::Duration;
 
 use klipp_core::AppCommand;
 
@@ -33,7 +32,7 @@ fn paused_4k_pq_regrade() {
         parked.begin_drag();
         let steps: Vec<f64> = (0..16).filter_map(|i| parked.step(0.5 + i as f32 * 0.05)).collect();
         let release = parked.end_drag();
-        std::thread::sleep(Duration::from_millis(300));
+        parked.settle();
         for s in parked.perf().iter().rev().take(3).rev() {
             eprintln!(
                 "  engine: {}x{} total {:6.1} ms | grade {:5.1} fx {:4.1} lut {:4.1} composite {:5.1} | encode {:5.1} scope {:4.1}",
@@ -54,6 +53,6 @@ fn paused_4k_pq_regrade() {
         clip_id: parked.clip_id,
         node_ids: vec![parked.source_node, parked.exposure_node],
     });
-    std::thread::sleep(Duration::from_millis(800));
+    parked.settle();
     drag("node editor open");
 }

@@ -265,14 +265,15 @@ impl Viewer {
         Self { cmd, fb, thread: Some(thread) }
     }
 
-    /// Wait until no new frame has arrived for 600 ms, then return the
-    /// latest as RGB24.
+    /// Wait until no new frame has arrived for 300 ms, then return the
+    /// latest as RGB24. A stream that opened later than that would leave a
+    /// layer out of the picture, which the comparison catches by a mile.
     fn settled_frame(&self) -> Vec<u8> {
         let generation = || self.fb.lock().unwrap().latest_generation();
         let start = Instant::now();
         let mut last = generation();
         let mut since = Instant::now();
-        while since.elapsed() < Duration::from_millis(600) && start.elapsed() < Duration::from_secs(10) {
+        while since.elapsed() < Duration::from_millis(300) && start.elapsed() < Duration::from_secs(10) {
             std::thread::sleep(Duration::from_millis(20));
             let g = generation();
             if g != last {
@@ -299,10 +300,24 @@ impl Viewer {
 
     /// Park the playhead at frame `n` and return the frame the viewer
     /// shows once it has settled, as RGB24.
-    /// (A paused frame waiting on its streams re-renders when they arrive,
-    /// hence waiting for the frames to stop, not for the first.)
+    ///
+    /// Two waits, in order. First for frame `n` itself to be the one
+    /// presented — the engine names it — because quiet on the frame buffer
+    /// before the first frame is not a settled picture, it is no picture:
+    /// waiting for quiet alone read the black start-up buffer as frame 10
+    /// whenever decoders took longer than the window to open. Then for the
+    /// re-renders that follow as the frame's streams arrive to stop.
     fn frame_at(&self, n: i64) -> Vec<u8> {
         self.cmd.send(AppCommand::SetPlayhead(tc(n))).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(20);
+        loop {
+            let presented = self.fb.lock().unwrap().latest_presented().map(|at| at.value * FPS / at.rate as i64);
+            if presented == Some(n) {
+                break;
+            }
+            assert!(Instant::now() < deadline, "the viewer never presented frame {n} (last: {presented:?})");
+            std::thread::sleep(Duration::from_millis(5));
+        }
         self.settled_frame()
     }
 }

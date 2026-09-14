@@ -17,6 +17,12 @@ use klipp_timeline::{Clip, ClipKind, Sequence, Track, TrackKind};
 
 pub const FPS: u32 = 25;
 
+/// How long the frame buffer must stay unchanged for a paused frame to
+/// count as settled. A stream that opens after this much silence would be
+/// read as missing — the picture would then be wrong by a whole layer, so
+/// a window that is too short fails loudly rather than passing quietly.
+pub const QUIET: Duration = Duration::from_millis(250);
+
 /// A two-second ffmpeg test pattern, 10-bit, tagged with `setparams`
 /// (`tags`, e.g. `color_trc=smpte2084:...`) — FFV1 in Matroska keeps
 /// only tags set on the frames. `None` without ffmpeg.
@@ -153,7 +159,7 @@ impl Parked {
         parked.send(AppCommand::SetPlayhead(tc(10)));
         let g = parked.generation();
         parked.wait_new(g, Duration::from_secs(20)).expect("no first frame");
-        std::thread::sleep(Duration::from_millis(1500));
+        parked.settle();
         parked
     }
 
@@ -169,6 +175,37 @@ impl Parked {
 
     pub fn generation(&self) -> u64 {
         self.fb.lock().unwrap().latest_generation()
+    }
+
+    /// Wait for a frame newer than `since`, then for the picture to stop
+    /// changing; how long the first frame took. A paused frame is rendered
+    /// again as what it was waiting on arrives — its streams, its ungraded
+    /// picture — and the last of those is the one a test reads.
+    pub fn settle_after(&self, since: u64, limit: Duration) -> Option<Duration> {
+        let took = self.wait_new(since, limit)?;
+        self.settle();
+        Some(took)
+    }
+
+    /// Wait until no new frame has arrived for [`QUIET`], five seconds at
+    /// the most. The engine has no "done" signal — paused, it wakes every
+    /// 16 ms to look for commands — so quiet on the frame buffer is the
+    /// measure. It replaced fixed sleeps of 250–1500 ms, which were both
+    /// slower and, under a loaded machine, no safer.
+    ///
+    /// Quiet is only meaningful once something has been drawn: before the
+    /// first frame the buffer is quiet because it is empty. A command that
+    /// must produce a frame goes through [`Self::settle_after`], which
+    /// waits for that frame first.
+    pub fn settle(&self) {
+        let cap = Instant::now() + Duration::from_secs(5);
+        let mut g = self.generation();
+        while Instant::now() < cap {
+            match self.wait_new(g, QUIET) {
+                Some(_) => g = self.generation(),
+                None => return,
+            }
+        }
     }
 
     /// Wait for a frame newer than `since`; how long it took.

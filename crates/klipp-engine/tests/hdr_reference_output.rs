@@ -22,6 +22,30 @@ use klipp_hdr_out::FrameReader;
 /// BT.2408 reference white — what display light 1.0 means.
 const REF_WHITE_NITS: f32 = 203.0;
 
+/// Poll `probe` every 20 ms until it yields, or `limit` passes.
+fn wait_for<T>(limit: Duration, mut probe: impl FnMut() -> Option<T>) -> Option<T> {
+    let deadline = std::time::Instant::now() + limit;
+    loop {
+        if let Some(v) = probe() {
+            return Some(v);
+        }
+        if std::time::Instant::now() >= deadline {
+            return None;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// The reference output's shared frame, once the engine is writing it.
+fn open_published(path: &std::path::Path) -> Option<FrameReader> {
+    wait_for(Duration::from_secs(5), || FrameReader::open(path).ok().filter(|r| r.writer_present()))
+}
+
+/// Wait for the engine to let go of the shared frame.
+fn writer_gone(reader: &FrameReader) -> bool {
+    wait_for(Duration::from_secs(5), || (!reader.writer_present()).then_some(())).is_some()
+}
+
 /// The light of a pixel as the encoder measures it: the brightest channel
 /// in BT.2020, cd/m².
 fn nits_of(px: [f32; 3], ws: klipp_core::WorkingColorspace) -> f32 {
@@ -56,14 +80,11 @@ fn the_published_frame_is_hdr_display_light() {
     // monitor is being fed.
     parked.send(AppCommand::SetHdrMonitor(HdrMonitor::Preview));
     parked.send(AppCommand::SetHdrReferenceOutput(true));
-    std::thread::sleep(Duration::from_millis(1200));
 
     let path = klipp_hdr_out::default_path();
-    let mut reader = match FrameReader::open(&path) {
-        Ok(r) => r,
-        Err(e) => panic!("the engine published nothing to {}: {e:?}", path.display()),
+    let Some(mut reader) = open_published(&path) else {
+        panic!("the engine published nothing to {} within five seconds", path.display());
     };
-    assert!(reader.writer_present(), "the engine is not publishing");
     assert_eq!(
         (reader.width(), reader.height()),
         (width, height),
@@ -142,19 +163,16 @@ fn the_published_frame_is_hdr_display_light() {
     // reference monitor reads as the grade being fine long after it
     // stopped arriving.
     parked.send(AppCommand::SetHdrMonitor(HdrMonitor::Off));
-    std::thread::sleep(Duration::from_millis(600));
     assert!(
-        !reader.writer_present(),
+        writer_gone(&reader),
         "monitoring went off and the engine kept the shared frame open, so the reference \
          output would sit on a stale frame",
     );
     // And it comes back when monitoring does, without touching the output
     // toggle.
     parked.send(AppCommand::SetHdrMonitor(HdrMonitor::Preview));
-    std::thread::sleep(Duration::from_millis(900));
-    let mut again = match FrameReader::open(&path) {
-        Ok(r) => r,
-        Err(e) => panic!("publishing did not resume: {e:?}"),
+    let Some(mut again) = open_published(&path) else {
+        panic!("publishing did not resume within five seconds");
     };
     let mut buf = Vec::new();
     let mut resumed = false;
@@ -170,6 +188,5 @@ fn the_published_frame_is_hdr_display_light() {
     // Turning it off stops the publishing, so a presenter does not sit on
     // a frame nothing is updating.
     parked.send(AppCommand::SetHdrReferenceOutput(false));
-    std::thread::sleep(Duration::from_millis(600));
-    assert!(!reader.writer_present(), "the engine kept the shared frame open after being told to stop");
+    assert!(writer_gone(&reader), "the engine kept the shared frame open after being told to stop");
 }

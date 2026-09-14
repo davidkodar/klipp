@@ -29,9 +29,8 @@ fn paused_4k_stage_costs() {
         let before = parked.perf().len();
         let g = parked.generation();
         parked.send(cmd);
-        let _ = parked.wait_new(g, Duration::from_secs(5));
-        // Let any follow-up frame (a paused refresh) land too.
-        std::thread::sleep(Duration::from_millis(500));
+        // And any follow-up frame (a paused refresh) with it.
+        let _ = parked.settle_after(g, Duration::from_secs(5));
         let samples = parked.perf();
         for s in samples.iter().skip(before) {
             eprintln!(
