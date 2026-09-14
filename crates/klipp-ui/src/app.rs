@@ -137,6 +137,11 @@ enum FilmstripResult {
     Done {
         media_id: MediaId,
     },
+    /// The disk cache for this media could not be read (and has been
+    /// removed); the filmstrip is to be generated afresh.
+    CacheUnreadable {
+        media_id: MediaId,
+    },
 }
 
 enum AudioConformResult {
@@ -1313,6 +1318,20 @@ impl KlippApp {
                         tracing::info!("Media {:?} has source rotation: {}°", path.file_name().unwrap_or_default(), source_rotation);
                     }
 
+                    // A re-probe (relink, or a file edited outside Klipp)
+                    // keeps what the user said about the item and, when
+                    // the file itself is unchanged, the caches built from
+                    // it. Replacing the item wholesale lost the rating,
+                    // tags and bin on every relink.
+                    let previous = self.state.media_pool.remove(&media_id);
+                    let file_changed = previous.as_ref().is_some_and(|old| !klipp_media::same_file_as_probed(old, &media_item));
+                    if let Some(old) = &previous {
+                        klipp_media::merge_reprobed(old, &mut media_item);
+                    }
+                    let filmstrips_enabled = self.state.project_auto_filmstrips
+                        .unwrap_or(self.prefs.editing.auto_generate_filmstrips);
+                    let skim_enabled = self.state.project_auto_skim
+                        .unwrap_or(self.prefs.editing.auto_generate_skim);
                     self.state.media_pool.add(media_item);
                     // Imports stay off the timeline-edit undo stack (FCP /
                     // Premiere convention). Mixing them in caused two
@@ -1326,47 +1345,69 @@ impl KlippApp {
                     // an item out.
                     self.state.dirty = true;
                     self.sync_media_pool_to_engine();
-                    self.state.fps = fps;
-                    self.state.playback = PlaybackState::Stopped;
-
-                    // Record as recently-used for the file browser Recents view.
-                    self.prefs.file_browser.add_recent_file(path.clone());
-                    self.state.recent_files_snapshot = self.prefs.file_browser.recent_files.clone();
-                    self.prefs_dirty = true;
-
-                    // Clear pending path — media goes to pool only.
-                    // User adds to timeline via double-click or drag-and-drop.
-                    if self.state.pending_media_path.is_some() {
+                    if previous.is_some() {
+                        tracing::info!(
+                            "Reloaded {:?}: {}",
+                            path.file_name().unwrap_or_default(),
+                            if file_changed { "the file changed; its caches are rebuilt" } else { "the file is unchanged" }
+                        );
+                        if file_changed {
+                            // The in-memory pictures were of the old
+                            // file; the disk caches are content-keyed and
+                            // miss on their own.
+                            self.state.thumbnail_cache.set_filmstrip(media_id, Vec::new());
+                            self.state.filmstrip_in_progress.remove(&media_id);
+                            self.spawn_thumbnail(media_id, path.clone(), duration);
+                            if filmstrips_enabled {
+                                self.spawn_filmstrip(media_id, path.clone(), duration);
+                            }
+                            if has_audio {
+                                self.spawn_audio_conform(media_id, path.clone());
+                            }
+                            if skim_enabled {
+                                self.state.pending_skim_transcodes.push(media_id);
+                            }
+                        }
                         self.state.pending_media_path = None;
-                    }
+                    } else {
+                        self.state.fps = fps;
+                        self.state.playback = PlaybackState::Stopped;
 
-                    // Start thumbnail (always) + optional filmstrip/audio/skim generation
-                    self.spawn_thumbnail(media_id, path.clone(), duration);
-                    let filmstrips_enabled = self.state.project_auto_filmstrips
-                        .unwrap_or(self.prefs.editing.auto_generate_filmstrips);
-                    let skim_enabled = self.state.project_auto_skim
-                        .unwrap_or(self.prefs.editing.auto_generate_skim);
-                    if filmstrips_enabled {
-                        self.spawn_filmstrip(media_id, path.clone(), duration);
-                        self.state.filmstrip_generating = true;
-                        self.state.filmstrip_generate_start = std::time::Instant::now();
-                        self.state.filmstrip_toast_dismissed = false;
-                    }
-                    if has_audio {
-                        self.spawn_audio_conform(media_id, path.clone());
-                    }
-                    if skim_enabled {
-                        self.state.pending_skim_transcodes.push(media_id);
-                    }
+                        // Record as recently-used for the file browser Recents view.
+                        self.prefs.file_browser.add_recent_file(path.clone());
+                        self.state.recent_files_snapshot = self.prefs.file_browser.recent_files.clone();
+                        self.prefs_dirty = true;
 
-                    // Auto-generate proxy for heavy media (disabled by default, opt-in via preferences)
-                    if self.prefs.proxy.auto_generate_on_import && !is_still {
-                        // Only proxy media that benefits: 4K+ or high bitrate (>100 Mbps)
-                        let needs_proxy = resolution.width >= 3840
-                            || resolution.width * resolution.height > 3840 * 2160
-                            || video_bitrate_kbps.unwrap_or(0) > 100_000;
-                        if needs_proxy {
-                            self.spawn_proxy_generation(media_id);
+                        // Clear pending path — media goes to pool only.
+                        // User adds to timeline via double-click or drag-and-drop.
+                        if self.state.pending_media_path.is_some() {
+                            self.state.pending_media_path = None;
+                        }
+
+                        // Start thumbnail (always) + optional filmstrip/audio/skim generation
+                        self.spawn_thumbnail(media_id, path.clone(), duration);
+                        if filmstrips_enabled {
+                            self.spawn_filmstrip(media_id, path.clone(), duration);
+                            self.state.filmstrip_generating = true;
+                            self.state.filmstrip_generate_start = std::time::Instant::now();
+                            self.state.filmstrip_toast_dismissed = false;
+                        }
+                        if has_audio {
+                            self.spawn_audio_conform(media_id, path.clone());
+                        }
+                        if skim_enabled {
+                            self.state.pending_skim_transcodes.push(media_id);
+                        }
+
+                        // Auto-generate proxy for heavy media (disabled by default, opt-in via preferences)
+                        if self.prefs.proxy.auto_generate_on_import && !is_still {
+                            // Only proxy media that benefits: 4K+ or high bitrate (>100 Mbps)
+                            let needs_proxy = resolution.width >= 3840
+                                || resolution.width * resolution.height > 3840 * 2160
+                                || video_bitrate_kbps.unwrap_or(0) > 100_000;
+                            if needs_proxy {
+                                self.spawn_proxy_generation(media_id);
+                            }
                         }
                     }
                 }
@@ -1673,8 +1714,13 @@ impl KlippApp {
                                 let _ = tx.send(FilmstripResult::Done { media_id });
                             }
                             Err(e) => {
-                                tracing::warn!("Filmstrip disk cache load failed: {e}");
-                                let _ = tx.send(FilmstripResult::Done { media_id });
+                                // Reported as unreadable, not as done:
+                                // "done" left the clip with no filmstrip
+                                // for the rest of the session, and the
+                                // same corrupt file the next one.
+                                tracing::warn!("Filmstrip disk cache load failed, regenerating: {e}");
+                                klipp_media::disk_cache::remove_filmstrip_cache(&key_clone);
+                                let _ = tx.send(FilmstripResult::CacheUnreadable { media_id });
                             }
                         }
                     })
@@ -1893,7 +1939,7 @@ impl KlippApp {
 
                 // Check content-based cache first, then fall back to MediaId-based
                 let (exists, pcm_path, peaks_path) = if let Some(ref key) = cache_key {
-                    klipp_media::disk_cache::audio_conform_cache_exists(key, media_id)
+                    klipp_media::disk_cache::audio_conform_cache_exists(key)
                 } else {
                     // No cache key (offline file?) — use old MediaId-based paths
                     let pcm = cache_dir.join(format!("{media_id}.pcm"));
@@ -2171,6 +2217,43 @@ impl KlippApp {
         }
     }
 
+    /// Point `media_id` at `new_path` and re-probe it. Whatever was
+    /// derived from the old file — proxy, skim, waveform, conform — is
+    /// dropped here and the proxy file removed: the proxy is named by
+    /// media id, and left in place it would be picked up as "already
+    /// generated" for the new file. The re-probe's `MediaLoaded` then
+    /// merges the new facts into the item, keeping the user's metadata.
+    ///
+    /// Only an offline item used to be re-probed; relinking an online
+    /// clip to a different file kept the old duration, frame rate and
+    /// resolution.
+    fn relink_media(&mut self, media_id: MediaId, new_path: &Path) {
+        let Some(item) = self.state.media_pool.get_mut(&media_id) else { return };
+        let changed = item.path != new_path;
+        item.path = new_path.to_path_buf();
+        item.offline = !new_path.exists();
+        if changed {
+            if let Some(proxy) = item.proxy_path.take() {
+                let _ = std::fs::remove_file(&proxy);
+                let _ = std::fs::remove_file(partial_proxy_path(&proxy));
+            }
+            item.proxy_ready = false;
+            item.skim_file = None;
+            item.waveform_data = None;
+            item.audio_cache = None;
+            item.fingerprint = compute_media_fingerprint(new_path);
+            self.state.thumbnail_cache.set_filmstrip(media_id, Vec::new());
+        }
+        self.state.offline_media_ids.retain(|id| *id != media_id);
+        if new_path.exists() {
+            let _ = self.cmd_tx.send(AppCommand::LoadMediaFile {
+                path: new_path.to_path_buf(),
+                media_id,
+            });
+        }
+        self.sync_media_pool_to_engine();
+    }
+
     fn spawn_proxy_generation(&mut self, media_id: MediaId) {
         let item = match self.state.media_pool.get(&media_id) {
             Some(item) => item.clone(),
@@ -2192,17 +2275,34 @@ impl KlippApp {
         let _ = std::fs::create_dir_all(&cache_dir);
         let proxy_path = cache_dir.join(format!("{}.mp4", media_id));
         if proxy_path.exists() {
-            let file_size = std::fs::metadata(&proxy_path).map(|m| m.len()).unwrap_or(0);
-            tracing::info!(
-                "Proxy already exists for {}: {} ({:.1} MB)",
-                item.filename, proxy_path.display(), file_size as f64 / (1024.0 * 1024.0)
-            );
-            if let Some(item) = self.state.media_pool.get_mut(&media_id) {
-                item.proxy_path = Some(proxy_path);
-                item.proxy_ready = true;
+            // A file at the proxy path is not a proxy until it has been
+            // checked against the source: a generation killed part-way
+            // (a crash, a power cut) leaves a playable file that is
+            // shorter than the clip, and the timeline then plays the
+            // clip's tail as black. New proxies are written to a
+            // `.partial` name and renamed on success, so this mostly
+            // guards files from before that; it is one header probe.
+            let probed = klipp_engine::probe_media_header(&proxy_path).ok().and_then(|h| h.duration_secs);
+            if proxy_is_complete(probed, item.duration.to_secs_f64()) {
+                let file_size = std::fs::metadata(&proxy_path).map(|m| m.len()).unwrap_or(0);
+                tracing::info!(
+                    "Proxy already exists for {}: {} ({:.1} MB)",
+                    item.filename, proxy_path.display(), file_size as f64 / (1024.0 * 1024.0)
+                );
+                if let Some(item) = self.state.media_pool.get_mut(&media_id) {
+                    item.proxy_path = Some(proxy_path);
+                    item.proxy_ready = true;
+                }
+                return;
             }
-            return;
+            tracing::warn!(
+                "Proxy for {} at {} is incomplete ({:?} s of {:.2} s); regenerating",
+                item.filename, proxy_path.display(), probed, item.duration.to_secs_f64()
+            );
+            let _ = std::fs::remove_file(&proxy_path);
         }
+        let partial_path = partial_proxy_path(&proxy_path);
+        let _ = std::fs::remove_file(&partial_path);
         let res_label = self.prefs.proxy.proxy_resolution.label();
         let scale_arg = self.prefs.proxy.proxy_resolution.ffmpeg_scale_arg().to_string();
         tracing::info!(
@@ -2220,7 +2320,7 @@ impl KlippApp {
         let total_duration_secs = item.duration.to_secs_f64();
         let tx = self.proxy_event_tx.clone();
         let progress_tx = self.proxy_progress_tx.clone();
-        let proxy_out = proxy_path.clone();
+        let proxy_out = partial_path;
         let child_pid: Arc<std::sync::atomic::AtomicU32> = Arc::new(std::sync::atomic::AtomicU32::new(0));
         let pid_clone = child_pid.clone();
         self.proxy_children.push(child_pid);
@@ -2293,22 +2393,22 @@ impl KlippApp {
                 }
             };
 
+            // The proxy exists at its real name only once it is whole.
+            let result = result.and_then(|()| {
+                std::fs::rename(&proxy_out, &proxy_path).map_err(|e| format!("moving the finished proxy into place: {e}"))
+            });
             match result {
                 Ok(()) => {
-                    let _ = tx.send(AppEvent::ProxyGenerationComplete { media_id, path: proxy_out });
+                    let _ = tx.send(AppEvent::ProxyGenerationComplete { media_id, path: proxy_path });
                 }
                 Err(e) => {
+                    let _ = std::fs::remove_file(&proxy_out);
                     let _ = tx.send(AppEvent::ProxyGenerationFailed { media_id, error: e });
                 }
             }
         });
     }
 
-    /// Kick off a background decode of a single frame for the given media
-    /// at `seek_secs` and pipe the result through `source_frame_tx`. No-op
-    /// if the media is offline, missing on disk, or has no video stream.
-    /// Used both for the initial first-frame preview on load and for each
-    /// scrub-bar update on the Source Viewer.
     fn start_source_frame_decode_at(&self, media_id: MediaId, seek_secs: f64) {
         let Some(item) = self.state.media_pool.get(&media_id) else { return; };
         if item.offline || !item.path.exists() {
@@ -2530,6 +2630,14 @@ impl KlippApp {
                     // increment the completed-frames counter.
                     if let Some(prog) = self.state.filmstrip_progress.get_mut(&media_id) {
                         prog.0 += 1;
+                    }
+                }
+                Ok(FilmstripResult::CacheUnreadable { media_id }) => {
+                    self.state.filmstrip_in_progress.remove(&media_id);
+                    self.state.filmstrip_progress.remove(&media_id);
+                    self.state.thumbnail_cache.set_filmstrip(media_id, Vec::new());
+                    if let Some((path, duration)) = self.state.media_pool.get(&media_id).map(|m| (m.path.clone(), m.duration)) {
+                        self.spawn_filmstrip(media_id, path, duration);
                     }
                 }
                 Ok(FilmstripResult::Done { media_id }) => {
@@ -3560,31 +3668,30 @@ impl KlippApp {
         let mut files_removed = 0usize;
 
         // Scan each cache directory
-        let dirs_and_matchers: Vec<(std::path::PathBuf, Box<dyn Fn(&str) -> bool>)> = vec![
-            // Proxy: {media_id}.mp4
-            (
-                self.prefs.proxy.proxy_cache_dir.clone().unwrap_or_else(|| klipp_cache.join("proxies")),
-                Box::new(|stem: &str| valid_media_ids.contains(stem)),
-            ),
-            // Skim: {cache_key}.mkv or {media_id}.mkv
-            (
-                klipp_cache.join("skim"),
-                Box::new(|stem: &str| valid_cache_keys.contains(stem) || valid_media_ids.contains(stem)),
-            ),
-            // Filmstrips: {cache_key}.strip
-            (
-                self.prefs.media_cache.filmstrip_cache_dir.clone().unwrap_or_else(|| klipp_cache.join("thumbnails")),
-                Box::new(|stem: &str| valid_cache_keys.contains(stem)),
-            ),
-            // Audio: {cache_key}.pcm / .peaks or {media_id}.pcm / .peaks
-            (
-                self.prefs.media_cache.audio_cache_dir.clone().unwrap_or_else(|| klipp_cache.join("waveforms")),
-                Box::new(|stem: &str| valid_cache_keys.contains(stem) || valid_media_ids.contains(stem)),
-            ),
-            // Render cache: skip orphan scan — not tied to individual media files.
-            // Use the explicit "Clear render cache" button instead.
-        ];
-
+        // Every directory a cache lives in, resolved the way the cache
+        // code resolves it. This used to scan `thumbnails` for
+        // filmstrips and `waveforms` for audio — neither is where those
+        // caches are written — so the real directories were never
+        // cleaned; and files named by media id no longer count as
+        // valid, since no cache is read by that name any more.
+        let dirs_and_matchers: Vec<(std::path::PathBuf, Box<dyn Fn(&str) -> bool>)> =
+            crate::cache_manager::orphan_scan_dirs(
+                &klipp_cache,
+                self.prefs.proxy.proxy_cache_dir.as_deref(),
+                self.prefs.media_cache.filmstrip_cache_dir.as_deref(),
+                self.prefs.media_cache.audio_cache_dir.as_deref(),
+            )
+            .into_iter()
+            .map(|(dir, by)| {
+                let ids = valid_media_ids.clone();
+                let keys = valid_cache_keys.clone();
+                let f: Box<dyn Fn(&str) -> bool> = match by {
+                    crate::cache_manager::OrphanKey::MediaId => Box::new(move |stem: &str| ids.contains(stem)),
+                    crate::cache_manager::OrphanKey::CacheKey => Box::new(move |stem: &str| keys.contains(stem)),
+                };
+                (dir, f)
+            })
+            .collect();
         for (dir, is_valid) in &dirs_and_matchers {
             if !dir.exists() { continue; }
             if let Ok(entries) = std::fs::read_dir(dir) {
@@ -10616,7 +10723,16 @@ impl KlippApp {
         // true (duplicate found, skip engine) or false (stage pending_media_path
         // and let the dispatch loop's fallthrough forwarder send the command to
         // the engine for probing).
-        if let AppCommand::LoadMediaFile { ref path, .. } = cmd {
+        if let AppCommand::LoadMediaFile { ref path, media_id } = cmd {
+            // A media id already in the pool is a re-probe — a relink,
+            // or a file edited outside Klipp and reloaded — not an
+            // import. It goes to the engine as it is: the duplicate
+            // checks below would find the item itself, say "already in
+            // the media pool", and drop it, so a relinked clip kept its
+            // old duration and an externally edited one never reloaded.
+            if self.state.media_pool.get(media_id).is_some() {
+                return false;
+            }
             if let Some(existing) = self.state.media_pool.find_by_path(path) {
                 let existing_id = existing.id;
                 self.state.toast.show(format!(
@@ -11206,22 +11322,7 @@ impl KlippApp {
                     true
                 }
                 AppCommand::RelinkMedia { media_id, new_path } => {
-                    let was_offline;
-                    if let Some(item) = self.state.media_pool.get_mut(media_id) {
-                        was_offline = item.offline;
-                        item.path = new_path.clone();
-                        item.offline = !new_path.exists();
-                    } else {
-                        was_offline = false;
-                    }
-                    self.state.offline_media_ids.retain(|id| id != media_id);
-                    // Re-probe the media to refresh metadata/thumbnails
-                    if was_offline && new_path.exists() {
-                        let _ = self.cmd_tx.send(AppCommand::LoadMediaFile {
-                            path: new_path.clone(),
-                            media_id: *media_id,
-                        });
-                    }
+                    self.relink_media(*media_id, new_path);
                     self.state.dirty = true;
                     true
                 }
@@ -11250,15 +11351,9 @@ impl KlippApp {
                     let mut relinked = 0;
                     for (media_id, filename) in &offline {
                         if let Some(new_path) = file_map.get(filename) {
-                            if let Some(item) = self.state.media_pool.get_mut(media_id) {
-                                item.path = new_path.clone();
-                                item.offline = false;
+                            if self.state.media_pool.get(media_id).is_some() {
+                                self.relink_media(*media_id, new_path);
                                 relinked += 1;
-                                self.state.offline_media_ids.retain(|id| id != media_id);
-                                let _ = self.cmd_tx.send(AppCommand::LoadMediaFile {
-                                    path: new_path.clone(),
-                                    media_id: *media_id,
-                                });
                             }
                         }
                     }
@@ -22923,14 +23018,14 @@ impl KlippApp {
                     let mut skim_updates: Vec<(klipp_core::MediaId, std::path::PathBuf)> = Vec::new();
                     for item in self.state.media_pool.all() {
                         if item.skim_file.is_none() {
-                            if let Some(key) = klipp_media::disk_cache::compute_cache_key(&item.path) {
-                                let skim_dir = dirs::cache_dir()
-                                    .map(|d| d.join("klipp").join("skim"));
-                                if let Some(dir) = skim_dir {
-                                    let skim_path = dir.join(format!("{key}.mkv"));
-                                    if skim_path.exists() {
-                                        skim_updates.push((item.id, skim_path));
-                                    }
+                            // The same key the transcode writes under —
+                            // with its HDR and rotation markers. The bare
+                            // content key found exactly the stale skims
+                            // those markers exist to skip.
+                            if let Some(key) = skim_cache_key_for(item) {
+                                let skim_path = klipp_media::disk_cache::skim_transcode_path(&key);
+                                if skim_path.exists() {
+                                    skim_updates.push((item.id, skim_path));
                                 }
                             }
                         }
@@ -27618,42 +27713,19 @@ impl KlippApp {
                 item.colour_space,
                 klipp_media::ColourSpace::Hdr10 | klipp_media::ColourSpace::Hlg,
             );
-
-            // Use content-based cache key for skim path
             let skim_dir = dirs::cache_dir()
                 .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
                 .join("klipp")
                 .join("skim");
             let _ = std::fs::create_dir_all(&skim_dir);
-            // HDR-aware cache key: append `.hdrtm` for tone-mapped
-            // HDR skims so old (broken) HDR skims that were encoded
-            // without tone-mapping become "not found" and get
-            // re-generated cleanly. SDR keys are unchanged.
+            // The key carries `.hdrtm` for a tone-mapped HDR skim and
+            // `.r<deg>` for a rotated source, so stale skims from before
+            // either fix are not reused. One definition, shared with
+            // the project loader's look-up (`skim_cache_key_for`).
             let base_key = klipp_media::disk_cache::compute_cache_key(&source_path)
                 .unwrap_or_else(|| media_id.to_string());
-            let cache_key = if is_hdr_source {
-                format!("{base_key}.hdrtm")
-            } else {
-                base_key
-            };
-            // Rotation cache marker: portrait clips now go through the
-            // libx264 path so the skim has upright pixels (was sideways
-            // when nvenc was the only encoder). Stale sideways skims
-            // from before that change must NOT be reused — the read
-            // path now passes 0 for skim/proxy assuming upright pixels.
-            // Marker only appears on rotated clips; landscape (the
-            // dominant case) keeps its existing cache keys unchanged.
-            let cache_key = if source_rotation != 0 {
-                format!("{cache_key}.r{source_rotation}")
-            } else {
-                cache_key
-            };
-            let skim_path = klipp_media::disk_cache::skim_transcode_path(
-                &cache_key,
-                media_id,
-            );
-
-            // Cache hit: skim already exists for this source file
+            let cache_key = klipp_media::disk_cache::skim_cache_key(&base_key, is_hdr_source, source_rotation);
+            let skim_path = klipp_media::disk_cache::skim_transcode_path(&cache_key);
             if skim_path.exists() {
                 tracing::info!("Skim cache hit for {:?}", source_path);
                 if let Some(item) = self.state.media_pool.get_mut(&media_id) {
@@ -38611,5 +38683,43 @@ mod attach_linked_audio_tests {
         let mut want = spans;
         want.sort();
         assert_eq!(got, want, "the audio track matches the video track's layout");
+    }
+}
+
+/// Where a proxy is written while ffmpeg is still producing it. It is
+/// renamed to the real name once whole, so a file at the real name is a
+/// finished proxy — never one a crash cut short.
+fn partial_proxy_path(proxy: &Path) -> PathBuf {
+    proxy.with_extension("partial.mp4")
+}
+
+/// Whether a file found at the proxy path covers the source: within two
+/// seconds or two percent of its duration, whichever is more (the proxy
+/// encode may drop or pad a few frames at the end). `None` — the file
+/// does not even probe — is not a proxy.
+fn proxy_is_complete(proxy_secs: Option<f64>, source_secs: f64) -> bool {
+    let Some(p) = proxy_secs else { return false };
+    let slack = (source_secs * 0.02).max(2.0);
+    p + slack >= source_secs
+}
+
+/// The skim cache key for a media item, as the transcode names it.
+fn skim_cache_key_for(item: &klipp_media::MediaItem) -> Option<String> {
+    let base = klipp_media::disk_cache::compute_cache_key(&item.path)?;
+    let hdr = matches!(item.colour_space, klipp_media::ColourSpace::Hdr10 | klipp_media::ColourSpace::Hlg);
+    Some(klipp_media::disk_cache::skim_cache_key(&base, hdr, item.source_rotation))
+}
+
+#[cfg(test)]
+mod proxy_completeness_tests {
+    use super::proxy_is_complete;
+
+    #[test]
+    fn a_truncated_proxy_is_not_a_proxy() {
+        assert!(proxy_is_complete(Some(120.0), 120.0));
+        assert!(proxy_is_complete(Some(118.5), 120.0), "a few frames short at the end is the encoder");
+        assert!(proxy_is_complete(Some(590.0), 600.0), "two percent on a long clip");
+        assert!(!proxy_is_complete(Some(60.0), 120.0), "half the clip is a cut-short generation");
+        assert!(!proxy_is_complete(None, 120.0), "a file that does not probe is not a proxy");
     }
 }

@@ -762,3 +762,140 @@ mod effective_rotation_tests {
         assert_eq!(item.effective_rotation_for(&PathBuf::from("/tmp/skim.mkv")), 0);
     }
 }
+
+/// Whether a fresh probe of `fresh` describes the same file `old` was
+/// probed from: same path, same size, same modification time.
+pub fn same_file_as_probed(old: &MediaItem, fresh: &MediaItem) -> bool {
+    old.path == fresh.path
+        && old.file_size_bytes == fresh.file_size_bytes
+        && old.file_modified_at == fresh.file_modified_at
+}
+
+/// Carry what the user and the app know about `old` over to `fresh`, a
+/// re-probe of the same media item (a relink, or a file edited outside
+/// Klipp and reloaded). The probe supplies the file's facts; this keeps
+/// everything the file cannot tell us — rating, tags, notes, bin, colour
+/// label, log-format choice, in/out defaults, when it was added, what it
+/// is a subclip of — and, when the file itself is unchanged, the caches
+/// built from it. A changed or different file gets none of its old
+/// proxy, skim, waveform or conform: they were made from other pixels.
+///
+/// It used to replace the item wholesale, so relinking a clip cost its
+/// rating, tags and bin; and a proxy keyed by media id survived a relink
+/// to a different file.
+pub fn merge_reprobed(old: &MediaItem, fresh: &mut MediaItem) {
+    fresh.rating = old.rating;
+    fresh.tags = old.tags.clone();
+    fresh.user_notes = old.user_notes.clone();
+    fresh.bin = old.bin.clone();
+    fresh.bin_id = old.bin_id;
+    fresh.color_label = old.color_label;
+    fresh.log_format = old.log_format;
+    fresh.log_format_user_set = old.log_format_user_set;
+    fresh.default_source_in = old.default_source_in;
+    fresh.default_source_out = old.default_source_out;
+    fresh.added_at = old.added_at;
+    fresh.parent_media_id = old.parent_media_id;
+    fresh.kind = old.kind.clone();
+    if same_file_as_probed(old, fresh) {
+        fresh.proxy_path = old.proxy_path.clone();
+        fresh.proxy_ready = old.proxy_ready;
+        fresh.skim_file = old.skim_file.clone();
+        fresh.waveform_data = old.waveform_data.clone();
+        fresh.audio_cache = old.audio_cache.clone();
+    }
+    fresh.needs_reprobe = false;
+}
+
+impl MediaItem {
+    /// A fully populated item for tests, at `path`, with an optional
+    /// ready proxy.
+    #[doc(hidden)]
+    pub fn synthetic_for_test(path: std::path::PathBuf, proxy: Option<&str>) -> MediaItem {
+        MediaItem {
+            id: MediaId::new(),
+            filename: path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
+            path,
+            kind: MediaItemKind::File,
+            duration: klipp_core::RationalTime { value: 240, rate: 24 },
+            fps: klipp_core::Fps::film_24(),
+            resolution: klipp_core::Resolution { width: 1920, height: 1080 },
+            video_codec: "h264".into(),
+            audio_codec: "aac".into(),
+            has_audio: true,
+            file_size_bytes: 1_000_000,
+            sample_rate: None,
+            audio_channels: None,
+            offline: false,
+            is_still: false,
+            proxy_path: proxy.map(std::path::PathBuf::from),
+            proxy_ready: proxy.is_some(),
+            default_source_in: None,
+            default_source_out: None,
+            rating: 0,
+            tags: Vec::new(),
+            user_notes: String::new(),
+            bin: None,
+            bin_id: None,
+            added_at: 0,
+            fingerprint: None,
+            file_modified_at: None,
+            media_created_at: None,
+            color_label: ColorLabel::default(),
+            colour_space: ColourSpace::default(),
+            log_format: klipp_core::LogFormat::default(),
+            skim_file: None,
+            needs_reprobe: false,
+            waveform_data: None,
+            audio_cache: None,
+            source_rotation: 0,
+            camera_make: None,
+            camera_model: None,
+            encoder: None,
+            bit_depth: None,
+            video_bitrate_kbps: None,
+            audio_bitrate_kbps: None,
+            color_primaries: None,
+            color_transfer: None,
+            pixel_format: None,
+            detected_log_format: klipp_core::LogFormat::default(),
+            log_format_user_set: false,
+            parent_media_id: None,
+        }
+    }
+}
+
+#[cfg(test)]
+mod reprobe_tests {
+    use super::*;
+
+    #[test]
+    fn a_reprobe_keeps_what_the_user_said_and_drops_caches_of_another_file() {
+        let mut old = MediaItem::synthetic_for_test(std::path::PathBuf::from("/media/a.mp4"), Some("/cache/id.mp4"));
+        old.rating = 4;
+        old.tags = vec!["hero".into()];
+        old.user_notes = "keep".into();
+        old.log_format_user_set = true;
+        old.skim_file = Some("/cache/skim.mkv".into());
+        old.file_size_bytes = 10;
+        old.file_modified_at = Some(1);
+
+        // Same file, re-probed: everything survives.
+        let mut same = MediaItem::synthetic_for_test(std::path::PathBuf::from("/media/a.mp4"), None);
+        same.file_size_bytes = 10;
+        same.file_modified_at = Some(1);
+        same.needs_reprobe = true;
+        merge_reprobed(&old, &mut same);
+        assert_eq!((same.rating, same.tags.len(), same.user_notes.as_str()), (4, 1, "keep"));
+        assert!(same.log_format_user_set && !same.needs_reprobe);
+        assert!(same.proxy_ready && same.proxy_path.is_some() && same.skim_file.is_some(), "the caches of the unchanged file stay");
+
+        // Relinked to another file: the user's metadata survives, the
+        // caches made from the old pixels do not.
+        let mut other = MediaItem::synthetic_for_test(std::path::PathBuf::from("/media/b.mp4"), None);
+        other.file_size_bytes = 20;
+        merge_reprobed(&old, &mut other);
+        assert_eq!(other.rating, 4);
+        assert!(!other.proxy_ready && other.proxy_path.is_none() && other.skim_file.is_none());
+    }
+}

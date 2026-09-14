@@ -116,6 +116,36 @@ pub fn scan_cache_categories(
     ]
 }
 
+/// What a cache file's name (its first dot-separated component) is
+/// matched against when looking for orphans.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OrphanKey {
+    /// Named by media id: proxies.
+    MediaId,
+    /// Named by the file's content key: everything else.
+    CacheKey,
+}
+
+/// Every directory the orphan cleaner scans, resolved as the cache code
+/// resolves it (the same preference overrides), with how each file's
+/// name is matched. Skim keys carry `.hdrtm` / `.r90` suffixes and
+/// filmstrips `.{height}.c2` — the first component is still the key.
+pub fn orphan_scan_dirs(
+    cache_root: &Path,
+    proxy_override: Option<&Path>,
+    filmstrip_override: Option<&Path>,
+    audio_override: Option<&Path>,
+) -> Vec<(PathBuf, OrphanKey)> {
+    vec![
+        (proxy_override.map(Path::to_path_buf).unwrap_or_else(|| cache_root.join("proxies")), OrphanKey::MediaId),
+        (cache_root.join("skim"), OrphanKey::CacheKey),
+        (filmstrip_override.map(Path::to_path_buf).unwrap_or_else(|| cache_root.join("filmstrips")), OrphanKey::CacheKey),
+        (cache_root.join("thumbnails"), OrphanKey::CacheKey),
+        (audio_override.map(Path::to_path_buf).unwrap_or_else(|| cache_root.join("audio-cache")), OrphanKey::CacheKey),
+        (cache_root.join("audio-peaks"), OrphanKey::CacheKey),
+    ]
+}
+
 /// Sibling path for the "Audio peaks" category — the heavy PCM conform cache
 /// lives in a second directory and should be cleared alongside peaks so the
 /// UI category stays consistent with what the user sees on disk.
@@ -187,5 +217,31 @@ mod tests {
             Some(override_path),
         );
         assert_eq!(cats[0].path, override_path);
+    }
+}
+
+#[cfg(test)]
+mod orphan_dir_tests {
+    use super::*;
+
+    /// The cleaner scans where the caches are written. It scanned
+    /// `thumbnails` for filmstrips and `waveforms` for audio, and so
+    /// never cleaned either real directory.
+    #[test]
+    fn the_cleaner_scans_the_directories_the_caches_are_written_to() {
+        let root = Path::new("/c");
+        let dirs: Vec<String> = orphan_scan_dirs(root, None, None, None)
+            .into_iter()
+            .map(|(d, _)| d.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        for expected in ["proxies", "skim", "filmstrips", "thumbnails", "audio-cache", "audio-peaks"] {
+            assert!(dirs.contains(&expected.to_string()), "{expected} missing from {dirs:?}");
+        }
+        assert!(!dirs.contains(&"waveforms".to_string()));
+        let with = orphan_scan_dirs(root, None, Some(Path::new("/f")), Some(Path::new("/a")));
+        assert!(with.iter().any(|(d, k)| d == Path::new("/f") && *k == OrphanKey::CacheKey));
+        assert!(with.iter().any(|(d, k)| d == Path::new("/a") && *k == OrphanKey::CacheKey));
+        let proxies = with.iter().find(|(_, k)| *k == OrphanKey::MediaId).unwrap();
+        assert_eq!(proxies.0, Path::new("/c/proxies"), "only proxies are named by media id");
     }
 }

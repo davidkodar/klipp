@@ -408,22 +408,17 @@ fn audio_cache_dir() -> PathBuf {
 /// the cache-hit path then loads zero samples and the clip plays silent.
 /// Here we treat zero-byte or sub-header-sized files as missing and delete
 /// them so the caller regenerates instead of re-using a broken entry.
-/// Falls back to the old MediaId-based filenames if the new ones don't exist.
-pub fn audio_conform_cache_exists(cache_key: &str, media_id: klipp_core::MediaId) -> (bool, PathBuf, PathBuf) {
+///
+/// Keyed by content only. There used to be a fallback to files named by
+/// media id, from before content keys; a media id outlives a relink, so
+/// that fallback served the conform of whatever file the id used to
+/// point at.
+pub fn audio_conform_cache_exists(cache_key: &str) -> (bool, PathBuf, PathBuf) {
     let dir = audio_cache_dir();
     let pcm = dir.join(format!("{cache_key}.pcm"));
     let peaks = dir.join(format!("{cache_key}.peaks"));
-    if is_valid_conform_pair(&pcm, &peaks) {
-        return (true, pcm, peaks);
-    }
-    // Fallback: old MediaId-based filenames
-    let pcm_old = dir.join(format!("{media_id}.pcm"));
-    let peaks_old = dir.join(format!("{media_id}.peaks"));
-    if is_valid_conform_pair(&pcm_old, &peaks_old) {
-        return (true, pcm_old, peaks_old);
-    }
-    // Return the new paths for generation
-    (false, pcm, peaks)
+    let exists = is_valid_conform_pair(&pcm, &peaks);
+    (exists, pcm, peaks)
 }
 
 /// Both files must exist AND have a plausible minimum size. A PCM file
@@ -458,19 +453,47 @@ fn skim_dir() -> PathBuf {
     cache_base_dir().join("skim")
 }
 
-/// Get the skim transcode path for a content-based key.
-/// Also checks the old MediaId-based path as fallback.
-pub fn skim_transcode_path(cache_key: &str, media_id: klipp_core::MediaId) -> PathBuf {
-    let dir = skim_dir();
-    let new_path = dir.join(format!("{cache_key}.mkv"));
-    if new_path.exists() {
-        return new_path;
+/// The skim transcode path for a skim cache key (see [`skim_cache_key`]).
+/// Content-keyed only: the old media-id fallback outlived relinks and
+/// served another file's skim.
+pub fn skim_transcode_path(cache_key: &str) -> PathBuf {
+    skim_dir().join(format!("{cache_key}.mkv"))
+}
+
+/// The cache key a skim transcode is stored under: the file's content
+/// key, plus `.hdrtm` when the source is HDR (the skim is tone-mapped to
+/// SDR, and older skims that were not must not be reused) and `.r<deg>`
+/// when the source is rotated (the skim has upright pixels, and older
+/// sideways ones must not be). One function, so the transcode and every
+/// place that looks for an existing skim agree; the project loader used
+/// to look for the bare content key and pre-loaded exactly those stale
+/// HDR and sideways skims the markers exist to skip.
+pub fn skim_cache_key(content_key: &str, hdr_source: bool, source_rotation: i32) -> String {
+    let mut key = content_key.to_string();
+    if hdr_source {
+        key.push_str(".hdrtm");
     }
-    // Fallback: old MediaId-based path
-    let old_path = dir.join(format!("{media_id}.mkv"));
-    if old_path.exists() {
-        return old_path;
+    if source_rotation != 0 {
+        key.push_str(&format!(".r{source_rotation}"));
     }
-    // Return new path for generation
-    new_path
+    key
+}
+
+#[cfg(test)]
+mod skim_key_tests {
+    use super::*;
+
+    #[test]
+    fn markers_follow_the_source() {
+        assert_eq!(skim_cache_key("abc", false, 0), "abc");
+        assert_eq!(skim_cache_key("abc", true, 0), "abc.hdrtm");
+        assert_eq!(skim_cache_key("abc", false, 90), "abc.r90");
+        assert_eq!(skim_cache_key("abc", true, 270), "abc.hdrtm.r270");
+    }
+
+    #[test]
+    fn a_skim_path_is_the_key_alone() {
+        let p = skim_transcode_path("abc.hdrtm");
+        assert_eq!(p.file_name().unwrap(), "abc.hdrtm.mkv");
+    }
 }
