@@ -6,7 +6,7 @@
 //! the time of each render, measured at the picture's own size.
 
 use klipp_effects::gpu::GpuEffectsPipeline;
-use klipp_effects::gpu_scopes::{ScopeInput, ScopeTransfer, WaveformJob, WaveformMode};
+use klipp_effects::gpu_scopes::{ScopeInput, ScopeJob, ScopeTransfer, VectorscopeJob, WaveformJob, WaveformMode};
 use std::time::Instant;
 
 fn srgb_to_linear(c: f32) -> f32 {
@@ -32,7 +32,7 @@ fn draw_the_scopes_of_a_picture() {
     for step in [1u32, 2] {
         for (name, mode) in jobs {
             for glow in [false, true] {
-                let job = WaveformJob { mode, intensity: -1.0, channels: 7, envelope: false, glow, out_w, out_h };
+                let job = ScopeJob::Waveform(WaveformJob { mode, intensity: -1.0, channels: 7, envelope: false, glow, out_w, out_h });
                 let scope = ScopeInput::Linear { rgba: &linear, width: w, height: h, matrix: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]], luma, transfer: ScopeTransfer::Srgb, scale: 1.0 };
                 // Warm once, then time.
                 let _ = gpu.scopes().render(&scope, step, &[job]);
@@ -47,17 +47,24 @@ fn draw_the_scopes_of_a_picture() {
         }
         // Both waveform and parade from one measurement, as the engine asks.
         let scope = ScopeInput::Linear { rgba: &linear, width: w, height: h, matrix: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]], luma, transfer: ScopeTransfer::Srgb, scale: 1.0 };
-        let both = [
-            WaveformJob { mode: WaveformMode::RgbOverlay, intensity: -1.0, channels: 7, envelope: false, glow: true, out_w, out_h },
-            WaveformJob { mode: WaveformMode::Parade, intensity: -1.0, channels: 7, envelope: false, glow: true, out_w, out_h },
+        let all = [
+            ScopeJob::Waveform(WaveformJob { mode: WaveformMode::RgbOverlay, intensity: -1.0, channels: 7, envelope: false, glow: true, out_w, out_h }),
+            ScopeJob::Waveform(WaveformJob { mode: WaveformMode::Parade, intensity: -1.0, channels: 7, envelope: false, glow: true, out_w, out_h }),
+            ScopeJob::Vectorscope(VectorscopeJob { zoom: 1.0, intensity: -1.0, colorize: true, luma_lo: 0.0, luma_hi: 1.0, glow: true, out_w: 1024, out_h: 1024 }),
+            ScopeJob::Vectorscope(VectorscopeJob { zoom: 2.0, intensity: -1.0, colorize: true, luma_lo: 0.0, luma_hi: 1.0, glow: true, out_w: 1024, out_h: 1024 }),
+            ScopeJob::Vectorscope(VectorscopeJob { zoom: 1.0, intensity: -1.0, colorize: false, luma_lo: 0.0, luma_hi: 1.0, glow: true, out_w: 1024, out_h: 1024 }),
         ];
         let t = Instant::now();
-        let out = gpu.scopes().render(&scope, step, &both);
-        println!("waveform + parade together, step {step}: {:.2} ms ({} results)", t.elapsed().as_secs_f64() * 1000.0, out.iter().filter(|o| o.is_some()).count());
+        let out = gpu.scopes().render(&scope, step, &all);
+        println!("waveform + parade + vectorscope together, step {step}: {:.2} ms ({} results)", t.elapsed().as_secs_f64() * 1000.0, out.iter().filter(|o| o.is_some()).count());
+        for (name, o) in [("vectorscope", &out[2]), ("vectorscope_zoom2", &out[3]), ("vectorscope_mono", &out[4])] {
+            let file = format!("{out_dir}/{name}_step{step}.png");
+            image::save_buffer(&file, o.as_ref().unwrap(), 1024, 1024, image::ColorType::Rgba8).unwrap();
+        }
     }
     // The display-bytes path, as ACES projects and skims use it.
     let scope = ScopeInput::Display { rgba: &bytes, width: w, height: h, luma };
-    let job = WaveformJob { mode: WaveformMode::RgbOverlay, intensity: -1.0, channels: 7, envelope: false, glow: true, out_w, out_h };
+    let job = ScopeJob::Waveform(WaveformJob { mode: WaveformMode::RgbOverlay, intensity: -1.0, channels: 7, envelope: false, glow: true, out_w, out_h });
     let _ = gpu.scopes().render(&scope, 1, &[job]);
     let t = Instant::now();
     let _ = gpu.scopes().render(&scope, 1, &[job]);

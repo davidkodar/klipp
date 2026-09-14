@@ -1,8 +1,9 @@
-//! Waveform and parade scopes drawn on the GPU.
+//! Waveform, parade and vectorscope drawn on the GPU.
 //!
 //! A scope is a density plot: for every column of the picture, how many
-//! samples sit at each level. Drawing one well is two separate jobs, and
-//! this module keeps them apart.
+//! samples sit at each level — or, for the vectorscope, how many sit at
+//! each chroma. Drawing one well is two separate jobs, and this module
+//! keeps them apart.
 //!
 //! **Measuring** ([`ScopeRenderer::render`], the accumulate pass) reads
 //! every sample of the frame — or every second or fourth, by quality —
@@ -37,6 +38,9 @@ use wgpu::util::DeviceExt;
 pub const BIN_COLS: u32 = 1024;
 /// Levels the picture is measured into: 10-bit.
 pub const BIN_ROWS: u32 = 1024;
+/// Cells across the vectorscope's chroma plane, Cb and Cr each −0.5..0.5.
+/// Twice the output size, so a 2× zoom still has a cell per pixel.
+pub const VECTOR_BINS: u32 = 2048;
 
 /// How the shade pass lays the channels out.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -98,6 +102,55 @@ pub fn parade_gap(out_w: u32) -> u32 {
     (out_w / 128).clamp(2, 12)
 }
 
+/// One vectorscope picture: the density of chroma, Cb across and Cr up,
+/// in the measured space's own Y′CbCr.
+#[derive(Clone, Copy, Debug)]
+pub struct VectorscopeJob {
+    /// 1 shows the full ±0.5 plane; 2 shows ±0.25 at the same size.
+    pub zoom: f32,
+    /// Trace brightness, 0..1; negative takes the default.
+    pub intensity: f32,
+    /// Tint the trace by the hue at each point, or draw it mono.
+    pub colorize: bool,
+    /// Only samples whose Y′ lies in `luma_lo..=luma_hi` are plotted.
+    pub luma_lo: f32,
+    pub luma_hi: f32,
+    pub glow: bool,
+    pub out_w: u32,
+    pub out_h: u32,
+}
+
+/// One picture to draw from a frame's measurement.
+#[derive(Clone, Copy, Debug)]
+pub enum ScopeJob {
+    Waveform(WaveformJob),
+    Vectorscope(VectorscopeJob),
+}
+
+impl ScopeJob {
+    fn out(&self) -> (u32, u32) {
+        match self {
+            ScopeJob::Waveform(j) => (j.out_w, j.out_h),
+            ScopeJob::Vectorscope(j) => (j.out_w, j.out_h),
+        }
+    }
+    fn glow(&self) -> bool {
+        match self {
+            ScopeJob::Waveform(j) => j.glow,
+            ScopeJob::Vectorscope(j) => j.glow,
+        }
+    }
+    fn gain(&self) -> f32 {
+        let intensity = match self {
+            ScopeJob::Waveform(j) => j.intensity,
+            ScopeJob::Vectorscope(j) => j.intensity,
+        };
+        // Density per unit of brightness. The slider is geometric: 0 is
+        // a sixth of the default, 1 six times it.
+        1.5 * if intensity < 0.0 { 1.0 } else { 6.0f32.powf(intensity.clamp(0.0, 1.0) * 2.0 - 1.0) }
+    }
+}
+
 /// One picture to draw from the measured bins.
 #[derive(Clone, Copy, Debug)]
 pub struct WaveformJob {
@@ -129,6 +182,24 @@ struct AccParams {
     m0: [f32; 4],
     m1: [f32; 4],
     m2: [f32; 4],
+    luma: [f32; 4],
+    lo: f32,
+    hi: f32,
+    _p2: u32,
+    _p3: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct VecShadeParams {
+    out_w: u32,
+    out_h: u32,
+    n: u32,
+    colorize: u32,
+    zoom: f32,
+    gain: f32,
+    norm: f32,
+    floor: f32,
     luma: [f32; 4],
 }
 
@@ -178,6 +249,7 @@ struct AccParams {
     width: u32, height: u32, step: u32, cols: u32,
     rows: u32, transfer: u32, scale: f32, _pad: u32,
     m0: vec4<f32>, m1: vec4<f32>, m2: vec4<f32>, luma: vec4<f32>,
+    lo: f32, hi: f32, _p2: u32, _p3: u32,
 };
 @group(0) @binding(1) var<storage, read_write> bins: array<atomic<u32>>;
 @group(0) @binding(2) var<uniform> p: AccParams;
@@ -232,6 +304,129 @@ fn bin_sample(sx: u32, e: vec3<f32>) {
         splat(2u, c, e.b, wgt);
         splat(3u, c, y, wgt);
     }
+}
+"#;
+
+const WGSL_COMMON_VECTOR: &str = r#"
+// One sample into the chroma plane: Cb across, Cr up, in the measured
+// space's own Y′CbCr — `Cb = (B′ − Y′) / 2(1 − Kb)`, `Cr = (R′ − Y′) /
+// 2(1 − Kr)` — split by distance between the four cells around it.
+fn bin_vector(e: vec3<f32>) {
+    let y = dot(p.luma.xyz, e);
+    if (y < p.lo || y > p.hi) { return; }
+    let cb = (e.b - y) * 0.5 / (1.0 - p.luma.z);
+    let cr = (e.r - y) * 0.5 / (1.0 - p.luma.x);
+    let n = f32(p.cols - 1u);
+    let x = clamp((cb + 0.5) * n, 0.0, n);
+    let yy = clamp((0.5 - cr) * n, 0.0, n);
+    let x0 = u32(floor(x)); let y0 = u32(floor(yy));
+    let fx = x - f32(x0); let fy = yy - f32(y0);
+    let x1 = min(x0 + 1u, p.cols - 1u); let y1 = min(y0 + 1u, p.cols - 1u);
+    atomicAdd(&bins[y0 * p.cols + x0], u32((1.0 - fx) * (1.0 - fy) * 256.0 + 0.5));
+    atomicAdd(&bins[y0 * p.cols + x1], u32(fx * (1.0 - fy) * 256.0 + 0.5));
+    atomicAdd(&bins[y1 * p.cols + x0], u32((1.0 - fx) * fy * 256.0 + 0.5));
+    atomicAdd(&bins[y1 * p.cols + x1], u32(fx * fy * 256.0 + 0.5));
+}
+"#;
+
+const WGSL_ACC_VECTOR_LINEAR: &str = r#"
+@group(0) @binding(0) var<storage, read> src: array<vec4<f32>>;
+@compute @workgroup_size(16, 16)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let sx = gid.x * p.step; let sy = gid.y * p.step;
+    if (sx >= p.width || sy >= p.height) { return; }
+    let c = src[sy * p.width + sx].rgb;
+    let m = vec3<f32>(dot(p.m0.xyz, c), dot(p.m1.xyz, c), dot(p.m2.xyz, c));
+    bin_vector(vec3<f32>(encode(m.r), encode(m.g), encode(m.b)));
+}
+"#;
+
+const WGSL_ACC_VECTOR_DISPLAY: &str = r#"
+@group(0) @binding(0) var<storage, read> src: array<u32>;
+@compute @workgroup_size(16, 16)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let sx = gid.x * p.step; let sy = gid.y * p.step;
+    if (sx >= p.width || sy >= p.height) { return; }
+    let v = src[sy * p.width + sx];
+    bin_vector(vec3<f32>(f32(v & 0xffu), f32((v >> 8u) & 0xffu), f32((v >> 16u) & 0xffu)) / 255.0);
+}
+"#;
+
+const WGSL_SHADE_VECTOR: &str = r#"
+struct VecShadeParams {
+    out_w: u32, out_h: u32, n: u32, colorize: u32,
+    zoom: f32, gain: f32, norm: f32, floor: f32,
+    luma: vec4<f32>,
+};
+@group(0) @binding(0) var<storage, read> bins: array<u32>;
+@group(0) @binding(1) var<storage, read_write> out: array<vec4<f32>>;
+@group(0) @binding(2) var<uniform> p: VecShadeParams;
+
+// The colour of a chroma direction: the hue at (cb, cr) at full
+// vividness, so the trace is tinted the way the picture is, where it is.
+fn tint_of(cb: f32, cr: f32) -> vec3<f32> {
+    let mag = max(length(vec2<f32>(cb, cr)), 1e-4);
+    let ncb = cb / mag * 0.35; let ncr = cr / mag * 0.35;
+    let kr = p.luma.x; let kg = p.luma.y; let kb = p.luma.z;
+    let r = 0.5 + ncr * 2.0 * (1.0 - kr);
+    let b = 0.5 + ncb * 2.0 * (1.0 - kb);
+    let g = (0.5 - kr * r - kb * b) / kg;
+    var c = clamp(vec3<f32>(r, g, b), vec3<f32>(0.0), vec3<f32>(1.0));
+    c = c / max(max(c.r, c.g), max(c.b, 1e-3));
+    return mix(c, vec3<f32>(1.0), 0.12);
+}
+fn glow_of(n: f32) -> f32 {
+    return clamp(log2(1.0 + n * p.gain) / 8.0, 0.0, 1.0);
+}
+@compute @workgroup_size(16, 16)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let ox = gid.x; let oy = gid.y;
+    if (ox >= p.out_w || oy >= p.out_h) { return; }
+    let oi = oy * p.out_w + ox;
+    let n = f32(p.n);
+    // The patch of the plane this pixel shows, in cells.
+    let bx0 = ((f32(ox) / f32(p.out_w) - 0.5) / p.zoom + 0.5) * n;
+    let bx1 = ((f32(ox + 1u) / f32(p.out_w) - 0.5) / p.zoom + 0.5) * n;
+    let by0 = ((f32(oy) / f32(p.out_h) - 0.5) / p.zoom + 0.5) * n;
+    let by1 = ((f32(oy + 1u) / f32(p.out_h) - 0.5) / p.zoom + 0.5) * n;
+    if (bx1 <= 0.0 || bx0 >= n || by1 <= 0.0 || by0 >= n) {
+        out[oi] = vec4<f32>(0.0, 0.0, 0.0, 1.0);
+        return;
+    }
+    // The patch, with a tent of eight cells around it on every side. An
+    // 8-bit 4:2:0 picture's chroma is a lattice up to nine cells apart,
+    // and the tent joins the lattice into the cloud the picture is;
+    // eight cells is 0.4 % of range.
+    let tent = 8.0;
+    let area = (bx1 - bx0 + tent) * (by1 - by0 + tent);
+    var sum = 0.0;
+    let ix0 = u32(max(floor(bx0 - tent), 0.0)); let ix1 = min(u32(ceil(bx1 + tent)), p.n);
+    let iy0 = u32(max(floor(by0 - tent), 0.0)); let iy1 = min(u32(ceil(by1 + tent)), p.n);
+    for (var iy = iy0; iy < iy1; iy = iy + 1u) {
+        let cy = f32(iy) + 0.5;
+        let dy = max(max(by0 - cy, cy - by1), 0.0);
+        let wy = max(1.0 - dy / tent, 0.0);
+        for (var ix = ix0; ix < ix1; ix = ix + 1u) {
+            let cx = f32(ix) + 0.5;
+            let dx = max(max(bx0 - cx, cx - bx1), 0.0);
+            let wx = max(1.0 - dx / tent, 0.0);
+            sum = sum + f32(bins[iy * p.n + ix]) * wx * wy;
+        }
+    }
+    if (sum <= 0.0) {
+        out[oi] = vec4<f32>(0.0, 0.0, 0.0, 1.0);
+        return;
+    }
+    let dens = sum / 256.0 * p.norm / area;
+    let i = max(glow_of(dens), p.floor);
+    var t = vec3<f32>(0.80, 0.95, 0.85);
+    if (p.colorize != 0u) {
+        let cb = ((bx0 + bx1) * 0.5 / n) - 0.5;
+        let cr = 0.5 - ((by0 + by1) * 0.5 / n);
+        t = tint_of(cb, cr);
+    }
+    let rgb = mix(t, vec3<f32>(1.0), i * i * 0.5) * i;
+    out[oi] = vec4<f32>(min(rgb, vec3<f32>(1.0)), 1.0);
 }
 "#;
 
@@ -444,6 +639,11 @@ pub struct ScopeRenderer {
     acc_layout: wgpu::BindGroupLayout,
     acc_linear: wgpu::ComputePipeline,
     acc_display: wgpu::ComputePipeline,
+    acc_vector_linear: wgpu::ComputePipeline,
+    acc_vector_display: wgpu::ComputePipeline,
+    vshade_layout: wgpu::BindGroupLayout,
+    vshade_pipeline: wgpu::ComputePipeline,
+    vbins: wgpu::Buffer,
     ext_layout: wgpu::BindGroupLayout,
     ext_pipeline: wgpu::ComputePipeline,
     shade_layout: wgpu::BindGroupLayout,
@@ -516,6 +716,11 @@ impl ScopeRenderer {
         let acc_layout = layout(&device, "scope_acc", &[storage(true), storage(false), UNIFORM]);
         let acc_linear = pipeline(&device, "scope_acc_linear", &acc_layout, &format!("{WGSL_COMMON_ACC}{WGSL_ACC_LINEAR}"));
         let acc_display = pipeline(&device, "scope_acc_display", &acc_layout, &format!("{WGSL_COMMON_ACC}{WGSL_ACC_DISPLAY}"));
+        let acc_vector_linear = pipeline(&device, "scope_acc_vector_linear", &acc_layout, &format!("{WGSL_COMMON_ACC}{WGSL_COMMON_VECTOR}{WGSL_ACC_VECTOR_LINEAR}"));
+        let acc_vector_display = pipeline(&device, "scope_acc_vector_display", &acc_layout, &format!("{WGSL_COMMON_ACC}{WGSL_COMMON_VECTOR}{WGSL_ACC_VECTOR_DISPLAY}"));
+        let vshade_layout = layout(&device, "scope_vshade", &[storage(true), storage(false), UNIFORM]);
+        let vshade_pipeline = pipeline(&device, "scope_vshade", &vshade_layout, WGSL_SHADE_VECTOR);
+        let vbins = buffer(&device, "scope_vbins", (VECTOR_BINS * VECTOR_BINS) as u64 * 4, wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST);
         let ext_layout = layout(&device, "scope_ext", &[storage(true), storage(false), UNIFORM]);
         let ext_pipeline = pipeline(&device, "scope_ext", &ext_layout, WGSL_EXTENTS);
         let shade_layout = layout(&device, "scope_shade", &[storage(true), storage(true), storage(false), UNIFORM]);
@@ -532,6 +737,11 @@ impl ScopeRenderer {
             acc_layout,
             acc_linear,
             acc_display,
+            acc_vector_linear,
+            acc_vector_display,
+            vshade_layout,
+            vshade_pipeline,
+            vbins,
             ext_layout,
             ext_pipeline,
             shade_layout,
@@ -568,9 +778,9 @@ impl ScopeRenderer {
 
     /// Measure `input` every `step` pixels and draw every job from the
     /// measurement. One submit, one readback; the results are RGBA8 rows
-    /// of `out_w × out_h`, in job order, `None` where a job could not be
-    /// drawn.
-    pub fn render(&mut self, input: &ScopeInput<'_>, step: u32, jobs: &[WaveformJob]) -> Vec<Option<Vec<u8>>> {
+    /// of each job's `out_w × out_h`, in job order, `None` where a job
+    /// could not be drawn.
+    pub fn render(&mut self, input: &ScopeInput<'_>, step: u32, jobs: &[ScopeJob]) -> Vec<Option<Vec<u8>>> {
         let step = step.max(1);
         let (width, height) = input.size();
         if width == 0 || height == 0 || jobs.is_empty() {
@@ -623,6 +833,15 @@ impl ScopeRenderer {
             ScopeInput::Linear { matrix, luma, transfer, scale, .. } => (*matrix, *luma, *transfer as u32, *scale),
             ScopeInput::Display { luma, .. } => ([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]], *luma, 0, 1.0),
         };
+        let want_wave = jobs.iter().any(|j| matches!(j, ScopeJob::Waveform(_)));
+        let want_vector = jobs.iter().any(|j| matches!(j, ScopeJob::Vectorscope(_)));
+        let (vlo, vhi) = jobs
+            .iter()
+            .find_map(|j| match j {
+                ScopeJob::Vectorscope(v) => Some((v.luma_lo, v.luma_hi)),
+                _ => None,
+            })
+            .unwrap_or((0.0, 1.0));
         let acc = AccParams {
             width,
             height,
@@ -636,6 +855,10 @@ impl ScopeRenderer {
             m1: [m[1][0], m[1][1], m[1][2], 0.0],
             m2: [m[2][0], m[2][1], m[2][2], 0.0],
             luma: [luma[0], luma[1], luma[2], 0.0],
+            lo: 0.0,
+            hi: 1.0,
+            _p2: 0,
+            _p3: 0,
         };
         let acc_params = self.uniform("scope_acc_params", &acc);
         let acc_bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -645,6 +868,17 @@ impl ScopeRenderer {
                 wgpu::BindGroupEntry { binding: 0, resource: input_buf.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 1, resource: self.bins.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 2, resource: acc_params.as_entire_binding() },
+            ],
+        });
+        let vacc = AccParams { cols: VECTOR_BINS, rows: VECTOR_BINS, lo: vlo, hi: vhi, ..acc };
+        let vacc_params = self.uniform("scope_vacc_params", &vacc);
+        let vacc_bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("scope_vacc_bg"),
+            layout: &self.acc_layout,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: input_buf.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: self.vbins.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 2, resource: vacc_params.as_entire_binding() },
             ],
         });
         let ext_params = self.uniform("scope_ext_params", &ExtParams { cols: BIN_COLS, rows: BIN_ROWS, _p0: 0, _p1: 0 });
@@ -658,13 +892,17 @@ impl ScopeRenderer {
             ],
         });
 
-        // Samples per bin column, for the density normalisation.
+        // Samples per bin column, for the density normalisation; and for
+        // the chroma plane, samples per cell were the picture spread over
+        // the whole of it.
         let sw = width.div_ceil(step) as f64;
         let sh = height.div_ceil(step) as f64;
-        let per_column = (sw * sh / BIN_COLS as f64).max(1.0);
+        let total = (sw * sh).max(1.0);
+        let per_column = (total / BIN_COLS as f64).max(1.0);
         let norm = (BIN_ROWS as f64 / per_column) as f32;
+        let vnorm = ((VECTOR_BINS as f64 * VECTOR_BINS as f64) / total) as f32;
 
-        let max_px = jobs.iter().map(|j| (j.out_w as u64) * (j.out_h as u64)).max().unwrap_or(0);
+        let max_px = jobs.iter().map(|j| { let (w, h) = j.out(); (w as u64) * (h as u64) }).max().unwrap_or(0);
         if max_px == 0 {
             return jobs.iter().map(|_| None).collect();
         }
@@ -674,7 +912,8 @@ impl ScopeRenderer {
         }
         let mut staging_total = 0u64;
         for (i, job) in jobs.iter().enumerate() {
-            let bytes = (job.out_w as u64) * (job.out_h as u64) * 4;
+            let (out_w, out_h) = job.out();
+            let bytes = (out_w as u64) * (out_h as u64) * 4;
             if self.packed[i].size() < bytes {
                 self.packed[i] = buffer(&self.device, "scope_packed", bytes, wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC);
             }
@@ -686,59 +925,102 @@ impl ScopeRenderer {
         let blurred = self.blurred.as_ref().expect("blurred");
 
         let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("scopes") });
-        encoder.clear_buffer(&self.bins, 0, None);
-        encoder.clear_buffer(&self.extents, 0, None);
+        if want_wave {
+            encoder.clear_buffer(&self.bins, 0, None);
+            encoder.clear_buffer(&self.extents, 0, None);
+        }
+        if want_vector {
+            encoder.clear_buffer(&self.vbins, 0, None);
+        }
         {
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("scope_measure"), timestamp_writes: None });
-            pass.set_pipeline(match input {
-                ScopeInput::Linear { .. } => &self.acc_linear,
-                ScopeInput::Display { .. } => &self.acc_display,
-            });
-            pass.set_bind_group(0, &acc_bg, &[]);
-            pass.dispatch_workgroups(width.div_ceil(step).div_ceil(16), height.div_ceil(step).div_ceil(16), 1);
-            if jobs.iter().any(|j| j.envelope) {
-                pass.set_pipeline(&self.ext_pipeline);
-                pass.set_bind_group(0, &ext_bg, &[]);
-                pass.dispatch_workgroups(BIN_COLS.div_ceil(64), 4, 1);
+            let groups = (width.div_ceil(step).div_ceil(16), height.div_ceil(step).div_ceil(16));
+            if want_wave {
+                pass.set_pipeline(match input {
+                    ScopeInput::Linear { .. } => &self.acc_linear,
+                    ScopeInput::Display { .. } => &self.acc_display,
+                });
+                pass.set_bind_group(0, &acc_bg, &[]);
+                pass.dispatch_workgroups(groups.0, groups.1, 1);
+                if jobs.iter().any(|j| matches!(j, ScopeJob::Waveform(w) if w.envelope)) {
+                    pass.set_pipeline(&self.ext_pipeline);
+                    pass.set_bind_group(0, &ext_bg, &[]);
+                    pass.dispatch_workgroups(BIN_COLS.div_ceil(64), 4, 1);
+                }
+            }
+            if want_vector {
+                pass.set_pipeline(match input {
+                    ScopeInput::Linear { .. } => &self.acc_vector_linear,
+                    ScopeInput::Display { .. } => &self.acc_vector_display,
+                });
+                pass.set_bind_group(0, &vacc_bg, &[]);
+                pass.dispatch_workgroups(groups.0, groups.1, 1);
             }
         }
         let mut keep_alive: Vec<wgpu::Buffer> = Vec::new();
         let mut offsets = Vec::with_capacity(jobs.len());
         let mut offset = 0u64;
         for (i, job) in jobs.iter().enumerate() {
-            // Density per unit of brightness. The slider is geometric: 0
-            // is a sixth of the default, 1 six times it.
-            let gain = 1.5 * if job.intensity < 0.0 { 1.0 } else { 6.0f32.powf(job.intensity.clamp(0.0, 1.0) * 2.0 - 1.0) };
-            let shade = ShadeParams {
-                out_w: job.out_w,
-                out_h: job.out_h,
-                cols: BIN_COLS,
-                rows: BIN_ROWS,
-                mode: job.mode as u32,
-                channels: if job.channels & 7 == 0 { 7 } else { job.channels & 7 },
-                envelope: job.envelope as u32,
-                gap: if job.mode == WaveformMode::Parade { parade_gap(job.out_w) } else { 0 },
-                gain,
-                norm,
-                floor: 0.04,
-                _pad: 0.0,
+            let (out_w, out_h) = job.out();
+            let (shade_pipeline, shade_bg, shade_params) = match job {
+                ScopeJob::Waveform(job) => {
+                    let shade = ShadeParams {
+                        out_w,
+                        out_h,
+                        cols: BIN_COLS,
+                        rows: BIN_ROWS,
+                        mode: job.mode as u32,
+                        channels: if job.channels & 7 == 0 { 7 } else { job.channels & 7 },
+                        envelope: job.envelope as u32,
+                        gap: if job.mode == WaveformMode::Parade { parade_gap(out_w) } else { 0 },
+                        gain: ScopeJob::Waveform(*job).gain(),
+                        norm,
+                        floor: 0.04,
+                        _pad: 0.0,
+                    };
+                    let params = self.uniform("scope_shade_params", &shade);
+                    let bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                        label: Some("scope_shade_bg"),
+                        layout: &self.shade_layout,
+                        entries: &[
+                            wgpu::BindGroupEntry { binding: 0, resource: self.bins.as_entire_binding() },
+                            wgpu::BindGroupEntry { binding: 1, resource: self.extents.as_entire_binding() },
+                            wgpu::BindGroupEntry { binding: 2, resource: shaded.as_entire_binding() },
+                            wgpu::BindGroupEntry { binding: 3, resource: params.as_entire_binding() },
+                        ],
+                    });
+                    (&self.shade_pipeline, bg, params)
+                }
+                ScopeJob::Vectorscope(job) => {
+                    let shade = VecShadeParams {
+                        out_w,
+                        out_h,
+                        n: VECTOR_BINS,
+                        colorize: job.colorize as u32,
+                        zoom: job.zoom.clamp(0.25, 16.0),
+                        gain: ScopeJob::Vectorscope(*job).gain(),
+                        norm: vnorm,
+                        floor: 0.05,
+                        luma: [luma[0], luma[1], luma[2], 0.0],
+                    };
+                    let params = self.uniform("scope_vshade_params", &shade);
+                    let bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                        label: Some("scope_vshade_bg"),
+                        layout: &self.vshade_layout,
+                        entries: &[
+                            wgpu::BindGroupEntry { binding: 0, resource: self.vbins.as_entire_binding() },
+                            wgpu::BindGroupEntry { binding: 1, resource: shaded.as_entire_binding() },
+                            wgpu::BindGroupEntry { binding: 2, resource: params.as_entire_binding() },
+                        ],
+                    });
+                    (&self.vshade_pipeline, bg, params)
+                }
             };
-            let shade_params = self.uniform("scope_shade_params", &shade);
-            let shade_bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("scope_shade_bg"),
-                layout: &self.shade_layout,
-                entries: &[
-                    wgpu::BindGroupEntry { binding: 0, resource: self.bins.as_entire_binding() },
-                    wgpu::BindGroupEntry { binding: 1, resource: self.extents.as_entire_binding() },
-                    wgpu::BindGroupEntry { binding: 2, resource: shaded.as_entire_binding() },
-                    wgpu::BindGroupEntry { binding: 3, resource: shade_params.as_entire_binding() },
-                ],
-            });
             let glow = GlowParams {
-                out_w: job.out_w,
-                out_h: job.out_h,
+                out_w,
+                out_h,
                 radius: 8,
-                glow: job.glow as u32,
+                glow: job.glow() as u32,
                 sigma: 3.0,
                 strength: 0.6,
                 _p0: 0.0,
@@ -766,8 +1048,8 @@ impl ScopeRenderer {
             });
             {
                 let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("scope_draw"), timestamp_writes: None });
-                let (gx, gy) = (job.out_w.div_ceil(16), job.out_h.div_ceil(16));
-                pass.set_pipeline(&self.shade_pipeline);
+                let (gx, gy) = (out_w.div_ceil(16), out_h.div_ceil(16));
+                pass.set_pipeline(shade_pipeline);
                 pass.set_bind_group(0, &shade_bg, &[]);
                 pass.dispatch_workgroups(gx, gy, 1);
                 pass.set_pipeline(&self.glow_h_pipeline);
@@ -777,7 +1059,7 @@ impl ScopeRenderer {
                 pass.set_bind_group(0, &glow_v_bg, &[]);
                 pass.dispatch_workgroups(gx, gy, 1);
             }
-            let bytes = (job.out_w as u64) * (job.out_h as u64) * 4;
+            let bytes = (out_w as u64) * (out_h as u64) * 4;
             encoder.copy_buffer_to_buffer(&self.packed[i], 0, staging, offset, bytes);
             offsets.push((offset, bytes));
             offset += bytes.next_multiple_of(wgpu::COPY_BUFFER_ALIGNMENT);

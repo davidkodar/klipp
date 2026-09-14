@@ -306,6 +306,7 @@ pub fn show_scopes(
     show_cursor: bool,
     theme: &KlippTheme,
     basis: klipp_color::scopes::ScopeBasis,
+    vectorscope_zoom: f32,
 ) {
     let render_h: usize = 512;
 
@@ -320,7 +321,7 @@ pub fn show_scopes(
         // On a never-rendered-yet mode (first tab visit) we return None
         // so the dock displays its previously cached texture (or nothing)
         // until the engine catches up on its next tick.
-        let _ = (skin_tone_angle, quality); // legacy CPU params; kept on the signature for API stability
+        let _ = quality; // legacy CPU param; kept on the signature for API stability
         let fb = frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
         if fb.width == 0 || fb.height == 0 || fb.data.is_empty() {
             None
@@ -534,14 +535,16 @@ pub fn show_scopes(
         ui.painter().rect_filled(full_rect, 0.0, egui::Color32::BLACK);
 
         if is_vector {
-            // Vectorscope: centered square, no scale
+            // Vectorscope: centred square, inset so the trace's full
+            // scale is the graticule's radius exactly.
             let side = full_rect.width().min(full_rect.height());
             let offset_x = (full_rect.width() - side) / 2.0;
             let offset_y = (full_rect.height() - side) / 2.0;
             let img_rect = egui::Rect::from_min_size(
                 egui::pos2(full_rect.min.x + offset_x, full_rect.min.y + offset_y),
                 egui::vec2(side, side),
-            );
+            )
+            .shrink(4.0);
             ui.painter().image(tex.id(), img_rect,
                 egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
                 egui::Color32::WHITE);
@@ -562,26 +565,32 @@ pub fn show_scopes(
             let label_color = theme.scope_label;
             let cx = img_rect.center().x;
             let cy = img_rect.center().y;
+            // The trace's full scale (±0.5) is the image's half side;
+            // zoom magnifies the plane about the centre, so everything
+            // drawn at a chroma scales with it.
             let r = side / 2.0 - 4.0;
+            let zoom = vectorscope_zoom.max(0.25);
 
-            // 1. Inner range rings at 25 / 50 / 75 % — subtle so they
-            // don't compete with the trace.
+            // 1. Range rings at 25 / 50 / 75 % — subtle so they don't
+            // compete with the trace.
             let inner_ring_color = egui::Color32::from_rgba_unmultiplied(
                 label_color.r(), label_color.g(), label_color.b(), 40,
             );
             for frac in [0.25_f32, 0.50, 0.75] {
-                painter.circle_stroke(
-                    egui::pos2(cx, cy),
-                    r * frac,
-                    egui::Stroke::new(0.6_f32, inner_ring_color),
-                );
+                if frac * zoom <= 1.0 {
+                    painter.circle_stroke(
+                        egui::pos2(cx, cy),
+                        r * frac * zoom,
+                        egui::Stroke::new(0.6_f32, inner_ring_color),
+                    );
+                }
             }
 
             // 2. Rainbow hue ring at 100% — paints the outer circle as
             // 120 short arc segments, each tinted by its angular hue.
             // This is the signature broadcast/Resolve look that's
             // missing when libavfilter doesn't paint a graticule.
-            let segments = 120;
+            let segments = if zoom <= 1.0 { 120 } else { 0 };
             for i in 0..segments {
                 let a0 = (i as f32) / (segments as f32) * std::f32::consts::TAU;
                 let a1 = ((i + 1) as f32) / (segments as f32) * std::f32::consts::TAU;
@@ -617,8 +626,7 @@ pub fn show_scopes(
             // broadcast-standard 123° angle (centre → upper-left between
             // Yl and R). Stops short of the hue ring so the "I" label
             // sits inside the ring.
-            let skin_angle_deg = 123.0_f32;
-            let (dx, dy) = skin_line_direction(skin_angle_deg);
+            let (dx, dy) = skin_line_direction(skin_tone_angle);
             let i_line_len = r * 0.92;
             let i_color = egui::Color32::from_rgb(220, 170, 80);
             painter.line_segment(
@@ -644,8 +652,11 @@ pub fn show_scopes(
             );
             let box_half = 4.0;
             for (name, cb, cr) in &klipp_color::scopes::vectorscope_targets(basis) {
-                let tx = cx + cb * r * 2.0;
-                let ty = cy - cr * r * 2.0;
+                if (cb * zoom).abs() > 0.5 || (cr * zoom).abs() > 0.5 {
+                    continue;
+                }
+                let tx = cx + cb * r * 2.0 * zoom;
+                let ty = cy - cr * r * 2.0 * zoom;
                 let rect = egui::Rect::from_center_size(
                     egui::pos2(tx, ty),
                     egui::vec2(box_half * 2.0, box_half * 2.0),
@@ -693,7 +704,7 @@ pub fn show_scopes(
             if let Some(ref cur) = scope_cursor {
                 let scope_type = crate::state::ScopeType::from(mode);
                 super::scope_window::draw_scope_cursor_indicator(
-                    &ui.painter_at(full_rect), scope_type, cur, full_rect, basis,
+                    &ui.painter_at(full_rect), scope_type, cur, full_rect, basis, vectorscope_zoom,
                 );
             }
         }

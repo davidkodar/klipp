@@ -26026,6 +26026,7 @@ impl eframe::App for KlippApp {
                     bgopacity: self.state.scope_ffmpeg.vectorscope_bgopacity,
                     lthreshold: self.state.scope_ffmpeg.vectorscope_lthreshold,
                     hthreshold: self.state.scope_ffmpeg.vectorscope_hthreshold,
+                    zoom: self.state.scope_ffmpeg.vectorscope_zoom,
                 },
                 histogram: klipp_core::HistogramSettings {
                     display_mode: self.state.scope_ffmpeg.histogram_display,
@@ -30920,6 +30921,7 @@ impl KlippApp {
                                 klipp_color::scopes::ScopeBasis::for_working_space(
                                     self.state.project_working_colorspace,
                                 ),
+                                self.state.scope_ffmpeg.vectorscope_zoom,
                             );
                         });
                     }
@@ -32297,6 +32299,7 @@ impl KlippApp {
                 klipp_color::scopes::ScopeBasis::for_working_space(
                     self.state.project_working_colorspace,
                 ),
+                self.state.scope_ffmpeg.vectorscope_zoom,
             );
         });
         // U-6: same guard as render_color_ws_bottom_tools. Scopes only

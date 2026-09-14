@@ -735,7 +735,7 @@ impl PlaybackEngine {
                 let scopes_after_encode = crate::video_decoder::working_colorspace()
                     == klipp_core::WorkingColorspace::AcesCG;
                 if scope_due && !scopes_after_encode {
-                    self.render_active_scopes(Some(&linear), None, w, h, 1024, 512);
+                    self.render_active_scopes(Some(&linear), None, w, h);
                     self.last_scope_render = Instant::now();
                 }
                 scope_ms = t_scope.elapsed().as_secs_f64() * 1000.0;
@@ -763,7 +763,7 @@ impl PlaybackEngine {
                 let encoded = self.encode_for_screen(&linear, w, h);
                 if scope_due && scopes_after_encode {
                     let t_scope = Instant::now();
-                    self.render_active_scopes(Some(&linear), Some(&encoded.0), w, h, 1024, 512);
+                    self.render_active_scopes(Some(&linear), Some(&encoded.0), w, h);
                     self.last_scope_render = Instant::now();
                     scope_ms += t_scope.elapsed().as_secs_f64() * 1000.0;
                 }

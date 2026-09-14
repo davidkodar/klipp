@@ -2970,6 +2970,8 @@ pub struct ScopeFfmpegState {
     pub vectorscope_lthreshold: f32,
     /// FFmpeg vectorscope `hthreshold=` (high luma cutoff). Default 1.0.
     pub vectorscope_hthreshold: f32,
+    /// Magnification of the vectorscope's chroma plane: 1, 2 or 4.
+    pub vectorscope_zoom: f32,
     /// FFmpeg histogram `display_mode=`.
     pub histogram_display: klipp_core::HistogramDisplayMode,
     /// FFmpeg histogram `levels_mode=`.
@@ -2992,6 +2994,7 @@ impl Default for ScopeFfmpegState {
             vectorscope_bgopacity: 0.3,
             vectorscope_lthreshold: 0.0,
             vectorscope_hthreshold: 1.0,
+            vectorscope_zoom: 1.0,
             histogram_display: klipp_core::HistogramDisplayMode::Parade,
             histogram_levels: klipp_core::HistogramLevels::Linear,
             histogram_fgopacity: 0.7,

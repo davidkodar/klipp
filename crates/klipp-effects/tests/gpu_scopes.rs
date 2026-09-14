@@ -4,7 +4,7 @@
 //! line where it should. Skips without a GPU.
 
 use klipp_effects::gpu::GpuEffectsPipeline;
-use klipp_effects::gpu_scopes::{parade_gap, ScopeInput, ScopeTransfer, WaveformJob, WaveformMode};
+use klipp_effects::gpu_scopes::{parade_gap, ScopeInput, ScopeJob, ScopeTransfer, VectorscopeJob, WaveformJob, WaveformMode};
 
 const W: u32 = 256;
 const H: u32 = 64;
@@ -16,8 +16,24 @@ fn flat(v: f32) -> Vec<f32> {
     (0..W * H).flat_map(|_| [v, v, v, 1.0]).collect()
 }
 
-fn job(mode: WaveformMode, out_w: u32) -> WaveformJob {
-    WaveformJob { mode, intensity: -1.0, channels: 7, envelope: false, glow: false, out_w, out_h: OUT }
+fn job(mode: WaveformMode, out_w: u32) -> ScopeJob {
+    ScopeJob::Waveform(WaveformJob { mode, intensity: -1.0, channels: 7, envelope: false, glow: false, out_w, out_h: OUT })
+}
+
+fn vector(zoom: f32, colorize: bool) -> ScopeJob {
+    ScopeJob::Vectorscope(VectorscopeJob { zoom, intensity: -1.0, colorize, luma_lo: 0.0, luma_hi: 1.0, glow: false, out_w: OUT, out_h: OUT })
+}
+
+/// The brightest pixel of an `OUT × OUT` image.
+fn brightest_pixel(img: &[u8]) -> (u32, u32, [u8; 3]) {
+    let (i, _) = img.chunks_exact(4).enumerate().max_by_key(|(_, p)| p[0] as u32 + p[1] as u32 + p[2] as u32).unwrap();
+    let px = &img[i * 4..i * 4 + 3];
+    ((i as u32) % OUT, (i as u32) / OUT, [px[0], px[1], px[2]])
+}
+
+/// Where a chroma lands in the output at `zoom`.
+fn plane_px(cb: f32, cr: f32, zoom: f32) -> (f32, f32) {
+    ((cb * zoom + 0.5) * OUT as f32, (0.5 - cr * zoom) * OUT as f32)
 }
 
 /// The brightest row of column `x` in an `out_w × OUT` RGBA8 image, by
@@ -124,7 +140,8 @@ fn glow_and_envelope_add_light_without_moving_the_trace() {
     let frame = flat(0.4);
     let input = ScopeInput::Linear { rgba: &frame, width: W, height: H, matrix: IDENTITY, luma: REC709, transfer: ScopeTransfer::Srgb, scale: 1.0 };
     let plain = job(WaveformMode::Luma, OUT);
-    let glowing = WaveformJob { glow: true, envelope: true, ..plain };
+    let ScopeJob::Waveform(inner) = plain else { unreachable!() };
+    let glowing = ScopeJob::Waveform(WaveformJob { glow: true, envelope: true, ..inner });
     let out = gpu.scopes().render(&input, 1, &[plain, glowing]);
     let (a, b) = (out[0].as_ref().unwrap(), out[1].as_ref().unwrap());
     let (row_a, _) = brightest_row(a, OUT, 128);
@@ -133,4 +150,73 @@ fn glow_and_envelope_add_light_without_moving_the_trace() {
     let near = ((row_a + 4) * OUT as usize + 128) * 4;
     assert_eq!(&a[near..near + 3], &[0, 0, 0], "no glow: dark beside the line");
     assert!(b[near] + b[near + 1] + b[near + 2] > 0, "glow: light beside the line");
+}
+
+#[test]
+fn the_vectorscope_puts_the_bars_on_their_targets_and_zooms_about_the_centre() {
+    let Some(mut gpu) = GpuEffectsPipeline::new() else { return };
+    // Rec.709 Y′CbCr of an encoded colour.
+    let chroma = |rgb: [f32; 3]| {
+        let y = REC709[0] * rgb[0] + REC709[1] * rgb[1] + REC709[2] * rgb[2];
+        ((rgb[2] - y) * 0.5 / (1.0 - REC709[2]), (rgb[0] - y) * 0.5 / (1.0 - REC709[0]))
+    };
+    // 75 % bars, one frame each, as the linear light of encoded 0.75 so
+    // the scope's own encode lands them on 0.75.
+    let level = 0.75f32;
+    let lin = ((level + 0.055) / 1.055).powf(2.4);
+    let bars = [[1.0, 0.0, 0.0], [1.0, 1.0, 0.0], [0.0, 1.0, 0.0], [0.0, 1.0, 1.0], [0.0, 0.0, 1.0], [1.0, 0.0, 1.0]];
+    for (bar, rgb) in bars.iter().enumerate() {
+        let frame: Vec<f32> = (0..W * H).flat_map(|_| [rgb[0] * lin, rgb[1] * lin, rgb[2] * lin, 1.0]).collect();
+        let input = ScopeInput::Linear { rgba: &frame, width: W, height: H, matrix: IDENTITY, luma: REC709, transfer: ScopeTransfer::Srgb, scale: 1.0 };
+        let (cb, cr) = chroma(rgb.map(|c| c * level));
+        let out = gpu.scopes().render(&input, 1, &[vector(1.0, true)]);
+        let img = out[0].as_ref().expect("a vectorscope");
+        assert_eq!(img.len(), (OUT * OUT * 4) as usize);
+        let (x, y, px) = brightest_pixel(img);
+        let (ex, ey) = plane_px(cb, cr, 1.0);
+        assert!((x as f32 - ex).abs() <= 2.5 && (y as f32 - ey).abs() <= 2.5, "bar {bar}: dot at ({x}, {y}), expected ({ex:.1}, {ey:.1})");
+        // Tinted the bar's own way: its strongest channel leads.
+        let lead = (0..3).max_by_key(|c| (rgb[*c] * 1000.0) as u32).unwrap();
+        assert!(px[lead] >= px[(lead + 1) % 3] && px[lead] >= px[(lead + 2) % 3], "bar {bar} tint {px:?}");
+    }
+    // Zoom magnifies about the centre: a 20 % red bar sits at twice the
+    // distance at 2×, and a 75 % one has left the view.
+    let small = 0.2f32;
+    let lin_small = ((small + 0.055) / 1.055).powf(2.4);
+    let frame: Vec<f32> = (0..W * H).flat_map(|_| [lin_small, 0.0, 0.0, 1.0]).collect();
+    let input = ScopeInput::Linear { rgba: &frame, width: W, height: H, matrix: IDENTITY, luma: REC709, transfer: ScopeTransfer::Srgb, scale: 1.0 };
+    let (cb, cr) = chroma([small, 0.0, 0.0]);
+    let out = gpu.scopes().render(&input, 1, &[vector(2.0, true)]);
+    let (x, y, _) = brightest_pixel(out[0].as_ref().unwrap());
+    let (ex, ey) = plane_px(cb, cr, 2.0);
+    assert!((x as f32 - ex).abs() <= 2.5 && (y as f32 - ey).abs() <= 2.5, "20 % red at 2×: dot at ({x}, {y}), expected ({ex:.1}, {ey:.1})");
+    let frame: Vec<f32> = (0..W * H).flat_map(|_| [lin, 0.0, 0.0, 1.0]).collect();
+    let input = ScopeInput::Linear { rgba: &frame, width: W, height: H, matrix: IDENTITY, luma: REC709, transfer: ScopeTransfer::Srgb, scale: 1.0 };
+    let out = gpu.scopes().render(&input, 1, &[vector(2.0, true)]);
+    assert!(out[0].as_ref().unwrap().chunks_exact(4).all(|p| p[0] == 0 && p[1] == 0 && p[2] == 0), "75 % red is outside the 2× view");
+    // Grey sits at the centre, and mono mode draws it without a hue.
+    let grey = flat(0.3);
+    let input = ScopeInput::Linear { rgba: &grey, width: W, height: H, matrix: IDENTITY, luma: REC709, transfer: ScopeTransfer::Srgb, scale: 1.0 };
+    let out = gpu.scopes().render(&input, 1, &[vector(1.0, false)]);
+    let (x, y, px) = brightest_pixel(out[0].as_ref().unwrap());
+    assert!((x as f32 - OUT as f32 / 2.0).abs() <= 2.0 && (y as f32 - OUT as f32 / 2.0).abs() <= 2.0, "grey at ({x}, {y})");
+    assert!(px[1] >= px[0] && px[1] >= px[2], "mono trace: {px:?}");
+}
+
+#[test]
+fn the_vectorscope_luma_window_keeps_only_the_levels_asked_for() {
+    let Some(mut gpu) = GpuEffectsPipeline::new() else { return };
+    // Left half a dark red, right half a bright red: same hue, different Y′.
+    let frame: Vec<f32> = (0..W * H)
+        .flat_map(|i| if (i % W) < W / 2 { [0.02, 0.0, 0.0, 1.0] } else { [0.8, 0.1, 0.1, 1.0] })
+        .collect();
+    let input = ScopeInput::Linear { rgba: &frame, width: W, height: H, matrix: IDENTITY, luma: REC709, transfer: ScopeTransfer::Srgb, scale: 1.0 };
+    // The window is part of the measurement, so each is its own render.
+    let every = VectorscopeJob { zoom: 1.0, intensity: -1.0, colorize: true, luma_lo: 0.0, luma_hi: 1.0, glow: false, out_w: OUT, out_h: OUT };
+    let dark = VectorscopeJob { luma_hi: 0.3, ..every };
+    let a = gpu.scopes().render(&input, 1, &[ScopeJob::Vectorscope(every)]);
+    let d = gpu.scopes().render(&input, 1, &[ScopeJob::Vectorscope(dark)]);
+    let lit = |img: &[u8]| img.chunks_exact(4).filter(|p| p[0] as u32 + p[1] as u32 + p[2] as u32 > 0).count();
+    let (a, d) = (a[0].as_ref().unwrap(), d[0].as_ref().unwrap());
+    assert!(lit(a) > lit(d) && lit(d) > 0, "the window drops the bright red: {} vs {}", lit(a), lit(d));
 }

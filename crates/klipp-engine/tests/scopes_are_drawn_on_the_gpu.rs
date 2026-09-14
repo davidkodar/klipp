@@ -22,23 +22,25 @@ fn the_waveform_and_parade_are_gpu_drawn_and_measure_the_shown_frame() {
     let Some(src) = common::hevc_ramp() else { return };
     let parked = common::Parked::start_ungraded(src, common::RAMP_W, common::RAMP_H);
     parked.send(AppCommand::SetScopesVisible(true));
-    parked.send(AppCommand::SetActiveScopeModes { modes: [0u8, 1].into_iter().collect() });
+    parked.send(AppCommand::SetActiveScopeModes { modes: [0u8, 1, 2].into_iter().collect() });
     // A slider step renders the frame again with the scopes due.
     parked.begin_drag();
     parked.step(0.0);
     parked.end_drag();
 
     let deadline = Instant::now() + Duration::from_secs(5);
-    let (wave, parade) = loop {
+    let (wave, parade, vector) = loop {
         let w = parked.scope_texture(0).filter(|e| !e.data.is_empty());
         let p = parked.scope_texture(1).filter(|e| !e.data.is_empty());
-        if let (Some(w), Some(p)) = (w, p) {
-            break (w, p);
+        let v = parked.scope_texture(2).filter(|e| !e.data.is_empty());
+        if let (Some(w), Some(p), Some(v)) = (w, p, v) {
+            break (w, p, v);
         }
         assert!(Instant::now() < deadline, "no scope textures within 5 s");
         std::thread::sleep(Duration::from_millis(10));
     };
-    assert!(wave.gpu && parade.gpu, "both scopes are drawn on the GPU");
+    assert!(wave.gpu && parade.gpu && vector.gpu, "all three scopes are drawn on the GPU");
+    assert_eq!((vector.w, vector.h), (1024, 1024));
     assert_eq!((wave.w, wave.h), (1024, 512));
     assert_eq!(wave.data.len(), (wave.w * wave.h * 4) as usize);
 
@@ -62,4 +64,8 @@ fn the_waveform_and_parade_are_gpu_drawn_and_measure_the_shown_frame() {
         let row = brightest_row(&parade.data, parade.w, parade.h, x) as f64;
         assert!((row - expect).abs() <= 4.0, "parade panel {panel}: line at row {row}, expected {expect:.1}");
     }
+    // A grey frame's chroma sits at the centre of the vectorscope.
+    let (i, _) = vector.data.chunks_exact(4).enumerate().max_by_key(|(_, p)| p[0] as u32 + p[1] as u32 + p[2] as u32).unwrap();
+    let (vx, vy) = ((i as u32 % vector.w) as f64, (i as u32 / vector.w) as f64);
+    assert!((vx - 512.0).abs() <= 4.0 && (vy - 512.0).abs() <= 4.0, "grey at ({vx}, {vy})");
 }

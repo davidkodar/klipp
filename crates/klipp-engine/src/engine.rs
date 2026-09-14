@@ -562,14 +562,12 @@ const MAX_CLIP_STREAMS: usize = 6;
 /// CPU fallback runs for that mode.
 fn write_scope_tex_to_fb(
     fb: &mut crate::texture::FrameBuffer,
-    tex: Option<Vec<u8>>,
-    scope_w: u32,
-    scope_h: u32,
+    tex: Option<(Vec<u8>, u32, u32)>,
     mode: u8,
     gpu: bool,
 ) {
     match tex {
-        Some(t) => {
+        Some((t, scope_w, scope_h)) => {
             // Keep the legacy singular fields populated for the in-tree
             // dock reader (`widgets/scopes.rs`). Also fan out into the
             // per-mode map so a UI consumer can look up by mode and
@@ -2664,12 +2662,10 @@ impl PlaybackEngine {
                 // result to fb.scope_texture so the UI displays it via its
                 // existing GPU scope path. Used by media-browser hover-skim
                 // and timeline scrub so scope quality matches playback.
-                let scope_w = 1024u32;
-                let scope_h = 512u32;
                 // The UI hands over an sRGB u8 frame (a skim or scrub
-                // snapshot). The waveform and parade measure those codes
-                // as they are; the remaining scopes linearise them.
-                self.render_active_scopes(None, Some(&rgba), width, height, scope_w, scope_h);
+                // snapshot). The GPU scopes measure those codes as they
+                // are; the remaining scopes linearise them.
+                self.render_active_scopes(None, Some(&rgba), width, height);
             }
             AppCommand::SetScopeTapNode { clip_id, node_id } => {
                 self.inspect_clip = Some(clip_id);
@@ -7036,7 +7032,7 @@ impl PlaybackEngine {
         display: Option<&[u8]>,
         src_w: u32,
         src_h: u32,
-    ) -> Vec<(u8, Option<Vec<u8>>, bool)> {
+    ) -> Vec<(u8, Option<(Vec<u8>, u32, u32)>, bool)> {
         // Union: always include the main-dock mode so its singular-field
         // back-compat readers (in-tree dock UI) never see a stale
         // texture, even when the floating window's active set excludes
@@ -7051,11 +7047,11 @@ impl PlaybackEngine {
 
         let settings = self.scope_ffmpeg_settings;
         let bloom_enabled = self.scope_bloom_enabled;
-        let mut rendered: Vec<(u8, Option<Vec<u8>>, bool)> = Vec::with_capacity(to_render.len());
+        let mut rendered: Vec<(u8, Option<(Vec<u8>, u32, u32)>, bool)> = Vec::with_capacity(to_render.len());
 
-        let wanted: Vec<u8> = to_render.iter().copied().filter(|m| *m == 0 || *m == 1).collect();
+        let wanted: Vec<u8> = to_render.iter().copied().filter(|m| *m <= 2).collect();
         if !wanted.is_empty() {
-            if let Some(results) = self.render_waveforms_on_gpu(linear, display, src_w, src_h, &wanted) {
+            if let Some(results) = self.render_scopes_on_gpu(linear, display, src_w, src_h, &wanted) {
                 for (mode, result) in wanted.iter().zip(results) {
                     rendered.push((*mode, result, true));
                     to_render.remove(mode);
@@ -7112,28 +7108,28 @@ impl PlaybackEngine {
                 }
                 other => other,
             };
-            rendered.push((mode, tex, false));
+            rendered.push((mode, tex.map(|t| (t, crate::ffmpeg_scope::SCOPE_OUT_W, crate::ffmpeg_scope::SCOPE_OUT_H)), false));
         }
         rendered
     }
 
-    /// The waveform (mode 0) and parade (mode 1) from the GPU scope
-    /// renderer, one result per entry of `modes`. `None` when there is
-    /// no GPU or nothing to measure.
+    /// The waveform (mode 0), parade (1) and vectorscope (2) from the GPU
+    /// scope renderer, one result with its size per entry of `modes`.
+    /// `None` when there is no GPU or nothing to measure.
     ///
     /// The picture is measured as it is delivered: the linear frame is
     /// encoded with the viewer's SDR transfer in the working space's own
     /// primaries, or with PQ in BT.2020 while HDR monitoring shows
     /// display light; display bytes are binned as the codes they are.
-    fn render_waveforms_on_gpu(
+    fn render_scopes_on_gpu(
         &mut self,
         linear: Option<&[f32]>,
         display: Option<&[u8]>,
         src_w: u32,
         src_h: u32,
         modes: &[u8],
-    ) -> Option<Vec<Option<Vec<u8>>>> {
-        use klipp_effects::gpu_scopes::{ScopeInput, ScopeTransfer, WaveformJob, WaveformMode};
+    ) -> Option<Vec<Option<(Vec<u8>, u32, u32)>>> {
+        use klipp_effects::gpu_scopes::{ScopeInput, ScopeJob, ScopeTransfer, VectorscopeJob, WaveformJob, WaveformMode};
         let settings = self.scope_ffmpeg_settings;
         let glow = self.scope_bloom_enabled;
         let ws = crate::video_decoder::working_colorspace();
@@ -7169,16 +7165,29 @@ impl PlaybackEngine {
             },
             (None, None) => return None,
         };
-        let jobs: Vec<WaveformJob> = modes
+        let jobs: Vec<ScopeJob> = modes
             .iter()
             .map(|&mode| {
+                if mode == 2 {
+                    let v = settings.vectorscope;
+                    return ScopeJob::Vectorscope(VectorscopeJob {
+                        zoom: v.zoom,
+                        intensity: settings.waveform.intensity_override,
+                        colorize: v.mode != klipp_core::VectorscopeMode::Gray,
+                        luma_lo: v.lthreshold,
+                        luma_hi: v.hthreshold,
+                        glow,
+                        out_w: crate::ffmpeg_scope::VECTOR_OUT,
+                        out_h: crate::ffmpeg_scope::VECTOR_OUT,
+                    });
+                }
                 let wp = if mode == 1 { settings.parade } else { settings.waveform };
                 let layout = match (settings.luma_only, mode) {
                     (true, _) => WaveformMode::Luma,
                     (false, 1) => WaveformMode::Parade,
                     _ => WaveformMode::RgbOverlay,
                 };
-                WaveformJob {
+                ScopeJob::Waveform(WaveformJob {
                     mode: layout,
                     intensity: wp.intensity_override,
                     channels: wp.channels.to_components() as u32,
@@ -7186,12 +7195,20 @@ impl PlaybackEngine {
                     glow,
                     out_w: crate::ffmpeg_scope::SCOPE_OUT_W,
                     out_h: crate::ffmpeg_scope::SCOPE_OUT_H,
-                }
+                })
             })
             .collect();
         let step = settings.quality.sample_step() as u32;
         let gpu = self.renderer.executor().gpu_pipeline_or_init()?;
-        Some(gpu.scopes().render(&input, step, &jobs))
+        let sizes: Vec<(u32, u32)> = jobs
+            .iter()
+            .map(|j| match j {
+                ScopeJob::Waveform(w) => (w.out_w, w.out_h),
+                ScopeJob::Vectorscope(v) => (v.out_w, v.out_h),
+            })
+            .collect();
+        let results = gpu.scopes().render(&input, step, &jobs);
+        Some(results.into_iter().zip(sizes).map(|(r, (w, h))| r.map(|bytes| (bytes, w, h))).collect())
     }
 
     /// Apply the output of [`Self::render_active_scopes_pending`] to a
@@ -7202,16 +7219,14 @@ impl PlaybackEngine {
     fn apply_scope_renders(
         fb: &mut crate::texture::FrameBuffer,
         dock_mode: u8,
-        renders: Vec<(u8, Option<Vec<u8>>, bool)>,
-        scope_w: u32,
-        scope_h: u32,
+        renders: Vec<(u8, Option<(Vec<u8>, u32, u32)>, bool)>,
     ) {
         for (mode, tex_opt, gpu) in renders.into_iter() {
             if mode == dock_mode {
-                write_scope_tex_to_fb(fb, tex_opt.clone(), scope_w, scope_h, mode, gpu);
+                write_scope_tex_to_fb(fb, tex_opt.clone(), mode, gpu);
             }
             match tex_opt {
-                Some(bytes) => {
+                Some((bytes, scope_w, scope_h)) => {
                     let entry = fb
                         .scope_textures
                         .entry(mode)
@@ -7245,8 +7260,6 @@ impl PlaybackEngine {
         display: Option<&[u8]>,
         src_w: u32,
         src_h: u32,
-        scope_w: u32,
-        scope_h: u32,
     ) {
         let renders = self.render_active_scopes_pending(linear, display, src_w, src_h);
         let dock_mode = self.scope_render_mode;
@@ -7254,12 +7267,12 @@ impl PlaybackEngine {
         // frame leaves its previous samples in place.
         let Some(linear_rgba) = linear else {
             let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
-            Self::apply_scope_renders(&mut fb, dock_mode, renders, scope_w, scope_h);
+            Self::apply_scope_renders(&mut fb, dock_mode, renders);
             return;
         };
         let cie = self.cie_samples_pending(linear_rgba, src_w, src_h);
         let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
-        Self::apply_scope_renders(&mut fb, dock_mode, renders, scope_w, scope_h);
+        Self::apply_scope_renders(&mut fb, dock_mode, renders);
         match cie {
             Some((samples, w, h)) => {
                 fb.cie_samples = samples;

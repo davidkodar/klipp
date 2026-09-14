@@ -369,6 +369,13 @@ pub struct VectorscopeSettings {
     /// High luma threshold (FFmpeg `hthreshold=`). Pixels above this
     /// luma are dropped — focuses on shadow chroma. Default 1.0.
     pub hthreshold: f32,
+    /// Magnification of the chroma plane: 1 shows ±0.5, 2 shows ±0.25.
+    #[serde(default = "default_vectorscope_zoom")]
+    pub zoom: f32,
+}
+
+fn default_vectorscope_zoom() -> f32 {
+    1.0
 }
 
 impl Default for VectorscopeSettings {
@@ -379,6 +386,7 @@ impl Default for VectorscopeSettings {
             bgopacity: 0.3,
             lthreshold: 0.0,
             hthreshold: 1.0,
+            zoom: 1.0,
         }
     }
 }

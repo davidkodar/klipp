@@ -22,7 +22,9 @@ The vectorscope shows colour (hue and saturation) as a circular plot:
 
 - **Angle** — Hue (red, yellow, green, cyan, blue, magenta around the circle)
 - **Distance from centre** — Saturation (centre = no colour, edge = maximum saturation)
-- Coloured target boxes mark standard colour-bar positions (R, G, B, Cy, Mg, Yl)
+- Target boxes mark the 75 % colour-bar positions (R, G, B, Cy, Mg, Yl) in the project's working space
+
+It is drawn on the GPU as a density plot of Y′CbCr chroma: every measured pixel is placed at its Cb and Cr in the project's working space, and the trace brightness follows the density on the same logarithmic curve as the waveform, so a lone pixel is a faint dot and a skin tone a bright streak. In the colour modes the cloud is tinted by the hue at each point; Gray draws it mono. **Zoom** (1×, 2×, 4×) magnifies the plane about the centre and the graticule follows, and the low and high range settings keep only pixels whose Y′ lies between them, to look at the chroma of shadows or highlights alone.
 
 ### Skin Tone Line
 

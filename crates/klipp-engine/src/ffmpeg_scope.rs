@@ -33,6 +33,8 @@ type Result<T> = std::result::Result<T, String>;
 /// constants so the dock display path doesn't need to change.
 pub const SCOPE_OUT_W: u32 = 1024;
 pub const SCOPE_OUT_H: u32 = 512;
+/// The GPU vectorscope's output: a square.
+pub const VECTOR_OUT: u32 = 1024;
 
 /// The CIE chromaticity scope's place in `active_scope_modes`.
 ///

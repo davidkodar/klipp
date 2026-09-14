@@ -463,7 +463,8 @@ fn draw_pane(
         return;
     }
 
-    render_pane_scope(ui, pane_idx, state, runtime, frame_buffer, skin_tone_angle, is_playing, content_rect, scope_cursor, spectrum_bins, correlation_samples, lufs_history, lufs_target, spectrum_history, theme, basis);
+    let vectorscope_zoom = scope_ffmpeg.vectorscope_zoom;
+    render_pane_scope(ui, pane_idx, state, runtime, frame_buffer, skin_tone_angle, is_playing, content_rect, scope_cursor, spectrum_bins, correlation_samples, lufs_history, lufs_target, spectrum_history, theme, basis, vectorscope_zoom);
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -484,6 +485,7 @@ fn render_pane_scope(
     spectrum_history: &[Vec<f32>],
     theme: &KlippTheme,
     basis: klipp_color::scopes::ScopeBasis,
+    vectorscope_zoom: f32,
 ) {
     let pane = &state.panes[pane_idx];
     let render_h: usize = 256; // Smaller for multi-pane to stay fast
@@ -660,7 +662,8 @@ fn render_pane_scope(
             let img_rect = egui::Rect::from_min_size(
                 egui::pos2(r.min.x + offset_x, r.min.y + offset_y),
                 egui::vec2(side, side),
-            );
+            )
+            .shrink(4.0);
             let bri = pane.settings.vectorscope_brightness;
             let tint_val = (bri * 2.0).min(1.0);
             let tint = egui::Color32::from_rgb(
@@ -679,22 +682,28 @@ fn render_pane_scope(
                 let label_color = theme.scope_label;
                 let cx = img_rect.center().x;
                 let cy = img_rect.center().y;
+                // The trace's full scale (±0.5) is the image's half side;
+                // zoom magnifies the plane about the centre.
                 let rad = side / 2.0 - 4.0;
+                let zoom = vectorscope_zoom.max(0.25);
+                let graticule = pane.settings.show_graticule;
 
-                // 1. Inner range rings at 25 / 50 / 75 %.
+                // 1. Range rings at 25 / 50 / 75 %.
                 let inner_ring_color = egui::Color32::from_rgba_unmultiplied(
                     label_color.r(), label_color.g(), label_color.b(), 40,
                 );
                 for frac in [0.25_f32, 0.50, 0.75] {
-                    painter.circle_stroke(
-                        egui::pos2(cx, cy),
-                        rad * frac,
-                        egui::Stroke::new(0.6_f32, inner_ring_color),
-                    );
+                    if graticule && frac * zoom <= 1.0 {
+                        painter.circle_stroke(
+                            egui::pos2(cx, cy),
+                            rad * frac * zoom,
+                            egui::Stroke::new(0.6_f32, inner_ring_color),
+                        );
+                    }
                 }
 
                 // 2. Rainbow hue ring at 100% — 120 tinted segments.
-                let segments = 120;
+                let segments = if graticule && zoom <= 1.0 { 120 } else { 0 };
                 for i in 0..segments {
                     let a0 = (i as f32) / (segments as f32) * std::f32::consts::TAU;
                     let a1 = ((i + 1) as f32) / (segments as f32) * std::f32::consts::TAU;
@@ -724,9 +733,21 @@ fn render_pane_scope(
                     egui::Stroke::new(0.5_f32, cross_color),
                 );
 
-                // 4. Skin-tone I-line at 123° + "I" label.
-                let skin_angle_deg = 123.0_f32;
-                let (dx, dy) = super::scopes::skin_line_direction(skin_angle_deg);
+                // 4. Skin-tone line at the preferred angle + "I" label,
+                // and the NTSC I/Q axes when asked for.
+                if pane.settings.show_iq_lines {
+                    let iq_color = egui::Color32::from_rgba_unmultiplied(
+                        label_color.r(), label_color.g(), label_color.b(), 70,
+                    );
+                    for angle in [123.0_f32, 33.0] {
+                        let (dx, dy) = super::scopes::skin_line_direction(angle);
+                        painter.line_segment(
+                            [egui::pos2(cx - dx * rad, cy - dy * rad), egui::pos2(cx + dx * rad, cy + dy * rad)],
+                            egui::Stroke::new(0.6_f32, iq_color),
+                        );
+                    }
+                }
+                let (dx, dy) = super::scopes::skin_line_direction(skin_tone_angle);
                 let i_line_len = rad * 0.92;
                 let i_color = egui::Color32::from_rgb(220, 170, 80);
                 painter.line_segment(
@@ -750,8 +771,11 @@ fn render_pane_scope(
                 );
                 let box_half = 4.0;
                 for (name, cb, cr) in &klipp_color::scopes::vectorscope_targets(basis) {
-                    let tx = cx + cb * rad * 2.0;
-                    let ty = cy - cr * rad * 2.0;
+                    if !graticule || (cb * zoom).abs() > 0.5 || (cr * zoom).abs() > 0.5 {
+                        continue;
+                    }
+                    let tx = cx + cb * rad * 2.0 * zoom;
+                    let ty = cy - cr * rad * 2.0 * zoom;
                     let rect = egui::Rect::from_center_size(
                         egui::pos2(tx, ty),
                         egui::vec2(box_half * 2.0, box_half * 2.0),
@@ -909,7 +933,7 @@ fn render_pane_scope(
         // ── Scope cursor indicator ──
         if pane.settings.show_scope_cursor {
             if let Some(cur) = scope_cursor {
-                draw_scope_cursor_indicator(&painter, pane.scope_type, &cur, r, basis);
+                draw_scope_cursor_indicator(&painter, pane.scope_type, &cur, r, basis, vectorscope_zoom);
             }
         }
 
@@ -929,6 +953,7 @@ pub fn draw_scope_cursor_indicator(
     cur: &crate::state::ScopeCursorData,
     rect: egui::Rect,
     basis: klipp_color::scopes::ScopeBasis,
+    vectorscope_zoom: f32,
 ) {
     let cursor_color = egui::Color32::from_rgb(0xff, 0xff, 0xff);
     let outline_color = egui::Color32::from_rgba_unmultiplied(0, 0, 0, 200);
@@ -965,9 +990,9 @@ pub fn draw_scope_cursor_indicator(
             let side = rect.width().min(rect.height());
             let cx = rect.center().x;
             let cy = rect.center().y;
-            let r_radius = side / 2.0 - 8.0;
-            let x = cx + cur.cb * r_radius * 2.0;
-            let y = cy - cur.cr * r_radius * 2.0;
+            let r_radius = side / 2.0 - 4.0;
+            let x = cx + cur.cb * r_radius * 2.0 * vectorscope_zoom;
+            let y = cy - cur.cr * r_radius * 2.0 * vectorscope_zoom;
             draw_dot(painter, egui::pos2(x, y));
             // Crosshair
             let ch_color = egui::Color32::from_rgba_unmultiplied(255, 255, 255, 120);
@@ -1236,7 +1261,6 @@ fn draw_vectorscope_settings(ui: &mut egui::Ui, pane_idx: usize, state: &mut Sco
 
     ui.label(egui::RichText::new("ADDITIONAL GAMUT").size(9.0)
         .color(theme.text_dim).strong());
-    ui.checkbox(&mut s.show_2x_zoom, "Show 2x Zoom");
     ui.checkbox(&mut s.show_skin_tone_indicator, "Show Skin Tone Indicator");
     ui.checkbox(&mut s.show_iq_lines, "Show I/Q Lines")
         .on_hover_text("Draw NTSC I and Q color axes as reference lines");
@@ -1479,6 +1503,15 @@ pub fn draw_ffmpeg_scope_options(
                 ui.selectable_value(&mut state.vectorscope_mode, mode, label);
             }
         });
+    ui.add_space(2.0);
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new("Zoom").size(9.0).color(theme.text_dim));
+        for (zoom, label) in [(1.0_f32, "1×"), (2.0, "2×"), (4.0, "4×")] {
+            ui.selectable_value(&mut state.vectorscope_zoom, zoom, label);
+        }
+    })
+    .response
+    .on_hover_text("Magnify the chroma plane about the centre; the graticule follows.");
     ui.add_space(2.0);
     egui::ComboBox::from_id_salt(ui.next_auto_id().with("vectorscope_graticule"))
         .selected_text(match state.vectorscope_graticule {
