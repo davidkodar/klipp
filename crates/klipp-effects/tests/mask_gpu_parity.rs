@@ -291,7 +291,9 @@ fn gpu_matches_cpu_oracle_across_fixtures() {
         // Compare GPU to CPU within cross-implementation tolerance.
         // Hard failure = unexpected drift on a shape the GPU should
         // already render correctly.
-        let mismatch = pixel_mismatch(&cpu_rgba, &gpu_rgba, 2, 0.001);
+        // 8/255 outlier bound against a measured worst of 1: room for another
+        // driver's edge rasterisation, nothing like room for a wrong pixel.
+        let mismatch = pixel_mismatch(&cpu_rgba, &gpu_rgba, 2, 0.001, 8);
         match (case.expects_gpu_gap, stack_was_truncated, mismatch) {
             (true, true, _) => {
                 expected_gaps.push(format!(
@@ -336,7 +338,33 @@ fn gpu_matches_cpu_oracle_across_fixtures() {
 
 /// Return `Some(reason)` when the GPU buffer drifts from the CPU
 /// buffer by more than the cross-impl tolerance; `None` on parity.
-fn pixel_mismatch(cpu: &[u8], gpu: &[u8], per_channel_max: u8, max_bad_fraction: f32) -> Option<String> {
+/// Compare two u8 RGBA buffers. `None` when they agree closely enough.
+///
+/// Three limits, because two were not enough:
+///
+/// * `per_channel_max` — what counts as a bad channel;
+/// * `max_bad_fraction` — how many pixels may be bad. Mask edges are
+///   antialiased, and a boundary pixel can legitimately land a level or
+///   two apart between two rasterisers, so a small excuse is reasonable;
+/// * `outlier_max` — **how wrong an excused pixel may be.** This one was
+///   missing. `worst` was tracked and printed but never asserted on, so
+///   any pixel inside the fraction could differ by any amount: at 0.1% of
+///   a 96x64 canvas, six pixels could have rendered solid black and this
+///   returned `None`. A "0.1% of pixels" allowance reads like a precision
+///   tolerance and was actually a correctness hole.
+///
+/// Measured before choosing the bound: across all nine fixtures the two
+/// rasterisers produce **zero** bad pixels and a worst channel delta of
+/// 0 or 1. So nothing was hiding under the old allowance — but the
+/// allowance was three orders of magnitude looser than the behaviour, and
+/// that gap is where a defect would have gone unseen.
+fn pixel_mismatch(
+    cpu: &[u8],
+    gpu: &[u8],
+    per_channel_max: u8,
+    max_bad_fraction: f32,
+    outlier_max: u8,
+) -> Option<String> {
     if cpu.len() != gpu.len() {
         return Some(format!("buffer length mismatch: cpu={} gpu={}", cpu.len(), gpu.len()));
     }
@@ -353,13 +381,25 @@ fn pixel_mismatch(cpu: &[u8], gpu: &[u8], per_channel_max: u8, max_bad_fraction:
     }
     let total = (cpu.len() / 4).max(1);
     let frac = bad_pixels as f32 / total as f32;
+    // Printed on success too, so the margin against these limits is
+    // visible and drift shows up long before it trips them.
+    eprintln!(
+        "    {bad_pixels}/{total} bad ({:.4}%), worst channel delta {worst}          (limits: {:.3}% bad, {outlier_max} outlier)",
+        frac * 100.0, max_bad_fraction * 100.0,
+    );
+    if worst > outlier_max {
+        return Some(format!(
+            "a pixel differs by {worst}/255, past the {outlier_max}/255 outlier \
+             limit — the bad-pixel fraction excuses *how many* pixels differ, \
+             not how wrong one may be",
+        ));
+    }
     if frac > max_bad_fraction {
-        Some(format!(
+        return Some(format!(
             "{} / {} pixels ({:.3}%) over ±{}/255 (worst {}); bad-pixel limit {:.3}%",
             bad_pixels, total, frac * 100.0,
             per_channel_max, worst, max_bad_fraction * 100.0,
-        ))
-    } else {
-        None
+        ));
     }
+    None
 }
