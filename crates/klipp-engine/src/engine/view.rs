@@ -633,9 +633,10 @@ impl PlaybackEngine {
         if super::should_publish_gpu_viewer() && (w * 4).is_multiple_of(256) {
             return None;
         }
-        klipp_color::display::display_transform_u8_lut(
+        klipp_color::display::display_transform_u8_lut_to(
             self.tone_map_op,
             crate::video_decoder::working_colorspace(),
+            self.sdr_transfer,
         )
     }
 

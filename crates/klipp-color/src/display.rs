@@ -248,6 +248,15 @@ fn display_transform_from(
     display_transform_from_pre(linear_rgba, tone_map_op, to_709, |v| v)
 }
 
+/// Encode a display-linear value for the SDR viewer's transfer.
+#[inline]
+pub fn encode_sdr(v: f32, transfer: klipp_core::SdrTransfer) -> f32 {
+    match transfer {
+        klipp_core::SdrTransfer::Srgb => linear_to_srgb(v),
+        klipp_core::SdrTransfer::Bt1886 => v.clamp(0.0, 1.0).powf(1.0 / 2.4),
+    }
+}
+
 /// [`display_transform_from`] with a per-channel function applied to the
 /// linear light first.
 ///
@@ -261,6 +270,16 @@ fn display_transform_from_pre(
     tone_map_op: ToneMapOp,
     to_709: Option<ToBt709>,
     pre: impl Fn(f32) -> f32 + Sync + Send,
+) -> Vec<u8> {
+    display_transform_from_pre_to(linear_rgba, tone_map_op, to_709, pre, klipp_core::SdrTransfer::Srgb)
+}
+
+fn display_transform_from_pre_to(
+    linear_rgba: &[f32],
+    tone_map_op: ToneMapOp,
+    to_709: Option<ToBt709>,
+    pre: impl Fn(f32) -> f32 + Sync + Send,
+    transfer: klipp_core::SdrTransfer,
 ) -> Vec<u8> {
     use rayon::prelude::*;
     assert!(
@@ -287,9 +306,9 @@ fn display_transform_from_pre(
                 [rgb[0].max(0.0), rgb[1].max(0.0), rgb[2].max(0.0)],
                 tone_map_op,
             );
-            dst[0] = (linear_to_srgb(mapped[0]).clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
-            dst[1] = (linear_to_srgb(mapped[1]).clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
-            dst[2] = (linear_to_srgb(mapped[2]).clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
+            dst[0] = (encode_sdr(mapped[0], transfer).clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
+            dst[1] = (encode_sdr(mapped[1], transfer).clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
+            dst[2] = (encode_sdr(mapped[2], transfer).clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
             dst[3] = (chunk[3].clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
         });
     out
@@ -347,6 +366,28 @@ pub fn display_transform_ws_pre(
     working_space: klipp_core::WorkingColorspace,
     pre: impl Fn(f32) -> f32 + Sync + Send + Copy,
 ) -> Vec<u8> {
+    display_transform_ws_pre_to(linear_rgba, tone_map_op, working_space, pre, klipp_core::SdrTransfer::Srgb)
+}
+
+/// [`display_transform_ws`] encoding for `transfer` — the SDR viewer's
+/// monitor. The ACES path is display-referred already (its ODT encodes
+/// BT.1886) and is left as it is.
+pub fn display_transform_ws_to(
+    linear_rgba: &[f32],
+    tone_map_op: ToneMapOp,
+    working_space: klipp_core::WorkingColorspace,
+    transfer: klipp_core::SdrTransfer,
+) -> Vec<u8> {
+    display_transform_ws_pre_to(linear_rgba, tone_map_op, working_space, |v| v, transfer)
+}
+
+pub fn display_transform_ws_pre_to(
+    linear_rgba: &[f32],
+    tone_map_op: ToneMapOp,
+    working_space: klipp_core::WorkingColorspace,
+    pre: impl Fn(f32) -> f32 + Sync + Send + Copy,
+    transfer: klipp_core::SdrTransfer,
+) -> Vec<u8> {
     use klipp_core::WorkingColorspace;
     use rayon::prelude::*;
     assert!(
@@ -354,11 +395,12 @@ pub fn display_transform_ws_pre(
         "display_transform_ws requires RGBA-packed input",
     );
     if let WorkingColorspace::Rec709Linear | WorkingColorspace::Bt2020Linear = working_space {
-        return display_transform_from_pre(
+        return display_transform_from_pre_to(
             linear_rgba,
             tone_map_op,
             ToBt709::for_working_space(working_space),
             pre,
+            transfer,
         );
     }
     // AcesCG: ACES Output Device Transform path.
@@ -400,6 +442,15 @@ pub fn display_transform_u8_lut(
     tone_map_op: ToneMapOp,
     working_space: klipp_core::WorkingColorspace,
 ) -> Option<[u8; 256]> {
+    display_transform_u8_lut_to(tone_map_op, working_space, klipp_core::SdrTransfer::Srgb)
+}
+
+/// [`display_transform_u8_lut`] encoding for `transfer`.
+pub fn display_transform_u8_lut_to(
+    tone_map_op: ToneMapOp,
+    working_space: klipp_core::WorkingColorspace,
+    transfer: klipp_core::SdrTransfer,
+) -> Option<[u8; 256]> {
     if working_space != klipp_core::WorkingColorspace::Rec709Linear {
         return None;
     }
@@ -412,9 +463,33 @@ pub fn display_transform_u8_lut(
         // on the linear value this code decodes to.
         let linear = srgb_to_linear(code as f32 / 255.0);
         let mapped = tone_map(linear.max(0.0), tone_map_op);
-        *slot = (linear_to_srgb(mapped).clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
+        *slot = (encode_sdr(mapped, transfer).clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
     }
     Some(lut)
+}
+
+#[cfg(test)]
+mod sdr_transfer_tests {
+    use super::*;
+    use klipp_core::{SdrTransfer, WorkingColorspace};
+
+    /// BT.1886 and sRGB agree at black and white and differ between,
+    /// most in the shadows — mid grey is 0.489 against sRGB's 0.461.
+    #[test]
+    fn bt1886_is_gamma_2_4_and_meets_srgb_only_at_the_ends() {
+        assert_eq!(encode_sdr(0.0, SdrTransfer::Bt1886), 0.0);
+        assert!((encode_sdr(1.0, SdrTransfer::Bt1886) - 1.0).abs() < 1e-6);
+        assert!((encode_sdr(0.18, SdrTransfer::Bt1886) - 0.4894).abs() < 1e-3);
+        assert!((encode_sdr(0.18, SdrTransfer::Srgb) - 0.4613).abs() < 1e-3);
+        let frame = [0.18f32, 0.18, 0.18, 1.0, 0.01, 0.01, 0.01, 1.0];
+        let srgb = display_transform_ws_to(&frame, ToneMapOp::None, WorkingColorspace::Rec709Linear, SdrTransfer::Srgb);
+        let bt = display_transform_ws_to(&frame, ToneMapOp::None, WorkingColorspace::Rec709Linear, SdrTransfer::Bt1886);
+        assert!(bt[0] > srgb[0] && bt[4] > srgb[4], "BT.1886 shows the shadows lighter than sRGB on the same monitor: {bt:?} vs {srgb:?}");
+        // The table path is the float path for the chosen transfer.
+        let lut = display_transform_u8_lut_to(ToneMapOp::None, WorkingColorspace::Rec709Linear, SdrTransfer::Bt1886).unwrap();
+        let code = (linear_to_srgb(0.18) * 255.0 + 0.5) as usize;
+        assert_eq!(lut[code], bt[0]);
+    }
 }
 
 /// Export-side display transform.

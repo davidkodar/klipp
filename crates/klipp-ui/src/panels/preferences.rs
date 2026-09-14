@@ -3156,6 +3156,31 @@ impl PreferencesPanel {
                 });
         });
 
+        Self::setting_row(ui, "SDR viewer transfer", theme, |ui| {
+            use klipp_core::SdrTransfer;
+            egui::ComboBox::from_id_salt("sdr_transfer")
+                .selected_text(match prefs.color.sdr_display_transfer {
+                    SdrTransfer::Srgb => "sRGB",
+                    SdrTransfer::Bt1886 => "BT.1886 (gamma 2.4)",
+                })
+                .width(160.0)
+                .show_ui(ui, |ui| {
+                    if ui
+                        .selectable_value(&mut prefs.color.sdr_display_transfer, SdrTransfer::Srgb, "sRGB")
+                        .on_hover_text("A desktop monitor. The viewer encodes the sRGB piecewise curve.")
+                        .changed()
+                    {
+                        *dirty = true;
+                    }
+                    if ui
+                        .selectable_value(&mut prefs.color.sdr_display_transfer, SdrTransfer::Bt1886, "BT.1886 (gamma 2.4)")
+                        .on_hover_text("A calibrated grading monitor. Rec.709 deliveries are mastered on gamma 2.4; the shadows match what the delivery will show there.")
+                        .changed()
+                    {
+                        *dirty = true;
+                    }
+                });
+        });
         Self::setting_row(ui, "LUT interpolation", theme, |ui| {
             use crate::prefs::LutInterpolation;
             egui::ComboBox::from_id_salt("lut_interp")

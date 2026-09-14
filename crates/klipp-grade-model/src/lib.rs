@@ -224,3 +224,167 @@ mod tests {
         assert!(log_wheel_weights(0.20)[0] > 0.99 && log_wheel_weights(0.78)[2] > 0.99);
     }
 }
+
+/// ASC CDL interchange: the `.cdl` / `.cc` / `.ccc` XML files every
+/// grading pipeline reads and writes.
+pub mod cdl {
+    /// One colour correction: slope, offset, power per channel, and
+    /// saturation.
+    #[derive(Clone, Debug, PartialEq)]
+    pub struct Cdl {
+        pub slope: [f32; 3],
+        pub offset: [f32; 3],
+        pub power: [f32; 3],
+        pub saturation: f32,
+    }
+
+    impl Cdl {
+        /// The CDL the wheels and saturation are (see [`super::cdl_of`]).
+        pub fn from_wheels(lift: [f32; 3], gamma: [f32; 3], gain: [f32; 3], offset: [f32; 3], saturation: f32) -> Self {
+            let (slope, off, power) = super::cdl_of(lift, gamma, gain, offset);
+            Self { slope, offset: off, power, saturation }
+        }
+
+        /// Wheel amounts that apply this CDL: lift stays neutral (a CDL
+        /// has three numbers per channel, the wheels four), gain carries
+        /// the slope, offset the offset, gamma the power.
+        pub fn wheel_amounts(&self) -> ([f32; 3], [f32; 3], [f32; 3], [f32; 3]) {
+            let lift = [0.0; 3];
+            let mut gamma = [0.0; 3];
+            let mut gain = [0.0; 3];
+            for i in 0..3 {
+                gain[i] = self.slope[i] - 1.0;
+                gamma[i] = 1.0 / self.power[i].max(0.05) - 1.0;
+            }
+            (lift, gamma, gain, self.offset)
+        }
+
+        /// The correction as an ASC CDL 1.01 `ColorDecisionList` document.
+        pub fn to_xml(&self, id: &str) -> String {
+            let v = |a: [f32; 3]| format!("{} {} {}", trim(a[0]), trim(a[1]), trim(a[2]));
+            format!(
+                "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
+<ColorDecisionList xmlns=\"urn:ASC:CDL:v1.01\">\n\
+  <ColorDecision>\n\
+    <ColorCorrection id=\"{}\">\n\
+      <SOPNode>\n\
+        <Slope>{}</Slope>\n\
+        <Offset>{}</Offset>\n\
+        <Power>{}</Power>\n\
+      </SOPNode>\n\
+      <SatNode>\n\
+        <Saturation>{}</Saturation>\n\
+      </SatNode>\n\
+    </ColorCorrection>\n\
+  </ColorDecision>\n\
+</ColorDecisionList>\n",
+                escape(id),
+                v(self.slope),
+                v(self.offset),
+                v(self.power),
+                trim(self.saturation)
+            )
+        }
+
+        /// The first colour correction in a `.cdl`, `.ccc` or `.cc` file.
+        /// Reads the `Slope`, `Offset`, `Power` and `Saturation` elements
+        /// wherever they sit and whatever namespace prefix they carry; a
+        /// missing SatNode is saturation 1.
+        pub fn parse(text: &str) -> Result<Self, String> {
+            let triple = |name: &str| -> Result<[f32; 3], String> {
+                let body = element(text, name).ok_or_else(|| format!("no <{name}> in the file"))?;
+                let nums = body
+                    .split_whitespace()
+                    .map(|t| t.parse::<f32>().map_err(|e| format!("<{name}>: {e}")))
+                    .collect::<Result<Vec<f32>, String>>()?;
+                if nums.len() != 3 {
+                    return Err(format!("<{name}> has {} values, not 3", nums.len()));
+                }
+                Ok([nums[0], nums[1], nums[2]])
+            };
+            let slope = triple("Slope")?;
+            let offset = triple("Offset")?;
+            let power = triple("Power")?;
+            let saturation = match element(text, "Saturation") {
+                Some(b) => b.trim().parse::<f32>().map_err(|e| format!("<Saturation>: {e}"))?,
+                None => 1.0,
+            };
+            if power.iter().any(|p| *p <= 0.0) {
+                return Err("a Power must be positive".into());
+            }
+            Ok(Self { slope, offset, power, saturation })
+        }
+    }
+
+    /// The text of the first `<name>` or `<prefix:name>` element.
+    fn element<'a>(text: &'a str, name: &str) -> Option<&'a str> {
+        let mut from = 0;
+        while let Some(rel) = text[from..].find('<') {
+            let start = from + rel;
+            let rest = &text[start + 1..];
+            let tag_end = rest.find('>')?;
+            let tag = &rest[..tag_end];
+            let tag_name = tag.split(|c: char| c.is_whitespace() || c == '/').next().unwrap_or("");
+            let local = tag_name.rsplit(':').next().unwrap_or(tag_name);
+            if local == name && !tag.starts_with('/') && !tag.ends_with('/') {
+                let body_start = start + 1 + tag_end + 1;
+                let close = text[body_start..].find("</")?;
+                return Some(&text[body_start..body_start + close]);
+            }
+            from = start + 1;
+        }
+        None
+    }
+
+    fn trim(v: f32) -> String {
+        let s = format!("{v:.6}");
+        let s = s.trim_end_matches('0').trim_end_matches('.');
+        if s.is_empty() || s == "-0" {
+            "0".into()
+        } else {
+            s.to_string()
+        }
+    }
+
+    fn escape(s: &str) -> String {
+        s.replace('&', "&amp;").replace('<', "&lt;").replace('"', "&quot;")
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn a_grade_round_trips_through_the_file() {
+            let cdl = Cdl::from_wheels([0.05, 0.0, -0.02], [0.2, 0.1, 0.0], [0.3, 0.0, 0.1], [-0.02, 0.01, 0.0], 0.9);
+            let back = Cdl::parse(&cdl.to_xml("shot 3")).unwrap();
+            for i in 0..3 {
+                assert!((back.slope[i] - cdl.slope[i]).abs() < 1e-5);
+                assert!((back.offset[i] - cdl.offset[i]).abs() < 1e-5);
+                assert!((back.power[i] - cdl.power[i]).abs() < 1e-5);
+            }
+            assert!((back.saturation - 0.9).abs() < 1e-6);
+            // Put on the wheels and read off again, it is the same CDL.
+            let (lift, gamma, gain, offset) = back.wheel_amounts();
+            let again = Cdl::from_wheels(lift, gamma, gain, offset, back.saturation);
+            for i in 0..3 {
+                assert!((again.slope[i] - cdl.slope[i]).abs() < 1e-5);
+                assert!((again.offset[i] - cdl.offset[i]).abs() < 1e-5);
+                assert!((again.power[i] - cdl.power[i]).abs() < 1e-5);
+            }
+        }
+
+        /// A file as another system writes it: a namespace prefix, a bare
+        /// ColorCorrection, no SatNode, extra whitespace.
+        #[test]
+        fn reads_what_other_systems_write() {
+            let text = "<cdl:ColorCorrection xmlns:cdl=\"urn:ASC:CDL:v1.01\" id=\"x\">\n  <cdl:SOPNode>\n   <cdl:Slope> 1.2  0.9 1.0 </cdl:Slope>\n   <cdl:Offset>0.01 -0.02 0</cdl:Offset>\n   <cdl:Power>1.1 1 0.95</cdl:Power>\n  </cdl:SOPNode>\n</cdl:ColorCorrection>";
+            let c = Cdl::parse(text).unwrap();
+            assert_eq!(c.slope, [1.2, 0.9, 1.0]);
+            assert_eq!(c.offset, [0.01, -0.02, 0.0]);
+            assert_eq!(c.power, [1.1, 1.0, 0.95]);
+            assert_eq!(c.saturation, 1.0);
+            assert!(Cdl::parse("<ColorCorrection><SOPNode><Slope>1 1</Slope></SOPNode></ColorCorrection>").is_err());
+        }
+    }
+}

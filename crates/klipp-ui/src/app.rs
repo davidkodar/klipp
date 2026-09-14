@@ -768,6 +768,7 @@ impl KlippApp {
         let _ = app.cmd_tx.send(AppCommand::SetLutTetrahedral(
             app.prefs.color.lut_interpolation == crate::prefs::LutInterpolation::Tetrahedral,
         ));
+        let _ = app.cmd_tx.send(AppCommand::SetSdrTransfer(app.prefs.color.sdr_display_transfer));
         // Map GpuPreference to wgpu PowerPreference (klipp-effects can't depend on klipp-core)
         let gpu_pref = match app.prefs.system.gpu_preference {
             klipp_core::GpuPreference::Auto => Some(wgpu::PowerPreference::default()),
@@ -26215,6 +26216,7 @@ impl eframe::App for KlippApp {
             let _ = self.cmd_tx.send(AppCommand::SetLutTetrahedral(
                 self.prefs.color.lut_interpolation == crate::prefs::LutInterpolation::Tetrahedral,
             ));
+            let _ = self.cmd_tx.send(AppCommand::SetSdrTransfer(self.prefs.color.sdr_display_transfer));
             // Push the background-performance pref into the live
             // scheduler so user changes take effect immediately
             // (without waiting for the next app launch).

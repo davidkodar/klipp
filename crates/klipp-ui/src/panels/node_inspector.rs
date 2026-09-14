@@ -2173,6 +2173,61 @@ impl NodeInspectorPanel {
                         "Edit this node via the Adjustments / Wheels / Curves / Hue-Sat / Warper tabs."
                     ).color(theme.text_dim).small()
                 );
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    if ui
+                        .button("Import CDL…")
+                        .on_hover_text("Put an ASC CDL file's slope, offset, power and saturation on this node's wheels")
+                        .clicked()
+                    {
+                        if let Some(path) = rfd::FileDialog::new().add_filter("ASC CDL", &["cdl", "cc", "ccc"]).pick_file() {
+                            let read = std::fs::read_to_string(&path)
+                                .map_err(|e| e.to_string())
+                                .and_then(|t| klipp_grade_model::cdl::Cdl::parse(&t));
+                            match read {
+                                Ok(cdl) => {
+                                    let (lift, gamma, gain, offset) = cdl.wheel_amounts();
+                                    for (name, amounts) in [("lift", lift), ("gamma", gamma), ("gain", gain), ("offset", offset)] {
+                                        let (x, y, m) = klipp_color::rgb_to_wheel_offset((amounts[0], amounts[1], amounts[2]));
+                                        for (suffix, v) in [("x", x), ("y", y), ("master", m)] {
+                                            let pname = format!("{name}_{suffix}");
+                                            params.apply_override(&pname, v);
+                                            cmds.push(AppCommand::SetNodeParam { clip_id, node_id, param: pname, value: v });
+                                        }
+                                    }
+                                    params.apply_override("saturation", cdl.saturation);
+                                    cmds.push(AppCommand::SetNodeParam { clip_id, node_id, param: "saturation".into(), value: cdl.saturation });
+                                    tracing::info!("Imported CDL from {}", path.display());
+                                }
+                                Err(e) => tracing::warn!("CDL import failed for {}: {e}", path.display()),
+                            }
+                        }
+                    }
+                    if ui
+                        .button("Export CDL…")
+                        .on_hover_text("Write this node's wheels and saturation as an ASC CDL file")
+                        .clicked()
+                    {
+                        if let Some(path) = rfd::FileDialog::new().add_filter("ASC CDL", &["cdl"]).set_file_name("grade.cdl").save_file() {
+                            let wheel = |x: Option<f32>, y: Option<f32>, m: Option<f32>| {
+                                let (r, g, b) = klipp_color::wheel_offset_to_rgb(x.unwrap_or(0.0), y.unwrap_or(0.0), m.unwrap_or(0.0));
+                                [r, g, b]
+                            };
+                            let cdl = klipp_grade_model::cdl::Cdl::from_wheels(
+                                wheel(params.lift_x, params.lift_y, params.lift_master),
+                                wheel(params.gamma_x, params.gamma_y, params.gamma_master),
+                                wheel(params.gain_x, params.gain_y, params.gain_master),
+                                wheel(params.offset_x, params.offset_y, params.offset_master),
+                                params.saturation.unwrap_or(1.0),
+                            );
+                            let id = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "klipp".into());
+                            match std::fs::write(&path, cdl.to_xml(&id)) {
+                                Ok(()) => tracing::info!("Exported CDL to {}", path.display()),
+                                Err(e) => tracing::warn!("CDL export failed for {}: {e}", path.display()),
+                            }
+                        }
+                    }
+                });
             }
             NodeKind::Source | NodeKind::Output | NodeKind::Layer
             | NodeKind::RGBSplitter | NodeKind::RGBCombiner

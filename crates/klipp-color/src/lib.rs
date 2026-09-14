@@ -79,4 +79,4 @@ pub use pipeline::ColorPipeline;
 pub use transforms::*;
 pub use warper::apply_color_warper;
 pub use klipp_core::ColorWarperParams;
-pub use wheels::{generate_wheel_texture, hsv_to_rgb, wheel_offset_to_rgb};
+pub use wheels::{generate_wheel_texture, hsv_to_rgb, rgb_to_wheel_offset, wheel_offset_to_rgb};

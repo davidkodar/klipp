@@ -1287,6 +1287,8 @@ pub struct PlaybackEngine {
     /// What the pre-grade cache was filled under (see
     /// [`timeline_layout_fingerprint`]); a different layout empties it.
     layout_fingerprint: u64,
+    /// The transfer the SDR viewer encodes for — the monitor it assumes.
+    sdr_transfer: klipp_core::SdrTransfer,
     /// Reasons the direct-present fast path declined the previous frame,
     /// so they can be logged when the set *changes* rather than once per
     /// frame. Empty means the last frame took the fast path.
@@ -1628,6 +1630,7 @@ impl PlaybackEngine {
             cached_pregrade_at: None,
             presenting_progress: false,
             layout_fingerprint: 0,
+            sdr_transfer: klipp_core::SdrTransfer::Srgb,
             last_direct_present_blockers: Vec::new(),
             last_grab_wait: Duration::ZERO,
             frame_cache: FrameCache::new(120), // ~5s at 24fps (backward history + forward prefetch)
@@ -2362,6 +2365,14 @@ impl PlaybackEngine {
             AppCommand::SetGlobalLutEnabled(enabled) => {
                 self.color_pipeline.enabled = enabled;
                 self.regrade_cached_frame();
+            }
+            AppCommand::SetSdrTransfer(transfer) => {
+                if self.sdr_transfer != transfer {
+                    info!("Engine: SDR viewer transfer {:?} → {transfer:?}", self.sdr_transfer);
+                    self.sdr_transfer = transfer;
+                    // The parked frame is shown again under the new encode.
+                    self.regrade_cached_frame();
+                }
             }
             AppCommand::SetLutTetrahedral(tetrahedral) => {
                 self.color_pipeline.use_tetrahedral = tetrahedral;
@@ -6217,10 +6228,11 @@ impl PlaybackEngine {
     /// keeps every site at a single-line `self.display_encode(&linear)`
     /// invocation.
     fn display_encode(&self, linear: &[f32]) -> Vec<u8> {
-        klipp_color::display::display_transform_ws(
+        klipp_color::display::display_transform_ws_to(
             linear,
             self.tone_map_op,
             crate::video_decoder::working_colorspace(),
+            self.sdr_transfer,
         )
     }
 
@@ -6272,6 +6284,7 @@ impl PlaybackEngine {
                     | "ACES working space"
                     | "BT.2020 working space"
                     | "HDR preview"
+                    | "BT.1886 viewer transfer"
             )
         })
     }
@@ -6436,6 +6449,11 @@ impl PlaybackEngine {
         // path applies it, so either would show the picture without it.
         if self.color_pipeline.enabled {
             blockers.push("global colour pipeline active");
+        }
+        // Decoded bytes are sRGB; a BT.1886 viewer re-encodes them, which
+        // the graded path does and a direct present does not.
+        if self.sdr_transfer != klipp_core::SdrTransfer::Srgb {
+            blockers.push("BT.1886 viewer transfer");
         }
 
         // The fast paths show the primary decoder's frame, so they are the
@@ -6629,7 +6647,7 @@ impl PlaybackEngine {
             // The same peak `view.rs` renders monitoring at.
             hdr_peak_nits: klipp_color::hdr::DEFAULT_MASTERING_MAX_LUMA_CD_M2,
         };
-        let (tone_map, working, preview) = (self.tone_map_op, at.working, at.hdr_preview);
+        let (tone_map, working, preview, transfer) = (self.tone_map_op, at.working, at.hdr_preview, self.sdr_transfer);
         // The frame the fallback gets is display light when monitoring is
         // on, so it takes the preview encode — the same substitution the
         // GPU branch makes.
@@ -6637,7 +6655,7 @@ impl PlaybackEngine {
             if preview {
                 klipp_color::hdr_view::preview_frame(linear, tone_map, working)
             } else {
-                klipp_color::display::display_transform_ws(linear, tone_map, working)
+                klipp_color::display::display_transform_ws_to(linear, tone_map, working, transfer)
             }
         };
         mark_stage(EngineStage::PostProcessInnerGradeExecute);
@@ -6733,7 +6751,7 @@ impl PlaybackEngine {
             // The same peak `view.rs` renders monitoring at.
             hdr_peak_nits: klipp_color::hdr::DEFAULT_MASTERING_MAX_LUMA_CD_M2,
         };
-        let (tone_map, working, preview) = (self.tone_map_op, at.working, at.hdr_preview);
+        let (tone_map, working, preview, transfer) = (self.tone_map_op, at.working, at.hdr_preview, self.sdr_transfer);
         // The frame the fallback gets is display light when monitoring is
         // on, so it takes the preview encode — the same substitution the
         // GPU branch makes.
@@ -6741,7 +6759,7 @@ impl PlaybackEngine {
             if preview {
                 klipp_color::hdr_view::preview_frame(linear, tone_map, working)
             } else {
-                klipp_color::display::display_transform_ws(linear, tone_map, working)
+                klipp_color::display::display_transform_ws_to(linear, tone_map, working, transfer)
             }
         };
         mark_stage(EngineStage::PostProcessInnerGradeExecute);

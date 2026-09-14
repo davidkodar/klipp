@@ -82,6 +82,21 @@ impl HdrMonitor {
 /// Lives in `klipp-core` so `ExportSettings` can carry it without
 /// pulling in `klipp-color`; the actual curves live in
 /// `klipp_color::display` and match one-to-one on these variants.
+/// The transfer the SDR viewer encodes for: the monitor it assumes.
+///
+/// A Rec.709 delivery is graded on a BT.1886 display (gamma 2.4); the
+/// viewer encoded sRGB, whose piecewise curve differs from 2.4 near
+/// black, so shadows in the viewer did not match a calibrated grading
+/// monitor. Export is unaffected: it encodes for its delivery.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum SdrTransfer {
+    /// The sRGB piecewise curve: a desktop monitor.
+    #[default]
+    Srgb,
+    /// BT.1886, gamma 2.4: a grading monitor.
+    Bt1886,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum ToneMapOp {
     /// Identity — no tone mapping. Values above 1.0 clip at display
@@ -1645,6 +1660,8 @@ pub enum AppCommand {
     SetGlobalLutEnabled(bool),
     /// Switch LUT interpolation: true = tetrahedral, false = trilinear.
     SetLutTetrahedral(bool),
+    /// The transfer the SDR viewer encodes for (see [`SdrTransfer`]).
+    SetSdrTransfer(SdrTransfer),
 
     // Effects (OFX)
     AddEffect { clip_id: ClipId, plugin_name: String },

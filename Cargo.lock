@@ -3053,6 +3053,7 @@ dependencies = [
  "klipp-engine",
  "klipp-export",
  "klipp-frei0r",
+ "klipp-grade-model",
  "klipp-jobs",
  "klipp-media",
  "klipp-ml",

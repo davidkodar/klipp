@@ -140,3 +140,50 @@ mod tests {
         assert_eq!(pixels[idx + 3], 255); // opaque
     }
 }
+
+/// The wheel position `(x, y, master)` whose [`wheel_offset_to_rgb`] is
+/// `rgb`, for putting a per-channel correction — a CDL — on the wheels.
+/// A channel spread wider than the wheel's rim reaches (0.5) is clamped
+/// to the rim.
+pub fn rgb_to_wheel_offset(rgb: (f32, f32, f32)) -> (f32, f32, f32) {
+    let (r, g, b) = rgb;
+    let (max, min) = (r.max(g).max(b), r.min(g).min(b));
+    let spread = max - min;
+    if spread < 1e-6 {
+        return (0.0, 0.0, (r + g + b) / 3.0);
+    }
+    // The hue of a triple is unchanged by a constant shift.
+    let (nr, ng, nb) = (r - min, g - min, b - min);
+    let hue = if nr >= ng && nr >= nb {
+        60.0 * ((ng - nb) / spread).rem_euclid(6.0)
+    } else if ng >= nb {
+        60.0 * ((nb - nr) / spread + 2.0)
+    } else {
+        60.0 * ((nr - ng) / spread + 4.0)
+    };
+    // The chroma part spans `0.5 · dist²` from its lowest channel to its highest.
+    let dist = (2.0 * spread).sqrt().min(1.0);
+    let (x, y) = (dist * hue.to_radians().cos(), dist * hue.to_radians().sin());
+    let (cr, cg, cb) = wheel_offset_to_rgb(x, y, 0.0);
+    let master = (r + g + b) / 3.0 - (cr + cg + cb) / 3.0;
+    (x, y, master)
+}
+
+#[cfg(test)]
+mod inverse_tests {
+    use super::*;
+
+    #[test]
+    fn a_wheel_position_survives_the_round_trip() {
+        for (x, y, m) in [(0.3, 0.1, 0.05), (-0.4, 0.5, -0.1), (0.0, -0.7, 0.0), (0.2, 0.2, 0.3)] {
+            let rgb = wheel_offset_to_rgb(x, y, m);
+            let (x2, y2, m2) = rgb_to_wheel_offset(rgb);
+            let rgb2 = wheel_offset_to_rgb(x2, y2, m2);
+            assert!(
+                (rgb.0 - rgb2.0).abs() < 1e-4 && (rgb.1 - rgb2.1).abs() < 1e-4 && (rgb.2 - rgb2.2).abs() < 1e-4,
+                "{rgb:?} vs {rgb2:?}"
+            );
+        }
+        assert_eq!(rgb_to_wheel_offset((0.1, 0.1, 0.1)), (0.0, 0.0, 0.1), "a neutral shift is the master alone");
+    }
+}

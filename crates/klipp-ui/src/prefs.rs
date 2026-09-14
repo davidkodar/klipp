@@ -1369,6 +1369,10 @@ pub struct ColorPrefs {
     /// LUT interpolation method.
     #[serde(default)]
     pub lut_interpolation: LutInterpolation,
+    /// The monitor the SDR viewer encodes for: sRGB (a desktop monitor)
+    /// or BT.1886 (a grading monitor, gamma 2.4).
+    #[serde(default)]
+    pub sdr_display_transfer: klipp_core::SdrTransfer,
     /// Scope rendering quality.
     #[serde(default)]
     pub scope_quality: klipp_core::ScopeQuality,
@@ -1406,6 +1410,7 @@ impl Default for ColorPrefs {
         Self {
             viewer_lut_path: None,
             lut_interpolation: Default::default(),
+            sdr_display_transfer: Default::default(),
             scope_quality: Default::default(),
             scope_update_interval_ms: default_scope_ms(),
             vectorscope_skin_angle: default_skin_angle(),
