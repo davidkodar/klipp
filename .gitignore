@@ -1,5 +1,6 @@
 target/
 klipp-debug.log
+klipp-debug.log.1
 icon-src/
 
 # Local-only planning / tracker docs (no private files in git).

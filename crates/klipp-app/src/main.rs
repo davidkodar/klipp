@@ -152,7 +152,12 @@ fn main() -> Result<()> {
         ffmpeg_next::ffi::av_log_set_callback(Some(klipp_engine::ffmpeg_log_to_tracing));
     }
 
-    // Log to klipp-debug.log, truncated on each launch
+    // Log to klipp-debug.log. The previous launch's log is kept as
+    // klipp-debug.log.1: the watchdog and slow-tick lines that explain
+    // an "app froze, had to restart" are in the log of the run that
+    // froze, and truncating on launch destroyed them the moment the user
+    // did the one thing a frozen app leaves them — restart it.
+    let _ = std::fs::rename("klipp-debug.log", "klipp-debug.log.1");
     let log_file = std::fs::File::create("klipp-debug.log")
         .expect("Failed to create klipp-debug.log");
 
