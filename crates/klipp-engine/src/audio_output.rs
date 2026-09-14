@@ -40,6 +40,15 @@ pub fn set_skim_consumer(skim: &SkimConsumer, consumer: Option<ringbuf::HeapCons
     }
 }
 
+/// ALSA's "could not open this plugin" messages go to the log, not to
+/// stderr (see `alsa_quiet`). Every path that opens or lists a device
+/// through cpal calls this first.
+pub(crate) fn quiet_alsa() {
+    #[cfg(target_os = "linux")]
+    crate::alsa_quiet::install();
+}
+
+
 /// Probe the default cpal output device sample rate. Returns 48000 if unavailable.
 ///
 /// U-5: cached in a process-wide OnceLock. cpal's default-device
@@ -55,6 +64,7 @@ pub fn probe_sample_rate() -> u32 {
     static CACHED: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
     *CACHED.get_or_init(|| {
         use cpal::traits::{DeviceTrait, HostTrait};
+        quiet_alsa();
         let host = cpal::default_host();
         host.default_output_device()
             .and_then(|d| d.default_output_config().ok())
@@ -70,6 +80,7 @@ pub fn probe_audio_available() -> bool {
     static CACHED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *CACHED.get_or_init(|| {
         use cpal::traits::HostTrait;
+        quiet_alsa();
         let host = cpal::default_host();
         host.default_output_device().is_some()
     })
@@ -165,6 +176,7 @@ pub fn prime_audio_devices_cache() {
 /// dropdown built from the result naturally puts the default at the top.
 pub fn enumerate_output_devices() -> Vec<AudioDeviceInfo> {
     use cpal::traits::{DeviceTrait, HostTrait};
+    quiet_alsa();
     let host = cpal::default_host();
     let default_name = host
         .default_output_device()
@@ -283,6 +295,7 @@ impl AudioOutput {
     /// Create audio output with an optional device name preference.
     /// Falls back silently to the system default device if the named device isn't found.
     pub fn new_with_device(mut consumer: AudioConsumer, skim_consumer: SkimConsumer, preferred_device: Option<&str>) -> Result<Self, AudioOutputError> {
+        quiet_alsa();
         let host = cpal::default_host();
 
         // Try to find preferred device by name, fall back to default

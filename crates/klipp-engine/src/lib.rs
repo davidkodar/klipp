@@ -47,6 +47,8 @@
 //! (f16 or f32 intermediate, display transform at the viewer) is the
 //! canonical fix; this crate is the substrate for it.
 
+#[cfg(target_os = "linux")]
+pub mod alsa_quiet;
 pub mod audio_decoder;
 pub mod audio_input;
 pub mod audio_output;

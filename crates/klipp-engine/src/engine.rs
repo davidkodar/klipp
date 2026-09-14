@@ -1341,6 +1341,7 @@ impl PlaybackEngine {
         let cpal_sample_rate = {
             let _t = klipp_core::startup_timer::LogTimer::new("engine: cpal default device probe");
             use cpal::traits::{DeviceTrait, HostTrait};
+            crate::audio_output::quiet_alsa();
             let host = cpal::default_host();
             host.default_output_device()
                 .and_then(|d| d.default_output_config().ok())

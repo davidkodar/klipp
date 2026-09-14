@@ -65,6 +65,7 @@ impl AudioInput {
         device_name: Option<&str>,
         sample_rate: u32,
     ) -> Result<(Self, ringbuf::HeapCons<f32>), AudioInputError> {
+        crate::audio_output::quiet_alsa();
         let host = cpal::default_host();
 
         // Try named device first; silently fall back to the default on miss.
@@ -230,6 +231,7 @@ fn pick_supported_rate(device: &cpal::Device, want: u32) -> Option<u32> {
 /// `audio_output::enumerate_output_devices` in spirit but with a slimmer
 /// payload since the input-device picker doesn't need rate/channel details.
 pub fn enumerate_input_devices() -> Vec<(String, bool)> {
+    crate::audio_output::quiet_alsa();
     let host = cpal::default_host();
     let default_name = host
         .default_input_device()
