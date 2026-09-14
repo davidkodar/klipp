@@ -23,6 +23,19 @@ pub enum RenderError {
     #[error("export cancelled")]
     Cancelled,
 
+    /// A clip's media stopped decoding part-way through the render.
+    /// The export fails rather than freezing the last good frame for
+    /// the rest of the clip: a file that plays back with a still where
+    /// motion should be is a bad delivery, not a finished one.
+    #[error("source decode failed: {0}")]
+    Source(String),
+
+    /// The encode finished but the `.partial` file could not be renamed
+    /// into place. The partial is complete and is kept for the user to
+    /// move by hand — the one failure after which it is not deleted.
+    #[error("publish rename failed: {0}")]
+    Publish(String),
+
     #[error("snapshot error: {0}")]
     Snapshot(String),
 

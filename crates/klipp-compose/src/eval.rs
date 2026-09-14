@@ -376,7 +376,7 @@ pub fn synthesise_tracker_transform(tracker_x_norm: f32, tracker_y_norm: f32, fr
 ///
 /// ```text
 ///   playhead_secs    = (playhead - host_clip.timeline_in).to_secs_f64()
-///   playhead_frame   = (playhead_secs * fps).floor() as i64
+///   playhead_frame   = frame_index(playhead_secs, fps)   (floor, with slack)
 ///   pos_idx          = playhead_frame - tp.start_frame   (signed!)
 ///   if pos_idx < 0:                  → before start, return None
 ///   if pos_idx >= positions.len():   → past end,    return None
@@ -405,7 +405,7 @@ pub fn tracker_position_at_playhead(
     // matches what the rest of the resolver uses; falls out of
     // the engine's per-frame call.
     let clip_local_secs = (playhead - host_clip.timeline_in).to_secs_f64();
-    let playhead_frame = (clip_local_secs * fps).floor() as i64;
+    let playhead_frame = crate::render::frame_index(clip_local_secs, fps);
     let pos_idx_signed = playhead_frame - tp.start_frame as i64;
     if pos_idx_signed < 0 {
         return None; // before tracker started

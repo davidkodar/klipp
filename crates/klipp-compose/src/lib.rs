@@ -13,5 +13,5 @@ pub mod render;
 pub use render::{
     active_layers, frame_snapshot, ActiveLayer, FrameSource, GlobalLut, GpuPixels, Inspect, Inspection, RenderOptions,
     RenderStats, Renderer,
-    SourceFrame, SourcePixels,
+    SourceFrame, SourcePixels, frame_index,
 };

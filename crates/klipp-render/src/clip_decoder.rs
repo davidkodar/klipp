@@ -784,6 +784,14 @@ impl RenderDecoder {
         self.frames_skipped
     }
 
+    /// The source stream's frame rate: the unit for "half a frame" of
+    /// seek tolerance. Half a *sequence* frame is 1.25 source frames
+    /// for 60 fps footage in a 24 fps sequence, and a tolerance that
+    /// wide picks the frame after the one asked for.
+    pub(crate) fn source_fps(&self) -> f64 {
+        self.fps
+    }
+
     pub fn hw_accel_name(&self) -> &'static str {
         match self.hw_accel {
             HwAccel::Cuda => "CUDA/NVDEC",
@@ -1086,9 +1094,15 @@ fn rotate_rgba<T: Copy + Default + Send + Sync>(
     (out, nw, nh)
 }
 
-/// Decode a single frame from a media file at the given time, scaled to `max_width`.
+/// Decode the frame at `seek_secs` from a media file, scaled to `max_width`.
 /// Used for RSC motion estimation (decodes adjacent frames at low resolution).
 /// Returns (rgba_data, width, height) or None on failure.
+///
+/// A container seek lands on the keyframe *before* the time asked for,
+/// so the decode walks forward to the first frame at or after it. This
+/// used to return that keyframe: every "adjacent" frame the motion
+/// estimator asked for within one GOP was the same picture, so it saw no
+/// motion and the correction did nothing.
 pub(crate) fn decode_frame_at_size(
     path: &Path,
     seek_secs: f64,
@@ -1100,6 +1114,11 @@ pub(crate) fn decode_frame_at_size(
         .streams()
         .best(ffmpeg_next::media::Type::Video)?;
     let stream_index = video_stream.index();
+    let time_base = f64::from(video_stream.time_base());
+    let half_frame = {
+        let r = video_stream.avg_frame_rate();
+        if r.numerator() > 0 && r.denominator() > 0 { 0.5 / f64::from(r) } else { 0.02 }
+    };
 
     let codec_ctx =
         ffmpeg_next::codec::context::Context::from_parameters(video_stream.parameters()).ok()?;
@@ -1109,28 +1128,53 @@ pub(crate) fn decode_frame_at_size(
         (*decoder.as_mut_ptr()).thread_count = 2;
     }
 
-    if seek_secs > 0.1 {
+    let target = if seek_secs > 0.1 {
         let ts = (seek_secs * 1_000_000.0) as i64;
         let _ = format_ctx.seek(ts, ..ts);
-    }
+        Some(seek_secs)
+    } else {
+        None
+    };
+    let wanted = |f: &ffmpeg_next::frame::Video| match target {
+        None => true,
+        Some(t) => f
+            .pts()
+            .or_else(|| f.timestamp())
+            .is_none_or(|pts| pts as f64 * time_base >= t - half_frame),
+    };
 
     let mut decoded_frame = ffmpeg_next::frame::Video::empty();
     let mut got_frame = false;
 
-    // Read packets until we get a video frame
+    // Read packets until the frame at or after the target; at the end
+    // of the file, the last frame there is.
     loop {
-        let read_result = read_next_packet(&mut format_ctx);
-        match read_result {
+        match read_next_packet(&mut format_ctx) {
             Ok(packet) => {
-                if packet.stream() == stream_index {
-                    let _ = decoder.send_packet(&packet);
-                    if decoder.receive_frame(&mut decoded_frame).is_ok() {
+                if packet.stream() != stream_index {
+                    continue;
+                }
+                let _ = decoder.send_packet(&packet);
+                while decoder.receive_frame(&mut decoded_frame).is_ok() {
+                    if wanted(&decoded_frame) {
                         got_frame = true;
                         break;
                     }
                 }
+                if got_frame {
+                    break;
+                }
             }
-            Err(_) => break,
+            Err(_) => {
+                let _ = decoder.send_eof();
+                while decoder.receive_frame(&mut decoded_frame).is_ok() {
+                    got_frame = true;
+                    if wanted(&decoded_frame) {
+                        break;
+                    }
+                }
+                break;
+            }
         }
     }
 
@@ -1341,5 +1385,47 @@ mod tests {
                 ms / frames.max(1) as f64,
             );
         }
+    }
+
+    /// A 25 fps H.264 clip of 50 flat frames, one GOP, whose luma rises
+    /// with the frame number. `None` without the ffmpeg CLI.
+    fn luma_ramp_one_gop() -> Option<PathBuf> {
+        if std::process::Command::new("ffmpeg").arg("-version").output().is_err() {
+            return None;
+        }
+        let (w, h, n) = (64usize, 64usize, 50usize);
+        let mut bytes = Vec::with_capacity(n * w * h * 3 / 2);
+        for i in 0..n {
+            bytes.extend(std::iter::repeat_n((16 + i * 219 / (n - 1)) as u8, w * h));
+            bytes.extend(std::iter::repeat_n(128u8, w * h / 2));
+        }
+        let raw = klipp_testing::scratch::scratch_file("klipp-motion-frame", "ramp.yuv");
+        let out = klipp_testing::scratch::scratch_file("klipp-motion-frame", "ramp.mp4");
+        std::fs::write(&raw, bytes).ok()?;
+        let ok = std::process::Command::new("ffmpeg")
+            .args(["-nostdin", "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "yuv420p", "-s", "64x64", "-r", "25", "-i"])
+            .arg(&raw)
+            .args(["-c:v", "libx264", "-preset", "ultrafast", "-g", "250", "-bf", "0", "-x264-params", "log-level=error"])
+            .arg(&out)
+            .status()
+            .ok()?
+            .success();
+        ok.then_some(out)
+    }
+
+    /// The motion estimator asks for the frame at a time; a container
+    /// seek only reaches the keyframe before it. With one GOP, every
+    /// time in the clip used to come back as frame 0.
+    #[test]
+    fn a_motion_frame_is_the_frame_at_the_time_asked_for() {
+        let Some(path) = luma_ramp_one_gop() else { return };
+        let mean_r = |secs: f64| {
+            let (rgba, w, h) = decode_frame_at_size(&path, secs, 64).expect("a frame");
+            rgba.chunks(4).map(|p| p[0] as f64).sum::<f64>() / (w * h) as f64
+        };
+        let (start, middle, late) = (mean_r(0.0), mean_r(1.0), mean_r(1.6));
+        assert!(start < 20.0, "frame 0 is near black, got {start}");
+        assert!((100.0..160.0).contains(&middle), "the frame at 1.0 s is mid grey, got {middle}");
+        assert!(late > middle + 40.0, "the frame at 1.6 s is brighter still, got {late} vs {middle}");
     }
 }

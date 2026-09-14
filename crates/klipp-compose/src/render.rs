@@ -1532,7 +1532,17 @@ pub fn grade_time(clip: &Clip, time: Timecode, fps: f64) -> (f64, u64) {
 }
 
 fn grade_frame(clip_time: f64, fps: f64) -> u64 {
-    (clip_time * fps).max(0.0) as u64
+    frame_index(clip_time, fps).max(0) as u64
+}
+
+/// The frame that is showing at `secs`: `floor(secs * fps)`, with a
+/// thousandth of a frame of slack for the arithmetic. Frame times come
+/// from timecodes as `value / rate`, and at 29.97 that product lands a
+/// hair under the integer for one frame in ten — frame 15 is
+/// `0.5005 * 29.97 = 14.9999…` — so a bare truncation evaluated
+/// keyframes, trackers and speed ramps one frame late there.
+pub fn frame_index(secs: f64, fps: f64) -> i64 {
+    (secs * fps + 1e-3).floor() as i64
 }
 
 /// Source time for `time`, through the clip's speed curve. Outside the
@@ -1602,7 +1612,11 @@ pub fn clip_effects(
             }
             BuiltinEffect::ColorFade { duration_secs, mode, progress, .. } => {
                 let dur = (*duration_secs as f64).max(0.0);
-                let clip_dur = (clip.source_out.to_secs_f64() - clip.source_in.to_secs_f64()).max(0.0);
+                // `t` is timeline seconds into the clip, so the fade out
+                // is measured from the clip's timeline end. Measured from
+                // its *source* length, a clip sped up 2× faded out an
+                // hour early in the source and never on the timeline.
+                let clip_dur = (clip.timeline_out - clip.timeline_in).to_secs_f64().max(0.0);
                 *progress = if dur <= 0.0 {
                     1.0
                 } else {
@@ -1869,4 +1883,31 @@ fn unshare(p: Arc<Vec<f32>>) -> Vec<f32> {
 
 fn ms_since(t: Instant) -> f64 {
     t.elapsed().as_secs_f64() * 1000.0
+}
+
+#[cfg(test)]
+mod frame_index_tests {
+    use super::frame_index;
+
+    /// Every NTSC frame time, as a timecode makes it, indexes back to
+    /// itself. A bare `(secs * fps) as u64` got one frame in ten wrong.
+    #[test]
+    fn every_ntsc_frame_time_indexes_to_its_own_frame() {
+        let fps = 30000.0 / 1001.0;
+        for n in 0..200_000i64 {
+            let secs = klipp_core::Timecode { value: n * 1001, rate: 30000 }.to_secs_f64();
+            assert_eq!(frame_index(secs, fps), n, "frame {n} at {secs}s");
+        }
+        for n in 0..200_000i64 {
+            let secs = klipp_core::Timecode { value: n, rate: 24 }.to_secs_f64();
+            assert_eq!(frame_index(secs, 24.0), n);
+        }
+    }
+
+    #[test]
+    fn a_time_inside_a_frame_is_that_frame() {
+        assert_eq!(frame_index(0.5 / 24.0, 24.0), 0);
+        assert_eq!(frame_index(1.9 / 24.0, 24.0), 1);
+        assert_eq!(frame_index(-0.5, 24.0), -12);
+    }
 }

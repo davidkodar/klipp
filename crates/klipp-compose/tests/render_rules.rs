@@ -212,6 +212,35 @@ fn opacity_is_applied_once() {
     }
 }
 
+/// A fade to colour at the end of a clip is timed on the clip's length
+/// on the timeline. It was timed on the source length: a clip playing
+/// at 2× (four seconds of source in two of timeline) faded out at
+/// source second three, which the timeline never reaches, so it ended
+/// with no fade at all.
+#[test]
+fn a_fade_out_ends_with_the_clip_on_the_timeline() {
+    let at = |t: f64| {
+        let mut c = solid([255, 255, 255], 0.0, 2.0);
+        c.source_in = tc(0.0);
+        c.source_out = tc(4.0);
+        c.builtin_effects = vec![BuiltinEffect::ColorFade {
+            color: [0, 0, 0, 255],
+            duration_secs: 1.0,
+            mode: klipp_effects::ColorFadeMode::Out,
+            progress: 1.0,
+        }];
+        render(&sequence(vec![vec![c]]), t, &mut Flat::default()).map(|img| px(&img, 16, 9)[0])
+    };
+    for (i, v) in at(0.5).iter().enumerate() {
+        assert!((v - 1.0).abs() < 1e-3, "run {i}: before the fade the clip is untouched, got {v}");
+    }
+    let [cpu, gpu] = at(1.5);
+    assert!(cpu < 0.99 && cpu > 0.01, "half-way through the fade the clip is part black, got {cpu}");
+    assert!((cpu - gpu).abs() < 1e-3, "CPU {cpu} and GPU {gpu} disagree");
+    let [late, _] = at(1.95);
+    assert!(late < cpu, "the fade deepens towards the clip's end: {late} at 1.95 s vs {cpu} at 1.5 s");
+}
+
 /// A dissolve mixes the two clips as they are graded, in linear light,
 /// both running at the frame's time. The incoming clip is brightened by
 /// its own grade; mid-dissolve is half red, half that. The viewer mixed

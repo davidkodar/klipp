@@ -51,6 +51,13 @@ struct ClipStream {
     current: Option<Decoded>,
     next: Option<Decoded>,
     ended: bool,
+    /// The decoder failed: what it said. Reported once by
+    /// [`ExportFrameSource::end_frame`], which fails the export.
+    error: Option<String>,
+    /// The file ended before the clip did and its last frame is being
+    /// held; said once per clip.
+    held_warned: bool,
+    path: std::path::PathBuf,
 }
 
 impl ClipStream {
@@ -69,17 +76,20 @@ impl ClipStream {
                 None
             }
             Err(e) => {
-                warn!("export decode failed: {e}");
+                let at = self.current.as_ref().map_or(0.0, |c| c.pts);
+                warn!("export decode failed: {:?} after {at:.3}s: {e}", self.path);
                 self.ended = true;
+                self.error = Some(format!("{} after {at:.3}s: {e}", self.path.display()));
                 None
             }
         }
     }
 
-    /// Advance to the last frame at or before `secs` (half a frame of
-    /// tolerance). Before the first frame, the first frame; past the end,
-    /// the last — a transition holding an edge frame.
-    fn seek_forward(&mut self, secs: f64, half_frame: f64, gpu: &mut crate::clip_decoder::GpuConverters) {
+    /// Advance to the last frame at or before `secs` (half a *source*
+    /// frame of tolerance). Before the first frame, the first frame;
+    /// past the end, the last — a transition holding an edge frame.
+    fn seek_forward(&mut self, secs: f64, gpu: &mut crate::clip_decoder::GpuConverters) {
+        let half_frame = 0.5 / self.decoder.source_fps().max(1.0);
         if self.current.is_none() {
             self.current = self.pull(gpu);
         }
@@ -90,6 +100,20 @@ impl ClipStream {
             match &self.next {
                 Some(n) if n.pts <= secs + half_frame => self.current = self.next.take(),
                 _ => break,
+            }
+        }
+        // Holding the last frame past the file's end: say so once, so
+        // a still where motion was expected can be traced to the file
+        // being shorter than the timeline says.
+        if self.ended && self.error.is_none() && !self.held_warned {
+            if let Some(c) = &self.current {
+                if secs > c.pts + 2.0 * half_frame {
+                    self.held_warned = true;
+                    warn!(
+                        "export: {:?} ends at {:.3}s but the timeline asks for {secs:.3}s; holding its last frame",
+                        self.path, c.pts
+                    );
+                }
             }
         }
     }
@@ -147,9 +171,16 @@ impl<'a> ExportFrameSource<'a> {
         )
     }
 
-    pub(crate) fn end_frame(&mut self) {
+    ///
+    /// Fails if any decoder the frame used has failed: the export stops
+    /// there instead of freezing that clip's last good frame to its end.
+    pub(crate) fn end_frame(&mut self) -> Result<(), crate::error::RenderError> {
         let used = std::mem::take(&mut self.used);
         self.streams.retain(|id, _| used.contains(id));
+        if let Some(e) = self.streams.values_mut().find_map(|s| s.error.take()) {
+            return Err(crate::error::RenderError::Source(e));
+        }
+        Ok(())
     }
 
     /// Hardware decode in use, for the render queue's info line.
@@ -174,7 +205,16 @@ impl<'a> ExportFrameSource<'a> {
             .with_working_colorspace(self.working);
         let m = klipp_color::camera_log::primaries_to_working_matrix(decoder.source_primaries(), self.working);
         let identity = m == [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
-        Some(ClipStream { decoder, to_working: (!identity).then_some(m), current: None, next: None, ended: false })
+        Some(ClipStream {
+            decoder,
+            to_working: (!identity).then_some(m),
+            current: None,
+            next: None,
+            ended: false,
+            error: None,
+            held_warned: false,
+            path: file.path.clone(),
+        })
     }
 }
 
@@ -187,13 +227,12 @@ impl FrameSource for ExportFrameSource<'_> {
             let s = self.open(clip, file, source_secs, width, height)?;
             self.streams.insert(clip.id, s);
         }
-        let half_frame = 0.5 / self.fps.max(1.0);
         let t0 = std::time::Instant::now();
         // Split the borrow: the stream and the shared converter are
         // different fields, and the decode needs both at once.
         let Self { streams, gpu, .. } = self;
         let stream = streams.get_mut(&clip.id)?;
-        stream.seek_forward(source_secs, half_frame, gpu);
+        stream.seek_forward(source_secs, gpu);
         let to_working = stream.to_working;
         let decoded = stream.current.as_ref();
         self.t_decode += t0.elapsed();

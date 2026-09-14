@@ -65,6 +65,20 @@ impl ExportJob {
     }
 
     pub fn run(self) -> Result<(), RenderError> {
+        let partial_path = partial_path_for(&self.output_path);
+        let result = self.run_to_partial();
+        // A failed render leaves no `.partial` behind — except the one
+        // failure where the partial is the finished encode and the
+        // rename into place is what failed.
+        if let Err(e) = &result {
+            if !matches!(e, RenderError::Publish(_)) {
+                let _ = std::fs::remove_file(&partial_path);
+            }
+        }
+        result
+    }
+
+    fn run_to_partial(self) -> Result<(), RenderError> {
         // Early cancellation check before any initialization
         if self.cancel.load(Ordering::Relaxed) {
             return Err(RenderError::Cancelled);
@@ -284,7 +298,7 @@ impl ExportJob {
                 )
             });
             if let Some((planes, light)) = planes {
-                frames.end_frame();
+                frames.end_frame()?;
                 t_render += t0.elapsed();
                 let t2 = std::time::Instant::now();
                 // `light` is the frame's MaxCLL/MaxFALL contribution for a
@@ -319,7 +333,7 @@ impl ExportJob {
             }
 
             let picture = renderer.render(timeline, time, fit_w, fit_h, &mut frames, render_opts);
-            frames.end_frame();
+            frames.end_frame()?;
             t_render += t0.elapsed();
             if !hw_reported {
                 hw_reported = true;
@@ -408,8 +422,8 @@ impl ExportJob {
                  encode is at the .partial path; rename manually.",
                 self.id, partial_path, self.output_path,
             );
-            return Err(RenderError::Encode(format!(
-                "publish rename failed: {e} (encode complete at {:?})",
+            return Err(RenderError::Publish(format!(
+                "{e} (encode complete at {:?})",
                 partial_path
             )));
         }
