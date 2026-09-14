@@ -769,14 +769,12 @@ fn inference_device_label() -> String {
 /// capability bits — no separate source-of-truth needed in the
 /// panel (the registry's `MaskCapabilities` IS the truth).
 fn capability_kind_label(caps: klipp_ml::MaskCapabilities) -> &'static str {
+    // At this coarseness there are two kinds: something that tracks
+    // through time, and everything else. The prompt, auto-detect and
+    // fallback arms all returned "Mask Generator" separately, which read
+    // as though the distinction mattered here.
     if caps.contains(klipp_ml::MaskCapabilities::TEMPORAL) {
         "Video Tracker"
-    } else if caps.contains(klipp_ml::MaskCapabilities::POINT_PROMPT)
-        || caps.contains(klipp_ml::MaskCapabilities::BOX_PROMPT)
-    {
-        "Mask Generator"
-    } else if caps.contains(klipp_ml::MaskCapabilities::AUTO_DETECT) {
-        "Mask Generator"
     } else {
         "Mask Generator"
     }

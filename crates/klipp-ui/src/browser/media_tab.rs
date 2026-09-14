@@ -1184,12 +1184,19 @@ fn render_list_view(
                 cmds.push(AppCommand::ImportMediaLinked { media_id: item.id, on_new_tracks });
             }
             if resp.dragged() {
-                // Drag all selected items if the dragged item is in the selection
-                if state.selected_media_ids.contains(&item.id) && state.selected_media_ids.len() > 1 {
-                    state.dragging_media = Some(item.id);
-                } else {
-                    state.dragging_media = Some(item.id);
-                }
+                // Single item, whatever the selection. `dragging_media` is
+                // one `Option<MediaId>` and the timeline's drop handler
+                // reads only that — it never consults
+                // `state.selected_media_ids` — so dragging a multi-selection
+                // drops one clip.
+                //
+                // This used to be an `if selected.contains(id) && len > 1`
+                // with identical arms, under a comment claiming "drag all
+                // selected items". Nothing implemented it. Left unimplemented
+                // rather than guessed at: where several clips land on a drop
+                // (end to end on one track? one per track?) is a design
+                // decision, not a fix.
+                state.dragging_media = Some(item.id);
             }
             resp.context_menu(|ui| {
                 if state.selected_media_ids.len() > 1 && state.selected_media_ids.contains(&item.id) {

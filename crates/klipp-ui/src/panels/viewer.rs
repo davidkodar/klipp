@@ -4583,11 +4583,12 @@ impl ViewerPanel {
         // thumbnail during scrub was why "frames don't follow the
         // progressbar." Browser skim hover overlay still wins on
         // top of everything.
-        let playback_tex = if state.source_playback == klipp_engine::PlaybackState::Playing {
-            live_tex.or(committed_tex)
-        } else {
-            live_tex.or(committed_tex)
-        };
+        // No branch on playback state: as the note above says, the live
+        // texture always wins now. The `if playing { .. } else { .. }` this
+        // replaces had identical arms — a leftover from when paused
+        // deferred to the thumbnail, and misleading to read as though the
+        // playback state still mattered here.
+        let playback_tex = live_tex.or(committed_tex);
         let active_tex = state.browser_skim_texture.as_ref().or(playback_tex);
         if let Some(tex) = active_tex {
             let tex_size = tex.size_vec2();

@@ -8665,15 +8665,15 @@ impl CachedFrameDecoder {
         }
 
         // Determine if we need to seek or can just read forward
-        let need_seek = if self.current_pts < 0.0 {
-            true // first access
-        } else if seek_secs < self.current_pts - self.frame_duration {
-            true // seeking backwards
-        } else if seek_secs > self.current_pts + self.frame_duration * 30.0 {
-            true // jumping far forward (>30 frames)
-        } else {
-            false // close enough — just read forward
-        };
+        // `||` rather than a chain of `if .. { true } else if ..`, which
+        // is the shape that hid a real bug in `handle_title_commands`: one
+        // arm of six returned `false` and the value was reported wrong.
+        // Written this way there is no per-arm boolean to get wrong, and
+        // the reason for each case still sits beside it. Anything else
+        // means the frame is close enough to read forward to.
+        let need_seek = self.current_pts < 0.0                                        // first access
+            || seek_secs < self.current_pts - self.frame_duration                     // seeking backwards
+            || seek_secs > self.current_pts + self.frame_duration * 30.0;             // jumping far forward (>30 frames)
 
         if need_seek {
             let ts = ((seek_secs - 0.5).max(0.0) * 1_000_000.0) as i64;

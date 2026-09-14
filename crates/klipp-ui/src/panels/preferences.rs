@@ -330,7 +330,12 @@ impl PreferencesPanel {
                     egui::vec2(66.0, 28.0),
                 );
                 let done_resp = ui.allocate_rect(done_rect, egui::Sense::click());
-                let done_bg = if done_resp.hovered() { theme.accent } else { theme.accent };
+                // Both arms were `theme.accent`, so the primary action in
+                // this dialog was the one button with no hover feedback.
+                // `accent_dim` -> `accent` is how `launch_screen.rs` does an
+                // accent button; the neighbouring Reset button uses
+                // bg_raised -> bg_hover because it is not the primary action.
+                let done_bg = if done_resp.hovered() { theme.accent } else { theme.accent_dim };
                 bottom_painter.rect_filled(done_rect, 6.0, done_bg);
                 bottom_painter.text(done_rect.center(), egui::Align2::CENTER_CENTER, "Done", egui::FontId::proportional(12.0).clone(), theme.text_on_accent);
                 if done_resp.clicked() { open = false; }
