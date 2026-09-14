@@ -896,8 +896,10 @@ mod tests {
         sub_track.clips.push(Clip {
             id: ClipId::new(),
             kind: ClipKind::Title({
-                let mut tb = klipp_timeline::TextBox::default();
-                tb.text = "Hello World".to_string();
+                let tb = klipp_timeline::TextBox {
+                    text: "Hello World".to_string(),
+                    ..Default::default()
+                };
                 klipp_timeline::TitleData::single_text(tb)
             }),
             timeline_in: make_rational(24, 24),
@@ -909,8 +911,10 @@ mod tests {
         sub_track.clips.push(Clip {
             id: ClipId::new(),
             kind: ClipKind::Title({
-                let mut tb = klipp_timeline::TextBox::default();
-                tb.text = "Second subtitle".to_string();
+                let tb = klipp_timeline::TextBox {
+                    text: "Second subtitle".to_string(),
+                    ..Default::default()
+                };
                 klipp_timeline::TitleData::single_text(tb)
             }),
             timeline_in: make_rational(96, 24),
@@ -955,8 +959,10 @@ mod tests {
         sub_track.clips.push(Clip {
             id: ClipId::new(),
             kind: ClipKind::Title({
-                let mut tb = klipp_timeline::TextBox::default();
-                tb.text = "Test".to_string();
+                let tb = klipp_timeline::TextBox {
+                    text: "Test".to_string(),
+                    ..Default::default()
+                };
                 klipp_timeline::TitleData::single_text(tb)
             }),
             timeline_in: make_rational(0, 24),

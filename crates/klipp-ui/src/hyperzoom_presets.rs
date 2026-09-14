@@ -380,23 +380,23 @@ mod tests {
     use klipp_core::ClipId;
 
     fn tweaked_scratch() -> HyperzoomScratch {
-        let mut s = HyperzoomScratch::default();
-        s.focal_x = 0.3;
-        s.focal_y = 0.7;
-        s.duration_secs = 0.42;
-        s.max_scale = 75.0;
-        s.target_choice = HyperzoomTargetChoice::Explicit(ClipId::new());
-        s.easing = HyperzoomEasing::Bezier;
-        s.hold_secs = 0.12;
-        s.add_radial_blur = true;
-        s.radial_blur_amount = 22.5;
-        s.add_chromatic_aberration = true;
-        s.chromatic_aberration_amount = 9.0;
-        s.add_light_leak = true;
-        s.light_leak_intensity = 0.55;
-        s.whoosh_enabled = true;
-        s.whoosh_variant = 1; // Medium
-        s
+        HyperzoomScratch {
+            focal_x: 0.3,
+            focal_y: 0.7,
+            duration_secs: 0.42,
+            max_scale: 75.0,
+            target_choice: HyperzoomTargetChoice::Explicit(ClipId::new()),
+            easing: HyperzoomEasing::Bezier,
+            hold_secs: 0.12,
+            add_radial_blur: true,
+            radial_blur_amount: 22.5,
+            add_chromatic_aberration: true,
+            chromatic_aberration_amount: 9.0,
+            add_light_leak: true,
+            light_leak_intensity: 0.55,
+            whoosh_enabled: true,
+            whoosh_variant: 1, // Medium
+        }
     }
 
     fn tmp_dir(stem: &str) -> PathBuf {
@@ -473,9 +473,11 @@ mod tests {
         // tuned for this clip. Different clip might want the
         // same look applied to a different region of frame.
         let p = HyperzoomPreset::from_scratch("test".into(), &tweaked_scratch());
-        let mut s = HyperzoomScratch::default();
-        s.focal_x = 0.18;
-        s.focal_y = 0.82;
+        let mut s = HyperzoomScratch {
+            focal_x: 0.18,
+            focal_y: 0.82,
+            ..Default::default()
+        };
         p.apply_to_scratch(&mut s);
         assert_eq!(s.focal_x, 0.18, "focal_x untouched by load");
         assert_eq!(s.focal_y, 0.82, "focal_y untouched by load");

@@ -61,13 +61,15 @@ pub(crate) const TITLES_FOR_TESTS: &[TitleTemplate] = TITLES;
 
 /// Centered title with optional shadow.
 fn centered(text: &str, size: f32, style: FontStyle, color: [u8; 4], shadow: bool) -> TitleData {
-    let mut tb = klipp_timeline::TextBox::default();
-    tb.text = text.into();
-    tb.font_size = size;
-    tb.font_name = "sans-serif".into();
-    tb.font_style = style;
-    tb.color = color;
-    tb.alignment = TextAlignment::Center;
+    let mut tb = klipp_timeline::TextBox {
+        text: text.into(),
+        font_size: size,
+        font_name: "sans-serif".into(),
+        font_style: style,
+        color,
+        alignment: TextAlignment::Center,
+        ..Default::default()
+    };
     if shadow {
         tb.shadows.push(TitleShadow { color: [0, 0, 0, 160], offset_x: 3.0, offset_y: 3.0, blur: 6.0, enabled: true, offset_x_keyframes: Vec::new(), offset_y_keyframes: Vec::new(), blur_keyframes: Vec::new() });
     }
@@ -80,13 +82,15 @@ fn centered(text: &str, size: f32, style: FontStyle, color: [u8; 4], shadow: boo
 
 /// Centered on a full-frame background.
 fn centered_on_bg(text: &str, size: f32, style: FontStyle, fg: [u8; 4], bg: [u8; 4]) -> TitleData {
-    let mut tb = klipp_timeline::TextBox::default();
-    tb.text = text.into();
-    tb.font_size = size;
-    tb.font_name = "sans-serif".into();
-    tb.font_style = style;
-    tb.color = fg;
-    tb.alignment = TextAlignment::Center;
+    let tb = klipp_timeline::TextBox {
+        text: text.into(),
+        font_size: size,
+        font_name: "sans-serif".into(),
+        font_style: style,
+        color: fg,
+        alignment: TextAlignment::Center,
+        ..Default::default()
+    };
     let mut td = klipp_timeline::TitleData::single_text(tb);
     td.background = TitleBackground::FullFrame { color: bg };
     td
@@ -94,13 +98,15 @@ fn centered_on_bg(text: &str, size: f32, style: FontStyle, fg: [u8; 4], bg: [u8;
 
 /// Lower-third style: left-aligned near bottom, with box background.
 fn lower_third_style(text: &str, size: f32, style: FontStyle, fg: [u8; 4], bg: [u8; 4], x: f32, y: f32) -> TitleData {
-    let mut tb = klipp_timeline::TextBox::default();
-    tb.text = text.into();
-    tb.font_size = size;
-    tb.font_name = "sans-serif".into();
-    tb.font_style = style;
-    tb.color = fg;
-    tb.alignment = TextAlignment::Left;
+    let tb = klipp_timeline::TextBox {
+        text: text.into(),
+        font_size: size,
+        font_name: "sans-serif".into(),
+        font_style: style,
+        color: fg,
+        alignment: TextAlignment::Left,
+        ..Default::default()
+    };
     let mut td = klipp_timeline::TitleData::single_text(tb);
     td.background = TitleBackground::Color { color: bg, padding: 12.0 };
     if let Some(o) = td.objects.first_mut() {
@@ -143,13 +149,15 @@ fn with_chromatic(mut td: TitleData, offset_px: f32) -> TitleData {
 /// Positioned text with optional shadow, no background.
 #[allow(clippy::too_many_arguments)]
 fn positioned(text: &str, size: f32, style: FontStyle, color: [u8; 4], align: TextAlignment, x: f32, y: f32, shadow: Option<TitleShadow>) -> TitleData {
-    let mut tb = klipp_timeline::TextBox::default();
-    tb.text = text.into();
-    tb.font_size = size;
-    tb.font_name = "sans-serif".into();
-    tb.font_style = style;
-    tb.color = color;
-    tb.alignment = align;
+    let mut tb = klipp_timeline::TextBox {
+        text: text.into(),
+        font_size: size,
+        font_name: "sans-serif".into(),
+        font_style: style,
+        color,
+        alignment: align,
+        ..Default::default()
+    };
     if let Some(s) = shadow { tb.shadows.push(s); }
     let mut td = klipp_timeline::TitleData::single_text(tb);
     if let Some(o) = td.objects.first_mut() {
@@ -193,13 +201,15 @@ fn shadow_glow(color: [u8; 4]) -> Option<TitleShadow> {
 fn basic_plain_title() -> TitleData { centered("[Your Title]", 72.0, FontStyle::Regular, WHITE, true) }
 fn basic_subtitle() -> TitleData {
     {
-    let mut tb = klipp_timeline::TextBox::default();
-    tb.text = "[Subtitle text]".into();
-    tb.font_size = 28.0;
-    tb.font_name = "sans-serif".into();
-    tb.font_style = FontStyle::Regular;
-    tb.color = WHITE;
-    tb.alignment = TextAlignment::Center;
+    let mut tb = klipp_timeline::TextBox {
+        text: "[Subtitle text]".into(),
+        font_size: 28.0,
+        font_name: "sans-serif".into(),
+        font_style: FontStyle::Regular,
+        color: WHITE,
+        alignment: TextAlignment::Center,
+        ..Default::default()
+    };
     tb.shadows.clear();
     let mut td = klipp_timeline::TitleData::single_text(tb);
     td.background = TitleBackground::Color { color: [0, 0, 0, 153], padding: 10.0 };
@@ -296,13 +306,15 @@ fn sm_thumbnail() -> TitleData {
 }
 fn sm_subscribe_cta() -> TitleData {
     {
-    let mut tb = klipp_timeline::TextBox::default();
-    tb.text = "SUBSCRIBE to [Channel Name]".into();
-    tb.font_size = 42.0;
-    tb.font_name = "sans-serif".into();
-    tb.font_style = FontStyle::Bold;
-    tb.color = WHITE;
-    tb.alignment = TextAlignment::Center;
+    let mut tb = klipp_timeline::TextBox {
+        text: "SUBSCRIBE to [Channel Name]".into(),
+        font_size: 42.0,
+        font_name: "sans-serif".into(),
+        font_style: FontStyle::Bold,
+        color: WHITE,
+        alignment: TextAlignment::Center,
+        ..Default::default()
+    };
     tb.shadows.clear();
     let mut td = klipp_timeline::TitleData::single_text(tb);
     td.background = TitleBackground::Color { color: [200, 20, 20, 230], padding: 16.0 };
@@ -312,13 +324,15 @@ fn sm_subscribe_cta() -> TitleData {
 }
 fn sm_like_share() -> TitleData {
     {
-    let mut tb = klipp_timeline::TextBox::default();
-    tb.text = "LIKE & SHARE".into();
-    tb.font_size = 36.0;
-    tb.font_name = "sans-serif".into();
-    tb.font_style = FontStyle::Bold;
-    tb.color = WHITE;
-    tb.alignment = TextAlignment::Center;
+    let mut tb = klipp_timeline::TextBox {
+        text: "LIKE & SHARE".into(),
+        font_size: 36.0,
+        font_name: "sans-serif".into(),
+        font_style: FontStyle::Bold,
+        color: WHITE,
+        alignment: TextAlignment::Center,
+        ..Default::default()
+    };
     tb.shadows.clear();
     let mut td = klipp_timeline::TitleData::single_text(tb);
     td.background = TitleBackground::Color { color: [40, 100, 200, 220], padding: 12.0 };
@@ -331,13 +345,15 @@ fn sm_hashtag() -> TitleData {
 }
 fn sm_comment() -> TitleData {
     {
-    let mut tb = klipp_timeline::TextBox::default();
-    tb.text = "[Your comment here...]".into();
-    tb.font_size = 28.0;
-    tb.font_name = "sans-serif".into();
-    tb.font_style = FontStyle::Regular;
-    tb.color = WHITE;
-    tb.alignment = TextAlignment::Left;
+    let mut tb = klipp_timeline::TextBox {
+        text: "[Your comment here...]".into(),
+        font_size: 28.0,
+        font_name: "sans-serif".into(),
+        font_style: FontStyle::Regular,
+        color: WHITE,
+        alignment: TextAlignment::Left,
+        ..Default::default()
+    };
     tb.shadows.clear();
     let mut td = klipp_timeline::TitleData::single_text(tb);
     td.background = TitleBackground::Color { color: [50, 50, 60, 200], padding: 14.0 };
@@ -405,13 +421,15 @@ fn anim_quick_flash() -> TitleData { with_anim(centered("Quick Flash", 72.0, Fon
 
 fn bc_breaking_news() -> TitleData {
     {
-    let mut tb = klipp_timeline::TextBox::default();
-    tb.text = "BREAKING NEWS".into();
-    tb.font_size = 48.0;
-    tb.font_name = "sans-serif".into();
-    tb.font_style = FontStyle::Bold;
-    tb.color = WHITE;
-    tb.alignment = TextAlignment::Center;
+    let mut tb = klipp_timeline::TextBox {
+        text: "BREAKING NEWS".into(),
+        font_size: 48.0,
+        font_name: "sans-serif".into(),
+        font_style: FontStyle::Bold,
+        color: WHITE,
+        alignment: TextAlignment::Center,
+        ..Default::default()
+    };
     tb.shadows.clear();
     let mut td = klipp_timeline::TitleData::single_text(tb);
     td.background = TitleBackground::Color { color: [200, 20, 20, 230], padding: 16.0 };
@@ -423,13 +441,15 @@ fn bc_news_ticker() -> TitleData { lower_third_style("Breaking: [Story details h
 fn bc_weather() -> TitleData { lower_third_style("[City]  [Temp]\u{00b0}F", 28.0, FontStyle::Regular, WHITE, [0, 80, 160, 210], 0.08, 0.87) }
 fn bc_score_bug() -> TitleData {
     {
-    let mut tb = klipp_timeline::TextBox::default();
-    tb.text = "[HOME] 0 - 0 [AWAY]".into();
-    tb.font_size = 28.0;
-    tb.font_name = "sans-serif".into();
-    tb.font_style = FontStyle::Bold;
-    tb.color = WHITE;
-    tb.alignment = TextAlignment::Center;
+    let mut tb = klipp_timeline::TextBox {
+        text: "[HOME] 0 - 0 [AWAY]".into(),
+        font_size: 28.0,
+        font_name: "sans-serif".into(),
+        font_style: FontStyle::Bold,
+        color: WHITE,
+        alignment: TextAlignment::Center,
+        ..Default::default()
+    };
     tb.shadows.clear();
     let mut td = klipp_timeline::TitleData::single_text(tb);
     td.background = TitleBackground::Color { color: [0, 0, 0, 200], padding: 10.0 };
@@ -441,13 +461,15 @@ fn bc_reporter() -> TitleData { lower_third_style("[Reporter Name]\n[City Bureau
 fn bc_program_title() -> TitleData { centered_on_bg("[PROGRAM TITLE]", 56.0, FontStyle::Bold, WHITE, [20, 30, 60, 240]) }
 fn bc_live_badge() -> TitleData {
     {
-    let mut tb = klipp_timeline::TextBox::default();
-    tb.text = "LIVE".into();
-    tb.font_size = 24.0;
-    tb.font_name = "sans-serif".into();
-    tb.font_style = FontStyle::Bold;
-    tb.color = WHITE;
-    tb.alignment = TextAlignment::Center;
+    let mut tb = klipp_timeline::TextBox {
+        text: "LIVE".into(),
+        font_size: 24.0,
+        font_name: "sans-serif".into(),
+        font_style: FontStyle::Bold,
+        color: WHITE,
+        alignment: TextAlignment::Center,
+        ..Default::default()
+    };
     tb.shadows.clear();
     let mut td = klipp_timeline::TitleData::single_text(tb);
     td.background = TitleBackground::Color { color: [220, 20, 20, 240], padding: 8.0 };
@@ -457,13 +479,15 @@ fn bc_live_badge() -> TitleData {
 }
 fn bc_time_zone() -> TitleData {
     {
-    let mut tb = klipp_timeline::TextBox::default();
-    tb.text = "12:00 PM EST".into();
-    tb.font_size = 22.0;
-    tb.font_name = "sans-serif".into();
-    tb.font_style = FontStyle::Regular;
-    tb.color = WHITE_DIM;
-    tb.alignment = TextAlignment::Right;
+    let mut tb = klipp_timeline::TextBox {
+        text: "12:00 PM EST".into(),
+        font_size: 22.0,
+        font_name: "sans-serif".into(),
+        font_style: FontStyle::Regular,
+        color: WHITE_DIM,
+        alignment: TextAlignment::Right,
+        ..Default::default()
+    };
     tb.shadows.clear();
     let mut td = klipp_timeline::TitleData::single_text(tb);
     td.background = TitleBackground::Color { color: [0, 0, 0, 150], padding: 6.0 };
@@ -476,13 +500,15 @@ fn bc_network_bug() -> TitleData {
 }
 fn bc_alert() -> TitleData {
     {
-    let mut tb = klipp_timeline::TextBox::default();
-    tb.text = "SEVERE WEATHER ALERT".into();
-    tb.font_size = 36.0;
-    tb.font_name = "sans-serif".into();
-    tb.font_style = FontStyle::Bold;
-    tb.color = WHITE;
-    tb.alignment = TextAlignment::Center;
+    let mut tb = klipp_timeline::TextBox {
+        text: "SEVERE WEATHER ALERT".into(),
+        font_size: 36.0,
+        font_name: "sans-serif".into(),
+        font_style: FontStyle::Bold,
+        color: WHITE,
+        alignment: TextAlignment::Center,
+        ..Default::default()
+    };
     tb.shadows.clear();
     let mut td = klipp_timeline::TitleData::single_text(tb);
     td.background = TitleBackground::Color { color: [180, 40, 0, 230], padding: 18.0 };
@@ -498,13 +524,15 @@ fn bc_alert() -> TitleData {
 fn edu_lesson() -> TitleData { centered_on_bg("Lesson [#]: [Topic]", 48.0, FontStyle::Bold, WHITE, [30, 30, 60, 240]) }
 fn edu_key_point() -> TitleData {
     {
-    let mut tb = klipp_timeline::TextBox::default();
-    tb.text = "Key Point: [Important fact here]".into();
-    tb.font_size = 36.0;
-    tb.font_name = "sans-serif".into();
-    tb.font_style = FontStyle::Bold;
-    tb.color = [255, 255, 100, 255];
-    tb.alignment = TextAlignment::Center;
+    let mut tb = klipp_timeline::TextBox {
+        text: "Key Point: [Important fact here]".into(),
+        font_size: 36.0,
+        font_name: "sans-serif".into(),
+        font_style: FontStyle::Bold,
+        color: [255, 255, 100, 255],
+        alignment: TextAlignment::Center,
+        ..Default::default()
+    };
     tb.shadows.clear();
     let mut td = klipp_timeline::TitleData::single_text(tb);
     td.background = TitleBackground::Color { color: [0, 0, 0, 180], padding: 16.0 };
@@ -514,13 +542,15 @@ fn edu_key_point() -> TitleData {
 }
 fn edu_definition() -> TitleData {
     {
-    let mut tb = klipp_timeline::TextBox::default();
-    tb.text = "[Term]: [Definition goes here]".into();
-    tb.font_size = 32.0;
-    tb.font_name = "sans-serif".into();
-    tb.font_style = FontStyle::Regular;
-    tb.color = WHITE;
-    tb.alignment = TextAlignment::Left;
+    let mut tb = klipp_timeline::TextBox {
+        text: "[Term]: [Definition goes here]".into(),
+        font_size: 32.0,
+        font_name: "sans-serif".into(),
+        font_style: FontStyle::Regular,
+        color: WHITE,
+        alignment: TextAlignment::Left,
+        ..Default::default()
+    };
     tb.shadows.clear();
     let mut td = klipp_timeline::TitleData::single_text(tb);
     td.background = TitleBackground::Color { color: [20, 60, 80, 200], padding: 14.0 };
@@ -534,13 +564,15 @@ fn edu_formula() -> TitleData {
 }
 fn edu_annotation() -> TitleData {
     {
-    let mut tb = klipp_timeline::TextBox::default();
-    tb.text = "Note: See details".into();
-    tb.font_size = 22.0;
-    tb.font_name = "sans-serif".into();
-    tb.font_style = FontStyle::Italic;
-    tb.color = [255, 255, 200, 255];
-    tb.alignment = TextAlignment::Right;
+    let mut tb = klipp_timeline::TextBox {
+        text: "Note: See details".into(),
+        font_size: 22.0,
+        font_name: "sans-serif".into(),
+        font_style: FontStyle::Italic,
+        color: [255, 255, 200, 255],
+        alignment: TextAlignment::Right,
+        ..Default::default()
+    };
     tb.shadows.clear();
     let mut td = klipp_timeline::TitleData::single_text(tb);
     td.background = TitleBackground::Color { color: [0, 0, 0, 140], padding: 8.0 };
@@ -551,13 +583,15 @@ fn edu_annotation() -> TitleData {
 fn edu_summary() -> TitleData { centered_on_bg("Summary", 48.0, FontStyle::Bold, WHITE, [50, 30, 80, 240]) }
 fn edu_quiz() -> TitleData {
     {
-    let mut tb = klipp_timeline::TextBox::default();
-    tb.text = "[Your question here?]".into();
-    tb.font_size = 42.0;
-    tb.font_name = "sans-serif".into();
-    tb.font_style = FontStyle::Bold;
-    tb.color = WHITE;
-    tb.alignment = TextAlignment::Center;
+    let mut tb = klipp_timeline::TextBox {
+        text: "[Your question here?]".into(),
+        font_size: 42.0,
+        font_name: "sans-serif".into(),
+        font_style: FontStyle::Bold,
+        color: WHITE,
+        alignment: TextAlignment::Center,
+        ..Default::default()
+    };
     tb.shadows.clear();
     let mut td = klipp_timeline::TitleData::single_text(tb);
     td.background = TitleBackground::Color { color: [80, 40, 160, 210], padding: 16.0 };
@@ -1125,17 +1159,19 @@ const TITLES: &[TitleTemplate] = &[
         let text = "BREAKING NEWS\nExplosion reported downtown, emergency services responding";
         let tlen = text.len();
         {
-    let mut tb = klipp_timeline::TextBox::default();
-    tb.text = text.into();
-    tb.font_size = 36.0;
-    tb.font_name = "sans-serif".into();
-    tb.font_style = FontStyle::Bold;
-    tb.color = [255, 255, 255, 255];
-    tb.alignment = TextAlignment::Left;
-    tb.style_runs = vec![
-                StyleRun { start: 0, end: 13, font_size: Some(42.0), font_style: Some(FontStyle::Bold), color: Some([255, 255, 255, 255]), ..StyleRun::default_for_range(0, 13) },
-                StyleRun { start: 14, end: tlen, font_size: Some(24.0), font_style: Some(FontStyle::Regular), color: Some([240, 220, 200, 255]), ..StyleRun::default_for_range(14, tlen) },
-            ];
+    let tb = klipp_timeline::TextBox {
+        text: text.into(),
+        font_size: 36.0,
+        font_name: "sans-serif".into(),
+        font_style: FontStyle::Bold,
+        color: [255, 255, 255, 255],
+        alignment: TextAlignment::Left,
+        style_runs: vec![
+                    StyleRun { start: 0, end: 13, font_size: Some(42.0), font_style: Some(FontStyle::Bold), color: Some([255, 255, 255, 255]), ..StyleRun::default_for_range(0, 13) },
+                    StyleRun { start: 14, end: tlen, font_size: Some(24.0), font_style: Some(FontStyle::Regular), color: Some([240, 220, 200, 255]), ..StyleRun::default_for_range(14, tlen) },
+                ],
+        ..Default::default()
+    };
     let mut td = klipp_timeline::TitleData::single_text(tb);
     td.background = TitleBackground::Color { color: [180, 20, 20, 220], padding: 12.0 };
     if let Some(o) = td.objects.first_mut() { o.transform.center = TitlePosition { x: 0.15, y: 0.85 }; }
@@ -1147,12 +1183,14 @@ const TITLES: &[TitleTemplate] = &[
     // These exercise multi-field combinations that would take a user
     // many Inspector clicks to reproduce from scratch.
     TitleTemplate { name: "Cyberpunk", category: "Effects", preview_text: "[CYBERPUNK]", create_data: || {
-        let mut tb = klipp_timeline::TextBox::default();
-        tb.text = "[CYBERPUNK]".into();
-        tb.font_size = 84.0;
-        tb.font_style = FontStyle::Bold;
-        tb.color = [50, 255, 220, 255];
-        tb.alignment = TextAlignment::Center;
+        let mut tb = klipp_timeline::TextBox {
+            text: "[CYBERPUNK]".into(),
+            font_size: 84.0,
+            font_style: FontStyle::Bold,
+            color: [50, 255, 220, 255],
+            alignment: TextAlignment::Center,
+            ..Default::default()
+        };
         tb.outlines.push(klipp_timeline::TextOutline { color: [10, 10, 14, 220], width: 2.0, enabled: true, width_keyframes: Vec::new() });
         tb.glows = vec![klipp_timeline::TextGlow { color: [50, 255, 220, 200], radius: 14.0, intensity: 1.5, enabled: true, radius_keyframes: Vec::new(), intensity_keyframes: Vec::new() }];
         tb.chromatic_aberration_px = 4.0;
@@ -1234,12 +1272,14 @@ const TITLES: &[TitleTemplate] = &[
         with_anim(t, TitleAnimationType::FadeIn { duration_secs: 0.6 })
     }, animation: Some("FadeIn(0.6s) + RTL") },
     TitleTemplate { name: "Countdown 10\u{2192}0", category: "Effects", preview_text: "10", create_data: || {
-        let mut tb = klipp_timeline::TextBox::default();
-        tb.text = "10".into();
-        tb.font_size = 200.0;
-        tb.font_style = FontStyle::Bold;
-        tb.color = [255, 70, 70, 255];
-        tb.alignment = TextAlignment::Center;
+        let mut tb = klipp_timeline::TextBox {
+            text: "10".into(),
+            font_size: 200.0,
+            font_style: FontStyle::Bold,
+            color: [255, 70, 70, 255],
+            alignment: TextAlignment::Center,
+            ..Default::default()
+        };
         tb.outlines.push(klipp_timeline::TextOutline { color: [40, 0, 0, 220], width: 4.0, enabled: true, width_keyframes: Vec::new() });
         let mut td = klipp_timeline::TitleData::single_text(tb);
         td.animation_type = TitleAnimationType::Counter {
@@ -1266,12 +1306,14 @@ const TITLES: &[TitleTemplate] = &[
     }, animation: None },
     TitleTemplate { name: "Neon Sign", category: "Effects", preview_text: "OPEN", create_data: || {
         let accent: [u8; 4] = [255, 60, 200, 255];
-        let mut tb = klipp_timeline::TextBox::default();
-        tb.text = "OPEN".into();
-        tb.font_size = 120.0;
-        tb.font_style = FontStyle::Bold;
-        tb.color = accent;
-        tb.alignment = TextAlignment::Center;
+        let mut tb = klipp_timeline::TextBox {
+            text: "OPEN".into(),
+            font_size: 120.0,
+            font_style: FontStyle::Bold,
+            color: accent,
+            alignment: TextAlignment::Center,
+            ..Default::default()
+        };
         tb.outlines.push(klipp_timeline::TextOutline { color: [10, 10, 14, 200], width: 3.0, enabled: true, width_keyframes: Vec::new() });
         tb.glows = vec![klipp_timeline::TextGlow { color: accent, radius: 22.0, intensity: 1.6, enabled: true, radius_keyframes: Vec::new(), intensity_keyframes: Vec::new() }];
         let mut td = klipp_timeline::TitleData::single_text(tb);

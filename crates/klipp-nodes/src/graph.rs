@@ -572,9 +572,11 @@ impl NodeGraph {
         // delivers `new`), wrapper converts it back to the basis the
         // chain was tuned against.
         let head_id = NodeId::new_v4();
-        let mut head_params = NodeParams::default();
-        head_params.primaries_from = Some(new);
-        head_params.primaries_to = Some(old);
+        let head_params = NodeParams {
+            primaries_from: Some(new),
+            primaries_to: Some(old),
+            ..Default::default()
+        };
         self.nodes.push(Node {
             id: head_id,
             kind: crate::kinds::NodeKind::PrimariesMatrix,
@@ -602,9 +604,11 @@ impl NodeGraph {
         // new project ws so anything downstream (Output, exporters,
         // viewer ODT) sees pixels in the correct basis.
         let tail_id = NodeId::new_v4();
-        let mut tail_params = NodeParams::default();
-        tail_params.primaries_from = Some(old);
-        tail_params.primaries_to = Some(new);
+        let tail_params = NodeParams {
+            primaries_from: Some(old),
+            primaries_to: Some(new),
+            ..Default::default()
+        };
         self.nodes.push(Node {
             id: tail_id,
             kind: crate::kinds::NodeKind::PrimariesMatrix,

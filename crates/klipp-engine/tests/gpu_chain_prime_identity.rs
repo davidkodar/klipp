@@ -29,11 +29,13 @@ fn color_balance_graph() -> NodeGraph {
     let colorbal = NodeId::new_v4();
     let output = NodeId::new_v4();
 
-    let mut p = NodeParams::default();
-    p.temperature = Some(0.10);
-    p.tint = Some(-0.05);
-    p.hue = Some(0.12);
-    p.global_mix = Some(1.0);
+    let p = NodeParams {
+        temperature: Some(0.10),
+        tint: Some(-0.05),
+        hue: Some(0.12),
+        global_mix: Some(1.0),
+        ..Default::default()
+    };
 
     let nodes = vec![
         Node {

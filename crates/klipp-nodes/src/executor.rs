@@ -5052,14 +5052,16 @@ mod tests {
             label: "Qualifier".to_string(),
             enabled: true,
             params: {
-                let mut p = NodeParams::default();
-                p.qualifier = Some(klipp_core::QualifierSettings {
-                    enabled: true,
-                    hue_center: 0.0,
-                    hue_width: 30.0,
+                
+                NodeParams {
+                    qualifier: Some(klipp_core::QualifierSettings {
+                        enabled: true,
+                        hue_center: 0.0,
+                        hue_width: 30.0,
+                        ..Default::default()
+                    }),
                     ..Default::default()
-                });
-                p
+                }
             },
             keyframes: Default::default(),
             output_link: None,
@@ -5539,12 +5541,14 @@ mod tests {
     }
 
     fn make_track_point_at(linked_to: Option<(NodeId, usize)>, positions: Vec<(f64, f64)>) -> klipp_core::TrackPoint {
-        let mut tp = klipp_core::TrackPoint::default();
-        tp.linked_mask = linked_to;
-        tp.start_frame = 0;
-        tp.positions = positions;
-        tp.enabled = true;
-        tp
+        
+        klipp_core::TrackPoint {
+            linked_mask: linked_to,
+            start_frame: 0,
+            positions,
+            enabled: true,
+            ..Default::default()
+        }
     }
 
     #[test]
@@ -5599,11 +5603,13 @@ mod tests {
         let mut stack = klipp_core::MaskStack { masks: vec![make_circle_mask(0.5, 0.5)] };
         // Tracker only has positions starting from frame 10. At frame 0, before the
         // tracker's analysed range, the mask centre stays at its persistent value.
-        let mut tp = klipp_core::TrackPoint::default();
-        tp.linked_mask = Some((node_id, 0));
-        tp.start_frame = 10;
-        tp.positions = vec![(0.1, 0.1)];
-        tp.enabled = true;
+        let tp = klipp_core::TrackPoint {
+            linked_mask: Some((node_id, 0)),
+            start_frame: 10,
+            positions: vec![(0.1, 0.1)],
+            enabled: true,
+            ..Default::default()
+        };
         let track_points = vec![tp];
         apply_tracker_overrides_to_masks(&mut stack, node_id, 0.0, &track_points);
         match stack.masks[0].shape {
@@ -6154,9 +6160,11 @@ mod tests {
         let src = NodeId::new_v4();
         let pm = NodeId::new_v4();
         let out = NodeId::new_v4();
-        let mut params = NodeParams::default();
-        params.primaries_from = from;
-        params.primaries_to = to;
+        let params = NodeParams {
+            primaries_from: from,
+            primaries_to: to,
+            ..Default::default()
+        };
         let graph = NodeGraph {
             nodes: vec![
                 crate::graph::Node {
@@ -6209,8 +6217,10 @@ mod tests {
             klipp_core::LogFormat::LogC3,
             klipp_core::LogFormat::Srgb,
         ] {
-            let mut params = NodeParams::default();
-            params.log_format = Some(format);
+            let params = NodeParams {
+                log_format: Some(format),
+                ..Default::default()
+            };
             let graph = NodeGraph {
                 nodes: vec![
                     node(src, NodeKind::Source, Default::default()),
@@ -6294,12 +6304,16 @@ mod tests {
         let pm2 = NodeId::new_v4();
         let src = NodeId::new_v4();
         let out = NodeId::new_v4();
-        let mut p1 = NodeParams::default();
-        p1.primaries_from = Some(klipp_core::WorkingColorspace::Rec709Linear);
-        p1.primaries_to = Some(klipp_core::WorkingColorspace::AcesCG);
-        let mut p2 = NodeParams::default();
-        p2.primaries_from = Some(klipp_core::WorkingColorspace::AcesCG);
-        p2.primaries_to = Some(klipp_core::WorkingColorspace::Rec709Linear);
+        let p1 = NodeParams {
+            primaries_from: Some(klipp_core::WorkingColorspace::Rec709Linear),
+            primaries_to: Some(klipp_core::WorkingColorspace::AcesCG),
+            ..Default::default()
+        };
+        let p2 = NodeParams {
+            primaries_from: Some(klipp_core::WorkingColorspace::AcesCG),
+            primaries_to: Some(klipp_core::WorkingColorspace::Rec709Linear),
+            ..Default::default()
+        };
         let graph = NodeGraph {
             nodes: vec![
                 crate::graph::Node {
@@ -6401,8 +6415,11 @@ mod tests {
         let sat = NodeId::new_v4();
         let out = NodeId::new_v4();
         let make_graph = |override_ws: Option<klipp_core::WorkingColorspace>| {
-            let mut sat_params = NodeParams::default();
-            sat_params.saturation = Some(0.3); // strong desat — luma vector matters
+            let sat_params = NodeParams {
+                // strong desat — luma vector matters
+                saturation: Some(0.3),
+                ..Default::default()
+            };
             NodeGraph {
                 nodes: vec![
                     crate::graph::Node {
@@ -6470,8 +6487,10 @@ mod tests {
             let src = NodeId::new_v4();
             let sat = NodeId::new_v4();
             let out = NodeId::new_v4();
-            let mut sp = NodeParams::default();
-            sp.saturation = Some(saturation);
+            let sp = NodeParams {
+                saturation: Some(saturation),
+                ..Default::default()
+            };
             NodeGraph {
                 nodes: vec![
                     crate::graph::Node { id: src, kind: NodeKind::Source, label: "S".into(),
@@ -6504,14 +6523,20 @@ mod tests {
             let sat = NodeId::new_v4();
             let post = NodeId::new_v4();
             let out = NodeId::new_v4();
-            let mut sp = NodeParams::default();
-            sp.saturation = Some(saturation);
-            let mut pre_params = NodeParams::default();
-            pre_params.primaries_from = Some(klipp_core::WorkingColorspace::AcesCG);
-            pre_params.primaries_to = Some(klipp_core::WorkingColorspace::Rec709Linear);
-            let mut post_params = NodeParams::default();
-            post_params.primaries_from = Some(klipp_core::WorkingColorspace::Rec709Linear);
-            post_params.primaries_to = Some(klipp_core::WorkingColorspace::AcesCG);
+            let sp = NodeParams {
+                saturation: Some(saturation),
+                ..Default::default()
+            };
+            let pre_params = NodeParams {
+                primaries_from: Some(klipp_core::WorkingColorspace::AcesCG),
+                primaries_to: Some(klipp_core::WorkingColorspace::Rec709Linear),
+                ..Default::default()
+            };
+            let post_params = NodeParams {
+                primaries_from: Some(klipp_core::WorkingColorspace::Rec709Linear),
+                primaries_to: Some(klipp_core::WorkingColorspace::AcesCG),
+                ..Default::default()
+            };
             NodeGraph {
                 nodes: vec![
                     crate::graph::Node { id: src, kind: NodeKind::Source, label: "S".into(),

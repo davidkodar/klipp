@@ -4261,8 +4261,10 @@ mod per_sequence_history_tests {
 
     #[test]
     fn abandon_pending_drag_drops_envelope_without_pushing() {
-        let mut state = AppState::default();
-        state.active_sequence_idx = 0;
+        let mut state = AppState {
+            active_sequence_idx: 0,
+            ..Default::default()
+        };
         let h = state.active_history_mut();
         h.begin_drag(
             "test_key".into(),
@@ -4470,8 +4472,10 @@ mod focus_search_request_tests {
     /// the consumer reads it, clears it, and the next read sees None.
     #[test]
     fn round_trip_set_then_clear() {
-        let mut s = super::AppState::default();
-        s.active_panel = Some(PanelKind::Browser);
+        let mut s = super::AppState {
+            active_panel: Some(PanelKind::Browser),
+            ..Default::default()
+        };
 
         // Dispatcher path
         s.focus_search_request = s.active_panel;
@@ -4488,8 +4492,10 @@ mod focus_search_request_tests {
     /// request — the watchdog clears it at end-of-update instead.
     #[test]
     fn wrong_panel_does_not_consume() {
-        let mut s = super::AppState::default();
-        s.focus_search_request = Some(PanelKind::Markers);
+        let mut s = super::AppState {
+            focus_search_request: Some(PanelKind::Markers),
+            ..Default::default()
+        };
 
         // Browser's MediaBrowser consumer runs but the request is
         // for Markers — must leave the flag intact.

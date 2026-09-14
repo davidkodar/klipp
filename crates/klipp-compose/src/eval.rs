@@ -517,10 +517,12 @@ mod tracker_resolution_tests {
         // defaults; we override only the fields the tests assert
         // on. Avoids pulling `uuid` into klipp-engine's dev-deps
         // just to build test fixtures.
-        let mut tp = TrackPoint::default();
-        tp.positions = vec![(0.10, 0.10), (0.20, 0.20), (0.30, 0.30), (0.40, 0.40)];
-        tp.start_frame = start_frame;
-        tp
+        
+        TrackPoint {
+            positions: vec![(0.10, 0.10), (0.20, 0.20), (0.30, 0.30), (0.40, 0.40)],
+            start_frame,
+            ..Default::default()
+        }
     }
 
     fn host_clip_with_tracker(start_frame: usize) -> Clip {

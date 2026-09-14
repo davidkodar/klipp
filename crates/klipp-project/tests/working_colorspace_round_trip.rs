@@ -27,8 +27,10 @@ fn acescg_setting_round_trips_through_save_load() {
     let seq = Sequence::new_default();
     let pool = MediaPool::new();
 
-    let mut color = ColorSettings::default();
-    color.working_colorspace = WorkingColorspace::AcesCG;
+    let color = ColorSettings {
+        working_colorspace: WorkingColorspace::AcesCG,
+        ..Default::default()
+    };
 
     save_project_with_color(&dir, &[seq], &pool, &color, None, None, "").unwrap();
 

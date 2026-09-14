@@ -37,8 +37,10 @@ fn rec2100_pq_4000_round_trips_through_serde() {
     // The most "exotic" non-default — exercises the full enum tag
     // serialiser path. If this drifts, every PQ4000 preset on disk
     // breaks.
-    let mut s = ExportSettings::default();
-    s.odt = OdtChoice::Rec2100Pq4000;
+    let s = ExportSettings {
+        odt: OdtChoice::Rec2100Pq4000,
+        ..Default::default()
+    };
     let json = serde_json::to_string(&s).unwrap();
     let back: ExportSettings = serde_json::from_str(&json).unwrap();
     assert_eq!(back.odt, OdtChoice::Rec2100Pq4000);
@@ -49,8 +51,10 @@ fn every_supported_choice_round_trips_through_serde() {
     // Ranged check across the full menu so a future variant addition
     // can't silently break one without the others noticing.
     for choice in OdtChoice::ALL {
-        let mut s = ExportSettings::default();
-        s.odt = choice;
+        let s = ExportSettings {
+            odt: choice,
+            ..Default::default()
+        };
         let json = serde_json::to_string(&s).unwrap();
         let back: ExportSettings = serde_json::from_str(&json).unwrap();
         assert_eq!(
@@ -92,8 +96,10 @@ fn unknown_odt_tag_loads_as_match_viewer_via_serde_other() {
     // (klipp_color::display::display_transform_for_export) treats
     // Unknown as MatchViewer at runtime — neither path leaves the
     // user with mystery pixels.
-    let mut s = ExportSettings::default();
-    s.odt = OdtChoice::MatchViewer;
+    let s = ExportSettings {
+        odt: OdtChoice::MatchViewer,
+        ..Default::default()
+    };
     let json = serde_json::to_string(&s).unwrap();
     let mut value: serde_json::Value = serde_json::from_str(&json).unwrap();
     if let Some(obj) = value.as_object_mut() {

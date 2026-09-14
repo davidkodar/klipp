@@ -38,10 +38,14 @@ fn node(kind: NodeKind, params: NodeParams) -> Node {
 
 /// The graph a PQ clip is seeded with, Corrector warmed.
 fn graded_pq_graph() -> NodeGraph {
-    let mut it = NodeParams::default();
-    it.log_format = Some(LogFormat::PQ);
-    let mut corrector = NodeParams::default();
-    corrector.temperature = Some(20.0);
+    let it = NodeParams {
+        log_format: Some(LogFormat::PQ),
+        ..Default::default()
+    };
+    let corrector = NodeParams {
+        temperature: Some(20.0),
+        ..Default::default()
+    };
     let nodes = vec![
         node(NodeKind::Source, NodeParams::default()),
         node(NodeKind::InputTransform, it),

@@ -131,43 +131,57 @@ fn realistic_grade_graph() -> NodeGraph {
         Edge { from_node: from, from_port: 0, to_node: to, to_port: 0 }
     }
 
-    let mut p_exposure = NodeParams::default();
-    p_exposure.exposure = Some(0.3);
+    let p_exposure = NodeParams {
+        exposure: Some(0.3),
+        ..Default::default()
+    };
 
-    let mut p_tone = NodeParams::default();
-    p_tone.highlights = Some(-0.2);
-    p_tone.shadows = Some(0.2);
-    p_tone.whites = Some(0.05);
-    p_tone.blacks = Some(-0.05);
+    let p_tone = NodeParams {
+        highlights: Some(-0.2),
+        shadows: Some(0.2),
+        whites: Some(0.05),
+        blacks: Some(-0.05),
+        ..Default::default()
+    };
 
-    let mut p_wheels = NodeParams::default();
-    p_wheels.lift_master = Some(0.02);
-    p_wheels.gamma_master = Some(-0.05);
-    p_wheels.gain_master = Some(0.03);
-    p_wheels.lift_x = Some(0.01);
-    p_wheels.gamma_y = Some(-0.01);
+    let p_wheels = NodeParams {
+        lift_master: Some(0.02),
+        gamma_master: Some(-0.05),
+        gain_master: Some(0.03),
+        lift_x: Some(0.01),
+        gamma_y: Some(-0.01),
+        ..Default::default()
+    };
 
-    let mut p_wheel_sb = NodeParams::default();
-    p_wheel_sb.lift_sat = Some(1.02);
-    p_wheel_sb.gain_sat = Some(1.05);
-    p_wheel_sb.gain_bri = Some(0.03);
+    let p_wheel_sb = NodeParams {
+        lift_sat: Some(1.02),
+        gain_sat: Some(1.05),
+        gain_bri: Some(0.03),
+        ..Default::default()
+    };
 
-    let mut p_contrast = NodeParams::default();
-    p_contrast.contrast = Some(0.15);
-    p_contrast.clarity = Some(0.10);
+    let p_contrast = NodeParams {
+        contrast: Some(0.15),
+        clarity: Some(0.10),
+        ..Default::default()
+    };
 
-    let mut p_saturation = NodeParams::default();
-    p_saturation.saturation = Some(1.10);
-    p_saturation.vibrance = Some(0.10);
+    let p_saturation = NodeParams {
+        saturation: Some(1.10),
+        vibrance: Some(0.10),
+        ..Default::default()
+    };
 
     let p_curves = NodeParams::default(); // Identity → bypass tunnel
     let p_huesat = NodeParams::default(); // Identity → bypass tunnel
     let p_warper = NodeParams::default(); // Identity → bypass tunnel
 
-    let mut p_colorbal = NodeParams::default();
-    p_colorbal.temperature = Some(0.05);
-    p_colorbal.tint = Some(-0.02);
-    p_colorbal.global_mix = Some(1.0);
+    let p_colorbal = NodeParams {
+        temperature: Some(0.05),
+        tint: Some(-0.02),
+        global_mix: Some(1.0),
+        ..Default::default()
+    };
 
     let nodes = vec![
         n(source, NodeKind::Source, "Source", NodeParams::default()),

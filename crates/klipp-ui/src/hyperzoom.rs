@@ -1876,9 +1876,11 @@ mod tests {
         // what the variant tag or custom path happen to hold (the
         // user might have toggled off after picking a custom
         // file; we don't ship a stale path).
-        let mut scratch = HyperzoomScratch::default();
-        scratch.whoosh_enabled = false;
-        scratch.whoosh_variant = WhooshChoice::Custom.as_u8();
+        let scratch = HyperzoomScratch {
+            whoosh_enabled: false,
+            whoosh_variant: WhooshChoice::Custom.as_u8(),
+            ..Default::default()
+        };
         let custom = WhooshCustomState {
             path: Some(std::path::PathBuf::from("/tmp/stale.wav")),
             length_secs: Some(2.0),
@@ -1899,9 +1901,11 @@ mod tests {
         // Checkbox on + variant = Medium → wire-tag 1, path None
         // even when the custom-state slot has stale data from a
         // previous Custom selection.
-        let mut scratch = HyperzoomScratch::default();
-        scratch.whoosh_enabled = true;
-        scratch.whoosh_variant = WhooshChoice::Medium.as_u8();
+        let scratch = HyperzoomScratch {
+            whoosh_enabled: true,
+            whoosh_variant: WhooshChoice::Medium.as_u8(),
+            ..Default::default()
+        };
         let custom = WhooshCustomState {
             path: Some(std::path::PathBuf::from("/tmp/old-custom.wav")),
             length_secs: Some(0.4),
@@ -1914,9 +1918,11 @@ mod tests {
 
     #[test]
     fn apply_fields_enabled_custom_passes_path_when_picked() {
-        let mut scratch = HyperzoomScratch::default();
-        scratch.whoosh_enabled = true;
-        scratch.whoosh_variant = WhooshChoice::Custom.as_u8();
+        let scratch = HyperzoomScratch {
+            whoosh_enabled: true,
+            whoosh_variant: WhooshChoice::Custom.as_u8(),
+            ..Default::default()
+        };
         let custom_path = std::path::PathBuf::from("/tmp/user-pick.wav");
         let custom = WhooshCustomState {
             path: Some(custom_path.clone()),
@@ -1935,9 +1941,11 @@ mod tests {
         // file picker yet. Apply must surface this as path=None;
         // the AppCommand handler then logs a warning and skips
         // the whoosh insertion (commit 2 contract).
-        let mut scratch = HyperzoomScratch::default();
-        scratch.whoosh_enabled = true;
-        scratch.whoosh_variant = WhooshChoice::Custom.as_u8();
+        let scratch = HyperzoomScratch {
+            whoosh_enabled: true,
+            whoosh_variant: WhooshChoice::Custom.as_u8(),
+            ..Default::default()
+        };
         let custom = WhooshCustomState::default();
         let (add_whoosh, variant, path) = build_whoosh_fields_for_apply(&scratch, &custom);
         assert!(add_whoosh);
@@ -2016,15 +2024,19 @@ mod tests {
         // instead of 6.0, the first toggle-on apply would be a
         // visual no-op even though the user opted in. This test
         // pins the visibly-meaningful contract.
-        let mut scratch = HyperzoomScratch::default();
-        scratch.add_chromatic_aberration = true; // user just ticked
         // No other changes — no DragValue interaction yet.
+        let scratch = HyperzoomScratch {
+            add_chromatic_aberration: true, // user just ticked
+            ..Default::default()
+        };
         assert!(scratch.chromatic_aberration_amount > 0.5,
             "first-toggle-on must pass a meaningful amount, got {}",
             scratch.chromatic_aberration_amount);
 
-        let mut scratch2 = HyperzoomScratch::default();
-        scratch2.add_light_leak = true;
+        let scratch2 = HyperzoomScratch {
+            add_light_leak: true,
+            ..Default::default()
+        };
         assert!(scratch2.light_leak_intensity > 0.05,
             "first-toggle-on must pass a meaningful intensity, got {}",
             scratch2.light_leak_intensity);

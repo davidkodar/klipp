@@ -40,8 +40,10 @@ fn node(kind: NodeKind, label: &str, params: NodeParams) -> Node {
 
 /// The graph a PQ clip gets on import, with the Corrector's params given.
 fn seeded_pq_graph(corrector: NodeParams) -> NodeGraph {
-    let mut it = NodeParams::default();
-    it.log_format = Some(LogFormat::PQ);
+    let it = NodeParams {
+        log_format: Some(LogFormat::PQ),
+        ..Default::default()
+    };
     let nodes = vec![
         node(NodeKind::Source, "Source", NodeParams::default()),
         node(NodeKind::InputTransform, "Input Transform", it),
@@ -155,8 +157,10 @@ fn a_temperature_grade_on_hdr_warms_it_instead_of_crushing_it() {
     let mut exec = GraphExecutor::new();
     let identity = grade_and_display(&mut exec, &input, &seeded_pq_graph(NodeParams::default()));
 
-    let mut warm = NodeParams::default();
-    warm.temperature = Some(20.0);
+    let warm = NodeParams {
+        temperature: Some(20.0),
+        ..Default::default()
+    };
     let graded = grade_and_display(&mut exec, &input, &seeded_pq_graph(warm));
 
     let (mi, mg) = (mean_rgb(&identity), mean_rgb(&graded));

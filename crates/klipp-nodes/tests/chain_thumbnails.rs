@@ -19,11 +19,15 @@ fn graph() -> NodeGraph {
         id: NodeId::new_v4(), kind, label: format!("{kind:?}"), enabled: true, params,
         keyframes: Default::default(), output_link: None, input_links: vec![],
     };
-    let mut exposure = NodeParams::default();
-    exposure.exposure = Some(0.7);
-    let mut saturation = NodeParams::default();
-    saturation.saturation = Some(1.4);
-    let mut bypassed = node(NodeKind::Contrast, { let mut p = NodeParams::default(); p.contrast = Some(0.3); p });
+    let exposure = NodeParams {
+        exposure: Some(0.7),
+        ..Default::default()
+    };
+    let saturation = NodeParams {
+        saturation: Some(1.4),
+        ..Default::default()
+    };
+    let mut bypassed = node(NodeKind::Contrast, NodeParams { contrast: Some(0.3), ..Default::default() });
     bypassed.enabled = false;
     let nodes = vec![
         node(NodeKind::Source, NodeParams::default()),

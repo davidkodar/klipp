@@ -3717,10 +3717,12 @@ mod tests {
     fn white_text_has_correct_color() {
         let mut renderer = TitleRenderer::new();
         let title = {
-    let mut tb = klipp_timeline::TextBox::default();
-    tb.text = "X".to_string();
-    tb.font_size = 200.0;
-    tb.color = [255, 255, 255, 255];
+    let tb = klipp_timeline::TextBox {
+        text: "X".to_string(),
+        font_size: 200.0,
+        color: [255, 255, 255, 255],
+        ..Default::default()
+    };
     let mut td = klipp_timeline::TitleData::single_text(tb);
     if let Some(o) = td.objects.first_mut() { o.transform.center = TitlePosition { x: 0.5, y: 0.5 }; }
     td
@@ -3735,8 +3737,10 @@ mod tests {
     fn full_frame_background() {
         let mut renderer = TitleRenderer::new();
         let title = {
-    let mut tb = klipp_timeline::TextBox::default();
-    tb.text = "BG".to_string();
+    let tb = klipp_timeline::TextBox {
+        text: "BG".to_string(),
+        ..Default::default()
+    };
     let mut td = klipp_timeline::TitleData::single_text(tb);
     td.background = TitleBackground::FullFrame {
                 color: [0, 0, 128, 255],
@@ -3778,10 +3782,12 @@ mod tests {
         );
         // Plain text on top. Use a short string so it doesn't
         // blanket the whole rectangle.
-        let mut tb = klipp_timeline::TextBox::default();
-        tb.text = "X".to_string();
-        tb.font_size = 60.0;
-        tb.color = [0, 255, 0, 255];
+        let tb = klipp_timeline::TextBox {
+            text: "X".to_string(),
+            font_size: 60.0,
+            color: [0, 255, 0, 255],
+            ..Default::default()
+        };
         let _text_id = td.add_object(
             TitleObjectContent::TextBox(tb),
             klipp_timeline::default_text_transform(),
@@ -3805,10 +3811,12 @@ mod tests {
         let mut td = TitleData::default();
         // Add a second TextBox with a unique colour, then hide it.
         // The visible-flag path must keep it out of the composite.
-        let mut tb2 = klipp_timeline::TextBox::default();
-        tb2.text = "MARK".to_string();
-        tb2.font_size = 80.0;
-        tb2.color = [0, 0, 255, 255];
+        let tb2 = klipp_timeline::TextBox {
+            text: "MARK".to_string(),
+            font_size: 80.0,
+            color: [0, 0, 255, 255],
+            ..Default::default()
+        };
         let id2 = td.add_object(
             TitleObjectContent::TextBox(tb2),
             klipp_timeline::default_text_transform(),
@@ -3830,9 +3838,11 @@ mod tests {
     fn shadow_adds_extra_pixels() {
         let mut renderer = TitleRenderer::new();
         let no_shadow = {
-    let mut tb = klipp_timeline::TextBox::default();
-    tb.text = "S".to_string();
-    tb.font_size = 100.0;
+    let mut tb = klipp_timeline::TextBox {
+        text: "S".to_string(),
+        font_size: 100.0,
+        ..Default::default()
+    };
     tb.shadows.clear();
     
     klipp_timeline::TitleData::single_text(tb)
@@ -3864,9 +3874,11 @@ mod tests {
     fn outline_adds_extra_pixels() {
         let mut renderer = TitleRenderer::new();
         let no_outline = {
-    let mut tb = klipp_timeline::TextBox::default();
-    tb.text = "O".to_string();
-    tb.font_size = 100.0;
+    let tb = klipp_timeline::TextBox {
+        text: "O".to_string(),
+        font_size: 100.0,
+        ..Default::default()
+    };
     
     klipp_timeline::TitleData::single_text(tb)
 };
@@ -3893,9 +3905,11 @@ mod tests {
     fn glow_adds_extra_pixels() {
         let mut renderer = TitleRenderer::new();
         let no_glow = {
-    let mut tb = klipp_timeline::TextBox::default();
-    tb.text = "G".to_string();
-    tb.font_size = 100.0;
+    let tb = klipp_timeline::TextBox {
+        text: "G".to_string(),
+        font_size: 100.0,
+        ..Default::default()
+    };
     
     klipp_timeline::TitleData::single_text(tb)
 };
@@ -3924,14 +3938,16 @@ mod tests {
     fn gradient_produces_color_variation() {
         let mut renderer = TitleRenderer::new();
         let title = {
-    let mut tb = klipp_timeline::TextBox::default();
-    tb.text = "GRADIENT".to_string();
-    tb.font_size = 100.0;
-    tb.gradient = Some(klipp_timeline::TextGradient {
-        top_color: [255, 0, 0, 255],
-        bottom_color: [0, 0, 255, 255],
-        enabled: true,
-    });
+    let tb = klipp_timeline::TextBox {
+        text: "GRADIENT".to_string(),
+        font_size: 100.0,
+        gradient: Some(klipp_timeline::TextGradient {
+            top_color: [255, 0, 0, 255],
+            bottom_color: [0, 0, 255, 255],
+            enabled: true,
+        }),
+        ..Default::default()
+    };
     
     klipp_timeline::TitleData::single_text(tb)
 };
@@ -3959,9 +3975,11 @@ mod tests {
     fn extrusion_adds_extra_pixels() {
         let mut renderer = TitleRenderer::new();
         let no_ext = {
-    let mut tb = klipp_timeline::TextBox::default();
-    tb.text = "3D".to_string();
-    tb.font_size = 100.0;
+    let tb = klipp_timeline::TextBox {
+        text: "3D".to_string(),
+        font_size: 100.0,
+        ..Default::default()
+    };
     
     klipp_timeline::TitleData::single_text(tb)
 };
@@ -3993,9 +4011,11 @@ mod tests {
     fn test_char_positions_simple() {
         let mut renderer = TitleRenderer::new();
         let td = {
-    let mut tb = klipp_timeline::TextBox::default();
-    tb.text = "Hello".to_string();
-    tb.font_size = 72.0;
+    let tb = klipp_timeline::TextBox {
+        text: "Hello".to_string(),
+        font_size: 72.0,
+        ..Default::default()
+    };
     
     klipp_timeline::TitleData::single_text(tb)
 };
@@ -4017,9 +4037,11 @@ mod tests {
     fn test_char_positions_multiline() {
         let mut renderer = TitleRenderer::new();
         let td = {
-    let mut tb = klipp_timeline::TextBox::default();
-    tb.text = "Line1\nLine2".to_string();
-    tb.font_size = 72.0;
+    let tb = klipp_timeline::TextBox {
+        text: "Line1\nLine2".to_string(),
+        font_size: 72.0,
+        ..Default::default()
+    };
     
     klipp_timeline::TitleData::single_text(tb)
 };
@@ -4048,14 +4070,16 @@ mod tests {
         let body = "Lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod \
                     tempor incididunt ut labore et dolore magna aliqua";
         let mk = |cols: u8| {
-            let mut tb = klipp_timeline::TextBox::default();
-            tb.text = body.to_string();
-            tb.font_size = 40.0;
-            // Center alignment so the column block centres in the
-            // frame and both columns fit inside the visible area
-            // regardless of how wide the block ends up.
-            tb.alignment = klipp_timeline::TextAlignment::Center;
-            tb.columns = cols;
+            let tb = klipp_timeline::TextBox {
+                text: body.to_string(),
+                font_size: 40.0,
+                // Center alignment so the column block centres in the
+                // frame and both columns fit inside the visible area
+                // regardless of how wide the block ends up.
+                alignment: klipp_timeline::TextAlignment::Center,
+                columns: cols,
+                ..Default::default()
+            };
             klipp_timeline::TitleData::single_text(tb)
         };
         let buf = renderer.render(&mk(2), 1280, 720);
@@ -4081,10 +4105,12 @@ mod tests {
     fn vertical_layout_stacks_characters() {
         let mut renderer = TitleRenderer::new();
         let mk = |vertical: bool| {
-            let mut tb = klipp_timeline::TextBox::default();
-            tb.text = "VERTICAL".to_string();
-            tb.font_size = 60.0;
-            tb.vertical_layout = vertical;
+            let tb = klipp_timeline::TextBox {
+                text: "VERTICAL".to_string(),
+                font_size: 60.0,
+                vertical_layout: vertical,
+                ..Default::default()
+            };
             klipp_timeline::TitleData::single_text(tb)
         };
         let horizontal = renderer.render_layout(&mk(false), 1280, 720);
@@ -4109,10 +4135,12 @@ mod tests {
     fn rtl_reverses_visible_character_order() {
         let mut renderer = TitleRenderer::new();
         let mk = |dir: klipp_timeline::TextDirection| {
-            let mut tb = klipp_timeline::TextBox::default();
-            tb.text = "ABC".to_string();
-            tb.font_size = 80.0;
-            tb.text_direction = dir;
+            let tb = klipp_timeline::TextBox {
+                text: "ABC".to_string(),
+                font_size: 80.0,
+                text_direction: dir,
+                ..Default::default()
+            };
             klipp_timeline::TitleData::single_text(tb)
         };
         let ltr = renderer.render(&mk(klipp_timeline::TextDirection::Ltr), 1280, 720);
@@ -4129,11 +4157,13 @@ mod tests {
     fn chromatic_aberration_alters_output() {
         let mut renderer = TitleRenderer::new();
         let mk = |ca_px: f32| {
-            let mut tb = klipp_timeline::TextBox::default();
-            tb.text = "ABC".to_string();
-            tb.font_size = 80.0;
-            tb.color = [255, 255, 255, 255];
-            tb.chromatic_aberration_px = ca_px;
+            let tb = klipp_timeline::TextBox {
+                text: "ABC".to_string(),
+                font_size: 80.0,
+                color: [255, 255, 255, 255],
+                chromatic_aberration_px: ca_px,
+                ..Default::default()
+            };
             klipp_timeline::TitleData::single_text(tb)
         };
         let plain = renderer.render(&mk(0.0), 1280, 720);
@@ -4155,10 +4185,12 @@ mod tests {
     #[test]
     fn glitch_produces_different_frames_over_time() {
         let mut renderer = TitleRenderer::new();
-        let mut tb = klipp_timeline::TextBox::default();
-        tb.text = "GLITCH".to_string();
-        tb.font_size = 80.0;
-        tb.glitch_intensity = 0.5;
+        let tb = klipp_timeline::TextBox {
+            text: "GLITCH".to_string(),
+            font_size: 80.0,
+            glitch_intensity: 0.5,
+            ..Default::default()
+        };
         let td = klipp_timeline::TitleData::single_text(tb);
 
         let frame_a = renderer.render_with_time(&td, 1280, 720, None, 0.0);
@@ -4173,9 +4205,11 @@ mod tests {
     #[test]
     fn outline_draw_on_clips_outline_horizontally() {
         let mut renderer = TitleRenderer::new();
-        let mut tb = klipp_timeline::TextBox::default();
-        tb.text = "ABCDE".to_string();
-        tb.font_size = 80.0;
+        let mut tb = klipp_timeline::TextBox {
+            text: "ABCDE".to_string(),
+            font_size: 80.0,
+            ..Default::default()
+        };
         tb.outlines.push(klipp_timeline::TextOutline {
             color: [255, 0, 0, 255],
             width: 4.0,
@@ -4213,9 +4247,11 @@ mod tests {
     #[test]
     fn color_blend_produces_distinct_colours_over_time() {
         let mut renderer = TitleRenderer::new();
-        let mut tb = klipp_timeline::TextBox::default();
-        tb.text = "X".to_string();
-        tb.font_size = 80.0;
+        let tb = klipp_timeline::TextBox {
+            text: "X".to_string(),
+            font_size: 80.0,
+            ..Default::default()
+        };
         let mut td = klipp_timeline::TitleData::single_text(tb);
         td.animation_type = klipp_timeline::TitleAnimationType::ColorBlend {
             color_a: [255, 0, 0, 255],
@@ -4250,11 +4286,13 @@ mod tests {
                          commodo consequat duis aute irure dolor in reprehenderit in voluptate \
                          velit esse cillum dolore eu fugiat nulla pariatur excepteur sint occaecat";
         let mk = |scale: f32| {
-            let mut tb = klipp_timeline::TextBox::default();
-            tb.text = body_text.to_string();
-            tb.font_size = 50.0;
-            tb.alignment = klipp_timeline::TextAlignment::Left;
-            tb.drop_cap_scale = scale;
+            let tb = klipp_timeline::TextBox {
+                text: body_text.to_string(),
+                font_size: 50.0,
+                alignment: klipp_timeline::TextAlignment::Left,
+                drop_cap_scale: scale,
+                ..Default::default()
+            };
             klipp_timeline::TitleData::single_text(tb)
         };
         let no_cap = renderer.render_layout(&mk(0.0), 1280, 720);
@@ -4278,10 +4316,12 @@ mod tests {
     fn drop_cap_enlarges_first_character() {
         let mut renderer = TitleRenderer::new();
         let mk = |scale: f32| {
-            let mut tb = klipp_timeline::TextBox::default();
-            tb.text = "Lorem ipsum".to_string();
-            tb.font_size = 50.0;
-            tb.drop_cap_scale = scale;
+            let tb = klipp_timeline::TextBox {
+                text: "Lorem ipsum".to_string(),
+                font_size: 50.0,
+                drop_cap_scale: scale,
+                ..Default::default()
+            };
             klipp_timeline::TitleData::single_text(tb)
         };
         let plain = renderer.render_layout(&mk(0.0), 1920, 1080);
@@ -4305,10 +4345,12 @@ mod tests {
     #[test]
     fn color_cycle_changes_rendered_pixels_over_time() {
         let mut renderer = TitleRenderer::new();
-        let mut tb = klipp_timeline::TextBox::default();
-        tb.text = "X".to_string();
-        tb.font_size = 80.0;
-        tb.color = [255, 0, 0, 255];  // pure red resting hue
+        let tb = klipp_timeline::TextBox {
+            text: "X".to_string(),
+            font_size: 80.0,
+            color: [255, 0, 0, 255], // pure red resting hue
+            ..Default::default()
+        };
         let mut td = klipp_timeline::TitleData::single_text(tb);
         td.animation_type = klipp_timeline::TitleAnimationType::ColorCycle { rate_hz: 1.0 };
 
@@ -4335,19 +4377,21 @@ mod tests {
     #[test]
     fn gaussian_blur_in_diffuses_glyph_during_entrance() {
         let mut renderer = TitleRenderer::new();
-        let mut tb = klipp_timeline::TextBox::default();
-        tb.text = "X".to_string();
-        tb.font_size = 100.0;
-        tb.char_animation = Some(klipp_timeline::CharAnimation {
-            stagger: 0.0,
-            entrance: klipp_timeline::CharEntrance::BlurIn,
-            wave_amplitude: 0.0,
-            wave_speed: 1.0,
-            enabled: true,
-            stagger_keyframes: Vec::new(),
-            wave_amplitude_keyframes: Vec::new(),
-            wave_speed_keyframes: Vec::new(),
-        });
+        let tb = klipp_timeline::TextBox {
+            text: "X".to_string(),
+            font_size: 100.0,
+            char_animation: Some(klipp_timeline::CharAnimation {
+                stagger: 0.0,
+                entrance: klipp_timeline::CharEntrance::BlurIn,
+                wave_amplitude: 0.0,
+                wave_speed: 1.0,
+                enabled: true,
+                stagger_keyframes: Vec::new(),
+                wave_amplitude_keyframes: Vec::new(),
+                wave_speed_keyframes: Vec::new(),
+            }),
+            ..Default::default()
+        };
         let td = klipp_timeline::TitleData::single_text(tb);
 
         // local_t at t=0.2 = 0.5 → mid-entrance, decent alpha.
@@ -4378,9 +4422,11 @@ mod tests {
     #[test]
     fn per_object_opacity_reduces_alpha_proportionally() {
         let mut renderer = TitleRenderer::new();
-        let mut tb = klipp_timeline::TextBox::default();
-        tb.text = "X".to_string();
-        tb.font_size = 80.0;
+        let tb = klipp_timeline::TextBox {
+            text: "X".to_string(),
+            font_size: 80.0,
+            ..Default::default()
+        };
         let td_full = {
             
             klipp_timeline::TitleData::single_text(tb.clone())
@@ -4411,11 +4457,13 @@ mod tests {
     fn underline_and_strikethrough_add_visible_pixels() {
         let mut renderer = TitleRenderer::new();
         let mk = |underline: bool, strike: bool| {
-            let mut tb = klipp_timeline::TextBox::default();
-            tb.text = "abc".to_string();
-            tb.font_size = 80.0;
-            tb.underline = underline;
-            tb.strikethrough = strike;
+            let tb = klipp_timeline::TextBox {
+                text: "abc".to_string(),
+                font_size: 80.0,
+                underline,
+                strikethrough: strike,
+                ..Default::default()
+            };
             klipp_timeline::TitleData::single_text(tb)
         };
         let count_nonzero = |buf: &[u8]| buf.chunks_exact(4).filter(|p| p[3] > 0).count();
@@ -4442,10 +4490,12 @@ mod tests {
     fn case_transform_changes_rendered_text() {
         let mut renderer = TitleRenderer::new();
         let mk = |case: klipp_timeline::TextCase| {
-            let mut tb = klipp_timeline::TextBox::default();
-            tb.text = "abc".to_string();
-            tb.font_size = 80.0;
-            tb.case_transform = case;
+            let tb = klipp_timeline::TextBox {
+                text: "abc".to_string(),
+                font_size: 80.0,
+                case_transform: case,
+                ..Default::default()
+            };
             klipp_timeline::TitleData::single_text(tb)
         };
         let lower = renderer.render(&mk(klipp_timeline::TextCase::None), 1280, 720);
@@ -4470,10 +4520,12 @@ mod tests {
     fn baseline_shift_moves_text_vertically() {
         let mut renderer = TitleRenderer::new();
         let mk = |shift: f32| {
-            let mut tb = klipp_timeline::TextBox::default();
-            tb.text = "X".to_string();
-            tb.font_size = 80.0;
-            tb.baseline_shift = shift;
+            let tb = klipp_timeline::TextBox {
+                text: "X".to_string(),
+                font_size: 80.0,
+                baseline_shift: shift,
+                ..Default::default()
+            };
             klipp_timeline::TitleData::single_text(tb)
         };
         // Find first row with a non-transparent pixel for each render.
@@ -4514,19 +4566,21 @@ mod tests {
     #[test]
     fn char_animation_alters_output_during_entrance() {
         let mut renderer = TitleRenderer::new();
-        let mut tb = klipp_timeline::TextBox::default();
-        tb.text = "ABCDEFG".to_string();
-        tb.font_size = 80.0;
-        tb.char_animation = Some(klipp_timeline::CharAnimation {
-            stagger: 0.05,
-            entrance: klipp_timeline::CharEntrance::FadeIn,
-            wave_amplitude: 0.0,
-            wave_speed: 1.0,
-            enabled: true,
-            stagger_keyframes: Vec::new(),
-            wave_amplitude_keyframes: Vec::new(),
-            wave_speed_keyframes: Vec::new(),
-        });
+        let tb = klipp_timeline::TextBox {
+            text: "ABCDEFG".to_string(),
+            font_size: 80.0,
+            char_animation: Some(klipp_timeline::CharAnimation {
+                stagger: 0.05,
+                entrance: klipp_timeline::CharEntrance::FadeIn,
+                wave_amplitude: 0.0,
+                wave_speed: 1.0,
+                enabled: true,
+                stagger_keyframes: Vec::new(),
+                wave_amplitude_keyframes: Vec::new(),
+                wave_speed_keyframes: Vec::new(),
+            }),
+            ..Default::default()
+        };
         let td = klipp_timeline::TitleData::single_text(tb);
 
         let buf_t0 = renderer.render_with_time(&td, 1920, 1080, None, 0.0);
@@ -4549,19 +4603,21 @@ mod tests {
     #[test]
     fn char_animation_bypasses_cache_at_different_times() {
         let mut renderer = TitleRenderer::new();
-        let mut tb = klipp_timeline::TextBox::default();
-        tb.text = "TEST".to_string();
-        tb.font_size = 80.0;
-        tb.char_animation = Some(klipp_timeline::CharAnimation {
-            stagger: 0.1,
-            entrance: klipp_timeline::CharEntrance::SlideUp,
-            wave_amplitude: 0.0,
-            wave_speed: 1.0,
-            enabled: true,
-            stagger_keyframes: Vec::new(),
-            wave_amplitude_keyframes: Vec::new(),
-            wave_speed_keyframes: Vec::new(),
-        });
+        let tb = klipp_timeline::TextBox {
+            text: "TEST".to_string(),
+            font_size: 80.0,
+            char_animation: Some(klipp_timeline::CharAnimation {
+                stagger: 0.1,
+                entrance: klipp_timeline::CharEntrance::SlideUp,
+                wave_amplitude: 0.0,
+                wave_speed: 1.0,
+                enabled: true,
+                stagger_keyframes: Vec::new(),
+                wave_amplitude_keyframes: Vec::new(),
+                wave_speed_keyframes: Vec::new(),
+            }),
+            ..Default::default()
+        };
         let td = klipp_timeline::TitleData::single_text(tb);
 
         let frame_a = renderer.render_with_time(&td, 1280, 720, None, 0.05);
@@ -4589,10 +4645,12 @@ mod tests {
         let frame_w: u32 = 1920;
         let frame_h: u32 = 1080;
         let mut mk = |alignment: klipp_timeline::TextAlignment, cx: f32| -> TitleLayout {
-            let mut tb = klipp_timeline::TextBox::default();
-            tb.text = "X".to_string();
-            tb.font_size = 100.0;
-            tb.alignment = alignment;
+            let tb = klipp_timeline::TextBox {
+                text: "X".to_string(),
+                font_size: 100.0,
+                alignment,
+                ..Default::default()
+            };
             let mut td = klipp_timeline::TitleData::single_text(tb);
             if let Some(o) = td.objects.first_mut() {
                 o.transform.center = TitlePosition { x: cx, y: 0.5 };
@@ -4635,13 +4693,15 @@ mod tests {
     fn test_char_positions_with_style_runs() {
         let mut renderer = TitleRenderer::new();
         let td = {
-    let mut tb = klipp_timeline::TextBox::default();
-    tb.text = "Hello World".to_string();
-    tb.font_size = 72.0;
-    tb.style_runs = vec![
-                StyleRun { start: 0, end: 5, font_size: Some(100.0), color: None, font_name: None, font_style: None, tracking: None, baseline_offset: None },
-                StyleRun { start: 6, end: 11, font_size: Some(50.0), color: None, font_name: None, font_style: None, tracking: None, baseline_offset: None },
-            ];
+    let tb = klipp_timeline::TextBox {
+        text: "Hello World".to_string(),
+        font_size: 72.0,
+        style_runs: vec![
+                    StyleRun { start: 0, end: 5, font_size: Some(100.0), color: None, font_name: None, font_style: None, tracking: None, baseline_offset: None },
+                    StyleRun { start: 6, end: 11, font_size: Some(50.0), color: None, font_name: None, font_style: None, tracking: None, baseline_offset: None },
+                ],
+        ..Default::default()
+    };
     
     klipp_timeline::TitleData::single_text(tb)
 };
@@ -4659,9 +4719,11 @@ mod tests {
         let mut renderer = TitleRenderer::new();
         let text = "Hi there!";
         let td = {
-    let mut tb = klipp_timeline::TextBox::default();
-    tb.text = text.to_string();
-    tb.font_size = 72.0;
+    let tb = klipp_timeline::TextBox {
+        text: text.to_string(),
+        font_size: 72.0,
+        ..Default::default()
+    };
     
     klipp_timeline::TitleData::single_text(tb)
 };
@@ -4681,14 +4743,16 @@ mod tests {
         let mut renderer = TitleRenderer::new();
         let text = "ABCDEFGHIJ";
         let td = {
-    let mut tb = klipp_timeline::TextBox::default();
-    tb.text = text.to_string();
-    tb.font_size = 72.0;
-    tb.style_runs = vec![
-                StyleRun { start: 0, end: 3, font_size: Some(100.0), color: None, font_name: None, font_style: None, tracking: None, baseline_offset: None }, // ABC
-                StyleRun { start: 3, end: 7, font_size: Some(50.0), color: None, font_name: None, font_style: None, tracking: None, baseline_offset: None },  // DEFG
-                StyleRun { start: 7, end: 10, font_size: Some(72.0), color: None, font_name: None, font_style: None, tracking: None, baseline_offset: None }, // HIJ
-            ];
+    let tb = klipp_timeline::TextBox {
+        text: text.to_string(),
+        font_size: 72.0,
+        style_runs: vec![
+                    StyleRun { start: 0, end: 3, font_size: Some(100.0), color: None, font_name: None, font_style: None, tracking: None, baseline_offset: None }, // ABC
+                    StyleRun { start: 3, end: 7, font_size: Some(50.0), color: None, font_name: None, font_style: None, tracking: None, baseline_offset: None },  // DEFG
+                    StyleRun { start: 7, end: 10, font_size: Some(72.0), color: None, font_name: None, font_style: None, tracking: None, baseline_offset: None }, // HIJ
+                ],
+        ..Default::default()
+    };
     
     klipp_timeline::TitleData::single_text(tb)
 };
@@ -4737,9 +4801,11 @@ mod tests {
         let frame_w: u32 = 1280;
         let frame_h: u32 = 720;
 
-        let mut tb = klipp_timeline::TextBox::default();
-        tb.text = "X".to_string();
-        tb.font_size = 100.0;
+        let tb = klipp_timeline::TextBox {
+            text: "X".to_string(),
+            font_size: 100.0,
+            ..Default::default()
+        };
         let mut td = klipp_timeline::TitleData::single_text(tb);
         if let Some(o) = td.objects.first_mut() {
             // Static fallback in the centre — must be ignored once the
@@ -4808,9 +4874,11 @@ mod tests {
         let frame_w: u32 = 640;
         let frame_h: u32 = 480;
 
-        let mut tb = klipp_timeline::TextBox::default();
-        tb.text = "X".to_string();
-        tb.font_size = 80.0;
+        let tb = klipp_timeline::TextBox {
+            text: "X".to_string(),
+            font_size: 80.0,
+            ..Default::default()
+        };
         let td = klipp_timeline::TitleData::single_text(tb);
 
         let buf_no_time = renderer.render(&td, frame_w, frame_h);
@@ -4836,9 +4904,11 @@ mod tests {
         let frame_w: u32 = 640;
         let frame_h: u32 = 480;
 
-        let mut tb = klipp_timeline::TextBox::default();
-        tb.text = "X".to_string();
-        tb.font_size = 80.0;
+        let mut tb = klipp_timeline::TextBox {
+            text: "X".to_string(),
+            font_size: 80.0,
+            ..Default::default()
+        };
         tb.glows.push(klipp_timeline::TextGlow {
             enabled: true,
             color: [255, 200, 0, 255],
@@ -4896,9 +4966,11 @@ mod tests {
         let frame_w: u32 = 640;
         let frame_h: u32 = 480;
 
-        let mut tb = klipp_timeline::TextBox::default();
-        tb.text = "O".to_string();
-        tb.font_size = 80.0;
+        let mut tb = klipp_timeline::TextBox {
+            text: "O".to_string(),
+            font_size: 80.0,
+            ..Default::default()
+        };
         tb.glows.push(klipp_timeline::TextGlow {
             enabled: true,
             color: [255, 100, 100, 255],
@@ -4954,32 +5026,34 @@ mod tests {
         let frame_w: u32 = 1280;
         let frame_h: u32 = 720;
 
-        let mut tb = klipp_timeline::TextBox::default();
-        tb.text = "ABCDE".to_string();
-        tb.font_size = 80.0;
-        tb.color = [255, 255, 255, 255];
-        // CharAnimation with wave_amplitude ramping 0 → 30 px,
-        // entrance None so the only animation is the wave.
-        tb.char_animation = Some(klipp_timeline::CharAnimation {
-            enabled: true,
-            entrance: klipp_timeline::CharEntrance::None,
-            stagger: 0.0, stagger_keyframes: Vec::new(),
-            wave_amplitude: 0.0,
-            wave_amplitude_keyframes: vec![
-                Keyframe {
-                    time_secs: 0.0, value: 0.0,
-                    interpolation: Interpolation::Linear,
-                    tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0),
-                },
-                Keyframe {
-                    time_secs: 2.0, value: 30.0,
-                    interpolation: Interpolation::Linear,
-                    tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0),
-                },
-            ],
-            // Fixed wave_speed so the wave actually visibly displaces.
-            wave_speed: 2.0, wave_speed_keyframes: Vec::new(),
-        });
+        let tb = klipp_timeline::TextBox {
+            text: "ABCDE".to_string(),
+            font_size: 80.0,
+            color: [255, 255, 255, 255],
+            // CharAnimation with wave_amplitude ramping 0 → 30 px,
+            // entrance None so the only animation is the wave.
+            char_animation: Some(klipp_timeline::CharAnimation {
+                enabled: true,
+                entrance: klipp_timeline::CharEntrance::None,
+                stagger: 0.0, stagger_keyframes: Vec::new(),
+                wave_amplitude: 0.0,
+                wave_amplitude_keyframes: vec![
+                    Keyframe {
+                        time_secs: 0.0, value: 0.0,
+                        interpolation: Interpolation::Linear,
+                        tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0),
+                    },
+                    Keyframe {
+                        time_secs: 2.0, value: 30.0,
+                        interpolation: Interpolation::Linear,
+                        tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0),
+                    },
+                ],
+                // Fixed wave_speed so the wave actually visibly displaces.
+                wave_speed: 2.0, wave_speed_keyframes: Vec::new(),
+            }),
+            ..Default::default()
+        };
         let mut td = klipp_timeline::TitleData::single_text(tb);
         // animation_type = FadeIn lives at the clip level, evaluated
         // by the engine; the title renderer ignores it. Pinning that
@@ -5015,9 +5089,11 @@ mod tests {
         let frame_w: u32 = 640;
         let frame_h: u32 = 480;
 
-        let mut tb = klipp_timeline::TextBox::default();
-        tb.text = "X".to_string();
-        tb.font_size = 80.0;
+        let mut tb = klipp_timeline::TextBox {
+            text: "X".to_string(),
+            font_size: 80.0,
+            ..Default::default()
+        };
         tb.glows.push(klipp_timeline::TextGlow {
             enabled: true,
             color: [255, 200, 0, 255],
@@ -5073,9 +5149,11 @@ mod tests {
         let frame_w: u32 = 640;
         let frame_h: u32 = 480;
 
-        let mut tb = klipp_timeline::TextBox::default();
-        tb.text = "X".to_string();
-        tb.font_size = 80.0;
+        let mut tb = klipp_timeline::TextBox {
+            text: "X".to_string(),
+            font_size: 80.0,
+            ..Default::default()
+        };
         tb.glows.push(klipp_timeline::TextGlow {
             enabled: true,
             color: [255, 200, 0, 255],
@@ -5107,9 +5185,11 @@ mod tests {
         let frame_w: u32 = 640;
         let frame_h: u32 = 480;
 
-        let mut tb = klipp_timeline::TextBox::default();
-        tb.text = "X".to_string();
-        tb.font_size = 80.0;
+        let mut tb = klipp_timeline::TextBox {
+            text: "X".to_string(),
+            font_size: 80.0,
+            ..Default::default()
+        };
         tb.shadows.push(klipp_timeline::TitleShadow {
             enabled: true,
             color: [0, 0, 0, 220],
@@ -5159,10 +5239,12 @@ mod tests {
         let frame_w: u32 = 1280;
         let frame_h: u32 = 720;
 
-        let mut tb = klipp_timeline::TextBox::default();
-        tb.text = "X".to_string();
-        tb.font_size = 100.0;
-        tb.color = [255, 255, 255, 255];
+        let mut tb = klipp_timeline::TextBox {
+            text: "X".to_string(),
+            font_size: 100.0,
+            color: [255, 255, 255, 255],
+            ..Default::default()
+        };
         tb.shadows.push(klipp_timeline::TitleShadow {
             enabled: true,
             color: [0, 0, 0, 255],
@@ -5223,10 +5305,12 @@ mod tests {
         let frame_w: u32 = 640;
         let frame_h: u32 = 480;
 
-        let mut tb = klipp_timeline::TextBox::default();
-        tb.text = "O".to_string();
-        tb.font_size = 100.0;
-        tb.color = [255, 255, 255, 255];
+        let mut tb = klipp_timeline::TextBox {
+            text: "O".to_string(),
+            font_size: 100.0,
+            color: [255, 255, 255, 255],
+            ..Default::default()
+        };
         tb.inner_shadows.push(klipp_timeline::InnerShadow {
             enabled: true,
             color: [0, 0, 0, 255],
@@ -5278,9 +5362,11 @@ mod tests {
         let frame_w: u32 = 640;
         let frame_h: u32 = 480;
 
-        let mut tb = klipp_timeline::TextBox::default();
-        tb.text = "X".to_string();
-        tb.font_size = 80.0;
+        let mut tb = klipp_timeline::TextBox {
+            text: "X".to_string(),
+            font_size: 80.0,
+            ..Default::default()
+        };
         tb.shadows.push(klipp_timeline::TitleShadow {
             enabled: true,
             color: [0, 0, 0, 200],
@@ -5314,10 +5400,12 @@ mod tests {
         let frame_w: u32 = 640;
         let frame_h: u32 = 480;
 
-        let mut tb = klipp_timeline::TextBox::default();
-        tb.text = "X".to_string();
-        tb.font_size = 80.0;
-        tb.color = [255, 255, 255, 255];
+        let mut tb = klipp_timeline::TextBox {
+            text: "X".to_string(),
+            font_size: 80.0,
+            color: [255, 255, 255, 255],
+            ..Default::default()
+        };
         tb.outlines.push(klipp_timeline::TextOutline {
             enabled: true,
             color: [255, 0, 0, 255],
@@ -5368,11 +5456,12 @@ mod tests {
         let frame_w: u32 = 640;
         let frame_h: u32 = 480;
 
-        let mut tb = klipp_timeline::TextBox::default();
-        tb.text = "X".to_string();
-        tb.font_size = 80.0;
-        tb.color = [255, 255, 255, 255];
-        // outlines[0]: blue, static 4 px.
+        let mut tb = klipp_timeline::TextBox {
+            text: "X".to_string(),
+            font_size: 80.0,
+            color: [255, 255, 255, 255],
+            ..Default::default()
+        };
         tb.outlines.push(klipp_timeline::TextOutline {
             enabled: true,
             color: [0, 100, 255, 255],
@@ -5443,11 +5532,12 @@ mod tests {
         let frame_w: u32 = 640;
         let frame_h: u32 = 480;
 
-        let mut tb = klipp_timeline::TextBox::default();
-        tb.text = "G".to_string();
-        tb.font_size = 100.0;
-        tb.color = [255, 255, 255, 255];
-        // Primary glow (red, tight).
+        let mut tb = klipp_timeline::TextBox {
+            text: "G".to_string(),
+            font_size: 100.0,
+            color: [255, 255, 255, 255],
+            ..Default::default()
+        };
         tb.glows.push(klipp_timeline::TextGlow {
             enabled: true,
             color: [255, 0, 0, 255],
@@ -5500,11 +5590,12 @@ mod tests {
         let frame_w: u32 = 640;
         let frame_h: u32 = 480;
 
-        let mut tb = klipp_timeline::TextBox::default();
-        tb.text = "O".to_string();
-        tb.font_size = 100.0;
-        tb.color = [255, 255, 255, 255];
-        // Primary inner shadow (red, small blur).
+        let mut tb = klipp_timeline::TextBox {
+            text: "O".to_string(),
+            font_size: 100.0,
+            color: [255, 255, 255, 255],
+            ..Default::default()
+        };
         tb.inner_shadows.push(klipp_timeline::InnerShadow {
             enabled: true,
             color: [255, 0, 0, 220],
@@ -5547,11 +5638,12 @@ mod tests {
         let frame_w: u32 = 640;
         let frame_h: u32 = 480;
 
-        let mut tb = klipp_timeline::TextBox::default();
-        tb.text = "X".to_string();
-        tb.font_size = 80.0;
-        tb.color = [255, 255, 255, 255];
-        // Primary (red) at small offset.
+        let mut tb = klipp_timeline::TextBox {
+            text: "X".to_string(),
+            font_size: 80.0,
+            color: [255, 255, 255, 255],
+            ..Default::default()
+        };
         tb.shadows.push(klipp_timeline::TitleShadow {
             enabled: true,
             color: [255, 0, 0, 220],
@@ -5612,10 +5704,12 @@ mod tests {
         let frame_w: u32 = 640;
         let frame_h: u32 = 480;
 
-        let mut tb = klipp_timeline::TextBox::default();
-        tb.text = "X".to_string();
-        tb.font_size = 80.0;
-        tb.color = [255, 255, 255, 255];
+        let mut tb = klipp_timeline::TextBox {
+            text: "X".to_string(),
+            font_size: 80.0,
+            color: [255, 255, 255, 255],
+            ..Default::default()
+        };
         tb.outlines.push(klipp_timeline::TextOutline {
             enabled: true,
             color: [0, 100, 255, 255],
@@ -5667,9 +5761,11 @@ mod tests {
         let frame_w: u32 = 640;
         let frame_h: u32 = 480;
 
-        let mut tb = klipp_timeline::TextBox::default();
-        tb.text = "X".to_string();
-        tb.font_size = 80.0;
+        let mut tb = klipp_timeline::TextBox {
+            text: "X".to_string(),
+            font_size: 80.0,
+            ..Default::default()
+        };
         tb.outlines.push(klipp_timeline::TextOutline {
             enabled: true,
             color: [255, 0, 0, 255],
@@ -5698,30 +5794,32 @@ mod tests {
         let frame_w: u32 = 1280;
         let frame_h: u32 = 720;
 
-        let mut tb = klipp_timeline::TextBox::default();
-        tb.text = "X".to_string();
-        tb.font_size = 100.0;
-        tb.color = [255, 255, 255, 255];
-        tb.extrusion = Some(klipp_timeline::TextExtrusion {
-            enabled: true,
-            face_color: [255, 255, 255, 255],
-            side_color: [80, 80, 120, 255],
-            depth: 4.0,
-            depth_keyframes: vec![
-                Keyframe {
-                    time_secs: 0.0, value: 4.0,
-                    interpolation: Interpolation::Linear,
-                    tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0),
-                },
-                Keyframe {
-                    time_secs: 2.0, value: 30.0,
-                    interpolation: Interpolation::Linear,
-                    tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0),
-                },
-            ],
-            angle: 135.0, angle_keyframes: Vec::new(),
-            lighting: 0.5, lighting_keyframes: Vec::new(),
-        });
+        let tb = klipp_timeline::TextBox {
+            text: "X".to_string(),
+            font_size: 100.0,
+            color: [255, 255, 255, 255],
+            extrusion: Some(klipp_timeline::TextExtrusion {
+                enabled: true,
+                face_color: [255, 255, 255, 255],
+                side_color: [80, 80, 120, 255],
+                depth: 4.0,
+                depth_keyframes: vec![
+                    Keyframe {
+                        time_secs: 0.0, value: 4.0,
+                        interpolation: Interpolation::Linear,
+                        tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0),
+                    },
+                    Keyframe {
+                        time_secs: 2.0, value: 30.0,
+                        interpolation: Interpolation::Linear,
+                        tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0),
+                    },
+                ],
+                angle: 135.0, angle_keyframes: Vec::new(),
+                lighting: 0.5, lighting_keyframes: Vec::new(),
+            }),
+            ..Default::default()
+        };
         let td = klipp_timeline::TitleData::single_text(tb);
 
         let buf_t0 = renderer.render_with_time(&td, frame_w, frame_h, None, 0.0);
@@ -5746,17 +5844,19 @@ mod tests {
         let frame_w: u32 = 640;
         let frame_h: u32 = 480;
 
-        let mut tb = klipp_timeline::TextBox::default();
-        tb.text = "X".to_string();
-        tb.font_size = 80.0;
-        tb.extrusion = Some(klipp_timeline::TextExtrusion {
-            enabled: true,
-            face_color: [255, 255, 255, 255],
-            side_color: [80, 80, 80, 255],
-            depth: 12.0, depth_keyframes: Vec::new(),
-            angle: 135.0, angle_keyframes: Vec::new(),
-            lighting: 0.5, lighting_keyframes: Vec::new(),
-        });
+        let tb = klipp_timeline::TextBox {
+            text: "X".to_string(),
+            font_size: 80.0,
+            extrusion: Some(klipp_timeline::TextExtrusion {
+                enabled: true,
+                face_color: [255, 255, 255, 255],
+                side_color: [80, 80, 80, 255],
+                depth: 12.0, depth_keyframes: Vec::new(),
+                angle: 135.0, angle_keyframes: Vec::new(),
+                lighting: 0.5, lighting_keyframes: Vec::new(),
+            }),
+            ..Default::default()
+        };
         let td = klipp_timeline::TitleData::single_text(tb);
 
         let buf_no_time = renderer.render(&td, frame_w, frame_h);
@@ -5776,9 +5876,11 @@ mod tests {
         let frame_w: u32 = 640;
         let frame_h: u32 = 480;
 
-        let mut tb = klipp_timeline::TextBox::default();
-        tb.text = "X".to_string();
-        tb.font_size = 80.0;
+        let mut tb = klipp_timeline::TextBox {
+            text: "X".to_string(),
+            font_size: 80.0,
+            ..Default::default()
+        };
         tb.inner_shadows.push(klipp_timeline::InnerShadow {
             enabled: true,
             color: [0, 0, 0, 200],
@@ -5853,24 +5955,28 @@ mod tests {
         let frame_w: u32 = 640;
         let frame_h: u32 = 480;
 
-        let mut tb_no_tex = klipp_timeline::TextBox::default();
-        tb_no_tex.text = "X".to_string();
-        tb_no_tex.font_size = 100.0;
-        tb_no_tex.color = [255, 0, 0, 255];
+        let tb_no_tex = klipp_timeline::TextBox {
+            text: "X".to_string(),
+            font_size: 100.0,
+            color: [255, 0, 0, 255],
+            ..Default::default()
+        };
         let td_no_tex = klipp_timeline::TitleData::single_text(tb_no_tex);
 
-        let mut tb_zero_op = klipp_timeline::TextBox::default();
-        tb_zero_op.text = "X".to_string();
-        tb_zero_op.font_size = 100.0;
-        tb_zero_op.color = [255, 0, 0, 255];
-        tb_zero_op.texture_fill = Some(klipp_timeline::TextureFill {
-            enabled: true,
-            source: klipp_timeline::TextureSource::Preset(
-                klipp_timeline::TexturePresetId::Scanlines,
-            ),
-            opacity: 0.0,
-            ..klipp_timeline::TextureFill::default()
-        });
+        let tb_zero_op = klipp_timeline::TextBox {
+            text: "X".to_string(),
+            font_size: 100.0,
+            color: [255, 0, 0, 255],
+            texture_fill: Some(klipp_timeline::TextureFill {
+                enabled: true,
+                source: klipp_timeline::TextureSource::Preset(
+                    klipp_timeline::TexturePresetId::Scanlines,
+                ),
+                opacity: 0.0,
+                ..klipp_timeline::TextureFill::default()
+            }),
+            ..Default::default()
+        };
         let td_zero_op = klipp_timeline::TitleData::single_text(tb_zero_op);
 
         let buf_no = renderer.render(&td_no_tex, frame_w, frame_h);
@@ -5891,24 +5997,28 @@ mod tests {
         let frame_w: u32 = 640;
         let frame_h: u32 = 480;
 
-        let mut tb_no = klipp_timeline::TextBox::default();
-        tb_no.text = "X".to_string();
-        tb_no.font_size = 100.0;
-        tb_no.color = [255, 0, 0, 255];
+        let tb_no = klipp_timeline::TextBox {
+            text: "X".to_string(),
+            font_size: 100.0,
+            color: [255, 0, 0, 255],
+            ..Default::default()
+        };
         let td_no = klipp_timeline::TitleData::single_text(tb_no);
 
-        let mut tb_full = klipp_timeline::TextBox::default();
-        tb_full.text = "X".to_string();
-        tb_full.font_size = 100.0;
-        tb_full.color = [255, 0, 0, 255];
-        tb_full.texture_fill = Some(klipp_timeline::TextureFill {
-            enabled: true,
-            source: klipp_timeline::TextureSource::Preset(
-                klipp_timeline::TexturePresetId::GradientSweep,
-            ),
-            opacity: 1.0,
-            ..klipp_timeline::TextureFill::default()
-        });
+        let tb_full = klipp_timeline::TextBox {
+            text: "X".to_string(),
+            font_size: 100.0,
+            color: [255, 0, 0, 255],
+            texture_fill: Some(klipp_timeline::TextureFill {
+                enabled: true,
+                source: klipp_timeline::TextureSource::Preset(
+                    klipp_timeline::TexturePresetId::GradientSweep,
+                ),
+                opacity: 1.0,
+                ..klipp_timeline::TextureFill::default()
+            }),
+            ..Default::default()
+        };
         let td_full = klipp_timeline::TitleData::single_text(tb_full);
 
         let buf_no = renderer.render(&td_no, frame_w, frame_h);
@@ -5931,30 +6041,34 @@ mod tests {
 
         let preset = klipp_timeline::TexturePresetId::GradientSweep;
 
-        let mut tb_white = klipp_timeline::TextBox::default();
-        tb_white.text = "X".to_string();
-        tb_white.font_size = 100.0;
-        tb_white.color = [255, 255, 255, 255];
-        tb_white.texture_fill = Some(klipp_timeline::TextureFill {
-            enabled: true,
-            source: klipp_timeline::TextureSource::Preset(preset),
-            opacity: 1.0,
-            tint: [255, 255, 255, 255],
-            ..klipp_timeline::TextureFill::default()
-        });
+        let tb_white = klipp_timeline::TextBox {
+            text: "X".to_string(),
+            font_size: 100.0,
+            color: [255, 255, 255, 255],
+            texture_fill: Some(klipp_timeline::TextureFill {
+                enabled: true,
+                source: klipp_timeline::TextureSource::Preset(preset),
+                opacity: 1.0,
+                tint: [255, 255, 255, 255],
+                ..klipp_timeline::TextureFill::default()
+            }),
+            ..Default::default()
+        };
         let td_white = klipp_timeline::TitleData::single_text(tb_white);
 
-        let mut tb_green = klipp_timeline::TextBox::default();
-        tb_green.text = "X".to_string();
-        tb_green.font_size = 100.0;
-        tb_green.color = [255, 255, 255, 255];
-        tb_green.texture_fill = Some(klipp_timeline::TextureFill {
-            enabled: true,
-            source: klipp_timeline::TextureSource::Preset(preset),
-            opacity: 1.0,
-            tint: [0, 255, 0, 255],
-            ..klipp_timeline::TextureFill::default()
-        });
+        let tb_green = klipp_timeline::TextBox {
+            text: "X".to_string(),
+            font_size: 100.0,
+            color: [255, 255, 255, 255],
+            texture_fill: Some(klipp_timeline::TextureFill {
+                enabled: true,
+                source: klipp_timeline::TextureSource::Preset(preset),
+                opacity: 1.0,
+                tint: [0, 255, 0, 255],
+                ..klipp_timeline::TextureFill::default()
+            }),
+            ..Default::default()
+        };
         let td_green = klipp_timeline::TitleData::single_text(tb_green);
 
         let buf_white = renderer.render(&td_white, frame_w, frame_h);
@@ -5990,23 +6104,27 @@ mod tests {
         let frame_w: u32 = 640;
         let frame_h: u32 = 480;
 
-        let mut tb_off = klipp_timeline::TextBox::default();
-        tb_off.text = "X".to_string();
-        tb_off.font_size = 100.0;
-        tb_off.color = [200, 50, 50, 255];
-        tb_off.texture_fill = Some(klipp_timeline::TextureFill {
-            enabled: false,
-            source: klipp_timeline::TextureSource::Preset(
-                klipp_timeline::TexturePresetId::PaperGrain,
-            ),
-            ..klipp_timeline::TextureFill::default()
-        });
+        let tb_off = klipp_timeline::TextBox {
+            text: "X".to_string(),
+            font_size: 100.0,
+            color: [200, 50, 50, 255],
+            texture_fill: Some(klipp_timeline::TextureFill {
+                enabled: false,
+                source: klipp_timeline::TextureSource::Preset(
+                    klipp_timeline::TexturePresetId::PaperGrain,
+                ),
+                ..klipp_timeline::TextureFill::default()
+            }),
+            ..Default::default()
+        };
         let td_off = klipp_timeline::TitleData::single_text(tb_off);
 
-        let mut tb_none = klipp_timeline::TextBox::default();
-        tb_none.text = "X".to_string();
-        tb_none.font_size = 100.0;
-        tb_none.color = [200, 50, 50, 255];
+        let tb_none = klipp_timeline::TextBox {
+            text: "X".to_string(),
+            font_size: 100.0,
+            color: [200, 50, 50, 255],
+            ..Default::default()
+        };
         let td_none = klipp_timeline::TitleData::single_text(tb_none);
 
         let buf_off = renderer.render(&td_off, frame_w, frame_h);
@@ -6035,12 +6153,14 @@ mod tests {
     use klipp_timeline::{FontStyle, StyleRun, TextAlignment, TextBox, TextCase};
 
     fn glyph_hash_baseline_title() -> klipp_timeline::TitleData {
-        let mut tb = TextBox::default();
-        tb.text = "Hello".to_string();
-        tb.font_name = "Sans".to_string();
-        tb.font_size = 72.0;
-        tb.font_style = FontStyle::Regular;
-        tb.alignment = TextAlignment::Center;
+        let tb = TextBox {
+            text: "Hello".to_string(),
+            font_name: "Sans".to_string(),
+            font_size: 72.0,
+            font_style: FontStyle::Regular,
+            alignment: TextAlignment::Center,
+            ..Default::default()
+        };
         klipp_timeline::TitleData::single_text(tb)
     }
 

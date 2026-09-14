@@ -17745,8 +17745,10 @@ mod snap_tests {
     // hardcodes a single string.
     #[test]
     fn snap_legend_grid_label_carries_interval_name() {
-        let mut state = AppState::default();
-        state.grid_snap_interval = klipp_core::GridInterval::Second;
+        let mut state = AppState {
+            grid_snap_interval: klipp_core::GridInterval::Second,
+            ..Default::default()
+        };
         let label = TimelinePanel::snap_legend_label_for_kind(
             klipp_core::SnapTargetKind::Grid,
             0.0,

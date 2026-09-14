@@ -305,9 +305,11 @@ fn graph_colorbalance_only() -> NodeGraph {
     let colorbal = NodeId::new_v4();
     let output = NodeId::new_v4();
 
-    let mut p = NodeParams::default();
-    p.hue = Some(0.15); // non-zero → forces execution
-    p.global_mix = Some(1.0);
+    let p = NodeParams {
+        hue: Some(0.15), // non-zero → forces execution
+        global_mix: Some(1.0),
+        ..Default::default()
+    };
 
     let nodes = vec![
         mk_node(source, NodeKind::Source, "Source", NodeParams::default()),
@@ -327,27 +329,37 @@ fn graph_chain_5node() -> NodeGraph {
     let colorbal = NodeId::new_v4();
     let output = NodeId::new_v4();
 
-    let mut p_exp = NodeParams::default();
-    p_exp.exposure = Some(0.3);
+    let p_exp = NodeParams {
+        exposure: Some(0.3),
+        ..Default::default()
+    };
 
-    let mut p_con = NodeParams::default();
-    p_con.contrast = Some(0.15);
-    p_con.clarity = Some(0.10);
+    let p_con = NodeParams {
+        contrast: Some(0.15),
+        clarity: Some(0.10),
+        ..Default::default()
+    };
 
-    let mut p_sat = NodeParams::default();
-    p_sat.saturation = Some(1.10);
-    p_sat.vibrance = Some(0.10);
+    let p_sat = NodeParams {
+        saturation: Some(1.10),
+        vibrance: Some(0.10),
+        ..Default::default()
+    };
 
-    let mut p_wheel = NodeParams::default();
-    p_wheel.lift_master = Some(0.02);
-    p_wheel.gamma_master = Some(-0.05);
-    p_wheel.gain_master = Some(0.03);
+    let p_wheel = NodeParams {
+        lift_master: Some(0.02),
+        gamma_master: Some(-0.05),
+        gain_master: Some(0.03),
+        ..Default::default()
+    };
 
-    let mut p_cb = NodeParams::default();
-    p_cb.temperature = Some(0.05);
-    p_cb.tint = Some(-0.02);
-    p_cb.hue = Some(0.08);
-    p_cb.global_mix = Some(1.0);
+    let p_cb = NodeParams {
+        temperature: Some(0.05),
+        tint: Some(-0.02),
+        hue: Some(0.08),
+        global_mix: Some(1.0),
+        ..Default::default()
+    };
 
     let nodes = vec![
         mk_node(source, NodeKind::Source, "Source", NodeParams::default()),
@@ -384,42 +396,56 @@ fn graph_chain_10node() -> NodeGraph {
     let colorbal = NodeId::new_v4();
     let output = NodeId::new_v4();
 
-    let mut p_exp = NodeParams::default();
-    p_exp.exposure = Some(0.3);
+    let p_exp = NodeParams {
+        exposure: Some(0.3),
+        ..Default::default()
+    };
 
-    let mut p_tone = NodeParams::default();
-    p_tone.highlights = Some(-0.2);
-    p_tone.shadows = Some(0.2);
-    p_tone.whites = Some(0.05);
-    p_tone.blacks = Some(-0.05);
+    let p_tone = NodeParams {
+        highlights: Some(-0.2),
+        shadows: Some(0.2),
+        whites: Some(0.05),
+        blacks: Some(-0.05),
+        ..Default::default()
+    };
 
-    let mut p_wheels = NodeParams::default();
-    p_wheels.lift_master = Some(0.02);
-    p_wheels.gamma_master = Some(-0.05);
-    p_wheels.gain_master = Some(0.03);
+    let p_wheels = NodeParams {
+        lift_master: Some(0.02),
+        gamma_master: Some(-0.05),
+        gain_master: Some(0.03),
+        ..Default::default()
+    };
 
-    let mut p_wheel_sb = NodeParams::default();
-    p_wheel_sb.lift_sat = Some(1.02);
-    p_wheel_sb.gain_sat = Some(1.05);
-    p_wheel_sb.gain_bri = Some(0.03);
+    let p_wheel_sb = NodeParams {
+        lift_sat: Some(1.02),
+        gain_sat: Some(1.05),
+        gain_bri: Some(0.03),
+        ..Default::default()
+    };
 
-    let mut p_con = NodeParams::default();
-    p_con.contrast = Some(0.15);
-    p_con.clarity = Some(0.10);
+    let p_con = NodeParams {
+        contrast: Some(0.15),
+        clarity: Some(0.10),
+        ..Default::default()
+    };
 
-    let mut p_sat = NodeParams::default();
-    p_sat.saturation = Some(1.10);
-    p_sat.vibrance = Some(0.10);
+    let p_sat = NodeParams {
+        saturation: Some(1.10),
+        vibrance: Some(0.10),
+        ..Default::default()
+    };
 
     let p_curves = NodeParams::default(); // will be a bypass tunnel — still traversed
     let p_huesat = NodeParams::default();
     let p_warper = NodeParams::default();
 
-    let mut p_cb = NodeParams::default();
-    p_cb.temperature = Some(0.05);
-    p_cb.tint = Some(-0.02);
-    p_cb.hue = Some(0.08);
-    p_cb.global_mix = Some(1.0);
+    let p_cb = NodeParams {
+        temperature: Some(0.05),
+        tint: Some(-0.02),
+        hue: Some(0.08),
+        global_mix: Some(1.0),
+        ..Default::default()
+    };
 
     let nodes = vec![
         mk_node(source, NodeKind::Source, "Source", NodeParams::default()),

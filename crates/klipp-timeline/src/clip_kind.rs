@@ -2670,18 +2670,20 @@ mod tests {
     /// TextBox.
     #[test]
     fn texturefill_round_trips_through_serde() {
-        let mut tb = TextBox::default();
-        tb.texture_fill = Some(TextureFill {
-            enabled: true,
-            source: TextureSource::File("/tmp/paper.png".to_string()),
-            tile_mode: TextureTileMode::Tile,
-            scale: 1.5,
-            offset_x: 12.0,
-            offset_y: -8.0,
-            rotation: 30.0,
-            opacity: 0.75,
-            tint: [200, 180, 140, 255],
-        });
+        let tb = TextBox {
+            texture_fill: Some(TextureFill {
+                enabled: true,
+                source: TextureSource::File("/tmp/paper.png".to_string()),
+                tile_mode: TextureTileMode::Tile,
+                scale: 1.5,
+                offset_x: 12.0,
+                offset_y: -8.0,
+                rotation: 30.0,
+                opacity: 0.75,
+                tint: [200, 180, 140, 255],
+            }),
+            ..Default::default()
+        };
         let json = serde_json::to_string(&tb).expect("serialise");
         let round: TextBox = serde_json::from_str(&json).expect("deserialise");
         assert_eq!(tb.texture_fill, round.texture_fill);
@@ -2980,8 +2982,10 @@ mod tests {
     /// `shadow_stack_enabled = false` round-trips the explicit false.
     #[test]
     fn shadow_stack_enabled_round_trips_false() {
-        let mut tb = TextBox::default();
-        tb.shadow_stack_enabled = false;
+        let tb = TextBox {
+            shadow_stack_enabled: false,
+            ..Default::default()
+        };
         let json = serde_json::to_string(&tb).expect("serialise");
         let round: TextBox = serde_json::from_str(&json).expect("deserialise");
         assert!(!round.shadow_stack_enabled);
@@ -2994,8 +2998,10 @@ mod tests {
     #[test]
     fn outline_stack_enabled_round_trips_and_legacy_defaults_true() {
         // Round-trip `false`.
-        let mut tb = TextBox::default();
-        tb.outline_stack_enabled = false;
+        let tb = TextBox {
+            outline_stack_enabled: false,
+            ..Default::default()
+        };
         let json = serde_json::to_string(&tb).expect("serialise");
         let round: TextBox = serde_json::from_str(&json).expect("deserialise");
         assert!(!round.outline_stack_enabled, "explicit false must survive round-trip");

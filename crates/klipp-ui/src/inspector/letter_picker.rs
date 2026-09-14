@@ -289,12 +289,14 @@ mod tests {
     fn tc(frames: i64) -> RationalTime { RationalTime::from_frames(frames, 24) }
 
     fn make_title(text: &str) -> TitleData {
-        let mut tb = TextBox::default();
-        tb.text = text.to_string();
-        tb.font_name = "Sans".to_string();
-        tb.font_size = 72.0;
-        tb.font_style = FontStyle::Regular;
-        tb.alignment = TextAlignment::Center;
+        let tb = TextBox {
+            text: text.to_string(),
+            font_name: "Sans".to_string(),
+            font_size: 72.0,
+            font_style: FontStyle::Regular,
+            alignment: TextAlignment::Center,
+            ..Default::default()
+        };
         TitleData::single_text(tb)
     }
 

@@ -541,6 +541,9 @@ impl KlippApp {
             preferences_panel: PreferencesPanel::default(),
             transport: TransportBar,
             timeline: {
+                // Field assignment rather than a struct literal with
+                // `..Default::default()`: TimelinePanel has private
+                // fields, so the literal form is not available here.
                 let mut tl = TimelinePanel::default();
                 tl.embedded = true;
                 tl
@@ -2728,12 +2731,14 @@ impl KlippApp {
 
                 if let Some(clip_id) = self.state.selected_clip {
                     let node_id = Self::find_or_create_node(&mut self.state, clip_id, klipp_nodes::NodeKind::Qualifier);
-                    let mut qual = klipp_core::QualifierSettings::default();
-                    qual.enabled = true;
-                    qual.hue_center = hue_degrees;
-                    qual.hue_width = 30.0;
-                    qual.sat_low = (s - 0.2).max(0.0);
-                    qual.sat_high = (s + 0.2).min(1.0);
+                    let qual = klipp_core::QualifierSettings {
+                        enabled: true,
+                        hue_center: hue_degrees,
+                        hue_width: 30.0,
+                        sat_low: (s - 0.2).max(0.0),
+                        sat_high: (s + 0.2).min(1.0),
+                        ..Default::default()
+                    };
                     self.cmd_tx.send(AppCommand::SetNodeQualifier {
                         clip_id, node_id, qualifier: qual,
                     }).ok();
@@ -15178,8 +15183,10 @@ impl KlippApp {
                                     },
                                 ),
                                 _ => {
-                                    let mut tb = klipp_timeline::TextBox::default();
-                                    tb.text = "New Text".to_string();
+                                    let tb = klipp_timeline::TextBox {
+                                        text: "New Text".to_string(),
+                                        ..Default::default()
+                                    };
                                     klipp_timeline::TitleObjectContent::TextBox(tb)
                                 }
                             };
@@ -17865,11 +17872,13 @@ impl KlippApp {
                     };
 
                     let count = clip.track_points.len();
-                    let mut tp = klipp_core::TrackPoint::default();
-                    tp.name = format!("Mask {} tracker", mask_index + 1);
-                    tp.start_frame = frame_idx;
-                    tp.positions = vec![(cx, cy)];
-                    tp.linked_mask = Some((node_id, mask_index));
+                    let tp = klipp_core::TrackPoint {
+                        name: format!("Mask {} tracker", mask_index + 1),
+                        start_frame: frame_idx,
+                        positions: vec![(cx, cy)],
+                        linked_mask: Some((node_id, mask_index)),
+                        ..Default::default()
+                    };
                     clip.track_points.push(tp);
                     new_index = Some(count);
                 }
@@ -17896,10 +17905,12 @@ impl KlippApp {
                     let clip_time = playhead_secs - clip_in_secs + source_in_secs;
                     let frame_idx = (clip_time * fps).round() as usize;
                     let count = clip.track_points.len();
-                    let mut tp = klipp_core::TrackPoint::default();
-                    tp.name = format!("Tracker {}", count + 1);
-                    tp.start_frame = frame_idx;
-                    tp.positions = vec![(*x, *y)];
+                    let tp = klipp_core::TrackPoint {
+                        name: format!("Tracker {}", count + 1),
+                        start_frame: frame_idx,
+                        positions: vec![(*x, *y)],
+                        ..Default::default()
+                    };
                     clip.track_points.push(tp);
                     self.state.active_track_point = Some(count);
                 }
@@ -18962,13 +18973,15 @@ impl KlippApp {
                                     ),
                                 };
 
-                                let mut tb = klipp_timeline::TextBox::default();
-                                tb.text = entry.text.clone();
-                                tb.font_size = font_size;
-                                tb.font_name = font_name;
-                                tb.font_style = font_style;
-                                tb.color = color;
-                                tb.alignment = klipp_timeline::TextAlignment::Center;
+                                let mut tb = klipp_timeline::TextBox {
+                                    text: entry.text.clone(),
+                                    font_size,
+                                    font_name,
+                                    font_style,
+                                    color,
+                                    alignment: klipp_timeline::TextAlignment::Center,
+                                    ..Default::default()
+                                };
                                 if let Some(o) = outline { tb.outlines.push(o); }
                                 if let Some(s) = shadow { tb.shadows.push(s); }
                                 tb.ass_style_name = if entry.style_name.is_empty() { None } else { Some(entry.style_name.clone()) };
@@ -18994,11 +19007,13 @@ impl KlippApp {
                                 let timeline_in = klipp_core::RationalTime::from_secs_f64(sub.start_secs, fps_rate);
                                 let timeline_out = klipp_core::RationalTime::from_secs_f64(sub.end_secs, fps_rate);
                                 let dur = timeline_out - timeline_in;
-                                let mut tb = klipp_timeline::TextBox::default();
-                                tb.text = sub.text.clone();
-                                tb.font_size = 32.0;
-                                tb.font_name = String::new();
-                                tb.alignment = klipp_timeline::TextAlignment::Center;
+                                let mut tb = klipp_timeline::TextBox {
+                                    text: sub.text.clone(),
+                                    font_size: 32.0,
+                                    font_name: String::new(),
+                                    alignment: klipp_timeline::TextAlignment::Center,
+                                    ..Default::default()
+                                };
                                 tb.outlines.push(klipp_timeline::TextOutline { color: [0, 0, 0, 200], width: 2.0, enabled: true, width_keyframes: Vec::new() });
                                 let mut title_data = klipp_timeline::TitleData::single_text(tb);
                                 if let Some(o) = title_data.objects.first_mut() {
@@ -19234,11 +19249,13 @@ impl KlippApp {
                         seq.tracks.iter().position(|t| t.id == id).unwrap()
                     });
 
-                let mut tb = klipp_timeline::TextBox::default();
-                tb.text = String::new();
-                tb.font_size = 32.0;
-                tb.font_name = String::new();
-                tb.alignment = klipp_timeline::TextAlignment::Center;
+                let mut tb = klipp_timeline::TextBox {
+                    text: String::new(),
+                    font_size: 32.0,
+                    font_name: String::new(),
+                    alignment: klipp_timeline::TextAlignment::Center,
+                    ..Default::default()
+                };
                 tb.outlines.push(klipp_timeline::TextOutline {
                     color: [0, 0, 0, 200],
                     width: 2.0,

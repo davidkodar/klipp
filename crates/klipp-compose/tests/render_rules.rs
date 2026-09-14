@@ -65,8 +65,10 @@ fn graph(kind: NodeKind, params: NodeParams, keyframes: klipp_nodes::NodeKeyfram
 }
 
 fn exposure(stops: f32) -> NodeGraph {
-    let mut p = NodeParams::default();
-    p.exposure = Some(stops);
+    let p = NodeParams {
+        exposure: Some(stops),
+        ..Default::default()
+    };
     graph(NodeKind::Exposure, p, Default::default())
 }
 
@@ -325,9 +327,11 @@ fn an_hdr_delivery_renders_display_light() {
 #[test]
 fn temperature_and_tint_balance_every_exposure_alike() {
     for kind in [NodeKind::Corrector, NodeKind::ColorBalance] {
-        let mut p = NodeParams::default();
-        p.temperature = Some(40.0);
-        p.tint = Some(-15.0);
+        let p = NodeParams {
+            temperature: Some(40.0),
+            tint: Some(-15.0),
+            ..Default::default()
+        };
         let want = klipp_color::white_balance::white_balance_matrix(40.0, -15.0, Default::default()).unwrap();
         for grey in [0.0f32, 0.18, 0.72, 6.0] {
             let mut c = media(0.0, 2.0);
@@ -466,8 +470,10 @@ fn a_chroma_key_keys_its_colour_in_any_working_space() {
             let mut r = Renderer::new(klipp_plugin::OfxHost::new(), klipp_title::TitleRenderer::new());
             r.set_gpu_enabled(gpu);
             r.set_working_colorspace(ws);
-            let mut opts = RenderOptions::default();
-            opts.keep_alpha = true;
+            let opts = RenderOptions {
+                keep_alpha: true,
+                ..Default::default()
+            };
             let img = r.render(&seq, tc(1.0), W, H, &mut Flat::default(), opts);
             let alpha = img[((9 * W + 16) * 4 + 3) as usize];
             assert!(alpha < 0.1, "{name} (gpu {gpu}): the key left alpha at {alpha}");
@@ -486,8 +492,10 @@ fn node_keyframes_use_clip_relative_time() {
     klipp_core::keyframe::upsert_keyframe(&mut keys, 0.0, 0.0);
     klipp_core::keyframe::upsert_keyframe(&mut keys, 2.0, 2.0);
     kf.tracks.push(klipp_nodes::NodeKeyframeTrack { param_name: "exposure".into(), keyframes: keys });
-    let mut p = NodeParams::default();
-    p.exposure = Some(0.0);
+    let p = NodeParams {
+        exposure: Some(0.0),
+        ..Default::default()
+    };
     let mut c = media(0.0, 4.0);
     c.source_in = tc(10.0);
     c.source_out = tc(14.0);

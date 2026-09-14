@@ -273,8 +273,10 @@ mod tests {
     #[test]
     fn test_browser_zero_width_when_hidden() {
         let layout = LayoutState::default();
-        let mut state = AppState::default();
-        state.show_browser_panel = false;
+        let state = AppState {
+            show_browser_panel: false,
+            ..Default::default()
+        };
         let rects = compute_layout(test_full_rect(), &layout, &state);
         assert_eq!(rects.browser_rect.width(), 0.0);
     }

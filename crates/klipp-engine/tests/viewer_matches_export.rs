@@ -121,8 +121,10 @@ fn exposure(stops: f32) -> klipp_nodes::NodeGraph {
         id: NodeId::new_v4(), kind, label: format!("{kind:?}"), enabled: true, params,
         keyframes: Default::default(), output_link: None, input_links: vec![],
     };
-    let mut p = NodeParams::default();
-    p.exposure = Some(stops);
+    let p = NodeParams {
+        exposure: Some(stops),
+        ..Default::default()
+    };
     let nodes = vec![node(NodeKind::Source, NodeParams::default()), node(NodeKind::Exposure, p), node(NodeKind::Output, NodeParams::default())];
     let edges = (0..2).map(|i| Edge { from_node: nodes[i].id, from_port: 0, to_node: nodes[i + 1].id, to_port: 0 }).collect();
     let node_positions = nodes.iter().enumerate().map(|(i, n)| (n.id, NodePos { x: i as f32 * 100.0, y: 0.0 })).collect();
@@ -179,9 +181,11 @@ fn timeline() -> Timeline {
 
 /// The timeline exported through the real `ExportJob`, H.264 near-lossless.
 fn export(t: &Timeline, out: &Path) {
-    let mut video = VideoTimeline::default();
-    video.sequence = t.seq.clone();
-    video.media = t.files.iter().map(|(id, p)| (*id, MediaFile { path: p.clone(), log_format: None, source_rotation: 0 })).collect();
+    let video = VideoTimeline {
+        sequence: t.seq.clone(),
+        media: t.files.iter().map(|(id, p)| (*id, MediaFile { path: p.clone(), log_format: None, source_rotation: 0 })).collect(),
+        ..Default::default()
+    };
     let snapshot = SequenceSnapshot {
         fps: FPS as f64, fps_num: FPS as u32, fps_den: 1, width: W, height: H, sample_rate: 48000,
         duration_frames: LEN as u64, export_range: None, video,
@@ -430,20 +434,26 @@ fn secondary_graph() -> klipp_nodes::NodeGraph {
         id: NodeId::new_v4(), kind, label: format!("{kind:?}"), enabled: true, params,
         keyframes: Default::default(), output_link: None, input_links: vec![],
     };
-    let mut primary = NodeParams::default();
-    primary.temperature = Some(-15.0);
-    primary.contrast = Some(0.04);
-    let mut keyer = NodeParams::default();
-    keyer.qualifier = Some(klipp_core::QualifierSettings {
-        enabled: true,
-        // The warm end of the gradient below, and nothing else.
-        hue_center: 27.0, hue_width: 20.0, hue_soft: 10.0,
-        sat_low: 0.20, sat_high: 0.50, sat_soft: 0.05,
-        lum_low: 0.10, lum_high: 0.85, lum_soft: 0.04,
+    let primary = NodeParams {
+        temperature: Some(-15.0),
+        contrast: Some(0.04),
         ..Default::default()
-    });
-    let mut branch = NodeParams::default();
-    branch.temperature = Some(-45.0);
+    };
+    let keyer = NodeParams {
+        qualifier: Some(klipp_core::QualifierSettings {
+            enabled: true,
+            // The warm end of the gradient below, and nothing else.
+            hue_center: 27.0, hue_width: 20.0, hue_soft: 10.0,
+            sat_low: 0.20, sat_high: 0.50, sat_soft: 0.05,
+            lum_low: 0.10, lum_high: 0.85, lum_soft: 0.04,
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let branch = NodeParams {
+        temperature: Some(-45.0),
+        ..Default::default()
+    };
 
     let src = node(NodeKind::Source, NodeParams::default());
     let prim = node(NodeKind::Corrector, primary);

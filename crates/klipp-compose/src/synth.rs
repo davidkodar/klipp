@@ -71,14 +71,16 @@ pub fn build_slate_title_data(
     push(&mut lines, "NOTES:",     notes);
     let text = lines.join("\n");
 
-    let mut text_box = klipp_timeline::TextBox::default();
-    text_box.text = text;
-    text_box.color = text_color;
-    // Roughly 1080p / 24 ≈ 45 px font; floor at 20 so very small
-    // resolutions still produce legible output.
-    text_box.font_size = ((height as f32) / 24.0).max(20.0);
-    text_box.alignment = klipp_timeline::TextAlignment::Left;
-    text_box.line_spacing = 1.4;
+    let text_box = klipp_timeline::TextBox {
+        text,
+        color: text_color,
+        // Roughly 1080p / 24 ≈ 45 px font; floor at 20 so very small
+        // resolutions still produce legible output.
+        font_size: ((height as f32) / 24.0).max(20.0),
+        alignment: klipp_timeline::TextAlignment::Left,
+        line_spacing: 1.4,
+        ..Default::default()
+    };
 
     let mut td = klipp_timeline::TitleData::single_text(text_box);
     td.background = klipp_timeline::TitleBackground::FullFrame { color: background_color };

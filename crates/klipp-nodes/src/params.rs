@@ -772,8 +772,10 @@ mod tests {
     /// are bypassed, and one that ignored its match never ran.
     #[test]
     fn a_colour_match_is_not_default() {
-        let mut p = NodeParams::default();
-        p.color_match = Some(klipp_core::ColorMatchSettings { exposure: 0.0, temperature: 0.0, tint: 0.0, saturation: 1.0 });
+        let mut p = NodeParams {
+            color_match: Some(klipp_core::ColorMatchSettings { exposure: 0.0, temperature: 0.0, tint: 0.0, saturation: 1.0 }),
+            ..Default::default()
+        };
         assert!(p.is_default(), "an identity match changes nothing");
         p.color_match = Some(klipp_core::ColorMatchSettings { exposure: 0.3, temperature: 20.0, tint: 0.0, saturation: 1.0 });
         assert!(!p.is_default());

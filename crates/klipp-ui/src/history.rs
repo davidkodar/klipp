@@ -1913,15 +1913,19 @@ mod title_text_coalesce_tests {
     }
 
     fn td_with_text(s: &str) -> TitleData {
-        let mut tb = klipp_timeline::TextBox::default();
-        tb.text = s.to_string();
+        let tb = klipp_timeline::TextBox {
+            text: s.to_string(),
+            ..Default::default()
+        };
         TitleData::single_text(tb)
     }
 
     fn td_with_text_and_size(s: &str, size: f32) -> TitleData {
-        let mut tb = klipp_timeline::TextBox::default();
-        tb.text = s.to_string();
-        tb.font_size = size;
+        let tb = klipp_timeline::TextBox {
+            text: s.to_string(),
+            font_size: size,
+            ..Default::default()
+        };
         TitleData::single_text(tb)
     }
 
@@ -2052,8 +2056,10 @@ mod title_text_coalesce_tests {
         // Different layer count → not text-only.
         a = td_with_text("hello");
         b = td_with_text("hello");
-        let mut tb_extra = klipp_timeline::TextBox::default();
-        tb_extra.text = "extra".into();
+        let tb_extra = klipp_timeline::TextBox {
+            text: "extra".into(),
+            ..Default::default()
+        };
         b.objects.push(klipp_timeline::TitleObject {
             id: klipp_timeline::TitleObjectId(99),
             name: String::new(),

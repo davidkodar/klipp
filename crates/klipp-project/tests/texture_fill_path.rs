@@ -16,8 +16,10 @@ use klipp_timeline::{
 fn make_title_clip_with_texture(texture_path: &str) -> Clip {
     let ti = RationalTime::from_frames(0, 24);
     let to = RationalTime::from_frames(48, 24);
-    let mut tb = TextBox::default();
-    tb.texture_fill = Some(TextureFill::from_legacy_path(texture_path.to_string(), true));
+    let tb = TextBox {
+        texture_fill: Some(TextureFill::from_legacy_path(texture_path.to_string(), true)),
+        ..Default::default()
+    };
     Clip {
         id: ClipId::new(),
         kind: ClipKind::Title(TitleData::single_text(tb)),

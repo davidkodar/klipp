@@ -5830,9 +5830,11 @@ mod text_editor_tests {
 
         // Compute positions
         let td = {
-    let mut tb = klipp_timeline::TextBox::default();
-    tb.text = text.clone();
-    tb.font_size = 72.0;
+    let tb = klipp_timeline::TextBox {
+        text: text.clone(),
+        font_size: 72.0,
+        ..Default::default()
+    };
     
     klipp_timeline::TitleData::single_text(tb)
 };
@@ -5875,9 +5877,11 @@ mod text_editor_tests {
 
             // Simulate UpdateTitleData: create TitleData with new text
             let td = {
-    let mut tb = klipp_timeline::TextBox::default();
-    tb.text = text.clone();
-    tb.font_size = 72.0;
+    let tb = klipp_timeline::TextBox {
+        text: text.clone(),
+        font_size: 72.0,
+        ..Default::default()
+    };
     
     klipp_timeline::TitleData::single_text(tb)
 };
@@ -5930,9 +5934,11 @@ mod text_editor_tests {
             sim_insert(&mut text, &mut cursor, &ch.to_string());
 
             let td = {
-    let mut tb = klipp_timeline::TextBox::default();
-    tb.text = text.clone();
-    tb.font_size = 72.0;
+    let tb = klipp_timeline::TextBox {
+        text: text.clone(),
+        font_size: 72.0,
+        ..Default::default()
+    };
     
     klipp_timeline::TitleData::single_text(tb)
 };
@@ -6005,9 +6011,11 @@ mod text_editor_tests {
         let mut renderer = klipp_title::TitleRenderer::new();
         let text = "Hello World";
         let td = {
-    let mut tb = klipp_timeline::TextBox::default();
-    tb.text = text.to_string();
-    tb.font_size = 72.0;
+    let tb = klipp_timeline::TextBox {
+        text: text.to_string(),
+        font_size: 72.0,
+        ..Default::default()
+    };
     
     klipp_timeline::TitleData::single_text(tb)
 };

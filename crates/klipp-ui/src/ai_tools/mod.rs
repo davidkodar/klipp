@@ -449,8 +449,10 @@ mod tests {
 
     #[test]
     fn switching_task_updates_active_task() {
-        let mut s = AiToolsState::default();
-        s.active_task = Some(AiTask::IsolateObject);
+        let mut s = AiToolsState {
+            active_task: Some(AiTask::IsolateObject),
+            ..Default::default()
+        };
         assert_eq!(s.active_task, Some(AiTask::IsolateObject));
         s.active_task = Some(AiTask::RemoveBackground);
         assert_eq!(s.active_task, Some(AiTask::RemoveBackground));
@@ -470,10 +472,12 @@ mod tests {
             }],
             inference_ms: 17,
         };
-        let mut s = AiToolsState::default();
-        s.inference = InferenceState::Done {
-            model_id: "stub".into(),
-            response: resp,
+        let s = AiToolsState {
+            inference: InferenceState::Done {
+                model_id: "stub".into(),
+                response: resp,
+            },
+            ..Default::default()
         };
         match &s.inference {
             InferenceState::Done { response, .. } => {

@@ -142,8 +142,10 @@ fn sequence_with_two_clips() -> (klipp_timeline::Sequence, Ids) {
                 output_link: None,
                 input_links: Vec::new(),
             });
-            let mut params = klipp_nodes::params::NodeParams::default();
-            params.compound_subgraph = Some(sub);
+            let params = klipp_nodes::params::NodeParams {
+                compound_subgraph: Some(sub),
+                ..Default::default()
+            };
             graph.nodes.push(Node {
                 id: NodeId::new_v4(),
                 kind: NodeKind::Compound,

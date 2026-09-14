@@ -297,8 +297,10 @@ fn exposure_graph(stops: f32) -> klipp_nodes::NodeGraph {
         id: NodeId::new_v4(), kind, label: format!("{kind:?}"), enabled: true, params,
         keyframes: Default::default(), output_link: None, input_links: vec![],
     };
-    let mut p = NodeParams::default();
-    p.exposure = Some(stops);
+    let p = NodeParams {
+        exposure: Some(stops),
+        ..Default::default()
+    };
     let nodes = vec![node(NodeKind::Source, NodeParams::default()), node(NodeKind::Exposure, p), node(NodeKind::Output, NodeParams::default())];
     let edges = (0..2).map(|i| Edge { from_node: nodes[i].id, from_port: 0, to_node: nodes[i + 1].id, to_port: 0 }).collect();
     let node_positions = nodes.iter().enumerate().map(|(i, n)| (n.id, NodePos { x: i as f32 * 100.0, y: 0.0 })).collect();

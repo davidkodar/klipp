@@ -77,15 +77,21 @@ fn keyframed_grade(input_transform: Option<LogFormat>) -> NodeGraph {
     klipp_core::keyframe::upsert_keyframe(&mut keys, 4.0, 2.0);
     let mut kf = NodeKeyframeTracks::default();
     kf.tracks.push(NodeKeyframeTrack { param_name: "exposure".into(), keyframes: keys });
-    let mut exposure = NodeParams::default();
-    exposure.exposure = Some(0.0);
-    let mut balance = NodeParams::default();
-    balance.temperature = Some(0.08);
-    balance.global_mix = Some(1.0);
+    let exposure = NodeParams {
+        exposure: Some(0.0),
+        ..Default::default()
+    };
+    let balance = NodeParams {
+        temperature: Some(0.08),
+        global_mix: Some(1.0),
+        ..Default::default()
+    };
     let mut nodes = Vec::new();
     if let Some(format) = input_transform {
-        let mut it = NodeParams::default();
-        it.log_format = Some(format);
+        let it = NodeParams {
+            log_format: Some(format),
+            ..Default::default()
+        };
         nodes.push((NodeKind::InputTransform, it, NodeKeyframeTracks::default()));
     }
     nodes.push((NodeKind::Exposure, exposure, kf));

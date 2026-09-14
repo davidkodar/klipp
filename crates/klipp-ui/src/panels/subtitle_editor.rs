@@ -653,8 +653,10 @@ mod tests {
         Clip {
             id: ClipId::new(),
             kind: ClipKind::Title({
-    let mut tb = klipp_timeline::TextBox::default();
-    tb.text = text.to_string();
+    let tb = klipp_timeline::TextBox {
+        text: text.to_string(),
+        ..Default::default()
+    };
     
     klipp_timeline::TitleData::single_text(tb)
 }),
