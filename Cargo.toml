@@ -257,3 +257,7 @@ strip = false
 # aborted the app whenever a texture was freed in the frame it was drawn.
 [patch.crates-io]
 egui-wgpu = { path = "vendor/egui-wgpu" }
+# winit 0.30.13 with the Wayland frame-callback wait bounded at 100 ms (see
+# vendor/winit/KLIPP-PATCH.md). Unbounded, Hyprland's once-a-second callbacks
+# on an idle desktop left the app painting once a second under input.
+winit = { path = "vendor/winit" }
