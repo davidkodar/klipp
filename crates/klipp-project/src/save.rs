@@ -223,6 +223,8 @@ fn sequence_to_json(seq: &Sequence, color: &ColorSettings, project_dir: &Path) -
                     klipp_core::AudioParam::Gain => "Gain".to_string(),
                 }),
                 automation_lane_height: t.automation_lane_height,
+                magnetic_role: Some(t.magnetic_role.clone()),
+                storyline_anchor: t.storyline_anchor.clone(),
                 transitions: t.transitions.iter().map(|tr| {
                     TransitionJson {
                         id: tr.id.to_string(),
@@ -230,6 +232,8 @@ fn sequence_to_json(seq: &Sequence, color: &ColorSettings, project_dir: &Path) -
                         duration: timecode_to_json(&tr.duration),
                         clip_a_id: tr.clip_a_id.to_string(),
                         clip_b_id: tr.clip_b_id.to_string(),
+                        user_params: tr.user_params,
+                        alignment: tr.alignment,
                     }
                 }).collect(),
                 clips: t.clips.iter().map(|c| {
@@ -250,6 +254,8 @@ fn sequence_to_json(seq: &Sequence, color: &ColorSettings, project_dir: &Path) -
                         } else {
                             serde_json::to_value(&c.builtin_effects).ok()
                         },
+                        builtin_effects_enabled: c.builtin_effects_enabled.clone(),
+                        magnetic_anchor: c.magnetic_anchor.clone(),
                         linked_clip_id: c.linked_clip_id.map(|id| id.to_string()),
                         linked_title_asset_id: c.linked_title_asset_id.map(|id| id.to_string()),
                         group_id: c.group_id.map(|id| id.to_string()),
@@ -359,6 +365,22 @@ fn effect_to_json(effect: &klipp_plugin::AppliedEffect) -> EffectJson {
     }
 }
 
+/// The title as it goes into the file: every texture path made relative
+/// to the project directory, the way the flat fields have always stored
+/// it, so a project that is moved still finds its textures. The
+/// in-memory data keeps its absolute paths.
+fn title_data_for_file(data: &klipp_timeline::TitleData, project_dir: &Path) -> klipp_timeline::TitleData {
+    let mut copy = data.clone();
+    for obj in &mut copy.objects {
+        if let klipp_timeline::TitleObjectContent::TextBox(tb) = &mut obj.content {
+            if let Some(p) = tb.texture_fill.as_mut().and_then(|t| t.file_path_mut()) {
+                *p = to_project_relative(project_dir, Path::new(p)).to_string_lossy().to_string();
+            }
+        }
+    }
+    copy
+}
+
 #[allow(clippy::needless_borrows_for_generic_args)]
 fn clip_kind_to_json(kind: &ClipKind, project_dir: &Path) -> ClipKindJson {
     match kind {
@@ -374,6 +396,7 @@ fn clip_kind_to_json(kind: &ClipKind, project_dir: &Path) -> ClipKindJson {
             let tb = data.primary_text_or_default();
             let pos = data.position();
             ClipKindJson::Title {
+                title_data: serde_json::to_value(title_data_for_file(data, project_dir)).ok(),
                 text: tb.text.clone(),
                 font_size: tb.font_size,
                 font_name: tb.font_name.clone(),

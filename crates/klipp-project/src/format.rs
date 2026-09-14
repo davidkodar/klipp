@@ -156,6 +156,14 @@ pub struct TrackJson {
     /// round-trip unchanged.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub automation_lane_height: Option<f32>,
+    /// The track's magnetic role. `None` only in files written before it
+    /// was saved; the loader then gives such a sequence the roles a new
+    /// one gets (first video track Primary, first audio track Connected),
+    /// which is what every reload had silently taken away.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub magnetic_role: Option<klipp_timeline::TrackRole>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub storyline_anchor: Option<klipp_timeline::MagneticAnchor>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -165,6 +173,15 @@ pub struct TransitionJson {
     pub duration: TimecodeJson,
     pub clip_a_id: String,
     pub clip_b_id: String,
+    /// The user's per-kind settings (feather, radius, …). Absent in files
+    /// written before they were saved at all; the loader then stamps the
+    /// kind's defaults, which is what those files had shown.
+    #[serde(default)]
+    pub user_params: klipp_core::TransitionUserParams,
+    /// Where the transition sits relative to the cut. Absent → centred,
+    /// which is what older files rendered.
+    #[serde(default)]
+    pub alignment: klipp_core::TransitionAlignment,
 }
 
 fn default_opacity() -> f32 { 1.0 }
@@ -199,6 +216,13 @@ pub struct ClipJson {
     pub effects: Vec<EffectJson>,
     #[serde(default)]
     pub builtin_effects: Option<serde_json::Value>,
+    /// Per-effect enabled flags, parallel to `builtin_effects`; a missing
+    /// entry means enabled. Empty is left out of the file.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub builtin_effects_enabled: Vec<bool>,
+    /// The clip's magnetic anchor, when it is a connected clip.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub magnetic_anchor: Option<klipp_timeline::MagneticAnchor>,
     #[serde(default)]
     pub linked_clip_id: Option<String>,
     /// Project-asset MediaId this clip is a linked instance of.
@@ -396,6 +420,15 @@ pub enum ClipKindJson {
         media_id: String,
     },
     Title {
+        /// The whole `TitleData`, verbatim: every object, its transform,
+        /// the animation, the background. The flat fields that follow are
+        /// the legacy single-text shape, still written so older readers
+        /// open the file; a reader that finds `title_data` uses it and
+        /// ignores them. Before this the flat shape was all that was
+        /// saved, and a title lost its animation and every object after
+        /// the first on each reload.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        title_data: Option<serde_json::Value>,
         text: String,
         #[serde(default = "default_font_size")]
         font_size: f32,
@@ -868,6 +901,8 @@ mod tests {
             color_grade: None,
             effects: vec![],
             builtin_effects: None,
+            builtin_effects_enabled: Vec::new(),
+            magnetic_anchor: None,
             linked_clip_id: None,
             linked_title_asset_id: None,
             group_id: None,
@@ -937,7 +972,7 @@ mod tests {
             timeline_in: 0, timeline_out: 24,
             source_in: 0, source_out: 24, rate: 24,
             node_graph: None, color_grade: None,
-            effects: vec![], builtin_effects: None,
+            effects: vec![], builtin_effects: None, builtin_effects_enabled: Vec::new(), magnetic_anchor: None,
             linked_clip_id: None, linked_title_asset_id: None, group_id: None,
             gain: None, volume: None, pan: None,
             fade_in_secs: None, fade_out_secs: None,
@@ -980,6 +1015,8 @@ mod tests {
     fn automation_lane_visible_round_trips_through_track_json() {
         for label in ["Volume", "Pan", "Gain"] {
             let track = TrackJson {
+                magnetic_role: None,
+                storyline_anchor: None,
                 id: "t1".to_string(),
                 name: "A1".to_string(),
                 kind: "Audio".to_string(),
@@ -1021,6 +1058,8 @@ mod tests {
     #[test]
     fn collapsed_lane_state_is_omitted_from_serialised_track() {
         let track = TrackJson {
+            magnetic_role: None,
+            storyline_anchor: None,
             id: "t1".to_string(),
             name: "A1".to_string(),
             kind: "Audio".to_string(),
@@ -1049,6 +1088,8 @@ mod tests {
     #[test]
     fn automation_lane_height_round_trips_through_track_json() {
         let track = TrackJson {
+            magnetic_role: None,
+            storyline_anchor: None,
             id: "t1".to_string(),
             name: "A1".to_string(),
             kind: "Audio".to_string(),
@@ -1098,7 +1139,7 @@ mod tests {
             timeline_in: 0, timeline_out: 24,
             source_in: 0, source_out: 24, rate: 24,
             node_graph: None, color_grade: None,
-            effects: vec![], builtin_effects: None,
+            effects: vec![], builtin_effects: None, builtin_effects_enabled: Vec::new(), magnetic_anchor: None,
             linked_clip_id: None, linked_title_asset_id: None, group_id: None,
             gain: None, volume: None, pan: None,
             fade_in_secs: None, fade_out_secs: None,

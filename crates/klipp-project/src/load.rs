@@ -326,7 +326,7 @@ pub fn load_project(dir: &Path) -> Result<LoadResult, String> {
 
 
 fn load_sequence_from_json(seq_json: &SequenceJson, project_dir: &Path) -> Result<Sequence, String> {
-    Ok(Sequence {
+    let mut sequence = Sequence {
         id: SequenceId(parse_uuid(&seq_json.id)?),
         name: seq_json.name.clone(),
         fps: sanitize_fps(seq_json.fps.num, seq_json.fps.den),
@@ -351,6 +351,10 @@ fn load_sequence_from_json(seq_json: &SequenceJson, project_dir: &Path) -> Resul
             track.pan = t.pan;
             track.locked = t.locked;
             track.custom_height = t.custom_height;
+            if let Some(role) = &t.magnetic_role {
+                track.magnetic_role = role.clone();
+            }
+            track.storyline_anchor = t.storyline_anchor.clone();
             track.automation_lane_visible = t.automation_lane_visible.as_deref().and_then(|s| {
                 match s {
                     "Volume" => Some(klipp_core::AudioParam::Volume),
@@ -371,8 +375,8 @@ fn load_sequence_from_json(seq_json: &SequenceJson, project_dir: &Path) -> Resul
                     duration: RationalTime { value: tr.duration.value, rate: tr.duration.rate },
                     clip_a_id: ClipId(parse_uuid(&tr.clip_a_id).ok()?),
                     clip_b_id: ClipId(parse_uuid(&tr.clip_b_id).ok()?),
-                    user_params: Default::default(),
-                    alignment: Default::default(),
+                    user_params: tr.user_params,
+                    alignment: tr.alignment,
                 })
             }).collect();
             track.clips = t.clips.iter().map(|c| {
@@ -392,7 +396,7 @@ fn load_sequence_from_json(seq_json: &SequenceJson, project_dir: &Path) -> Resul
                     builtin_effects: c.builtin_effects.as_ref()
                         .and_then(|v| serde_json::from_value::<Vec<klipp_effects::BuiltinEffect>>(v.clone()).ok())
                         .unwrap_or_default(),
-                    builtin_effects_enabled: Vec::new(),
+                    builtin_effects_enabled: c.builtin_effects_enabled.clone(),
                     effects: c.effects.iter().map(|e| {
                         klipp_plugin::AppliedEffect {
                             plugin_name: e.plugin_name.clone(),
@@ -425,7 +429,7 @@ fn load_sequence_from_json(seq_json: &SequenceJson, project_dir: &Path) -> Resul
                     group_id: c.group_id.as_ref().and_then(|s| {
                         parse_uuid(s).ok().map(GroupId)
                     }),
-                    magnetic_anchor: None,
+                    magnetic_anchor: c.magnetic_anchor.clone(),
                     gain: c.gain.unwrap_or(1.0),
                     volume: c.volume.unwrap_or(1.0),
                     pan: c.pan.unwrap_or(0.0),
@@ -561,7 +565,20 @@ fn load_sequence_from_json(seq_json: &SequenceJson, project_dir: &Path) -> Resul
             })
         }).collect(),
         last_playhead: seq_json.last_playhead.as_ref().map(|tc| RationalTime { value: tc.value, rate: tc.rate }),
-    })
+    };
+    // A file from before roles were saved carries none: give it the roles
+    // a new sequence gets, which is what it had when it was made and what
+    // every reload had been silently taking away. A file that says a
+    // track is Free is left Free.
+    if seq_json.tracks.iter().all(|t| t.magnetic_role.is_none()) {
+        if let Some(v) = sequence.tracks.iter_mut().find(|t| t.kind == TrackKind::Video) {
+            v.magnetic_role = klipp_timeline::TrackRole::Primary;
+        }
+        if let Some(a) = sequence.tracks.iter_mut().find(|t| t.kind == TrackKind::Audio) {
+            a.magnetic_role = klipp_timeline::TrackRole::Connected;
+        }
+    }
+    Ok(sequence)
 }
 
 /// Parse the JSON-side marker-kind tag back into the enum. Unknown
@@ -591,6 +608,7 @@ fn load_clip_kind(c: &ClipJson, project_dir: &Path) -> ClipKind {
                 ClipKind::Media { media_id: mid }
             }
             ClipKindJson::Title {
+                title_data,
                 text,
                 font_size,
                 font_name,
@@ -625,6 +643,25 @@ fn load_clip_kind(c: &ClipJson, project_dir: &Path) -> ClipKind {
                 motion_blur,
                 style_runs,
             } => {
+                if let Some(v) = title_data {
+                    match serde_json::from_value::<klipp_timeline::TitleData>(v.clone()) {
+                        Ok(mut td) => {
+                            // Texture paths are stored project-relative;
+                            // resolve them here as the flat fields are.
+                            for obj in &mut td.objects {
+                                if let klipp_timeline::TitleObjectContent::TextBox(tb) = &mut obj.content {
+                                    if let Some(p) = tb.texture_fill.as_mut().and_then(|t| t.file_path_mut()) {
+                                        *p = crate::path_util::resolve_media_path(project_dir, Path::new(p))
+                                            .to_string_lossy()
+                                            .to_string();
+                                    }
+                                }
+                            }
+                            return ClipKind::Title(td);
+                        }
+                        Err(e) => warn!("title_data could not be read, using the flat title fields: {e}"),
+                    }
+                }
                 let align = match alignment.as_str() {
                     "Left" => TextAlignment::Left,
                     "Right" => TextAlignment::Right,
