@@ -456,6 +456,26 @@ impl PlaybackEngine {
             }
         }
 
+        // A frame the renderer would only pass through — one ungraded clip,
+        // no effect, no overlay, SDR in Rec.709 — is shown as the sRGB bytes
+        // the decoder made, which the pre-grade capture above already
+        // read back. Rendering it expanded those bytes to linear floats,
+        // composited them and encoded them back: 17 ms of a 24 ms 1080p
+        // present, for the same bytes. Everything the blockers name —
+        // a grade, an effect, a LUT, a tone map, a scope tap, node
+        // thumbnails — still takes the full path.
+        if let Some(p) = primary.as_ref() {
+            if self.fast_path_blockers_for(super::FastPath::PausedIdentity).is_empty() {
+                if let super::PregradePixels::Srgb8(bytes) = &p.pregrade().pixels {
+                    if bytes.len() == (w as usize) * (h as usize) * 4 {
+                        let picture = Picture::Display(bytes.as_ref().clone());
+                        self.show_rendered(Rendered { picture, width: w, height: h, stats: None }, t_frame);
+                        return;
+                    }
+                }
+            }
+        }
+
         let inspect = self.inspect_request(&seq, primary_clip);
         let inspected = inspect.clip;
         let primary_ref = primary_clip.zip(primary.as_ref());

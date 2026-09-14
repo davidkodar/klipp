@@ -499,6 +499,18 @@ fn should_publish_gpu_viewer() -> bool {
 /// `KLIPP_DIRECT_PRESENT=0` to force every frame through the full
 /// grade + composite pipeline, which is the way to check whether a
 /// suspected display problem comes from the fast path.
+/// Which use of the direct-present fast path is being gated; see
+/// [`PlaybackEngine::fast_path_blockers_for`].
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum FastPath {
+    /// Steady-state playback: decoded frames straight to the viewer.
+    Playing,
+    /// A slider step on the parked frame, graded on the GPU.
+    ParkedDrag,
+    /// A paused present of a frame the renderer would only pass through.
+    PausedIdentity,
+}
+
 fn direct_present_enabled() -> bool {
     use std::sync::OnceLock;
     static GATE: OnceLock<bool> = OnceLock::new();
@@ -6167,6 +6179,18 @@ impl PlaybackEngine {
     /// inspector's matte preview. (Node thumbnails are not captured while
     /// a slider is held.)
     fn fast_path_blockers(&self, parked_drag: bool) -> Vec<&'static str> {
+        self.fast_path_blockers_for(if parked_drag { FastPath::ParkedDrag } else { FastPath::Playing })
+    }
+
+    /// [`Self::fast_path_blockers`] for one of the three uses of the fast
+    /// path. `PausedIdentity` is a paused present — a seek, a scrub step,
+    /// a skim — of a frame the renderer would only pass through: the
+    /// decoded sRGB bytes, which the pre-grade capture has already read
+    /// back, are the picture, and the full path's expansion to linear
+    /// floats, composite and re-encode (17 ms of a 24 ms 1080p present)
+    /// is skipped. The pre-grade capture itself is not a blocker there:
+    /// it has happened.
+    fn fast_path_blockers_for(&self, mode: FastPath) -> Vec<&'static str> {
         if !direct_present_enabled() {
             return vec!["KLIPP_DIRECT_PRESENT=0"];
         }
@@ -6174,10 +6198,10 @@ impl PlaybackEngine {
         // paused frame goes through `regrade_cached_frame`'s full render.
         // Checked first and alone so the sequence lock below is not taken
         // on every idle tick.
-        if !parked_drag && self.state != PlaybackState::Playing {
+        if mode == FastPath::Playing && self.state != PlaybackState::Playing {
             return vec!["not playing"];
         }
-        if parked_drag && (self.state != PlaybackState::Paused || !self.in_node_param_edit) {
+        if mode == FastPath::ParkedDrag && (self.state != PlaybackState::Paused || !self.in_node_param_edit) {
             return vec!["not a slider drag on the parked frame"];
         }
 
@@ -6186,21 +6210,33 @@ impl PlaybackEngine {
         // out is the slow way to learn why playback is not accelerating.
         let mut blockers: Vec<&'static str> = Vec::new();
 
-        if parked_drag {
-            if self.scope_tap_node.is_some() {
-                blockers.push("scope tap on a node");
+        match mode {
+            FastPath::ParkedDrag | FastPath::PausedIdentity => {
+                // What the grade tools read off the linear frame while paused.
+                if self.scope_tap_node.is_some() {
+                    blockers.push("scope tap on a node");
+                }
+                if self.inspector_matte_preview_target.is_some() {
+                    blockers.push("inspector matte preview");
+                }
+                if mode == FastPath::PausedIdentity {
+                    if self.in_node_param_edit {
+                        blockers.push("node param edit in progress");
+                    }
+                    if !self.visible_node_thumbs.is_empty() && !self.thumb_capture_suspended {
+                        blockers.push("node thumbnails wanted");
+                    }
+                }
             }
-            if self.inspector_matte_preview_target.is_some() {
-                blockers.push("inspector matte preview");
-            }
-        } else {
-            // Compare modes, paused scrubbing and param drags read the
-            // ungraded CPU frame.
-            if self.pregrade_encode_needed() {
-                blockers.push("pre-grade CPU encode needed");
-            }
-            if self.in_node_param_edit {
-                blockers.push("node param edit in progress");
+            FastPath::Playing => {
+                // Compare modes, paused scrubbing and param drags read the
+                // ungraded CPU frame.
+                if self.pregrade_encode_needed() {
+                    blockers.push("pre-grade CPU encode needed");
+                }
+                if self.in_node_param_edit {
+                    blockers.push("node param edit in progress");
+                }
             }
         }
         // What the byte-identity of *direct present* rests on, and what
