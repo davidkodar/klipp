@@ -249,3 +249,9 @@ panic = "abort"        # Smaller binary, no unwinding overhead
 inherits = "release"
 debug = true           # Keep debug info for profiling with perf/tracy
 strip = false
+
+# egui-wgpu 0.29.1 with textures freed after the frame's submit instead
+# of before it (see vendor/egui-wgpu/KLIPP-PATCH.md). Upstream's order
+# aborted the app whenever a texture was freed in the frame it was drawn.
+[patch.crates-io]
+egui-wgpu = { path = "vendor/egui-wgpu" }

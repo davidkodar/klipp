@@ -364,6 +364,10 @@ impl AudioOutput {
             .build_output_stream(
                 &config,
                 move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
+                    // alsa-lib's error handler is per thread, and this is
+                    // the thread that recovers from an underrun and would
+                    // print "snd_pcm_recover: underrun occurred" to stderr.
+                    quiet_alsa();
                     crate::thread_guard::catch_panic_once(
                         "klipp-cpal-output",
                         &OUTPUT_CALLBACK_PANIC_LOGGED,
