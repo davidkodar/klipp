@@ -4966,11 +4966,28 @@ impl KlippApp {
                                 let target = self.state.sequences[seq_idx].tracks.iter()
                                     .position(|t| t.kind == target_kind)
                                     .expect("checked above");
-                                let Some(edit) = self.state.sequences[seq_idx].insert_edit(target, new_clip, timeline_in) else {
+                                let Some(mut edit) = self.state.sequences[seq_idx].insert_edit(target, new_clip, timeline_in) else {
                                     self.state.toast.show("Target track is locked");
                                     return true;
                                 };
-                                self.state.push_history(EditCommand::LegacyInsertEdit(edit));
+                                // The clip's sound goes under it as a linked
+                                // audio clip, as the magnetic path lays one.
+                                // The ripple already cleared that span on the
+                                // audio track; a track is made if there is
+                                // none. The record's clip takes the link so a
+                                // redo brings it back linked.
+                                let (audio, created_audio_track_at) = if item.has_audio && !is_audio_only {
+                                    match attach_linked_audio_to_clip(&mut self.state.sequences[seq_idx], new_id) {
+                                        Some(a) => {
+                                            edit.clip.linked_clip_id = Some(a.clip.id);
+                                            (Some((a.clip, a.track_index)), a.created_track_at)
+                                        }
+                                        None => (None, None),
+                                    }
+                                } else {
+                                    (None, None)
+                                };
+                                self.state.push_history(EditCommand::LegacyInsertEdit { edit, audio, created_audio_track_at });
                             }
                             self.state.selected_clip = Some(new_id);
                             self.state.dirty = true;
@@ -21335,8 +21352,9 @@ impl KlippApp {
                     track.sort_clips();
                 }
             }
-            EditCommand::LegacyInsertEdit(edit) => {
-                self.state.sequences[self.state.active_sequence_idx].undo_insert_edit(edit);
+            EditCommand::LegacyInsertEdit { edit, audio, created_audio_track_at } => {
+                let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+                crate::history::apply_insert_edit_inverse(seq, edit, audio, *created_audio_track_at);
             }
             EditCommand::LegacyPasteClip { clip, track_index } => {
                 // Undo paste = remove the pasted clip
@@ -21847,8 +21865,9 @@ impl KlippApp {
                     track.ripple_remove(clip.id);
                 }
             }
-            EditCommand::LegacyInsertEdit(edit) => {
-                self.state.sequences[self.state.active_sequence_idx].redo_insert_edit(edit);
+            EditCommand::LegacyInsertEdit { edit, audio, created_audio_track_at } => {
+                let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+                crate::history::apply_insert_edit_forward(seq, edit, audio, *created_audio_track_at);
             }
             EditCommand::LegacyPasteClip { clip, track_index } => {
                 // Redo paste = re-insert

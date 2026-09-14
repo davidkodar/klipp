@@ -264,9 +264,15 @@ pub enum EditCommand {
         track_index: usize,
     },
     /// An insert edit on free tracks: the clip, every split it made,
-    /// every clip it moved, and the transitions and links it re-pointed.
-    /// The timeline crate owns the operation and its inverse.
-    LegacyInsertEdit(klipp_timeline::insert_edit::InsertEdit),
+    /// every clip it moved, and the transitions and links it re-pointed
+    /// (the timeline crate owns that operation and its inverse); plus the
+    /// linked audio clip laid under it, and the audio track created to
+    /// hold that if there was none. One ctrl+z reverts all of it.
+    LegacyInsertEdit {
+        edit: klipp_timeline::insert_edit::InsertEdit,
+        audio: Option<(Clip, usize)>,
+        created_audio_track_at: Option<usize>,
+    },
     LegacyMoveClipToTrack {
         clip: Clip,
         old_timeline_in: RationalTime,
@@ -557,6 +563,34 @@ pub fn apply_linked_import_forward(
     propagated_fps
 }
 
+/// Undo `EditCommand::LegacyInsertEdit`: the audio companion and its
+/// track go first, then the insert itself is unwound. The track, if one
+/// was created, holds only the companion — it did not exist when the
+/// insert rippled the others — so removing it loses nothing else.
+pub fn apply_insert_edit_inverse(
+    seq: &mut klipp_timeline::Sequence,
+    edit: &klipp_timeline::insert_edit::InsertEdit,
+    audio: &Option<(Clip, usize)>,
+    created_audio_track_at: Option<usize>,
+) {
+    apply_linked_import_inverse(seq, &None, audio, None, created_audio_track_at, &None);
+    seq.undo_insert_edit(edit);
+}
+
+/// Redo `EditCommand::LegacyInsertEdit`: the insert, then the companion
+/// (and its track) on top, as the original gesture did it. `edit.clip`
+/// already carries its link to the companion, so the re-inserted video
+/// clip comes back linked.
+pub fn apply_insert_edit_forward(
+    seq: &mut klipp_timeline::Sequence,
+    edit: &klipp_timeline::insert_edit::InsertEdit,
+    audio: &Option<(Clip, usize)>,
+    created_audio_track_at: Option<usize>,
+) {
+    seq.redo_insert_edit(edit);
+    apply_linked_import_forward(seq, &None, audio, None, created_audio_track_at, &None);
+}
+
 impl EditCommand {
     pub fn label(&self) -> &'static str {
         match self {
@@ -575,7 +609,7 @@ impl EditCommand {
             EditCommand::LegacySplitAtSceneMarkers { .. } => "Split at Scene Markers",
             EditCommand::LegacyCutClip { .. } => "Cut Clip",
             EditCommand::LegacyPasteClip { .. } => "Paste Clip",
-            EditCommand::LegacyInsertEdit(..) => "Insert Edit",
+            EditCommand::LegacyInsertEdit { .. } => "Insert Edit",
             EditCommand::Magnetic(cmd) => cmd.label(),
             EditCommand::SourceLinkedInsert { video_command, .. } => video_command.label(),
             EditCommand::AddMediaToPool { .. } => "Import Media",
@@ -2278,5 +2312,70 @@ mod linked_import_tests {
         // Clips landed on the recreated tracks.
         assert_eq!(seq.tracks[0].clips.len(), 1);
         assert_eq!(seq.tracks[seq.tracks.len() - 1].clips.len(), 1);
+    }
+}
+
+#[cfg(test)]
+mod insert_edit_with_audio_tests {
+    //! The handler's whole gesture — an insert on V1 with a linked audio
+    //! clip laid under it, on a track made for it — undone by one entry
+    //! and redone by one, through the helpers the app's undo calls.
+    use super::*;
+    use klipp_core::{ClipId, MediaId, RationalTime};
+    use klipp_timeline::{Sequence, Track, TrackKind};
+
+    fn tc(f: i64) -> RationalTime {
+        RationalTime::from_frames(f, 25)
+    }
+    fn clip(from: i64, to: i64) -> Clip {
+        Clip::media(MediaId::new(), tc(from), tc(to), tc(0), tc(to - from))
+    }
+    type Shape = Vec<(TrackKind, Vec<(ClipId, i64, i64, Option<ClipId>)>)>;
+    fn shape(s: &Sequence) -> Shape {
+        let f = |t: RationalTime| t.value * 25 / t.rate as i64;
+        s.tracks
+            .iter()
+            .map(|t| (t.kind, t.clips.iter().map(|c| (c.id, f(c.timeline_in), f(c.timeline_out), c.linked_clip_id)).collect()))
+            .collect()
+    }
+
+    #[test]
+    fn one_entry_reverts_the_insert_its_audio_and_the_track_made_for_it() {
+        // A video-only sequence: the audio track has to be made.
+        let mut seq = Sequence::new_default();
+        seq.fps = klipp_core::Fps::new(25, 1);
+        let mut v1 = Track::new("V1", TrackKind::Video);
+        v1.clips = vec![clip(0, 100)];
+        seq.tracks = vec![v1];
+        let before = shape(&seq);
+
+        // The handler: insert, then the companion the way
+        // attach_linked_audio_to_clip lays it — same span, linked both
+        // ways, on an audio track made at the end.
+        let inserted = clip(0, 10);
+        let video_id = inserted.id;
+        let mut edit = seq.insert_edit(0, inserted, tc(40)).expect("insert");
+        seq.add_audio_track("Audio 1".into());
+        let ai = seq.tracks.len() - 1;
+        let mut audio = clip(40, 50);
+        audio.linked_clip_id = Some(video_id);
+        let audio_id = audio.id;
+        seq.tracks[ai].clips.push(audio.clone());
+        seq.tracks[0].find_clip_mut(video_id).unwrap().linked_clip_id = Some(audio_id);
+        edit.clip.linked_clip_id = Some(audio_id);
+        let after = shape(&seq);
+        assert_eq!(after[0].1.len(), 3, "left half, insert, right half");
+        assert_eq!(after.len(), 2, "an audio track was made");
+        assert_eq!(after[1].1, vec![(audio_id, 40, 50, Some(video_id))]);
+
+        let audio_rec = Some((audio, ai));
+        apply_insert_edit_inverse(&mut seq, &edit, &audio_rec, Some(ai));
+        assert_eq!(shape(&seq), before, "undo did not put the sequence back — track included");
+
+        apply_insert_edit_forward(&mut seq, &edit, &audio_rec, Some(ai));
+        assert_eq!(shape(&seq), after, "redo did not reproduce the gesture, links included");
+
+        apply_insert_edit_inverse(&mut seq, &edit, &audio_rec, Some(ai));
+        assert_eq!(shape(&seq), before);
     }
 }
