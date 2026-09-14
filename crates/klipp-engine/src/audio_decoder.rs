@@ -340,7 +340,7 @@ fn audio_decode_thread(
     loop {
         while let Ok(cmd) = cmd_rx.try_recv() {
             match cmd {
-                DecodeCommand::SeekTo(secs, _) => {
+                DecodeCommand::SeekTo(secs, _) | DecodeCommand::SeekOn(secs, _) => {
                     let ts = (secs * 1_000_000.0) as i64;
                     debug!("audio_decode_thread: seek to {secs:.3}s");
                     drop(packets);

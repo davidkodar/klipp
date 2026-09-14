@@ -709,6 +709,23 @@ impl FrameQueue {
         self.capacity
     }
 
+    /// Keep the frames at or after `secs`, stamped with `epoch` — a
+    /// forward seek that the decoder answers by decoding on, for which
+    /// the frames already decoded past the new target are still right.
+    /// Returns how many remain.
+    pub fn keep_from(&mut self, secs: f64, epoch: u64) -> usize {
+        self.frames.retain(|f| !f.is_eof && f.pts_secs() >= secs);
+        for f in &mut self.frames {
+            f.seek_epoch = epoch;
+        }
+        self.frames.len()
+    }
+
+    /// The presentation time of the oldest queued picture, if any.
+    pub fn oldest_pts_secs(&self) -> Option<f64> {
+        self.frames.iter().find(|f| !f.is_eof).map(|f| f.pts_secs())
+    }
+
     pub fn clear(&mut self) {
         self.frames.clear();
     }

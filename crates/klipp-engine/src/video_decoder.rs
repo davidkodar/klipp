@@ -497,6 +497,11 @@ pub enum DecodeCommand {
     /// epoch, so consumers can tell a frame decoded for this seek from one
     /// converted just before it — see [`LinearFrame::seek_epoch`].
     SeekTo(f64, u64),
+    /// Seek to a time that lies just ahead of the last decoded frame, by
+    /// decoding on and skipping up to it instead of seeking the
+    /// container. The requester has already kept the queued frames at or
+    /// after the time, restamped with the epoch.
+    SeekOn(f64, u64),
     Pause,
     Resume,
     Stop,
@@ -540,6 +545,30 @@ pub struct VideoDecoder {
     /// goes out, so a consumer can read it without having tracked the
     /// return value of every seek call.
     seek_epoch: Arc<std::sync::atomic::AtomicU64>,
+    /// The presentation time of the last frame the decode thread decoded,
+    /// as `f64` bits; [`NO_PTS`] before the first frame and after a
+    /// container seek. Read by [`VideoDecoder::seek`] to decide whether a
+    /// seek can be answered by decoding on.
+    last_decoded_pts: Arc<std::sync::atomic::AtomicU64>,
+}
+
+/// [`VideoDecoder::last_decoded_pts`] when there is no frame.
+const NO_PTS: u64 = u64::MAX;
+
+/// How far before a seek target a queued frame may lie and still be the
+/// frame for it: the rounding between a timeline time and a stream
+/// timestamp, well under any frame.
+const SEEK_PTS_SLACK: f64 = 1e-3;
+
+fn publish_pts(slot: &std::sync::atomic::AtomicU64, pts: Option<f64>) {
+    slot.store(pts.map_or(NO_PTS, f64::to_bits), std::sync::atomic::Ordering::Relaxed);
+}
+
+fn read_pts(slot: &std::sync::atomic::AtomicU64) -> Option<f64> {
+    match slot.load(std::sync::atomic::Ordering::Relaxed) {
+        NO_PTS => None,
+        bits => Some(f64::from_bits(bits)),
+    }
 }
 
 impl VideoDecoder {
@@ -567,6 +596,8 @@ impl VideoDecoder {
         let stop_flag_clone = stop_flag.clone();
         let last_decode_us = Arc::new(std::sync::atomic::AtomicU32::new(0));
         let last_decode_us_clone = last_decode_us.clone();
+        let last_decoded_pts = Arc::new(std::sync::atomic::AtomicU64::new(NO_PTS));
+        let last_decoded_pts_clone = last_decoded_pts.clone();
 
         let alive = DecodeThreadToken::new();
         let thread = std::thread::Builder::new()
@@ -577,7 +608,7 @@ impl VideoDecoder {
                 // is still inside ffmpeg's teardown.
                 let _alive = alive;
                 crate::thread_guard::catch_panic("klipp-vdec", || {
-                    decode_thread_main(path_owned, queue_clone, cmd_rx, hw_flag, stop_flag_clone, source_rotation, last_decode_us_clone);
+                    decode_thread_main(path_owned, queue_clone, cmd_rx, hw_flag, stop_flag_clone, source_rotation, last_decode_us_clone, last_decoded_pts_clone);
                 });
             })
             .map_err(|e| DecoderError::Open(format!("spawn thread: {e}")))?;
@@ -590,6 +621,7 @@ impl VideoDecoder {
             hw_active,
             stop_flag,
             last_decode_us,
+            last_decoded_pts,
         })
     }
 
@@ -610,7 +642,22 @@ impl VideoDecoder {
     /// decoded before this seek and are stale.
     pub fn seek(&self, secs: f64) -> u64 {
         let epoch = self.seek_epoch.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
-        let _ = self.decode_cmd_tx.send(DecodeCommand::SeekTo(secs, epoch));
+        // Decided here, not on the decode thread: the epoch is already
+        // the new one, so the caller's next look at the queue treats every
+        // frame stamped with the old one as stale. Frames that a step
+        // forward can use are restamped now, before that look.
+        let last = read_pts(&self.last_decoded_pts);
+        let mut queue = self.frame_queue.lock().unwrap_or_else(|e| e.into_inner());
+        let (oldest, queued) = (queue.oldest_pts_secs(), queue.len());
+        let decode_on = seek_is_just_ahead(last, oldest, secs);
+        let kept = if decode_on { queue.keep_from(secs - SEEK_PTS_SLACK, epoch) } else { queue.clear(); 0 };
+        drop(queue);
+        debug!(
+            "VideoDecoder::seek {secs:.3}s: last decoded {last:?}, queued {queued} from {oldest:?} → {} (kept {kept}, epoch {epoch})",
+            if decode_on { "decode on" } else { "container seek" }
+        );
+        let cmd = if decode_on { DecodeCommand::SeekOn(secs, epoch) } else { DecodeCommand::SeekTo(secs, epoch) };
+        let _ = self.decode_cmd_tx.send(cmd);
         epoch
     }
 
@@ -2252,6 +2299,7 @@ fn decode_thread_main(
     stop_flag: Arc<std::sync::atomic::AtomicBool>,
     source_rotation: i32,
     last_decode_us: Arc<std::sync::atomic::AtomicU32>,
+    last_decoded_pts: Arc<std::sync::atomic::AtomicU64>,
 ) {
     DECODE_PATH.with(|p| *p.borrow_mut() = Some(path.clone()));
     let mut format_ctx = match ffmpeg_next::format::input(&path) {
@@ -2418,6 +2466,9 @@ fn decode_thread_main(
     let mut paused = true;
     let mut eof_sent = false;
     let mut seek_target: Option<f64> = None;
+    // The presentation time of the last frame this thread decoded, to
+    // tell a seek just ahead of it from one that needs the container.
+    let mut last_pts_secs: Option<f64> = None;
     // The epoch every frame produced from here on is stamped with. Advanced
     // when a seek is applied, not when it is received, so a frame converted
     // before the seek keeps the older epoch and consumers can drop it.
@@ -2452,13 +2503,16 @@ fn decode_thread_main(
         // HEVC), pinning the CPU and stalling the visible
         // playhead behind the cursor by hundreds of ms. Only the
         // newest scrub target matters.
-        let mut latest_seek: Option<(f64, u64)> = None;
+        let mut latest_seek: Option<(f64, u64, bool)> = None;
         let mut got_stop = false;
         while let Ok(cmd) = cmd_rx.try_recv() {
             match cmd {
                 DecodeCommand::SeekTo(secs, epoch) => {
                     // Coalesced: the newest seek wins, and its epoch with it.
-                    latest_seek = Some((secs, epoch));
+                    latest_seek = Some((secs, epoch, false));
+                }
+                DecodeCommand::SeekOn(secs, epoch) => {
+                    latest_seek = Some((secs, epoch, true));
                 }
                 DecodeCommand::Pause => paused = true,
                 DecodeCommand::Resume => {
@@ -2475,22 +2529,37 @@ fn decode_thread_main(
             debug!("decode_thread: stop");
             return;
         }
-        if let Some((secs, epoch)) = latest_seek {
+        if let Some((secs, epoch, decode_on)) = latest_seek {
             seek_epoch = epoch;
-            let ts = (secs * 1_000_000.0) as i64;
-            debug!("decode_thread: seek to {secs:.3}s (ts={ts} us, epoch {epoch})");
-            drop(packets);
-            let _ = format_ctx.seek(ts, ..ts);
-            packets = format_ctx.packets();
-            decoder.flush();
-            if let Some(bsf) = bsf_ctx.as_ref() {
-                bsf.flush();
+            if decode_on {
+                // Keep decoding forward and skip up to the target: a
+                // scrub steps a frame or two at a time, and a container
+                // seek would decode the whole group of pictures again
+                // from its keyframe for every step. The requester kept
+                // the queued frames past the target; frames decoded
+                // since then are restamped here.
+                let kept = frame_queue.lock().unwrap_or_else(|e| e.into_inner()).keep_from(secs - SEEK_PTS_SLACK, epoch);
+                debug!("decode_thread: seek to {secs:.3}s by decoding on from {:.3}s, {kept} queued (epoch {epoch})", last_pts_secs.unwrap_or(0.0));
+                seek_target = Some(secs);
+                eof_sent = false;
+            } else {
+                let ts = (secs * 1_000_000.0) as i64;
+                debug!("decode_thread: seek to {secs:.3}s (ts={ts} us, epoch {epoch})");
+                drop(packets);
+                let _ = format_ctx.seek(ts, ..ts);
+                packets = format_ctx.packets();
+                decoder.flush();
+                if let Some(bsf) = bsf_ctx.as_ref() {
+                    bsf.flush();
+                }
+                frame_queue.lock().unwrap_or_else(|e| e.into_inner()).clear();
+                seek_target = Some(secs);
+                last_pts_secs = None;
+                publish_pts(&last_decoded_pts, None);
+                eof_sent = false;
+                eof_from_demuxer = false;
+                pending_packet = None;
             }
-            frame_queue.lock().unwrap_or_else(|e| e.into_inner()).clear();
-            seek_target = Some(secs);
-            eof_sent = false;
-            eof_from_demuxer = false;
-            pending_packet = None;
         }
 
         if paused {
@@ -2520,13 +2589,16 @@ fn decode_thread_main(
                 // Re-check commands (seek/stop) while waiting.
                 // Drain the whole queue and coalesce SeekTo to the
                 // latest, same reasoning as the top-of-loop drain.
-                let mut latest_inner_seek: Option<(f64, u64)> = None;
+                let mut latest_inner_seek: Option<(f64, u64, bool)> = None;
                 let mut inner_break = false;
                 let mut inner_return = false;
                 while let Ok(cmd) = cmd_rx.try_recv() {
                     match cmd {
                         DecodeCommand::SeekTo(secs, epoch) => {
-                            latest_inner_seek = Some((secs, epoch));
+                            latest_inner_seek = Some((secs, epoch, false));
+                        }
+                        DecodeCommand::SeekOn(secs, epoch) => {
+                            latest_inner_seek = Some((secs, epoch, true));
                         }
                         DecodeCommand::Pause => { paused = true; inner_break = true; break; }
                         DecodeCommand::Resume => { paused = false; eof_sent = false; }
@@ -2534,8 +2606,15 @@ fn decode_thread_main(
                     }
                 }
                 if inner_return { return; }
-                if let Some((secs, epoch)) = latest_inner_seek {
+                if let Some((secs, epoch, decode_on)) = latest_inner_seek {
                     seek_epoch = epoch;
+                    if decode_on {
+                        let kept = frame_queue.lock().unwrap_or_else(|e| e.into_inner()).keep_from(secs - SEEK_PTS_SLACK, epoch);
+                        debug!("decode_thread: seek to {secs:.3}s by decoding on, {kept} queued (epoch {epoch}) (in drain)");
+                        seek_target = Some(secs);
+                        eof_sent = false;
+                        continue; // the queue has room again; keep draining
+                    }
                     let ts = (secs * 1_000_000.0) as i64;
                     debug!("decode_thread: seek to {secs:.3}s (ts={ts} us, epoch {epoch}) (in drain)");
                     drop(packets);
@@ -2547,6 +2626,8 @@ fn decode_thread_main(
                     }
                     frame_queue.lock().unwrap_or_else(|e| e.into_inner()).clear();
                     seek_target = Some(secs);
+                    last_pts_secs = None;
+                    publish_pts(&last_decoded_pts, None);
                     eof_sent = false;
                     eof_from_demuxer = false;
                     pending_packet = None;
@@ -2572,6 +2653,8 @@ fn decode_thread_main(
                 .unwrap_or(0.0);
 
             // Skip pre-seek frames
+            last_pts_secs = Some(pts_secs);
+            publish_pts(&last_decoded_pts, last_pts_secs);
             if let Some(target) = seek_target {
                 if pts_secs < target - 0.05 {
                     continue; // skip this frame, try next
@@ -3461,5 +3544,55 @@ mod decode_thread_barrier_tests {
             before,
             "a panicking thread left itself registered",
         );
+    }
+}
+
+/// Whether a seek to `target` is better served by decoding on than by a
+/// container seek. The decoder's last frame was at `last_pts`; the
+/// oldest frame still queued, not yet taken by the engine, is at
+/// `queued_from`. The target is reachable without the container when it
+/// is no earlier than what is still queued (those frames are kept) and
+/// no further past the last decoded frame than a group of pictures
+/// typically is. Decoding on costs one frame per frame skipped; a
+/// container seek costs every frame from the previous keyframe up to
+/// the target — for a one-frame step, the whole group again.
+fn seek_is_just_ahead(last_pts: Option<f64>, queued_from: Option<f64>, target: f64) -> bool {
+    const JUST_AHEAD_SECS: f64 = 1.0;
+    let Some(last) = last_pts else { return false };
+    if target > last + JUST_AHEAD_SECS {
+        return false;
+    }
+    match queued_from {
+        // Still queued from `from`: anything from there on is at hand. A
+        // target one frame before it has gone by — the engine took that
+        // frame already — and decoding on can never produce it again, so
+        // the tolerance is float noise, not a frame.
+        Some(from) => target >= from - SEEK_PTS_SLACK,
+        // Nothing queued: only what is still to be decoded is ahead.
+        None => target > last,
+    }
+}
+
+#[cfg(test)]
+mod seek_shortcut_tests {
+    use super::seek_is_just_ahead;
+
+    #[test]
+    fn a_step_forward_decodes_on_and_anything_else_seeks() {
+        assert!(seek_is_just_ahead(Some(10.0), None, 10.04), "one frame on, nothing queued");
+        assert!(seek_is_just_ahead(Some(10.0), None, 10.9), "within a second");
+        assert!(!seek_is_just_ahead(Some(10.0), None, 10.0), "the same time with nothing queued: the frame has gone by");
+        assert!(!seek_is_just_ahead(Some(10.0), None, 9.96), "one frame back");
+        assert!(!seek_is_just_ahead(Some(10.0), None, 11.5), "too far to decode on");
+        assert!(!seek_is_just_ahead(None, None, 5.0), "nothing decoded yet");
+        // The decoder read ahead to 10.6 s; frames from 10.2 s are queued.
+        assert!(seek_is_just_ahead(Some(10.6), Some(10.2), 10.24), "a step into what is queued");
+        assert!(seek_is_just_ahead(Some(10.6), Some(10.2), 10.8), "a step past the queue, still ahead");
+        assert!(!seek_is_just_ahead(Some(10.6), Some(10.2), 10.0), "before the queue: gone by");
+        // Paused right after playing: the frame at the playhead was the
+        // last one played and is no longer queued. One frame before the
+        // queue is gone by, however close.
+        assert!(!seek_is_just_ahead(Some(4.92), Some(4.32), 4.28), "the frame just played is gone by");
+        assert!(seek_is_just_ahead(Some(4.92), Some(4.32), 4.32 - 1e-4), "the queued frame itself, to timestamp rounding");
     }
 }

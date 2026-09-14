@@ -1203,6 +1203,9 @@ pub struct PlaybackEngine {
     /// so they can be logged when the set *changes* rather than once per
     /// frame. Empty means the last frame took the fast path.
     last_direct_present_blockers: Vec<&'static str>,
+    /// How long the last paused seek waited for the decoder's frame,
+    /// apart from rendering it. For the seek timing log.
+    last_grab_wait: Duration,
     // Bidirectional frame cache — keeps last N decoded pre-grade frames for instant
     // backward stepping without FFmpeg seeks.
     frame_cache: FrameCache,
@@ -1537,6 +1540,7 @@ impl PlaybackEngine {
             cached_pregrade_at: None,
             presenting_progress: false,
             last_direct_present_blockers: Vec::new(),
+            last_grab_wait: Duration::ZERO,
             frame_cache: FrameCache::new(120), // ~5s at 24fps (backward history + forward prefetch)
             render_cache_hot: crate::render_cache::HotCache::new(30),
             render_cache_disk,
@@ -2046,11 +2050,6 @@ impl PlaybackEngine {
                         };
                         if !queue_has_target {
                             dec.seek(source_secs);
-                            // Drain stale frames from queue immediately —
-                            // the decoder thread will also clear on seek, but we
-                            // clear from here to discard any frames produced between
-                            // our seek command and the decoder processing it.
-                            dec.frame_queue().lock().unwrap_or_else(|e| e.into_inner()).clear();
                         }
                         dec.resume();
                     }
@@ -3048,6 +3047,55 @@ impl PlaybackEngine {
 
     /// Open audio sources for ALL tracks that have a clip at `tc`.
     /// Replaces any existing audio sources.
+    /// Put the audio at `tc`: seek the open sources when the clips with
+    /// audio there are the ones they were opened for, otherwise open the
+    /// set afresh.
+    ///
+    /// Every seek used to tear the whole audio pipeline down and build
+    /// it again — each source's decoder, the mix thread and the cpal
+    /// output stream — and only then seek, though the sources can seek
+    /// in place and `seek_all_audio_to_timecode` already reopens when a
+    /// clip's media or effect chain differs. That rebuild was most of a
+    /// seek's cost, so a scrub ran at a handful of positions a second.
+    fn reposition_audio(&mut self, tc: Timecode) {
+        let fingerprint = self.audio_fingerprint_at(tc);
+        let same_set = !self.audio_sources.is_empty()
+            && self.audio_output.is_some()
+            && fingerprint == self.last_audio_fingerprint
+            && self.audio_sources.len() == self.audio_source_count_at(tc);
+        if same_set {
+            self.seek_all_audio_to_timecode(tc);
+        } else {
+            self.start_all_audio(tc);
+            self.seek_all_audio_to_timecode(tc);
+        }
+    }
+
+    /// How many sources `start_all_audio` would open at `tc`.
+    fn audio_source_count_at(&self, tc: Timecode) -> usize {
+        let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
+        let pool = self.media_pool.read().unwrap_or_else(|e| e.into_inner());
+        seq.tracks
+            .iter()
+            .filter(|track| {
+                let Some((_, clip)) = track.clip_at_timecode(tc) else { return false };
+                if !clip.enabled { return false; }
+                let Some(media_id) = clip.media_id() else { return false };
+                let Some(item) = pool.get(&media_id) else { return false };
+                if !item.has_audio { return false; }
+                if track.kind == klipp_timeline::TrackKind::Video {
+                    if let Some(lid) = clip.linked_clip_id {
+                        let partner_on_audio = seq.tracks.iter().any(|t| {
+                            t.kind == klipp_timeline::TrackKind::Audio && t.clips.iter().any(|c| c.id == lid)
+                        });
+                        if partner_on_audio { return false; }
+                    }
+                }
+                true
+            })
+            .count()
+    }
+
     fn start_all_audio(&mut self, tc: Timecode) {
         // Update fingerprint so SequenceUpdated knows the current audio state
         // (prevents redundant restart on the next SequenceUpdated after a seek/play).
@@ -3365,8 +3413,11 @@ impl PlaybackEngine {
     /// clones the clip's audio_effect_keyframes fresh, so the edit is
     /// picked up at clip-transition time.
     fn compute_audio_fingerprint(&self) -> u64 {
+        self.audio_fingerprint_at(self.playhead)
+    }
+
+    fn audio_fingerprint_at(&self, tc: Timecode) -> u64 {
         let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
-        let tc = self.playhead;
         let mut fp: u64 = 0;
         for track in &seq.tracks {
             if let Some((_, clip)) = track.clip_at_timecode(tc) {
@@ -4402,7 +4453,6 @@ impl PlaybackEngine {
                 info!("CUT-DIAG SAME-FILE seek: idx={} source_in={:.4}s (reusing decoder)", actual_idx, source_in_secs);
                 if let Some(dec) = &self.v1_decoder {
                     dec.seek(source_in_secs);
-                    dec.frame_queue().lock().unwrap_or_else(|e| e.into_inner()).clear();
                 }
 
                 self.master_clock.pause();
@@ -4825,7 +4875,6 @@ impl PlaybackEngine {
                         }
                     } else if let Some(dec) = &self.v1_decoder {
                         dec.seek(source_secs);
-                        dec.frame_queue().lock().unwrap_or_else(|e| e.into_inner()).clear();
                         self.clip_source_start = clip_source_in;
                         self.clip_timeline_start = timeline_in;
                         self.clip_speed = spd;
@@ -4957,7 +5006,12 @@ impl PlaybackEngine {
                 }
             } else if let Some(dec) = &self.v1_decoder {
                 dec.seek(source_secs);
-                dec.frame_queue().lock().unwrap_or_else(|e| e.into_inner()).clear();
+                // The queue is the decoder's to clear, when it applies the
+                // seek: a step forward keeps the frames it read ahead,
+                // which are exactly the next positions of a scrub. Frames
+                // from before the seek carry an older epoch and are
+                // dropped when taken. Clearing here threw the read-ahead
+                // away before the decoder could see it.
                 if self.state != PlaybackState::Playing {
                     dec.resume();
                 }
@@ -5038,6 +5092,7 @@ impl PlaybackEngine {
     }
 
     fn seek_in_sequence_with_timeout(&mut self, tc: Timecode, grab_timeout: Duration) {
+        let t_seek = std::time::Instant::now();
         self.sync_fps_to_sequence();
         // A frame held back for the previous seek is not this one's.
         self.paused_refresh_best = None;
@@ -5134,8 +5189,12 @@ impl PlaybackEngine {
                 }
             } else if let Some(dec) = &self.v1_decoder {
                 dec.seek(source_secs);
-                // Clear stale frames from queue
-                dec.frame_queue().lock().unwrap_or_else(|e| e.into_inner()).clear();
+                // The queue is the decoder's to clear, when it applies the
+                // seek: a step forward keeps the frames it read ahead,
+                // which are exactly the next positions of a scrub. Frames
+                // from before the seek carry an older epoch and are
+                // dropped when taken. Clearing here threw the read-ahead
+                // away before the decoder could see it.
                 if self.state != PlaybackState::Playing {
                     dec.resume();
                 }
@@ -5146,6 +5205,7 @@ impl PlaybackEngine {
             }
 
             let was_playing = self.state == PlaybackState::Playing;
+            let t_video = t_seek.elapsed();
 
             // 1. Pause clock + cpal output
             self.master_clock.pause();
@@ -5153,13 +5213,13 @@ impl PlaybackEngine {
                 aout.0.pause();
             }
 
-            // 2. Re-open audio sources (start paused) then flush+seek
-            self.start_all_audio(tc);
-            self.seek_all_audio_to_timecode(tc);
+            // 2. Put the audio at the new time
+            self.reposition_audio(tc);
 
             // 3. Set master clock to target
             let target_us = (source_secs * 1_000_000.0) as u64;
             self.master_clock.seek(target_us);
+            let t_audio = t_seek.elapsed();
 
             // 4. Resume or stay paused based on playback state
             if was_playing {
@@ -5175,6 +5235,7 @@ impl PlaybackEngine {
                 }
                 self.master_clock.resume();
             }
+            let t_prefill = t_seek.elapsed();
             // Sources already start paused, no need to pause them
 
             // The frame renders at the new time; the other clips' streams
@@ -5184,6 +5245,17 @@ impl PlaybackEngine {
 
             if !was_playing {
                 let got_frame = self.grab_single_frame_timeout(grab_timeout);
+                let total = t_seek.elapsed();
+                // Where a seek's time goes. Only seeks worth noticing are
+                // logged at info; a scrub is a stream of these.
+                let ms = |d: Duration| d.as_secs_f64() * 1000.0;
+                if total >= Duration::from_millis(20) {
+                    info!(
+                        "SEEK_TIMING total={:.1}ms video={:.1} audio={:.1} prefill={:.1} wait={:.1} present={:.1} got_frame={got_frame}",
+                        ms(total), ms(t_video), ms(t_audio - t_video), ms(t_prefill - t_audio),
+                        ms(self.last_grab_wait), ms(total - t_prefill - self.last_grab_wait)
+                    );
+                }
                 if !got_frame {
                     // 4K / slow codec cold seeks routinely outrun the
                     // 50–200 ms grab budget. Instead of giving up and
@@ -5229,9 +5301,8 @@ impl PlaybackEngine {
                     aout.0.pause();
                 }
 
-                // Re-open audio (paused), flush+seek
-                self.start_all_audio(tc);
-                self.seek_all_audio_to_timecode(tc);
+                // Put the audio at the new time
+                self.reposition_audio(tc);
                 let target_us = (tc.to_secs_f64() * 1_000_000.0) as u64;
                 self.master_clock.seek(target_us);
 
@@ -5417,7 +5488,6 @@ impl PlaybackEngine {
             // Seek decoder to prefetch start position
             if let Some(dec) = &self.v1_decoder {
                 dec.seek(seek_tc.to_secs_f64());
-                dec.frame_queue().lock().unwrap_or_else(|e| e.into_inner()).clear();
                 dec.resume();
             }
 
@@ -5607,7 +5677,6 @@ impl PlaybackEngine {
             if let Some(dec) = &self.v1_decoder {
                 let seek_secs = RationalTime { value: prefetch_start, rate: self.playhead.rate }.to_secs_f64();
                 dec.seek(seek_secs);
-                dec.frame_queue().lock().unwrap_or_else(|e| e.into_inner()).clear();
                 dec.resume();
             }
 
@@ -5647,7 +5716,6 @@ impl PlaybackEngine {
             if let Some(dec) = &self.v1_decoder {
                 let current_secs = self.playhead.to_secs_f64();
                 dec.seek(current_secs);
-                dec.frame_queue().lock().unwrap_or_else(|e| e.into_inner()).clear();
             }
         }
 
@@ -5707,7 +5775,8 @@ impl PlaybackEngine {
     }
 
     fn grab_single_frame_timeout(&mut self, timeout: Duration) -> bool {
-        let deadline = std::time::Instant::now() + timeout;
+        let started = std::time::Instant::now();
+        let deadline = started + timeout;
         let mut best = None;
         let mut settled = false;
         while std::time::Instant::now() < deadline {
@@ -5717,6 +5786,7 @@ impl PlaybackEngine {
             }
             std::thread::sleep(Duration::from_millis(2));
         }
+        self.last_grab_wait = started.elapsed();
         if let Some(frame) = best.take_if(|_| settled) {
             // The whole frame, overlays and mattes included: the other
             // clips' streams are waited for, briefly, before it renders.
@@ -7514,7 +7584,6 @@ impl PlaybackEngine {
         let was_playing = self.source_state == PlaybackState::Playing;
         if let Some(ref dec) = self.source_decoder {
             dec.seek(secs);
-            dec.frame_queue().lock().unwrap_or_else(|e| e.into_inner()).clear();
             dec.resume();
         }
         if let Some(ref src) = self.source_audio_source {

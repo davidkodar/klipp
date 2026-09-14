@@ -211,7 +211,6 @@ impl ClipStream {
 
     fn seek(&mut self, secs: f64) {
         self.decoder.seek(secs);
-        self.decoder.frame_queue().lock().unwrap_or_else(|e| e.into_inner()).clear();
         self.decoder.resume();
         self.seeking = Some(secs);
         self.ended = false;
