@@ -331,7 +331,7 @@ pub fn show(
             .collect();
         match *sort_mode {
             EffectSort::NameAsc => filtered.sort_by_key(|a| a.name.to_lowercase()),
-            EffectSort::NameDesc => filtered.sort_by(|a, b| b.name.to_lowercase().cmp(&a.name.to_lowercase())),
+            EffectSort::NameDesc => filtered.sort_by_key(|a| std::cmp::Reverse(a.name.to_lowercase())),
             EffectSort::Category => filtered.sort_by(|a, b| {
                 a.category.to_lowercase().cmp(&b.category.to_lowercase())
                     .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))

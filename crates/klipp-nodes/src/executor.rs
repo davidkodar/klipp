@@ -2041,11 +2041,11 @@ impl GraphExecutor {
             NodeKind::RGBCurves => params
                 .curves
                 .as_ref()
-                .map_or(false, |c| !is_curves_identity(c)),
+                .is_some_and(|c| !is_curves_identity(c)),
             NodeKind::HueSatCurves => params
                 .huesat
                 .as_ref()
-                .map_or(false, |h| !h.is_all_identity()),
+                .is_some_and(|h| !h.is_all_identity()),
             NodeKind::ColorBalance => {
                 // Same story as WheelSatBri — all four params default
                 // to identity (temp/tint/hue = 0, global_mix = 1).
@@ -2063,15 +2063,15 @@ impl GraphExecutor {
             NodeKind::FilmGrain => params
                 .grain
                 .as_ref()
-                .map_or(false, |g| g.enabled && g.amount > 0.001),
+                .is_some_and(|g| g.enabled && g.amount > 0.001),
             NodeKind::ColorMatch => params
                 .color_match
                 .as_ref()
-                .map_or(false, |s| !s.is_identity()),
+                .is_some_and(|s| !s.is_identity()),
             NodeKind::ColorWarper => params
                 .warper_params
                 .as_ref()
-                .map_or(false, |w| !w.is_identity()),
+                .is_some_and(|w| !w.is_identity()),
             NodeKind::Denoise => {
                 params.denoise_luma.unwrap_or(0.0) > 0.0
                     || params.denoise_chroma.unwrap_or(0.0) > 0.0
@@ -2111,10 +2111,7 @@ impl GraphExecutor {
         height: u32,
         frame_number: u64,
     ) -> Option<u32> {
-        let gpu = match &mut self.gpu {
-            Some(g) => g,
-            None => return None,
-        };
+        let gpu = self.gpu.as_mut()?;
         if gpu.is_device_lost() {
             return None;
         }
@@ -2505,10 +2502,7 @@ impl GraphExecutor {
             return Some(0);
         }
 
-        let gpu = match &mut self.gpu {
-            Some(g) => g,
-            None => return None,
-        };
+        let gpu = self.gpu.as_mut()?;
         // A recognised secondary's two nodes. The caller has checked the
         // shape; here we only dispatch. The Qualifier reports zero slot
         // flips because it writes the matte, not the picture.
@@ -2680,7 +2674,7 @@ impl GraphExecutor {
                 Some(1)
             }
             NodeKind::RGBCurves => {
-                let Some(curves) = params.curves.as_ref() else { return None };
+                let curves = params.curves.as_ref()?;
                 if is_curves_identity(curves) { return None; }
                 // Use pre-built LUTs from prepare_clip() when available.
                 let lut_data = self
@@ -2697,7 +2691,7 @@ impl GraphExecutor {
                 Some(1)
             }
             NodeKind::HueSatCurves => {
-                let Some(huesat) = params.huesat.as_ref() else { return None };
+                let huesat = params.huesat.as_ref()?;
                 if huesat.is_all_identity() { return None; }
                 let lut_data = build_huesat_lut_data(huesat);
                 let mix = params.huesat_mix.unwrap_or(1.0);
@@ -2715,7 +2709,7 @@ impl GraphExecutor {
                 Some(1)
             }
             NodeKind::Lut3D => {
-                let Some(path) = params.lut_path.as_ref() else { return None };
+                let path = params.lut_path.as_ref()?;
                 let lut = self
                     .lut_cache
                     .entry(path.clone())
@@ -2748,7 +2742,7 @@ impl GraphExecutor {
                 Some(1)
             }
             NodeKind::FilmGrain => {
-                let Some(grain) = params.grain.as_ref() else { return None };
+                let grain = params.grain.as_ref()?;
                 if !grain.enabled || grain.amount <= 0.001 { return None; }
                 self.gpu.as_mut().unwrap().apply_grain_chain(
                     in_is_a, width, height,
@@ -2934,9 +2928,8 @@ impl GraphExecutor {
         height: u32,
         in_is_a: bool,
     ) -> Option<u32> {
-        if self.gpu.is_none() { return None; }
         let stages = self.corrector_stages(node_id, params);
-        let gpu = self.gpu.as_mut().unwrap();
+        let gpu = self.gpu.as_mut()?;
         let mut cur = in_is_a;
         let mut flips: u32 = 0;
         for stage in &stages {
@@ -3427,7 +3420,7 @@ impl GraphExecutor {
                 // `RemoveMaskShape` after the user removes the last
                 // shape) from ~57 ms / 4K frame to nothing.
                 let stack_has_active = params.masks.as_ref()
-                    .map_or(false, |ms| ms.masks.iter().any(|m| m.enabled));
+                    .is_some_and(|ms| ms.masks.iter().any(|m| m.enabled));
                 if !stack_has_active {
                     return Vec::new();
                 }
@@ -3739,7 +3732,7 @@ impl GraphExecutor {
                 // then could not stay on the chain. Reading it back costs
                 // a transfer; not reading it would drop the secondary
                 // from the picture without saying so.
-                let downloaded = if matte_in_gpu && secondary_input.map_or(true, |m| m.len() != n) {
+                let downloaded = if matte_in_gpu && secondary_input.is_none_or(|m| m.len() != n) {
                     self.gpu.as_ref().map(|g| g.read_matte_buf_linear(n / 4)).filter(|m| m.len() == n)
                 } else {
                     None
@@ -4182,9 +4175,9 @@ fn corrector_has_active_stage(p: &NodeParams) -> bool {
         || p.tint.unwrap_or(0.0) != 0.0
         || p.hue.unwrap_or(0.0) != 0.0
         || (p.global_mix.unwrap_or(1.0) - 1.0).abs() > f32::EPSILON
-        || p.curves.as_ref().map_or(false, |c| !is_curves_identity(c))
-        || p.huesat.as_ref().map_or(false, |h| !h.is_all_identity())
-        || p.warper_params.as_ref().map_or(false, |w| !w.is_identity())
+        || p.curves.as_ref().is_some_and(|c| !is_curves_identity(c))
+        || p.huesat.as_ref().is_some_and(|h| !h.is_all_identity())
+        || p.warper_params.as_ref().is_some_and(|w| !w.is_identity())
         || log_wheels(p).is_some()
 }
 

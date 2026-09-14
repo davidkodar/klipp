@@ -462,7 +462,7 @@ pub fn show(
                 filtered.sort_by_key(|a| a.name.to_lowercase());
             }
             EffectSort::NameDesc => {
-                filtered.sort_by(|a, b| b.name.to_lowercase().cmp(&a.name.to_lowercase()));
+                filtered.sort_by_key(|a| std::cmp::Reverse(a.name.to_lowercase()));
             }
             EffectSort::Category => {
                 filtered.sort_by(|a, b| {

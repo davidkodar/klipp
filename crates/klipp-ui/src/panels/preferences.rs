@@ -2652,9 +2652,12 @@ impl PreferencesPanel {
                 } else {
                     format!("  {}", d.name)
                 };
-                let rate_text = if d.min_sample_rate == 0 || d.max_sample_rate == 0 {
-                    format!("{} Hz", d.default_sample_rate)
-                } else if d.min_sample_rate == d.max_sample_rate {
+                // No reported range, or a range of exactly one rate:
+                // either way there is a single number to show.
+                let rate_text = if d.min_sample_rate == 0
+                    || d.max_sample_rate == 0
+                    || d.min_sample_rate == d.max_sample_rate
+                {
                     format!("{} Hz", d.default_sample_rate)
                 } else {
                     format!(

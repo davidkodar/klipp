@@ -381,7 +381,7 @@ pub fn show(
         match *sort_mode {
             EffectSort::NameAsc => {} // already sorted
             EffectSort::NameDesc => {
-                filtered.sort_by(|a, b| b.name.to_lowercase().cmp(&a.name.to_lowercase()));
+                filtered.sort_by_key(|a| std::cmp::Reverse(a.name.to_lowercase()));
             }
             EffectSort::Category => {
                 filtered.sort_by(|a, b| {
@@ -508,9 +508,7 @@ pub fn show(
                                     );
                                 }
                                 let star_glyph = if is_fav { "\u{2605}" } else { "\u{2606}" };
-                                let star_color = if is_fav {
-                                    egui::Color32::from_rgb(255, 215, 106)
-                                } else if star_resp.hovered() {
+                                let star_color = if is_fav || star_resp.hovered() {
                                     egui::Color32::from_rgb(255, 215, 106)
                                 } else if render_grid {
                                     egui::Color32::from_rgba_unmultiplied(255, 255, 255, 200)
@@ -1165,9 +1163,7 @@ fn sidebar_row(
     let icon_size = 13.0;
     let icon_gap = 8.0;
     let label_x = rect.min.x + indent + icon_size + icon_gap;
-    let label_color = if is_active {
-        theme.text_primary
-    } else if hovered {
+    let label_color = if is_active || hovered {
         theme.text_primary
     } else {
         theme.text_secondary
@@ -1352,9 +1348,7 @@ fn segmented_source_filter(
             ui.painter().rect_filled(seg_rect, 3.0, theme.accent_subtle);
         }
 
-        let label_color = if is_active {
-            theme.text_primary
-        } else if hovered {
+        let label_color = if is_active || hovered {
             theme.text_primary
         } else {
             theme.text_secondary

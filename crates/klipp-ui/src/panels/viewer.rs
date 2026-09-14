@@ -2676,6 +2676,9 @@ impl ViewerPanel {
             .unwrap_or(false);
         for (i, line) in lines.iter().enumerate() {
             let _ = i;
+            // One arm per status line. Two arms share a colour, which
+            // is coincidence, not a case to merge.
+            #[allow(clippy::if_same_then_else)]
             let color = if line.starts_with("● REC") {
                 theme.marker_error
             } else if line.starts_with("Decode:") && state.perf_hw_decode == Some(true) {

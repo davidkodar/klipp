@@ -476,7 +476,8 @@ fn audio_decode_thread(
             // When effects are active, accumulate small decoded frames into
             // larger batches (≈42ms) so DSP algorithms with internal state
             // (pitch shift, reverb, delay) get enough samples to work correctly.
-            if effect_chain.is_some() && fx_batch_target > 0 {
+            let batching_chain = if fx_batch_target > 0 { effect_chain.as_mut() } else { None };
+            if let Some(chain) = batching_chain {
                 // Capture the source-time of the first frame in this batch
                 // so chain.process can derive clip_time_secs.
                 if fx_accum.is_empty() {
@@ -487,7 +488,6 @@ fn audio_decode_thread(
                     continue; // keep accumulating
                 }
                 // Process the accumulated batch
-                let chain = effect_chain.as_mut().unwrap();
                 let clip_time_secs = fx_accum_start_pts_secs
                     .map(|secs| (secs - clip_source_in_secs).max(0.0))
                     .unwrap_or(0.0);

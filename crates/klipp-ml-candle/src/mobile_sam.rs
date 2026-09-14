@@ -201,6 +201,12 @@ impl MobileSam {
     /// Lazy session init. Loads the safetensors weights, picks the
     /// device (CPU / CUDA), and builds candle's `Sam::new_tiny` —
     /// the MobileSAM TinyViT-backed variant.
+    // `is_some` + `expect` rather than `if let Some(s) = ..as_mut()`:
+    // returning the borrow from inside the `if let` extends it over the
+    // whole function, so the `self.session = ..` below is rejected
+    // (E0506). The borrow checker cannot see that the two paths are
+    // exclusive.
+    #[allow(clippy::unnecessary_unwrap)]
     fn ensure_session(&mut self) -> Result<&mut CandleSession, MaskError> {
         if self.session.is_some() {
             return Ok(self.session.as_mut().expect("just-checked Some"));

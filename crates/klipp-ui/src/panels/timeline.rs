@@ -11751,9 +11751,9 @@ impl TimelinePanel {
                                 let is_dragging_vrb_bezier = state.dragging_video_bezier_handle.as_ref().is_some_and(|d| d.clip_id == vrb_clip_id);
                                 if is_dragging_vrb_kf || is_dragging_vrb_bezier {
                                     ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
-                                } else if vrb_nearest_bezier_handle.is_some() {
-                                    ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
-                                } else if vrb_hovered_kf_idx.is_some() {
+                                } else if vrb_nearest_bezier_handle.is_some()
+                                    || vrb_hovered_kf_idx.is_some()
+                                {
                                     ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
                                 }
 
@@ -12294,9 +12294,7 @@ impl TimelinePanel {
 
                 if is_dragging_this_kf || is_dragging_this_bezier {
                     ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeVertical);
-                } else if nearest_bezier_handle.is_some() {
-                    ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
-                } else if hovered_kf_idx.is_some() {
+                } else if nearest_bezier_handle.is_some() || hovered_kf_idx.is_some() {
                     ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
                 } else if near_curve {
                     ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeVertical);
@@ -12958,9 +12956,7 @@ impl TimelinePanel {
                         let is_dragging_bezier = state.dragging_bezier_handle.as_ref().is_some_and(|d| d.clip_id == kf_clip_id);
                         if is_dragging_this_rb || is_dragging_this_kf || is_dragging_bezier {
                             ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeVertical);
-                        } else if nearest_bezier_handle.is_some() {
-                            ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
-                        } else if nearest_kf_idx.is_some() {
+                        } else if nearest_bezier_handle.is_some() || nearest_kf_idx.is_some() {
                             ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
                         } else if near_line {
                             ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeVertical);
@@ -13841,11 +13837,7 @@ impl TimelinePanel {
             // Draw visual feedback during fade handle drag
             if dragging_fi || dragging_fo {
                 if let Some(pos) = pointer_pos {
-                    let boundary_x = if dragging_fi {
-                        pos.x.clamp(clip_rect.left(), clip_rect.right())
-                    } else {
-                        pos.x.clamp(clip_rect.left(), clip_rect.right())
-                    };
+                    let boundary_x = pos.x.clamp(clip_rect.left(), clip_rect.right());
                     // Vertical line at current drag position
                     painter.line_segment(
                         [egui::pos2(boundary_x, clip_rect.top()), egui::pos2(boundary_x, clip_rect.bottom())],

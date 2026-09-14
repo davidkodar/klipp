@@ -6324,13 +6324,19 @@ impl PlaybackEngine {
     fn v1_graph_setup(&mut self) -> Option<(Arc<klipp_nodes::NodeGraph>, f64, u64, Vec<klipp_core::TrackPoint>)> {
         let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
         let clip = seq.tracks.get(self.current_track_index)?.clips.get(self.current_clip_index)?;
-        let graph = if self.current_graph_arc.is_some() && self.current_grade_clip_id == Some(clip.id) {
-            Arc::clone(self.current_graph_arc.as_ref().unwrap())
-        } else {
-            let arc = Arc::new(clip.node_graph.clone());
-            self.current_graph_arc = Some(Arc::clone(&arc));
-            self.current_grade_clip_id = Some(clip.id);
-            arc
+        let cached = self
+            .current_graph_arc
+            .as_ref()
+            .filter(|_| self.current_grade_clip_id == Some(clip.id))
+            .map(Arc::clone);
+        let graph = match cached {
+            Some(arc) => arc,
+            None => {
+                let arc = Arc::new(clip.node_graph.clone());
+                self.current_graph_arc = Some(Arc::clone(&arc));
+                self.current_grade_clip_id = Some(clip.id);
+                arc
+            }
         };
         let (clip_time_secs, frame_number) = klipp_compose::render::grade_time(clip, self.playhead, seq.fps.as_f64());
         Some((graph, clip_time_secs, frame_number, clip.track_points.clone()))
@@ -9245,17 +9251,6 @@ mod glyph_focal_resolution_tests {
     use std::collections::HashMap;
 
     fn tc(frames: i64) -> Timecode { RationalTime::from_frames(frames, 24) }
-
-    fn approx_eq(a: ResolvedTransform, b: ResolvedTransform) {
-        let eps = 1e-3;
-        assert!((a.0 - b.0).abs() < eps, "px {} vs {}", a.0, b.0);
-        assert!((a.1 - b.1).abs() < eps, "py {} vs {}", a.1, b.1);
-        assert!((a.2 - b.2).abs() < eps, "sx {} vs {}", a.2, b.2);
-        assert!((a.3 - b.3).abs() < eps, "sy {} vs {}", a.3, b.3);
-        assert!((a.4 - b.4).abs() < eps, "ro {} vs {}", a.4, b.4);
-        assert!((a.5 - b.5).abs() < eps, "ax {} vs {}", a.5, b.5);
-        assert!((a.6 - b.6).abs() < eps, "ay {} vs {}", a.6, b.6);
-    }
 
     fn make_title_data(text: &str) -> TitleData {
         let mut tb = TextBox::default();

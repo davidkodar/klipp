@@ -861,14 +861,13 @@ impl Encoder {
             audio_buffer: Vec::new(),
             audio_resampler,
             audio_sample_format: audio_sample_fmt,
-            audio_frame: if audio_frame_size.is_some() && audio_sample_fmt.is_some() {
-                Some(ffmpeg_next::frame::Audio::new(
-                    audio_sample_fmt.unwrap(),
-                    audio_frame_size.unwrap(),
+            audio_frame: match (audio_sample_fmt, audio_frame_size) {
+                (Some(fmt), Some(size)) => Some(ffmpeg_next::frame::Audio::new(
+                    fmt,
+                    size,
                     ffmpeg_next::ChannelLayout::STEREO,
-                ))
-            } else {
-                None
+                )),
+                _ => None,
             },
             video_codec_name,
             subtitle_stream_idx,

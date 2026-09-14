@@ -569,7 +569,7 @@ impl LaunchScreen {
                 filtered.sort_by_key(|a| a.name.to_lowercase());
             }
             SortMode::Size => {
-                filtered.sort_by(|a, b| b.total_size_bytes.unwrap_or(0).cmp(&a.total_size_bytes.unwrap_or(0)));
+                filtered.sort_by_key(|a| std::cmp::Reverse(a.total_size_bytes.unwrap_or(0)));
             }
         }
 

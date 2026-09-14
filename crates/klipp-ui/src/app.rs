@@ -4959,11 +4959,17 @@ impl KlippApp {
                                 // NOTE: legacy straddle handling is a known pre-existing bug —
                                 // straddle is shifted rather than split. Magnetic path above
                                 // handles it correctly.
+                                #[allow(clippy::if_same_then_else)]
                                 for clip in &mut track.clips {
                                     if clip.timeline_in >= timeline_in {
                                         clip.timeline_in += dur;
                                         clip.timeline_out += dur;
                                     } else if clip.timeline_out > timeline_in {
+                                        // The straddle case, kept separate on
+                                        // purpose: it should split the clip,
+                                        // and shifting it is the known bug
+                                        // noted above. Merging the branches
+                                        // would erase where the fix goes.
                                         clip.timeline_in += dur;
                                         clip.timeline_out += dur;
                                     }

@@ -244,9 +244,11 @@ impl NewInspectorPanel {
             *active_tab = InspectorTab::Title;
         } else if is_generator_clip && *active_tab != InspectorTab::Generator {
             *active_tab = InspectorTab::Generator;
-        } else if !is_title_clip && *active_tab == InspectorTab::Title {
-            *active_tab = InspectorTab::Video;
-        } else if !is_generator_clip && *active_tab == InspectorTab::Generator {
+        } else if (!is_title_clip && *active_tab == InspectorTab::Title)
+            || (!is_generator_clip && *active_tab == InspectorTab::Generator)
+        {
+            // The selected clip no longer has the synthetic tab that is
+            // showing, so fall back to Video.
             *active_tab = InspectorTab::Video;
         }
 

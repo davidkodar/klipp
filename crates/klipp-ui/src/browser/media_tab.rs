@@ -238,7 +238,7 @@ pub fn show(
     match sort_by {
         SortBy::Name => items.sort_by_key(|a| a.filename.to_lowercase()),
         SortBy::Duration => items.sort_by_key(|a| a.duration.value),
-        SortBy::Rating => items.sort_by(|a, b| b.rating.cmp(&a.rating)),
+        SortBy::Rating => items.sort_by_key(|a| std::cmp::Reverse(a.rating)),
         SortBy::Codec => items.sort_by(|a, b| a.codec.cmp(&b.codec)),
         SortBy::FileSize => items.sort_by_key(|a| a.file_size_bytes),
         SortBy::DateAdded => items.sort_by_key(|a| a.added_at),

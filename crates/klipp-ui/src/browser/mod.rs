@@ -3328,6 +3328,7 @@ impl BrowserPanel {
                         self.renaming_file = None;
                     }
                 } else {
+                    #[allow(clippy::if_same_then_else)]
                     let name_color = if is_selected {
                         theme.text_accent
                     } else if entry.is_dir {

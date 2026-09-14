@@ -372,11 +372,11 @@ impl NodeParams {
     /// Check if all params are at their default (identity) values — no grading applied.
     pub fn is_default(&self) -> bool {
         // Treat both None and Some(~0.0) as default for numeric fields
-        let z = |f: &Option<f32>| f.map_or(true, |v| v.abs() < 0.0001);
+        let z = |f: &Option<f32>| f.is_none_or(|v| v.abs() < 0.0001);
         z(&self.exposure)
             && z(&self.contrast)
             && z(&self.clarity)
-            && self.saturation.map_or(true, |v| (v - 1.0).abs() < 0.0001) // default is 1.0
+            && self.saturation.is_none_or(|v| (v - 1.0).abs() < 0.0001) // default is 1.0
             && z(&self.vibrance)
             && z(&self.temperature)
             && z(&self.tint)
@@ -425,7 +425,7 @@ impl NodeParams {
             && self.qualifier.is_none()
             && self.luma_key.is_none()
             && self.difference_key.is_none()
-            && self.color_match.as_ref().map_or(true, |m| m.is_identity())
+            && self.color_match.as_ref().is_none_or(|m| m.is_identity())
             && self.soft_clip.is_none()
             && self.masks.is_none()
             && self.lut_path.is_none()
@@ -440,7 +440,7 @@ impl NodeParams {
             && z(&self.denoise_chroma)
             && self.denoise_radius.is_none()
             && z(&self.mix)
-            && self.layer_mixer.as_ref().map_or(true, |m| m.is_identity())
+            && self.layer_mixer.as_ref().is_none_or(|m| m.is_identity())
             && self.matte_image_path.is_none()
             && self.compound_subgraph.is_none()
     }
