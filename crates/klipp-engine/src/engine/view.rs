@@ -728,8 +728,14 @@ impl PlaybackEngine {
             Picture::Display(bytes) => (bytes, None),
             Picture::Linear(linear) => {
                 let t_scope = Instant::now();
-                if self.should_render_scope() {
-                    self.render_active_scopes_via_ffmpeg_linear(&linear, w, h, 1024, 512);
+                // ACES has no GPU display transform, so its waveform reads
+                // the bytes on screen after the encode below; every other
+                // space is measured from the linear frame here.
+                let scope_due = self.should_render_scope();
+                let scopes_after_encode = crate::video_decoder::working_colorspace()
+                    == klipp_core::WorkingColorspace::AcesCG;
+                if scope_due && !scopes_after_encode {
+                    self.render_active_scopes(Some(&linear), None, w, h, 1024, 512);
                     self.last_scope_render = Instant::now();
                 }
                 scope_ms = t_scope.elapsed().as_secs_f64() * 1000.0;
@@ -754,7 +760,14 @@ impl PlaybackEngine {
                 // the one place the HDR frame exists on the CPU as a whole
                 // — which is what another process needs.
                 self.publish_hdr_reference(&linear, w, h);
-                self.encode_for_screen(&linear, w, h)
+                let encoded = self.encode_for_screen(&linear, w, h);
+                if scope_due && scopes_after_encode {
+                    let t_scope = Instant::now();
+                    self.render_active_scopes(Some(&linear), Some(&encoded.0), w, h, 1024, 512);
+                    self.last_scope_render = Instant::now();
+                    scope_ms += t_scope.elapsed().as_secs_f64() * 1000.0;
+                }
+                encoded
             }
         };
         let encode_ms = t_encode.elapsed().as_secs_f64() * 1000.0;

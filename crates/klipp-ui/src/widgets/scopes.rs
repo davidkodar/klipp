@@ -344,7 +344,7 @@ pub fn show_scopes(
                         size: [entry.w as usize, entry.h as usize],
                         pixels,
                     };
-                    Some((ScopeImage::Ready(image), gen))
+                    Some((ScopeImage::Ready(image), gen, entry.gpu))
                 } else if !fb.scope_texture.is_empty()
                     && fb.scope_texture_w > 0
                     && fb.scope_texture_mode == mi as u8
@@ -359,7 +359,7 @@ pub fn show_scopes(
                         size: [fb.scope_texture_w as usize, fb.scope_texture_h as usize],
                         pixels,
                     };
-                    Some((ScopeImage::Ready(image), gen))
+                    Some((ScopeImage::Ready(image), gen, false))
                 } else {
                     None
                 }
@@ -369,7 +369,7 @@ pub fn show_scopes(
         }
     };
 
-    if let Some((scope_img, gen)) = scope_result {
+    if let Some((scope_img, gen, finished)) = scope_result {
         state.frame_generations[mi] = gen;
         state.last_settings_generation = state.settings_generation;
         state.last_render_time = Some(Instant::now());
@@ -387,7 +387,9 @@ pub fn show_scopes(
         // lower threshold catches mid-density energy, larger radius
         // softens it across more pixels, higher strength makes the
         // glow visible without needing to crank monitor brightness.
-        if state.bloom {
+        // A GPU-drawn scope arrives finished: its glow is part of the
+        // drawing, and a filter or texture on top would only blur it.
+        if state.bloom && !finished {
             let w = image.size[0];
             let h = image.size[1];
             // Tightened to a thin inner-glow pass (was a broad
@@ -480,7 +482,7 @@ pub fn show_scopes(
         }
 
         // Post-processing: horizontal low pass filter (5-tap gaussian)
-        if state.low_pass && mode != ScopeMode::Vectorscope {
+        if state.low_pass && mode != ScopeMode::Vectorscope && !finished {
             apply_low_pass_filter(&mut image);
         }
 
@@ -488,7 +490,9 @@ pub fn show_scopes(
         // the effect is small enough (4% per-row darkening on alternating
         // rows) that it reads as texture rather than as stripes. Adds
         // analog character to all four scope modes.
-        apply_scanline_texture(&mut image);
+        if !finished {
+            apply_scanline_texture(&mut image);
+        }
 
         let new_size = egui::vec2(image.size[0] as f32, image.size[1] as f32);
         match state.textures[mi] {

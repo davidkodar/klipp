@@ -1090,6 +1090,14 @@ impl GraphExecutor {
         self.gpu.as_mut()
     }
 
+    /// [`Self::gpu_pipeline_mut`], building the pipeline first if it has
+    /// not been tried yet: for work that wants the GPU before any graph
+    /// has run on it, such as the scopes of an ungraded clip.
+    pub fn gpu_pipeline_or_init(&mut self) -> Option<&mut GpuEffectsPipeline> {
+        self.ensure_gpu();
+        self.gpu.as_mut()
+    }
+
     /// Pre-build curve LUTs for all RGBCurves nodes at clip start.
     /// Called from begin_clip() to avoid rebuilding every frame.
     pub fn prepare_clip(&mut self, graph: &NodeGraph) {

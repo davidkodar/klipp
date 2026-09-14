@@ -534,7 +534,7 @@ fn render_pane_scope(
                 _ => unreachable!("is_audio_only gates this match"),
             };
             let gen = runtime.frame_gens[pane_idx].wrapping_add(1);
-            Some((image, gen))
+            Some((image, gen, false))
         }
     } else {
         let fb = frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
@@ -554,7 +554,7 @@ fn render_pane_scope(
                 // keyed on the pane's mode. CIE chromaticity is the one
                 // mode that still uses a CPU renderer — libavfilter has
                 // no equivalent gamut scope.
-                let ffmpeg_image: Option<egui::ColorImage> = pane.scope_type
+                let ffmpeg_image: Option<(egui::ColorImage, bool)> = pane.scope_type
                     .to_scope_mode()
                     .and_then(|sm| {
                         let mode_byte = match sm {
@@ -564,15 +564,18 @@ fn render_pane_scope(
                             crate::state::ScopeMode::Histogram => 3,
                         };
                         fb.scope_textures.get(&mode_byte).map(|entry| {
-                            egui::ColorImage::from_rgba_unmultiplied(
-                                [entry.w as usize, entry.h as usize],
-                                &entry.data,
+                            (
+                                egui::ColorImage::from_rgba_unmultiplied(
+                                    [entry.w as usize, entry.h as usize],
+                                    &entry.data,
+                                ),
+                                entry.gpu,
                             )
                         })
                     });
 
-                if let Some(image) = ffmpeg_image {
-                    Some((image, gen))
+                if let Some((image, finished)) = ffmpeg_image {
+                    Some((image, gen, finished))
                 } else if pane.scope_type == ScopeType::CIEChromaticity
                     && !fb.cie_samples.is_empty()
                 {
@@ -594,7 +597,7 @@ fn render_pane_scope(
                         render_w,
                         render_h,
                     );
-                    Some((image, gen))
+                    Some((image, gen, false))
                 } else {
                     // Engine hasn't published this mode's FFmpeg texture
                     // yet (first frame on a fresh pane, mode-switch).
@@ -609,13 +612,16 @@ fn render_pane_scope(
         }
     };
 
-    if let Some((mut image, gen)) = scope_image {
+    if let Some((mut image, gen, finished)) = scope_image {
         runtime.frame_gens[pane_idx] = gen;
         runtime.last_render[pane_idx] = Some(Instant::now());
 
         // Apply CRT scanline overlay so floating-window scopes get the
-        // same analog character as the main scope panel.
-        super::scopes::apply_scanline_texture(&mut image);
+        // same analog character as the main scope panel. A GPU-drawn
+        // scope is finished as it is.
+        if !finished {
+            super::scopes::apply_scanline_texture(&mut image);
+        }
 
         let new_size = egui::vec2(image.size[0] as f32, image.size[1] as f32);
         match runtime.textures[pane_idx] {

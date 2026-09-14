@@ -566,6 +566,7 @@ fn write_scope_tex_to_fb(
     scope_w: u32,
     scope_h: u32,
     mode: u8,
+    gpu: bool,
 ) {
     match tex {
         Some(t) => {
@@ -582,10 +583,12 @@ fn write_scope_tex_to_fb(
                     w: 0,
                     h: 0,
                     generation: 0,
+                    gpu: false,
                 });
             entry.data = t.clone();
             entry.w = scope_w;
             entry.h = scope_h;
+            entry.gpu = gpu;
             entry.generation = entry.generation.wrapping_add(1);
 
             fb.scope_texture = t;
@@ -2663,12 +2666,10 @@ impl PlaybackEngine {
                 // and timeline scrub so scope quality matches playback.
                 let scope_w = 1024u32;
                 let scope_h = 512u32;
-                let _ = self.scope_render_mode;
-                // UI hands us an sRGB u8 frame (skim / scrub snapshot);
-                // re-linearise via the LUT (~5 ms at 1080p, runs at
-                // ≤10 Hz) so the scope sees 10-bit precision end-to-end.
-                let linear = u8_rgba_to_linear(&rgba);
-                self.render_active_scopes_via_ffmpeg_linear(&linear, width, height, scope_w, scope_h);
+                // The UI hands over an sRGB u8 frame (a skim or scrub
+                // snapshot). The waveform and parade measure those codes
+                // as they are; the remaining scopes linearise them.
+                self.render_active_scopes(None, Some(&rgba), width, height, scope_w, scope_h);
             }
             AppCommand::SetScopeTapNode { clip_id, node_id } => {
                 self.inspect_clip = Some(clip_id);
@@ -7023,12 +7024,19 @@ impl PlaybackEngine {
     /// `None` entries mean the filter buffered the input or rebuild
     /// failed — caller should leave the previous texture in place
     /// instead of clearing.
+    ///
+    /// The waveform and parade are drawn on the GPU from `display` when it
+    /// is given (the bytes on screen, for a working space whose display
+    /// transform has no GPU form) and from `linear` otherwise. The other
+    /// scopes still run through libavfilter, which needs the linear
+    /// frame and linearises `display` when that is all there is.
     fn render_active_scopes_pending(
         &mut self,
-        linear_rgba: &[f32],
+        linear: Option<&[f32]>,
+        display: Option<&[u8]>,
         src_w: u32,
         src_h: u32,
-    ) -> Vec<(u8, Option<Vec<u8>>)> {
+    ) -> Vec<(u8, Option<Vec<u8>>, bool)> {
         // Union: always include the main-dock mode so its singular-field
         // back-compat readers (in-tree dock UI) never see a stale
         // texture, even when the floating window's active set excludes
@@ -7043,12 +7051,35 @@ impl PlaybackEngine {
 
         let settings = self.scope_ffmpeg_settings;
         let bloom_enabled = self.scope_bloom_enabled;
+        let mut rendered: Vec<(u8, Option<Vec<u8>>, bool)> = Vec::with_capacity(to_render.len());
+
+        let wanted: Vec<u8> = to_render.iter().copied().filter(|m| *m == 0 || *m == 1).collect();
+        if !wanted.is_empty() {
+            if let Some(results) = self.render_waveforms_on_gpu(linear, display, src_w, src_h, &wanted) {
+                for (mode, result) in wanted.iter().zip(results) {
+                    rendered.push((*mode, result, true));
+                    to_render.remove(mode);
+                }
+            }
+        }
+        if to_render.is_empty() {
+            return rendered;
+        }
+        let linearised;
+        let linear_rgba: &[f32] = match (linear, display) {
+            (Some(l), _) => l,
+            (None, Some(d)) => {
+                linearised = u8_rgba_to_linear(d);
+                &linearised
+            }
+            (None, None) => return rendered,
+        };
+
         // The frame is in the project's working space, so that is the basis
         // its luma and chroma mean anything in.
         let basis = klipp_color::scopes::ScopeBasis::for_working_space(
             crate::video_decoder::working_colorspace(),
         );
-        let mut rendered: Vec<(u8, Option<Vec<u8>>)> = Vec::with_capacity(to_render.len());
         for &mode in &to_render {
             let tex = match self
                 .ffmpeg_scope_bank
@@ -7081,9 +7112,86 @@ impl PlaybackEngine {
                 }
                 other => other,
             };
-            rendered.push((mode, tex));
+            rendered.push((mode, tex, false));
         }
         rendered
+    }
+
+    /// The waveform (mode 0) and parade (mode 1) from the GPU scope
+    /// renderer, one result per entry of `modes`. `None` when there is
+    /// no GPU or nothing to measure.
+    ///
+    /// The picture is measured as it is delivered: the linear frame is
+    /// encoded with the viewer's SDR transfer in the working space's own
+    /// primaries, or with PQ in BT.2020 while HDR monitoring shows
+    /// display light; display bytes are binned as the codes they are.
+    fn render_waveforms_on_gpu(
+        &mut self,
+        linear: Option<&[f32]>,
+        display: Option<&[u8]>,
+        src_w: u32,
+        src_h: u32,
+        modes: &[u8],
+    ) -> Option<Vec<Option<Vec<u8>>>> {
+        use klipp_effects::gpu_scopes::{ScopeInput, ScopeTransfer, WaveformJob, WaveformMode};
+        let settings = self.scope_ffmpeg_settings;
+        let glow = self.scope_bloom_enabled;
+        let ws = crate::video_decoder::working_colorspace();
+        let hdr = self.hdr_monitor.renders_hdr();
+        let sdr_transfer = self.sdr_transfer;
+        let input = match (display, linear) {
+            (Some(rgba), _) => ScopeInput::Display {
+                rgba,
+                width: src_w,
+                height: src_h,
+                luma: klipp_color::primaries::luminance_weights(klipp_core::WorkingColorspace::Rec709Linear),
+            },
+            (None, Some(rgba)) if hdr => ScopeInput::Linear {
+                rgba,
+                width: src_w,
+                height: src_h,
+                matrix: klipp_color::primaries::working_to_bt2020(ws),
+                luma: klipp_color::primaries::luminance_weights(klipp_core::WorkingColorspace::Bt2020Linear),
+                transfer: ScopeTransfer::Pq,
+                scale: klipp_color::hdr::HDR_REFERENCE_WHITE_NITS / 10_000.0,
+            },
+            (None, Some(rgba)) => ScopeInput::Linear {
+                rgba,
+                width: src_w,
+                height: src_h,
+                matrix: klipp_color::primaries::IDENTITY,
+                luma: klipp_color::primaries::luminance_weights(ws),
+                transfer: match sdr_transfer {
+                    klipp_core::SdrTransfer::Srgb => ScopeTransfer::Srgb,
+                    klipp_core::SdrTransfer::Bt1886 => ScopeTransfer::Bt1886,
+                },
+                scale: 1.0,
+            },
+            (None, None) => return None,
+        };
+        let jobs: Vec<WaveformJob> = modes
+            .iter()
+            .map(|&mode| {
+                let wp = if mode == 1 { settings.parade } else { settings.waveform };
+                let layout = match (settings.luma_only, mode) {
+                    (true, _) => WaveformMode::Luma,
+                    (false, 1) => WaveformMode::Parade,
+                    _ => WaveformMode::RgbOverlay,
+                };
+                WaveformJob {
+                    mode: layout,
+                    intensity: wp.intensity_override,
+                    channels: wp.channels.to_components() as u32,
+                    envelope: wp.envelope != klipp_core::WaveformEnvelope::None,
+                    glow,
+                    out_w: crate::ffmpeg_scope::SCOPE_OUT_W,
+                    out_h: crate::ffmpeg_scope::SCOPE_OUT_H,
+                }
+            })
+            .collect();
+        let step = settings.quality.sample_step() as u32;
+        let gpu = self.renderer.executor().gpu_pipeline_or_init()?;
+        Some(gpu.scopes().render(&input, step, &jobs))
     }
 
     /// Apply the output of [`Self::render_active_scopes_pending`] to a
@@ -7094,13 +7202,13 @@ impl PlaybackEngine {
     fn apply_scope_renders(
         fb: &mut crate::texture::FrameBuffer,
         dock_mode: u8,
-        renders: Vec<(u8, Option<Vec<u8>>)>,
+        renders: Vec<(u8, Option<Vec<u8>>, bool)>,
         scope_w: u32,
         scope_h: u32,
     ) {
-        for (mode, tex_opt) in renders.into_iter() {
+        for (mode, tex_opt, gpu) in renders.into_iter() {
             if mode == dock_mode {
-                write_scope_tex_to_fb(fb, tex_opt.clone(), scope_w, scope_h, mode);
+                write_scope_tex_to_fb(fb, tex_opt.clone(), scope_w, scope_h, mode, gpu);
             }
             match tex_opt {
                 Some(bytes) => {
@@ -7112,10 +7220,12 @@ impl PlaybackEngine {
                             w: 0,
                             h: 0,
                             generation: 0,
+                            gpu: false,
                         });
                     entry.data = bytes;
                     entry.w = scope_w;
                     entry.h = scope_h;
+                    entry.gpu = gpu;
                     entry.generation = entry.generation.wrapping_add(1);
                 }
                 None => {
@@ -7129,17 +7239,25 @@ impl PlaybackEngine {
 
     /// Combined render + apply for sites that don't need to share the
     /// FB lock with another write. Acquires the lock exactly once.
-    fn render_active_scopes_via_ffmpeg_linear(
+    fn render_active_scopes(
         &mut self,
-        linear_rgba: &[f32],
+        linear: Option<&[f32]>,
+        display: Option<&[u8]>,
         src_w: u32,
         src_h: u32,
         scope_w: u32,
         scope_h: u32,
     ) {
-        let renders = self.render_active_scopes_pending(linear_rgba, src_w, src_h);
-        let cie = self.cie_samples_pending(linear_rgba, src_w, src_h);
+        let renders = self.render_active_scopes_pending(linear, display, src_w, src_h);
         let dock_mode = self.scope_render_mode;
+        // The chromaticity scope wants the linear picture; a display-only
+        // frame leaves its previous samples in place.
+        let Some(linear_rgba) = linear else {
+            let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
+            Self::apply_scope_renders(&mut fb, dock_mode, renders, scope_w, scope_h);
+            return;
+        };
+        let cie = self.cie_samples_pending(linear_rgba, src_w, src_h);
         let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
         Self::apply_scope_renders(&mut fb, dock_mode, renders, scope_w, scope_h);
         match cie {

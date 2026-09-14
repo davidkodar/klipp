@@ -4,13 +4,17 @@ Video scopes provide objective measurement of your image's colour and luminance 
 
 ## Waveform
 
-The waveform monitor displays luminance values from left to right, matching the horizontal position of pixels in the frame:
+The waveform monitor displays levels from left to right, matching the horizontal position of pixels in the frame:
 
-- **Y-axis** — Brightness level (0 = black, 100 = white / 100 IRE)
+- **Y-axis** — Level (0 = black, 100 = white / 100 IRE, or 0–1023 in 10-bit code values)
 - **X-axis** — Horizontal position in the frame
-- Bright areas in the waveform indicate many pixels at that luminance
+- Brighter trace means more pixels at that level
 
-Use the waveform to check exposure. Keep important content between 0 and 100 IRE. Clipping at the top or bottom indicates lost detail.
+The waveform and parade are drawn on the GPU from the frame the viewer shows. Every pixel of the frame is measured (or every second or fourth, by scope quality) into 1024 columns by 1024 levels, so the trace has 10-bit vertical resolution, and the trace brightness follows the density of samples on a logarithmic curve: a lone sample is a faint dot, a thin edge a clear line, a flat area a bright core, and nothing clips into a solid blob. The optional glow is the light a dense trace throws.
+
+Levels are those of the delivery: the working space's primaries encoded with the SDR viewer transfer chosen in preferences (sRGB or BT.1886), PQ in BT.2020 while HDR monitoring shows display light, and the display codes themselves in an ACES project.
+
+Use the waveform to check exposure. Keep important content between 0 and 100 IRE. Clipping at the top or bottom indicates lost detail. The **Luma only** option shows one trace of Y′ built from the encoded channels with the working space's luminance weights; otherwise the red, green and blue traces are drawn over each other and add towards white where they agree.
 
 ## Vectorscope
 
@@ -46,14 +50,16 @@ Particularly useful for white-balance correction: adjust temperature and tint un
 
 ## Working Colourspace
 
-Scopes display values in the working colour space (default ACEScg, linear). For viewers used to display-referred scopes, the bottom of the scope panel offers a **Display-referred** toggle that re-maps the scope output through the current ODT before displaying — closer to what an SDI monitor would show.
+The vectorscope measures Y′CbCr in the project's working space, with that space's own luminance weights, so its targets sit where the space's primaries land. The waveform and parade measure the delivered levels described above.
 
 ## Scope Quality Settings
 
 Adjust scope rendering quality in preferences:
 
-- **High** — full resolution analysis; most accurate, higher CPU usage
-- **Medium** — samples every other pixel; good balance for real-time grading
-- **Low** — samples every fourth pixel; best performance for smooth playback
+- **High** — every pixel; most accurate
+- **Medium** — every other pixel; the default
+- **Low** — every fourth pixel; least work per refresh
+
+A sampled column is spread over every scope column it stands for, so a lower quality changes how many samples are counted, not where the trace is.
 
 Scope quality does not affect the video output, only the precision of the scope displays.

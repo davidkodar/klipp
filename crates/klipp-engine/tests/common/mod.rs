@@ -251,6 +251,11 @@ impl Parked {
         self.fb.lock().unwrap().latest_frame().0.to_vec()
     }
 
+    /// The scope texture the engine last published for `mode`.
+    pub fn scope_texture(&self, mode: u8) -> Option<klipp_engine::texture::ScopeTextureEntry> {
+        self.fb.lock().unwrap().scope_textures.get(&mode).cloned()
+    }
+
     /// The picture's light in cd/m² at `(nx, ny)`, while HDR monitoring
     /// is on.
     pub fn nits_at(&self, nx: f32, ny: f32) -> Option<f32> {

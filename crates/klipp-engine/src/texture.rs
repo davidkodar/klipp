@@ -14,6 +14,9 @@ pub struct ScopeTextureEntry {
     pub w: u32,
     pub h: u32,
     pub generation: u64,
+    /// Drawn by the GPU scope renderer, finished as it is: the UI adds
+    /// no glow, filter or texture of its own on top.
+    pub gpu: bool,
 }
 
 pub struct FrameBuffer {

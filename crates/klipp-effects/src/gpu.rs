@@ -391,6 +391,9 @@ pub struct GpuEffectsPipeline {
     /// downstream-crate tests can observe it without coupling to this
     /// crate's test harness — an atomic counter is ~free in release.
     submit_count: Arc<std::sync::atomic::AtomicU64>,
+    /// The waveform and parade scopes, made on first use: they share
+    /// the device so a frame the chain graded can be measured in place.
+    scopes: Option<crate::gpu_scopes::ScopeRenderer>,
 
     /// Working-space luma coefficients pushed into every grade-shader
     /// uniform (saturation, tone-controls keying, lift/gamma/gain
@@ -1238,6 +1241,7 @@ impl GpuEffectsPipeline {
             current_buf_size: 0,
             device_lost,
             submit_count: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            scopes: None,
             luma_coefs: [0.2126, 0.7152, 0.0722],
         })
     }
@@ -1798,6 +1802,14 @@ impl GpuEffectsPipeline {
     /// `FrameBuffer::ensure_gpu_output` when routing the final
     /// graded frame into a viewer-bindable texture on the shared
     /// device.
+    /// The scope renderer on this device, made on first use.
+    pub fn scopes(&mut self) -> &mut crate::gpu_scopes::ScopeRenderer {
+        if self.scopes.is_none() {
+            self.scopes = Some(crate::gpu_scopes::ScopeRenderer::new(self.device.clone(), self.queue.clone()));
+        }
+        self.scopes.as_mut().expect("just made")
+    }
+
     pub fn device(&self) -> std::sync::Arc<wgpu::Device> {
         std::sync::Arc::clone(&self.device)
     }
