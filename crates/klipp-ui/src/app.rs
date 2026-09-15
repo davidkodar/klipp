@@ -29266,9 +29266,16 @@ impl KlippApp {
     /// The export settings form: presets, output, codec, audio, range
     /// and the Export button. Hosted by the Export workspace's right
     /// column and by the Export dialog elsewhere.
-    fn export_settings_contents(&mut self, ui: &mut egui::Ui, all_presets: &[ExportPreset], cmds: &mut Vec<AppCommand>) {
+    fn export_settings_contents(&mut self, ui: &mut egui::Ui, all_presets: &[ExportPreset], cmds: &mut Vec<AppCommand>, in_dialog: bool) {
+        use crate::widgets::inspector_group::section_card;
+        let theme = self.theme.clone();
+        let grid = |name: &str| egui::Grid::new(name).num_columns(2).spacing([12.0, 6.0]);
+        let indent = |ui: &mut egui::Ui, add: &mut dyn FnMut(&mut egui::Ui)| {
+            ui.horizontal(|ui| { ui.add_space(12.0); ui.vertical(|ui| add(ui)); });
+        };
+        section_card(ui, "OUTPUT", None, &theme, |ui| { indent(ui, &mut |ui| {
                 // Preset selector
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
                     ui.label("Preset:");
                     let selected_label = self.export_dialog.selected_preset_id.as_ref()
                         .and_then(|id| all_presets.iter().find(|p| &p.id == id))
@@ -29276,7 +29283,8 @@ impl KlippApp {
                         .unwrap_or("Custom");
                     egui::ComboBox::from_id_salt("export_preset")
                         .selected_text(selected_label)
-                        .width(200.0)
+                        .width(0.0)
+                        .wrap_mode(egui::TextWrapMode::Extend)
                         .show_ui(ui, |ui| {
                             if ui.selectable_label(self.export_dialog.selected_preset_id.is_none(), "Custom").clicked() {
                                 self.export_dialog.selected_preset_id = None;
@@ -29308,14 +29316,11 @@ impl KlippApp {
                 });
                 ui.add_space(4.0);
 
-                egui::Grid::new("export_grid")
-                    .num_columns(2)
-                    .spacing([12.0, 8.0])
-                    .show(ui, |ui| {
+                grid("export_grid_output").show(ui, |ui| {
                         ui.label("Output file:");
                         ui.horizontal(|ui| {
                             ui.add(egui::TextEdit::singleline(&mut self.export_dialog.output_path)
-                                .desired_width(300.0));
+                                .desired_width((ui.available_width() - 40.0).max(120.0)));
                             if ui.button("...").clicked() {
                                 if let Some(path) = rfd::FileDialog::new()
                                     .set_title("Export to...")
@@ -29434,6 +29439,10 @@ impl KlippApp {
                         }
                         ui.end_row();
 
+                });
+        }); });
+        section_card(ui, "VIDEO", None, &theme, |ui| { indent(ui, &mut |ui| {
+                grid("export_grid_video").show(ui, |ui| {
                         // #65: bit-depth + HDR controls. H.264/H.265 pick
                         // their depth and take HDR at 10 bits; ProRes is
                         // always 10-bit, so always can. DNxHD is 8-bit,
@@ -29697,6 +29706,10 @@ impl KlippApp {
                             ui.end_row();
                         }
 
+                });
+        }); });
+        section_card(ui, "AUDIO", None, &theme, |ui| { indent(ui, &mut |ui| {
+                grid("export_grid_audio").show(ui, |ui| {
                         // Audio settings disabled for GIF — the format
                         // can't carry audio, so the encoder silently
                         // drops it. Showing the controls in a disabled
@@ -29763,6 +29776,10 @@ impl KlippApp {
                         });
                         ui.end_row();
 
+                });
+        }); });
+        section_card(ui, "SIZE AND RATE", None, &theme, |ui| { indent(ui, &mut |ui| {
+                grid("export_grid_size").show(ui, |ui| {
                         // Resolution override
                         let seq_res = &self.state.sequences[self.state.active_sequence_idx].resolution;
                         let res_labels = [
@@ -29807,10 +29824,11 @@ impl KlippApp {
                                 }
                             });
                         ui.end_row();
-                    });
+                });
+        }); });
 
-                // Export range — radio selection: Full / Marked range / Selected clips
-                ui.add_space(4.0);
+        // Export range — radio selection: Full / Marked range / Selected clips
+        section_card(ui, "RANGE", None, &theme, |ui| { indent(ui, &mut |ui| {
                 ui.radio_value(&mut self.export_dialog.range_mode, 0, "Full timeline");
                 let has_range = self.state.sequences[self.state.active_sequence_idx].in_point.is_some()
                     && self.state.sequences[self.state.active_sequence_idx].out_point.is_some();
@@ -29947,9 +29965,12 @@ impl KlippApp {
                     }
                 }
 
+        }); });
+
                 ui.add_space(12.0);
                 ui.horizontal(|ui| {
-                    if ui.button("Cancel").clicked() {
+                    ui.add_space(12.0);
+                    if in_dialog && ui.button("Cancel").clicked() {
                         self.state.show_export_dialog = false;
                     }
                     if ui.button("Add to Queue").clicked() {
@@ -30029,7 +30050,7 @@ impl KlippApp {
                 .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
                 .open(&mut open)
                 .show(ctx, |ui| {
-                    self.export_settings_contents(ui, &all_presets, &mut cmds);
+                    self.export_settings_contents(ui, &all_presets, &mut cmds, true);
                 });
             if !open {
                 self.state.show_export_dialog = false;
@@ -31763,9 +31784,9 @@ impl KlippApp {
                     .chain(self.prefs.export.custom_presets.iter().cloned())
                     .collect();
                 egui::ScrollArea::vertical().id_salt("export_ws_scroll").show(ui, |ui| {
-                    egui::Frame::none().inner_margin(egui::Margin::symmetric(12.0, 8.0)).show(ui, |ui| {
-                        self.export_settings_contents(ui, &all_presets, all_cmds);
-                    });
+                    ui.set_min_width(ui.available_width());
+                    self.export_settings_contents(ui, &all_presets, all_cmds, false);
+                    ui.add_space(12.0);
                 });
                 return;
             }
