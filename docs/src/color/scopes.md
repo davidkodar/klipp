@@ -10,7 +10,7 @@ The waveform monitor displays levels from left to right, matching the horizontal
 - **X-axis** — Horizontal position in the frame
 - Brighter trace means more pixels at that level
 
-The waveform and parade are drawn on the GPU from the frame the viewer shows. Every pixel of the frame is measured (or every second or fourth, by scope quality) into 1024 columns by 1024 levels, so the trace has 10-bit vertical resolution, and the trace brightness follows the density of samples on a logarithmic curve: a lone sample is a faint dot, a thin edge a clear line, a flat area a bright core, and nothing clips into a solid blob. The optional glow is the light a dense trace throws.
+The waveform and parade are drawn on the GPU from the frame the viewer shows, at the size of their panel on screen in physical pixels, one measured column per pixel of trace, so they stay sharp in a large or fullscreen panel. Every pixel of the frame is measured (or every second or fourth, by scope quality) into 1024 columns by 1024 levels, so the trace has 10-bit vertical resolution, and the trace brightness follows the density of samples on a logarithmic curve: a lone sample is a faint dot, a thin edge a clear line, a flat area a bright core, and nothing clips into a solid blob. The optional glow is the light a dense trace throws.
 
 Levels are those of the delivery: the working space's primaries encoded with the SDR viewer transfer chosen in preferences (sRGB or BT.1886), PQ in BT.2020 while HDR monitoring shows display light, and the display codes themselves in an ACES project.
 

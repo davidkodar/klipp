@@ -27,6 +27,9 @@ pub struct ScopeWindowRuntime {
     pub dot_menu_open: bool,
     /// Whether the pointer is currently over the scope window (blocks background interaction).
     pub pointer_over: bool,
+    /// Per pane, the engine scope mode it showed this frame and the
+    /// physical size it drew the image at: what the engine is asked to draw.
+    pub shown_sizes: [Option<(u8, (u32, u32))>; 9],
 }
 
 impl Default for ScopeWindowRuntime {
@@ -39,6 +42,7 @@ impl Default for ScopeWindowRuntime {
             type_dropdown_pane: None,
             dot_menu_open: false,
             pointer_over: false,
+            shown_sizes: [None; 9],
         }
     }
 }
@@ -545,7 +549,14 @@ fn render_pane_scope(
         if fb.width == 0 || fb.height == 0 || fb.data.is_empty() {
             None
         } else {
-            let gen = fb.generation;
+            // A video scope's image is stale when the engine has drawn that
+            // scope again, not merely a frame; the chromaticity scope is drawn
+            // here from the frame's samples, so it follows the frame.
+            let gen = pane
+                .scope_type
+                .to_scope_mode()
+                .and_then(|sm| fb.scope_textures.get(&(super::scopes::mode_index(sm) as u8)))
+                .map_or(fb.generation | (1 << 63), |e| e.generation);
             let stale = runtime.textures[pane_idx].is_none()
                 || runtime.frame_gens[pane_idx] != gen;
 
@@ -666,6 +677,10 @@ fn render_pane_scope(
                 egui::vec2(side, side),
             )
             .shrink(4.0);
+            let (img_rect, px) = super::scopes::pixel_rect(ui.ctx(), img_rect);
+            if pane.scope_type == ScopeType::Vectorscope {
+                runtime.shown_sizes[pane_idx] = Some((2, px));
+            }
             let bri = pane.settings.vectorscope_brightness;
             let tint_val = (bri * 2.0).min(1.0);
             let tint = egui::Color32::from_rgb(
@@ -813,7 +828,8 @@ fn render_pane_scope(
                 }
             }
         } else if pane.scope_type == ScopeType::Histogram {
-            let img_rect = super::scopes::histogram_image_rect(r);
+            let (img_rect, px) = super::scopes::pixel_rect(ui.ctx(), super::scopes::histogram_image_rect(r));
+            runtime.shown_sizes[pane_idx] = Some((3, px));
             painter.image(tex.id(), img_rect, uv, egui::Color32::WHITE);
             super::scopes::draw_histogram_scale(&painter, img_rect, pane.settings.scale, histogram_display, theme);
         } else if pane.scope_type == ScopeType::Spectrogram {
@@ -886,10 +902,15 @@ fn render_pane_scope(
         } else {
             // Waveform/Parade: scope image in trace area + scale overlay
             let scale = pane.settings.scale;
-            let img_rect = egui::Rect::from_min_max(
+            let (img_rect, px) = super::scopes::pixel_rect(ui.ctx(), egui::Rect::from_min_max(
                 egui::pos2(r.min.x + super::scopes::AXIS_W, r.min.y + super::scopes::PAD_TOP),
                 egui::pos2(r.max.x - super::scopes::PAD_RIGHT, r.max.y - super::scopes::PAD_BOTTOM),
-            );
+            ));
+            match pane.scope_type {
+                ScopeType::Waveform => runtime.shown_sizes[pane_idx] = Some((0, px)),
+                ScopeType::Parade => runtime.shown_sizes[pane_idx] = Some((1, px)),
+                _ => {}
+            }
             let bri = pane.settings.waveform_brightness;
             let tint_val = (bri * 2.0).min(1.0).clamp(0.0, 1.0);
             let g = (tint_val * 255.0) as u8;
@@ -1014,7 +1035,7 @@ pub fn draw_scope_cursor_indicator(
                 (4, cur.b, egui::Color32::from_rgb(112, 150, 255)),
                 (8, cur.luma, amber),
             ];
-            for (panel, channels) in super::scopes::histogram_screen_panels(img, histogram_display) {
+            for (panel, channels) in super::scopes::histogram_screen_panels(img, histogram_display, painter.ctx().pixels_per_point()) {
                 for (bit, value, color) in marks {
                     if channels & bit == 0 {
                         continue;

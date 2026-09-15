@@ -9,7 +9,8 @@
 //! **Measuring** ([`ScopeRenderer::render`], the accumulate pass) reads
 //! every sample of the frame — or every second or fourth, by quality —
 //! encodes it for the transfer the picture is delivered in, and splats it
-//! into a bin grid of [`BIN_COLS`] columns by [`BIN_ROWS`] levels. The
+//! into a bin grid one column per pixel of the widest trace drawn (at
+//! most [`MAX_BIN_COLS`]) by [`BIN_ROWS`] levels. The
 //! levels are 10-bit, so the trace has the vertical resolution a 10-bit
 //! delivery has, and a sample is split between its two nearest levels and
 //! its two nearest columns by distance, which is what keeps a slow ramp
@@ -35,8 +36,12 @@
 use std::sync::Arc;
 use wgpu::util::DeviceExt;
 
-/// Columns the picture is measured into.
-pub const BIN_COLS: u32 = 1024;
+/// The most columns the picture is measured into. It is measured into
+/// one column per pixel of the widest trace drawn, so a scope drawn at its
+/// pane's size keeps a one-pixel feature one pixel wide.
+pub const MAX_BIN_COLS: u32 = 4096;
+/// The fewest: for a small scope, or a measurement no waveform draws from.
+const MIN_BIN_COLS: u32 = 256;
 /// Levels the picture is measured into: 10-bit.
 pub const BIN_ROWS: u32 = 1024;
 /// Cells across the vectorscope's chroma plane, Cb and Cr each −0.5..0.5.
@@ -595,19 +600,19 @@ fn tint(ch: u32) -> vec3<f32> {
 fn glow_of(n: f32) -> f32 {
     return clamp(log2(1.0 + n * p.gain) / 8.0, 0.0, 1.0);
 }
-// The count over levels [r0, r1) of column `c`, with a tent of four
-// levels either side. Four levels is 0.4 % of range, below anything the
-// graticule resolves, and a tent that wide is what keeps an 8-bit
-// picture — whose levels land on every fourth 10-bit bin — from combing:
-// a narrower one leaves the rows between two codes lighter or darker
-// than the rows on them.
+// The count over levels [r0, r1) of column `c`, with a tent weighted
+// `1 − d/4` reaching three levels either side. An 8-bit picture's levels
+// land on every fourth 10-bit bin, and that tent sums a comb of period
+// four exactly flat, so the rows between two codes are neither lighter
+// nor darker than the rows on them; it is the narrowest tent that does,
+// so a scope drawn tall stays as sharp as the measurement allows.
 fn column_count(base: u32, r0: u32, r1: u32) -> f32 {
     var sum = 0.0;
     for (var r = r0; r < r1; r = r + 1u) {
         sum = sum + f32(bins[base + r]);
     }
-    for (var d = 1u; d <= 4u; d = d + 1u) {
-        let w = 1.0 - f32(d) * 0.2;
+    for (var d = 1u; d < 4u; d = d + 1u) {
+        let w = 1.0 - f32(d) * 0.25;
         if (r0 >= d) { sum = sum + f32(bins[base + r0 - d]) * w; }
         if (r1 + d - 1u < p.rows) { sum = sum + f32(bins[base + r1 + d - 1u]) * w; }
     }
@@ -643,8 +648,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let v_hi = 1.0 - f32(oy) / f32(p.out_h);
     let r0 = u32(floor(v_lo * f32(p.rows)));
     let r1 = min(max(u32(ceil(v_hi * f32(p.rows))), r0 + 1u), p.rows);
-    // The tent adds two levels of weight either side.
-    let cells = f32(c1 - c0) * (f32(r1 - r0) + 4.0);
+    // The tent adds a level and a half of weight either side.
+    let cells = f32(c1 - c0) * (f32(r1 - r0) + 3.0);
 
     var rgb = vec3<f32>(0.0);
     for (var ch = ch_first; ch <= ch_last; ch = ch + 1u) {
@@ -922,6 +927,8 @@ pub struct ScopeRenderer {
     input_size: u64,
     bins: wgpu::Buffer,
     extents: wgpu::Buffer,
+    /// The columns `bins` and `extents` have room for.
+    bin_cols: u32,
     shaded: Option<wgpu::Buffer>,
     blurred: Option<wgpu::Buffer>,
     float_size: u64,
@@ -1003,8 +1010,8 @@ impl ScopeRenderer {
         let glow_h_pipeline = pipeline(&device, "scope_glow_h", &glow_h_layout, WGSL_GLOW_H);
         let glow_v_layout = layout(&device, "scope_glow_v", &[storage(true), storage(true), storage(false), UNIFORM]);
         let glow_v_pipeline = pipeline(&device, "scope_glow_v", &glow_v_layout, WGSL_GLOW_V);
-        let bins = buffer(&device, "scope_bins", 4 * (BIN_COLS * BIN_ROWS) as u64 * 4, wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST);
-        let extents = buffer(&device, "scope_extents", 4 * BIN_COLS as u64 * 2 * 4, wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST);
+        let bins = buffer(&device, "scope_bins", 4 * (MIN_BIN_COLS * BIN_ROWS) as u64 * 4, wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST);
+        let extents = buffer(&device, "scope_extents", 4 * MIN_BIN_COLS as u64 * 2 * 4, wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST);
         Self {
             device,
             queue,
@@ -1036,6 +1043,7 @@ impl ScopeRenderer {
             input_size: 0,
             bins,
             extents,
+            bin_cols: MIN_BIN_COLS,
             shaded: None,
             blurred: None,
             float_size: 0,
@@ -1107,6 +1115,20 @@ impl ScopeRenderer {
                 }
             }
         };
+        // One column per pixel of the widest trace: a waveform's width, a
+        // parade panel's. Any fewer and a thin vertical feature is spread
+        // over several pixels of a large scope.
+        let cols = jobs
+            .iter()
+            .filter_map(|j| match j {
+                ScopeJob::Waveform(w) if w.mode == WaveformMode::Parade => Some(w.out_w.saturating_sub(2 * parade_gap(w.out_w)) / 3),
+                ScopeJob::Waveform(w) => Some(w.out_w),
+                _ => None,
+            })
+            .max()
+            .unwrap_or(MIN_BIN_COLS)
+            .clamp(MIN_BIN_COLS, MAX_BIN_COLS);
+        self.ensure_bins(cols);
         self.ensure_input(bytes.len() as u64);
         let input_buf = self.input.as_ref().expect("input buffer");
         self.queue.write_buffer(input_buf, 0, bytes);
@@ -1129,7 +1151,7 @@ impl ScopeRenderer {
             width,
             height,
             step,
-            cols: BIN_COLS,
+            cols,
             rows: BIN_ROWS,
             transfer,
             scale,
@@ -1164,7 +1186,7 @@ impl ScopeRenderer {
                 wgpu::BindGroupEntry { binding: 2, resource: vacc_params.as_entire_binding() },
             ],
         });
-        let ext_params = self.uniform("scope_ext_params", &ExtParams { cols: BIN_COLS, rows: BIN_ROWS, _p0: 0, _p1: 0 });
+        let ext_params = self.uniform("scope_ext_params", &ExtParams { cols, rows: BIN_ROWS, _p0: 0, _p1: 0 });
         let ext_bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("scope_ext_bg"),
             layout: &self.ext_layout,
@@ -1174,7 +1196,7 @@ impl ScopeRenderer {
                 wgpu::BindGroupEntry { binding: 2, resource: ext_params.as_entire_binding() },
             ],
         });
-        let hist_params = self.uniform("scope_hist_params", &ExtParams { cols: BIN_COLS, rows: BIN_ROWS, _p0: 0, _p1: 0 });
+        let hist_params = self.uniform("scope_hist_params", &ExtParams { cols, rows: BIN_ROWS, _p0: 0, _p1: 0 });
         let hist_reduce_bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("scope_hist_reduce_bg"),
             layout: &self.hist_reduce_layout,
@@ -1200,7 +1222,7 @@ impl ScopeRenderer {
         let sw = width.div_ceil(step) as f64;
         let sh = height.div_ceil(step) as f64;
         let total = (sw * sh).max(1.0);
-        let per_column = (total / BIN_COLS as f64).max(1.0);
+        let per_column = (total / cols as f64).max(1.0);
         let norm = (BIN_ROWS as f64 / per_column) as f32;
         let vnorm = ((VECTOR_BINS as f64 * VECTOR_BINS as f64) / total) as f32;
 
@@ -1247,7 +1269,7 @@ impl ScopeRenderer {
                 if jobs.iter().any(|j| matches!(j, ScopeJob::Waveform(w) if w.envelope)) {
                     pass.set_pipeline(&self.ext_pipeline);
                     pass.set_bind_group(0, &ext_bg, &[]);
-                    pass.dispatch_workgroups(BIN_COLS.div_ceil(64), 4, 1);
+                    pass.dispatch_workgroups(cols.div_ceil(64), 4, 1);
                 }
                 if want_hist {
                     pass.set_pipeline(&self.hist_reduce_pipeline);
@@ -1277,7 +1299,7 @@ impl ScopeRenderer {
                     let shade = ShadeParams {
                         out_w,
                         out_h,
-                        cols: BIN_COLS,
+                        cols,
                         rows: BIN_ROWS,
                         mode: job.mode as u32,
                         channels: if job.channels & 7 == 0 { 7 } else { job.channels & 7 },
@@ -1438,6 +1460,15 @@ impl ScopeRenderer {
         }
         drop(keep_alive);
         results
+    }
+
+    fn ensure_bins(&mut self, cols: u32) {
+        if self.bin_cols < cols {
+            let usage = wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST;
+            self.bins = buffer(&self.device, "scope_bins", 4 * cols as u64 * BIN_ROWS as u64 * 4, usage);
+            self.extents = buffer(&self.device, "scope_extents", 4 * cols as u64 * 2 * 4, usage);
+            self.bin_cols = cols;
+        }
     }
 
     fn ensure_input(&mut self, bytes: u64) {

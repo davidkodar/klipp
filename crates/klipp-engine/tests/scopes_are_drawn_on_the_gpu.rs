@@ -85,4 +85,25 @@ fn the_waveform_and_parade_are_gpu_drawn_and_measure_the_shown_frame() {
     let expect_x = code / 255.0 * panel.w as f64;
     assert!((hx as f64 - expect_x).abs() <= 6.0, "histogram spike at column {hx}, expected {expect_x:.1} for code {code}");
     assert!(hh as f64 >= 0.8 * hist.h as f64, "the spike fills the panel: {hh}");
+
+    // Told the size the UI shows each scope at, the engine draws it there:
+    // the vectorscope square at its smaller side. Nothing else happens —
+    // paused, a pane resized has to redraw its scope by itself.
+    parked.send(AppCommand::SetScopeSizes { sizes: [(0u8, (1700u32, 860u32)), (2, (900, 1000)), (3, (1300, 500))].into_iter().collect() });
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let w = parked.scope_texture(0).map(|e| (e.w, e.h));
+        let v = parked.scope_texture(2).map(|e| (e.w, e.h));
+        let h = parked.scope_texture(3).map(|e| (e.w, e.h));
+        if (w, v, h) == (Some((1700, 860)), Some((900, 900)), Some((1300, 500))) {
+            break;
+        }
+        assert!(Instant::now() < deadline, "scopes not redrawn at the pane sizes: {w:?} {v:?} {h:?}");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let wave = parked.scope_texture(0).unwrap();
+    assert_eq!(wave.data.len(), 1700 * 860 * 4);
+    let expect = (1.0 - code / 255.0) * 860.0;
+    let row = brightest_row(&wave.data, wave.w, wave.h, 850) as f64;
+    assert!((row - expect).abs() <= 6.0, "waveform at its pane size: line at row {row}, expected {expect:.1}");
 }

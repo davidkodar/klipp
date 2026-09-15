@@ -18,8 +18,6 @@ pub struct ScopeState {
     textures: [Option<egui::TextureHandle>; 4], // Waveform, Parade, Vectorscope, Histogram
     /// Frame generation counter used for each cached texture (from FrameBuffer.generation).
     frame_generations: [u64; 4],
-    /// Render sizes used for each cached texture.
-    render_sizes: [(usize, usize); 4],
     /// Current scale mode (synced from AppState each frame).
     pub scale: ScopeScale,
     /// Enable horizontal low pass filter on scope output.
@@ -37,9 +35,12 @@ pub struct ScopeState {
     last_settings_generation: u64,
     /// Throttle: last time a scope render completed.
     last_render_time: Option<Instant>,
+    /// The mode the dock showed this frame and the physical size it drew
+    /// the image at: what the engine is asked to draw.
+    pub shown_size: Option<(u8, (u32, u32))>,
 }
 
-fn mode_index(mode: ScopeMode) -> usize {
+pub(crate) fn mode_index(mode: ScopeMode) -> usize {
     match mode {
         ScopeMode::Waveform => 0,
         ScopeMode::Parade => 1,
@@ -60,7 +61,6 @@ impl Default for ScopeState {
         Self {
             textures: [None, None, None, None],
             frame_generations: [u64::MAX; 4], // MAX ensures first frame always triggers render
-            render_sizes: [(0, 0); 4],
             scale: ScopeScale::TenBit,
             low_pass: false,
             bloom: true,
@@ -71,6 +71,7 @@ impl Default for ScopeState {
             settings_generation: 0,
             last_settings_generation: u64::MAX,
             last_render_time: None,
+            shown_size: None,
         }
     }
 }
@@ -107,6 +108,26 @@ fn graticule_amber(theme: &KlippTheme, a: u8) -> egui::Color32 {
     egui::Color32::from_rgba_unmultiplied(r, g, b, a)
 }
 
+/// `rect` snapped to whole physical pixels, and its size in them. An image
+/// that size drawn into the snapped rect maps one texel to one pixel, with
+/// nothing resampled.
+pub(crate) fn pixel_rect(ctx: &egui::Context, rect: egui::Rect) -> (egui::Rect, (u32, u32)) {
+    let ppp = ctx.pixels_per_point();
+    let snap = |v: f32| (v * ppp).round();
+    let (x0, y0, x1, y1) = (snap(rect.min.x), snap(rect.min.y), snap(rect.max.x), snap(rect.max.y));
+    let snapped = egui::Rect::from_min_max(egui::pos2(x0 / ppp, y0 / ppp), egui::pos2(x1 / ppp, y1 / ppp));
+    (snapped, ((x1 - x0).max(0.0) as u32, (y1 - y0).max(0.0) as u32))
+}
+
+/// A mode's shown size, merged with what was already noted this frame: two
+/// panes showing the same mode ask for the larger of each side.
+pub(crate) fn merge_shown(prev: Option<(u8, (u32, u32))>, mode: u8, px: (u32, u32)) -> (u8, (u32, u32)) {
+    match prev {
+        Some((m, (w, h))) if m == mode => (mode, (w.max(px.0), h.max(px.1))),
+        _ => (mode, px),
+    }
+}
+
 /// Where the histogram's image sits in a scope panel: the panel's width
 /// less a margin each side, over a strip along the bottom for the level
 /// labels. The count has no units, so there is no axis at the side.
@@ -118,11 +139,14 @@ pub(crate) fn histogram_image_rect(rect: egui::Rect) -> egui::Rect {
 }
 
 /// The histogram's panels on screen when its image is drawn into `img`,
-/// each with the channels it carries (1 red, 2 green, 4 blue, 8 Y′).
-pub(crate) fn histogram_screen_panels(img: egui::Rect, mode: klipp_core::HistogramDisplayMode) -> Vec<(egui::Rect, u32)> {
-    use klipp_engine::ffmpeg_scope::{histogram_layout, SCOPE_OUT_H, SCOPE_OUT_W};
-    let (sx, sy) = (img.width() / SCOPE_OUT_W as f32, img.height() / SCOPE_OUT_H as f32);
-    klipp_effects::gpu_scopes::histogram_panels(histogram_layout(mode), SCOPE_OUT_W, SCOPE_OUT_H)
+/// each with the channels it carries (1 red, 2 green, 4 blue, 8 Y′). The
+/// image is drawn at `img`'s physical size, so the panels are laid out at
+/// that size.
+pub(crate) fn histogram_screen_panels(img: egui::Rect, mode: klipp_core::HistogramDisplayMode, ppp: f32) -> Vec<(egui::Rect, u32)> {
+    use klipp_engine::ffmpeg_scope::histogram_layout;
+    let (tw, th) = (((img.width() * ppp).round() as u32).max(1), ((img.height() * ppp).round() as u32).max(1));
+    let (sx, sy) = (img.width() / tw as f32, img.height() / th as f32);
+    klipp_effects::gpu_scopes::histogram_panels(histogram_layout(mode), tw, th)
         .into_iter()
         .map(|p| {
             let min = egui::pos2(img.min.x + p.x as f32 * sx, img.min.y + p.y as f32 * sy);
@@ -147,7 +171,7 @@ pub(crate) fn draw_histogram_scale(
         ScopeScale::TenBit => (&[0.0, 256.0, 512.0, 768.0, 1023.0], 64.0),
         _ => (&[0.0, 25.0, 50.0, 75.0, 100.0], 5.0),
     };
-    for (panel, _) in histogram_screen_panels(img, mode) {
+    for (panel, _) in histogram_screen_panels(img, mode, painter.ctx().pixels_per_point()) {
         let x_of = |v: f32| panel.min.x + v / max * panel.width();
         // Minor marks, only where they stay apart.
         if minor_step / max * panel.width() >= 6.0 {
@@ -279,7 +303,10 @@ pub(crate) fn draw_scale(ui: &egui::Ui, rect: egui::Rect, scale: ScopeScale, is_
     let trace_x1 = rect.max.x - PAD_RIGHT;
     let trace_w = trace_x1 - trace_x0;
     let n_sections: usize = if is_parade { section_count.max(1) } else { 1 };
-    let gap = if is_parade { 2.0_f32 } else { 0.0_f32 };
+    // The parade's panels sit the renderer's gap apart, at the image's
+    // physical width.
+    let ppp = ui.ctx().pixels_per_point();
+    let gap = if is_parade { klipp_effects::gpu_scopes::parade_gap((trace_w * ppp).round() as u32) as f32 / ppp } else { 0.0_f32 };
     let section_w = (trace_w - gap * (n_sections.saturating_sub(1)) as f32)
         / n_sections.max(1) as f32;
     let ticks_per_section: usize = 50;
@@ -300,9 +327,8 @@ pub(crate) fn draw_scale(ui: &egui::Ui, rect: egui::Rect, scale: ScopeScale, is_
 
     // Parade section separators — rgba(255,255,255,0.05) within trace area
     if is_parade && section_count == 3 {
-        let third = trace_w / 3.0;
         for i in 1..3 {
-            let x = rect.min.x + AXIS_W + third * i as f32;
+            let x = trace_x0 + i as f32 * (section_w + gap) - gap / 2.0;
             painter.line_segment(
                 [egui::pos2(x, rect.min.y + PAD_TOP), egui::pos2(x, bottom_y)],
                 egui::Stroke::new(0.5_f32, egui::Color32::from_rgba_unmultiplied(255, 255, 255, 13)),
@@ -391,8 +417,6 @@ pub fn show_scopes(
     vectorscope_zoom: f32,
     histogram_display: klipp_core::HistogramDisplayMode,
 ) {
-    let render_h: usize = 512;
-
     let mi = mode_index(mode);
 
     // ── Check for GPU-rendered scope texture from engine ──────────────────
@@ -409,17 +433,21 @@ pub fn show_scopes(
         if fb.width == 0 || fb.height == 0 || fb.data.is_empty() {
             None
         } else {
-            let gen = fb.generation;
+            // The image is stale when the engine has drawn this scope again,
+            // not merely a frame: an unchanged image at pane size, converted
+            // and uploaded on every repaint, is megabytes a frame for nothing.
+            // The singular back-compat texture has no generation of its own
+            // and follows the frame's, kept apart from the scope's by its
+            // top bit.
+            let mode_tex = fb.scope_textures.get(&(mi as u8)).filter(|e| !e.data.is_empty() && e.w > 0);
+            let gen = mode_tex.map_or(fb.generation | (1 << 63), |e| e.generation);
             let tex_none = state.textures[mi].is_none();
             let gen_diff = state.frame_generations[mi] != gen;
-            let size_diff = state.render_sizes[mi] != (fb.width as usize, render_h);
             let settings_diff = state.last_settings_generation != state.settings_generation;
-            let stale = tex_none || gen_diff || size_diff || settings_diff;
+            let stale = tex_none || gen_diff || settings_diff;
             let throttled = is_playing && state.last_render_time
                 .is_some_and(|t| t.elapsed().as_millis() < 80);
             if stale && !throttled {
-                let map_entry = fb.scope_textures.get(&(mi as u8));
-                let mode_tex = map_entry.filter(|e| !e.data.is_empty() && e.w > 0);
                 if let Some(entry) = mode_tex {
                     let pixels: Vec<egui::Color32> = entry.data.chunks_exact(4)
                         .map(|c| egui::Color32::from_rgba_premultiplied(c[0], c[1], c[2], c[3]))
@@ -462,7 +490,6 @@ pub fn show_scopes(
         }
 
         let ScopeImage::Ready(mut image) = scope_img;
-        state.render_sizes[mi] = (image.size[0], image.size[1]);
 
         // Post-processing: threshold bloom (extract bright → gaussian blur → additive blend).
         // Now applied to vectorscope as well — chroma vector clouds
@@ -628,6 +655,8 @@ pub fn show_scopes(
                 egui::vec2(side, side),
             )
             .shrink(4.0);
+            let (img_rect, px) = pixel_rect(ui.ctx(), img_rect);
+            state.shown_size = Some(merge_shown(state.shown_size, mi as u8, px));
             ui.painter().image(tex.id(), img_rect,
                 egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
                 egui::Color32::WHITE);
@@ -765,17 +794,19 @@ pub fn show_scopes(
             }
 
         } else if mode == ScopeMode::Histogram {
-            let img_rect = histogram_image_rect(full_rect);
+            let (img_rect, px) = pixel_rect(ui.ctx(), histogram_image_rect(full_rect));
+            state.shown_size = Some(merge_shown(state.shown_size, mi as u8, px));
             ui.painter().image(tex.id(), img_rect,
                 egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
                 egui::Color32::WHITE);
             draw_histogram_scale(&ui.painter_at(full_rect), img_rect, state.scale, histogram_display, theme);
         } else {
             // Waveform/Parade: scope image + scale overlay
-            let img_rect = egui::Rect::from_min_max(
+            let (img_rect, px) = pixel_rect(ui.ctx(), egui::Rect::from_min_max(
                 egui::pos2(full_rect.min.x + AXIS_W, full_rect.min.y + PAD_TOP),
                 egui::pos2(full_rect.max.x - PAD_RIGHT, full_rect.max.y - PAD_BOTTOM),
-            );
+            ));
+            state.shown_size = Some(merge_shown(state.shown_size, mi as u8, px));
             ui.painter().image(tex.id(), img_rect,
                 egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
                 egui::Color32::WHITE);

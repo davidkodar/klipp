@@ -29,12 +29,33 @@ use klipp_core::{ScopeFfmpegSettings, ScopeQuality};
 
 type Result<T> = std::result::Result<T, String>;
 
-/// Output dimensions. Matches the engine's existing `scope_w / scope_h`
-/// constants so the dock display path doesn't need to change.
+/// Output dimensions: the libavfilter path's only size, and the GPU
+/// scopes' size before the UI has said what size it shows them at.
 pub const SCOPE_OUT_W: u32 = 1024;
 pub const SCOPE_OUT_H: u32 = 512;
 /// The GPU vectorscope's output: a square.
 pub const VECTOR_OUT: u32 = 1024;
+/// The largest GPU scope image, in physical pixels: wider than a 4K
+/// screen, and taller than any pane on one.
+pub const MAX_SCOPE_OUT_W: u32 = 4096;
+pub const MAX_SCOPE_OUT_H: u32 = 2400;
+
+/// The size to draw GPU scope `mode` at: the physical size the UI shows it
+/// at, capped, or the default while the UI has not said. The vectorscope
+/// is square, at the smaller side.
+pub fn scope_out_size(sizes: &std::collections::BTreeMap<u8, (u32, u32)>, mode: u8) -> (u32, u32) {
+    let (w, h) = match sizes.get(&mode) {
+        Some(&(w, h)) if w >= 32 && h >= 32 => (w.min(MAX_SCOPE_OUT_W), h.min(MAX_SCOPE_OUT_H)),
+        _ if mode == 2 => (VECTOR_OUT, VECTOR_OUT),
+        _ => (SCOPE_OUT_W, SCOPE_OUT_H),
+    };
+    if mode == 2 {
+        let side = w.min(h);
+        (side, side)
+    } else {
+        (w, h)
+    }
+}
 
 /// The GPU histogram's layout for a histogram display choice. The engine
 /// draws with it and the UI lays its graticule out with it, so the two

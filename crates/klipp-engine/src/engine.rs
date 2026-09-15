@@ -1259,6 +1259,9 @@ pub struct PlaybackEngine {
     /// only) — covers boot before the UI publishes anything and the
     /// `KLIPP_SCOPE_FFMPEG=0` legacy GPU/CPU path.
     active_scope_modes: std::collections::BTreeSet<u8>,
+    /// The physical pixel size the UI shows each scope mode at, pushed by
+    /// `AppCommand::SetScopeSizes`. The GPU scopes are drawn at it.
+    scope_sizes: std::collections::BTreeMap<u8, (u32, u32)>,
     /// Whether the scope panel is actually visible in the UI.
     /// Drives `should_render_scope()` together with the time-based
     /// throttle. Default `false` so a fresh engine doesn't burn the
@@ -1272,6 +1275,12 @@ pub struct PlaybackEngine {
     /// two full GPU sync fences (~40 ms together on NVIDIA Vulkan)
     /// which would otherwise consume most of a 24fps frame budget.
     last_scope_render: std::time::Instant,
+    /// A frame reached the screen, or a scope's settings, size or set
+    /// changed, without the scopes being drawn: they still show what came
+    /// before. Paid on the next frame whose scopes are due, and while
+    /// paused, when nothing else would render, by rendering the parked
+    /// frame again once they are.
+    scope_render_owed: bool,
     // Matte preview node — which Qualifier/Mask node's matte to show
     matte_preview_node: Option<klipp_nodes::NodeId>,
     // Cached pre-grade frame for instant parameter updates when paused.
@@ -1624,8 +1633,10 @@ impl PlaybackEngine {
             scope_ffmpeg_settings: klipp_core::ScopeFfmpegSettings::default(),
             scope_bloom_enabled: true,
             active_scope_modes: std::collections::BTreeSet::new(),
+            scope_sizes: std::collections::BTreeMap::new(),
             scopes_visible: false,
             last_scope_render: std::time::Instant::now() - std::time::Duration::from_secs(1),
+            scope_render_owed: false,
             matte_preview_node: None,
             cached_pregrade_frame: None,
             cached_pregrade_at: None,
@@ -1944,6 +1955,15 @@ impl PlaybackEngine {
                     // the viewer recovers cleanly. Clear the flag so we
                     // don't loop here forever.
                     self.force_full_res_regrade = false;
+                    self.dbg_regrade_count += 1;
+                    self.regrade_cached_frame();
+                } else if self.scope_render_owed && self.should_render_scope() {
+                    // The scopes still show an earlier picture, size or
+                    // setting, and paused nothing else will render: render
+                    // the parked frame again now that they are due. A due
+                    // scope blocks every path that skips them, so this one
+                    // draws them.
+                    self.scope_render_owed = false;
                     self.dbg_regrade_count += 1;
                     self.regrade_cached_frame();
                 } else if !had_commands && self.last_command_at.elapsed() >= PRERENDER_AFTER_IDLE {
@@ -2636,12 +2656,21 @@ impl PlaybackEngine {
                     fb.scope_textures.retain(|m, _| modes.contains(m));
                 }
                 self.active_scope_modes = modes;
+                // A pane just opened on a mode has nothing to show until it is drawn.
+                self.scope_render_owed = true;
                 // Force a fresh render on the next tick so newly-added
                 // panes don't sit blank on a paused viewer.
                 self.current_grade_hash = 0;
             }
+            AppCommand::SetScopeSizes { sizes } => {
+                self.scope_sizes = sizes;
+                // Drawn at the new size on the next scope tick, paused or not.
+                self.scope_render_owed = true;
+            }
             AppCommand::SetScopeFfmpegSettings { settings } => {
                 self.scope_ffmpeg_settings = settings;
+                // The grade hash below does not redraw the scopes by itself.
+                self.scope_render_owed = true;
                 // Invalidate the grade hash so the next tick re-renders
                 // the paused frame. Without this, scope-settings changes
                 // (R/G/B pills, filter, intensity, opacities, …) only
@@ -2651,10 +2680,12 @@ impl PlaybackEngine {
             }
             AppCommand::SetScopeBloom { enabled } => {
                 self.scope_bloom_enabled = enabled;
+                self.scope_render_owed = true;
                 self.current_grade_hash = 0;
             }
             AppCommand::SetScopesVisible(visible) => {
                 self.scopes_visible = visible;
+                self.scope_render_owed |= visible;
             }
             AppCommand::RenderScopesForFrame { rgba, width, height } => {
                 // Run the same GPU scope shaders the playback pipeline uses
@@ -2666,6 +2697,9 @@ impl PlaybackEngine {
                 // snapshot). The GPU scopes measure those codes as they
                 // are; the remaining scopes linearise them.
                 self.render_active_scopes(None, Some(&rgba), width, height);
+                // A scope was just drawn: an owed timeline redraw waits its
+                // interval like any other, rather than landing over a skim.
+                self.last_scope_render = std::time::Instant::now();
             }
             AppCommand::SetScopeTapNode { clip_id, node_id } => {
                 self.inspect_clip = Some(clip_id);
@@ -6668,6 +6702,8 @@ impl PlaybackEngine {
             fb.write_frame_swap(&mut bytes, width, height);
             fb.set_presented(self.playhead);
         }
+        // Graded on the GPU straight to display bytes: no scope saw it.
+        self.scope_render_owed |= self.scopes_visible;
         self.composite_scratch_u8 = bytes;
         let total_ms = t_frame.elapsed().as_secs_f64() * 1000.0;
         if let Ok(mut ring) = self.perf_ring.lock() {
@@ -6805,6 +6841,8 @@ impl PlaybackEngine {
         q_len: usize,
         nits: Option<(Vec<f32>, u32, u32)>,
     ) {
+        // A fast path's frame never passes the scopes.
+        self.scope_render_owed |= self.scopes_visible;
         let t_fb = std::time::Instant::now();
         {
             let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
@@ -7121,7 +7159,8 @@ impl PlaybackEngine {
     /// The picture is measured as it is delivered: the linear frame is
     /// encoded with the viewer's SDR transfer in the working space's own
     /// primaries, or with PQ in BT.2020 while HDR monitoring shows
-    /// display light; display bytes are binned as the codes they are.
+    /// display light; display bytes are binned as the codes they are. Each
+    /// is drawn at the physical size the UI shows it at.
     fn render_scopes_on_gpu(
         &mut self,
         linear: Option<&[f32]>,
@@ -7169,6 +7208,7 @@ impl PlaybackEngine {
         let jobs: Vec<ScopeJob> = modes
             .iter()
             .map(|&mode| {
+                let (out_w, out_h) = crate::ffmpeg_scope::scope_out_size(&self.scope_sizes, mode);
                 if mode == 2 {
                     let v = settings.vectorscope;
                     return ScopeJob::Vectorscope(VectorscopeJob {
@@ -7178,8 +7218,8 @@ impl PlaybackEngine {
                         luma_lo: v.lthreshold,
                         luma_hi: v.hthreshold,
                         glow,
-                        out_w: crate::ffmpeg_scope::VECTOR_OUT,
-                        out_h: crate::ffmpeg_scope::VECTOR_OUT,
+                        out_w,
+                        out_h,
                     });
                 }
                 if mode == 3 {
@@ -7189,8 +7229,8 @@ impl PlaybackEngine {
                         log: h.levels == klipp_core::HistogramLevels::Logarithmic,
                         fill: h.fgopacity,
                         glow,
-                        out_w: crate::ffmpeg_scope::SCOPE_OUT_W,
-                        out_h: crate::ffmpeg_scope::SCOPE_OUT_H,
+                        out_w,
+                        out_h,
                     });
                 }
                 let wp = if mode == 1 { settings.parade } else { settings.waveform };
@@ -7205,8 +7245,8 @@ impl PlaybackEngine {
                     channels: wp.channels.to_components() as u32,
                     envelope: wp.envelope != klipp_core::WaveformEnvelope::None,
                     glow,
-                    out_w: crate::ffmpeg_scope::SCOPE_OUT_W,
-                    out_h: crate::ffmpeg_scope::SCOPE_OUT_H,
+                    out_w,
+                    out_h,
                 })
             })
             .collect();

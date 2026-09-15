@@ -349,6 +349,9 @@ pub struct KlippApp {
     /// video scope mode). Re-sent only when the union changes —
     /// floating-window open/close, layout swap, or per-pane mode picks.
     last_sent_active_scope_modes: Option<std::collections::BTreeSet<u8>>,
+    /// Last `SetScopeSizes` payload sent to the engine: the physical size
+    /// each scope mode was last shown at.
+    last_sent_scope_sizes: Option<std::collections::BTreeMap<u8, (u32, u32)>>,
     /// Last `SetScopeFfmpegSettings` payload sent to the engine. Tracks
     /// the union of low-pass / quality / R-G-B toggles. Re-sent only on
     /// change so settings-popover idle traffic doesn't churn the engine.
@@ -623,6 +626,7 @@ impl KlippApp {
                 - std::time::Duration::from_secs(1),
             last_sent_scope_mode: None,
             last_sent_active_scope_modes: None,
+            last_sent_scope_sizes: None,
             last_sent_scope_ffmpeg_settings: None,
             last_sent_scope_bloom: None,
             last_sent_scopes_visible: None,
@@ -25985,6 +25989,23 @@ impl eframe::App for KlippApp {
                     modes: active.clone(),
                 });
                 self.last_sent_active_scope_modes = Some(active);
+            }
+
+            // The physical size each scope mode was drawn at last frame —
+            // by the dock and by every floating pane, the larger side of
+            // each where two show the same mode — so the engine draws it
+            // at that size. Taken, so this frame's drawing notes it afresh
+            // and a closed pane stops asking.
+            let mut sizes: std::collections::BTreeMap<u8, (u32, u32)> = std::collections::BTreeMap::new();
+            let shown = std::iter::once(self.state.scope_state.shown_size.take())
+                .chain(self.scope_window_runtime.shown_sizes.iter_mut().map(Option::take));
+            for (mode, (w, h)) in shown.flatten() {
+                let size = sizes.entry(mode).or_insert((0, 0));
+                *size = (size.0.max(w), size.1.max(h));
+            }
+            if self.last_sent_scope_sizes.as_ref() != Some(&sizes) {
+                let _ = self.cmd_tx.send(AppCommand::SetScopeSizes { sizes: sizes.clone() });
+                self.last_sent_scope_sizes = Some(sizes);
             }
 
             // Publish FFmpeg-scope settings. Built from the existing

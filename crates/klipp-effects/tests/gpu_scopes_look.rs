@@ -84,4 +84,27 @@ fn draw_the_scopes_of_a_picture() {
     let t = Instant::now();
     let _ = gpu.scopes().render(&scope, 1, &[job]);
     println!("display bytes, step 1: {:.2} ms", t.elapsed().as_secs_f64() * 1000.0);
+
+    // Drawn at a pane's size, beside the fixed 1024x512 image stretched to
+    // that size as the UI used to show it.
+    let (pw, ph) = (1750u32, 875u32);
+    let scope = ScopeInput::Linear { rgba: &linear, width: w, height: h, matrix: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]], luma, transfer: ScopeTransfer::Srgb, scale: 1.0 };
+    for (name, mode) in [("waveform_rgb", WaveformMode::RgbOverlay), ("parade", WaveformMode::Parade)] {
+        let native = ScopeJob::Waveform(WaveformJob { mode, intensity: -1.0, channels: 7, envelope: false, glow: true, out_w: pw, out_h: ph });
+        let fixed = ScopeJob::Waveform(WaveformJob { mode, intensity: -1.0, channels: 7, envelope: false, glow: true, out_w: 1024, out_h: 512 });
+        let _ = gpu.scopes().render(&scope, 2, &[native]);
+        let t = Instant::now();
+        let out = gpu.scopes().render(&scope, 2, &[native]);
+        println!("{name} at {pw}x{ph}, step 2: {:.2} ms", t.elapsed().as_secs_f64() * 1000.0);
+        image::save_buffer(format!("{out_dir}/{name}_native_{pw}x{ph}.png"), out[0].as_ref().unwrap(), pw, ph, image::ColorType::Rgba8).unwrap();
+        let out = gpu.scopes().render(&scope, 2, &[fixed]);
+        let small = image::RgbaImage::from_raw(1024, 512, out[0].clone().unwrap()).unwrap();
+        let stretched = image::imageops::resize(&small, pw, ph, image::imageops::FilterType::Triangle);
+        stretched.save(format!("{out_dir}/{name}_stretched_{pw}x{ph}.png")).unwrap();
+    }
+    let big = ScopeJob::Vectorscope(VectorscopeJob { zoom: 1.0, intensity: -1.0, colorize: true, luma_lo: 0.0, luma_hi: 1.0, glow: true, out_w: 2000, out_h: 2000 });
+    let _ = gpu.scopes().render(&scope, 2, &[big]);
+    let t = Instant::now();
+    let _ = gpu.scopes().render(&scope, 2, &[big]);
+    println!("vectorscope at 2000x2000, step 2: {:.2} ms", t.elapsed().as_secs_f64() * 1000.0);
 }

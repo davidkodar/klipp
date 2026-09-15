@@ -725,7 +725,10 @@ impl PlaybackEngine {
             // Already the bytes the screen wants. Nothing here measures the
             // picture or mirrors it to the GPU — that is a precondition of
             // taking this path, checked in `cached_frame_display_lut`.
-            Picture::Display(bytes) => (bytes, None),
+            Picture::Display(bytes) => {
+                self.scope_render_owed |= self.scopes_visible;
+                (bytes, None)
+            }
             Picture::Linear(linear) => {
                 let t_scope = Instant::now();
                 // ACES has no GPU display transform, so its waveform reads
@@ -767,6 +770,8 @@ impl PlaybackEngine {
                     self.last_scope_render = Instant::now();
                     scope_ms += t_scope.elapsed().as_secs_f64() * 1000.0;
                 }
+                // Scopes not due this frame still show the one before it.
+                self.scope_render_owed = if scope_due { false } else { self.scopes_visible };
                 encoded
             }
         };

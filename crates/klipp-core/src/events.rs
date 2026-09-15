@@ -1454,6 +1454,12 @@ pub enum AppCommand {
     /// Sent on UI-side change only (e.g. opening the floating window, adding a
     /// pane, switching a pane's mode) — not every frame.
     SetActiveScopeModes { modes: std::collections::BTreeSet<u8> },
+    /// The physical pixel size each video scope mode is shown at: the
+    /// largest pane showing it. The engine draws its GPU scopes at this
+    /// size, so a scope is never a small image stretched to fill its pane.
+    /// A mode missing from the map is drawn at the default size. Sent on
+    /// change only.
+    SetScopeSizes { sizes: std::collections::BTreeMap<u8, (u32, u32)> },
     /// Push current FFmpeg-scope settings (low-pass / quality / R-G-B mask)
     /// to the engine. A settings change triggers a per-mode filter-graph
     /// rebuild on the next scope tick. Sent on UI-side change only (button

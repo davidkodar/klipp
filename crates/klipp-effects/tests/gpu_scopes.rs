@@ -381,3 +381,48 @@ fn log_levels_lift_a_small_population_and_clipped_samples_do_not_set_the_scale()
     assert!(grey >= 0.78 * HH as f32 && grey <= peak + 2.5, "the grey still sets the scale: {grey}");
     assert_eq!(column_height(img, &panel, panel.w - 1), panel.h, "the clipped pile is a spike to the top");
 }
+
+#[test]
+fn drawn_at_a_pane_size_a_one_pixel_column_stays_one_column_and_the_parade_keeps_its_levels() {
+    let Some(mut gpu) = GpuEffectsPipeline::new() else { return };
+    // Black, but for one column of white pixels, measured at the width it
+    // is drawn at.
+    const WW: u32 = 1920;
+    let (out_w, out_h) = (1920u32, 700u32);
+    let frame: Vec<f32> = (0..WW * H).flat_map(|i| if i % WW == 1000 { [1.0, 1.0, 1.0, 1.0] } else { [0.0, 0.0, 0.0, 1.0] }).collect();
+    let input = ScopeInput::Linear { rgba: &frame, width: WW, height: H, matrix: IDENTITY, luma: REC709, transfer: ScopeTransfer::Srgb, scale: 1.0 };
+    let job = ScopeJob::Waveform(WaveformJob { mode: WaveformMode::Luma, intensity: -1.0, channels: 7, envelope: false, glow: false, out_w, out_h });
+    let out = gpu.scopes().render(&input, 1, &[job]);
+    let img = out[0].as_ref().unwrap();
+    assert_eq!(img.len(), (out_w * out_h * 4) as usize);
+    let lit: Vec<u32> = (0..out_w)
+        .filter(|&x| {
+            (0..4u32).any(|y| {
+                let i = ((y * out_w + x) * 4) as usize;
+                img[i] as u32 + img[i + 1] as u32 + img[i + 2] as u32 > 60
+            })
+        })
+        .collect();
+    assert_eq!(lit, vec![1000], "the white column is one scope column wide");
+
+    // A parade at an arbitrary pane size keeps each panel's line at its level.
+    let frame: Vec<f32> = (0..W * H).flat_map(|_| [0.5, 0.18, 0.02, 1.0]).collect();
+    let input = linear_input(&frame);
+    let (pw, ph) = (1537u32, 811u32);
+    let job = ScopeJob::Waveform(WaveformJob { mode: WaveformMode::Parade, intensity: -1.0, channels: 7, envelope: false, glow: false, out_w: pw, out_h: ph });
+    let out = gpu.scopes().render(&input, 2, &[job]);
+    let img = out[0].as_ref().unwrap();
+    let gap = parade_gap(pw);
+    let panel_w = (pw - 2 * gap) / 3;
+    for (panel, level) in [(0u32, 0.5f32), (1, 0.18), (2, 0.02)] {
+        let x = panel * (panel_w + gap) + panel_w / 2;
+        let row = (0..ph)
+            .max_by_key(|y| {
+                let i = ((y * pw + x) * 4) as usize;
+                img[i] as u32 + img[i + 1] as u32 + img[i + 2] as u32
+            })
+            .unwrap();
+        let expect = (1.0 - linear_to_srgb(level)) * ph as f32;
+        assert!((row as f32 - expect).abs() <= 2.0, "panel {panel}: line at row {row}, expected {expect:.1}");
+    }
+}
