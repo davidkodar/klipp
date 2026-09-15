@@ -62,6 +62,10 @@ Cameras that write exposure only into their own container boxes, or into proprie
 
 A project saved before Klipp kept this metadata reads it the first time the project opens, one file at a time in the background, and saves it with the project. **Refresh Metadata** in a clip's right-click menu reads a file again at any time, for instance after copying its sidecar next to it.
 
+## Files cut short
+
+A copy interrupted mid-transfer keeps its header, which describes the whole recording, while its picture data stops early. Import checks for this: a clip that holds less than its header claims is imported at the length it really holds, a message says so, and the Info tab shows **Cut short** with both figures. Copy the file from the camera again and use **Relink** or **Refresh Metadata** to bring in the whole clip.
+
 ## Subtitles
 
 - **SRT** (SubRip) — standard timed text format

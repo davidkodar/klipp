@@ -427,6 +427,7 @@ mod tests {
             audio_cache: None,
             shot: Default::default(),
             metadata_read: false,
+            truncated_from_secs: None,
         }
     }
 

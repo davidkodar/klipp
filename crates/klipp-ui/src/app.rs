@@ -1259,6 +1259,7 @@ impl KlippApp {
                         color_transfer,
                         pixel_format,
                         shot,
+                        truncated_from_secs,
                     } = *payload;
                     let filename = path
                         .file_name()
@@ -1330,6 +1331,7 @@ impl KlippApp {
                         pixel_format,
                         shot,
                         metadata_read: true,
+                        truncated_from_secs,
                         detected_log_format: Default::default(),
                         log_format_user_set: false,
                         skim_file: None,
@@ -1362,6 +1364,15 @@ impl KlippApp {
                         .unwrap_or(self.prefs.editing.auto_generate_filmstrips);
                     let skim_enabled = self.state.project_auto_skim
                         .unwrap_or(self.prefs.editing.auto_generate_skim);
+                    if let Some(claimed) = media_item.truncated_from_secs {
+                        let held = media_item.duration.to_secs_f64();
+                        self.state.toast.show(format!(
+                            "{} is cut short: it holds {} of the {} its header claims",
+                            media_item.filename,
+                            klipp_media::describe_secs(held),
+                            klipp_media::describe_secs(claimed),
+                        ));
+                    }
                     self.state.media_pool.add(media_item);
                     // Imports stay off the timeline-edit undo stack (FCP /
                     // Premiere convention). Mixing them in caused two
@@ -11701,6 +11712,7 @@ impl KlippApp {
                         audio_cache: None,
                         shot: Default::default(),
                         metadata_read: false,
+                        truncated_from_secs: None,
                     };
                     self.state.media_pool.add(media_item);
                     // Imports stay off the timeline-edit undo stack (FCP /
@@ -34303,6 +34315,7 @@ fn build_whoosh_media_item(
         audio_cache: None,
         shot: Default::default(),
         metadata_read: false,
+        truncated_from_secs: None,
     }
 }
 
@@ -38495,6 +38508,7 @@ mod insert_audio_media_clip_tests {
             audio_cache: None,
             shot: Default::default(),
             metadata_read: false,
+            truncated_from_secs: None,
         }
     }
 

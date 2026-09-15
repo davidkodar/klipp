@@ -382,6 +382,7 @@ fn register_asset_media(
         audio_cache: None,
         shot: Default::default(),
         metadata_read: false,
+        truncated_from_secs: None,
     };
     let id = media_pool.add(item);
     cache.insert(asset_id.to_string(), id);

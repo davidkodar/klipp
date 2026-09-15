@@ -260,6 +260,10 @@ pub struct MediaItem {
     /// opens; see [`MediaItem::wants_metadata_probe`].
     #[serde(default)]
     pub metadata_read: bool,
+    /// The duration the file's header claims, when the file holds less:
+    /// a copy cut short. `duration` is then what it holds.
+    #[serde(default)]
+    pub truncated_from_secs: Option<f64>,
     /// Path to skim-optimised file (all-keyframe transcode for instant seeking)
     #[serde(default)]
     pub skim_file: Option<PathBuf>,
@@ -389,6 +393,7 @@ impl MediaItem {
             audio_cache: None,
             shot: Default::default(),
             metadata_read: false,
+            truncated_from_secs: None,
         }
     }
 
@@ -561,6 +566,7 @@ mod subclip_tests {
             audio_cache: None,
             shot: Default::default(),
             metadata_read: false,
+            truncated_from_secs: None,
         }
     }
 
@@ -736,6 +742,7 @@ mod effective_rotation_tests {
             audio_cache: None,
             shot: Default::default(),
             metadata_read: false,
+            truncated_from_secs: None,
         }
     }
 
@@ -802,6 +809,17 @@ impl MediaItem {
     /// metadata: a file on disk whose metadata was never read.
     pub fn wants_metadata_probe(&self) -> bool {
         matches!(self.kind, MediaItemKind::File) && !self.offline && !self.metadata_read && self.path.is_file()
+    }
+}
+
+/// A duration for people: "5.9 s", "1:24", "9:15" — minutes and seconds
+/// past a minute, seconds with a decimal under it.
+pub fn describe_secs(secs: f64) -> String {
+    if secs < 60.0 {
+        format!("{secs:.1} s")
+    } else {
+        let whole = secs.round() as u64;
+        format!("{}:{:02}", whole / 60, whole % 60)
     }
 }
 
@@ -885,6 +903,7 @@ impl MediaItem {
             parent_media_id: None,
             shot: Default::default(),
             metadata_read: false,
+            truncated_from_secs: None,
         }
     }
 }
@@ -927,6 +946,13 @@ mod reprobe_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_duration_reads_as_seconds_under_a_minute_and_minutes_past_it() {
+        assert_eq!(describe_secs(5.93), "5.9 s");
+        assert_eq!(describe_secs(84.0), "1:24");
+        assert_eq!(describe_secs(554.97), "9:15");
+    }
 
     #[test]
     fn only_an_online_file_whose_metadata_was_never_read_wants_a_probe() {

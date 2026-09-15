@@ -3195,6 +3195,9 @@ pub struct MediaLoadedPayload {
     pub pixel_format: Option<String>,
     /// Timecode, reel, lens, exposure and every tag the file carried.
     pub shot: crate::ShotMetadata,
+    /// The duration the file's header claims, when the file holds less:
+    /// a copy cut short. `duration` is then what it holds.
+    pub truncated_from_secs: Option<f64>,
 }
 
 #[derive(Debug, Clone)]

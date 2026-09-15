@@ -50,9 +50,14 @@ fn scratch(name: &str) -> PathBuf {
 
 /// A one-second clip with the tags a camera writes, `None` without ffmpeg.
 fn clip(name: &str, args: &[&str]) -> Option<PathBuf> {
+    clip_of(name, 1, args)
+}
+
+/// [`clip`] lasting `secs`.
+fn clip_of(name: &str, secs: u32, args: &[&str]) -> Option<PathBuf> {
     let out = scratch(name);
     let ok = std::process::Command::new("ffmpeg")
-        .args(["-nostdin", "-v", "error", "-y", "-f", "lavfi", "-i", "testsrc2=s=64x64:r=25:d=1", "-c:v", "libx264", "-pix_fmt", "yuv420p"])
+        .args(["-nostdin", "-v", "error", "-y", "-f", "lavfi", "-i", &format!("testsrc2=s=64x64:r=25:d={secs}"), "-c:v", "libx264", "-pix_fmt", "yuv420p"])
         .args(args)
         .arg(&out)
         .status()
@@ -83,6 +88,7 @@ fn a_clips_timecode_camera_and_sidecar_exposure_are_read_at_import() {
     let p = import(&mov);
     assert_eq!(p.camera_make.as_deref(), Some("Sony"));
     assert_eq!(p.camera_model.as_deref(), Some("ILCE-7M4"));
+    assert_eq!(p.truncated_from_secs, None, "a whole file");
     let shot = &p.shot;
     assert_eq!(shot.start_timecode.as_deref(), Some("01:02:03:04"), "the timecode track's start");
     assert_eq!(shot.iso, Some(800));
@@ -155,4 +161,23 @@ fn a_still_reads_its_exif_for_camera_lens_exposure_and_date() {
     assert_eq!(shot.exposure_summary().as_deref(), Some("ISO 400 \u{00B7} 1/125 \u{00B7} f/1.2 \u{00B7} 50 mm"));
     assert_eq!(shot.exposure_source.as_deref(), Some("EXIF"));
     assert!(shot.tags.iter().any(|(k, v)| k == "exif:FNumber" && v.contains("1.2")), "{:?}", shot.tags);
+}
+
+#[test]
+fn a_copy_cut_short_is_as_long_as_it_holds_and_says_what_its_header_claimed() {
+    // The header up front, as a phone writes it, so cutting the file's
+    // tail keeps the claim and loses the pictures.
+    let Some(whole) = clip_of("whole.mov", 10, &["-g", "15", "-movflags", "+faststart"]) else { return };
+    let bytes = std::fs::read(&whole).unwrap();
+    let short = scratch("short.mov");
+    std::fs::write(&short, &bytes[..bytes.len() * 35 / 100]).unwrap();
+    let p = import(&short);
+    let held = p.duration.to_secs_f64();
+    let claimed = p.truncated_from_secs.expect("the header's claim");
+    assert!((claimed - 10.0).abs() < 0.2, "header claims {claimed}");
+    assert!(held > 0.5 && held < 6.0, "holds {held} s");
+    // Whole, the same file is not cut short.
+    let p = import(&whole);
+    assert_eq!(p.truncated_from_secs, None);
+    assert!((p.duration.to_secs_f64() - 10.0).abs() < 0.2);
 }

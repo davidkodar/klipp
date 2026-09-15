@@ -217,6 +217,7 @@ mod tests {
             parent_media_id: None,
             shot: Default::default(),
             metadata_read: false,
+            truncated_from_secs: None,
         }
     }
 

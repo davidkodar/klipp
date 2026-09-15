@@ -4650,8 +4650,12 @@ impl ViewerPanel {
             let dim = theme.text_dim;
             let label_col = theme.text_secondary;
             let val_col = theme.text_primary;
+            // Everything drawn here stays inside the viewer: a narrow
+            // viewer once let this text and these buttons bleed over the
+            // panel beside it.
+            let painter = ui.painter_at(viewer_rect);
 
-            ui.painter().text(
+            painter.text(
                 egui::pos2(cx, cy - 60.0),
                 egui::Align2::CENTER_CENTER,
                 &media.filename,
@@ -4673,7 +4677,7 @@ impl ViewerPanel {
                 "{}x{}  {}fps  {}:{:05.2}",
                 media.resolution.width, media.resolution.height, fps_str, dur_m, dur_s,
             );
-            ui.painter().text(
+            painter.text(
                 egui::pos2(cx, cy - 38.0),
                 egui::Align2::CENTER_CENTER,
                 &res_line,
@@ -4696,7 +4700,7 @@ impl ViewerPanel {
                 "{}  \u{2502}  {}  \u{2502}  {}",
                 media.video_codec.to_lowercase(), audio_str, size_str,
             );
-            ui.painter().text(
+            painter.text(
                 egui::pos2(cx, cy - 20.0),
                 egui::Align2::CENTER_CENTER,
                 &codec_line,
@@ -4710,7 +4714,7 @@ impl ViewerPanel {
             let out_str = media.default_source_out
                 .map(|t| t.to_timecode_string())
                 .unwrap_or_else(|| media.duration.to_timecode_string());
-            ui.painter().text(
+            painter.text(
                 egui::pos2(cx, cy + 6.0),
                 egui::Align2::CENTER_CENTER,
                 format!("In: {}  Out: {}", in_str, out_str),
@@ -4737,9 +4741,10 @@ impl ViewerPanel {
                 ("Subclip", AppCommand::CreateSubclipFromZone { source_media_id: media.id, name: None }, subclip_enabled),
             ];
 
-            let btn_w = 90.0;
+            // As wide as fits the viewer, up to 90 px each.
             let btn_gap = 6.0;
             let btn_count = edit_buttons.len() as f32;
+            let btn_w = ((viewer_rect.width() - 16.0 - btn_gap * (btn_count - 1.0)) / btn_count).clamp(44.0, 90.0);
             let total_w = btn_w * btn_count + btn_gap * (btn_count - 1.0);
             let btn_y = cy + 34.0;
             let btn_x_start = cx - total_w / 2.0;
@@ -4763,12 +4768,12 @@ impl ViewerPanel {
                 } else {
                     theme.text_dim
                 };
-                ui.painter().rect_filled(rect, 3.0, fill);
-                ui.painter().text(
+                painter.rect_filled(rect, 3.0, fill);
+                painter.text(
                     rect.center(),
                     egui::Align2::CENTER_CENTER,
                     *label,
-                    egui::FontId::proportional(10.0),
+                    egui::FontId::proportional(if btn_w < 70.0 { 9.0 } else { 10.0 }),
                     text_color,
                 );
                 if *enabled && resp.clicked() {

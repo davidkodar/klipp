@@ -40,7 +40,7 @@ pub mod waveform;
 pub mod yuv_samples;
 
 pub use audio_cache::AudioCacheEntry;
-pub use item::{merge_reprobed, same_file_as_probed, Bin, ColorLabel, ColourSpace, MediaItem, MediaItemKind};
+pub use item::{describe_secs, merge_reprobed, same_file_as_probed, Bin, ColorLabel, ColourSpace, MediaItem, MediaItemKind};
 pub use pool::MediaPool;
 pub use thumbnail::{FilmstripFrame, ThumbnailCache, ThumbnailEntry};
 pub use waveform::generate_waveform_from_samples;

@@ -568,6 +568,7 @@ fn register_media(
         audio_cache: None,
         shot: Default::default(),
         metadata_read: false,
+        truncated_from_secs: None,
     };
     Some(media_pool.add(item))
 }

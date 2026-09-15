@@ -7488,6 +7488,20 @@ impl PlaybackEngine {
                     && (duration_secs < 0.1 || duration_secs.is_nan())
                     && is_image_extension(&path);
 
+                // A copy cut short keeps its header's duration while its
+                // media data ends early: the clip is as long as the file
+                // holds, and the header's claim is kept to say so.
+                let truncated_from_secs = if !is_still && duration_secs > 5.0 {
+                    truncated_end_secs(&path, duration_secs).map(|end| (end, duration_secs))
+                } else {
+                    None
+                };
+                let duration_secs = truncated_from_secs.map_or(duration_secs, |(end, _)| end);
+                let truncated_from_secs = truncated_from_secs.map(|(_, header)| header);
+                if let Some(header) = truncated_from_secs {
+                    warn!("{:?} holds {duration_secs:.1} s of the {header:.1} s its header claims: the file is cut short", path.file_name().unwrap_or_default());
+                }
+
                 self.fps = fps_from_float(container_fps);
                 self.duration = RationalTime::from_secs_f64(duration_secs, self.fps.rate());
                 self.playhead = RationalTime::from_frames(0, self.fps.rate());
@@ -7690,6 +7704,7 @@ impl PlaybackEngine {
                         color_transfer: color_transfer_name,
                         pixel_format: pixel_format_name,
                         shot,
+                        truncated_from_secs,
                     },
                 )));
 
@@ -8285,6 +8300,44 @@ fn coalesce_commands(commands: Vec<AppCommand>) -> Vec<AppCommand> {
     }
 
     result
+}
+
+/// Where a file's media data ends when its header claims more. A copy
+/// interrupted mid-transfer keeps the MOV header's full duration while its
+/// samples stop early, and trusting the header made a nine-minute clip
+/// that played for six seconds. Seeks near the claimed end and reads: a
+/// packet there means the file is whole (`None`); none means it is short,
+/// and a scan from the start finds where it ends. The scan reads only what
+/// the file holds, so it is cheap exactly when it runs.
+fn truncated_end_secs(path: &std::path::Path, header_secs: f64) -> Option<f64> {
+    let mut ictx = ffmpeg_next::format::input(path).ok()?;
+    let time_bases: Vec<f64> = ictx.streams().map(|s| f64::from(s.time_base())).collect();
+    let secs_of = |stream: usize, ts: i64| ts as f64 * time_bases.get(stream).copied().unwrap_or(0.0);
+    let near_end = (header_secs - 3.0).max(0.0);
+    let ts = (near_end * f64::from(ffmpeg_next::ffi::AV_TIME_BASE)) as i64;
+    if ictx.seek(ts, ..ts).is_err() {
+        return None;
+    }
+    // A long GOP puts the seek a few hundred packets before its target;
+    // a file that has not reached the end by then is taken as whole.
+    for (i, (stream, packet)) in ictx.packets().enumerate() {
+        if let Some(pts) = packet.pts() {
+            if secs_of(stream.index(), pts) >= near_end {
+                return None;
+            }
+        }
+        if i >= 600 {
+            return None;
+        }
+    }
+    let mut ictx = ffmpeg_next::format::input(path).ok()?;
+    let mut end = 0.0f64;
+    for (stream, packet) in ictx.packets() {
+        if let Some(pts) = packet.pts() {
+            end = end.max(secs_of(stream.index(), pts) + secs_of(stream.index(), packet.duration().max(0)));
+        }
+    }
+    (end > 0.0 && end < near_end).then_some(end)
 }
 
 /// Parse ISO 8601 timestamp like "2024-03-15T10:30:00.000000Z" to Unix epoch seconds.

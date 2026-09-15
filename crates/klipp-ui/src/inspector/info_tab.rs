@@ -456,6 +456,7 @@ pub fn show_bin_media(
             });
         }
 
+        truncated_row(ui, theme, pad, row_h, w, media);
         shot_rows(ui, theme, pad, row_h, w, dim, &media.shot);
 
         // Encoder
@@ -888,6 +889,7 @@ pub fn show_clip(
                 ui.painter().text(egui::pos2(rx, cy), egui::Align2::RIGHT_CENTER, text, egui::FontId::proportional(13.0), theme.text_primary);
             });
         }
+        truncated_row(ui, theme, pad, row_h, w, media);
         shot_rows(ui, theme, pad, row_h, w, dim, &media.shot);
 
         if let Some(ref enc) = media.encoder {
@@ -1237,6 +1239,15 @@ fn section_card(
 }
 
 /// Draw a single key-value row with custom right-side rendering.
+/// A file cut short: what it holds against what its header claims.
+fn truncated_row(ui: &mut egui::Ui, theme: &KlippTheme, pad: f32, row_h: f32, w: f32, media: &klipp_media::MediaItem) {
+    let Some(claimed) = media.truncated_from_secs else { return };
+    let text = format!("{} of {} the header claims", klipp_media::describe_secs(media.duration.to_secs_f64()), klipp_media::describe_secs(claimed));
+    info_row_custom(ui, theme, pad, row_h, w, "Cut short", |ui, rx, cy| {
+        ui.painter().text(egui::pos2(rx, cy), egui::Align2::RIGHT_CENTER, text, egui::FontId::proportional(12.0), theme.text_accent);
+    });
+}
+
 /// The shot as the camera recorded it: lens, exposure, white balance,
 /// gamma and gamut, timecode and reel — each row only when known.
 fn shot_rows(ui: &mut egui::Ui, theme: &KlippTheme, pad: f32, row_h: f32, w: f32, dim: egui::Color32, shot: &klipp_core::ShotMetadata) {
