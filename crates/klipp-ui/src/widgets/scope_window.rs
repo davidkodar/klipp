@@ -1618,3 +1618,63 @@ pub fn draw_ffmpeg_scope_options(
         ).on_hover_text("Brightness of the area under each curve. The curve itself is always drawn.");
     });
 }
+
+/// Show the engine's one low-pass filter and one bloom in every pane and in
+/// the ··· menu. Every scope is drawn from one measurement with one glow
+/// setting, so a pane cannot hold a value of its own; call before drawing
+/// the window.
+pub fn show_shared_toggles(state: &mut ScopeWindowState, low_pass: bool, bloom: bool) {
+    state.global_low_pass = low_pass;
+    for pane in &mut state.panes {
+        pane.settings.low_pass = low_pass;
+        pane.settings.bloom = bloom;
+    }
+}
+
+/// After drawing the window: a checkbox that no longer shows the shared
+/// value was just clicked, in a pane or in the ··· menu, and what it now
+/// shows becomes the shared value.
+pub fn take_shared_toggles(state: &ScopeWindowState, low_pass: &mut bool, bloom: &mut bool) {
+    if state.global_low_pass != *low_pass {
+        *low_pass = state.global_low_pass;
+    } else if let Some(pane) = state.panes.iter().find(|p| p.settings.low_pass != *low_pass) {
+        *low_pass = pane.settings.low_pass;
+    }
+    if let Some(pane) = state.panes.iter().find(|p| p.settings.bloom != *bloom) {
+        *bloom = pane.settings.bloom;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_floating_pane_shows_and_sets_the_shared_low_pass_and_bloom() {
+        let mut state = ScopeWindowState::default();
+        assert!(state.panes.len() > 1, "the default layout has several panes");
+        let (mut low_pass, mut bloom) = (true, false);
+
+        show_shared_toggles(&mut state, low_pass, bloom);
+        assert!(state.global_low_pass);
+        assert!(state.panes.iter().all(|p| p.settings.low_pass && !p.settings.bloom), "every pane shows the shared values");
+
+        take_shared_toggles(&state, &mut low_pass, &mut bloom);
+        assert!(low_pass && !bloom, "nothing clicked, nothing changes");
+
+        // One pane's two checkboxes clicked.
+        state.panes[1].settings.low_pass = false;
+        state.panes[1].settings.bloom = true;
+        take_shared_toggles(&state, &mut low_pass, &mut bloom);
+        assert!(!low_pass && bloom, "a pane's click sets the shared values");
+
+        // The ··· menu's filter, which sets every pane as well.
+        show_shared_toggles(&mut state, low_pass, bloom);
+        state.global_low_pass = true;
+        for pane in &mut state.panes {
+            pane.settings.low_pass = true;
+        }
+        take_shared_toggles(&state, &mut low_pass, &mut bloom);
+        assert!(low_pass && bloom, "the menu's click sets the filter and leaves bloom");
+    }
+}

@@ -27043,6 +27043,13 @@ impl eframe::App for KlippApp {
             let lufs_target = self.state.lufs_target;
             let spectrum_history: Vec<Vec<f32>> =
                 self.state.spectrum_history.iter().cloned().collect();
+            // The engine keeps one low-pass filter and one bloom for every
+            // scope: the floating window's checkboxes show and set those.
+            crate::widgets::scope_window::show_shared_toggles(
+                &mut self.state.scope_window,
+                self.state.scope_low_pass,
+                self.state.scope_bloom,
+            );
             crate::widgets::scope_window::show_scope_window(
                 ctx,
                 &mut self.state.scope_window,
@@ -27063,6 +27070,11 @@ impl eframe::App for KlippApp {
                 klipp_color::scopes::ScopeBasis::for_working_space(
                     self.state.project_working_colorspace,
                 ),
+            );
+            crate::widgets::scope_window::take_shared_toggles(
+                &self.state.scope_window,
+                &mut self.state.scope_low_pass,
+                &mut self.state.scope_bloom,
             );
         }
 
