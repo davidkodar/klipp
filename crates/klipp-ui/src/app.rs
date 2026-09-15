@@ -31464,6 +31464,14 @@ impl KlippApp {
         if resizer_active {
             self.layout_dirty = true;
         }
+        // Color's single viewer is the program viewer: the transport and
+        // the keys follow it there, whatever the source viewer had.
+        if self.state.show_color_panel
+            && !self.state.viewers_side_by_side()
+            && self.state.viewer_mode == klipp_core::ViewerMode::Source
+        {
+            self.state.viewer_mode = klipp_core::ViewerMode::Program;
+        }
         if self.layout.dual_viewers != self.state.dual_viewers
             || self.layout.color_dual_viewers != self.state.color_dual_viewers
         {

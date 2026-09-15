@@ -2175,7 +2175,7 @@ impl ViewerPanel {
         }
 
         // ── Single viewer: which one this is, and the way to the other ──
-        if !state.viewers_side_by_side() {
+        if !state.viewers_side_by_side() && !state.show_color_panel {
             let font = egui::FontId::proportional(crate::theme::type_scale::CAPTION);
             let labels = ["Source", "Program"];
             let h = crate::theme::control::COMPACT;
