@@ -10,7 +10,7 @@ Toggle between two view modes using the icons at the top of the browser:
 Displays media as thumbnail tiles in a grid layout. Tiles show the first frame of video clips and a waveform preview for audio files. Hover over a tile to skim through it.
 
 ### List View
-Displays media in a sortable table with columns for name, duration, resolution, codec, frame rate, and file size. Click column headers to sort.
+Displays media in a table. A header names the columns: click one to sort by it, click again to flip the order, and right-click the header to choose which columns show, from duration, resolution, frame rate, codec and size to camera, lens, timecode, reel, shoot date, scene, shot, take, keywords, description, comments, good take, label, tags, favourite, rejected and markers. The choice is kept in the preferences. Each part of a split take is named "part 1 of 3" after its file name.
 
 ## Skimming
 
@@ -36,35 +36,38 @@ Organise media into bins (folders) for large projects:
 
 ## Sorting
 
-Sort media by:
-
-- Name (alphabetical)
-- Duration
-- Date imported
-- File size
-- Resolution
-
-Click the sort button or column headers to change sort order.
+Sort media by any sortable field: name, date added, shoot date, duration, rating, codec, size, resolution, frame rate, camera, lens, timecode, reel, scene, shot, take, keywords or kind. Numbers sort as numbers, so take 2 comes before take 10. Use the sort dropdown or the list's column headers.
 
 ## Search
 
 The search box at the top of the browser matches against:
 
-- File name
+- File name and bin path
 - User-applied tags
-- Bin path
+- Everything logged: scene, shot, take, description, comments, keywords, reel
+- Camera model and lens
 
 Searches are sub-millisecond — Klipp builds an in-memory index when the project loads.
 
+## Filters
+
+The filter row narrows the bin: a fixed filter (unused, video, audio, stills, offline, favourites, rejected), a minimum rating, a colour label, and one metadata value from whatever the pool holds — codec, frame rate, camera, lens, reel, scene, keyword, resolution, or good takes only. Filters combine.
+
 ## Smart Bins
 
-Smart bins automatically collect media matching certain criteria:
+A smart bin is a set of rules you write, saved with the project: **New smart bin…** in the filter dropdown opens the editor. Each rule is a field, a comparison and a value — *Rating is at least 4*, *Keywords contains interview*, *Shot on is after 2024-03-01*, *Camera is FX6*, *Resolution is at least 4k*, *Duration is at most 1:30*, *Good is set* — and the bin gathers the clips matching all of them or any. Numbers compare as numbers, dates as dates, text as text. Pick a saved bin from the same dropdown; edit or delete it there. Smart bins update as media is imported and logged.
 
-- By media type (video, audio, image)
-- By resolution (4K, 1080p, 720p)
-- By frame rate
+## Logging
 
-Smart bins update dynamically as you import new media.
+The Info tab's **Logging** section holds the editor's record of a clip: scene, shot, take, reel, keywords, description, comments and a good-take mark. Everything there is a column, a sort key, a filter and a smart-bin field, and goes out and comes back in with the metadata sheet (see [Importing Media](../editing/importing.md#metadata-sheets)).
+
+## Marks on a Clip
+
+With the source viewer active, **M** leaves a note on the pool clip at the source playhead, **Shift+F** marks the stretch between the in and out points as a favourite and **Shift+R** rejects it; with no points set the mark covers the whole clip. The Mark menu has the same. Marks show on the source scrub bar, are named and removed in the Info tab's **Markers** section, and the browser's Favourites and Rejected filters gather clips by them.
+
+## Synced Sound
+
+Select a camera clip and a separate recording, right-click, **Sync Video and Audio**. When both files carry a start timecode the offset is taken from them; otherwise the two sounds are matched by waveform. The pairing is kept on the clip: whenever it is added to the timeline the recording goes under it at that offset in place of the camera's own sound. **Remove Synced Audio** undoes it.
 
 ## Adding Media to Timeline
 

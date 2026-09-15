@@ -62,6 +62,14 @@ Cameras that write exposure only into their own container boxes, or into proprie
 
 A project saved before Klipp kept this metadata reads it the first time the project opens, one file at a time in the background, and saves it with the project. **Refresh Metadata** in a clip's right-click menu reads a file again at any time, for instance after copying its sidecar next to it.
 
+## Camera cards
+
+Importing a folder that is a camera card — Sony XAVC or XDCAM, AVCHD, Canon XF, Panasonic P2, or a DCIM card — brings in the clips and leaves the proxies, thumbnails and index files beside them where they are. A take the camera split at its file-size limit is recognised from its numbered parts, where each part's timecode picks up where the last ended or the earlier part is a full-size file; each part then says which it is of how many, and **Add All Parts to Timeline** in its right-click menu lays them back to back.
+
+## Metadata sheets
+
+**File > Export Metadata Sheet** writes every clip's logged fields and what the camera recorded as CSV, for a spreadsheet, or ALE, for tools that read Avid Log Exchange. **File > Import Metadata Sheet** reads either back: rows are matched to clips by file name, in any case and with or without the extension, and the editor's fields are taken — scene, shot, take, description, comments, keywords, good take, reel, rating and tags. A column the sheet does not have is left alone.
+
 ## Files cut short
 
 A copy interrupted mid-transfer keeps its header, which describes the whole recording, while its picture data stops early. Import checks for this: a clip that holds less than its header claims is imported at the length it really holds, a message says so, and the Info tab shows **Cut short** with both figures. Copy the file from the camera again and use **Relink** or **Refresh Metadata** to bring in the whole clip.

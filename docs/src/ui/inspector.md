@@ -68,6 +68,9 @@ The info tab displays read-only metadata about the selected clip:
 - The gamma and gamut the camera recorded in, such as S-Log3 / S-Gamut3.Cine
 - Start timecode and reel
 - **All metadata**: every tag the file carried, as written, folded under a header
+- **Logging**: scene, shot, take, reel, keywords, description, comments and good take, edited in place
+- **Markers**: the notes, favourite and rejected stretches marked on the clip
+- Synced audio and split-take part, when the clip has them
 
 See [Importing Media](../editing/importing.md#what-klipp-reads-about-a-shot) for where each of these comes from.
 
