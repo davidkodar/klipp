@@ -197,37 +197,48 @@ impl NewInspectorPanel {
                         (InspectorTab::Info, "INFO"),
                     ]
                 };
-                let tab_w = ui.available_width() / tabs.len() as f32;
-                for (tab, label) in &tabs {
+                // Each tab as wide as its title, at the largest size that
+                // fits the strip; titles shorten before they would collide.
+                let avail = ui.available_width();
+                fn short(l: &str) -> &str {
+                    match l {
+                        "VIDEO" => "VID",
+                        "AUDIO" => "AUD",
+                        "COLOR" => "COL",
+                        "EFFECTS" => "FX",
+                        "GENERATOR" => "GEN",
+                        other => other,
+                    }
+                }
+                let pad = 14.0;
+                let widths = |ui: &egui::Ui, labels: &[String], size: f32| -> Vec<f32> {
+                    labels
+                        .iter()
+                        .map(|l| ui.painter().layout_no_wrap(l.clone(), egui::FontId::proportional(size), egui::Color32::WHITE).size().x + pad)
+                        .collect()
+                };
+                let full: Vec<String> = tabs.iter().map(|(_, l)| l.to_string()).collect();
+                let brief: Vec<String> = tabs.iter().map(|(_, l)| short(l).to_string()).collect();
+                let (labels, size, w) = [(&full, 11.0), (&full, 10.0), (&brief, 10.0)]
+                    .into_iter()
+                    .map(|(labels, size)| (labels, size, widths(ui, labels, size)))
+                    .find(|(_, _, w)| w.iter().sum::<f32>() <= avail)
+                    .unwrap_or_else(|| (&brief, 10.0, widths(ui, &brief, 10.0)));
+                let total: f32 = w.iter().sum();
+                let stretch = if total > 0.0 { (avail / total).max(1.0) } else { 1.0 };
+                for (i, (tab, _)) in tabs.iter().enumerate() {
                     let is_active = *active_tab == *tab;
-
-                    let (tab_rect, resp) = ui.allocate_exact_size(
-                        egui::vec2(tab_w, 26.0),
-                        egui::Sense::click(),
-                    );
-
+                    let (tab_rect, resp) = ui.allocate_exact_size(egui::vec2(w[i] * stretch, 26.0), egui::Sense::click());
                     let text_color = if is_active {
-                        theme.text_accent
+                        theme.text_primary
                     } else if resp.hovered() {
                         theme.text_secondary
                     } else {
                         theme.text_dim
                     };
-
-                    ui.painter().text(
-                        tab_rect.center(),
-                        egui::Align2::CENTER_CENTER,
-                        *label,
-                        egui::FontId::proportional(10.0),
-                        text_color,
-                    );
-
+                    ui.painter().text(tab_rect.center(), egui::Align2::CENTER_CENTER, &labels[i], egui::FontId::proportional(size), text_color);
                     if is_active {
-                        ui.painter().hline(
-                            tab_rect.x_range(),
-                            tab_rect.max.y - 1.0,
-                            egui::Stroke::new(2.0_f32, theme.accent),
-                        );
+                        ui.painter().hline(tab_rect.x_range().shrink(4.0), tab_rect.max.y - 1.0, egui::Stroke::new(2.0_f32, theme.accent));
                     }
                     if resp.clicked() {
                         *active_tab = *tab;

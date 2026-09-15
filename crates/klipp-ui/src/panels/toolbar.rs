@@ -69,7 +69,7 @@ impl ToolbarPanel {
         let resp = alloc_btn(ui, egui::pos2(rx, cy - 16.0), 32.0);
         let ic = icon_color(&resp, skim_active, theme);
         let bg = icon_bg(&resp, skim_active, theme);
-        painter.rect_filled(resp.rect, 6.0, bg);
+        painter.rect_filled(resp.rect, 4.0, bg);
         draw_skimming_icon(&painter, resp.rect, ic);
         styled_tooltip(&resp, theme, "Skimming On/Off", Some("S"));
         if resp.clicked() {
@@ -86,7 +86,7 @@ impl ToolbarPanel {
         let resp = alloc_btn(ui, egui::pos2(rx, cy - 16.0), 32.0);
         let ic = icon_color(&resp, color_active, theme);
         let bg = icon_bg(&resp, color_active, theme);
-        painter.rect_filled(resp.rect, 6.0, bg);
+        painter.rect_filled(resp.rect, 4.0, bg);
         draw_color_icon(&painter, resp.rect, ic);
         styled_tooltip(&resp, theme, "Color Workspace", Some("C"));
         if resp.clicked() {
@@ -108,7 +108,7 @@ impl ToolbarPanel {
         let resp = alloc_btn(ui, egui::pos2(rx, cy - 16.0), 32.0);
         let ic = icon_color(&resp, scopes_active, theme);
         let bg = icon_bg(&resp, scopes_active, theme);
-        painter.rect_filled(resp.rect, 6.0, bg);
+        painter.rect_filled(resp.rect, 4.0, bg);
         draw_scopes_icon(&painter, resp.rect, ic);
         styled_tooltip(&resp, theme, "Toggle Scopes", Some("V"));
         if resp.clicked() {
@@ -125,37 +125,41 @@ impl ToolbarPanel {
         // ═══════════════════════════════════════════
         // WORKSPACE TABS — centred in toolbar
         // ═══════════════════════════════════════════
-        let ws_tab_w = 150.0;
-        let ws_rect = egui::Rect::from_min_size(
-            egui::pos2(toolbar_rect.center().x - ws_tab_w / 2.0, toolbar_rect.min.y),
-            egui::vec2(ws_tab_w, toolbar_rect.height()),
-        );
-        ui.allocate_new_ui(egui::UiBuilder::new().max_rect(ws_rect), |ui| {
-            ui.horizontal_centered(|ui| {
-                ui.spacing_mut().item_spacing.x = 1.0;
-                for (ws, label) in [
-                    (Workspace::Edit, "Edit"),
-                    (Workspace::Color, "Color"),
-                    (Workspace::Export, "Export"),
-                ] {
-                    let active = state.active_workspace == ws;
-                    let text = egui::RichText::new(label).size(10.0);
-                    let text = if active {
-                        text.strong().color(theme.text_accent)
-                    } else {
-                        text.color(theme.text_dim)
-                    };
-                    let resp = ui.selectable_label(active, text);
-                    if resp.clicked() {
-                        state.active_workspace = ws;
-                        state.show_color_panel = ws == Workspace::Color;
-                        if ws == Workspace::Color {
-                            state.show_scopes = true;
-                        }
-                    }
+        // A segmented control: three labels in one field, the active one
+        // lit, sized to its titles so none is ever clipped.
+        let workspaces = [(Workspace::Edit, "Edit"), (Workspace::Color, "Color"), (Workspace::Export, "Export")];
+        let ws_font = egui::FontId::proportional(crate::theme::type_scale::CONTROL);
+        let seg_pad = 12.0;
+        let seg_w: Vec<f32> = workspaces
+            .iter()
+            .map(|(_, l)| ui.painter().layout_no_wrap(l.to_string(), ws_font.clone(), egui::Color32::WHITE).size().x + seg_pad * 2.0)
+            .collect();
+        let ws_tab_w: f32 = seg_w.iter().sum::<f32>() + 4.0;
+        let ws_h = crate::theme::control::REGULAR;
+        let ws_rect = egui::Rect::from_center_size(toolbar_rect.center(), egui::vec2(ws_tab_w, ws_h));
+        painter.rect_filled(ws_rect, crate::theme::radius::PANEL, theme.bg_panel);
+        painter.rect_stroke(ws_rect, crate::theme::radius::PANEL, egui::Stroke::new(1.0_f32, theme.border));
+        let mut x = ws_rect.min.x + 2.0;
+        for (i, (ws, label)) in workspaces.iter().enumerate() {
+            let seg = egui::Rect::from_min_size(egui::pos2(x, ws_rect.min.y + 2.0), egui::vec2(seg_w[i], ws_h - 4.0));
+            let resp = ui.allocate_rect(seg, egui::Sense::click());
+            let active = state.active_workspace == *ws;
+            if active {
+                painter.rect_filled(seg, crate::theme::radius::CONTROL, theme.bg_raised);
+            } else if resp.hovered() {
+                painter.rect_filled(seg, crate::theme::radius::CONTROL, theme.bg_hover);
+            }
+            let colour = if active { theme.text_primary } else { theme.text_secondary };
+            painter.text(seg.center(), egui::Align2::CENTER_CENTER, *label, ws_font.clone(), colour);
+            if resp.clicked() {
+                state.active_workspace = *ws;
+                state.show_color_panel = *ws == Workspace::Color;
+                if *ws == Workspace::Color {
+                    state.show_scopes = true;
                 }
-            });
-        });
+            }
+            x += seg_w[i];
+        }
 
         // ═══════════════════════════════════════════
         // LEFT GROUP — brand + menus + tool buttons
@@ -229,7 +233,7 @@ impl ToolbarPanel {
                     );
                     let bg = if resp.hovered() && !active { theme.bg_hover } else { bg };
                     let fg = if resp.hovered() && !active { theme.text_primary } else { fg };
-                    ui.painter().rect_filled(rect, 6.0, bg);
+                    ui.painter().rect_filled(rect, 4.0, bg);
                     match tool {
                         EditTool::Select => draw_select_icon(ui.painter(), rect, fg),
                         EditTool::Trim => draw_trim_icon(ui.painter(), rect, fg),
@@ -273,8 +277,8 @@ impl ToolbarPanel {
                         mode_color.linear_multiply(0.25)
                     };
                     let border = mode_color.linear_multiply(0.6);
-                    ui.painter().rect_filled(rect, 3.0, bg);
-                    ui.painter().rect_stroke(rect, 3.0, egui::Stroke::new(1.0_f32, border));
+                    ui.painter().rect_filled(rect, 2.0, bg);
+                    ui.painter().rect_stroke(rect, 2.0, egui::Stroke::new(1.0_f32, border));
                     ui.painter().text(
                         rect.center(),
                         egui::Align2::CENTER_CENTER,

@@ -30,7 +30,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState, theme: &KlippTheme, cmds: &
             } else {
                 (egui::Color32::TRANSPARENT, theme.text_dim)
             };
-            ui.painter().rect_filled(rect, 5.0, bg);
+            ui.painter().rect_filled(rect, 4.0, bg);
             draw_fn(ui.painter(), rect, fg);
             styled_tooltip(&resp, theme, tip, Some(key));
             if resp.clicked() {
@@ -56,7 +56,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState, theme: &KlippTheme, cmds: &
             egui::Sense::click().union(egui::Sense::hover()),
         );
         let bg = if resp.hovered() && !snap_active { theme.bg_hover } else { snap_bg };
-        ui.painter().rect_filled(rect, 5.0, bg);
+        ui.painter().rect_filled(rect, 4.0, bg);
         draw_tl_snap_icon(ui.painter(), rect, snap_fg);
         // Small ▾ chevron in the lower-right corner hints at the
         // per-target dropdown (right-click reveals it). Same colour
@@ -114,7 +114,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState, theme: &KlippTheme, cmds: &
         };
         let (rect, resp) = ui.allocate_exact_size(egui::vec2(26.0, 26.0), egui::Sense::click());
         let bg = if resp.hovered() && !skim_active { theme.bg_hover } else { skim_bg };
-        ui.painter().rect_filled(rect, 5.0, bg);
+        ui.painter().rect_filled(rect, 4.0, bg);
         draw_tl_skim_icon(ui.painter(), rect, skim_fg);
         styled_tooltip(&resp, theme, "Skimming", Some("S"));
         if resp.clicked() {
@@ -126,7 +126,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState, theme: &KlippTheme, cmds: &
         // ── Add Marker ──
         let (rect, resp) = ui.allocate_exact_size(egui::vec2(26.0, 26.0), egui::Sense::click());
         let bg = if resp.hovered() { theme.bg_hover } else { egui::Color32::TRANSPARENT };
-        ui.painter().rect_filled(rect, 5.0, bg);
+        ui.painter().rect_filled(rect, 4.0, bg);
         draw_tl_marker_icon(ui.painter(), rect, theme.text_dim);
         styled_tooltip(&resp, theme, "Add Marker", Some("M"));
         if resp.clicked() {

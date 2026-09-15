@@ -132,7 +132,7 @@ fn render_category_row(
         // Colour swatch
         let (swatch_rect, _) =
             ui.allocate_exact_size(egui::vec2(16.0, 16.0), egui::Sense::hover());
-        ui.painter().rect_filled(swatch_rect, 3.0, cat.color);
+        ui.painter().rect_filled(swatch_rect, 2.0, cat.color);
         ui.painter().rect_stroke(
             swatch_rect,
             3.0,

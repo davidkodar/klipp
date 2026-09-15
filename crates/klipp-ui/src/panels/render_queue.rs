@@ -193,7 +193,7 @@ impl RenderQueuePanel {
                 egui::Sense::hover(),
             ).0;
             let painter = ui.painter_at(badge_rect);
-            painter.rect_filled(badge_rect, 3.0, badge_bg);
+            painter.rect_filled(badge_rect, 2.0, badge_bg);
 
             // Animated dot for rendering jobs
             let badge_text = if job.status == RenderJobStatus::Rendering {
@@ -274,7 +274,7 @@ impl RenderQueuePanel {
         let painter = ui.painter_at(bar_rect);
 
         // Background track
-        painter.rect_filled(bar_rect, 3.0, theme.bg_deep);
+        painter.rect_filled(bar_rect, 2.0, theme.bg_deep);
 
         // Fill
         let fill_width = bar_rect.width() * job.progress;
@@ -287,7 +287,7 @@ impl RenderQueuePanel {
                 RenderJobStatus::Failed => theme.marker_error,
                 _ => theme.bg_hover,
             };
-            painter.rect_filled(fill_rect, 3.0, fill_color);
+            painter.rect_filled(fill_rect, 2.0, fill_color);
         }
 
         // Text (shadow + foreground)

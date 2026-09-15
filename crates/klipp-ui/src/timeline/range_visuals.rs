@@ -178,7 +178,7 @@ fn draw_handle(
             egui::pos2(x + HANDLE_WIDTH, tracks_bottom),
         )
     };
-    painter.rect_filled(rect, 3.0, theme.accent);
+    painter.rect_filled(rect, 2.0, theme.accent);
 }
 
 /// Draw lollipop circle cap above the ruler.
@@ -265,7 +265,7 @@ fn draw_collapsed_handle(
         egui::pos2(bar_left, ruler_top),
         egui::pos2(bar_right, tracks_bottom),
     );
-    painter.rect_filled(rect, 3.0, theme.accent);
+    painter.rect_filled(rect, 2.0, theme.accent);
 
     // Centered cap
     let cx = (in_x + out_x) / 2.0;

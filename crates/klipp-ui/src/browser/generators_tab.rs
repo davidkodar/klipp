@@ -445,7 +445,7 @@ fn generator_card(
         theme.border
     };
 
-    ui.painter().rect_filled(rect, 6.0, theme.bg_raised);
+    ui.painter().rect_filled(rect, 4.0, theme.bg_raised);
 
     // Generator preview fills the card; a thin 2px border at the top
     // hints at the card edge but lets the swatch read edge-to-edge.
@@ -480,7 +480,7 @@ fn generator_card(
         );
     }
 
-    ui.painter().rect_stroke(rect, 6.0, egui::Stroke::new(if is_selected { 2.0_f32 } else { 1.0_f32 }, border_color));
+    ui.painter().rect_stroke(rect, 4.0, egui::Stroke::new(if is_selected { 2.0_f32 } else { 1.0_f32 }, border_color));
 
     resp
 }
@@ -563,8 +563,8 @@ fn paint_corner_badge(
     fg: egui::Color32,
     bg: egui::Color32,
 ) {
-    p.rect_filled(rect, 3.0, bg);
-    p.rect_stroke(rect, 3.0, egui::Stroke::new(1.0_f32, theme.border));
+    p.rect_filled(rect, 2.0, bg);
+    p.rect_stroke(rect, 2.0, egui::Stroke::new(1.0_f32, theme.border));
     p.text(
         rect.center(),
         egui::Align2::CENTER_CENTER,
@@ -578,9 +578,9 @@ fn paint_animated_chip(p: &egui::Painter, theme: &KlippTheme, rect: egui::Rect) 
     // Opaque underlay first so the chip never lets the preview
     // (e.g. countdown circle stroke) bleed through the semi-
     // transparent accent fill on top.
-    p.rect_filled(rect, 3.0, theme.bg_panel);
-    p.rect_filled(rect, 3.0, theme.accent_subtle);
-    p.rect_stroke(rect, 3.0, egui::Stroke::new(1.0_f32, theme.accent_dim));
+    p.rect_filled(rect, 2.0, theme.bg_panel);
+    p.rect_filled(rect, 2.0, theme.accent_subtle);
+    p.rect_stroke(rect, 2.0, egui::Stroke::new(1.0_f32, theme.accent_dim));
     p.text(
         egui::pos2(rect.min.x + 6.0, rect.center().y),
         egui::Align2::LEFT_CENTER,
@@ -1097,8 +1097,8 @@ fn gen_segmented_filter(
     }
     total_w -= 1.0;
     let (outer_rect, _) = ui.allocate_exact_size(egui::vec2(total_w, outer_h), egui::Sense::hover());
-    ui.painter().rect_filled(outer_rect, 5.0, theme.bg_panel);
-    ui.painter().rect_stroke(outer_rect, 5.0, egui::Stroke::new(1.0_f32, theme.border));
+    ui.painter().rect_filled(outer_rect, 4.0, theme.bg_panel);
+    ui.painter().rect_stroke(outer_rect, 4.0, egui::Stroke::new(1.0_f32, theme.border));
     let mut x = outer_rect.min.x + pad;
     for (i, (variant, label, count)) in segments.iter().enumerate() {
         let seg_rect = egui::Rect::from_min_size(
@@ -1109,9 +1109,9 @@ fn gen_segmented_filter(
         let is_active = *filter == *variant;
         let hovered = resp.hovered();
         if is_active {
-            ui.painter().rect_filled(seg_rect, 3.0, theme.bg_raised);
+            ui.painter().rect_filled(seg_rect, 2.0, theme.bg_raised);
         } else if hovered {
-            ui.painter().rect_filled(seg_rect, 3.0, theme.accent_subtle);
+            ui.painter().rect_filled(seg_rect, 2.0, theme.accent_subtle);
         }
         let label_color = if is_active || hovered { theme.text_primary } else { theme.text_secondary };
         let count_color = if is_active { theme.accent } else { theme.text_dim };
@@ -1163,8 +1163,8 @@ fn animated_only_pill(ui: &mut egui::Ui, theme: &KlippTheme, active: &mut bool) 
     } else {
         (theme.bg_panel, theme.border, theme.text_secondary)
     };
-    ui.painter().rect_filled(rect, 12.0, bg);
-    ui.painter().rect_stroke(rect, 12.0, egui::Stroke::new(1.0_f32, border));
+    ui.painter().rect_filled(rect, 4.0, bg);
+    ui.painter().rect_stroke(rect, 4.0, egui::Stroke::new(1.0_f32, border));
     let icon_rect = egui::Rect::from_min_size(
         egui::pos2(rect.min.x + pad_x, rect.center().y - icon_size * 0.5),
         egui::vec2(icon_size, icon_size),

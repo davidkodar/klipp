@@ -206,7 +206,7 @@ impl LaunchScreen {
         );
         let new_resp = ui.allocate_rect(new_rect, egui::Sense::click());
         let new_bg = if new_resp.hovered() { theme.accent } else { theme.accent_dim };
-        ui.painter().rect_filled(new_rect, 6.0, new_bg);
+        ui.painter().rect_filled(new_rect, 4.0, new_bg);
         ui.painter().text(
             new_rect.center(),
             egui::Align2::CENTER_CENTER,
@@ -225,8 +225,8 @@ impl LaunchScreen {
         );
         let open_resp = ui.allocate_rect(open_rect, egui::Sense::click());
         let open_bg = if open_resp.hovered() { theme.bg_hover } else { theme.bg_raised };
-        ui.painter().rect_filled(open_rect, 6.0, open_bg);
-        ui.painter().rect_stroke(open_rect, 6.0, egui::Stroke::new(1.0_f32, theme.border_light));
+        ui.painter().rect_filled(open_rect, 4.0, open_bg);
+        ui.painter().rect_stroke(open_rect, 4.0, egui::Stroke::new(1.0_f32, theme.border_light));
         ui.painter().text(
             open_rect.center(),
             egui::Align2::CENTER_CENTER,
@@ -250,8 +250,8 @@ impl LaunchScreen {
         );
         let import_resp = ui.allocate_rect(import_rect, egui::Sense::click());
         let import_bg = if import_resp.hovered() { theme.bg_hover } else { theme.bg_raised };
-        ui.painter().rect_filled(import_rect, 6.0, import_bg);
-        ui.painter().rect_stroke(import_rect, 6.0, egui::Stroke::new(1.0_f32, theme.border_light));
+        ui.painter().rect_filled(import_rect, 4.0, import_bg);
+        ui.painter().rect_stroke(import_rect, 4.0, egui::Stroke::new(1.0_f32, theme.border_light));
         ui.painter().text(
             import_rect.center(),
             egui::Align2::CENTER_CENTER,

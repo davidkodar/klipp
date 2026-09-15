@@ -988,7 +988,7 @@ impl NodeGraphV2Panel {
             );
             let chip_rect = egui::Rect::from_min_size(chip_pos, chip_size);
             painter.rect_filled(
-                chip_rect, 3.0,
+                chip_rect, 2.0,
                 egui::Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), 220),
             );
             painter.galley(chip_rect.min + chip_pad, galley, theme.bg_deep);
@@ -1799,8 +1799,8 @@ impl NodeGraphV2Panel {
                 );
                 let chip_rect = egui::Rect::from_min_size(chip_pos, chip_size);
                 let solo_color = egui::Color32::from_rgb(0xff, 0xd5, 0x3a);
-                painter.rect_filled(chip_rect, 3.0, solo_color);
-                painter.rect_stroke(chip_rect, 3.0, egui::Stroke::new(0.5_f32, theme.bg_deep));
+                painter.rect_filled(chip_rect, 2.0, solo_color);
+                painter.rect_stroke(chip_rect, 2.0, egui::Stroke::new(0.5_f32, theme.bg_deep));
                 painter.text(
                     chip_rect.center(),
                     egui::Align2::CENTER_CENTER,
@@ -1879,8 +1879,8 @@ impl NodeGraphV2Panel {
                         rect.min.y - chip_size.y - 2.0 * zoom,
                     );
                     let chip_rect = egui::Rect::from_min_size(chip_pos, chip_size);
-                    painter.rect_filled(chip_rect, 3.0, chip_bg);
-                    painter.rect_stroke(chip_rect, 3.0, egui::Stroke::new(0.5_f32, chip_fg));
+                    painter.rect_filled(chip_rect, 2.0, chip_bg);
+                    painter.rect_stroke(chip_rect, 2.0, egui::Stroke::new(0.5_f32, chip_fg));
                     painter.galley(chip_rect.min + pad, galley, chip_fg);
                 }
                 for (port, slot) in node.input_links.iter().enumerate() {
@@ -1895,8 +1895,8 @@ impl NodeGraphV2Panel {
                             port_pos.y - chip_size.y * 0.5,
                         );
                         let chip_rect = egui::Rect::from_min_size(chip_pos, chip_size);
-                        painter.rect_filled(chip_rect, 3.0, chip_bg);
-                        painter.rect_stroke(chip_rect, 3.0, egui::Stroke::new(0.5_f32, chip_fg));
+                        painter.rect_filled(chip_rect, 2.0, chip_bg);
+                        painter.rect_stroke(chip_rect, 2.0, egui::Stroke::new(0.5_f32, chip_fg));
                         painter.galley(chip_rect.min + pad, galley, chip_fg);
                     }
                 }
@@ -4355,13 +4355,13 @@ fn paint_port_label(
     // Translucent dark backdrop + thin border so the label reads
     // on top of any canvas content (wires, frames, other nodes).
     painter.rect_filled(
-        chip_rect, 3.0,
+        chip_rect, 2.0,
         egui::Color32::from_rgba_unmultiplied(
             theme.bg_deep.r(), theme.bg_deep.g(), theme.bg_deep.b(), 230,
         ),
     );
     painter.rect_stroke(
-        chip_rect, 3.0,
+        chip_rect, 2.0,
         egui::Stroke::new(0.5_f32, theme.border),
     );
     painter.galley(chip_min + pad, galley, theme.text_primary);
@@ -4379,7 +4379,7 @@ fn add_menu_entry(ui: &mut egui::Ui, label: &str, theme: &KlippTheme) -> bool {
     if resp.hovered() {
         let a = theme.accent;
         let bg = egui::Color32::from_rgba_unmultiplied(a.r(), a.g(), a.b(), 32);
-        painter.rect_filled(resp.rect, 3.0, bg);
+        painter.rect_filled(resp.rect, 2.0, bg);
     }
     let text_color = if resp.hovered() {
         theme.text_primary

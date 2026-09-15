@@ -111,12 +111,12 @@ impl NodeGraphPanel {
                     } else {
                         theme.bg_panel
                     };
-                    painter.rect_filled(body_rect, 3.0, fill);
+                    painter.rect_filled(body_rect, 2.0, fill);
 
                     // Selection border
                     let border_color = if is_selected { theme.accent } else { theme.border };
                     let border_width = if is_selected { 2.0_f32 } else { 0.5_f32 };
-                    painter.rect_stroke(node_rect, 3.0, egui::Stroke::new(border_width, border_color));
+                    painter.rect_stroke(node_rect, 2.0, egui::Stroke::new(border_width, border_color));
 
                     // Label
                     let label = if node.label.len() > 10 {
@@ -199,7 +199,7 @@ impl NodeGraphPanel {
                     .on_hover_text("Add a node to the chain");
                 let plus_color = if plus_resp.hovered() { theme.accent } else { theme.text_dim };
                 painter.rect_stroke(
-                    plus_rect, 3.0,
+                    plus_rect, 2.0,
                     egui::Stroke::new(1.0_f32, plus_color),
                 );
                 painter.text(

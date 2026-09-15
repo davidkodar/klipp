@@ -1940,8 +1940,8 @@ fn show_builtin_effect_params(
                             );
                             let p = ui.painter_at(rect);
                             // Background
-                            p.rect_filled(rect, 3.0, theme.bg_deep);
-                            p.rect_stroke(rect, 3.0, egui::Stroke::new(0.5_f32, theme.border));
+                            p.rect_filled(rect, 2.0, theme.bg_deep);
+                            p.rect_stroke(rect, 2.0, egui::Stroke::new(0.5_f32, theme.border));
 
                             // Y range covers both lines with small padding.
                             let mut lo = f32::INFINITY;

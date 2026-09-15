@@ -1764,10 +1764,10 @@ fn display_mode_tab(
         },
     );
     if active {
-        ui.painter().rect_filled(rect, 3.0, theme.bg_raised);
+        ui.painter().rect_filled(rect, 2.0, theme.bg_raised);
     } else if enabled && resp.hovered() {
         ui.painter()
-            .rect_filled(rect, 3.0, theme.bg_raised.gamma_multiply(0.5));
+            .rect_filled(rect, 2.0, theme.bg_raised.gamma_multiply(0.5));
     }
     ui.painter().text(
         rect.center(),

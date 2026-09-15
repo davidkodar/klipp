@@ -427,9 +427,9 @@ fn show_clip_video(
                 0.0, theme.border,
             );
             let full_rect = egui::Rect::from_min_max(header_rect.min, egui::pos2(header_rect.max.x, body_end_y));
-            ui.painter().rect_stroke(full_rect.shrink(0.25), 6.0, egui::Stroke::new(0.5_f32, theme.border));
+            ui.painter().rect_stroke(full_rect.shrink(0.25), 4.0, egui::Stroke::new(0.5_f32, theme.border));
         } else {
-            ui.painter().rect_stroke(header_rect.shrink(0.25), 6.0, egui::Stroke::new(0.5_f32, theme.border));
+            ui.painter().rect_stroke(header_rect.shrink(0.25), 4.0, egui::Stroke::new(0.5_f32, theme.border));
         }
 
         col_state.store(ui.ctx());
@@ -1257,9 +1257,9 @@ fn show_clip_video(
                     0.0, theme.border,
                 );
                 let full_rect = egui::Rect::from_min_max(header_rect.min, egui::pos2(header_rect.max.x, body_end_y));
-                ui.painter().rect_stroke(full_rect.shrink(0.25), 6.0, egui::Stroke::new(0.5_f32, theme.border));
+                ui.painter().rect_stroke(full_rect.shrink(0.25), 4.0, egui::Stroke::new(0.5_f32, theme.border));
             } else {
-                ui.painter().rect_stroke(header_rect.shrink(0.25), 6.0, egui::Stroke::new(0.5_f32, theme.border));
+                ui.painter().rect_stroke(header_rect.shrink(0.25), 4.0, egui::Stroke::new(0.5_f32, theme.border));
             }
             col_state.store(ui.ctx());
         }
@@ -3739,7 +3739,7 @@ fn show_sequence_properties(ui: &mut egui::Ui, theme: &KlippTheme, state: &AppSt
                 egui::pos2(rx - sub_w - 8.0 - bw, cy - bh / 2.0),
                 egui::vec2(bw, bh),
             );
-            ui.painter().rect_filled(badge_rect, 3.0, badge_color);
+            ui.painter().rect_filled(badge_rect, 2.0, badge_color);
             ui.painter().text(
                 badge_rect.center(), egui::Align2::CENTER_CENTER,
                 badge_text, egui::FontId::proportional(11.0), egui::Color32::WHITE,
@@ -4032,7 +4032,7 @@ fn show_sequence_properties(ui: &mut egui::Ui, theme: &KlippTheme, state: &AppSt
         let bx = bar_rect.min.x + pad;
         let by = bar_rect.center().y - bar_h / 2.0;
         let full_bar = egui::Rect::from_min_size(egui::pos2(bx, by), egui::vec2(bar_w, bar_h));
-        ui.painter().rect_filled(full_bar, 3.0, theme.bg_hover);
+        ui.painter().rect_filled(full_bar, 2.0, theme.bg_hover);
         // Project portion (blue)
         let pw = (bar_w * project_frac).max(if project_bytes > 0 { 2.0 } else { 0.0 });
         if pw > 0.0 {

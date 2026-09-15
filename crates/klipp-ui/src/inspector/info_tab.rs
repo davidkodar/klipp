@@ -430,7 +430,7 @@ pub fn show_bin_media(
             let bw = badge_galley.size().x + 10.0;
             let bh = 18.0;
             let badge_rect = egui::Rect::from_min_size(egui::pos2(rx - sub_w - 8.0 - bw, cy - bh / 2.0), egui::vec2(bw, bh));
-            ui.painter().rect_filled(badge_rect, 3.0, badge_color);
+            ui.painter().rect_filled(badge_rect, 2.0, badge_color);
             ui.painter().text(badge_rect.center(), egui::Align2::CENTER_CENTER, badge_text, egui::FontId::proportional(11.0), egui::Color32::WHITE);
         });
 
@@ -863,7 +863,7 @@ pub fn show_clip(
                 egui::pos2(rx - sub_w - 8.0 - bw, cy - bh / 2.0),
                 egui::vec2(bw, bh),
             );
-            ui.painter().rect_filled(badge_rect, 3.0, badge_color);
+            ui.painter().rect_filled(badge_rect, 2.0, badge_color);
             ui.painter().text(
                 badge_rect.center(), egui::Align2::CENTER_CENTER,
                 badge_text, egui::FontId::proportional(11.0),

@@ -1321,7 +1321,7 @@ fn segmented_source_filter(
         egui::Sense::hover(),
     );
 
-    ui.painter().rect_filled(outer_rect, 5.0, theme.bg_panel);
+    ui.painter().rect_filled(outer_rect, 4.0, theme.bg_panel);
     ui.painter().rect_stroke(
         outer_rect,
         5.0,
@@ -1343,9 +1343,9 @@ fn segmented_source_filter(
         let hovered = resp.hovered();
 
         if is_active {
-            ui.painter().rect_filled(seg_rect, 3.0, theme.bg_raised);
+            ui.painter().rect_filled(seg_rect, 2.0, theme.bg_raised);
         } else if hovered {
-            ui.painter().rect_filled(seg_rect, 3.0, theme.accent_subtle);
+            ui.painter().rect_filled(seg_rect, 2.0, theme.accent_subtle);
         }
 
         let label_color = if is_active || hovered {
@@ -1414,8 +1414,8 @@ fn gpu_only_pill(ui: &mut egui::Ui, theme: &KlippTheme, active: &mut bool) {
     } else {
         (theme.bg_panel, theme.border, theme.text_secondary)
     };
-    ui.painter().rect_filled(rect, 12.0, bg);
-    ui.painter().rect_stroke(rect, 12.0, egui::Stroke::new(1.0_f32, border));
+    ui.painter().rect_filled(rect, 4.0, bg);
+    ui.painter().rect_stroke(rect, 4.0, egui::Stroke::new(1.0_f32, border));
     let icon_rect = egui::Rect::from_min_size(
         egui::pos2(rect.min.x + pad_x, rect.center().y - icon_size * 0.5),
         egui::vec2(icon_size, icon_size),
@@ -1639,7 +1639,7 @@ fn paint_thumb_badge(
         ThumbBadgeKind::Cpu => egui::Color32::from_rgba_unmultiplied(0, 0, 0, 165),
         ThumbBadgeKind::Source => egui::Color32::from_rgba_unmultiplied(0, 0, 0, 165),
     };
-    painter.rect_filled(rect, 3.0, bg);
+    painter.rect_filled(rect, 2.0, bg);
     // Hairline highlight to lift the badge off arbitrary thumbnail
     // backgrounds (mirrors the mockup's `border-color: rgba(255,255,255,.08)`).
     painter.rect_stroke(

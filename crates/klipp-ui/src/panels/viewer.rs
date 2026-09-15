@@ -2754,7 +2754,7 @@ impl ViewerPanel {
             // "TRACKING" label top-left
             let label_pos = egui::pos2(image_rect.left() + 8.0, image_rect.top() + 8.0);
             let label_bg = egui::Rect::from_min_size(label_pos, egui::vec2(80.0, 18.0));
-            ui.painter().rect_filled(label_bg, 3.0, egui::Color32::from_rgba_unmultiplied(
+            ui.painter().rect_filled(label_bg, 2.0, egui::Color32::from_rgba_unmultiplied(
                 theme.accent.r(), theme.accent.g(), theme.accent.b(), 200,
             ));
             ui.painter().text(
@@ -4804,7 +4804,7 @@ impl ViewerPanel {
                 } else {
                     theme.text_dim
                 };
-                painter.rect_filled(rect, 3.0, fill);
+                painter.rect_filled(rect, 2.0, fill);
                 painter.text(
                     rect.center(),
                     egui::Align2::CENTER_CENTER,

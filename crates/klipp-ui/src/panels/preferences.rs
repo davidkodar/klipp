@@ -161,8 +161,8 @@ impl PreferencesPanel {
                     egui::pos2(win_rect.left() + 12.0, title_rect.bottom() + 4.0),
                     egui::vec2(win_rect.width() - 24.0, search_h),
                 );
-                ui.painter().rect_filled(search_rect, 6.0, theme.bg_panel_alt);
-                ui.painter().rect_stroke(search_rect, 6.0, egui::Stroke::new(1.0_f32, theme.bg_hover));
+                ui.painter().rect_filled(search_rect, 4.0, theme.bg_panel_alt);
+                ui.painter().rect_stroke(search_rect, 4.0, egui::Stroke::new(1.0_f32, theme.bg_hover));
                 // Interactive search input — vertically centered in the bar
                 let text_h = 18.0;
                 let text_rect = egui::Rect::from_min_max(
@@ -336,7 +336,7 @@ impl PreferencesPanel {
                 // accent button; the neighbouring Reset button uses
                 // bg_raised -> bg_hover because it is not the primary action.
                 let done_bg = if done_resp.hovered() { theme.accent } else { theme.accent_dim };
-                bottom_painter.rect_filled(done_rect, 6.0, done_bg);
+                bottom_painter.rect_filled(done_rect, 4.0, done_bg);
                 bottom_painter.text(done_rect.center(), egui::Align2::CENTER_CENTER, "Done", egui::FontId::proportional(12.0).clone(), theme.text_on_accent);
                 if done_resp.clicked() { open = false; }
                 // Reset defaults button
@@ -346,8 +346,8 @@ impl PreferencesPanel {
                 );
                 let reset_resp = ui.allocate_rect(reset_rect, egui::Sense::click());
                 let reset_bg = if reset_resp.hovered() { theme.bg_hover } else { theme.bg_raised };
-                bottom_painter.rect_filled(reset_rect, 6.0, reset_bg);
-                bottom_painter.rect_stroke(reset_rect, 6.0, egui::Stroke::new(1.0_f32, theme.border_light));
+                bottom_painter.rect_filled(reset_rect, 4.0, reset_bg);
+                bottom_painter.rect_stroke(reset_rect, 4.0, egui::Stroke::new(1.0_f32, theme.border_light));
                 bottom_painter.text(reset_rect.center(), egui::Align2::CENTER_CENTER, "Reset to defaults", egui::FontId::proportional(11.0), theme.text_primary);
                 if reset_resp.clicked() {
                     *prefs = Preferences::default();
@@ -411,9 +411,9 @@ impl PreferencesPanel {
 
         if is_active {
             // Solid amber background — use dark text for readability
-            ui.painter().rect_filled(rect, 5.0, theme.accent);
+            ui.painter().rect_filled(rect, 4.0, theme.accent);
         } else if resp.hovered() {
-            ui.painter().rect_filled(rect, 5.0, theme.bg_hover);
+            ui.painter().rect_filled(rect, 4.0, theme.bg_hover);
         }
 
         let text_color = if is_active { theme.text_on_accent } else { theme.text_primary };
@@ -2262,62 +2262,6 @@ impl PreferencesPanel {
                     }
                 });
         });
-
-        // Accent color — row with subtitle and color preset circles
-        {
-            let row_h = 48.0;
-            let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), row_h), egui::Sense::hover());
-            ui.painter().rect_filled(rect, 0.0, theme.bg_panel_alt);
-            ui.painter().line_segment(
-                [egui::pos2(rect.left() + 14.0, rect.bottom()), egui::pos2(rect.right() - 14.0, rect.bottom())],
-                egui::Stroke::new(0.5_f32, theme.bg_raised),
-            );
-            // Label + subtitle
-            ui.painter().text(
-                egui::pos2(rect.left() + 14.0, rect.top() + 14.0),
-                egui::Align2::LEFT_CENTER,
-                "Accent color",
-                egui::FontId::proportional(12.0),
-                theme.text_primary,
-            );
-            ui.painter().text(
-                egui::pos2(rect.left() + 14.0, rect.top() + 32.0),
-                egui::Align2::LEFT_CENTER,
-                "Used for selections and active state",
-                egui::FontId::proportional(10.0),
-                theme.text_dim,
-            );
-            // Color preset circles (right-aligned)
-            let presets: &[[u8; 3]] = &[
-                [0xff, 0x5a, 0x3c], // warm red (default)
-                [0x40, 0x80, 0xe0], // blue
-                [0x40, 0xb0, 0x60], // green
-                [0xe0, 0x70, 0x70], // red/pink
-                [0xa0, 0x60, 0xc0], // purple
-            ];
-            let circle_r = 14.0;
-            let spacing = 6.0;
-            let total_w = presets.len() as f32 * (circle_r * 2.0 + spacing) - spacing;
-            let start_x = rect.right() - 14.0 - total_w;
-            for (i, color) in presets.iter().enumerate() {
-                let cx = start_x + i as f32 * (circle_r * 2.0 + spacing) + circle_r;
-                let cy = rect.center().y;
-                let c = egui::Color32::from_rgb(color[0], color[1], color[2]);
-                let is_selected = prefs.appearance.accent_color == *color;
-                // Clickable area
-                let click_rect = egui::Rect::from_center_size(egui::pos2(cx, cy), egui::vec2(circle_r * 2.0 + 2.0, circle_r * 2.0 + 2.0));
-                let resp = ui.allocate_rect(click_rect, egui::Sense::click());
-                ui.painter().circle_filled(egui::pos2(cx, cy), circle_r, c);
-                if is_selected {
-                    ui.painter().circle_stroke(egui::pos2(cx, cy), circle_r + 2.0, egui::Stroke::new(2.0_f32, egui::Color32::WHITE));
-                }
-                if resp.clicked() {
-                    prefs.appearance.accent_color = *color;
-                    prefs.appearance.playhead_color = *color;
-                    *dirty = true;
-                }
-            }
-        }
 
         // ── ROLE COLORS section ──
         Self::section_header(ui, "ROLE COLORS", theme);

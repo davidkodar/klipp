@@ -26283,7 +26283,7 @@ impl eframe::App for KlippApp {
                 .show(ctx, |ui| {
                     let (rect, _) = ui.allocate_exact_size(screen.size(), egui::Sense::hover());
                     ui.painter().rect_filled(rect, 0.0, self.theme.accent_subtle);
-                    ui.painter().rect_stroke(rect.shrink(4.0), 8.0, egui::Stroke::new(2.0_f32, self.theme.accent_glow));
+                    ui.painter().rect_stroke(rect.shrink(4.0), 4.0, egui::Stroke::new(2.0_f32, self.theme.accent_glow));
                     ui.painter().text(
                         rect.center(),
                         egui::Align2::CENTER_CENTER,
@@ -31347,7 +31347,7 @@ impl KlippApp {
                         crate::ui_util::allocate_clipped_ui(ui, overlay_rect, |ui| {
                             ui.set_min_size(overlay_rect.size());
                             // Semi-transparent dark background
-                            ui.painter().rect_filled(overlay_rect, 6.0, egui::Color32::from_black_alpha(160));
+                            ui.painter().rect_filled(overlay_rect, 4.0, egui::Color32::from_black_alpha(160));
                             self.state.scope_state.scale = self.state.scope_scale;
                             self.state.scope_state.legal_range = self.state.scope_legal_range;
                             self.state.scope_state.hdr_levels = self.state.hdr_monitor.renders_hdr();

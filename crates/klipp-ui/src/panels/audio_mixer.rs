@@ -361,8 +361,8 @@ fn fader_strip(
         egui::pos2(pan_x, pan_rect.center().y),
         egui::vec2(thumb_w, thumb_h),
     );
-    painter.rect_filled(thumb_rect, 3.0, theme.text_secondary);
-    painter.rect_stroke(thumb_rect, 3.0, egui::Stroke::new(0.5_f32, theme.border));
+    painter.rect_filled(thumb_rect, 2.0, theme.text_secondary);
+    painter.rect_stroke(thumb_rect, 2.0, egui::Stroke::new(0.5_f32, theme.border));
     // Pan interaction
     let pan_resp = ui.allocate_rect(pan_rect.expand(2.0), egui::Sense::click_and_drag());
     if pan_resp.dragged() {
@@ -491,8 +491,8 @@ fn fader_strip(
     let mute_rect = egui::Rect::from_min_size(egui::pos2(btn_left, y), btn_size);
     let mute_bg = if *muted { theme.marker_error } else { theme.bg_raised };
     let mute_tc = if *muted { egui::Color32::WHITE } else { theme.text_secondary };
-    painter.rect_filled(mute_rect, 3.0, mute_bg);
-    painter.rect_stroke(mute_rect, 3.0, egui::Stroke::new(1.0_f32, theme.border));
+    painter.rect_filled(mute_rect, 2.0, mute_bg);
+    painter.rect_stroke(mute_rect, 2.0, egui::Stroke::new(1.0_f32, theme.border));
     painter.text(mute_rect.center(), egui::Align2::CENTER_CENTER, "M", egui::FontId::proportional(10.0), mute_tc);
     let mute_resp = ui.allocate_rect(mute_rect, egui::Sense::click());
     if mute_resp.clicked() {
@@ -504,8 +504,8 @@ fn fader_strip(
     let solo_rect = egui::Rect::from_min_size(egui::pos2(btn_left + btn_size.x + btn_gap, y), btn_size);
     let solo_bg = if *solo { theme.accent } else { theme.bg_raised };
     let solo_tc = if *solo { theme.text_on_accent } else { theme.text_secondary };
-    painter.rect_filled(solo_rect, 3.0, solo_bg);
-    painter.rect_stroke(solo_rect, 3.0, egui::Stroke::new(1.0_f32, theme.border));
+    painter.rect_filled(solo_rect, 2.0, solo_bg);
+    painter.rect_stroke(solo_rect, 2.0, egui::Stroke::new(1.0_f32, theme.border));
     painter.text(solo_rect.center(), egui::Align2::CENTER_CENTER, "S", egui::FontId::proportional(10.0), solo_tc);
     let solo_resp = ui.allocate_rect(solo_rect, egui::Sense::click());
     if solo_resp.clicked() {

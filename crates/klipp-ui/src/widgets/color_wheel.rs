@@ -213,8 +213,8 @@ pub fn color_wheel_sized(
         let is_zero = val.abs() < 0.005;
         let border = if is_zero { theme.border } else { border_c };
         let text = if is_zero { neutral_text } else { text_c };
-        painter.rect_filled(pill_rect, 3.0, bg);
-        painter.rect_stroke(pill_rect, 3.0, egui::Stroke::new(0.5_f32, border));
+        painter.rect_filled(pill_rect, 2.0, bg);
+        painter.rect_stroke(pill_rect, 2.0, egui::Stroke::new(0.5_f32, border));
         painter.text(
             pill_rect.center(),
             egui::Align2::CENTER_CENTER,

@@ -259,25 +259,9 @@ impl KlippTheme {
                 KlippTheme::default()
             });
 
-        // Apply user accent override.
-        let [ar, ag, ab] = prefs.accent_color;
-        let accent = Color32::from_rgb(ar, ag, ab);
-        t.accent = accent;
-        t.accent_dim = Color32::from_rgb(
-            ar.saturating_sub(0x48),
-            ag.saturating_sub(0x32),
-            ab.saturating_sub(0x0c),
-        );
-        // The theme's embedded accent_glow / accent_subtle carry the
-        // alpha that suits its polarity. Reuse those alphas, but
-        // recolour to the user's accent so the glow tint follows the
-        // accent picker.
-        let glow_a = t.accent_glow.a();
-        let sub_a = t.accent_subtle.a();
-        let pm = |c: u8, a: u8| (c as u16 * a as u16 / 255) as u8;
-        t.accent_glow = Color32::from_rgba_premultiplied(pm(ar, glow_a), pm(ag, glow_a), pm(ab, glow_a), glow_a);
-        t.accent_subtle = Color32::from_rgba_premultiplied(pm(ar, sub_a), pm(ag, sub_a), pm(ab, sub_a), sub_a);
-        t.text_accent = accent;
+        // The accent is the theme's. It used to follow a preference,
+        // which put the old amber over every palette that came after
+        // and made the accent a decoration rather than a signal.
 
         // Role colours — user prefs always win (themes specify role
         // defaults but the per-clip-role picker is universal).

@@ -1161,7 +1161,7 @@ fn render_list_view(
                 };
                 ui.painter().image(tex.id(), thumb_rect, uv_rect, egui::Color32::WHITE);
             } else {
-                ui.painter().rect_filled(thumb_rect, 3.0, theme.bg_raised);
+                ui.painter().rect_filled(thumb_rect, 2.0, theme.bg_raised);
             }
 
             // Offline badge: dim the thumbnail and overlay an OFFLINE pill.

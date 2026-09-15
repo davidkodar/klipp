@@ -3641,7 +3641,7 @@ fn titles_segmented_filter(
         egui::vec2(total_w, outer_h),
         egui::Sense::hover(),
     );
-    ui.painter().rect_filled(outer_rect, 5.0, theme.bg_panel);
+    ui.painter().rect_filled(outer_rect, 4.0, theme.bg_panel);
     ui.painter().rect_stroke(
         outer_rect,
         5.0,
@@ -3661,9 +3661,9 @@ fn titles_segmented_filter(
         let is_active = *filter == *variant;
         let hovered = resp.hovered();
         if is_active {
-            ui.painter().rect_filled(seg_rect, 3.0, theme.bg_raised);
+            ui.painter().rect_filled(seg_rect, 2.0, theme.bg_raised);
         } else if hovered {
-            ui.painter().rect_filled(seg_rect, 3.0, theme.accent_subtle);
+            ui.painter().rect_filled(seg_rect, 2.0, theme.accent_subtle);
         }
         let label_color = if is_active || hovered {
             theme.text_primary
@@ -3725,8 +3725,8 @@ fn animated_only_pill(ui: &mut egui::Ui, theme: &KlippTheme, active: &mut bool) 
     } else {
         (theme.bg_panel, theme.border, theme.text_secondary)
     };
-    ui.painter().rect_filled(rect, 12.0, bg);
-    ui.painter().rect_stroke(rect, 12.0, egui::Stroke::new(1.0_f32, border));
+    ui.painter().rect_filled(rect, 4.0, bg);
+    ui.painter().rect_stroke(rect, 4.0, egui::Stroke::new(1.0_f32, border));
     let icon_rect = egui::Rect::from_min_size(
         egui::pos2(rect.min.x + pad_x, rect.center().y - icon_size * 0.5),
         egui::vec2(icon_size, icon_size),

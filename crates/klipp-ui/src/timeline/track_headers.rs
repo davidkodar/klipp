@@ -151,7 +151,7 @@ pub fn show(
             egui::pos2(badge_x, track_rect.center().y - 6.0),
             egui::vec2(badge_w, 12.0),
         );
-        ui.painter().rect_filled(badge_rect, 3.0, badge_color);
+        ui.painter().rect_filled(badge_rect, 2.0, badge_color);
         ui.painter().text(
             badge_rect.center(),
             egui::Align2::CENTER_CENTER,
@@ -183,7 +183,7 @@ pub fn show(
                 egui::pos2(name_x + 2.0, track_rect.center().y + 6.0),
                 egui::vec2(badge_w, 10.0),
             );
-            ui.painter().rect_filled(badge_rect, 3.0, color);
+            ui.painter().rect_filled(badge_rect, 2.0, color);
             ui.painter().text(
                 badge_rect.center(),
                 egui::Align2::CENTER_CENTER,
@@ -385,7 +385,7 @@ pub fn show(
             egui::Color32::TRANSPARENT
         };
         let solo_text_color = if solo_active { theme.text_on_accent } else { theme.text_dim };
-        ui.painter().rect_filled(solo_rect, 3.0, solo_bg);
+        ui.painter().rect_filled(solo_rect, 2.0, solo_bg);
         ui.painter().text(
             solo_rect.center(),
             egui::Align2::CENTER_CENTER,
