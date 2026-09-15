@@ -990,7 +990,8 @@ impl Renderer {
                 let td = over.as_ref().unwrap_or(td);
                 let mut adapter = self.gpu.as_mut().map(crate::synth::GpuAlphaMaskAdapter);
                 let gpu = adapter.as_mut().map(|a| a as &mut dyn klipp_title::AlphaMaskProcessor);
-                let u8s = self.titles.render_with_time(td, width, height, gpu, clip_time as f32);
+                let total = (clip.timeline_out - clip.timeline_in).to_secs_f64() as f32;
+                let u8s = self.titles.render_with_window(td, width, height, gpu, clip_time as f32, Some(total));
                 let mut linear = klipp_effects::srgb_u8_to_linear_f32_rgba(&u8s);
                 self.authored_to_working(&mut linear);
                 (GradeInput::Cpu(Arc::new(linear)), None)

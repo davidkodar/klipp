@@ -161,6 +161,26 @@ fn run_scan_and_publish() {
         }
     };
 
+    // The families that ship with the app join the list so the font
+    // picker offers them; the renderer loads them from memory, never
+    // from these paths.
+    let registry: FontRegistry = {
+        let mut fonts: BTreeMap<String, Vec<FontInfo>> = (*registry).clone();
+        for (family, styles) in crate::bundled::families() {
+            let entry = fonts.entry(family.to_string()).or_default();
+            for style in styles {
+                if !entry.iter().any(|i| i.style == style) {
+                    entry.push(FontInfo {
+                        family: family.to_string(),
+                        style: style.to_string(),
+                        path: PathBuf::from(format!("bundled://{family}/{style}")),
+                    });
+                }
+            }
+        }
+        Arc::new(fonts)
+    };
+
     // Publish + notify waiters under the lock so no one races between
     // `REGISTRY.set` and `cvar.notify_all`.
     let (mu, cvar) = scan_state();

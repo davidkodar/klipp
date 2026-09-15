@@ -4047,6 +4047,100 @@ fn show_title_layer_row(
     );
 }
 
+/// One row per direction: on/off, the kind, timing, easing and stagger.
+/// Every change sends the whole `TitleMotion` so undo has one step.
+fn show_title_motion_editor(
+    ui: &mut egui::Ui,
+    theme: &KlippTheme,
+    clip_id: klipp_core::ClipId,
+    tb: &klipp_timeline::TextBox,
+    cmds: &mut Vec<AppCommand>,
+) {
+    use klipp_timeline::{Easing, Motion, MotionKind, StaggerUnit, TitleMotion};
+    let mut motion: TitleMotion = tb.motion;
+    let mut changed = false;
+
+    let mut direction = |ui: &mut egui::Ui, label: &str, slot: &mut Option<Motion>, default_kind: MotionKind, id: &str| {
+        ui.horizontal(|ui| {
+            let mut on = slot.is_some();
+            if ui.checkbox(&mut on, label).changed() {
+                *slot = if on { Some(Motion::new(default_kind)) } else { None };
+                changed = true;
+            }
+            if let Some(m) = slot.as_mut() {
+                egui::ComboBox::from_id_salt(format!("{id}_kind"))
+                    .selected_text(m.kind.label())
+                    .width(0.0)
+                    .wrap_mode(egui::TextWrapMode::Extend)
+                    .show_ui(ui, |ui| {
+                        for k in MotionKind::ALL {
+                            if ui.selectable_value(&mut m.kind, k, k.label()).changed() {
+                                changed = true;
+                            }
+                        }
+                    });
+            }
+        });
+        if let Some(m) = slot.as_mut() {
+            ui.horizontal(|ui| {
+                ui.add_space(20.0);
+                if ui.add(egui::DragValue::new(&mut m.duration_secs).range(0.05..=5.0).speed(0.02).suffix(" s").prefix("Duration ").fixed_decimals(2)).changed() {
+                    changed = true;
+                }
+                if ui.add(egui::DragValue::new(&mut m.delay_secs).range(0.0..=10.0).speed(0.02).suffix(" s").prefix("Delay ").fixed_decimals(2)).changed() {
+                    changed = true;
+                }
+            });
+            ui.horizontal(|ui| {
+                ui.add_space(20.0);
+                egui::ComboBox::from_id_salt(format!("{id}_easing"))
+                    .selected_text(m.easing.label())
+                    .width(0.0)
+                    .wrap_mode(egui::TextWrapMode::Extend)
+                    .show_ui(ui, |ui| {
+                        for e in Easing::ALL {
+                            if ui.selectable_value(&mut m.easing, e, e.label()).changed() {
+                                changed = true;
+                            }
+                        }
+                    });
+                egui::ComboBox::from_id_salt(format!("{id}_stagger"))
+                    .selected_text(m.stagger.label())
+                    .width(0.0)
+                    .wrap_mode(egui::TextWrapMode::Extend)
+                    .show_ui(ui, |ui| {
+                        for u in StaggerUnit::ALL {
+                            if ui.selectable_value(&mut m.stagger, u, u.label()).changed() {
+                                changed = true;
+                            }
+                        }
+                    });
+                if m.stagger != StaggerUnit::None
+                    && ui.add(egui::DragValue::new(&mut m.stagger_secs).range(0.0..=1.0).speed(0.005).suffix(" s").fixed_decimals(3)).changed()
+                {
+                    changed = true;
+                }
+            });
+            let moves = matches!(m.kind, MotionKind::Rise | MotionKind::Drop | MotionKind::SlideLeft | MotionKind::SlideRight);
+            if moves {
+                ui.horizontal(|ui| {
+                    ui.add_space(20.0);
+                    if ui.add(egui::DragValue::new(&mut m.distance).range(0.1..=4.0).speed(0.02).suffix("\u{00d7} font").prefix("Travel ").fixed_decimals(2)).changed() {
+                        changed = true;
+                    }
+                });
+            }
+        }
+    };
+    direction(ui, "Enter", &mut motion.enter, MotionKind::Rise, "title_motion_enter");
+    ui.add_space(4.0);
+    direction(ui, "Exit", &mut motion.exit, MotionKind::Fade, "title_motion_exit");
+    let _ = theme;
+    if changed {
+        cmds.push(AppCommand::SetTitleMotion { clip_id, motion });
+    }
+}
+
 fn show_title_editor(
     ui: &mut egui::Ui,
     theme: &KlippTheme,
@@ -4216,6 +4310,21 @@ fn show_title_editor(
         show_title_pinned_core_textbox(ui, theme, clip_id, td, state, cmds, tb, clip_time_secs);
     }
     ui.add_space(8.0);
+
+    // ── Motion: how the text enters and leaves ──
+    if let Some(tb) = tb_target {
+        let n = tb.motion.enter.is_some() as u32 + tb.motion.exit.is_some() as u32;
+        let status = crate::widgets::inspector_group::GroupStatus {
+            count: if n > 0 { Some(n) } else { None },
+            active: tb.motion.is_active(),
+        };
+        if title_group_is_open(ui, theme, clip_id, "Motion", status) {
+            ui.add_space(6.0);
+            show_title_motion_editor(ui, theme, clip_id, tb, cmds);
+            ui.add_space(8.0);
+        }
+        ui.add_space(2.0);
+    }
 
     // ── Effects group ──
     if let Some(tb) = tb_target {

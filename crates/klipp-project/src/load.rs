@@ -750,6 +750,7 @@ fn load_clip_kind(c: &ClipJson, project_dir: &Path) -> ClipKind {
                     font_name: font_name.clone(),
                     font_style: fs,
                     color: *color,
+                    motion: Default::default(),
                     alignment: align,
                     shadows: shadow_vec,
                     shadow_stack_enabled: *shadow_stack_enabled,

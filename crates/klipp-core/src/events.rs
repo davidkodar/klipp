@@ -1962,6 +1962,8 @@ pub enum AppCommand {
     SetTitlePattern { clip_id: ClipId, pattern_kind: u8, color_a: [u8; 4], color_b: [u8; 4], size: f32 },
     /// Set per-character tracking (extra spacing in px).
     SetTitleTracking { clip_id: ClipId, tracking: f32 },
+    /// The entrance and exit motion of the targeted text layer.
+    SetTitleMotion { clip_id: ClipId, motion: crate::title_motion::TitleMotion },
     /// Set write-on reveal progress (0.0-1.0).
     SetTitleWriteOn { clip_id: ClipId, write_on: f32 },
     /// Set line spacing multiplier.

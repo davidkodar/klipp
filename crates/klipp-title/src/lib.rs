@@ -37,6 +37,7 @@ use klipp_timeline::{
 };
 use std::collections::HashMap;
 
+pub mod bundled;
 pub mod font_discovery;
 
 /// Embedded fallback font — Noto Sans Regular (OFL license).
@@ -146,6 +147,9 @@ pub struct TitleRenderer {
     /// title clips are visited (e.g. scrubbing across a long credits
     /// sequence).
     render_cache: Vec<CachedRender>,
+    /// The clip's length while rendering with `render_with_window`,
+    /// which exit motion counts back from. `None` outside a clip.
+    motion_window: Option<f32>,
 }
 
 const RENDER_CACHE_CAP: usize = 4;
@@ -171,6 +175,7 @@ impl TitleRenderer {
             font_registry: registry,
             texture_fill_cache: None,
             render_cache: Vec::with_capacity(RENDER_CACHE_CAP),
+            motion_window: None,
         }
     }
 
@@ -206,13 +211,23 @@ impl TitleRenderer {
             return key;
         }
 
+        let style_str = match style {
+            FontStyle::Regular => "Regular",
+            FontStyle::Bold => "Bold",
+            FontStyle::Italic => "Italic",
+            FontStyle::BoldItalic => "Bold Italic",
+        };
+
+        // Fonts that ship with the app come first: the same face on
+        // every machine, no disk read.
+        if let Some(bytes) = bundled::lookup(family, style_str) {
+            if let Ok(font) = Font::from_bytes(bytes, fontdue::FontSettings::default()) {
+                self.font_cache.insert(key.clone(), font);
+            }
+            return key;
+        }
+
         if let Some(infos) = self.font_registry.get(family) {
-            let style_str = match style {
-                FontStyle::Regular => "Regular",
-                FontStyle::Bold => "Bold",
-                FontStyle::Italic => "Italic",
-                FontStyle::BoldItalic => "Bold Italic",
-            };
 
             // Try exact style match first, then fall back to Regular, then first available
             let info = infos
@@ -686,6 +701,14 @@ impl TitleRenderer {
         // texture fill) consumes the resulting mask unmodified.
         let mut alpha_mask = vec![0u8; mask_w * mask_h];
         match (time_secs, tb.char_animation.as_ref().filter(|c| c.enabled)) {
+            (Some(t), _) if tb.motion.is_active() => {
+                rasterize_to_mask_motion(
+                    font, glyphs,
+                    offset_x, offset_y,
+                    &mut alpha_mask, mask_w, mask_h, mask_x0, mask_y0,
+                    &tb.motion, t, font_px, self.motion_window,
+                );
+            }
             (Some(t), Some(ca)) => {
                 rasterize_to_mask_animated(
                     font, glyphs,
@@ -1256,6 +1279,23 @@ impl TitleRenderer {
     /// (every `local_t = 1`) the per-glyph path produces an output
     /// identical to the static cached render — the engine could
     /// elide the call there as a future optimisation.
+    /// Render at `time_secs` into a clip `window_secs` long, so exit
+    /// motion can count back from the clip's end.
+    pub fn render_with_window(
+        &mut self,
+        title: &TitleData,
+        width: u32,
+        height: u32,
+        gpu: Option<&mut dyn AlphaMaskProcessor>,
+        time_secs: f32,
+        window_secs: Option<f32>,
+    ) -> Vec<u8> {
+        self.motion_window = window_secs;
+        let out = self.render_with_time(title, width, height, gpu, time_secs);
+        self.motion_window = None;
+        out
+    }
+
     pub fn render_with_time(
         &mut self,
         title: &TitleData,
@@ -1278,7 +1318,7 @@ impl TitleRenderer {
         // cache every frame.
         let any_char_anim = title.objects.iter().any(|o| {
             if let TitleObjectContent::TextBox(tb) = &o.content {
-                tb.char_animation.as_ref().is_some_and(|c| c.enabled)
+                tb.char_animation.as_ref().is_some_and(|c| c.enabled) || tb.motion.is_active()
             } else {
                 false
             }
@@ -3104,6 +3144,131 @@ fn paint_alpha_mask_stripe(
         for x in x_lo..x_hi {
             let idx = row_start + x;
             mask[idx] = 255;
+        }
+    }
+}
+
+/// Which stagger unit each glyph belongs to, in glyph order: the line,
+/// word or character index, or 0 for everything at once.
+fn motion_units(glyphs: &[fontdue::layout::GlyphPosition], unit: klipp_timeline::StaggerUnit) -> Vec<usize> {
+    use klipp_timeline::StaggerUnit as U;
+    let mut out = Vec::with_capacity(glyphs.len());
+    let (mut line, mut word, mut ch) = (0usize, 0usize, 0usize);
+    let mut in_word = false;
+    for g in glyphs {
+        let c = g.parent;
+        if c == '\n' {
+            line += 1;
+            in_word = false;
+            out.push(match unit { U::None => 0, U::Line => line, U::Word => word.saturating_sub(1), U::Char => ch });
+            continue;
+        }
+        if c.is_whitespace() {
+            in_word = false;
+        } else if !in_word {
+            in_word = true;
+            word += 1;
+        }
+        out.push(match unit { U::None => 0, U::Line => line, U::Word => word.saturating_sub(1), U::Char => ch });
+        if !c.is_whitespace() {
+            ch += 1;
+        }
+    }
+    out
+}
+
+/// Rasterize the alpha mask with `TitleMotion` applied per glyph: the
+/// entrance and exit poses at this time, eased and staggered by unit,
+/// combined into one alpha, offset, scale and blur per glyph. Mask
+/// kinds clip each glyph to its resting box so it appears to rise out
+/// of an invisible edge.
+#[allow(clippy::too_many_arguments)]
+fn rasterize_to_mask_motion(
+    font: &Font,
+    glyphs: &[fontdue::layout::GlyphPosition],
+    offset_x: f32,
+    offset_y: f32,
+    mask: &mut [u8],
+    mask_w: usize,
+    mask_h: usize,
+    mask_x0: usize,
+    mask_y0: usize,
+    motion: &klipp_timeline::TitleMotion,
+    time_secs: f32,
+    base_font_px: f32,
+    window_secs: Option<f32>,
+) {
+    let enter_units = motion_units(glyphs, motion.enter.map(|m| m.stagger).unwrap_or_default());
+    let exit_units = motion_units(glyphs, motion.exit.map(|m| m.stagger).unwrap_or_default());
+
+    for (i, glyph) in glyphs.iter().enumerate() {
+        if glyph.width == 0 || glyph.height == 0 {
+            continue;
+        }
+        let (pe, _) = motion.progress(time_secs, window_secs, enter_units[i]);
+        let (_, px) = motion.progress(time_secs, window_secs, exit_units[i]);
+        let rest = (1.0, 0.0, 0.0, 1.0, 0.0, false);
+        let (a1, dx1, dy1, s1, b1, c1) = motion.enter.map(|m| m.pose(pe, base_font_px)).unwrap_or(rest);
+        let (a2, dx2, dy2, s2, b2, c2) = motion.exit.map(|m| m.pose(px, base_font_px)).unwrap_or(rest);
+        let alpha = a1 * a2;
+        if alpha <= 0.001 {
+            continue;
+        }
+        let dx = dx1 + dx2;
+        let dy = dy1 + dy2;
+        let scale = s1 * s2;
+        let sigma = b1.max(b2);
+        let clip_to_rest = c1 || c2;
+
+        let (coverage_base, base_w, base_h) = if (scale - 1.0).abs() > 0.001 {
+            let scaled_px = (base_font_px * scale).max(1.0);
+            let (m, cov) = font.rasterize(glyph.parent, scaled_px);
+            (cov, m.width, m.height)
+        } else {
+            let (_, cov) = font.rasterize_config(glyph.key);
+            (cov.to_vec(), glyph.width, glyph.height)
+        };
+        let (coverage, raw_w, raw_h) = if sigma > 0.05 {
+            gaussian_blur_expand(&coverage_base, base_w, base_h, sigma)
+        } else {
+            (coverage_base, base_w, base_h)
+        };
+
+        // The resting box, for the mask kinds.
+        let rest_top = (glyph.y + offset_y).floor() as i32;
+        let rest_bottom = (glyph.y + offset_y + glyph.height as f32).ceil() as i32;
+
+        let cx = glyph.x + offset_x + dx + glyph.width as f32 * 0.5;
+        let cy = glyph.y + offset_y + dy + glyph.height as f32 * 0.5;
+        let gx = (cx - raw_w as f32 * 0.5).round() as i32;
+        let gy = (cy - raw_h as f32 * 0.5).round() as i32;
+
+        for row in 0..raw_h {
+            let py = gy + row as i32;
+            if clip_to_rest && (py < rest_top || py >= rest_bottom) {
+                continue;
+            }
+            let my = py - mask_y0 as i32;
+            if my < 0 || my >= mask_h as i32 {
+                continue;
+            }
+            for col in 0..raw_w {
+                let px_ = gx + col as i32;
+                let mx = px_ - mask_x0 as i32;
+                if mx < 0 || mx >= mask_w as i32 {
+                    continue;
+                }
+                let cov = coverage[row * raw_w + col];
+                if cov == 0 {
+                    continue;
+                }
+                let scaled_cov = (cov as f32 * alpha).round() as u8;
+                if scaled_cov == 0 {
+                    continue;
+                }
+                let idx = my as usize * mask_w + mx as usize;
+                mask[idx] = mask[idx].max(scaled_cov);
+            }
         }
     }
 }

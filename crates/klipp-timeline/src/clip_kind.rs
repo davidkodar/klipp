@@ -457,6 +457,10 @@ pub struct TextBox {
     /// Per-character entrance animation.
     #[serde(default)]
     pub char_animation: Option<CharAnimation>,
+    /// Entrance and exit motion, evaluated per glyph with easing and
+    /// stagger. Independent of `char_animation`, which it supersedes.
+    #[serde(default)]
+    pub motion: TitleMotion,
     /// Texture fill — file path or procedural preset, plus the
     /// transform / blend params (scale, offset, rotation, opacity,
     /// tint, tile mode). `None` = no texture fill configured.
@@ -695,7 +699,7 @@ impl Default for TextBox {
         Self {
             text: String::from("Title"),
             font_size: 72.0,
-            font_name: String::from("sans-serif"),
+            font_name: String::from("Inter"),
             font_style: FontStyle::Regular,
             color: [255, 255, 255, 255],
             alignment: TextAlignment::Center,
@@ -716,6 +720,7 @@ impl Default for TextBox {
             extrusion: None,
             text_path: None,
             char_animation: None,
+            motion: TitleMotion::default(),
             texture_fill: None,
             motion_blur: None,
             style_runs: Vec::new(),
@@ -1404,6 +1409,8 @@ pub enum CharEntrance {
     /// real blur requires a separate offscreen render pass).
     BlurIn,
 }
+
+use klipp_core::title_motion::TitleMotion;
 
 fn default_one() -> f32 { 1.0 }
 
