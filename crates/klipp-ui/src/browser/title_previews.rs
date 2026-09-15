@@ -36,6 +36,9 @@ pub struct TitlePreviews {
     /// Keys touched this frame; anything else is dropped once the map
     /// grows past `CAP`, so hover frames never pile up.
     wanted: HashSet<String>,
+    /// Prefixes (one per card in use this frame) whose every cached
+    /// step stays resident, so a hover loop never re-renders.
+    wanted_prefixes: HashSet<String>,
     jobs: Sender<Job>,
     done: Receiver<Done>,
 }
@@ -58,7 +61,7 @@ impl Default for TitlePreviews {
                 }
             })
             .expect("title preview thread");
-        Self { textures: HashMap::new(), pending: HashSet::new(), wanted: HashSet::new(), jobs, done }
+        Self { textures: HashMap::new(), pending: HashSet::new(), wanted: HashSet::new(), wanted_prefixes: HashSet::new(), jobs, done }
     }
 }
 
@@ -84,6 +87,9 @@ impl TitlePreviews {
         make: impl FnOnce() -> klipp_timeline::TitleData,
     ) -> Option<&egui::TextureHandle> {
         self.wanted.insert(key.to_string());
+        if let Some(i) = key.rfind('\u{1}') {
+            self.wanted_prefixes.insert(key[..=i].to_string());
+        }
         if !self.textures.contains_key(key) && !self.pending.contains(key) {
             self.pending.insert(key.to_string());
             let _ = self.jobs.send(Job { key: key.to_string(), td: make(), time });
@@ -91,16 +97,31 @@ impl TitlePreviews {
         self.textures.get(key)
     }
 
-    /// The most recent frame for a template while its hover frames are
-    /// still arriving: the latest cached moment of the same template
-    /// and text.
-    pub fn latest_for(&self, template: &str, text: &str) -> Option<&egui::TextureHandle> {
+    /// While the requested moment is still rendering: the cached moment
+    /// nearest to it, so the picture never jumps to a distant frame.
+    pub fn nearest_for(&self, template: &str, text: &str, time: f32) -> Option<&egui::TextureHandle> {
         let prefix = format!("{template}\u{1}{text}\u{1}");
         self.textures
             .iter()
-            .filter(|(k, _)| k.starts_with(&prefix))
-            .max_by(|(a, _), (b, _)| a.cmp(b))
+            .filter_map(|(k, t)| {
+                let moment: f32 = k.strip_prefix(&prefix)?.parse().ok()?;
+                Some(((moment - time).abs(), t))
+            })
+            .min_by(|(a, _), (b, _)| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
             .map(|(_, t)| t)
+    }
+
+    /// Queue a moment without reading it, so the frames a hover is
+    /// about to need are rendering before they are asked for.
+    pub fn request(&mut self, key: &str, time: f32, make: impl FnOnce() -> klipp_timeline::TitleData) {
+        self.wanted.insert(key.to_string());
+        if let Some(i) = key.rfind('\u{1}') {
+            self.wanted_prefixes.insert(key[..=i].to_string());
+        }
+        if !self.textures.contains_key(key) && !self.pending.contains(key) {
+            self.pending.insert(key.to_string());
+            let _ = self.jobs.send(Job { key: key.to_string(), td: make(), time });
+        }
     }
 
     /// Upload finished renders. Displaced handles go to `displaced`
@@ -123,7 +144,13 @@ impl TitlePreviews {
         }
         if self.textures.len() > CAP {
             let wanted = std::mem::take(&mut self.wanted);
-            let keys: Vec<String> = self.textures.keys().filter(|k| !wanted.contains(*k)).cloned().collect();
+            let prefixes = std::mem::take(&mut self.wanted_prefixes);
+            let keys: Vec<String> = self
+                .textures
+                .keys()
+                .filter(|k| !wanted.contains(*k) && !prefixes.iter().any(|p| k.starts_with(p.as_str())))
+                .cloned()
+                .collect();
             for k in keys {
                 if let Some(old) = self.textures.remove(&k) {
                     displaced.push(old);
@@ -131,6 +158,7 @@ impl TitlePreviews {
             }
         } else {
             self.wanted.clear();
+            self.wanted_prefixes.clear();
         }
         if any {
             ctx.request_repaint();

@@ -785,11 +785,14 @@ pub fn show(
                                 // shows the settled pose.
                                 let elapsed = read_anim_elapsed(ui, title.name);
                                 let time = if elapsed > 0.0 { TitlePreviews::hover_time(elapsed) } else { REST_TIME };
+                                if elapsed > 0.0 {
+                                    request_ahead(previews, title, &display_text, time);
+                                }
                                 let key = TitlePreviews::key(title.name, &display_text, time);
                                 let tex = previews
                                     .get_or_request(&key, time, || preview_data(title, &display_text))
                                     .cloned()
-                                    .or_else(|| previews.latest_for(title.name, &display_text).cloned());
+                                    .or_else(|| previews.nearest_for(title.name, &display_text, time).cloned());
                                 let resp = title_card(
                                     ui,
                                     theme,
@@ -821,11 +824,14 @@ pub fn show(
                         let row_text = effective_preview_text(preview_text, title);
                         let row_elapsed = read_anim_elapsed(ui, title.name);
                         let time = if row_elapsed > 0.0 { TitlePreviews::hover_time(row_elapsed) } else { REST_TIME };
+                        if row_elapsed > 0.0 {
+                            request_ahead(previews, title, &row_text, time);
+                        }
                         let key = TitlePreviews::key(title.name, &row_text, time);
                         let tex = previews
                             .get_or_request(&key, time, || preview_data(title, &row_text))
                             .cloned()
-                            .or_else(|| previews.latest_for(title.name, &row_text).cloned());
+                            .or_else(|| previews.nearest_for(title.name, &row_text, time).cloned());
                         let resp = title_list_row(
                             ui,
                             theme,
@@ -993,6 +999,18 @@ fn paint_preview_backdrop(
             p.rect_filled(area, rounding, egui::Color32::from_rgb(0x2a, 0x2c, 0x33));
         }
         (bg, _) => paint_preview_canvas(p, area, rounding, bg),
+    }
+}
+
+/// Queue the next moments of a hovered card so its motion plays
+/// without waiting on renders.
+fn request_ahead(previews: &mut TitlePreviews, title: &TitleTemplate, text: &str, time: f32) {
+    use crate::browser::title_previews::{FRAME_STEP, LOOP_SECS};
+    for k in 1..=6 {
+        let ahead = (time + k as f32 * FRAME_STEP) % LOOP_SECS;
+        let ahead = TitlePreviews::hover_time(ahead);
+        let key = TitlePreviews::key(title.name, text, ahead);
+        previews.request(&key, ahead, || preview_data(title, text));
     }
 }
 

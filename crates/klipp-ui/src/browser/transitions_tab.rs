@@ -1757,21 +1757,34 @@ fn preview_texture(
     spec: &klipp_core::TransitionSpec,
     elapsed_secs: f32,
 ) -> Option<egui::TextureHandle> {
+    use crate::browser::transition_previews::{PROGRESS_STEP, REST_PROGRESS};
+    let eased_for = |p: f32| {
+        if matches!(tr.kind, klipp_core::TransitionKind::CrossDissolve) {
+            klipp_transitions::apply_easing(p, spec.default_params.param0)
+        } else {
+            p
+        }
+    };
     let progress = if elapsed_secs > 0.0 {
         TransitionPreviews::hover_progress(tx_progress(elapsed_secs))
     } else {
-        crate::browser::transition_previews::REST_PROGRESS
+        REST_PROGRESS
     };
-    let eased = if matches!(tr.kind, klipp_core::TransitionKind::CrossDissolve) {
-        klipp_transitions::apply_easing(progress, spec.default_params.param0)
-    } else {
-        progress
-    };
+    if elapsed_secs > 0.0 {
+        // The steps a hover is about to reach, queued ahead so the
+        // play never waits on a render.
+        for k in 1..=8 {
+            let ahead = (progress + k as f32 * PROGRESS_STEP).min(1.0);
+            let ahead = TransitionPreviews::hover_progress(ahead);
+            let key = TransitionPreviews::key(spec.display_name, ahead);
+            previews.request(&key, spec.kind_id as u32, eased_for(ahead), &spec.default_params);
+        }
+    }
     let key = TransitionPreviews::key(spec.display_name, progress);
     previews
-        .get_or_request(&key, spec.kind_id as u32, eased, &spec.default_params)
+        .get_or_request(&key, spec.kind_id as u32, eased_for(progress), &spec.default_params)
         .cloned()
-        .or_else(|| previews.latest_for(spec.display_name).cloned())
+        .or_else(|| previews.nearest_for(spec.display_name, progress).cloned())
 }
 
 /// Two frames of the project's footage for the previews: the posters

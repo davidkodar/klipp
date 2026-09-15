@@ -36,6 +36,9 @@ pub struct TransitionPreviews {
     textures: HashMap<String, egui::TextureHandle>,
     pending: HashSet<String>,
     wanted: HashSet<String>,
+    /// Prefixes (one per card in use this frame) whose every cached
+    /// step stays resident, so a hover loop never re-renders.
+    wanted_prefixes: HashSet<String>,
     frames_source: Option<String>,
     jobs: Sender<Job>,
     done: Receiver<Done>,
@@ -69,7 +72,7 @@ impl Default for TransitionPreviews {
                 }
             })
             .expect("transition preview thread");
-        Self { textures: HashMap::new(), pending: HashSet::new(), wanted: HashSet::new(), frames_source: None, jobs, done }
+        Self { textures: HashMap::new(), pending: HashSet::new(), wanted: HashSet::new(), wanted_prefixes: HashSet::new(), frames_source: None, jobs, done }
     }
 }
 
@@ -107,6 +110,9 @@ impl TransitionPreviews {
         params: &klipp_core::TransitionUserParams,
     ) -> Option<&egui::TextureHandle> {
         self.wanted.insert(key.to_string());
+        if let Some(i) = key.rfind('\u{1}') {
+            self.wanted_prefixes.insert(key[..=i].to_string());
+        }
         if self.frames_source.is_some() && !self.textures.contains_key(key) && !self.pending.contains(key) {
             self.pending.insert(key.to_string());
             let _ = self.jobs.send(Job::Render { key: key.to_string(), kind_id, progress, params: *params });
@@ -114,15 +120,31 @@ impl TransitionPreviews {
         self.textures.get(key)
     }
 
-    /// The latest cached frame of a transition while its hover frames
-    /// are still arriving.
-    pub fn latest_for(&self, name: &str) -> Option<&egui::TextureHandle> {
+    /// While the requested step is still rendering: the cached step
+    /// nearest to it, so the picture never jumps to a distant frame.
+    pub fn nearest_for(&self, name: &str, progress: f32) -> Option<&egui::TextureHandle> {
         let prefix = format!("{name}\u{1}");
         self.textures
             .iter()
-            .filter(|(k, _)| k.starts_with(&prefix))
-            .max_by(|(a, _), (b, _)| a.cmp(b))
+            .filter_map(|(k, t)| {
+                let p: f32 = k.strip_prefix(&prefix)?.parse().ok()?;
+                Some(((p - progress).abs(), t))
+            })
+            .min_by(|(a, _), (b, _)| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
             .map(|(_, t)| t)
+    }
+
+    /// Queue a step without reading it, so the frames a hover is about
+    /// to need are rendering before they are asked for.
+    pub fn request(&mut self, key: &str, kind_id: u32, progress: f32, params: &klipp_core::TransitionUserParams) {
+        self.wanted.insert(key.to_string());
+        if let Some(i) = key.rfind('\u{1}') {
+            self.wanted_prefixes.insert(key[..=i].to_string());
+        }
+        if self.frames_source.is_some() && !self.textures.contains_key(key) && !self.pending.contains(key) {
+            self.pending.insert(key.to_string());
+            let _ = self.jobs.send(Job::Render { key: key.to_string(), kind_id, progress, params: *params });
+        }
     }
 
     pub fn poll(&mut self, ctx: &egui::Context, displaced: &mut Vec<egui::TextureHandle>) {
@@ -145,7 +167,13 @@ impl TransitionPreviews {
         }
         if self.textures.len() > CAP {
             let wanted = std::mem::take(&mut self.wanted);
-            let keys: Vec<String> = self.textures.keys().filter(|k| !wanted.contains(*k)).cloned().collect();
+            let prefixes = std::mem::take(&mut self.wanted_prefixes);
+            let keys: Vec<String> = self
+                .textures
+                .keys()
+                .filter(|k| !wanted.contains(*k) && !prefixes.iter().any(|p| k.starts_with(p.as_str())))
+                .cloned()
+                .collect();
             for k in keys {
                 if let Some(old) = self.textures.remove(&k) {
                     displaced.push(old);
@@ -153,6 +181,7 @@ impl TransitionPreviews {
             }
         } else {
             self.wanted.clear();
+            self.wanted_prefixes.clear();
         }
         if any {
             ctx.request_repaint();
@@ -216,6 +245,24 @@ mod tests {
         assert!(frame[3] > 0.99, "alpha is opaque");
         let dark = counterpart(&frame);
         assert!(dark[0] < frame[0] && (dark[3] - frame[3]).abs() < 1e-6);
+    }
+
+    #[test]
+    fn a_pending_step_shows_its_nearest_neighbour_not_the_rest_frame() {
+        // While step 0.08 renders, a hover at 0.08 must show 0.04, never
+        // jump back to the resting midpoint at 0.5.
+        let ctx = egui::Context::default();
+        let mut p = TransitionPreviews::default();
+        let img = egui::ColorImage::new([2, 2], egui::Color32::BLACK);
+        let mut ids = Vec::new();
+        for step in [0.5f32, 0.0, 0.04] {
+            let t = ctx.load_texture(format!("t{step}"), img.clone(), egui::TextureOptions::LINEAR);
+            ids.push((step, t.id()));
+            p.textures.insert(TransitionPreviews::key("Wipe Left", step), t);
+        }
+        let got = p.nearest_for("Wipe Left", 0.08).map(|t| t.id());
+        assert_eq!(got, ids.iter().find(|(s, _)| *s == 0.04).map(|(_, id)| *id));
+        assert!(p.nearest_for("Other", 0.08).is_none());
     }
 
     #[test]
