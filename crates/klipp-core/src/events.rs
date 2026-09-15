@@ -3189,6 +3189,8 @@ pub struct MediaLoadedPayload {
     pub color_primaries: Option<String>,
     pub color_transfer: Option<String>,
     pub pixel_format: Option<String>,
+    /// Timecode, reel, lens, exposure and every tag the file carried.
+    pub shot: crate::ShotMetadata,
 }
 
 #[derive(Debug, Clone)]

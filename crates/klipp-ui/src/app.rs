@@ -1258,6 +1258,7 @@ impl KlippApp {
                         color_primaries,
                         color_transfer,
                         pixel_format,
+                        shot,
                     } = *payload;
                     let filename = path
                         .file_name()
@@ -1327,6 +1328,7 @@ impl KlippApp {
                         color_primaries,
                         color_transfer,
                         pixel_format,
+                        shot,
                         detected_log_format: Default::default(),
                         log_format_user_set: false,
                         skim_file: None,
@@ -11676,6 +11678,7 @@ impl KlippApp {
                         skim_file: None,
                         waveform_data: None,
                         audio_cache: None,
+                        shot: Default::default(),
                     };
                     self.state.media_pool.add(media_item);
                     // Imports stay off the timeline-edit undo stack (FCP /
@@ -34253,6 +34256,7 @@ fn build_whoosh_media_item(
         needs_reprobe: false,
         waveform_data: None,
         audio_cache: None,
+        shot: Default::default(),
     }
 }
 
@@ -38443,6 +38447,7 @@ mod insert_audio_media_clip_tests {
             needs_reprobe: false,
             waveform_data: None,
             audio_cache: None,
+            shot: Default::default(),
         }
     }
 

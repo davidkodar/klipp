@@ -46,6 +46,7 @@ pub mod modifier;
 pub mod modifier_math;
 pub mod ofx_value;
 pub mod snap;
+pub mod shot;
 pub mod startup_timer;
 pub mod time;
 pub mod transition_registry;
@@ -71,3 +72,4 @@ pub use config::{
 };
 pub use gpu_vendor::GpuVendor;
 pub use working_colorspace::WorkingColorspace;
+pub use shot::ShotMetadata;

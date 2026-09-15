@@ -63,6 +63,13 @@ The info tab displays read-only metadata about the selected clip:
 - Audio codec, sample rate, channels
 - File size
 - Date created / modified
+- Camera make and model, encoder
+- Lens, exposure (ISO, shutter, aperture, focal length), white balance
+- The gamma and gamut the camera recorded in, such as S-Log3 / S-Gamut3.Cine
+- Start timecode and reel
+- **All metadata**: every tag the file carried, as written, folded under a header
+
+See [Importing Media](../editing/importing.md#what-klipp-reads-about-a-shot) for where each of these comes from.
 
 ## Adaptive Layout
 

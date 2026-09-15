@@ -84,6 +84,7 @@ fn make_media_item(path: PathBuf) -> MediaItem {
         needs_reprobe: false,
         waveform_data: None,
         audio_cache: None,
+        shot: Default::default(),
     }
 }
 

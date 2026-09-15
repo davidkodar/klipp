@@ -384,6 +384,7 @@ mod tests {
             needs_reprobe: false,
             waveform_data: None,
             audio_cache: None,
+            shot: Default::default(),
         }
     }
 

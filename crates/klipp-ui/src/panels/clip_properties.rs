@@ -498,6 +498,23 @@ fn render_metadata_tab(ui: &mut egui::Ui, media: &klipp_media::MediaItem) {
                 kv(ui, "Software / encoder", enc);
                 any = true;
             }
+            let shot = &media.shot;
+            let shot_rows: [(&str, Option<String>); 8] = [
+                ("Lens", shot.lens.clone()),
+                ("Exposure", shot.exposure_summary()),
+                ("White balance", shot.white_balance.clone()),
+                ("Gamma", shot.gamma.clone()),
+                ("Colour gamut", shot.colour_gamut.clone()),
+                ("Start timecode", shot.start_timecode.clone()),
+                ("Reel", shot.reel_name.clone()),
+                ("Exposure from", shot.exposure_source.clone()),
+            ];
+            for (label, value) in shot_rows {
+                if let Some(v) = value {
+                    kv(ui, label, &v);
+                    any = true;
+                }
+            }
             if let Some(ref pri) = media.color_primaries {
                 kv(ui, "Color primaries", pri);
                 any = true;

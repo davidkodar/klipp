@@ -7504,16 +7504,16 @@ impl PlaybackEngine {
                     .map(|d| d.as_secs());
 
                 // Try to extract creation_time from container metadata (camera shoot date)
-                let media_created_at = format_ctx.metadata().get("creation_time")
+                let mut media_created_at = format_ctx.metadata().get("creation_time")
                     .and_then(parse_iso8601_timestamp);
 
                 // Extract extended metadata from container and stream tags
                 let fmt_meta = &format_ctx.metadata();
-                let camera_make = fmt_meta.get("com.apple.quicktime.make")
+                let mut camera_make = fmt_meta.get("com.apple.quicktime.make")
                     .or_else(|| fmt_meta.get("make"))
                     .or_else(|| fmt_meta.get("manufacturer"))
                     .map(|s| s.to_string());
-                let camera_model = fmt_meta.get("com.apple.quicktime.model")
+                let mut camera_model = fmt_meta.get("com.apple.quicktime.model")
                     .or_else(|| fmt_meta.get("model"))
                     .map(|s| s.to_string());
                 // Encoder tag: try format-level first, then fall
@@ -7536,6 +7536,54 @@ impl PlaybackEngine {
                             break;
                         }
                     }
+                }
+
+                // Everything else the file says about the shot: every tag
+                // the container and its streams carry, and among them the
+                // start timecode (a MOV's timecode track, an MXF's
+                // material package) and the reel.
+                let mut shot = klipp_core::ShotMetadata::default();
+                for (k, v) in fmt_meta.iter() {
+                    shot.tags.push((format!("format:{k}"), v.to_string()));
+                }
+                for stream in format_ctx.streams() {
+                    let kind = match stream.parameters().medium() {
+                        ffmpeg_next::media::Type::Video => "video",
+                        ffmpeg_next::media::Type::Audio => "audio",
+                        ffmpeg_next::media::Type::Data => "data",
+                        ffmpeg_next::media::Type::Subtitle => "subtitle",
+                        _ => "stream",
+                    };
+                    for (k, v) in stream.metadata().iter() {
+                        shot.tags.push((format!("{kind}:{k}"), v.to_string()));
+                    }
+                }
+                let tag = |names: &[&str]| -> Option<String> {
+                    names.iter().find_map(|n| {
+                        shot.tags
+                            .iter()
+                            .find(|(k, _)| k.split_once(':').is_some_and(|(_, key)| key.eq_ignore_ascii_case(n)))
+                            .map(|(_, v)| v.clone())
+                    })
+                };
+                let start_timecode = tag(&["timecode"]);
+                let reel_name = tag(&["reel_name", "com.apple.proapps.reel", "reel"]);
+                shot.start_timecode = start_timecode;
+                shot.reel_name = reel_name;
+                // A still's EXIF, then the sidecar a Sony or Canon camera
+                // writes beside a clip: each fills what is still missing.
+                if is_still {
+                    if let Some(still) = klipp_media::exif_read::read_exif(&path) {
+                        camera_make = camera_make.or(still.camera_make);
+                        camera_model = camera_model.or(still.camera_model);
+                        media_created_at = media_created_at.or(still.taken_at);
+                        shot.fill_missing_from(still.shot);
+                    }
+                }
+                if let Some(sidecar) = klipp_media::sidecar::read_sidecar(&path) {
+                    camera_make = camera_make.or(sidecar.camera_make);
+                    camera_model = camera_model.or(sidecar.camera_model);
+                    shot.fill_missing_from(sidecar.shot);
                 }
 
                 // Extract bit depth, bitrate, pixel format, color info from video stream
@@ -7641,6 +7689,7 @@ impl PlaybackEngine {
                         color_primaries: color_primaries_name,
                         color_transfer: color_transfer_name,
                         pixel_format: pixel_format_name,
+                        shot,
                     },
                 )));
 

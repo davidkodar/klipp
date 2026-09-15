@@ -37,6 +37,7 @@ klipp-testing = { workspace = true }
 pollster = "0.3"
 klipp-render = { workspace = true }
 uuid = { workspace = true }
+kamadak-exif = "0.6"
 
 [lints]
 workspace = true

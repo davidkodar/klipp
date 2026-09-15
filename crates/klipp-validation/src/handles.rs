@@ -215,6 +215,7 @@ mod tests {
             waveform_data: None,
             audio_cache: None,
             parent_media_id: None,
+            shot: Default::default(),
         }
     }
 

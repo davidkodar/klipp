@@ -50,6 +50,16 @@ Klipp auto-detects log-encoded source material at import time using a four-layer
 
 Detected log curves include Sony S-Log3, Canon Log, Panasonic V-Log, ARRI Log-C, Apple Log, RED Log3G10. See [Source Colourspace & Log](../color/source-colorspace.md) for the full table and override mechanics.
 
+## What Klipp reads about a shot
+
+Import records what the camera wrote about the shot, and the Info tab and clip properties show it. Three sources are read, and a later one fills only what an earlier one left blank:
+
+1. **The container and its streams.** Every tag is kept, as written, under the **All metadata** header, and among them the camera make and model, the encoder, the creation date, the **start timecode** (a QuickTime timecode track, an MXF material package, a Matroska tag) and the **reel name**.
+2. **A still's EXIF.** Photos show their camera, lens, ISO, shutter, aperture, focal length, white balance and the time they were taken.
+3. **The camera's sidecar.** Sony XAVC clips come with a `C0001M01.XML` beside `C0001.MP4`, and Canon XF clips with a `.XML` of the same name; both hold what the container does not: the lens and exposure, the **gamma and gamut** the clip was recorded in (`s-log3-cine` / `s-gamut3-cine`), and the start timecode. Keep the sidecar next to the clip when you copy a card and Klipp reads it at import.
+
+Cameras that write exposure only into their own container boxes, or into proprietary raw headers, are not read yet: their clips show what the container tags carry.
+
 ## Subtitles
 
 - **SRT** (SubRip) — standard timed text format

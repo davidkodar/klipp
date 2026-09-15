@@ -380,6 +380,7 @@ fn register_asset_media(
         needs_reprobe: !offline,
         waveform_data: None,
         audio_cache: None,
+        shot: Default::default(),
     };
     let id = media_pool.add(item);
     cache.insert(asset_id.to_string(), id);

@@ -566,6 +566,7 @@ fn register_media(
         needs_reprobe: false,
         waveform_data: None,
         audio_cache: None,
+        shot: Default::default(),
     };
     Some(media_pool.add(item))
 }

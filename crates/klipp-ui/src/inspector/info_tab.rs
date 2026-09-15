@@ -456,6 +456,8 @@ pub fn show_bin_media(
             });
         }
 
+        shot_rows(ui, theme, pad, row_h, w, dim, &media.shot);
+
         // Encoder
         if let Some(ref enc) = media.encoder {
             info_row_custom(ui, theme, pad, row_h, w, "Encoder", |ui, rx, cy| {
@@ -494,6 +496,8 @@ pub fn show_bin_media(
                 ui.painter().text(egui::pos2(rx, cy), egui::Align2::RIGHT_CENTER, text, egui::FontId::proportional(12.0), dim);
             });
         }
+
+        tag_list(ui, theme, &media.shot);
 
         // Proxy
         info_row_custom(ui, theme, pad, row_h, w, "Proxy", |ui, rx, cy| {
@@ -884,6 +888,8 @@ pub fn show_clip(
                 ui.painter().text(egui::pos2(rx, cy), egui::Align2::RIGHT_CENTER, text, egui::FontId::proportional(13.0), theme.text_primary);
             });
         }
+        shot_rows(ui, theme, pad, row_h, w, dim, &media.shot);
+
         if let Some(ref enc) = media.encoder {
             info_row_custom(ui, theme, pad, row_h, w, "Encoder", |ui, rx, cy| {
                 ui.painter().text(egui::pos2(rx, cy), egui::Align2::RIGHT_CENTER, enc, egui::FontId::proportional(12.0), dim);
@@ -903,6 +909,8 @@ pub fn show_clip(
                 ui.painter().text(egui::pos2(rx, cy), egui::Align2::RIGHT_CENTER, text, egui::FontId::proportional(12.0), dim);
             });
         }
+
+        tag_list(ui, theme, &media.shot);
 
         // Proxy
         info_row_custom(ui, theme, pad, row_h, w, "Proxy", |ui, rx, cy| {
@@ -1229,6 +1237,52 @@ fn section_card(
 }
 
 /// Draw a single key-value row with custom right-side rendering.
+/// The shot as the camera recorded it: lens, exposure, white balance,
+/// gamma and gamut, timecode and reel — each row only when known.
+fn shot_rows(ui: &mut egui::Ui, theme: &KlippTheme, pad: f32, row_h: f32, w: f32, dim: egui::Color32, shot: &klipp_core::ShotMetadata) {
+    let rows: [(&str, Option<String>, egui::Color32); 6] = [
+        ("Lens", shot.lens.clone(), theme.text_primary),
+        ("Exposure", shot.exposure_summary(), theme.text_primary),
+        ("White balance", shot.white_balance.clone(), dim),
+        (
+            "Gamma",
+            match (&shot.gamma, &shot.colour_gamut) {
+                (Some(g), Some(c)) => Some(format!("{g} / {c}")),
+                (Some(g), None) => Some(g.clone()),
+                (None, Some(c)) => Some(c.clone()),
+                (None, None) => None,
+            },
+            dim,
+        ),
+        ("Timecode", shot.start_timecode.clone(), theme.text_primary),
+        ("Reel", shot.reel_name.clone(), dim),
+    ];
+    for (label, value, colour) in rows {
+        let Some(value) = value else { continue };
+        info_row_custom(ui, theme, pad, row_h, w, label, |ui, rx, cy| {
+            ui.painter().text(egui::pos2(rx, cy), egui::Align2::RIGHT_CENTER, value, egui::FontId::proportional(12.0), colour);
+        });
+    }
+}
+
+/// Every tag the file carried, as written, folded away under a header.
+fn tag_list(ui: &mut egui::Ui, theme: &KlippTheme, shot: &klipp_core::ShotMetadata) {
+    if shot.tags.is_empty() {
+        return;
+    }
+    egui::CollapsingHeader::new(egui::RichText::new(format!("All metadata ({})", shot.tags.len())).size(11.0).color(theme.text_dim))
+        .id_salt("shot_tag_list")
+        .show(ui, |ui| {
+            egui::Grid::new("shot_tag_grid").num_columns(2).spacing([8.0, 2.0]).show(ui, |ui| {
+                for (k, v) in &shot.tags {
+                    ui.label(egui::RichText::new(k).monospace().size(10.0).color(theme.text_dim));
+                    ui.add(egui::Label::new(egui::RichText::new(v).size(10.0).color(theme.text_primary)).wrap());
+                    ui.end_row();
+                }
+            });
+        });
+}
+
 fn info_row_custom(
     ui: &mut egui::Ui,
     theme: &KlippTheme,

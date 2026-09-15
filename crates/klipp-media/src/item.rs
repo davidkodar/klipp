@@ -252,6 +252,9 @@ pub struct MediaItem {
     /// Used to suggest InputTransform when clips are added to the timeline.
     #[serde(default)]
     pub detected_log_format: klipp_core::LogFormat,
+    /// Timecode, reel, lens, exposure and every tag the file carried.
+    #[serde(default)]
+    pub shot: klipp_core::ShotMetadata,
     /// Path to skim-optimised file (all-keyframe transcode for instant seeking)
     #[serde(default)]
     pub skim_file: Option<PathBuf>,
@@ -379,6 +382,7 @@ impl MediaItem {
             needs_reprobe: false,
             waveform_data: None,
             audio_cache: None,
+            shot: Default::default(),
         }
     }
 
@@ -549,6 +553,7 @@ mod subclip_tests {
             needs_reprobe: false,
             waveform_data: None,
             audio_cache: None,
+            shot: Default::default(),
         }
     }
 
@@ -722,6 +727,7 @@ mod effective_rotation_tests {
             needs_reprobe: false,
             waveform_data: None,
             audio_cache: None,
+            shot: Default::default(),
         }
     }
 
@@ -861,6 +867,7 @@ impl MediaItem {
             detected_log_format: klipp_core::LogFormat::default(),
             log_format_user_set: false,
             parent_media_id: None,
+            shot: Default::default(),
         }
     }
 }
