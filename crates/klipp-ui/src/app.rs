@@ -598,6 +598,7 @@ impl KlippApp {
                 // to a full SnapConfig on read (see LayoutState::load).
                 s.snap = layout.snap;
                 s.dual_viewers = layout.dual_viewers;
+                s.color_dual_viewers = layout.color_dual_viewers;
                 s
             },
             toolbar: ToolbarPanel { logo_texture: None },
@@ -31451,15 +31452,23 @@ impl KlippApp {
                 .clamp(theme::INSPECTOR_MIN_W, theme::INSPECTOR_MAX_W);
         }
         if h_delta != 0.0 {
-            self.layout.timeline_height = (self.layout.timeline_height - h_delta)
-                .clamp(timeline_min_h, max_timeline_h);
+            if self.state.show_color_panel {
+                self.layout.color_timeline_height = (self.layout.color_timeline_height - h_delta)
+                    .clamp(timeline_min_h, max_timeline_h.max(timeline_min_h));
+            } else {
+                self.layout.timeline_height = (self.layout.timeline_height - h_delta)
+                    .clamp(timeline_min_h, max_timeline_h);
+            }
         }
         let resizer_active = left_delta != 0.0 || right_delta != 0.0 || h_delta != 0.0;
         if resizer_active {
             self.layout_dirty = true;
         }
-        if self.layout.dual_viewers != self.state.dual_viewers {
+        if self.layout.dual_viewers != self.state.dual_viewers
+            || self.layout.color_dual_viewers != self.state.color_dual_viewers
+        {
             self.layout.dual_viewers = self.state.dual_viewers;
+            self.layout.color_dual_viewers = self.state.color_dual_viewers;
             self.layout_dirty = true;
         }
         if self.layout_dirty

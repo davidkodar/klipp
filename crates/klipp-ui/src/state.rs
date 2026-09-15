@@ -1680,6 +1680,9 @@ pub struct AppState {
     /// Source and program viewers side by side (true) or one viewer
     /// that shows whichever `viewer_mode` names (false).
     pub dual_viewers: bool,
+    /// The same choice for the Color workspace, which starts with one
+    /// program viewer so the picture gets the room.
+    pub color_dual_viewers: bool,
     /// Render scopes as a semi-transparent overlay on the viewer instead of a separate panel.
     pub scope_overlay_mode: bool,
     pub show_keyframe_editor: bool,
@@ -3182,6 +3185,20 @@ impl AppState {
             || self.scope_window.open
     }
 
+    /// Whether the viewers sit side by side in the current workspace.
+    pub fn viewers_side_by_side(&self) -> bool {
+        if self.show_color_panel { self.color_dual_viewers } else { self.dual_viewers }
+    }
+
+    /// Flip the viewer layout of the current workspace.
+    pub fn toggle_viewer_layout(&mut self) {
+        if self.show_color_panel {
+            self.color_dual_viewers = !self.color_dual_viewers;
+        } else {
+            self.dual_viewers = !self.dual_viewers;
+        }
+    }
+
     /// The scopes toggle (V, the toolbar icon, the View menu): the dock in
     /// Color, the viewer overlay when that mode is chosen, otherwise the
     /// floating window, which never steals space from the timeline.
@@ -3464,6 +3481,7 @@ impl Default for AppState {
             huesat_active_curve: 0,
             show_scopes: false,
             dual_viewers: true,
+            color_dual_viewers: false,
             scope_overlay_mode: false,
             scope_state: Default::default(),
             show_keyframe_editor: false,

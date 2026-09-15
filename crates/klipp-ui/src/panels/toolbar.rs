@@ -802,9 +802,9 @@ impl ToolbarPanel {
                 state.skimming_enabled = !state.skimming_enabled;
                 ui.close_menu();
             }
-            let dual_check = if state.dual_viewers { "\u{2714} " } else { "  " };
-            if ui.button(format!("{dual_check}Dual Viewers")).clicked() {
-                state.dual_viewers = !state.dual_viewers;
+            let dual_check = if state.viewers_side_by_side() { "\u{2714} " } else { "  " };
+            if ui.button(format!("{dual_check}Dual Viewers")).on_hover_text("Remembered per workspace").clicked() {
+                state.toggle_viewer_layout();
                 ui.close_menu();
             }
             ui.separator();

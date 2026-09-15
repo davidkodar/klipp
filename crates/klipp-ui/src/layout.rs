@@ -151,9 +151,10 @@ pub(crate) fn compute_layout(
     let timeline_bottom = color_bottom_top;
     let max_timeline_h = (timeline_bottom - main_top - theme::RESIZER_THICKNESS) * theme::TIMELINE_MAX_H_PCT;
     let timeline_min_h = theme::TIMELINE_MIN_H;
-    let timeline_h = layout
-        .timeline_height
-        .clamp(timeline_min_h, max_timeline_h);
+    // In Color the timeline is a strip: no toolbar, no tabs, its own
+    // remembered height.
+    let wanted_timeline_h = if in_color_ws { layout.color_timeline_height } else { layout.timeline_height };
+    let timeline_h = wanted_timeline_h.clamp(timeline_min_h, max_timeline_h.max(timeline_min_h));
 
     let timeline_rect = egui::Rect::from_min_size(
         egui::pos2(center_left, timeline_bottom - timeline_h),
@@ -205,7 +206,7 @@ pub(crate) fn compute_layout(
         egui::pos2(center_left, viewer_row_top),
         egui::pos2(center_left + center_w, viewer_row_bottom),
     );
-    let (source_viewer_rect, viewer_rect) = if state.dual_viewers {
+    let (source_viewer_rect, viewer_rect) = if state.viewers_side_by_side() {
         let half_w = ((center_w - viewer_gutter) * 0.5).max(0.0);
         (
             egui::Rect::from_min_max(

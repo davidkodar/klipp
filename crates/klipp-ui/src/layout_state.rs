@@ -21,6 +21,12 @@ pub struct LayoutState {
     /// Two viewers side by side, or one.
     #[serde(default = "default_true")]
     pub dual_viewers: bool,
+    /// The Color workspace's viewer layout: one program viewer by default.
+    #[serde(default)]
+    pub color_dual_viewers: bool,
+    /// The Color workspace's timeline is a strip under the viewer.
+    #[serde(default = "default_color_timeline_h")]
+    pub color_timeline_height: f32,
     /// Snap configuration: master + per-target booleans. Older
     /// layout.json files carry a bare `snap_enabled: bool` instead;
     /// `LayoutState::load()` migrates them on read into `SnapConfig
@@ -49,6 +55,7 @@ pub struct LayoutState {
 
 fn default_files_split_ratio() -> f32 { 0.5 }
 fn default_true() -> bool { true }
+fn default_color_timeline_h() -> f32 { 112.0 }
 fn default_color_panel_height() -> f32 { 200.0 }
 fn default_color_viewer_ratio() -> f32 { 0.55 }
 fn default_color_inspector_width() -> f32 { 300.0 }
@@ -64,6 +71,8 @@ impl Default for LayoutState {
             active_tool: EditTool::Select,
             skimming_enabled: true,
             dual_viewers: true,
+            color_dual_viewers: false,
+            color_timeline_height: default_color_timeline_h(),
             snap: SnapConfig::default(),
             color_panel_height: default_color_panel_height(),
             color_viewer_height_ratio: default_color_viewer_ratio(),

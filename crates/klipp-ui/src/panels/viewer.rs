@@ -2175,7 +2175,7 @@ impl ViewerPanel {
         }
 
         // ── Single viewer: which one this is, and the way to the other ──
-        if !state.dual_viewers {
+        if !state.viewers_side_by_side() {
             let font = egui::FontId::proportional(crate::theme::type_scale::CAPTION);
             let labels = ["Source", "Program"];
             let h = crate::theme::control::COMPACT;
@@ -2543,11 +2543,12 @@ impl ViewerPanel {
                 let r = egui::Rect::from_center_size(egui::pos2(cursor_right - btn_w / 2.0, cy), egui::vec2(btn_w, btn_w));
                 let resp = ui.allocate_rect(r, egui::Sense::click());
                 let colour = if resp.hovered() { theme.text_primary } else { theme.text_secondary };
-                draw_viewer_layout_icon(ui.painter(), r, state.dual_viewers, colour);
+                let dual = state.viewers_side_by_side();
+                draw_viewer_layout_icon(ui.painter(), r, dual, colour);
                 if resp.clicked() {
-                    state.dual_viewers = !state.dual_viewers;
+                    state.toggle_viewer_layout();
                 }
-                resp.on_hover_text(if state.dual_viewers { "Single viewer" } else { "Dual viewers" });
+                resp.on_hover_text(if dual { "Single viewer" } else { "Dual viewers" });
                 cursor_right -= btn_w + gap;
             }
         }
@@ -4613,9 +4614,9 @@ impl ViewerPanel {
 
         // ── Layout ──
         section_label(ui, "LAYOUT");
-        let dual_label = if state.dual_viewers { "\u{2714} Dual viewers" } else { "  Dual viewers" };
+        let dual_label = if state.viewers_side_by_side() { "\u{2714} Dual viewers" } else { "  Dual viewers" };
         if ui.button(dual_label).clicked() {
-            state.dual_viewers = !state.dual_viewers;
+            state.toggle_viewer_layout();
         }
         let scopes_label = if state.scopes_shown() { "\u{2714} Scopes (Alt+V)" } else { "  Scopes (Alt+V)" };
         if ui.button(scopes_label).clicked() {

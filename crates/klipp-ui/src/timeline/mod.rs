@@ -31,30 +31,40 @@ impl NewTimelinePanel {
         let mut cmds = Vec::new();
         let full_rect = ui.max_rect();
 
+        // In the Color workspace the timeline is a strip for moving
+        // between shots: no toolbar, no sequence tabs.
+        let strip = state.show_color_panel;
+
         // ── Timeline toolbar (34px) ──
+        let toolbar_h = if strip { 0.0 } else { 34.0 };
         let toolbar_rect = egui::Rect::from_min_size(
             full_rect.min,
-            egui::vec2(full_rect.width(), 34.0),
+            egui::vec2(full_rect.width(), toolbar_h),
         );
-        crate::ui_util::allocate_clipped_ui(ui, toolbar_rect, |ui| {
-            ui.painter().rect_filled(toolbar_rect, 0.0, theme.bg_panel);
-            ui.painter().hline(
-                toolbar_rect.x_range(),
-                toolbar_rect.max.y,
-                egui::Stroke::new(1.0_f32, theme.border),
-            );
-            toolbar::show(ui, state, theme, &mut cmds);
-        });
+        if !strip {
+            crate::ui_util::allocate_clipped_ui(ui, toolbar_rect, |ui| {
+                ui.painter().rect_filled(toolbar_rect, 0.0, theme.bg_panel);
+                ui.painter().hline(
+                    toolbar_rect.x_range(),
+                    toolbar_rect.max.y,
+                    egui::Stroke::new(1.0_f32, theme.border),
+                );
+                toolbar::show(ui, state, theme, &mut cmds);
+            });
+        }
 
         // ── Sequence tabs (24px) ──
+        let tabs_h = if strip { 0.0 } else { sequence_tabs::HEIGHT };
         let tabs_rect = egui::Rect::from_min_size(
             egui::pos2(full_rect.min.x, toolbar_rect.max.y),
-            egui::vec2(full_rect.width(), sequence_tabs::HEIGHT),
+            egui::vec2(full_rect.width(), tabs_h),
         );
-        crate::ui_util::allocate_clipped_ui(ui, tabs_rect, |ui| {
-            let tab_cmds = sequence_tabs::show(ui, state, theme);
-            cmds.extend(tab_cmds);
-        });
+        if !strip {
+            crate::ui_util::allocate_clipped_ui(ui, tabs_rect, |ui| {
+                let tab_cmds = sequence_tabs::show(ui, state, theme);
+                cmds.extend(tab_cmds);
+            });
+        }
 
         // Content area below tabs
         let content_rect = egui::Rect::from_min_max(
