@@ -732,6 +732,124 @@ pub(crate) fn apply(
                 }
             })
         }
+        FilmGrain { amount, size, color, shadows, seed } => {
+            if amount < f32::EPSILON {
+                return p;
+            }
+            let cell = (size * hf / 1080.0).max(1.0);
+            each_pixel(&p, w, h, |x, y, f| {
+                let o = f.at(x, y);
+                let gx = (x as f32 / cell) as u32;
+                let gy = (y as f32 / cell) as u32;
+                let base = gx.wrapping_mul(7919).wrapping_add(gy.wrapping_mul(104729)).wrapping_add(seed.wrapping_mul(15485863));
+                let l = luma(o, yw).clamp(0.0, 1.0);
+                let depth = amount * 0.35 * (1.0 - shadows * l);
+                let n0 = (noise_hash(base) - 0.5) * 2.0 * depth;
+                if color != 0 {
+                    let n1 = (noise_hash(base.wrapping_add(1)) - 0.5) * 2.0 * depth;
+                    let n2 = (noise_hash(base.wrapping_add(2)) - 0.5) * 2.0 * depth;
+                    [o[0] + n0, o[1] + n1, o[2] + n2, o[3]]
+                } else {
+                    [o[0] + n0, o[1] + n0, o[2] + n0, o[3]]
+                }
+            })
+        }
+        TiltShift { center, width, softness, radius } => {
+            if radius < 0.5 {
+                return p;
+            }
+            let blurred = gaussian(&p, w, h, radius, true);
+            let soft = softness.max(0.001);
+            each_pixel(&p, w, h, |x, y, f| {
+                let ny = (y as f32 + 0.5) / hf;
+                let d = (ny - center).abs() - width * 0.5;
+                let m = (d / soft).clamp(0.0, 1.0);
+                let m = m * m * (3.0 - 2.0 * m);
+                let o = f.at(x, y);
+                let i = (y * w as usize + x) * 4;
+                [
+                    o[0] + (blurred[i] - o[0]) * m,
+                    o[1] + (blurred[i + 1] - o[1]) * m,
+                    o[2] + (blurred[i + 2] - o[2]) * m,
+                    o[3],
+                ]
+            })
+        }
+        OldFilm { flicker, scratches, dust, weave, sepia, seed } => {
+            let fseed = seed.wrapping_mul(2654435761);
+            let flick = 1.0 + (noise_hash(fseed) - 0.5) * flicker * 0.4;
+            let wx = (noise_hash(fseed.wrapping_add(11)) - 0.5) * weave * 6.0 * wf / 1920.0;
+            let wy = (noise_hash(fseed.wrapping_add(23)) - 0.5) * weave * 6.0 * hf / 1080.0;
+            let n_scr = (scratches * 4.0).round() as u32;
+            let life = seed / 6;
+            each_pixel(&p, w, h, |x, y, f| {
+                let o = f.clamped(round(x as f32 + wx), round(y as f32 + wy));
+                let l = luma(o, yw);
+                let mut r = o[0] + (l * 1.07 - o[0]) * sepia;
+                let mut g = o[1] + (l * 0.93 - o[1]) * sepia;
+                let mut b = o[2] + (l * 0.72 - o[2]) * sepia;
+                r *= flick;
+                g *= flick;
+                b *= flick;
+                let mut k = 0u32;
+                while k < n_scr {
+                    let sx = noise_hash(life.wrapping_add(k.wrapping_mul(97)).wrapping_mul(7919)) * wf;
+                    let jitter = (noise_hash(seed.wrapping_add(k.wrapping_mul(31))) - 0.5) * 2.0;
+                    if (x as f32 - (sx + jitter)).abs() < 0.8 {
+                        r += (1.0 - r) * 0.35;
+                        g += (1.0 - g) * 0.35;
+                        b += (1.0 - b) * 0.35;
+                    }
+                    k += 1;
+                }
+                let cx = x as u32 / 5;
+                let cy = y as u32 / 5;
+                let dh = noise_hash(cx.wrapping_mul(7919).wrapping_add(cy.wrapping_mul(104729)).wrapping_add(seed.wrapping_mul(15485863)));
+                if dh > 1.0 - dust * 0.004 {
+                    r *= 0.15;
+                    g *= 0.15;
+                    b *= 0.15;
+                }
+                let nx = (x as f32 - wf * 0.5) / (wf * 0.5);
+                let ny = (y as f32 - hf * 0.5) / (hf * 0.5);
+                let vig = 1.0 - 0.25 * (nx * nx + ny * ny);
+                [r * vig, g * vig, b * vig, o[3]]
+            })
+        }
+        Vhs { tracking, bleed, noise, scanlines, seed } => {
+            let band_y = noise_hash(seed.wrapping_mul(2654435761)) * hf;
+            let band_h = hf * 0.06;
+            each_pixel(&p, w, h, |x, y, f| {
+                let row = y as u32;
+                let rh = noise_hash(row.wrapping_mul(7919).wrapping_add(seed.wrapping_mul(15485863)));
+                let in_band = (y as f32 - band_y).abs() < band_h;
+                let mut dx = (rh - 0.5) * tracking * 3.0;
+                if in_band {
+                    dx += (rh - 0.5) * tracking * 40.0;
+                }
+                let o = f.clamped(round(x as f32 + dx), y as i32);
+                let sh = f.clamped(round(x as f32 + dx - bleed * 8.0), y as i32);
+                let lo = luma(o, yw);
+                let ls = luma(sh, yw);
+                let mut r = lo + (sh[0] - ls);
+                let mut g = lo + (sh[1] - ls);
+                let mut b = lo + (sh[2] - ls);
+                let mut n = (noise_hash((row * w).wrapping_add(x as u32).wrapping_mul(7919).wrapping_add(seed)) - 0.5) * noise * 0.3;
+                if in_band {
+                    n *= 3.0;
+                }
+                r += n;
+                g += n;
+                b += n;
+                if row % 2 == 1 {
+                    let k = 1.0 - scanlines * 0.25;
+                    r *= k;
+                    g *= k;
+                    b *= k;
+                }
+                [r, g, b, o[3]]
+            })
+        }
         ChromaticAberration { red_shift, blue_shift, center_x, center_y } => {
             if red_shift.abs() < f32::EPSILON && blue_shift.abs() < f32::EPSILON {
                 return p;

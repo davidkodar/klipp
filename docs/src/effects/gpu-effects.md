@@ -44,7 +44,28 @@ Removes a specific colour (green screen / blue screen):
 - **Bloom** — light bleed from bright areas; threshold, intensity, radius
 - **Light Rays** — volumetric rays from bright areas
 - **Lens Flare** — simulated optical flare; position, intensity, flare elements
-- **Film Grain** — photographic grain texture; size, intensity, mono/colour mode
+- **Film Halation** — red bloom around highlights, the way film stock glows
+- **Noise** — static per-pixel noise; amount, mono/colour, seed
+
+## Film Effects
+
+The animated film effects take a new pattern every frame: the compositor
+sets their seed to the timeline frame number, so a scrub, playback and an
+export all land on the same grain for a given frame.
+
+- **Film Grain** — emulsion grain in cells sized in pixels at 1080p and scaled
+  with the frame; **Shadows** weights it away from the highlights, **Colour
+  grain** makes it per channel
+- **Old Film** — flicker, vertical scratches that live for a few frames,
+  dust specks, gate weave (the frame drifts by a few pixels) and a sepia wash,
+  under a soft vignette
+- **VHS** — per-row tracking jitter with a wandering tear band, chroma bleed
+  (luma stays put, chroma is taken a few pixels to the left), tape noise and
+  scanlines
+- **Tilt-Shift** — a sharp band across the frame (**Focus** and **Band**,
+  as fractions of the height) blurred beyond it by **Blur** with a
+  **Softness** ramp; the blur runs into a scratch buffer and a blend pass
+  mixes the original back in
 
 ## Pipeline Architecture
 

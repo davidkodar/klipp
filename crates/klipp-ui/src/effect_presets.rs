@@ -376,6 +376,32 @@ impl PresetManager {
         self.bi("noise_generator", "B&W Grain", "Classic monochrome film grain",
             klipp_effects::BuiltinEffect::NoiseGenerator { amount: 0.15, monochrome: 1, seed: 0 });
 
+        // ── Film Grain ────────────────────────────────────────
+        self.bi("film_grain", "Fine 35mm", "Tight grain that lives in the shadows",
+            klipp_effects::BuiltinEffect::FilmGrain { amount: 0.25, size: 1.2, color: 0, shadows: 0.7, seed: 0 });
+        self.bi("film_grain", "16mm", "Coarser, more visible grain",
+            klipp_effects::BuiltinEffect::FilmGrain { amount: 0.45, size: 2.2, color: 0, shadows: 0.5, seed: 0 });
+        self.bi("film_grain", "Colour Negative", "Per-channel grain of a colour stock",
+            klipp_effects::BuiltinEffect::FilmGrain { amount: 0.3, size: 1.6, color: 1, shadows: 0.6, seed: 0 });
+
+        // ── Old Film ──────────────────────────────────────────
+        self.bi("old_film", "Silent Era", "Sepia, heavy weave and scratches",
+            klipp_effects::BuiltinEffect::OldFilm { flicker: 0.6, scratches: 0.8, dust: 0.8, weave: 0.8, sepia: 0.9, seed: 0 });
+        self.bi("old_film", "Home Movie", "Light wear, colour kept",
+            klipp_effects::BuiltinEffect::OldFilm { flicker: 0.3, scratches: 0.3, dust: 0.4, weave: 0.4, sepia: 0.15, seed: 0 });
+
+        // ── VHS ───────────────────────────────────────────────
+        self.bi("vhs", "Worn Tape", "Heavy tracking and bleed",
+            klipp_effects::BuiltinEffect::Vhs { tracking: 0.8, bleed: 0.8, noise: 0.6, scanlines: 0.6, seed: 0 });
+        self.bi("vhs", "Clean Dub", "A subtle tape look",
+            klipp_effects::BuiltinEffect::Vhs { tracking: 0.2, bleed: 0.4, noise: 0.2, scanlines: 0.4, seed: 0 });
+
+        // ── Tilt-Shift ────────────────────────────────────────
+        self.bi("tilt_shift", "Miniature", "A narrow sharp band, strong blur",
+            klipp_effects::BuiltinEffect::TiltShift { center: 0.55, width: 0.2, softness: 0.12, radius: 24.0 });
+        self.bi("tilt_shift", "Soft Frame", "Wide focus, gentle fall-off",
+            klipp_effects::BuiltinEffect::TiltShift { center: 0.5, width: 0.5, softness: 0.3, radius: 8.0 });
+
         // ── Median Filter ─────────────────────────────────────
         self.bi("median_filter", "Light Smooth", "Gentle noise removal",
             klipp_effects::BuiltinEffect::MedianFilter { radius: 1 });
@@ -477,6 +503,10 @@ pub fn builtin_effect_key(effect: &klipp_effects::BuiltinEffect) -> &'static str
         klipp_effects::BuiltinEffect::Gamma { .. } => "gamma",
         klipp_effects::BuiltinEffect::HSVAdjust { .. } => "hsv_adjust",
         klipp_effects::BuiltinEffect::NoiseGenerator { .. } => "noise_generator",
+        klipp_effects::BuiltinEffect::FilmGrain { .. } => "film_grain",
+        klipp_effects::BuiltinEffect::TiltShift { .. } => "tilt_shift",
+        klipp_effects::BuiltinEffect::OldFilm { .. } => "old_film",
+        klipp_effects::BuiltinEffect::Vhs { .. } => "vhs",
         klipp_effects::BuiltinEffect::MedianFilter { .. } => "median_filter",
         klipp_effects::BuiltinEffect::RadialBlur { .. } => "radial_blur",
         klipp_effects::BuiltinEffect::Levels { .. } => "levels",

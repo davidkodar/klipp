@@ -588,6 +588,20 @@ pub enum BuiltinEffect {
         /// Center Y (0.0-1.0, default 0.5)
         center_y: f32,
     },
+    /// Film Grain: animated emulsion grain, sized in pixels at 1080p and
+    /// weighted towards the shadows and midtones. `color` 0 = mono,
+    /// 1 = per channel. The compositor sets `seed` to the frame number.
+    FilmGrain { amount: f32, size: f32, color: u32, shadows: f32, seed: u32 },
+    /// Tilt-Shift: a sharp band across the frame at `center` (0..1 of
+    /// the height), `width` tall, blurred by `radius` beyond it with a
+    /// `softness` ramp.
+    TiltShift { center: f32, width: f32, softness: f32, radius: f32 },
+    /// Old Film: flicker, scratches, dust, gate weave and a sepia wash.
+    /// The compositor sets `seed` to the frame number.
+    OldFilm { flicker: f32, scratches: f32, dust: f32, weave: f32, sepia: f32, seed: u32 },
+    /// VHS: tracking error, chroma bleed, tape noise and scanlines. The
+    /// compositor sets `seed` to the frame number.
+    Vhs { tracking: f32, bleed: f32, noise: f32, scanlines: f32, seed: u32 },
     /// Rolling Shutter Correction: removes wobble/jello from CMOS sensor footage.
     RollingShutterCorrection {
         /// Correction strength (0.0=off, 1.0=full correction)

@@ -1602,6 +1602,36 @@ pub fn clip_effects(
                 *soft_edge = param("spill", *soft_edge);
                 *spill_strength = param("spill_strength", *spill_strength);
             }
+            // The animated film effects take a fresh pattern per frame:
+            // the seed is the timeline frame number, so a still export
+            // and a scrub land on the same grain.
+            BuiltinEffect::FilmGrain { amount, size, shadows, seed, .. } => {
+                *amount = param("amount", *amount);
+                *size = param("size", *size);
+                *shadows = param("shadows", *shadows);
+                *seed = (t * fps).round().max(0.0) as u32;
+            }
+            BuiltinEffect::OldFilm { flicker, scratches, dust, weave, sepia, seed } => {
+                *flicker = param("flicker", *flicker);
+                *scratches = param("scratches", *scratches);
+                *dust = param("dust", *dust);
+                *weave = param("weave", *weave);
+                *sepia = param("sepia", *sepia);
+                *seed = (t * fps).round().max(0.0) as u32;
+            }
+            BuiltinEffect::Vhs { tracking, bleed, noise, scanlines, seed } => {
+                *tracking = param("tracking", *tracking);
+                *bleed = param("bleed", *bleed);
+                *noise = param("noise", *noise);
+                *scanlines = param("scanlines", *scanlines);
+                *seed = (t * fps).round().max(0.0) as u32;
+            }
+            BuiltinEffect::TiltShift { center, width, softness, radius } => {
+                *center = param("center", *center);
+                *width = param("width", *width);
+                *softness = param("softness", *softness);
+                *radius = param("radius", *radius);
+            }
             BuiltinEffect::Opacity { value } => {
                 // Clip opacity keyframes / modifiers first, then the
                 // effect's own parameter keyframes — the viewer's order.

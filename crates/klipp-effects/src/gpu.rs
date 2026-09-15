@@ -149,6 +149,10 @@ pub struct GpuEffectsPipeline {
     glow_blend_pipeline: wgpu::ComputePipeline,
     light_rays_pipeline: wgpu::ComputePipeline,
     vignette_pipeline: wgpu::ComputePipeline,
+    film_grain_pipeline: wgpu::ComputePipeline,
+    tilt_shift_blend_pipeline: wgpu::ComputePipeline,
+    old_film_pipeline: wgpu::ComputePipeline,
+    vhs_pipeline: wgpu::ComputePipeline,
     lens_flare_pipeline: wgpu::ComputePipeline,
     anamorphic_streak_pipeline: wgpu::ComputePipeline,
     film_halation_blend_pipeline: wgpu::ComputePipeline,
@@ -693,6 +697,10 @@ impl GpuEffectsPipeline {
         let glow_blend_pipeline = create_pipeline(&device, &transition_pl, "glow_blend", SHADER_GLOW_BLEND);
         let light_rays_pipeline = create_pipeline(&device, &pipeline_layout, "light_rays", SHADER_LIGHT_RAYS);
         let vignette_pipeline = create_pipeline(&device, &pipeline_layout, "vignette", SHADER_VIGNETTE);
+        let film_grain_pipeline = create_pipeline(&device, &pipeline_layout, "film_grain", SHADER_FILM_GRAIN);
+        let tilt_shift_blend_pipeline = create_pipeline(&device, &transition_pl, "tilt_shift_blend", SHADER_TILT_SHIFT_BLEND);
+        let old_film_pipeline = create_pipeline(&device, &pipeline_layout, "old_film", SHADER_OLD_FILM);
+        let vhs_pipeline = create_pipeline(&device, &pipeline_layout, "vhs", SHADER_VHS);
         let lens_flare_pipeline = create_pipeline(&device, &pipeline_layout, "lens_flare", SHADER_LENS_FLARE);
         let anamorphic_streak_pipeline = create_pipeline(&device, &pipeline_layout, "anamorphic_streak", SHADER_ANAMORPHIC_STREAK);
         let film_halation_blend_pipeline = create_pipeline(&device, &transition_pl, "film_halation_blend", SHADER_FILM_HALATION);
@@ -1129,6 +1137,10 @@ impl GpuEffectsPipeline {
             glow_blend_pipeline,
             light_rays_pipeline,
             vignette_pipeline,
+            film_grain_pipeline,
+            tilt_shift_blend_pipeline,
+            old_film_pipeline,
+            vhs_pipeline,
             lens_flare_pipeline,
             anamorphic_streak_pipeline,
             film_halation_blend_pipeline,
@@ -5285,6 +5297,65 @@ impl GpuEffectsPipeline {
                     self.dispatch(&self.letterbox_pipeline, input, output, workgroups);
                     current_in_a = !current_in_a;
                 }
+                BuiltinEffect::FilmGrain { amount, size, color, shadows, seed } => {
+                    if *amount < f32::EPSILON {
+                        continue;
+                    }
+                    self.write_params(&FilmGrainParams {
+                        width, height,
+                        amount: *amount, size: *size, color: *color, shadows: *shadows, seed: *seed,
+                        luma_yr: self.luma_coefs[0], luma_yg: self.luma_coefs[1], luma_yb: self.luma_coefs[2],
+                        _pad: 0, _pad2: 0,
+                    });
+                    self.dispatch(&self.film_grain_pipeline, input, output, workgroups);
+                    current_in_a = !current_in_a;
+                }
+                BuiltinEffect::TiltShift { center, width: band, softness, radius } => {
+                    if *radius < 0.5 {
+                        continue;
+                    }
+                    // The blurred frame into buf_c, then the band mask
+                    // blends the original back over it.
+                    let buf_c = self.buf_c.as_ref().unwrap();
+                    let boxes = crate::blur::boxes_for_gaussian(*radius);
+                    let mut first = true;
+                    for &box_r in &boxes {
+                        if box_r == 0 {
+                            continue;
+                        }
+                        let src = if first { input } else { buf_c };
+                        self.write_params(&BlurParams { width, height, radius: box_r as i32, _pad: 0 });
+                        self.dispatch(&self.blur_h_pipeline, src, output, workgroups);
+                        self.write_params(&BlurParams { width, height, radius: box_r as i32, _pad: 0 });
+                        self.dispatch(&self.blur_v_pipeline, output, buf_c, workgroups);
+                        first = false;
+                    }
+                    if first {
+                        continue;
+                    }
+                    self.write_params(&TiltShiftParams { width, height, center: *center, band: *band, softness: *softness, _pad: 0, _pad2: 0, _pad3: 0 });
+                    self.dispatch_pair(&self.tilt_shift_blend_pipeline, input, buf_c, output, workgroups);
+                    current_in_a = !current_in_a;
+                }
+                BuiltinEffect::OldFilm { flicker, scratches, dust, weave, sepia, seed } => {
+                    self.write_params(&OldFilmParams {
+                        width, height,
+                        flicker: *flicker, scratches: *scratches, dust: *dust, weave: *weave, sepia: *sepia, seed: *seed,
+                        luma_yr: self.luma_coefs[0], luma_yg: self.luma_coefs[1], luma_yb: self.luma_coefs[2], _pad: 0,
+                    });
+                    self.dispatch(&self.old_film_pipeline, input, output, workgroups);
+                    current_in_a = !current_in_a;
+                }
+                BuiltinEffect::Vhs { tracking, bleed, noise, scanlines, seed } => {
+                    self.write_params(&VhsParams {
+                        width, height,
+                        tracking: *tracking, bleed: *bleed, noise: *noise, scanlines: *scanlines, seed: *seed,
+                        luma_yr: self.luma_coefs[0], luma_yg: self.luma_coefs[1], luma_yb: self.luma_coefs[2],
+                        _pad: 0, _pad2: 0,
+                    });
+                    self.dispatch(&self.vhs_pipeline, input, output, workgroups);
+                    current_in_a = !current_in_a;
+                }
                 BuiltinEffect::ChromaticAberration { red_shift, blue_shift, center_x, center_y } => {
                     if red_shift.abs() < f32::EPSILON && blue_shift.abs() < f32::EPSILON {
                         continue;
@@ -5913,9 +5984,97 @@ impl GpuEffectsPipeline {
         // queue drains between submits. See submit_chain for context.
         self.device.poll(wgpu::Maintain::Poll);
     }
+
+    /// One pass over two inputs (bindings 0 and 1) into `output`, with
+    /// the params already written: the layout the blend shaders share.
+    fn dispatch_pair(&self, pipeline: &wgpu::ComputePipeline, a: &wgpu::Buffer, b: &wgpu::Buffer, output: &wgpu::Buffer, workgroups: u32) {
+        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("pair_bg"),
+            layout: &self.transition_bgl,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: a.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: b.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 2, resource: output.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 3, resource: self.params_buf.as_entire_binding() },
+            ],
+        });
+        let mut enc = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+        {
+            let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor::default());
+            pass.set_pipeline(pipeline);
+            pass.set_bind_group(0, &bind_group, &[]);
+            pass.dispatch_workgroups(workgroups, 1, 1);
+        }
+        self.queue.submit(Some(enc.finish()));
+        self.device.poll(wgpu::Maintain::Poll);
+    }
 }
 
 // ─── Param structs (must be Pod for bytemuck) ────────────────────────────────
+
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct FilmGrainParams {
+    width: u32,
+    height: u32,
+    amount: f32,
+    size: f32,
+    color: u32,
+    shadows: f32,
+    seed: u32,
+    luma_yr: f32,
+    luma_yg: f32,
+    luma_yb: f32,
+    _pad: u32,
+    _pad2: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct TiltShiftParams {
+    width: u32,
+    height: u32,
+    center: f32,
+    band: f32,
+    softness: f32,
+    _pad: u32,
+    _pad2: u32,
+    _pad3: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct OldFilmParams {
+    width: u32,
+    height: u32,
+    flicker: f32,
+    scratches: f32,
+    dust: f32,
+    weave: f32,
+    sepia: f32,
+    seed: u32,
+    luma_yr: f32,
+    luma_yg: f32,
+    luma_yb: f32,
+    _pad: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct VhsParams {
+    width: u32,
+    height: u32,
+    tracking: f32,
+    bleed: f32,
+    noise: f32,
+    scanlines: f32,
+    seed: u32,
+    luma_yr: f32,
+    luma_yg: f32,
+    luma_yb: f32,
+    _pad: u32,
+    _pad2: u32,
+}
 
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -12345,6 +12504,234 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
 
     output[idx] = pack(vec4<f32>(r, g, b, v.w));
+}
+"
+);
+
+// Film grain — emulsion-like grain in cells of `size` px at 1080p,
+// weighted away from the highlights, a new pattern per `seed`. The CPU
+// twin uses the same hash and cell arithmetic.
+const SHADER_FILM_GRAIN: &str = concat!(
+    shader_pixel_storage_wgsl!(),
+    "
+struct Params {
+    width: u32, height: u32, amount: f32, size: f32,
+    color: u32, shadows: f32, seed: u32, luma_yr: f32,
+    luma_yg: f32, luma_yb: f32, _pad: u32, _pad2: u32,
+}
+
+@group(0) @binding(0) var<storage, read> input: array<vec4<f32>>;
+@group(0) @binding(1) var<storage, read_write> output: array<vec4<f32>>;
+@group(0) @binding(2) var<uniform> params: Params;
+
+fn hash(p: u32) -> f32 {
+    var x = p;
+    x = ((x >> 16u) ^ x) * 0x45d9f3bu;
+    x = ((x >> 16u) ^ x) * 0x45d9f3bu;
+    x = (x >> 16u) ^ x;
+    return f32(x) / 4294967295.0;
+}
+
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let idx = gid.x;
+    if idx >= params.width * params.height { return; }
+    let x = idx % params.width;
+    let y = idx / params.width;
+    let v = unpack(input[idx]);
+    let cell = max(params.size * f32(params.height) / 1080.0, 1.0);
+    let gx = u32(f32(x) / cell);
+    let gy = u32(f32(y) / cell);
+    let base = gx * 7919u + gy * 104729u + params.seed * 15485863u;
+    let l = clamp(dot(v.xyz, vec3<f32>(params.luma_yr, params.luma_yg, params.luma_yb)), 0.0, 1.0);
+    let depth = params.amount * 0.35 * (1.0 - params.shadows * l);
+    let n0 = (hash(base) - 0.5) * 2.0 * depth;
+    var r = v.x + n0;
+    var g = v.y + n0;
+    var b = v.z + n0;
+    if params.color != 0u {
+        g = v.y + (hash(base + 1u) - 0.5) * 2.0 * depth;
+        b = v.z + (hash(base + 2u) - 0.5) * 2.0 * depth;
+    }
+    output[idx] = pack(vec4<f32>(r, g, b, v.w));
+}
+"
+);
+
+// Tilt-shift blend — the original inside the sharp band, the blurred
+// frame beyond it, over a smoothstep ramp of `softness`.
+const SHADER_TILT_SHIFT_BLEND: &str = concat!(
+    "
+struct Params {
+    width: u32, height: u32, center: f32, band: f32,
+    softness: f32, _pad: u32, _pad2: u32, _pad3: u32,
+}
+@group(0) @binding(0) var<storage, read> original: array<vec4<f32>>;
+@group(0) @binding(1) var<storage, read> blurred: array<vec4<f32>>;
+@group(0) @binding(2) var<storage, read_write> output: array<vec4<f32>>;
+@group(0) @binding(3) var<uniform> params: Params;
+",
+    shader_linear_helpers_wgsl!(),
+    "
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let idx = gid.x;
+    if idx >= params.width * params.height { return; }
+    let y = idx / params.width;
+    let o = unpack(original[idx]);
+    let bl = unpack(blurred[idx]);
+    let ny = (f32(y) + 0.5) / f32(params.height);
+    let d = abs(ny - params.center) - params.band * 0.5;
+    var m = clamp(d / max(params.softness, 0.001), 0.0, 1.0);
+    m = m * m * (3.0 - 2.0 * m);
+    output[idx] = pack(vec4<f32>(o.xyz + (bl.xyz - o.xyz) * m, o.w));
+}
+"
+);
+
+// Old film — gate weave, flicker, sepia, scratches, dust and a soft
+// vignette, one pass, all driven by `seed` (the frame number).
+const SHADER_OLD_FILM: &str = concat!(
+    shader_pixel_storage_wgsl!(),
+    "
+struct Params {
+    width: u32, height: u32, flicker: f32, scratches: f32,
+    dust: f32, weave: f32, sepia: f32, seed: u32,
+    luma_yr: f32, luma_yg: f32, luma_yb: f32, _pad: u32,
+}
+
+@group(0) @binding(0) var<storage, read> input: array<vec4<f32>>;
+@group(0) @binding(1) var<storage, read_write> output: array<vec4<f32>>;
+@group(0) @binding(2) var<uniform> params: Params;
+
+fn hash(p: u32) -> f32 {
+    var x = p;
+    x = ((x >> 16u) ^ x) * 0x45d9f3bu;
+    x = ((x >> 16u) ^ x) * 0x45d9f3bu;
+    x = (x >> 16u) ^ x;
+    return f32(x) / 4294967295.0;
+}
+
+fn sample_clamped(x: f32, y: f32) -> vec4<f32> {
+    let xi = clamp(i32(round(x)), 0, i32(params.width) - 1);
+    let yi = clamp(i32(round(y)), 0, i32(params.height) - 1);
+    return unpack(input[u32(yi) * params.width + u32(xi)]);
+}
+
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let idx = gid.x;
+    if idx >= params.width * params.height { return; }
+    let x = idx % params.width;
+    let y = idx / params.width;
+    let wf = f32(params.width);
+    let hf = f32(params.height);
+    let fseed = params.seed * 2654435761u;
+    let flick = 1.0 + (hash(fseed) - 0.5) * params.flicker * 0.4;
+    let wx = (hash(fseed + 11u) - 0.5) * params.weave * 6.0 * wf / 1920.0;
+    let wy = (hash(fseed + 23u) - 0.5) * params.weave * 6.0 * hf / 1080.0;
+    let o = sample_clamped(f32(x) + wx, f32(y) + wy);
+    let l = dot(o.xyz, vec3<f32>(params.luma_yr, params.luma_yg, params.luma_yb));
+    var r = (o.x + (l * 1.07 - o.x) * params.sepia) * flick;
+    var g = (o.y + (l * 0.93 - o.y) * params.sepia) * flick;
+    var b = (o.z + (l * 0.72 - o.z) * params.sepia) * flick;
+    let n_scr = u32(round(params.scratches * 4.0));
+    let life = params.seed / 6u;
+    var k: u32 = 0u;
+    loop {
+        if k >= n_scr { break; }
+        let sx = hash((life + k * 97u) * 7919u) * wf;
+        let jitter = (hash(params.seed + k * 31u) - 0.5) * 2.0;
+        if abs(f32(x) - (sx + jitter)) < 0.8 {
+            r = r + (1.0 - r) * 0.35;
+            g = g + (1.0 - g) * 0.35;
+            b = b + (1.0 - b) * 0.35;
+        }
+        k = k + 1u;
+    }
+    let cx = x / 5u;
+    let cy = y / 5u;
+    let dh = hash(cx * 7919u + cy * 104729u + params.seed * 15485863u);
+    if dh > 1.0 - params.dust * 0.004 {
+        r = r * 0.15;
+        g = g * 0.15;
+        b = b * 0.15;
+    }
+    let nx = (f32(x) - wf * 0.5) / (wf * 0.5);
+    let ny = (f32(y) - hf * 0.5) / (hf * 0.5);
+    let vig = 1.0 - 0.25 * (nx * nx + ny * ny);
+    output[idx] = pack(vec4<f32>(r * vig, g * vig, b * vig, o.w));
+}
+"
+);
+
+// VHS — per-row tracking jitter with a wandering tear band, chroma
+// bleed (luma from here, chroma from a few pixels left), tape noise
+// and scanlines.
+const SHADER_VHS: &str = concat!(
+    shader_pixel_storage_wgsl!(),
+    "
+struct Params {
+    width: u32, height: u32, tracking: f32, bleed: f32,
+    noise: f32, scanlines: f32, seed: u32, luma_yr: f32,
+    luma_yg: f32, luma_yb: f32, _pad: u32, _pad2: u32,
+}
+
+@group(0) @binding(0) var<storage, read> input: array<vec4<f32>>;
+@group(0) @binding(1) var<storage, read_write> output: array<vec4<f32>>;
+@group(0) @binding(2) var<uniform> params: Params;
+
+fn hash(p: u32) -> f32 {
+    var x = p;
+    x = ((x >> 16u) ^ x) * 0x45d9f3bu;
+    x = ((x >> 16u) ^ x) * 0x45d9f3bu;
+    x = (x >> 16u) ^ x;
+    return f32(x) / 4294967295.0;
+}
+
+fn sample_clamped(x: f32, yi: i32) -> vec4<f32> {
+    let xi = clamp(i32(round(x)), 0, i32(params.width) - 1);
+    let yc = clamp(yi, 0, i32(params.height) - 1);
+    return unpack(input[u32(yc) * params.width + u32(xi)]);
+}
+
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let idx = gid.x;
+    if idx >= params.width * params.height { return; }
+    let x = idx % params.width;
+    let y = idx / params.width;
+    let hf = f32(params.height);
+    let band_y = hash(params.seed * 2654435761u) * hf;
+    let band_h = hf * 0.06;
+    let rh = hash(y * 7919u + params.seed * 15485863u);
+    let in_band = abs(f32(y) - band_y) < band_h;
+    var dx = (rh - 0.5) * params.tracking * 3.0;
+    if in_band {
+        dx = dx + (rh - 0.5) * params.tracking * 40.0;
+    }
+    let o = sample_clamped(f32(x) + dx, i32(y));
+    let sh = sample_clamped(f32(x) + dx - params.bleed * 8.0, i32(y));
+    let yw = vec3<f32>(params.luma_yr, params.luma_yg, params.luma_yb);
+    let lo = dot(o.xyz, yw);
+    let ls = dot(sh.xyz, yw);
+    var r = lo + (sh.x - ls);
+    var g = lo + (sh.y - ls);
+    var b = lo + (sh.z - ls);
+    var n = (hash((y * params.width + x) * 7919u + params.seed) - 0.5) * params.noise * 0.3;
+    if in_band {
+        n = n * 3.0;
+    }
+    r = r + n;
+    g = g + n;
+    b = b + n;
+    if (y % 2u) == 1u {
+        let k = 1.0 - params.scanlines * 0.25;
+        r = r * k;
+        g = g * k;
+        b = b * k;
+    }
+    output[idx] = pack(vec4<f32>(r, g, b, o.w));
 }
 "
 );

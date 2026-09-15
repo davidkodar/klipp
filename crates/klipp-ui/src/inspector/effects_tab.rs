@@ -1145,7 +1145,11 @@ fn builtin_effect_name(effect: &klipp_effects::BuiltinEffect) -> std::borrow::Co
         klipp_effects::BuiltinEffect::Denoise { .. } => Cow::Borrowed("Denoise"),
         klipp_effects::BuiltinEffect::Gamma { .. } => Cow::Borrowed("Gamma"),
         klipp_effects::BuiltinEffect::HSVAdjust { .. } => Cow::Borrowed("HSV Adjust"),
-        klipp_effects::BuiltinEffect::NoiseGenerator { .. } => Cow::Borrowed("Noise Generator"),
+        klipp_effects::BuiltinEffect::NoiseGenerator { .. } => Cow::Borrowed("Noise"),
+        klipp_effects::BuiltinEffect::FilmGrain { .. } => Cow::Borrowed("Film Grain"),
+        klipp_effects::BuiltinEffect::TiltShift { .. } => Cow::Borrowed("Tilt-Shift"),
+        klipp_effects::BuiltinEffect::OldFilm { .. } => Cow::Borrowed("Old Film"),
+        klipp_effects::BuiltinEffect::Vhs { .. } => Cow::Borrowed("VHS"),
         klipp_effects::BuiltinEffect::MedianFilter { .. } => Cow::Borrowed("Median Filter"),
         klipp_effects::BuiltinEffect::RadialBlur { .. } => Cow::Borrowed("Radial Blur"),
         klipp_effects::BuiltinEffect::Levels { .. } => Cow::Borrowed("Levels"),
@@ -1249,6 +1253,18 @@ fn builtin_effect_default(effect: &klipp_effects::BuiltinEffect) -> klipp_effect
         BuiltinEffect::NoiseGenerator { .. } => BuiltinEffect::NoiseGenerator {
             amount: 0.1, monochrome: 0, seed: 0,
         },
+        BuiltinEffect::FilmGrain { .. } => BuiltinEffect::FilmGrain {
+            amount: 0.3, size: 1.5, color: 0, shadows: 0.6, seed: 0,
+        },
+        BuiltinEffect::TiltShift { .. } => BuiltinEffect::TiltShift {
+            center: 0.5, width: 0.3, softness: 0.2, radius: 12.0,
+        },
+        BuiltinEffect::OldFilm { .. } => BuiltinEffect::OldFilm {
+            flicker: 0.4, scratches: 0.5, dust: 0.5, weave: 0.5, sepia: 0.6, seed: 0,
+        },
+        BuiltinEffect::Vhs { .. } => BuiltinEffect::Vhs {
+            tracking: 0.5, bleed: 0.5, noise: 0.4, scanlines: 0.5, seed: 0,
+        },
         BuiltinEffect::MedianFilter { .. } => BuiltinEffect::MedianFilter { radius: 1 },
         BuiltinEffect::RadialBlur { .. } => BuiltinEffect::RadialBlur {
             center_x: 0.5, center_y: 0.5, amount: 10.0, samples: 12, mode: 0,
@@ -1303,7 +1319,9 @@ fn builtin_effect_has_multi_params(effect: &klipp_effects::BuiltinEffect) -> boo
         | BuiltinEffect::Denoise { .. } | BuiltinEffect::RollingShutterCorrection { .. } | BuiltinEffect::VideoStabilization { .. } | BuiltinEffect::SpeedRamp { .. }
         | BuiltinEffect::HSVAdjust { .. } | BuiltinEffect::NoiseGenerator { .. }
         | BuiltinEffect::RadialBlur { .. } | BuiltinEffect::Levels { .. }
-        | BuiltinEffect::Letterbox { .. } | BuiltinEffect::ChromaticAberration { .. })
+        | BuiltinEffect::Letterbox { .. } | BuiltinEffect::ChromaticAberration { .. }
+        | BuiltinEffect::FilmGrain { .. } | BuiltinEffect::TiltShift { .. }
+        | BuiltinEffect::OldFilm { .. } | BuiltinEffect::Vhs { .. })
 }
 
 #[allow(dead_code)]
@@ -2287,6 +2305,82 @@ fn show_builtin_effect_params(
             if r_s.drag_started() { any_drag_started = true; }
             if r_s.drag_stopped() { any_drag_stopped = true; }
             changed |= r_s.changed();
+        }
+        klipp_effects::BuiltinEffect::FilmGrain { amount, size, color, shadows, .. } => {
+            *amount = eval_effect_kf(clip, effect_index, "amount", clip_time_secs, *amount);
+            *size = eval_effect_kf(clip, effect_index, "size", clip_time_secs, *size);
+            *shadows = eval_effect_kf(clip, effect_index, "shadows", clip_time_secs, *shadows);
+            let ks_a = Some(effect_keyframe_state(clip, effect_index, "amount", clip_time_secs));
+            let ks_s = Some(effect_keyframe_state(clip, effect_index, "size", clip_time_secs));
+            let ks_h = Some(effect_keyframe_state(clip, effect_index, "shadows", clip_time_secs));
+            let r_a = scrubby_param_row(ui, "Amount", amount, 0.0..=1.0, 0.3, 0.005, 3, "", ks_a);
+            track_scrubby!("amount", r_a, *amount);
+            let r_s = scrubby_param_row(ui, "Size", size, 0.5..=6.0, 1.5, 0.02, 2, " px", ks_s);
+            track_scrubby!("size", r_s, *size);
+            let r_h = scrubby_param_row(ui, "Shadows", shadows, 0.0..=1.0, 0.6, 0.005, 2, "", ks_h);
+            track_scrubby!("shadows", r_h, *shadows);
+            let mut col = *color != 0;
+            let r_c = ui.checkbox(&mut col, "Colour grain");
+            *color = u32::from(col);
+            changed |= r_c.changed();
+        }
+        klipp_effects::BuiltinEffect::TiltShift { center, width, softness, radius } => {
+            *center = eval_effect_kf(clip, effect_index, "center", clip_time_secs, *center);
+            *width = eval_effect_kf(clip, effect_index, "width", clip_time_secs, *width);
+            *softness = eval_effect_kf(clip, effect_index, "softness", clip_time_secs, *softness);
+            *radius = eval_effect_kf(clip, effect_index, "radius", clip_time_secs, *radius);
+            let ks_c = Some(effect_keyframe_state(clip, effect_index, "center", clip_time_secs));
+            let ks_w = Some(effect_keyframe_state(clip, effect_index, "width", clip_time_secs));
+            let ks_s = Some(effect_keyframe_state(clip, effect_index, "softness", clip_time_secs));
+            let ks_r = Some(effect_keyframe_state(clip, effect_index, "radius", clip_time_secs));
+            let r_c = scrubby_param_row(ui, "Focus", center, 0.0..=1.0, 0.5, 0.005, 2, "", ks_c);
+            track_scrubby!("center", r_c, *center);
+            let r_w = scrubby_param_row(ui, "Band", width, 0.0..=1.0, 0.3, 0.005, 2, "", ks_w);
+            track_scrubby!("width", r_w, *width);
+            let r_s = scrubby_param_row(ui, "Softness", softness, 0.01..=0.5, 0.2, 0.005, 2, "", ks_s);
+            track_scrubby!("softness", r_s, *softness);
+            let r_r = scrubby_param_row(ui, "Blur", radius, 0.0..=60.0, 12.0, 0.2, 1, " px", ks_r);
+            track_scrubby!("radius", r_r, *radius);
+        }
+        klipp_effects::BuiltinEffect::OldFilm { flicker, scratches, dust, weave, sepia, .. } => {
+            *flicker = eval_effect_kf(clip, effect_index, "flicker", clip_time_secs, *flicker);
+            *scratches = eval_effect_kf(clip, effect_index, "scratches", clip_time_secs, *scratches);
+            *dust = eval_effect_kf(clip, effect_index, "dust", clip_time_secs, *dust);
+            *weave = eval_effect_kf(clip, effect_index, "weave", clip_time_secs, *weave);
+            *sepia = eval_effect_kf(clip, effect_index, "sepia", clip_time_secs, *sepia);
+            let ks_f = Some(effect_keyframe_state(clip, effect_index, "flicker", clip_time_secs));
+            let ks_s = Some(effect_keyframe_state(clip, effect_index, "scratches", clip_time_secs));
+            let ks_d = Some(effect_keyframe_state(clip, effect_index, "dust", clip_time_secs));
+            let ks_w = Some(effect_keyframe_state(clip, effect_index, "weave", clip_time_secs));
+            let ks_p = Some(effect_keyframe_state(clip, effect_index, "sepia", clip_time_secs));
+            let r_f = scrubby_param_row(ui, "Flicker", flicker, 0.0..=1.0, 0.4, 0.005, 2, "", ks_f);
+            track_scrubby!("flicker", r_f, *flicker);
+            let r_s = scrubby_param_row(ui, "Scratches", scratches, 0.0..=1.0, 0.5, 0.005, 2, "", ks_s);
+            track_scrubby!("scratches", r_s, *scratches);
+            let r_d = scrubby_param_row(ui, "Dust", dust, 0.0..=1.0, 0.5, 0.005, 2, "", ks_d);
+            track_scrubby!("dust", r_d, *dust);
+            let r_w = scrubby_param_row(ui, "Gate weave", weave, 0.0..=1.0, 0.5, 0.005, 2, "", ks_w);
+            track_scrubby!("weave", r_w, *weave);
+            let r_p = scrubby_param_row(ui, "Sepia", sepia, 0.0..=1.0, 0.6, 0.005, 2, "", ks_p);
+            track_scrubby!("sepia", r_p, *sepia);
+        }
+        klipp_effects::BuiltinEffect::Vhs { tracking, bleed, noise, scanlines, .. } => {
+            *tracking = eval_effect_kf(clip, effect_index, "tracking", clip_time_secs, *tracking);
+            *bleed = eval_effect_kf(clip, effect_index, "bleed", clip_time_secs, *bleed);
+            *noise = eval_effect_kf(clip, effect_index, "noise", clip_time_secs, *noise);
+            *scanlines = eval_effect_kf(clip, effect_index, "scanlines", clip_time_secs, *scanlines);
+            let ks_t = Some(effect_keyframe_state(clip, effect_index, "tracking", clip_time_secs));
+            let ks_b = Some(effect_keyframe_state(clip, effect_index, "bleed", clip_time_secs));
+            let ks_n = Some(effect_keyframe_state(clip, effect_index, "noise", clip_time_secs));
+            let ks_s = Some(effect_keyframe_state(clip, effect_index, "scanlines", clip_time_secs));
+            let r_t = scrubby_param_row(ui, "Tracking", tracking, 0.0..=1.0, 0.5, 0.005, 2, "", ks_t);
+            track_scrubby!("tracking", r_t, *tracking);
+            let r_b = scrubby_param_row(ui, "Chroma bleed", bleed, 0.0..=1.0, 0.5, 0.005, 2, "", ks_b);
+            track_scrubby!("bleed", r_b, *bleed);
+            let r_n = scrubby_param_row(ui, "Noise", noise, 0.0..=1.0, 0.4, 0.005, 2, "", ks_n);
+            track_scrubby!("noise", r_n, *noise);
+            let r_s = scrubby_param_row(ui, "Scanlines", scanlines, 0.0..=1.0, 0.5, 0.005, 2, "", ks_s);
+            track_scrubby!("scanlines", r_s, *scanlines);
         }
         klipp_effects::BuiltinEffect::MedianFilter { radius } => {
             let mut r_f = *radius as f32;
