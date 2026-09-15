@@ -1637,7 +1637,7 @@ pub fn show(
 
                 if render_grid {
                     let card_w = ((avail_w - spacing) / 2.0).floor();
-                    let card_h = (card_w * 9.0 / 16.0).round().max(96.0);
+                    let card_h = (card_w * 9.0 / 16.0).round().max(72.0) + crate::browser::library_card::CAPTION_H;
                     egui::Grid::new("titles_grid")
                         .num_columns(2)
                         .spacing([spacing, spacing])
@@ -1808,38 +1808,18 @@ fn title_card(
         egui::Sense::click_and_drag(),
     );
     let hovered = resp.hovered();
-    let border_color = if is_selected {
-        theme.accent
-    } else if hovered {
-        theme.accent_dim
-    } else {
-        theme.border
-    };
-    let stroke_w: f32 = if is_selected { 2.0 } else { 1.0 };
-    let rounding = egui::Rounding::same(4.0);
-    paint_preview_canvas(ui.painter(), rect, rounding, preview_bg);
-    ui.painter()
-        .rect_stroke(rect, rounding, egui::Stroke::new(stroke_w, border_color));
-
-    // Inset so the rendered text doesn't sit flush against the badge
-    // area at the top. The inner rect is the "frame" we treat as the
-    // 0–1 normalized coordinate space for `TitleData::position`.
-    let inner = rect.shrink2(egui::vec2(8.0, 16.0));
-    paint_card_text(
-        ui.painter(),
-        inner,
-        title,
-        preview_text_override,
-        elapsed_secs,
+    let caption = format!(
+        "{} \u{00B7} Built-in{}",
+        title.category,
+        if title.animation.is_some() { " \u{00B7} Animated" } else { "" },
     );
-
-    // Top-right BUILT-IN / USER badge (USER stub for now since the
-    // registry has no user-imported templates).
-    paint_corner_badge(ui, theme, rect, "BUILT-IN", BadgeKind::Builtin, true);
-    // Top-left "+ ANIMATED" badge.
-    if title.animation.is_some() {
-        paint_corner_badge(ui, theme, rect, "+ ANIMATED", BadgeKind::Animated, false);
-    }
+    crate::browser::library_card::library_card(ui, rect, title.name, &caption, is_selected, hovered, theme, |p, preview| {
+        let top = egui::Rounding { nw: crate::theme::radius::PANEL, ne: crate::theme::radius::PANEL, sw: 0.0, se: 0.0 };
+        paint_preview_canvas(p, preview, top, preview_bg);
+        // The inner rect is the frame for `TitleData::position`.
+        let inner = preview.shrink2(egui::vec2(8.0, 8.0));
+        paint_card_text(p, inner, title, preview_text_override, elapsed_secs);
+    });
     resp
 }
 
@@ -1883,55 +1863,7 @@ fn update_anim_state(ui: &egui::Ui, title_name: &str, active: bool) {
     });
 }
 
-#[derive(Debug, Clone, Copy)]
-enum BadgeKind {
-    Builtin,
-    Animated,
-}
 
-/// Place a small pill-shaped badge in either the top-left or top-right
-/// corner of `rect`. Both badges share the dark high-contrast style so
-/// they read against any preview background.
-fn paint_corner_badge(
-    ui: &egui::Ui,
-    theme: &KlippTheme,
-    rect: egui::Rect,
-    label: &str,
-    kind: BadgeKind,
-    right_aligned: bool,
-) {
-    let (fg, bg) = match kind {
-        BadgeKind::Builtin => (
-            theme.text_secondary,
-            egui::Color32::from_rgba_unmultiplied(0, 0, 0, 180),
-        ),
-        BadgeKind::Animated => (
-            theme.text_primary,
-            egui::Color32::from_rgba_unmultiplied(0, 0, 0, 180),
-        ),
-    };
-    let painter = ui.painter();
-    let font = egui::FontId::proportional(10.0);
-    let galley = painter.layout_no_wrap(label.to_string(), font, fg);
-    let pad_x = 7.0;
-    let h = 17.0;
-    let w = galley.size().x + pad_x * 2.0;
-    let pos = if right_aligned {
-        egui::pos2(rect.max.x - w - 8.0, rect.min.y + 8.0)
-    } else {
-        egui::pos2(rect.min.x + 8.0, rect.min.y + 8.0)
-    };
-    let badge_rect = egui::Rect::from_min_size(pos, egui::vec2(w, h));
-    painter.rect_filled(badge_rect, egui::Rounding::same(2.0), bg);
-    painter.galley(
-        egui::pos2(
-            badge_rect.min.x + pad_x,
-            badge_rect.center().y - galley.size().y * 0.5,
-        ),
-        galley,
-        fg,
-    );
-}
 
 /// Compact list-mode row used when the user toggles to list view.
 fn title_list_row(

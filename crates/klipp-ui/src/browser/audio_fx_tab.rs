@@ -1855,98 +1855,7 @@ fn audio_fx_row(
     // ── Text block: name + category · description ──
     let text_x = tile_rect.max.x + 12.0;
 
-    // BUILT-IN / LADSPA badge — pinned to the right edge.
-    //
-    // Both badges keep a dark, slightly-tinted bg so the foreground
-    // text reads cleanly. LADSPA uses theme.accent for the text only —
-    // never as a background — to honour the amber-on-amber contrast
-    // rule (amber bg + amber text was unreadable on yellow themes).
-    let (badge_label, badge_fg, badge_bg) = match &entry.source {
-        EffectSource::Audio(_) => (
-            "BUILT-IN",
-            theme.text_secondary,
-            egui::Color32::from_rgba_premultiplied(
-                theme.text_dim.r(),
-                theme.text_dim.g(),
-                theme.text_dim.b(),
-                28,
-            ),
-        ),
-        EffectSource::Ladspa(_) => (
-            "LADSPA",
-            theme.accent,
-            egui::Color32::from_rgba_premultiplied(
-                theme.bg_panel.r(),
-                theme.bg_panel.g(),
-                theme.bg_panel.b(),
-                255,
-            ),
-        ),
-        EffectSource::Lv2(_) => (
-            "LV2",
-            theme.text_secondary,
-            egui::Color32::from_rgba_premultiplied(
-                theme.bg_panel.r(),
-                theme.bg_panel.g(),
-                theme.bg_panel.b(),
-                255,
-            ),
-        ),
-        EffectSource::Clap(_) => (
-            "CLAP",
-            theme.text_secondary,
-            egui::Color32::from_rgba_premultiplied(
-                theme.bg_panel.r(),
-                theme.bg_panel.g(),
-                theme.bg_panel.b(),
-                255,
-            ),
-        ),
-        _ => ("", theme.text_dim, egui::Color32::TRANSPARENT),
-    };
-    let badge_pad = 8.0;
-    let badge_galley = ui.painter().layout_no_wrap(
-        badge_label.to_string(),
-        egui::FontId::proportional(10.0),
-        badge_fg,
-    );
-    let badge_w = badge_galley.size().x + badge_pad * 2.0;
-    let badge_h = 18.0;
-    let badge_rect = egui::Rect::from_min_size(
-        egui::pos2(
-            row_rect.max.x - badge_w - 12.0,
-            row_rect.min.y + 10.0,
-        ),
-        egui::vec2(badge_w, badge_h),
-    );
-    ui.painter().rect_filled(badge_rect, egui::Rounding::same(2.0), badge_bg);
-    if matches!(&entry.source, EffectSource::Ladspa(_)) {
-        // Subtle amber outline so the LADSPA pill still reads as the
-        // brand colour, but contained — never as a fill.
-        ui.painter().rect_stroke(
-            badge_rect,
-            egui::Rounding::same(2.0),
-            egui::Stroke::new(
-                1.0_f32,
-                egui::Color32::from_rgba_premultiplied(
-                    theme.accent.r(),
-                    theme.accent.g(),
-                    theme.accent.b(),
-                    140,
-                ),
-            ),
-        );
-    }
-    ui.painter().galley(
-        egui::pos2(
-            badge_rect.min.x + badge_pad,
-            badge_rect.center().y - badge_galley.size().y * 0.5,
-        ),
-        badge_galley,
-        badge_fg,
-    );
-
-    let text_max_x = badge_rect.min.x - 8.0;
+    let text_max_x = row_rect.max.x - 12.0;
     let text_w = (text_max_x - text_x).max(40.0);
 
     // Single-line layouts with manual ellipsis truncation. The earlier
@@ -1969,11 +1878,19 @@ fn audio_fx_row(
         theme.text_primary,
     );
 
-    let sub_text = format!(
-        "{} \u{00B7} {}",
-        crate::browser::effects_tab::display_category_for(entry),
-        description_for(entry)
-    );
+    // Category, then what the effect does for a built-in, or where a
+    // plugin comes from (its format and maker), never a URI.
+    let what = description_for(entry);
+    let plugin_line = what.starts_with("LV2 plugin:") || what.starts_with("CLAP plugin:") || what.starts_with("LADSPA plugin:");
+    let sub_text = if plugin_line {
+        if entry.grouping.is_empty() || entry.grouping == entry.source_label {
+            format!("{} \u{00B7} {}", crate::browser::effects_tab::display_category_for(entry), entry.source_label)
+        } else {
+            format!("{} \u{00B7} {} \u{00B7} {}", crate::browser::effects_tab::display_category_for(entry), entry.source_label, entry.grouping)
+        }
+    } else {
+        format!("{} \u{00B7} {}", crate::browser::effects_tab::display_category_for(entry), what)
+    };
     let sub_truncated = truncate_to_width(
         ui,
         &sub_text,

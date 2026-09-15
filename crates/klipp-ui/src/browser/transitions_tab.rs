@@ -1690,7 +1690,7 @@ pub fn show(
                 let render_grid = *view_mode == EffectViewMode::Grid;
                 if render_grid {
                     let card_w = ((avail_w - spacing) / 2.0).floor();
-                    let card_h = (card_w * 9.0 / 16.0).round().max(96.0);
+                    let card_h = (card_w * 9.0 / 16.0).round().max(72.0) + crate::browser::library_card::CAPTION_H;
                     egui::Grid::new("transitions_grid")
                         .num_columns(2)
                         .spacing([spacing, spacing])
@@ -1858,128 +1858,43 @@ fn transition_card(
 
     if ui.is_rect_visible(rect) {
         let hovered = resp.hovered();
-        let border_color = if is_selected {
-            theme.accent
-        } else if hovered {
-            theme.accent_dim
-        } else {
-            theme.border
-        };
-        let stroke_w: f32 = if is_selected { 2.0 } else { 1.0 };
-        let rounding = egui::Rounding::same(4.0);
-
-        // Base canvas — neutral dark fill so the two-tone preview pops.
-        ui.painter().rect_filled(rect, rounding, theme.bg_panel);
-        ui.painter()
-            .rect_stroke(rect, rounding, egui::Stroke::new(stroke_w, border_color));
-
         // Animate when hovered/selected; otherwise show the static
         // mid-pose so the card communicates the transition's shape at
         // a glance.
-        let progress = if elapsed_secs > 0.0 {
-            tx_progress(elapsed_secs)
-        } else {
-            0.5
-        };
+        let progress = if elapsed_secs > 0.0 { tx_progress(elapsed_secs) } else { 0.5 };
+        let caption = format!("{} \u{00B7} Built-in", tr.category.label());
+        crate::browser::library_card::library_card(ui, rect, spec.display_name, &caption, is_selected, hovered, theme, |p, preview| {
+            // Static A/B halves give every card the same identity;
+            // the per-transition closure paints its shape over them,
+            // and the category overlay adds motion while hovered.
+            let canvas = preview.shrink(1.0);
+            paint_ab_canvas(p, canvas, progress);
+            let clip_painter = p.with_clip_rect(canvas);
+            (tr.preview)(&clip_painter, canvas, theme, progress);
+            if elapsed_secs > 0.0 {
+                paint_kind_motion_overlay(&clip_painter, canvas, tr.kind, progress);
+            }
 
-        // Static A/B halves (always the same — provides identity even
-        // if the per-transition closure is a no-op for some kinds).
-        let canvas = rect.shrink(1.0);
-        paint_ab_canvas(ui.painter(), canvas, progress);
-
-        // Per-transition preview overlay, clipped to the canvas. The
-        // closure either paints a static composition (most kinds) or
-        // a progress-driven shape (the few that use _progress).
-        let clip_painter = ui.painter().with_clip_rect(canvas);
-        (tr.preview)(&clip_painter, canvas, theme, progress);
-
-        // Animated overlay driven by category — wipe sweeps a boundary,
-        // slide moves a colored block, zoom expands a tile, etc. This
-        // sits on top of the static preview so the user sees motion
-        // when hovering even if the underlying preview closure is
-        // static.
-        if elapsed_secs > 0.0 {
-            let clip_painter = ui.painter().with_clip_rect(canvas);
-            paint_kind_motion_overlay(&clip_painter, canvas, tr.kind, progress);
-        }
-
-        // Center name pill — small dark backdrop tint behind text.
-        let pill_text = spec.display_name.to_string();
-        let font = egui::FontId::proportional(11.0);
-        let galley = ui.painter().layout_no_wrap(
-            pill_text.clone(),
-            font.clone(),
-            theme.text_primary,
-        );
-        let pad_x = 10.0;
-        let pad_y = 5.0;
-        let pill_w = galley.size().x + pad_x * 2.0;
-        let pill_h = galley.size().y + pad_y * 2.0;
-        let pill_rect = egui::Rect::from_center_size(
-            canvas.center(),
-            egui::vec2(pill_w, pill_h),
-        );
-        // Backdrop alpha eases from 220 (idle) → 110 (active) so the
-        // animation reads through the pill while still keeping the
-        // name legible.
-        let backdrop_alpha = if elapsed_secs > 0.0 {
-            (220.0 - 110.0 * tx_progress(elapsed_secs)) as u8
-        } else {
-            220
-        };
-        let backdrop = egui::Color32::from_rgba_unmultiplied(
-            theme.bg_panel.r(),
-            theme.bg_panel.g(),
-            theme.bg_panel.b(),
-            backdrop_alpha,
-        );
-        ui.painter().rect_filled(pill_rect, egui::Rounding::same(4.0), backdrop);
-        ui.painter().rect_stroke(
-            pill_rect,
-            egui::Rounding::same(4.0),
-            egui::Stroke::new(1.0_f32, theme.border),
-        );
-        ui.painter().text(
-            canvas.center(),
-            egui::Align2::CENTER_CENTER,
-            pill_text,
-            font,
-            theme.text_primary,
-        );
-
-        // Top-right BUILT-IN badge.
-        paint_corner_badge(ui, theme, rect, "BUILT-IN", true);
-
-        // Optional bottom-right direction indicator for slides/wipes
-        // with an obvious axis. Looks at the kind name.
-        let kind_name = format!("{:?}", tr.kind).to_lowercase();
-        let arrow = if kind_name.contains("up") {
-            Some("\u{2191}")
-        } else if kind_name.contains("down") {
-            Some("\u{2193}")
-        } else if kind_name.contains("left") {
-            Some("\u{2190}")
-        } else if kind_name.contains("right") {
-            Some("\u{2192}")
-        } else {
-            None
-        };
-        if let Some(g) = arrow {
-            let pos = egui::pos2(rect.max.x - 20.0, rect.max.y - 18.0);
-            let ind_rect = egui::Rect::from_center_size(pos, egui::vec2(28.0, 18.0));
-            ui.painter().rect_filled(
-                ind_rect,
-                egui::Rounding::same(4.0),
-                egui::Color32::from_rgba_unmultiplied(0, 0, 0, 180),
-            );
-            ui.painter().text(
-                ind_rect.center(),
-                egui::Align2::CENTER_CENTER,
-                g,
-                egui::FontId::proportional(11.0),
-                theme.text_primary,
-            );
-        }
+            // Direction indicator for slides and wipes with an axis.
+            let kind_name = format!("{:?}", tr.kind).to_lowercase();
+            let arrow = if kind_name.contains("up") {
+                Some("\u{2191}")
+            } else if kind_name.contains("down") {
+                Some("\u{2193}")
+            } else if kind_name.contains("left") {
+                Some("\u{2190}")
+            } else if kind_name.contains("right") {
+                Some("\u{2192}")
+            } else {
+                None
+            };
+            if let Some(g) = arrow {
+                let pos = egui::pos2(canvas.max.x - 16.0, canvas.max.y - 12.0);
+                let ind_rect = egui::Rect::from_center_size(pos, egui::vec2(24.0, 16.0));
+                p.rect_filled(ind_rect, crate::theme::radius::CONTROL, egui::Color32::from_rgba_unmultiplied(0, 0, 0, 180));
+                p.text(ind_rect.center(), egui::Align2::CENTER_CENTER, g, egui::FontId::proportional(11.0), theme.text_primary);
+            }
+        });
     }
 
     resp
@@ -2866,43 +2781,6 @@ fn paint_kind_motion_overlay(
                   // helper kept around for future Iris* variants.
 }
 
-fn paint_corner_badge(
-    ui: &egui::Ui,
-    theme: &KlippTheme,
-    rect: egui::Rect,
-    label: &str,
-    right_aligned: bool,
-) {
-    let painter = ui.painter();
-    let font = egui::FontId::proportional(10.0);
-    let galley = painter.layout_no_wrap(
-        label.to_string(),
-        font.clone(),
-        theme.text_secondary,
-    );
-    let pad_x = 7.0;
-    let h = 17.0;
-    let w = galley.size().x + pad_x * 2.0;
-    let pos = if right_aligned {
-        egui::pos2(rect.max.x - w - 8.0, rect.min.y + 8.0)
-    } else {
-        egui::pos2(rect.min.x + 8.0, rect.min.y + 8.0)
-    };
-    let badge_rect = egui::Rect::from_min_size(pos, egui::vec2(w, h));
-    painter.rect_filled(
-        badge_rect,
-        egui::Rounding::same(2.0),
-        egui::Color32::from_rgba_unmultiplied(0, 0, 0, 180),
-    );
-    painter.galley(
-        egui::pos2(
-            badge_rect.min.x + pad_x,
-            badge_rect.center().y - galley.size().y * 0.5,
-        ),
-        galley,
-        theme.text_secondary,
-    );
-}
 
 // ─────────────── Sidebar widgets ───────────────
 

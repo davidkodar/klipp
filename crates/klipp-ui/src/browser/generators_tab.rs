@@ -366,7 +366,7 @@ pub fn show(
 
                 if render_grid {
                     let card_w = ((avail_w - spacing) / 2.0).floor();
-                    let card_h = (card_w * 9.0 / 16.0).round().max(72.0);
+                    let card_h = (card_w * 9.0 / 16.0).round().max(72.0) + crate::browser::library_card::CAPTION_H;
                     egui::Grid::new("generators_grid")
                         .num_columns(2)
                         .spacing([spacing, spacing])
@@ -437,50 +437,15 @@ fn generator_card(
     );
 
     let hovered = resp.hovered();
-    let border_color = if is_selected {
-        theme.accent
-    } else if hovered {
-        theme.accent_dim
-    } else {
-        theme.border
-    };
-
-    ui.painter().rect_filled(rect, 4.0, theme.bg_raised);
-
-    // Generator preview fills the card; a thin 2px border at the top
-    // hints at the card edge but lets the swatch read edge-to-edge.
-    let preview_rect = rect.shrink(1.0);
-    let data = (tmpl.create_data)();
-    paint_generator_preview(ui.painter(), preview_rect, &data);
-
-    // Top-right BUILT-IN / USER badge — same shape as titles_tab so
-    // the visual language is consistent across Library tabs.
-    paint_corner_badge(
-        ui.painter(),
-        theme,
-        egui::Rect::from_min_max(
-            egui::pos2(rect.max.x - 80.0, rect.min.y + 4.0),
-            egui::pos2(rect.max.x - 4.0, rect.min.y + 22.0),
-        ),
-        "BUILT-IN",
-        theme.text_secondary,
-        theme.bg_panel,
+    let caption = format!(
+        "{} \u{00B7} Built-in{}",
+        tmpl.category,
+        if tmpl.animated { " \u{00B7} Animated" } else { "" },
     );
-
-    // Top-left ANIMATED chip when applicable — matches transitions_tab
-    // pattern (animated transitions wear the same chip).
-    if tmpl.animated {
-        paint_animated_chip(
-            ui.painter(),
-            theme,
-            egui::Rect::from_min_max(
-                egui::pos2(rect.min.x + 4.0, rect.min.y + 4.0),
-                egui::pos2(rect.min.x + 92.0, rect.min.y + 22.0),
-            ),
-        );
-    }
-
-    ui.painter().rect_stroke(rect, 4.0, egui::Stroke::new(if is_selected { 2.0_f32 } else { 1.0_f32 }, border_color));
+    let data = (tmpl.create_data)();
+    crate::browser::library_card::library_card(ui, rect, tmpl.name, &caption, is_selected, hovered, theme, |p, preview| {
+        paint_generator_preview(p, preview.shrink(1.0), &data);
+    });
 
     resp
 }
