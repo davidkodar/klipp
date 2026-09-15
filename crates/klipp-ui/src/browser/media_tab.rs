@@ -276,6 +276,7 @@ pub fn show(
             has_zone: m.default_source_in.is_some() && m.default_source_out.is_some(),
             kind: m.kind.clone(),
             columns: columns.iter().map(|c| c.text(m)).collect(),
+            synced_audio: m.synced_audio.is_some(),
         })
         .collect();
 
@@ -1266,9 +1267,9 @@ fn render_list_view(
             }
             resp.context_menu(|ui| {
                 if state.selected_media_ids.len() > 1 && state.selected_media_ids.contains(&item.id) {
-                    show_multi_context_menu(ui, &state.selected_media_ids, cmds);
+                    show_multi_context_menu(ui, &state.selected_media_ids, sync_pair_of(state), cmds);
                 } else {
-                    show_context_menu(ui, item.id, &item.path, item.offline, &item.filename, item.has_zone, item.parent_media_id.is_some(), cmds);
+                    show_context_menu(ui, item.id, &item.path, item.offline, &item.filename, item.has_zone, item.parent_media_id.is_some(), item.synced_audio, cmds);
                 }
             });
         }
@@ -1670,9 +1671,9 @@ fn render_grid_view(
 
             card_resp.context_menu(|ui| {
                 if state.selected_media_ids.len() > 1 && state.selected_media_ids.contains(&item.id) {
-                    show_multi_context_menu(ui, &state.selected_media_ids, cmds);
+                    show_multi_context_menu(ui, &state.selected_media_ids, sync_pair_of(state), cmds);
                 } else {
-                    show_context_menu(ui, item.id, &item.path, item.offline, &item.filename, item.has_zone, item.parent_media_id.is_some(), cmds);
+                    show_context_menu(ui, item.id, &item.path, item.offline, &item.filename, item.has_zone, item.parent_media_id.is_some(), item.synced_audio, cmds);
                 }
             });
 
@@ -1951,6 +1952,8 @@ struct MediaRow {
     kind: klipp_media::MediaItemKind,
     /// The list's columns as text, in the order the list shows them.
     columns: Vec<String>,
+    /// A separate recording is paired with the clip.
+    synced_audio: bool,
 }
 
 fn show_context_menu(
@@ -1961,8 +1964,13 @@ fn show_context_menu(
     filename: &str,
     has_zone: bool,
     is_subclip: bool,
+    synced_audio: bool,
     cmds: &mut Vec<AppCommand>,
 ) {
+    if synced_audio && ui.button("Remove Synced Audio").on_hover_text("The clip goes back to its own sound.").clicked() {
+        cmds.push(AppCommand::ClearSyncedAudio { video_id: media_id });
+        ui.close_menu();
+    }
     // Relink — only shown for offline items, sits at the top so it's
     // the first action a user sees when reaching for a missing clip.
     if offline {
@@ -2130,9 +2138,29 @@ fn handle_media_click(
     }
 }
 
+/// The video and audio item of a two-item selection that could be
+/// synced: one clip with a picture, one recording without.
+fn sync_pair_of(state: &AppState) -> Option<(MediaId, MediaId)> {
+    if state.selected_media_ids.len() != 2 {
+        return None;
+    }
+    let items: Vec<&klipp_media::MediaItem> = state.selected_media_ids.iter().filter_map(|id| state.media_pool.get(id)).collect();
+    let [a, b] = items[..] else { return None };
+    let is_video = |m: &klipp_media::MediaItem| !m.video_codec.is_empty() && !m.is_still;
+    let is_audio = |m: &klipp_media::MediaItem| m.has_audio && m.video_codec.is_empty();
+    if is_video(a) && is_audio(b) {
+        Some((a.id, b.id))
+    } else if is_video(b) && is_audio(a) {
+        Some((b.id, a.id))
+    } else {
+        None
+    }
+}
+
 fn show_multi_context_menu(
     ui: &mut egui::Ui,
     selected_ids: &std::collections::HashSet<MediaId>,
+    sync_pair: Option<(MediaId, MediaId)>,
     cmds: &mut Vec<AppCommand>,
 ) {
     let count = selected_ids.len();
@@ -2147,6 +2175,15 @@ fn show_multi_context_menu(
     if ui.button("Refresh Metadata").on_hover_text("Read these files again for what the camera recorded.").clicked() {
         ui.close_menu();
         cmds.push(AppCommand::RefreshMediaMetadata { media_ids: selected_ids.iter().copied().collect() });
+    }
+    if let Some((video_id, audio_id)) = sync_pair {
+        if ui.button("Sync Video and Audio")
+            .on_hover_text("Pair the clip with this recording: by timecode when both carry one, by the sound otherwise. The recording then goes under the clip when it is added to the timeline.")
+            .clicked()
+        {
+            ui.close_menu();
+            cmds.push(AppCommand::SyncMediaPair { video_id, audio_id });
+        }
     }
     ui.separator();
     ui.menu_button("Move to bin", |ui| {

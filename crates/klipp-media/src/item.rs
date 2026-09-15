@@ -267,6 +267,10 @@ pub struct MediaItem {
     /// What the editor logged about the clip.
     #[serde(default)]
     pub log: klipp_core::ClipLog,
+    /// The separate recording paired with this clip, and its offset:
+    /// placed under the clip instead of the camera's own sound.
+    #[serde(default)]
+    pub synced_audio: Option<klipp_core::SyncedAudio>,
     /// Path to skim-optimised file (all-keyframe transcode for instant seeking)
     #[serde(default)]
     pub skim_file: Option<PathBuf>,
@@ -398,6 +402,7 @@ impl MediaItem {
             metadata_read: false,
             truncated_from_secs: None,
             log: Default::default(),
+            synced_audio: None,
         }
     }
 
@@ -572,6 +577,7 @@ mod subclip_tests {
             metadata_read: false,
             truncated_from_secs: None,
             log: Default::default(),
+            synced_audio: None,
         }
     }
 
@@ -749,6 +755,7 @@ mod effective_rotation_tests {
             metadata_read: false,
             truncated_from_secs: None,
             log: Default::default(),
+            synced_audio: None,
         }
     }
 
@@ -853,6 +860,7 @@ pub fn merge_reprobed(old: &MediaItem, fresh: &mut MediaItem) {
     fresh.parent_media_id = old.parent_media_id;
     fresh.kind = old.kind.clone();
     fresh.log = old.log.clone();
+    fresh.synced_audio = old.synced_audio.clone();
     if same_file_as_probed(old, fresh) {
         fresh.proxy_path = old.proxy_path.clone();
         fresh.proxy_ready = old.proxy_ready;
@@ -921,6 +929,7 @@ impl MediaItem {
             metadata_read: false,
             truncated_from_secs: None,
             log: Default::default(),
+            synced_audio: None,
         }
     }
 }

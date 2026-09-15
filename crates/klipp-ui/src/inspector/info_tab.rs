@@ -457,6 +457,7 @@ pub fn show_bin_media(
         }
 
         truncated_row(ui, theme, pad, row_h, w, media);
+        synced_audio_row(ui, theme, pad, row_h, w, state, media);
         shot_rows(ui, theme, pad, row_h, w, dim, &media.shot);
 
         // Encoder
@@ -893,6 +894,7 @@ pub fn show_clip(
             });
         }
         truncated_row(ui, theme, pad, row_h, w, media);
+        synced_audio_row(ui, theme, pad, row_h, w, state, media);
         shot_rows(ui, theme, pad, row_h, w, dim, &media.shot);
 
         if let Some(ref enc) = media.encoder {
@@ -1324,6 +1326,16 @@ fn section_card(
 }
 
 /// Draw a single key-value row with custom right-side rendering.
+/// The separate recording paired with the clip, and its offset.
+fn synced_audio_row(ui: &mut egui::Ui, theme: &KlippTheme, pad: f32, row_h: f32, w: f32, state: &AppState, media: &klipp_media::MediaItem) {
+    let Some(sync) = &media.synced_audio else { return };
+    let name = state.media_pool.get(&sync.audio_media_id).map(|m| m.filename.clone()).unwrap_or_else(|| "missing recording".to_string());
+    let text = format!("{name} ({})", sync.describe());
+    info_row_custom(ui, theme, pad, row_h, w, "Synced audio", |ui, rx, cy| {
+        ui.painter().text(egui::pos2(rx, cy), egui::Align2::RIGHT_CENTER, text, egui::FontId::proportional(12.0), theme.text_accent);
+    });
+}
+
 /// A file cut short: what it holds against what its header claims.
 fn truncated_row(ui: &mut egui::Ui, theme: &KlippTheme, pad: f32, row_h: f32, w: f32, media: &klipp_media::MediaItem) {
     let Some(claimed) = media.truncated_from_secs else { return };

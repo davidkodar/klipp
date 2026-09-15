@@ -66,9 +66,20 @@ struct LinkedAudioAppend {
 /// `None` when there is nothing to do or it cannot be done: no such
 /// clip, not on a video track, already linked to something, or no audio
 /// track and none could be made.
+/// A separate recording to put under a clip instead of its own sound:
+/// which file, how far into it the clip's first frame falls, and how
+/// long it is.
+#[derive(Debug, Clone, Copy)]
+struct ExternalAudio {
+    media_id: klipp_core::MediaId,
+    offset_secs: f64,
+    len_secs: f64,
+}
+
 fn attach_linked_audio_to_clip(
     seq: &mut klipp_timeline::Sequence,
     clip_id: klipp_core::ClipId,
+    external: Option<ExternalAudio>,
 ) -> Option<LinkedAudioAppend> {
     let video = seq
         .tracks
@@ -80,6 +91,31 @@ fn attach_linked_audio_to_clip(
         return None;
     }
     let klipp_timeline::ClipKind::Media { media_id } = video.kind else { return None };
+    // The recording's range under the clip: the clip's source range
+    // shifted by the offset, and cut where the recording does not reach
+    // — a recorder started late leaves the clip's head silent, one
+    // stopped early its tail.
+    let (media_id, timeline_in, timeline_out, source_in, source_out) = match external {
+        None => (media_id, video.timeline_in, video.timeline_out, video.source_in, video.source_out),
+        Some(ext) => {
+            let rate = video.source_in.rate;
+            let (mut ain, mut aout) = (video.source_in.to_secs_f64() + ext.offset_secs, video.source_out.to_secs_f64() + ext.offset_secs);
+            let (mut tin, mut tout) = (video.timeline_in.to_secs_f64(), video.timeline_out.to_secs_f64());
+            if ain < 0.0 {
+                tin -= ain;
+                ain = 0.0;
+            }
+            if aout > ext.len_secs {
+                tout -= aout - ext.len_secs;
+                aout = ext.len_secs;
+            }
+            if tout <= tin || aout <= ain {
+                return None;
+            }
+            let t = |secs: f64| klipp_core::RationalTime::from_secs_f64(secs, rate);
+            (ext.media_id, t(tin), t(tout), t(ain), t(aout))
+        }
+    };
 
     let (track_index, created_track_at) = match seq
         .tracks
@@ -95,13 +131,7 @@ fn attach_linked_audio_to_clip(
         }
     };
 
-    let mut audio = klipp_timeline::Clip::media(
-        media_id,
-        video.timeline_in,
-        video.timeline_out,
-        video.source_in,
-        video.source_out,
-    );
+    let mut audio = klipp_timeline::Clip::media(media_id, timeline_in, timeline_out, source_in, source_out);
     audio.linked_clip_id = Some(clip_id);
     let audio_id = audio.id;
 
@@ -1339,6 +1369,7 @@ impl KlippApp {
                         waveform_data: None,
                         audio_cache: None,
                         log: Default::default(),
+                        synced_audio: None,
                     };
 
                     // Auto-detect log format from metadata
@@ -1574,7 +1605,9 @@ impl KlippApp {
                 // Audio sync events come through proxy_event_rx (our generic
                 // background-job channel) and are handled in drain_proxy_events.
                 AppEvent::AudioSyncComplete { .. }
-                | AppEvent::AudioSyncFailed { .. } => {}
+                | AppEvent::AudioSyncFailed { .. }
+                | AppEvent::MediaSyncComplete { .. }
+                | AppEvent::MediaSyncFailed { .. } => {}
             }
         }
 
@@ -3510,6 +3543,79 @@ impl KlippApp {
     /// and so does appending a silent file, and the next clip with sound
     /// then goes in the hole rather than under itself. Found by doing
     /// exactly that on a real timeline.
+    /// The recording synced to `media_id`, if any and if it is still in
+    /// the pool.
+    fn external_audio_of(&self, media_id: klipp_core::MediaId) -> Option<ExternalAudio> {
+        let sync = self.state.media_pool.get(&media_id)?.synced_audio.as_ref()?;
+        let audio = self.state.media_pool.get(&sync.audio_media_id)?;
+        Some(ExternalAudio { media_id: audio.id, offset_secs: sync.offset_secs, len_secs: audio.duration.to_secs_f64() })
+    }
+
+    /// Pair a camera clip with a separate recording. The two files'
+    /// timecodes settle it at once when both carry one; otherwise the
+    /// two sounds are correlated on a thread and the result arrives as
+    /// an event.
+    fn spawn_media_sync(&mut self, video_id: klipp_core::MediaId, audio_id: klipp_core::MediaId) {
+        let (Some(video), Some(audio)) = (self.state.media_pool.get(&video_id), self.state.media_pool.get(&audio_id)) else {
+            self.state.toast.show("Sync: one of the clips is no longer in the pool");
+            return;
+        };
+        if let (Some(vt), Some(at)) = (&video.shot.start_timecode, &audio.shot.start_timecode) {
+            let fps = video.fps;
+            if let (Some(vs), Some(a_s)) = (klipp_core::timecode_to_secs(vt, fps), klipp_core::timecode_to_secs(at, fps)) {
+                let sync = klipp_core::SyncedAudio { audio_media_id: audio_id, offset_secs: vs - a_s, method: klipp_core::SyncMethod::Timecode };
+                self.apply_media_sync(video_id, sync);
+                return;
+            }
+        }
+        if !video.has_audio {
+            self.state.toast.show("Sync: the clip has no sound to match against and no timecode to go by");
+            return;
+        }
+        let (Some(video_pcm), Some(audio_pcm)) = (
+            video.audio_cache.as_ref().map(|c| c.pcm_path.clone()),
+            audio.audio_cache.as_ref().map(|c| c.pcm_path.clone()),
+        ) else {
+            self.state.toast.show("Sync: the audio cache is not ready for one of the clips yet; try again in a moment");
+            return;
+        };
+        let tx = self.proxy_event_tx.clone();
+        self.state.toast.show("Syncing by sound\u{2026}");
+        std::thread::Builder::new()
+            .name("klipp-media-sync".into())
+            .spawn(move || {
+                use crate::audio_sync::{find_sync_offset, load_pcm_mono};
+                const SR: u32 = 48_000;
+                let (v, a) = match (load_pcm_mono(&video_pcm), load_pcm_mono(&audio_pcm)) {
+                    (Ok(v), Ok(a)) => (v, a),
+                    (Err(e), _) | (_, Err(e)) => {
+                        let _ = tx.send(AppEvent::MediaSyncFailed { video_id, error: format!("load PCM: {e}") });
+                        return;
+                    }
+                };
+                // Positive: the recording's matching sound begins further
+                // into its buffer, so audio time = video time + offset.
+                let offset = find_sync_offset(&v, &a, SR, 120.0);
+                let sync = klipp_core::SyncedAudio {
+                    audio_media_id: audio_id,
+                    offset_secs: offset as f64 / f64::from(SR),
+                    method: klipp_core::SyncMethod::Waveform,
+                };
+                let _ = tx.send(AppEvent::MediaSyncComplete { video_id, sync });
+            })
+            .ok();
+    }
+
+    fn apply_media_sync(&mut self, video_id: klipp_core::MediaId, sync: klipp_core::SyncedAudio) {
+        let audio_name = self.state.media_pool.get(&sync.audio_media_id).map(|m| m.filename.clone()).unwrap_or_default();
+        let Some(video) = self.state.media_pool.get_mut(&video_id) else { return };
+        let message = format!("Synced {} to {audio_name}: {}", video.filename, sync.describe());
+        video.synced_audio = Some(sync);
+        self.state.dirty = true;
+        tracing::info!("{message}");
+        self.state.toast.show(message);
+    }
+
     fn append_linked_audio(
         &mut self,
         media_id: klipp_core::MediaId,
@@ -3521,13 +3627,16 @@ impl KlippApp {
             return None;
         }
         let item = self.state.media_pool.get(&media_id)?;
-        // Audio-only media is already on an audio track, put there by
-        // the caller; a silent file has nothing to add.
-        if !item.has_audio || item.video_codec.is_empty() {
+        // A synced recording goes under the clip in place of its own
+        // sound. Otherwise audio-only media is already on an audio
+        // track, put there by the caller, and a silent file has nothing
+        // to add.
+        let external = self.external_audio_of(media_id);
+        if external.is_none() && (!item.has_audio || item.video_codec.is_empty()) {
             return None;
         }
         let seq_idx = self.state.active_sequence_idx;
-        attach_linked_audio_to_clip(&mut self.state.sequences[seq_idx], video_clip_id)
+        attach_linked_audio_to_clip(&mut self.state.sequences[seq_idx], video_clip_id, external)
     }
 
     fn sync_sequence_to_engine(&self) {
@@ -5199,7 +5308,12 @@ impl KlippApp {
                                 // none. The record's clip takes the link so a
                                 // redo brings it back linked.
                                 let (audio, created_audio_track_at) = if item.has_audio && !is_audio_only {
-                                    match attach_linked_audio_to_clip(&mut self.state.sequences[seq_idx], new_id) {
+                                    let external = self.state.sequences[seq_idx]
+                            .all_clips()
+                            .find(|c| c.id == new_id)
+                            .and_then(|c| c.media_id())
+                            .and_then(|m| self.external_audio_of(m));
+                        match attach_linked_audio_to_clip(&mut self.state.sequences[seq_idx], new_id, external) {
                                         Some(a) => {
                                             edit.clip.linked_clip_id = Some(a.clip.id);
                                             (Some((a.clip, a.track_index)), a.created_track_at)
@@ -10974,12 +11088,19 @@ impl KlippApp {
                             _ => None,
                         })
                         .and_then(|m| self.state.media_pool.get(&m))
-                        .is_some_and(|i| i.has_audio);
+                        .is_some_and(|i| i.has_audio || i.synced_audio.is_some());
                     if !has_audio {
                         self.state.toast.show("That clip's media has no audio");
                         return true;
                     }
-                    match attach_linked_audio_to_clip(&mut self.state.sequences[seq_idx], *clip_id) {
+                    match {
+                        let external = self.state.sequences[seq_idx]
+                            .all_clips()
+                            .find(|c| c.id == *clip_id)
+                            .and_then(|c| c.media_id())
+                            .and_then(|m| self.external_audio_of(m));
+                        attach_linked_audio_to_clip(&mut self.state.sequences[seq_idx], *clip_id, external)
+                    } {
                         Some(a) => {
                             self.state.push_history(EditCommand::LinkedImport {
                                 video: None,
@@ -11554,6 +11675,18 @@ impl KlippApp {
                     self.sync_media_pool_to_engine();
                     true
                 }
+                AppCommand::SyncMediaPair { video_id, audio_id } => {
+                    self.spawn_media_sync(*video_id, *audio_id);
+                    true
+                }
+                AppCommand::ClearSyncedAudio { video_id } => {
+                    if let Some(item) = self.state.media_pool.get_mut(video_id) {
+                        if item.synced_audio.take().is_some() {
+                            self.state.dirty = true;
+                        }
+                    }
+                    true
+                }
                 AppCommand::SetMediaLog { media_id, log } => {
                     if let Some(item) = self.state.media_pool.get_mut(media_id) {
                         if item.log != *log {
@@ -11725,6 +11858,7 @@ impl KlippApp {
                         metadata_read: false,
                         truncated_from_secs: None,
                         log: Default::default(),
+                        synced_audio: None,
                     };
                     self.state.media_pool.add(media_item);
                     // Imports stay off the timeline-edit undo stack (FCP /
@@ -28813,6 +28947,13 @@ impl KlippApp {
                     tracing::warn!("Point tracking failed for {:?}: {}", clip_id, error);
                     self.state.toast.show(format!("Point tracking failed: {error}"));
                 }
+                AppEvent::MediaSyncComplete { video_id, sync } => {
+                    self.apply_media_sync(video_id, sync);
+                }
+                AppEvent::MediaSyncFailed { video_id, error } => {
+                    tracing::warn!("Media sync failed for {:?}: {}", video_id, error);
+                    self.state.toast.show(format!("Sync failed: {error}"));
+                }
                 AppEvent::AudioSyncComplete { clip_id, offset_samples, ref_timeline_in_secs } => {
                     self.apply_audio_sync_result(clip_id, offset_samples, ref_timeline_in_secs);
                 }
@@ -34347,6 +34488,7 @@ fn build_whoosh_media_item(
         metadata_read: false,
         truncated_from_secs: None,
         log: Default::default(),
+        synced_audio: None,
     }
 }
 
@@ -38541,6 +38683,7 @@ mod insert_audio_media_clip_tests {
             metadata_read: false,
             truncated_from_secs: None,
             log: Default::default(),
+            synced_audio: None,
         }
     }
 
@@ -38695,7 +38838,7 @@ mod attach_linked_audio_tests {
         let third = *ids.last().unwrap();
         let want = seq.tracks[vi].find_clip(third).unwrap().clone();
 
-        let added = attach_linked_audio_to_clip(&mut seq, third).expect("attached");
+        let added = attach_linked_audio_to_clip(&mut seq, third, None).expect("attached");
         let audio = &seq.tracks[added.track_index].clips[0];
         assert_eq!(
             audio.timeline_in, want.timeline_in,
@@ -38738,7 +38881,7 @@ mod attach_linked_audio_tests {
         let want = seq.tracks[vi].find_clip(second).unwrap().clone();
         assert!(want.timeline_in > t(0), "the fixture's second clip must not start at zero");
 
-        let added = attach_linked_audio_to_clip(&mut seq, second).expect("attached");
+        let added = attach_linked_audio_to_clip(&mut seq, second, None).expect("attached");
         let audio = &seq.tracks[added.track_index].clips[0];
         assert_eq!(audio.timeline_in, want.timeline_in, "under the clip, not at the start");
         assert_eq!(audio.timeline_out, want.timeline_out);
@@ -38764,12 +38907,61 @@ mod attach_linked_audio_tests {
             c.timeline_out = t(4);
         }
 
-        attach_linked_audio_to_clip(&mut seq, id).expect("attached");
+        attach_linked_audio_to_clip(&mut seq, id, None).expect("attached");
         let ai = audio_track(&seq).unwrap();
         let audio = &seq.tracks[ai].clips[0];
         assert_eq!(audio.source_in, t(3), "the same point in the file");
         assert_eq!(audio.source_out, t(7));
         assert_eq!(audio.timeline_out - audio.timeline_in, t(4), "and the same length");
+    }
+
+    /// A synced recording goes under the clip at its offset, and is cut
+    /// where the recording does not reach: a recorder started late
+    /// leaves the head of the clip silent rather than sound from before
+    /// the recording began.
+    #[test]
+    fn a_synced_recording_lies_under_the_clip_at_its_offset() {
+        let mut seq = Sequence::new_default();
+        let media_id = klipp_core::MediaId::new();
+        let recording = klipp_core::MediaId::new();
+        let vi = video_track(&seq);
+        let id = seq.tracks[vi].append_clip(media_id, t(10));
+        if let Some(c) = seq.tracks[vi].find_clip_mut(id) {
+            c.source_in = t(2);
+            c.source_out = t(7);
+            c.timeline_in = t(0);
+            c.timeline_out = t(5);
+        }
+        // The camera's first frame is 1.5 s into the recording.
+        let ext = ExternalAudio { media_id: recording, offset_secs: 1.5, len_secs: 100.0 };
+        attach_linked_audio_to_clip(&mut seq, id, Some(ext)).expect("attached");
+        let ai = audio_track(&seq).unwrap();
+        let audio = &seq.tracks[ai].clips[0];
+        assert_eq!(audio.media_id(), Some(recording), "the recording, not the camera's sound");
+        assert!((audio.source_in.to_secs_f64() - 3.5).abs() < 1e-6);
+        assert!((audio.source_out.to_secs_f64() - 8.5).abs() < 1e-6);
+        assert_eq!(audio.timeline_in, t(0));
+        assert_eq!(audio.timeline_out, t(5));
+
+        // A recorder started 3 s after the camera: the first second of the
+        // clip has no recording, so the sound starts a second in.
+        let mut seq = Sequence::new_default();
+        let vi = video_track(&seq);
+        let id = seq.tracks[vi].append_clip(media_id, t(10));
+        if let Some(c) = seq.tracks[vi].find_clip_mut(id) {
+            c.source_in = t(2);
+            c.source_out = t(7);
+            c.timeline_in = t(4);
+            c.timeline_out = t(9);
+        }
+        let ext = ExternalAudio { media_id: recording, offset_secs: -3.0, len_secs: 100.0 };
+        attach_linked_audio_to_clip(&mut seq, id, Some(ext)).expect("attached");
+        let ai = audio_track(&seq).unwrap();
+        let audio = &seq.tracks[ai].clips[0];
+        assert!((audio.source_in.to_secs_f64()).abs() < 1e-6, "from the recording's start");
+        assert!((audio.source_out.to_secs_f64() - 4.0).abs() < 1e-6);
+        assert_eq!(audio.timeline_in, t(5), "a second into the clip");
+        assert_eq!(audio.timeline_out, t(9));
     }
 
     /// Asking twice must not stack two copies of the sound.
@@ -38780,11 +38972,11 @@ mod attach_linked_audio_tests {
         let vi = video_track(&seq);
         let id = seq.tracks[vi].append_clip(media_id, t(4));
 
-        attach_linked_audio_to_clip(&mut seq, id).expect("the first attach works");
+        attach_linked_audio_to_clip(&mut seq, id, None).expect("the first attach works");
         let ai = audio_track(&seq).unwrap();
         assert_eq!(seq.tracks[ai].clips.len(), 1);
         assert!(
-            attach_linked_audio_to_clip(&mut seq, id).is_none(),
+            attach_linked_audio_to_clip(&mut seq, id, None).is_none(),
             "the second attach is refused"
         );
         assert_eq!(seq.tracks[ai].clips.len(), 1, "and adds nothing");
@@ -38807,7 +38999,7 @@ mod attach_linked_audio_tests {
             .collect();
 
         for id in &ids {
-            attach_linked_audio_to_clip(&mut seq, *id).expect("attached");
+            attach_linked_audio_to_clip(&mut seq, *id, None).expect("attached");
         }
         let ai = audio_track(&seq).unwrap();
         assert_eq!(seq.tracks[ai].clips.len(), 3, "one audio clip per video clip");

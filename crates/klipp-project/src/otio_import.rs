@@ -315,6 +315,7 @@ fn make_otio_media_item(path: PathBuf, filename: String, fps: Fps, offline: bool
         metadata_read: false,
         truncated_from_secs: None,
         log: Default::default(),
+        synced_audio: None,
     }
 }
 

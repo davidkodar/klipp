@@ -2196,6 +2196,11 @@ pub enum AppCommand {
     /// What the editor logged about a clip: scene, shot, take,
     /// description, comments, keywords, good take, reel.
     SetMediaLog { media_id: MediaId, log: crate::ClipLog },
+    /// Pair a camera clip with a separate recording: by timecode when
+    /// both carry one, by the sound otherwise.
+    SyncMediaPair { video_id: MediaId, audio_id: MediaId },
+    /// Undo the pairing; the clip goes back to its own sound.
+    ClearSyncedAudio { video_id: MediaId },
 
     SetMediaTags { media_id: MediaId, tags: Vec<String> },
     RevealInFileManager { path: PathBuf },
@@ -3330,6 +3335,9 @@ pub enum AppEvent {
     /// reference clip's timeline position at the moment the job was spawned
     /// (read on the UI thread, shipped to the worker, and echoed back so the
     /// completion handler has it without another lookup).
+    /// A pool pair was synced (see `AppCommand::SyncMediaPair`).
+    MediaSyncComplete { video_id: MediaId, sync: crate::SyncedAudio },
+    MediaSyncFailed { video_id: MediaId, error: String },
     AudioSyncComplete {
         clip_id: ClipId,
         offset_samples: i64,
