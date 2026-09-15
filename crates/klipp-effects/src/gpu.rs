@@ -448,11 +448,10 @@ pub enum GpuStage {
     /// blocking readback. Called at the end of post_process_rgba
     /// for cache writes and scope input.
     LinearRgbaToU8 = 3,
-    // Discriminants 4–8 were the legacy in-tree scope-render stage
-    // labels (ScopeWfMaxRefresh / ScopeImgDrain / ScopeHistogram /
-    // ScopeWaveform / ScopeParade). Removed in Phase 8 — the FFmpeg
-    // path does its own timing. The numeric gap is intentional so
-    // any persisted instrumentation logs still resolve.
+    // Discriminants 4–8 were the stage labels of a scope renderer since
+    // removed; the GPU scopes are timed by the engine as one pass. The
+    // numeric gap is intentional so any persisted instrumentation logs
+    // still resolve.
     /// `Frame::into_cpu` in klipp-engine — reads back a
     /// decode-thread-produced GpuFrame to CPU.
     FrameIntoCpu = 9,

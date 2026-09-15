@@ -242,7 +242,7 @@ pub fn show_scope_window(
                                 let pane_rect = egui::Rect::from_min_size(egui::pos2(x, y), egui::vec2(pane_w, pane_h));
                                 // Per-pane border in pure #000000 so it
                                 // blends into the pane's own true-black
-                                // interior (matching the FFmpeg texture
+                                // interior (matching the scope texture
                                 // and the main-dock paint path).
                                 ui.painter().rect_stroke(pane_rect, 0.0,
                                     egui::Stroke::new(0.5_f32, egui::Color32::BLACK));
@@ -608,7 +608,6 @@ fn render_pane_scope(
                     // The engine has not drawn this mode yet (first frame
                     // on a fresh pane, a mode switch): it catches up on its
                     // next scope tick.
-                    let _ = (skin_tone_angle,); // formerly fed render_vectorscope
                     None
                 }
             } else {
@@ -899,7 +898,7 @@ fn render_pane_scope(
             let tint_val = (bri * 2.0).min(1.0).clamp(0.0, 1.0);
             let g = (tint_val * 255.0) as u8;
             // Per-pane Y / R / G / B channel filter — applied as an egui
-            // image tint. The FFmpeg waveform texture paints each channel
+            // image tint. The waveform texture paints each channel
             // in its own colour (R = red, G = green, B = blue), so
             // multiplying the texture by a channel-coloured tint keeps
             // only that channel's trace and masks the other two to zero.
@@ -1149,11 +1148,10 @@ fn draw_pane_settings(
         state.panes[pane_idx].settings = PaneScopeSettings::default();
     }
 
-    // Mirror the main-dock FFmpeg-scope-settings block here for video
-    // scope types so the floating window has full parity. Audio scopes
-    // (Spectrum / Correlation / LoudnessHistory / Spectrogram) and CIE
-    // chromaticity don't go through the FFmpeg path, so skip the block
-    // entirely for them.
+    // The main dock's scope options, here too so the floating window
+    // has full parity. Audio scopes (Spectrum / Correlation /
+    // LoudnessHistory / Spectrogram) and CIE chromaticity are not drawn
+    // by the engine's scopes, so the block is skipped for them.
     let is_video_scope = matches!(
         state.panes[pane_idx].scope_type,
         ScopeType::Waveform | ScopeType::Parade | ScopeType::Vectorscope | ScopeType::Histogram

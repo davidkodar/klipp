@@ -2851,7 +2851,6 @@ pub struct PaneScopeSettings {
     pub vectorscope_graticule_brightness: f32,
     pub low_range: f32,
     pub high_range: f32,
-    pub show_2x_zoom: bool,
     pub show_skin_tone_indicator: bool,
     pub show_graticule: bool,
 
@@ -2901,7 +2900,6 @@ impl Default for PaneScopeSettings {
             vectorscope_graticule_brightness: 0.5,
             low_range: 0.30,
             high_range: 0.70,
-            show_2x_zoom: false,
             show_skin_tone_indicator: false,
             show_graticule: true,
             // Parade

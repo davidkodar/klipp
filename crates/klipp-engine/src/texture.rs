@@ -64,20 +64,10 @@ pub struct FrameBuffer {
     pub nit_map_w: u32,
     pub nit_map_h: u32,
     pub nit_map_step: u32,
-    /// GPU-rendered scope texture (RGBA) — ready for display.
-    /// Legacy singular-scope path: holds whichever mode the main dock
-    /// most recently requested. Kept for back-compat with the in-tree
-    /// GPU/CPU path readers; new code should prefer `scope_textures`.
-    pub scope_texture: Vec<u8>,
-    pub scope_texture_w: u32,
-    pub scope_texture_h: u32,
-    /// Which scope mode was rendered (0=waveform, 1=parade, 2=vectorscope, 3=histogram).
-    pub scope_texture_mode: u8,
-    /// Per-mode rendered scope textures, keyed by mode byte. Engine
-    /// populates one entry per mode in `active_scope_modes` each tick.
-    /// Main dock reads its single active mode; floating multi-scope
-    /// window panes each read their own mode. Replaces the per-pane
-    /// in-UI-thread scope rendering that bypassed the engine entirely.
+    /// The drawn scopes, keyed by mode byte (0=waveform, 1=parade,
+    /// 2=vectorscope, 3=histogram). The engine writes one entry per
+    /// mode in `active_scope_modes` each scope pass; the main dock reads
+    /// its active mode and each floating pane its own.
     pub scope_textures: HashMap<u8, ScopeTextureEntry>,
     pub width: u32,
     pub height: u32,
@@ -147,10 +137,6 @@ impl FrameBuffer {
             scope_preview: Vec::new(),
             scope_preview_w: 0,
             scope_preview_h: 0,
-            scope_texture: Vec::new(),
-            scope_texture_w: 0,
-            scope_texture_h: 0,
-            scope_texture_mode: 255, // invalid = no texture
             scope_textures: HashMap::new(),
             width,
             height,
@@ -314,19 +300,11 @@ impl FrameBuffer {
         self.pending_ready = true;
     }
 
-    /// Write a skim preview frame *and* clear the GPU scope texture.
-    ///
-    /// The UI dispatches `AppCommand::RenderScopesForFrame` right after this
-    /// call (see `app.rs` — `browser_skim_pending` handler), so the engine
-    /// refills `scope_texture` with a fresh GPU-rendered scope within ~1
-    /// tick. We deliberately do NOT clear `scope_texture` here: the stale
-    /// playback scope stays visible during the handful of milliseconds
-    /// before the new one lands, which avoids the CPU-fallback flicker the
-    /// previous clear caused when the user moved the cursor quickly over a
-    /// clip (gap → CPU render → engine refill → swap, repeated per skim
-    /// frame). For modes without a GPU kernel (e.g. vectorscope) the engine
-    /// explicitly clears `scope_texture` so the UI still falls back to CPU
-    /// in that branch.
+    /// Write a skim preview frame. The scope textures are left as they
+    /// are: the UI dispatches `AppCommand::RenderScopesForFrame` right
+    /// after this call, and the previous scope stays visible for the few
+    /// milliseconds until the fresh one lands rather than flickering to
+    /// nothing on every skim frame.
     pub fn write_skim_frame(&mut self, rgba_data: Vec<u8>, width: u32, height: u32) {
         self.write_frame(rgba_data, width, height);
     }
@@ -416,45 +394,22 @@ mod tests {
     }
 
     #[test]
-    fn write_skim_frame_preserves_gpu_scope_texture() {
-        // The CURRENT invariant (committed in f5d11d6 "Match scope
-        // quality during skim to playback"): write_skim_frame must
-        // NOT clear the previous GPU scope texture. The UI keeps
-        // displaying the stale scope for the handful of ms before
-        // the fresh scope lands, which avoids the CPU-fallback
-        // flicker the old clear-on-skim path caused when the user
-        // moved the cursor quickly over a clip. A fresh scope is
-        // then dispatched by the app via AppCommand::RenderScopesForFrame
-        // (see app.rs — browser_skim_pending handler) against the
-        // same RGBA, so the skim scope ends up matching playback
-        // pixel-for-pixel.
-        //
-        // The PREVIOUS invariant (clear on skim) is intentionally
-        // gone; keep this test to prevent a regression that
-        // re-introduces the flicker.
+    fn write_skim_frame_preserves_the_scope_textures() {
+        // A skim frame must not clear the previous scope: the UI keeps
+        // drawing it for the few milliseconds until the fresh one lands,
+        // or every skim frame flickers to nothing. A regression here
+        // brought that flicker back once (f5d11d6).
         let mut fb = FrameBuffer::new(4, 4);
-        fb.scope_texture = vec![99u8; 720 * 256 * 4];
-        fb.scope_texture_w = 720;
-        fb.scope_texture_h = 256;
-        fb.scope_texture_mode = 0; // waveform
+        fb.scope_textures.insert(0, ScopeTextureEntry { data: vec![99u8; 720 * 256 * 4], w: 720, h: 256, generation: 1 });
 
         let skim_rgba = vec![42u8; 4 * 4 * 4];
         fb.write_skim_frame(skim_rgba, 4, 4);
 
-        // Pending frame swapped in correctly.
         assert!(fb.pending_ready, "pending frame should be queued");
         assert_eq!(fb.pending_width, 4);
         assert_eq!(fb.pending_height, 4);
-
-        // Scope texture must be PRESERVED so the UI can keep
-        // drawing the previous scope until the fresh one arrives.
-        assert_eq!(
-            fb.scope_texture.len(), 720 * 256 * 4,
-            "GPU scope texture must survive skim write — clearing it caused flicker"
-        );
-        assert_eq!(fb.scope_texture_w, 720);
-        assert_eq!(fb.scope_texture_h, 256);
-        assert_eq!(fb.scope_texture_mode, 0);
+        let wave = fb.scope_textures.get(&0).expect("the scope survives a skim write");
+        assert_eq!((wave.data.len(), wave.w, wave.h), (720 * 256 * 4, 720, 256));
     }
 
     #[test]

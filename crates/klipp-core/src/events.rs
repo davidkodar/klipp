@@ -1480,11 +1480,9 @@ pub enum AppCommand {
     /// engine has no way to know the scope panel is hidden and
     /// burns the budget on data nobody is looking at.
     SetScopesVisible(bool),
-    /// Render the engine's GPU scope shaders against an arbitrary RGBA frame
-    /// (used for media-browser hover skim and timeline scrub) and write the
-    /// resulting 720×256 texture into `frame_buffer.scope_texture`. Same code
-    /// path the playback pipeline uses, so skim scopes match playback quality
-    /// pixel-for-pixel.
+    /// Draw the scopes of an arbitrary sRGB RGBA frame (a media-browser
+    /// hover skim, a timeline scrub) into `frame_buffer.scope_textures`,
+    /// the way the playback pipeline draws them.
     RenderScopesForFrame { rgba: Vec<u8>, width: u32, height: u32 },
     SetNodeParam { clip_id: ClipId, node_id: uuid::Uuid, param: String, value: f32 },
     /// Called when the user starts dragging a color-grading parameter

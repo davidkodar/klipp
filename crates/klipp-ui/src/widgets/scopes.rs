@@ -3,11 +3,6 @@ use crate::theme::KlippTheme;
 use klipp_engine::SharedFrameBuffer;
 use std::time::Instant;
 
-/// A scope image the engine drew.
-enum ScopeImage {
-    Ready(egui::ColorImage),
-}
-
 /// Persistent state for scope rendering (texture cache + throttling).
 pub struct ScopeState {
     /// One cached texture per scope mode — switching is instant.
@@ -428,22 +423,7 @@ pub fn show_scopes(
                         size: [entry.w as usize, entry.h as usize],
                         pixels,
                     };
-                    Some((ScopeImage::Ready(image), gen))
-                } else if !fb.scope_texture.is_empty()
-                    && fb.scope_texture_w > 0
-                    && fb.scope_texture_mode == mi as u8
-                {
-                    // Back-compat singular fields (still populated by
-                    // `write_scope_tex_to_fb` for the main-dock back-
-                    // compat path during the multi-mode rollout).
-                    let pixels: Vec<egui::Color32> = fb.scope_texture.chunks_exact(4)
-                        .map(|c| egui::Color32::from_rgba_premultiplied(c[0], c[1], c[2], c[3]))
-                        .collect();
-                    let image = egui::ColorImage {
-                        size: [fb.scope_texture_w as usize, fb.scope_texture_h as usize],
-                        pixels,
-                    };
-                    Some((ScopeImage::Ready(image), gen))
+                    Some((image, gen))
                 } else {
                     None
                 }
@@ -461,7 +441,7 @@ pub fn show_scopes(
             if idx != mi { state.frame_generations[idx] = u64::MAX; }
         }
 
-        let ScopeImage::Ready(image) = scope_img;
+        let image = scope_img;
 
         let new_size = egui::vec2(image.size[0] as f32, image.size[1] as f32);
         match state.textures[mi] {

@@ -581,51 +581,6 @@ impl<'a> DisplayScopeFrame<'a> {
 /// The longest the scopes wait between passes, however cheap or costly.
 const SCOPE_MAX_INTERVAL: Duration = Duration::from_millis(100);
 
-/// `FrameBuffer`. `Some(t)` populates the texture and mode tag; `None`
-/// (the mode was not drawn) clears the texture.
-fn write_scope_tex_to_fb(
-    fb: &mut crate::texture::FrameBuffer,
-    tex: Option<(Vec<u8>, u32, u32)>,
-    mode: u8,
-) {
-    match tex {
-        Some((t, scope_w, scope_h)) => {
-            // Keep the legacy singular fields populated for the in-tree
-            // dock reader (`widgets/scopes.rs`). Also fan out into the
-            // per-mode map so a UI consumer can look up by mode and
-            // skip the stale-comparison race that caused the
-            // click-twice mode-switch bug.
-            let entry = fb
-                .scope_textures
-                .entry(mode)
-                .or_insert(crate::texture::ScopeTextureEntry {
-                    data: Vec::new(),
-                    w: 0,
-                    h: 0,
-                    generation: 0,
-                });
-            entry.data = t.clone();
-            entry.w = scope_w;
-            entry.h = scope_h;
-            entry.generation = entry.generation.wrapping_add(1);
-
-            fb.scope_texture = t;
-            fb.scope_texture_w = scope_w;
-            fb.scope_texture_h = scope_h;
-            fb.scope_texture_mode = mode;
-        }
-        None => {
-            fb.scope_texture.clear();
-            fb.scope_texture_w = 0;
-            fb.scope_texture_h = 0;
-            fb.scope_texture_mode = mode;
-            // Map entry intentionally untouched on `None` — keeps the
-            // previous frame visible for that mode rather than blanking,
-            // matching the prior skim semantics.
-        }
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PlaybackState {
     Idle,
@@ -1253,22 +1208,14 @@ pub struct PlaybackEngine {
     /// reserves) so SetTrackVolume / mute toggles don't accidentally
     /// touch a real timeline track.
     source_mixer_track_index: usize,
-    /// Which scope mode to render on GPU (0=waveform, 1=parade, 2=vectorscope, 3=histogram).
-    /// Used as the main-dock single-mode key + back-compat target for the
-    /// legacy `scope_texture` singular field. The full per-tick render set
-    /// is `active_scope_modes` (which always includes this value while the
-    /// dock is visible).
+    /// The main dock's scope mode (0=waveform, 1=parade, 2=vectorscope,
+    /// 3=histogram), always drawn along with `active_scope_modes`.
     scope_render_mode: u8,
-    /// Current FFmpeg-scope settings (low-pass / quality / R-G-B mask)
-    /// pushed from UI by `AppCommand::SetScopeSettings`. Changes
-    /// trigger a per-mode filter-graph rebuild on the next render via
-    /// the bank's settings comparison.
+    /// The scope settings (quality, channels, envelope, vectorscope
+    /// window, histogram layout) pushed by `AppCommand::SetScopeSettings`.
     scope_settings: klipp_core::ScopeSettings,
-    /// Whether to apply the bloom post-pass to scope textures
-    /// (`klipp_effects::light::apply_bloom` — threshold + Gaussian +
-    /// additive composite). Runs after every FFmpeg scope render for
-    /// the waveform/parade modes so dense traces glow like the in-tree
-    /// GPU path. Pushed by `AppCommand::SetScopeBloom`.
+    /// Whether the GPU scopes draw their glow. Pushed by
+    /// `AppCommand::SetScopeBloom`.
     scope_bloom_enabled: bool,
     /// Whether the waveform and parade measure a low-passed copy of the
     /// picture. Pushed by `AppCommand::SetScopeLowPass`.
@@ -2707,11 +2654,10 @@ impl PlaybackEngine {
                 self.scope_render_owed |= visible;
             }
             AppCommand::RenderScopesForFrame { rgba, width, height } => {
-                // Run the same GPU scope shaders the playback pipeline uses
-                // (engine.rs:5149) on a UI-supplied RGBA frame and write the
-                // result to fb.scope_texture so the UI displays it via its
-                // existing GPU scope path. Used by media-browser hover-skim
-                // and timeline scrub so scope quality matches playback.
+                // Draw the scopes of a UI-supplied RGBA frame the way the
+                // playback pipeline does, into `fb.scope_textures`. Used by
+                // media-browser hover-skim and timeline scrub so scope
+                // quality matches playback.
                 // The UI hands over an sRGB u8 frame (a skim or scrub
                 // snapshot). The GPU scopes measure those codes as they
                 // are; the remaining scopes linearise them.
@@ -3544,10 +3490,6 @@ impl PlaybackEngine {
             fb.scope_preview.clear();
             fb.scope_preview_w = 0;
             fb.scope_preview_h = 0;
-            fb.scope_texture.clear();
-            fb.scope_texture_w = 0;
-            fb.scope_texture_h = 0;
-            fb.scope_texture_mode = 255;
             fb.pending_data.clear();
             fb.pending_width = 0;
             fb.pending_height = 0;
@@ -7266,19 +7208,13 @@ impl PlaybackEngine {
     }
 
     /// Apply the output of [`Self::render_active_scopes_pending`] to a
-    /// `FrameBuffer` already held by the caller. Writes the legacy
-    /// singular fields for `scope_render_mode` (back-compat with the
-    /// in-tree dock reader) AND the per-mode `scope_textures` map
-    /// (floating multi-scope window pane reader).
+    /// `FrameBuffer` already held by the caller: one `scope_textures`
+    /// entry per drawn mode.
     fn apply_scope_renders(
         fb: &mut crate::texture::FrameBuffer,
-        dock_mode: u8,
         renders: Vec<(u8, Option<(Vec<u8>, u32, u32)>)>,
     ) {
         for (mode, tex_opt) in renders.into_iter() {
-            if mode == dock_mode {
-                write_scope_tex_to_fb(fb, tex_opt.clone(), mode);
-            }
             match tex_opt {
                 Some((bytes, scope_w, scope_h)) => {
                     let entry = fb
@@ -7296,9 +7232,8 @@ impl PlaybackEngine {
                             entry.generation = entry.generation.wrapping_add(1);
                 }
                 None => {
-                    // Leave the existing entry alone — UI keeps the
-                    // previous frame. Mirrors the singular path's
-                    // "no clear" semantics for skim writes.
+                    // Leave the existing entry alone — the UI keeps the
+                    // previous frame.
                 }
             }
         }
@@ -7314,17 +7249,16 @@ impl PlaybackEngine {
         src_h: u32,
     ) {
         let renders = self.render_active_scopes_pending(linear, display, src_w, src_h);
-        let dock_mode = self.scope_render_mode;
         // The chromaticity scope wants the linear picture; a display-only
         // frame leaves its previous samples in place.
         let Some(linear_rgba) = linear else {
             let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
-            Self::apply_scope_renders(&mut fb, dock_mode, renders);
+            Self::apply_scope_renders(&mut fb, renders);
             return;
         };
         let cie = self.cie_samples_pending(linear_rgba, src_w, src_h);
         let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
-        Self::apply_scope_renders(&mut fb, dock_mode, renders);
+        Self::apply_scope_renders(&mut fb, renders);
         match cie {
             Some((samples, w, h)) => {
                 fb.cie_samples = samples;
@@ -10028,13 +9962,6 @@ mod glyph_focal_resolution_tests {
             expected_dy, off_out.6 - ref_out.6);
     }
 }
-
-
-// Legacy `scope_dispatch_tests` module removed during the in-tree
-// scope renderer deletion (Phase 8). The FFmpeg path renders all four
-// modes through a single dispatch — there's no per-mode kernel
-// selection to test any more. End-to-end coverage of the FFmpeg path
-// lives in `crates/klipp-engine/tests/ffmpeg_scope_smoke.rs`.
 
 #[cfg(test)]
 mod codec_fix_tests {

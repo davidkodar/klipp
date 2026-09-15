@@ -5,46 +5,6 @@
 
 use crate::blur;
 
-/// Bloom: extract bright pixels above threshold, blur them, blend back.
-pub fn apply_bloom(
-    rgba: Vec<u8>,
-    width: u32,
-    height: u32,
-    threshold: f32,
-    radius: f32,
-    intensity: f32,
-) -> Vec<u8> {
-    let len = rgba.len();
-
-    // Step 1: Extract bright areas
-    let mut bright = vec![0u8; len];
-    for i in (0..len).step_by(4) {
-        let r = rgba[i] as f32 / 255.0;
-        let g = rgba[i + 1] as f32 / 255.0;
-        let b = rgba[i + 2] as f32 / 255.0;
-        let luma = 0.2126 * r + 0.7152 * g + 0.0722 * b;
-        if luma > threshold {
-            let factor = (luma - threshold) / (1.0 - threshold + 1e-6);
-            bright[i] = (r * factor * 255.0).min(255.0) as u8;
-            bright[i + 1] = (g * factor * 255.0).min(255.0) as u8;
-            bright[i + 2] = (b * factor * 255.0).min(255.0) as u8;
-            bright[i + 3] = rgba[i + 3];
-        }
-    }
-
-    // Step 2: Blur the bright areas
-    let blurred = blur::apply(bright, width, height, radius);
-
-    // Step 3: Additive blend back onto original
-    let mut output = rgba;
-    for i in (0..len).step_by(4) {
-        output[i] = (output[i] as f32 + blurred[i] as f32 * intensity).min(255.0) as u8;
-        output[i + 1] = (output[i + 1] as f32 + blurred[i + 1] as f32 * intensity).min(255.0) as u8;
-        output[i + 2] = (output[i + 2] as f32 + blurred[i + 2] as f32 * intensity).min(255.0) as u8;
-    }
-    output
-}
-
 /// Glow: blur the entire image and blend with original using screen mode.
 pub fn apply_glow(
     rgba: Vec<u8>,
