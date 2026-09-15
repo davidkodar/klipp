@@ -536,7 +536,7 @@ pub mod control {
     pub const LARGE: f32 = 32.0;
 }
 
-pub const TOOLBAR_HEIGHT: f32 = 44.0;
+pub const TOOLBAR_HEIGHT: f32 = 36.0;
 pub const STATUSBAR_HEIGHT: f32 = 26.0;
 pub const TIMELINE_MIN_H: f32 = 60.0;
 pub const TIMELINE_DEFAULT_H: f32 = 210.0;

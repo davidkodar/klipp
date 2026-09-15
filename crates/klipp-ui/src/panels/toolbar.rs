@@ -1,9 +1,8 @@
-use crate::layout_state::EditTool;
 use crate::prefs::RecentProject;
 use crate::state::{AppState, Workspace};
 use crate::theme::KlippTheme;
 use crate::widgets::tooltip::styled_tooltip;
-use klipp_core::{AppCommand, Tool};
+use klipp_core::AppCommand;
 
 pub struct ToolbarPanel {
     pub logo_texture: Option<egui::TextureHandle>,
@@ -16,7 +15,6 @@ impl ToolbarPanel {
         state: &mut AppState,
         recent_projects: &[RecentProject],
         theme: &KlippTheme,
-        layout_tool: &mut EditTool,
     ) -> Vec<AppCommand> {
         let mut cmds = Vec::new();
         let toolbar_rect = ui.max_rect();
@@ -38,8 +36,8 @@ impl ToolbarPanel {
         let mut rx = toolbar_rect.max.x - 10.0;
 
         // Export (icon 6)
-        rx -= 32.0;
-        let resp = alloc_btn(ui, egui::pos2(rx, cy - 16.0), 32.0);
+        rx -= 28.0;
+        let resp = alloc_btn(ui, egui::pos2(rx, cy - 14.0), 28.0);
         let ic = icon_color(&resp, false, theme);
         draw_export_icon(&painter, resp.rect, ic);
         styled_tooltip(&resp, theme, "Export / Share", Some("Ctrl+E"));
@@ -48,77 +46,12 @@ impl ToolbarPanel {
         rx -= 2.0;
 
         // Render Queue (icon 5)
-        rx -= 32.0;
-        let resp = alloc_btn(ui, egui::pos2(rx, cy - 16.0), 32.0);
+        rx -= 28.0;
+        let resp = alloc_btn(ui, egui::pos2(rx, cy - 14.0), 28.0);
         let ic = icon_color(&resp, false, theme);
         draw_render_queue_icon(&painter, resp.rect, ic);
         styled_tooltip(&resp, theme, "Render Queue", None);
         if resp.clicked() { cmds.push(AppCommand::ShowRenderQueue); }
-
-        rx -= 4.0;
-        // Separator
-        painter.rect_filled(
-            egui::Rect::from_min_size(egui::pos2(rx, cy - 11.0), egui::vec2(1.0, 22.0)),
-            0.0, theme.border_light,
-        );
-        rx -= 4.0;
-
-        // Skimming (icon 4)
-        rx -= 32.0;
-        let skim_active = state.skimming_enabled;
-        let resp = alloc_btn(ui, egui::pos2(rx, cy - 16.0), 32.0);
-        let ic = icon_color(&resp, skim_active, theme);
-        let bg = icon_bg(&resp, skim_active, theme);
-        painter.rect_filled(resp.rect, 4.0, bg);
-        draw_skimming_icon(&painter, resp.rect, ic);
-        styled_tooltip(&resp, theme, "Skimming On/Off", Some("S"));
-        if resp.clicked() {
-            state.skimming_enabled = !state.skimming_enabled;
-            let msg = if state.skimming_enabled { "Skimming On" } else { "Skimming Off" };
-            state.toast.show(msg);
-        }
-
-        rx -= 2.0;
-
-        // Color Grading (icon 3) — switches to Color workspace
-        rx -= 32.0;
-        let color_active = state.active_workspace == Workspace::Color;
-        let resp = alloc_btn(ui, egui::pos2(rx, cy - 16.0), 32.0);
-        let ic = icon_color(&resp, color_active, theme);
-        let bg = icon_bg(&resp, color_active, theme);
-        painter.rect_filled(resp.rect, 4.0, bg);
-        draw_color_icon(&painter, resp.rect, ic);
-        styled_tooltip(&resp, theme, "Color Workspace", Some("C"));
-        if resp.clicked() {
-            if color_active {
-                state.active_workspace = Workspace::Edit;
-                state.show_color_panel = false;
-            } else {
-                state.active_workspace = Workspace::Color;
-                state.show_color_panel = true;
-            }
-        }
-
-        rx -= 2.0;
-
-        // Scopes (icon 2). Renders in any workspace (FCP/Premiere
-        // convention). Pure show/hide toggle — does not switch workspace.
-        rx -= 32.0;
-        let scopes_active = state.scopes_shown();
-        let resp = alloc_btn(ui, egui::pos2(rx, cy - 16.0), 32.0);
-        let ic = icon_color(&resp, scopes_active, theme);
-        let bg = icon_bg(&resp, scopes_active, theme);
-        painter.rect_filled(resp.rect, 4.0, bg);
-        draw_scopes_icon(&painter, resp.rect, ic);
-        styled_tooltip(&resp, theme, "Toggle Scopes", Some("V"));
-        if resp.clicked() {
-            state.toggle_scopes();
-        }
-
-        // Roles & Lanes button — hidden until the underlying feature exists
-        // (no clip role assignment, no lane filtering, no role-coloured bars
-        // implemented yet). Re-enable here once the feature ships. Tracked
-        // in code_audit.html.
 
         let right_edge = rx - 10.0;
 
@@ -191,13 +124,25 @@ impl ToolbarPanel {
                     egui::Color32::WHITE,
                 );
                 ui.add_space(logo_size + 4.0);
-                ui.label(egui::RichText::new("Klipp").size(13.0).strong().color(theme.text_accent));
+                ui.label(egui::RichText::new("Klipp").size(crate::theme::type_scale::TITLE).strong().color(theme.text_primary));
                 ui.add_space(12.0);
 
                 // Separator
                 sep(ui, theme);
 
-                // Compact menus
+                // The menu bar: plain titles on the bar, a hover tone,
+                // no button frames.
+                {
+                    let v = ui.visuals_mut();
+                    v.widgets.inactive.weak_bg_fill = egui::Color32::TRANSPARENT;
+                    v.widgets.inactive.bg_stroke = egui::Stroke::NONE;
+                    v.widgets.hovered.weak_bg_fill = theme.bg_hover;
+                    v.widgets.hovered.bg_stroke = egui::Stroke::NONE;
+                    v.widgets.active.weak_bg_fill = theme.bg_hover;
+                    v.widgets.active.bg_stroke = egui::Stroke::NONE;
+                    v.widgets.open.weak_bg_fill = theme.bg_hover;
+                    v.widgets.open.bg_stroke = egui::Stroke::NONE;
+                }
                 Self::file_menu(ui, &mut cmds, state, recent_projects);
                 Self::edit_menu(ui, &mut cmds, state);
                 Self::clip_menu(ui, &mut cmds, state);
@@ -208,95 +153,6 @@ impl ToolbarPanel {
                 Self::tools_menu(ui, &mut cmds, state);
                 Self::help_menu(ui, state);
 
-                sep(ui, theme);
-
-                // Edit tool buttons (only shown when there's enough space)
-                let tools = [
-                    (EditTool::Select, "Select Tool", "V"),
-                    (EditTool::Trim, "Trim Tool", "T"),
-                    (EditTool::Blade, "Blade Tool", "B"),
-                    (EditTool::Range, "Range Tool", "R"),
-                    (EditTool::Zoom, "Zoom Tool", "Z"),
-                ];
-                for (tool, tip, key) in &tools {
-                    let active = *layout_tool == *tool;
-                    // The active tool: a tinted field and the accent on the
-                    // glyph, not a solid block of colour.
-                    let (bg, fg) = if active {
-                        (theme.accent_subtle, theme.accent)
-                    } else {
-                        (egui::Color32::TRANSPARENT, theme.text_secondary)
-                    };
-                    let (rect, resp) = ui.allocate_exact_size(
-                        egui::vec2(32.0, 32.0),
-                        egui::Sense::click(),
-                    );
-                    let bg = if resp.hovered() && !active { theme.bg_hover } else { bg };
-                    let fg = if resp.hovered() && !active { theme.text_primary } else { fg };
-                    ui.painter().rect_filled(rect, 4.0, bg);
-                    match tool {
-                        EditTool::Select => draw_select_icon(ui.painter(), rect, fg),
-                        EditTool::Trim => draw_trim_icon(ui.painter(), rect, fg),
-                        EditTool::Blade => draw_blade_icon(ui.painter(), rect, fg),
-                        EditTool::Range => draw_range_icon(ui.painter(), rect, fg),
-                        EditTool::Zoom => draw_zoom_icon(ui.painter(), rect, fg),
-                    }
-                    styled_tooltip(&resp, theme, tip, Some(key));
-                    if resp.clicked() {
-                        *layout_tool = *tool;
-                        let engine_tool = match tool {
-                            EditTool::Select => Tool::Select,
-                            EditTool::Blade => Tool::Blade,
-                            EditTool::Range => Tool::Range,
-                            EditTool::Trim => Tool::Trim,
-                            EditTool::Zoom => Tool::Select,
-                        };
-                        cmds.push(AppCommand::SetActiveTool(engine_tool));
-                    }
-                }
-
-                sep(ui, theme);
-
-                // Insert / Overwrite: a two-segment switch, the active mode lit.
-                {
-                    let seg_w = 34.0;
-                    let h = crate::theme::control::COMPACT;
-                    let (rect, resp) = ui.allocate_exact_size(egui::vec2(seg_w * 2.0 + 4.0, h), egui::Sense::click());
-                    ui.painter().rect_filled(rect, crate::theme::radius::PANEL, theme.bg_panel);
-                    ui.painter().rect_stroke(rect, crate::theme::radius::PANEL, egui::Stroke::new(1.0_f32, theme.border));
-                    let pointer = ui.input(|i| i.pointer.interact_pos());
-                    for (i, (mode, label)) in [(klipp_timeline::magnetic::EditMode::Insert, "INS"), (klipp_timeline::magnetic::EditMode::Overwrite, "OVR")].into_iter().enumerate() {
-                        let seg = egui::Rect::from_min_size(egui::pos2(rect.min.x + 2.0 + i as f32 * seg_w, rect.min.y + 2.0), egui::vec2(seg_w, h - 4.0));
-                        let active = state.edit_mode == mode;
-                        let under = pointer.is_some_and(|p| seg.contains(p));
-                        if active {
-                            ui.painter().rect_filled(seg, crate::theme::radius::CONTROL, theme.accent_subtle);
-                        } else if under && resp.hovered() {
-                            ui.painter().rect_filled(seg, crate::theme::radius::CONTROL, theme.bg_hover);
-                        }
-                        let colour = if active { theme.accent } else { theme.text_dim };
-                        ui.painter().text(seg.center(), egui::Align2::CENTER_CENTER, label, egui::FontId::monospace(crate::theme::type_scale::CAPTION), colour);
-                    }
-                    let mode_text = match state.edit_mode {
-                        klipp_timeline::magnetic::EditMode::Insert => "INS",
-                        klipp_timeline::magnetic::EditMode::Overwrite => "OVR",
-                    };
-                    let _ = mode_text;
-                    let tip = if matches!(state.edit_mode, klipp_timeline::magnetic::EditMode::Insert) {
-                        "Edit Mode: Insert (W to toggle)"
-                    } else {
-                        "Edit Mode: Overwrite (W to toggle)"
-                    };
-                    styled_tooltip(&resp, theme, tip, Some("W"));
-                    if resp.clicked() {
-                        state.edit_mode = match state.edit_mode {
-                            klipp_timeline::magnetic::EditMode::Insert => klipp_timeline::magnetic::EditMode::Overwrite,
-                            klipp_timeline::magnetic::EditMode::Overwrite => klipp_timeline::magnetic::EditMode::Insert,
-                        };
-                    }
-                }
-
-                sep(ui, theme);
             });
         });
 
@@ -308,7 +164,7 @@ impl ToolbarPanel {
     // ══════════════════════════════════════════════
 
     fn file_menu(ui: &mut egui::Ui, cmds: &mut Vec<AppCommand>, state: &mut AppState, recent: &[RecentProject]) {
-        ui.menu_button(egui::RichText::new("File").size(11.0), |ui| {
+        ui.menu_button(egui::RichText::new("File").size(crate::theme::type_scale::CONTROL), |ui| {
             if ui.add(egui::Button::new("New Project...").shortcut_text("Ctrl+N")).clicked() { cmds.push(AppCommand::NewProject); ui.close_menu(); }
             if ui.add(egui::Button::new("Open Project...").shortcut_text("Ctrl+O")).clicked() { ui.close_menu(); if let Some(p) = rfd::FileDialog::new().set_title("Open Project").pick_folder() { cmds.push(AppCommand::OpenProject { path: p }); } }
             if !recent.is_empty() {
@@ -484,7 +340,7 @@ impl ToolbarPanel {
     }
 
     fn edit_menu(ui: &mut egui::Ui, cmds: &mut Vec<AppCommand>, state: &mut AppState) {
-        ui.menu_button(egui::RichText::new("Edit").size(11.0), |ui| {
+        ui.menu_button(egui::RichText::new("Edit").size(crate::theme::type_scale::CONTROL), |ui| {
             if ui.add_enabled(state.active_history().can_undo(), egui::Button::new(state.active_history().undo_label().map(|d| format!("Undo {d}")).unwrap_or("Undo".into())).shortcut_text("Ctrl+Z")).clicked() { cmds.push(AppCommand::Undo); ui.close_menu(); }
             if ui.add_enabled(state.active_history().can_redo(), egui::Button::new(state.active_history().redo_label().map(|d| format!("Redo {d}")).unwrap_or("Redo".into())).shortcut_text("Ctrl+Shift+Z")).clicked() { cmds.push(AppCommand::Redo); ui.close_menu(); }
             if ui.button("History...").clicked() { state.show_history_panel = true; ui.close_menu(); }
@@ -526,7 +382,7 @@ impl ToolbarPanel {
     }
 
     fn clip_menu(ui: &mut egui::Ui, cmds: &mut Vec<AppCommand>, state: &mut AppState) {
-        ui.menu_button(egui::RichText::new("Clip").size(11.0), |ui| {
+        ui.menu_button(egui::RichText::new("Clip").size(crate::theme::type_scale::CONTROL), |ui| {
             let has_clip = state.selected_clip.is_some();
             if ui.add_enabled(has_clip, egui::Button::new("Enable / Disable").shortcut_text("V")).clicked() {
                 if let Some(cid) = state.selected_clip {
@@ -696,7 +552,7 @@ impl ToolbarPanel {
     }
 
     fn timeline_menu(ui: &mut egui::Ui, cmds: &mut Vec<AppCommand>, state: &mut AppState) {
-        ui.menu_button(egui::RichText::new("Timeline").size(11.0), |ui| {
+        ui.menu_button(egui::RichText::new("Timeline").size(crate::theme::type_scale::CONTROL), |ui| {
             if ui.button("Add Video Track").clicked() { cmds.push(AppCommand::AddVideoTrack); ui.close_menu(); }
             if ui.button("Add Audio Track").clicked() { cmds.push(AppCommand::AddAudioTrack); ui.close_menu(); }
             if ui.button("Delete Track").clicked() {
@@ -750,7 +606,7 @@ impl ToolbarPanel {
     }
 
     fn mark_menu(ui: &mut egui::Ui, cmds: &mut Vec<AppCommand>, state: &mut AppState) {
-        ui.menu_button(egui::RichText::new("Mark").size(11.0), |ui| {
+        ui.menu_button(egui::RichText::new("Mark").size(crate::theme::type_scale::CONTROL), |ui| {
             if ui.add(egui::Button::new("Set In Point").shortcut_text("I")).clicked() { cmds.push(AppCommand::SetSequenceInPoint(state.playhead)); ui.close_menu(); }
             if ui.add(egui::Button::new("Set Out Point").shortcut_text("O")).clicked() { cmds.push(AppCommand::SetSequenceOutPoint(state.playhead)); ui.close_menu(); }
             if ui.add(egui::Button::new("Clear In Point").shortcut_text("Alt+I")).clicked() { cmds.push(AppCommand::ClearSequenceInPoint); ui.close_menu(); }
@@ -822,7 +678,7 @@ impl ToolbarPanel {
     }
 
     fn view_menu(ui: &mut egui::Ui, cmds: &mut Vec<AppCommand>, state: &mut AppState) {
-        ui.menu_button(egui::RichText::new("View").size(11.0), |ui| {
+        ui.menu_button(egui::RichText::new("View").size(crate::theme::type_scale::CONTROL), |ui| {
             // Zoom targets the currently-focused viewer (state.viewer_mode).
             // Source and Program have independent zoom + pan so clicking on
             // one viewer and Ctrl-+/-ing zooms only that one.
@@ -960,6 +816,17 @@ impl ToolbarPanel {
                 ui.close_menu();
             }
             ui.separator();
+            let skim_check = if state.skimming_enabled { "\u{2714} " } else { "  " };
+            if ui.add(egui::Button::new(format!("{skim_check}Skimming")).shortcut_text("S")).clicked() {
+                state.skimming_enabled = !state.skimming_enabled;
+                ui.close_menu();
+            }
+            let dual_check = if state.dual_viewers { "\u{2714} " } else { "  " };
+            if ui.button(format!("{dual_check}Dual Viewers")).clicked() {
+                state.dual_viewers = !state.dual_viewers;
+                ui.close_menu();
+            }
+            ui.separator();
             let perf_check = if state.show_perf_overlay { "\u{2714} " } else { "  " };
             if ui.button(format!("{perf_check}Performance Overlay").as_str()).clicked() {
                 state.show_perf_overlay = !state.show_perf_overlay;
@@ -990,7 +857,7 @@ impl ToolbarPanel {
     }
 
     fn window_menu(ui: &mut egui::Ui, cmds: &mut Vec<AppCommand>, state: &mut AppState) {
-        ui.menu_button(egui::RichText::new("Window").size(11.0), |ui| {
+        ui.menu_button(egui::RichText::new("Window").size(crate::theme::type_scale::CONTROL), |ui| {
             // Active-workspace mode flags (controls the composite
             // inspector layout — not the same as a full workspace
             // preset below; kept as-is for backwards compatibility).
@@ -1072,7 +939,7 @@ impl ToolbarPanel {
     /// LV2 / VST3 plugin managers will join group 1; project-doctor /
     /// consolidate / asset-relink etc. will join group 2.
     fn tools_menu(ui: &mut egui::Ui, cmds: &mut Vec<AppCommand>, state: &mut AppState) {
-        ui.menu_button(egui::RichText::new("Tools").size(11.0), |ui| {
+        ui.menu_button(egui::RichText::new("Tools").size(crate::theme::type_scale::CONTROL), |ui| {
             if ui.button("Audio Plugins\u{2026}").clicked() {
                 state.show_audio_plugins_dialog = true;
                 state.audio_plugins_dialog.last_scanned_secs = None;
@@ -1104,7 +971,7 @@ impl ToolbarPanel {
     }
 
     fn help_menu(ui: &mut egui::Ui, state: &mut AppState) {
-        ui.menu_button(egui::RichText::new("Help").size(11.0), |ui| {
+        ui.menu_button(egui::RichText::new("Help").size(crate::theme::type_scale::CONTROL), |ui| {
             if ui.add(egui::Button::new("Klipp Documentation").shortcut_text("F1")).clicked() {
                 // Open local mdbook docs if available, fall back to GitHub
                 let local_docs = std::path::Path::new("docs/book/index.html");
@@ -1156,13 +1023,7 @@ fn icon_color(resp: &egui::Response, active: bool, theme: &KlippTheme) -> egui::
 
 /// An icon button's field: a tint of the accent when active, the hover
 /// tone under the pointer, nothing otherwise.
-fn icon_bg(resp: &egui::Response, active: bool, theme: &KlippTheme) -> egui::Color32 {
-    if active { theme.accent_subtle }
-    else if resp.hovered() { theme.bg_hover }
-    else { egui::Color32::TRANSPARENT }
-}
-
-fn icon_rect(btn: egui::Rect) -> egui::Rect {
+pub(crate) fn icon_rect(btn: egui::Rect) -> egui::Rect {
     egui::Rect::from_center_size(btn.center(), egui::vec2(16.0, 16.0))
 }
 
@@ -1177,46 +1038,6 @@ fn sep(ui: &mut egui::Ui, theme: &KlippTheme) {
 // ═══════════════════════════════════════════
 // LEFT GROUP TOOL ICONS
 // ═══════════════════════════════════════════
-
-fn draw_select_icon(painter: &egui::Painter, btn: egui::Rect, c: egui::Color32) {
-    let ir = icon_rect(btn);
-    let pts = vec![
-        egui::pos2(ir.min.x + 2.0, ir.min.y),
-        egui::pos2(ir.min.x + 2.0, ir.max.y - 2.0),
-        egui::pos2(ir.min.x + 6.0, ir.max.y - 6.0),
-        egui::pos2(ir.min.x + 12.0, ir.center().y + 2.0),
-    ];
-    painter.add(egui::Shape::convex_polygon(pts, c, egui::Stroke::NONE));
-}
-
-fn draw_trim_icon(painter: &egui::Painter, btn: egui::Rect, c: egui::Color32) {
-    let ir = icon_rect(btn);
-    let s = egui::Stroke::new(1.5_f32, c);
-    painter.line_segment([egui::pos2(ir.min.x + 3.0, ir.min.y + 2.0), egui::pos2(ir.min.x + 3.0, ir.max.y - 2.0)], s);
-    painter.line_segment([egui::pos2(ir.max.x - 3.0, ir.min.y + 2.0), egui::pos2(ir.max.x - 3.0, ir.max.y - 2.0)], s);
-    painter.line_segment([egui::pos2(ir.min.x + 3.0, ir.center().y), egui::pos2(ir.min.x + 6.0, ir.center().y)], s);
-    painter.line_segment([egui::pos2(ir.max.x - 6.0, ir.center().y), egui::pos2(ir.max.x - 3.0, ir.center().y)], s);
-}
-
-fn draw_blade_icon(painter: &egui::Painter, btn: egui::Rect, c: egui::Color32) {
-    let ir = icon_rect(btn);
-    let s = egui::Stroke::new(1.5_f32, c);
-    painter.line_segment([egui::pos2(ir.min.x + 2.0, ir.max.y - 2.0), egui::pos2(ir.max.x - 2.0, ir.min.y + 2.0)], s);
-    let pts = vec![
-        egui::pos2(ir.max.x - 2.0, ir.min.y + 2.0),
-        egui::pos2(ir.max.x - 5.0, ir.min.y + 3.0),
-        egui::pos2(ir.max.x - 3.0, ir.min.y + 5.0),
-    ];
-    painter.add(egui::Shape::convex_polygon(pts, c, egui::Stroke::NONE));
-}
-
-fn draw_zoom_icon(painter: &egui::Painter, btn: egui::Rect, c: egui::Color32) {
-    let ir = icon_rect(btn);
-    let s = egui::Stroke::new(1.5_f32, c);
-    let center = egui::pos2(ir.min.x + 6.0, ir.min.y + 6.0);
-    painter.circle_stroke(center, 5.0, s);
-    painter.line_segment([egui::pos2(center.x + 3.5, center.y + 3.5), egui::pos2(ir.max.x - 2.0, ir.max.y - 2.0)], s);
-}
 
 // ═══════════════════════════════════════════
 // RIGHT GROUP ICONS (from KLIPP_TOOLBAR_ICONS_FIX.md)
@@ -1234,7 +1055,7 @@ fn draw_roles_icon(painter: &egui::Painter, btn: egui::Rect, c: egui::Color32) {
     painter.rect_filled(egui::Rect::from_min_size(egui::pos2(ir.min.x, top_y + (bh + gap) * 2.0), egui::vec2(9.6, bh)), 1.0, c);
 }
 
-fn draw_scopes_icon(painter: &egui::Painter, btn: egui::Rect, c: egui::Color32) {
+pub(crate) fn draw_scopes_icon(painter: &egui::Painter, btn: egui::Rect, c: egui::Color32) {
     let ir = icon_rect(btn);
     painter.rect_stroke(ir, 2.0, egui::Stroke::new(1.2_f32, c));
     let pts = vec![
@@ -1245,32 +1066,6 @@ fn draw_scopes_icon(painter: &egui::Painter, btn: egui::Rect, c: egui::Color32) 
         egui::pos2(ir.min.x + 14.0, ir.center().y + 1.0),
     ];
     painter.add(egui::Shape::line(pts, egui::Stroke::new(1.3_f32, c)));
-}
-
-fn draw_color_icon(painter: &egui::Painter, btn: egui::Rect, c: egui::Color32) {
-    let center = btn.center();
-    let radius = 6.7;
-    painter.circle_stroke(center, radius, egui::Stroke::new(1.3_f32, c));
-    let mut pts = vec![center];
-    for i in 0..=20 {
-        let angle = std::f32::consts::FRAC_PI_2 + std::f32::consts::PI * (i as f32 / 20.0);
-        pts.push(egui::pos2(center.x + radius * angle.cos(), center.y + radius * angle.sin()));
-    }
-    pts.push(center);
-    painter.add(egui::Shape::convex_polygon(pts, c, egui::Stroke::NONE));
-}
-
-fn draw_skimming_icon(painter: &egui::Painter, btn: egui::Rect, c: egui::Color32) {
-    let ir = icon_rect(btn);
-    let cx = ir.center().x;
-    let top = ir.min.y + 1.0;
-    let bot = ir.max.y - 1.0;
-    let mid = ir.center().y;
-    painter.line_segment([egui::pos2(cx, top + 5.0), egui::pos2(cx, bot)], egui::Stroke::new(1.5_f32, c));
-    painter.add(egui::Shape::convex_polygon(vec![
-        egui::pos2(cx, top), egui::pos2(cx - 4.0, top + 6.0), egui::pos2(cx + 4.0, top + 6.0),
-    ], c, egui::Stroke::NONE));
-    painter.line_segment([egui::pos2(cx - 5.0, mid + 3.0), egui::pos2(cx + 5.0, mid + 3.0)], egui::Stroke::new(1.5_f32, c));
 }
 
 fn draw_render_queue_icon(painter: &egui::Painter, btn: egui::Rect, c: egui::Color32) {
@@ -1288,26 +1083,6 @@ fn draw_render_queue_icon(painter: &egui::Painter, btn: egui::Rect, c: egui::Col
     painter.add(egui::Shape::convex_polygon(vec![
         egui::pos2(x + bw + 3.0, mid_y), egui::pos2(x + bw, mid_y - 3.0), egui::pos2(x + bw, mid_y + 3.0),
     ], c, egui::Stroke::NONE));
-}
-
-fn draw_range_icon(painter: &egui::Painter, btn: egui::Rect, c: egui::Color32) {
-    let ir = icon_rect(btn);
-    let s = egui::Stroke::new(1.5_f32, c);
-    // Left bracket bar
-    painter.line_segment([egui::pos2(ir.min.x + 3.0, ir.min.y + 1.0), egui::pos2(ir.min.x + 3.0, ir.max.y - 1.0)], s);
-    // Right bracket bar
-    painter.line_segment([egui::pos2(ir.max.x - 3.0, ir.min.y + 1.0), egui::pos2(ir.max.x - 3.0, ir.max.y - 1.0)], s);
-    // Horizontal connecting line
-    painter.line_segment([egui::pos2(ir.min.x + 4.0, ir.center().y), egui::pos2(ir.max.x - 4.0, ir.center().y)], s);
-    // Subtle fill between bars
-    painter.rect_filled(
-        egui::Rect::from_min_max(
-            egui::pos2(ir.min.x + 3.0, ir.min.y + 3.0),
-            egui::pos2(ir.max.x - 3.0, ir.max.y - 3.0),
-        ),
-        0.0,
-        egui::Color32::from_rgba_premultiplied(c.r(), c.g(), c.b(), 30),
-    );
 }
 
 fn draw_export_icon(painter: &egui::Painter, btn: egui::Rect, c: egui::Color32) {

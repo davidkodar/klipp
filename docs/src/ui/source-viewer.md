@@ -2,7 +2,7 @@
 
 The source viewer is an optional second viewer for browsing source media without affecting the program viewer or timeline. It is a familiar pattern from professional NLEs (Avid, Premiere) — review your source clip in one viewer, see the program output in the other, and use insert/overwrite to move material between them.
 
-Toggle the source viewer from **View → Toggle Source Viewer**.
+It is shown beside the program viewer while **View → Dual Viewers** is on; with a single viewer, the Source / Program switch under the viewer brings it up.
 
 ## Workflow
 

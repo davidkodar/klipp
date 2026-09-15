@@ -18,6 +18,9 @@ pub struct LayoutState {
     pub active_inspector_tab: InspectorTab,
     pub active_tool: EditTool,
     pub skimming_enabled: bool,
+    /// Two viewers side by side, or one.
+    #[serde(default = "default_true")]
+    pub dual_viewers: bool,
     /// Snap configuration: master + per-target booleans. Older
     /// layout.json files carry a bare `snap_enabled: bool` instead;
     /// `LayoutState::load()` migrates them on read into `SnapConfig
@@ -45,6 +48,7 @@ pub struct LayoutState {
 }
 
 fn default_files_split_ratio() -> f32 { 0.5 }
+fn default_true() -> bool { true }
 fn default_color_panel_height() -> f32 { 200.0 }
 fn default_color_viewer_ratio() -> f32 { 0.55 }
 fn default_color_inspector_width() -> f32 { 300.0 }
@@ -59,6 +63,7 @@ impl Default for LayoutState {
             active_inspector_tab: InspectorTab::Video,
             active_tool: EditTool::Select,
             skimming_enabled: true,
+            dual_viewers: true,
             snap: SnapConfig::default(),
             color_panel_height: default_color_panel_height(),
             color_viewer_height_ratio: default_color_viewer_ratio(),

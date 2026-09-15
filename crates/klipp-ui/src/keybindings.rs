@@ -187,7 +187,7 @@ impl KeyBindings {
         bind(&mut b, "toggle_fullscreen", vec![KeyCombo::new("F11")]);
         bind(&mut b, "toggle_before_after", vec![KeyCombo::new("B")]);
         bind(&mut b, "toggle_color_panel", vec![KeyCombo::new("C")]);
-        bind(&mut b, "toggle_scopes", vec![KeyCombo::new("V")]);
+        bind(&mut b, "toggle_scopes", vec![KeyCombo::new("Alt+V")]);
         bind(&mut b, "toggle_zebra", vec![KeyCombo::new("Z")]);
         bind(&mut b, "toggle_false_color", vec![KeyCombo::alt("F")]);
         bind(&mut b, "toggle_perf_overlay", vec![KeyCombo::new("P")]);

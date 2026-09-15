@@ -2174,6 +2174,33 @@ impl ViewerPanel {
             }
         }
 
+        // ── Single viewer: which one this is, and the way to the other ──
+        if !state.dual_viewers {
+            let seg_w = 60.0;
+            let h = crate::theme::control::COMPACT;
+            let sw = egui::Rect::from_min_size(egui::pos2(rect.min.x + 126.0, cy - h / 2.0), egui::vec2(seg_w * 2.0 + 4.0, h));
+            let resp = ui.allocate_rect(sw, egui::Sense::click());
+            ui.painter().rect_filled(sw, crate::theme::radius::PANEL, theme.bg_panel);
+            ui.painter().rect_stroke(sw, crate::theme::radius::PANEL, egui::Stroke::new(1.0_f32, theme.border));
+            let pointer = ui.input(|i| i.pointer.interact_pos());
+            for (i, (mode, label)) in [(ViewerMode::Source, "Source"), (ViewerMode::Program, "Program")].into_iter().enumerate() {
+                let seg = egui::Rect::from_min_size(egui::pos2(sw.min.x + 2.0 + i as f32 * seg_w, sw.min.y + 2.0), egui::vec2(seg_w, h - 4.0));
+                let active = viewer_kind == mode;
+                let under = pointer.is_some_and(|p| seg.contains(p));
+                if active {
+                    ui.painter().rect_filled(seg, crate::theme::radius::CONTROL, theme.bg_raised);
+                } else if under && resp.hovered() {
+                    ui.painter().rect_filled(seg, crate::theme::radius::CONTROL, theme.bg_hover);
+                }
+                let colour = if active { theme.text_primary } else { theme.text_secondary };
+                ui.painter().text(seg.center(), egui::Align2::CENTER_CENTER, label, egui::FontId::proportional(crate::theme::type_scale::CAPTION), colour);
+                if resp.clicked() && under && !active {
+                    cmds.push(AppCommand::SetViewerMode(mode));
+                }
+            }
+            resp.on_hover_text("Which viewer fills the row (dual viewers in the View menu)");
+        }
+
         // ── Center: Transport buttons ──
         let btn_size = 30.0;
         let play_size = 38.0;
@@ -2273,6 +2300,8 @@ impl ViewerPanel {
         let vol_pct_slot = 36.0 + gap;
         let xform_slot = btn_w + gap;
         let cam_slot = btn_w + gap;
+        let scopes_slot = btn_w + gap;
+        let layout_slot = btn_w + gap;
 
         let mut remaining = budget_right;
         let mut show_mute = false;
@@ -2281,8 +2310,16 @@ impl ViewerPanel {
         let mut show_vol_pct = false;
         let mut show_xform = false;
         let mut show_camera = false;
+        let mut show_scopes = false;
+        let mut show_layout = false;
         if remaining >= mute_slot { remaining -= mute_slot; show_mute = true; }
         if remaining >= mf_slot { remaining -= mf_slot; show_mf = true; }
+        if viewer_kind == ViewerMode::Program {
+            // Scopes and the viewer layout are the picture's own
+            // controls; they outrank the volume readout for room.
+            if remaining >= scopes_slot { remaining -= scopes_slot; show_scopes = true; }
+            if remaining >= layout_slot { remaining -= layout_slot; show_layout = true; }
+        }
         if remaining >= slider_slot { remaining -= slider_slot; show_slider = true; }
         if remaining >= vol_pct_slot { remaining -= vol_pct_slot; show_vol_pct = true; }
         if viewer_kind == ViewerMode::Program {
@@ -2493,6 +2530,36 @@ impl ViewerPanel {
                     cmds.push(AppCommand::ExtractFrameToBin);
                 }
                 cam_resp.on_hover_text("Extract frame to bin (Ctrl+Alt+B)");
+                cursor_right -= btn_w + gap;
+            }
+
+            // Scopes: the dock in Color, the floating window elsewhere.
+            if show_scopes {
+                let r = egui::Rect::from_center_size(egui::pos2(cursor_right - btn_w / 2.0, cy), egui::vec2(btn_w, btn_w));
+                let resp = ui.allocate_rect(r, egui::Sense::click());
+                let on = state.scopes_shown();
+                let colour = if on { theme.accent } else if resp.hovered() { theme.text_primary } else { theme.text_secondary };
+                if on {
+                    ui.painter().rect_filled(r, crate::theme::radius::CONTROL, theme.accent_subtle);
+                }
+                crate::panels::toolbar::draw_scopes_icon(ui.painter(), r, colour);
+                if resp.clicked() {
+                    state.toggle_scopes();
+                }
+                resp.on_hover_text("Scopes (Alt+V)");
+                cursor_right -= btn_w + gap;
+            }
+
+            // One viewer or two.
+            if show_layout {
+                let r = egui::Rect::from_center_size(egui::pos2(cursor_right - btn_w / 2.0, cy), egui::vec2(btn_w, btn_w));
+                let resp = ui.allocate_rect(r, egui::Sense::click());
+                let colour = if resp.hovered() { theme.text_primary } else { theme.text_secondary };
+                draw_viewer_layout_icon(ui.painter(), r, state.dual_viewers, colour);
+                if resp.clicked() {
+                    state.dual_viewers = !state.dual_viewers;
+                }
+                resp.on_hover_text(if state.dual_viewers { "Single viewer" } else { "Dual viewers" });
                 cursor_right -= btn_w + gap;
             }
         }
@@ -4556,6 +4623,19 @@ impl ViewerPanel {
 
         ui.separator();
 
+        // ── Layout ──
+        section_label(ui, "LAYOUT");
+        let dual_label = if state.dual_viewers { "\u{2714} Dual viewers" } else { "  Dual viewers" };
+        if ui.button(dual_label).clicked() {
+            state.dual_viewers = !state.dual_viewers;
+        }
+        let scopes_label = if state.scopes_shown() { "\u{2714} Scopes (Alt+V)" } else { "  Scopes (Alt+V)" };
+        if ui.button(scopes_label).clicked() {
+            state.toggle_scopes();
+        }
+
+        ui.separator();
+
         // ── Actions ──
         section_label(ui, "ACTIONS");
         match viewer_kind {
@@ -4923,6 +5003,20 @@ impl ViewerPanel {
 /// Compute the bounding box of a Title object in screen coords,
 /// derived from its normalised `transform.center` / `transform.size`
 /// mapped through the rendered video's `image_rect`.
+/// One rectangle, or two side by side: the viewer layout the click
+/// will switch to is the one drawn.
+fn draw_viewer_layout_icon(painter: &egui::Painter, btn: egui::Rect, dual_now: bool, c: egui::Color32) {
+    let ir = btn.shrink(4.0);
+    let s = egui::Stroke::new(1.2_f32, c);
+    if dual_now {
+        painter.rect_stroke(ir, 1.0, s);
+    } else {
+        let half = (ir.width() - 2.0) / 2.0;
+        painter.rect_stroke(egui::Rect::from_min_size(ir.min, egui::vec2(half, ir.height())), 1.0, s);
+        painter.rect_stroke(egui::Rect::from_min_size(egui::pos2(ir.min.x + half + 2.0, ir.min.y), egui::vec2(half, ir.height())), 1.0, s);
+    }
+}
+
 fn object_screen_bb(
     obj: &klipp_timeline::TitleObject,
     image_rect: egui::Rect,

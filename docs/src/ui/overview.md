@@ -4,27 +4,29 @@ Klipp's interface follows a standard NLE layout with customizable panels and wor
 
 ## Default Layout
 
-The default workspace arranges four main areas:
+Three columns over a timeline, with one rule: every panel has one job and every tool has one home.
 
 ```
-+---------------------------+------------------+
-|                           |                  |
-|         Viewer            |  Media Browser   |
-|                           |                  |
-+---------------------------+------------------+
-|                                    | Inspector|
-|             Timeline               |          |
-|                                    |          |
-+------------------------------------+----------+
++--------------------------------------------------------------+
+| Klipp  File Edit Clip ...      Edit | Color | Export   [Q] [E]|
++-----------+--------------------------------------+-----------+
+|           |      Source        |     Program     |           |
+|  Browser  |      viewer        |     viewer      | Inspector |
+|           |  transport         |  transport      |           |
+|           +--------------------------------------+           |
+|           |  tools | INS OVR | snap skim | M   zoom          |
+|           |  Timeline                            |           |
++-----------+--------------------------------------+-----------+
+| status bar                                                   |
++--------------------------------------------------------------+
 ```
 
-- **Menu Bar** — Across the top of the window with all menus and the toolbar.
-- **Viewer** — Top-left. Displays the current frame at the playhead position.
-- **Source Viewer** — Optional second viewer for browsing source media without affecting the timeline.
-- **Media Browser** — Top-right. Imported media with grid/list views, bins, and skimming.
-- **Timeline** — Bottom area. Multi-track timeline with filmstrip thumbnails and waveforms.
-- **Inspector** — Right side. Context-sensitive panel showing video, audio, effects, and info tabs for the selected clip.
-- **AI Tools** — Optional panel (Alt+A). Three-state machine for AI-assisted masking, isolation, and detection.
+- **App bar** — Brand, the menu bar, the workspace switch (Edit, Color, Export) and the two global actions: Render Queue and Export. Nothing on it acts on the timeline.
+- **Browser** — Left column: Files, Media and Library tabs.
+- **Viewers** — Centre top. Source and program side by side, or one viewer (**View → Dual Viewers**). Each viewer owns its transport, its overlays and, on the program side, the scopes and viewer-layout buttons.
+- **Timeline** — Centre bottom. Its own toolbar carries everything that changes how an edit behaves: the edit tools, insert / overwrite, snap, skimming, markers and zoom.
+- **Inspector** — Right column. Video, Audio, Color, Effects and Info tabs for the selection.
+- **AI Tools** — Optional panel (Alt+A) for AI-assisted masking, isolation and detection.
 
 ## Workspaces
 
@@ -38,8 +40,6 @@ Klipp provides workspace presets accessible from **Window → Workspaces**:
 
 Toggle individual panels from the **Window** menu:
 
-- Viewer
-- Source Viewer
 - Media Browser
 - Timeline
 - Inspector

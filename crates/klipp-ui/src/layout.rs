@@ -197,16 +197,31 @@ pub(crate) fn compute_layout(
     // how Resolve, Premiere, FCPX, and Avid all do it.
     let viewer_row_top = main_top;
     let viewer_row_bottom = h_resizer_rect.min.y;
+    //
+    // A single-viewer layout hands the whole row to whichever viewer
+    // `viewer_mode` names and leaves the other with no width.
     let viewer_gutter = theme::RESIZER_THICKNESS;
-    let half_w = ((center_w - viewer_gutter) * 0.5).max(0.0);
-    let source_viewer_rect = egui::Rect::from_min_max(
+    let full_row = egui::Rect::from_min_max(
         egui::pos2(center_left, viewer_row_top),
-        egui::pos2(center_left + half_w, viewer_row_bottom),
-    );
-    let viewer_rect = egui::Rect::from_min_max(
-        egui::pos2(center_left + half_w + viewer_gutter, viewer_row_top),
         egui::pos2(center_left + center_w, viewer_row_bottom),
     );
+    let (source_viewer_rect, viewer_rect) = if state.dual_viewers {
+        let half_w = ((center_w - viewer_gutter) * 0.5).max(0.0);
+        (
+            egui::Rect::from_min_max(
+                egui::pos2(center_left, viewer_row_top),
+                egui::pos2(center_left + half_w, viewer_row_bottom),
+            ),
+            egui::Rect::from_min_max(
+                egui::pos2(center_left + half_w + viewer_gutter, viewer_row_top),
+                egui::pos2(center_left + center_w, viewer_row_bottom),
+            ),
+        )
+    } else if state.viewer_mode == klipp_core::ViewerMode::Source {
+        (full_row, egui::Rect::from_min_size(full_row.right_top(), egui::vec2(0.0, full_row.height())))
+    } else {
+        (egui::Rect::from_min_size(full_row.left_top(), egui::vec2(0.0, full_row.height())), full_row)
+    };
 
     LayoutRects {
         full,
@@ -276,6 +291,23 @@ mod tests {
         state.show_color_panel = true;
         let color = compute_layout(test_full_rect(), &layout, &state);
         assert!(color.scopes_rect.height() > 0.0);
+    }
+
+    #[test]
+    fn a_single_viewer_takes_the_whole_row() {
+        let layout = LayoutState::default();
+        let mut state = AppState { dual_viewers: false, ..Default::default() };
+        state.viewer_mode = klipp_core::ViewerMode::Program;
+        let r = compute_layout(test_full_rect(), &layout, &state);
+        assert_eq!(r.source_viewer_rect.width(), 0.0);
+        assert!(r.viewer_rect.width() > 1000.0);
+        state.viewer_mode = klipp_core::ViewerMode::Source;
+        let r = compute_layout(test_full_rect(), &layout, &state);
+        assert_eq!(r.viewer_rect.width(), 0.0);
+        assert!(r.source_viewer_rect.width() > 1000.0);
+        state.dual_viewers = true;
+        let r = compute_layout(test_full_rect(), &layout, &state);
+        assert!((r.source_viewer_rect.width() - r.viewer_rect.width()).abs() < 1.0);
     }
 
     #[test]

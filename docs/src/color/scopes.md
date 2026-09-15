@@ -1,6 +1,6 @@
 # Video Scopes
 
-Video scopes provide objective measurement of your image's colour and luminance values, essential for accurate colour grading. Access scopes from **View → Scopes**, the scopes icon in the toolbar, or **V**. In the Color workspace they dock under the viewer, where the timeline is hidden. In every other workspace the same toggle opens the floating scope window, so the timeline keeps its rows; **View → Scopes → Overlay on Viewer** draws one scope in the viewer's corner instead.
+Video scopes provide objective measurement of your image's colour and luminance values, essential for accurate colour grading. Access scopes from **View → Scopes**, the scopes button under the program viewer, or **Alt+V**. In the Color workspace they dock under the viewer, where the timeline is hidden. In every other workspace the same toggle opens the floating scope window, so the timeline keeps its rows; **View → Scopes → Overlay on Viewer** draws one scope in the viewer's corner instead.
 
 ## Waveform
 

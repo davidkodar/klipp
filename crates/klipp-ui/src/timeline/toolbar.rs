@@ -2,81 +2,92 @@ use crate::state::AppState;
 use crate::theme::KlippTheme;
 use crate::widgets::tooltip::styled_tooltip;
 use klipp_core::AppCommand;
+use klipp_timeline::magnetic::EditMode;
 
-/// 34px timeline toolbar: edit tools, snap/skimming/marker toggles, role dots, zoom slider.
+/// The timeline's own toolbar: everything that changes how an edit on
+/// the timeline behaves lives here and nowhere else. Left to right:
+/// the edit tools, the insert / overwrite mode, snap and skimming, the
+/// marker button; on the right the zoom.
 pub fn show(ui: &mut egui::Ui, state: &mut AppState, theme: &KlippTheme, cmds: &mut Vec<AppCommand>) {
+    let btn = crate::theme::control::REGULAR;
     ui.horizontal_centered(|ui| {
         ui.spacing_mut().item_spacing.x = 4.0;
         ui.add_space(8.0);
 
-        // ── Edit tools (26px, painted icons) ──
+        // ── Edit tools ──
         #[allow(clippy::type_complexity)]
         let tool_defs: &[(klipp_core::Tool, &str, &str, fn(&egui::Painter, egui::Rect, egui::Color32))] = &[
             (klipp_core::Tool::Select, "Select Tool", "V", draw_tl_select_icon),
-            (klipp_core::Tool::Blade, "Blade Tool", "B", draw_tl_blade_icon),
             (klipp_core::Tool::Trim, "Trim Tool", "T", draw_tl_trim_icon),
+            (klipp_core::Tool::Blade, "Blade Tool", "B", draw_tl_blade_icon),
             (klipp_core::Tool::Range, "Range Tool", "R", draw_tl_range_icon),
         ];
         for (tool, tip, key, draw_fn) in tool_defs {
             let active = state.active_tool == *tool;
-            let (rect, resp) = ui.allocate_exact_size(
-                egui::vec2(26.0, 26.0),
-                egui::Sense::click(),
-            );
-            let (bg, fg) = if active {
-                (theme.accent_subtle, theme.accent)
-            } else if resp.hovered() {
-                (theme.bg_hover, theme.text_secondary)
-            } else {
-                (egui::Color32::TRANSPARENT, theme.text_dim)
-            };
-            ui.painter().rect_filled(rect, 4.0, bg);
-            draw_fn(ui.painter(), rect, fg);
+            let resp = icon_button(ui, theme, btn, active, *draw_fn);
             styled_tooltip(&resp, theme, tip, Some(key));
             if resp.clicked() {
-                state.active_tool = *tool;
+                cmds.push(AppCommand::SetActiveTool(*tool));
             }
         }
 
         separator(ui, theme);
 
-        // ── Snap toggle (left-click = master; right-click = per-target dropdown) ──
+        // ── Insert / Overwrite: a two-segment switch, the active mode lit ──
+        {
+            let seg_w = 34.0;
+            let h = crate::theme::control::COMPACT;
+            let (rect, resp) = ui.allocate_exact_size(egui::vec2(seg_w * 2.0 + 4.0, h), egui::Sense::click());
+            ui.painter().rect_filled(rect, crate::theme::radius::PANEL, theme.bg_panel);
+            ui.painter().rect_stroke(rect, crate::theme::radius::PANEL, egui::Stroke::new(1.0_f32, theme.border));
+            let pointer = ui.input(|i| i.pointer.interact_pos());
+            for (i, (mode, label)) in [(EditMode::Insert, "INS"), (EditMode::Overwrite, "OVR")].into_iter().enumerate() {
+                let seg = egui::Rect::from_min_size(egui::pos2(rect.min.x + 2.0 + i as f32 * seg_w, rect.min.y + 2.0), egui::vec2(seg_w, h - 4.0));
+                let active = state.edit_mode == mode;
+                let under = pointer.is_some_and(|p| seg.contains(p));
+                if active {
+                    ui.painter().rect_filled(seg, crate::theme::radius::CONTROL, theme.accent_subtle);
+                } else if under && resp.hovered() {
+                    ui.painter().rect_filled(seg, crate::theme::radius::CONTROL, theme.bg_hover);
+                }
+                let colour = if active { theme.accent } else { theme.text_dim };
+                ui.painter().text(seg.center(), egui::Align2::CENTER_CENTER, label, egui::FontId::monospace(crate::theme::type_scale::CAPTION), colour);
+            }
+            let tip = match state.edit_mode {
+                EditMode::Insert => "Edit Mode: Insert",
+                EditMode::Overwrite => "Edit Mode: Overwrite",
+            };
+            styled_tooltip(&resp, theme, tip, Some("W"));
+            if resp.clicked() {
+                state.edit_mode = match state.edit_mode {
+                    EditMode::Insert => EditMode::Overwrite,
+                    EditMode::Overwrite => EditMode::Insert,
+                };
+            }
+        }
+
+        separator(ui, theme);
+
+        // ── Snap (left-click = master; right-click = per-target menu) ──
         // Dispatches through AppCommand so the central handler can
         // persist state.snap → layout.snap on every flip (and so the
         // four snap-toggle surfaces — toolbar, N shortcut, palette,
         // View menu — stay in sync without parallel mutation paths).
         let snap_active = state.snap.master;
-        let (snap_bg, snap_fg) = if snap_active {
-            (theme.accent_subtle, theme.accent)
-        } else {
-            (egui::Color32::TRANSPARENT, theme.text_dim)
-        };
-        let (rect, resp) = ui.allocate_exact_size(
-            egui::vec2(26.0, 26.0),
-            egui::Sense::click().union(egui::Sense::hover()),
-        );
-        let bg = if resp.hovered() && !snap_active { theme.bg_hover } else { snap_bg };
-        ui.painter().rect_filled(rect, 4.0, bg);
-        draw_tl_snap_icon(ui.painter(), rect, snap_fg);
-        // Small ▾ chevron in the lower-right corner hints at the
-        // per-target dropdown (right-click reveals it). Same colour
-        // as the icon so it tracks active/inactive state.
+        let resp = icon_button(ui, theme, btn, snap_active, draw_tl_snap_icon);
+        // A small chevron in the corner hints at the per-target menu.
+        let chevron = if snap_active { theme.accent } else { theme.text_dim };
         ui.painter().text(
-            egui::pos2(rect.right() - 4.0, rect.bottom() - 6.0),
+            egui::pos2(resp.rect.right() - 4.0, resp.rect.bottom() - 6.0),
             egui::Align2::RIGHT_BOTTOM,
             "\u{25BE}",
             egui::FontId::proportional(10.0),
-            snap_fg,
+            chevron,
         );
         styled_tooltip(&resp, theme, "Snap (right-click for per-target options)", Some("N"));
         if resp.clicked() {
             cmds.push(AppCommand::SetSnapMaster(!state.snap.master));
         }
-        // Right-click opens the per-target dropdown. Each entry
-        // dispatches AppCommand::SetSnapTarget which the central
-        // handler routes into state.snap and persists to layout.json.
-        // Per-target rows are greyed when master is off (they have
-        // no effect until master is back on).
         resp.context_menu(|ui| {
             use klipp_core::SnapTargetKind;
             let cfg = state.snap;
@@ -105,17 +116,8 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState, theme: &KlippTheme, cmds: &
             });
         });
 
-        // ── Skimming toggle ──
-        let skim_active = state.skimming_enabled;
-        let (skim_bg, skim_fg) = if skim_active {
-            (theme.accent_subtle, theme.accent)
-        } else {
-            (egui::Color32::TRANSPARENT, theme.text_dim)
-        };
-        let (rect, resp) = ui.allocate_exact_size(egui::vec2(26.0, 26.0), egui::Sense::click());
-        let bg = if resp.hovered() && !skim_active { theme.bg_hover } else { skim_bg };
-        ui.painter().rect_filled(rect, 4.0, bg);
-        draw_tl_skim_icon(ui.painter(), rect, skim_fg);
+        // ── Skimming ──
+        let resp = icon_button(ui, theme, btn, state.skimming_enabled, draw_tl_skim_icon);
         styled_tooltip(&resp, theme, "Skimming", Some("S"));
         if resp.clicked() {
             state.skimming_enabled = !state.skimming_enabled;
@@ -123,11 +125,10 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState, theme: &KlippTheme, cmds: &
             state.toast.show(msg);
         }
 
-        // ── Add Marker ──
-        let (rect, resp) = ui.allocate_exact_size(egui::vec2(26.0, 26.0), egui::Sense::click());
-        let bg = if resp.hovered() { theme.bg_hover } else { egui::Color32::TRANSPARENT };
-        ui.painter().rect_filled(rect, 4.0, bg);
-        draw_tl_marker_icon(ui.painter(), rect, theme.text_dim);
+        separator(ui, theme);
+
+        // ── Add marker ──
+        let resp = icon_button(ui, theme, btn, false, draw_tl_marker_icon);
         styled_tooltip(&resp, theme, "Add Marker", Some("M"));
         if resp.clicked() {
             cmds.push(AppCommand::AddMarker {
@@ -137,65 +138,50 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState, theme: &KlippTheme, cmds: &
             });
         }
 
-        separator(ui, theme);
-
-        // ── Role visibility dots ──
-        let roles = [
-            (theme.role_video, "Video role", true),
-            (theme.role_dialogue, "Dialogue role", true),
-            (theme.role_music, "Music role", true),
-            (theme.role_sfx, "SFX role", true),
-            (theme.role_broll, "B-Roll role", false),
-        ];
-        for (color, tip, visible) in &roles {
-            let alpha = if *visible { 255u8 } else { 128 };
-            let dot_color = egui::Color32::from_rgba_premultiplied(
-                color.r(), color.g(), color.b(), alpha,
-            );
-            let (dot_rect, dot_resp) =
-                ui.allocate_exact_size(egui::vec2(7.0, 7.0), egui::Sense::click());
-            ui.painter().circle_filled(dot_rect.center(), 3.5, dot_color);
-            if !visible {
-                ui.painter().circle_stroke(dot_rect.center(), 3.5, egui::Stroke::new(1.0_f32, *color));
-            }
-            styled_tooltip(&dot_resp, theme, tip, None);
-        }
-
-        // ── Zoom slider + Fit button (right-aligned) ──
-        // Items in `right_to_left` are added from the RIGHT moving LEFT, so the
-        // FIRST add becomes the rightmost on screen. Final visual order:
-        //     [−] [slider] [+] [Fit]
+        // ── Zoom (right-aligned): [−] [slider] [+] [Fit] ──
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             ui.add_space(8.0);
-
-            // Fit button — first add → rightmost position on screen.
-            let fit_resp = ui.add(
-                egui::Button::new(
-                    egui::RichText::new("Fit").size(10.0).color(theme.text_secondary),
-                )
-                .min_size(egui::vec2(26.0, 16.0))
-                .rounding(2.0)
-                .fill(egui::Color32::TRANSPARENT)
-                .stroke(egui::Stroke::new(0.5_f32, theme.border)),
-            );
+            let fit_resp = ui.add(egui::Button::new("Fit").min_size(egui::vec2(36.0, crate::theme::control::COMPACT)));
             styled_tooltip(&fit_resp, theme, "Fit timeline to window", Some("Shift+Z"));
             if fit_resp.clicked() {
                 cmds.push(AppCommand::ZoomTimelineToFit);
             }
             ui.add_space(4.0);
 
-            ui.label(egui::RichText::new("+").size(10.0).color(theme.text_dim));
+            ui.label(egui::RichText::new("+").size(crate::theme::type_scale::CAPTION).color(theme.text_dim));
             let mut zoom_t = ((state.timeline_zoom.ln() - 0.1f32.ln())
                 / (2000.0f32.ln() - 0.1f32.ln())).clamp(0.0, 1.0);
             let slider = egui::Slider::new(&mut zoom_t, 0.0..=1.0).show_value(false);
-            let resp = ui.add_sized([70.0, 16.0], slider);
+            let resp = ui.add_sized([90.0, 16.0], slider);
             if resp.changed() {
                 let new_zoom = (0.1f32.ln() + zoom_t * (2000.0f32.ln() - 0.1f32.ln())).exp();
                 cmds.push(AppCommand::SetTimelineZoom { zoom: new_zoom, scroll_x: None });
             }
-            ui.label(egui::RichText::new("\u{2212}").size(10.0).color(theme.text_dim));
+            ui.label(egui::RichText::new("\u{2212}").size(crate::theme::type_scale::CAPTION).color(theme.text_dim));
         });
     });
+}
+
+/// A square glyph button: a tinted field and the accent on the glyph
+/// when active, the hover tone under the pointer, nothing otherwise.
+fn icon_button(
+    ui: &mut egui::Ui,
+    theme: &KlippTheme,
+    size: f32,
+    active: bool,
+    draw: impl FnOnce(&egui::Painter, egui::Rect, egui::Color32),
+) -> egui::Response {
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(size, size), egui::Sense::click());
+    let (bg, fg) = if active {
+        (theme.accent_subtle, theme.accent)
+    } else if resp.hovered() {
+        (theme.bg_hover, theme.text_primary)
+    } else {
+        (egui::Color32::TRANSPARENT, theme.text_secondary)
+    };
+    ui.painter().rect_filled(rect, crate::theme::radius::CONTROL, bg);
+    draw(ui.painter(), rect, fg);
+    resp
 }
 
 fn separator(ui: &mut egui::Ui, theme: &KlippTheme) {

@@ -1677,6 +1677,9 @@ pub struct AppState {
 
     // Scopes
     pub show_scopes: bool,
+    /// Source and program viewers side by side (true) or one viewer
+    /// that shows whichever `viewer_mode` names (false).
+    pub dual_viewers: bool,
     /// Render scopes as a semi-transparent overlay on the viewer instead of a separate panel.
     pub scope_overlay_mode: bool,
     pub show_keyframe_editor: bool,
@@ -3460,6 +3463,7 @@ impl Default for AppState {
             huesat_single_mode: false,
             huesat_active_curve: 0,
             show_scopes: false,
+            dual_viewers: true,
             scope_overlay_mode: false,
             scope_state: Default::default(),
             show_keyframe_editor: false,

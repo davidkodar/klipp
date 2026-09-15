@@ -597,6 +597,7 @@ impl KlippApp {
                 // carried only `snap_enabled: bool` and are migrated
                 // to a full SnapConfig on read (see LayoutState::load).
                 s.snap = layout.snap;
+                s.dual_viewers = layout.dual_viewers;
                 s
             },
             toolbar: ToolbarPanel { logo_texture: None },
@@ -24095,11 +24096,10 @@ impl KlippApp {
             {
                 self.state.viewer_overlays.focus_peaking = !self.state.viewer_overlays.focus_peaking;
             }
-            // V key (bare) — toggle scopes: the dock in Color, the
-            // floating window elsewhere (the timeline keeps its rows).
-            if !i.modifiers.ctrl && !i.modifiers.alt && !i.modifiers.shift
-                && i.key_pressed(egui::Key::V)
-            {
+            // Alt+V — toggle scopes: the dock in Color, the floating
+            // window elsewhere (the timeline keeps its rows). Bare V is
+            // the select tool.
+            if kb.is_action_pressed("toggle_scopes", i) {
                 self.state.toggle_scopes();
             }
             // Alt+S — toggle safe-areas overlay (action + title).
@@ -31284,8 +31284,14 @@ impl KlippApp {
                     let color_tools_bottom = in_color_ws
                         && self.state.color_tools_position == crate::state::ColorToolsPosition::Bottom;
 
-                    self.render_source_viewer_placeholder(ui, source_viewer_rect, all_cmds);
-                    self.render_viewer_panel(ui, viewer_rect, all_cmds);
+                    // A single-viewer layout gives the hidden viewer no
+                    // width; it is not drawn at all.
+                    if source_viewer_rect.width() > 1.0 {
+                        self.render_source_viewer_placeholder(ui, source_viewer_rect, all_cmds);
+                    }
+                    if viewer_rect.width() > 1.0 {
+                        self.render_viewer_panel(ui, viewer_rect, all_cmds);
+                    }
 
                     // The light under the pointer, while HDR monitoring is
                     // on: the engine publishes the picture's cd/m² with
@@ -31452,6 +31458,10 @@ impl KlippApp {
         if resizer_active {
             self.layout_dirty = true;
         }
+        if self.layout.dual_viewers != self.state.dual_viewers {
+            self.layout.dual_viewers = self.state.dual_viewers;
+            self.layout_dirty = true;
+        }
         if self.layout_dirty
             && !ui.input(|i| i.pointer.any_pressed() || i.pointer.is_decidedly_dragging())
         {
@@ -31483,7 +31493,6 @@ impl KlippApp {
                 &mut self.state,
                 &recent,
                 &self.theme,
-                &mut self.layout.active_tool,
             );
             all_cmds.extend(panel_cmds);
         });

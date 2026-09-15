@@ -2,6 +2,10 @@
 
 The timeline is the primary editing surface where you arrange, trim, and organize your clips.
 
+## Toolbar
+
+The timeline's own toolbar sits above the sequence tabs and holds every control that changes how an edit behaves: the edit tools, the INS / OVR edit mode, snap and skimming, the marker button and the zoom. See [Toolbar](toolbar.md#timeline-toolbar).
+
 ## Tracks
 
 The timeline supports multiple video and audio tracks:

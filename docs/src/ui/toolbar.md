@@ -1,22 +1,35 @@
 # Toolbar
 
-The toolbar sits within the menu bar area and provides quick access to editing tools and transport controls.
+Klipp has two toolbars, and they never overlap in purpose.
 
-## Layout
+## App bar
 
-From left to right, the toolbar contains:
+The bar across the top of the window holds what applies to the whole application:
 
-1. **Klipp logo** — Application identity in the top-left corner.
-2. **Menu bar** — File, Edit, Clip, Timeline, Mark, View, Window, Help.
-3. **Tool buttons** — Editing tool selection.
-4. **Transport controls** — Playback controls centred below the viewer.
+1. **Klipp** — Brand mark.
+2. **Menu bar** — File, Edit, Clip, Timeline, Mark, View, Window, Tools, Help.
+3. **Workspace switch** — Edit, Color, Export. Centred.
+4. **Render Queue** and **Export** — The two global actions, at the right.
+
+## Timeline toolbar
+
+The row above the tracks holds everything that changes how an edit on the timeline behaves, left to right:
+
+1. **Edit tools** — Select (V), Trim (T), Blade (B), Range (R).
+2. **INS / OVR** — The edit mode for insert and overwrite edits (W toggles).
+3. **Snap** (N; right-click for the per-target options) and **Skimming** (S).
+4. **Add Marker** (M).
+5. **Zoom** — Slider, plus and minus, and Fit (Shift+Z), at the right.
 
 ## Editing Tools
 
-Three primary tools, switchable with a single keypress:
+Four tools, switchable with a single keypress:
 
 ### Select Tool (V)
 The default tool. Click clips to select, drag to move, drag clip edges to trim. Hold Shift to select multiple clips. The tool you will use most of the time.
+
+### Trim Tool (T)
+Drag clip edges to trim with the ripple, roll, slip and slide behaviours of the magnetic timeline.
 
 ### Blade Tool (B)
 Click on a clip to split it at that position. The blade follows the cursor with a vertical indicator showing where the cut will land. With snapping enabled, the blade snaps to the playhead and clip boundaries.
