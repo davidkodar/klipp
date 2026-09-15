@@ -31735,67 +31735,70 @@ impl KlippApp {
                 let clip = self.state.sequences[seq_idx].tracks.iter_mut()
                     .find_map(|t| t.find_clip_mut(clip_id));
                 if let Some(clip) = clip {
-                    let grade_ver_h = 26.0;
-                    let avail_w = ui.available_width();
-                    ui.horizontal(|ui| {
-                        ui.set_height(grade_ver_h);
-                        ui.add_space(8.0);
-                        ui.label(egui::RichText::new("Grades").size(10.0).color(self.theme.text_dim));
-                        ui.add_space(4.0);
-                        let num_versions = clip.grade_versions.len();
-                        let active = clip.active_grade_version;
-                        for i in 0..num_versions {
-                            let is_active = active == Some(i);
-                            let label = {
-                                let name = &clip.grade_versions[i].name;
-                                if name.is_empty() {
-                                    format!("V{}", i + 1)
-                                } else {
-                                    name.clone()
-                                }
-                            };
-                            let resp = ui.selectable_label(is_active, egui::RichText::new(&label).size(10.0));
-                            if resp.clicked() && !is_active {
-                                all_cmds.push(AppCommand::SwitchGradeVersion { clip_id, version_index: i });
-                            }
-                            resp.context_menu(|ui| {
-                                if ui.button("Rename...").clicked() {
-                                    all_cmds.push(AppCommand::RenameGradeVersion {
-                                        clip_id,
-                                        version_index: i,
-                                        name: format!("Version {}", i + 1),
-                                    });
-                                    ui.close_menu();
-                                }
-                                if !is_active && ui.button("Delete").clicked() {
-                                    all_cmds.push(AppCommand::DeleteGradeVersion { clip_id, version_index: i });
-                                    ui.close_menu();
-                                }
-                            });
-                        }
-                        if ui.small_button("+").on_hover_text("Save current grade as new version").clicked() {
-                            let name = format!("Version {}", num_versions + 1);
-                            all_cmds.push(AppCommand::SaveGradeVersion { clip_id, name });
-                        }
-                    });
-                    ui.add_space(2.0);
-                    let sep_rect = ui.allocate_space(egui::vec2(avail_w, 1.0)).1;
-                    // Match the add_space(8.0) inside the surrounding horizontal so
-                    // the separator doesn't notch into the empty left padding zone.
-                    let sep_rect = egui::Rect::from_min_max(
-                        egui::pos2(sep_rect.min.x + 8.0, sep_rect.min.y),
-                        sep_rect.max,
-                    );
-                    ui.painter().rect_filled(sep_rect, 0.0, self.theme.border);
+                    let theme = self.theme.clone();
+                    let title = clip
+                        .media_id()
+                        .and_then(|m| self.state.media_pool.get(&m))
+                        .map(|m| m.filename.clone())
+                        .unwrap_or_else(|| "Clip".into());
+                    crate::widgets::inspector_group::panel_title_row(ui, &title, false, &theme);
 
-                    {
-                        let stills_h = 28.0;
+                    // Versions, stills and looks: the grade's own library,
+                    // one section above the tabs, collapsible like any
+                    // other section.
+                    let version_badge = clip
+                        .active_grade_version
+                        .map(|i| {
+                            let name = &clip.grade_versions[i].name;
+                            if name.is_empty() { format!("V{}", i + 1) } else { name.clone() }
+                        });
+                    let caption_row = |ui: &mut egui::Ui, label: &str, add: &mut dyn FnMut(&mut egui::Ui)| {
                         ui.horizontal(|ui| {
-                            ui.set_height(stills_h);
-                            ui.add_space(8.0);
-                            ui.label(egui::RichText::new("Stills").size(10.0).color(self.theme.text_dim));
-                            ui.add_space(4.0);
+                            ui.set_min_height(crate::theme::control::COMPACT);
+                            ui.add_space(12.0);
+                            ui.add_sized(
+                                [56.0, crate::theme::control::COMPACT],
+                                egui::Label::new(egui::RichText::new(label).size(crate::theme::type_scale::CAPTION).color(theme.text_dim)).selectable(false),
+                            );
+                            add(ui);
+                        });
+                    };
+                    crate::widgets::inspector_group::section_card(ui, "GRADE", version_badge, &theme, |ui| {
+                        caption_row(ui, "Versions", &mut |ui| {
+                            let num_versions = clip.grade_versions.len();
+                            let active = clip.active_grade_version;
+                            for i in 0..num_versions {
+                                let is_active = active == Some(i);
+                                let label = {
+                                    let name = &clip.grade_versions[i].name;
+                                    if name.is_empty() { format!("V{}", i + 1) } else { name.clone() }
+                                };
+                                let resp = ui.selectable_label(is_active, egui::RichText::new(&label).size(crate::theme::type_scale::CAPTION));
+                                if resp.clicked() && !is_active {
+                                    all_cmds.push(AppCommand::SwitchGradeVersion { clip_id, version_index: i });
+                                }
+                                resp.context_menu(|ui| {
+                                    if ui.button("Rename...").clicked() {
+                                        all_cmds.push(AppCommand::RenameGradeVersion {
+                                            clip_id,
+                                            version_index: i,
+                                            name: format!("Version {}", i + 1),
+                                        });
+                                        ui.close_menu();
+                                    }
+                                    if !is_active && ui.button("Delete").clicked() {
+                                        all_cmds.push(AppCommand::DeleteGradeVersion { clip_id, version_index: i });
+                                        ui.close_menu();
+                                    }
+                                });
+                            }
+                            if ui.small_button("+").on_hover_text("Save current grade as new version").clicked() {
+                                let name = format!("Version {}", num_versions + 1);
+                                all_cmds.push(AppCommand::SaveGradeVersion { clip_id, name });
+                            }
+                        });
 
+                        caption_row(ui, "Stills", &mut |ui| {
                             let mut delete_idx = None;
                             for (i, still) in self.state.grade_stills.iter_mut().enumerate() {
                                 let is_active = self.state.active_grade_still == Some(i);
@@ -31824,11 +31827,12 @@ impl KlippApp {
                                         egui::Color32::WHITE,
                                     );
                                 }
-                                if is_active {
-                                    ui.painter().rect_stroke(rect, 1.0, egui::Stroke::new(1.5_f32, self.theme.text_accent));
+                                let stroke = if is_active {
+                                    egui::Stroke::new(1.5_f32, theme.accent)
                                 } else {
-                                    ui.painter().rect_stroke(rect, 1.0, egui::Stroke::new(0.5_f32, self.theme.border));
-                                }
+                                    egui::Stroke::new(1.0_f32, theme.border)
+                                };
+                                ui.painter().rect_stroke(rect, crate::theme::radius::CONTROL, stroke);
                                 if resp.clicked() {
                                     all_cmds.push(AppCommand::SetActiveGradeStill {
                                         index: if is_active { None } else { Some(i) },
@@ -31845,55 +31849,32 @@ impl KlippApp {
                             if let Some(idx) = delete_idx {
                                 all_cmds.push(AppCommand::DeleteGradeStill { index: idx });
                             }
-
-                            if ui.small_button("\u{1F4F7}").on_hover_text("Capture current frame as grade still").clicked() {
+                            if ui.small_button("Grab").on_hover_text("Capture the current frame as a grade still").clicked() {
                                 let name = format!("Still {}", self.state.grade_stills.len() + 1);
                                 all_cmds.push(AppCommand::CaptureGradeStill { name });
                             }
-
                             let compare_active = self.state.grade_still_compare;
-                            let compare_label = if compare_active { "Compare ON" } else { "Compare" };
-                            let compare_color = if compare_active { self.theme.text_accent } else { self.theme.text_dim };
-                            if ui.add(egui::Button::new(egui::RichText::new(compare_label).size(10.0).color(compare_color)).frame(false))
-                                .on_hover_text("Toggle split-view comparison with active still")
+                            if ui.selectable_label(compare_active, "Compare")
+                                .on_hover_text("Split the viewer against the active still")
                                 .clicked()
                             {
                                 all_cmds.push(AppCommand::ToggleGradeStillCompare);
                             }
                         });
-                        let sep_rect2 = ui.allocate_space(egui::vec2(avail_w, 1.0)).1;
-                        // Match the add_space(8.0) inside the surrounding horizontal.
-                        let sep_rect2 = egui::Rect::from_min_max(
-                            egui::pos2(sep_rect2.min.x + 8.0, sep_rect2.min.y),
-                            sep_rect2.max,
-                        );
-                        ui.painter().rect_filled(sep_rect2, 0.0, self.theme.border);
-                    }
 
-                    // Looks strip — project-level reusable grades.
-                    // Sits above the tabs; saves the selected clip's
-                    // graph, applies to the timeline selection (or the
-                    // single selected clip when no rubber-band is
-                    // active). Same disjoint-field borrow trick as the
-                    // grade-stills section above.
-                    {
+                        // Looks: project-level reusable grades. Saves the
+                        // selected clip's graph, applies to the timeline
+                        // selection (or the single selected clip).
                         let looks_cmds = crate::panels::looks::show(
                             ui,
                             &mut self.looks_panel_state,
                             &self.state.looks,
                             self.state.selected_clip,
                             &self.state.selected_clips,
-                            &self.theme,
+                            &theme,
                         );
                         all_cmds.extend(looks_cmds);
-                        ui.add_space(2.0);
-                        let sep_rect3 = ui.allocate_space(egui::vec2(avail_w, 1.0)).1;
-                        let sep_rect3 = egui::Rect::from_min_max(
-                            egui::pos2(sep_rect3.min.x + 8.0, sep_rect3.min.y),
-                            sep_rect3.max,
-                        );
-                        ui.painter().rect_filled(sep_rect3, 0.0, self.theme.border);
-                    }
+                    });
 
                     // Swap between tabbed grade inspector and per-node
                     // inspector based on what the user selected in the

@@ -101,6 +101,84 @@ pub fn section_card(ui: &mut Ui, title: &str, badge: Option<String>, theme: &Kli
     col_state.store(ui.ctx());
 }
 
+/// The one-row title of an inspector column: what is being inspected,
+/// nothing else, on the deep surface with a hairline below.
+pub fn panel_title_row(ui: &mut Ui, title: &str, dim: bool, theme: &KlippTheme) {
+    let rect = Rect::from_min_size(ui.cursor().min, vec2(ui.available_width(), SECTION_HEADER_H));
+    ui.allocate_new_ui(egui::UiBuilder::new().max_rect(rect), |ui| {
+        ui.painter().rect_filled(rect, 0.0, theme.bg_deep);
+        ui.painter().hline(rect.x_range(), rect.max.y, Stroke::new(1.0_f32, theme.border));
+        ui.horizontal_centered(|ui| {
+            ui.add_space(12.0);
+            let colour = if dim { theme.text_dim } else { theme.text_primary };
+            ui.add(
+                egui::Label::new(
+                    egui::RichText::new(title).size(crate::theme::type_scale::CONTROL).strong().color(colour),
+                )
+                .truncate()
+                .selectable(false),
+            );
+        });
+    });
+    ui.advance_cursor_after_rect(rect);
+}
+
+/// One strip of tabs for every inspector column. Each tab is as wide as
+/// its title at the largest size that fits; titles fall back to their
+/// short forms before they would collide, so none is ever clipped.
+/// Returns the index of a tab clicked this frame.
+pub fn tab_strip(ui: &mut Ui, labels: &[&str], short: &[&str], active: usize, theme: &KlippTheme) -> Option<usize> {
+    let strip = Rect::from_min_size(ui.cursor().min, vec2(ui.available_width(), SECTION_HEADER_H));
+    let mut clicked = None;
+    ui.allocate_new_ui(egui::UiBuilder::new().max_rect(strip), |ui| {
+        ui.painter().rect_filled(strip, 0.0, theme.bg_deep);
+        ui.painter().hline(strip.x_range(), strip.max.y, Stroke::new(1.0_f32, theme.border));
+        ui.horizontal_centered(|ui| {
+            ui.spacing_mut().item_spacing.x = 0.0;
+            let avail = ui.available_width();
+            let pad = 14.0;
+            let widths = |ui: &Ui, labels: &[&str], size: f32| -> Vec<f32> {
+                labels
+                    .iter()
+                    .map(|l| ui.painter().layout_no_wrap(l.to_string(), egui::FontId::proportional(size), egui::Color32::WHITE).size().x + pad)
+                    .collect()
+            };
+            let tiers: [(&[&str], f32); 3] = [
+                (labels, crate::theme::type_scale::BODY),
+                (labels, crate::theme::type_scale::CAPTION),
+                (short, crate::theme::type_scale::CAPTION),
+            ];
+            let (names, size, w) = tiers
+                .into_iter()
+                .map(|(names, size)| (names, size, widths(ui, names, size)))
+                .find(|(_, _, w)| w.iter().sum::<f32>() <= avail)
+                .unwrap_or_else(|| (short, crate::theme::type_scale::CAPTION, widths(ui, short, crate::theme::type_scale::CAPTION)));
+            let total: f32 = w.iter().sum();
+            let stretch = if total > 0.0 { (avail / total).max(1.0) } else { 1.0 };
+            for (i, name) in names.iter().enumerate() {
+                let is_active = i == active;
+                let (tab_rect, resp) = ui.allocate_exact_size(vec2(w[i] * stretch, SECTION_HEADER_H - 2.0), Sense::click());
+                let colour = if is_active {
+                    theme.text_primary
+                } else if resp.hovered() {
+                    theme.text_secondary
+                } else {
+                    theme.text_dim
+                };
+                ui.painter().text(tab_rect.center(), egui::Align2::CENTER_CENTER, *name, egui::FontId::proportional(size), colour);
+                if is_active {
+                    ui.painter().hline(tab_rect.x_range().shrink(4.0), tab_rect.max.y - 1.0, Stroke::new(2.0_f32, theme.accent));
+                }
+                if resp.clicked() {
+                    clicked = Some(i);
+                }
+            }
+        });
+    });
+    ui.advance_cursor_after_rect(strip);
+    clicked
+}
+
 pub fn inspector_group_header(
     ui: &mut Ui,
     title: &str,

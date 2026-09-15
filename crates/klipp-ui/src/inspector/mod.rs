@@ -67,48 +67,22 @@ impl NewInspectorPanel {
 
 
         // ── Header ──
-        // One 28 px row: what is being inspected, nothing else.
-        let header_rect = egui::Rect::from_min_size(
-            ui.cursor().min,
-            egui::vec2(ui.available_width(), crate::widgets::inspector_group::SECTION_HEADER_H),
-        );
-        ui.allocate_new_ui(egui::UiBuilder::new().max_rect(header_rect), |ui| {
-            ui.painter().rect_filled(header_rect, 0.0, theme.bg_deep);
-            ui.painter().hline(
-                header_rect.x_range(),
-                header_rect.max.y,
-                egui::Stroke::new(1.0_f32, theme.border),
-            );
-            ui.horizontal_centered(|ui| {
-                ui.add_space(12.0);
-                let (clip_name, name_color) = if let Some((_, c)) = clip_info {
-                    let name = match &c.kind {
-                        klipp_timeline::ClipKind::Title(td) => {
-                            let text_preview = if td.text().len() > 30 { format!("{}...", &td.text()[..27]) } else { td.text().clone() };
-                            format!("Title: {}", text_preview)
-                        }
-                        klipp_timeline::ClipKind::Gap => "Gap".into(),
-                        _ => media.map(|m| m.filename.clone()).unwrap_or_else(|| "Clip".into()),
-                    };
-                    (name, theme.text_primary)
-                } else if let Some(bm) = bin_media {
-                    (bm.filename.clone(), theme.text_primary)
-                } else {
-                    ("No clip selected".into(), theme.text_dim)
-                };
-                ui.add(
-                    egui::Label::new(
-                        egui::RichText::new(clip_name)
-                            .size(crate::theme::type_scale::CONTROL)
-                            .strong()
-                            .color(name_color),
-                    )
-                    .truncate()
-                    .selectable(false),
-                );
-            });
-        });
-        ui.advance_cursor_after_rect(header_rect);
+        let (clip_name, name_dim) = if let Some((_, c)) = clip_info {
+            let name = match &c.kind {
+                klipp_timeline::ClipKind::Title(td) => {
+                    let text_preview = if td.text().len() > 30 { format!("{}...", &td.text()[..27]) } else { td.text().clone() };
+                    format!("Title: {}", text_preview)
+                }
+                klipp_timeline::ClipKind::Gap => "Gap".into(),
+                _ => media.map(|m| m.filename.clone()).unwrap_or_else(|| "Clip".into()),
+            };
+            (name, false)
+        } else if let Some(bm) = bin_media {
+            (bm.filename.clone(), false)
+        } else {
+            ("No clip selected".into(), true)
+        };
+        crate::widgets::inspector_group::panel_title_row(ui, &clip_name, name_dim, theme);
 
         // ── Amber context banner (timeline clip only) ──
         if let Some((track_idx, clip)) = clip_info {
@@ -156,98 +130,39 @@ impl NewInspectorPanel {
         }
 
         // ── Tab bar ──
-        let tab_rect = egui::Rect::from_min_size(
-            ui.cursor().min,
-            egui::vec2(ui.available_width(), 28.0),
-        );
-        ui.allocate_new_ui(egui::UiBuilder::new().max_rect(tab_rect), |ui| {
-            ui.painter().rect_filled(tab_rect, 0.0, theme.bg_deep);
-            ui.painter().hline(
-                tab_rect.x_range(),
-                tab_rect.max.y,
-                egui::Stroke::new(1.0_f32, theme.border),
-            );
-            ui.horizontal_centered(|ui| {
-                ui.spacing_mut().item_spacing.x = 0.0;
-                let is_title_clip = clip_info.as_ref().is_some_and(|(_, c)| matches!(c.kind, klipp_timeline::ClipKind::Title(_)));
-                let is_generator_clip = clip_info.as_ref().is_some_and(|(_, c)| matches!(c.kind, klipp_timeline::ClipKind::Generator(_)));
-                let tabs: Vec<(InspectorTab, &str)> = if is_title_clip {
-                    vec![
-                        (InspectorTab::Title, "TITLE"),
-                        (InspectorTab::Video, "VIDEO"),
-                        (InspectorTab::Effects, "EFFECTS"),
-                        (InspectorTab::Info, "INFO"),
-                    ]
-                } else if is_generator_clip {
-                    vec![
-                        (InspectorTab::Generator, "GENERATOR"),
-                        (InspectorTab::Video, "VIDEO"),
-                        (InspectorTab::Effects, "EFFECTS"),
-                        (InspectorTab::Info, "INFO"),
-                    ]
-                } else {
-                    vec![
-                        (InspectorTab::Video, "VIDEO"),
-                        (InspectorTab::Audio, "AUDIO"),
-                        (InspectorTab::Color, "COLOR"),
-                        (InspectorTab::Effects, "EFFECTS"),
-                        (InspectorTab::Info, "INFO"),
-                    ]
-                };
-                // Each tab as wide as its title, at the largest size that
-                // fits the strip; titles shorten before they would collide.
-                let avail = ui.available_width();
-                fn short(l: &str) -> &str {
-                    match l {
-                        "VIDEO" => "VID",
-                        "AUDIO" => "AUD",
-                        "COLOR" => "COL",
-                        "EFFECTS" => "FX",
-                        "GENERATOR" => "GEN",
-                        other => other,
-                    }
-                }
-                let pad = 14.0;
-                let widths = |ui: &egui::Ui, labels: &[String], size: f32| -> Vec<f32> {
-                    labels
-                        .iter()
-                        .map(|l| ui.painter().layout_no_wrap(l.clone(), egui::FontId::proportional(size), egui::Color32::WHITE).size().x + pad)
-                        .collect()
-                };
-                let full: Vec<String> = tabs.iter().map(|(_, l)| l.to_string()).collect();
-                let brief: Vec<String> = tabs.iter().map(|(_, l)| short(l).to_string()).collect();
-                let (labels, size, w) = [(&full, 11.0), (&full, 10.0), (&brief, 10.0)]
-                    .into_iter()
-                    .map(|(labels, size)| (labels, size, widths(ui, labels, size)))
-                    .find(|(_, _, w)| w.iter().sum::<f32>() <= avail)
-                    .unwrap_or_else(|| (&brief, 10.0, widths(ui, &brief, 10.0)));
-                let total: f32 = w.iter().sum();
-                let stretch = if total > 0.0 { (avail / total).max(1.0) } else { 1.0 };
-                for (i, (tab, _)) in tabs.iter().enumerate() {
-                    let is_active = *active_tab == *tab;
-                    let (tab_rect, resp) = ui.allocate_exact_size(egui::vec2(w[i] * stretch, 26.0), egui::Sense::click());
-                    let text_color = if is_active {
-                        theme.text_primary
-                    } else if resp.hovered() {
-                        theme.text_secondary
-                    } else {
-                        theme.text_dim
-                    };
-                    ui.painter().text(tab_rect.center(), egui::Align2::CENTER_CENTER, &labels[i], egui::FontId::proportional(size), text_color);
-                    if is_active {
-                        ui.painter().hline(tab_rect.x_range().shrink(4.0), tab_rect.max.y - 1.0, egui::Stroke::new(2.0_f32, theme.accent));
-                    }
-                    if resp.clicked() {
-                        *active_tab = *tab;
-                    }
-                }
-            });
-        });
-        ui.advance_cursor_after_rect(tab_rect);
-
-        // Auto-switch to Title/Generator tab when a synthetic clip is selected (and away when not)
         let is_title_clip = clip_info.as_ref().is_some_and(|(_, c)| matches!(c.kind, klipp_timeline::ClipKind::Title(_)));
         let is_generator_clip = clip_info.as_ref().is_some_and(|(_, c)| matches!(c.kind, klipp_timeline::ClipKind::Generator(_)));
+        let tabs: Vec<(InspectorTab, &str, &str)> = if is_title_clip {
+            vec![
+                (InspectorTab::Title, "TITLE", "TTL"),
+                (InspectorTab::Video, "VIDEO", "VID"),
+                (InspectorTab::Effects, "EFFECTS", "FX"),
+                (InspectorTab::Info, "INFO", "INFO"),
+            ]
+        } else if is_generator_clip {
+            vec![
+                (InspectorTab::Generator, "GENERATOR", "GEN"),
+                (InspectorTab::Video, "VIDEO", "VID"),
+                (InspectorTab::Effects, "EFFECTS", "FX"),
+                (InspectorTab::Info, "INFO", "INFO"),
+            ]
+        } else {
+            vec![
+                (InspectorTab::Video, "VIDEO", "VID"),
+                (InspectorTab::Audio, "AUDIO", "AUD"),
+                (InspectorTab::Color, "COLOR", "COL"),
+                (InspectorTab::Effects, "EFFECTS", "FX"),
+                (InspectorTab::Info, "INFO", "INFO"),
+            ]
+        };
+        let labels: Vec<&str> = tabs.iter().map(|t| t.1).collect();
+        let brief: Vec<&str> = tabs.iter().map(|t| t.2).collect();
+        let active = tabs.iter().position(|t| t.0 == *active_tab).unwrap_or(0);
+        if let Some(i) = crate::widgets::inspector_group::tab_strip(ui, &labels, &brief, active, theme) {
+            *active_tab = tabs[i].0;
+        }
+
+        // Auto-switch to Title/Generator tab when a synthetic clip is selected (and away when not)
         if is_title_clip && *active_tab != InspectorTab::Title {
             *active_tab = InspectorTab::Title;
         } else if is_generator_clip && *active_tab != InspectorTab::Generator {

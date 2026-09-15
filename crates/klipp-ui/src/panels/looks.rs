@@ -45,21 +45,19 @@ pub fn show(
 ) -> Vec<AppCommand> {
     let mut cmds = Vec::new();
 
-    // Header row: "LOOKS" label + "Save current" button on the right.
+    // Caption row like the versions and stills rows above it, with the
+    // save action at the right.
     ui.horizontal(|ui| {
-        ui.add_space(8.0);
-        ui.label(
-            egui::RichText::new("LOOKS")
-                .size(10.0).strong().color(theme.text_dim)
+        ui.set_min_height(crate::theme::control::COMPACT);
+        ui.add_space(12.0);
+        ui.add_sized(
+            [56.0, crate::theme::control::COMPACT],
+            egui::Label::new(egui::RichText::new("Looks").size(crate::theme::type_scale::CAPTION).color(theme.text_dim)).selectable(false),
         );
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             ui.add_space(6.0);
-            let label = if state.save_field_open { "Cancel" } else { "+ Save current" };
-            let resp = ui.add(
-                egui::Button::new(
-                    egui::RichText::new(label).size(10.0).color(theme.text_accent)
-                ).frame(false)
-            );
+            let label = if state.save_field_open { "Cancel" } else { "Save current" };
+            let resp = ui.small_button(label);
             let resp = resp.on_hover_text(
                 "Snapshot the selected clip's grade as a reusable Look"
             );
@@ -76,7 +74,7 @@ pub fn show(
     // header button so the panel stays compact at idle.
     if state.save_field_open {
         ui.horizontal(|ui| {
-            ui.add_space(8.0);
+            ui.add_space(12.0);
             let resp = ui.add(
                 egui::TextEdit::singleline(&mut state.new_look_name)
                     .hint_text("Look name…")
@@ -112,9 +110,9 @@ pub fn show(
     // Empty state — clearer than a blank panel.
     if looks.is_empty() {
         ui.horizontal(|ui| {
-            ui.add_space(8.0);
+            ui.add_space(12.0);
             ui.label(
-                egui::RichText::new("No saved Looks yet — save the current grade to start.")
+                egui::RichText::new("No saved Looks yet. Save the current grade to start.")
                     .small().color(theme.text_dim)
             );
         });
@@ -145,7 +143,7 @@ pub fn show(
                     .unwrap_or(false);
 
                 ui.horizontal(|ui| {
-                    ui.add_space(8.0);
+                    ui.add_space(12.0);
                     if is_renaming {
                         let text_ref = state.renaming.as_mut().map(|(_, t)| t).unwrap();
                         let resp = ui.add(

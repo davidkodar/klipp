@@ -137,57 +137,19 @@ impl NodeInspectorPanel {
     ) -> Vec<AppCommand> {
         let mut cmds = Vec::new();
 
-        // ── Tab row (equal-width, amber underline on active) ──
-        let tab_h = 28.0;
-        let avail_w = ui.available_width();
-        let tab_w = avail_w / 5.0;
-
-        let (tab_rect, _) = ui.allocate_exact_size(egui::vec2(avail_w, tab_h), egui::Sense::hover());
-
-        // Draw tabs using painter clone to avoid borrow conflict
-        {
-            let painter = ui.painter().clone();
-            painter.line_segment(
-                [egui::pos2(tab_rect.min.x, tab_rect.max.y), egui::pos2(tab_rect.max.x, tab_rect.max.y)],
-                egui::Stroke::new(0.5_f32, theme.border),
-            );
-
-            for (i, (tab, label)) in [
-                (ColorTab::Adjustments, "Color"),
-                (ColorTab::Wheels, "Wheels"),
-                (ColorTab::Curves, "Curves"),
-                (ColorTab::HueSat, "Hue/Sat"),
-                (ColorTab::Warper, "Warper"),
-            ].iter().enumerate() {
-                let active = *color_tab == *tab;
-                let x = tab_rect.min.x + i as f32 * tab_w;
-                let rect = egui::Rect::from_min_size(egui::pos2(x, tab_rect.min.y), egui::vec2(tab_w, tab_h));
-
-                let color = if active { theme.text_accent } else { theme.text_secondary };
-                painter.text(rect.center(), egui::Align2::CENTER_CENTER, label,
-                    egui::FontId::proportional(11.0), color);
-
-                if active {
-                    painter.line_segment(
-                        [egui::pos2(rect.min.x + 4.0, rect.max.y), egui::pos2(rect.max.x - 4.0, rect.max.y)],
-                        egui::Stroke::new(1.5_f32, theme.text_accent),
-                    );
-                }
-            }
-        }
-
-        // Tab click interaction (separate pass)
-        for (i, (tab, _label)) in [
-            (ColorTab::Adjustments, "Color"),
-            (ColorTab::Wheels, "Wheels"),
-            (ColorTab::Curves, "Curves"),
-            (ColorTab::HueSat, "Hue/Sat"),
-            (ColorTab::Warper, "Warper"),
-        ].iter().enumerate() {
-            let x = tab_rect.min.x + i as f32 * tab_w;
-            let rect = egui::Rect::from_min_size(egui::pos2(x, tab_rect.min.y), egui::vec2(tab_w, tab_h));
-            let resp = ui.allocate_rect(rect, egui::Sense::click());
-            if resp.clicked() { *color_tab = *tab; }
+        // ── Tab row: the same strip as the Edit inspector ──
+        let tabs = [
+            (ColorTab::Adjustments, "COLOR", "COL"),
+            (ColorTab::Wheels, "WHEELS", "WHL"),
+            (ColorTab::Curves, "CURVES", "CRV"),
+            (ColorTab::HueSat, "HUE/SAT", "HUE"),
+            (ColorTab::Warper, "WARPER", "WRP"),
+        ];
+        let labels: Vec<&str> = tabs.iter().map(|t| t.1).collect();
+        let brief: Vec<&str> = tabs.iter().map(|t| t.2).collect();
+        let active = tabs.iter().position(|t| t.0 == *color_tab).unwrap_or(0);
+        if let Some(i) = crate::widgets::inspector_group::tab_strip(ui, &labels, &brief, active, theme) {
+            *color_tab = tabs[i].0;
         }
 
         // ── Tab content ──
