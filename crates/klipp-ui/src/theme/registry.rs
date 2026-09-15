@@ -40,6 +40,7 @@ pub const BUILTIN_CREAM: &str = include_str!("builtin/cream.toml");
 pub const BUILTIN_SLATE: &str = include_str!("builtin/slate.toml");
 pub const BUILTIN_NORD: &str = include_str!("builtin/nord.toml");
 pub const BUILTIN_HIGH_CONTRAST: &str = include_str!("builtin/high_contrast.toml");
+pub const BUILTIN_CUT: &str = include_str!("builtin/cut.toml");
 
 /// Default theme name used when [`crate::prefs::AppearancePrefs::theme_name`]
 /// references a theme that the registry doesn't know about (e.g. a
@@ -103,6 +104,7 @@ impl ThemeRegistry {
     fn load_builtins(&mut self) {
         for raw in [
             BUILTIN_DARK,
+            BUILTIN_CUT,
             BUILTIN_LIGHT,
             BUILTIN_SOLARIZED_DARK,
             BUILTIN_CREAM,

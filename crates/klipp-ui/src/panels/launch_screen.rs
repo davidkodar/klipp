@@ -850,7 +850,7 @@ impl LaunchScreen {
                     // so the badge doesn't overshoot).
                     if rp.missing_media == Some(true) {
                         let warn_x = text_x + name_galley.size().x + 8.0;
-                        draw_missing_media_badge(ui, egui::pos2(warn_x + 18.0, rect.min.y + 6.0));
+                        draw_missing_media_badge(ui, egui::pos2(warn_x + 18.0, rect.min.y + 6.0), theme.marker_warning);
                     }
 
                     // Timestamp (right-aligned) with clock icon
@@ -1097,7 +1097,7 @@ impl LaunchScreen {
 
         // Missing media warning badge (top-right of thumbnail)
         if rp.missing_media == Some(true) {
-            draw_missing_media_badge(ui, egui::pos2(thumb_rect.max.x, thumb_rect.min.y));
+            draw_missing_media_badge(ui, egui::pos2(thumb_rect.max.x, thumb_rect.min.y), theme.marker_warning);
         }
 
         // ── Info area (bottom ~40%) ──
@@ -1290,7 +1290,7 @@ fn build_counts_string(rp: &RecentProject) -> String {
 }
 
 /// Draw a small warning triangle icon for missing media.
-fn draw_missing_media_badge(ui: &egui::Ui, top_right: egui::Pos2) {
+fn draw_missing_media_badge(ui: &egui::Ui, top_right: egui::Pos2, fill: egui::Color32) {
     let size = 18.0;
     let margin = 6.0;
     let center = egui::pos2(top_right.x - margin - size / 2.0, top_right.y + margin + size / 2.0);
@@ -1303,7 +1303,7 @@ fn draw_missing_media_badge(ui: &egui::Ui, top_right: egui::Pos2) {
     let painter = ui.painter();
     painter.add(egui::Shape::convex_polygon(
         vec![tri_top, tri_bl, tri_br],
-        egui::Color32::from_rgb(220, 160, 40),
+        fill,
         egui::Stroke::NONE,
     ));
 

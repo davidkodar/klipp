@@ -34,7 +34,7 @@ resizer_idle  = "#a8a294"
 accent        = "#b87810"
 accent_dim    = "#8a5a0c"
 accent_glow   = "#2e1e0440"
-accent_subtle = "#160e021e"
+accent_subtle = "#281a0438"
 # Dark dusty purple — sits well against the warm cream tones
 # without competing with the amber accent.
 accent_alt    = "#783c8e"
@@ -49,7 +49,7 @@ playhead       = "#d63b2f"
 text_primary   = "#2a2520"
 text_secondary = "#585045"
 text_dim       = "#888070"
-text_accent    = "#985810"
+text_accent    = "#1c1814"
 text_on_accent = "#1c1814"
 
 # ── Functional marker colours ──

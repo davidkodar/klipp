@@ -4249,11 +4249,14 @@ impl BrowserPanel {
     }
 
     fn render_media_filter_toolbar(&mut self, ui: &mut egui::Ui, theme: &KlippTheme, state: &AppState) {
-        ui.horizontal(|ui| {
-            ui.label(egui::RichText::new("Filter:").size(crate::theme::type_scale::BODY).color(theme.text_dim));
+        // One wrapping row of self-labelled pickers: each reads as its
+        // own default ("All media", "Any rating") so the row needs no
+        // captions and never clips in a narrow browser.
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing = egui::vec2(6.0, 4.0);
             let saved_name = |id: &str| state.media_pool.smart_bins.iter().find(|b| b.id == id).map(|b| b.name.clone());
             let filter_label = match &self.smart_bin_filter {
-                SmartBinFilter::None => "All Media".to_string(),
+                SmartBinFilter::None => "All media".to_string(),
                 SmartBinFilter::Unused => "Unused".to_string(),
                 SmartBinFilter::VideoOnly => "Video Only".to_string(),
                 SmartBinFilter::AudioOnly => "Audio Only".to_string(),
@@ -4266,9 +4269,10 @@ impl BrowserPanel {
             let mut open_editor: Option<klipp_core::SmartBin> = None;
             egui::ComboBox::from_id_salt("smart_bin")
                 .selected_text(filter_label)
-                .width(130.0)
+                .width(0.0)
+                .wrap_mode(egui::TextWrapMode::Extend)
                 .show_ui(ui, |ui| {
-                    ui.selectable_value(&mut self.smart_bin_filter, SmartBinFilter::None, "All Media");
+                    ui.selectable_value(&mut self.smart_bin_filter, SmartBinFilter::None, "All media");
                     ui.separator();
                     ui.selectable_value(&mut self.smart_bin_filter, SmartBinFilter::Unused, "Unused");
                     ui.selectable_value(&mut self.smart_bin_filter, SmartBinFilter::VideoOnly, "Video Only");
@@ -4310,22 +4314,21 @@ impl BrowserPanel {
                 self.smart_bin_editor = Some(bin);
             }
 
-            ui.add_space(8.0);
-            ui.label(egui::RichText::new("Rating:").size(crate::theme::type_scale::BODY).color(theme.text_dim));
             let rating_label = match self.min_rating_filter {
-                None => "Any".to_string(),
+                None => "Any rating".to_string(),
                 Some(1) => "1+ \u{2605}".to_string(),
                 Some(2) => "2+ \u{2605}\u{2605}".to_string(),
                 Some(3) => "3+ \u{2605}\u{2605}\u{2605}".to_string(),
                 Some(4) => "4+ \u{2605}\u{2605}\u{2605}\u{2605}".to_string(),
                 Some(5) => "5 \u{2605}\u{2605}\u{2605}\u{2605}\u{2605}".to_string(),
-                _ => "Any".to_string(),
+                _ => "Any rating".to_string(),
             };
             egui::ComboBox::from_id_salt("rating_filter")
                 .selected_text(rating_label)
-                .width(110.0)
+                .width(0.0)
+                .wrap_mode(egui::TextWrapMode::Extend)
                 .show_ui(ui, |ui| {
-                    ui.selectable_value(&mut self.min_rating_filter, None, "Any");
+                    ui.selectable_value(&mut self.min_rating_filter, None, "Any rating");
                     for stars in 1u8..=5 {
                         let glyphs = "\u{2605}".repeat(stars as usize);
                         let label = if stars == 5 {
@@ -4343,13 +4346,11 @@ impl BrowserPanel {
             // with only h264 footage shows only "Codec: h264" — the
             // dropdown stays as small as the actual diversity in the
             // pool.
-            ui.add_space(8.0);
-            ui.label(egui::RichText::new("Metadata:").size(crate::theme::type_scale::BODY).color(theme.text_dim));
             let pool_snapshot: Vec<_> = state.media_pool.all().cloned().collect();
             let values = media_tab::enumerate_metadata_filter_values(&pool_snapshot);
             let (codecs, fps_pairs, cameras) = (&values.codecs, &values.fps, &values.cameras);
             let metadata_label = match &self.metadata_filter {
-                MetadataFilter::Any => "Any".to_string(),
+                MetadataFilter::Any => "Any metadata".to_string(),
                 MetadataFilter::Codec(c) => format!("Codec: {c}"),
                 MetadataFilter::Fps { num, den } => {
                     format!("FPS: {}", media_tab::format_fps_label(*num, *den))
@@ -4364,9 +4365,10 @@ impl BrowserPanel {
             };
             egui::ComboBox::from_id_salt("metadata_filter")
                 .selected_text(metadata_label)
-                .width(160.0)
+                .width(0.0)
+                .wrap_mode(egui::TextWrapMode::Extend)
                 .show_ui(ui, |ui| {
-                    ui.selectable_value(&mut self.metadata_filter, MetadataFilter::Any, "Any");
+                    ui.selectable_value(&mut self.metadata_filter, MetadataFilter::Any, "Any metadata");
                     if !codecs.is_empty() {
                         ui.separator();
                         ui.label(egui::RichText::new("Codec").size(10.0).color(theme.text_dim));
@@ -4435,20 +4437,16 @@ impl BrowserPanel {
             // Replaces the previous always-visible 7-dot row, which ate
             // horizontal space in the browser toolbar even for projects
             // that don't use colour labels.
-            ui.add_space(8.0);
-            ui.separator();
-
             let active_count = self.color_label_filter.count_ones();
             let pill_text = if active_count == 0 {
-                "Label".to_string()
+                "Any label".to_string()
             } else {
                 format!("Label \u{00B7} {active_count}")
             };
             let pill_resp = ui.add(
                 egui::Button::new(
                     egui::RichText::new(pill_text)
-                        .size(11.0)
-                        .color(if active_count > 0 { theme.text_accent } else { theme.text_secondary }),
+                        .color(if active_count > 0 { theme.text_accent } else { theme.text_primary }),
                 )
                 .stroke(if active_count > 0 {
                     egui::Stroke::new(1.0_f32, theme.accent)

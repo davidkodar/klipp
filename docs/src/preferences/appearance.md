@@ -6,7 +6,7 @@ Access appearance preferences from **Edit → Preferences → Appearance**.
 
 Klipp uses a theme registry — themes are data, not hardcoded. The dropdown lists every theme Klipp has discovered:
 
-- **Built-in themes** — bundled with Klipp, compiled in via `include_str!`. Examples: Klipp Dark, Klipp Light, Klipp Amber, Klipp Slate.
+- **Built-in themes** — bundled with Klipp, compiled in via `include_str!`: Dark (the neutral grading-suite look with a blue accent), Cut (warm greys, cobalt accent, white playhead, dialogue-green / music-teal / effects-violet roles), Light, Slate, Nord, Solarized Dark, Cream and High Contrast. Every theme owns its accent; there is no separate accent-colour preference.
 - **User themes** — TOML files in `~/.config/klipp/themes/`. Drop a TOML into that directory and Klipp picks it up on next launch (or when you run `Reload Themes` from the command palette).
 
 ## Theme File Format

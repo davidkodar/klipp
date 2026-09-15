@@ -1,0 +1,66 @@
+# Klipp built-in Cut theme: the warm-neutral greys of the magnetic
+# timeline editors, a cobalt accent, a white playhead, and role colours
+# by the dialogue-green / music-teal / effects-violet convention.
+#
+# Embedded at compile time (src/theme/registry.rs include_str!). Same
+# schema as dark.toml: `name` and a `[colors]` table filling ThemeColors
+# field-for-field. Every field is required.
+
+name = "Cut"
+
+[colors]
+# ── Surfaces: darkest (void) → lightest (raised). Warm neutral. ──
+bg_void       = "#161616"
+bg_deep       = "#1c1c1c"
+bg_panel      = "#222222"
+bg_panel_alt  = "#272727"
+bg_raised     = "#303030"
+bg_hover      = "#3a3a3a"
+bg_viewer     = "#1a1a1a"
+
+# ── Borders / dividers ──
+border        = "#333333"
+border_light  = "#414141"
+resizer_idle  = "#414141"
+
+# ── Accent: cobalt, for the active tool, the selected row, the
+# focused control. ──
+accent        = "#3d7bf7"
+accent_dim    = "#2a55ad"
+# Premultiplied translucent overlays of the accent.
+accent_glow   = "#0b162c2e"
+accent_subtle = "#0d1b3638"
+# Secondary accent: the violet of titles and effects.
+accent_alt    = "#b07fe0"
+# The playhead is white here; the skimmer carries the warm mark.
+playhead       = "#f2f2f2"
+
+# ── Text ──
+text_primary   = "#dedede"
+text_secondary = "#a3a3a3"
+text_dim       = "#737373"
+text_accent    = "#f0f0f0"
+text_on_accent = "#ffffff"
+
+# ── Functional marker / status colours ──
+marker_error   = "#e04848"
+marker_success = "#55c06e"
+marker_info    = "#3d7bf7"
+marker_warning = "#e6b23a"
+
+# ── Scope display tokens (instrument graticule stays amber on black) ──
+scope_grid  = "#1e160720"
+scope_label = "#907830"
+scope_bg    = "#040407"
+
+# ── Role colours ──
+role_video     = "#4a7fd6"
+role_dialogue  = "#4fae6e"
+role_music     = "#3ba8b8"
+role_sfx       = "#8f6bd6"
+role_title     = "#a56ad6"
+role_broll     = "#5a7fa8"
+role_ambience  = "#6f8fb5"
+role_foley     = "#b86ad0"
+role_voiceover = "#5abf7f"
+role_graphics  = "#d09a3a"

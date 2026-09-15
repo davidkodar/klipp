@@ -29,11 +29,11 @@ resizer_idle  = "#66666e"
 # ── Accent ──
 # Same warm amber as Dark — works cleanly against the neutral
 # greys.
-accent        = "#e8a020"
-accent_dim    = "#a06e14"
-accent_glow   = "#1701052e"
-accent_subtle = "#150e0317"
-# Magenta-purple — distinct from the warm accent for compare /
+accent        = "#5b9bd5"
+accent_dim    = "#3d6e99"
+accent_glow   = "#101c262e"
+accent_subtle = "#14222f38"
+# Magenta-purple — distinct from the steel-blue accent for compare /
 # Title-clip identity.
 accent_alt    = "#c878ff"
 
@@ -46,8 +46,8 @@ playhead       = "#ff5a3c"
 text_primary   = "#e8e8ee"
 text_secondary = "#a8a8b0"
 text_dim       = "#76767e"
-text_accent    = "#e8a020"
-text_on_accent = "#1a1a1e"
+text_accent    = "#f4f4f8"
+text_on_accent = "#ffffff"
 
 # ── Functional marker colours ──
 marker_error   = "#c83c3c"

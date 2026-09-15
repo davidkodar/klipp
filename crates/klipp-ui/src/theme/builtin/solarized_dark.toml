@@ -33,8 +33,8 @@ resizer_idle  = "#2a7a8e"
 # ~18 % opacity, premultiplied (RGB scaled to alpha).
 accent        = "#b58900"
 accent_dim    = "#7d5e00"
-accent_glow   = "#1f17002e"
-accent_subtle = "#150f0017"
+accent_glow   = "#2119002e"
+accent_subtle = "#281e0038"
 # Solarized magenta — distinct from the warm yellow accent for
 # A/B-compare highlights and Title-clip identity.
 accent_alt    = "#d33682"
@@ -48,7 +48,7 @@ playhead       = "#ff5a3c"
 text_primary   = "#93a1a1"
 text_secondary = "#839496"
 text_dim       = "#586e75"
-text_accent    = "#b58900"
+text_accent    = "#eee8d5"
 # Dark text on yellow accent fills.
 text_on_accent = "#002b36"
 

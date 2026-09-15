@@ -1300,7 +1300,7 @@ const GRID_DEFAULT_COLS: usize = 2;
 const GRID_GAP: f32 = 8.0;
 const GRID_PADDING: f32 = 8.0;
 const GRID_THUMB_ASPECT: f32 = 16.0 / 9.0; // 16:9 thumbnail area
-const GRID_INFO_H: f32 = 38.0; // space below thumbnail for name + meta
+const GRID_INFO_H: f32 = 36.0; // name row + caption row below the thumbnail
 
 #[allow(clippy::too_many_arguments)]
 fn render_grid_view(
@@ -1414,7 +1414,7 @@ fn render_grid_view(
             }
 
             // Card background
-            ui.painter().rect_filled(card_rect, 4.0, theme.bg_deep);
+            ui.painter().rect_filled(card_rect, crate::theme::radius::PANEL, theme.bg_panel_alt);
 
             // ── Thumbnail area (top portion, 16:9) ──
             let thumb_rect = egui::Rect::from_min_size(card_pos, egui::vec2(card_w, thumb_h));
@@ -1478,14 +1478,14 @@ fn render_grid_view(
             }
 
             // Card border (drawn after thumbnail so it's on top)
-            let border_color = if is_selected {
-                theme.accent
+            let (border_w, border_color) = if is_selected {
+                (1.5_f32, theme.accent)
             } else if hovered {
-                theme.accent_dim
+                (1.0_f32, theme.border_light)
             } else {
-                theme.border
+                (1.0_f32, theme.border)
             };
-            ui.painter().rect_stroke(card_rect, 4.0, egui::Stroke::new(1.0_f32, border_color));
+            ui.painter().rect_stroke(card_rect, crate::theme::radius::PANEL, egui::Stroke::new(border_w, border_color));
 
             // Offline badge: dim the thumbnail and overlay an OFFLINE pill.
             if item.offline {
@@ -1528,45 +1528,23 @@ fn render_grid_view(
             // Hover skim (grid view: white scrubber line over thumbnail)
             handle_hover_skim(ui, state, &thumb_rect, item, cmds, true);
 
-            // ── Label strip (attached to thumbnail, DaVinci-style) ──
-            let label_strip_h = 18.0_f32;
-            let label_strip = egui::Rect::from_min_size(
-                egui::pos2(card_pos.x, thumb_rect.max.y),
-                egui::vec2(card_w, label_strip_h),
-            );
-            let [lr, lg, lb] = state.timeline_prefs.clip_label_bg_color;
-            let [tr, tg, tb] = state.timeline_prefs.clip_label_text_color;
-            ui.painter().rect_filled(label_strip, 0.0, egui::Color32::from_rgb(lr, lg, lb));
-            ui.painter().line_segment(
-                [label_strip.left_top(), label_strip.right_top()],
-                egui::Stroke::new(1.0_f32, egui::Color32::from_rgba_premultiplied(0, 0, 0, 160)),
-            );
-            let text_max_w = card_w - 24.0;
-
-            // Filename rendered inside the label strip, vertically centered.
-            let display_name = truncate_to_width(
-                &item.filename,
-                egui::FontId::proportional(11.0),
-                text_max_w,
-                ui,
-            );
+            // ── Name row and caption row on the card's own field ──
+            let name_font = egui::FontId::proportional(crate::theme::type_scale::BODY);
+            let text_max_w = card_w - 12.0;
+            let name_y = thumb_rect.max.y + 4.0;
+            let display_name = truncate_to_width(&item.filename, name_font.clone(), text_max_w, ui);
             ui.painter().text(
-                egui::pos2(card_pos.x + 6.0, label_strip.center().y),
-                egui::Align2::LEFT_CENTER,
+                egui::pos2(card_pos.x + 6.0, name_y),
+                egui::Align2::LEFT_TOP,
                 &display_name,
-                egui::FontId::proportional(11.0),
-                egui::Color32::from_rgb(tr, tg, tb),
+                name_font,
+                theme.text_primary,
             );
 
-            // (Used indicator removed: the red "in use on timeline" bar
-            // painted on the thumbnail by `paint_usage_badges` already
-            // conveys this state without competing for label-strip space.)
-
-            // Metadata line — stars first (amber) when rated, then dim grey
-            // duration · fps.
+            // Caption: stars first when rated, then duration · fps.
             let dur_str = format_duration(&item.duration);
             let fps_str = format_fps(&item.fps);
-            let meta_y = label_strip.max.y + 2.0;
+            let meta_y = name_y + crate::theme::type_scale::BODY + 5.0;
             let mut meta_x = card_pos.x + 6.0;
             if item.rating > 0 {
                 let stars = "\u{2605}".repeat(item.rating as usize);

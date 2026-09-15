@@ -33,7 +33,7 @@ resizer_idle  = "#5c647a"
 accent        = "#88c0d0"
 accent_dim    = "#5e8a9a"
 accent_glow   = "#202d313c"
-accent_subtle = "#1017191e"
+accent_subtle = "#1e2a2e38"
 # Nord Aurora purple (nord15) — distinct from the cyan accent for
 # A/B-compare / Title-clip identity.
 accent_alt    = "#b48ead"
@@ -46,7 +46,7 @@ playhead       = "#ff5a3c"
 text_primary   = "#eceff4"
 text_secondary = "#d8dee9"
 text_dim       = "#8590a3"
-text_accent    = "#88c0d0"
+text_accent    = "#f4f6fa"
 # Dark text for use on cyan-accent backgrounds.
 text_on_accent = "#2e3440"
 

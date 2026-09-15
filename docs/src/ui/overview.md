@@ -57,7 +57,7 @@ Toggle individual panels from the **Window** menu:
 
 ## Themes
 
-Klipp ships a theme registry with several built-in themes (Klipp Dark, Klipp Light, plus accent variants). User themes can be added by dropping a TOML file into `~/.config/klipp/themes/`.
+Klipp ships a theme registry with eight built-in themes (Dark, Cut, Light, Slate, Nord, Solarized Dark, Cream, High Contrast). User themes can be added by dropping a TOML file into `~/.config/klipp/themes/`.
 
 Theme definitions cover:
 
