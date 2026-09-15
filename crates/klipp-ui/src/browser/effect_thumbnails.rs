@@ -169,7 +169,16 @@ impl ThumbnailRenderer {
                             continue;
                         }
                         let type_id = info.type_id();
-                        let params = klipp_effects::frei0r_effect::default_params(&type_id).unwrap_or_default();
+                        // Mid-range values: frei0r doubles are 0..1 and a
+                        // zero default drives gamma-like filters to black.
+                        let params: Vec<klipp_frei0r::Frei0rValue> = klipp_effects::frei0r_effect::default_params(&type_id)
+                            .unwrap_or_default()
+                            .into_iter()
+                            .map(|v| match v {
+                                klipp_frei0r::Frei0rValue::Double(_) => klipp_frei0r::Frei0rValue::Double(0.5),
+                                other => other,
+                            })
+                            .collect();
                         // frei0r wants 8-aligned dimensions: pad, render, crop.
                         let (pw, ph) = (frame.width.div_ceil(8) * 8, frame.height.div_ceil(8) * 8);
                         let padded = pad_rgba(&frame.rgba, frame.width, frame.height, pw, ph);
@@ -463,7 +472,7 @@ fn builtin_preview_params(effect: &klipp_effects::BuiltinEffect) -> klipp_effect
             klipp_effects::BuiltinEffect::Denoise { spatial_sigma: 10.0, color_sigma: 0.3, iterations: 2 }
         }
         klipp_effects::BuiltinEffect::Gamma { .. } => {
-            klipp_effects::BuiltinEffect::Gamma { gamma: 2.0 }
+            klipp_effects::BuiltinEffect::Gamma { gamma: 0.6 }
         }
         klipp_effects::BuiltinEffect::HSVAdjust { .. } => {
             klipp_effects::BuiltinEffect::HSVAdjust { hue_shift: 90.0, saturation: 1.5, value: 1.0 }

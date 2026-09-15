@@ -29240,6 +29240,12 @@ impl KlippApp {
         if !self.state.show_render_queue {
             return;
         }
+        // The Export workspace shows the queue in its column; no window
+        // on top of it.
+        if self.state.active_workspace == crate::state::Workspace::Export {
+            self.state.show_render_queue = false;
+            return;
+        }
         let actions = crate::panels::render_queue::RenderQueuePanel::show(
             ctx,
             &self.state.render_queue,
@@ -31800,6 +31806,7 @@ impl KlippApp {
                         ui.horizontal(|ui| {
                             ui.add_space(12.0);
                             ui.vertical(|ui| {
+                                ui.set_max_width(ui.available_width() - 12.0);
                                 crate::panels::render_queue::RenderQueuePanel::show_contents(
                                     ui, &self.state.render_queue, &theme, true, &mut actions,
                                 );

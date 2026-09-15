@@ -18,3 +18,7 @@ PHASE_*_PLAN.md
 
 # Model weights (large binary blobs).
 *.pt
+
+# In-progress render output written next to the project
+*.partial
+.partial

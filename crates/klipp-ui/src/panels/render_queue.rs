@@ -97,7 +97,7 @@ impl RenderQueuePanel {
                     let complete = queue.jobs.iter().filter(|j| j.status == RenderJobStatus::Complete).count();
 
                     ui.label(
-                        egui::RichText::new(format!("{total} jobs"))
+                        egui::RichText::new(if total == 1 { "1 job".to_string() } else { format!("{total} jobs") })
                             .color(theme.text_primary)
                             .size(13.0),
                     );
