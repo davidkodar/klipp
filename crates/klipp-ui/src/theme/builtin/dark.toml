@@ -33,7 +33,7 @@ accent_dim    = "#2f5e9a"
 # Translucent overlays, premultiplied (#rrggbbaa with channels scaled
 # by alpha): the selected row and the focused viewer's outline.
 accent_glow   = "#0d1a2a2e"
-accent_subtle = "#070d1517"
+accent_subtle = "#101f3338"
 # Secondary accent for things that must read as "not the accent":
 # a muted violet.
 accent_alt    = "#a78bdc"

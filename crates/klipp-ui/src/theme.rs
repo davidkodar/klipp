@@ -375,9 +375,9 @@ impl KlippTheme {
         // tint — same accent family, different polarity — to mark
         // selection without dominating the panel.
         visuals.selection.bg_fill = if self.is_light() {
-            Color32::from_rgb(0xf2, 0xe6, 0xc8)
+            Color32::from_rgb(0xd6, 0xe4, 0xf8)
         } else {
-            Color32::from_rgb(0x38, 0x2c, 0x14)
+            Color32::from_rgb(0x1e, 0x2f, 0x4a)
         };
         visuals.selection.stroke = egui::Stroke::new(1.0_f32, self.accent);
 

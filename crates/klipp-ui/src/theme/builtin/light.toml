@@ -34,7 +34,7 @@ accent_dim    = "#245399"
 # Glow alphas re-tuned for white background: higher opacity so the hint
 # of accent reads, lower RGB so we don't tint to a muddy yellow.
 accent_glow   = "#0b1a303c"
-accent_subtle = "#050d181e"
+accent_subtle = "#0a1a3438"
 # Secondary accent — slightly darker purple than Dark mode so it
 # carries enough weight against white surfaces.
 accent_alt    = "#7a4fb8"

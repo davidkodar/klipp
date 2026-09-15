@@ -429,7 +429,8 @@ pub fn scrubby_param_row(
             egui::pos2(label_rect_out.left(), label_rect_out.bottom() - bar_height),
             egui::vec2(label_rect_out.width() * t, bar_height),
         );
-        let bar_color = egui::Color32::from_rgba_premultiplied(255, 180, 50, 35);
+        let acc = ui.visuals().selection.stroke.color;
+        let bar_color = egui::Color32::from_rgba_unmultiplied(acc.r(), acc.g(), acc.b(), 110);
         ui.painter().rect_filled(bar_rect, 1.0, bar_color);
     }
 
