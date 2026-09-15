@@ -228,7 +228,7 @@ fn show_sequence_properties(ui: &mut egui::Ui, theme: &KlippTheme, state: &AppSt
             egui::pos2(knob_center.x + knob_r + 12.0, knob_row.center().y + 8.0),
             egui::Align2::LEFT_CENTER,
             format!("{:.1} dB", 20.0 * state.master_volume.max(0.0001).log10()),
-            egui::FontId::proportional(15.0), theme.text_primary,
+            egui::FontId::proportional(13.0), theme.text_primary,
         );
         // Keyframe diamond
         let kf_pos = egui::pos2(knob_row.max.x - pad - 6.0, knob_row.center().y + 8.0);
@@ -418,7 +418,7 @@ fn slider_row(
                 let arrow_col = if prev_resp.hovered() { theme.text_primary } else { theme.text_dim };
                 ui.painter().text(
                     prev_rect.center(), egui::Align2::CENTER_CENTER,
-                    "\u{25C0}", egui::FontId::proportional(8.0), arrow_col,
+                    "\u{25C0}", egui::FontId::proportional(10.0), arrow_col,
                 );
                 if prev_resp.clicked() { resp.keyframe_nav_prev = true; }
             }
@@ -431,7 +431,7 @@ fn slider_row(
                 let arrow_col = if next_resp.hovered() { theme.text_primary } else { theme.text_dim };
                 ui.painter().text(
                     next_rect.center(), egui::Align2::CENTER_CENTER,
-                    "\u{25B6}", egui::FontId::proportional(8.0), arrow_col,
+                    "\u{25B6}", egui::FontId::proportional(10.0), arrow_col,
                 );
                 if next_resp.clicked() { resp.keyframe_nav_next = true; }
             }
@@ -1243,7 +1243,7 @@ fn section_card(
     let rounding = if is_open {
         egui::Rounding { nw: 6.0, ne: 6.0, sw: 0.0, se: 0.0 }
     } else {
-        egui::Rounding::same(6.0)
+        egui::Rounding::same(4.0)
     };
     ui.painter().rect_filled(header_rect, rounding, theme.bg_deep);
 
@@ -1402,7 +1402,7 @@ fn draw_stereo_meter(ui: &mut egui::Ui, theme: &KlippTheme, peak_l: f32, peak_r:
 
         painter.text(
             egui::pos2(meter_rect.left() + label_w / 2.0, y + bar_h / 2.0),
-            egui::Align2::CENTER_CENTER, *label, egui::FontId::monospace(9.0), theme.text_dim,
+            egui::Align2::CENTER_CENTER, *label, egui::FontId::monospace(10.0), theme.text_dim,
         );
 
         let bar = egui::Rect::from_min_size(egui::pos2(bar_left, y), egui::vec2(bar_w, bar_h));
@@ -1443,7 +1443,7 @@ fn draw_stereo_meter(ui: &mut egui::Ui, theme: &KlippTheme, peak_l: f32, peak_r:
     for &(level, label) in db_marks {
         let x = tick_left + (level / max_level) * tick_w;
         if x <= tick_left + tick_w {
-            ui.painter().text(egui::pos2(x, tick_rect.center().y), egui::Align2::CENTER_CENTER, label, egui::FontId::monospace(7.0), theme.text_dim);
+            ui.painter().text(egui::pos2(x, tick_rect.center().y), egui::Align2::CENTER_CENTER, label, egui::FontId::monospace(10.0), theme.text_dim);
         }
     }
 

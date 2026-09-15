@@ -573,7 +573,7 @@ fn draw_info_icon_with_tooltip(
         egui::Frame::none()
             .fill(bg_panel_alt)
             .stroke(egui::Stroke::new(1.0_f32, border_light))
-            .rounding(5.0)
+            .rounding(4.0)
             .inner_margin(egui::Margin::symmetric(10.0, 8.0))
             .show(ui, |ui| {
                 ui.set_max_width(420.0);
@@ -843,7 +843,7 @@ fn paint_asset_instance_count(
     count: usize,
 ) {
     let label = format!("{}\u{00D7}", count);
-    let font = egui::FontId::proportional(9.0);
+    let font = egui::FontId::proportional(10.0);
     let galley = painter.layout_no_wrap(label.clone(), font.clone(), theme.text_primary);
     let pad_x = 6.0;
     let pad_y = 2.0;
@@ -875,7 +875,7 @@ fn paint_asset_instance_count(
 /// thumbnail background.
 fn paint_title_asset_badge(painter: &egui::Painter, thumb_rect: egui::Rect, theme: &KlippTheme) {
     let label = "TITLE";
-    let font = egui::FontId::proportional(9.0);
+    let font = egui::FontId::proportional(10.0);
     let galley = painter.layout_no_wrap(label.into(), font.clone(), theme.text_on_accent);
     let pad_x = 6.0;
     let pad_y = 2.0;
@@ -1574,7 +1574,7 @@ fn render_grid_view(
                     egui::pos2(meta_x, meta_y),
                     egui::Align2::LEFT_TOP,
                     &stars,
-                    egui::FontId::monospace(9.0),
+                    egui::FontId::monospace(10.0),
                     theme.accent,
                 );
                 meta_x = stars_rect.max.x;
@@ -1582,7 +1582,7 @@ fn render_grid_view(
                     egui::pos2(meta_x, meta_y),
                     egui::Align2::LEFT_TOP,
                     " \u{00b7} ",
-                    egui::FontId::monospace(9.0),
+                    egui::FontId::monospace(10.0),
                     theme.text_dim,
                 );
                 meta_x = sep_rect.max.x;
@@ -1592,7 +1592,7 @@ fn render_grid_view(
                 egui::pos2(meta_x, meta_y),
                 egui::Align2::LEFT_TOP,
                 &meta_str,
-                egui::FontId::monospace(9.0),
+                egui::FontId::monospace(10.0),
                 theme.text_dim,
             );
 

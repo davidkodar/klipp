@@ -42,6 +42,9 @@ accent_alt    = "#d33682"
 # ── Text ──
 # Solarized base1 (light text) on dark; base0 / base01 for secondary
 # and dim respectively.
+# The playhead: the one warm mark in a neutral interface.
+playhead       = "#ff5a3c"
+
 text_primary   = "#93a1a1"
 text_secondary = "#839496"
 text_dim       = "#586e75"

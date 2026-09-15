@@ -85,7 +85,7 @@ impl ToastState {
                 egui::Frame::none()
                     .fill(bg)
                     .stroke(egui::Stroke::new(1.0_f32, border))
-                    .rounding(8.0)
+                    .rounding(4.0)
                     .inner_margin(egui::Margin::symmetric(16.0, 8.0))
                     .shadow(egui::Shadow {
                         spread: 0.0,

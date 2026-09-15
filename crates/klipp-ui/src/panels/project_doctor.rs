@@ -230,7 +230,7 @@ fn render_body(
                 "Per-finding fix buttons dispatch existing AppCommands. Most fixes \
                  are immediate; Relink opens a file picker.",
             )
-            .size(9.0)
+            .size(10.0)
             .color(theme.text_dim),
         );
     });
@@ -258,7 +258,7 @@ fn render_finding(
             ui.horizontal(|ui| {
                 ui.label(
                     egui::RichText::new(icon)
-                        .size(14.0)
+                        .size(13.0)
                         .strong()
                         .color(icon_color),
                 );
@@ -272,7 +272,7 @@ fn render_finding(
                         );
                         ui.label(
                             egui::RichText::new(&finding.category)
-                                .size(8.0)
+                                .size(10.0)
                                 .strong()
                                 .color(theme.text_dim),
                         );

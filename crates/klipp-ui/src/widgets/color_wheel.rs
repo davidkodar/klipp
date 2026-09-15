@@ -67,7 +67,7 @@ pub fn color_wheel_sized(
         egui::pos2(center_x, full_rect.min.y + label_h / 2.0),
         egui::Align2::CENTER_CENTER,
         label,
-        egui::FontId::proportional(9.0),
+        egui::FontId::proportional(10.0),
         text_accent,
     );
 
@@ -239,7 +239,7 @@ pub fn color_wheel_sized(
         egui::pos2(center_x - pills_total / 2.0, track_y),
         egui::Align2::LEFT_CENTER,
         "M",
-        egui::FontId::proportional(9.0),
+        egui::FontId::proportional(10.0),
         theme.text_dim,
     );
 

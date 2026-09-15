@@ -233,7 +233,7 @@ fn add_effect_picker(
             if !builtins.is_empty() {
                 ui.label(
                     egui::RichText::new("BUILT-IN")
-                        .size(9.0)
+                        .size(10.0)
                         .strong()
                         .color(theme.text_dim),
                 );
@@ -275,7 +275,7 @@ fn add_effect_picker(
                 }
                 ui.label(
                     egui::RichText::new("LADSPA")
-                        .size(9.0)
+                        .size(10.0)
                         .strong()
                         .color(theme.text_dim),
                 );
@@ -292,7 +292,7 @@ fn add_effect_picker(
                         ui.add_space(4.0);
                         ui.label(
                             egui::RichText::new(maker.to_uppercase())
-                                .size(8.0)
+                                .size(10.0)
                                 .color(theme.text_secondary),
                         );
                         last_maker = Some(maker);
@@ -338,7 +338,7 @@ fn add_effect_picker(
                 }
                 ui.label(
                     egui::RichText::new("LV2")
-                        .size(9.0)
+                        .size(10.0)
                         .strong()
                         .color(theme.text_dim),
                 );
@@ -371,7 +371,7 @@ fn add_effect_picker(
                 }
                 ui.label(
                     egui::RichText::new("CLAP")
-                        .size(9.0)
+                        .size(10.0)
                         .strong()
                         .color(theme.text_dim),
                 );
@@ -415,7 +415,7 @@ fn add_effect_picker(
             klipp_audio::lv2::registry_snapshot().len(),
             klipp_audio::clap::registry_snapshot().len(),
         ))
-        .size(9.0)
+        .size(10.0)
         .color(theme.text_dim),
     );
 }
@@ -599,7 +599,7 @@ pub fn show_content(
                     let arrow_resp = ui.add(
                         egui::Label::new(
                             egui::RichText::new(arrow)
-                                .size(9.0)
+                                .size(10.0)
                                 .color(theme.text_dim),
                         )
                         .sense(egui::Sense::click()),

@@ -63,7 +63,7 @@ pub fn show_clip_properties_dialog(
                     );
                     ui.add_space(4.0);
                 }
-                ui.label(egui::RichText::new(&media.filename).strong().size(14.0));
+                ui.label(egui::RichText::new(&media.filename).strong().size(13.0));
                 if media.offline {
                     ui.add_space(8.0);
                     ui.label(

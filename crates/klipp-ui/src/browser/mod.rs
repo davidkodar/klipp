@@ -33,7 +33,7 @@ pub fn browser_search_field(
     egui::Frame::none()
         .fill(theme.bg_raised)
         .stroke(egui::Stroke::new(1.0_f32, theme.border))
-        .rounding(5.0)
+        .rounding(4.0)
         .inner_margin(egui::Margin::symmetric(9.0, 5.0))
         .show(ui, |ui| {
             let search = egui::TextEdit::singleline(query)
@@ -2175,7 +2175,7 @@ impl BrowserPanel {
                 can_go_up,
                 egui::Button::new(
                     egui::RichText::new("<").size(12.0).color(if can_go_up { theme.text_primary } else { theme.text_dim })
-                ).fill(theme.bg_raised).rounding(3.0).min_size(egui::vec2(24.0, 20.0)),
+                ).fill(theme.bg_raised).rounding(2.0).min_size(egui::vec2(24.0, 20.0)),
             )
             .on_hover_text("Go up one directory");
             if back_resp.clicked() {
@@ -2188,7 +2188,7 @@ impl BrowserPanel {
             let home_resp = ui.add(
                 egui::Button::new(
                     egui::RichText::new("~").size(12.0).color(theme.text_primary)
-                ).fill(theme.bg_raised).rounding(3.0).min_size(egui::vec2(24.0, 20.0)),
+                ).fill(theme.bg_raised).rounding(2.0).min_size(egui::vec2(24.0, 20.0)),
             )
             .on_hover_text("Go to home directory");
             if home_resp.clicked() {
@@ -2259,7 +2259,7 @@ impl BrowserPanel {
                     )
                     .fill(bg)
                     .stroke(egui::Stroke::new(0.5_f32, border_color))
-                    .rounding(3.0)
+                    .rounding(2.0)
                     .min_size(egui::vec2(22.0, 20.0)),
                 )
                 .on_hover_text(if is_active {
@@ -2294,7 +2294,7 @@ impl BrowserPanel {
                         egui::Button::image(Icon::PushPin.image(12.0).tint(pin_color))
                             .min_size(egui::vec2(22.0, 20.0))
                             .fill(if is_pinned { theme.accent } else { theme.bg_raised })
-                            .rounding(3.0),
+                            .rounding(2.0),
                     )
                     .on_hover_text(if is_pinned {
                         "Unpin Files panel (return to single tab)"
@@ -2355,12 +2355,12 @@ impl BrowserPanel {
                     let is_current = *path == self.files_current_path;
                     let btn = ui.add(
                         egui::Button::new(
-                            egui::RichText::new(*label).size(9.0)
+                            egui::RichText::new(*label).size(10.0)
                                 .color(if is_current { theme.text_on_accent } else { theme.text_secondary })
                         )
                         .fill(if is_current { theme.accent } else { egui::Color32::TRANSPARENT })
                         .stroke(egui::Stroke::new(0.5_f32, if is_current { theme.accent } else { theme.border }))
-                        .rounding(3.0),
+                        .rounding(2.0),
                     )
                     .on_hover_text(path.to_string_lossy().to_string());
                     if btn.clicked() {
@@ -2377,12 +2377,12 @@ impl BrowserPanel {
                 let is_current = self.files_current_path == RECENTS_SENTINEL.as_path();
                 let btn = ui.add(
                     egui::Button::new(
-                        egui::RichText::new("\u{1F552} Recents").size(9.0)
+                        egui::RichText::new("\u{1F552} Recents").size(10.0)
                             .color(if is_current { theme.text_on_accent } else { theme.text_secondary })
                     )
                     .fill(if is_current { theme.accent } else { egui::Color32::TRANSPARENT })
                     .stroke(egui::Stroke::new(0.5_f32, if is_current { theme.accent } else { theme.border }))
-                    .rounding(3.0),
+                    .rounding(2.0),
                 )
                 .on_hover_text("Recently imported files");
                 if btn.clicked() {
@@ -2416,12 +2416,12 @@ impl BrowserPanel {
                     .unwrap_or_else(|| path.to_string_lossy().to_string());
                 let btn = ui.add(
                     egui::Button::new(
-                        egui::RichText::new(format!("\u{2605} {}", display_name)).size(9.0)
+                        egui::RichText::new(format!("\u{2605} {}", display_name)).size(10.0)
                             .color(if is_current { theme.text_on_accent } else { theme.text_secondary })
                     )
                     .fill(if is_current { theme.accent } else { egui::Color32::TRANSPARENT })
                     .stroke(egui::Stroke::new(0.5_f32, if is_current { theme.accent } else { theme.border }))
-                    .rounding(3.0),
+                    .rounding(2.0),
                 )
                 .on_hover_text(path.to_string_lossy().to_string());
                 if btn.clicked() {
@@ -2466,12 +2466,12 @@ impl BrowserPanel {
                 let is_current = *path == self.files_current_path;
                 let btn = ui.add(
                     egui::Button::new(
-                        egui::RichText::new(label).size(9.0)
+                        egui::RichText::new(label).size(10.0)
                             .color(if is_current { theme.text_on_accent } else { theme.text_secondary })
                     )
                     .fill(if is_current { theme.accent } else { egui::Color32::TRANSPARENT })
                     .stroke(egui::Stroke::new(0.5_f32, if is_current { theme.accent } else { theme.border }))
-                    .rounding(3.0),
+                    .rounding(2.0),
                 )
                 .on_hover_text(path.to_string_lossy().to_string());
                 if btn.clicked() {
@@ -3437,7 +3437,7 @@ impl BrowserPanel {
                                 egui::pos2(name_x, meta_y),
                                 egui::Align2::LEFT_CENTER,
                                 &meta_text,
-                                egui::FontId::proportional(9.0),
+                                egui::FontId::proportional(10.0),
                                 theme.text_dim,
                             );
                         }
@@ -4281,7 +4281,7 @@ impl BrowserPanel {
                     ui.selectable_value(&mut self.smart_bin_filter, SmartBinFilter::Rejected, "Rejected");
                     if !state.media_pool.smart_bins.is_empty() {
                         ui.separator();
-                        ui.label(egui::RichText::new("Smart bins").size(9.0).color(theme.text_dim));
+                        ui.label(egui::RichText::new("Smart bins").size(10.0).color(theme.text_dim));
                         for bin in &state.media_pool.smart_bins {
                             ui.selectable_value(&mut self.smart_bin_filter, SmartBinFilter::Saved(bin.id.clone()), &bin.name)
                                 .on_hover_text(bin.describe());
@@ -4369,7 +4369,7 @@ impl BrowserPanel {
                     ui.selectable_value(&mut self.metadata_filter, MetadataFilter::Any, "Any");
                     if !codecs.is_empty() {
                         ui.separator();
-                        ui.label(egui::RichText::new("Codec").size(9.0).color(theme.text_dim));
+                        ui.label(egui::RichText::new("Codec").size(10.0).color(theme.text_dim));
                         for c in codecs {
                             ui.selectable_value(
                                 &mut self.metadata_filter,
@@ -4380,7 +4380,7 @@ impl BrowserPanel {
                     }
                     if !fps_pairs.is_empty() {
                         ui.separator();
-                        ui.label(egui::RichText::new("FPS").size(9.0).color(theme.text_dim));
+                        ui.label(egui::RichText::new("FPS").size(10.0).color(theme.text_dim));
                         for (num, den) in fps_pairs {
                             ui.selectable_value(
                                 &mut self.metadata_filter,
@@ -4391,7 +4391,7 @@ impl BrowserPanel {
                     }
                     if !cameras.is_empty() {
                         ui.separator();
-                        ui.label(egui::RichText::new("Camera").size(9.0).color(theme.text_dim));
+                        ui.label(egui::RichText::new("Camera").size(10.0).color(theme.text_dim));
                         for c in cameras {
                             ui.selectable_value(
                                 &mut self.metadata_filter,
@@ -4411,14 +4411,14 @@ impl BrowserPanel {
                             continue;
                         }
                         ui.separator();
-                        ui.label(egui::RichText::new(title).size(9.0).color(theme.text_dim));
+                        ui.label(egui::RichText::new(title).size(10.0).color(theme.text_dim));
                         for v in list {
                             ui.selectable_value(&mut self.metadata_filter, make(v.clone()), format!("{title}: {v}"));
                         }
                     }
                     if !values.resolutions.is_empty() {
                         ui.separator();
-                        ui.label(egui::RichText::new("Resolution").size(9.0).color(theme.text_dim));
+                        ui.label(egui::RichText::new("Resolution").size(10.0).color(theme.text_dim));
                         for (w, h) in &values.resolutions {
                             ui.selectable_value(&mut self.metadata_filter, MetadataFilter::Resolution(*w, *h), format!("{w}x{h}"));
                         }
@@ -4851,7 +4851,7 @@ fn library_category_tab(
         (theme.bg_panel, theme.border, theme.text_secondary)
     };
 
-    let rounding = egui::Rounding::same(5.0);
+    let rounding = egui::Rounding::same(4.0);
     ui.painter().rect_filled(rect, rounding, bg);
     ui.painter().rect_stroke(
         rect,

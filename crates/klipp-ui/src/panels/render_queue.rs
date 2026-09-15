@@ -131,7 +131,7 @@ impl RenderQueuePanel {
                         ui.label(
                             egui::RichText::new("No render jobs queued")
                                 .color(theme.text_dim)
-                                .size(15.0),
+                                .size(13.0),
                         );
                         ui.add_space(8.0);
                         ui.label(

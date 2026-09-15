@@ -521,7 +521,7 @@ fn generator_list_row(
         egui::pos2(thumb_rect.max.x + 10.0, rect.center().y),
         egui::Align2::LEFT_CENTER,
         tmpl.name,
-        egui::FontId::proportional(11.5),
+        egui::FontId::proportional(11.0),
         theme.text_primary,
     );
 
@@ -569,7 +569,7 @@ fn paint_corner_badge(
         rect.center(),
         egui::Align2::CENTER_CENTER,
         label,
-        egui::FontId::proportional(9.0),
+        egui::FontId::proportional(10.0),
         fg,
     );
 }
@@ -585,7 +585,7 @@ fn paint_animated_chip(p: &egui::Painter, theme: &KlippTheme, rect: egui::Rect) 
         egui::pos2(rect.min.x + 6.0, rect.center().y),
         egui::Align2::LEFT_CENTER,
         "+ ANIMATED",
-        egui::FontId::proportional(9.0),
+        egui::FontId::proportional(10.0),
         theme.accent,
     );
 }
@@ -595,7 +595,7 @@ fn paint_generator_preview(
     rect: egui::Rect,
     data: &GeneratorData,
 ) {
-    let rounding = egui::Rounding::same(5.0);
+    let rounding = egui::Rounding::same(4.0);
 
     match data {
         GeneratorData::SolidColor { color } => {
@@ -925,7 +925,7 @@ fn gen_sidebar_row(
 
     let label_galley = ui.painter().layout_no_wrap(
         label.to_string(),
-        egui::FontId::proportional(11.5),
+        egui::FontId::proportional(11.0),
         label_color,
     );
     ui.painter().galley(
@@ -985,7 +985,7 @@ fn gen_general_row(
     ui.allocate_new_ui(egui::UiBuilder::new().max_rect(icon_rect), |ui| { ui.add(img); });
     let label_galley = ui.painter().layout_no_wrap(
         label.to_string(),
-        egui::FontId::proportional(11.5),
+        egui::FontId::proportional(11.0),
         theme.text_secondary,
     );
     ui.painter().galley(
@@ -1048,7 +1048,7 @@ fn gen_section_header(
         egui::pos2(label_x, rect.center().y),
         egui::Align2::LEFT_CENTER,
         label.to_uppercase(),
-        egui::FontId::proportional(9.5),
+        egui::FontId::proportional(10.0),
         theme.text_dim,
     );
 }
@@ -1231,7 +1231,7 @@ fn gen_result_strip(
         egui::pos2(rect.min.x + 12.0, rect.center().y),
         egui::Align2::LEFT_CENTER,
         format!("{} Generators", count),
-        egui::FontId::proportional(10.5),
+        egui::FontId::proportional(11.0),
         theme.text_secondary,
     );
 
@@ -1245,7 +1245,7 @@ fn gen_result_strip(
         ui.style_mut().visuals.widgets.inactive.bg_stroke = egui::Stroke::NONE;
         let label = format!("Sort: {}", sort_mode.label());
         egui::ComboBox::from_id_salt("generators_sort_dd")
-            .selected_text(egui::RichText::new(label).size(10.5).color(theme.text_dim))
+            .selected_text(egui::RichText::new(label).size(11.0).color(theme.text_dim))
             .width(dropdown_w - 4.0)
             .show_ui(ui, |ui| {
                 for variant in [EffectSort::NameAsc, EffectSort::NameDesc, EffectSort::Category] {

@@ -978,7 +978,7 @@ fn show_model_details(
         .order(egui::Order::Foreground)
         .show(ctx, |ui| {
             if let Some(e) = &manifest_entry {
-                ui.label(egui::RichText::new(&e.display_name).strong().size(15.0));
+                ui.label(egui::RichText::new(&e.display_name).strong().size(13.0));
                 ui.add_space(2.0);
                 ui.label(
                     egui::RichText::new(format!("ID  {}", e.id))
@@ -1016,7 +1016,7 @@ fn show_model_details(
                     );
                 }
             } else if let Some(e) = &custom_entry {
-                ui.label(egui::RichText::new(&e.display_name).strong().size(15.0));
+                ui.label(egui::RichText::new(&e.display_name).strong().size(13.0));
                 ui.add_space(2.0);
                 ui.label(
                     egui::RichText::new(format!("ID  {}", e.id))
@@ -1585,7 +1585,7 @@ fn render_custom_row(
                         ui.label(
                             egui::RichText::new(&entry.display_name)
                                 .strong()
-                                .size(14.0),
+                                .size(13.0),
                         );
                         ui.label(
                             egui::RichText::new(format!(
@@ -1642,7 +1642,7 @@ fn render_custom_row(
                         let badge = egui::Frame::none()
                             .fill(badge_color.gamma_multiply(0.18))
                             .stroke(egui::Stroke::new(1.0_f32, badge_color))
-                            .rounding(3.0)
+                            .rounding(2.0)
                             .inner_margin(egui::Margin::symmetric(6.0, 2.0));
                         badge.show(ui, |ui| {
                             ui.label(
@@ -2404,7 +2404,7 @@ fn render_row(
                             ui.label(
                                 egui::RichText::new(&entry.display_name)
                                     .strong()
-                                    .size(14.0),
+                                    .size(13.0),
                             );
                             if is_recommended(&entry.id) {
                                 recommended_badge(ui, theme);
@@ -2563,7 +2563,7 @@ fn recommended_badge(ui: &mut egui::Ui, theme: &KlippTheme) {
     let bg = theme.marker_warning;
     egui::Frame::none()
         .fill(bg)
-        .rounding(3.0)
+        .rounding(2.0)
         .inner_margin(egui::Margin::symmetric(6.0, 1.0))
         .show(ui, |ui| {
             ui.label(
@@ -2587,7 +2587,7 @@ fn status_badge(
     egui::Frame::none()
         .fill(color.gamma_multiply(0.18))
         .stroke(egui::Stroke::new(1.0_f32, color))
-        .rounding(3.0)
+        .rounding(2.0)
         .inner_margin(egui::Margin::symmetric(6.0, 2.0))
         .show(ui, |ui| {
             ui.label(

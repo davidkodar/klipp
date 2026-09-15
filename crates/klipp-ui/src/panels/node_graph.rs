@@ -129,7 +129,7 @@ impl NodeGraphPanel {
                         egui::pos2(node_rect.center().x, node_rect.min.y + STRIP_LABEL_H * 0.5),
                         egui::Align2::CENTER_CENTER,
                         &label,
-                        egui::FontId::proportional(9.0),
+                        egui::FontId::proportional(10.0),
                         label_color,
                     );
 
@@ -139,7 +139,7 @@ impl NodeGraphPanel {
                             body_rect.center(),
                             egui::Align2::CENTER_CENTER,
                             "OFF",
-                            egui::FontId::proportional(8.0),
+                            egui::FontId::proportional(10.0),
                             theme.text_dim,
                         );
                     }

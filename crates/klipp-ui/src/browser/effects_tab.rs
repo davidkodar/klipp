@@ -522,7 +522,7 @@ pub fn show(
                                     star_rect.center(),
                                     egui::Align2::CENTER_CENTER,
                                     star_glyph,
-                                    egui::FontId::proportional(14.0),
+                                    egui::FontId::proportional(13.0),
                                     star_color,
                                 );
                             }
@@ -769,14 +769,14 @@ pub fn show(
                     ui.add_space(4.0);
                     ui.label(
                         egui::RichText::new(format!("{count} items"))
-                            .size(9.0)
+                            .size(10.0)
                             .color(theme.text_dim),
                     );
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.add_space(4.0);
                         ui.label(
                             egui::RichText::new("Drag to timeline to apply")
-                                .size(9.0)
+                                .size(10.0)
                                 .color(theme.text_dim),
                         );
                     });
@@ -813,7 +813,7 @@ fn effect_card(
 
     // Preview area (top)
     let preview_rect = egui::Rect::from_min_size(card_rect.min, egui::vec2(width, preview_h));
-    let rounding = egui::Rounding::same(6.0);
+    let rounding = egui::Rounding::same(4.0);
 
     // Dark background for preview
     painter.rect_filled(preview_rect, rounding, theme.bg_panel);
@@ -933,7 +933,7 @@ fn effect_card(
         }
         ui.label(
             egui::RichText::new(fx.source_label)
-                .size(9.0)
+                .size(10.0)
                 .color(theme.text_dim),
         );
         // Limitation notices in tooltip
@@ -946,19 +946,19 @@ fn effect_card(
             || plugin_id.contains("Keyer") || plugin_id.contains("IDistort")
             || plugin_id.contains("STMap") || plugin_id.contains("VectorToColor")
         {
-            ui.label(egui::RichText::new("CPU only — adjust while paused, apply on export").size(9.0).color(theme.marker_warning));
+            ui.label(egui::RichText::new("CPU only — adjust while paused, apply on export").size(10.0).color(theme.marker_warning));
         }
         if plugin_id.contains("Retime") || plugin_id.contains("SlitScan") || plugin_id.contains("timeOffset") {
-            ui.label(egui::RichText::new("Render only — not real-time, applied on export").size(9.0).color(theme.marker_error));
+            ui.label(egui::RichText::new("Render only — not real-time, applied on export").size(10.0).color(theme.marker_error));
         }
         if plugin_id.contains("anaglyph") || plugin_id.contains("joinView") || plugin_id.contains("mixView")
             || plugin_id.contains("oneView") || plugin_id.contains("sideBySide")
             || name.contains("Anaglyph") || name.contains("Join Views") || name.contains("Mix Views")
             || name.contains("One View") || name.contains("Side By Side")
         {
-            ui.label(egui::RichText::new("Requires multi-view — stereo 3D not supported yet").size(9.0).color(theme.marker_error));
+            ui.label(egui::RichText::new("Requires multi-view — stereo 3D not supported yet").size(10.0).color(theme.marker_error));
         }
-        ui.label(egui::RichText::new("Double-click to apply").size(9.0).color(theme.text_dim));
+        ui.label(egui::RichText::new("Double-click to apply").size(10.0).color(theme.text_dim));
     });
 
     resp
@@ -1187,7 +1187,7 @@ fn sidebar_row(
     // Label, vertically centered.
     let label_galley = ui.painter().layout_no_wrap(
         label.to_string(),
-        egui::FontId::proportional(11.5),
+        egui::FontId::proportional(11.0),
         label_color,
     );
     ui.painter().galley(
@@ -1255,7 +1255,7 @@ fn sidebar_section_header(
         egui::pos2(label_x, rect.center().y),
         egui::Align2::LEFT_CENTER,
         label.to_uppercase(),
-        egui::FontId::proportional(9.5),
+        egui::FontId::proportional(10.0),
         theme.text_dim,
     );
 }
@@ -1302,12 +1302,12 @@ fn segmented_source_filter(
     for (i, (_, label, count)) in segments.iter().enumerate() {
         let label_galley = ui.painter().layout_no_wrap(
             (*label).to_string(),
-            egui::FontId::proportional(10.5),
+            egui::FontId::proportional(11.0),
             theme.text_secondary,
         );
         let count_galley = ui.painter().layout_no_wrap(
             format!("{}", count),
-            egui::FontId::monospace(9.5),
+            egui::FontId::monospace(10.0),
             theme.text_dim,
         );
         let w = label_galley.size().x + 5.0 + count_galley.size().x + 18.0;
@@ -1357,12 +1357,12 @@ fn segmented_source_filter(
 
         let label_galley = ui.painter().layout_no_wrap(
             (*label).to_string(),
-            egui::FontId::proportional(10.5),
+            egui::FontId::proportional(11.0),
             label_color,
         );
         let count_galley = ui.painter().layout_no_wrap(
             format!("{}", count),
-            egui::FontId::monospace(9.5),
+            egui::FontId::monospace(10.0),
             count_color,
         );
 
@@ -1395,7 +1395,7 @@ fn segmented_source_filter(
 fn gpu_only_pill(ui: &mut egui::Ui, theme: &KlippTheme, active: &mut bool) {
     let label_galley = ui.painter().layout_no_wrap(
         "GPU only".to_string(),
-        egui::FontId::proportional(10.5),
+        egui::FontId::proportional(11.0),
         theme.text_secondary,
     );
     let icon_size = 11.0;
@@ -1434,7 +1434,7 @@ fn gpu_only_pill(ui: &mut egui::Ui, theme: &KlippTheme, active: &mut bool) {
         ),
         egui::Align2::LEFT_CENTER,
         "GPU only",
-        egui::FontId::proportional(10.5),
+        egui::FontId::proportional(11.0),
         fg,
     );
     if resp.clicked() {
@@ -1555,7 +1555,7 @@ fn result_strip(
         egui::pos2(rect.min.x + 12.0, rect.center().y),
         egui::Align2::LEFT_CENTER,
         left,
-        egui::FontId::proportional(10.5),
+        egui::FontId::proportional(11.0),
         theme.text_secondary,
     );
 
@@ -1575,7 +1575,7 @@ fn result_strip(
             let label = format!("Sort: {}", sort_mode.label());
             egui::ComboBox::from_id_salt("effect_sort_dd")
                 .selected_text(
-                    egui::RichText::new(label).size(10.5).color(theme.text_dim),
+                    egui::RichText::new(label).size(11.0).color(theme.text_dim),
                 )
                 .width(dropdown_w - 4.0)
                 .show_ui(ui, |ui| {
@@ -1615,7 +1615,7 @@ fn paint_thumb_badge(
     kind: ThumbBadgeKind,
 ) -> egui::Rect {
     let painter = ui.painter();
-    let font = egui::FontId::proportional(9.0);
+    let font = egui::FontId::proportional(10.0);
     let label_color = match kind {
         ThumbBadgeKind::Gpu => theme.text_on_accent,
         ThumbBadgeKind::Cpu => egui::Color32::from_rgba_unmultiplied(255, 255, 255, 230),

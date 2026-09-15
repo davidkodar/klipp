@@ -40,7 +40,7 @@ impl ToolbarPanel {
         // Export (icon 6)
         rx -= 32.0;
         let resp = alloc_btn(ui, egui::pos2(rx, cy - 16.0), 32.0);
-        let ic = icon_color(&resp, false);
+        let ic = icon_color(&resp, false, theme);
         draw_export_icon(&painter, resp.rect, ic);
         styled_tooltip(&resp, theme, "Export / Share", Some("Ctrl+E"));
         if resp.clicked() { cmds.push(AppCommand::ShowExportDialog); }
@@ -50,7 +50,7 @@ impl ToolbarPanel {
         // Render Queue (icon 5)
         rx -= 32.0;
         let resp = alloc_btn(ui, egui::pos2(rx, cy - 16.0), 32.0);
-        let ic = icon_color(&resp, false);
+        let ic = icon_color(&resp, false, theme);
         draw_render_queue_icon(&painter, resp.rect, ic);
         styled_tooltip(&resp, theme, "Render Queue", None);
         if resp.clicked() { cmds.push(AppCommand::ShowRenderQueue); }
@@ -67,8 +67,8 @@ impl ToolbarPanel {
         rx -= 32.0;
         let skim_active = state.skimming_enabled;
         let resp = alloc_btn(ui, egui::pos2(rx, cy - 16.0), 32.0);
-        let ic = icon_color(&resp, skim_active);
-        let bg = icon_bg(&resp, skim_active);
+        let ic = icon_color(&resp, skim_active, theme);
+        let bg = icon_bg(&resp, skim_active, theme);
         painter.rect_filled(resp.rect, 6.0, bg);
         draw_skimming_icon(&painter, resp.rect, ic);
         styled_tooltip(&resp, theme, "Skimming On/Off", Some("S"));
@@ -84,8 +84,8 @@ impl ToolbarPanel {
         rx -= 32.0;
         let color_active = state.active_workspace == Workspace::Color;
         let resp = alloc_btn(ui, egui::pos2(rx, cy - 16.0), 32.0);
-        let ic = icon_color(&resp, color_active);
-        let bg = icon_bg(&resp, color_active);
+        let ic = icon_color(&resp, color_active, theme);
+        let bg = icon_bg(&resp, color_active, theme);
         painter.rect_filled(resp.rect, 6.0, bg);
         draw_color_icon(&painter, resp.rect, ic);
         styled_tooltip(&resp, theme, "Color Workspace", Some("C"));
@@ -106,8 +106,8 @@ impl ToolbarPanel {
         rx -= 32.0;
         let scopes_active = state.show_scopes;
         let resp = alloc_btn(ui, egui::pos2(rx, cy - 16.0), 32.0);
-        let ic = icon_color(&resp, scopes_active);
-        let bg = icon_bg(&resp, scopes_active);
+        let ic = icon_color(&resp, scopes_active, theme);
+        let bg = icon_bg(&resp, scopes_active, theme);
         painter.rect_filled(resp.rect, 6.0, bg);
         draw_scopes_icon(&painter, resp.rect, ic);
         styled_tooltip(&resp, theme, "Toggle Scopes", Some("V"));
@@ -187,7 +187,7 @@ impl ToolbarPanel {
                     egui::Color32::WHITE,
                 );
                 ui.add_space(logo_size + 4.0);
-                ui.label(egui::RichText::new("Klipp").size(15.0).strong().color(theme.text_accent));
+                ui.label(egui::RichText::new("Klipp").size(13.0).strong().color(theme.text_accent));
                 ui.add_space(12.0);
 
                 // Separator
@@ -216,10 +216,12 @@ impl ToolbarPanel {
                 ];
                 for (tool, tip, key) in &tools {
                     let active = *layout_tool == *tool;
+                    // The active tool: a tinted field and the accent on the
+                    // glyph, not a solid block of colour.
                     let (bg, fg) = if active {
-                        (theme.accent, theme.bg_void)
+                        (theme.accent_subtle, theme.accent)
                     } else {
-                        (theme.bg_raised, theme.text_secondary)
+                        (egui::Color32::TRANSPARENT, theme.text_secondary)
                     };
                     let (rect, resp) = ui.allocate_exact_size(
                         egui::vec2(32.0, 32.0),
@@ -976,7 +978,7 @@ impl ToolbarPanel {
             // Active-workspace mode flags (controls the composite
             // inspector layout — not the same as a full workspace
             // preset below; kept as-is for backwards compatibility).
-            ui.label(egui::RichText::new("ACTIVE MODE").size(9.0).color(egui::Color32::from_rgb(0x70, 0x70, 0x78)));
+            ui.label(egui::RichText::new("ACTIVE MODE").size(10.0).color(egui::Color32::from_rgb(0x70, 0x70, 0x78)));
             for (ws, label) in &[(Workspace::Edit, "Default"), (Workspace::Color, "Color Grading"), (Workspace::Export, "Audio Mixing")] {
                 let c = if state.active_workspace == *ws { "\u{2714} " } else { "  " };
                 if ui.button(format!("{c}{label}")).clicked() { state.active_workspace = *ws; ui.close_menu(); }
@@ -986,7 +988,7 @@ impl ToolbarPanel {
             // Built-in workspace layout presets (#39). Dispatched via
             // AppCommand so the apply path — write visibility + sizes +
             // layout.save() — stays in one place.
-            ui.label(egui::RichText::new("BUILT-IN LAYOUTS").size(9.0).color(egui::Color32::from_rgb(0x70, 0x70, 0x78)));
+            ui.label(egui::RichText::new("BUILT-IN LAYOUTS").size(10.0).color(egui::Color32::from_rgb(0x70, 0x70, 0x78)));
             for (i, layout) in crate::state::builtin_workspace_layouts().iter().enumerate() {
                 if ui.button(&layout.name).clicked() {
                     cmds.push(AppCommand::ApplyBuiltinWorkspaceLayout { index: i });
@@ -997,7 +999,7 @@ impl ToolbarPanel {
             // User-saved workspaces.
             if !state.custom_workspaces.is_empty() {
                 ui.separator();
-                ui.label(egui::RichText::new("SAVED").size(9.0).color(egui::Color32::from_rgb(0x70, 0x70, 0x78)));
+                ui.label(egui::RichText::new("SAVED").size(10.0).color(egui::Color32::from_rgb(0x70, 0x70, 0x78)));
                 for ws in state.custom_workspaces.clone().iter() {
                     if ui.button(&ws.name).clicked() {
                         cmds.push(AppCommand::ApplyCustomWorkspaceLayout { name: ws.name.clone() });
@@ -1018,7 +1020,7 @@ impl ToolbarPanel {
             }
             ui.separator();
             // Panels
-            ui.label(egui::RichText::new("PANELS").size(9.0).color(egui::Color32::from_rgb(0x70, 0x70, 0x78)));
+            ui.label(egui::RichText::new("PANELS").size(10.0).color(egui::Color32::from_rgb(0x70, 0x70, 0x78)));
             let toggle_label = |active: bool, name: &str| if active { format!("\u{2714} {name}") } else { format!("  {name}") };
             if ui.add(egui::Button::new(toggle_label(state.show_inspector_panel, "Inspector")).shortcut_text("Ctrl+Shift+I")).clicked() { state.show_inspector_panel = !state.show_inspector_panel; ui.close_menu(); }
             if ui.add(egui::Button::new(toggle_label(state.show_browser_panel, "Effects Browser")).shortcut_text("Ctrl+Shift+E")).clicked() { state.show_browser_panel = !state.show_browser_panel; ui.close_menu(); }
@@ -1128,15 +1130,19 @@ fn alloc_btn(ui: &mut egui::Ui, pos: egui::Pos2, size: f32) -> egui::Response {
     ui.allocate_rect(rect, egui::Sense::click())
 }
 
-fn icon_color(resp: &egui::Response, active: bool) -> egui::Color32 {
-    if active { egui::Color32::from_rgb(0x0a, 0x0a, 0x0c) } // dark on bright bg
-    else if resp.hovered() { egui::Color32::from_rgb(0xe8, 0xe8, 0xee) }
-    else { egui::Color32::from_rgb(0x90, 0x90, 0xa0) }
+/// An icon button's glyph: the accent when active, brighter under the
+/// pointer, secondary otherwise.
+fn icon_color(resp: &egui::Response, active: bool, theme: &KlippTheme) -> egui::Color32 {
+    if active { theme.accent }
+    else if resp.hovered() { theme.text_primary }
+    else { theme.text_secondary }
 }
 
-fn icon_bg(resp: &egui::Response, active: bool) -> egui::Color32 {
-    if active { egui::Color32::from_rgb(0xe8, 0xa0, 0x20) } // solid accent fill
-    else if resp.hovered() { egui::Color32::from_rgb(0x2a, 0x2a, 0x32) }
+/// An icon button's field: a tint of the accent when active, the hover
+/// tone under the pointer, nothing otherwise.
+fn icon_bg(resp: &egui::Response, active: bool, theme: &KlippTheme) -> egui::Color32 {
+    if active { theme.accent_subtle }
+    else if resp.hovered() { theme.bg_hover }
     else { egui::Color32::TRANSPARENT }
 }
 

@@ -43,6 +43,9 @@ accent_alt    = "#783c8e"
 # Dark warm brown rather than pure black — matches the warm bg
 # polarity so text feels like ink on paper, not a sharp contrast
 # stripe.
+# The playhead: the one warm mark in a neutral interface.
+playhead       = "#d63b2f"
+
 text_primary   = "#2a2520"
 text_secondary = "#585045"
 text_dim       = "#888070"

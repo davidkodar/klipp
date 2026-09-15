@@ -50,7 +50,7 @@ pub fn show_batch_rename_dialog(
             ui.label(
                 egui::RichText::new(format!("Rename {count} item{}", if count == 1 { "" } else { "s" }))
                     .strong()
-                    .size(14.0),
+                    .size(13.0),
             );
             ui.add_space(4.0);
 
@@ -146,7 +146,7 @@ pub fn show_batch_rename_dialog(
                     if preview.len() > 50 {
                         ui.label(
                             egui::RichText::new(format!("\u{2026} and {} more", preview.len() - 50))
-                                .size(10.5)
+                                .size(11.0)
                                 .color(egui::Color32::from_rgb(140, 140, 150)),
                         );
                     }

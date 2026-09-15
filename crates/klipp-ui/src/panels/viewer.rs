@@ -353,7 +353,7 @@ impl ViewerPanel {
                 egui::pos2(bar_rect.right() - 16.0, bar_rect.center().y),
                 egui::Align2::RIGHT_CENTER,
                 playback_text,
-                egui::FontId::proportional(14.0),
+                egui::FontId::proportional(13.0),
                 egui::Color32::from_rgba_premultiplied(200, 200, 210, 200),
             );
             ui.ctx().request_repaint();
@@ -922,7 +922,7 @@ impl ViewerPanel {
         painter.text(
             egui::pos2(action_rect.left() + 4.0, action_rect.top() + 2.0),
             egui::Align2::LEFT_TOP, "Action Safe",
-            egui::FontId::proportional(9.0),
+            egui::FontId::proportional(10.0),
             egui::Color32::from_rgba_premultiplied(255, 200, 0, 140),
         );
         // 80% title safe
@@ -931,7 +931,7 @@ impl ViewerPanel {
         painter.text(
             egui::pos2(title_rect.left() + 4.0, title_rect.top() + 2.0),
             egui::Align2::LEFT_TOP, "Title Safe",
-            egui::FontId::proportional(9.0),
+            egui::FontId::proportional(10.0),
             egui::Color32::from_rgba_premultiplied(0, 180, 255, 140),
         );
     }
@@ -1015,7 +1015,7 @@ impl ViewerPanel {
                 badge_pos,
                 egui::Align2::RIGHT_TOP,
                 "PREVIEW",
-                egui::FontId::monospace(9.0),
+                egui::FontId::monospace(10.0),
                 egui::Color32::from_rgba_unmultiplied(255, 255, 255, 140),
             );
         } else if state.use_proxies && frame.current_media_info.is_some_and(|(_, _, proxy_ready)| proxy_ready) {
@@ -1024,7 +1024,7 @@ impl ViewerPanel {
                 badge_pos,
                 egui::Align2::RIGHT_TOP,
                 "PROXY",
-                egui::FontId::monospace(9.0),
+                egui::FontId::monospace(10.0),
                 theme.accent,
             );
         }
@@ -1188,7 +1188,7 @@ impl ViewerPanel {
                         egui::pos2(pos.x, pos.y - 10.0),
                         egui::Align2::CENTER_BOTTOM,
                         "LOCKED",
-                        egui::FontId::proportional(8.0),
+                        egui::FontId::proportional(10.0),
                         cursor_color,
                     );
                 }
@@ -2001,8 +2001,9 @@ impl ViewerPanel {
         // the visible track strip.
         let head_x = track_rect.min.x + fill_w;
         let head_center = egui::pos2(head_x, rect.center().y);
-        ui.painter().circle_filled(head_center, 7.0, theme.accent_glow);
-        ui.painter().circle_filled(head_center, 5.5, theme.accent);
+        let ph = theme.playhead;
+        ui.painter().circle_filled(head_center, 7.0, egui::Color32::from_rgba_unmultiplied(ph.r(), ph.g(), ph.b(), 60));
+        ui.painter().circle_filled(head_center, 5.0, ph);
 
         // Scrub interaction — clicks/drags both focus the viewer and
         // (if there's a clip to seek in) emit a per-viewer seek. The
@@ -2164,7 +2165,7 @@ impl ViewerPanel {
                 egui::pos2(rect.min.x + 12.0, cy),
                 egui::Align2::LEFT_CENTER,
                 &tc_str,
-                egui::FontId::monospace(14.0),
+                egui::FontId::monospace(13.0),
                 theme.text_primary,
             );
             if tc_resp.clicked() {
@@ -2219,7 +2220,7 @@ impl ViewerPanel {
             ui.painter().rect_filled(play_rect, play_size / 2.0, bg);
             let play_icon = if is_playing { Icon::Pause } else { Icon::Play };
             let icon_rect = egui::Rect::from_center_size(play_rect.center(), egui::vec2(18.0, 18.0));
-            play_icon.bold(18.0).tint(theme.text_on_accent).paint_at(ui, icon_rect);
+            play_icon.image(18.0).tint(theme.text_on_accent).paint_at(ui, icon_rect);
             let clicked = resp.clicked();
             resp.on_hover_text("Play / Pause (Space)");
             if clicked && enabled {
@@ -2519,7 +2520,7 @@ impl ViewerPanel {
         let fill = if resp.hovered() && enabled { hover_bg } else { bg };
         ui.painter().rect_filled(btn_rect, size / 2.0, fill);
         let icon_rect = egui::Rect::from_center_size(btn_rect.center(), egui::vec2(14.0, 14.0));
-        icon.bold(14.0).tint(if enabled { fg } else { disabled_fg }).paint_at(ui, icon_rect);
+        icon.image(14.0).tint(if enabled { fg } else { disabled_fg }).paint_at(ui, icon_rect);
         let clicked = resp.clicked();
         resp.on_hover_text(tooltip);
         if clicked && enabled {
@@ -2861,7 +2862,7 @@ impl ViewerPanel {
                             egui::pos2(sx + arm + 4.0, sy - arm),
                             egui::Align2::LEFT_CENTER,
                             &label,
-                            egui::FontId::proportional(9.0),
+                            egui::FontId::proportional(10.0),
                             color,
                         );
 
@@ -4694,7 +4695,7 @@ impl ViewerPanel {
                 egui::pos2(cx, cy - 60.0),
                 egui::Align2::CENTER_CENTER,
                 &media.filename,
-                egui::FontId::proportional(14.0),
+                egui::FontId::proportional(13.0),
                 label_col,
             );
 
@@ -4820,7 +4821,7 @@ impl ViewerPanel {
                 viewer_rect.center(),
                 egui::Align2::CENTER_CENTER,
                 "Click a media item to load it here",
-                egui::FontId::proportional(14.0),
+                egui::FontId::proportional(13.0),
                 theme.text_dim,
             );
         }
@@ -4836,7 +4837,7 @@ impl ViewerPanel {
         let amber = theme.accent;
         let bar_h = 4.0_f32;
         let marker_w = 3.0_f32;
-        let label_font = egui::FontId::monospace(8.0);
+        let label_font = egui::FontId::monospace(10.0);
 
         let has_in = media.default_source_in.is_some();
         let has_out = media.default_source_out.is_some();

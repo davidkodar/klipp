@@ -16,7 +16,7 @@ pub fn styled_tooltip(
         egui::Frame::none()
             .fill(theme.bg_raised)
             .stroke(egui::Stroke::new(1.0_f32, theme.border_light))
-            .rounding(5.0)
+            .rounding(4.0)
             .inner_margin(egui::Margin::symmetric(10.0, 5.0))
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
@@ -35,7 +35,7 @@ pub fn styled_tooltip(
                         egui::Frame::none()
                             .fill(theme.bg_panel_alt)
                             .stroke(egui::Stroke::new(1.0_f32, theme.border_light))
-                            .rounding(3.0)
+                            .rounding(2.0)
                             .inner_margin(egui::Margin::symmetric(4.0, 1.0))
                             .show(ui, |ui| {
                                 ui.label(

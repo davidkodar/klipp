@@ -32,7 +32,7 @@ pub fn vertical_slider(
     let painter = ui.painter_at(full_rect);
     let cx = full_rect.center().x;
     let text_dim = egui::Color32::from_rgb(0x40, 0x40, 0x50);
-    let text_accent = egui::Color32::from_rgb(0xe8, 0xa0, 0x20);
+    let text_accent = egui::Color32::from_rgb(0xf2, 0xf2, 0xf4);
     let track_bg = egui::Color32::from_rgb(0x1e, 0x1e, 0x26);
 
     // Label above
@@ -40,7 +40,7 @@ pub fn vertical_slider(
         egui::pos2(cx, full_rect.min.y + label_h / 2.0),
         egui::Align2::CENTER_CENTER,
         label,
-        egui::FontId::proportional(8.0),
+        egui::FontId::proportional(10.0),
         text_dim,
     );
 

@@ -29,7 +29,7 @@ pub fn show(
         egui::pos2(spacer_rect.min.x + 6.0, spacer_rect.center().y),
         egui::Align2::LEFT_CENTER,
         "TRACKS",
-        egui::FontId::monospace(9.0),
+        egui::FontId::monospace(10.0),
         theme.text_dim,
     );
 
@@ -156,7 +156,7 @@ pub fn show(
             badge_rect.center(),
             egui::Align2::CENTER_CENTER,
             &layer_label,
-            egui::FontId::monospace(8.0),
+            egui::FontId::monospace(10.0),
             egui::Color32::WHITE,
         );
 
@@ -188,7 +188,7 @@ pub fn show(
                 badge_rect.center(),
                 egui::Align2::CENTER_CENTER,
                 label,
-                egui::FontId::monospace(7.0),
+                egui::FontId::monospace(10.0),
                 egui::Color32::WHITE,
             );
         }
@@ -216,7 +216,7 @@ pub fn show(
             // Label
             ui.painter().text(
                 slider_rect.center(), egui::Align2::CENTER_CENTER,
-                format!("{}%", opacity_pct), egui::FontId::proportional(8.0),
+                format!("{}%", opacity_pct), egui::FontId::proportional(10.0),
                 theme.text_secondary,
             );
             // Interaction

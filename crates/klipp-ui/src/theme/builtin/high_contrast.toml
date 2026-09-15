@@ -55,6 +55,9 @@ accent_alt    = "#00ffff"
 # Pure white primary, lightly-greyed secondary / dim — staying
 # above the AAA 7:1 contrast threshold against bg_panel even at
 # the dimmest tier.
+# The playhead: the one warm mark in a neutral interface.
+playhead       = "#ff5a3c"
+
 text_primary   = "#ffffff"
 text_secondary = "#d0d0d0"
 text_dim       = "#a0a0a0"

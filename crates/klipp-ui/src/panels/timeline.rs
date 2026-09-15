@@ -3938,7 +3938,7 @@ impl TimelinePanel {
                     egui::pos2(ghost_rect.right() - 4.0, ghost_rect.center().y),
                     egui::Align2::RIGHT_CENTER,
                     &dur_label,
-                    egui::FontId::monospace(9.0),
+                    egui::FontId::monospace(10.0),
                     egui::Color32::from_rgb(180, 180, 200),
                 );
 
@@ -3973,7 +3973,7 @@ impl TimelinePanel {
                     egui::pos2(ghost_rect.left() + 14.0, ghost_rect.center().y),
                     egui::Align2::CENTER_CENTER,
                     "T",
-                    egui::FontId::proportional(14.0),
+                    egui::FontId::proportional(13.0),
                     egui::Color32::WHITE,
                 );
 
@@ -4161,7 +4161,7 @@ impl TimelinePanel {
                     egui::pos2(ghost_rect.left() + 14.0, ghost_rect.center().y),
                     egui::Align2::CENTER_CENTER,
                     "G",
-                    egui::FontId::proportional(14.0),
+                    egui::FontId::proportional(13.0),
                     text_color,
                 );
 
@@ -4696,7 +4696,7 @@ impl TimelinePanel {
         let label_pos = egui::pos2(snap_x + 4.0, tracks_start_y + 3.0);
         let text_galley = painter.layout_no_wrap(
             label.clone(),
-            egui::FontId::monospace(9.0),
+            egui::FontId::monospace(10.0),
             snap_color_faded,
         );
         let pill_rect = egui::Rect::from_min_size(
@@ -4713,7 +4713,7 @@ impl TimelinePanel {
             label_pos,
             egui::Align2::LEFT_TOP,
             &label,
-            egui::FontId::monospace(9.0),
+            egui::FontId::monospace(10.0),
             snap_color_faded,
         );
     }
@@ -4978,7 +4978,7 @@ impl TimelinePanel {
                     bg_painter.rect_filled(fill_rect, 2.0, tt.role_video);
                     bg_painter.text(
                         opacity_rect.center(), egui::Align2::CENTER_CENTER,
-                        format!("{}%", opacity_pct), egui::FontId::proportional(9.0),
+                        format!("{}%", opacity_pct), egui::FontId::proportional(10.0),
                         tt.text_secondary,
                     );
                     if opacity_resp.double_clicked() {
@@ -5046,7 +5046,7 @@ impl TimelinePanel {
                     };
                     bg_painter.rect_filled(s_rect, 2.0, s_bg);
                     bg_painter.text(s_rect.center(), egui::Align2::CENTER_CENTER, "S",
-                        egui::FontId::proportional(9.0), tt.text_primary);
+                        egui::FontId::proportional(10.0), tt.text_primary);
                     if s_resp.clicked() {
                         cmds.push(AppCommand::SetTrackSolo { track_index: track_idx, solo: !track.solo });
                     }
@@ -5069,7 +5069,7 @@ impl TimelinePanel {
                     let vol_pct = (track.volume * 100.0) as u32;
                     bg_painter.text(
                         vol_rect.center(), egui::Align2::CENTER_CENTER,
-                        format!("{}%", vol_pct), egui::FontId::proportional(9.0),
+                        format!("{}%", vol_pct), egui::FontId::proportional(10.0),
                         tt.text_secondary,
                     );
                     if vol_resp.double_clicked() {
@@ -5110,7 +5110,7 @@ impl TimelinePanel {
                     bg_painter.text(
                         egui::pos2(pan_rect.right() - 2.0, pan_rect.center().y),
                         egui::Align2::RIGHT_CENTER, &pan_label,
-                        egui::FontId::proportional(7.0), tt.text_dim,
+                        egui::FontId::proportional(10.0), tt.text_dim,
                     );
                     if pan_resp.dragged() {
                         let dx = pan_resp.drag_delta().x;
@@ -5256,7 +5256,7 @@ impl TimelinePanel {
 
         let dim = tt.text_dim;
         let bright = tt.text_secondary;
-        let font = egui::FontId::proportional(9.5);
+        let font = egui::FontId::proportional(10.0);
         let sep = "  \u{2022}  ";
         let cy = layout.status_rect.center().y;
 
@@ -5395,7 +5395,7 @@ impl TimelinePanel {
             let has_fx = !clip.effects.is_empty()
                 || clip.builtin_effects.iter().any(|e| !matches!(e, klipp_effects::BuiltinEffect::Transform { .. }));
             if has_fx {
-                let fx_font = egui::FontId::proportional(8.0);
+                let fx_font = egui::FontId::proportional(10.0);
                 let fx_galley = painter.layout_no_wrap(
                     "FX".to_string(),
                     fx_font,
@@ -5445,7 +5445,7 @@ impl TimelinePanel {
         if let Some(binding) = clip.matte_source.as_ref() {
             if clip_rect.width() > 30.0 {
                 let source_id = binding.source_clip_id;
-                let m_font = egui::FontId::proportional(8.0);
+                let m_font = egui::FontId::proportional(10.0);
                 let m_galley = painter.layout_no_wrap(
                     "M".to_string(),
                     m_font.clone(),
@@ -5513,7 +5513,7 @@ impl TimelinePanel {
             }
             // Tiny "matte source" tag bottom-left.
             if clip_rect.width() > 60.0 {
-                let tag_font = egui::FontId::proportional(8.0);
+                let tag_font = egui::FontId::proportional(10.0);
                 let tag_text = if clip.matte_stencil.is_some() { "STENCIL" } else { "MATTE SOURCE" };
                 let tag_galley = painter.layout_no_wrap(
                     tag_text.to_string(),
@@ -5728,7 +5728,7 @@ impl TimelinePanel {
 
                 // Proxy badge [P] — orange pill when using proxy for this clip
                 if media.proxy_ready && state.use_proxies && clip_rect.width() > 30.0 {
-                    let badge_font = egui::FontId::proportional(8.0);
+                    let badge_font = egui::FontId::proportional(10.0);
                     let badge_pos = egui::pos2(clip_rect.right() - 12.0, clip_rect.top() + 8.0);
                     let badge_rect = egui::Rect::from_center_size(
                         badge_pos,
@@ -5778,7 +5778,7 @@ impl TimelinePanel {
             let g_rect = egui::Rect::from_center_size(g_pos, egui::vec2(14.0, 11.0));
             painter.rect_filled(g_rect, 3.0, tt.marker_info);
             painter.text(g_pos, egui::Align2::CENTER_CENTER, "G",
-                egui::FontId::proportional(8.0), tt.text_primary);
+                egui::FontId::proportional(10.0), tt.text_primary);
         }
 
         // Multicam indicators (gated by multicam_show_angles pref synced to state)
@@ -5791,7 +5791,7 @@ impl TimelinePanel {
             );
             painter.rect_filled(badge_rect, 3.0, tt.marker_info);
             painter.text(badge_rect.center(), egui::Align2::CENTER_CENTER, &angle_text,
-                egui::FontId::proportional(9.0), tt.text_primary);
+                egui::FontId::proportional(10.0), tt.text_primary);
 
             // "MC" badge (top-left)
             let mc_rect = egui::Rect::from_min_size(
@@ -5800,7 +5800,7 @@ impl TimelinePanel {
             );
             painter.rect_filled(mc_rect, 3.0, egui::Color32::from_rgba_premultiplied(20, 15, 3, 40));
             painter.text(mc_rect.center(), egui::Align2::CENTER_CENTER, "MC",
-                egui::FontId::proportional(8.0), tt.accent);
+                egui::FontId::proportional(10.0), tt.accent);
 
             // Cut list visualization (only on primary angle)
             if clip.multicam_angle == 0 && !clip.multicam_cuts.is_empty() {
@@ -6371,7 +6371,7 @@ impl TimelinePanel {
                     );
                     ui.label(
                         egui::RichText::new("Click to view envelope")
-                            .size(9.0)
+                            .size(10.0)
                             .color(theme_ref.text_dim),
                     );
                 },
@@ -6521,7 +6521,7 @@ impl TimelinePanel {
                 egui::pos2(clip_rect.right() - 2.0, strips_top_y - 1.0),
                 egui::Align2::RIGHT_BOTTOM,
                 format!("+{n}"),
-                egui::FontId::proportional(7.0),
+                egui::FontId::proportional(10.0),
                 theme.text_dim,
             );
         }
@@ -8912,7 +8912,7 @@ impl TimelinePanel {
                                 egui::pos2(ghost_rect.center().x, ghost_rect.top() - 10.0),
                                 egui::Align2::CENTER_BOTTOM,
                                 &tc_text,
-                                egui::FontId::monospace(9.0),
+                                egui::FontId::monospace(10.0),
                                 tt.text_secondary,
                             );
                         }
@@ -9262,7 +9262,7 @@ impl TimelinePanel {
                             egui::pos2(ghost_rect.center().x, ghost_rect.top() - 10.0),
                             egui::Align2::CENTER_BOTTOM,
                             &tc_text,
-                            egui::FontId::monospace(9.0),
+                            egui::FontId::monospace(10.0),
                             tt.text_secondary,
                         );
 
@@ -9302,7 +9302,7 @@ impl TimelinePanel {
                                     painter.rect_filled(pill_rect, 4.0, egui::Color32::from_rgba_unmultiplied(bp.r(), bp.g(), bp.b(), 220));
                                     painter.rect_stroke(pill_rect, 4.0, egui::Stroke::new(1.0_f32, amber));
                                     painter.text(pill_rect.center(), egui::Align2::CENTER_CENTER,
-                                        "\u{229E} Will connect", egui::FontId::monospace(8.0), amber);
+                                        "\u{229E} Will connect", egui::FontId::monospace(10.0), amber);
 
                                     // Dashed amber vertical line from dragged clip to primary
                                     let clip_x = state.sequence().tracks.get(drag.track_idx)
@@ -9339,7 +9339,7 @@ impl TimelinePanel {
                                     painter.rect_filled(pill_rect, 4.0, egui::Color32::from_rgba_unmultiplied(bp.r(), bp.g(), bp.b(), 220));
                                     painter.rect_stroke(pill_rect, 4.0, egui::Stroke::new(1.0_f32, warn_color));
                                     painter.text(pill_rect.center(), egui::Align2::CENTER_CENTER,
-                                        "\u{229F} Will disconnect", egui::FontId::monospace(8.0), warn_color);
+                                        "\u{229F} Will disconnect", egui::FontId::monospace(10.0), warn_color);
 
                                     // Existing anchor line turns red-dashed to indicate it will break
                                     if let Some(anchor) = state.sequence().tracks.get(drag.track_idx)
@@ -9686,7 +9686,7 @@ impl TimelinePanel {
                         painter.rect_filled(badge_rect, 4.0, egui::Color32::from_rgba_unmultiplied(bp.r(), bp.g(), bp.b(), 220));
                         painter.rect_stroke(badge_rect, 4.0, egui::Stroke::new(1.0_f32, mi));
                         painter.text(badge_rect.center(), egui::Align2::CENTER_CENTER,
-                            &badge_text, egui::FontId::monospace(9.0), mi);
+                            &badge_text, egui::FontId::monospace(10.0), mi);
 
                         // Highlight all three involved clips. The mutations
                         // above moved their timeline positions, so we look
@@ -9834,7 +9834,7 @@ impl TimelinePanel {
                         painter.rect_filled(badge_rect, 4.0, egui::Color32::from_rgba_unmultiplied(bp.r(), bp.g(), bp.b(), 220));
                         painter.rect_stroke(badge_rect, 4.0, egui::Stroke::new(1.0_f32, acc));
                         painter.text(badge_rect.center(), egui::Align2::CENTER_CENTER,
-                            &badge_text, egui::FontId::monospace(9.0), acc);
+                            &badge_text, egui::FontId::monospace(10.0), acc);
 
                         // Draw semi-transparent directional arrow overlay on
                         // the clip. Slip changes source_in/out only, so the
@@ -10418,7 +10418,7 @@ impl TimelinePanel {
                                     egui::pos2(junction_x, cr_a.top() - 2.0),
                                     egui::Align2::CENTER_BOTTOM,
                                     "Roll trim",
-                                    egui::FontId::proportional(8.0),
+                                    egui::FontId::proportional(10.0),
                                     tt.text_accent,
                                 );
                                 break;
@@ -10495,7 +10495,7 @@ impl TimelinePanel {
                                 egui::pos2(tip_x, cr.top() + 6.0),
                                 tip_align,
                                 "Drag to trim clip",
-                                egui::FontId::proportional(8.0),
+                                egui::FontId::proportional(10.0),
                                 egui::Color32::from_rgba_premultiplied(tp.r(), tp.g(), tp.b(), 180),
                             );
                         }
@@ -10662,7 +10662,7 @@ impl TimelinePanel {
                                 egui::pos2(cx, cy - d - 8.0),
                                 egui::Align2::CENTER_BOTTOM,
                                 kind_label,
-                                egui::FontId::proportional(9.0),
+                                egui::FontId::proportional(10.0),
                                 tt.text_accent,
                             );
                         }
@@ -10949,7 +10949,7 @@ impl TimelinePanel {
             clip_rect.center(),
             egui::Align2::CENTER_CENTER,
             &label,
-            egui::FontId::monospace(9.0),
+            egui::FontId::monospace(10.0),
             egui::Color32::from_rgba_unmultiplied(acc.r(), acc.g(), acc.b(), 120),
         );
 
@@ -11504,7 +11504,7 @@ impl TimelinePanel {
                     klipp_core::VideoParam::MatteFeather => "MFth",
                     klipp_core::VideoParam::MatteChoke => "MChk",
                 };
-                let vrb_pill_font = egui::FontId::proportional(9.0);
+                let vrb_pill_font = egui::FontId::proportional(10.0);
                 let vrb_pill_galley = ui.painter().layout_no_wrap(vrb_param_label.to_string(), vrb_pill_font.clone(), egui::Color32::WHITE);
                 let vrb_pill_w = vrb_pill_galley.size().x + 8.0;
                 let vrb_pill_h = 14.0;
@@ -11666,7 +11666,7 @@ impl TimelinePanel {
                                     egui::pos2(cx, cy - 14.0),
                                     egui::Align2::CENTER_BOTTOM,
                                     tooltip_text,
-                                    egui::FontId::proportional(9.0),
+                                    egui::FontId::proportional(10.0),
                                     vrb_active_line_color,
                                 );
                             }
@@ -11935,7 +11935,7 @@ impl TimelinePanel {
             palette.ref_color.r(), palette.ref_color.g(), palette.ref_color.b(), 110,
         );
         let label_color = tt.text_dim;
-        let label_font = egui::FontId::proportional(9.0);
+        let label_font = egui::FontId::proportional(10.0);
 
         let scale_label_x = lane_rect.left() + 4.0;
         let scale_inset_left = lane_rect.left() + 28.0; // grid starts after the value column
@@ -12786,7 +12786,7 @@ impl TimelinePanel {
                 klipp_core::AudioParam::Gain => "Gain",
             };
             // Measure text width to size the pill dynamically
-            let pill_font = egui::FontId::proportional(9.0);
+            let pill_font = egui::FontId::proportional(10.0);
             let pill_text_galley = ui.painter().layout_no_wrap(param_label.to_string(), pill_font.clone(), egui::Color32::WHITE);
             let pill_w = pill_text_galley.size().x + 8.0; // 4px padding each side
             let pill_h = 14.0;
@@ -13164,7 +13164,7 @@ impl TimelinePanel {
                                 egui::pos2(kx, ky - 14.0),
                                 egui::Align2::CENTER_BOTTOM,
                                 tooltip_text,
-                                egui::FontId::proportional(9.0),
+                                egui::FontId::proportional(10.0),
                                 active_line_color,
                             );
                         }
@@ -13285,7 +13285,7 @@ impl TimelinePanel {
 
         // ── Pill: "FX {idx}: {name}" ──
         let pill_label = format_effect_param_pill(effect_index, param_name);
-        let pill_font = egui::FontId::proportional(9.0);
+        let pill_font = egui::FontId::proportional(10.0);
         let pill_galley = ui.painter().layout_no_wrap(
             pill_label.clone(), pill_font.clone(), egui::Color32::WHITE,
         );
@@ -13613,7 +13613,7 @@ impl TimelinePanel {
                 ui.set_min_width(160.0);
 
                 // ── Clip-level group ──
-                ui.label(egui::RichText::new("CLIP").size(9.0).strong()
+                ui.label(egui::RichText::new("CLIP").size(10.0).strong()
                     .color(theme().text_dim));
                 for (param, label) in [
                     (klipp_core::AudioParam::Volume, "Volume"),
@@ -13631,7 +13631,7 @@ impl TimelinePanel {
                 }
 
                 ui.separator();
-                ui.label(egui::RichText::new("EFFECTS").size(9.0).strong()
+                ui.label(egui::RichText::new("EFFECTS").size(10.0).strong()
                     .color(theme().text_dim));
 
                 // Group keys by effect index, preserve order via
@@ -13657,7 +13657,7 @@ impl TimelinePanel {
                     } else {
                         format!("FX {idx}: {}", effect_display_name(&effect_type))
                     };
-                    ui.label(egui::RichText::new(header).size(9.0)
+                    ui.label(egui::RichText::new(header).size(10.0)
                         .color(theme().text_secondary));
                     for name in names {
                         let pretty = match name.as_str() {
@@ -13716,7 +13716,7 @@ impl TimelinePanel {
             pill_rect.center(),
             egui::Align2::CENTER_CENTER,
             "\u{2014}", // em-dash
-            egui::FontId::proportional(9.0),
+            egui::FontId::proportional(10.0),
             egui::Color32::WHITE,
         );
         // Suppress unused warning for diagnostic-only param name.
@@ -13814,7 +13814,7 @@ impl TimelinePanel {
             if !dragging_fi && !dragging_fo && self.dragging_clip.is_none() && self.trimming_clip.is_none() {
                 let tp = tt.text_primary;
                 let tip_color = egui::Color32::from_rgba_premultiplied(tp.r(), tp.g(), tp.b(), 180);
-                let tip_font = egui::FontId::proportional(8.0);
+                let tip_font = egui::FontId::proportional(10.0);
                 if near_fi {
                     painter.text(
                         egui::pos2(fi_x + 10.0, clip_rect.top() + 6.0),
@@ -14111,7 +14111,7 @@ impl TimelinePanel {
         let line3 = format!("Dur: {dur_str}");
 
         let tt = theme();
-        let font = egui::FontId::proportional(9.0);
+        let font = egui::FontId::proportional(10.0);
         let text_color = tt.text_primary;
         let bp = tt.bg_deep;
         let bg_color = egui::Color32::from_rgba_unmultiplied(bp.r(), bp.g(), bp.b(), 220);
@@ -14242,7 +14242,7 @@ impl TimelinePanel {
             .on_hover_text("Fit timeline to window (Shift+Z)");
         painter.rect_filled(fit_rect, 2.0, if fit_resp.hovered() { tt.bg_hover } else { tt.bg_raised });
         painter.text(fit_rect.center(), egui::Align2::CENTER_CENTER, "Fit",
-            egui::FontId::proportional(8.0), tt.text_primary);
+            egui::FontId::proportional(10.0), tt.text_primary);
         if fit_resp.clicked() {
             cmds.push(AppCommand::ZoomTimelineToFit);
         }
@@ -14253,7 +14253,7 @@ impl TimelinePanel {
         let minus_resp = ui.interact(minus_rect, ui.id().with("zoom_minus"), egui::Sense::click())
             .on_hover_text("Zoom out");
         painter.rect_filled(minus_rect, 2.0, if minus_resp.hovered() { tt.bg_hover } else { tt.bg_raised });
-        Icon::Minus.bold(12.0).tint(tt.text_primary).paint_at(ui, minus_rect.shrink(2.0));
+        Icon::Minus.image(12.0).tint(tt.text_primary).paint_at(ui, minus_rect.shrink(2.0));
         if minus_resp.clicked() {
             let new_zoom = (state.timeline_zoom / 1.5).clamp(0.1, 2000.0);
             cmds.push(AppCommand::SetTimelineZoom { zoom: new_zoom, scroll_x: None });
@@ -14265,7 +14265,7 @@ impl TimelinePanel {
         let plus_resp = ui.interact(plus_rect, ui.id().with("zoom_plus"), egui::Sense::click())
             .on_hover_text("Zoom in");
         painter.rect_filled(plus_rect, 2.0, if plus_resp.hovered() { tt.bg_hover } else { tt.bg_raised });
-        Icon::Plus.bold(12.0).tint(tt.text_primary).paint_at(ui, plus_rect.shrink(2.0));
+        Icon::Plus.image(12.0).tint(tt.text_primary).paint_at(ui, plus_rect.shrink(2.0));
         if plus_resp.clicked() {
             let new_zoom = (state.timeline_zoom * 1.5).clamp(0.1, 2000.0);
             cmds.push(AppCommand::SetTimelineZoom { zoom: new_zoom, scroll_x: None });
@@ -14374,7 +14374,7 @@ impl TimelinePanel {
         let snap_col = if state.snap.master { tt.marker_info } else { tt.bg_raised };
         painter.rect_filled(snap_rect, 2.0, snap_col);
         painter.text(snap_rect.center(), egui::Align2::CENTER_CENTER, "Snap",
-            egui::FontId::proportional(8.0), tt.text_primary);
+            egui::FontId::proportional(10.0), tt.text_primary);
         if snap_resp.clicked() {
             cmds.push(AppCommand::SetSnapMaster(!state.snap.master));
         }
@@ -14388,7 +14388,7 @@ impl TimelinePanel {
         let ripple_col = if state.ripple_enabled { tt.marker_info } else { tt.bg_raised };
         painter.rect_filled(ripple_rect, 2.0, ripple_col);
         painter.text(ripple_rect.center(), egui::Align2::CENTER_CENTER, "Ripple",
-            egui::FontId::proportional(8.0), tt.text_primary);
+            egui::FontId::proportional(10.0), tt.text_primary);
         if ripple_resp.clicked() {
             cmds.push(AppCommand::SetRippleEnabled(!state.ripple_enabled));
         }
@@ -14404,7 +14404,7 @@ impl TimelinePanel {
         painter.rect_filled(follow_rect, 2.0, follow_col);
         let follow_label = format!("Follow: {}", state.playhead_follow.label());
         painter.text(follow_rect.center(), egui::Align2::CENTER_CENTER, follow_label,
-            egui::FontId::proportional(7.0), tt.text_primary);
+            egui::FontId::proportional(10.0), tt.text_primary);
         if follow_resp.clicked() {
             state.playhead_follow = state.playhead_follow.next();
         }
@@ -14420,7 +14420,7 @@ impl TimelinePanel {
         let proxy_col = if state.use_proxies { tt.accent_dim } else { tt.bg_raised };
         painter.rect_filled(proxy_rect, 2.0, proxy_col);
         painter.text(proxy_rect.center(), egui::Align2::CENTER_CENTER, "Proxy",
-            egui::FontId::proportional(8.0), tt.text_primary);
+            egui::FontId::proportional(10.0), tt.text_primary);
         if proxy_resp.clicked() {
             cmds.push(AppCommand::SetUseProxies(!state.use_proxies));
         }
@@ -14444,7 +14444,7 @@ impl TimelinePanel {
             patch_rect.center(),
             egui::Align2::CENTER_CENTER,
             if state.append_brings_audio { "V+A" } else { "V only" },
-            egui::FontId::proportional(8.0),
+            egui::FontId::proportional(10.0),
             tt.text_primary,
         );
         if patch_resp.clicked() {

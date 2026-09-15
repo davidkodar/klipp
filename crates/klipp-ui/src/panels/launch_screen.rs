@@ -211,7 +211,7 @@ impl LaunchScreen {
             new_rect.center(),
             egui::Align2::CENTER_CENTER,
             "+ New Project",
-            egui::FontId::proportional(14.0),
+            egui::FontId::proportional(13.0),
             theme.bg_void,
         );
         if new_resp.clicked() {
@@ -735,7 +735,7 @@ impl LaunchScreen {
                         ui.label(
                             egui::RichText::new("No matching projects")
                                 .color(theme.text_dim)
-                                .size(14.0),
+                                .size(13.0),
                         );
                     });
                 }
@@ -904,7 +904,7 @@ impl LaunchScreen {
                         ui.label(
                             egui::RichText::new("No matching projects")
                                 .color(theme.text_dim)
-                                .size(14.0),
+                                .size(13.0),
                         );
                     });
                 }
@@ -935,7 +935,7 @@ impl LaunchScreen {
             ui.painter().rect_filled(
                 rect.shrink(1.0),
                 rounding,
-                egui::Color32::from_rgba_unmultiplied(232, 160, 32, 10),
+                egui::Color32::from_rgba_unmultiplied(220, 220, 228, 8),
             );
         }
 
@@ -1130,7 +1130,7 @@ impl LaunchScreen {
             let g = layout_truncated(
                 ui.painter(),
                 &meta,
-                egui::FontId::monospace(9.5),
+                egui::FontId::monospace(10.0),
                 theme.text_dim,
                 max_w,
             );
@@ -1144,7 +1144,7 @@ impl LaunchScreen {
             let g = layout_truncated(
                 ui.painter(),
                 &counts,
-                egui::FontId::proportional(9.5),
+                egui::FontId::proportional(10.0),
                 theme.text_dim,
                 max_w,
             );

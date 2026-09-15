@@ -65,7 +65,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState, theme: &KlippTheme, cmds: &
             egui::pos2(rect.right() - 4.0, rect.bottom() - 6.0),
             egui::Align2::RIGHT_BOTTOM,
             "\u{25BE}",
-            egui::FontId::proportional(8.0),
+            egui::FontId::proportional(10.0),
             snap_fg,
         );
         styled_tooltip(&resp, theme, "Snap (right-click for per-target options)", Some("N"));
@@ -171,10 +171,10 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState, theme: &KlippTheme, cmds: &
             // Fit button — first add → rightmost position on screen.
             let fit_resp = ui.add(
                 egui::Button::new(
-                    egui::RichText::new("Fit").size(9.0).color(theme.text_secondary),
+                    egui::RichText::new("Fit").size(10.0).color(theme.text_secondary),
                 )
                 .min_size(egui::vec2(26.0, 16.0))
-                .rounding(3.0)
+                .rounding(2.0)
                 .fill(egui::Color32::TRANSPARENT)
                 .stroke(egui::Stroke::new(0.5_f32, theme.border)),
             );
@@ -184,7 +184,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState, theme: &KlippTheme, cmds: &
             }
             ui.add_space(4.0);
 
-            ui.label(egui::RichText::new("+").size(9.0).color(theme.text_dim));
+            ui.label(egui::RichText::new("+").size(10.0).color(theme.text_dim));
             let mut zoom_t = ((state.timeline_zoom.ln() - 0.1f32.ln())
                 / (2000.0f32.ln() - 0.1f32.ln())).clamp(0.0, 1.0);
             let slider = egui::Slider::new(&mut zoom_t, 0.0..=1.0).show_value(false);
@@ -193,7 +193,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState, theme: &KlippTheme, cmds: &
                 let new_zoom = (0.1f32.ln() + zoom_t * (2000.0f32.ln() - 0.1f32.ln())).exp();
                 cmds.push(AppCommand::SetTimelineZoom { zoom: new_zoom, scroll_x: None });
             }
-            ui.label(egui::RichText::new("\u{2212}").size(9.0).color(theme.text_dim));
+            ui.label(egui::RichText::new("\u{2212}").size(10.0).color(theme.text_dim));
         });
     });
 }

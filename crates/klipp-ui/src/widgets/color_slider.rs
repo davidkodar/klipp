@@ -178,7 +178,7 @@ pub fn color_slider_with_edit(
                 egui::UiBuilder::new().max_rect(edit_rect),
                 |ui| {
                     let te = egui::TextEdit::singleline(&mut edit_state.edit_buf)
-                        .font(egui::FontId::monospace(9.0))
+                        .font(egui::FontId::monospace(10.0))
                         .text_color(text_accent)
                         .desired_width(value_w - 4.0)
                         .margin(egui::Margin::symmetric(2.0, 0.0))

@@ -1816,7 +1816,7 @@ fn title_card(
         theme.border
     };
     let stroke_w: f32 = if is_selected { 2.0 } else { 1.0 };
-    let rounding = egui::Rounding::same(8.0);
+    let rounding = egui::Rounding::same(4.0);
     paint_preview_canvas(ui.painter(), rect, rounding, preview_bg);
     ui.painter()
         .rect_stroke(rect, rounding, egui::Stroke::new(stroke_w, border_color));
@@ -1911,7 +1911,7 @@ fn paint_corner_badge(
         ),
     };
     let painter = ui.painter();
-    let font = egui::FontId::proportional(9.0);
+    let font = egui::FontId::proportional(10.0);
     let galley = painter.layout_no_wrap(label.to_string(), font, fg);
     let pad_x = 7.0;
     let h = 17.0;
@@ -1922,7 +1922,7 @@ fn paint_corner_badge(
         egui::pos2(rect.min.x + 8.0, rect.min.y + 8.0)
     };
     let badge_rect = egui::Rect::from_min_size(pos, egui::vec2(w, h));
-    painter.rect_filled(badge_rect, egui::Rounding::same(3.0), bg);
+    painter.rect_filled(badge_rect, egui::Rounding::same(2.0), bg);
     painter.galley(
         egui::pos2(
             badge_rect.min.x + pad_x,
@@ -1959,9 +1959,9 @@ fn title_list_row(
             28,
         );
         ui.painter()
-            .rect_filled(rect, egui::Rounding::same(6.0), bg);
+            .rect_filled(rect, egui::Rounding::same(4.0), bg);
     } else if hovered {
-        ui.painter().rect_filled(rect, egui::Rounding::same(6.0), theme.bg_raised);
+        ui.painter().rect_filled(rect, egui::Rounding::same(4.0), theme.bg_raised);
     }
 
     // Mini preview on the left, text block on the right.
@@ -3427,7 +3427,7 @@ fn titles_sidebar_row(
 
     let label_galley = ui.painter().layout_no_wrap(
         label.to_string(),
-        egui::FontId::proportional(11.5),
+        egui::FontId::proportional(11.0),
         label_color,
     );
     ui.painter().galley(
@@ -3499,7 +3499,7 @@ fn titles_general_row(
     );
     let label_galley = ui.painter().layout_no_wrap(
         label.to_string(),
-        egui::FontId::proportional(11.5),
+        egui::FontId::proportional(11.0),
         theme.text_secondary,
     );
     ui.painter().galley(
@@ -3570,7 +3570,7 @@ fn titles_section_header(
         egui::pos2(label_x, rect.center().y),
         egui::Align2::LEFT_CENTER,
         label.to_uppercase(),
-        egui::FontId::proportional(9.5),
+        egui::FontId::proportional(10.0),
         theme.text_dim,
     );
 }
@@ -3811,7 +3811,7 @@ fn titles_result_strip(
         egui::pos2(rect.min.x + 12.0, rect.center().y),
         egui::Align2::LEFT_CENTER,
         format!("{} Titles", count),
-        egui::FontId::proportional(10.5),
+        egui::FontId::proportional(11.0),
         theme.text_secondary,
     );
 
@@ -3829,7 +3829,7 @@ fn titles_result_strip(
             let label = format!("Sort: {}", sort_mode.label());
             egui::ComboBox::from_id_salt("titles_sort_dd")
                 .selected_text(
-                    egui::RichText::new(label).size(10.5).color(theme.text_dim),
+                    egui::RichText::new(label).size(11.0).color(theme.text_dim),
                 )
                 .width(dropdown_w - 4.0)
                 .show_ui(ui, |ui| {

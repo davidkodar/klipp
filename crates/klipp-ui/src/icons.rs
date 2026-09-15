@@ -1,7 +1,7 @@
 //! Phosphor icon library integration for Klipp.
 //!
 //! Call [`install`] once at startup, then use [`Icon`] variants
-//! with `.image()` / `.bold()` to get tintable `egui::Image` widgets.
+//! with `.image()` / `.image()` to get tintable `egui::Image` widgets.
 
 /// Register SVG image loaders with egui. Call once in app init.
 pub fn install(ctx: &egui::Context) {

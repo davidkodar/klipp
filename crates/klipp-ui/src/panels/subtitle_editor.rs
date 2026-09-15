@@ -456,7 +456,7 @@ fn render_row(
         ui.vertical(|ui| {
             ui.label(
                 egui::RichText::new("Start")
-                    .size(9.0)
+                    .size(10.0)
                     .color(egui::Color32::from_rgb(0x70, 0x70, 0x80)),
             );
             let editing_timecode = &mut state.subtitle_editor.editing_timecode;
@@ -483,7 +483,7 @@ fn render_row(
         ui.vertical(|ui| {
             ui.label(
                 egui::RichText::new("End")
-                    .size(9.0)
+                    .size(10.0)
                     .color(egui::Color32::from_rgb(0x70, 0x70, 0x80)),
             );
             let editing_timecode = &mut state.subtitle_editor.editing_timecode;

@@ -222,7 +222,7 @@ fn draw_handle_timecode(
     // Background pill for readability
     let galley = painter.layout_no_wrap(
         timecode_str.to_string(),
-        egui::FontId::monospace(9.0),
+        egui::FontId::monospace(10.0),
         theme.accent,
     );
     let text_w = galley.size().x;
@@ -242,7 +242,7 @@ fn draw_handle_timecode(
         egui::pos2(cx, label_y),
         align,
         timecode_str,
-        egui::FontId::monospace(9.0),
+        egui::FontId::monospace(10.0),
         theme.accent,
     );
 }
@@ -276,7 +276,7 @@ fn draw_collapsed_handle(
     let label_y = ruler_top - LOLLIPOP_RADIUS * 2.0 - 2.0;
     let galley = painter.layout_no_wrap(
         dur_str.to_string(),
-        egui::FontId::monospace(9.0),
+        egui::FontId::monospace(10.0),
         theme.accent,
     );
     let pill_rect = egui::Rect::from_min_size(
@@ -292,7 +292,7 @@ fn draw_collapsed_handle(
         egui::pos2(cx, label_y),
         egui::Align2::CENTER_BOTTOM,
         dur_str,
-        egui::FontId::monospace(9.0),
+        egui::FontId::monospace(10.0),
         theme.accent,
     );
 }
@@ -459,7 +459,7 @@ pub fn draw_snap_line(
     let label_pos = egui::pos2(x + 4.0, top + 3.0);
     let galley = painter.layout_no_wrap(
         label.clone(),
-        egui::FontId::monospace(9.0),
+        egui::FontId::monospace(10.0),
         snap_color,
     );
     let pill_rect = egui::Rect::from_min_size(
@@ -471,7 +471,7 @@ pub fn draw_snap_line(
         label_pos,
         egui::Align2::LEFT_TOP,
         &label,
-        egui::FontId::monospace(9.0),
+        egui::FontId::monospace(10.0),
         snap_color,
     );
 }

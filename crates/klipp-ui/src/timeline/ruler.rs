@@ -120,7 +120,7 @@ pub fn draw_ruler(
 
     let major_tick_h = 9.0_f32;
     let minor_tick_h = 4.0_f32;
-    let font_id = egui::FontId::monospace(9.0);
+    let font_id = egui::FontId::monospace(10.0);
     let label_margin = 4.0_f32;
 
     let mut last_label_right = f32::NEG_INFINITY;
@@ -189,7 +189,7 @@ pub fn draw_ruler(
                 ruler_rect.max,
             ),
             0.0,
-            Color32::from_rgba_unmultiplied(232, 160, 32, 18),
+            Color32::from_rgba_unmultiplied(220, 220, 228, 14),
         );
     }
 }

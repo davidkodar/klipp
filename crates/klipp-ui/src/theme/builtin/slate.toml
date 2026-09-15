@@ -40,6 +40,9 @@ accent_alt    = "#c878ff"
 # ── Text ──
 # Light text since the polarity check (text_primary luminance vs
 # bg_panel luminance) still treats Slate as "dark mode".
+# The playhead: the one warm mark in a neutral interface.
+playhead       = "#ff5a3c"
+
 text_primary   = "#e8e8ee"
 text_secondary = "#a8a8b0"
 text_dim       = "#76767e"

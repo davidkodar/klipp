@@ -1252,7 +1252,8 @@ pub struct AppearancePrefs {
     #[serde(default = "default_role_graphics")] pub role_graphics: [u8; 3],
 }
 fn default_ui_text_size() -> f32 { 13.0 }
-fn default_accent_color() -> [u8; 3] { [0xe8, 0xa0, 0x20] }
+fn default_accent_color() -> [u8; 3] { [0x4a, 0x8f, 0xe7] }
+fn default_playhead_color() -> [u8; 3] { [0xff, 0x5a, 0x3c] }
 fn default_theme_name() -> String { "Dark".to_string() }
 // Role colors match theme.rs Default exactly
 fn default_role_video() -> [u8; 3] { [0x2d, 0x6f, 0xa8] }
@@ -1273,7 +1274,7 @@ impl Default for AppearancePrefs {
             theme_name: default_theme_name(),
             theme_mode: None,
             accent_color: default_accent_color(),
-            playhead_color: default_accent_color(),
+            playhead_color: default_playhead_color(),
             role_video: default_role_video(), role_dialogue: default_role_dialogue(),
             role_music: default_role_music(), role_sfx: default_role_sfx(),
             role_title: default_role_title(), role_broll: default_role_broll(),
@@ -1917,8 +1918,8 @@ mod tests {
 
         // AppearancePrefs
         assert_eq!(rt.appearance.ui_text_size, 13.0);
-        assert_eq!(rt.appearance.accent_color, [0xe8, 0xa0, 0x20]);
-        assert_eq!(rt.appearance.playhead_color, [0xe8, 0xa0, 0x20]);
+        assert_eq!(rt.appearance.accent_color, [0x4a, 0x8f, 0xe7]);
+        assert_eq!(rt.appearance.playhead_color, [0xff, 0x5a, 0x3c]);
 
         // MediaCachePrefs
         assert!(rt.media_cache.filmstrip_cache_dir.is_none());
@@ -2065,7 +2066,7 @@ mod tests {
         assert_eq!(prefs.audio.fade_overlay_mode, FadeOverlayMode::AudioOnly);
         assert_eq!(prefs.system.gpu_preference, klipp_core::GpuPreference::Auto);
         assert_eq!(prefs.audio_hardware.buffer_size, 256);
-        assert_eq!(prefs.appearance.accent_color, [0xe8, 0xa0, 0x20]);
+        assert_eq!(prefs.appearance.accent_color, [0x4a, 0x8f, 0xe7]);
         assert_eq!(prefs.media_cache.thumbnail_height, 256);
         assert_eq!(prefs.color.scope_update_interval_ms, 32);
         assert_eq!(prefs.title.default_size_pt, 48.0);
@@ -2364,7 +2365,7 @@ mod tests {
         assert_eq!(prefs.system.frame_queue_size, 16);
         assert_eq!(prefs.audio_hardware.sample_rate, 48000);
         assert_eq!(prefs.appearance.ui_text_size, 13.0);
-        assert_eq!(prefs.appearance.accent_color, [0xe8, 0xa0, 0x20]);
+        assert_eq!(prefs.appearance.accent_color, [0x4a, 0x8f, 0xe7]);
         assert_eq!(prefs.media_cache.max_cache_size_gb, 20);
         assert!(prefs.title.default_font.is_empty());
         assert_eq!(prefs.timeline.clip_colors.len(), 6);

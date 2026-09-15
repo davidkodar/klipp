@@ -59,6 +59,10 @@ pub struct KlippTheme {
     /// long as it's perceptually distinct from `accent` on its
     /// background polarity.
     pub accent_alt: Color32,
+    /// The playhead and the record/live marks: the one warm colour in a
+    /// neutral interface, kept apart from `accent` so selection and
+    /// active state never look like the playhead.
+    pub playhead: Color32,
 
     // Text
     pub text_primary: Color32,
@@ -140,6 +144,7 @@ pub struct ThemeColors {
     pub accent_glow: HexColor,
     pub accent_subtle: HexColor,
     pub accent_alt: HexColor,
+    pub playhead: HexColor,
 
     pub text_primary: HexColor,
     pub text_secondary: HexColor,
@@ -186,6 +191,7 @@ impl From<ThemeColors> for KlippTheme {
             accent_glow: c.accent_glow.0,
             accent_subtle: c.accent_subtle.0,
             accent_alt: c.accent_alt.0,
+            playhead: c.playhead.0,
             text_primary: c.text_primary.0,
             text_secondary: c.text_secondary.0,
             text_dim: c.text_dim.0,
@@ -508,6 +514,35 @@ fn install_unicode_fallback_fonts(ctx: &egui::Context) {
 }
 
 // ── Fixed size constants ──
+
+/// The type scale: four sizes, hierarchy from weight and colour rather
+/// than from a dozen sizes.
+pub mod type_scale {
+    /// Captions, units, secondary metadata.
+    pub const CAPTION: f32 = 10.0;
+    /// Body text and most labels.
+    pub const BODY: f32 = 11.0;
+    /// Control labels, values, tab titles.
+    pub const CONTROL: f32 = 12.0;
+    /// Panel and section titles.
+    pub const TITLE: f32 = 13.0;
+    /// The rare headline: dialog titles, empty states.
+    pub const HEADLINE: f32 = 16.0;
+}
+
+/// Two radii: controls are nearly square, panels and popups a little
+/// softer. Anything rounder reads as a pill.
+pub mod radius {
+    pub const CONTROL: f32 = 2.0;
+    pub const PANEL: f32 = 4.0;
+}
+
+/// Control heights on a 4 px grid.
+pub mod control {
+    pub const COMPACT: f32 = 22.0;
+    pub const REGULAR: f32 = 26.0;
+    pub const LARGE: f32 = 32.0;
+}
 
 pub const TOOLBAR_HEIGHT: f32 = 44.0;
 pub const STATUSBAR_HEIGHT: f32 = 26.0;

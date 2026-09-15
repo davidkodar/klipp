@@ -17,14 +17,14 @@ pub fn show_empty(ui: &mut egui::Ui, theme: &KlippTheme, cmds: &mut Vec<AppComma
         ui.painter().rect(icon_rect, 8.0, theme.bg_raised, egui::Stroke::new(1.0_f32, theme.border));
         ui.painter().text(
             icon_rect.center(), egui::Align2::CENTER_CENTER,
-            "+", egui::FontId::proportional(20.0), theme.text_dim,
+            "+", egui::FontId::proportional(16.0), theme.text_dim,
         );
 
         ui.add_space(12.0);
 
         ui.label(
             egui::RichText::new("No effects applied")
-                .size(14.0)
+                .size(13.0)
                 .color(theme.text_primary),
         );
 
@@ -61,7 +61,7 @@ pub fn show_empty(ui: &mut egui::Ui, theme: &KlippTheme, cmds: &mut Vec<AppComma
                 egui::Button::new(job)
                     .fill(theme.bg_raised)
                     .stroke(egui::Stroke::new(1.0_f32, theme.border))
-                    .rounding(6.0),
+                    .rounding(4.0),
             ).clicked() {
                 cmds.push(AppCommand::ShowEffectsBrowser);
             }
@@ -170,7 +170,7 @@ pub fn show(
 
         // "Built-in" badge — outlined pill, green
         let badge_text = "Built-in";
-        let badge_font = egui::FontId::proportional(9.0);
+        let badge_font = egui::FontId::proportional(10.0);
         let badge_galley = ui.painter().layout_no_wrap(badge_text.to_string(), badge_font.clone(), badge_green);
         let badge_w = badge_galley.size().x + 10.0;
         let badge_h = 16.0;
@@ -194,7 +194,7 @@ pub fn show(
         let remove_color = if remove_resp.hovered() { theme.text_primary } else { theme.text_dim };
         ui.painter().text(
             remove_center, egui::Align2::CENTER_CENTER,
-            "\u{00d7}", egui::FontId::proportional(15.0), remove_color,
+            "\u{00d7}", egui::FontId::proportional(13.0), remove_color,
         );
         let remove_clicked = remove_resp.on_hover_text("Remove effect").clicked();
         if remove_clicked {
@@ -250,7 +250,7 @@ pub fn show(
             compare_rect.center(),
             egui::Align2::CENTER_CENTER,
             "\u{25D0}",
-            egui::FontId::proportional(14.0),
+            egui::FontId::proportional(13.0),
             compare_tint,
         );
         let compare_clicked = compare_resp.clicked();
@@ -436,7 +436,7 @@ pub fn show(
 
         // "OFX" badge — outlined pill, gray
         let badge_text = "OFX";
-        let badge_font = egui::FontId::proportional(9.0);
+        let badge_font = egui::FontId::proportional(10.0);
         let badge_galley = ui.painter().layout_no_wrap(badge_text.to_string(), badge_font.clone(), badge_gray);
         let badge_w = badge_galley.size().x + 10.0;
         let badge_h = 16.0;
@@ -460,7 +460,7 @@ pub fn show(
         let remove_color = if remove_resp.hovered() { theme.text_primary } else { theme.text_dim };
         ui.painter().text(
             remove_center, egui::Align2::CENTER_CENTER,
-            "\u{00d7}", egui::FontId::proportional(15.0), remove_color,
+            "\u{00d7}", egui::FontId::proportional(13.0), remove_color,
         );
         let remove_clicked = remove_resp.on_hover_text("Remove effect").clicked();
         if remove_clicked {
@@ -515,7 +515,7 @@ pub fn show(
             compare_rect.center(),
             egui::Align2::CENTER_CENTER,
             "\u{25D0}",
-            egui::FontId::proportional(14.0),
+            egui::FontId::proportional(13.0),
             compare_tint,
         );
         let compare_clicked = compare_resp.clicked();
@@ -564,8 +564,8 @@ pub fn show(
                     || effect.plugin_name.contains("ContactSheet");
                 if is_float_plugin {
                     ui.horizontal(|ui| {
-                        ui.label(egui::RichText::new("CPU only").size(9.0).color(theme.marker_warning).strong());
-                        ui.label(egui::RichText::new("\u{2014} adjust while paused, apply on export").size(9.0).color(theme.text_dim));
+                        ui.label(egui::RichText::new("CPU only").size(10.0).color(theme.marker_warning).strong());
+                        ui.label(egui::RichText::new("\u{2014} adjust while paused, apply on export").size(10.0).color(theme.text_dim));
                     });
                     ui.add_space(2.0);
                 }
@@ -577,8 +577,8 @@ pub fn show(
                     || effect.plugin_name.contains("TimeOffset");
                 if is_temporal {
                     ui.horizontal(|ui| {
-                        ui.label(egui::RichText::new("Render only").size(9.0).color(theme.marker_error).strong());
-                        ui.label(egui::RichText::new("\u{2014} not real-time, applied on export").size(9.0).color(theme.text_dim));
+                        ui.label(egui::RichText::new("Render only").size(10.0).color(theme.marker_error).strong());
+                        ui.label(egui::RichText::new("\u{2014} not real-time, applied on export").size(10.0).color(theme.text_dim));
                     });
                     ui.add_space(2.0);
                 }
@@ -596,8 +596,8 @@ pub fn show(
                     || effect.plugin_name.contains("SideBySide");
                 if is_stereo {
                     ui.horizontal(|ui| {
-                        ui.label(egui::RichText::new("Requires multi-view").size(9.0).color(theme.marker_error).strong());
-                        ui.label(egui::RichText::new("\u{2014} stereo 3D not supported yet").size(9.0).color(theme.text_dim));
+                        ui.label(egui::RichText::new("Requires multi-view").size(10.0).color(theme.marker_error).strong());
+                        ui.label(egui::RichText::new("\u{2014} stereo 3D not supported yet").size(10.0).color(theme.text_dim));
                     });
                     ui.add_space(2.0);
                 }
@@ -794,7 +794,7 @@ fn show_add_effect_button(ui: &mut egui::Ui, theme: &KlippTheme, _clip: &Clip, c
         let btn = egui::Button::new(job)
             .fill(egui::Color32::TRANSPARENT)
             .stroke(egui::Stroke::new(1.0_f32, theme.border_light))
-            .rounding(6.0);
+            .rounding(4.0);
 
         let resp = ui.add_sized(egui::vec2(btn_w, 32.0), btn);
 
@@ -1923,7 +1923,7 @@ fn show_builtin_effect_params(
                             "Jitter: {:.1} → {:.1} px/frame",
                             smoothed.raw_jitter_px, smoothed.smoothed_jitter_px
                         ))
-                        .size(9.5)
+                        .size(10.0)
                         .color(theme.text_dim),
                     );
 

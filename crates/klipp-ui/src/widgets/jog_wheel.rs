@@ -85,7 +85,7 @@ pub fn jog_wheel(
         center,
         egui::Align2::CENTER_CENTER,
         "JOG",
-        egui::FontId::proportional(9.0),
+        egui::FontId::proportional(10.0),
         theme.text_dim,
     );
 

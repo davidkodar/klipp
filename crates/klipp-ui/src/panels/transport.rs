@@ -65,7 +65,7 @@ impl TransportBar {
 
             // Go to start
             if ui
-                .add_enabled(enabled, egui::Button::image(Icon::SkipBack.bold(16.0).tint(icon_tint)).min_size(egui::vec2(32.0, 32.0)))
+                .add_enabled(enabled, egui::Button::image(Icon::SkipBack.image(16.0).tint(icon_tint)).min_size(egui::vec2(32.0, 32.0)))
                 .on_hover_text("Go to start")
                 .clicked()
             {
@@ -77,7 +77,7 @@ impl TransportBar {
 
             // -10s
             if ui
-                .add_enabled(enabled, egui::Button::image(Icon::Rewind.bold(16.0).tint(icon_tint)).min_size(egui::vec2(32.0, 32.0)))
+                .add_enabled(enabled, egui::Button::image(Icon::Rewind.image(16.0).tint(icon_tint)).min_size(egui::vec2(32.0, 32.0)))
                 .on_hover_text("-10s")
                 .clicked()
             {
@@ -86,7 +86,7 @@ impl TransportBar {
 
             // Step back (one frame)
             if ui
-                .add_enabled(enabled, egui::Button::image(Icon::CaretLeft.bold(16.0).tint(icon_tint)).min_size(egui::vec2(32.0, 32.0)))
+                .add_enabled(enabled, egui::Button::image(Icon::CaretLeft.image(16.0).tint(icon_tint)).min_size(egui::vec2(32.0, 32.0)))
                 .on_hover_text("Step back 1 frame")
                 .clicked()
             {
@@ -109,7 +109,7 @@ impl TransportBar {
             if ui
                 .add_enabled(
                     enabled,
-                    egui::Button::image(play_icon.bold(20.0).tint(icon_tint)).min_size(egui::vec2(40.0, 40.0)),
+                    egui::Button::image(play_icon.image(18.0).tint(icon_tint)).min_size(egui::vec2(36.0, 32.0)),
                 )
                 .on_hover_text("Play/Pause")
                 .clicked()
@@ -128,7 +128,7 @@ impl TransportBar {
 
             // Step forward (one frame)
             if ui
-                .add_enabled(enabled, egui::Button::image(Icon::CaretRight.bold(16.0).tint(icon_tint)).min_size(egui::vec2(32.0, 32.0)))
+                .add_enabled(enabled, egui::Button::image(Icon::CaretRight.image(16.0).tint(icon_tint)).min_size(egui::vec2(32.0, 32.0)))
                 .on_hover_text("Step forward 1 frame")
                 .clicked()
             {
@@ -152,7 +152,7 @@ impl TransportBar {
                 // filled circle that's already used elsewhere in the UI.
                 let glyph = egui::RichText::new("\u{25CF}")
                     .color(rec_color)
-                    .size(18.0);
+                    .size(16.0);
                 let resp = ui
                     .add(
                         egui::Button::new(glyph)
@@ -191,7 +191,7 @@ impl TransportBar {
 
             // +10s
             if ui
-                .add_enabled(enabled, egui::Button::image(Icon::FastForward.bold(16.0).tint(icon_tint)).min_size(egui::vec2(32.0, 32.0)))
+                .add_enabled(enabled, egui::Button::image(Icon::FastForward.image(16.0).tint(icon_tint)).min_size(egui::vec2(32.0, 32.0)))
                 .on_hover_text("+10s")
                 .clicked()
             {
@@ -200,7 +200,7 @@ impl TransportBar {
 
             // Go to end
             if ui
-                .add_enabled(enabled, egui::Button::image(Icon::SkipForward.bold(16.0).tint(icon_tint)).min_size(egui::vec2(32.0, 32.0)))
+                .add_enabled(enabled, egui::Button::image(Icon::SkipForward.image(16.0).tint(icon_tint)).min_size(egui::vec2(32.0, 32.0)))
                 .on_hover_text("Go to end")
                 .clicked()
             {
@@ -217,13 +217,13 @@ impl TransportBar {
                     egui::Sense::click(),
                 );
                 let (bg, fg) = if loop_active {
-                    (theme.accent, theme.text_on_accent)
+                    (theme.accent_subtle, theme.accent)
                 } else if resp.hovered() {
-                    (theme.bg_raised, theme.text_secondary)
+                    (theme.bg_hover, theme.text_secondary)
                 } else {
                     (egui::Color32::TRANSPARENT, theme.text_dim)
                 };
-                ui.painter().rect_filled(rect, rect.height() / 2.0, bg);
+                ui.painter().rect_filled(rect, crate::theme::radius::CONTROL, bg);
                 // Loop icon: 270° arc + arrowhead
                 draw_loop_icon(ui.painter(), rect.center(), 8.0, fg);
                 if resp.clicked() {
@@ -271,7 +271,7 @@ impl TransportBar {
                     egui::Label::new(
                         egui::RichText::new(&playhead_str)
                             .monospace()
-                            .size(18.0)
+                            .size(16.0)
                             .color(theme.text_primary),
                     )
                     .sense(egui::Sense::click()),
@@ -288,7 +288,7 @@ impl TransportBar {
             ui.label(
                 egui::RichText::new(format!(" / {}", duration_str))
                     .monospace()
-                    .size(14.0)
+                    .size(13.0)
                     .color(theme.text_dim),
             );
 
@@ -299,7 +299,7 @@ impl TransportBar {
                 ui.separator();
                 ui.add_space(4.0);
 
-                let amber = theme.accent;
+                let amber = theme.text_accent;
                 let dim = theme.text_dim;
 
                 if let Some(in_pt) = state.sequence().in_point {
@@ -373,7 +373,7 @@ impl TransportBar {
                 ui.add_space(4.0);
                 ui.label(
                     egui::RichText::new("\u{26a0} MUTED BY SYSTEM")
-                        .size(9.0)
+                        .size(10.0)
                         .strong()
                         .color(theme.marker_error)
                         .background_color(egui::Color32::from_rgba_unmultiplied(theme.marker_error.r(), theme.marker_error.g(), theme.marker_error.b(), 30)),
@@ -440,7 +440,7 @@ impl TransportBar {
                 }
 
                 // Cancel button
-                if ui.add(egui::Button::image(Icon::XCircle.bold(14.0).tint(theme.marker_error))
+                if ui.add(egui::Button::image(Icon::XCircle.image(14.0).tint(theme.marker_error))
                     .min_size(egui::vec2(18.0, 18.0))).on_hover_text("Cancel render").clicked() {
                     cmds.push(AppCommand::CancelExport);
                 }

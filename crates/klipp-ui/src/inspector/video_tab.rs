@@ -308,7 +308,7 @@ fn show_clip_video(
         let rounding = if is_open {
             egui::Rounding { nw: 6.0, ne: 6.0, sw: 0.0, se: 0.0 }
         } else {
-            egui::Rounding::same(6.0)
+            egui::Rounding::same(4.0)
         };
         ui.painter().rect_filled(header_rect, rounding, theme.bg_deep);
 
@@ -832,7 +832,7 @@ fn show_clip_video(
                                 egui::pos2(inner.left() + 2.0, y - 9.0),
                                 egui::Align2::LEFT_BOTTOM,
                                 format!("{}x", speed_line as i32),
-                                egui::FontId::proportional(8.0),
+                                egui::FontId::proportional(10.0),
                                 egui::Color32::from_white_alpha(60),
                             );
                         }
@@ -894,7 +894,7 @@ fn show_clip_video(
                                     egui::pos2(px, py - 12.0),
                                     egui::Align2::CENTER_BOTTOM,
                                     tip,
-                                    egui::FontId::proportional(9.0),
+                                    egui::FontId::proportional(10.0),
                                     egui::Color32::WHITE,
                                 );
                             }
@@ -982,7 +982,7 @@ fn show_clip_video(
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             ui.label(
                                 egui::RichText::new("Dbl-click: add  |  Right-click: delete")
-                                    .size(9.0)
+                                    .size(10.0)
                                     .color(theme.text_dim),
                             );
                         });
@@ -1004,7 +1004,7 @@ fn show_clip_video(
 
                         if ui.add(egui::Button::new(btn("Ramp Up"))
                             .fill(theme.bg_raised).stroke(egui::Stroke::new(0.5_f32, theme.border))
-                            .rounding(3.0).min_size(egui::vec2(0.0, 20.0))
+                            .rounding(2.0).min_size(egui::vec2(0.0, 20.0))
                         ).on_hover_text("0.5x to 2x over clip duration").clicked() {
                             cmds.push(AppCommand::SetSpeedKeyframes {
                                 clip_id,
@@ -1017,7 +1017,7 @@ fn show_clip_video(
 
                         if ui.add(egui::Button::new(btn("Ramp Down"))
                             .fill(theme.bg_raised).stroke(egui::Stroke::new(0.5_f32, theme.border))
-                            .rounding(3.0).min_size(egui::vec2(0.0, 20.0))
+                            .rounding(2.0).min_size(egui::vec2(0.0, 20.0))
                         ).on_hover_text("2x to 0.5x over clip duration").clicked() {
                             cmds.push(AppCommand::SetSpeedKeyframes {
                                 clip_id,
@@ -1030,7 +1030,7 @@ fn show_clip_video(
 
                         if ui.add(egui::Button::new(btn("Slow-Mo"))
                             .fill(theme.bg_raised).stroke(egui::Stroke::new(0.5_f32, theme.border))
-                            .rounding(3.0).min_size(egui::vec2(0.0, 20.0))
+                            .rounding(2.0).min_size(egui::vec2(0.0, 20.0))
                         ).on_hover_text("1x -> 0.25x -> 1x (center slow-mo)").clicked() {
                             cmds.push(AppCommand::SetSpeedKeyframes {
                                 clip_id,
@@ -1045,7 +1045,7 @@ fn show_clip_video(
 
                         if ui.add(egui::Button::new(btn("Speed Burst"))
                             .fill(theme.bg_raised).stroke(egui::Stroke::new(0.5_f32, theme.border))
-                            .rounding(3.0).min_size(egui::vec2(0.0, 20.0))
+                            .rounding(2.0).min_size(egui::vec2(0.0, 20.0))
                         ).on_hover_text("1x -> 3x -> 1x (center speed burst)").clicked() {
                             cmds.push(AppCommand::SetSpeedKeyframes {
                                 clip_id,
@@ -1060,7 +1060,7 @@ fn show_clip_video(
 
                         if ui.add(egui::Button::new(btn("Reset"))
                             .fill(theme.bg_raised).stroke(egui::Stroke::new(0.5_f32, theme.marker_error))
-                            .rounding(3.0).min_size(egui::vec2(0.0, 20.0))
+                            .rounding(2.0).min_size(egui::vec2(0.0, 20.0))
                         ).on_hover_text("Clear all speed keyframes").clicked() {
                             cmds.push(AppCommand::SetSpeedKeyframes {
                                 clip_id,
@@ -1143,7 +1143,7 @@ fn show_clip_video(
             let rounding = if is_open {
                 egui::Rounding { nw: 6.0, ne: 6.0, sw: 0.0, se: 0.0 }
             } else {
-                egui::Rounding::same(6.0)
+                egui::Rounding::same(4.0)
             };
             ui.painter().rect_filled(header_rect, rounding, theme.bg_deep);
             // Left accent
@@ -1343,16 +1343,16 @@ fn show_tracking_section(ui: &mut egui::Ui, theme: &KlippTheme, state: &AppState
                             new_selection = if is_selected { None } else { Some(*idx) };
                         }
 
-                        ui.label(egui::RichText::new(format!("{} fr", frame_count)).size(9.0).color(theme.text_dim));
+                        ui.label(egui::RichText::new(format!("{} fr", frame_count)).size(10.0).color(theme.text_dim));
 
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             // Delete button
-                            if ui.add(egui::Button::new(egui::RichText::new("X").size(9.0).color(theme.text_dim)).frame(false)).clicked() {
+                            if ui.add(egui::Button::new(egui::RichText::new("X").size(10.0).color(theme.text_dim)).frame(false)).clicked() {
                                 remove_idx = Some(*idx);
                             }
                             // Analyze button
                             if !tracking_active
-                                && ui.add(egui::Button::new(egui::RichText::new("Analyze").size(9.0)).frame(true)).clicked() {
+                                && ui.add(egui::Button::new(egui::RichText::new("Analyze").size(10.0)).frame(true)).clicked() {
                                     analyze_idx = Some(*idx);
                                 }
                         });
@@ -1365,7 +1365,7 @@ fn show_tracking_section(ui: &mut egui::Ui, theme: &KlippTheme, state: &AppState
 
                             ui.label(egui::RichText::new("Link to:").size(10.0).color(theme.text_dim));
 
-                            if ui.add(egui::Button::new(egui::RichText::new("Transform Pos").size(9.0)).frame(true)).clicked() {
+                            if ui.add(egui::Button::new(egui::RichText::new("Transform Pos").size(10.0)).frame(true)).clicked() {
                                 cmds.push(AppCommand::GenerateKeyframesFromTrack {
                                     clip_id,
                                     point_index: *idx,
@@ -1387,7 +1387,7 @@ fn show_tracking_section(ui: &mut egui::Ui, theme: &KlippTheme, state: &AppState
                                 })
                                 .collect();
                             for (node_uuid, mask_idx, label) in &mask_targets {
-                                if ui.add(egui::Button::new(egui::RichText::new(label).size(9.0)).frame(true)).clicked() {
+                                if ui.add(egui::Button::new(egui::RichText::new(label).size(10.0)).frame(true)).clicked() {
                                     cmds.push(AppCommand::GenerateKeyframesFromTrack {
                                         clip_id,
                                         point_index: *idx,
@@ -1482,7 +1482,7 @@ fn show_color_section(ui: &mut egui::Ui, theme: &KlippTheme, state: &AppState, c
                         )
                         .fill(theme.bg_raised)
                         .stroke(egui::Stroke::new(0.5_f32, theme.border))
-                        .rounding(6.0),
+                        .rounding(4.0),
                     ).clicked() {
                         cmds.push(AppCommand::ToggleColorPanel);
                     }
@@ -1723,7 +1723,7 @@ fn show_compositing_section(
                         ui.colored_label(
                             theme.marker_warning,
                             egui::RichText::new("⚠ Matte source clip is no longer in the project — clip will render invisible.")
-                                .size(10.5),
+                                .size(11.0),
                         );
                     }
 
@@ -1985,7 +1985,7 @@ fn show_compositing_section(
                         )
                         .fill(theme.bg_raised)
                         .stroke(egui::Stroke::new(0.5_f32, theme.border))
-                        .rounding(6.0)).clicked()
+                        .rounding(4.0)).clicked()
                     {
                         cmds.push(AppCommand::ClearClipMatte { clip_id });
                     }
@@ -2104,7 +2104,7 @@ fn show_transform_link_section(
                             // show beneath it; same for the Trackers
                             // section below.
                             if !candidates.is_empty() {
-                                ui.label(egui::RichText::new("── Clips ──").size(9.0).color(theme.text_dim));
+                                ui.label(egui::RichText::new("── Clips ──").size(10.0).color(theme.text_dim));
                             }
                             for (cand_id, label) in &candidates {
                                 let selected = clip.transform_link.as_ref()
@@ -2148,7 +2148,7 @@ fn show_transform_link_section(
                             // shared with the HYPERZOOM "Track this
                             // point" surface via tracker_picker.
                             if !tracker_candidates.is_empty() {
-                                ui.label(egui::RichText::new("── Trackers ──").size(9.0).color(theme.text_dim));
+                                ui.label(egui::RichText::new("── Trackers ──").size(10.0).color(theme.text_dim));
                                 if let Some(seq) = state.sequences.get(active_idx) {
                                     let cur = clip.transform_link.clone();
                                     let mode_flags = match cur.as_ref() {
@@ -2193,7 +2193,7 @@ fn show_transform_link_section(
                     egui::RichText::new(
                         "Clip targets follow another clip's resolved transform. Tracker targets bind live — re-tracking updates this link automatically. (For a static one-shot copy, use 'Link to → Transform Pos' in the TRACKING section instead.)"
                     )
-                    .size(9.5)
+                    .size(10.0)
                     .italics()
                     .color(theme.text_dim),
                 );
@@ -2209,7 +2209,7 @@ fn show_transform_link_section(
                         ui.colored_label(
                             theme.marker_warning,
                             egui::RichText::new("⚠ Target clip is no longer in the project — this clip falls back to its own transform.")
-                                .size(10.5),
+                                .size(11.0),
                         );
                     }
 
@@ -2286,7 +2286,7 @@ fn show_transform_link_section(
                         )
                         .fill(theme.bg_raised)
                         .stroke(egui::Stroke::new(0.5_f32, theme.border))
-                        .rounding(6.0)).clicked()
+                        .rounding(4.0)).clicked()
                     {
                         cmds.push(AppCommand::ClearClipTransformLink { clip_id });
                     }
@@ -2488,7 +2488,7 @@ fn show_hyperzoom_section(
                             if let Some(seq) = state.sequences.get(state.active_sequence_idx) {
                                 let trackers = crate::inspector::tracker_picker::enumerate_tracker_targets(seq);
                                 if !trackers.is_empty() {
-                                    ui.label(egui::RichText::new("── Trackers ──").size(9.0).color(theme.text_dim));
+                                    ui.label(egui::RichText::new("── Trackers ──").size(10.0).color(theme.text_dim));
                                 }
                                 // Hoist the ctx clone out so the
                                 // on_pick closure doesn't re-borrow
@@ -2996,7 +2996,7 @@ fn show_hyperzoom_section(
                                 ui.add_space(16.0);
                                 ui.label(
                                     egui::RichText::new(format!("\u{26A0} {msg}"))
-                                        .size(10.5)
+                                        .size(11.0)
                                         .color(theme.marker_warning),
                                 );
                             });
@@ -3104,7 +3104,7 @@ fn show_hyperzoom_section(
                                 .color(theme.text_on_accent),
                         )
                         .fill(theme.accent)
-                        .rounding(6.0),
+                        .rounding(4.0),
                     )
                     .on_hover_text(
                         "Writes anchor + scale keyframes on this clip and the chosen target. \
@@ -3216,7 +3216,7 @@ fn show_hyperzoom_section(
                         )
                         .fill(theme.bg_raised)
                         .stroke(egui::Stroke::new(0.5_f32, theme.border))
-                        .rounding(6.0),
+                        .rounding(4.0),
                     )
                     .on_hover_text(
                         "Auto-set transform_link on every clip beneath this one within the \
@@ -3376,10 +3376,10 @@ fn show_ken_burns_section(ui: &mut egui::Ui, theme: &KlippTheme, clip: &Clip, cm
             .show(ui, |ui| {
                 ui.horizontal_wrapped(|ui| {
                     ui.spacing_mut().item_spacing = egui::vec2(4.0, 4.0);
-                    let btn_text = |label: &str| egui::RichText::new(label).size(10.5);
+                    let btn_text = |label: &str| egui::RichText::new(label).size(11.0);
                     if ui.add(egui::Button::new(btn_text("Zoom In"))
                         .fill(theme.bg_raised).stroke(egui::Stroke::new(0.5_f32, theme.border))
-                        .rounding(3.0).min_size(egui::vec2(0.0, 20.0))
+                        .rounding(2.0).min_size(egui::vec2(0.0, 20.0))
                     ).on_hover_text("Scale 1.0 to 1.3, centered").clicked() {
                         cmds.push(AppCommand::ApplyKenBurns {
                             clip_id, start_scale: 1.0, end_scale: 1.3,
@@ -3388,7 +3388,7 @@ fn show_ken_burns_section(ui: &mut egui::Ui, theme: &KlippTheme, clip: &Clip, cm
                     }
                     if ui.add(egui::Button::new(btn_text("Zoom Out"))
                         .fill(theme.bg_raised).stroke(egui::Stroke::new(0.5_f32, theme.border))
-                        .rounding(3.0).min_size(egui::vec2(0.0, 20.0))
+                        .rounding(2.0).min_size(egui::vec2(0.0, 20.0))
                     ).on_hover_text("Scale 1.3 to 1.0, centered").clicked() {
                         cmds.push(AppCommand::ApplyKenBurns {
                             clip_id, start_scale: 1.3, end_scale: 1.0,
@@ -3397,7 +3397,7 @@ fn show_ken_burns_section(ui: &mut egui::Ui, theme: &KlippTheme, clip: &Clip, cm
                     }
                     if ui.add(egui::Button::new(btn_text("Pan L>R"))
                         .fill(theme.bg_raised).stroke(egui::Stroke::new(0.5_f32, theme.border))
-                        .rounding(3.0).min_size(egui::vec2(0.0, 20.0))
+                        .rounding(2.0).min_size(egui::vec2(0.0, 20.0))
                     ).on_hover_text("Pan left to right, 1.2\u{00d7} zoom").clicked() {
                         cmds.push(AppCommand::ApplyKenBurns {
                             clip_id, start_scale: 1.2, end_scale: 1.2,
@@ -3406,7 +3406,7 @@ fn show_ken_burns_section(ui: &mut egui::Ui, theme: &KlippTheme, clip: &Clip, cm
                     }
                     if ui.add(egui::Button::new(btn_text("Pan R>L"))
                         .fill(theme.bg_raised).stroke(egui::Stroke::new(0.5_f32, theme.border))
-                        .rounding(3.0).min_size(egui::vec2(0.0, 20.0))
+                        .rounding(2.0).min_size(egui::vec2(0.0, 20.0))
                     ).on_hover_text("Pan right to left, 1.2\u{00d7} zoom").clicked() {
                         cmds.push(AppCommand::ApplyKenBurns {
                             clip_id, start_scale: 1.2, end_scale: 1.2,
@@ -3415,7 +3415,7 @@ fn show_ken_burns_section(ui: &mut egui::Ui, theme: &KlippTheme, clip: &Clip, cm
                     }
                     if has_transform_kfs && ui.add(egui::Button::new(btn_text("Remove"))
                         .fill(theme.bg_raised).stroke(egui::Stroke::new(0.5_f32, theme.border))
-                        .rounding(3.0).min_size(egui::vec2(0.0, 20.0))
+                        .rounding(2.0).min_size(egui::vec2(0.0, 20.0))
                     ).on_hover_text("Clear all transform keyframes").clicked() {
                         cmds.push(AppCommand::ClearTransformKeyframes { clip_id });
                     }
@@ -3474,7 +3474,7 @@ fn show_speed_section(ui: &mut egui::Ui, theme: &KlippTheme, clip: &Clip, cmds: 
                 // Speed preset buttons
                 ui.horizontal_wrapped(|ui| {
                     ui.spacing_mut().item_spacing = egui::vec2(3.0, 3.0);
-                    let btn_text = |label: &str| egui::RichText::new(label).size(10.5);
+                    let btn_text = |label: &str| egui::RichText::new(label).size(11.0);
                     for (label, speed_val) in [("25%", 0.25), ("50%", 0.5), ("100%", 1.0), ("200%", 2.0), ("400%", 4.0)] {
                         let is_active = (clip.speed - speed_val).abs() < 0.001;
                         let fill = if is_active { theme.accent.linear_multiply(0.25) } else { theme.bg_raised };
@@ -3485,7 +3485,7 @@ fn show_speed_section(ui: &mut egui::Ui, theme: &KlippTheme, clip: &Clip, cmds: 
                         };
                         if ui.add(egui::Button::new(btn_text(label))
                             .fill(fill).stroke(stroke)
-                            .rounding(3.0).min_size(egui::vec2(0.0, 20.0))
+                            .rounding(2.0).min_size(egui::vec2(0.0, 20.0))
                         ).clicked() {
                             cmds.push(AppCommand::SetClipSpeed { clip_id, speed: speed_val });
                         }
@@ -3778,7 +3778,7 @@ fn show_sequence_properties(ui: &mut egui::Ui, theme: &KlippTheme, state: &AppSt
         let (label_rect, _) = ui.allocate_exact_size(egui::vec2(w, 18.0), egui::Sense::hover());
         ui.painter().text(
             label_rect.center(), egui::Align2::CENTER_CENTER,
-            "PLAYHEAD POSITION", egui::FontId::proportional(9.0), theme.text_dim,
+            "PLAYHEAD POSITION", egui::FontId::proportional(10.0), theme.text_dim,
         );
 
         // Large timecode display
@@ -4086,12 +4086,12 @@ fn stat_card(ui: &mut egui::Ui, theme: &KlippTheme, rect: egui::Rect, label: &st
     ui.painter().text(
         egui::pos2(rect.center().x, rect.min.y + 16.0),
         egui::Align2::CENTER_CENTER,
-        label, egui::FontId::proportional(9.0), theme.text_dim,
+        label, egui::FontId::proportional(10.0), theme.text_dim,
     );
     ui.painter().text(
         egui::pos2(rect.center().x, rect.max.y - 14.0),
         egui::Align2::CENTER_CENTER,
-        value, egui::FontId::proportional(20.0), value_color,
+        value, egui::FontId::proportional(16.0), value_color,
     );
 }
 
@@ -4134,7 +4134,7 @@ fn section_card(
     let rounding = if is_open {
         egui::Rounding { nw: 6.0, ne: 6.0, sw: 0.0, se: 0.0 }
     } else {
-        egui::Rounding::same(6.0)
+        egui::Rounding::same(4.0)
     };
     ui.painter().rect_filled(header_rect, rounding, theme.bg_deep);
 

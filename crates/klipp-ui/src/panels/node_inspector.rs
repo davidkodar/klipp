@@ -487,7 +487,7 @@ impl NodeInspectorPanel {
                         egui::pos2(col_rect.center().x, sat_label_y + label_h / 2.0),
                         egui::Align2::CENTER_CENTER,
                         "Saturation",
-                        egui::FontId::proportional(8.0),
+                        egui::FontId::proportional(10.0),
                         theme.text_dim,
                     );
                     let sat_track_y = sat_label_y + label_h + 2.0;
@@ -526,7 +526,7 @@ impl NodeInspectorPanel {
                         egui::pos2(cx + track_draw_w + value_w - 2.0, sat_track_y + slider_h / 2.0),
                         egui::Align2::RIGHT_CENTER,
                         format!("{s:+.2}"),
-                        egui::FontId::monospace(8.0),
+                        egui::FontId::monospace(10.0),
                         val_color,
                     );
 
@@ -536,7 +536,7 @@ impl NodeInspectorPanel {
                         egui::pos2(col_rect.center().x, bri_label_y + label_h / 2.0),
                         egui::Align2::CENTER_CENTER,
                         "Brightness",
-                        egui::FontId::proportional(8.0),
+                        egui::FontId::proportional(10.0),
                         theme.text_dim,
                     );
                     let bri_track_y = bri_label_y + label_h + 2.0;
@@ -575,7 +575,7 @@ impl NodeInspectorPanel {
                         egui::pos2(cx + track_draw_w + value_w - 2.0, bri_track_y + slider_h / 2.0),
                         egui::Align2::RIGHT_CENTER,
                         format!("{b:+.2}"),
-                        egui::FontId::monospace(8.0),
+                        egui::FontId::monospace(10.0),
                         val_color,
                     );
                 }
@@ -727,7 +727,7 @@ impl NodeInspectorPanel {
                         ui.add_space(14.0);
                         if ui.add(
                             egui::Button::new(
-                                egui::RichText::new("\u{00D7}").size(14.0).color(theme.text_dim)
+                                egui::RichText::new("\u{00D7}").size(13.0).color(theme.text_dim)
                             )
                             .frame(true)
                             .min_size(egui::vec2(22.0, 22.0))
@@ -1670,14 +1670,14 @@ impl NodeInspectorPanel {
                         for (group_label, sat_name, bri_name, sat_val, bri_val) in &groups {
                             ui.allocate_ui(egui::vec2(col_w, 55.0), |ui| {
                                 ui.spacing_mut().item_spacing.y = 1.0;
-                                ui.label(egui::RichText::new(*group_label).size(8.0).color(theme.text_dim).strong());
+                                ui.label(egui::RichText::new(*group_label).size(10.0).color(theme.text_dim).strong());
                                 let slider_w = col_w - 40.0; // room for label + value
                                 let mut s = *sat_val;
                                 let sat_resp = ui.horizontal(|ui| {
-                                    ui.label(egui::RichText::new("S").size(8.0).color(theme.text_dim));
+                                    ui.label(egui::RichText::new("S").size(10.0).color(theme.text_dim));
                                     let r = ui.add_sized([slider_w, 14.0],
                                         egui::Slider::new(&mut s, -1.0..=1.0).show_value(false));
-                                    ui.label(egui::RichText::new(format!("{s:.2}")).size(8.0).color(theme.text_dim));
+                                    ui.label(egui::RichText::new(format!("{s:.2}")).size(10.0).color(theme.text_dim));
                                     r
                                 }).inner;
                                 if sat_resp.drag_started() {
@@ -1692,10 +1692,10 @@ impl NodeInspectorPanel {
                                 }
                                 let mut b = *bri_val;
                                 let bri_resp = ui.horizontal(|ui| {
-                                    ui.label(egui::RichText::new("B").size(8.0).color(theme.text_dim));
+                                    ui.label(egui::RichText::new("B").size(10.0).color(theme.text_dim));
                                     let r = ui.add_sized([slider_w, 14.0],
                                         egui::Slider::new(&mut b, -1.0..=1.0).show_value(false));
-                                    ui.label(egui::RichText::new(format!("{b:.2}")).size(8.0).color(theme.text_dim));
+                                    ui.label(egui::RichText::new(format!("{b:.2}")).size(10.0).color(theme.text_dim));
                                     r
                                 }).inner;
                                 if bri_resp.drag_started() {
@@ -2704,7 +2704,7 @@ impl NodeInspectorPanel {
                 egui::pos2(lx, ly),
                 egui::Align2::CENTER_CENTER,
                 sector_labels[i],
-                egui::FontId::proportional(8.0),
+                egui::FontId::proportional(10.0),
                 egui::Color32::from_rgba_premultiplied(
                     (hr * 180.0 + 75.0).min(255.0) as u8,
                     (hg * 180.0 + 75.0).min(255.0) as u8,
@@ -2827,7 +2827,7 @@ impl NodeInspectorPanel {
         ui.add_space(4.0);
         let active_count = (0..12).filter(|&i| warper.hue_shifts[i].abs() > 0.1 || warper.sat_shifts[i].abs() > 0.01).count();
         if active_count > 0 {
-            ui.label(egui::RichText::new(format!("{active_count} sector(s) adjusted")).size(9.0).color(theme.text_dim));
+            ui.label(egui::RichText::new(format!("{active_count} sector(s) adjusted")).size(10.0).color(theme.text_dim));
         }
     }
 
@@ -2854,7 +2854,7 @@ impl NodeInspectorPanel {
         ui.add_space(2.0);
         ui.horizontal(|ui| {
             ui.add_space(8.0);
-            ui.label(egui::RichText::new("Preset").size(9.0).color(theme.text_dim));
+            ui.label(egui::RichText::new("Preset").size(10.0).color(theme.text_dim));
 
             // Preset dropdown
             let combo_id = format!("tool_preset_{:?}", tool);
@@ -2973,7 +2973,7 @@ fn section_header(ui: &mut egui::Ui, title: &str, enabled: bool, theme: &KlippTh
     let rounding = if is_open {
         egui::Rounding { nw: 6.0, ne: 6.0, sw: 0.0, se: 0.0 }
     } else {
-        egui::Rounding::same(6.0)
+        egui::Rounding::same(4.0)
     };
     ui.painter().rect_filled(rect, rounding, theme.bg_deep);
 

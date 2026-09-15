@@ -103,12 +103,12 @@ pub fn show_color_and_luts(
                     .map(|(_, l)| *l)
                     .unwrap_or("sRGB / Rec.709");
                 egui::ComboBox::from_id_salt("color_tab_log_format")
-                    .selected_text(egui::RichText::new(current_label).size(9.0))
+                    .selected_text(egui::RichText::new(current_label).size(10.0))
                     .width(200.0)
                     .show_ui(ui, |ui| {
                         for &(fmt, label) in &formats {
                             if ui.selectable_label(current_log == fmt,
-                                egui::RichText::new(label).size(9.0),
+                                egui::RichText::new(label).size(10.0),
                             ).clicked() {
                                 cmds.push(AppCommand::SetClipLogFormat { clip_id, log_format: fmt });
                             }
@@ -183,7 +183,7 @@ pub fn show_color_and_luts(
             ui.add_space(2.0);
             ui.label(egui::RichText::new(
                 "Captures the current clip's grade chain. Qualifier / mask / matte nodes are skipped."
-            ).size(9.0).color(theme.text_dim));
+            ).size(10.0).color(theme.text_dim));
         } else {
             ui.label(egui::RichText::new("Select a clip to bake its grade.")
                 .size(10.0).color(theme.text_dim));

@@ -138,7 +138,7 @@ impl MarkersPanel {
                                 resp.rect.center(),
                                 egui::Align2::CENTER_CENTER,
                                 "●",
-                                egui::FontId::proportional(14.0),
+                                egui::FontId::proportional(13.0),
                                 btn_color,
                             );
                             if resp.clicked() {
@@ -240,7 +240,7 @@ impl MarkersPanel {
                                     let secs = dur.to_secs_f64();
                                     ui.label(
                                         egui::RichText::new(format!("{secs:.1}s"))
-                                            .size(10.5)
+                                            .size(11.0)
                                             .monospace()
                                             .color(egui::Color32::from_rgb(160, 170, 190)),
                                     );
@@ -306,7 +306,7 @@ impl MarkersPanel {
                                 };
                                 let resp = ui.label(
                                     egui::RichText::new(preview)
-                                        .size(10.5)
+                                        .size(11.0)
                                         .italics()
                                         .color(egui::Color32::from_rgb(140, 150, 170)),
                                 )

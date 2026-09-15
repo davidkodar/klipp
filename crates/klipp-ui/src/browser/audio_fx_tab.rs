@@ -690,7 +690,7 @@ fn audition_player(
     egui::Frame::none()
         .fill(theme.bg_raised)
         .stroke(egui::Stroke::new(1.0_f32, theme.border))
-        .rounding(8.0)
+        .rounding(4.0)
         .inner_margin(egui::Margin::symmetric(12.0, 10.0))
         .outer_margin(egui::Margin::symmetric(8.0, 0.0))
         .show(ui, |ui| {
@@ -1139,7 +1139,7 @@ fn audition_player(
                     let painter = ui.painter();
                     painter.rect_filled(
                         vu_rect,
-                        egui::Rounding::same(3.0),
+                        egui::Rounding::same(2.0),
                         theme.bg_panel,
                     );
                     let level: f32 = if *playing {
@@ -1182,7 +1182,7 @@ fn audition_player(
                         };
                         painter.rect_filled(
                             lvl_rect,
-                            egui::Rounding::same(3.0),
+                            egui::Rounding::same(2.0),
                             colour,
                         );
                     }
@@ -1216,12 +1216,12 @@ fn audition_source_pill(
         ui,
         label,
         label_inner_w,
-        &egui::FontId::proportional(10.5),
+        &egui::FontId::proportional(11.0),
         theme.text_secondary,
     );
     let label_galley = ui.painter().layout_no_wrap(
         truncated_label,
-        egui::FontId::proportional(10.5),
+        egui::FontId::proportional(11.0),
         theme.text_secondary,
     );
     let w = pad_x * 2.0 + label_galley.size().x + caret_w;
@@ -1282,7 +1282,7 @@ fn audition_source_pill(
             if source_options.is_empty() {
                 ui.label(
                     egui::RichText::new("No clips selected")
-                        .size(10.5)
+                        .size(11.0)
                         .color(theme.text_dim),
                 );
                 ui.add_space(2.0);
@@ -1290,7 +1290,7 @@ fn audition_source_pill(
                     egui::RichText::new(
                         "Select a clip on the timeline to audition with its audio.",
                     )
-                    .size(9.5)
+                    .size(10.0)
                     .color(theme.text_dim),
                 );
                 return;
@@ -1538,7 +1538,7 @@ fn sidebar_row(
 
     let label_galley = ui.painter().layout_no_wrap(
         label.to_string(),
-        egui::FontId::proportional(11.5),
+        egui::FontId::proportional(11.0),
         label_color,
     );
     ui.painter().galley(
@@ -1603,7 +1603,7 @@ fn sidebar_section_header(
         egui::pos2(label_x, rect.center().y),
         egui::Align2::LEFT_CENTER,
         label.to_uppercase(),
-        egui::FontId::proportional(9.5),
+        egui::FontId::proportional(10.0),
         theme.text_dim,
     );
 }
@@ -1654,7 +1654,7 @@ fn result_strip(
         egui::pos2(rect.min.x + 12.0, rect.center().y),
         egui::Align2::LEFT_CENTER,
         left,
-        egui::FontId::proportional(10.5),
+        egui::FontId::proportional(11.0),
         theme.text_secondary,
     );
 
@@ -1673,7 +1673,7 @@ fn result_strip(
             let label = format!("Sort: {}", sort_mode.label());
             egui::ComboBox::from_id_salt("audio_fx_sort_dd")
                 .selected_text(
-                    egui::RichText::new(label).size(10.5).color(theme.text_dim),
+                    egui::RichText::new(label).size(11.0).color(theme.text_dim),
                 )
                 .width(dropdown_w - 4.0)
                 .show_ui(ui, |ui| {
@@ -1801,7 +1801,7 @@ fn audio_fx_row(
             ),
         );
         ui.painter()
-            .rect_filled(inner, egui::Rounding::same(6.0), bg);
+            .rect_filled(inner, egui::Rounding::same(4.0), bg);
         let stripe_rect = egui::Rect::from_min_size(
             inner.min,
             egui::vec2(2.0, inner.height()),
@@ -1832,10 +1832,10 @@ fn audio_fx_row(
         color.b(),
         90,
     );
-    ui.painter().rect_filled(tile_rect, egui::Rounding::same(6.0), icon_bg);
+    ui.painter().rect_filled(tile_rect, egui::Rounding::same(4.0), icon_bg);
     ui.painter().rect_stroke(
         tile_rect,
-        egui::Rounding::same(6.0),
+        egui::Rounding::same(4.0),
         egui::Stroke::new(1.0_f32, icon_border),
     );
     let glyph = category_glyph_icon(entry.category);
@@ -1907,7 +1907,7 @@ fn audio_fx_row(
     let badge_pad = 8.0;
     let badge_galley = ui.painter().layout_no_wrap(
         badge_label.to_string(),
-        egui::FontId::proportional(9.0),
+        egui::FontId::proportional(10.0),
         badge_fg,
     );
     let badge_w = badge_galley.size().x + badge_pad * 2.0;
@@ -1919,13 +1919,13 @@ fn audio_fx_row(
         ),
         egui::vec2(badge_w, badge_h),
     );
-    ui.painter().rect_filled(badge_rect, egui::Rounding::same(3.0), badge_bg);
+    ui.painter().rect_filled(badge_rect, egui::Rounding::same(2.0), badge_bg);
     if matches!(&entry.source, EffectSource::Ladspa(_)) {
         // Subtle amber outline so the LADSPA pill still reads as the
         // brand colour, but contained — never as a fill.
         ui.painter().rect_stroke(
             badge_rect,
-            egui::Rounding::same(3.0),
+            egui::Rounding::same(2.0),
             egui::Stroke::new(
                 1.0_f32,
                 egui::Color32::from_rgba_premultiplied(
@@ -1955,7 +1955,7 @@ fn audio_fx_row(
     // <…> (adapted by Josh Green and Hexasoft) · by Achim Settelmeier
     // <…>") spilled the wrapped text down into the next row.
     let name_font = egui::FontId::proportional(12.5);
-    let sub_font = egui::FontId::proportional(10.5);
+    let sub_font = egui::FontId::proportional(11.0);
     let name_truncated = truncate_to_width(
         ui,
         &entry.name,

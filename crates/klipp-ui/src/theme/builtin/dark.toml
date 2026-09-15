@@ -1,92 +1,74 @@
-# Klipp built-in Dark theme.
+# Klipp built-in Dark theme: flat neutral surfaces in the tradition of
+# the grading suites, one cool accent for what is active or selected,
+# and the playhead the only warm mark.
 #
 # This file is embedded in the binary at compile time
 # (src/theme/registry.rs include_str!). User themes drop into
-# ~/.config/klipp/themes/*.toml using the same schema.
-#
-# Format: top-level `name` (display string in the picker) + `[colors]`
-# table that fills the ThemeColors struct field-for-field. Every field
-# below is required — a missing field will reject the file at load.
+# ~/.config/klipp/themes/*.toml using the same schema: top-level `name`
+# and a `[colors]` table that fills ThemeColors field-for-field. Every
+# field is required.
 
 name = "Dark"
 
 [colors]
-# ── Backgrounds: darkest (void) → lightest (raised) ──
-bg_void       = "#0a0a0c"
-bg_deep       = "#111114"
-bg_panel      = "#16161a"
-bg_panel_alt  = "#1c1c21"
-bg_raised     = "#222228"
-bg_hover      = "#2a2a32"
-# Elevated container around the program viewer — bg_deep + ~4 % brightness.
-# The video letterbox itself stays pure black inside this frame.
-bg_viewer     = "#1c1c1e"
+# ── Surfaces: darkest (void) → lightest (raised). Six greys, no tint. ──
+bg_void       = "#0e0e10"
+bg_deep       = "#151517"
+bg_panel      = "#1b1b1e"
+bg_panel_alt  = "#202024"
+bg_raised     = "#2a2a2f"
+bg_hover      = "#35353b"
+# The frame around the viewers; the picture itself sits on black.
+bg_viewer     = "#131315"
 
 # ── Borders / dividers ──
-border        = "#2a2a32"
-border_light  = "#363640"
-# Idle resizer strip — brighter than `border` so it reads as a divider
-# against bg_raised inspector cards.
-resizer_idle  = "#373741"
+border        = "#2c2c31"
+border_light  = "#3a3a40"
+resizer_idle  = "#3a3a40"
 
-# ── Accent (warm amber) ──
-# CONTRAST RULE: When `accent` is used as a BACKGROUND fill, all text
-# on top must use `text_on_accent` (dark). Light text on amber is
-# nearly unreadable.
-accent        = "#e8a020"
-accent_dim    = "#a06e14"
-# Translucent amber overlays. Premultiplied alpha — RGB channels
-# scaled to a/255 so the colour reads correctly when blended.
-# Hex format here is #rrggbbaa with already-premultiplied channels.
-accent_glow   = "#1701052e"
-accent_subtle = "#150e0317"
-# Secondary accent — distinct from the warm amber for things that
-# would clash with role colours (Effect orange, Title red). Bright
-# magenta-purple reads cleanly against dark bgs.
-accent_alt    = "#c878ff"
+# ── Accent: a cool blue, for the active tool, the selected row, the
+# focused control — and nothing decorative. ──
+accent        = "#4a8fe7"
+accent_dim    = "#2f5e9a"
+# Translucent overlays, premultiplied (#rrggbbaa with channels scaled
+# by alpha): the selected row and the focused viewer's outline.
+accent_glow   = "#0d1a2a2e"
+accent_subtle = "#070d1517"
+# Secondary accent for things that must read as "not the accent":
+# a muted violet.
+accent_alt    = "#a78bdc"
+# The playhead: the one warm mark in a neutral interface.
+playhead       = "#ff5a3c"
 
 # ── Text ──
-text_primary   = "#e8e8ee"
-text_secondary = "#9090a0"
-text_dim       = "#505060"
-text_accent    = "#e8a020"
-# Dark text for use ON accent-colored backgrounds. RULE: any
-# amber/gold background MUST use this colour, never light text.
-text_on_accent = "#1a1a1e"
+text_primary   = "#e6e6e9"
+text_secondary = "#a0a0a8"
+text_dim       = "#6f6f78"
+# Values and timecodes: a touch brighter than body text, no colour.
+text_accent    = "#f2f2f4"
+# Text on an accent-filled control: the blue is dark enough for white.
+text_on_accent = "#ffffff"
 
 # ── Functional marker / status colours ──
-# Semantic naming so high-contrast / colour-blind themes can pick
-# their own hues without breaking the use sites. `marker_error` is
-# anywhere we signal destruction / reject / failure (delete buttons,
-# out-points, render queue failures). `marker_success` is anywhere
-# we signal positive state (linked indicators, render-complete).
-# `marker_info` is the cool-blue colour-science indicator (BT.709
-# badges, colorspace tags). `marker_warning` is the warm signalling
-# yellow for non-critical alerts.
-marker_error   = "#c83c3c"
-marker_success = "#64c878"
-marker_info    = "#3c78c8"
-marker_warning = "#c8a028"
+marker_error   = "#d64545"
+marker_success = "#4fb86e"
+marker_info    = "#4a8fe7"
+marker_warning = "#d9a42b"
 
-# ── Scope display tokens ──
-# `scope_grid` is a translucent overlay; alpha is polarity-dependent.
-# Hex is premultiplied — RGB = source * (alpha/255). For dark mode:
-# source amber (245,180,60) at alpha 32/255 ≈ 12 % → premultiplied
-# RGB (30,22,7), alpha 0x20.
+# ── Scope display tokens (instrument graticule stays amber on black) ──
 scope_grid  = "#1e160720"
 scope_label = "#907830"
 scope_bg    = "#040407"
 
-# ── Role colours (one per clip/track role) ──
-# User can override per-role via Preferences → Appearance; these are
-# the defaults the theme ships with.
-role_video     = "#2d6fa8"
-role_dialogue  = "#3a8c6e"
-role_music     = "#4285f4"
-role_sfx       = "#a85c2d"
-role_title     = "#c0392b"
-role_broll     = "#4a6ea8"
-role_ambience  = "#9c27b0"
-role_foley     = "#e91e63"
-role_voiceover = "#00bcd4"
-role_graphics  = "#ffeb3b"
+# ── Role colours (one per clip/track role), a little desaturated so
+# the timeline reads as one surface. ──
+role_video     = "#3d6f9e"
+role_dialogue  = "#3f8a70"
+role_music     = "#4f7fd0"
+role_sfx       = "#a0623a"
+role_title     = "#b04a40"
+role_broll     = "#556f9c"
+role_ambience  = "#8a4fa8"
+role_foley     = "#c0466e"
+role_voiceover = "#3aa3b5"
+role_graphics  = "#c8b04a"

@@ -1816,7 +1816,7 @@ fn show_title_pinned_core_textbox(
             }
         }
         if size_is_mixed {
-            ui.label(egui::RichText::new("Mixed").size(9.0).color(theme.accent));
+            ui.label(egui::RichText::new("Mixed").size(10.0).color(theme.accent));
         }
     });
     ui.add_space(8.0);
@@ -1963,7 +1963,7 @@ fn show_title_pinned_core_textbox(
                 );
             });
         if color_is_mixed {
-            ui.label(egui::RichText::new("Mixed").size(9.0).color(theme.accent));
+            ui.label(egui::RichText::new("Mixed").size(10.0).color(theme.accent));
         }
     });
     if let Some(a) = new_alpha_u8 {
@@ -2027,7 +2027,7 @@ fn show_title_quick_style_subsection(
     ui.add_space(2.0);
 
     ui.horizontal(|ui| {
-        ui.label(egui::RichText::new("Quick").size(9.0).color(theme.text_dim));
+        ui.label(egui::RichText::new("Quick").size(10.0).color(theme.text_dim));
         let preset_colors: &[(&str, [u8; 4])] = &[
             ("W", [255, 255, 255, 255]),
             ("R", [255, 60, 60, 255]),
@@ -2040,7 +2040,7 @@ fn show_title_quick_style_subsection(
         for (label, c) in preset_colors {
             let btn_color = egui::Color32::from_rgba_unmultiplied(c[0], c[1], c[2], c[3]);
             let resp = ui.add(
-                egui::Button::new(egui::RichText::new(*label).size(9.0).color(
+                egui::Button::new(egui::RichText::new(*label).size(10.0).color(
                     if c[0] as u16 + c[1] as u16 + c[2] as u16 > 400 {
                         egui::Color32::BLACK
                     } else {
@@ -2076,7 +2076,7 @@ fn show_title_quick_style_subsection(
     if has_selection && sel_range.1 > sel_range.0 {
         ui.add_space(2.0);
         ui.horizontal(|ui| {
-            ui.label(egui::RichText::new("Effects:").size(9.0).color(theme.text_dim));
+            ui.label(egui::RichText::new("Effects:").size(10.0).color(theme.text_dim));
             if ui.small_button("Rainbow").clicked() {
                 let rainbow: &[[u8; 4]] = &[
                     [255, 50, 50, 255], [255, 150, 0, 255], [255, 230, 0, 255],
@@ -2171,7 +2171,7 @@ fn show_title_quick_style_subsection(
         ui.horizontal(|ui| {
             ui.label(
                 egui::RichText::new(format!("{} style runs", td.style_runs().len()))
-                    .size(9.0).color(theme.text_dim),
+                    .size(10.0).color(theme.text_dim),
             );
             if ui.small_button("Clear All").clicked() {
                 cmds.push(AppCommand::ClearTitleStyleRuns { clip_id });
@@ -3394,7 +3394,7 @@ fn show_title_layers_panel(
     egui::Frame::none()
         .fill(theme.bg_panel)
         .stroke(egui::Stroke::new(1.0_f32, theme.border))
-        .rounding(6.0)
+        .rounding(4.0)
         .inner_margin(egui::Margin::symmetric(6.0, 6.0))
         .show(ui, |ui| {
             if total == 0 {
@@ -3912,13 +3912,13 @@ fn show_title_layer_row(
     if is_selected {
         ui.painter().rect(
             rect.shrink(1.0),
-            egui::Rounding::same(5.0),
+            egui::Rounding::same(4.0),
             theme.accent_subtle,
             egui::Stroke::new(1.5_f32, theme.accent),
         );
     } else if resp.hovered() {
         ui.painter()
-            .rect_filled(rect, egui::Rounding::same(5.0), theme.bg_hover);
+            .rect_filled(rect, egui::Rounding::same(4.0), theme.bg_hover);
     }
 
     if resp.clicked() {
@@ -4187,7 +4187,7 @@ fn show_title_editor(
                             };
                             ui.label(
                                 egui::RichText::new(footer)
-                                    .size(9.5)
+                                    .size(10.0)
                                     .color(theme.text_secondary),
                             );
                         });
@@ -7568,7 +7568,7 @@ fn show_transition_inspector(
                             fix_target
                         ))
                         .color(theme.text_dim)
-                        .size(9.0)
+                        .size(10.0)
                         .italics(),
                     );
                 }
@@ -7586,7 +7586,7 @@ fn show_transition_inspector(
                                     label
                                 ))
                                 .color(amber_color)
-                                .size(9.0)
+                                .size(10.0)
                                 .italics(),
                             );
                         });

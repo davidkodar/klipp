@@ -510,7 +510,7 @@ fn model_card(
 
     egui::Frame::none()
         .fill(theme.bg_raised.gamma_multiply(0.6))
-        .rounding(6.0)
+        .rounding(4.0)
         .inner_margin(egui::Margin::symmetric(10.0, 8.0))
         .show(ui, |ui| {
             ui.horizontal(|ui| {
@@ -950,7 +950,7 @@ fn tag_chip(ui: &mut egui::Ui, accent: egui::Color32, label: &str) {
     egui::Frame::none()
         .fill(accent.gamma_multiply(0.18))
         .stroke(egui::Stroke::new(1.0_f32, accent))
-        .rounding(10.0)
+        .rounding(4.0)
         .inner_margin(egui::Margin::symmetric(8.0, 1.5))
         .show(ui, |ui| {
             ui.label(
@@ -979,7 +979,7 @@ fn counter_chip(
     };
     egui::Frame::none()
         .fill(theme.bg_raised.gamma_multiply(0.5))
-        .rounding(3.0)
+        .rounding(2.0)
         .inner_margin(egui::Margin::symmetric(6.0, 3.0))
         .show(ui, |ui| {
             ui.label(
@@ -1362,7 +1362,7 @@ fn done_preview(ui: &mut egui::Ui, state: &mut AiToolsState, theme: &KlippTheme)
     let h = (avail * 9.0 / 16.0).clamp(120.0, 220.0);
     let preview_w = (avail - 4.0).max(120.0);
     egui::Frame::none()
-        .rounding(6.0)
+        .rounding(4.0)
         .inner_margin(egui::Margin::same(0.0))
         .show(ui, |ui| {
             let (rect, _) = ui.allocate_exact_size(
@@ -1631,7 +1631,7 @@ fn recent_row(
                         ui.add(
                             egui::Button::new(
                                 egui::RichText::new("↻")
-                                    .size(14.0)
+                                    .size(13.0)
                                     .color(theme.text_dim),
                             )
                             .frame(false),
@@ -1663,7 +1663,7 @@ fn running_output_overlay(
     let h = (avail * 9.0 / 16.0).clamp(120.0, 220.0);
     egui::Frame::none()
         .fill(theme.bg_raised.gamma_multiply(0.4))
-        .rounding(6.0)
+        .rounding(4.0)
         .inner_margin(egui::Margin::same(0.0))
         .show(ui, |ui| {
             let (rect, _) = ui.allocate_exact_size(
@@ -1773,7 +1773,7 @@ fn display_mode_tab(
         rect.center(),
         egui::Align2::CENTER_CENTER,
         mode.label(),
-        egui::FontId::proportional(11.5),
+        egui::FontId::proportional(11.0),
         color,
     );
     if enabled && resp.clicked() {
@@ -1792,7 +1792,7 @@ fn empty_output_placeholder(ui: &mut egui::Ui, theme: &KlippTheme) {
     // logic.
     egui::Frame::none()
         .fill(theme.bg_raised.gamma_multiply(0.6))
-        .rounding(6.0)
+        .rounding(4.0)
         .inner_margin(egui::Margin::symmetric(8.0, 36.0))
         .show(ui, |ui| {
             ui.vertical_centered(|ui| {

@@ -80,7 +80,7 @@ pub fn inspector_group_header(
         pos2(rect.min.x + 36.0, rect.center().y),
         egui::Align2::LEFT_CENTER,
         title,
-        FontId::proportional(14.0),
+        FontId::proportional(13.0),
         theme.text_primary,
     );
 
@@ -183,7 +183,7 @@ pub fn inspector_subgroup_card<R>(
     let frame = Frame::none()
         .fill(theme.bg_panel_alt)
         .stroke(Stroke::new(1.0_f32, theme.border))
-        .rounding(Rounding::same(8.0))
+        .rounding(Rounding::same(4.0))
         .inner_margin(Margin::same(0.0));
 
     let mut body_result: Option<R> = None;
@@ -220,7 +220,7 @@ pub fn inspector_subgroup_card<R>(
                             ui.add_space(12.0);
                             ui.label(
                                 RichText::new(chip)
-                                    .size(11.5)
+                                    .size(11.0)
                                     .color(theme.text_dim),
                             );
                         });

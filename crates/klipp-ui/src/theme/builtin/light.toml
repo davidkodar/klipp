@@ -29,25 +29,28 @@ resizer_idle  = "#b0b0b8"
 # ── Accent (warm amber, same family) ──
 # Slightly darker than Dark's accent so it carries enough weight against
 # white surfaces.
-accent        = "#c88610"
-accent_dim    = "#90600c"
+accent        = "#2f6fd0"
+accent_dim    = "#245399"
 # Glow alphas re-tuned for white background: higher opacity so the hint
 # of accent reads, lower RGB so we don't tint to a muddy yellow.
-accent_glow   = "#2317053c"
-accent_subtle = "#1c12041e"
+accent_glow   = "#0b1a303c"
+accent_subtle = "#050d181e"
 # Secondary accent — slightly darker purple than Dark mode so it
 # carries enough weight against white surfaces.
-accent_alt    = "#8a3cc8"
+accent_alt    = "#7a4fb8"
 
 # ── Text ──
+# The playhead: the one warm mark in a neutral interface.
+playhead       = "#d63b2f"
+
 text_primary   = "#18181c"
 text_secondary = "#555560"
 text_dim       = "#888890"
-text_accent    = "#a87010"
+text_accent    = "#101014"
 # Same dark text as Dark mode for accent backgrounds — the contrast
 # rule is about contrast vs the accent itself, which is the same
 # colour on both polarities.
-text_on_accent = "#1a1a1e"
+text_on_accent = "#ffffff"
 
 # ── Functional marker / status colours ──
 # Slightly darker than the Dark theme equivalents so they carry

@@ -343,7 +343,7 @@ impl CurveEditorPanel {
             pos2(label_rect.center().x, label_rect.center().y),
             egui::Align2::CENTER_CENTER,
             self.param.label(),
-            egui::FontId::proportional(9.0),
+            egui::FontId::proportional(10.0),
             theme.text_dim,
         );
 
@@ -352,7 +352,7 @@ impl CurveEditorPanel {
             pos2(graph_rect.center().x, graph_rect.max.y + 8.0),
             egui::Align2::CENTER_TOP,
             "Time (s)",
-            egui::FontId::proportional(9.0),
+            egui::FontId::proportional(10.0),
             theme.text_dim,
         );
 
@@ -584,7 +584,7 @@ impl CurveEditorPanel {
         let painter = ui.painter();
         let grid_stroke = Stroke::new(0.5_f32, theme.border);
         let grid_stroke_major = Stroke::new(0.8_f32, theme.border_light);
-        let label_font = egui::FontId::proportional(9.0);
+        let label_font = egui::FontId::proportional(10.0);
 
         // Clip the painter to graph rect
         let clip_rect = *rect;

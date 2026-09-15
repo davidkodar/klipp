@@ -378,7 +378,7 @@ fn fader_strip(
     painter.text(
         egui::pos2(rect.center().x, pan_rect.max.y + 2.0),
         egui::Align2::CENTER_TOP, &pan_label,
-        egui::FontId::monospace(8.0), theme.text_dim,
+        egui::FontId::monospace(10.0), theme.text_dim,
     );
     y = pan_rect.max.y + 10.0;
 
@@ -477,7 +477,7 @@ fn fader_strip(
     let db_color = if *muted { theme.text_dim } else { theme.text_secondary };
     painter.text(
         egui::pos2(rect.center().x, y + 5.0), egui::Align2::CENTER_CENTER,
-        format!("{} dB", format_db(db)), egui::FontId::monospace(8.0), db_color,
+        format!("{} dB", format_db(db)), egui::FontId::monospace(10.0), db_color,
     );
     y += 16.0;
 
@@ -493,7 +493,7 @@ fn fader_strip(
     let mute_tc = if *muted { egui::Color32::WHITE } else { theme.text_secondary };
     painter.rect_filled(mute_rect, 3.0, mute_bg);
     painter.rect_stroke(mute_rect, 3.0, egui::Stroke::new(1.0_f32, theme.border));
-    painter.text(mute_rect.center(), egui::Align2::CENTER_CENTER, "M", egui::FontId::proportional(9.0), mute_tc);
+    painter.text(mute_rect.center(), egui::Align2::CENTER_CENTER, "M", egui::FontId::proportional(10.0), mute_tc);
     let mute_resp = ui.allocate_rect(mute_rect, egui::Sense::click());
     if mute_resp.clicked() {
         *muted = !*muted;
@@ -506,7 +506,7 @@ fn fader_strip(
     let solo_tc = if *solo { theme.text_on_accent } else { theme.text_secondary };
     painter.rect_filled(solo_rect, 3.0, solo_bg);
     painter.rect_stroke(solo_rect, 3.0, egui::Stroke::new(1.0_f32, theme.border));
-    painter.text(solo_rect.center(), egui::Align2::CENTER_CENTER, "S", egui::FontId::proportional(9.0), solo_tc);
+    painter.text(solo_rect.center(), egui::Align2::CENTER_CENTER, "S", egui::FontId::proportional(10.0), solo_tc);
     let solo_resp = ui.allocate_rect(solo_rect, egui::Sense::click());
     if solo_resp.clicked() {
         *solo = !*solo;
@@ -560,7 +560,7 @@ fn master_strip(
     let label_cx = rect.min.x + 40.0;
     painter.text(
         egui::pos2(label_cx, y + 6.0), egui::Align2::CENTER_CENTER,
-        "MASTER", egui::FontId::proportional(9.0), theme.accent,
+        "MASTER", egui::FontId::proportional(10.0), theme.accent,
     );
 
     // Clip indicator (latched red dot, click to clear)
@@ -672,12 +672,12 @@ fn master_strip(
     painter.text(
         egui::pos2(col1_x, y + 4.0), egui::Align2::LEFT_CENTER,
         format!("{} dB", format_db(vol_to_db(*master_volume))),
-        egui::FontId::monospace(8.0), theme.text_secondary,
+        egui::FontId::monospace(10.0), theme.text_secondary,
     );
     painter.text(
         egui::pos2(col2_x, y + 4.0), egui::Align2::LEFT_CENTER,
         format!("I:{}", format_lufs(lufs_integrated)),
-        egui::FontId::monospace(8.0), lufs_text_color(lufs_integrated, lufs_target, theme),
+        egui::FontId::monospace(10.0), lufs_text_color(lufs_integrated, lufs_target, theme),
     );
     y += 11.0;
 
@@ -687,12 +687,12 @@ fn master_strip(
     painter.text(
         egui::pos2(col1_x, y + 4.0), egui::Align2::LEFT_CENTER,
         format!("Pk{}", format_db(peak_db)),
-        egui::FontId::monospace(7.0), peak_color,
+        egui::FontId::monospace(10.0), peak_color,
     );
     painter.text(
         egui::pos2(col2_x, y + 4.0), egui::Align2::LEFT_CENTER,
         format!("S:{}", format_lufs(lufs_short_term)),
-        egui::FontId::monospace(7.0), theme.text_dim,
+        egui::FontId::monospace(10.0), theme.text_dim,
     );
     y += 10.0;
 
@@ -704,7 +704,7 @@ fn master_strip(
     painter.text(
         egui::pos2(col1_x, y + 4.0), egui::Align2::LEFT_CENTER,
         &tp_text,
-        egui::FontId::monospace(7.0), tp_color,
+        egui::FontId::monospace(10.0), tp_color,
     );
     // Invisible hover rect over the TP label so the user gets a
     // tooltip explaining whether 4× oversampling is engaged.
@@ -722,7 +722,7 @@ fn master_strip(
     painter.text(
         egui::pos2(col2_x, y + 4.0), egui::Align2::LEFT_CENTER,
         format!("M:{}", format_lufs(lufs_momentary)),
-        egui::FontId::monospace(7.0), theme.text_dim,
+        egui::FontId::monospace(10.0), theme.text_dim,
     );
     y += 10.0;
 
@@ -730,7 +730,7 @@ fn master_strip(
     painter.text(
         egui::pos2(col1_x, y + 4.0), egui::Align2::LEFT_CENTER,
         format!("LRA {:.1} LU", lufs_lra),
-        egui::FontId::monospace(7.0), theme.text_dim,
+        egui::FontId::monospace(10.0), theme.text_dim,
     );
     y += 12.0;
 
@@ -739,7 +739,7 @@ fn master_strip(
     painter.rect_filled(btn_rect, 2.0, theme.bg_raised);
     painter.rect_stroke(btn_rect, 2.0, egui::Stroke::new(1.0_f32, theme.border));
     painter.text(btn_rect.center(), egui::Align2::CENTER_CENTER, "RST",
-        egui::FontId::monospace(7.0), theme.text_secondary);
+        egui::FontId::monospace(10.0), theme.text_secondary);
     let rst_resp = ui.allocate_rect(btn_rect, egui::Sense::click());
     if rst_resp.clicked() {
         cmds.push(AppCommand::ResetLufsMeter);
@@ -925,7 +925,7 @@ pub fn draw_inspector_meter(
         let tick_y = bar_bottom - tick_t * meter_h;
         painter.text(
             egui::pos2(label_x, tick_y), egui::Align2::LEFT_CENTER,
-            label, egui::FontId::monospace(7.0), theme.text_dim,
+            label, egui::FontId::monospace(10.0), theme.text_dim,
         );
     }
 
@@ -933,7 +933,7 @@ pub fn draw_inspector_meter(
     if state.clip_indicator {
         painter.text(
             egui::pos2(label_x + 32.0, bar_top + 6.0), egui::Align2::LEFT_CENTER,
-            "CLIP", egui::FontId::monospace(9.0), theme.marker_error,
+            "CLIP", egui::FontId::monospace(10.0), theme.marker_error,
         );
     }
 
@@ -951,13 +951,13 @@ pub fn draw_inspector_meter(
             format_lufs(state.lufs_short_term),
             format_lufs(state.lufs_momentary),
             format_lufs(state.lufs_true_peak_dbfs)),
-        egui::FontId::monospace(9.0),
+        egui::FontId::monospace(10.0),
         theme.text_dim,
     );
     painter.text(
         egui::pos2(rect.min.x + 6.0, ry + 33.0), egui::Align2::LEFT_CENTER,
         format!("LRA: {:.1} LU", state.lufs_lra),
-        egui::FontId::monospace(9.0),
+        egui::FontId::monospace(10.0),
         theme.text_dim,
     );
 

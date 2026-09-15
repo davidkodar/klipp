@@ -40,6 +40,9 @@ accent_alt    = "#b48ead"
 
 # ── Text ──
 # Nord Snow Storm (nord4 / nord6) — light blue-tinted whites.
+# The playhead: the one warm mark in a neutral interface.
+playhead       = "#ff5a3c"
+
 text_primary   = "#eceff4"
 text_secondary = "#d8dee9"
 text_dim       = "#8590a3"

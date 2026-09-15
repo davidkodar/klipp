@@ -55,7 +55,7 @@ pub fn role_pill(
     };
 
     let btn = egui::Button::new(
-        egui::RichText::new(label).size(9.0).color(text_color),
+        egui::RichText::new(label).size(10.0).color(text_color),
     )
     .fill(bg)
     .stroke(stroke)

@@ -797,7 +797,7 @@ impl NodeGraphV2Panel {
             egui::Frame::none()
                 .fill(bg)
                 .stroke(egui::Stroke::new(0.5_f32, solo_color))
-                .rounding(3.0)
+                .rounding(2.0)
                 .inner_margin(egui::Margin::symmetric(4.0, 1.0))
                 .show(&mut toolbar_ui, |ui| {
                     ui.label(
@@ -1465,7 +1465,7 @@ impl NodeGraphV2Panel {
             {
                 painter.add(egui::Shape::Rect(egui::epaint::RectShape {
                     rect: rect.translate(egui::vec2(0.0, 5.0)).expand(2.0),
-                    rounding: egui::Rounding::same(6.0),
+                    rounding: egui::Rounding::same(4.0),
                     fill: egui::Color32::from_rgba_premultiplied(0, 0, 0, 50),
                     stroke: egui::Stroke::NONE,
                     blur_width: 8.0,
@@ -3813,7 +3813,7 @@ impl NodeGraphV2Panel {
                             let glyph = if selected { "\u{25C9}" } else { "\u{25CB}" };
                             let resp = ui.add(
                                 egui::Label::new(
-                                    egui::RichText::new(glyph).size(14.0).color(swatch_color),
+                                    egui::RichText::new(glyph).size(13.0).color(swatch_color),
                                 ).sense(egui::Sense::click()),
                             ).on_hover_text(label);
                             if resp.clicked() {

@@ -384,7 +384,7 @@ fn render_body(
                         ui.add_space(6.0);
                         ui.label(
                             egui::RichText::new(maker.to_uppercase())
-                                .size(9.0)
+                                .size(10.0)
                                 .strong()
                                 .color(theme.text_secondary),
                         );
@@ -547,7 +547,7 @@ fn render_plugin_row(
                         ui.add(
                             egui::Label::new(
                                 egui::RichText::new(chev)
-                                    .size(9.0)
+                                    .size(10.0)
                                     .color(theme.text_dim),
                             )
                             .selectable(false),
@@ -571,7 +571,7 @@ fn render_plugin_row(
                                 if is_disabled {
                                     ui.label(
                                         egui::RichText::new("DISABLED")
-                                            .size(8.0)
+                                            .size(10.0)
                                             .strong()
                                             .color(theme.text_dim),
                                     );
@@ -579,7 +579,7 @@ fn render_plugin_row(
                             });
                             ui.label(
                                 egui::RichText::new(plugin.path.to_string_lossy())
-                                    .size(9.0)
+                                    .size(10.0)
                                     .color(theme.text_dim),
                             );
                         });
@@ -623,7 +623,7 @@ fn render_plugin_row(
                             "{} | {} ports",
                             shape_label, plugin.port_count
                         ))
-                        .size(9.0)
+                        .size(10.0)
                         .color(theme.text_dim),
                     );
                 });
@@ -781,7 +781,7 @@ fn render_plugin_details(ui: &mut egui::Ui, theme: &KlippTheme, plugin: &LadspaP
                 "CONTROLS ({})",
                 plugin.control_inputs.len()
             ))
-            .size(9.0)
+            .size(10.0)
             .strong()
             .color(theme.text_dim),
         );
@@ -843,7 +843,7 @@ fn render_plugin_details(ui: &mut egui::Ui, theme: &KlippTheme, plugin: &LadspaP
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.label(
                         egui::RichText::new(format!("{}{}", range_text, flag_suffix))
-                            .size(9.0)
+                            .size(10.0)
                             .color(theme.text_dim),
                     );
                 });
@@ -853,7 +853,7 @@ fn render_plugin_details(ui: &mut egui::Ui, theme: &KlippTheme, plugin: &LadspaP
         ui.add_space(6.0);
         ui.label(
             egui::RichText::new("(no control parameters)")
-                .size(9.0)
+                .size(10.0)
                 .color(theme.text_dim),
         );
     }
@@ -862,7 +862,7 @@ fn render_plugin_details(ui: &mut egui::Ui, theme: &KlippTheme, plugin: &LadspaP
 fn detail_label(ui: &mut egui::Ui, theme: &KlippTheme, text: &str) {
     ui.label(
         egui::RichText::new(text)
-            .size(9.0)
+            .size(10.0)
             .color(theme.text_dim),
     );
 }
@@ -943,7 +943,7 @@ fn render_search_paths(ui: &mut egui::Ui, state: &AppState, theme: &KlippTheme) 
             egui::RichText::new(
                 "Tip: set $LADSPA_PATH (colon-separated) to add custom plugin directories.",
             )
-            .size(9.0)
+            .size(10.0)
             .color(theme.text_dim),
         );
     }

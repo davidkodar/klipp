@@ -26288,7 +26288,7 @@ impl eframe::App for KlippApp {
                         rect.center(),
                         egui::Align2::CENTER_CENTER,
                         "Drop media files to import",
-                        egui::FontId::proportional(18.0),
+                        egui::FontId::proportional(16.0),
                         self.theme.text_accent,
                     );
                 });
@@ -27085,7 +27085,7 @@ impl eframe::App for KlippApp {
                     egui::Frame::window(ui.style())
                         .fill(self.theme.bg_panel)
                         .stroke(egui::Stroke::new(1.0_f32, self.theme.border))
-                        .rounding(8.0)
+                        .rounding(4.0)
                         .inner_margin(8.0)
                         .show(ui, |ui| {
                             ui.set_min_width(400.0);
@@ -27094,7 +27094,7 @@ impl eframe::App for KlippApp {
                                 egui::TextEdit::singleline(&mut self.state.command_palette_query)
                                     .hint_text("Type a command...")
                                     .desired_width(384.0)
-                                    .font(egui::FontId::proportional(14.0))
+                                    .font(egui::FontId::proportional(13.0))
                             );
                             resp.request_focus();
 
@@ -27267,7 +27267,7 @@ impl eframe::App for KlippApp {
                             );
                             ui.add_space(4.0);
                         }
-                        ui.label(egui::RichText::new("Klipp").strong().size(20.0));
+                        ui.label(egui::RichText::new("Klipp").strong().size(16.0));
                         ui.add_space(4.0);
                         let build = klipp_core::build_info::get();
                         ui.label(format!("Version {}", build.label()));
@@ -27709,7 +27709,7 @@ impl eframe::App for KlippApp {
                             egui::Frame::popup(ui.style())
                                 .fill(self.theme.bg_raised)
                                 .stroke(egui::Stroke::new(1.0_f32, self.theme.border))
-                                .rounding(6.0)
+                                .rounding(4.0)
                                 .inner_margin(egui::Margin::symmetric(16.0, 10.0))
                                 .show(ui, |ui| {
                                     ui.horizontal(|ui| {
@@ -32490,7 +32490,7 @@ impl KlippApp {
                     };
                     if ui.add(
                         egui::Button::new(
-                            egui::RichText::new(label).size(9.0).color(theme.text_secondary),
+                            egui::RichText::new(label).size(10.0).color(theme.text_secondary),
                         ),
                     ).on_hover_text(tooltip).clicked()
                     {
@@ -32513,7 +32513,7 @@ impl KlippApp {
                         (ScopeMode::Histogram, "Hist"),
                     ] {
                         let active = self.state.scope_mode == mode;
-                        let text = egui::RichText::new(label).size(9.0);
+                        let text = egui::RichText::new(label).size(10.0);
                         let text = if active { text.color(theme.text_accent) } else { text.color(theme.text_dim) };
                         if ui.selectable_label(active, text).clicked() {
                             tracing::info!("UI: scope mode button clicked: {:?} (was {:?})", mode, self.state.scope_mode);
@@ -32546,10 +32546,10 @@ impl KlippApp {
                         ] {
                             let bg = if *enabled { color } else { theme.bg_raised };
                             let text_c = if *enabled { egui::Color32::WHITE } else { theme.text_dim };
-                            let btn = egui::Button::new(egui::RichText::new(label).size(9.0).color(text_c).strong())
+                            let btn = egui::Button::new(egui::RichText::new(label).size(10.0).color(text_c).strong())
                                 .fill(bg)
                                 .min_size(egui::vec2(20.0, 16.0))
-                                .rounding(3.0);
+                                .rounding(2.0);
                             if ui.add(btn).clicked() { *enabled = !*enabled; }
                         }
                     }
@@ -32604,7 +32604,7 @@ impl KlippApp {
 
                         egui::ComboBox::from_id_salt("scope_scale_sel")
                             .width(50.0)
-                            .selected_text(egui::RichText::new(crate::widgets::scopes::graticule_scale(self.state.scope_scale, self.state.hdr_monitor.renders_hdr()).button_label()).size(9.0))
+                            .selected_text(egui::RichText::new(crate::widgets::scopes::graticule_scale(self.state.scope_scale, self.state.hdr_monitor.renders_hdr()).button_label()).size(10.0))
                             .show_ui(ui, |ui| {
                                 for s in [ScopeScale::TenBit, ScopeScale::Ire, ScopeScale::Percent] {
                                     ui.selectable_value(&mut self.state.scope_scale, s, s.label());
@@ -32804,26 +32804,26 @@ impl KlippApp {
                             let target = (ui.available_width() - 12.0).max(180.0);
                             ui.set_max_width(target);
 
-                    ui.label(egui::RichText::new("DISPLAY").size(9.0).color(theme.text_dim).strong());
+                    ui.label(egui::RichText::new("DISPLAY").size(10.0).color(theme.text_dim).strong());
                     ui.checkbox(&mut self.state.scope_low_pass, "Low Pass Filter");
                     ui.checkbox(&mut self.state.scope_bloom, "Bloom on dense regions");
                     ui.checkbox(&mut self.state.scope_overlay_mode, "Overlay on viewer");
 
                     ui.add_space(4.0);
-                    ui.label(egui::RichText::new("QUALITY").size(9.0).color(theme.text_dim).strong());
+                    ui.label(egui::RichText::new("QUALITY").size(10.0).color(theme.text_dim).strong());
                     ui.radio_value(&mut self.state.scope_quality, klipp_core::ScopeQuality::Low, "Draft (every 4px)");
                     ui.radio_value(&mut self.state.scope_quality, klipp_core::ScopeQuality::Medium, "Standard (every 2px)");
                     ui.radio_value(&mut self.state.scope_quality, klipp_core::ScopeQuality::High, "Full (every px)");
 
                     ui.add_space(4.0);
-                    ui.label(egui::RichText::new("SCALE").size(9.0).color(theme.text_dim).strong());
+                    ui.label(egui::RichText::new("SCALE").size(10.0).color(theme.text_dim).strong());
                     ui.radio_value(&mut self.state.scope_scale, ScopeScale::TenBit, "0 \u{2013} 1023 (10-bit)");
                     ui.radio_value(&mut self.state.scope_scale, ScopeScale::Ire, "0 \u{2013} 100 IRE");
                     ui.radio_value(&mut self.state.scope_scale, ScopeScale::Percent, "0 \u{2013} 100%");
                     ui.checkbox(&mut self.state.scope_legal_range, "Show legal range (64\u{2013}940)")
                         .on_hover_text("Mark codes 64 and 940, the legal range of a 10-bit signal, on the waveform, parade and histogram.");
                     if self.state.hdr_monitor.renders_hdr() {
-                        ui.label(egui::RichText::new("HDR monitoring: the graticule is in nits.").size(9.0).color(theme.text_dim));
+                        ui.label(egui::RichText::new("HDR monitoring: the graticule is in nits.").size(10.0).color(theme.text_dim));
                     }
 
                     // The scope options: the same block the floating scope

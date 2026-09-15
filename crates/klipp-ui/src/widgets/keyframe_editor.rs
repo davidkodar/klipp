@@ -16,7 +16,7 @@ pub fn show_keyframe_editor(
     let bg = egui::Color32::from_rgb(0x16, 0x16, 0x1a);
     let grid_color = egui::Color32::from_rgb(0x22, 0x22, 0x28);
     let text_dim = egui::Color32::from_rgb(0x50, 0x50, 0x60);
-    let playhead_color = egui::Color32::from_rgb(0xe8, 0xa0, 0x20);
+    let playhead_color = egui::Color32::from_rgb(0xff, 0x5a, 0x3c);
 
     let (rect, _response) = ui.allocate_exact_size(
         egui::vec2(ui.available_width(), height),
@@ -53,7 +53,7 @@ pub fn show_keyframe_editor(
             egui::pos2(x, plot_rect.max.y + 2.0),
             egui::Align2::CENTER_TOP,
             label,
-            egui::FontId::monospace(8.0),
+            egui::FontId::monospace(10.0),
             text_dim,
         );
 

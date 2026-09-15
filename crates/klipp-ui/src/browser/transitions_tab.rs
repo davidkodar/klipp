@@ -1866,7 +1866,7 @@ fn transition_card(
             theme.border
         };
         let stroke_w: f32 = if is_selected { 2.0 } else { 1.0 };
-        let rounding = egui::Rounding::same(8.0);
+        let rounding = egui::Rounding::same(4.0);
 
         // Base canvas — neutral dark fill so the two-tone preview pops.
         ui.painter().rect_filled(rect, rounding, theme.bg_panel);
@@ -1933,10 +1933,10 @@ fn transition_card(
             theme.bg_panel.b(),
             backdrop_alpha,
         );
-        ui.painter().rect_filled(pill_rect, egui::Rounding::same(5.0), backdrop);
+        ui.painter().rect_filled(pill_rect, egui::Rounding::same(4.0), backdrop);
         ui.painter().rect_stroke(
             pill_rect,
-            egui::Rounding::same(5.0),
+            egui::Rounding::same(4.0),
             egui::Stroke::new(1.0_f32, theme.border),
         );
         ui.painter().text(
@@ -2004,9 +2004,9 @@ fn transition_list_row(
         let bg = egui::Color32::from_rgba_unmultiplied(
             theme.accent.r(), theme.accent.g(), theme.accent.b(), 28,
         );
-        ui.painter().rect_filled(rect, egui::Rounding::same(6.0), bg);
+        ui.painter().rect_filled(rect, egui::Rounding::same(4.0), bg);
     } else if hovered {
-        ui.painter().rect_filled(rect, egui::Rounding::same(6.0), theme.bg_raised);
+        ui.painter().rect_filled(rect, egui::Rounding::same(4.0), theme.bg_raised);
     }
     let mini_w = 96.0;
     let mini_rect = egui::Rect::from_min_size(
@@ -2049,8 +2049,8 @@ fn paint_ab_canvas(painter: &egui::Painter, rect: egui::Rect, _progress: f32) {
     let mid_x = rect.center().x;
     let left = egui::Rect::from_min_max(rect.min, egui::pos2(mid_x, rect.max.y));
     let right = egui::Rect::from_min_max(egui::pos2(mid_x, rect.min.y), rect.max);
-    painter.rect_filled(left, egui::Rounding::same(6.0), a);
-    painter.rect_filled(right, egui::Rounding::same(6.0), b);
+    painter.rect_filled(left, egui::Rounding::same(4.0), a);
+    painter.rect_filled(right, egui::Rounding::same(4.0), b);
 }
 
 /// Per-kind motion overlay. Each transition gets its own visual
@@ -2071,7 +2071,7 @@ fn paint_kind_motion_overlay(
     let t = progress.clamp(0.0, 1.0);
     let a = egui::Color32::from_rgb(0xc4, 0x6e, 0x3d);
     let b = egui::Color32::from_rgb(0x60, 0x7a, 0xa8);
-    let r = egui::Rounding::same(6.0);
+    let r = egui::Rounding::same(4.0);
 
     // Helper closures kept local — don't pollute the module's public
     // surface. Each is a single visual primitive.
@@ -2874,7 +2874,7 @@ fn paint_corner_badge(
     right_aligned: bool,
 ) {
     let painter = ui.painter();
-    let font = egui::FontId::proportional(9.0);
+    let font = egui::FontId::proportional(10.0);
     let galley = painter.layout_no_wrap(
         label.to_string(),
         font.clone(),
@@ -2891,7 +2891,7 @@ fn paint_corner_badge(
     let badge_rect = egui::Rect::from_min_size(pos, egui::vec2(w, h));
     painter.rect_filled(
         badge_rect,
-        egui::Rounding::same(3.0),
+        egui::Rounding::same(2.0),
         egui::Color32::from_rgba_unmultiplied(0, 0, 0, 180),
     );
     painter.galley(
@@ -2968,7 +2968,7 @@ fn tx_sidebar_row(
     }
     let label_galley = ui.painter().layout_no_wrap(
         label.to_string(),
-        egui::FontId::proportional(11.5),
+        egui::FontId::proportional(11.0),
         label_color,
     );
     ui.painter().galley(
@@ -3029,7 +3029,7 @@ fn tx_general_row(
     );
     let label_galley = ui.painter().layout_no_wrap(
         label.to_string(),
-        egui::FontId::proportional(11.5),
+        egui::FontId::proportional(11.0),
         theme.text_secondary,
     );
     ui.painter().galley(
@@ -3074,7 +3074,7 @@ fn tx_section_header(ui: &mut egui::Ui, theme: &KlippTheme, label: &str) {
         egui::pos2(rect.min.x + 14.0, rect.center().y),
         egui::Align2::LEFT_CENTER,
         label.to_uppercase(),
-        egui::FontId::proportional(9.5),
+        egui::FontId::proportional(10.0),
         theme.text_dim,
     );
 }
@@ -3274,7 +3274,7 @@ fn tx_result_strip(
         egui::pos2(rect.min.x + 12.0, rect.center().y),
         egui::Align2::LEFT_CENTER,
         format!("{} Transitions", count),
-        egui::FontId::proportional(10.5),
+        egui::FontId::proportional(11.0),
         theme.text_secondary,
     );
     let dropdown_w = 116.0;
@@ -3287,7 +3287,7 @@ fn tx_result_strip(
         ui.style_mut().visuals.widgets.inactive.bg_stroke = egui::Stroke::NONE;
         let label = format!("Sort: {}", sort_mode.label());
         egui::ComboBox::from_id_salt("transitions_sort_dd")
-            .selected_text(egui::RichText::new(label).size(10.5).color(theme.text_dim))
+            .selected_text(egui::RichText::new(label).size(11.0).color(theme.text_dim))
             .width(dropdown_w - 4.0)
             .show_ui(ui, |ui| {
                 for variant in [EffectSort::NameAsc, EffectSort::NameDesc, EffectSort::Category] {

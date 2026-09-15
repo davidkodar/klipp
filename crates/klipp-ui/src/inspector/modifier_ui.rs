@@ -75,7 +75,7 @@ fn show_behavior_for_param(
             if count > 0 {
                 ui.label(
                     egui::RichText::new(format!("({count})"))
-                        .size(9.0)
+                        .size(10.0)
                         .color(theme.text_dim),
                 );
             }
@@ -112,7 +112,7 @@ fn show_modifier_stack(
         egui::Frame::none()
             .fill(theme.bg_raised)
             .stroke(egui::Stroke::new(0.5_f32, theme.border))
-            .rounding(3.0)
+            .rounding(2.0)
             .inner_margin(egui::Margin::symmetric(6.0, 4.0))
             .show(ui, |ui| {
                 // Header row: name + enabled toggle + remove button
@@ -440,7 +440,7 @@ fn drag_row(
     ui.horizontal(|ui| {
         ui.label(
             egui::RichText::new(label)
-                .size(10.5)
+                .size(11.0)
                 .color(egui::Color32::from_rgb(160, 160, 170)),
         );
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -470,7 +470,7 @@ fn waveform_combo(ui: &mut egui::Ui, wf: &mut Waveform, id_salt: &str) -> bool {
     ui.horizontal(|ui| {
         ui.label(
             egui::RichText::new("Waveform")
-                .size(10.5)
+                .size(11.0)
                 .color(egui::Color32::from_rgb(160, 160, 170)),
         );
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -498,7 +498,7 @@ fn blend_combo(ui: &mut egui::Ui, bl: &mut ModifierBlend, id_salt: &str) -> bool
     ui.horizontal(|ui| {
         ui.label(
             egui::RichText::new("Blend")
-                .size(10.5)
+                .size(11.0)
                 .color(egui::Color32::from_rgb(160, 160, 170)),
         );
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {

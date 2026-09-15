@@ -136,15 +136,15 @@ pub fn show_no_selection(
                     ui.painter().rect_filled(rect, 4.0, theme.bg_raised);
                     ui.painter().text(
                         egui::pos2(rect.min.x + 10.0, rect.min.y + 14.0), egui::Align2::LEFT_CENTER,
-                        "CLIPS IN BIN", egui::FontId::proportional(9.0), theme.text_dim,
+                        "CLIPS IN BIN", egui::FontId::proportional(10.0), theme.text_dim,
                     );
                     ui.painter().text(
                         egui::pos2(rect.min.x + 10.0, rect.min.y + 32.0), egui::Align2::LEFT_CENTER,
-                        format!("{total_bin}"), egui::FontId::proportional(18.0), theme.text_primary,
+                        format!("{total_bin}"), egui::FontId::proportional(16.0), theme.text_primary,
                     );
                     ui.painter().text(
                         egui::pos2(rect.min.x + 10.0, rect.min.y + 50.0), egui::Align2::LEFT_CENTER,
-                        format!("{video_count} video \u{00B7} {audio_count} audio"), egui::FontId::proportional(9.0), theme.text_dim,
+                        format!("{video_count} video \u{00B7} {audio_count} audio"), egui::FontId::proportional(10.0), theme.text_dim,
                     );
 
                     ui.add_space(8.0);
@@ -154,15 +154,15 @@ pub fn show_no_selection(
                     ui.painter().rect_filled(rect, 4.0, theme.bg_raised);
                     ui.painter().text(
                         egui::pos2(rect.min.x + 10.0, rect.min.y + 14.0), egui::Align2::LEFT_CENTER,
-                        "TOTAL BIN DURATION", egui::FontId::proportional(9.0), theme.text_dim,
+                        "TOTAL BIN DURATION", egui::FontId::proportional(10.0), theme.text_dim,
                     );
                     ui.painter().text(
                         egui::pos2(rect.min.x + 10.0, rect.min.y + 32.0), egui::Align2::LEFT_CENTER,
-                        &dur_text, egui::FontId::proportional(18.0), theme.text_primary,
+                        &dur_text, egui::FontId::proportional(16.0), theme.text_primary,
                     );
                     ui.painter().text(
                         egui::pos2(rect.min.x + 10.0, rect.min.y + 50.0), egui::Align2::LEFT_CENTER,
-                        "hh:mm:ss", egui::FontId::proportional(9.0), theme.text_dim,
+                        "hh:mm:ss", egui::FontId::proportional(10.0), theme.text_dim,
                     );
                 });
 
@@ -175,12 +175,12 @@ pub fn show_no_selection(
                     ui.painter().rect_filled(rect, 4.0, theme.bg_raised);
                     ui.painter().text(
                         egui::pos2(rect.min.x + 10.0, rect.min.y + 12.0), egui::Align2::LEFT_CENTER,
-                        "MISSING MEDIA", egui::FontId::proportional(9.0), theme.text_dim,
+                        "MISSING MEDIA", egui::FontId::proportional(10.0), theme.text_dim,
                     );
                     let mc = if missing_count == 0 { theme.marker_success } else { theme.marker_error };
                     ui.painter().text(
                         egui::pos2(rect.min.x + 10.0, rect.min.y + 30.0), egui::Align2::LEFT_CENTER,
-                        format!("{missing_count}"), egui::FontId::proportional(18.0), mc,
+                        format!("{missing_count}"), egui::FontId::proportional(16.0), mc,
                     );
 
                     ui.add_space(8.0);
@@ -190,12 +190,12 @@ pub fn show_no_selection(
                     ui.painter().rect_filled(rect, 4.0, theme.bg_raised);
                     ui.painter().text(
                         egui::pos2(rect.min.x + 10.0, rect.min.y + 12.0), egui::Align2::LEFT_CENTER,
-                        "OFFLINE CLIPS", egui::FontId::proportional(9.0), theme.text_dim,
+                        "OFFLINE CLIPS", egui::FontId::proportional(10.0), theme.text_dim,
                     );
                     let oc = if offline_count == 0 { theme.marker_success } else { theme.marker_error };
                     ui.painter().text(
                         egui::pos2(rect.min.x + 10.0, rect.min.y + 30.0), egui::Align2::LEFT_CENTER,
-                        format!("{offline_count}"), egui::FontId::proportional(18.0), oc,
+                        format!("{offline_count}"), egui::FontId::proportional(16.0), oc,
                     );
                 });
             });
@@ -550,7 +550,7 @@ pub fn show_bin_media(
                 for (i, tag) in media.tags.iter().enumerate() {
                     egui::Frame::default()
                         .fill(theme.bg_raised)
-                        .rounding(10.0)
+                        .rounding(4.0)
                         .inner_margin(egui::Margin { left: 8.0, right: 4.0, top: 3.0, bottom: 3.0 })
                         .show(ui, |ui| {
                             ui.horizontal(|ui| {
@@ -984,7 +984,7 @@ pub fn show_clip(
                 for (i, tag) in media.tags.iter().enumerate() {
                     egui::Frame::none()
                         .fill(theme.bg_raised)
-                        .rounding(10.0)
+                        .rounding(4.0)
                         .inner_margin(egui::Margin { left: 8.0, right: 4.0, top: 3.0, bottom: 3.0 })
                         .show(ui, |ui| {
                             ui.horizontal(|ui| {
@@ -1317,7 +1317,7 @@ fn section_card(
     let rounding = if is_open {
         egui::Rounding { nw: 6.0, ne: 6.0, sw: 0.0, se: 0.0 }
     } else {
-        egui::Rounding::same(6.0)
+        egui::Rounding::same(4.0)
     };
     ui.painter().rect_filled(header_rect, rounding, header_bg);
 

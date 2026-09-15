@@ -77,7 +77,7 @@ pub fn show_file_info(
                     ui.label(
                         egui::RichText::new(&filename)
                             .strong()
-                            .size(14.0)
+                            .size(13.0)
                             .color(theme.text_primary),
                     );
                 });

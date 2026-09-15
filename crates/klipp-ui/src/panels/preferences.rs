@@ -132,7 +132,7 @@ impl PreferencesPanel {
             .default_width(win_w)
             .default_height(win_h)
             .default_pos(egui::pos2(screen.center().x - win_w / 2.0, screen.center().y - win_h / 2.0))
-            .frame(egui::Frame::window(&ctx.style()).fill(theme.bg_void).rounding(10.0).inner_margin(0.0))
+            .frame(egui::Frame::window(&ctx.style()).fill(theme.bg_void).rounding(4.0).inner_margin(0.0))
             .show(ctx, |ui| {
                 let win_rect = ui.max_rect();
 
@@ -153,7 +153,7 @@ impl PreferencesPanel {
                 }
                 if close_resp.clicked() { open = false; }
                 // Title text
-                ui.painter().text(title_rect.center(), egui::Align2::CENTER_CENTER, "Preferences", egui::FontId::proportional(14.0), theme.text_primary);
+                ui.painter().text(title_rect.center(), egui::Align2::CENTER_CENTER, "Preferences", egui::FontId::proportional(13.0), theme.text_primary);
 
                 // ── Search bar ──
                 let search_h = 36.0;
@@ -564,7 +564,7 @@ impl PreferencesPanel {
         // Page heading
         ui.horizontal(|ui| {
             ui.add_space(14.0);
-            ui.label(egui::RichText::new("General").strong().size(18.0).color(theme.text_primary));
+            ui.label(egui::RichText::new("General").strong().size(16.0).color(theme.text_primary));
         });
 
         // ── STARTUP section ──
@@ -679,7 +679,7 @@ impl PreferencesPanel {
         // Page heading
         ui.horizontal(|ui| {
             ui.add_space(14.0);
-            ui.label(egui::RichText::new("Playback").strong().size(18.0).color(theme.text_primary));
+            ui.label(egui::RichText::new("Playback").strong().size(16.0).color(theme.text_primary));
         });
         ui.add_space(4.0);
 
@@ -854,7 +854,7 @@ impl PreferencesPanel {
         // Page heading
         ui.horizontal(|ui| {
             ui.add_space(14.0);
-            ui.label(egui::RichText::new("Editing").strong().size(18.0).color(theme.text_primary));
+            ui.label(egui::RichText::new("Editing").strong().size(16.0).color(theme.text_primary));
         });
         ui.add_space(4.0);
 
@@ -1200,7 +1200,7 @@ impl PreferencesPanel {
             ui.label(
                 egui::RichText::new("File Browser")
                     .strong()
-                    .size(18.0)
+                    .size(16.0)
                     .color(theme.text_primary),
             );
         });
@@ -1538,7 +1538,7 @@ impl PreferencesPanel {
         // Page heading
         ui.horizontal(|ui| {
             ui.add_space(14.0);
-            ui.label(egui::RichText::new("Audio").strong().size(18.0).color(theme.text_primary));
+            ui.label(egui::RichText::new("Audio").strong().size(16.0).color(theme.text_primary));
         });
         ui.add_space(4.0);
 
@@ -1671,7 +1671,7 @@ impl PreferencesPanel {
         // Page heading
         ui.horizontal(|ui| {
             ui.add_space(14.0);
-            ui.label(egui::RichText::new("Export").strong().size(18.0).color(theme.text_primary));
+            ui.label(egui::RichText::new("Export").strong().size(16.0).color(theme.text_primary));
         });
         ui.add_space(4.0);
 
@@ -1845,7 +1845,7 @@ impl PreferencesPanel {
         // Page heading
         ui.horizontal(|ui| {
             ui.add_space(14.0);
-            ui.label(egui::RichText::new("Proxy").strong().size(18.0).color(theme.text_primary));
+            ui.label(egui::RichText::new("Proxy").strong().size(16.0).color(theme.text_primary));
         });
         ui.add_space(4.0);
 
@@ -1997,7 +1997,7 @@ impl PreferencesPanel {
         // Page heading
         ui.horizontal(|ui| {
             ui.add_space(14.0);
-            ui.label(egui::RichText::new("External Tools").strong().size(18.0).color(theme.text_primary));
+            ui.label(egui::RichText::new("External Tools").strong().size(16.0).color(theme.text_primary));
         });
         ui.add_space(4.0);
 
@@ -2061,7 +2061,7 @@ impl PreferencesPanel {
                      Leave empty to fall back to xdg-open (OS default). Linux only \u{2014} \
                      macOS/Windows support is deferred.",
                 )
-                .size(10.5)
+                .size(11.0)
                 .color(theme.text_dim),
             );
         });
@@ -2075,7 +2075,7 @@ impl PreferencesPanel {
         // Page heading with "Restart required" badge
         ui.horizontal(|ui| {
             ui.add_space(14.0);
-            ui.label(egui::RichText::new("System").strong().size(18.0).color(theme.text_primary));
+            ui.label(egui::RichText::new("System").strong().size(16.0).color(theme.text_primary));
             ui.add_space(8.0);
             // Restart required badge
             let badge_text = "Restart required";
@@ -2187,7 +2187,7 @@ impl PreferencesPanel {
         // Page heading
         ui.horizontal(|ui| {
             ui.add_space(14.0);
-            ui.label(egui::RichText::new("Appearance").strong().size(18.0).color(theme.text_primary));
+            ui.label(egui::RichText::new("Appearance").strong().size(16.0).color(theme.text_primary));
         });
 
         // ── THEME section ──
@@ -2289,7 +2289,7 @@ impl PreferencesPanel {
             );
             // Color preset circles (right-aligned)
             let presets: &[[u8; 3]] = &[
-                [0xe8, 0xa0, 0x20], // amber (default)
+                [0xff, 0x5a, 0x3c], // warm red (default)
                 [0x40, 0x80, 0xe0], // blue
                 [0x40, 0xb0, 0x60], // green
                 [0xe0, 0x70, 0x70], // red/pink
@@ -2396,7 +2396,7 @@ impl PreferencesPanel {
         // Page heading
         ui.horizontal(|ui| {
             ui.add_space(14.0);
-            ui.label(egui::RichText::new("Audio hardware").strong().size(18.0).color(theme.text_primary));
+            ui.label(egui::RichText::new("Audio hardware").strong().size(16.0).color(theme.text_primary));
         });
         ui.add_space(4.0);
 
@@ -2688,7 +2688,7 @@ impl PreferencesPanel {
         // Page heading
         ui.horizontal(|ui| {
             ui.add_space(14.0);
-            ui.label(egui::RichText::new("Cache").strong().size(18.0).color(theme.text_primary));
+            ui.label(egui::RichText::new("Cache").strong().size(16.0).color(theme.text_primary));
         });
         ui.add_space(4.0);
 
@@ -3127,7 +3127,7 @@ impl PreferencesPanel {
         // Page heading
         ui.horizontal(|ui| {
             ui.add_space(14.0);
-            ui.label(egui::RichText::new("Color").strong().size(18.0).color(theme.text_primary));
+            ui.label(egui::RichText::new("Color").strong().size(16.0).color(theme.text_primary));
         });
         ui.add_space(4.0);
 
@@ -3296,7 +3296,7 @@ impl PreferencesPanel {
         // Page heading
         ui.horizontal(|ui| {
             ui.add_space(14.0);
-            ui.label(egui::RichText::new("Titles").strong().size(18.0).color(theme.text_primary));
+            ui.label(egui::RichText::new("Titles").strong().size(16.0).color(theme.text_primary));
         });
         ui.add_space(4.0);
 
@@ -3726,7 +3726,7 @@ impl PreferencesPanel {
         // Page heading
         ui.horizontal(|ui| {
             ui.add_space(14.0);
-            ui.label(egui::RichText::new("Advanced").strong().size(18.0).color(theme.text_primary));
+            ui.label(egui::RichText::new("Advanced").strong().size(16.0).color(theme.text_primary));
         });
         ui.add_space(4.0);
 
@@ -3818,7 +3818,7 @@ impl PreferencesPanel {
         // Page heading
         ui.horizontal(|ui| {
             ui.add_space(14.0);
-            ui.label(egui::RichText::new("Keyboard shortcuts").strong().size(18.0).color(theme.text_primary));
+            ui.label(egui::RichText::new("Keyboard shortcuts").strong().size(16.0).color(theme.text_primary));
         });
         ui.add_space(4.0);
 
@@ -4013,7 +4013,7 @@ impl PreferencesPanel {
         // Page heading
         ui.horizontal(|ui| {
             ui.add_space(14.0);
-            ui.label(egui::RichText::new("About Klipp").strong().size(18.0).color(theme.text_primary));
+            ui.label(egui::RichText::new("About Klipp").strong().size(16.0).color(theme.text_primary));
         });
         ui.add_space(4.0);
 
