@@ -14,9 +14,6 @@ pub struct ScopeTextureEntry {
     pub w: u32,
     pub h: u32,
     pub generation: u64,
-    /// Drawn by the GPU scope renderer, finished as it is: the UI adds
-    /// no glow, filter or texture of its own on top.
-    pub gpu: bool,
 }
 
 pub struct FrameBuffer {
@@ -56,7 +53,7 @@ pub struct FrameBuffer {
     /// and not the view of it: `data` has been through the display
     /// transform, which in a wide-gamut project has already mapped the
     /// gamut, and plotting that would draw the compression rather than the
-    /// colour. See [`crate::ffmpeg_scope::CIE_SAMPLES_MODE`].
+    /// colour. See [`crate::scopes::CIE_SAMPLES_MODE`].
     pub cie_samples: Vec<f32>,
     pub cie_samples_w: u32,
     pub cie_samples_h: u32,

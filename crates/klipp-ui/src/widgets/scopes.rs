@@ -3,11 +3,7 @@ use crate::theme::KlippTheme;
 use klipp_engine::SharedFrameBuffer;
 use std::time::Instant;
 
-// `scope_ffmpeg_enabled` removed during Phase 8 — the engine always
-// renders via libavfilter now and the legacy in-tree CPU fallback is
-// gone. See RECOVERY_SCOPES_INHOUSE.md for the legacy recovery path.
-
-/// Scope render result — either from GPU engine or CPU direct rendering.
+/// A scope image the engine drew.
 enum ScopeImage {
     Ready(egui::ColorImage),
 }
@@ -143,7 +139,7 @@ pub(crate) fn histogram_image_rect(rect: egui::Rect) -> egui::Rect {
 /// image is drawn at `img`'s physical size, so the panels are laid out at
 /// that size.
 pub(crate) fn histogram_screen_panels(img: egui::Rect, mode: klipp_core::HistogramDisplayMode, ppp: f32) -> Vec<(egui::Rect, u32)> {
-    use klipp_engine::ffmpeg_scope::histogram_layout;
+    use klipp_engine::scopes::histogram_layout;
     let (tw, th) = (((img.width() * ppp).round() as u32).max(1), ((img.height() * ppp).round() as u32).max(1));
     let (sx, sy) = (img.width() / tw as f32, img.height() / th as f32);
     klipp_effects::gpu_scopes::histogram_panels(histogram_layout(mode), tw, th)
@@ -337,58 +333,6 @@ pub(crate) fn draw_scale(ui: &egui::Ui, rect: egui::Rect, scale: ScopeScale, is_
     }
 }
 
-/// Apply a CRT scan-texture overlay — every other row darkens by a
-/// small fraction. The goal is "very subtle row structure" — not
-/// obvious stripes, just enough to break the sterile mathematically-
-/// clean look without distracting from the trace. 4 % per-row
-/// darkening (×0.96) reads as texture, not as banding.
-///
-/// Cheap: one multiply per pixel on alternating rows. No tier-gating
-/// today — the effect is subtle enough that the perf cost (~1 µs at
-/// typical scope sizes) doesn't justify a quality knob.
-///
-/// Part of the "energetic imperfection" direction (see
-/// feedback_scope_realism_through_imperfection.md): realism comes
-/// from non-uniformity, not from more blur.
-pub(crate) fn apply_scanline_texture(image: &mut egui::ColorImage) {
-    let w = image.size[0];
-    let h = image.size[1];
-    let mul: f32 = 0.96;
-    for y in (1..h).step_by(2) {
-        let row_start = y * w;
-        for x in 0..w {
-            let p = image.pixels[row_start + x];
-            image.pixels[row_start + x] = egui::Color32::from_rgb(
-                ((p.r() as f32) * mul) as u8,
-                ((p.g() as f32) * mul) as u8,
-                ((p.b() as f32) * mul) as u8,
-            );
-        }
-    }
-}
-
-/// Apply 5-tap horizontal Gaussian low pass filter to a ColorImage.
-fn apply_low_pass_filter(image: &mut egui::ColorImage) {
-    let w = image.size[0];
-    let h = image.size[1];
-    let weights = [0.05_f32, 0.20, 0.50, 0.20, 0.05];
-    let src = image.pixels.clone();
-    for y in 0..h {
-        for x in 2..w.saturating_sub(2) {
-            let idx = x + y * w;
-            let mut r = 0.0_f32;
-            let mut g = 0.0_f32;
-            let mut b = 0.0_f32;
-            for (di, &wt) in weights.iter().enumerate() {
-                let si = idx - 2 + di;
-                r += src[si].r() as f32 * wt;
-                g += src[si].g() as f32 * wt;
-                b += src[si].b() as f32 * wt;
-            }
-            image.pixels[idx] = egui::Color32::from_rgb(r as u8, g as u8, b as u8);
-        }
-    }
-}
 
 /// Show the complete scope panel with header, scale, and traces.
 /// Screen direction of the skin-tone line at `angle_deg`, measured the way
@@ -423,9 +367,7 @@ pub fn show_scopes(
     // Minimize mutex hold time: snapshot data, drop lock, then render CPU scopes outside lock
     let scope_result = {
         // Read the engine-published per-mode scope texture from the
-        // frame buffer. The legacy CPU fallback (ScopeAction::CpuRender)
-        // was removed in Phase 8 — the FFmpeg path is the sole renderer.
-        // On a never-rendered-yet mode (first tab visit) we return None
+        // frame buffer. On a never-rendered-yet mode (first tab visit) we return None
         // so the dock displays its previously cached texture (or nothing)
         // until the engine catches up on its next tick.
         let _ = quality; // legacy CPU param; kept on the signature for API stability
@@ -456,7 +398,7 @@ pub fn show_scopes(
                         size: [entry.w as usize, entry.h as usize],
                         pixels,
                     };
-                    Some((ScopeImage::Ready(image), gen, entry.gpu))
+                    Some((ScopeImage::Ready(image), gen))
                 } else if !fb.scope_texture.is_empty()
                     && fb.scope_texture_w > 0
                     && fb.scope_texture_mode == mi as u8
@@ -471,7 +413,7 @@ pub fn show_scopes(
                         size: [fb.scope_texture_w as usize, fb.scope_texture_h as usize],
                         pixels,
                     };
-                    Some((ScopeImage::Ready(image), gen, false))
+                    Some((ScopeImage::Ready(image), gen))
                 } else {
                     None
                 }
@@ -481,7 +423,7 @@ pub fn show_scopes(
         }
     };
 
-    if let Some((scope_img, gen, finished)) = scope_result {
+    if let Some((scope_img, gen)) = scope_result {
         state.frame_generations[mi] = gen;
         state.last_settings_generation = state.settings_generation;
         state.last_render_time = Some(Instant::now());
@@ -489,121 +431,7 @@ pub fn show_scopes(
             if idx != mi { state.frame_generations[idx] = u64::MAX; }
         }
 
-        let ScopeImage::Ready(mut image) = scope_img;
-
-        // Post-processing: threshold bloom (extract bright → gaussian blur → additive blend).
-        // Now applied to vectorscope as well — chroma vector clouds
-        // gain MORE from bloom than waveforms do (per the phosphor
-        // audit). Tuning is more aggressive than the legacy values:
-        // lower threshold catches mid-density energy, larger radius
-        // softens it across more pixels, higher strength makes the
-        // glow visible without needing to crank monitor brightness.
-        // A GPU-drawn scope arrives finished: its glow is part of the
-        // drawing, and a filter or texture on top would only blur it.
-        if state.bloom && !finished {
-            let w = image.size[0];
-            let h = image.size[1];
-            // Tightened to a thin inner-glow pass (was a broad
-            // front-lit halo). Three changes from the previous
-            // 0.20 / 0.65 / 18 tuning, all driven by the same
-            // perceptual goal: bloom should look EMITTED FROM
-            // INSIDE the densest filament cores, not painted on
-            // top of the trace.
-            //
-            //   * Threshold 0.20 → 0.55 — only fires on the very
-            //     brightest pixels (sparse hot intersections).
-            //     Below that, the trace's own intensity ramp is
-            //     doing the work; bloom would just smudge it.
-            //   * Strength 0.65 → 0.18 — even where bloom fires,
-            //     the contribution is a quiet additive glow, not
-            //     a wash. Combined with the smaller radius this
-            //     reads as core-light leaking 2-3 px outward,
-            //     not as a halo painted around the trace.
-            //   * Radius 18 → 5 — keeps glow LOCAL to the hot
-            //     cores. The previous 18-px radius was the main
-            //     contributor to the "broadly luminous" feel —
-            //     it spread bright-pixel energy 36 px across the
-            //     scope, painting whole regions with light.
-            let threshold = 0.55_f32;
-            let bloom_strength = 0.18_f32;
-            let radius = 5usize;
-
-            // 1. Extract bright pass
-            let mut bright: Vec<[f32; 3]> = image.pixels.iter().map(|p| {
-                let r = p.r() as f32 / 255.0;
-                let g = p.g() as f32 / 255.0;
-                let b = p.b() as f32 / 255.0;
-                let lum = r * 0.3 + g * 0.6 + b * 0.1;
-                if lum > threshold {
-                    [r, g, b]
-                } else {
-                    [0.0, 0.0, 0.0]
-                }
-            }).collect();
-
-            // 2. Separable Gaussian blur (horizontal then vertical)
-            for _pass in 0..1 {
-                // Horizontal
-                let src = bright.clone();
-                for y in 0..h {
-                    for x in radius..w.saturating_sub(radius) {
-                        let mut sum = [0.0_f32; 3];
-                        let mut wt_sum = 0.0_f32;
-                        for dx in 0..=radius * 2 {
-                            let sx = x + dx - radius;
-                            let d = (dx as f32 - radius as f32).abs();
-                            let wt = (-d * d / (2.0 * (radius as f32 * 0.5).powi(2))).exp();
-                            sum[0] += src[y * w + sx][0] * wt;
-                            sum[1] += src[y * w + sx][1] * wt;
-                            sum[2] += src[y * w + sx][2] * wt;
-                            wt_sum += wt;
-                        }
-                        bright[y * w + x] = [sum[0] / wt_sum, sum[1] / wt_sum, sum[2] / wt_sum];
-                    }
-                }
-                // Vertical
-                let src = bright.clone();
-                for x in 0..w {
-                    for y in radius..h.saturating_sub(radius) {
-                        let mut sum = [0.0_f32; 3];
-                        let mut wt_sum = 0.0_f32;
-                        for dy in 0..=radius * 2 {
-                            let sy = y + dy - radius;
-                            let d = (dy as f32 - radius as f32).abs();
-                            let wt = (-d * d / (2.0 * (radius as f32 * 0.5).powi(2))).exp();
-                            sum[0] += src[sy * w + x][0] * wt;
-                            sum[1] += src[sy * w + x][1] * wt;
-                            sum[2] += src[sy * w + x][2] * wt;
-                            wt_sum += wt;
-                        }
-                        bright[y * w + x] = [sum[0] / wt_sum, sum[1] / wt_sum, sum[2] / wt_sum];
-                    }
-                }
-            }
-
-            // 3. Additive blend back
-            for (pixel, bloom) in image.pixels.iter_mut().zip(bright.iter()) {
-                let r = (pixel.r() as f32 / 255.0 + bloom[0] * bloom_strength).min(1.0);
-                let g = (pixel.g() as f32 / 255.0 + bloom[1] * bloom_strength).min(1.0);
-                let b = (pixel.b() as f32 / 255.0 + bloom[2] * bloom_strength).min(1.0);
-                *pixel = egui::Color32::from_rgb(
-                    (r * 255.0) as u8, (g * 255.0) as u8, (b * 255.0) as u8,
-                );
-            }
-        }
-
-        // Post-processing: horizontal low pass filter (5-tap gaussian)
-        if state.low_pass && mode != ScopeMode::Vectorscope && !finished {
-            apply_low_pass_filter(&mut image);
-        }
-
-        // Post-processing: subtle CRT scanline overlay. Always on —
-        // the effect is small enough (4% per-row darkening on alternating
-        // rows) that it reads as texture rather than as stripes. Adds
-        // analog character to all four scope modes.
-        if !finished {
-            apply_scanline_texture(&mut image);
-        }
+        let ScopeImage::Ready(image) = scope_img;
 
         let new_size = egui::vec2(image.size[0] as f32, image.size[1] as f32);
         match state.textures[mi] {
@@ -637,7 +465,7 @@ pub fn show_scopes(
         let (full_rect, _) = ui.allocate_exact_size(available, egui::Sense::hover());
 
         // Pure #000000 (NOT `theme.bg_void` which is `#0a0a0c`). The
-        // FFmpeg scope texture renders its interior in pure black, and
+        // GPU scope texture renders its interior in pure black, and
         // a near-black-but-not-quite-black surround reads as a visible
         // grey halo against the texture's true black — the axis-label
         // column, the trace padding, and the strip above/below all
@@ -1586,22 +1414,6 @@ mod tests {
     }
 
     #[test]
-    fn test_low_pass_filter_changes_pixels() {
-        // Create a 10x1 image with a spike at position 5
-        let mut pixels = vec![egui::Color32::BLACK; 10];
-        pixels[5] = egui::Color32::from_rgb(255, 0, 0);
-        let mut image = egui::ColorImage { size: [10, 1], pixels };
-        apply_low_pass_filter(&mut image);
-        // After filtering, neighbors of the spike should be non-zero
-        assert!(image.pixels[4].r() > 0, "Left neighbor should pick up red from spike");
-        assert!(image.pixels[6].r() > 0, "Right neighbor should pick up red from spike");
-        // Center should be reduced from 255
-        assert!(image.pixels[5].r() < 255, "Center spike should be reduced by filter");
-    }
-
-    // ── Phase 2 tests ──────────────────────────────────────────────────
-
-    #[test]
     fn test_pad_top_prevents_label_clipping() {
         let rect = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(400.0, 400.0));
         let y = val_to_y(1023.0, &rect, ScopeScale::TenBit);
@@ -1888,82 +1700,6 @@ mod tests {
         let settings = crate::state::PaneScopeSettings::default();
         assert!(!settings.show_iq_lines);
         assert_eq!(settings.waveform_paint_mode, crate::state::WaveformPaintMode::Green);
-    }
-
-    // ── Splat kernel + density-aware tonemap tests ─────────────────────
-
-    /// Pin: a normalised Gaussian kernel sums to 1.0 — splatting one
-    /// data point deposits exactly one unit of density (away from
-    /// edges). Catches a regression in the normaliser.
-    #[test]
-    fn scanline_texture_darkens_odd_rows_only() {
-        // 4×4 image filled with mid-grey (128, 128, 128).
-        let mut image = egui::ColorImage {
-            size: [4, 4],
-            pixels: vec![egui::Color32::from_rgb(128, 128, 128); 16],
-        };
-        apply_scanline_texture(&mut image);
-
-        // Even rows (y=0, 2) untouched.
-        for y in [0, 2] {
-            for x in 0..4 {
-                let p = image.pixels[y * 4 + x];
-                assert_eq!(p.r(), 128, "even row y={y} darkened");
-                assert_eq!(p.g(), 128);
-                assert_eq!(p.b(), 128);
-            }
-        }
-        // Odd rows (y=1, 3) darkened by ×0.96.
-        let expected = (128.0_f32 * 0.96) as u8;
-        for y in [1, 3] {
-            for x in 0..4 {
-                let p = image.pixels[y * 4 + x];
-                assert_eq!(p.r(), expected, "odd row y={y} not darkened");
-                assert_eq!(p.g(), expected);
-                assert_eq!(p.b(), expected);
-            }
-        }
-    }
-
-    /// Pin: scanline overlay is subtle — at most a few percent total
-    /// brightness loss across the whole image. If a regression cranked
-    /// the multiplier down to 0.5 the test would catch it before
-    /// users do.
-    #[test]
-    fn scanline_texture_is_subtle() {
-        let mut image = egui::ColorImage {
-            size: [10, 10],
-            pixels: vec![egui::Color32::from_rgb(200, 200, 200); 100],
-        };
-        apply_scanline_texture(&mut image);
-
-        // Average brightness across all pixels — even rows untouched,
-        // odd rows ×0.96. Five even + five odd rows → expected
-        // ≈ 200 × (0.5 + 0.5 × 0.96) = 200 × 0.98 = 196.
-        let total: u32 = image.pixels.iter().map(|p| p.r() as u32).sum();
-        let avg = total as f32 / 100.0;
-        assert!(avg > 195.0 && avg < 197.0,
-            "scanline should drop avg brightness by ~2%, got avg={avg}");
-    }
-
-    /// Pin: scanline overlay handles non-multiple-of-2 heights. Odd
-    /// rows past the last even row still darken; bottom-most row
-    /// being either even or odd doesn't break the loop.
-    #[test]
-    fn scanline_texture_handles_odd_height() {
-        let mut image = egui::ColorImage {
-            size: [4, 5],
-            pixels: vec![egui::Color32::from_rgb(100, 100, 100); 20],
-        };
-        apply_scanline_texture(&mut image);
-
-        // y=0, 2, 4 are even (untouched at 100); y=1, 3 are odd (96).
-        let expected_dark = (100.0_f32 * 0.96) as u8;
-        assert_eq!(image.pixels[0].r(), 100);     // y=0
-        assert_eq!(image.pixels[4].r(), expected_dark);   // y=1
-        assert_eq!(image.pixels[8].r(), 100);     // y=2
-        assert_eq!(image.pixels[12].r(), expected_dark);  // y=3
-        assert_eq!(image.pixels[16].r(), 100);    // y=4
     }
 
 }

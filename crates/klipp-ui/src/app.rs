@@ -352,10 +352,10 @@ pub struct KlippApp {
     /// Last `SetScopeSizes` payload sent to the engine: the physical size
     /// each scope mode was last shown at.
     last_sent_scope_sizes: Option<std::collections::BTreeMap<u8, (u32, u32)>>,
-    /// Last `SetScopeFfmpegSettings` payload sent to the engine. Tracks
+    /// Last `SetScopeSettings` payload sent to the engine. Tracks
     /// the union of low-pass / quality / R-G-B toggles. Re-sent only on
     /// change so settings-popover idle traffic doesn't churn the engine.
-    last_sent_scope_ffmpeg_settings: Option<klipp_core::ScopeFfmpegSettings>,
+    last_sent_scope_settings: Option<klipp_core::ScopeSettings>,
     /// Last `SetScopeBloom` value sent to the engine. Tracks the scope
     /// bloom toggle so the publish fires only on change.
     last_sent_scope_bloom: Option<bool>,
@@ -629,7 +629,7 @@ impl KlippApp {
             last_sent_scope_mode: None,
             last_sent_active_scope_modes: None,
             last_sent_scope_sizes: None,
-            last_sent_scope_ffmpeg_settings: None,
+            last_sent_scope_settings: None,
             last_sent_scope_bloom: None,
             last_sent_scope_low_pass: None,
             last_sent_scopes_visible: None,
@@ -25992,7 +25992,7 @@ impl eframe::App for KlippApp {
                         // Drawn in the UI, but it still needs the engine to
                         // publish the linear working-space samples it
                         // measures — the picture, not the view of it.
-                        active.insert(klipp_engine::ffmpeg_scope::CIE_SAMPLES_MODE);
+                        active.insert(klipp_engine::scopes::CIE_SAMPLES_MODE);
                     }
                 }
             }
@@ -26036,45 +26036,33 @@ impl eframe::App for KlippApp {
                 g: self.state.scope_show_g,
                 b: self.state.scope_show_b,
             };
-            // Manual intensity is sent as a direct override; 0 keeps the
-            // quality-tier default (we encode 0 → -1 for the spec
-            // builder's "use tier" sentinel).
-            let intensity_override = if self.state.scope_ffmpeg.waveform_intensity > 0.0 {
-                self.state.scope_ffmpeg.waveform_intensity
-            } else {
-                -1.0
-            };
             let wp = klipp_core::WaveformParadeSettings {
-                filter: self.state.scope_ffmpeg.waveform_filter,
-                intensity_override,
+                intensity: self.state.scope_options.waveform_intensity,
                 channels: legacy_channels,
-                envelope: self.state.scope_ffmpeg.waveform_envelope,
+                envelope: self.state.scope_options.waveform_envelope,
             };
-            let ffmpeg_settings = klipp_core::ScopeFfmpegSettings {
+            let scope_settings = klipp_core::ScopeSettings {
                 waveform: wp,
                 parade: wp,
                 vectorscope: klipp_core::VectorscopeSettings {
-                    mode: self.state.scope_ffmpeg.vectorscope_mode,
-                    graticule: self.state.scope_ffmpeg.vectorscope_graticule,
-                    bgopacity: self.state.scope_ffmpeg.vectorscope_bgopacity,
-                    lthreshold: self.state.scope_ffmpeg.vectorscope_lthreshold,
-                    hthreshold: self.state.scope_ffmpeg.vectorscope_hthreshold,
-                    zoom: self.state.scope_ffmpeg.vectorscope_zoom,
+                    colour: self.state.scope_options.vectorscope_colour,
+                    luma_lo: self.state.scope_options.vectorscope_luma_lo,
+                    luma_hi: self.state.scope_options.vectorscope_luma_hi,
+                    zoom: self.state.scope_options.vectorscope_zoom,
                 },
                 histogram: klipp_core::HistogramSettings {
-                    display_mode: self.state.scope_ffmpeg.histogram_display,
-                    levels: self.state.scope_ffmpeg.histogram_levels,
-                    fgopacity: self.state.scope_ffmpeg.histogram_fgopacity,
-                    bgopacity: self.state.scope_ffmpeg.histogram_bgopacity,
+                    display_mode: self.state.scope_options.histogram_display,
+                    levels: self.state.scope_options.histogram_levels,
+                    fill: self.state.scope_options.histogram_fill,
                 },
                 quality: self.state.scope_quality,
-                luma_only: self.state.scope_ffmpeg.waveform_luma_only,
+                luma_only: self.state.scope_options.waveform_luma_only,
             };
-            if self.last_sent_scope_ffmpeg_settings != Some(ffmpeg_settings) {
-                let _ = self.cmd_tx.send(AppCommand::SetScopeFfmpegSettings {
-                    settings: ffmpeg_settings,
+            if self.last_sent_scope_settings != Some(scope_settings) {
+                let _ = self.cmd_tx.send(AppCommand::SetScopeSettings {
+                    settings: scope_settings,
                 });
-                self.last_sent_scope_ffmpeg_settings = Some(ffmpeg_settings);
+                self.last_sent_scope_settings = Some(scope_settings);
             }
 
             // Bloom toggle — separate post-pass concern (not an FFmpeg
@@ -27053,7 +27041,7 @@ impl eframe::App for KlippApp {
             crate::widgets::scope_window::show_scope_window(
                 ctx,
                 &mut self.state.scope_window,
-                &mut self.state.scope_ffmpeg,
+                &mut self.state.scope_options,
                 &mut self.scope_window_runtime,
                 &self.frame_buffer,
                 self.prefs.color.vectorscope_skin_angle,
@@ -30985,8 +30973,8 @@ impl KlippApp {
                                 klipp_color::scopes::ScopeBasis::for_working_space(
                                     self.state.project_working_colorspace,
                                 ),
-                                self.state.scope_ffmpeg.vectorscope_zoom,
-                                self.state.scope_ffmpeg.histogram_display,
+                                self.state.scope_options.vectorscope_zoom,
+                                self.state.scope_options.histogram_display,
                             );
                         });
                     }
@@ -32364,8 +32352,8 @@ impl KlippApp {
                 klipp_color::scopes::ScopeBasis::for_working_space(
                     self.state.project_working_colorspace,
                 ),
-                self.state.scope_ffmpeg.vectorscope_zoom,
-                self.state.scope_ffmpeg.histogram_display,
+                self.state.scope_options.vectorscope_zoom,
+                self.state.scope_options.histogram_display,
             );
         });
         // U-6: same guard as render_color_ws_bottom_tools. Scopes only
@@ -32441,11 +32429,11 @@ impl KlippApp {
                     // persist across path swaps. Shared helper so the
                     // same UI block also renders inside the floating
                     // scope window's per-pane settings (single source
-                    // of truth — both surfaces mutate `state.scope_ffmpeg`).
+                    // of truth — both surfaces mutate `state.scope_options`).
                     ui.add_space(4.0);
-                    crate::widgets::scope_window::draw_ffmpeg_scope_options(
+                    crate::widgets::scope_window::draw_scope_options(
                         ui,
-                        &mut self.state.scope_ffmpeg,
+                        &mut self.state.scope_options,
                         theme,
                     );
 

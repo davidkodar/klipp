@@ -55,7 +55,7 @@ pub mod audio_output;
 pub mod audio_source;
 pub mod engine;
 pub mod fast_path;
-pub mod ffmpeg_scope;
+pub mod scopes;
 pub mod frame;
 pub mod ffmpeg_caps;
 pub mod grade_resample;

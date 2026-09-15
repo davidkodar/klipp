@@ -66,9 +66,8 @@ pub use types::{AudioEffectInstance, BlendMode, ChannelConfig, ClipRole, ColorSp
 pub use transition_registry::{TransitionKind, TransitionSpec, TRANSITION_SPECS, spec_for_kind, spec_for_kind_id, spec_for_string_key};
 pub use config::{
     ChannelMask, GpuPreference, HistogramDisplayMode, HistogramLevels, HistogramSettings,
-    LoudnessStandard, MeteringBallistics, PanLaw, PlaybackQuality, ScopeFfmpegSettings,
-    ScopeQuality, VectorscopeGraticule, VectorscopeMode, VectorscopeSettings, WaveformEnvelope,
-    WaveformFilter, WaveformParadeSettings,
+    LoudnessStandard, MeteringBallistics, PanLaw, PlaybackQuality, ScopeSettings,
+    ScopeQuality, VectorscopeSettings, WaveformParadeSettings,
 };
 pub use gpu_vendor::GpuVendor;
 pub use working_colorspace::WorkingColorspace;

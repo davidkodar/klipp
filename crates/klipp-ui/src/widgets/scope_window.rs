@@ -1,5 +1,5 @@
 use crate::state::{
-    PaneConfig, PaneScopeSettings, ScopeFfmpegState, ScopeLayout, ScopeScale,
+    PaneConfig, PaneScopeSettings, ScopeOptions, ScopeLayout, ScopeScale,
     ScopeType, ScopeWindowState, VectorscopeScaleStyle, WaveformChannel, WaveformPaintMode,
     WaveformScaleStyle,
 };
@@ -7,9 +7,6 @@ use crate::theme::KlippTheme;
 use klipp_engine::SharedFrameBuffer;
 use std::time::Instant;
 
-// `scope_ffmpeg_enabled` removed during Phase 8 — the engine always
-// renders via libavfilter now; see RECOVERY_SCOPES_INHOUSE.md for the
-// legacy recovery path.
 
 /// Runtime state for the floating scope window (not serialized).
 pub struct ScopeWindowRuntime {
@@ -113,7 +110,7 @@ pub fn sample_viewer_pixel(
 pub fn show_scope_window(
     ctx: &egui::Context,
     state: &mut ScopeWindowState,
-    scope_ffmpeg: &mut ScopeFfmpegState,
+    scope_options: &mut ScopeOptions,
     runtime: &mut ScopeWindowRuntime,
     frame_buffer: &SharedFrameBuffer,
     skin_tone_angle: f32,
@@ -248,7 +245,7 @@ pub fn show_scope_window(
                                 ui.painter().rect_stroke(pane_rect, 0.0,
                                     egui::Stroke::new(0.5_f32, egui::Color32::BLACK));
                                 let mut child = ui.new_child(egui::UiBuilder::new().max_rect(pane_rect));
-                                draw_pane(&mut child, pane_idx, state, scope_ffmpeg, runtime, frame_buffer, skin_tone_angle, is_playing, scope_cursor, spectrum_bins, correlation_samples, lufs_history, lufs_target, spectrum_history, theme, basis);
+                                draw_pane(&mut child, pane_idx, state, scope_options, runtime, frame_buffer, skin_tone_angle, is_playing, scope_cursor, spectrum_bins, correlation_samples, lufs_history, lufs_target, spectrum_history, theme, basis);
                             }
                         }
 
@@ -275,7 +272,7 @@ fn draw_pane(
     ui: &mut egui::Ui,
     pane_idx: usize,
     state: &mut ScopeWindowState,
-    scope_ffmpeg: &mut ScopeFfmpegState,
+    scope_options: &mut ScopeOptions,
     runtime: &mut ScopeWindowRuntime,
     frame_buffer: &SharedFrameBuffer,
     skin_tone_angle: f32,
@@ -447,7 +444,7 @@ fn draw_pane(
                         });
                     });
                     ui.separator();
-                    draw_pane_settings(ui, pane_idx, state, scope_ffmpeg, theme);
+                    draw_pane_settings(ui, pane_idx, state, scope_options, theme);
                 });
             });
         // Close on click outside the settings panel
@@ -467,8 +464,8 @@ fn draw_pane(
         return;
     }
 
-    let vectorscope_zoom = scope_ffmpeg.vectorscope_zoom;
-    let histogram_display = scope_ffmpeg.histogram_display;
+    let vectorscope_zoom = scope_options.vectorscope_zoom;
+    let histogram_display = scope_options.histogram_display;
     render_pane_scope(ui, pane_idx, state, runtime, frame_buffer, skin_tone_angle, is_playing, content_rect, scope_cursor, spectrum_bins, correlation_samples, lufs_history, lufs_target, spectrum_history, theme, basis, vectorscope_zoom, histogram_display);
 }
 
@@ -542,7 +539,7 @@ fn render_pane_scope(
                 _ => unreachable!("is_audio_only gates this match"),
             };
             let gen = runtime.frame_gens[pane_idx].wrapping_add(1);
-            Some((image, gen, false))
+            Some((image, gen))
         }
     } else {
         let fb = frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
@@ -564,12 +561,10 @@ fn render_pane_scope(
                 .is_some_and(|t| t.elapsed().as_millis() < 80);
 
             if stale && !throttled {
-                // FFmpeg path is the only video-scope renderer now. Lift
-                // the engine-published texture from `fb.scope_textures`
+                // Lift the engine-drawn texture from `fb.scope_textures`
                 // keyed on the pane's mode. CIE chromaticity is the one
-                // mode that still uses a CPU renderer — libavfilter has
-                // no equivalent gamut scope.
-                let ffmpeg_image: Option<(egui::ColorImage, bool)> = pane.scope_type
+                // scope drawn here, from the engine's samples.
+                let scope_texture: Option<egui::ColorImage> = pane.scope_type
                     .to_scope_mode()
                     .and_then(|sm| {
                         let mode_byte = match sm {
@@ -579,18 +574,15 @@ fn render_pane_scope(
                             crate::state::ScopeMode::Histogram => 3,
                         };
                         fb.scope_textures.get(&mode_byte).map(|entry| {
-                            (
-                                egui::ColorImage::from_rgba_unmultiplied(
-                                    [entry.w as usize, entry.h as usize],
-                                    &entry.data,
-                                ),
-                                entry.gpu,
+                            egui::ColorImage::from_rgba_unmultiplied(
+                                [entry.w as usize, entry.h as usize],
+                                &entry.data,
                             )
                         })
                     });
 
-                if let Some((image, finished)) = ffmpeg_image {
-                    Some((image, gen, finished))
+                if let Some(image) = scope_texture {
+                    Some((image, gen))
                 } else if pane.scope_type == ScopeType::CIEChromaticity
                     && !fb.cie_samples.is_empty()
                 {
@@ -612,12 +604,11 @@ fn render_pane_scope(
                         render_w,
                         render_h,
                     );
-                    Some((image, gen, false))
+                    Some((image, gen))
                 } else {
-                    // Engine hasn't published this mode's FFmpeg texture
-                    // yet (first frame on a fresh pane, mode-switch).
-                    // Skip — the engine catches up on its next ~10 Hz
-                    // scope tick.
+                    // The engine has not drawn this mode yet (first frame
+                    // on a fresh pane, a mode switch): it catches up on its
+                    // next scope tick.
                     let _ = (skin_tone_angle,); // formerly fed render_vectorscope
                     None
                 }
@@ -627,16 +618,9 @@ fn render_pane_scope(
         }
     };
 
-    if let Some((mut image, gen, finished)) = scope_image {
+    if let Some((image, gen)) = scope_image {
         runtime.frame_gens[pane_idx] = gen;
         runtime.last_render[pane_idx] = Some(Instant::now());
-
-        // Apply CRT scanline overlay so floating-window scopes get the
-        // same analog character as the main scope panel. A GPU-drawn
-        // scope is finished as it is.
-        if !finished {
-            super::scopes::apply_scanline_texture(&mut image);
-        }
 
         let new_size = egui::vec2(image.size[0] as f32, image.size[1] as f32);
         match runtime.textures[pane_idx] {
@@ -656,7 +640,7 @@ fn render_pane_scope(
     let painter = ui.painter_at(r);
 
     // Pure #000000 background for the pane interior — matches the
-    // FFmpeg scope texture's own true-black interior so the areas
+    // GPU scope texture's own true-black interior so the areas
     // around the texture (vectorscope centred-square margins, axis
     // padding, pane-to-pane gutters) don't read as a grey halo
     // against the trace. Mirrors the same fix used by the main-dock
@@ -1088,7 +1072,7 @@ fn draw_pane_settings(
     ui: &mut egui::Ui,
     pane_idx: usize,
     state: &mut ScopeWindowState,
-    scope_ffmpeg: &mut ScopeFfmpegState,
+    scope_options: &mut ScopeOptions,
     theme: &KlippTheme,
 ) {
     let scope_type = state.panes[pane_idx].scope_type;
@@ -1179,7 +1163,7 @@ fn draw_pane_settings(
         ui.label(egui::RichText::new("FFMPEG OPTIONS").size(9.0).color(theme.text_dim).strong());
         ui.small("Global — also editable from the main-dock gear.");
         ui.add_space(2.0);
-        draw_ffmpeg_scope_options(ui, scope_ffmpeg, theme);
+        draw_scope_options(ui, scope_options, theme);
     }
 }
 
@@ -1451,61 +1435,19 @@ fn draw_dot_menu(
     }
 }
 
-/// Shared FFmpeg-scope-settings UI block — used by both the main-dock
-/// scope-settings popover (in `app.rs`) and the floating scope window's
-/// per-pane settings popover (in `draw_pane_settings` below). All
-/// surfaces mutate the same `ScopeFfmpegState` on `AppState`, so values
-/// stay consistent across UI entry points.
-pub fn draw_ffmpeg_scope_options(
+/// The scope options shared by the main-dock scope-settings popover (in
+/// `app.rs`) and the floating scope window's settings popover: both edit
+/// the one `ScopeOptions` on `AppState`, so the two agree.
+pub fn draw_scope_options(
     ui: &mut egui::Ui,
-    state: &mut ScopeFfmpegState,
+    state: &mut ScopeOptions,
     theme: &crate::theme::KlippTheme,
 ) {
     ui.label(egui::RichText::new("WAVEFORM / PARADE").size(9.0).color(theme.text_dim).strong());
     ui.checkbox(&mut state.waveform_luma_only, "Luma (B&W) only")
-        .on_hover_text("Render Wave and Parade as a single white Y (luma) trace instead of R/G/B. Broadcast luma scope view.");
-    ui.add_space(2.0);
-    egui::ComboBox::from_id_salt(ui.next_auto_id().with("waveform_filter"))
-        .selected_text(match state.waveform_filter {
-            klipp_core::WaveformFilter::Lowpass => "Filter: Lowpass",
-            klipp_core::WaveformFilter::Flat => "Filter: Flat",
-            klipp_core::WaveformFilter::Aflat => "Filter: Aflat",
-            klipp_core::WaveformFilter::Chroma => "Filter: Chroma",
-            klipp_core::WaveformFilter::Color => "Filter: Color",
-            klipp_core::WaveformFilter::Acolor => "Filter: Acolor",
-        })
-        .width(170.0)
-        .show_ui(ui, |ui| {
-            for (f, label) in [
-                (klipp_core::WaveformFilter::Lowpass, "Lowpass (smooth, default)"),
-                (klipp_core::WaveformFilter::Flat, "Flat (raw dot density)"),
-                (klipp_core::WaveformFilter::Aflat, "Aflat (anti-aliased flat)"),
-                (klipp_core::WaveformFilter::Chroma, "Chroma (color planes only)"),
-                (klipp_core::WaveformFilter::Color, "Color (per-pixel)"),
-                (klipp_core::WaveformFilter::Acolor, "Acolor (anti-aliased color)"),
-            ] {
-                ui.selectable_value(&mut state.waveform_filter, f, label);
-            }
-        });
-    ui.add_space(2.0);
-    egui::ComboBox::from_id_salt(ui.next_auto_id().with("waveform_envelope"))
-        .selected_text(match state.waveform_envelope {
-            klipp_core::WaveformEnvelope::None => "Envelope: None",
-            klipp_core::WaveformEnvelope::Instant => "Envelope: Instant",
-            klipp_core::WaveformEnvelope::Peak => "Envelope: Peak",
-            klipp_core::WaveformEnvelope::PeakInstant => "Envelope: Peak + Instant",
-        })
-        .width(170.0)
-        .show_ui(ui, |ui| {
-            for (e, label) in [
-                (klipp_core::WaveformEnvelope::None, "None"),
-                (klipp_core::WaveformEnvelope::Instant, "Instant (this frame)"),
-                (klipp_core::WaveformEnvelope::Peak, "Peak (rolling max)"),
-                (klipp_core::WaveformEnvelope::PeakInstant, "Peak + Instant"),
-            ] {
-                ui.selectable_value(&mut state.waveform_envelope, e, label);
-            }
-        });
+        .on_hover_text("Draw the waveform and parade as one white Y′ trace instead of red, green and blue.");
+    ui.checkbox(&mut state.waveform_envelope, "Envelope")
+        .on_hover_text("Draw each column's lowest and highest level as a line, to see clipping and the picture's range at a glance.");
     ui.add_space(2.0);
     ui.horizontal(|ui| {
         ui.label(egui::RichText::new("Intensity").size(9.0).color(theme.text_dim));
@@ -1513,33 +1455,13 @@ pub fn draw_ffmpeg_scope_options(
             egui::Slider::new(&mut state.waveform_intensity, 0.0..=1.0)
                 .show_value(true)
                 .step_by(0.01),
-        ).on_hover_text("Manual override of the FFmpeg waveform intensity. 0 = use Quality-tier default (0.04 / 0.08 / 0.16); higher = denser trace.");
+        ).on_hover_text("Trace brightness. 0.5 draws the density as it is; 1 is six times brighter, 0 six times dimmer.");
     });
 
     ui.add_space(4.0);
     ui.label(egui::RichText::new("VECTORSCOPE").size(9.0).color(theme.text_dim).strong());
-    egui::ComboBox::from_id_salt(ui.next_auto_id().with("vectorscope_mode"))
-        .selected_text(match state.vectorscope_mode {
-            klipp_core::VectorscopeMode::Gray => "Gray",
-            klipp_core::VectorscopeMode::Color => "Color",
-            klipp_core::VectorscopeMode::Color2 => "Color 2",
-            klipp_core::VectorscopeMode::Color3 => "Color 3 (default)",
-            klipp_core::VectorscopeMode::Color4 => "Color 4",
-            klipp_core::VectorscopeMode::Color5 => "Color 5",
-        })
-        .width(170.0)
-        .show_ui(ui, |ui| {
-            for (mode, label) in [
-                (klipp_core::VectorscopeMode::Gray, "Gray"),
-                (klipp_core::VectorscopeMode::Color, "Color"),
-                (klipp_core::VectorscopeMode::Color2, "Color 2"),
-                (klipp_core::VectorscopeMode::Color3, "Color 3 (default)"),
-                (klipp_core::VectorscopeMode::Color4, "Color 4"),
-                (klipp_core::VectorscopeMode::Color5, "Color 5"),
-            ] {
-                ui.selectable_value(&mut state.vectorscope_mode, mode, label);
-            }
-        });
+    ui.checkbox(&mut state.vectorscope_colour, "Colour")
+        .on_hover_text("Tint the trace by the hue at each point. Off draws it mono.");
     ui.add_space(2.0);
     ui.horizontal(|ui| {
         ui.label(egui::RichText::new("Zoom").size(9.0).color(theme.text_dim));
@@ -1550,48 +1472,21 @@ pub fn draw_ffmpeg_scope_options(
     .response
     .on_hover_text("Magnify the chroma plane about the centre; the graticule follows.");
     ui.add_space(2.0);
-    egui::ComboBox::from_id_salt(ui.next_auto_id().with("vectorscope_graticule"))
-        .selected_text(match state.vectorscope_graticule {
-            klipp_core::VectorscopeGraticule::None => "Graticule: None",
-            klipp_core::VectorscopeGraticule::Green => "Graticule: Green",
-            klipp_core::VectorscopeGraticule::Color => "Graticule: Color",
-            klipp_core::VectorscopeGraticule::Invert => "Graticule: Invert",
-        })
-        .width(170.0)
-        .show_ui(ui, |ui| {
-            for (g, label) in [
-                (klipp_core::VectorscopeGraticule::None, "None (Klipp draws overlay)"),
-                (klipp_core::VectorscopeGraticule::Green, "Green (FFmpeg overlay)"),
-                (klipp_core::VectorscopeGraticule::Color, "Color (FFmpeg overlay)"),
-                (klipp_core::VectorscopeGraticule::Invert, "Invert (FFmpeg overlay)"),
-            ] {
-                ui.selectable_value(&mut state.vectorscope_graticule, g, label);
-            }
-        });
-    ui.add_space(2.0);
-    ui.horizontal(|ui| {
-        ui.label(egui::RichText::new("Bg opacity").size(9.0).color(theme.text_dim));
-        ui.add(
-            egui::Slider::new(&mut state.vectorscope_bgopacity, 0.0..=1.0)
-                .show_value(true)
-                .step_by(0.01),
-        ).on_hover_text("Vectorscope background opacity (FFmpeg `bgopacity=`).");
-    });
     ui.horizontal(|ui| {
         ui.label(egui::RichText::new("Luma low").size(9.0).color(theme.text_dim));
         ui.add(
-            egui::Slider::new(&mut state.vectorscope_lthreshold, 0.0..=1.0)
+            egui::Slider::new(&mut state.vectorscope_luma_lo, 0.0..=1.0)
                 .show_value(true)
                 .step_by(0.01),
-        ).on_hover_text("Drop pixels below this luma from the scatter (FFmpeg `lthreshold=`). Focus on highlight chroma.");
+        ).on_hover_text("Plot only pixels whose Y′ is at least this: the chroma of the highlights alone.");
     });
     ui.horizontal(|ui| {
         ui.label(egui::RichText::new("Luma high").size(9.0).color(theme.text_dim));
         ui.add(
-            egui::Slider::new(&mut state.vectorscope_hthreshold, 0.0..=1.0)
+            egui::Slider::new(&mut state.vectorscope_luma_hi, 0.0..=1.0)
                 .show_value(true)
                 .step_by(0.01),
-        ).on_hover_text("Drop pixels above this luma from the scatter (FFmpeg `hthreshold=`). Focus on shadow chroma.");
+        ).on_hover_text("Plot only pixels whose Y′ is at most this: the chroma of the shadows alone.");
     });
 
     ui.add_space(4.0);
@@ -1612,7 +1507,7 @@ pub fn draw_ffmpeg_scope_options(
     ui.horizontal(|ui| {
         ui.label(egui::RichText::new("Fill").size(9.0).color(theme.text_dim));
         ui.add(
-            egui::Slider::new(&mut state.histogram_fgopacity, 0.0..=1.0)
+            egui::Slider::new(&mut state.histogram_fill, 0.0..=1.0)
                 .show_value(true)
                 .step_by(0.01),
         ).on_hover_text("Brightness of the area under each curve. The curve itself is always drawn.");

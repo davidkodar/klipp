@@ -4,14 +4,19 @@
 //! A vectorscope is a measuring instrument: its whole use is telling "on
 //! the target" from "near it". That only works if the trace and the
 //! graticule are drawn in the same coordinates — same colour-difference
-//! matrix, same orientation, same scale. Nothing in the shipping path
-//! guaranteed that, so this test measures it.
+//! matrix, same orientation, same scale — in every working space. The
+//! GPU scope measures with the working space's luminance weights, the way
+//! the engine drives it; the graticule's targets come from
+//! `klipp_color::scopes`. This test measures that they agree. Skips
+//! without a GPU.
 
 use klipp_color::scopes::ScopeBasis;
-use klipp_core::{ScopeFfmpegSettings, WorkingColorspace};
-use klipp_engine::ffmpeg_scope::{FfmpegScopeBank, SCOPE_OUT_H, SCOPE_OUT_W};
+use klipp_core::WorkingColorspace;
+use klipp_effects::gpu::GpuEffectsPipeline;
+use klipp_effects::gpu_scopes::{ScopeInput, ScopeJob, ScopeTransfer, VectorscopeJob};
 
-const VECTORSCOPE: u8 = 2;
+const OUT: u32 = 256;
+const IDENTITY: [[f32; 3]; 3] = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
 
 /// The six saturated bars, in the order a colourist names them.
 const BARS: [(&str, [f32; 3]); 6] = [
@@ -42,8 +47,6 @@ fn bars_frame(width: u32, height: u32, amplitude: f32) -> Vec<f32> {
     out
 }
 
-/// Inverse of the OETF the scope path applies, so a bar written here comes
-/// back out as the signal value it names.
 fn srgb_to_linear(v: f32) -> f32 {
     if v <= 0.04045 {
         v / 12.92
@@ -52,51 +55,42 @@ fn srgb_to_linear(v: f32) -> f32 {
     }
 }
 
-/// Feed until the filter graph hands a frame back.
-fn render(
-    bank: &mut FfmpegScopeBank,
-    frame: &[f32],
-    w: u32,
-    h: u32,
-    basis: ScopeBasis,
-) -> Option<Vec<u8>> {
-    for _ in 0..8 {
-        match bank.render_linear(
-            VECTORSCOPE,
-            frame,
-            w,
-            h,
-            ScopeFfmpegSettings::default(),
-            basis,
-        ) {
-            Ok(Some(tex)) => return Some(tex),
-            Ok(None) => continue,
-            Err(e) => {
-                eprintln!("skipping: the vectorscope filter is unavailable here: {e}");
-                return None;
-            }
-        }
-    }
-    None
+/// The vectorscope of `frame`, measured the way the engine measures a
+/// linear frame in working space `ws`.
+fn render(gpu: &mut GpuEffectsPipeline, frame: &[f32], w: u32, h: u32, ws: WorkingColorspace) -> Vec<u8> {
+    let input = ScopeInput::Linear {
+        rgba: frame,
+        width: w,
+        height: h,
+        matrix: IDENTITY,
+        luma: klipp_color::primaries::luminance_weights(ws),
+        transfer: ScopeTransfer::Srgb,
+        scale: 1.0,
+    };
+    let job = ScopeJob::Vectorscope(VectorscopeJob {
+        zoom: 1.0,
+        intensity: -1.0,
+        colorize: true,
+        luma_lo: 0.0,
+        luma_hi: 1.0,
+        glow: false,
+        out_w: OUT,
+        out_h: OUT,
+    });
+    let mut out = gpu.scopes().render(&input, 1, &[job]);
+    out.remove(0).expect("a vectorscope")
 }
 
-/// The trace's six clusters, as normalised positions in the square the UI
-/// draws the texture into: `(0,0)` top-left, `(1,1)` bottom-right.
-///
-/// The texture is 1024x512 and the UI squeezes it back into a square, so
-/// normalised coordinates are the vectorscope's own square again.
+/// The six brightest clusters of the trace, as fractions of the plane,
+/// with their weight.
 fn clusters(tex: &[u8]) -> Vec<(f32, f32, f64)> {
-    let (w, h) = (SCOPE_OUT_W as usize, SCOPE_OUT_H as usize);
+    let (w, h) = (OUT as usize, OUT as usize);
     let lit = |x: usize, y: usize| -> f64 {
         let i = (y * w + x) * 4;
         let (r, g, b) = (tex[i] as f64, tex[i + 1] as f64, tex[i + 2] as f64);
-        // The trace is drawn over pure black; anything with light in it
-        // is signal. Weight by brightness so a soft dot centres properly.
         let v = r.max(g).max(b);
         if v > 24.0 { v } else { 0.0 }
     };
-    // Greedy peak-picking: take the brightest pixel, claim everything
-    // within a radius of it as one cluster, repeat. Six dots, far apart.
     let mut weight: Vec<Vec<f64>> = (0..h).map(|y| (0..w).map(|x| lit(x, y)).collect()).collect();
     let mut found = Vec::new();
     for _ in 0..6 {
@@ -111,7 +105,6 @@ fn clusters(tex: &[u8]) -> Vec<(f32, f32, f64)> {
         if peak.2 <= 0.0 {
             break;
         }
-        // Centroid over the neighbourhood, then clear it.
         let (rx, ry) = (w / 12, h / 12);
         let (x0, x1) = (peak.0.saturating_sub(rx), (peak.0 + rx).min(w - 1));
         let (y0, y1) = (peak.1.saturating_sub(ry), (peak.1 + ry).min(h - 1));
@@ -130,35 +123,25 @@ fn clusters(tex: &[u8]) -> Vec<(f32, f32, f64)> {
     found
 }
 
-/// Where the UI draws a target, as a normalised position in the square:
-/// Cb to the right, Cr up, which is the mapping
-/// `klipp-ui/src/widgets/scopes.rs` paints with.
+/// Where the graticule draws a target: Cb to the right, Cr up, about the
+/// centre — the plane `klipp_ui` draws its boxes on.
 fn target_position(cb: f32, cr: f32) -> (f32, f32) {
     (0.5 + cb, 0.5 - cr)
 }
 
-/// Bars in, graticule out: the trace has to land in the boxes.
-///
-/// A target box is about 4 px across in a ~500 px square — 0.016 of full
-/// scale. Anything further out than a box is half the reason a colourist
-/// would distrust the instrument; this allows a little over one box for the
-/// width of the trace itself.
+/// A box is 0.05 of full scale wide; a trace inside half that is on it.
 const BOX_TOLERANCE: f32 = 0.025;
 
-fn check_bars_land_on_targets(ws: WorkingColorspace) {
+fn check_bars_land_on_targets(gpu: &mut GpuEffectsPipeline, ws: WorkingColorspace) {
     let basis = ScopeBasis::for_working_space(ws);
     let (w, h) = (192u32, 64u32);
     let frame = bars_frame(w, h, TARGET_AMPLITUDE);
-    let mut bank = FfmpegScopeBank::new();
-    let Some(tex) = render(&mut bank, &frame, w, h, basis) else {
-        return;
-    };
-    assert_eq!(tex.len(), (SCOPE_OUT_W * SCOPE_OUT_H * 4) as usize);
+    let tex = render(gpu, &frame, w, h, ws);
+    assert_eq!(tex.len(), (OUT * OUT * 4) as usize);
 
     let found = clusters(&tex);
     assert_eq!(found.len(), 6, "six bars should make six clusters, in {}", basis.label());
 
-    // The very targets the UI paints — not a copy of them.
     let targets = klipp_color::scopes::vectorscope_targets(basis);
     let mut worst: (f32, String) = (0.0, String::new());
     eprintln!("-- {} project, 75% bars --", basis.label());
@@ -169,17 +152,14 @@ fn check_bars_land_on_targets(ws: WorkingColorspace) {
             .map(|(tx, ty, _)| ((tx - bx).hypot(ty - by), *tx, *ty))
             .min_by(|a, b| a.0.total_cmp(&b.0))
             .expect("the trace has clusters");
-        eprintln!(
-            "  {name:>2}: box at ({bx:.4}, {by:.4}), trace at ({nx:.4}, {ny:.4}), off by {dist:.4}"
-        );
+        eprintln!("  {name:>2}: box at ({bx:.4}, {by:.4}), trace at ({nx:.4}, {ny:.4}), off by {dist:.4}");
         if dist > worst.0 {
             worst = (dist, name.to_string());
         }
     }
     assert!(
         worst.0 < BOX_TOLERANCE,
-        "in a {} project, {} lands {:.4} of full scale from its target box — \
-         further than a box is wide",
+        "in a {} project, {} lands {:.4} of full scale from its target box — further than half a box is wide",
         basis.label(),
         worst.1,
         worst.0,
@@ -188,31 +168,25 @@ fn check_bars_land_on_targets(ws: WorkingColorspace) {
 
 #[test]
 fn the_vectorscope_trace_lands_on_the_graticule_targets() {
-    check_bars_land_on_targets(WorkingColorspace::Rec709Linear);
+    let Some(mut gpu) = GpuEffectsPipeline::new() else { return };
+    check_bars_land_on_targets(&mut gpu, WorkingColorspace::Rec709Linear);
 }
 
-/// A wide-gamut project's own bars, on its own targets. The frame holds the
-/// same numbers — each space's primaries at 75% — but they are a different
-/// colour in each space, and the graticule moves with them. Rec.709's matrix
-/// puts BT.2020's green and magenta 0.0193 of full scale away from where
-/// they belong: wider than a target box, so the bar would read off-target.
 #[test]
 fn a_wide_gamut_project_reads_its_own_bars_on_target() {
-    check_bars_land_on_targets(WorkingColorspace::Bt2020Linear);
-    check_bars_land_on_targets(WorkingColorspace::AcesCG);
+    let Some(mut gpu) = GpuEffectsPipeline::new() else { return };
+    check_bars_land_on_targets(&mut gpu, WorkingColorspace::Bt2020Linear);
+    check_bars_land_on_targets(&mut gpu, WorkingColorspace::AcesCG);
 }
 
-/// 100% bars overshoot the 75% boxes, as they do on hardware — proof the
-/// scale is a real one and not fitted to whatever was fed in.
 #[test]
 fn full_amplitude_bars_sit_outside_the_seventy_five_percent_boxes() {
-    let basis = ScopeBasis::default();
+    let Some(mut gpu) = GpuEffectsPipeline::new() else { return };
+    let ws = WorkingColorspace::Rec709Linear;
+    let basis = ScopeBasis::for_working_space(ws);
     let (w, h) = (192u32, 64u32);
     let frame = bars_frame(w, h, 1.0);
-    let mut bank = FfmpegScopeBank::new();
-    let Some(tex) = render(&mut bank, &frame, w, h, basis) else {
-        return;
-    };
+    let tex = render(&mut gpu, &frame, w, h, ws);
     let found = clusters(&tex);
     for (name, cb, cr) in klipp_color::scopes::vectorscope_targets(basis) {
         let (bx, by) = target_position(cb, cr);
@@ -222,11 +196,7 @@ fn full_amplitude_bars_sit_outside_the_seventy_five_percent_boxes() {
             .map(|(tx, ty, _)| ((tx - bx).hypot(ty - by), *tx, *ty))
             .min_by(|a, b| a.0.total_cmp(&b.0))
             .expect("clusters");
-        eprintln!(
-            "  {name:>2}: box radius {:.4}, 100% trace radius {:.4}",
-            radius(bx, by),
-            radius(nx, ny),
-        );
+        eprintln!("  {name:>2}: box radius {:.4}, 100% trace radius {:.4}", radius(bx, by), radius(nx, ny));
         assert!(
             radius(nx, ny) > radius(bx, by) + 0.05,
             "{name} at full amplitude sits {dist:.4} from the 75% box, not outside it",

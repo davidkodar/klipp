@@ -1687,10 +1687,9 @@ pub struct AppState {
     pub scope_show_g: bool,
     pub scope_show_b: bool,
     pub scope_low_pass: bool,
-    /// All FFmpeg-specific scope knobs grouped so the same edit view
-    /// can be passed to both the main-dock popover and the floating
-    /// scope window's per-pane settings.
-    pub scope_ffmpeg: ScopeFfmpegState,
+    /// The scope options, one struct so the main-dock popover and the
+    /// floating scope window edit the same values.
+    pub scope_options: ScopeOptions,
     pub scope_bloom: bool,
     pub scope_settings_open: bool,
     /// Floating scope window state.
@@ -2932,33 +2931,26 @@ impl VectorscopeScaleStyle {
     }
 }
 
-/// All FFmpeg-scope user controls grouped into one struct so the same
-/// edit view can be shared by the main-dock scope-settings popover and
-/// the floating scope window's per-pane settings. Plumbed into both UI
-/// surfaces; the publish bridge reads from this struct each frame and
-/// ships [`klipp_core::ScopeFfmpegSettings`] to the engine.
+/// The scope options, one struct so the main-dock scope-settings popover
+/// and the floating scope window edit the same values; the publish
+/// bridge reads it each frame and ships [`klipp_core::ScopeSettings`] to
+/// the engine.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct ScopeFfmpegState {
-    /// FFmpeg waveform filter algorithm for both Wave and Parade modes.
-    pub waveform_filter: klipp_core::WaveformFilter,
-    /// Waveform / parade envelope overlay (FFmpeg `envelope=`). Default off.
-    pub waveform_envelope: klipp_core::WaveformEnvelope,
-    /// Manual override for the FFmpeg waveform `intensity=`. 0 = use the
-    /// Quality-tier default; non-zero overrides it.
+pub struct ScopeOptions {
+    /// Draw each column's lowest and highest level as a line.
+    pub waveform_envelope: bool,
+    /// Waveform and parade trace brightness, 0..1; 0.5 is the density
+    /// as drawn, 1 six times brighter, 0 six times dimmer.
     pub waveform_intensity: f32,
     /// When true, Wave and Parade render as a single white Y (luma)
     /// trace instead of three coloured R/G/B traces.
     pub waveform_luma_only: bool,
-    /// FFmpeg vectorscope `mode=` choice.
-    pub vectorscope_mode: klipp_core::VectorscopeMode,
-    /// FFmpeg vectorscope `graticule=` overlay choice.
-    pub vectorscope_graticule: klipp_core::VectorscopeGraticule,
-    /// FFmpeg vectorscope `bgopacity=`. Default 0.3.
-    pub vectorscope_bgopacity: f32,
-    /// FFmpeg vectorscope `lthreshold=` (low luma cutoff). Default 0.0.
-    pub vectorscope_lthreshold: f32,
-    /// FFmpeg vectorscope `hthreshold=` (high luma cutoff). Default 1.0.
-    pub vectorscope_hthreshold: f32,
+    /// Tint the vectorscope trace by hue; otherwise mono.
+    pub vectorscope_colour: bool,
+    /// Only pixels whose Y′ is at least this are plotted. Default 0.
+    pub vectorscope_luma_lo: f32,
+    /// Only pixels whose Y′ is at most this are plotted. Default 1.
+    pub vectorscope_luma_hi: f32,
     /// Magnification of the vectorscope's chroma plane: 1, 2 or 4.
     pub vectorscope_zoom: f32,
     /// How the histogram lays out its channels.
@@ -2966,29 +2958,22 @@ pub struct ScopeFfmpegState {
     /// Histogram height by the count or by its logarithm.
     pub histogram_levels: klipp_core::HistogramLevels,
     /// Brightness of the area under each histogram curve. Default 0.7.
-    pub histogram_fgopacity: f32,
-    /// libavfilter histogram `bgopacity=`, drawn only without a GPU.
-    /// Default 0.5.
-    pub histogram_bgopacity: f32,
+    pub histogram_fill: f32,
 }
 
-impl Default for ScopeFfmpegState {
+impl Default for ScopeOptions {
     fn default() -> Self {
         Self {
-            waveform_filter: klipp_core::WaveformFilter::Lowpass,
-            waveform_envelope: klipp_core::WaveformEnvelope::None,
-            waveform_intensity: 0.0,
+            waveform_envelope: false,
+            waveform_intensity: 0.5,
             waveform_luma_only: false,
-            vectorscope_mode: klipp_core::VectorscopeMode::Color3,
-            vectorscope_graticule: klipp_core::VectorscopeGraticule::None,
-            vectorscope_bgopacity: 0.3,
-            vectorscope_lthreshold: 0.0,
-            vectorscope_hthreshold: 1.0,
+            vectorscope_colour: true,
+            vectorscope_luma_lo: 0.0,
+            vectorscope_luma_hi: 1.0,
             vectorscope_zoom: 1.0,
             histogram_display: klipp_core::HistogramDisplayMode::Overlay,
             histogram_levels: klipp_core::HistogramLevels::Linear,
-            histogram_fgopacity: 0.7,
-            histogram_bgopacity: 0.5,
+            histogram_fill: 0.7,
         }
     }
 }
@@ -3378,7 +3363,7 @@ impl Default for AppState {
             scope_show_g: true,
             scope_show_b: true,
             scope_low_pass: true,
-            scope_ffmpeg: ScopeFfmpegState::default(),
+            scope_options: ScopeOptions::default(),
             // Off: at a large scope's size a glow washes the trace out.
             scope_bloom: false,
             scope_settings_open: false,

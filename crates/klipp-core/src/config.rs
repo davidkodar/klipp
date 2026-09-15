@@ -123,95 +123,10 @@ impl ScopeQuality {
             Self::High => 1,
         }
     }
-
-    /// Splat-kernel dimensions (width × height) for trace deposition.
-    /// **Width is always 1** — single-column deposition. Real CRT
-    /// phosphor energy follows the electron beam vertically; horizontal
-    /// spread comes from many independent samples landing in the same
-    /// column over many frames, not from one splat bleeding sideways
-    /// into its neighbours. The previous 3-px-wide footprint filled
-    /// the gaps BETWEEN columns and made dense regions read as a
-    /// continuous luminous mass instead of as accumulated filaments.
-    /// Height controls the vertical streak length (the beam's drift
-    /// during the sample window).
-    pub fn splat_kernel_size(&self) -> (usize, usize) {
-        match self {
-            Self::Low => (1, 1),
-            Self::Medium => (1, 5),
-            Self::High => (1, 7),
-        }
-    }
-
-    /// Per-axis Gaussian standard deviations (σx, σy). σx is always 0
-    /// — width=1 has no horizontal axis to blur. σy controls how
-    /// gradually the vertical streak falls off from the centre row.
-    pub fn splat_kernel_sigma(&self) -> (f32, f32) {
-        match self {
-            Self::Low => (0.0, 0.0),
-            Self::Medium => (0.0, 1.4),
-            Self::High => (0.0, 1.8),
-        }
-    }
-
-    /// FFmpeg scope input downsample dimensions for this quality tier.
-    /// Lower quality feeds a smaller frame to the filter graph so the
-    /// internal histogram cost scales with the user's perf budget.
-    pub fn ffmpeg_downsample(&self) -> (u32, u32) {
-        match self {
-            Self::Low => (320, 180),
-            Self::Medium => (640, 360),
-            Self::High => (960, 540),
-        }
-    }
-
-    /// FFmpeg waveform `intensity` parameter for this quality tier.
-    /// Higher quality compensates the denser sampling so bright peaks
-    /// don't oversaturate at higher resolutions.
-    pub fn ffmpeg_intensity(&self) -> f32 {
-        match self {
-            Self::Low => 0.04,
-            Self::Medium => 0.08,
-            Self::High => 0.16,
-        }
-    }
 }
 
-/// Filter algorithm for the libavfilter `waveform` filter (waveform +
-/// parade modes share this knob). Each value names exactly the
-/// FFmpeg `filter=` keyword so the spec builder is a 1:1 translation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-pub enum WaveformFilter {
-    /// `filter=lowpass` — soft column blur, gradient look. Default.
-    #[default]
-    Lowpass,
-    /// `filter=flat` — raw column-density dot histogram, sparse look.
-    Flat,
-    /// `filter=aflat` — anti-aliased flat, smoother trace edges.
-    Aflat,
-    /// `filter=chroma` — only the chroma planes, luma muted.
-    Chroma,
-    /// `filter=color` — per-pixel colour painting modulated by source.
-    Color,
-    /// `filter=acolor` — anti-aliased colour painting.
-    Acolor,
-}
-
-impl WaveformFilter {
-    pub fn keyword(&self) -> &'static str {
-        match self {
-            Self::Lowpass => "lowpass",
-            Self::Flat => "flat",
-            Self::Aflat => "aflat",
-            Self::Chroma => "chroma",
-            Self::Color => "color",
-            Self::Acolor => "acolor",
-        }
-    }
-}
-
-/// Per-channel visibility for waveform & parade. Translates to FFmpeg's
-/// `components=` bitmask (R=4, G=2, B=1). At least one channel is
-/// forced on so the filter graph parses cleanly.
+/// Per-channel visibility for waveform & parade. At least one channel is
+/// always drawn.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ChannelMask {
     pub r: bool,
@@ -224,13 +139,8 @@ impl Default for ChannelMask {
 }
 
 impl ChannelMask {
-    /// FFmpeg's `components=` bitmask for the waveform filter on RGB
-    /// input. Bit positions are R=1, G=2, B=4 (NOT plane-order — they
-    /// follow component index regardless of the underlying gbrp plane
-    /// storage). Returns at least 1 (R-only) so an all-channels-off
-    /// state still produces a parseable filter spec — the user's "no
-    /// channels" mental state is the right thing visually but the
-    /// graph must still build.
+    /// The channels as a bitmask, R=1, G=2, B=4. At least one bit is set
+    /// (R alone when every channel is off), so a trace is always drawn.
     pub fn to_components(&self) -> u8 {
         let mut m = 0u8;
         if self.r { m |= 1; }
@@ -240,56 +150,23 @@ impl ChannelMask {
     }
 }
 
-/// FFmpeg waveform `envelope=` choice. The envelope is an overlay drawn
-/// on top of the waveform trace marking min/max excursions across the
-/// frame — useful for spotting clipping (peak) and dropouts (instant).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-pub enum WaveformEnvelope {
-    /// No envelope overlay. Default.
-    #[default]
-    None,
-    /// Instant min/max for the current frame.
-    Instant,
-    /// Rolling peak — accumulates highest excursion across time.
-    Peak,
-    /// Both instant and rolling peak overlaid.
-    PeakInstant,
-}
-
-impl WaveformEnvelope {
-    /// FFmpeg `envelope=` numeric value.
-    pub fn ffmpeg_value(&self) -> u8 {
-        match self {
-            Self::None => 0,
-            Self::Instant => 1,
-            Self::Peak => 2,
-            Self::PeakInstant => 3,
-        }
-    }
-}
-
-/// Settings for waveform & parade modes (same shape — both are
-/// libavfilter `waveform` filter invocations with different `display=`
-/// values which the spec builder injects automatically). `intensity`
-/// floors at the quality-tier value so a Draft preset with intensity 0.4
-/// can't out-blow a Full preset's 0.16 by accident.
+/// Settings for the waveform and the parade, which share a shape.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct WaveformParadeSettings {
-    pub filter: WaveformFilter,
-    /// Per-mode override of the quality-tier intensity. Negative ⇒ use
-    /// the tier default. Positive ⇒ direct override.
-    pub intensity_override: f32,
+    /// Trace brightness, 0..1: 0.5 is the drawn density as it is, 1 is
+    /// six times brighter and 0 six times dimmer. Negative ⇒ 0.5.
+    pub intensity: f32,
     pub channels: ChannelMask,
-    pub envelope: WaveformEnvelope,
+    /// Draw each column's lowest and highest level as a line.
+    pub envelope: bool,
 }
 
 impl Default for WaveformParadeSettings {
     fn default() -> Self {
         Self {
-            filter: WaveformFilter::Lowpass,
-            intensity_override: -1.0,
+            intensity: -1.0,
             channels: ChannelMask::default(),
-            envelope: WaveformEnvelope::None,
+            envelope: false,
         }
     }
 }
@@ -298,77 +175,14 @@ impl Default for WaveformParadeSettings {
 // live in HashMap/BTreeSet keys if ever needed.
 impl Eq for WaveformParadeSettings {}
 
-/// libavfilter `vectorscope` `mode=` choice. The "color" variants paint
-/// the trace in per-pixel input colour; higher numbers are saturation-
-/// boosted blends. `gray` is luma-only (rarely useful for grading).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-pub enum VectorscopeMode {
-    Gray,
-    Color,
-    Color2,
-    #[default]
-    Color3,
-    Color4,
-    Color5,
-}
-
-impl VectorscopeMode {
-    pub fn keyword(&self) -> &'static str {
-        match self {
-            Self::Gray => "gray",
-            Self::Color => "color",
-            Self::Color2 => "color2",
-            Self::Color3 => "color3",
-            Self::Color4 => "color4",
-            Self::Color5 => "color5",
-        }
-    }
-}
-
-/// FFmpeg vectorscope `graticule=` choice. Off by default because
-/// Klipp's main-dock overlay draws its own ring + I-line + targets +
-/// labels on top of the scope texture — having FFmpeg also paint
-/// targets and letters duplicates the labels at slightly offset
-/// positions. Available for diagnostic comparison.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-pub enum VectorscopeGraticule {
-    /// No FFmpeg overlay — Klipp draws its own ring + I-line + targets.
-    /// Default.
-    #[default]
-    None,
-    /// FFmpeg paints target boxes + letters in green.
-    Green,
-    /// FFmpeg paints target boxes + letters in each target's hue.
-    Color,
-    /// FFmpeg paints targets inverted vs background.
-    Invert,
-}
-
-impl VectorscopeGraticule {
-    pub fn keyword(&self) -> &'static str {
-        match self {
-            Self::None => "none",
-            Self::Green => "green",
-            Self::Color => "color",
-            Self::Invert => "invert",
-        }
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct VectorscopeSettings {
-    pub mode: VectorscopeMode,
-    pub graticule: VectorscopeGraticule,
-    /// Background opacity (FFmpeg `bgopacity=`). 0 = transparent
-    /// background, 1 = fully opaque. Default 0.3.
-    pub bgopacity: f32,
-    /// Low luma threshold (FFmpeg `lthreshold=`). Pixels below this
-    /// luma are dropped from the scatter — lets the user focus on
-    /// chroma in the highlights. Default 0.0.
-    pub lthreshold: f32,
-    /// High luma threshold (FFmpeg `hthreshold=`). Pixels above this
-    /// luma are dropped — focuses on shadow chroma. Default 1.0.
-    pub hthreshold: f32,
+    /// Tint the trace by the hue at each point; otherwise it is mono.
+    pub colour: bool,
+    /// Only pixels whose Y′ is at least this are plotted. Default 0.
+    pub luma_lo: f32,
+    /// Only pixels whose Y′ is at most this are plotted. Default 1.
+    pub luma_hi: f32,
     /// Magnification of the chroma plane: 1 shows ±0.5, 2 shows ±0.25.
     #[serde(default = "default_vectorscope_zoom")]
     pub zoom: f32,
@@ -381,11 +195,9 @@ fn default_vectorscope_zoom() -> f32 {
 impl Default for VectorscopeSettings {
     fn default() -> Self {
         Self {
-            mode: VectorscopeMode::Color3,
-            graticule: VectorscopeGraticule::None,
-            bgopacity: 0.3,
-            lthreshold: 0.0,
-            hthreshold: 1.0,
+            colour: true,
+            luma_lo: 0.0,
+            luma_hi: 1.0,
             zoom: 1.0,
         }
     }
@@ -407,32 +219,11 @@ pub enum HistogramDisplayMode {
     Luma,
 }
 
-impl HistogramDisplayMode {
-    /// libavfilter's `display_mode=`. It has no luma mode: luma is its
-    /// overlay of a single Y′ component.
-    pub fn keyword(&self) -> &'static str {
-        match self {
-            Self::Parade => "parade",
-            Self::Stack => "stack",
-            Self::Overlay | Self::Luma => "overlay",
-        }
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum HistogramLevels {
     #[default]
     Linear,
     Logarithmic,
-}
-
-impl HistogramLevels {
-    pub fn keyword(&self) -> &'static str {
-        match self {
-            Self::Linear => "linear",
-            Self::Logarithmic => "logarithmic",
-        }
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -441,10 +232,7 @@ pub struct HistogramSettings {
     /// Height by the count, or by its logarithm.
     pub levels: HistogramLevels,
     /// Brightness of the area under each curve, 0..1. Default 0.7.
-    pub fgopacity: f32,
-    /// Background opacity of the libavfilter histogram (`bgopacity=`),
-    /// drawn only without a GPU. Default 0.5.
-    pub bgopacity: f32,
+    pub fill: f32,
 }
 
 impl Default for HistogramSettings {
@@ -452,38 +240,30 @@ impl Default for HistogramSettings {
         Self {
             display_mode: HistogramDisplayMode::Overlay,
             levels: HistogramLevels::Linear,
-            fgopacity: 0.7,
-            bgopacity: 0.5,
+            fill: 0.7,
         }
     }
 }
 
 impl Eq for HistogramSettings {}
 
-/// Per-mode runtime settings for the FFmpeg scope pipeline. Replaces
-/// the global Phase-3 toggles: each scope mode can now run a different
-/// filter, intensity, and (for waveform/parade) channel mask. Quality
-/// stays global because it's a perf-budget knob, not a per-mode visual
-/// choice. Plumbed engine → bank → spec builder; a change triggers a
-/// per-mode filter-graph rebuild on the next render.
+/// The scopes' settings, as the UI sends them to the engine. Quality is
+/// global because it is a perf-budget knob, not a per-mode visual choice.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Default)]
-pub struct ScopeFfmpegSettings {
+pub struct ScopeSettings {
     pub waveform: WaveformParadeSettings,
     pub parade: WaveformParadeSettings,
     pub vectorscope: VectorscopeSettings,
     pub histogram: HistogramSettings,
-    /// Global perf preset — drives input downsample + the
-    /// fallback intensity used when a per-mode `intensity_override`
-    /// is negative.
+    /// How many pixels are measured during playback.
     pub quality: ScopeQuality,
-    /// When true, route waveform & parade through `format=yuv444p,...
-    /// components=1` so they render a single Y (luma) trace in black &
-    /// white instead of R/G/B in three colours. Pro broadcast luma
-    /// scope view. Doesn't affect vectorscope or histogram.
+    /// Draw the waveform and parade as one trace of Y′ rather than the
+    /// red, green and blue traces. Does not affect the vectorscope or the
+    /// histogram.
     pub luma_only: bool,
 }
 
-impl Eq for ScopeFfmpegSettings {}
+impl Eq for ScopeSettings {}
 
 /// GPU device preference for wgpu adapter selection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]

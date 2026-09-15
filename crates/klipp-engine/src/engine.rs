@@ -558,13 +558,11 @@ const MAX_CLIP_STREAMS: usize = 6;
 
 /// Common write of a freshly-rendered scope texture into the shared
 /// `FrameBuffer`. `Some(t)` populates the texture and mode tag; `None`
-/// (mode has no renderer at this path) clears the texture so the UI's
-/// CPU fallback runs for that mode.
+/// (the mode was not drawn) clears the texture.
 fn write_scope_tex_to_fb(
     fb: &mut crate::texture::FrameBuffer,
     tex: Option<(Vec<u8>, u32, u32)>,
     mode: u8,
-    gpu: bool,
 ) {
     match tex {
         Some((t, scope_w, scope_h)) => {
@@ -581,12 +579,10 @@ fn write_scope_tex_to_fb(
                     w: 0,
                     h: 0,
                     generation: 0,
-                    gpu: false,
                 });
             entry.data = t.clone();
             entry.w = scope_w;
             entry.h = scope_h;
-            entry.gpu = gpu;
             entry.generation = entry.generation.wrapping_add(1);
 
             fb.scope_texture = t;
@@ -1240,10 +1236,10 @@ pub struct PlaybackEngine {
     /// dock is visible).
     scope_render_mode: u8,
     /// Current FFmpeg-scope settings (low-pass / quality / R-G-B mask)
-    /// pushed from UI by `AppCommand::SetScopeFfmpegSettings`. Changes
+    /// pushed from UI by `AppCommand::SetScopeSettings`. Changes
     /// trigger a per-mode filter-graph rebuild on the next render via
     /// the bank's settings comparison.
-    scope_ffmpeg_settings: klipp_core::ScopeFfmpegSettings,
+    scope_settings: klipp_core::ScopeSettings,
     /// Whether to apply the bloom post-pass to scope textures
     /// (`klipp_effects::light::apply_bloom` — threshold + Gaussian +
     /// additive composite). Runs after every FFmpeg scope render for
@@ -1255,12 +1251,10 @@ pub struct PlaybackEngine {
     scope_low_pass_enabled: bool,
     /// Union of scope modes the UI currently needs rendered per tick:
     /// (main dock active mode) ∪ (each floating-window pane's mode).
-    /// Updated by `AppCommand::SetActiveScopeModes`. The engine renders
-    /// every mode in this set on each scope tick (FFmpeg path) and writes
-    /// the results into `FrameBuffer::scope_textures` keyed by mode.
-    /// Empty set ⇒ legacy single-mode dispatch path (scope_render_mode
-    /// only) — covers boot before the UI publishes anything and the
-    /// `KLIPP_SCOPE_FFMPEG=0` legacy GPU/CPU path.
+    /// Updated by `AppCommand::SetActiveScopeModes`. The engine draws
+    /// every mode in this set on each scope tick and writes the results
+    /// into `FrameBuffer::scope_textures` keyed by mode. Empty before the
+    /// UI publishes anything: then only `scope_render_mode` is drawn.
     active_scope_modes: std::collections::BTreeSet<u8>,
     /// The physical pixel size the UI shows each scope mode at, pushed by
     /// `AppCommand::SetScopeSizes`. The GPU scopes are drawn at it.
@@ -1348,13 +1342,6 @@ pub struct PlaybackEngine {
     /// Optional so legacy constructors / tests still work; when
     /// `None`, all writes are no-ops.
     foreground_activity: Option<Arc<ForegroundActivity>>,
-    /// libavfilter-based scope renderer bank (waveform / parade /
-    /// vectorscope / histogram). Enabled by `KLIPP_SCOPE_FFMPEG=1`;
-    /// when off, the existing GPU shader path is used. The bank holds
-    /// one `FfmpegScope` instance per mode so simultaneous modes (main
-    /// dock + floating-window panes) can render in parallel without
-    /// graph-rebuild cost on mode-swap.
-    ffmpeg_scope_bank: crate::ffmpeg_scope::FfmpegScopeBank,
     /// GPU vendor detected at startup — gates VAAPI in thumbnail/filmstrip decode
     /// on AMD/Intel while skipping it on NVIDIA (where nvidia-vaapi-driver
     /// writes stderr noise that bypasses av_log suppression).
@@ -1633,7 +1620,7 @@ impl PlaybackEngine {
             // gets allocated lazily on first source-audio attach.
             source_mixer_track_index: 64,
             scope_render_mode: 0,
-            scope_ffmpeg_settings: klipp_core::ScopeFfmpegSettings::default(),
+            scope_settings: klipp_core::ScopeSettings::default(),
             // Off: at a large scope's size a glow washes the trace out.
             scope_bloom_enabled: false,
             scope_low_pass_enabled: true,
@@ -1662,7 +1649,6 @@ impl PlaybackEngine {
             drag_grade_count: 0,
             drag_downsampled_count: 0,
             foreground_activity: None,
-            ffmpeg_scope_bank: crate::ffmpeg_scope::FfmpegScopeBank::new(),
             gpu_vendor: {
                 let v = klipp_core::GpuVendor::detect();
                 let _ = DETECTED_GPU_VENDOR.set(v);
@@ -2672,8 +2658,8 @@ impl PlaybackEngine {
                 // Drawn at the new size on the next scope tick, paused or not.
                 self.scope_render_owed = true;
             }
-            AppCommand::SetScopeFfmpegSettings { settings } => {
-                self.scope_ffmpeg_settings = settings;
+            AppCommand::SetScopeSettings { settings } => {
+                self.scope_settings = settings;
                 // The grade hash below does not redraw the scopes by itself.
                 self.scope_render_owed = true;
                 // Invalidate the grade hash so the next tick re-renders
@@ -7063,28 +7049,25 @@ impl PlaybackEngine {
             && self.last_scope_render.elapsed().as_millis() >= SCOPE_MIN_INTERVAL_MS
     }
 
-    /// Render every mode in `(active_scope_modes ∪ {scope_render_mode})`
-    /// via libavfilter and return per-mode RGBA outputs. Does NOT touch
-    /// the framebuffer; pair with [`Self::apply_scope_renders`] to write
-    /// the results. Splitting render-from-apply lets the playback path
-    /// (Site 4) share one `frame_buffer.lock()` with `write_frame`.
+    /// Draw every mode in `(active_scope_modes ∪ {scope_render_mode})` on
+    /// the GPU and return per-mode RGBA outputs. Does NOT touch the
+    /// framebuffer; pair with [`Self::apply_scope_renders`] to write the
+    /// results, so the playback path shares one `frame_buffer.lock()`
+    /// with `write_frame`.
     ///
-    /// `None` entries mean the filter buffered the input or rebuild
-    /// failed — caller should leave the previous texture in place
-    /// instead of clearing.
+    /// A `None` entry means the mode was not drawn — the caller leaves
+    /// the previous texture in place instead of clearing.
     ///
-    /// The scopes are drawn on the GPU from `display` when it is given
-    /// (the bytes on screen, for a working space whose display transform
-    /// has no GPU form) and from `linear` otherwise. Without a GPU they
-    /// run through libavfilter, which needs the linear frame and
-    /// linearises `display` when that is all there is.
+    /// The scopes are drawn from `display` when it is given (the bytes on
+    /// screen, for a working space whose display transform has no GPU
+    /// form) and from `linear` otherwise.
     fn render_active_scopes_pending(
         &mut self,
         linear: Option<&[f32]>,
         display: Option<&[u8]>,
         src_w: u32,
         src_h: u32,
-    ) -> Vec<(u8, Option<(Vec<u8>, u32, u32)>, bool)> {
+    ) -> Vec<(u8, Option<(Vec<u8>, u32, u32)>)> {
         // Union: always include the main-dock mode so its singular-field
         // back-compat readers (in-tree dock UI) never see a stale
         // texture, even when the floating window's active set excludes
@@ -7095,73 +7078,21 @@ impl PlaybackEngine {
         to_render.insert(dock_mode);
         // The CIE scope is in the active set but is not a filter graph —
         // it asks for sample data instead. See `cie_samples_pending`.
-        to_render.remove(&crate::ffmpeg_scope::CIE_SAMPLES_MODE);
+        to_render.remove(&crate::scopes::CIE_SAMPLES_MODE);
 
-        let settings = self.scope_ffmpeg_settings;
-        let bloom_enabled = self.scope_bloom_enabled;
-        let mut rendered: Vec<(u8, Option<(Vec<u8>, u32, u32)>, bool)> = Vec::with_capacity(to_render.len());
+        let mut rendered: Vec<(u8, Option<(Vec<u8>, u32, u32)>)> = Vec::with_capacity(to_render.len());
 
         let wanted: Vec<u8> = to_render.iter().copied().filter(|m| *m <= 3).collect();
         if !wanted.is_empty() {
             if let Some(results) = self.render_scopes_on_gpu(linear, display, src_w, src_h, &wanted) {
                 for (mode, result) in wanted.iter().zip(results) {
-                    rendered.push((*mode, result, true));
+                    rendered.push((*mode, result));
                     to_render.remove(mode);
                 }
             }
         }
-        if to_render.is_empty() {
-            return rendered;
-        }
-        let linearised;
-        let linear_rgba: &[f32] = match (linear, display) {
-            (Some(l), _) => l,
-            (None, Some(d)) => {
-                linearised = u8_rgba_to_linear(d);
-                &linearised
-            }
-            (None, None) => return rendered,
-        };
-
-        // The frame is in the project's working space, so that is the basis
-        // its luma and chroma mean anything in.
-        let basis = klipp_color::scopes::ScopeBasis::for_working_space(
-            crate::video_decoder::working_colorspace(),
-        );
-        for &mode in &to_render {
-            let tex = match self
-                .ffmpeg_scope_bank
-                .render_linear(mode, linear_rgba, src_w, src_h, settings, basis)
-            {
-                Ok(Some(bytes)) => Some(bytes),
-                Ok(None) => None,
-                Err(e) => {
-                    tracing::warn!("FfmpegScope multi-mode render failed (mode={mode}): {e}");
-                    None
-                }
-            };
-            // Bloom post-pass: only on waveform (0) + parade (1) where
-            // dense trace regions actually glow. Vectorscope + histogram
-            // skip bloom — applying it to their sparse shapes looks
-            // muddy. CPU helper at klipp-effects/light.rs:apply_bloom;
-            // ~3-5 ms at 1024×512 RGBA on a modern CPU, runs at ≤10 Hz
-            // so the per-second cost is negligible.
-            let tex = match tex {
-                Some(bytes) if bloom_enabled && (mode == 0 || mode == 1) => {
-                    Some(klipp_effects::light::apply_bloom(
-                        bytes,
-                        crate::ffmpeg_scope::SCOPE_OUT_W,
-                        crate::ffmpeg_scope::SCOPE_OUT_H,
-                        0.55,  // luma threshold — matches in-tree default
-                        6.0,   // blur radius (px)
-                        0.6,   // intensity — softer than typical cinema
-                               // bloom so the scope graticule stays legible
-                    ))
-                }
-                other => other,
-            };
-            rendered.push((mode, tex.map(|t| (t, crate::ffmpeg_scope::SCOPE_OUT_W, crate::ffmpeg_scope::SCOPE_OUT_H)), false));
-        }
+        // A mode the GPU did not draw (no GPU, or nothing to measure) keeps
+        // the texture it had.
         rendered
     }
 
@@ -7184,7 +7115,7 @@ impl PlaybackEngine {
         modes: &[u8],
     ) -> Option<Vec<Option<(Vec<u8>, u32, u32)>>> {
         use klipp_effects::gpu_scopes::{HistogramJob, ScopeInput, ScopeJob, ScopeTransfer, VectorscopeJob, WaveformJob, WaveformMode};
-        let settings = self.scope_ffmpeg_settings;
+        let settings = self.scope_settings;
         let glow = self.scope_bloom_enabled;
         let ws = crate::video_decoder::working_colorspace();
         let hdr = self.hdr_monitor.renders_hdr();
@@ -7222,15 +7153,15 @@ impl PlaybackEngine {
         let jobs: Vec<ScopeJob> = modes
             .iter()
             .map(|&mode| {
-                let (out_w, out_h) = crate::ffmpeg_scope::scope_out_size(&self.scope_sizes, mode);
+                let (out_w, out_h) = crate::scopes::scope_out_size(&self.scope_sizes, mode);
                 if mode == 2 {
                     let v = settings.vectorscope;
                     return ScopeJob::Vectorscope(VectorscopeJob {
                         zoom: v.zoom,
-                        intensity: settings.waveform.intensity_override,
-                        colorize: v.mode != klipp_core::VectorscopeMode::Gray,
-                        luma_lo: v.lthreshold,
-                        luma_hi: v.hthreshold,
+                        intensity: settings.waveform.intensity,
+                        colorize: v.colour,
+                        luma_lo: v.luma_lo,
+                        luma_hi: v.luma_hi,
                         glow,
                         out_w,
                         out_h,
@@ -7239,9 +7170,9 @@ impl PlaybackEngine {
                 if mode == 3 {
                     let h = settings.histogram;
                     return ScopeJob::Histogram(HistogramJob {
-                        layout: crate::ffmpeg_scope::histogram_layout(h.display_mode),
+                        layout: crate::scopes::histogram_layout(h.display_mode),
                         log: h.levels == klipp_core::HistogramLevels::Logarithmic,
-                        fill: h.fgopacity,
+                        fill: h.fill,
                         glow,
                         out_w,
                         out_h,
@@ -7255,9 +7186,9 @@ impl PlaybackEngine {
                 };
                 ScopeJob::Waveform(WaveformJob {
                     mode: layout,
-                    intensity: wp.intensity_override,
+                    intensity: wp.intensity,
                     channels: wp.channels.to_components() as u32,
-                    envelope: wp.envelope != klipp_core::WaveformEnvelope::None,
+                    envelope: wp.envelope,
                     glow,
                     out_w,
                     out_h,
@@ -7290,11 +7221,11 @@ impl PlaybackEngine {
     fn apply_scope_renders(
         fb: &mut crate::texture::FrameBuffer,
         dock_mode: u8,
-        renders: Vec<(u8, Option<(Vec<u8>, u32, u32)>, bool)>,
+        renders: Vec<(u8, Option<(Vec<u8>, u32, u32)>)>,
     ) {
-        for (mode, tex_opt, gpu) in renders.into_iter() {
+        for (mode, tex_opt) in renders.into_iter() {
             if mode == dock_mode {
-                write_scope_tex_to_fb(fb, tex_opt.clone(), mode, gpu);
+                write_scope_tex_to_fb(fb, tex_opt.clone(), mode);
             }
             match tex_opt {
                 Some((bytes, scope_w, scope_h)) => {
@@ -7306,13 +7237,11 @@ impl PlaybackEngine {
                             w: 0,
                             h: 0,
                             generation: 0,
-                            gpu: false,
                         });
                     entry.data = bytes;
                     entry.w = scope_w;
                     entry.h = scope_h;
-                    entry.gpu = gpu;
-                    entry.generation = entry.generation.wrapping_add(1);
+                            entry.generation = entry.generation.wrapping_add(1);
                 }
                 None => {
                     // Leave the existing entry alone — UI keeps the
@@ -7374,14 +7303,14 @@ impl PlaybackEngine {
     ) -> Option<(Vec<f32>, u32, u32)> {
         if !self
             .active_scope_modes
-            .contains(&crate::ffmpeg_scope::CIE_SAMPLES_MODE)
+            .contains(&crate::scopes::CIE_SAMPLES_MODE)
         {
             return None;
         }
         if src_w == 0 || src_h == 0 || linear_rgba.len() < (src_w * src_h * 4) as usize {
             return None;
         }
-        let edge = crate::ffmpeg_scope::CIE_SAMPLES_MAX_EDGE;
+        let edge = crate::scopes::CIE_SAMPLES_MAX_EDGE;
         let step = (src_w.max(src_h) as f32 / edge as f32).ceil().max(1.0) as u32;
         let (out_w, out_h) = (src_w.div_ceil(step), src_h.div_ceil(step));
         let mut out = Vec::with_capacity((out_w * out_h * 3) as usize);

@@ -1460,11 +1460,10 @@ pub enum AppCommand {
     /// A mode missing from the map is drawn at the default size. Sent on
     /// change only.
     SetScopeSizes { sizes: std::collections::BTreeMap<u8, (u32, u32)> },
-    /// Push current FFmpeg-scope settings (low-pass / quality / R-G-B mask)
-    /// to the engine. A settings change triggers a per-mode filter-graph
-    /// rebuild on the next scope tick. Sent on UI-side change only (button
-    /// click in the scope settings popover) — not every frame.
-    SetScopeFfmpegSettings { settings: crate::config::ScopeFfmpegSettings },
+    /// Push the scope settings (quality, channels, envelope, vectorscope
+    /// window, histogram layout) to the engine. Sent on a UI-side change
+    /// only, not every frame.
+    SetScopeSettings { settings: crate::config::ScopeSettings },
     /// Push the scope bloom toggle to the engine. When enabled the engine
     /// runs a threshold + Gaussian + additive composite on the rendered
     /// waveform/parade scope textures so dense traces glow. Sent on
