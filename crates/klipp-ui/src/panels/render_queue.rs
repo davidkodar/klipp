@@ -69,6 +69,26 @@ impl RenderQueuePanel {
             .default_width(620.0)
             .default_height(420.0)
             .show(ctx, |ui| {
+                Self::show_contents(ui, queue, theme, false, &mut actions);
+            });
+
+        if !open {
+            actions.push(RenderQueueAction::Close);
+        }
+
+        actions
+    }
+
+    /// The queue itself: the summary row, then one card per job. In a
+    /// window the jobs scroll on their own; embedded in a column the
+    /// column scrolls.
+    pub fn show_contents(
+        ui: &mut egui::Ui,
+        queue: &RenderQueue,
+        theme: &KlippTheme,
+        embedded: bool,
+        actions: &mut Vec<RenderQueueAction>,
+    ) {
                 // ── Header bar ──
                 ui.horizontal(|ui| {
                     let total = queue.jobs.len();
@@ -126,7 +146,7 @@ impl RenderQueuePanel {
 
                 // ── Empty state ──
                 if queue.jobs.is_empty() {
-                    ui.add_space(40.0);
+                    ui.add_space(if embedded { 8.0 } else { 40.0 });
                     ui.vertical_centered(|ui| {
                         ui.label(
                             egui::RichText::new("No render jobs queued")
@@ -144,9 +164,7 @@ impl RenderQueuePanel {
                 }
 
                 // ── Job list ──
-                egui::ScrollArea::vertical()
-                    .auto_shrink([false, false])
-                    .show(ui, |ui| {
+                let jobs = |ui: &mut egui::Ui, actions: &mut Vec<RenderQueueAction>| {
                         for job in &queue.jobs {
                             let job_frame_bg = if job.status == RenderJobStatus::Rendering {
                                 theme.bg_panel_alt
@@ -160,19 +178,19 @@ impl RenderQueuePanel {
                                 .inner_margin(egui::Margin::same(8.0))
                                 .stroke(egui::Stroke::new(1.0_f32, theme.border))
                                 .show(ui, |ui| {
-                                    Self::show_job_row(ui, job, theme, &mut actions);
+                                    Self::show_job_row(ui, job, theme, actions);
                                 });
 
                             ui.add_space(Self::JOB_SPACING);
                         }
-                    });
-            });
-
-        if !open {
-            actions.push(RenderQueueAction::Close);
-        }
-
-        actions
+                };
+                if embedded {
+                    jobs(ui, actions);
+                } else {
+                    egui::ScrollArea::vertical()
+                        .auto_shrink([false, false])
+                        .show(ui, |ui| jobs(ui, actions));
+                }
     }
 
     fn show_job_row(

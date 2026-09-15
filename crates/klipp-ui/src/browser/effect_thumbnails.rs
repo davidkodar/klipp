@@ -43,6 +43,34 @@ fn load_embedded_reference() -> Option<ReferenceFrame> {
     Some(ReferenceFrame { rgba, width: w, height: h })
 }
 
+/// Copy an RGBA frame into a larger canvas, the extra rows and columns
+/// repeating the edge pixels so a filter sees no hard border.
+fn pad_rgba(src: &[u8], w: u32, h: u32, pw: u32, ph: u32) -> Vec<u8> {
+    let (w, h, pw, ph) = (w as usize, h as usize, pw as usize, ph as usize);
+    let mut out = vec![0u8; pw * ph * 4];
+    for y in 0..ph {
+        let sy = y.min(h - 1);
+        for x in 0..pw {
+            let sx = x.min(w - 1);
+            let si = (sy * w + sx) * 4;
+            let di = (y * pw + x) * 4;
+            out[di..di + 4].copy_from_slice(&src[si..si + 4]);
+        }
+    }
+    out
+}
+
+/// The top-left `w` × `h` of a frame `pw` wide.
+fn crop_rgba(src: &[u8], pw: u32, w: u32, h: u32) -> Vec<u8> {
+    let (pw, w, h) = (pw as usize, w as usize, h as usize);
+    let mut out = Vec::with_capacity(w * h * 4);
+    for y in 0..h {
+        let start = y * pw * 4;
+        out.extend_from_slice(&src[start..start + w * 4]);
+    }
+    out
+}
+
 /// A completed thumbnail ready for texture upload.
 pub struct ThumbnailResult {
     pub effect_name: String,
@@ -133,12 +161,20 @@ impl ThumbnailRenderer {
                         // LADSPA plugins are audio-only — no visual preview.
                         continue;
                     }
-                    EffectSource::Frei0r(_) => {
-                        // Frei0r plugins ship without a static thumbnail
-                        // primitive; the browser falls back to a generic
-                        // "frei0r" tile. v2 follow-up: dlopen + render
-                        // a real preview at thumbnail resolution.
-                        continue;
+                    EffectSource::Frei0r(info) => {
+                        // Filters render the reference through the plugin
+                        // at its default parameters. Sources and mixers
+                        // need other inputs and keep the drawn tile.
+                        if !matches!(info.plugin_type, klipp_frei0r::PluginType::Filter) {
+                            continue;
+                        }
+                        let type_id = info.type_id();
+                        let params = klipp_effects::frei0r_effect::default_params(&type_id).unwrap_or_default();
+                        // frei0r wants 8-aligned dimensions: pad, render, crop.
+                        let (pw, ph) = (frame.width.div_ceil(8) * 8, frame.height.div_ceil(8) * 8);
+                        let padded = pad_rgba(&frame.rgba, frame.width, frame.height, pw, ph);
+                        let out = klipp_effects::frei0r_effect::apply(&type_id, &params, padded, pw, ph, 0.5);
+                        crop_rgba(&out, pw, frame.width, frame.height)
                     }
                     EffectSource::Lv2(_) => {
                         // LV2 plugins are audio-only — no visual preview.
@@ -1047,3 +1083,23 @@ fn simple_name_hash(name: &str) -> u32 {
     h
 }
 
+
+#[cfg(test)]
+mod pad_tests {
+    use super::*;
+
+    #[test]
+    fn padding_repeats_the_edge_and_cropping_returns_the_frame() {
+        // A 3×2 frame with distinct pixels.
+        let w = 3u32;
+        let h = 2u32;
+        let src: Vec<u8> = (0..(w * h * 4) as u8).collect();
+        let padded = pad_rgba(&src, w, h, 8, 8);
+        assert_eq!(padded.len(), 8 * 8 * 4);
+        // The right edge repeats pixel (2, y); the bottom repeats row 1.
+        let px = |v: &[u8], pw: usize, x: usize, y: usize| v[(y * pw + x) * 4..(y * pw + x) * 4 + 4].to_vec();
+        assert_eq!(px(&padded, 8, 7, 0), px(&src, 3, 2, 0));
+        assert_eq!(px(&padded, 8, 1, 7), px(&src, 3, 1, 1));
+        assert_eq!(crop_rgba(&padded, 8, w, h), src);
+    }
+}

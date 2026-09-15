@@ -29245,6 +29245,10 @@ impl KlippApp {
             &self.state.render_queue,
             &self.theme,
         );
+        self.apply_render_queue_actions(actions);
+    }
+
+    fn apply_render_queue_actions(&mut self, actions: Vec<crate::panels::render_queue::RenderQueueAction>) {
         for action in actions {
             match action {
                 crate::panels::render_queue::RenderQueueAction::CancelJob(id) => {
@@ -31787,6 +31791,22 @@ impl KlippApp {
                     ui.set_min_width(ui.available_width());
                     self.export_settings_contents(ui, &all_presets, all_cmds, false);
                     ui.add_space(12.0);
+                    // The queue lives under the form here; the Render
+                    // Queue window is the same list elsewhere.
+                    let jobs = self.state.render_queue.jobs.len();
+                    let badge = if jobs > 0 { Some(format!("{jobs}")) } else { None };
+                    let mut actions = Vec::new();
+                    crate::widgets::inspector_group::section_card(ui, "RENDER QUEUE", badge, &theme, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.add_space(12.0);
+                            ui.vertical(|ui| {
+                                crate::panels::render_queue::RenderQueuePanel::show_contents(
+                                    ui, &self.state.render_queue, &theme, true, &mut actions,
+                                );
+                            });
+                        });
+                    });
+                    self.apply_render_queue_actions(actions);
                 });
                 return;
             }

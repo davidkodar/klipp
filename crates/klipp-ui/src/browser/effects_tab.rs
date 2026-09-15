@@ -757,6 +757,25 @@ pub fn show(
     cmds
 }
 
+/// Cut a label to one line of `max_w`, with an ellipsis.
+fn truncate_name(text: &str, max_w: f32, ui: &egui::Ui) -> String {
+    let font = egui::FontId::proportional(crate::theme::type_scale::BODY);
+    let fits = |t: &str| ui.painter().layout_no_wrap(t.to_string(), font.clone(), egui::Color32::WHITE).size().x <= max_w;
+    if fits(text) {
+        return text.to_string();
+    }
+    let chars: Vec<char> = text.chars().collect();
+    let mut n = chars.len();
+    while n > 1 {
+        n -= 1;
+        let candidate: String = chars[..n].iter().collect::<String>() + "\u{2026}";
+        if fits(&candidate) {
+            return candidate;
+        }
+    }
+    "\u{2026}".to_string()
+}
+
 /// FCP-style effect card. Thumbnail + name below; the on-thumbnail
 /// favorite star is overlaid by the caller (loop), but the GPU/CPU +
 /// Source badge pair is painted in here so it's always tied to the
@@ -781,22 +800,13 @@ fn effect_card(
     let card_rect = rect;
     let painter = ui.painter();
 
-    // Preview area (top)
+    // The card: the same field, border and hover as a media card.
+    let rounding = egui::Rounding::same(crate::theme::radius::PANEL);
+    painter.rect_filled(card_rect, rounding, theme.bg_panel_alt);
     let preview_rect = egui::Rect::from_min_size(card_rect.min, egui::vec2(width, preview_h));
-    let rounding = egui::Rounding::same(4.0);
-
-    // Dark background for preview
-    painter.rect_filled(preview_rect, rounding, theme.bg_panel);
-
-    // Card border tightens on hover (accent_dim) but stays 1px thick so
-    // the card doesn't "jump" — the visual lift is the divider line +
-    // the brighter border, not a thickness swap.
-    let stroke_color = if hovered { theme.accent_dim } else { theme.border };
-    painter.rect_stroke(preview_rect, rounding, egui::Stroke::new(1.0_f32, stroke_color));
 
     if let Some(tex) = thumbnail {
         let uv = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
-        // Clip the image to rounded rect
         painter.rect_filled(preview_rect, rounding, egui::Color32::BLACK);
         painter.image(tex.id(), preview_rect, uv, egui::Color32::WHITE);
     } else {
@@ -816,8 +826,10 @@ fn effect_card(
         }
     }
 
-    // Faint white center divider on hover — hints at a before/after
-    // split. Low opacity so it never competes with the thumbnail content.
+    let stroke_color = if hovered { theme.border_light } else { theme.border };
+    painter.rect_stroke(card_rect, rounding, egui::Stroke::new(1.0_f32, stroke_color));
+
+    // Faint centre divider on hover: a hint of the before/after split.
     if hovered {
         let mid_x = preview_rect.center().x;
         painter.line_segment(
@@ -825,47 +837,30 @@ fn effect_card(
                 egui::pos2(mid_x, preview_rect.min.y + 4.0),
                 egui::pos2(mid_x, preview_rect.max.y - 4.0),
             ],
-            egui::Stroke::new(
-                1.0_f32,
-                egui::Color32::from_rgba_unmultiplied(255, 255, 255, 90),
-            ),
+            egui::Stroke::new(1.0_f32, egui::Color32::from_rgba_unmultiplied(255, 255, 255, 90)),
         );
     }
 
-    // ── Top-right paired badges: GPU/CPU (left) · Source (right) ──
-    let source_label = match &fx.source {
-        EffectSource::Ofx(_) => "OFX",
-        EffectSource::Builtin(_) | EffectSource::Audio(_) => "Built-in",
-        EffectSource::Ladspa(_) => "LADSPA",
-        EffectSource::Frei0r(_) => "frei0r",
-        EffectSource::Lv2(_) => "LV2",
-        EffectSource::Clap(_) => "CLAP",
-    };
-    let perf_label = if supports_gpu { "GPU" } else { "CPU" };
-    let src_rect = paint_thumb_badge(
-        ui,
-        theme,
-        egui::pos2(card_rect.max.x - 6.0, card_rect.min.y + 6.0),
-        source_label,
-        ThumbBadgeKind::Source,
-    );
-    let _perf_rect = paint_thumb_badge(
-        ui,
-        theme,
-        egui::pos2(src_rect.min.x - 4.0, card_rect.min.y + 6.0),
-        perf_label,
-        if supports_gpu { ThumbBadgeKind::Gpu } else { ThumbBadgeKind::Cpu },
-    );
+    // One mark on the picture: GPU, when the effect runs in real time.
+    // The source is in the caption below.
+    if supports_gpu {
+        paint_thumb_badge(
+            ui,
+            theme,
+            egui::pos2(card_rect.max.x - 6.0, card_rect.min.y + 6.0),
+            "GPU",
+            ThumbBadgeKind::Gpu,
+        );
+    }
 
     // ── Card metadata: Name (top), then "Category · Source" below ──
     let painter = ui.painter();
     let name_y = card_rect.min.y + preview_h + 6.0;
     let display_name = display_name_for(fx);
-    let name_galley = painter.layout(
-        display_name,
-        egui::FontId::proportional(12.0),
+    let name_galley = painter.layout_no_wrap(
+        truncate_name(&display_name, width - 12.0, ui),
+        egui::FontId::proportional(crate::theme::type_scale::BODY),
         theme.text_primary,
-        width - 12.0,
     );
     painter.galley(
         egui::pos2(card_rect.min.x + 6.0, name_y),
@@ -877,13 +872,17 @@ fn effect_card(
     // makes provenance scannable at a glance. Source pill on the
     // thumbnail still owns the visual emphasis; this is just the
     // textual companion.
-    let meta_y = name_y + name_galley.size().y + 1.0;
-    let meta_text = format!("{} \u{00B7} {}", display_category_for(fx), fx.source_label);
-    let meta_galley = painter.layout(
-        meta_text,
-        egui::FontId::proportional(10.0),
+    let meta_y = name_y + name_galley.size().y + 2.0;
+    let meta_text = format!(
+        "{} \u{00B7} {}{}",
+        display_category_for(fx),
+        fx.source_label,
+        if supports_gpu { "" } else { " \u{00B7} CPU" },
+    );
+    let meta_galley = painter.layout_no_wrap(
+        truncate_name(&meta_text, width - 12.0, ui),
+        egui::FontId::proportional(crate::theme::type_scale::CAPTION),
         theme.text_dim,
-        width - 12.0,
     );
     painter.galley(
         egui::pos2(card_rect.min.x + 6.0, meta_y),
