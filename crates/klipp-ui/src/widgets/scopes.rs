@@ -387,9 +387,7 @@ pub fn show_scopes(
             let gen_diff = state.frame_generations[mi] != gen;
             let settings_diff = state.last_settings_generation != state.settings_generation;
             let stale = tex_none || gen_diff || settings_diff;
-            let throttled = is_playing && state.last_render_time
-                .is_some_and(|t| t.elapsed().as_millis() < 80);
-            if stale && !throttled {
+            if stale {
                 if let Some(entry) = mode_tex {
                     let pixels: Vec<egui::Color32> = entry.data.chunks_exact(4)
                         .map(|c| egui::Color32::from_rgba_premultiplied(c[0], c[1], c[2], c[3]))

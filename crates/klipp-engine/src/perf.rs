@@ -73,8 +73,9 @@ pub struct PerfSample {
     /// CPU/GPU linear-f32 → sRGB-u8 reencode feeding the scope and
     /// render cache. Same scaling as `bridge_u8_ms`.
     pub reencode_ms: f32,
-    /// GPU scope render (waveform / parade / histogram). 10 Hz
-    /// throttled — most frames see 0.0.
+    /// GPU scope render (waveform / parade / vectorscope / histogram),
+    /// paced by its own cost: a cheap pass runs every frame, a costly
+    /// one every other, and the frames between see 0.0.
     pub scope_ms: f32,
     /// CPU composite + tonemap — V1 + overlays blend into the final
     /// RGBA buffer. Independent of grade. Reserved; not yet wired.

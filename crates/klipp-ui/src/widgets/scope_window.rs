@@ -557,10 +557,7 @@ fn render_pane_scope(
             let stale = runtime.textures[pane_idx].is_none()
                 || runtime.frame_gens[pane_idx] != gen;
 
-            let throttled = is_playing && runtime.last_render[pane_idx]
-                .is_some_and(|t| t.elapsed().as_millis() < 80);
-
-            if stale && !throttled {
+            if stale {
                 // Lift the engine-drawn texture from `fb.scope_textures`
                 // keyed on the pane's mode. CIE chromaticity is the one
                 // scope drawn here, from the engine's samples.

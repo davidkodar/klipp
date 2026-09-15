@@ -614,20 +614,18 @@ impl PlaybackEngine {
     /// possible values per channel the whole chain is a table, and
     /// `display::the_u8_table_is_the_float_path` pins it byte for byte.
     ///
-    /// Four things have to hold, and any of them can change between ticks:
+    /// Three things have to hold, and monitoring can change between ticks:
     ///
     /// * the transform is per-channel — a BT.2020 or ACEScg project mixes
     ///   channels on the way to the display and cannot be a table;
     /// * HDR monitoring is off, since its readout needs the picture's light
     ///   and a cached frame has been clamped to `[0, 1]` besides;
-    /// * no scope is rendering this tick, for the same reason;
     /// * the GPU viewer mirror is not in use, which wants linear floats.
     ///
-    /// The last two are the reason this is decided per tick rather than
-    /// once: scopes run at 10 Hz, so most ticks can take the table even
-    /// while a scope is open.
+    /// The scopes are no reason to leave the table: they measure the bytes
+    /// it makes, which are the bytes the float path makes.
     fn cached_frame_display_lut(&self, w: u32) -> Option<[u8; 256]> {
-        if self.hdr_monitor.renders_hdr() || self.should_render_scope() {
+        if self.hdr_monitor.renders_hdr() {
             return None;
         }
         if super::should_publish_gpu_viewer() && (w * 4).is_multiple_of(256) {
@@ -722,15 +720,16 @@ impl PlaybackEngine {
         let mut scope_ms = 0.0;
         let t_encode = Instant::now();
         let (mut bytes, nits) = match picture {
-            // Already the bytes the screen wants. Nothing here measures the
-            // picture or mirrors it to the GPU — that is a precondition of
-            // taking this path, checked in `cached_frame_display_lut`.
+            // Already the bytes the screen wants: a cached frame through its
+            // per-channel display transform, or a decoder's own picture,
+            // Rec.709 either way. The scopes measure them when due; nothing
+            // here mirrors the picture to the GPU, which is a precondition
+            // of taking this path, checked in `cached_frame_display_lut`.
             Picture::Display(bytes) => {
-                self.scope_render_owed |= self.scopes_visible;
+                scope_ms = self.draw_due_scopes(super::DisplayScopeFrame::rec709(&bytes), w, h);
                 (bytes, None)
             }
             Picture::Linear(linear) => {
-                let t_scope = Instant::now();
                 // ACES has no GPU display transform, so its waveform reads
                 // the bytes on screen after the encode below; every other
                 // space is measured from the linear frame here.
@@ -738,10 +737,8 @@ impl PlaybackEngine {
                 let scopes_after_encode = crate::video_decoder::working_colorspace()
                     == klipp_core::WorkingColorspace::AcesCG;
                 if scope_due && !scopes_after_encode {
-                    self.render_active_scopes(Some(&linear), None, w, h);
-                    self.last_scope_render = Instant::now();
+                    scope_ms = self.draw_scopes(Some(&linear), None, w, h);
                 }
-                scope_ms = t_scope.elapsed().as_secs_f64() * 1000.0;
 
                 // Mirror the frame into the UI's GPU texture when that path is on.
                 if super::should_publish_gpu_viewer() && (w * 4) % 256 == 0 {
@@ -765,10 +762,7 @@ impl PlaybackEngine {
                 self.publish_hdr_reference(&linear, w, h);
                 let encoded = self.encode_for_screen(&linear, w, h);
                 if scope_due && scopes_after_encode {
-                    let t_scope = Instant::now();
-                    self.render_active_scopes(Some(&linear), Some(&encoded.0), w, h);
-                    self.last_scope_render = Instant::now();
-                    scope_ms += t_scope.elapsed().as_secs_f64() * 1000.0;
+                    scope_ms += self.draw_scopes(Some(&linear), Some(super::DisplayScopeFrame::rec709(&encoded.0)), w, h);
                 }
                 // Scopes not due this frame still show the one before it.
                 self.scope_render_owed = if scope_due { false } else { self.scopes_visible };

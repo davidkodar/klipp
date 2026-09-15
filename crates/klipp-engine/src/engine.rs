@@ -557,6 +557,30 @@ fn direct_present_enabled() -> bool {
 const MAX_CLIP_STREAMS: usize = 6;
 
 /// Common write of a freshly-rendered scope texture into the shared
+/// Display bytes for the scopes: the codes on screen, and the luminance
+/// weights of the primaries they are in, for their Y′.
+pub(crate) struct DisplayScopeFrame<'a> {
+    pub rgba: &'a [u8],
+    pub luma: [f32; 3],
+}
+
+impl<'a> DisplayScopeFrame<'a> {
+    /// sRGB / Rec.709 bytes: a skim or scrub frame, a decoder's own
+    /// picture, an ACES ODT's output.
+    pub fn rec709(rgba: &'a [u8]) -> Self {
+        Self { rgba, luma: klipp_color::primaries::luminance_weights(klipp_core::WorkingColorspace::Rec709Linear) }
+    }
+
+    /// Bytes in the working space's primaries, as the GPU grade encodes
+    /// them for the screen.
+    pub fn working(rgba: &'a [u8]) -> Self {
+        Self { rgba, luma: klipp_color::primaries::luminance_weights(crate::video_decoder::working_colorspace()) }
+    }
+}
+
+/// The longest the scopes wait between passes, however cheap or costly.
+const SCOPE_MAX_INTERVAL: Duration = Duration::from_millis(100);
+
 /// `FrameBuffer`. `Some(t)` populates the texture and mode tag; `None`
 /// (the mode was not drawn) clears the texture.
 fn write_scope_tex_to_fb(
@@ -1266,12 +1290,10 @@ pub struct PlaybackEngine {
     /// flips it on via `AppCommand::SetScopesVisible(true)` when
     /// the scopes panel opens.
     scopes_visible: bool,
-    /// Wall-clock timestamp of the last GPU scope render. Used to
-    /// throttle scope refresh to ~10 Hz — colourists can't perceive
-    /// scope updates faster than that, and each scope render costs
-    /// two full GPU sync fences (~40 ms together on NVIDIA Vulkan)
-    /// which would otherwise consume most of a 24fps frame budget.
+    /// When the scopes were last drawn, and what that pass cost. Together
+    /// they pace the scopes: see [`Self::should_render_scope`].
     last_scope_render: std::time::Instant,
+    last_scope_cost: Duration,
     /// A frame reached the screen, or a scope's settings, size or set
     /// changed, without the scopes being drawn: they still show what came
     /// before. Paid on the next frame whose scopes are due, and while
@@ -1628,6 +1650,7 @@ impl PlaybackEngine {
             scope_sizes: std::collections::BTreeMap::new(),
             scopes_visible: false,
             last_scope_render: std::time::Instant::now() - std::time::Duration::from_secs(1),
+            last_scope_cost: Duration::ZERO,
             scope_render_owed: false,
             matte_preview_node: None,
             cached_pregrade_frame: None,
@@ -2692,14 +2715,11 @@ impl PlaybackEngine {
                 // The UI hands over an sRGB u8 frame (a skim or scrub
                 // snapshot). The GPU scopes measure those codes as they
                 // are; the remaining scopes linearise them.
-                self.render_active_scopes(None, Some(&rgba), width, height);
-                // A scope was just drawn: an owed timeline redraw waits its
-                // interval like any other, rather than landing over a skim.
-                self.last_scope_render = std::time::Instant::now();
-                // And what was owed is paid: the scopes show the frame on
-                // screen. Left owed, the paused tick rendered the parked
+                // Drawn now, so an owed timeline redraw waits its interval
+                // rather than landing over a skim, and what was owed is
+                // paid: left owed, the paused tick rendered the parked
                 // frame over the skim a skim cycle later, again and again.
-                self.scope_render_owed = false;
+                self.draw_scopes(None, Some(DisplayScopeFrame::rec709(&rgba)), width, height);
             }
             AppCommand::SetScopeTapNode { clip_id, node_id } => {
                 self.inspect_clip = Some(clip_id);
@@ -6427,16 +6447,15 @@ impl PlaybackEngine {
                 }
             }
         }
-        // Scopes sample the post-grade linear frame, which this path
-        // never builds. But they refresh at 10 Hz, so only the frames
-        // that actually feed one need the full pipeline — at 59.94 fps
-        // that is one frame in six, and the other five accelerate. This
-        // is deliberately `should_render_scope()` and not "are scopes
-        // open": gating on the panel being visible turned the fast path
-        // off for the entire session, which is exactly the case colour
-        // work is done in.
-        if self.should_render_scope() {
-            blockers.push("scope refresh due this frame");
+        // The scopes measure the bytes a fast path puts on screen, so a
+        // due refresh does not stop it — except under HDR monitoring,
+        // whose bytes are a preview of the HDR levels the scopes show:
+        // those frames need the linear picture. Deliberately "due" and
+        // not "open": gating on the panel being visible turned the fast
+        // path off for the entire session, which is exactly the case
+        // colour work is done in.
+        if self.should_render_scope() && self.hdr_monitor.renders_hdr() {
+            blockers.push("scope refresh due this frame, and HDR levels need the linear frame");
         }
         // Node thumbnails are only captured while paused (`thumb_set` is
         // None whenever state is Playing), so they cannot block a path
@@ -6587,6 +6606,8 @@ impl PlaybackEngine {
         self.publish_fast_path_frame(
             bytes, width, height, t_frame, 0.0, readback_ms, "direct_present",
             current_source_secs, q_len, None,
+            // The decoder's own sRGB picture.
+            klipp_color::primaries::luminance_weights(klipp_core::WorkingColorspace::Rec709Linear),
         );
     }
 
@@ -6697,13 +6718,13 @@ impl PlaybackEngine {
             return false;
         };
         let grade_ms = t_frame.elapsed().as_secs_f64() * 1000.0;
+        // The scopes measure the bytes about to be shown, when due.
+        let scope_ms = self.draw_due_scopes(DisplayScopeFrame::working(&bytes), width, height);
         {
             let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
             fb.write_frame_swap(&mut bytes, width, height);
             fb.set_presented(self.playhead);
         }
-        // Graded on the GPU straight to display bytes: no scope saw it.
-        self.scope_render_owed |= self.scopes_visible;
         self.composite_scratch_u8 = bytes;
         let total_ms = t_frame.elapsed().as_secs_f64() * 1000.0;
         if let Ok(mut ring) = self.perf_ring.lock() {
@@ -6722,7 +6743,7 @@ impl PlaybackEngine {
                 dropped: false,
                 bridge_u8_ms: 0.0,
                 reencode_ms: 0.0,
-                scope_ms: 0.0,
+                scope_ms: scope_ms as f32,
                 composite_ms: 0.0,
                 update_playback_ms: 0.0,
             });
@@ -6819,6 +6840,8 @@ impl PlaybackEngine {
         self.publish_fast_path_frame(
             bytes, width, height, t_frame, grade_ms, readback_ms, "graded_gpu_present",
             current_source_secs, q_len, nits.flatten(),
+            // Encoded in the working space's primaries.
+            klipp_color::primaries::luminance_weights(crate::video_decoder::working_colorspace()),
         );
         true
     }
@@ -6840,9 +6863,10 @@ impl PlaybackEngine {
         current_source_secs: f64,
         q_len: usize,
         nits: Option<(Vec<f32>, u32, u32)>,
+        scope_luma: [f32; 3],
     ) {
-        // A fast path's frame never passes the scopes.
-        self.scope_render_owed |= self.scopes_visible;
+        // The scopes measure the bytes about to be shown, when due.
+        let scope_ms = self.draw_due_scopes(DisplayScopeFrame { rgba: &bytes, luma: scope_luma }, width, height);
         let t_fb = std::time::Instant::now();
         {
             let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
@@ -6896,7 +6920,7 @@ impl PlaybackEngine {
                 dropped,
                 bridge_u8_ms: 0.0,
                 reencode_ms: 0.0,
-                scope_ms: 0.0,
+                scope_ms: scope_ms as f32,
                 composite_ms: 0.0,
                 update_playback_ms: total_ms as f32,
             });
@@ -7036,17 +7060,45 @@ impl PlaybackEngine {
         self.perf_ring.clone()
     }
 
-    /// Whether enough wall time has passed since the last GPU scope
-    /// render to justify another one. Colourists can't perceive
-    /// scope updates faster than ~10 Hz, and each scope render costs
-    /// two full GPU sync fences (~30-40 ms together). Capping the
-    /// refresh rate here trades ~70 ms of latency on the scope
-    /// overlay for getting every frame back inside the 24 fps
-    /// budget during playback with sliders active.
+    /// Whether the scopes are due: they are visible, and long enough has
+    /// passed since they were last drawn. The scopes are paced by their
+    /// own cost so that they never take more than a third of the engine's
+    /// time: a pass that cost 4 ms is due every frame, one that cost
+    /// 15 ms every 30 ms, and none waits longer than `SCOPE_MAX_INTERVAL`.
     fn should_render_scope(&self) -> bool {
-        const SCOPE_MIN_INTERVAL_MS: u128 = 100;
-        self.scopes_visible
-            && self.last_scope_render.elapsed().as_millis() >= SCOPE_MIN_INTERVAL_MS
+        self.scopes_visible && self.last_scope_render.elapsed() >= self.scope_interval()
+    }
+
+    /// How long after one scope pass the next may start: twice what the
+    /// last one cost, at most [`SCOPE_MAX_INTERVAL`].
+    fn scope_interval(&self) -> Duration {
+        (self.last_scope_cost * 2).min(SCOPE_MAX_INTERVAL)
+    }
+
+    /// Draw the scopes from `linear` or `display` (see
+    /// [`Self::render_active_scopes`]), note when and what it cost, and
+    /// return the cost in ms. What was owed is paid.
+    fn draw_scopes(&mut self, linear: Option<&[f32]>, display: Option<DisplayScopeFrame<'_>>, w: u32, h: u32) -> f64 {
+        let t = std::time::Instant::now();
+        self.render_active_scopes(linear, display, w, h);
+        self.last_scope_cost = t.elapsed();
+        self.last_scope_render = std::time::Instant::now();
+        self.scope_render_owed = false;
+        self.last_scope_cost.as_secs_f64() * 1000.0
+    }
+
+    /// The scopes from the display bytes a fast path is about to show, if
+    /// they are due; otherwise they are owed. Not under HDR monitoring:
+    /// its bytes are a preview of the levels the scopes show, so those
+    /// frames leave the fast path when the scopes are due (see
+    /// [`Self::fast_path_blockers_for`]). The cost in ms, 0 when not drawn.
+    fn draw_due_scopes(&mut self, display: DisplayScopeFrame<'_>, w: u32, h: u32) -> f64 {
+        if self.should_render_scope() && !self.hdr_monitor.renders_hdr() {
+            self.draw_scopes(None, Some(display), w, h)
+        } else {
+            self.scope_render_owed |= self.scopes_visible;
+            0.0
+        }
     }
 
     /// Draw every mode in `(active_scope_modes ∪ {scope_render_mode})` on
@@ -7064,7 +7116,7 @@ impl PlaybackEngine {
     fn render_active_scopes_pending(
         &mut self,
         linear: Option<&[f32]>,
-        display: Option<&[u8]>,
+        display: Option<DisplayScopeFrame<'_>>,
         src_w: u32,
         src_h: u32,
     ) -> Vec<(u8, Option<(Vec<u8>, u32, u32)>)> {
@@ -7109,7 +7161,7 @@ impl PlaybackEngine {
     fn render_scopes_on_gpu(
         &mut self,
         linear: Option<&[f32]>,
-        display: Option<&[u8]>,
+        display: Option<DisplayScopeFrame<'_>>,
         src_w: u32,
         src_h: u32,
         modes: &[u8],
@@ -7121,11 +7173,11 @@ impl PlaybackEngine {
         let hdr = self.hdr_monitor.renders_hdr();
         let sdr_transfer = self.sdr_transfer;
         let input = match (display, linear) {
-            (Some(rgba), _) => ScopeInput::Display {
-                rgba,
+            (Some(d), _) => ScopeInput::Display {
+                rgba: d.rgba,
                 width: src_w,
                 height: src_h,
-                luma: klipp_color::primaries::luminance_weights(klipp_core::WorkingColorspace::Rec709Linear),
+                luma: d.luma,
             },
             (None, Some(rgba)) if hdr => ScopeInput::Linear {
                 rgba,
@@ -7257,7 +7309,7 @@ impl PlaybackEngine {
     fn render_active_scopes(
         &mut self,
         linear: Option<&[f32]>,
-        display: Option<&[u8]>,
+        display: Option<DisplayScopeFrame<'_>>,
         src_w: u32,
         src_h: u32,
     ) {
