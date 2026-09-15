@@ -9896,6 +9896,44 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
                 result = to_bytes(unpack(from_buf[sidx]));
             }
         }
+    } else if params.kind_id == 66u {
+        // Water Drop: a ring spreads from the centre; the incoming
+        // picture is revealed inside it, refracted at the crest, with
+        // ripples trailing behind the front.
+        // param0 = ring width (fraction of the half diagonal)
+        // param1 = refraction at the crest, px
+        // param2 = trailing ripples
+        // param3 = crest highlight
+        let cx = f32(params.width) * 0.5;
+        let cy = f32(params.height) * 0.5;
+        let dx = f32(x) - cx;
+        let dy = f32(y) - cy;
+        let dist = length(vec2<f32>(dx, dy));
+        let half_diag = length(vec2<f32>(cx, cy));
+        let band = max(params.param0, 0.02) * half_diag;
+        let front = -band * 0.5 + p * (half_diag * 1.05 + band);
+        let s = dist - front;
+        let env = sin(p * 3.14159265);
+        let crest = exp(-(s * s) / (band * band * 0.18));
+        var trail: f32 = 0.0;
+        if s < 0.0 {
+            trail = sin(s / band * 6.2831853 * max(params.param2, 0.0)) * exp(s / band);
+        }
+        let disp = (crest + trail * 0.5) * params.param1 * env;
+        var nx: f32 = 0.0;
+        var ny: f32 = 0.0;
+        if dist > 0.1 {
+            nx = dx / dist;
+            ny = dy / dist;
+        }
+        let sx = clamp(f32(x) + nx * disp, 0.0, f32(params.width) - 1.0);
+        let sy = clamp(f32(y) + ny * disp, 0.0, f32(params.height) - 1.0);
+        let from_s = bilinear(false, sx, sy);
+        let to_s = bilinear(true, sx, sy);
+        let reveal = 1.0 - smoothstep(-band * 0.5, band * 0.5, s);
+        let col = lerp_pixel(from_s, to_s, reveal);
+        let glint = crest * params.param3 * env * 255.0;
+        result = vec4<f32>(min(col.x + glint, 255.0), min(col.y + glint, 255.0), min(col.z + glint, 255.0), col.w);
     } else if params.kind_id == 63u || params.kind_id == 64u || params.kind_id == 65u {
         // Zoom family: scale from/to around frame center.
         let zoom_amount = max(params.param0, 1.001);

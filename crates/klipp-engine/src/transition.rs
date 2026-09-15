@@ -23,11 +23,11 @@ pub fn transition_kind_from_id(id: u8) -> TransitionKind {
 pub fn all_transition_kinds() -> &'static [(u8, &'static str)] {
     // This is used by UI combo boxes. The labels here are the full display_name
     // from the registry. Built once at compile time via a const array.
-    const ALL: [(u8, &str); 66] = {
+    const ALL: [(u8, &str); 67] = {
         let specs = &klipp_core::TRANSITION_SPECS;
-        let mut arr = [(0u8, ""); 66];
+        let mut arr = [(0u8, ""); 67];
         let mut i = 0;
-        while i < 66 {
+        while i < 67 {
             arr[i] = (specs[i].kind_id, specs[i].display_name);
             i += 1;
         }
@@ -805,6 +805,7 @@ mod tests {
         assert_eq!(transition_kind_to_id(TransitionKind::ZoomInDissolve), 63);
         assert_eq!(transition_kind_to_id(TransitionKind::ZoomOutDissolve), 64);
         assert_eq!(transition_kind_to_id(TransitionKind::CrossZoom), 65);
+        assert_eq!(transition_kind_to_id(TransitionKind::WaterDrop), 66);
     }
 
     #[test]
@@ -818,12 +819,12 @@ mod tests {
     #[test]
     fn unknown_kind_id_defaults_to_cross_dissolve() {
         assert_eq!(transition_kind_from_id(255), TransitionKind::CrossDissolve);
-        assert_eq!(transition_kind_from_id(66), TransitionKind::CrossDissolve);
+        assert_eq!(transition_kind_from_id(67), TransitionKind::CrossDissolve);
     }
 
     #[test]
-    fn all_transition_kinds_returns_66() {
-        assert_eq!(all_transition_kinds().len(), 66);
+    fn all_transition_kinds_returns_every_registered_kind() {
+        assert_eq!(all_transition_kinds().len(), klipp_core::TRANSITION_SPECS.len());
     }
 
     // ========================================================================
@@ -1852,6 +1853,7 @@ mod tests {
             TransitionKind::ZoomInDissolve,
             TransitionKind::ZoomOutDissolve,
             TransitionKind::CrossZoom,
+            TransitionKind::WaterDrop,
         ];
         for kind in &kinds {
             let result = render_transition(*kind, &from, &to, 0.5, 1, 1);
@@ -1924,6 +1926,7 @@ mod tests {
             TransitionKind::ZoomInDissolve,
             TransitionKind::ZoomOutDissolve,
             TransitionKind::CrossZoom,
+            TransitionKind::WaterDrop,
         ];
         for kind in &kinds {
             for &p in &[0.0f32, 0.25, 0.5, 0.75, 1.0] {

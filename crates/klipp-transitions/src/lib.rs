@@ -1668,6 +1668,50 @@ pub fn render_transition_with_params(
                 }
             }
         }
+        TransitionKind::WaterDrop => {
+            // Water drop: a ring spreads from the centre; the incoming
+            // picture is revealed inside it, refracted at the crest, with
+            // ripples trailing behind the front. Same maths as the shader.
+            let cx = width as f32 * 0.5;
+            let cy = height as f32 * 0.5;
+            let half_diag = (cx * cx + cy * cy).sqrt();
+            let band = user_params.param0.max(0.02) * half_diag;
+            let front = -band * 0.5 + p * (half_diag * 1.05 + band);
+            let env = (p * std::f32::consts::PI).sin();
+            let smoothstep = |lo: f32, hi: f32, v: f32| {
+                let t = ((v - lo) / (hi - lo)).clamp(0.0, 1.0);
+                t * t * (3.0 - 2.0 * t)
+            };
+            let w = width as usize;
+            let h = height as usize;
+            for y in 0..h {
+                for x in 0..w {
+                    let fi = (y * w + x) * 4;
+                    let dx = x as f32 - cx;
+                    let dy = y as f32 - cy;
+                    let dist = (dx * dx + dy * dy).sqrt();
+                    let s = dist - front;
+                    let crest = (-(s * s) / (band * band * 0.18)).exp();
+                    let trail = if s < 0.0 {
+                        (s / band * std::f32::consts::TAU * user_params.param2.max(0.0)).sin() * (s / band).exp()
+                    } else {
+                        0.0
+                    };
+                    let disp = (crest + trail * 0.5) * user_params.param1 * env;
+                    let (nx, ny) = if dist > 0.1 { (dx / dist, dy / dist) } else { (0.0, 0.0) };
+                    let sx = (x as f32 + nx * disp).clamp(0.0, w as f32 - 1.0) as usize;
+                    let sy = (y as f32 + ny * disp).clamp(0.0, h as f32 - 1.0) as usize;
+                    let si = (sy * w + sx) * 4;
+                    let reveal = 1.0 - smoothstep(-band * 0.5, band * 0.5, s);
+                    let glint = crest * user_params.param3 * env * 255.0;
+                    for c in 0..3 {
+                        let v = from[si + c] as f32 * (1.0 - reveal) + to[si + c] as f32 * reveal + glint;
+                        output[fi + c] = (v.min(255.0) + 0.5) as u8;
+                    }
+                    output[fi + 3] = 255;
+                }
+            }
+        }
         TransitionKind::Pixelate => {
             // Blocks grow to `max_block` at p=0.5, shrink to 1 at endpoints.
             // param0 = max block size (px), param1 = mode (0=pixelate then dissolve, 1=cross)

@@ -7289,6 +7289,46 @@ fn show_transition_inspector(
                     });
                 }
             }
+            if matches!(transition.kind, klipp_timeline::TransitionKind::WaterDrop) {
+                ui.add_space(6.0);
+                for (label, field, range, speed) in [
+                    ("Ring width", 0u8, 0.04..=0.5, 0.005),
+                    ("Refraction", 1u8, 0.0..=80.0, 0.5),
+                    ("Ripples", 2u8, 0.0..=8.0, 0.1),
+                    ("Highlight", 3u8, 0.0..=1.0, 0.01),
+                ] {
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            egui::RichText::new(label)
+                                .color(theme.text_secondary)
+                                .size(11.0),
+                        );
+                        let mut v = match field {
+                            0 => transition.user_params.param0,
+                            1 => transition.user_params.param1,
+                            2 => transition.user_params.param2,
+                            _ => transition.user_params.param3,
+                        };
+                        let resp = ui.add(
+                            egui::DragValue::new(&mut v).range(range).speed(speed),
+                        );
+                        if resp.changed() {
+                            let mut new_params = transition.user_params;
+                            match field {
+                                0 => new_params.param0 = v,
+                                1 => new_params.param1 = v,
+                                2 => new_params.param2 = v,
+                                _ => new_params.param3 = v,
+                            }
+                            cmds.push(AppCommand::SetTransitionParam {
+                                track_index: track_idx,
+                                transition_id: transition.id,
+                                user_params: new_params,
+                            });
+                        }
+                    });
+                }
+            }
             if matches!(transition.kind, klipp_timeline::TransitionKind::Pixelate) {
                 ui.add_space(6.0);
                 ui.horizontal(|ui| {

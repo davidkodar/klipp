@@ -1406,6 +1406,23 @@ const TRANSITIONS: &[TransitionDef] = &[
         },
     },
     TransitionDef {
+        kind: klipp_core::TransitionKind::WaterDrop,
+        category: TransitionCategory::Cinematic,
+        preview: |p, r, _, progress| {
+            p.rect_filled(r, 0.0, PREVIEW_A);
+            let c = r.center();
+            let radius = r.width() * 0.62 * progress;
+            p.circle_filled(c, radius, PREVIEW_B);
+            for i in 0..3i32 {
+                let ring = radius - i as f32 * 9.0;
+                if ring > 1.0 {
+                    let alpha = (150 - i * 45).max(30) as u8;
+                    p.circle_stroke(c, ring, egui::Stroke::new(1.5_f32, egui::Color32::from_white_alpha(alpha)));
+                }
+            }
+        },
+    },
+    TransitionDef {
         kind: klipp_core::TransitionKind::Pixelate,
         category: TransitionCategory::Effect,
         preview: |p, r, _, _progress| {
@@ -2829,6 +2846,7 @@ fn paint_kind_motion_overlay(
         K::PageTurn => page_turn(false),
         K::PageTurnReverse => page_turn(true),
         K::Ripple => ripple(),
+        K::WaterDrop => ripple(),
         K::FilmBurn => film_burn(),
         K::LightLeak => light_leak(),
         K::Halation => halation(),

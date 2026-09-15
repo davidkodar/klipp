@@ -788,6 +788,40 @@ fn pixel(params: &Params, from_buf: &Buf, to_buf: &Buf, idx: u32) -> V4 {
                 result = unpack(from_buf[sidx]);
             }
         }
+    } else if params.kind_id == 66u32 {
+        // Water Drop: a ring spreads from the centre; the incoming
+        // picture is revealed inside it, refracted at the crest, with
+        // ripples trailing behind the front.
+        let cx = f32c(params.width) * 0.5;
+        let cy = f32c(params.height) * 0.5;
+        let dx = f32c(x) - cx;
+        let dy = f32c(y) - cy;
+        let dist = length(vec2!(dx, dy));
+        let half_diag = length(vec2!(cx, cy));
+        let band = max(params.param0, 0.02) * half_diag;
+        let front = -band * 0.5 + p * (half_diag * 1.05 + band);
+        let s = dist - front;
+        let env = sin(p * 3.14159265);
+        let crest = exp(-(s * s) / (band * band * 0.18));
+        let mut trail: f32 = 0.0;
+        if s < 0.0 {
+            trail = sin(s / band * 6.2831853 * max(params.param2, 0.0)) * exp(s / band);
+        }
+        let disp = (crest + trail * 0.5) * params.param1 * env;
+        let mut nx: f32 = 0.0;
+        let mut ny: f32 = 0.0;
+        if dist > 0.1 {
+            nx = dx / dist;
+            ny = dy / dist;
+        }
+        let sx = clamp(f32c(x) + nx * disp, 0.0, f32c(params.width) - 1.0);
+        let sy = clamp(f32c(y) + ny * disp, 0.0, f32c(params.height) - 1.0);
+        let from_s = bilinear(false, sx, sy);
+        let to_s = bilinear(true, sx, sy);
+        let reveal = 1.0 - smoothstep(-band * 0.5, band * 0.5, s);
+        let col = lerp_pixel(from_s, to_s, reveal);
+        let glint = crest * params.param3 * env * 255.0;
+        result = vec4!(min(col.x + glint, 255.0), min(col.y + glint, 255.0), min(col.z + glint, 255.0), col.w);
     } else if params.kind_id == 63u32 || params.kind_id == 64u32 || params.kind_id == 65u32 {
         // Zoom family: scale from/to around frame center.
         let zoom_amount = max(params.param0, 1.001);

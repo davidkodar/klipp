@@ -91,6 +91,9 @@ pub enum TransitionKind {
     ZoomInDissolve,
     ZoomOutDissolve,
     CrossZoom,
+    /// A ring spreads from the centre; the incoming picture is revealed
+    /// inside it, refracted at the crest, with ripples trailing behind.
+    WaterDrop,
 }
 
 // ---------------------------------------------------------------------------
@@ -109,10 +112,10 @@ pub struct TransitionSpec {
 }
 
 // ---------------------------------------------------------------------------
-// Registry — const array of all 66 specs
+// Registry — const array of all 67 specs
 // ---------------------------------------------------------------------------
 
-pub const TRANSITION_SPECS: [TransitionSpec; 66] = [
+pub const TRANSITION_SPECS: [TransitionSpec; 67] = [
     TransitionSpec {
         kind: TransitionKind::CrossDissolve,
         kind_id: 0,
@@ -641,10 +644,20 @@ pub const TRANSITION_SPECS: [TransitionSpec; 66] = [
         short_label: "X Zoom",
         default_params: TransitionUserParams { param0: 1.4, param1: 1.0, param2: 0.0, param3: 0.0, color: [1.0, 1.0, 1.0, 1.0] },
     },
+    TransitionSpec {
+        kind: TransitionKind::WaterDrop,
+        kind_id: 66,
+        string_key: "WaterDrop",
+        display_name: "Water Drop",
+        short_label: "Drop",
+        // ring width (fraction of the half diagonal), refraction px at
+        // the crest, trailing ripples, crest highlight.
+        default_params: TransitionUserParams { param0: 0.14, param1: 26.0, param2: 3.0, param3: 0.35, color: [1.0, 1.0, 1.0, 1.0] },
+    },
 ];
 
-// Compile-time assertion: exactly 66 entries.
-const _: () = assert!(TRANSITION_SPECS.len() == 66);
+// Compile-time assertion: exactly 67 entries.
+const _: () = assert!(TRANSITION_SPECS.len() == 67);
 
 // ---------------------------------------------------------------------------
 // Lookup helpers
@@ -717,7 +730,7 @@ mod tests {
 
     #[test]
     fn test_spec_count() {
-        assert_eq!(TRANSITION_SPECS.len(), 66);
+        assert_eq!(TRANSITION_SPECS.len(), 67);
     }
 
     #[test]
@@ -937,6 +950,7 @@ mod tests {
             TransitionKind::ZoomInDissolve => check(TransitionKind::ZoomInDissolve),
             TransitionKind::ZoomOutDissolve => check(TransitionKind::ZoomOutDissolve),
             TransitionKind::CrossZoom => check(TransitionKind::CrossZoom),
+            TransitionKind::WaterDrop => check(TransitionKind::WaterDrop),
         }
     }
 
