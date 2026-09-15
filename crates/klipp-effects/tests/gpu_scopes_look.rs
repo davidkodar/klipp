@@ -107,4 +107,24 @@ fn draw_the_scopes_of_a_picture() {
     let t = Instant::now();
     let _ = gpu.scopes().render(&scope, 2, &[big]);
     println!("vectorscope at 2000x2000, step 2: {:.2} ms", t.elapsed().as_secs_f64() * 1000.0);
+
+    // A waveform at the pane size in KLIPP_SCOPE_LOOK_PANE (`WxH`, physical
+    // pixels), at full and medium quality: the whole image, a 1:1 crop, and
+    // the same crop scaled as a screenshot of a 4K screen at half size is.
+    if let Ok(pane) = std::env::var("KLIPP_SCOPE_LOOK_PANE") {
+        let (pw, ph) = pane.split_once('x').map(|(a, b)| (a.parse::<u32>().unwrap(), b.parse::<u32>().unwrap())).expect("WxH");
+        for step in [1u32, 2] {
+            let job = ScopeJob::Waveform(WaveformJob { mode: WaveformMode::RgbOverlay, intensity: -1.0, channels: 7, envelope: false, glow: true, out_w: pw, out_h: ph });
+            let _ = gpu.scopes().render(&scope, step, &[job]);
+            let t = Instant::now();
+            let out = gpu.scopes().render(&scope, step, &[job]);
+            println!("pane {pw}x{ph} step {step}: {:.2} ms", t.elapsed().as_secs_f64() * 1000.0);
+            let img = image::RgbaImage::from_raw(pw, ph, out[0].clone().unwrap()).unwrap();
+            img.save(format!("{out_dir}/pane_{pw}x{ph}_step{step}.png")).unwrap();
+            let (cx, cy) = ((pw * 29 / 100).min(pw.saturating_sub(1000)), (ph * 26 / 100).min(ph.saturating_sub(576)));
+            image::imageops::crop_imm(&img, cx, cy, 520.min(pw), 300.min(ph)).to_image().save(format!("{out_dir}/pane_crop1to1_step{step}.png")).unwrap();
+            let wide = image::imageops::crop_imm(&img, cx, cy, 998.min(pw), 576.min(ph)).to_image();
+            image::imageops::resize(&wide, 520, 300, image::imageops::FilterType::Triangle).save(format!("{out_dir}/pane_as_screenshot_step{step}.png")).unwrap();
+        }
+    }
 }

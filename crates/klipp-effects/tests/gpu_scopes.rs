@@ -426,3 +426,64 @@ fn drawn_at_a_pane_size_a_one_pixel_column_stays_one_column_and_the_parade_keeps
         assert!((row as f32 - expect).abs() <= 2.0, "panel {panel}: line at row {row}, expected {expect:.1}");
     }
 }
+
+#[test]
+fn a_sparse_noisy_picture_draws_a_smooth_trace_not_specks() {
+    let Some(mut gpu) = GpuEffectsPipeline::new() else { return };
+    // 160x90 samples for a 1024x512 scope: about fourteen per column, each
+    // at a noisy level about a rising ramp, as a small picture measured into
+    // a large pane is.
+    const SW: u32 = 160;
+    const SH: u32 = 90;
+    let mut seed = 0x2545_f491u32;
+    let mut rand = move || {
+        seed ^= seed << 13;
+        seed ^= seed >> 17;
+        seed ^= seed << 5;
+        seed as f32 / u32::MAX as f32
+    };
+    let frame: Vec<f32> = (0..SW * SH)
+        .flat_map(|i| {
+            let x = (i % SW) as f32 / (SW - 1) as f32;
+            let enc = 0.3 + 0.4 * x + (rand() - 0.5) * 0.12;
+            let lin = ((enc + 0.055) / 1.055).powf(2.4);
+            [lin, lin, lin, 1.0]
+        })
+        .collect();
+    let input = ScopeInput::Linear { rgba: &frame, width: SW, height: SH, matrix: IDENTITY, luma: REC709, transfer: ScopeTransfer::Srgb, scale: 1.0 };
+    let (ow, oh) = (1024u32, 512u32);
+    let job = ScopeJob::Waveform(WaveformJob { mode: WaveformMode::Luma, intensity: -1.0, channels: 7, envelope: false, glow: false, out_w: ow, out_h: oh });
+    let out = gpu.scopes().render(&input, 1, &[job]);
+    let img = out[0].as_ref().unwrap();
+    let lum = |x: u32, y: u32| {
+        let i = ((y * ow + x) * 4) as usize;
+        img[i] as u32 + img[i + 1] as u32 + img[i + 2] as u32
+    };
+    // A lit pixel whose four neighbours are all dark is a speck.
+    let (mut lit, mut specks) = (0u32, 0u32);
+    for y in 1..oh - 1 {
+        for x in 1..ow - 1 {
+            if lum(x, y) > 30 {
+                lit += 1;
+                if lum(x - 1, y) <= 30 && lum(x + 1, y) <= 30 && lum(x, y - 1) <= 30 && lum(x, y + 1) <= 30 {
+                    specks += 1;
+                }
+            }
+        }
+    }
+    assert!(lit > 10_000, "the band is drawn: {lit} lit pixels");
+    assert!((specks as f32) < 0.002 * lit as f32, "{specks} isolated specks among {lit} lit pixels");
+    // And the band sits where the picture is: about the middle columns its
+    // light is centred on the ramp's middle level. (The brightest single row
+    // of a band this sparse is anywhere in it; the centre of its light is not.)
+    let (mut light, mut moment) = (0f64, 0f64);
+    for x in 496..528 {
+        for y in 0..oh {
+            light += lum(x, y) as f64;
+            moment += lum(x, y) as f64 * y as f64;
+        }
+    }
+    let row = moment / light;
+    let expect = 0.5 * oh as f64;
+    assert!((row - expect).abs() <= 8.0, "the band's light centred on row {row:.1}, expected {expect}");
+}

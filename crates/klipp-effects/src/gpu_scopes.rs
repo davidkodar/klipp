@@ -305,7 +305,9 @@ struct ShadeParams {
     /// picture spread evenly over the levels reads density 1.
     norm: f32,
     floor: f32,
-    _pad: f32,
+    /// The samples a pixel's density estimate gathers before it stops
+    /// widening. (`target` is a reserved word in WGSL.)
+    gather: f32,
 }
 
 #[repr(C)]
@@ -573,13 +575,52 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 }
 "#;
 
+/// Running sums of the bins, first over levels within each column: with
+/// [`WGSL_SAT_ROWS`] after it, a summed-area table, so the shade pass sums
+/// any rectangle of bins with four reads however large the rectangle.
+const WGSL_SAT_COLS: &str = r#"
+struct ExtParams { cols: u32, rows: u32, _p0: u32, _p1: u32 };
+@group(0) @binding(0) var<storage, read> bins: array<u32>;
+@group(0) @binding(1) var<storage, read_write> sat: array<u32>;
+@group(0) @binding(2) var<uniform> p: ExtParams;
+@compute @workgroup_size(64, 4)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let col = gid.x; let ch = gid.y;
+    if (col >= p.cols || ch >= 4u) { return; }
+    let base = ch * p.cols * p.rows + col * p.rows;
+    var acc = 0u;
+    for (var r = 0u; r < p.rows; r = r + 1u) {
+        acc = acc + bins[base + r];
+        sat[base + r] = acc;
+    }
+}
+"#;
+
+/// Then across columns, in place: each invocation owns one level of one
+/// channel. The sums may wrap past 2^32; a rectangle taken from them with
+/// the same wrapping arithmetic is still exact.
+const WGSL_SAT_ROWS: &str = r#"
+struct ExtParams { cols: u32, rows: u32, _p0: u32, _p1: u32 };
+@group(0) @binding(0) var<storage, read_write> sat: array<u32>;
+@group(0) @binding(1) var<uniform> p: ExtParams;
+@compute @workgroup_size(64, 4)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let r = gid.x; let ch = gid.y;
+    if (r >= p.rows || ch >= 4u) { return; }
+    let base = ch * p.cols * p.rows;
+    for (var c = 1u; c < p.cols; c = c + 1u) {
+        sat[base + c * p.rows + r] = sat[base + c * p.rows + r] + sat[base + (c - 1u) * p.rows + r];
+    }
+}
+"#;
+
 const WGSL_SHADE: &str = r#"
 struct ShadeParams {
     out_w: u32, out_h: u32, cols: u32, rows: u32,
     mode: u32, channels: u32, envelope: u32, gap: u32,
-    gain: f32, norm: f32, floor: f32, _pad: f32,
+    gain: f32, norm: f32, floor: f32, gather: f32,
 };
-@group(0) @binding(0) var<storage, read> bins: array<u32>;
+@group(0) @binding(0) var<storage, read> sat: array<u32>;
 @group(0) @binding(1) var<storage, read> ext: array<u32>;
 @group(0) @binding(2) var<storage, read_write> out: array<vec4<f32>>;
 @group(0) @binding(3) var<uniform> p: ShadeParams;
@@ -600,23 +641,20 @@ fn tint(ch: u32) -> vec3<f32> {
 fn glow_of(n: f32) -> f32 {
     return clamp(log2(1.0 + n * p.gain) / 8.0, 0.0, 1.0);
 }
-// The count over levels [r0, r1) of column `c`, with a tent weighted
-// `1 − d/4` reaching three levels either side. An 8-bit picture's levels
-// land on every fourth 10-bit bin, and that tent sums a comb of period
-// four exactly flat, so the rows between two codes are neither lighter
-// nor darker than the rows on them; it is the narrowest tent that does,
-// so a scope drawn tall stays as sharp as the measurement allows.
-fn column_count(base: u32, r0: u32, r1: u32) -> f32 {
-    var sum = 0.0;
-    for (var r = r0; r < r1; r = r + 1u) {
-        sum = sum + f32(bins[base + r]);
-    }
-    for (var d = 1u; d < 4u; d = d + 1u) {
-        let w = 1.0 - f32(d) * 0.25;
-        if (r0 >= d) { sum = sum + f32(bins[base + r0 - d]) * w; }
-        if (r1 + d - 1u < p.rows) { sum = sum + f32(bins[base + r1 + d - 1u]) * w; }
-    }
-    return sum;
+// The summed-area table at the corner below column `c` and level `l`: the
+// bins of columns [0, c) and levels [0, l) of the channel at `base`.
+fn corner(base: u32, c: i32, l: i32) -> u32 {
+    if (c <= 0 || l <= 0) { return 0u; }
+    return sat[base + u32(c - 1) * p.rows + u32(l - 1)];
+}
+// The bins of columns [ca, cb) and levels [la, lb), clipped to the grid,
+// and how many cells that is.
+fn box_sum(base: u32, ca: i32, cb: i32, la: i32, lb: i32) -> vec2<f32> {
+    let ka = clamp(ca, 0, i32(p.cols)); let kb = clamp(cb, 0, i32(p.cols));
+    let la2 = clamp(la, 0, i32(p.rows)); let lb2 = clamp(lb, 0, i32(p.rows));
+    if (kb <= ka || lb2 <= la2) { return vec2<f32>(0.0, 0.0); }
+    let s = corner(base, kb, lb2) - corner(base, ka, lb2) - corner(base, kb, la2) + corner(base, ka, la2);
+    return vec2<f32>(f32(s), f32((kb - ka) * (lb2 - la2)));
 }
 @compute @workgroup_size(16, 16)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
@@ -648,26 +686,77 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let v_hi = 1.0 - f32(oy) / f32(p.out_h);
     let r0 = u32(floor(v_lo * f32(p.rows)));
     let r1 = min(max(u32(ceil(v_hi * f32(p.rows))), r0 + 1u), p.rows);
-    // The tent adds a level and a half of weight either side.
-    let cells = f32(c1 - c0) * (f32(r1 - r0) + 3.0);
+    // How dense the trace is at this pixel, from as wide a neighbourhood as
+    // the samples there call for.
+    //
+    // A scope drawn at its pane's size can have fewer samples than pixels,
+    // and a pixel lit from its own one or two samples is chance: the trace
+    // breaks into specks. So the estimate widens until it has gathered
+    // `gather` samples. Each step is a box a step wider in columns and one
+    // 8-bit code taller either way, and the estimate is the average of the
+    // boxes so far, a pyramid, so the widening fades out instead of ending
+    // at an edge. Every box is a whole number of codes tall about the
+    // pixel, so an 8-bit picture's comb, one filled level in four, sums
+    // flat at every step. A dense trace stops at the first box and stays
+    // as sharp as the measurement; a sparse one is smoothed only as far as
+    // it must be, blended with the step before by how close that came.
+    //
+    // A step whose added ring is far denser than what it surrounds has
+    // reached another trace, not more of this pixel's own: the widening stops
+    // there. So a pixel beside a line, empty or nearly, keeps its own
+    // estimate and the line keeps its edge; only where the samples around
+    // are as sparse as the pixel's own is the gap between them filled.
+    let k = i32(max(c1 - c0, 1u));
+    let h2 = i32(((r1 - r0 + 3u) / 4u) * 2u);
+    let rc = i32((r0 + r1) / 2u);
+    var hs = array<i32, 6>(0, 1, 2, 3, 5, 8);
+    var js = array<i32, 6>(0, 1, 2, 3, 5, 8);
 
     var rgb = vec3<f32>(0.0);
     for (var ch = ch_first; ch <= ch_last; ch = ch + 1u) {
         if (ch < 3u && (p.channels & (1u << ch)) == 0u) { continue; }
-        var sum = 0.0; var edge = false;
         let base = ch * p.cols * p.rows;
-        for (var c = c0; c < c1; c = c + 1u) {
-            sum = sum + column_count(base + c * p.rows, r0, r1);
-            if (p.envelope != 0u) {
+        var edge = false;
+        if (p.envelope != 0u) {
+            for (var c = c0; c < c1; c = c + 1u) {
                 let lo = ext[(ch * p.cols + c) * 2u];
                 let hi = ext[(ch * p.cols + c) * 2u + 1u];
                 if ((lo >= r0 && lo < r1) || (hi >= r0 && hi < r1)) { edge = true; }
             }
         }
-        if (sum <= 0.0 && !edge) { continue; }
-        let n = sum / 256.0 * p.norm / cells;
-        var i = glow_of(n);
-        if (sum > 0.0) { i = max(i, p.floor); }
+        var acc = vec2<f32>(0.0, 0.0);
+        var prev_b = vec2<f32>(0.0, 0.0);
+        var dens = 0.0; var own = 0.0;
+        var prev_dens = 0.0; var prev_n = 0.0;
+        for (var s = 0; s < 6; s = s + 1) {
+            let hc = hs[s] * k;
+            let jl = 4 * js[s];
+            let b = box_sum(base, i32(c0) - hc, i32(c1) + hc, rc - h2 - jl, rc + h2 + jl);
+            if (s == 0) { own = b.x; }
+            if (s > 0) {
+                // The ring this step adds. Enough samples in it, far denser
+                // than the box inside it: the widening has reached another,
+                // denser trace, and this pixel keeps what it had.
+                let ring = (b.x - prev_b.x) / max(b.y - prev_b.y, 1.0);
+                let inner = select(0.0, prev_b.x / prev_b.y, prev_b.y > 0.0);
+                if ((b.x - prev_b.x) / 256.0 >= p.gather && ring > 4.0 * inner) { break; }
+            }
+            acc = acc + b;
+            prev_b = b;
+            let d = acc.x / 256.0 * p.norm / acc.y;
+            let n = b.x / 256.0;
+            if (n >= p.gather) {
+                dens = d;
+                if (s > 0 && prev_n > 0.0) { dens = mix(d, prev_dens, prev_n / p.gather); }
+                break;
+            }
+            dens = d;
+            prev_dens = d;
+            prev_n = n;
+        }
+        if (dens <= 0.0 && !edge) { continue; }
+        var i = glow_of(dens);
+        if (own > 0.0) { i = max(i, p.floor); }
         if (edge) { i = max(i, 0.9); }
         // The core of a dense trace goes to white, as a phosphor does.
         let t = tint(ch);
@@ -929,6 +1018,12 @@ pub struct ScopeRenderer {
     extents: wgpu::Buffer,
     /// The columns `bins` and `extents` have room for.
     bin_cols: u32,
+    /// The bins' summed-area table: what the waveform shade reads.
+    sat: wgpu::Buffer,
+    sat_cols_layout: wgpu::BindGroupLayout,
+    sat_cols_pipeline: wgpu::ComputePipeline,
+    sat_rows_layout: wgpu::BindGroupLayout,
+    sat_rows_pipeline: wgpu::ComputePipeline,
     shaded: Option<wgpu::Buffer>,
     blurred: Option<wgpu::Buffer>,
     float_size: u64,
@@ -1012,6 +1107,11 @@ impl ScopeRenderer {
         let glow_v_pipeline = pipeline(&device, "scope_glow_v", &glow_v_layout, WGSL_GLOW_V);
         let bins = buffer(&device, "scope_bins", 4 * (MIN_BIN_COLS * BIN_ROWS) as u64 * 4, wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST);
         let extents = buffer(&device, "scope_extents", 4 * MIN_BIN_COLS as u64 * 2 * 4, wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST);
+        let sat = buffer(&device, "scope_sat", 4 * (MIN_BIN_COLS * BIN_ROWS) as u64 * 4, wgpu::BufferUsages::STORAGE);
+        let sat_cols_layout = layout(&device, "scope_sat_cols", &[storage(true), storage(false), UNIFORM]);
+        let sat_cols_pipeline = pipeline(&device, "scope_sat_cols", &sat_cols_layout, WGSL_SAT_COLS);
+        let sat_rows_layout = layout(&device, "scope_sat_rows", &[storage(false), UNIFORM]);
+        let sat_rows_pipeline = pipeline(&device, "scope_sat_rows", &sat_rows_layout, WGSL_SAT_ROWS);
         Self {
             device,
             queue,
@@ -1044,6 +1144,11 @@ impl ScopeRenderer {
             bins,
             extents,
             bin_cols: MIN_BIN_COLS,
+            sat,
+            sat_cols_layout,
+            sat_cols_pipeline,
+            sat_rows_layout,
+            sat_rows_pipeline,
             shaded: None,
             blurred: None,
             float_size: 0,
@@ -1196,6 +1301,23 @@ impl ScopeRenderer {
                 wgpu::BindGroupEntry { binding: 2, resource: ext_params.as_entire_binding() },
             ],
         });
+        let sat_cols_bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("scope_sat_cols_bg"),
+            layout: &self.sat_cols_layout,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: self.bins.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: self.sat.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 2, resource: ext_params.as_entire_binding() },
+            ],
+        });
+        let sat_rows_bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("scope_sat_rows_bg"),
+            layout: &self.sat_rows_layout,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: self.sat.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: ext_params.as_entire_binding() },
+            ],
+        });
         let hist_params = self.uniform("scope_hist_params", &ExtParams { cols, rows: BIN_ROWS, _p0: 0, _p1: 0 });
         let hist_reduce_bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("scope_hist_reduce_bg"),
@@ -1271,6 +1393,14 @@ impl ScopeRenderer {
                     pass.set_bind_group(0, &ext_bg, &[]);
                     pass.dispatch_workgroups(cols.div_ceil(64), 4, 1);
                 }
+                if jobs.iter().any(|j| matches!(j, ScopeJob::Waveform(_))) {
+                    pass.set_pipeline(&self.sat_cols_pipeline);
+                    pass.set_bind_group(0, &sat_cols_bg, &[]);
+                    pass.dispatch_workgroups(cols.div_ceil(64), 1, 1);
+                    pass.set_pipeline(&self.sat_rows_pipeline);
+                    pass.set_bind_group(0, &sat_rows_bg, &[]);
+                    pass.dispatch_workgroups(BIN_ROWS.div_ceil(64), 1, 1);
+                }
                 if want_hist {
                     pass.set_pipeline(&self.hist_reduce_pipeline);
                     pass.set_bind_group(0, &hist_reduce_bg, &[]);
@@ -1308,14 +1438,14 @@ impl ScopeRenderer {
                         gain: ScopeJob::Waveform(*job).gain(),
                         norm,
                         floor: 0.04,
-                        _pad: 0.0,
+                        gather: 16.0,
                     };
                     let params = self.uniform("scope_shade_params", &shade);
                     let bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
                         label: Some("scope_shade_bg"),
                         layout: &self.shade_layout,
                         entries: &[
-                            wgpu::BindGroupEntry { binding: 0, resource: self.bins.as_entire_binding() },
+                            wgpu::BindGroupEntry { binding: 0, resource: self.sat.as_entire_binding() },
                             wgpu::BindGroupEntry { binding: 1, resource: self.extents.as_entire_binding() },
                             wgpu::BindGroupEntry { binding: 2, resource: shaded.as_entire_binding() },
                             wgpu::BindGroupEntry { binding: 3, resource: params.as_entire_binding() },
@@ -1467,6 +1597,7 @@ impl ScopeRenderer {
             let usage = wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST;
             self.bins = buffer(&self.device, "scope_bins", 4 * cols as u64 * BIN_ROWS as u64 * 4, usage);
             self.extents = buffer(&self.device, "scope_extents", 4 * cols as u64 * 2 * 4, usage);
+            self.sat = buffer(&self.device, "scope_sat", 4 * cols as u64 * BIN_ROWS as u64 * 4, wgpu::BufferUsages::STORAGE);
             self.bin_cols = cols;
         }
     }
@@ -1490,6 +1621,41 @@ impl ScopeRenderer {
         if self.staging.is_none() || self.staging_size < bytes {
             self.staging = Some(buffer(&self.device, "scope_staging", bytes, wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST));
             self.staging_size = bytes;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every scope shader parses and validates, as each pipeline is built
+    /// from it. A shader wgpu rejects does not fail loudly here: the
+    /// pipeline is invalid, its dispatches do nothing, and the scope is
+    /// silently black.
+    #[test]
+    fn every_scope_shader_validates() {
+        let shaders = [
+            ("acc_linear", format!("{WGSL_COMMON_ACC}{WGSL_ACC_LINEAR}")),
+            ("acc_display", format!("{WGSL_COMMON_ACC}{WGSL_ACC_DISPLAY}")),
+            ("acc_vector_linear", format!("{WGSL_COMMON_ACC}{WGSL_COMMON_VECTOR}{WGSL_ACC_VECTOR_LINEAR}")),
+            ("acc_vector_display", format!("{WGSL_COMMON_ACC}{WGSL_COMMON_VECTOR}{WGSL_ACC_VECTOR_DISPLAY}")),
+            ("shade_vector", WGSL_SHADE_VECTOR.to_string()),
+            ("extents", WGSL_EXTENTS.to_string()),
+            ("sat_cols", WGSL_SAT_COLS.to_string()),
+            ("sat_rows", WGSL_SAT_ROWS.to_string()),
+            ("shade", WGSL_SHADE.to_string()),
+            ("hist_reduce", WGSL_HIST_REDUCE.to_string()),
+            ("hist_prep", WGSL_HIST_PREP.to_string()),
+            ("shade_hist", WGSL_SHADE_HIST.to_string()),
+            ("glow_h", WGSL_GLOW_H.to_string()),
+            ("glow_v", WGSL_GLOW_V.to_string()),
+        ];
+        for (name, src) in shaders {
+            let module = naga::front::wgsl::parse_str(&src).unwrap_or_else(|e| panic!("{name}: {}", e.emit_to_string(&src)));
+            naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::all())
+                .validate(&module)
+                .unwrap_or_else(|e| panic!("{name}: {}", e.emit_to_string(&src)));
         }
     }
 }

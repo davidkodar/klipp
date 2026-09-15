@@ -8,14 +8,21 @@ mod common;
 use klipp_core::AppCommand;
 use std::time::{Duration, Instant};
 
-/// The brightest row of column `x` in a `w × h` RGBA8 image.
-fn brightest_row(img: &[u8], w: u32, h: u32, x: u32) -> usize {
-    (0..h as usize)
-        .max_by_key(|y| {
-            let i = (y * w as usize + x as usize) * 4;
-            img[i] as u32 + img[i + 1] as u32 + img[i + 2] as u32
-        })
-        .unwrap()
+/// The row the light of column `x` in a `w × h` RGBA8 image is centred
+/// on, within 32 rows of `near`. The centre, not the brightest row: a real
+/// frame's line carries codec noise and saturates to white over several
+/// rows, and the brightest of those is whichever tie comes last.
+fn line_row(img: &[u8], w: u32, h: u32, x: u32, near: f64) -> f64 {
+    let (lo, hi) = ((near - 32.0).max(0.0) as usize, ((near + 32.0) as usize).min(h as usize - 1));
+    let (mut light, mut moment) = (0f64, 0f64);
+    for y in lo..=hi {
+        let i = (y * w as usize + x as usize) * 4;
+        let l = (img[i] as u32 + img[i + 1] as u32 + img[i + 2] as u32) as f64;
+        light += l;
+        moment += l * y as f64;
+    }
+    assert!(light > 3.0 * 255.0, "column {x}: no line near row {near:.1}");
+    moment / light
 }
 
 #[test]
@@ -57,15 +64,15 @@ fn the_waveform_and_parade_are_gpu_drawn_and_measure_the_shown_frame() {
     let code = (0..256).max_by_key(|c| codes[*c]).unwrap() as f64;
     let expect = (1.0 - code / 255.0) * wave.h as f64;
     for x in [100u32, 512, 900] {
-        let row = brightest_row(&wave.data, wave.w, wave.h, x) as f64;
-        assert!((row - expect).abs() <= 4.0, "column {x}: line at row {row}, expected {expect:.1} for code {code}");
+        let row = line_row(&wave.data, wave.w, wave.h, x, expect);
+        assert!((row - expect).abs() <= 4.0, "column {x}: line at row {row:.1}, expected {expect:.1} for code {code}");
     }
     let gap = klipp_effects::gpu_scopes::parade_gap(parade.w);
     let panel_w = (parade.w - 2 * gap) / 3;
     for panel in 0..3u32 {
         let x = panel * (panel_w + gap) + panel_w / 2;
-        let row = brightest_row(&parade.data, parade.w, parade.h, x) as f64;
-        assert!((row - expect).abs() <= 4.0, "parade panel {panel}: line at row {row}, expected {expect:.1}");
+        let row = line_row(&parade.data, parade.w, parade.h, x, expect);
+        assert!((row - expect).abs() <= 4.0, "parade panel {panel}: line at row {row:.1}, expected {expect:.1}");
     }
     // A grey frame's chroma sits at the centre of the vectorscope.
     let (i, _) = vector.data.chunks_exact(4).enumerate().max_by_key(|(_, p)| p[0] as u32 + p[1] as u32 + p[2] as u32).unwrap();
@@ -104,6 +111,6 @@ fn the_waveform_and_parade_are_gpu_drawn_and_measure_the_shown_frame() {
     let wave = parked.scope_texture(0).unwrap();
     assert_eq!(wave.data.len(), 1700 * 860 * 4);
     let expect = (1.0 - code / 255.0) * 860.0;
-    let row = brightest_row(&wave.data, wave.w, wave.h, 850) as f64;
-    assert!((row - expect).abs() <= 6.0, "waveform at its pane size: line at row {row}, expected {expect:.1}");
+    let row = line_row(&wave.data, wave.w, wave.h, 850, expect);
+    assert!((row - expect).abs() <= 6.0, "waveform at its pane size: line at row {row:.1}, expected {expect:.1}");
 }
