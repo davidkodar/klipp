@@ -847,6 +847,19 @@ impl PlaybackEngine {
         };
         let primary = self.sequence.read().ok().and_then(|s| self.v1_clip_id(&s));
         let rendered = match self.render_cache_key(&seq, primary) {
+            // Already cached at this size, in memory or on disk: nothing to
+            // render. Without this the scan rendered its nearest candidate
+            // again on every idle tick, forever — a full render, a readback,
+            // compression and a disk write, every 40 to 80 ms while paused.
+            Some(key)
+                if self
+                    .render_cache_hot
+                    .get(&key)
+                    .is_some_and(|(_, cw, ch)| (cw, ch) == (pixels.width, pixels.height))
+                    || self.render_cache_disk.contains(&key) =>
+            {
+                false
+            }
             Some(key) => {
                 let (w, h) = (pixels.width, pixels.height);
                 // No per-node thumbnails: this is not the user's frame.

@@ -317,6 +317,12 @@ impl DiskRenderCache {
         self.enabled
     }
 
+    /// Whether a frame is on disk for `key`, without reading it: the file's
+    /// existence, where [`Self::get`] reads and decompresses the whole frame.
+    pub fn contains(&self, key: &RenderCacheKey) -> bool {
+        self.enabled && self.cache_dir.join(key.filename()).exists()
+    }
+
     /// Read a cached frame from disk. Returns (rgba, width, height) or None.
     ///
     /// File layout (see [`Self::put`] for the writer):
@@ -636,6 +642,23 @@ mod tests {
 
         // Index must be in sync with disk too.
         assert_eq!(cache.index.len(), 2, "two entries should remain");
+    }
+
+    #[test]
+    fn contains_answers_without_reading_the_frame() {
+        let tmp = TmpDir::new("contains");
+        let mut cache = DiskRenderCache::new(tmp.path().to_path_buf(), 1);
+        let key = make_key(7);
+        assert!(!cache.contains(&key), "nothing written yet");
+        cache.put(&key, &[1u8; 16], 2, 2);
+        if cache.total_bytes == 0 {
+            eprintln!("SKIP contains_answers_without_reading_the_frame: /tmp write failed");
+            return;
+        }
+        assert!(cache.contains(&key), "a written frame is contained");
+        assert!(!cache.contains(&make_key(8)), "another frame is not");
+        cache.set_enabled(false);
+        assert!(!cache.contains(&key), "a disabled cache holds nothing");
     }
 
     #[test]
