@@ -19127,10 +19127,7 @@ impl KlippApp {
             }
             AppCommand::ShowExportDialog => {
                 self.state.show_export_dialog = true;
-                if self.export_dialog.output_path.is_empty() {
-                    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
-                    self.export_dialog.output_path = format!("{home}/output.{}", self.export_dialog.format.extension());
-                }
+                self.prepare_export_defaults();
                 // Restore last-used preset
                 if self.export_dialog.selected_preset_id.is_none() {
                     if let Some(ref last_id) = self.prefs.export.last_preset_id {
@@ -29273,6 +29270,24 @@ impl KlippApp {
         }
     }
 
+    /// An output path before the form is shown, so an export can never
+    /// start with an empty name (that wrote `.partial` into the working
+    /// directory). Named after the project, in the home directory.
+    fn prepare_export_defaults(&mut self) {
+        if self.export_dialog.output_path.trim().is_empty() {
+            let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
+            let stem = self
+                .state
+                .project_path
+                .as_ref()
+                .and_then(|p| p.file_stem())
+                .map(|s| s.to_string_lossy().to_string())
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| "output".into());
+            self.export_dialog.output_path = format!("{home}/{stem}.{}", self.export_dialog.format.extension());
+        }
+    }
+
     /// The export settings form: presets, output, codec, audio, range
     /// and the Export button. Hosted by the Export workspace's right
     /// column and by the Export dialog elsewhere.
@@ -29983,7 +29998,11 @@ impl KlippApp {
                     if in_dialog && ui.button("Cancel").clicked() {
                         self.state.show_export_dialog = false;
                     }
-                    if ui.button("Add to Queue").clicked() {
+                    let path_ok = !self.export_dialog.output_path.trim().is_empty();
+                    if ui.add_enabled(path_ok, egui::Button::new("Add to Queue"))
+                        .on_disabled_hover_text("Choose an output file first")
+                        .clicked()
+                    {
                         let path = PathBuf::from(&self.export_dialog.output_path);
                         let settings = build_export_settings(&self.export_dialog, self.prefs.audio.pan_law);
                         let use_marked = self.export_dialog.range_mode == 1;
@@ -30021,7 +30040,10 @@ impl KlippApp {
                         self.prefs.export.last_preset_id = self.export_dialog.selected_preset_id.clone();
                         self.prefs_dirty = true;
                     }
-                    if ui.button("Export").clicked() {
+                    if ui.add_enabled(path_ok, egui::Button::new("Export"))
+                        .on_disabled_hover_text("Choose an output file first")
+                        .clicked()
+                    {
                         let path = PathBuf::from(&self.export_dialog.output_path);
                         if path.exists() {
                             self.export_dialog.confirm_overwrite = true;
@@ -31788,6 +31810,7 @@ impl KlippApp {
             // The Export workspace's column is the export form.
             if self.state.active_workspace == crate::state::Workspace::Export {
                 let theme = self.theme.clone();
+                self.prepare_export_defaults();
                 crate::widgets::inspector_group::panel_title_row(ui, "Export", false, &theme);
                 let all_presets: Vec<ExportPreset> = builtin_presets()
                     .into_iter()
