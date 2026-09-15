@@ -80,7 +80,17 @@ From the browser, add media to the timeline by:
 
 ## Effects Browser
 
-Switch to the effects browser tab to browse and apply effects. Effects are categorised by type (colour, blur, distortion, etc.) and can be dragged onto clips or applied from the inspector.
+Switch to the effects browser tab to browse and apply effects. Effects are categorised by type (colour, blur, film, distortion, etc.) and can be dragged onto clips or applied from the inspector. Every card is rendered by the real effect over a reference frame.
+
+The source filter above the list defaults to **Built-in**: Klipp's own GPU
+effects, the ones that run at full speed in the viewer and the export.
+**Installed** shows the frei0r and OpenFX plugins found on the system; they
+run on the CPU and are kept as slow alternatives. **All** lists both.
+
+The **Looks** category holds chains of built-ins applied in one go (Cinematic,
+Dreamy, Punchy, Bleach Bypass, Vintage, Anamorphic). Dropping or double-clicking
+a Look adds every effect in the chain to the clip, each as its own row in the
+inspector, so any part of it can be tuned or removed afterwards.
 
 ## Title Browser
 

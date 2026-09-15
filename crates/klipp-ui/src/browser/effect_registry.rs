@@ -6,6 +6,8 @@ use crate::browser::effects_tab::EffectCategory;
 #[derive(Debug, Clone)]
 pub enum EffectSource {
     Builtin(klipp_effects::BuiltinEffect),
+    /// A one-click look: several built-in effects applied together.
+    Look(Vec<klipp_effects::BuiltinEffect>),
     Ofx(String),   // plugin identifier
     Audio(String), // audio effect type_id (e.g. "eq", "compressor")
     /// External LADSPA plugin. Holds the full discovered metadata so the
@@ -58,7 +60,7 @@ impl EffectEntry {
     /// - **Audio / LADSPA** are CPU-only.
     pub fn supports_gpu(&self, ofx_plugins: &[klipp_plugin::OfxPluginInfo]) -> bool {
         match &self.source {
-            EffectSource::Builtin(_) => true,
+            EffectSource::Builtin(_) | EffectSource::Look(_) => true,
             EffectSource::Ofx(id) => ofx_plugins
                 .iter()
                 .find(|p| &p.name == id)
@@ -247,7 +249,7 @@ impl EffectRegistry {
             },
             EffectEntry {
                 name: "Film Halation".into(),
-                category: EffectCategory::Light,
+                category: EffectCategory::Film,
                 source: EffectSource::Builtin(klipp_effects::BuiltinEffect::FilmHalation {
                     threshold: 0.75, radius: 15.0, intensity: 0.3, hue: 0.2,
                 }),
@@ -402,14 +404,134 @@ impl EffectRegistry {
                 grouping: "Color".into(),
             },
             EffectEntry {
-                name: "Noise Generator".into(),
-                category: EffectCategory::Stylize,
+                name: "Noise".into(),
+                category: EffectCategory::Film,
                 source: EffectSource::Builtin(klipp_effects::BuiltinEffect::NoiseGenerator {
                     amount: 0.1, monochrome: 0, seed: 0,
                 }),
                 source_label: "Built-in",
                 description: String::new(),
-                grouping: "Stylize".into(),
+                grouping: "Film".into(),
+            },
+            EffectEntry {
+                name: "Film Grain".into(),
+                category: EffectCategory::Film,
+                source: EffectSource::Builtin(klipp_effects::BuiltinEffect::FilmGrain {
+                    amount: 0.3, size: 1.5, color: 0, shadows: 0.6, seed: 0,
+                }),
+                source_label: "Built-in",
+                description: "Animated emulsion grain, heavier in the shadows.".into(),
+                grouping: "Film".into(),
+            },
+            EffectEntry {
+                name: "Old Film".into(),
+                category: EffectCategory::Film,
+                source: EffectSource::Builtin(klipp_effects::BuiltinEffect::OldFilm {
+                    flicker: 0.4, scratches: 0.5, dust: 0.5, weave: 0.5, sepia: 0.6, seed: 0,
+                }),
+                source_label: "Built-in",
+                description: "Flicker, scratches, dust, gate weave and a sepia wash.".into(),
+                grouping: "Film".into(),
+            },
+            EffectEntry {
+                name: "VHS".into(),
+                category: EffectCategory::Film,
+                source: EffectSource::Builtin(klipp_effects::BuiltinEffect::Vhs {
+                    tracking: 0.5, bleed: 0.5, noise: 0.4, scanlines: 0.5, seed: 0,
+                }),
+                source_label: "Built-in",
+                description: "Tape tracking, chroma bleed, noise and scanlines.".into(),
+                grouping: "Film".into(),
+            },
+            EffectEntry {
+                name: "Tilt-Shift".into(),
+                category: EffectCategory::Blur,
+                source: EffectSource::Builtin(klipp_effects::BuiltinEffect::TiltShift {
+                    center: 0.5, width: 0.3, softness: 0.2, radius: 12.0,
+                }),
+                source_label: "Built-in",
+                description: "A sharp band across the frame, blurred above and below.".into(),
+                grouping: "Blur".into(),
+            },
+            // ── Looks: several built-ins in one click, each still its own
+            // row in the inspector afterwards. ──
+            EffectEntry {
+                name: "Cinematic".into(),
+                category: EffectCategory::Looks,
+                source: EffectSource::Look(vec![
+                    klipp_effects::BuiltinEffect::FilmHalation { threshold: 0.65, radius: 30.0, intensity: 0.35, hue: 0.05 },
+                    klipp_effects::BuiltinEffect::Vignette { amount: -0.35, size: 0.75, softness: 0.6, roundness: 0.6 },
+                    klipp_effects::BuiltinEffect::NoiseGenerator { amount: 0.05, monochrome: 1, seed: 0 },
+                ]),
+                source_label: "Look",
+                description: "Halation on the highlights, a soft vignette and fine grain".into(),
+                grouping: "Looks".into(),
+            },
+            EffectEntry {
+                name: "Dreamy".into(),
+                category: EffectCategory::Looks,
+                source: EffectSource::Look(vec![
+                    klipp_effects::BuiltinEffect::Diffusion { amount: 0.35, radius: 40.0, threshold: 0.55, desaturation: 0.2 },
+                    klipp_effects::BuiltinEffect::Glow { radius: 30.0, intensity: 0.25 },
+                    klipp_effects::BuiltinEffect::Vignette { amount: -0.25, size: 0.8, softness: 0.7, roundness: 0.7 },
+                ]),
+                source_label: "Look",
+                description: "Pro-mist diffusion with a gentle glow".into(),
+                grouping: "Looks".into(),
+            },
+            EffectEntry {
+                name: "Punchy".into(),
+                category: EffectCategory::Looks,
+                source: EffectSource::Look(vec![
+                    klipp_effects::BuiltinEffect::Levels { in_black: 0.03, in_white: 0.97, gamma: 1.0, out_black: 0.0, out_white: 1.0 },
+                    klipp_effects::BuiltinEffect::Vibrance { amount: 0.35 },
+                    klipp_effects::BuiltinEffect::Sharpen { amount: 0.5 },
+                    klipp_effects::BuiltinEffect::Vignette { amount: -0.2, size: 0.85, softness: 0.5, roundness: 0.5 },
+                ]),
+                source_label: "Look",
+                description: "Contrast, vibrance and bite for social delivery".into(),
+                grouping: "Looks".into(),
+            },
+            EffectEntry {
+                name: "Bleach Bypass".into(),
+                category: EffectCategory::Looks,
+                source: EffectSource::Look(vec![
+                    klipp_effects::BuiltinEffect::HSVAdjust { hue_shift: 0.0, saturation: 0.45, value: 1.0 },
+                    klipp_effects::BuiltinEffect::Levels { in_black: 0.08, in_white: 0.92, gamma: 1.15, out_black: 0.0, out_white: 1.0 },
+                    klipp_effects::BuiltinEffect::NoiseGenerator { amount: 0.05, monochrome: 1, seed: 0 },
+                ]),
+                source_label: "Look",
+                description: "Desaturated, high contrast, grainy".into(),
+                grouping: "Looks".into(),
+            },
+            EffectEntry {
+                name: "Vintage".into(),
+                category: EffectCategory::Looks,
+                source: EffectSource::Look(vec![
+                    klipp_effects::BuiltinEffect::ChannelMixer {
+                        red_red: 1.0, red_green: 0.1, red_blue: 0.0,
+                        green_red: 0.0, green_green: 0.95, green_blue: 0.05,
+                        blue_red: 0.0, blue_green: 0.1, blue_blue: 0.8,
+                    },
+                    klipp_effects::BuiltinEffect::HSVAdjust { hue_shift: 0.0, saturation: 0.75, value: 0.98 },
+                    klipp_effects::BuiltinEffect::Vignette { amount: -0.5, size: 0.7, softness: 0.6, roundness: 0.5 },
+                    klipp_effects::BuiltinEffect::NoiseGenerator { amount: 0.08, monochrome: 1, seed: 0 },
+                ]),
+                source_label: "Look",
+                description: "Warm, faded, vignetted, grainy".into(),
+                grouping: "Looks".into(),
+            },
+            EffectEntry {
+                name: "Anamorphic".into(),
+                category: EffectCategory::Looks,
+                source: EffectSource::Look(vec![
+                    klipp_effects::BuiltinEffect::AnamorphicStreak { threshold: 0.75, length: 120.0, intensity: 0.5, tint: 0.6 },
+                    klipp_effects::BuiltinEffect::FilmHalation { threshold: 0.7, radius: 24.0, intensity: 0.25, hue: 0.05 },
+                    klipp_effects::BuiltinEffect::Letterbox { aspect_ratio: 2.39, bar_color: 0, opacity: 1.0 },
+                ]),
+                source_label: "Look",
+                description: "Blue streaks on the highlights, halation and a 2.39 frame".into(),
+                grouping: "Looks".into(),
             },
             EffectEntry {
                 name: "Median Filter".into(),

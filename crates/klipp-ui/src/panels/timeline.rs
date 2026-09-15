@@ -2836,14 +2836,20 @@ impl TimelinePanel {
                                     // plugin's default param values. The drag
                                     // payload's `plugin_id` carries the
                                     // type_id for the frei0r case.
-                                    let effect = state
+                                    let effects: Vec<klipp_effects::BuiltinEffect> = state
                                         .effect_registry
                                         .effects
                                         .iter()
                                         .find(|e| e.name == name)
                                         .and_then(|e| match &e.source {
                                             crate::browser::effect_registry::EffectSource::Builtin(eff) => {
-                                                Some(eff.clone())
+                                                Some(vec![eff.clone()])
+                                            }
+                                            // A Look is a chain: every
+                                            // effect lands on the clip as
+                                            // its own inspector row.
+                                            crate::browser::effect_registry::EffectSource::Look(chain) => {
+                                                Some(chain.clone())
                                             }
                                             crate::browser::effect_registry::EffectSource::Frei0r(plugin) => {
                                                 let params: Vec<klipp_frei0r::Frei0rValue> = plugin
@@ -2853,15 +2859,18 @@ impl TimelinePanel {
                                                         klipp_frei0r::Frei0rValue::default_for(p.kind)
                                                     })
                                                     .collect();
-                                                Some(klipp_effects::BuiltinEffect::Frei0r {
+                                                Some(vec![klipp_effects::BuiltinEffect::Frei0r {
                                                     type_id: plugin.type_id(),
                                                     params,
-                                                })
+                                                }])
                                             }
                                             _ => None,
-                                        });
-                                    if let Some(effect) = effect {
-                                        cmds.push(AppCommand::AddBuiltinEffect { clip_id, effect });
+                                        })
+                                        .unwrap_or_default();
+                                    if !effects.is_empty() {
+                                        for effect in effects {
+                                            cmds.push(AppCommand::AddBuiltinEffect { clip_id, effect });
+                                        }
                                         state.toast.show(format!("\"{}\" applied to clip", name));
                                     }
                                 } else {

@@ -234,6 +234,12 @@ impl ThumbnailRenderer {
                         );
                         klipp_effects::linear_f32_rgba_to_srgb_u8(&out)
                     }
+                    EffectSource::Look(effects) => {
+                        // The whole chain, as it will be applied.
+                        let linear = klipp_effects::srgb_u8_to_linear_f32_rgba(&frame.rgba);
+                        let out = klipp_effects::apply_effects(effects, linear, frame.width, frame.height);
+                        klipp_effects::linear_f32_rgba_to_srgb_u8(&out)
+                    }
                     EffectSource::Ofx(plugin_id) => {
                         apply_ofx_visual_proxy(&frame, plugin_id)
                     }
@@ -552,6 +558,18 @@ fn builtin_preview_params(effect: &klipp_effects::BuiltinEffect) -> klipp_effect
         }
         klipp_effects::BuiltinEffect::NoiseGenerator { .. } => {
             klipp_effects::BuiltinEffect::NoiseGenerator { amount: 0.3, monochrome: 0, seed: 42 }
+        }
+        klipp_effects::BuiltinEffect::FilmGrain { .. } => {
+            klipp_effects::BuiltinEffect::FilmGrain { amount: 0.6, size: 2.5, color: 0, shadows: 0.5, seed: 3 }
+        }
+        klipp_effects::BuiltinEffect::OldFilm { .. } => {
+            klipp_effects::BuiltinEffect::OldFilm { flicker: 0.4, scratches: 1.0, dust: 1.0, weave: 0.5, sepia: 0.7, seed: 5 }
+        }
+        klipp_effects::BuiltinEffect::Vhs { .. } => {
+            klipp_effects::BuiltinEffect::Vhs { tracking: 0.8, bleed: 0.8, noise: 0.6, scanlines: 0.8, seed: 9 }
+        }
+        klipp_effects::BuiltinEffect::TiltShift { .. } => {
+            klipp_effects::BuiltinEffect::TiltShift { center: 0.5, width: 0.25, softness: 0.15, radius: 8.0 }
         }
         klipp_effects::BuiltinEffect::MedianFilter { .. } => {
             klipp_effects::BuiltinEffect::MedianFilter { radius: 2 }

@@ -17,12 +17,16 @@ pub enum EffectCategory {
     /// about, video and audio combined.
     Installed,
     All,
+    /// One-click combinations of built-in effects.
+    Looks,
     Blur,
     Color,
     Stylize,
     Keying,
     Distort,
     Light,
+    /// Grain, halation and the ageing of a picture.
+    Film,
     // Audio categories
     AudioAll,
     AudioEQ,
@@ -42,10 +46,12 @@ pub enum EffectCategory {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[derive(Default)]
 pub enum SourceFilter {
+    /// Klipp's own effects: GPU, with a CPU twin. The default view.
     #[default]
-    All,
     Builtin,
-    Ofx,
+    /// Plugins found on this machine (frei0r, OFX): CPU-bound, slower.
+    Installed,
+    All,
 }
 
 
@@ -191,8 +197,9 @@ pub fn show(
                 // ── VIDEO FX section ──
                 sidebar_section_header(ui, theme, Some(Icon::FilmStrip), "Video FX");
 
-                let video_categories: [(EffectCategory, &str, Option<Icon>); 7] = [
+                let video_categories: [(EffectCategory, &str, Option<Icon>); 9] = [
                     (EffectCategory::All, "All", Some(Icon::List)),
+                    (EffectCategory::Looks, "Looks", Some(Icon::Star)),
                     // No drop/blur icon — leaving blank reads cleaner than
                     // a wrong-fit stand-in. TODO: bespoke blur glyph.
                     (EffectCategory::Blur, "Blur", None),
@@ -202,6 +209,7 @@ pub fn show(
                     (EffectCategory::Keying, "Keying", None),
                     (EffectCategory::Distort, "Distort", Some(Icon::ArrowsOut)),
                     (EffectCategory::Light, "Light", Some(Icon::Lightning)),
+                    (EffectCategory::Film, "Film", Some(Icon::FilmStrip)),
                 ];
                 for (cat, label, icon) in &video_categories {
                     let count = if *cat == EffectCategory::All {
@@ -258,6 +266,7 @@ pub fn show(
                     matches!(
                         fx.source,
                         EffectSource::Builtin(_)
+                            | EffectSource::Look(_)
                             | EffectSource::Audio(_)
                             | EffectSource::Ladspa(_)
                     )
@@ -265,7 +274,7 @@ pub fn show(
                 .count();
             let ofx_count = scoped
                 .iter()
-                .filter(|fx| matches!(fx.source, EffectSource::Ofx(_)))
+                .filter(|fx| matches!(fx.source, EffectSource::Ofx(_) | EffectSource::Frei0r(_)))
                 .count();
 
             segmented_source_filter(
@@ -303,11 +312,11 @@ pub fn show(
             .filter(|fx| {
                 let is_builtin = matches!(
                     fx.source,
-                    EffectSource::Builtin(_) | EffectSource::Audio(_) | EffectSource::Ladspa(_)
+                    EffectSource::Builtin(_) | EffectSource::Look(_) | EffectSource::Audio(_) | EffectSource::Ladspa(_)
                 );
-                let is_ofx = matches!(fx.source, EffectSource::Ofx(_));
+                let is_installed = matches!(fx.source, EffectSource::Ofx(_) | EffectSource::Frei0r(_));
 
-                // Source filter (mutually exclusive: All / Builtin / Ofx)
+                // Source filter: Klipp's own, installed plugins, or both.
                 match state.effect_source_filter {
                     SourceFilter::All => {}
                     SourceFilter::Builtin => {
@@ -315,8 +324,8 @@ pub fn show(
                             return false;
                         }
                     }
-                    SourceFilter::Ofx => {
-                        if !is_ofx {
+                    SourceFilter::Installed => {
+                        if !is_installed {
                             return false;
                         }
                     }
@@ -544,6 +553,15 @@ pub fn show(
                                             });
                                             state.toast.show(format!("\"{}\" applied", fx.name));
                                         }
+                                        EffectSource::Look(effects) => {
+                                            for effect in effects {
+                                                cmds.push(AppCommand::AddBuiltinEffect {
+                                                    clip_id,
+                                                    effect: effect.clone(),
+                                                });
+                                            }
+                                            state.toast.show(format!("\"{}\" look applied ({} effects)", fx.name, effects.len()));
+                                        }
                                         EffectSource::Ofx(plugin_name) => {
                                             cmds.push(AppCommand::AddEffect {
                                                 clip_id,
@@ -673,7 +691,7 @@ pub fn show(
                                     }
                                     _ => {
                                         let (is_builtin, plugin_id) = match &fx.source {
-                                            EffectSource::Builtin(_) => (true, String::new()),
+                                            EffectSource::Builtin(_) | EffectSource::Look(_) => (true, String::new()),
                                             EffectSource::Ofx(id) => (false, id.clone()),
                                             // frei0r is a "builtin" effect from the
                                             // drop-target's POV (lands in
@@ -1005,6 +1023,7 @@ fn effect_list_row(
         EffectSource::Frei0r(_) => "frei0r",
         EffectSource::Lv2(_) => "LV2",
         EffectSource::Clap(_) => "CLAP",
+        EffectSource::Look(_) => "Look",
     };
     let star_reserve = 30.0;
     let badge_y = rect.center().y - 8.0;
@@ -1074,6 +1093,8 @@ fn category_color(cat: EffectCategory, theme: &KlippTheme) -> egui::Color32 {
         EffectCategory::Keying => theme.role_dialogue,
         EffectCategory::Distort => egui::Color32::from_rgb(0xe8, 0x50, 0x20),
         EffectCategory::Light => egui::Color32::from_rgb(0xf0, 0xd0, 0x60),
+        EffectCategory::Film => egui::Color32::from_rgb(0xc8, 0x9a, 0x5a),
+        EffectCategory::Looks => theme.accent,
         EffectCategory::AudioAll => egui::Color32::from_rgb(0x60, 0xc0, 0x80),
         EffectCategory::AudioEQ => egui::Color32::from_rgb(0x2d, 0x6f, 0xa8),
         EffectCategory::AudioDynamics => egui::Color32::from_rgb(0x3a, 0x8c, 0x6e),
@@ -1260,9 +1281,9 @@ fn segmented_source_filter(
     let outer_h = 24.0;
     let pad = 2.0;
     let segments = [
-        (SourceFilter::All, "All", all_count),
         (SourceFilter::Builtin, "Built-in", builtin_count),
-        (SourceFilter::Ofx, "OFX", ofx_count),
+        (SourceFilter::Installed, "Installed", ofx_count),
+        (SourceFilter::All, "All", all_count),
     ];
 
     // Pre-measure each segment so total width is known before allocating.
@@ -1671,6 +1692,8 @@ pub fn category_label(fx: &crate::browser::effect_registry::EffectEntry) -> &'st
         EffectCategory::Keying => "Keying",
         EffectCategory::Distort => "Distort",
         EffectCategory::Light => "Light",
+        EffectCategory::Film => "Film",
+        EffectCategory::Looks => "Looks",
         EffectCategory::AudioEQ => "EQ",
         EffectCategory::AudioDynamics => "Dynamics",
         EffectCategory::AudioReverb => "Reverb",
@@ -1749,6 +1772,9 @@ fn paint_effect_preview(
         }
         EffectCategory::Keying => {
             painter.rect_filled(rect, 0.0, egui::Color32::from_rgb(0x0a, 0x30, 0x0a));
+        }
+        EffectCategory::Film | EffectCategory::Looks => {
+            painter.rect_filled(rect, 0.0, dim);
         }
         EffectCategory::Light => {
             painter.rect_filled(rect, 0.0, egui::Color32::from_rgb(0x10, 0x10, 0x10));
