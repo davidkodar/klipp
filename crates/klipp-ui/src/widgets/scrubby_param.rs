@@ -226,7 +226,7 @@ pub fn scrubby_param_row(
                     let arrow_color = if !has_next {
                         egui::Color32::from_rgb(60, 60, 65)
                     } else if next_resp.hovered() {
-                        egui::Color32::from_rgb(240, 180, 40)
+                        ui.visuals().selection.stroke.color
                     } else {
                         egui::Color32::from_rgb(140, 140, 145)
                     };
@@ -261,7 +261,7 @@ pub fn scrubby_param_row(
                     let arrow_color = if !has_prev {
                         egui::Color32::from_rgb(60, 60, 65)
                     } else if prev_resp.hovered() {
-                        egui::Color32::from_rgb(240, 180, 40)
+                        ui.visuals().selection.stroke.color
                     } else {
                         egui::Color32::from_rgb(140, 140, 145)
                     };
@@ -337,11 +337,11 @@ pub fn scrubby_param_row(
         let (diamond_color, diamond_filled, diamond_stroke_width) = if let Some(ref ks) = keyframe_state {
             let hovered = diamond_btn_resp.hovered();
             if ks.has_keyframe_at_playhead {
-                let c = if hovered { egui::Color32::from_rgb(255, 200, 60) } else { egui::Color32::from_rgb(240, 180, 40) };
+                let c = if hovered { ui.visuals().selection.stroke.color.gamma_multiply(1.25) } else { ui.visuals().selection.stroke.color };
                 (c, true, 0.0_f32) // filled — stroke width unused
             } else if ks.has_any_keyframes {
                 // Full-alpha yellow with thicker stroke — clearly "active but not here"
-                let c = if hovered { egui::Color32::from_rgb(255, 200, 60) } else { egui::Color32::from_rgb(240, 180, 40) };
+                let c = if hovered { ui.visuals().selection.stroke.color.gamma_multiply(1.25) } else { ui.visuals().selection.stroke.color };
                 (c, false, 1.8_f32)
             } else {
                 let c = if hovered { egui::Color32::from_rgb(180, 180, 185) } else { egui::Color32::from_rgb(100, 100, 105) };

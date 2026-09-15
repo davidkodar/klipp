@@ -1406,7 +1406,7 @@ impl ViewerPanel {
             if inline_object.is_some() {
                 let edit_stroke = egui::Stroke::new(
                     1.5_f32,
-                    egui::Color32::from_rgb(232, 160, 32),
+                    ui.visuals().selection.stroke.color,
                 );
                 let bb = te_rect.expand(4.0);
                 ui.painter().rect_stroke(bb, 2.0, edit_stroke);
@@ -2945,7 +2945,7 @@ impl ViewerPanel {
         let iw = image_rect.width();
         let ih = image_rect.height();
         let handle_radius = 5.0_f32;
-        let outline_color = egui::Color32::from_rgb(0xe8, 0xa0, 0x20);
+        let outline_color = ui.visuals().selection.stroke.color;
         let handle_color = egui::Color32::WHITE;
 
         // Helper: convert normalized coords to screen coords
@@ -3435,10 +3435,8 @@ impl ViewerPanel {
         };
 
         // Object-editor colours are deliberately fixed (not theme-
-        // sourced) so the bounding boxes / handles read consistently
-        // against any theme. Accent is the standard "object selected"
-        // amber from the rest of Klipp's selection treatment.
-        let accent = egui::Color32::from_rgb(232, 160, 32);
+        // The theme's accent, as every selection in Klipp is drawn.
+        let accent = ui.visuals().selection.stroke.color;
         let inactive_stroke = egui::Color32::from_rgba_unmultiplied(220, 220, 230, 180);
         let handle_fill = egui::Color32::from_rgb(20, 20, 24);
         let painter = ui.painter_at(image_rect);
@@ -3772,7 +3770,7 @@ impl ViewerPanel {
 
         // Same accent + handle colours as the title-object editor so
         // the two gizmos read as the same visual family.
-        let accent = egui::Color32::from_rgb(232, 160, 32);
+        let accent = ui.visuals().selection.stroke.color;
         let handle_fill = egui::Color32::from_rgb(20, 20, 24);
         let handle_stroke = egui::Stroke::new(1.5_f32, accent);
 
