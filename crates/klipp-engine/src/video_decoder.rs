@@ -1594,8 +1594,6 @@ fn max_playback_width() -> u32 {
     max_playback_height() * 2
 }
 
-/// Compute output dimensions that fit within MAX_PLAYBACK, preserving aspect ratio.
-/// For 90°/270° rotation, the effective display dimensions are swapped before scaling.
 /// NVDEC resize target for the hardware-decode path.
 ///
 /// Honours the user's "Max playback resolution" preference, the same as
@@ -1703,22 +1701,47 @@ mod hw_cap_tests {
         // Sub-cap sources are never touched either way.
         assert_eq!(hw_transfer_cap_dimensions(1280, 720), (1280, 720));
 
+        // Portrait: the box turns with the picture. A portrait 4K clip at
+        // the 4K setting is decoded whole, not cut to 1214x2160, and at
+        // 1080p it is the portrait of 1080p. The software path sizes after
+        // rotation and the hardware path before it; they agree.
+        set_max_playback_height(2160);
+        assert_eq!(playback_dimensions(3840, 2160, 90), (2160, 3840), "a portrait 4K clip at the 4K setting is not downscaled");
+        assert_eq!(playback_dimensions(2160, 3840, 0), (2160, 3840));
+        set_max_playback_height(1080);
+        assert_eq!(playback_dimensions(3840, 2160, 90), (1080, 1920), "a portrait 4K clip at 1080p decodes at 1080x1920");
+        assert_eq!(playback_dimensions(2160, 3840, 0), (1080, 1920));
+        assert_eq!(hw_transfer_cap_dimensions(3840, 2160), (1920, 1080), "the hardware path, before rotation, agrees");
+
         set_max_playback_height(restore);
     }
 }
 
+/// The size a frame is decoded at under "Max playback resolution": fitted,
+/// aspect preserved, into a box the preference's height on its short side
+/// and twice that on its long side, turned with the picture. For 90° and
+/// 270° rotation the display dimensions are the swapped ones.
+///
+/// The box used to be landscape whatever the picture, so a portrait clip
+/// was fitted by its long side into the preference's height: at the 4K
+/// setting a 2160x3840 iPhone clip decoded at 1214x2160, and the viewer and
+/// every scope saw 56 % of it. Turned, the software path (sized after
+/// rotation) and the hardware path (sized before it) agree.
 fn playback_dimensions(src_w: u32, src_h: u32, rotation: i32) -> (u32, u32) {
-    // For rotation, the effective display dimensions are swapped
     let (eff_w, eff_h) = if rotation == 90 || rotation == 270 {
         (src_h, src_w)
     } else {
         (src_w, src_h)
     };
-    if eff_w <= max_playback_width() && eff_h <= max_playback_height() {
+    let (box_w, box_h) = if eff_h > eff_w {
+        (max_playback_height(), max_playback_width())
+    } else {
+        (max_playback_width(), max_playback_height())
+    };
+    if eff_w <= box_w && eff_h <= box_h {
         return (eff_w, eff_h);
     }
-    let scale = (max_playback_width() as f64 / eff_w as f64)
-        .min(max_playback_height() as f64 / eff_h as f64);
+    let scale = (box_w as f64 / eff_w as f64).min(box_h as f64 / eff_h as f64);
     let out_w = ((eff_w as f64 * scale) as u32) & !1; // even width
     let out_h = ((eff_h as f64 * scale) as u32) & !1; // even height
     (out_w.max(2), out_h.max(2))
