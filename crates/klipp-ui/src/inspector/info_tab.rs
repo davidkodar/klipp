@@ -1,4 +1,3 @@
-use crate::icons::Icon;
 use crate::state::AppState;
 use crate::theme::KlippTheme;
 use klipp_core::AppCommand;
@@ -1293,88 +1292,8 @@ fn section_card(
     theme: &KlippTheme,
     add_contents: impl FnOnce(&mut egui::Ui),
 ) {
-    let w = ui.available_width();
-
-    // Use global collapsed sections set for persistence
-    let collapsed_key = egui::Id::new("klipp_collapsed_sections");
-    let is_collapsed: bool = ui.ctx().data_mut(|d| {
-        let set: &mut std::collections::HashSet<String> = d.get_temp_mut_or_default(collapsed_key);
-        set.contains(title)
-    });
-
-    let id = ui.id().with(title);
-    let mut state = egui::collapsing_header::CollapsingState::load_with_default_open(
-        ui.ctx(), id, !is_collapsed,
-    );
-
-    // Header
-    let header_h = 30.0;
-    let (header_rect, header_resp) = ui.allocate_exact_size(
-        egui::vec2(w, header_h), egui::Sense::click(),
-    );
-
-    let is_open = state.is_open();
-    let rounding = if is_open {
-        egui::Rounding { nw: 6.0, ne: 6.0, sw: 0.0, se: 0.0 }
-    } else {
-        egui::Rounding::same(4.0)
-    };
-    ui.painter().rect_filled(header_rect, rounding, header_bg);
-
-    // Title
-    ui.painter().text(
-        egui::pos2(header_rect.min.x + 14.0 + 4.0, header_rect.center().y),
-        egui::Align2::LEFT_CENTER,
-        title,
-        egui::FontId::proportional(11.0),
-        theme.text_dim,
-    );
-
-    // Badge
-    if let Some(ref badge_text) = badge {
-        ui.painter().text(
-            egui::pos2(header_rect.max.x - 14.0 - 16.0, header_rect.center().y),
-            egui::Align2::RIGHT_CENTER,
-            badge_text,
-            egui::FontId::proportional(11.0),
-            theme.text_dim,
-        );
-    }
-
-    // Collapse/expand icon
-    let icon = if is_open { Icon::CaretDown } else { Icon::CaretRight };
-    let icon_size = 12.0;
-    let icon_rect = egui::Rect::from_center_size(
-        egui::pos2(header_rect.max.x - 14.0 - icon_size / 2.0, header_rect.center().y),
-        egui::vec2(icon_size, icon_size),
-    );
-    ui.put(icon_rect, icon.image(icon_size).tint(theme.text_dim));
-
-    if header_resp.clicked() {
-        state.toggle(ui);
-        let now_open = state.is_open();
-        ui.ctx().data_mut(|d| {
-            let set: &mut std::collections::HashSet<String> = d.get_temp_mut_or_default(collapsed_key);
-            if now_open {
-                set.remove(title);
-            } else {
-                set.insert(title.to_string());
-            }
-        });
-    }
-
-    // Body
-    if state.is_open() {
-        let frame = egui::Frame::none()
-            .fill(card_bg)
-            .inner_margin(egui::Margin { left: 0.0, right: 0.0, top: 4.0, bottom: 0.0 });
-
-        frame.show(ui, |ui| {
-            add_contents(ui);
-        });
-    }
-
-    state.store(ui.ctx());
+    let _ = (header_bg, card_bg);
+    crate::widgets::inspector_group::section_card(ui, title, badge, theme, add_contents);
 }
 
 /// Draw a single key-value row with custom right-side rendering.

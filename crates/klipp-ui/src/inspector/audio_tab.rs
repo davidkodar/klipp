@@ -1225,65 +1225,7 @@ fn section_card(
     theme: &KlippTheme,
     add_contents: impl FnOnce(&mut egui::Ui),
 ) {
-    let w = ui.available_width();
-
-    // Use a global collapsed sections set stored in egui's persistent data
-    let collapsed_key = egui::Id::new("klipp_collapsed_sections");
-    let is_collapsed: bool = ui.ctx().data_mut(|d| {
-        let set: &mut std::collections::HashSet<String> = d.get_temp_mut_or_default(collapsed_key);
-        set.contains(title)
-    });
-
-    let id = ui.id().with(title).with("audio_section");
-    let mut col_state = egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, !is_collapsed);
-
-    let header_h = 30.0;
-    let (header_rect, header_resp) = ui.allocate_exact_size(egui::vec2(w, header_h), egui::Sense::click());
-    let is_open = col_state.is_open();
-    let rounding = if is_open {
-        egui::Rounding { nw: 6.0, ne: 6.0, sw: 0.0, se: 0.0 }
-    } else {
-        egui::Rounding::same(4.0)
-    };
-    ui.painter().rect_filled(header_rect, rounding, theme.bg_deep);
-
-    ui.painter().text(
-        egui::pos2(header_rect.min.x + 18.0, header_rect.center().y),
-        egui::Align2::LEFT_CENTER,
-        title, egui::FontId::proportional(11.0), theme.text_dim,
-    );
-
-    // Collapse icon (painted directly to avoid ui.put() cursor issues)
-    let icon = if is_open { Icon::CaretDown } else { Icon::CaretRight };
-    let icon_size = 12.0;
-    let icon_rect = egui::Rect::from_center_size(
-        egui::pos2(header_rect.max.x - 20.0, header_rect.center().y),
-        egui::vec2(icon_size, icon_size),
-    );
-    icon.image(icon_size).tint(theme.text_dim).paint_at(ui, icon_rect);
-
-    if header_resp.clicked() {
-        col_state.toggle(ui);
-        // Update global collapsed sections set
-        let now_open = col_state.is_open();
-        ui.ctx().data_mut(|d| {
-            let set: &mut std::collections::HashSet<String> = d.get_temp_mut_or_default(collapsed_key);
-            if now_open {
-                set.remove(title);
-            } else {
-                set.insert(title.to_string());
-            }
-        });
-    }
-
-    if col_state.is_open() {
-        let frame = egui::Frame::none()
-            .fill(theme.bg_panel)
-            .inner_margin(egui::Margin { left: 0.0, right: 0.0, top: 2.0, bottom: 0.0 });
-        frame.show(ui, |ui| { add_contents(ui); });
-    }
-
-    col_state.store(ui.ctx());
+    crate::widgets::inspector_group::section_card(ui, title, None, theme, add_contents);
 }
 
 fn info_row(

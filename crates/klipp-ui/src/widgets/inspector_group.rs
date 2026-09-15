@@ -32,6 +32,75 @@ pub struct GroupStatus {
 /// Collapsible group header. Caller owns the `is_open` state — this only
 /// renders the row and reports clicks. Body rendering is the caller's job
 /// (typically gated on `is_open`).
+/// The height of every section header in the inspector.
+pub const SECTION_HEADER_H: f32 = 28.0;
+
+/// Paint a section header into `rect`: a caret at the left, the title,
+/// an optional badge at the right, a hairline below, the hover tone
+/// under the pointer. One look for every section of every tab.
+pub fn paint_section_header(ui: &Ui, rect: Rect, title: &str, is_open: bool, badge: Option<&str>, hovered: bool, theme: &KlippTheme) {
+    let painter = ui.painter();
+    if hovered {
+        painter.rect_filled(rect, Rounding::ZERO, theme.bg_hover);
+    }
+    painter.hline(rect.min.x..=rect.max.x, rect.max.y - 0.5, Stroke::new(1.0_f32, theme.border));
+    let icon = if is_open { Icon::CaretDown } else { Icon::CaretRight };
+    let icon_rect = Rect::from_center_size(pos2(rect.min.x + 12.0, rect.center().y), vec2(10.0, 10.0));
+    icon.image(10.0).tint(theme.text_dim).paint_at(ui, icon_rect);
+    painter.text(
+        pos2(rect.min.x + 26.0, rect.center().y),
+        egui::Align2::LEFT_CENTER,
+        title,
+        FontId::proportional(crate::theme::type_scale::CONTROL),
+        theme.text_primary,
+    );
+    if let Some(badge) = badge.filter(|b| !b.is_empty()) {
+        painter.text(
+            pos2(rect.max.x - 12.0, rect.center().y),
+            egui::Align2::RIGHT_CENTER,
+            badge,
+            FontId::proportional(crate::theme::type_scale::CAPTION),
+            theme.text_dim,
+        );
+    }
+}
+
+/// A collapsible section: the shared header over `add_contents`, its
+/// open state remembered by title across the session.
+pub fn section_card(ui: &mut Ui, title: &str, badge: Option<String>, theme: &KlippTheme, add_contents: impl FnOnce(&mut Ui)) {
+    let w = ui.available_width();
+    let collapsed_key = egui::Id::new("klipp_collapsed_sections");
+    let is_collapsed: bool = ui.ctx().data_mut(|d| {
+        let set: &mut std::collections::HashSet<String> = d.get_temp_mut_or_default(collapsed_key);
+        set.contains(title)
+    });
+    let id = ui.id().with(title).with("section");
+    let mut col_state = egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, !is_collapsed);
+    let (header_rect, header_resp) = ui.allocate_exact_size(vec2(w, SECTION_HEADER_H), Sense::click());
+    let is_open = col_state.is_open();
+    if ui.is_rect_visible(header_rect) {
+        paint_section_header(ui, header_rect, title, is_open, badge.as_deref(), header_resp.hovered(), theme);
+    }
+    if header_resp.clicked() {
+        col_state.toggle(ui);
+        let now_open = col_state.is_open();
+        ui.ctx().data_mut(|d| {
+            let set: &mut std::collections::HashSet<String> = d.get_temp_mut_or_default(collapsed_key);
+            if now_open {
+                set.remove(title);
+            } else {
+                set.insert(title.to_string());
+            }
+        });
+    }
+    if col_state.is_open() {
+        Frame::none()
+            .inner_margin(Margin { left: 0.0, right: 0.0, top: 4.0, bottom: 6.0 })
+            .show(ui, |ui| add_contents(ui));
+    }
+    col_state.store(ui.ctx());
+}
+
 pub fn inspector_group_header(
     ui: &mut Ui,
     title: &str,
@@ -40,80 +109,17 @@ pub fn inspector_group_header(
     theme: &KlippTheme,
 ) -> Response {
     let w = ui.available_width();
-    let header_h = 36.0;
-    let (rect, resp) = ui.allocate_exact_size(vec2(w, header_h), Sense::click());
-
+    let (rect, resp) = ui.allocate_exact_size(vec2(w, SECTION_HEADER_H), Sense::click());
     if !ui.is_rect_visible(rect) {
         return resp;
     }
-
-    // Bottom hairline separator.
-    ui.painter().hline(
-        rect.min.x..=rect.max.x,
-        rect.max.y - 0.5,
-        Stroke::new(1.0_f32, theme.border),
-    );
-
-    // Hover background (subtle).
-    if resp.hovered() {
-        ui.painter()
-            .rect_filled(rect, Rounding::ZERO, theme.bg_hover);
-    }
-
-    // Chevron (left).
-    let icon = if is_open {
-        Icon::CaretDown
-    } else {
-        Icon::CaretRight
-    };
-    let icon_size = 12.0;
-    let icon_rect = Rect::from_center_size(
-        pos2(rect.min.x + 16.0, rect.center().y),
-        vec2(icon_size, icon_size),
-    );
-    icon.image(icon_size)
-        .tint(theme.text_secondary)
-        .paint_at(ui, icon_rect);
-
-    // Title.
-    ui.painter().text(
-        pos2(rect.min.x + 36.0, rect.center().y),
-        egui::Align2::LEFT_CENTER,
-        title,
-        FontId::proportional(13.0),
-        theme.text_primary,
-    );
-
-    // Right-side status: optional count badge then optional accent dot.
-    let mut x_cursor = rect.max.x - 16.0;
-
+    let badge = status.count.map(|n| n.to_string());
+    paint_section_header(ui, rect, title, is_open, badge.as_deref(), resp.hovered(), theme);
     if status.active {
-        let r = 4.0;
-        ui.painter()
-            .circle_filled(pos2(x_cursor - r, rect.center().y), r, theme.accent);
-        x_cursor -= r * 2.0 + 8.0;
+        // A lit dot: the group is doing something to the picture.
+        let x = rect.max.x - 12.0 - badge.as_ref().map_or(0.0, |b| 8.0 * b.len() as f32 + 8.0);
+        ui.painter().circle_filled(pos2(x - 3.0, rect.center().y), 3.0, theme.accent);
     }
-
-    if let Some(n) = status.count {
-        let txt = n.to_string();
-        // Approx width: 8px per digit + 14px horizontal padding.
-        let badge_w = 14.0 + 8.0 * txt.len() as f32;
-        let badge_h = 18.0;
-        let badge_rect = Rect::from_min_size(
-            pos2(x_cursor - badge_w, rect.center().y - badge_h / 2.0),
-            vec2(badge_w, badge_h),
-        );
-        ui.painter()
-            .rect_filled(badge_rect, Rounding::same(9.0), theme.bg_raised);
-        ui.painter().text(
-            badge_rect.center(),
-            egui::Align2::CENTER_CENTER,
-            txt,
-            FontId::proportional(11.0),
-            theme.text_primary,
-        );
-    }
-
     resp
 }
 
@@ -259,7 +265,7 @@ pub fn quick_preset_button(
     active: bool,
     theme: &KlippTheme,
 ) -> Response {
-    let h = 30.0;
+    let h = crate::theme::control::REGULAR;
     let w = ui.available_width();
     let (rect, resp) = ui.allocate_exact_size(vec2(w, h), Sense::click());
 
@@ -285,7 +291,7 @@ pub fn quick_preset_button(
         rect.center(),
         egui::Align2::CENTER_CENTER,
         label,
-        FontId::proportional(13.0),
+        FontId::proportional(crate::theme::type_scale::CONTROL),
         text_color,
     );
 

@@ -158,7 +158,7 @@ pub fn scrubby_param_row(
         // ---- LABEL (draggable -- this is the scrubby slider) ----
         // Use allocate_exact_size instead of Label to prevent text selection on drag.
         let (label_rect_inner, label_rect) = ui.allocate_exact_size(
-            egui::vec2(label_width, 18.0),
+            egui::vec2(label_width, 22.0),
             egui::Sense::click_and_drag(),
         );
 
@@ -166,9 +166,9 @@ pub fn scrubby_param_row(
 
         // Paint the label text manually (no text selection possible)
         let label_color = if label_rect.hovered() || label_rect.dragged() {
-            egui::Color32::from_rgb(190, 190, 195)
+            ui.visuals().widgets.hovered.fg_stroke.color
         } else {
-            egui::Color32::from_rgb(160, 160, 165)
+            ui.visuals().widgets.inactive.fg_stroke.color
         };
         ui.painter().text(
             egui::pos2(label_rect_inner.left() + 4.0, label_rect_inner.center().y),
@@ -278,7 +278,7 @@ pub fn scrubby_param_row(
 
             // Reset icon (left of prev arrow)
             let (rri, rr) = ui.allocate_exact_size(
-                egui::vec2(icon_width, 18.0),
+                egui::vec2(icon_width, 22.0),
                 egui::Sense::click(),
             );
             reset_rect_inner = rri;
@@ -306,7 +306,7 @@ pub fn scrubby_param_row(
         let show_reset = (row_is_hovered || was_row_hovered) && !is_at_default;
         if show_reset {
             let tint = if reset_rect.hovered() {
-                egui::Color32::from_rgb(220, 220, 225)
+                ui.visuals().widgets.hovered.fg_stroke.color
             } else {
                 // TODO: when scrubby_param_row gains a theme
                 // parameter, replace with theme.overlay(80) so the
@@ -315,7 +315,7 @@ pub fn scrubby_param_row(
                 // translucent white because the alternative
                 // (theme.overlay) requires plumbing theme through
                 // every caller of this widely-reused widget.
-                egui::Color32::from_rgba_premultiplied(255, 255, 255, 80)
+                ui.visuals().widgets.inactive.fg_stroke.color
             };
             let icon_rect = egui::Rect::from_center_size(reset_rect_inner.center(), egui::vec2(11.0, 11.0));
             Icon::ArrowCounterClockwise.image(11.0).tint(tint).paint_at(ui, icon_rect);

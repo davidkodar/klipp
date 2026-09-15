@@ -67,9 +67,10 @@ impl NewInspectorPanel {
 
 
         // ── Header ──
+        // One 28 px row: what is being inspected, nothing else.
         let header_rect = egui::Rect::from_min_size(
             ui.cursor().min,
-            egui::vec2(ui.available_width(), 42.0),
+            egui::vec2(ui.available_width(), crate::widgets::inspector_group::SECTION_HEADER_H),
         );
         ui.allocate_new_ui(egui::UiBuilder::new().max_rect(header_rect), |ui| {
             ui.painter().rect_filled(header_rect, 0.0, theme.bg_deep);
@@ -78,14 +79,8 @@ impl NewInspectorPanel {
                 header_rect.max.y,
                 egui::Stroke::new(1.0_f32, theme.border),
             );
-            ui.add_space(9.0);
-            ui.vertical(|ui| {
-                ui.add_space(4.0);
-                ui.label(
-                    egui::RichText::new("INSPECTOR")
-                        .size(10.0)
-                        .color(theme.text_dim),
-                );
+            ui.horizontal_centered(|ui| {
+                ui.add_space(12.0);
                 let (clip_name, name_color) = if let Some((_, c)) = clip_info {
                     let name = match &c.kind {
                         klipp_timeline::ClipKind::Title(td) => {
@@ -101,11 +96,15 @@ impl NewInspectorPanel {
                 } else {
                     ("No clip selected".into(), theme.text_dim)
                 };
-                ui.label(
-                    egui::RichText::new(clip_name)
-                        .size(13.0)
-                        .strong()
-                        .color(name_color),
+                ui.add(
+                    egui::Label::new(
+                        egui::RichText::new(clip_name)
+                            .size(crate::theme::type_scale::CONTROL)
+                            .strong()
+                            .color(name_color),
+                    )
+                    .truncate()
+                    .selectable(false),
                 );
             });
         });
@@ -125,10 +124,8 @@ impl NewInspectorPanel {
             );
             ui.allocate_new_ui(egui::UiBuilder::new().max_rect(banner_rect), |ui| {
                 // Amber background
-                ui.painter().rect_filled(banner_rect, 0.0,
-                    egui::Color32::from_rgba_premultiplied(theme.accent.r(), theme.accent.g(), theme.accent.b(), 30));
-                ui.painter().hline(banner_rect.x_range(), banner_rect.max.y,
-                    egui::Stroke::new(1.0_f32, egui::Color32::from_rgba_premultiplied(theme.accent.r(), theme.accent.g(), theme.accent.b(), 60)));
+                ui.painter().rect_filled(banner_rect, 0.0, theme.bg_panel_alt);
+                ui.painter().hline(banner_rect.x_range(), banner_rect.max.y, egui::Stroke::new(1.0_f32, theme.border));
 
                 // Color bar on left
                 let bar_rect = egui::Rect::from_min_size(
@@ -138,8 +135,8 @@ impl NewInspectorPanel {
                 ui.painter().rect_filled(bar_rect, 0.0, role_color);
 
                 // Text — dark colors for readability on amber background
-                let banner_text = theme.text_on_accent;
-                let banner_tc = theme.text_on_accent;
+                let banner_text = theme.text_secondary;
+                let banner_tc = theme.text_secondary;
                 ui.painter().text(
                     egui::pos2(banner_rect.min.x + 12.0, banner_rect.center().y),
                     egui::Align2::LEFT_CENTER,
