@@ -524,6 +524,9 @@ pub fn show_bin_media(
 
     ui.add_space(8.0);
 
+    logging_section(ui, theme, theme.bg_deep, theme.bg_panel, media, cmds);
+    ui.add_space(8.0);
+
     // ── TAGS ──
     let tag_count = media.tags.len();
     section_card(ui, "TAGS", Some(format!("{tag_count}")), theme.bg_deep, theme.bg_panel, theme, |ui| {
@@ -943,6 +946,9 @@ pub fn show_clip(
 
     ui.add_space(8.0);
 
+    logging_section(ui, theme, section_bg, card_bg, media, cmds);
+    ui.add_space(8.0);
+
     // ════════════════════════════════════════
     // TAGS
     // ════════════════════════════════════════
@@ -1145,6 +1151,85 @@ pub fn show_clip(
 // ── Helpers ──────────────────────────────────────────────
 
 /// Collapsible section card using egui's collapsing header state.
+/// The editor's log of the clip — scene, shot, take, reel, keywords,
+/// description, comments, good take — edited in place. Each change goes
+/// out as one `SetMediaLog`; the keywords line is committed when it is
+/// left, so a comma being typed is not swept away mid-edit.
+fn logging_section(ui: &mut egui::Ui, theme: &KlippTheme, header_bg: egui::Color32, card_bg: egui::Color32, media: &klipp_media::MediaItem, cmds: &mut Vec<AppCommand>) {
+    let pad = 12.0;
+    let dim = theme.text_dim;
+    let badge = media.log.slate_line().or_else(|| (!media.log.is_empty()).then(|| "logged".to_string()));
+    section_card(ui, "LOGGING", badge, header_bg, card_bg, theme, |ui| {
+        let mut log = media.log.clone();
+        let mut changed = false;
+        ui.add_space(6.0);
+        ui.horizontal(|ui| {
+            ui.add_space(pad);
+            let total = ui.available_width() - pad;
+            egui::Grid::new(("clip_log_grid", media.id)).num_columns(2).spacing([8.0, 4.0]).min_col_width(64.0).show(ui, |ui| {
+                let edit_w = (total - 80.0).max(60.0);
+                let mut line = |ui: &mut egui::Ui, label: &str, value: &mut String| {
+                    ui.label(egui::RichText::new(label).size(11.0).color(dim));
+                    if ui.add(egui::TextEdit::singleline(value).desired_width(edit_w).font(egui::TextStyle::Small)).changed() {
+                        changed = true;
+                    }
+                    ui.end_row();
+                };
+                line(ui, "Scene", &mut log.scene);
+                line(ui, "Shot", &mut log.shot);
+                line(ui, "Take", &mut log.take);
+                line(ui, "Reel", &mut log.reel);
+
+                // Keywords: edited as one line in a buffer of their own,
+                // normalised when the field is left.
+                ui.label(egui::RichText::new("Keywords").size(11.0).color(dim));
+                let buf_id = egui::Id::new(("clip_log_keywords", media.id));
+                let mut buf: String = ui.ctx().data_mut(|d| d.get_temp::<String>(buf_id)).unwrap_or_else(|| log.keywords_line());
+                let resp = ui.add(egui::TextEdit::singleline(&mut buf).desired_width(edit_w).font(egui::TextStyle::Small).hint_text("interview, wide, b-roll"));
+                if resp.has_focus() || resp.changed() {
+                    ui.ctx().data_mut(|d| d.insert_temp(buf_id, buf.clone()));
+                }
+                if resp.lost_focus() {
+                    ui.ctx().data_mut(|d| d.remove::<String>(buf_id));
+                    let mut edited = log.clone();
+                    edited.set_keywords_line(&buf);
+                    if edited.keywords != log.keywords {
+                        log.keywords = edited.keywords;
+                        changed = true;
+                    }
+                }
+                ui.end_row();
+
+                ui.label(egui::RichText::new("Description").size(11.0).color(dim));
+                if ui.add(egui::TextEdit::multiline(&mut log.description).desired_width(edit_w).desired_rows(2).font(egui::TextStyle::Small)).changed() {
+                    changed = true;
+                }
+                ui.end_row();
+                ui.label(egui::RichText::new("Comments").size(11.0).color(dim));
+                if ui.add(egui::TextEdit::multiline(&mut log.comments).desired_width(edit_w).desired_rows(2).font(egui::TextStyle::Small)).changed() {
+                    changed = true;
+                }
+                ui.end_row();
+                ui.label("");
+                if ui.checkbox(&mut log.good_take, egui::RichText::new("Good take").size(11.0)).changed() {
+                    changed = true;
+                }
+                ui.end_row();
+            });
+        });
+        if let Some(reel) = media.shot.reel_name.as_deref().filter(|_| log.reel.is_empty()) {
+            ui.horizontal(|ui| {
+                ui.add_space(pad);
+                ui.label(egui::RichText::new(format!("Reel from the file: {reel}")).size(10.0).color(dim));
+            });
+        }
+        ui.add_space(8.0);
+        if changed {
+            cmds.push(AppCommand::SetMediaLog { media_id: media.id, log });
+        }
+    });
+}
+
 fn section_card(
     ui: &mut egui::Ui,
     title: &str,

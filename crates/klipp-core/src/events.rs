@@ -2193,6 +2193,9 @@ pub enum AppCommand {
     RemoveFromPool { media_id: MediaId },
     ConfirmRemoveFromPool { media_id: MediaId },
     SetMediaRating { media_id: MediaId, rating: u8 },
+    /// What the editor logged about a clip: scene, shot, take,
+    /// description, comments, keywords, good take, reel.
+    SetMediaLog { media_id: MediaId, log: crate::ClipLog },
 
     SetMediaTags { media_id: MediaId, tags: Vec<String> },
     RevealInFileManager { path: PathBuf },

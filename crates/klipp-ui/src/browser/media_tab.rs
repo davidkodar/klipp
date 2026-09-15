@@ -194,7 +194,10 @@ pub fn show(
             if !search_lower.is_empty() {
                 return m.filename.to_lowercase().contains(&search_lower)
                     || m.path.to_string_lossy().to_lowercase().contains(&search_lower)
-                    || m.tags.iter().any(|t| t.to_lowercase().contains(&search_lower));
+                    || m.tags.iter().any(|t| t.to_lowercase().contains(&search_lower))
+                    || m.log.matches(&search_lower)
+                    || m.camera_model.as_deref().is_some_and(|c| c.to_lowercase().contains(&search_lower))
+                    || m.shot.lens.as_deref().is_some_and(|l| l.to_lowercase().contains(&search_lower));
             }
             true
         })

@@ -264,6 +264,9 @@ pub struct MediaItem {
     /// a copy cut short. `duration` is then what it holds.
     #[serde(default)]
     pub truncated_from_secs: Option<f64>,
+    /// What the editor logged about the clip.
+    #[serde(default)]
+    pub log: klipp_core::ClipLog,
     /// Path to skim-optimised file (all-keyframe transcode for instant seeking)
     #[serde(default)]
     pub skim_file: Option<PathBuf>,
@@ -394,6 +397,7 @@ impl MediaItem {
             shot: Default::default(),
             metadata_read: false,
             truncated_from_secs: None,
+            log: Default::default(),
         }
     }
 
@@ -567,6 +571,7 @@ mod subclip_tests {
             shot: Default::default(),
             metadata_read: false,
             truncated_from_secs: None,
+            log: Default::default(),
         }
     }
 
@@ -743,6 +748,7 @@ mod effective_rotation_tests {
             shot: Default::default(),
             metadata_read: false,
             truncated_from_secs: None,
+            log: Default::default(),
         }
     }
 
@@ -805,6 +811,15 @@ pub fn same_file_as_probed(old: &MediaItem, fresh: &MediaItem) -> bool {
 /// rating, tags and bin; and a proxy keyed by media id survived a relink
 /// to a different file.
 impl MediaItem {
+    /// The reel the clip goes under: the editor's, or the file's own.
+    pub fn reel(&self) -> Option<&str> {
+        if !self.log.reel.is_empty() {
+            Some(self.log.reel.as_str())
+        } else {
+            self.shot.reel_name.as_deref()
+        }
+    }
+
     /// Whether the item's file should be probed again for its shot
     /// metadata: a file on disk whose metadata was never read.
     pub fn wants_metadata_probe(&self) -> bool {
@@ -837,6 +852,7 @@ pub fn merge_reprobed(old: &MediaItem, fresh: &mut MediaItem) {
     fresh.added_at = old.added_at;
     fresh.parent_media_id = old.parent_media_id;
     fresh.kind = old.kind.clone();
+    fresh.log = old.log.clone();
     if same_file_as_probed(old, fresh) {
         fresh.proxy_path = old.proxy_path.clone();
         fresh.proxy_ready = old.proxy_ready;
@@ -904,6 +920,7 @@ impl MediaItem {
             shot: Default::default(),
             metadata_read: false,
             truncated_from_secs: None,
+            log: Default::default(),
         }
     }
 }

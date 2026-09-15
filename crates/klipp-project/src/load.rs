@@ -195,6 +195,7 @@ pub fn load_project(dir: &Path) -> Result<LoadResult, String> {
             shot: Default::default(),
             metadata_read: false,
             truncated_from_secs: None,
+            log: Default::default(),
         };
         // Re-run the log-format heuristic now that the metadata
         // fields are restored, so files saved before #35 (or files

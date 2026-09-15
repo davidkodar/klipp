@@ -1337,6 +1337,7 @@ impl KlippApp {
                         skim_file: None,
                         waveform_data: None,
                         audio_cache: None,
+                        log: Default::default(),
                     };
 
                     // Auto-detect log format from metadata
@@ -11552,6 +11553,15 @@ impl KlippApp {
                     self.sync_media_pool_to_engine();
                     true
                 }
+                AppCommand::SetMediaLog { media_id, log } => {
+                    if let Some(item) = self.state.media_pool.get_mut(media_id) {
+                        if item.log != *log {
+                            item.log = log.clone();
+                            self.state.dirty = true;
+                        }
+                    }
+                    true
+                }
                 AppCommand::SetMediaRating { media_id, rating } => {
                     if let Some(item) = self.state.media_pool.get_mut(media_id) {
                         let old_rating = item.rating;
@@ -11713,6 +11723,7 @@ impl KlippApp {
                         shot: Default::default(),
                         metadata_read: false,
                         truncated_from_secs: None,
+                        log: Default::default(),
                     };
                     self.state.media_pool.add(media_item);
                     // Imports stay off the timeline-edit undo stack (FCP /
@@ -34316,6 +34327,7 @@ fn build_whoosh_media_item(
         shot: Default::default(),
         metadata_read: false,
         truncated_from_secs: None,
+        log: Default::default(),
     }
 }
 
@@ -38509,6 +38521,7 @@ mod insert_audio_media_clip_tests {
             shot: Default::default(),
             metadata_read: false,
             truncated_from_secs: None,
+            log: Default::default(),
         }
     }
 

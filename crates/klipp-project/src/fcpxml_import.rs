@@ -383,6 +383,7 @@ fn register_asset_media(
         shot: Default::default(),
         metadata_read: false,
         truncated_from_secs: None,
+        log: Default::default(),
     };
     let id = media_pool.add(item);
     cache.insert(asset_id.to_string(), id);
