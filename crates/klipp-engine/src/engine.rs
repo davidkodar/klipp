@@ -1192,6 +1192,9 @@ pub struct PlaybackEngine {
     /// media — held so an EOF-restart rebuild can recreate the
     /// decoder with the same orientation as the original open.
     source_rotation: i32,
+    /// The file the source viewer's sound comes from: the original, even
+    /// while its picture comes from the skim transcode, which has none.
+    source_audio_path: Option<PathBuf>,
     /// Audio source for the bound media — mixed via the existing
     /// `mixer` on a dedicated source-viewer track. Muted whenever
     /// `source_state != Playing` (and the timeline pre-mutes its own
@@ -1579,6 +1582,7 @@ impl PlaybackEngine {
             source_at_eof: false,
             source_drain_pending: false,
             source_rotation: 0,
+            source_audio_path: None,
             source_audio_source: None,
             source_frame_buffer,
             // Reserve a track index past anything the timeline mixer
@@ -2709,8 +2713,16 @@ impl PlaybackEngine {
                 );
             }
 
-            AppCommand::SetSourceMedia { path, source_rotation, .. } => {
-                self.set_source_media(path, source_rotation);
+            AppCommand::SetSourceMedia { media_id, path, source_rotation } => {
+                // The sound comes from the original file whatever the
+                // picture is decoded from.
+                let audio_path = self
+                    .media_pool
+                    .read()
+                    .ok()
+                    .and_then(|pool| pool.get(&media_id).map(|m| m.path.clone()))
+                    .unwrap_or_else(|| path.clone());
+                self.set_source_media(path, source_rotation, audio_path);
             }
             AppCommand::PlaySource => {
                 debug!(
@@ -7779,8 +7791,8 @@ impl PlaybackEngine {
     /// the file has audio, and decodes the first frame into the
     /// source frame buffer so the panel has something to show
     /// immediately. No-op when the same path is already bound.
-    fn set_source_media(&mut self, path: PathBuf, source_rotation: i32) {
-        if self.source_path.as_ref() == Some(&path) {
+    fn set_source_media(&mut self, path: PathBuf, source_rotation: i32, audio_path: PathBuf) {
+        if self.source_path.as_ref() == Some(&path) && self.source_audio_path.as_ref() == Some(&audio_path) {
             return;
         }
         // Tear down anything currently bound — clean slate.
@@ -7791,6 +7803,7 @@ impl PlaybackEngine {
                 dec.resume();
                 self.source_decoder = Some(dec);
                 self.source_path = Some(path.clone());
+                self.source_audio_path = Some(audio_path.clone());
                 self.source_rotation = source_rotation;
                 self.source_state = PlaybackState::Paused;
                 self.source_playhead_secs = 0.0;
@@ -7809,9 +7822,11 @@ impl PlaybackEngine {
                 // wait-for-decoder pattern as the timeline's first-frame
                 // grab — gives VAAPI/NVDEC time to warm up.
                 self.grab_one_source_frame_timeout(Duration::from_millis(500));
-                // Open audio (silent attach — `play_source` is what
-                // actually unmutes / resumes).
-                self.open_source_audio(&path, 0.0);
+                // Open audio from the original file (silent attach —
+                // `play_source` is what actually unmutes / resumes). The
+                // picture may come from the skim transcode, which carries
+                // no sound.
+                self.open_source_audio(&audio_path, 0.0);
             }
             Err(e) => {
                 warn!("Source viewer: failed to open decoder for {path:?}: {e}");
@@ -7832,11 +7847,12 @@ impl PlaybackEngine {
         self.source_at_eof = false;
         let Some(path) = self.source_path.clone() else { return };
         let rotation = self.source_rotation;
+        let audio_path = self.source_audio_path.clone().unwrap_or_else(|| path.clone());
         // `set_source_media` early-returns when the path matches —
         // clear `source_path` so the rebuild takes the full open +
         // decode-thread spawn path.
         self.source_path = None;
-        self.set_source_media(path, rotation);
+        self.set_source_media(path, rotation, audio_path);
     }
 
     /// Begin source-viewer playback. Auto-pauses the timeline so the
@@ -8028,10 +8044,32 @@ impl PlaybackEngine {
             return;
         }
         let Some(dec) = self.source_decoder.as_ref() else { return };
-        // Pop one frame at a time so the playhead moves at video rate
-        // — popping all queued frames per tick would burn through the
-        // buffer in a few ms and stall on EOF.
-        let frame = dec.frame_queue().lock().unwrap_or_else(|e| e.into_inner()).pop();
+        // Only a frame whose time has come. The wall clock is the pace,
+        // not the decoder: a skim transcode decodes several times faster
+        // than real time, and taking a frame every tick played it at
+        // that speed. A frame the clock has passed, with a later one
+        // already due, is skipped to catch up.
+        let now_secs = self.source_clock_anchor_secs + self.source_clock_anchor_wall.elapsed().as_secs_f64();
+        let half_frame = if self.source_fps > 0.0 { 0.5 / self.source_fps } else { 0.02 };
+        let frame = {
+            let mut q = dec.frame_queue().lock().unwrap_or_else(|e| e.into_inner());
+            loop {
+                let Some(front) = q.front() else { break None };
+                if front.is_eof {
+                    break q.pop();
+                }
+                let pts = front.pts_secs();
+                let next = q.second().filter(|n| !n.is_eof).map(|n| n.pts_secs());
+                match source_frame_verdict(pts, now_secs, half_frame, next) {
+                    FrameVerdict::Wait => break None,
+                    FrameVerdict::Skip => {
+                        q.pop();
+                        continue;
+                    }
+                    FrameVerdict::Show => break q.pop(),
+                }
+            }
+        };
         let Some(mut frame) = frame else { return };
         if frame.is_eof {
             // End of file — flag it and pause. The next play_source
@@ -8338,6 +8376,41 @@ fn truncated_end_secs(path: &std::path::Path, header_secs: f64) -> Option<f64> {
         }
     }
     (end > 0.0 && end < near_end).then_some(end)
+}
+
+/// What to do with the front of the source viewer's frame queue at
+/// wall time `now`: wait for its time, show it, or skip it because it
+/// is late and the frame behind it is already due.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FrameVerdict {
+    Wait,
+    Show,
+    Skip,
+}
+
+fn source_frame_verdict(pts: f64, now: f64, half_frame: f64, next_pts: Option<f64>) -> FrameVerdict {
+    if pts > now + half_frame {
+        FrameVerdict::Wait
+    } else if now - pts > 2.0 * half_frame && next_pts.is_some_and(|n| n <= now + half_frame) {
+        FrameVerdict::Skip
+    } else {
+        FrameVerdict::Show
+    }
+}
+
+#[cfg(test)]
+mod source_pacing_tests {
+    use super::*;
+
+    #[test]
+    fn a_frame_is_shown_when_its_time_comes_not_when_it_is_decoded() {
+        let hf = 0.5 / 30.0;
+        assert_eq!(source_frame_verdict(1.0, 0.5, hf, None), FrameVerdict::Wait, "decoded early: wait");
+        assert_eq!(source_frame_verdict(1.0, 1.0, hf, Some(1.033)), FrameVerdict::Show);
+        assert_eq!(source_frame_verdict(1.0, 1.01, hf, Some(1.033)), FrameVerdict::Show, "within half a frame");
+        assert_eq!(source_frame_verdict(1.0, 1.2, hf, Some(1.033)), FrameVerdict::Skip, "late, and the next is due too");
+        assert_eq!(source_frame_verdict(1.0, 1.2, hf, None), FrameVerdict::Show, "late but the last one there is: show it");
+    }
 }
 
 /// Parse ISO 8601 timestamp like "2024-03-15T10:30:00.000000Z" to Unix epoch seconds.

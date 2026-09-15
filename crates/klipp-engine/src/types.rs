@@ -676,6 +676,12 @@ impl FrameQueue {
         self.frames.front()
     }
 
+    /// The frame behind the front, if there is one: what the source
+    /// viewer looks at to decide whether the front can be skipped.
+    pub fn second(&self) -> Option<&LinearFrame> {
+        self.frames.get(1)
+    }
+
     /// Get the PTS in seconds of the front frame, or f64::MAX if empty.
     pub fn front_pts_secs(&self) -> f64 {
         self.frames.front().map(|f| f.pts_secs()).unwrap_or(f64::MAX)
