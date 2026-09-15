@@ -3356,15 +3356,6 @@ impl PreferencesPanel {
         ui.add_space(12.0);
         ui.label(egui::RichText::new("Selection").strong().size(12.0));
         ui.add_space(4.0);
-        ui.horizontal(|ui| {
-            ui.label("Selection border colour:");
-            let sc = &mut prefs.timeline.clip_selection_color;
-            let mut c = egui::Color32::from_rgb(sc[0], sc[1], sc[2]);
-            if ui.color_edit_button_srgba(&mut c).changed() {
-                *sc = [c.r(), c.g(), c.b()];
-                *dirty = true;
-            }
-        });
         dim_row(
             ui,
             "Selection border width:",
@@ -3375,27 +3366,6 @@ impl PreferencesPanel {
             dirty,
         );
 
-        ui.add_space(12.0);
-        ui.label(egui::RichText::new("Clip Label Strip").strong().size(12.0));
-        ui.add_space(4.0);
-        ui.horizontal(|ui| {
-            ui.label("Background colour:");
-            let bg = &mut prefs.timeline.clip_label_bg_color;
-            let mut c = egui::Color32::from_rgb(bg[0], bg[1], bg[2]);
-            if ui.color_edit_button_srgba(&mut c).changed() {
-                *bg = [c.r(), c.g(), c.b()];
-                *dirty = true;
-            }
-        });
-        ui.horizontal(|ui| {
-            ui.label("Text colour:");
-            let tx = &mut prefs.timeline.clip_label_text_color;
-            let mut c = egui::Color32::from_rgb(tx[0], tx[1], tx[2]);
-            if ui.color_edit_button_srgba(&mut c).changed() {
-                *tx = [c.r(), c.g(), c.b()];
-                *dirty = true;
-            }
-        });
     }
 
     fn show_viewer(&mut self, ui: &mut egui::Ui, prefs: &mut Preferences, dirty: &mut bool, theme: &KlippTheme) {

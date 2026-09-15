@@ -1515,22 +1515,10 @@ pub struct TimelinePrefs {
     /// Text track default height in pixels.
     #[serde(default = "default_text_track_h")]
     pub text_track_height: f32,
-    /// Border color for selected clips (primary + multi-select). Default is a
-    /// high-contrast yellow-gold (FCP-style) so selection is unmistakable
-    /// against any clip palette colour.
-    #[serde(default = "default_selection_color")]
-    pub clip_selection_color: [u8; 3],
     /// Border width for selected clips, in pixels. Default 3.0 — thicker
     /// than the hover/idle border so selection reads at a glance.
     #[serde(default = "default_selection_border_width")]
     pub clip_selection_border_width: f32,
-    /// Background colour of the filename label strip drawn beneath each
-    /// clip's filmstrip/waveform (DaVinci/FCP-style).
-    #[serde(default = "default_clip_label_bg")]
-    pub clip_label_bg_color: [u8; 3],
-    /// Text colour for the filename inside the clip label strip.
-    #[serde(default = "default_clip_label_text")]
-    pub clip_label_text_color: [u8; 3],
 }
 fn default_clip_colors() -> Vec<[u8; 3]> { vec![[50,90,160],[50,130,80],[160,90,50],[130,50,130],[50,130,130],[160,50,80]] }
 fn default_clip_gap() -> f32 { 3.0 }
@@ -1541,10 +1529,7 @@ fn default_overview_h() -> f32 { 24.0 }
 fn default_min_track_h() -> f32 { 24.0 }
 fn default_max_track_h() -> f32 { 200.0 }
 fn default_text_track_h() -> f32 { 32.0 }
-fn default_selection_color() -> [u8; 3] { [255, 200, 0] }
 fn default_selection_border_width() -> f32 { 3.0 }
-fn default_clip_label_bg() -> [u8; 3] { [28, 30, 36] }
-fn default_clip_label_text() -> [u8; 3] { [220, 220, 225] }
 impl Default for TimelinePrefs {
     fn default() -> Self {
         Self {
@@ -1553,10 +1538,7 @@ impl Default for TimelinePrefs {
             clip_corner_radius: default_clip_radius(), overview_bar_height: default_overview_h(),
             min_track_height: default_min_track_h(), max_track_height: default_max_track_h(),
             text_track_height: default_text_track_h(),
-            clip_selection_color: default_selection_color(),
             clip_selection_border_width: default_selection_border_width(),
-            clip_label_bg_color: default_clip_label_bg(),
-            clip_label_text_color: default_clip_label_text(),
         }
     }
 }

@@ -268,10 +268,7 @@ thread_local! {
     static TL_CLIP_COLORS: std::cell::RefCell<Vec<[u8; 3]>> = std::cell::RefCell::new(vec![
         [50,90,160], [50,130,80], [160,90,50], [130,50,130], [50,130,130], [160,50,80]
     ]);
-    static TL_SELECTION_COLOR: std::cell::Cell<[u8; 3]> = const { std::cell::Cell::new([255, 200, 0]) };
     static TL_SELECTION_BORDER_WIDTH: std::cell::Cell<f32> = const { std::cell::Cell::new(3.0) };
-    static TL_CLIP_LABEL_BG: std::cell::Cell<[u8; 3]> = const { std::cell::Cell::new([28, 30, 36]) };
-    static TL_CLIP_LABEL_TEXT: std::cell::Cell<[u8; 3]> = const { std::cell::Cell::new([220, 220, 225]) };
 }
 
 /// Sync timeline prefs into thread-locals at start of each show() call.
@@ -280,20 +277,17 @@ fn sync_timeline_prefs(prefs: &crate::prefs::TimelinePrefs) {
     TL_TRIM_HANDLE_WIDTH.set(prefs.trim_handle_width);
     TL_OVERVIEW_BAR_HEIGHT.set(prefs.overview_bar_height);
     TL_CLIP_COLORS.with(|c| *c.borrow_mut() = prefs.clip_colors.clone());
-    TL_SELECTION_COLOR.set(prefs.clip_selection_color);
     TL_SELECTION_BORDER_WIDTH.set(prefs.clip_selection_border_width);
-    TL_CLIP_LABEL_BG.set(prefs.clip_label_bg_color);
-    TL_CLIP_LABEL_TEXT.set(prefs.clip_label_text_color);
 }
 
+/// The name strip under a clip's filmstrip or waveform sits on the
+/// theme's deep surface with primary text, like every other label.
 fn clip_label_bg_color() -> egui::Color32 {
-    let [r, g, b] = TL_CLIP_LABEL_BG.get();
-    egui::Color32::from_rgb(r, g, b)
+    theme().bg_deep
 }
 
 fn clip_label_text_color() -> egui::Color32 {
-    let [r, g, b] = TL_CLIP_LABEL_TEXT.get();
-    egui::Color32::from_rgb(r, g, b)
+    theme().text_primary
 }
 
 /// Pick a `(text, outline)` colour pair that stays readable on the given
@@ -320,9 +314,10 @@ fn contrast_pair_for(bg: egui::Color32) -> (egui::Color32, egui::Color32) {
 }
 
 /// Selection border colour configured in TimelinePrefs.
+/// A selected clip is outlined in the theme's accent, the same colour
+/// that marks selection everywhere else in the app.
 fn selection_color() -> egui::Color32 {
-    let [r, g, b] = TL_SELECTION_COLOR.get();
-    egui::Color32::from_rgb(r, g, b)
+    theme().accent
 }
 
 /// Selection border width configured in TimelinePrefs.
@@ -5638,8 +5633,7 @@ impl TimelinePanel {
                 if let Some(strip) = label_strip {
                     // When the clip is selected, paint the label strip in the
                     // same accent colour as the selection border so the label
-                    // reads as part of the highlighted chip. Offline clips
-                    // keep their amber warning tint regardless.
+                    // reads as part of the highlighted chip.
                     let strip_bg = if is_offline {
                         clip_label_bg_color()
                     } else if is_selected {

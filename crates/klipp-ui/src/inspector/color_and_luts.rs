@@ -1,3 +1,4 @@
+use crate::widgets::inspector_group::section_card;
 use crate::state::AppState;
 use crate::theme::KlippTheme;
 use klipp_core::AppCommand;
@@ -50,19 +51,11 @@ pub fn show_color_and_luts(
                         })
                     }));
             if let Some((node_id, mut masks, clip_time_secs, tracked)) = mask_entry {
-                ui.add_space(8.0);
-                ui.horizontal(|ui| {
-                    ui.add_space(12.0);
-                    ui.label(egui::RichText::new("MASKS")
-                        .size(11.0).strong().color(theme.text_primary));
+                section_card(ui, "MASKS", None, theme, |ui| {
+                    crate::panels::node_inspector::NodeInspectorPanel::render_masks_body(
+                        ui, &mut masks, node_id, clip_id, cmds, theme, clip_time_secs, &tracked,
+                    );
                 });
-                ui.add_space(4.0);
-                crate::panels::node_inspector::NodeInspectorPanel::render_masks_body(
-                    ui, &mut masks, node_id, clip_id, cmds, theme, clip_time_secs, &tracked,
-                );
-                ui.add_space(8.0);
-                ui.separator();
-                ui.add_space(4.0);
             }
         }
 
@@ -76,13 +69,7 @@ pub fn show_color_and_luts(
                     .find_map(|n| n.params.log_format))
                 .unwrap_or_default();
 
-            ui.add_space(8.0);
-            ui.horizontal(|ui| {
-                ui.add_space(12.0);
-                ui.label(egui::RichText::new("Input Color Space").size(10.0)
-                    .color(theme.text_dim));
-            });
-            ui.add_space(4.0);
+            section_card(ui, "INPUT COLOR SPACE", None, theme, |ui| {
             ui.horizontal(|ui| {
                 ui.add_space(12.0);
                 use klipp_core::LogFormat as LF;
@@ -103,39 +90,38 @@ pub fn show_color_and_luts(
                     .map(|(_, l)| *l)
                     .unwrap_or("sRGB / Rec.709");
                 egui::ComboBox::from_id_salt("color_tab_log_format")
-                    .selected_text(egui::RichText::new(current_label).size(10.0))
-                    .width(200.0)
+                    .selected_text(current_label)
+                    .width(ui.available_width() - 12.0)
                     .show_ui(ui, |ui| {
                         for &(fmt, label) in &formats {
-                            if ui.selectable_label(current_log == fmt,
-                                egui::RichText::new(label).size(10.0),
-                            ).clicked() {
+                            if ui.selectable_label(current_log == fmt, label).clicked() {
                                 cmds.push(AppCommand::SetClipLogFormat { clip_id, log_format: fmt });
                             }
                         }
                     });
             });
-            ui.add_space(8.0);
+            });
         }
 
-        // Open Color Panel button
-        ui.vertical_centered(|ui| {
-            if ui.button(
-                egui::RichText::new("Open Color Panel  (C)")
-                    .size(11.0)
-                    .color(theme.accent),
-            ).clicked() {
+        // The grade itself lives in the Color workspace.
+        ui.add_space(6.0);
+        ui.horizontal(|ui| {
+            ui.add_space(12.0);
+            let w = ui.available_width() - 12.0;
+            if ui.add_sized([w, crate::theme::control::REGULAR], egui::Button::new("Open Color Panel"))
+                .on_hover_text("Switch to the Color workspace (C)")
+                .clicked()
+            {
                 cmds.push(AppCommand::ToggleColorPanel);
             }
         });
+        ui.add_space(6.0);
 
         // Bake Grade — export the active clip's full grade chain to a .cube file.
         // Spatial nodes (qualifier / masks) are auto-skipped by the bake
         // function; the LUT captures the per-pixel colour mapping only.
-        ui.add_space(12.0);
-        ui.label(egui::RichText::new("Bake Grade").strong().size(12.0));
-        ui.separator();
-        ui.add_space(4.0);
+        section_card(ui, "BAKE GRADE", None, theme, |ui| {
+        ui.horizontal(|ui| { ui.add_space(12.0); ui.vertical(|ui| {
         if let Some(clip_id) = state.selected_clip {
             let mut size = state.bake_lut_size;
             let size_label = match size {
@@ -188,13 +174,12 @@ pub fn show_color_and_luts(
             ui.label(egui::RichText::new("Select a clip to bake its grade.")
                 .size(10.0).color(theme.text_dim));
         }
+        }); });
+        });
 
         // Global LUT
-        ui.add_space(12.0);
-        ui.label(egui::RichText::new("Global LUT").strong().size(12.0));
-        ui.separator();
-        ui.add_space(4.0);
-
+        section_card(ui, "GLOBAL LUT", None, theme, |ui| {
+        ui.horizontal(|ui| { ui.add_space(12.0); ui.vertical(|ui| {
         if let Some(path) = &state.global_lut_path {
             let filename = path.file_name()
                 .map(|n| n.to_string_lossy().to_string())
@@ -249,12 +234,11 @@ pub fn show_color_and_luts(
             }
         }
 
-        // Bundled LUT Presets
-        ui.add_space(8.0);
-        ui.label(egui::RichText::new("LUT Presets").strong().size(12.0));
-        ui.separator();
-        ui.add_space(4.0);
+        }); });
+        });
 
+        // Bundled LUT Presets
+        section_card(ui, "LUT PRESETS", None, theme, |ui| {
         let luts_dir = find_bundled_luts_dir();
         if let Some(ref base) = luts_dir {
             let categories = [
@@ -349,6 +333,7 @@ pub fn show_color_and_luts(
                     });
             }
         }
+        });
     });
 }
 

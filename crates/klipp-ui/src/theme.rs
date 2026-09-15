@@ -360,9 +360,12 @@ impl KlippTheme {
         visuals.widgets.hovered.bg_stroke =
             egui::Stroke::new(1.0_f32, self.border_light);
 
+        // A pressed widget keeps its text colour: egui also uses this
+        // slot for every `strong()` label, so an accent here would turn
+        // each bold heading in the app blue.
         visuals.widgets.active.bg_fill = self.bg_hover;
         visuals.widgets.active.fg_stroke =
-            egui::Stroke::new(1.0_f32, self.accent);
+            egui::Stroke::new(1.0_f32, self.text_primary);
         visuals.widgets.active.bg_stroke =
             egui::Stroke::new(1.0_f32, self.accent_dim);
 
