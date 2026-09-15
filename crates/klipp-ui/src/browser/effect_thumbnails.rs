@@ -43,6 +43,71 @@ fn load_embedded_reference() -> Option<ReferenceFrame> {
     Some(ReferenceFrame { rgba, width: w, height: h })
 }
 
+/// Render a frei0r filter's preview. frei0r has no notion of a default
+/// parameter value, so a few plausible sets are tried and the first
+/// that shows the picture is kept: not flat (a zero gamma gives black,
+/// three white balance points give black), and, when one exists,
+/// visibly different from the reference. `None` keeps the drawn tile.
+fn frei0r_preview(type_id: &str, frame: &ReferenceFrame) -> Option<Vec<u8>> {
+    use klipp_frei0r::Frei0rValue as V;
+    let defaults = klipp_effects::frei0r_effect::default_params(type_id).unwrap_or_default();
+    let with = |double: f64, colour: [f32; 3]| -> Vec<V> {
+        defaults
+            .iter()
+            .map(|v| match v {
+                V::Double(_) => V::Double(double),
+                V::Color(_) => V::Color(colour),
+                other => other.clone(),
+            })
+            .collect()
+    };
+    let candidates = [
+        with(0.5, [1.0, 1.0, 1.0]),
+        with(0.5, [0.5, 0.5, 0.5]),
+        with(0.25, [0.5, 0.5, 0.5]),
+        with(0.75, [0.5, 0.5, 0.5]),
+        defaults.clone(),
+    ];
+    // frei0r wants 8-aligned dimensions: pad, render, crop.
+    let (pw, ph) = (frame.width.div_ceil(8) * 8, frame.height.div_ceil(8) * 8);
+    let padded = pad_rgba(&frame.rgba, frame.width, frame.height, pw, ph);
+    let mut first_visible: Option<Vec<u8>> = None;
+    for params in &candidates {
+        let out = klipp_effects::frei0r_effect::apply(type_id, params, padded.clone(), pw, ph, 0.5);
+        let rgba = crop_rgba(&out, pw, frame.width, frame.height);
+        if luma_spread(&rgba) < 4.0 {
+            continue; // flat: black, white or one grey
+        }
+        if differs_from(&rgba, &frame.rgba) {
+            return Some(rgba);
+        }
+        first_visible.get_or_insert(rgba);
+    }
+    first_visible
+}
+
+/// Standard deviation of luma over the frame, in 8-bit code values.
+fn luma_spread(rgba: &[u8]) -> f64 {
+    let n = (rgba.len() / 4).max(1) as f64;
+    let (mut sum, mut sq) = (0.0f64, 0.0f64);
+    for px in rgba.chunks_exact(4) {
+        let y = 0.2126 * px[0] as f64 + 0.7152 * px[1] as f64 + 0.0722 * px[2] as f64;
+        sum += y;
+        sq += y * y;
+    }
+    let mean = sum / n;
+    (sq / n - mean * mean).max(0.0).sqrt()
+}
+
+/// Whether two frames differ by more than a few code values on average.
+fn differs_from(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return true;
+    }
+    let total: u64 = a.iter().zip(b).map(|(x, y)| (*x as i32 - *y as i32).unsigned_abs() as u64).sum();
+    total as f64 / a.len().max(1) as f64 > 2.0
+}
+
 /// Copy an RGBA frame into a larger canvas, the extra rows and columns
 /// repeating the edge pixels so a filter sees no hard border.
 fn pad_rgba(src: &[u8], w: u32, h: u32, pw: u32, ph: u32) -> Vec<u8> {
@@ -169,21 +234,10 @@ impl ThumbnailRenderer {
                             continue;
                         }
                         let type_id = info.type_id();
-                        // Mid-range values: frei0r doubles are 0..1 and a
-                        // zero default drives gamma-like filters to black.
-                        let params: Vec<klipp_frei0r::Frei0rValue> = klipp_effects::frei0r_effect::default_params(&type_id)
-                            .unwrap_or_default()
-                            .into_iter()
-                            .map(|v| match v {
-                                klipp_frei0r::Frei0rValue::Double(_) => klipp_frei0r::Frei0rValue::Double(0.5),
-                                other => other,
-                            })
-                            .collect();
-                        // frei0r wants 8-aligned dimensions: pad, render, crop.
-                        let (pw, ph) = (frame.width.div_ceil(8) * 8, frame.height.div_ceil(8) * 8);
-                        let padded = pad_rgba(&frame.rgba, frame.width, frame.height, pw, ph);
-                        let out = klipp_effects::frei0r_effect::apply(&type_id, &params, padded, pw, ph, 0.5);
-                        crop_rgba(&out, pw, frame.width, frame.height)
+                        match frei0r_preview(&type_id, &frame) {
+                            Some(rgba) => rgba,
+                            None => continue,
+                        }
                     }
                     EffectSource::Lv2(_) => {
                         // LV2 plugins are audio-only — no visual preview.
@@ -1096,6 +1150,19 @@ fn simple_name_hash(name: &str) -> u32 {
 #[cfg(test)]
 mod pad_tests {
     use super::*;
+
+    #[test]
+    fn flat_frames_are_flat_and_changed_frames_differ() {
+        let black = vec![0u8; 16 * 4];
+        assert!(luma_spread(&black) < 1.0);
+        let mut ramp = Vec::new();
+        for i in 0..16u8 {
+            ramp.extend_from_slice(&[i * 16, i * 16, i * 16, 255]);
+        }
+        assert!(luma_spread(&ramp) > 4.0);
+        assert!(!differs_from(&ramp, &ramp));
+        assert!(differs_from(&ramp, &black));
+    }
 
     #[test]
     fn padding_repeats_the_edge_and_cropping_returns_the_frame() {
