@@ -2799,7 +2799,7 @@ impl Default for PaneScopeSettings {
         Self {
             waveform_channel: WaveformChannel::Y,
             low_pass: false,
-            bloom: true,
+            bloom: false,
             quality: klipp_core::ScopeQuality::Medium,
             scale: ScopeScale::TenBit,
             // Waveform
@@ -3379,7 +3379,8 @@ impl Default for AppState {
             scope_show_b: true,
             scope_low_pass: true,
             scope_ffmpeg: ScopeFfmpegState::default(),
-            scope_bloom: true,
+            // Off: at a large scope's size a glow washes the trace out.
+            scope_bloom: false,
             scope_settings_open: false,
             scope_window: ScopeWindowState::default(),
             viewer_image_rect: None,

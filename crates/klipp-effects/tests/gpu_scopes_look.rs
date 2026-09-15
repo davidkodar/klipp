@@ -114,7 +114,8 @@ fn draw_the_scopes_of_a_picture() {
     if let Ok(pane) = std::env::var("KLIPP_SCOPE_LOOK_PANE") {
         let (pw, ph) = pane.split_once('x').map(|(a, b)| (a.parse::<u32>().unwrap(), b.parse::<u32>().unwrap())).expect("WxH");
         for step in [1u32, 2] {
-            let job = ScopeJob::Waveform(WaveformJob { mode: WaveformMode::RgbOverlay, intensity: -1.0, channels: 7, envelope: false, glow: true, out_w: pw, out_h: ph });
+            // As the app draws it by default: no glow.
+            let job = ScopeJob::Waveform(WaveformJob { mode: WaveformMode::RgbOverlay, intensity: -1.0, channels: 7, envelope: false, glow: false, out_w: pw, out_h: ph });
             let _ = gpu.scopes().render(&scope, step, &[job]);
             let t = Instant::now();
             let out = gpu.scopes().render(&scope, step, &[job]);

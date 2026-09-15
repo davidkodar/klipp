@@ -63,7 +63,7 @@ impl Default for ScopeState {
             frame_generations: [u64::MAX; 4], // MAX ensures first frame always triggers render
             scale: ScopeScale::TenBit,
             low_pass: false,
-            bloom: true,
+            bloom: false,
             show_r: true,
             show_g: true,
             show_b: true,

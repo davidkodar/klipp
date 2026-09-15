@@ -74,10 +74,18 @@ fn the_waveform_and_parade_are_gpu_drawn_and_measure_the_shown_frame() {
         let row = line_row(&parade.data, parade.w, parade.h, x, expect);
         assert!((row - expect).abs() <= 4.0, "parade panel {panel}: line at row {row:.1}, expected {expect:.1}");
     }
-    // A grey frame's chroma sits at the centre of the vectorscope.
-    let (i, _) = vector.data.chunks_exact(4).enumerate().max_by_key(|(_, p)| p[0] as u32 + p[1] as u32 + p[2] as u32).unwrap();
-    let (vx, vy) = ((i as u32 % vector.w) as f64, (i as u32 / vector.w) as f64);
-    assert!((vx - 512.0).abs() <= 4.0 && (vy - 512.0).abs() <= 4.0, "grey at ({vx}, {vy})");
+    // A grey frame's chroma sits at the centre of the vectorscope: the
+    // centre of its light, as the dense core saturates over several pixels.
+    let (mut light, mut mx, mut my) = (0f64, 0f64, 0f64);
+    for (i, p) in vector.data.chunks_exact(4).enumerate() {
+        let l = (p[0] as u32 + p[1] as u32 + p[2] as u32) as f64;
+        light += l;
+        mx += l * (i as u32 % vector.w) as f64;
+        my += l * (i as u32 / vector.w) as f64;
+    }
+    assert!(light > 0.0, "the vectorscope is dark");
+    let (vx, vy) = (mx / light, my / light);
+    assert!((vx - 512.0).abs() <= 4.0 && (vy - 512.0).abs() <= 4.0, "grey at ({vx:.1}, {vy:.1})");
     // The histogram, in its default overlay, is tallest at the frame's code.
     let panel = klipp_effects::gpu_scopes::histogram_panels(klipp_effects::gpu_scopes::HistogramLayout::Overlay, hist.w, hist.h)[0];
     let lit_height = |x: u32| {

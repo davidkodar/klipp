@@ -222,9 +222,14 @@ impl ScopeJob {
             ScopeJob::Vectorscope(j) => j.intensity,
             ScopeJob::Histogram(_) => -1.0,
         };
-        // Density per unit of brightness. The slider is geometric: 0 is
-        // a sixth of the default, 1 six times it.
-        1.5 * if intensity < 0.0 { 1.0 } else { 6.0f32.powf(intensity.clamp(0.0, 1.0) * 2.0 - 1.0) }
+        // The slider is geometric: 0 is a sixth of the default, 1 six
+        // times it.
+        let slider = if intensity < 0.0 { 1.0 } else { 6.0f32.powf(intensity.clamp(0.0, 1.0) * 2.0 - 1.0) };
+        // The waveform's saturating curve reaches three quarters of full
+        // brightness at a density of about 2.8; the vectorscope's log curve
+        // takes its gain per unit of density.
+        let base = if matches!(self, ScopeJob::Waveform(_)) { 0.5 } else { 1.5 };
+        base * slider
     }
 }
 
@@ -304,10 +309,8 @@ struct ShadeParams {
     /// Levels per expected sample: `rows / (samples per column)`, so a
     /// picture spread evenly over the levels reads density 1.
     norm: f32,
-    floor: f32,
-    /// The density at which a pixel holds half a sample, after the blur
-    /// spreads one: above it the trace is never quite dark.
-    n_floor: f32,
+    _f0: f32,
+    _f1: f32,
 }
 
 #[repr(C)]
@@ -680,7 +683,7 @@ const WGSL_TRACE_DENSITY: &str = r#"
 struct ShadeParams {
     out_w: u32, out_h: u32, cols: u32, rows: u32,
     mode: u32, channels: u32, envelope: u32, gap: u32,
-    gain: f32, norm: f32, floor: f32, n_floor: f32,
+    gain: f32, norm: f32, _f0: f32, _f1: f32,
 };
 @group(0) @binding(0) var<storage, read> sat: array<u32>;
 @group(0) @binding(1) var<storage, read> ext: array<u32>;
@@ -811,7 +814,7 @@ const WGSL_TRACE_COLOUR: &str = r#"
 struct ShadeParams {
     out_w: u32, out_h: u32, cols: u32, rows: u32,
     mode: u32, channels: u32, envelope: u32, gap: u32,
-    gain: f32, norm: f32, floor: f32, n_floor: f32,
+    gain: f32, norm: f32, _f0: f32, _f1: f32,
 };
 @group(0) @binding(0) var<storage, read> dens: array<vec4<f32>>;
 @group(0) @binding(1) var<storage, read> ext: array<u32>;
@@ -828,11 +831,14 @@ fn tint(ch: u32) -> vec3<f32> {
         default: { return vec3<f32>(0.86, 0.93, 0.90); }
     }
 }
-// Density to brightness. Logarithmic, so a lone sample, a thin trace
-// and a flat area are all visible at once and a dense core never turns
-// into a flat blob: eight doublings of density span dark to full.
+// Density to brightness, saturating: `1 - e^(-density * gain)`. A lone
+// sample stays a dim dot and the gaps between traces stay dark, while a
+// dense trace goes bright without clipping into a blob. The picture's
+// structure stands out against black. A logarithmic curve lifted every
+// stray sample to a visible grey, which in a large scope washed the whole
+// trace out.
 fn glow_of(n: f32) -> f32 {
-    return clamp(log2(1.0 + n * p.gain) / 8.0, 0.0, 1.0);
+    return 1.0 - exp(-n * p.gain);
 }
 @compute @workgroup_size(16, 16)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
@@ -876,9 +882,6 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         let n = dens[oi][ch];
         if (n <= 0.0 && !edge) { continue; }
         var i = glow_of(n);
-        // A pixel holding half a sample or more is never quite dark, however
-        // faint the log curve makes it; the thin tail of the blur is.
-        if (n >= p.n_floor) { i = max(i, p.floor); }
         if (edge) { i = max(i, 0.9); }
         // The core of a dense trace goes to white, as a phosphor does.
         let t = tint(ch);
@@ -1568,10 +1571,6 @@ impl ScopeRenderer {
                     let gap = if job.mode == WaveformMode::Parade { parade_gap(out_w) } else { 0 };
                     let trace_w = if job.mode == WaveformMode::Parade { out_w.saturating_sub(2 * gap) / 3 } else { out_w }.max(1);
                     let (sigma_h, sigma_v) = trace_blur(sw, sh, trace_w, out_h);
-                    // One sample's density in a pixel's box, spread over the
-                    // blur's area: half of that is half a sample.
-                    let cols_per_px = (cols as f32 / trace_w as f32).max(1.0);
-                    let blur_area = (std::f32::consts::TAU * sigma_h.max(0.4) * sigma_v.max(0.4)).max(1.0);
                     let shade = ShadeParams {
                         out_w,
                         out_h,
@@ -1583,8 +1582,8 @@ impl ScopeRenderer {
                         gap,
                         gain: ScopeJob::Waveform(*job).gain(),
                         norm,
-                        floor: 0.04,
-                        n_floor: 0.5 * norm / (cols_per_px * 4.0) / blur_area,
+                        _f0: 0.0,
+                        _f1: 0.0,
                     };
                     let params = self.uniform("scope_shade_params", &shade);
                     let bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {

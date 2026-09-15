@@ -1631,7 +1631,8 @@ impl PlaybackEngine {
             source_mixer_track_index: 64,
             scope_render_mode: 0,
             scope_ffmpeg_settings: klipp_core::ScopeFfmpegSettings::default(),
-            scope_bloom_enabled: true,
+            // Off: at a large scope's size a glow washes the trace out.
+            scope_bloom_enabled: false,
             active_scope_modes: std::collections::BTreeSet::new(),
             scope_sizes: std::collections::BTreeMap::new(),
             scopes_visible: false,
@@ -7254,7 +7255,9 @@ impl PlaybackEngine {
                 })
             })
             .collect();
-        let step = settings.quality.sample_step() as u32;
+        // Paused, a frame is studied rather than watched: every pixel is
+        // measured. The quality setting paces the scopes during playback.
+        let step = if self.state == PlaybackState::Playing { settings.quality.sample_step() as u32 } else { 1 };
         let gpu = self.renderer.executor().gpu_pipeline_or_init()?;
         let sizes: Vec<(u32, u32)> = jobs
             .iter()

@@ -52,6 +52,21 @@ fn brightest_row(img: &[u8], out_w: u32, x: u32) -> (usize, u32) {
         .unwrap()
 }
 
+/// The row the light of column `x` is centred on. The centre, not the
+/// brightest row: a dense trace saturates to white over several rows, and
+/// the brightest of those is whichever tie comes last.
+fn light_row(img: &[u8], out_w: u32, x: u32) -> f32 {
+    let (mut light, mut moment) = (0f32, 0f32);
+    for y in 0..OUT as usize {
+        let i = (y * out_w as usize + x as usize) * 4;
+        let l = (img[i] as u32 + img[i + 1] as u32 + img[i + 2] as u32) as f32;
+        light += l;
+        moment += l * y as f32;
+    }
+    assert!(light > 0.0, "column {x} is dark");
+    moment / light
+}
+
 /// The output row a level lands on: row 0 is level 1.0.
 fn row_of(level: f32) -> f32 {
     (1.0 - level) * OUT as f32
@@ -92,12 +107,12 @@ fn a_ramp_is_a_ramp_and_display_bytes_are_binned_as_codes() {
     let input = ScopeInput::Linear { rgba: &ramp, width: W, height: H, matrix: IDENTITY, luma: REC709, transfer: ScopeTransfer::Srgb, scale: 1.0 };
     let out = gpu.scopes().render(&input, 1, &[job(WaveformMode::RgbOverlay, OUT)]);
     let img = out[0].as_ref().unwrap();
-    let (left, _) = brightest_row(img, OUT, 20);
-    let (mid, _) = brightest_row(img, OUT, 128);
-    let (right, _) = brightest_row(img, OUT, 240);
-    assert!(left > mid && mid > right, "the trace rises left to right: {left} {mid} {right}");
+    let left = light_row(img, OUT, 20);
+    let mid = light_row(img, OUT, 128);
+    let right = light_row(img, OUT, 240);
+    assert!(left > mid && mid > right, "the trace rises left to right: {left:.1} {mid:.1} {right:.1}");
     let expect_mid = row_of(linear_to_srgb(128.0 / 255.0));
-    assert!((mid as f32 - expect_mid).abs() <= 2.0, "mid column at row {mid}, expected {expect_mid:.1}");
+    assert!((mid - expect_mid).abs() <= 2.0, "mid column at row {mid:.1}, expected {expect_mid:.1}");
 
     let grey: Vec<u8> = (0..W * H).flat_map(|_| [118u8, 118, 118, 255]).collect();
     let input = ScopeInput::Display { rgba: &grey, width: W, height: H, luma: REC709 };

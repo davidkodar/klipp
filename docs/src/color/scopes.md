@@ -10,7 +10,7 @@ The waveform monitor displays levels from left to right, matching the horizontal
 - **X-axis** — Horizontal position in the frame
 - Brighter trace means more pixels at that level
 
-The waveform and parade are drawn on the GPU from the frame the viewer shows, at the size of their panel on screen in physical pixels, one measured column per pixel of trace, so they stay sharp in a large or fullscreen panel. Every pixel of the frame is measured (or every second or fourth, by scope quality) into 1024 columns by 1024 levels, so the trace has 10-bit vertical resolution, and the trace brightness follows the density of samples on a logarithmic curve: a lone sample is a faint dot, a thin edge a clear line, a flat area a bright core, and nothing clips into a solid blob. The optional glow is the light a dense trace throws.
+The waveform and parade are drawn on the GPU from the frame the viewer shows, at the size of their panel on screen in physical pixels, one measured column per pixel of trace, so they stay sharp in a large or fullscreen panel. Every pixel of the frame is measured (or every second or fourth, by scope quality) into 1024 columns by 1024 levels, so the trace has 10-bit vertical resolution, and the trace brightness follows the density of samples on a saturating curve: a lone sample is a dim dot, the gaps between traces stay dark, and a dense trace goes bright without clipping into a solid blob, so the picture's structure stands out against black. The optional glow (**Bloom**, off by default) is the light a dense trace throws.
 
 Levels are those of the delivery: the working space's primaries encoded with the SDR viewer transfer chosen in preferences (sRGB or BT.1886), PQ in BT.2020 while HDR monitoring shows display light, and the display codes themselves in an ACES project.
 
@@ -24,7 +24,7 @@ The vectorscope shows colour (hue and saturation) as a circular plot:
 - **Distance from centre** — Saturation (centre = no colour, edge = maximum saturation)
 - Target boxes mark the 75 % colour-bar positions (R, G, B, Cy, Mg, Yl) in the project's working space
 
-It is drawn on the GPU as a density plot of Y′CbCr chroma: every measured pixel is placed at its Cb and Cr in the project's working space, and the trace brightness follows the density on the same logarithmic curve as the waveform, so a lone pixel is a faint dot and a skin tone a bright streak. In the colour modes the cloud is tinted by the hue at each point; Gray draws it mono. **Zoom** (1×, 2×, 4×) magnifies the plane about the centre and the graticule follows, and the low and high range settings keep only pixels whose Y′ lies between them, to look at the chroma of shadows or highlights alone.
+It is drawn on the GPU as a density plot of Y′CbCr chroma: every measured pixel is placed at its Cb and Cr in the project's working space, and the trace brightness follows the density on a logarithmic curve, so a lone pixel is a faint dot and a skin tone a bright streak. In the colour modes the cloud is tinted by the hue at each point; Gray draws it mono. **Zoom** (1×, 2×, 4×) magnifies the plane about the centre and the graticule follows, and the low and high range settings keep only pixels whose Y′ lies between them, to look at the chroma of shadows or highlights alone.
 
 ### Skin Tone Line
 
@@ -59,7 +59,7 @@ The vectorscope measures Y′CbCr in the project's working space, with that spac
 
 ## Scope Quality Settings
 
-Adjust scope rendering quality in preferences:
+Adjust how many pixels the scopes measure during playback in preferences. While playback is paused, every pixel is measured whatever the setting:
 
 - **High** — every pixel; most accurate
 - **Medium** — every other pixel; the default
