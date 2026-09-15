@@ -11510,7 +11510,7 @@ impl KlippApp {
         match cmd {
                 AppCommand::ExportMetadataSheet { path, ale } => {
                     let mut items: Vec<&klipp_media::MediaItem> = self.state.media_pool.all().filter(|m| matches!(m.kind, klipp_media::MediaItemKind::File)).collect();
-                    items.sort_by(|a, b| a.filename.to_lowercase().cmp(&b.filename.to_lowercase()));
+                    items.sort_by_key(|m| m.filename.to_lowercase());
                     let text = if *ale {
                         klipp_project::metadata_sheet::export_ale(&items, self.state.fps)
                     } else {
