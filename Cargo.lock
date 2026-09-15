@@ -3062,6 +3062,7 @@ dependencies = [
  "image",
  "klipp-audio",
  "klipp-color",
+ "klipp-compose",
  "klipp-core",
  "klipp-effects",
  "klipp-engine",

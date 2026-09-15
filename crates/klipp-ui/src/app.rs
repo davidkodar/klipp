@@ -4658,6 +4658,9 @@ impl KlippApp {
                     let timeline_out = ph + duration;
                     let label = match &data {
                         klipp_core::GeneratorData::SolidColor { .. } => "Solid Color",
+                        klipp_core::GeneratorData::LivingGradient { .. } => "Living Gradient",
+                        klipp_core::GeneratorData::Grain { .. } => "Grain",
+                        klipp_core::GeneratorData::Placeholder { .. } => "Placeholder",
                         klipp_core::GeneratorData::Gradient { .. } => "Gradient",
                         klipp_core::GeneratorData::ColorBars => "Color Bars",
                         klipp_core::GeneratorData::ColorBars100 => "Color Bars 100%",
@@ -4688,10 +4691,16 @@ impl KlippApp {
                     let clip_id = clip.id;
                     seq.tracks[track_idx].clips.push(clip);
                     seq.tracks[track_idx].sort_clips();
+                    // The new generator is the selection, the inspector
+                    // opens on its parameters, and the playhead parks a
+                    // little way in so the viewer shows it.
                     self.state.selected_clip = Some(clip_id);
+                    self.state.selected_clips = vec![clip_id];
                     self.state.toast.show(format!("{label} generator created"));
                     self.state.dirty = true;
                     self.sync_sequence_to_engine();
+                    let park = ph + klipp_core::RationalTime::from_secs_f64(0.25, fps_rate);
+                    let _ = self.cmd_tx.send(AppCommand::SeekTo(park));
                     true
                 }
                 // Create compound clip: move selected clips into a new nested sequence

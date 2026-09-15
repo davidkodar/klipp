@@ -1,3 +1,4 @@
+use crate::browser::generator_previews::GeneratorPreviews;
 use crate::browser::effects_tab::{EffectSort, EffectViewMode};
 use crate::drag_drop::DragPayload;
 use crate::icons::Icon;
@@ -30,82 +31,36 @@ struct GeneratorTemplate {
 }
 
 // ---------------------------------------------------------------------------
-// Generator factories
+// The curated set: one generator per job, every colour and count a
+// parameter in the inspector. Fifteen in five groups.
 // ---------------------------------------------------------------------------
 
-fn solid_black() -> GeneratorData { GeneratorData::SolidColor { color: [0, 0, 0, 255] } }
-fn solid_white() -> GeneratorData { GeneratorData::SolidColor { color: [255, 255, 255, 255] } }
-fn solid_red() -> GeneratorData { GeneratorData::SolidColor { color: [220, 50, 50, 255] } }
-fn solid_green() -> GeneratorData { GeneratorData::SolidColor { color: [50, 180, 80, 255] } }
-fn solid_blue() -> GeneratorData { GeneratorData::SolidColor { color: [50, 100, 220, 255] } }
-fn solid_cyan() -> GeneratorData { GeneratorData::SolidColor { color: [60, 200, 210, 255] } }
-fn solid_magenta() -> GeneratorData { GeneratorData::SolidColor { color: [210, 60, 180, 255] } }
-fn solid_yellow() -> GeneratorData { GeneratorData::SolidColor { color: [230, 210, 50, 255] } }
-fn solid_grey() -> GeneratorData { GeneratorData::SolidColor { color: [128, 128, 128, 255] } }
-
-fn gradient(top: [u8; 4], bottom: [u8; 4], angle_deg: f32) -> GeneratorData {
-    GeneratorData::Gradient { top, bottom, angle_deg, four_point: None }
+fn solid() -> GeneratorData { GeneratorData::SolidColor { color: [0, 0, 0, 255] } }
+fn gradient() -> GeneratorData {
+    GeneratorData::Gradient { top: [36, 52, 92, 255], bottom: [8, 10, 18, 255], angle_deg: 0.0, four_point: None }
 }
-fn gradient_bw() -> GeneratorData { gradient([0, 0, 0, 255], [255, 255, 255, 255], 0.0) }
-fn gradient_wb() -> GeneratorData { gradient([255, 255, 255, 255], [0, 0, 0, 255], 0.0) }
-fn gradient_blue() -> GeneratorData { gradient([80, 140, 220, 255], [0, 0, 30, 255], 0.0) }
-fn gradient_sunset() -> GeneratorData { gradient([255, 140, 60, 255], [90, 40, 120, 255], 0.0) }
-fn gradient_dawn() -> GeneratorData { gradient([255, 200, 220, 255], [120, 100, 200, 255], 0.0) }
-fn gradient_forest() -> GeneratorData { gradient([40, 90, 60, 255], [10, 20, 15, 255], 0.0) }
-fn gradient_amber() -> GeneratorData { gradient([255, 180, 80, 255], [60, 25, 10, 255], 0.0) }
-// Diagonal preset showcases the new `angle_deg` axis without needing
-// the user to dig into the inspector first.
-fn gradient_diagonal_neon() -> GeneratorData {
-    gradient([255, 80, 200, 255], [40, 220, 255, 255], 45.0)
-}
-// Cinematic 4-corner wash — each corner a different colour. Demonstrates
-// the new `four_point` mode straight from the browser.
-fn gradient_4pt_warm_cool() -> GeneratorData {
+fn four_corner() -> GeneratorData {
     GeneratorData::Gradient {
-        top: [0, 0, 0, 0],
-        bottom: [0, 0, 0, 0],
+        top: [0, 0, 0, 255],
+        bottom: [0, 0, 0, 255],
         angle_deg: 0.0,
         four_point: Some(FourPointGradient {
             top_left: [255, 140, 60, 255],
-            top_right: [255, 80, 120, 255],
-            bottom_left: [40, 90, 180, 255],
-            bottom_right: [80, 200, 220, 255],
+            top_right: [255, 200, 120, 255],
+            bottom_left: [60, 80, 200, 255],
+            bottom_right: [20, 30, 90, 255],
         }),
     }
 }
-
+fn living_gradient() -> GeneratorData {
+    GeneratorData::LivingGradient { a: [22, 34, 78, 255], b: [64, 24, 82, 255], angle_deg: 20.0, drift_deg_per_sec: 4.0, glow: 0.35 }
+}
+fn grain() -> GeneratorData {
+    GeneratorData::Grain { color: [26, 26, 30, 255], amount: 0.35, size_px: 2.0, speed: 24.0 }
+}
 fn color_bars() -> GeneratorData { GeneratorData::ColorBars }
-fn countdown() -> GeneratorData { GeneratorData::Countdown }
-
-// Vector shape factories. Defaults are mid-spec — 6-sided polygon
-// (hexagon) and 5-pointed star with 0.4 inner-ratio (the classic
-// pentagram look). Users tune via the inspector once on the timeline.
-fn shape_triangle() -> GeneratorData {
-    GeneratorData::Polygon { sides: 3, color: [255, 255, 255, 255], outline_width_px: 0.0, fill: true }
-}
-fn shape_square() -> GeneratorData {
-    GeneratorData::Polygon { sides: 4, color: [255, 255, 255, 255], outline_width_px: 0.0, fill: true }
-}
-fn shape_pentagon() -> GeneratorData {
-    GeneratorData::Polygon { sides: 5, color: [255, 255, 255, 255], outline_width_px: 0.0, fill: true }
-}
-fn shape_hexagon() -> GeneratorData {
-    GeneratorData::Polygon { sides: 6, color: [255, 255, 255, 255], outline_width_px: 0.0, fill: true }
-}
-fn shape_octagon() -> GeneratorData {
-    GeneratorData::Polygon { sides: 8, color: [255, 255, 255, 255], outline_width_px: 0.0, fill: true }
-}
-fn shape_circle_approx() -> GeneratorData {
-    // 24-sided polygon reads as a circle at typical viewer sizes.
-    GeneratorData::Polygon { sides: 24, color: [255, 255, 255, 255], outline_width_px: 0.0, fill: true }
-}
-fn shape_star_5() -> GeneratorData {
-    GeneratorData::Star { points: 5, inner_radius_pct: 0.40, color: [255, 220, 60, 255], outline_width_px: 0.0, fill: true }
-}
-fn shape_star_6() -> GeneratorData {
-    GeneratorData::Star { points: 6, inner_radius_pct: 0.50, color: [255, 220, 60, 255], outline_width_px: 0.0, fill: true }
-}
 fn color_bars_100() -> GeneratorData { GeneratorData::ColorBars100 }
+fn countdown() -> GeneratorData { GeneratorData::Countdown }
 fn timer_count_up() -> GeneratorData {
     GeneratorData::Timer {
         mode: klipp_core::TimerMode::CountUp,
@@ -138,48 +93,37 @@ fn slate() -> GeneratorData {
         background_color: [0, 0, 0, 255],
     }
 }
+fn placeholder() -> GeneratorData {
+    GeneratorData::Placeholder { label: String::from("Missing shot"), color: [66, 70, 84, 255] }
+}
+fn polygon() -> GeneratorData {
+    GeneratorData::Polygon { sides: 6, color: [255, 255, 255, 255], outline_width_px: 0.0, fill: true }
+}
+fn circle() -> GeneratorData {
+    GeneratorData::Polygon { sides: 24, color: [255, 255, 255, 255], outline_width_px: 0.0, fill: true }
+}
+fn star() -> GeneratorData {
+    GeneratorData::Star { points: 5, inner_radius_pct: 0.40, color: [255, 220, 60, 255], outline_width_px: 0.0, fill: true }
+}
 
-const CATEGORIES: &[&str] = &["Solid Color", "Gradient", "Test Pattern", "Countdown", "Slate", "Shape"];
+const CATEGORIES: &[&str] = &["Backgrounds", "Test", "Timing", "Slate", "Shape"];
 
 const GENERATORS: &[GeneratorTemplate] = &[
-    // Solid Color
-    GeneratorTemplate { name: "Black",       category: "Solid Color", create_data: solid_black,   animated: false },
-    GeneratorTemplate { name: "White",       category: "Solid Color", create_data: solid_white,   animated: false },
-    GeneratorTemplate { name: "Red",         category: "Solid Color", create_data: solid_red,     animated: false },
-    GeneratorTemplate { name: "Green",       category: "Solid Color", create_data: solid_green,   animated: false },
-    GeneratorTemplate { name: "Blue",        category: "Solid Color", create_data: solid_blue,    animated: false },
-    GeneratorTemplate { name: "Cyan",        category: "Solid Color", create_data: solid_cyan,    animated: false },
-    GeneratorTemplate { name: "Magenta",     category: "Solid Color", create_data: solid_magenta, animated: false },
-    GeneratorTemplate { name: "Yellow",      category: "Solid Color", create_data: solid_yellow,  animated: false },
-    GeneratorTemplate { name: "50% Grey",    category: "Solid Color", create_data: solid_grey,    animated: false },
-    // Gradient
-    GeneratorTemplate { name: "Black \u{2192} White", category: "Gradient", create_data: gradient_bw,     animated: false },
-    GeneratorTemplate { name: "White \u{2192} Black", category: "Gradient", create_data: gradient_wb,     animated: false },
-    GeneratorTemplate { name: "Blue Fade",            category: "Gradient", create_data: gradient_blue,   animated: false },
-    GeneratorTemplate { name: "Sunset",               category: "Gradient", create_data: gradient_sunset, animated: false },
-    GeneratorTemplate { name: "Dawn",                 category: "Gradient", create_data: gradient_dawn,   animated: false },
-    GeneratorTemplate { name: "Forest",               category: "Gradient", create_data: gradient_forest, animated: false },
-    GeneratorTemplate { name: "Amber",                category: "Gradient", create_data: gradient_amber,  animated: false },
-    GeneratorTemplate { name: "Neon Diagonal",        category: "Gradient", create_data: gradient_diagonal_neon, animated: false },
-    GeneratorTemplate { name: "4-Corner Wash",        category: "Gradient", create_data: gradient_4pt_warm_cool, animated: false },
-    // Test Pattern
-    GeneratorTemplate { name: "SMPTE 75% Bars",  category: "Test Pattern", create_data: color_bars,     animated: false },
-    GeneratorTemplate { name: "SMPTE 100% Bars", category: "Test Pattern", create_data: color_bars_100, animated: false },
-    // Countdown
-    GeneratorTemplate { name: "Countdown",         category: "Countdown",    create_data: countdown,         animated: true },
-    GeneratorTemplate { name: "Timer (Count Up)",  category: "Countdown",    create_data: timer_count_up,    animated: true },
-    GeneratorTemplate { name: "Timer (Count Down)", category: "Countdown",   create_data: timer_count_down,  animated: true },
-    // Slate
-    GeneratorTemplate { name: "Slate",             category: "Slate",        create_data: slate,             animated: false },
-    // Shape
-    GeneratorTemplate { name: "Triangle",       category: "Shape", create_data: shape_triangle,        animated: false },
-    GeneratorTemplate { name: "Square",         category: "Shape", create_data: shape_square,          animated: false },
-    GeneratorTemplate { name: "Pentagon",       category: "Shape", create_data: shape_pentagon,        animated: false },
-    GeneratorTemplate { name: "Hexagon",        category: "Shape", create_data: shape_hexagon,         animated: false },
-    GeneratorTemplate { name: "Octagon",        category: "Shape", create_data: shape_octagon,         animated: false },
-    GeneratorTemplate { name: "Circle (24-gon)", category: "Shape", create_data: shape_circle_approx,  animated: false },
-    GeneratorTemplate { name: "Star (5-pt)",    category: "Shape", create_data: shape_star_5,          animated: false },
-    GeneratorTemplate { name: "Star (6-pt)",    category: "Shape", create_data: shape_star_6,          animated: false },
+    GeneratorTemplate { name: "Solid Colour",    category: "Backgrounds", create_data: solid,           animated: false },
+    GeneratorTemplate { name: "Gradient",        category: "Backgrounds", create_data: gradient,        animated: false },
+    GeneratorTemplate { name: "Four-Corner",     category: "Backgrounds", create_data: four_corner,     animated: false },
+    GeneratorTemplate { name: "Living Gradient", category: "Backgrounds", create_data: living_gradient, animated: true },
+    GeneratorTemplate { name: "Grain",           category: "Backgrounds", create_data: grain,           animated: true },
+    GeneratorTemplate { name: "SMPTE 75% Bars",  category: "Test",        create_data: color_bars,      animated: false },
+    GeneratorTemplate { name: "SMPTE 100% Bars", category: "Test",        create_data: color_bars_100,  animated: false },
+    GeneratorTemplate { name: "Countdown",       category: "Timing",      create_data: countdown,       animated: true },
+    GeneratorTemplate { name: "Timer Up",        category: "Timing",      create_data: timer_count_up,  animated: true },
+    GeneratorTemplate { name: "Timer Down",      category: "Timing",      create_data: timer_count_down, animated: true },
+    GeneratorTemplate { name: "Slate",           category: "Slate",       create_data: slate,           animated: false },
+    GeneratorTemplate { name: "Placeholder",     category: "Slate",       create_data: placeholder,     animated: false },
+    GeneratorTemplate { name: "Polygon",         category: "Shape",       create_data: polygon,         animated: false },
+    GeneratorTemplate { name: "Circle",          category: "Shape",       create_data: circle,          animated: false },
+    GeneratorTemplate { name: "Star",            category: "Shape",       create_data: star,            animated: false },
 ];
 
 const GENERATORS_SIDEBAR_W: f32 = 180.0;
@@ -195,6 +139,7 @@ pub fn show(
     view_mode: &mut EffectViewMode,
     sort_mode: &mut EffectSort,
     selected: &mut Option<String>,
+    previews: &mut GeneratorPreviews,
 ) -> Vec<AppCommand> {
     let mut cmds = Vec::new();
     let avail = ui.available_rect_before_wrap();
@@ -374,7 +319,13 @@ pub fn show(
                         .show(ui, |ui| {
                             for (i, tmpl) in filtered.iter().enumerate() {
                                 let is_selected = selected.as_deref() == Some(tmpl.name);
-                                let resp = generator_card(ui, theme, tmpl, card_w, card_h, is_selected);
+                                let tex = preview_texture(ui, previews, tmpl);
+                                let resp = generator_card(ui, theme, tmpl, card_w, card_h, is_selected, tex.as_ref());
+                                let active = resp.hovered() || is_selected;
+                                gen_update_anim_state(ui, tmpl.name, active && tmpl.animated);
+                                if active && tmpl.animated {
+                                    ui.ctx().request_repaint();
+                                }
                                 handle_card_interaction(state, &mut cmds, selected, tmpl, &resp);
                                 if i % 2 == 1 {
                                     ui.end_row();
@@ -387,7 +338,13 @@ pub fn show(
                 } else {
                     for tmpl in filtered.iter() {
                         let is_selected = selected.as_deref() == Some(tmpl.name);
-                        let resp = generator_list_row(ui, theme, tmpl, avail_w, is_selected);
+                        let tex = preview_texture(ui, previews, tmpl);
+                        let resp = generator_list_row(ui, theme, tmpl, avail_w, is_selected, tex.as_ref());
+                        let active = resp.hovered() || is_selected;
+                        gen_update_anim_state(ui, tmpl.name, active && tmpl.animated);
+                        if active && tmpl.animated {
+                            ui.ctx().request_repaint();
+                        }
                         handle_card_interaction(state, &mut cmds, selected, tmpl, &resp);
                         ui.add_space(2.0);
                     }
@@ -430,6 +387,7 @@ fn generator_card(
     width: f32,
     height: f32,
     is_selected: bool,
+    preview: Option<&egui::TextureHandle>,
 ) -> egui::Response {
     let (rect, resp) = ui.allocate_exact_size(
         egui::vec2(width, height),
@@ -442,12 +400,72 @@ fn generator_card(
         tmpl.category,
         if tmpl.animated { " \u{00B7} Animated" } else { "" },
     );
-    let data = (tmpl.create_data)();
-    crate::browser::library_card::library_card(ui, rect, tmpl.name, &caption, is_selected, hovered, theme, |p, preview| {
-        paint_generator_preview(p, preview.shrink(1.0), &data);
+    crate::browser::library_card::library_card(ui, rect, tmpl.name, &caption, is_selected, hovered, theme, |p, area| {
+        paint_preview(p, area, preview, theme);
     });
 
     resp
+}
+
+/// The rendered frame, or a quiet field while it renders.
+fn paint_preview(p: &egui::Painter, area: egui::Rect, preview: Option<&egui::TextureHandle>, theme: &KlippTheme) {
+    match preview {
+        Some(t) => {
+            p.image(t.id(), area, egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), egui::Color32::WHITE);
+        }
+        None => {
+            p.rect_filled(area, 0.0, theme.bg_raised);
+        }
+    }
+}
+
+/// The card's frame: at rest a fixed moment, hovered the loop playing,
+/// with the next frames queued ahead and the nearest cached frame
+/// standing in while one renders.
+fn preview_texture(ui: &egui::Ui, previews: &mut GeneratorPreviews, tmpl: &GeneratorTemplate) -> Option<egui::TextureHandle> {
+    use crate::browser::generator_previews::{FRAME_STEP, LOOP_SECS, REST_TIME};
+    let elapsed = if tmpl.animated { gen_read_anim_elapsed(ui, tmpl.name) } else { 0.0 };
+    let time = if elapsed > 0.0 { GeneratorPreviews::hover_time(elapsed) } else { REST_TIME };
+    if elapsed > 0.0 {
+        for k in 1..=6 {
+            let ahead = GeneratorPreviews::hover_time((time + k as f32 * FRAME_STEP) % LOOP_SECS);
+            let key = GeneratorPreviews::key(tmpl.name, ahead);
+            previews.request(&key, ahead, tmpl.create_data);
+        }
+    }
+    let key = GeneratorPreviews::key(tmpl.name, time);
+    previews
+        .get_or_request(&key, time, tmpl.create_data)
+        .cloned()
+        .or_else(|| previews.nearest_for(tmpl.name, time).cloned())
+}
+
+fn gen_read_anim_elapsed(ui: &egui::Ui, name: &str) -> f32 {
+    let active_id = ui.id().with(("gen_anim_active", name));
+    let start_id = ui.id().with(("gen_anim_start", name));
+    let now = ui.ctx().input(|i| i.time);
+    let active: bool = ui.memory(|m| m.data.get_temp(active_id)).unwrap_or(false);
+    if !active {
+        return 0.0;
+    }
+    let start: f64 = ui.memory(|m| m.data.get_temp(start_id)).unwrap_or(now);
+    (now - start).max(0.0) as f32
+}
+
+fn gen_update_anim_state(ui: &egui::Ui, name: &str, active: bool) {
+    let active_id = ui.id().with(("gen_anim_active", name));
+    let start_id = ui.id().with(("gen_anim_start", name));
+    let now = ui.ctx().input(|i| i.time);
+    let prev: bool = ui.memory(|m| m.data.get_temp(active_id)).unwrap_or(false);
+    ui.memory_mut(|m| {
+        m.data.insert_temp(active_id, active);
+        if active && !prev {
+            m.data.insert_temp(start_id, now);
+        }
+        if !active {
+            m.data.remove::<f64>(start_id);
+        }
+    });
 }
 
 fn generator_list_row(
@@ -456,6 +474,7 @@ fn generator_list_row(
     tmpl: &GeneratorTemplate,
     width: f32,
     is_selected: bool,
+    preview: Option<&egui::TextureHandle>,
 ) -> egui::Response {
     let row_h = 40.0;
     let (rect, resp) = ui.allocate_exact_size(
@@ -471,369 +490,35 @@ fn generator_list_row(
     } else {
         theme.bg_panel
     };
-    ui.painter().rect_filled(rect, 4.0, bg);
+    ui.painter().rect_filled(rect, crate::theme::radius::PANEL, bg);
 
-    // Thumb (40×24) on the left
     let thumb_rect = egui::Rect::from_min_size(
-        egui::pos2(rect.min.x + 6.0, rect.center().y - 12.0),
-        egui::vec2(40.0, 24.0),
+        egui::pos2(rect.min.x + 6.0, rect.center().y - 14.0),
+        egui::vec2(50.0, 28.0),
     );
-    let data = (tmpl.create_data)();
-    paint_generator_preview(ui.painter(), thumb_rect, &data);
+    paint_preview(ui.painter(), thumb_rect, preview, theme);
 
-    // Name
     ui.painter().text(
-        egui::pos2(thumb_rect.max.x + 10.0, rect.center().y),
+        egui::pos2(thumb_rect.max.x + 10.0, rect.center().y - 7.0),
         egui::Align2::LEFT_CENTER,
         tmpl.name,
-        egui::FontId::proportional(11.0),
+        egui::FontId::proportional(crate::theme::type_scale::BODY),
         theme.text_primary,
     );
-
-    // Right-side ANIMATED + BUILT-IN chips
-    let mut x = rect.max.x - 6.0;
-    let badge_w = 64.0;
-    let badge_h = 16.0;
-    let badge_rect = egui::Rect::from_min_size(
-        egui::pos2(x - badge_w, rect.center().y - badge_h * 0.5),
-        egui::vec2(badge_w, badge_h),
+    let meta = format!("{} \u{00B7} Built-in{}", tmpl.category, if tmpl.animated { " \u{00B7} Animated" } else { "" });
+    ui.painter().text(
+        egui::pos2(thumb_rect.max.x + 10.0, rect.center().y + 8.0),
+        egui::Align2::LEFT_CENTER,
+        meta,
+        egui::FontId::proportional(crate::theme::type_scale::CAPTION),
+        theme.text_dim,
     );
-    paint_corner_badge(
-        ui.painter(), theme, badge_rect, "BUILT-IN",
-        theme.text_secondary, theme.bg_panel,
-    );
-    x -= badge_w + 6.0;
-    if tmpl.animated {
-        let badge_rect = egui::Rect::from_min_size(
-            egui::pos2(x - badge_w, rect.center().y - badge_h * 0.5),
-            egui::vec2(badge_w, badge_h),
-        );
-        paint_animated_chip(ui.painter(), theme, badge_rect);
-    }
 
     if is_selected {
-        ui.painter().rect_stroke(
-            rect, 4.0, egui::Stroke::new(1.0_f32, theme.accent),
-        );
+        ui.painter().rect_stroke(rect, crate::theme::radius::PANEL, egui::Stroke::new(1.5_f32, theme.accent));
     }
 
     resp
-}
-
-fn paint_corner_badge(
-    p: &egui::Painter,
-    theme: &KlippTheme,
-    rect: egui::Rect,
-    label: &str,
-    fg: egui::Color32,
-    bg: egui::Color32,
-) {
-    p.rect_filled(rect, 2.0, bg);
-    p.rect_stroke(rect, 2.0, egui::Stroke::new(1.0_f32, theme.border));
-    p.text(
-        rect.center(),
-        egui::Align2::CENTER_CENTER,
-        label,
-        egui::FontId::proportional(10.0),
-        fg,
-    );
-}
-
-fn paint_animated_chip(p: &egui::Painter, theme: &KlippTheme, rect: egui::Rect) {
-    // Opaque underlay first so the chip never lets the preview
-    // (e.g. countdown circle stroke) bleed through the semi-
-    // transparent accent fill on top.
-    p.rect_filled(rect, 2.0, theme.bg_panel);
-    p.rect_filled(rect, 2.0, theme.accent_subtle);
-    p.rect_stroke(rect, 2.0, egui::Stroke::new(1.0_f32, theme.accent_dim));
-    p.text(
-        egui::pos2(rect.min.x + 6.0, rect.center().y),
-        egui::Align2::LEFT_CENTER,
-        "+ ANIMATED",
-        egui::FontId::proportional(10.0),
-        theme.accent,
-    );
-}
-
-fn paint_generator_preview(
-    painter: &egui::Painter,
-    rect: egui::Rect,
-    data: &GeneratorData,
-) {
-    let rounding = egui::Rounding::same(4.0);
-
-    match data {
-        GeneratorData::SolidColor { color } => {
-            let c = egui::Color32::from_rgba_premultiplied(color[0], color[1], color[2], color[3]);
-            painter.rect_filled(rect, rounding, c);
-        }
-
-        GeneratorData::Gradient { top, bottom, angle_deg, four_point } => {
-            // Cards are small; we sample the gradient on a coarse
-            // grid (32×18 cells) and paint each cell as a tiny rect.
-            // That's enough resolution for the thumbnail to read
-            // honestly at any angle / 4-corner combination without
-            // doing a per-pixel bilinear blend.
-            painter.rect_filled(rect, rounding, egui::Color32::BLACK);
-            let cols = 32usize;
-            let rows = 18usize;
-            let cell_w = rect.width() / cols as f32;
-            let cell_h = rect.height() / rows as f32;
-            for ry in 0..rows {
-                for cx in 0..cols {
-                    let tx = cx as f32 / (cols - 1).max(1) as f32;
-                    let ty = ry as f32 / (rows - 1).max(1) as f32;
-                    let color = sample_gradient(top, bottom, *angle_deg, *four_point, tx, ty);
-                    let cell_rect = egui::Rect::from_min_size(
-                        egui::pos2(
-                            rect.min.x + cx as f32 * cell_w,
-                            rect.min.y + ry as f32 * cell_h,
-                        ),
-                        egui::vec2(cell_w + 0.5, cell_h + 0.5),
-                    );
-                    painter.rect_filled(
-                        cell_rect.intersect(rect),
-                        egui::Rounding::ZERO,
-                        color,
-                    );
-                }
-            }
-            // Re-stroke the rounded outline so the cells don't show
-            // square corners.
-            painter.rect_stroke(rect, rounding, egui::Stroke::NONE);
-        }
-
-        GeneratorData::ColorBars => {
-            // SMPTE 75% bars (values mirror klipp_core::generator::render_color_bars).
-            const BARS: [[u8; 4]; 7] = [
-                [191, 191, 191, 255],
-                [191, 191, 0, 255],
-                [0, 191, 191, 255],
-                [0, 191, 0, 255],
-                [191, 0, 191, 255],
-                [191, 0, 0, 255],
-                [0, 0, 191, 255],
-            ];
-            painter.rect_filled(rect, rounding, egui::Color32::BLACK);
-            let bar_w = rect.width() / 7.0;
-            for (i, bar) in BARS.iter().enumerate() {
-                let bar_rect = egui::Rect::from_min_size(
-                    egui::pos2(rect.min.x + i as f32 * bar_w, rect.min.y),
-                    egui::vec2(bar_w + 0.5, rect.height()),
-                );
-                painter.rect_filled(
-                    bar_rect.intersect(rect),
-                    egui::Rounding::ZERO,
-                    egui::Color32::from_rgba_premultiplied(bar[0], bar[1], bar[2], bar[3]),
-                );
-            }
-        }
-
-        GeneratorData::ColorBars100 => {
-            // SMPTE 100% bars — same layout as ColorBars at full intensity.
-            const BARS: [[u8; 4]; 7] = [
-                [255, 255, 255, 255],
-                [255, 255, 0, 255],
-                [0, 255, 255, 255],
-                [0, 255, 0, 255],
-                [255, 0, 255, 255],
-                [255, 0, 0, 255],
-                [0, 0, 255, 255],
-            ];
-            painter.rect_filled(rect, rounding, egui::Color32::BLACK);
-            let bar_w = rect.width() / 7.0;
-            for (i, bar) in BARS.iter().enumerate() {
-                let bar_rect = egui::Rect::from_min_size(
-                    egui::pos2(rect.min.x + i as f32 * bar_w, rect.min.y),
-                    egui::vec2(bar_w + 0.5, rect.height()),
-                );
-                painter.rect_filled(
-                    bar_rect.intersect(rect),
-                    egui::Rounding::ZERO,
-                    egui::Color32::from_rgba_premultiplied(bar[0], bar[1], bar[2], bar[3]),
-                );
-            }
-        }
-
-        GeneratorData::Countdown => {
-            painter.rect_filled(rect, rounding, egui::Color32::BLACK);
-            // Reserve a top strip for the corner badges (BUILT-IN /
-            // ANIMATED) so the ring stroke never crowds them. Numeral
-            // and ring centre in the remaining space; both scale with
-            // the card so wide and narrow cards both keep clearance.
-            let badge_strip = 28.0_f32;
-            let inner_top = (rect.min.y + badge_strip).min(rect.max.y);
-            let inner_rect = egui::Rect::from_min_max(
-                egui::pos2(rect.min.x, inner_top),
-                rect.max,
-            );
-            let ring_radius = (inner_rect.height() * 0.40).min(inner_rect.width() * 0.18);
-            let ring_centre = inner_rect.center();
-            let ring_stroke = egui::Stroke::new(1.5_f32, egui::Color32::from_white_alpha(140));
-            painter.circle_stroke(ring_centre, ring_radius, ring_stroke);
-            painter.text(
-                ring_centre,
-                egui::Align2::CENTER_CENTER,
-                "5",
-                egui::FontId::proportional(inner_rect.height() * 0.55),
-                egui::Color32::WHITE,
-            );
-        }
-
-        GeneratorData::Timer { background_color, text_color, .. } => {
-            // Card preview: the timer's own colours + a "00:00" sample.
-            let bg = egui::Color32::from_rgba_premultiplied(
-                background_color[0], background_color[1], background_color[2], background_color[3],
-            );
-            let fg = egui::Color32::from_rgba_premultiplied(
-                text_color[0], text_color[1], text_color[2], text_color[3],
-            );
-            painter.rect_filled(rect, rounding, bg);
-            painter.text(
-                rect.center(),
-                egui::Align2::CENTER_CENTER,
-                "00:00",
-                egui::FontId::monospace(rect.height() * 0.40),
-                fg,
-            );
-        }
-
-        GeneratorData::Slate { background_color, text_color, .. } => {
-            // Card preview: the slate's own colours + the literal word
-            // "SLATE" so the card is recognisable independent of the
-            // user's specific field values.
-            let bg = egui::Color32::from_rgba_premultiplied(
-                background_color[0], background_color[1], background_color[2], background_color[3],
-            );
-            let fg = egui::Color32::from_rgba_premultiplied(
-                text_color[0], text_color[1], text_color[2], text_color[3],
-            );
-            painter.rect_filled(rect, rounding, bg);
-            painter.text(
-                rect.center(),
-                egui::Align2::CENTER_CENTER,
-                "SLATE",
-                egui::FontId::proportional(rect.height() * 0.30),
-                fg,
-            );
-        }
-
-        GeneratorData::StillFrame { .. } => {
-            // Freeze frames live on the timeline only, not in the
-            // Library — paint a neutral placeholder if one ever shows.
-            painter.rect_filled(rect, rounding, egui::Color32::from_gray(60));
-            painter.text(
-                rect.center(),
-                egui::Align2::CENTER_CENTER,
-                "\u{2744}",
-                egui::FontId::proportional(rect.height() * 0.5),
-                egui::Color32::WHITE,
-            );
-        }
-
-        GeneratorData::Polygon { sides, color, .. } => {
-            // Card preview: dark backdrop + the filled n-gon at 70 %
-            // of the card's shorter side. egui's convex_polygon
-            // takes the same vertex layout as the production
-            // rasteriser (clockwise from 12 o'clock).
-            painter.rect_filled(rect, rounding, egui::Color32::from_gray(28));
-            let n = (*sides).max(3) as usize;
-            let cx = rect.center().x;
-            let cy = rect.center().y;
-            let radius = rect.height().min(rect.width()) * 0.35;
-            let verts: Vec<egui::Pos2> = (0..n).map(|i| {
-                let theta = -std::f32::consts::FRAC_PI_2
-                    + (i as f32) * std::f32::consts::TAU / (n as f32);
-                egui::pos2(cx + radius * theta.cos(), cy + radius * theta.sin())
-            }).collect();
-            let c = egui::Color32::from_rgba_premultiplied(color[0], color[1], color[2], color[3]);
-            painter.add(egui::Shape::convex_polygon(verts, c, egui::Stroke::NONE));
-        }
-
-        GeneratorData::Star { points, inner_radius_pct, color, .. } => {
-            // Star is non-convex so we use a Path shape instead of
-            // convex_polygon (which would fill the convex hull and
-            // mask the points). Outer radius matches the polygon
-            // preview's 35 % of the shorter side.
-            painter.rect_filled(rect, rounding, egui::Color32::from_gray(28));
-            let n_points = (*points).max(3) as usize;
-            let cx = rect.center().x;
-            let cy = rect.center().y;
-            let outer = rect.height().min(rect.width()) * 0.35;
-            let inner = outer * inner_radius_pct.clamp(0.05, 0.95);
-            let total = n_points * 2;
-            let mut verts: Vec<egui::Pos2> = Vec::with_capacity(total);
-            for i in 0..total {
-                let r = if i % 2 == 0 { outer } else { inner };
-                let theta = -std::f32::consts::FRAC_PI_2
-                    + (i as f32) * std::f32::consts::TAU / (total as f32);
-                verts.push(egui::pos2(cx + r * theta.cos(), cy + r * theta.sin()));
-            }
-            let c = egui::Color32::from_rgba_premultiplied(color[0], color[1], color[2], color[3]);
-            // Closed path filled with the chosen colour. egui's
-            // tessellator handles concave fans correctly even for
-            // 5-pointed stars.
-            painter.add(egui::Shape::Path(egui::epaint::PathShape {
-                points: verts,
-                closed: true,
-                fill: c,
-                stroke: egui::epaint::PathStroke::NONE,
-            }));
-        }
-    }
-}
-
-fn lerp_u8(a: u8, b: u8, t: f32) -> u8 {
-    (a as f32 + (b as f32 - a as f32) * t).round().clamp(0.0, 255.0) as u8
-}
-
-/// Sample a gradient at normalized coordinates `(tx, ty)` (0..1 across
-/// the rect). Mirrors the renderer's logic in
-/// `klipp_core::generator::render_gradient` /
-/// `render_four_point_gradient` so card previews and on-timeline
-/// renders agree.
-fn sample_gradient(
-    top: &[u8; 4],
-    bottom: &[u8; 4],
-    angle_deg: f32,
-    four_point: Option<klipp_core::FourPointGradient>,
-    tx: f32,
-    ty: f32,
-) -> egui::Color32 {
-    if let Some(c) = four_point {
-        let r_top_h = lerp_u8(c.top_left[0], c.top_right[0], tx);
-        let g_top_h = lerp_u8(c.top_left[1], c.top_right[1], tx);
-        let b_top_h = lerp_u8(c.top_left[2], c.top_right[2], tx);
-        let a_top_h = lerp_u8(c.top_left[3], c.top_right[3], tx);
-        let r_bot_h = lerp_u8(c.bottom_left[0], c.bottom_right[0], tx);
-        let g_bot_h = lerp_u8(c.bottom_left[1], c.bottom_right[1], tx);
-        let b_bot_h = lerp_u8(c.bottom_left[2], c.bottom_right[2], tx);
-        let a_bot_h = lerp_u8(c.bottom_left[3], c.bottom_right[3], tx);
-        return egui::Color32::from_rgba_premultiplied(
-            lerp_u8(r_top_h, r_bot_h, ty),
-            lerp_u8(g_top_h, g_bot_h, ty),
-            lerp_u8(b_top_h, b_bot_h, ty),
-            lerp_u8(a_top_h, a_bot_h, ty),
-        );
-    }
-    // 2-point at angle. tx/ty are in normalized image space; project
-    // onto the gradient axis and lerp.
-    let theta = angle_deg.to_radians();
-    let dir_x = theta.sin();
-    let dir_y = theta.cos();
-    // Centre offset = position relative to (0.5, 0.5)
-    let dx = tx - 0.5;
-    let dy = ty - 0.5;
-    let proj = dx * dir_x + dy * dir_y;
-    let half_extent = (dir_x.abs() + dir_y.abs()) * 0.5;
-    let extent = (half_extent * 2.0).max(f32::EPSILON);
-    let t = ((proj + half_extent) / extent).clamp(0.0, 1.0);
-    egui::Color32::from_rgba_premultiplied(
-        lerp_u8(top[0], bottom[0], t),
-        lerp_u8(top[1], bottom[1], t),
-        lerp_u8(top[2], bottom[2], t),
-        lerp_u8(top[3], bottom[3], t),
-    )
 }
 
 // ────────────────────────── Sidebar primitives ──────────────────────────
@@ -1020,10 +705,10 @@ fn gen_section_header(
 
 fn category_icon(cat: &str) -> Icon {
     match cat {
-        "Solid Color" => Icon::Eyedropper,
-        "Gradient" => Icon::Sliders,
-        "Test Pattern" => Icon::GridFour,
-        "Countdown" => Icon::ArrowCounterClockwise,
+        "Backgrounds" => Icon::GridFour,
+        "Test" => Icon::Sliders,
+        "Timing" => Icon::ArrowCounterClockwise,
+        "Slate" => Icon::FilmSlate,
         _ => Icon::Star,
     }
 }

@@ -8129,6 +8129,73 @@ fn show_generator_editor(
             );
         }
 
+        klipp_core::GeneratorData::LivingGradient { a, b, angle_deg, drift_deg_per_sec, glow } => {
+            ui.label(egui::RichText::new("Living Gradient").size(11.0).color(theme.text_secondary));
+            ui.add_space(4.0);
+            let (mut a2, mut b2, mut angle, mut drift, mut glow2) = (a, b, angle_deg, drift_deg_per_sec, glow);
+            let mut changed = false;
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("Colours").strong().size(11.0));
+                let mut ca = egui::Color32::from_rgba_premultiplied(a2[0], a2[1], a2[2], a2[3]);
+                if ui.color_edit_button_srgba(&mut ca).changed() { a2 = [ca.r(), ca.g(), ca.b(), ca.a()]; changed = true; }
+                let mut cb = egui::Color32::from_rgba_premultiplied(b2[0], b2[1], b2[2], b2[3]);
+                if ui.color_edit_button_srgba(&mut cb).changed() { b2 = [cb.r(), cb.g(), cb.b(), cb.a()]; changed = true; }
+            });
+            if ui.add(egui::Slider::new(&mut angle, 0.0..=360.0).text("Angle").suffix("\u{00b0}")).changed() { changed = true; }
+            if ui.add(egui::Slider::new(&mut drift, -30.0..=30.0).text("Drift").suffix("\u{00b0}/s")).changed() { changed = true; }
+            if ui.add(egui::Slider::new(&mut glow2, 0.0..=1.0).text("Light")).changed() { changed = true; }
+            if changed {
+                cmds.push(AppCommand::UpdateGeneratorData {
+                    clip_id,
+                    data: klipp_core::GeneratorData::LivingGradient { a: a2, b: b2, angle_deg: angle, drift_deg_per_sec: drift, glow: glow2 },
+                });
+            }
+        }
+
+        klipp_core::GeneratorData::Grain { color, amount, size_px, speed } => {
+            ui.label(egui::RichText::new("Grain").size(11.0).color(theme.text_secondary));
+            ui.add_space(4.0);
+            let (mut col, mut amt, mut size, mut spd) = (color, amount, size_px, speed);
+            let mut changed = false;
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("Colour").strong().size(11.0));
+                let mut c = egui::Color32::from_rgba_premultiplied(col[0], col[1], col[2], col[3]);
+                if ui.color_edit_button_srgba(&mut c).changed() { col = [c.r(), c.g(), c.b(), c.a()]; changed = true; }
+            });
+            if ui.add(egui::Slider::new(&mut amt, 0.0..=1.0).text("Amount")).changed() { changed = true; }
+            if ui.add(egui::Slider::new(&mut size, 1.0..=8.0).text("Size").suffix(" px")).changed() { changed = true; }
+            if ui.add(egui::Slider::new(&mut spd, 0.0..=60.0).text("Speed").suffix(" fps")).changed() { changed = true; }
+            if changed {
+                cmds.push(AppCommand::UpdateGeneratorData {
+                    clip_id,
+                    data: klipp_core::GeneratorData::Grain { color: col, amount: amt, size_px: size, speed: spd },
+                });
+            }
+        }
+
+        klipp_core::GeneratorData::Placeholder { label, color } => {
+            ui.label(egui::RichText::new("Placeholder").size(11.0).color(theme.text_secondary));
+            ui.add_space(4.0);
+            let mut text = label.clone();
+            let mut col = color;
+            let mut changed = false;
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("Label").strong().size(11.0));
+                if ui.text_edit_singleline(&mut text).changed() { changed = true; }
+            });
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("Colour").strong().size(11.0));
+                let mut c = egui::Color32::from_rgba_premultiplied(col[0], col[1], col[2], col[3]);
+                if ui.color_edit_button_srgba(&mut c).changed() { col = [c.r(), c.g(), c.b(), c.a()]; changed = true; }
+            });
+            if changed {
+                cmds.push(AppCommand::UpdateGeneratorData {
+                    clip_id,
+                    data: klipp_core::GeneratorData::Placeholder { label: text, color: col },
+                });
+            }
+        }
+
         klipp_core::GeneratorData::Polygon { sides, color, outline_width_px, fill } => {
             ui.label(egui::RichText::new("Polygon").size(11.0).color(theme.text_secondary));
             ui.add_space(4.0);

@@ -32,6 +32,7 @@ klipp-nodes = { workspace = true }
 klipp-timeline = { workspace = true }
 klipp-media = { workspace = true }
 klipp-transitions = { workspace = true }
+klipp-compose = { workspace = true }
 klipp-validation = { workspace = true }
 klipp-audio = { workspace = true }
 klipp-plugin = { workspace = true }

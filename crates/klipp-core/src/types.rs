@@ -382,6 +382,15 @@ pub enum TimerFormat {
 pub enum GeneratorData {
     /// Solid color fill.
     SolidColor { color: [u8; 4] },
+    /// A background that lives: the gradient's angle turns slowly and
+    /// a soft light drifts across it.
+    LivingGradient { a: [u8; 4], b: [u8; 4], angle_deg: f32, drift_deg_per_sec: f32, glow: f32 },
+    /// Film grain on a colour: a texture plate for behind titles.
+    /// `amount` 0..1, `size_px` the grain size at 1080p, `speed` in
+    /// new grain frames per second.
+    Grain { color: [u8; 4], amount: f32, size_px: f32, speed: f32 },
+    /// A labelled card standing in for a shot that is not cut yet.
+    Placeholder { label: String, color: [u8; 4] },
     /// Two-point linear gradient (`top` → `bottom` along
     /// `angle_deg`) or, when `four_point` is `Some`, a 4-corner
     /// bilinear gradient that ignores `top` / `bottom` / `angle_deg`.

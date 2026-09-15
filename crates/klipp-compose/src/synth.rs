@@ -30,6 +30,33 @@ pub fn render_generator_with_slate(
         );
         return title_renderer.render(&title_data, w, h);
     }
+    if let klipp_core::GeneratorData::Placeholder { label, color } = gen_data {
+        let mut backdrop = klipp_core::generator::render_placeholder_backdrop(*color, w, h);
+        let text_box = klipp_timeline::TextBox {
+            text: if label.trim().is_empty() { "PLACEHOLDER".into() } else { label.clone() },
+            color: [255, 255, 255, 255],
+            font_name: "Inter".into(),
+            font_style: klipp_timeline::FontStyle::Bold,
+            font_size: ((h as f32) / 9.0).max(24.0),
+            alignment: klipp_timeline::TextAlignment::Center,
+            case_transform: klipp_timeline::TextCase::Uppercase,
+            tracking: 4.0,
+            ..Default::default()
+        };
+        let td = klipp_timeline::TitleData::single_text(text_box);
+        let text = title_renderer.render(&td, w, h);
+        // Straight-alpha text over the backdrop.
+        for (dst, src) in backdrop.chunks_exact_mut(4).zip(text.chunks_exact(4)) {
+            let a = src[3] as u32;
+            if a == 0 {
+                continue;
+            }
+            for c in 0..3 {
+                dst[c] = ((src[c] as u32 * a + dst[c] as u32 * (255 - a)) / 255) as u8;
+            }
+        }
+        return backdrop;
+    }
     klipp_core::generator::render_generator(gen_data, w, h, elapsed_secs, total_secs)
 }
 

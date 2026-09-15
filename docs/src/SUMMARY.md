@@ -26,6 +26,7 @@
 - [Working with Clips](./editing/clips.md)
 - [Magnetic Timeline](./editing/magnetic-timeline.md)
 - [Transitions](./editing/transitions.md)
+- [Generators](./editing/generators.md)
 - [Markers](./editing/markers.md)
 - [Titles](./editing/titles.md)
 - [Stabilization](./editing/stabilization.md)

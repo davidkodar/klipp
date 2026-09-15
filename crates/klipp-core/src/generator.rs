@@ -14,6 +14,13 @@ pub fn render_generator(
 ) -> Vec<u8> {
     match data {
         GeneratorData::SolidColor { color } => render_solid_color(*color, width, height),
+        GeneratorData::LivingGradient { a, b, angle_deg, drift_deg_per_sec, glow } => {
+            render_living_gradient(*a, *b, *angle_deg, *drift_deg_per_sec, *glow, width, height, elapsed_secs)
+        }
+        GeneratorData::Grain { color, amount, size_px, speed } => {
+            render_grain(*color, *amount, *size_px, *speed, width, height, elapsed_secs)
+        }
+        GeneratorData::Placeholder { color, .. } => render_placeholder_backdrop(*color, width, height),
         GeneratorData::Gradient { top, bottom, angle_deg, four_point } => {
             if let Some(corners) = four_point {
                 render_four_point_gradient(*corners, width, height)
@@ -255,6 +262,100 @@ pub fn render_still_frame(png_path: &std::path::Path, width: u32, height: u32) -
 }
 
 /// Render a solid color frame.
+/// A small integer hash to a value in -1..1, stable per (x, y, frame).
+fn grain_at(x: u32, y: u32, frame: u32) -> f32 {
+    let mut h = x.wrapping_mul(0x8da6_b343) ^ y.wrapping_mul(0xd816_3841) ^ frame.wrapping_mul(0xcb1a_b31f);
+    h ^= h >> 15;
+    h = h.wrapping_mul(0x2c1b_3c6d);
+    h ^= h >> 12;
+    h = h.wrapping_mul(0x297a_2d39);
+    h ^= h >> 15;
+    (h as f32 / u32::MAX as f32) * 2.0 - 1.0
+}
+
+/// The gradient with its angle turned by `drift` degrees per second,
+/// and a soft light of strength `glow` drifting across it on a slow
+/// ellipse, so a background behind a title is never a still.
+#[allow(clippy::too_many_arguments)]
+pub fn render_living_gradient(
+    a: [u8; 4],
+    b: [u8; 4],
+    angle_deg: f32,
+    drift_deg_per_sec: f32,
+    glow: f32,
+    width: u32,
+    height: u32,
+    elapsed_secs: f64,
+) -> Vec<u8> {
+    let t = elapsed_secs as f32;
+    let mut buf = render_gradient(a, b, angle_deg + drift_deg_per_sec * t, width, height);
+    if glow <= 0.0 {
+        return buf;
+    }
+    let (w, h) = (width as f32, height as f32);
+    let cx = w * (0.5 + 0.28 * (t * 0.33).cos());
+    let cy = h * (0.5 + 0.22 * (t * 0.21).sin());
+    let radius = w.max(h) * 0.45;
+    let inv = 1.0 / (2.0 * radius * radius);
+    for y in 0..height {
+        for x in 0..width {
+            let dx = x as f32 - cx;
+            let dy = y as f32 - cy;
+            let f = (-(dx * dx + dy * dy) * inv).exp() * glow;
+            if f < 0.002 {
+                continue;
+            }
+            let i = ((y * width + x) * 4) as usize;
+            for c in 0..3 {
+                let v = buf[i + c] as f32;
+                buf[i + c] = (v + (255.0 - v) * f * 0.6).min(255.0) as u8;
+            }
+        }
+    }
+    buf
+}
+
+/// Film grain over a colour: monochrome noise of `size_px` grains (at
+/// 1080p), `amount` deep, refreshed `speed` times a second.
+pub fn render_grain(color: [u8; 4], amount: f32, size_px: f32, speed: f32, width: u32, height: u32, elapsed_secs: f64) -> Vec<u8> {
+    let mut buf = render_solid_color(color, width, height);
+    let scale = (height as f32 / 1080.0).max(0.1);
+    let cell = (size_px * scale).max(1.0);
+    let frame = (elapsed_secs as f32 * speed.max(0.0)).floor() as u32;
+    let depth = amount.clamp(0.0, 1.0) * 110.0;
+    for y in 0..height {
+        let gy = (y as f32 / cell) as u32;
+        for x in 0..width {
+            let gx = (x as f32 / cell) as u32;
+            let n = grain_at(gx, gy, frame) * depth;
+            let i = ((y * width + x) * 4) as usize;
+            for c in 0..3 {
+                buf[i + c] = (buf[i + c] as f32 + n).clamp(0.0, 255.0) as u8;
+            }
+        }
+    }
+    buf
+}
+
+/// The stripes behind a placeholder's label: the colour and a darker
+/// diagonal hatch, so the card reads as "not the shot" at a glance.
+pub fn render_placeholder_backdrop(color: [u8; 4], width: u32, height: u32) -> Vec<u8> {
+    let mut buf = render_solid_color(color, width, height);
+    let period = (height as f32 / 1080.0 * 64.0).max(8.0);
+    for y in 0..height {
+        for x in 0..width {
+            let d = ((x as f32 + y as f32) / period).fract();
+            if d < 0.5 {
+                let i = ((y * width + x) * 4) as usize;
+                for c in 0..3 {
+                    buf[i + c] = (buf[i + c] as f32 * 0.78) as u8;
+                }
+            }
+        }
+    }
+    buf
+}
+
 pub fn render_solid_color(color: [u8; 4], width: u32, height: u32) -> Vec<u8> {
     let pixel_count = (width as usize) * (height as usize);
     let mut buf = Vec::with_capacity(pixel_count * 4);
@@ -981,5 +1082,41 @@ mod tests {
     #[test]
     fn timer_default_format_is_mm_ss() {
         assert_eq!(TimerFormat::default(), TimerFormat::MmSs);
+    }
+}
+
+#[cfg(test)]
+mod living_generators_tests {
+    use super::*;
+
+    fn luma_mean(px: &[u8]) -> f32 {
+        let n = (px.len() / 4) as f32;
+        px.chunks_exact(4).map(|p| 0.2126 * p[0] as f32 + 0.7152 * p[1] as f32 + 0.0722 * p[2] as f32).sum::<f32>() / n
+    }
+
+    #[test]
+    fn grain_is_noise_around_the_colour_and_changes_between_frames() {
+        let a = render_grain([100, 100, 100, 255], 0.5, 1.0, 24.0, 64, 36, 0.0);
+        let b = render_grain([100, 100, 100, 255], 0.5, 1.0, 24.0, 64, 36, 0.5);
+        assert_ne!(a, b, "a new grain frame each tick");
+        assert!((luma_mean(&a) - 100.0).abs() < 6.0, "grain averages to the colour");
+        let flat = render_grain([100, 100, 100, 255], 0.0, 1.0, 24.0, 64, 36, 0.0);
+        assert!(flat.chunks_exact(4).all(|p| p[0] == 100), "no amount, no grain");
+    }
+
+    #[test]
+    fn a_living_gradient_moves_and_its_light_brightens() {
+        let t0 = render_living_gradient([0, 0, 80, 255], [80, 0, 40, 255], 0.0, 10.0, 0.0, 64, 36, 0.0);
+        let t1 = render_living_gradient([0, 0, 80, 255], [80, 0, 40, 255], 0.0, 10.0, 0.0, 64, 36, 2.0);
+        assert_ne!(t0, t1, "the angle drifts");
+        let lit = render_living_gradient([0, 0, 80, 255], [80, 0, 40, 255], 0.0, 0.0, 0.6, 64, 36, 0.0);
+        assert!(luma_mean(&lit) > luma_mean(&t0), "the light adds to the picture");
+    }
+
+    #[test]
+    fn a_placeholder_backdrop_is_hatched() {
+        let px = render_placeholder_backdrop([100, 100, 100, 255], 64, 36);
+        let distinct: std::collections::HashSet<u8> = px.chunks_exact(4).map(|p| p[0]).collect();
+        assert_eq!(distinct.len(), 2, "the colour and its darker stripe");
     }
 }
