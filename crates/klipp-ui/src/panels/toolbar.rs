@@ -104,7 +104,7 @@ impl ToolbarPanel {
         // Scopes (icon 2). Renders in any workspace (FCP/Premiere
         // convention). Pure show/hide toggle — does not switch workspace.
         rx -= 32.0;
-        let scopes_active = state.show_scopes;
+        let scopes_active = state.scopes_shown();
         let resp = alloc_btn(ui, egui::pos2(rx, cy - 16.0), 32.0);
         let ic = icon_color(&resp, scopes_active, theme);
         let bg = icon_bg(&resp, scopes_active, theme);
@@ -112,7 +112,7 @@ impl ToolbarPanel {
         draw_scopes_icon(&painter, resp.rect, ic);
         styled_tooltip(&resp, theme, "Toggle Scopes", Some("V"));
         if resp.clicked() {
-            state.show_scopes = !state.show_scopes;
+            state.toggle_scopes();
         }
 
         // Roles & Lanes button — hidden until the underlying feature exists
@@ -916,15 +916,31 @@ impl ToolbarPanel {
                 ui.close_menu();
             }
             ui.separator();
-            let scopes_check = if state.show_scopes { "\u{2714} " } else { "  " };
+            let scopes_check = if state.scopes_shown() { "\u{2714} " } else { "  " };
             ui.menu_button(format!("{scopes_check}Scopes"), |ui| {
-                // Toggle scopes panel + select scope type
-                if ui.button("Waveform").clicked() { state.show_scopes = true; ui.close_menu(); }
-                if ui.button("Vectorscope").clicked() { state.show_scopes = true; ui.close_menu(); }
-                if ui.button("Histogram").clicked() { state.show_scopes = true; ui.close_menu(); }
-                if ui.button("Parade").clicked() { state.show_scopes = true; ui.close_menu(); }
+                // Pick a scope: shows it (dock, overlay or floating window)
+                // and makes it the one the dock and overlay draw.
+                use crate::state::ScopeMode;
+                for (label, mode) in [
+                    ("Waveform", ScopeMode::Waveform),
+                    ("Vectorscope", ScopeMode::Vectorscope),
+                    ("Histogram", ScopeMode::Histogram),
+                    ("Parade", ScopeMode::Parade),
+                ] {
+                    if ui.button(label).clicked() {
+                        state.scope_mode = mode;
+                        if !state.scopes_shown() {
+                            state.toggle_scopes();
+                        }
+                        ui.close_menu();
+                    }
+                }
                 ui.separator();
-                if ui.button("Hide Scopes").clicked() { state.show_scopes = false; ui.close_menu(); }
+                if ui.button("Hide Scopes").clicked() {
+                    state.show_scopes = false;
+                    state.scope_window.open = false;
+                    ui.close_menu();
+                }
                 ui.separator();
                 let overlay_check = if state.scope_overlay_mode { "\u{2714} " } else { "  " };
                 if ui.button(format!("{overlay_check}Overlay on Viewer")).clicked() { state.scope_overlay_mode = !state.scope_overlay_mode; ui.close_menu(); }

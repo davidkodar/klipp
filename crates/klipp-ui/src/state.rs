@@ -3164,6 +3164,32 @@ pub struct AttributesClipboard {
 }
 
 impl AppState {
+    /// The scope dock under the viewer exists only in the Color
+    /// workspace, where the timeline is hidden. Elsewhere it would take
+    /// the timeline's rows, so the dock flag is ignored there.
+    pub fn scopes_docked(&self) -> bool {
+        self.show_scopes && self.show_color_panel
+    }
+
+    /// Whether any scope is on screen: the Color dock, the overlay in the
+    /// viewer, or the floating window. The engine draws scopes only then.
+    pub fn scopes_shown(&self) -> bool {
+        self.scopes_docked()
+            || (self.show_scopes && self.scope_overlay_mode)
+            || self.scope_window.open
+    }
+
+    /// The scopes toggle (V, the toolbar icon, the View menu): the dock in
+    /// Color, the viewer overlay when that mode is chosen, otherwise the
+    /// floating window, which never steals space from the timeline.
+    pub fn toggle_scopes(&mut self) {
+        if self.show_color_panel || self.scope_overlay_mode {
+            self.show_scopes = !self.show_scopes;
+        } else {
+            self.scope_window.open = !self.scope_window.open;
+        }
+    }
+
     /// Returns true when any modal dialog, window, or popup menu is open.
     /// Used to block background interactions like skimming, timeline hover, etc.
     pub fn has_modal_open(&self) -> bool {
@@ -3701,6 +3727,9 @@ impl Default for AppState {
 }
 
 impl AppState {
+    /// The scope dock under the viewer exists only in the Color
+    /// workspace, where the timeline is hidden. Elsewhere it would take
+    /// the timeline's rows, so the dock flag is ignored there.
     pub fn sequence(&self) -> &Sequence {
         &self.sequences[self.active_sequence_idx]
     }
@@ -3847,6 +3876,23 @@ pub(crate) fn find_clip_cached<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_scopes_toggle_docks_only_in_color() {
+        let mut s = AppState { show_color_panel: false, scope_overlay_mode: false, ..Default::default() };
+        s.toggle_scopes();
+        assert!(s.scope_window.open && !s.show_scopes);
+        assert!(s.scopes_shown() && !s.scopes_docked());
+        s.toggle_scopes();
+        assert!(!s.scopes_shown());
+
+        s.show_color_panel = true;
+        s.toggle_scopes();
+        assert!(s.show_scopes && s.scopes_docked() && !s.scope_window.open);
+        // Leaving Color keeps the flag but the dock goes with the workspace.
+        s.show_color_panel = false;
+        assert!(!s.scopes_docked());
+    }
 
     #[test]
     fn subtitle_editor_state_default_is_inactive() {

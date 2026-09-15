@@ -24095,13 +24095,12 @@ impl KlippApp {
             {
                 self.state.viewer_overlays.focus_peaking = !self.state.viewer_overlays.focus_peaking;
             }
-            // V key (bare) — toggle scopes. Renders in any workspace, so
-            // this is a pure show/hide toggle independent of C (workspace
-            // switch). Matches FCP/Premiere convention.
+            // V key (bare) — toggle scopes: the dock in Color, the
+            // floating window elsewhere (the timeline keeps its rows).
             if !i.modifiers.ctrl && !i.modifiers.alt && !i.modifiers.shift
                 && i.key_pressed(egui::Key::V)
             {
-                self.state.show_scopes = !self.state.show_scopes;
+                self.state.toggle_scopes();
             }
             // Alt+S — toggle safe-areas overlay (action + title).
             if kb.is_action_pressed("toggle_safe_areas", i) {
@@ -24120,8 +24119,8 @@ impl KlippApp {
                     ScopeMode::Vectorscope => ScopeMode::Histogram,
                     ScopeMode::Histogram => ScopeMode::Waveform,
                 };
-                if !self.state.show_scopes {
-                    self.state.show_scopes = true;
+                if !self.state.scopes_shown() {
+                    self.state.toggle_scopes();
                 }
                 let mode_byte = match self.state.scope_mode {
                     crate::state::ScopeMode::Waveform => 0u8,
@@ -26469,7 +26468,7 @@ impl eframe::App for KlippApp {
         // restore) without per-site plumbing because we observe the
         // current state value once per UI frame.
         {
-            let visible = self.state.show_scopes;
+            let visible = self.state.scopes_shown();
             if self.last_sent_scopes_visible != Some(visible) {
                 let _ = self.cmd_tx.send(AppCommand::SetScopesVisible(visible));
                 self.last_sent_scopes_visible = Some(visible);
@@ -26876,7 +26875,7 @@ impl eframe::App for KlippApp {
                     self.state.program_skim_active = true;
                     // Only when a scope is there to show it: the engine
                     // draws every active scope for each skim frame.
-                    if self.state.show_scopes || self.state.scope_window.open {
+                    if self.state.scopes_shown() {
                         let _ = self.cmd_tx.send(AppCommand::RenderScopesForFrame {
                             rgba,
                             width,
@@ -31252,7 +31251,7 @@ impl KlippApp {
                     // the source-viewer half empty below the viewer row.
                     let center_w = right_resizer_rect.min.x - left_resizer_rect.max.x;
                     let in_color_ws = self.state.show_color_panel;
-                    let show_scopes_bar = self.state.show_scopes;
+                    let show_scopes_bar = self.state.scopes_docked();
                     let show_nodes_bar = in_color_ws && self.state.show_node_strip;
                     let toggle_bar_h = toggle_bar_rect.height();
                     let scopes_h = scopes_rect.height();
@@ -32372,7 +32371,7 @@ impl KlippApp {
         // theme's `bg_void` (`#0a0a0c`, a near-but-not-pure black that
         // reads as a visible halo against the FFmpeg scope texture's
         // true `#000000` interior).
-        if self.state.show_scopes && !color_tools_bottom {
+        if show_scopes_bar && !color_tools_bottom {
             let bottom_rect = egui::Rect::from_min_max(
                 egui::pos2(center_left, toggle_bar_rect.min.y - theme::RESIZER_THICKNESS),
                 egui::pos2(center_left + center_w, main_bottom),
@@ -32413,7 +32412,7 @@ impl KlippApp {
                 ui, all_cmds, center_left, center_w, scopes_h,
                 main_top, main_bottom, toggle_bar_h, toggle_bar_rect, &theme,
             );
-        } else if self.state.show_scopes {
+        } else if show_scopes_bar {
             self.render_color_ws_bottom_scopes(
                 ui, center_left, center_w, scopes_h, main_top, main_bottom,
                 toggle_bar_h, show_nodes_bar, toggle_bar_rect, bottom_scope_cursor,
@@ -32421,7 +32420,7 @@ impl KlippApp {
         }
 
         // Scope settings dropdown
-        if self.state.scope_settings_open && self.state.show_scopes {
+        if self.state.scope_settings_open && show_scopes_bar {
             self.render_color_ws_scope_settings_dropdown(ctx, ui, toggle_bar_rect, &theme);
         }
 

@@ -103,7 +103,7 @@ pub(crate) fn compute_layout(
     // Export too. The Color-only [Scopes/Nodes] toggle bar and the node
     // strip stay gated to Color since they're Color-specific tooling.
     let in_color_ws = state.show_color_panel;
-    let show_scopes_bar = state.show_scopes;
+    let show_scopes_bar = state.scopes_docked();
     let show_nodes_bar = in_color_ws && state.show_node_strip;
 
     // In Color workspace: allocate bottom space for toggle + scopes + nodes
@@ -260,6 +260,22 @@ mod tests {
         let state = AppState::default();
         let rects = compute_layout(test_full_rect(), &layout, &state);
         assert!(rects.viewer_rect.min.y >= rects.toolbar_rect.max.y);
+    }
+
+    #[test]
+    fn scopes_outside_color_leave_the_timeline_alone() {
+        // The dock flag survives a layout restore; in Edit it must not
+        // take rows from the timeline.
+        let layout = LayoutState::default();
+        let mut state = AppState { show_color_panel: false, show_scopes: false, ..Default::default() };
+        let plain = compute_layout(test_full_rect(), &layout, &state);
+        state.show_scopes = true;
+        let docked = compute_layout(test_full_rect(), &layout, &state);
+        assert_eq!(docked.scopes_rect.height(), 0.0);
+        assert_eq!(docked.timeline_rect, plain.timeline_rect);
+        state.show_color_panel = true;
+        let color = compute_layout(test_full_rect(), &layout, &state);
+        assert!(color.scopes_rect.height() > 0.0);
     }
 
     #[test]

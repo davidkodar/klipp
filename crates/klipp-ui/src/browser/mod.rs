@@ -1159,7 +1159,7 @@ impl BrowserPanel {
                         // can't collide regardless of cursor edge cases.
                         let text_galley = ui.painter().layout_no_wrap(
                             display_label.clone(),
-                            egui::FontId::proportional(10.0),
+                            egui::FontId::proportional(crate::theme::type_scale::BODY),
                             theme.text_dim,
                         );
                         let icon_size = 12.0;
@@ -1198,7 +1198,7 @@ impl BrowserPanel {
                                         ui.add(
                                             egui::Label::new(
                                                 egui::RichText::new(&display_label)
-                                                    .size(10.0)
+                                                    .size(crate::theme::type_scale::BODY)
                                                     .color(text_color),
                                             )
                                             .selectable(false),
@@ -4250,7 +4250,7 @@ impl BrowserPanel {
 
     fn render_media_filter_toolbar(&mut self, ui: &mut egui::Ui, theme: &KlippTheme, state: &AppState) {
         ui.horizontal(|ui| {
-            ui.label(egui::RichText::new("Filter:").size(10.0).color(theme.text_dim));
+            ui.label(egui::RichText::new("Filter:").size(crate::theme::type_scale::BODY).color(theme.text_dim));
             let saved_name = |id: &str| state.media_pool.smart_bins.iter().find(|b| b.id == id).map(|b| b.name.clone());
             let filter_label = match &self.smart_bin_filter {
                 SmartBinFilter::None => "All Media".to_string(),
@@ -4311,7 +4311,7 @@ impl BrowserPanel {
             }
 
             ui.add_space(8.0);
-            ui.label(egui::RichText::new("Rating:").size(10.0).color(theme.text_dim));
+            ui.label(egui::RichText::new("Rating:").size(crate::theme::type_scale::BODY).color(theme.text_dim));
             let rating_label = match self.min_rating_filter {
                 None => "Any".to_string(),
                 Some(1) => "1+ \u{2605}".to_string(),
@@ -4344,7 +4344,7 @@ impl BrowserPanel {
             // dropdown stays as small as the actual diversity in the
             // pool.
             ui.add_space(8.0);
-            ui.label(egui::RichText::new("Metadata:").size(10.0).color(theme.text_dim));
+            ui.label(egui::RichText::new("Metadata:").size(crate::theme::type_scale::BODY).color(theme.text_dim));
             let pool_snapshot: Vec<_> = state.media_pool.all().cloned().collect();
             let values = media_tab::enumerate_metadata_filter_values(&pool_snapshot);
             let (codecs, fps_pairs, cameras) = (&values.codecs, &values.fps, &values.cameras);

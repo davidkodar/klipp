@@ -521,7 +521,7 @@ pub fn build(state: &AppState) -> Vec<PaletteEntry> {
         }),
         enabled: state.selected_clip.is_some() });
     e.push(PaletteEntry { label: Cow::Borrowed("Toggle Scopes"), shortcut: Cow::Borrowed("V"),
-        action: PaletteAction::ToggleState(|s| s.show_scopes = !s.show_scopes), enabled: true });
+        action: PaletteAction::ToggleState(|s| s.toggle_scopes()), enabled: true });
     e.push(PaletteEntry { label: Cow::Borrowed("Scope: Toggle Low-Pass Filter"), shortcut: Cow::Borrowed(""),
         action: PaletteAction::ToggleState(|s| s.scope_low_pass = !s.scope_low_pass), enabled: true });
     e.push(PaletteEntry { label: Cow::Borrowed("Scope: Toggle Bloom"), shortcut: Cow::Borrowed(""),
