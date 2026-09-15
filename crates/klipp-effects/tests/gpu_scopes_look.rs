@@ -18,10 +18,13 @@ fn srgb_to_linear(c: f32) -> f32 {
 fn draw_the_scopes_of_a_picture() {
     let (Ok(input), Ok(out_dir)) = (std::env::var("KLIPP_SCOPE_LOOK_IN"), std::env::var("KLIPP_SCOPE_LOOK_OUT")) else { return };
     let Some(mut gpu) = GpuEffectsPipeline::new() else { return };
-    let img = image::open(&input).expect("a readable picture").to_rgba8();
+    let picture = image::open(&input).expect("a readable picture");
+    let img = picture.to_rgba8();
     let (w, h) = img.dimensions();
     let bytes = img.into_raw();
-    let linear: Vec<f32> = bytes.iter().enumerate().map(|(i, b)| if i % 4 == 3 { 1.0 } else { srgb_to_linear(*b as f32 / 255.0) }).collect();
+    // From 16 bits, so a picture with levels between 8-bit codes keeps them.
+    let wide = picture.to_rgba16().into_raw();
+    let linear: Vec<f32> = wide.iter().enumerate().map(|(i, v)| if i % 4 == 3 { 1.0 } else { srgb_to_linear(*v as f32 / 65535.0) }).collect();
     let luma = [0.2126, 0.7152, 0.0722];
     let (out_w, out_h) = (1024u32, 512u32);
     let jobs = [
