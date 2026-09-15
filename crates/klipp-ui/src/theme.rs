@@ -533,11 +533,11 @@ pub const STATUSBAR_HEIGHT: f32 = 26.0;
 pub const TIMELINE_MIN_H: f32 = 60.0;
 pub const TIMELINE_DEFAULT_H: f32 = 210.0;
 pub const TIMELINE_MAX_H_PCT: f32 = 0.85;
-pub const BROWSER_DEFAULT_W: f32 = 270.0;
-pub const BROWSER_MIN_W: f32 = 80.0;
+pub const BROWSER_DEFAULT_W: f32 = 300.0;
+pub const BROWSER_MIN_W: f32 = 220.0;
 pub const BROWSER_MAX_W: f32 = 900.0;
-pub const INSPECTOR_DEFAULT_W: f32 = 230.0;
-pub const INSPECTOR_MIN_W: f32 = 120.0;
+pub const INSPECTOR_DEFAULT_W: f32 = 320.0;
+pub const INSPECTOR_MIN_W: f32 = 260.0;
 pub const INSPECTOR_MAX_W: f32 = 800.0;
 pub const RESIZER_THICKNESS: f32 = 5.0;
 /// Height of the transport chrome below each viewer's video area

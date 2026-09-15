@@ -81,13 +81,13 @@ pub fn show(ui: &mut egui::Ui, state: &AppState, theme: &KlippTheme) {
             let (mode_label, mode_color, tooltip) = match state.edit_mode {
                 klipp_timeline::magnetic::EditMode::Insert => (
                     "INSERT",
-                    theme.accent,
+                    theme.text_secondary,
                     "Insert mode — dropping a clip pushes existing clips later \
                      in time to make room. Toggle from the toolbar's INS button.",
                 ),
                 klipp_timeline::magnetic::EditMode::Overwrite => (
                     "OVERWRITE",
-                    theme.marker_info,
+                    theme.text_secondary,
                     "Overwrite mode — dropping a clip replaces whatever sits \
                      under the playhead. Toggle from the toolbar's OVR button.",
                 ),

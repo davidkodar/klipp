@@ -2216,11 +2216,16 @@ impl ViewerPanel {
                 ViewerMode::Source => state.source_playback == PlaybackState::Playing,
                 ViewerMode::Program => state.playback == PlaybackState::Playing,
             };
-            let bg = if enabled { theme.accent } else { theme.accent_dim };
-            ui.painter().rect_filled(play_rect, play_size / 2.0, bg);
+            // No block of colour under the play glyph: the glyph is the
+            // control, lit when it can be pressed, the field only under
+            // the pointer.
+            if enabled && resp.hovered() {
+                ui.painter().rect_filled(play_rect, crate::theme::radius::CONTROL, theme.bg_hover);
+            }
             let play_icon = if is_playing { Icon::Pause } else { Icon::Play };
             let icon_rect = egui::Rect::from_center_size(play_rect.center(), egui::vec2(18.0, 18.0));
-            play_icon.image(18.0).tint(theme.text_on_accent).paint_at(ui, icon_rect);
+            let tint = if enabled { theme.text_primary } else { theme.text_dim };
+            play_icon.image(18.0).tint(tint).paint_at(ui, icon_rect);
             let clicked = resp.clicked();
             resp.on_hover_text("Play / Pause (Space)");
             if clicked && enabled {

@@ -263,28 +263,21 @@ impl ToolbarPanel {
                         klipp_timeline::magnetic::EditMode::Insert => "INS",
                         klipp_timeline::magnetic::EditMode::Overwrite => "OVR",
                     };
-                    let mode_color = match state.edit_mode {
-                        klipp_timeline::magnetic::EditMode::Insert => egui::Color32::from_rgb(232, 160, 32),
-                        klipp_timeline::magnetic::EditMode::Overwrite => egui::Color32::from_rgb(60, 120, 220),
-                    };
+                    // The mode as a quiet outlined label: the word says
+                    // which, no colour needed.
                     let (rect, resp) = ui.allocate_exact_size(
-                        egui::vec2(36.0, 20.0),
+                        egui::vec2(36.0, crate::theme::control::COMPACT),
                         egui::Sense::click(),
                     );
-                    let bg = if resp.hovered() {
-                        mode_color.linear_multiply(0.35)
-                    } else {
-                        mode_color.linear_multiply(0.25)
-                    };
-                    let border = mode_color.linear_multiply(0.6);
-                    ui.painter().rect_filled(rect, 2.0, bg);
-                    ui.painter().rect_stroke(rect, 2.0, egui::Stroke::new(1.0_f32, border));
+                    let bg = if resp.hovered() { theme.bg_hover } else { theme.bg_panel };
+                    ui.painter().rect_filled(rect, crate::theme::radius::CONTROL, bg);
+                    ui.painter().rect_stroke(rect, crate::theme::radius::CONTROL, egui::Stroke::new(1.0_f32, theme.border_light));
                     ui.painter().text(
                         rect.center(),
                         egui::Align2::CENTER_CENTER,
                         mode_text,
-                        egui::FontId::monospace(10.0),
-                        mode_color,
+                        egui::FontId::monospace(crate::theme::type_scale::CAPTION),
+                        theme.text_secondary,
                     );
                     let tip = if matches!(state.edit_mode, klipp_timeline::magnetic::EditMode::Insert) {
                         "Edit Mode: Insert (W to toggle)"

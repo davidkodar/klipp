@@ -24,7 +24,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState, theme: &KlippTheme, cmds: &
                 egui::Sense::click(),
             );
             let (bg, fg) = if active {
-                (theme.accent, theme.bg_void)
+                (theme.accent_subtle, theme.accent)
             } else if resp.hovered() {
                 (theme.bg_hover, theme.text_secondary)
             } else {
@@ -47,7 +47,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState, theme: &KlippTheme, cmds: &
         // View menu — stay in sync without parallel mutation paths).
         let snap_active = state.snap.master;
         let (snap_bg, snap_fg) = if snap_active {
-            (theme.accent, theme.bg_void)
+            (theme.accent_subtle, theme.accent)
         } else {
             (egui::Color32::TRANSPARENT, theme.text_dim)
         };
@@ -108,7 +108,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState, theme: &KlippTheme, cmds: &
         // ── Skimming toggle ──
         let skim_active = state.skimming_enabled;
         let (skim_bg, skim_fg) = if skim_active {
-            (theme.accent, theme.bg_void)
+            (theme.accent_subtle, theme.accent)
         } else {
             (egui::Color32::TRANSPARENT, theme.text_dim)
         };
