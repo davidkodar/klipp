@@ -2256,6 +2256,14 @@ impl KlippApp {
     /// the frame (or an empty one on failure) clears it.
     fn request_skim_frame(&mut self, media_id: MediaId, time_secs: f64, target: klipp_core::ViewerMode) {
         let Some(item) = self.state.media_pool.get(&media_id) else { return };
+        // The frame last asked for is the one on screen. A pointer resting
+        // on a clip keeps the UI redrawing, and every redraw used to ask
+        // again: each repeat was a fresh seek that could land on a
+        // neighbouring frame, so the viewer flickered.
+        let frame = klipp_engine::skim::frame_index(time_secs, item.fps.as_f64());
+        if self.state.skim_last_requested == Some((media_id, frame, target)) {
+            return;
+        }
         let (decode_path, fallback_path) = match item.skim_file.as_ref().filter(|p| p.exists()) {
             Some(skim) => (skim.clone(), Some(item.path.clone())),
             None => (item.path.clone(), None),
@@ -2265,6 +2273,7 @@ impl KlippApp {
         let max_height = self.prefs.playback.skim_resolution.max(source_height.min(1080));
         self.state.skim_decode_in_flight = true;
         self.state.skim_decode_started_at = Some(std::time::Instant::now());
+        self.state.skim_last_requested = Some((media_id, frame, target));
         self.skim_worker.request(klipp_engine::skim::SkimJob {
             path: decode_path,
             fallback_path,
@@ -26487,11 +26496,15 @@ impl eframe::App for KlippApp {
                     // refresh back to the committed playhead when the
                     // mouse leaves the timeline / filmstrip.
                     self.state.program_skim_active = true;
-                    let _ = self.cmd_tx.send(AppCommand::RenderScopesForFrame {
-                        rgba,
-                        width,
-                        height,
-                    });
+                    // Only when a scope is there to show it: the engine
+                    // draws every active scope for each skim frame.
+                    if self.state.show_scopes || self.state.scope_window.open {
+                        let _ = self.cmd_tx.send(AppCommand::RenderScopesForFrame {
+                            rgba,
+                            width,
+                            height,
+                        });
+                    }
                 }
                 klipp_core::ViewerMode::Source => {
                     let image = egui::ColorImage::from_rgba_unmultiplied(
@@ -27108,6 +27121,8 @@ impl eframe::App for KlippApp {
             || self.state.skim_audio_session.is_some()
             || self.state.program_skim_active;
         if (!self.state.browser_skim_active_this_frame && any_skim_state_alive) || lost_focus {
+            // The skim is over: coming back to the same frame asks for it again.
+            self.state.skim_last_requested = None;
             if self.state.browser_skim_media_id.is_some() {
                 // Route the cleared handle through the deferred-drop ring —
                 // the current frame's submit may still reference its ID,
@@ -28519,6 +28534,10 @@ impl KlippApp {
                 AppEvent::BrowserSkimFrameReady { media_id, rgba, width, height, target } => {
                     if !rgba.is_empty() && width > 0 && height > 0 {
                         self.state.browser_skim_pending = Some((media_id, rgba, width, height, target));
+                    } else {
+                        // Nothing was shown for it: the next request for
+                        // this frame is not a repeat.
+                        self.state.skim_last_requested = None;
                     }
                     // Always reset — flag must never stay stuck regardless of decode outcome
                     self.state.skim_decode_in_flight = false;

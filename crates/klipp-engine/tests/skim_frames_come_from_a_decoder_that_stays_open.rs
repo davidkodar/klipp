@@ -56,3 +56,27 @@ fn the_most_recently_used_decoders_are_kept() {
     let f = skim.frame_at(&path, 0, 0.4, 1080, Duration::from_secs(2)).unwrap();
     assert!(!f.reused_decoder, "the first file's decoder was evicted by the second");
 }
+
+#[test]
+fn a_resting_position_is_answered_with_the_frame_it_shows_without_a_seek() {
+    let Some(path) = common::hevc_ramp() else { return };
+    let mut skim = SkimDecoders::new(1);
+    let mut at = |secs: f64| {
+        let f = skim.frame_at(&path, 0, secs, 1080, Duration::from_secs(2)).expect("a skim frame");
+        (mean_r(&f.rgba), f.repeated)
+    };
+    // 25 fps: frame 10 is shown from 0.40 s until 0.44 s.
+    let (frame10, _) = at(0.41);
+    let (again, repeated) = at(0.41);
+    assert!(repeated && again == frame10, "the same position again is the frame already delivered, without a seek");
+    let (later, repeated_later) = at(0.43);
+    assert!(repeated_later && later == frame10, "a later time inside the same frame is that frame too");
+    let (frame11, repeated11) = at(0.44);
+    assert!(!repeated11 && frame11 > frame10, "the next frame's time is the next frame: {frame11:.1} vs {frame10:.1}");
+
+    // Between two frames from a decoder that has not delivered either: the
+    // frame shown at that time, not the one after it.
+    let mut fresh = SkimDecoders::new(1);
+    let f = fresh.frame_at(&path, 0, 0.43, 1080, Duration::from_secs(2)).expect("a skim frame");
+    assert!((mean_r(&f.rgba) - frame10).abs() < 2.0, "0.43 s is frame 10: {:.1} vs {frame10:.1}", mean_r(&f.rgba));
+}

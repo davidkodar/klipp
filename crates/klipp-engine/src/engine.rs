@@ -2700,6 +2700,10 @@ impl PlaybackEngine {
                 // A scope was just drawn: an owed timeline redraw waits its
                 // interval like any other, rather than landing over a skim.
                 self.last_scope_render = std::time::Instant::now();
+                // And what was owed is paid: the scopes show the frame on
+                // screen. Left owed, the paused tick rendered the parked
+                // frame over the skim a skim cycle later, again and again.
+                self.scope_render_owed = false;
             }
             AppCommand::SetScopeTapNode { clip_id, node_id } => {
                 self.inspect_clip = Some(clip_id);

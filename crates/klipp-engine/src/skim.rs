@@ -26,6 +26,31 @@ pub struct SkimFrame {
     pub height: u32,
     /// Whether the decoder that made it was already open.
     pub reused_decoder: bool,
+    /// Whether it is the frame this decoder last delivered, answered again
+    /// without a seek because the time asked for is still inside it.
+    pub repeated: bool,
+}
+
+/// The frame of a `fps` stream shown at `secs`: the one whose display
+/// interval contains it. A pointer resting between two frames' start times
+/// is on the earlier one.
+pub fn frame_index(secs: f64, fps: f64) -> i64 {
+    (secs * fps + 1e-6).floor() as i64
+}
+
+/// Slack for comparing a time with a frame's timestamp, which the
+/// container rounds.
+const PTS_SLACK: f64 = 1e-4;
+
+/// The frame a decoder last delivered, and the span of time it is shown
+/// for.
+struct Delivered {
+    from: f64,
+    to: f64,
+    max_height: u32,
+    rgba: Vec<u8>,
+    width: u32,
+    height: u32,
 }
 
 struct Entry {
@@ -33,6 +58,7 @@ struct Entry {
     rotation: i32,
     decoder: VideoDecoder,
     last_used: Instant,
+    last: Option<Delivered>,
 }
 
 /// The open skim decoders, most recently used kept.
@@ -71,41 +97,81 @@ impl SkimDecoders {
         let reused = self.ensure_open(path, rotation)?;
         let entry = self.open.last_mut().expect("just ensured");
         entry.last_used = Instant::now();
+        let secs = secs.max(0.0);
+
+        // Still inside the frame last delivered: that is the frame shown
+        // now. Every repeat of a position used to seek again, and a seek
+        // lands on whichever neighbour the read-ahead left, so a pointer
+        // resting on a clip flickered between frames.
+        if let Some(d) = entry.last.as_ref().filter(|d| d.max_height == max_height && d.from <= secs + PTS_SLACK && secs + PTS_SLACK < d.to) {
+            return Ok(SkimFrame { rgba: d.rgba.clone(), width: d.width, height: d.height, reused_decoder: true, repeated: true });
+        }
         let dec = &entry.decoder;
 
-        let epoch = dec.seek(secs.max(0.0));
+        let epoch = dec.seek(secs);
         dec.resume();
         let deadline = Instant::now() + timeout;
-        let frame = loop {
+        // The frame shown at `secs` is the latest at or before it, and it
+        // is shown until the next one starts. The decode thread begins a
+        // seek up to 50 ms before its target, so the first frame to arrive
+        // is not necessarily it: frames are taken while they start at or
+        // before `secs`, and the first one after ends the search. A target
+        // before the file's first frame gets that frame.
+        let mut chosen = None;
+        let mut shown_until = f64::INFINITY;
+        loop {
+            let mut found = false;
             {
                 let mut q = dec.frame_queue().lock().unwrap_or_else(|e| e.into_inner());
-                let mut taken = None;
                 while let Some(f) = q.front() {
-                    if f.seek_epoch < epoch {
+                    let (frame_epoch, eof, pts) = (f.seek_epoch, f.is_eof, f.pts_secs());
+                    if frame_epoch < epoch {
                         q.pop();
                         continue;
                     }
-                    if f.is_eof {
+                    if eof {
+                        if chosen.is_some() {
+                            found = true;
+                            break;
+                        }
                         q.pop();
                         dec.pause();
                         return Err(format!("no frame at {secs:.3}s: the file ends before it"));
                     }
-                    taken = q.pop();
+                    if pts <= secs + PTS_SLACK {
+                        chosen = q.pop();
+                        continue;
+                    }
+                    if chosen.is_none() {
+                        chosen = q.pop();
+                    } else {
+                        // Left queued: the next position may want it.
+                        shown_until = pts;
+                    }
+                    found = true;
                     break;
                 }
-                if let Some(f) = taken {
-                    break f;
-                }
+            }
+            if found {
+                break;
             }
             if Instant::now() >= deadline {
+                if chosen.is_some() {
+                    break;
+                }
                 dec.pause();
                 return Err(format!("no frame at {secs:.3}s within {timeout:?}"));
             }
             std::thread::sleep(Duration::from_millis(1));
-        };
+        }
         // Read ahead stays queued for the next position; the thread need
         // not run meanwhile.
         dec.pause();
+        let frame = chosen.expect("a frame was chosen");
+        let shown_from = frame.pts_secs().min(secs);
+        if !shown_until.is_finite() {
+            shown_until = shown_from.max(frame.pts_secs()) + 1.0 / 30.0;
+        }
 
         if frame.hdr.is_some() {
             return Err("an HDR frame; skim HDR media from its tone-mapped transcode".into());
@@ -120,7 +186,10 @@ impl SkimDecoders {
         while h > max_height.max(2) && w >= 2 && h >= 2 {
             (rgba, w, h) = halve_rgba(&rgba, w, h);
         }
-        Ok(SkimFrame { rgba, width: w, height: h, reused_decoder: reused })
+        if let Some(e) = self.open.last_mut() {
+            e.last = Some(Delivered { from: shown_from, to: shown_until, max_height, rgba: rgba.clone(), width: w, height: h });
+        }
+        Ok(SkimFrame { rgba, width: w, height: h, reused_decoder: reused, repeated: false })
     }
 
     /// Make `path`'s decoder the last entry, opening it if needed.
@@ -136,7 +205,7 @@ impl SkimDecoders {
             self.open.remove(0);
         }
         let decoder = VideoDecoder::open(path, rotation).map_err(|e| format!("opening {}: {e}", path.display()))?;
-        self.open.push(Entry { path: path.to_path_buf(), rotation, decoder, last_used: Instant::now() });
+        self.open.push(Entry { path: path.to_path_buf(), rotation, decoder, last_used: Instant::now(), last: None });
         Ok(false)
     }
 }
@@ -216,7 +285,7 @@ impl<T: Clone + Send + 'static> SkimWorker<T> {
                         let source = job.fallback_path.as_deref().unwrap_or(&job.path);
                         tracing::debug!("skim: decoder path failed for {:?} @ {:.3}s ({e}); software fallback", source, job.secs);
                         crate::generate_thumbnail_at_size_with_rotation(source, job.secs, job.max_height.max(240), job.rotation)
-                            .map(|(rgba, width, height)| SkimFrame { rgba, width, height, reused_decoder: false })
+                            .map(|(rgba, width, height)| SkimFrame { rgba, width, height, reused_decoder: false, repeated: false })
                     });
                 tracing::trace!("skim: {:?} @ {:.3}s in {:.1} ms", job.path.file_name().unwrap_or_default(), job.secs, t0.elapsed().as_secs_f64() * 1000.0);
                 deliver(job, result);
@@ -235,7 +304,16 @@ impl<T: Clone + Send + 'static> SkimWorker<T> {
 
 #[cfg(test)]
 mod tests {
-    use super::halve_rgba;
+    use super::{frame_index, halve_rgba};
+
+    #[test]
+    fn a_time_belongs_to_the_frame_shown_at_it() {
+        assert_eq!(frame_index(18.122, 30.0), 543, "18.122 s is inside the frame shown from 18.100 s");
+        assert_eq!(frame_index(18.1334, 30.0), 544);
+        assert_eq!(frame_index(0.40, 25.0), 10, "a frame's own start time is that frame");
+        assert_eq!(frame_index(0.4399, 25.0), 10);
+        assert_eq!(frame_index(0.44, 25.0), 11);
+    }
 
     #[test]
     fn halving_averages_each_block() {

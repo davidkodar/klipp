@@ -6096,17 +6096,6 @@ impl TimelinePanel {
                             }
                         }
 
-                        // Auto-restart video skim if hover is still active and no
-                        // decode is in flight (single-frame hover misses, e.g.
-                        // after zoom changes the clip's screen rect).
-                        if has_skim_file && !state.skim_decode_in_flight {
-                            cmds.push(AppCommand::BrowserSkimFrame {
-                                media_id,
-                                time_secs: skim_time,
-                                target: klipp_core::ViewerMode::Program,
-                            });
-                        }
-
                         // Poster fallback intentionally omitted — see matching
                         // comment above the V1 filmstrip hover path. Filmstrip
                         // hover targets the Program Viewer; falling back to a

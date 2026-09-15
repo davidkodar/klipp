@@ -1381,6 +1381,11 @@ pub struct AppState {
     /// through the queue so the eventual response routes to the correct
     /// viewer.
     pub skim_queued_request: Option<(MediaId, f64, klipp_core::ViewerMode)>,
+    /// `(media_id, frame, target)` of the skim frame last asked for: the
+    /// frame on screen while a skim rests on it. A resting pointer redraws
+    /// the UI, and a request for the frame already shown is not sent
+    /// again. Cleared when the skim ends or a frame fails.
+    pub skim_last_requested: Option<(MediaId, i64, klipp_core::ViewerMode)>,
     /// Set to true each frame if hover skim is active (used to clear texture when mouse leaves)
     pub browser_skim_active_this_frame: bool,
     /// Sticky flag: `true` once a skim with `target = Program` has
@@ -3269,6 +3274,7 @@ impl Default for AppState {
             skim_decode_in_flight: false,
             skim_decode_started_at: None,
             skim_queued_request: None,
+            skim_last_requested: None,
             browser_skim_active_this_frame: false,
             program_skim_active: false,
             program_skim_revert_deadline: None,
