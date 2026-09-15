@@ -777,7 +777,7 @@ impl LaunchScreen {
                     );
                     ui.painter().rect_filled(bar_rect, 4.0, color);
                     // Mini timeline strip
-                    draw_timeline_strip(ui, bar_rect, &rp.name);
+                    draw_timeline_strip(ui, bar_rect, &rp.name, theme.role_dialogue);
 
                     // Reserve space for the right-aligned timestamp
                     // FIRST so the name + meta can be truncated to
@@ -1026,7 +1026,7 @@ impl LaunchScreen {
                 ui.painter().rect_filled(
                     thumb_rect,
                     egui::Rounding { nw: 7.0, ne: 7.0, sw: 0.0, se: 0.0 },
-                    egui::Color32::from_rgb(18, 18, 18),
+                    theme.bg_void,
                 );
                 ui.painter().image(
                     tex.id(),
@@ -1085,7 +1085,7 @@ impl LaunchScreen {
             0.0,
             egui::Color32::from_rgba_unmultiplied(0, 0, 0, 150),
         );
-        draw_timeline_strip(ui, strip_rect, &rp.name);
+        draw_timeline_strip(ui, strip_rect, &rp.name, theme.role_dialogue);
 
         // Playhead indicator on timeline strip
         let playhead_x = strip_rect.min.x + strip_rect.width() * 0.35;
@@ -1207,7 +1207,7 @@ impl LaunchScreen {
         }
         ui.separator();
         if ui
-            .button(egui::RichText::new("Delete Project").color(egui::Color32::from_rgb(200, 60, 60)))
+            .button(egui::RichText::new("Delete Project").color(ui.visuals().error_fg_color))
             .clicked()
         {
             cmds.push(AppCommand::DeleteProject { path: rp.path.clone() });
@@ -1374,7 +1374,7 @@ fn hsv_to_rgb(h: f32, s: f32, v: f32) -> (u8, u8, u8) {
 }
 
 /// Draw a simulated timeline strip with colored bars inside a rect.
-fn draw_timeline_strip(ui: &mut egui::Ui, rect: egui::Rect, name: &str) {
+fn draw_timeline_strip(ui: &mut egui::Ui, rect: egui::Rect, name: &str, audio: egui::Color32) {
     let mut hash: u32 = 7;
     for b in name.bytes() {
         hash = hash.wrapping_mul(31).wrapping_add(b as u32);
@@ -1412,7 +1412,7 @@ fn draw_timeline_strip(ui: &mut egui::Ui, rect: egui::Rect, name: &str) {
         let w = (total_w * 0.2 + total_w * 0.3 * frac).min(total_w - (x - rect.min.x));
         if w < 4.0 { break; }
 
-        let green = egui::Color32::from_rgba_unmultiplied(60, 140, 90, 180);
+        let green = audio.gamma_multiply(0.7);
         let bar_rect = egui::Rect::from_min_size(
             egui::pos2(x, audio_y),
             egui::vec2(w - 1.0, bar_h),

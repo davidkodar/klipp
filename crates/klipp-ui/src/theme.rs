@@ -380,6 +380,11 @@ impl KlippTheme {
             Color32::from_rgb(0x1e, 0x2f, 0x4a)
         };
         visuals.selection.stroke = egui::Stroke::new(1.0_f32, self.accent);
+        // egui's own status colours follow the theme's markers, so a
+        // destructive menu item or a warning label reads in the palette.
+        visuals.error_fg_color = self.marker_error;
+        visuals.warn_fg_color = self.marker_warning;
+        visuals.hyperlink_color = self.accent;
 
         visuals.window_stroke = egui::Stroke::new(1.0_f32, self.border);
         visuals.window_shadow = egui::Shadow::NONE;

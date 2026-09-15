@@ -901,11 +901,11 @@ fn paint_title_asset_badge(painter: &egui::Painter, thumb_rect: egui::Rect, them
 /// click sorts by that column, a second click flips the order, and a
 /// right-click chooses which columns the list shows.
 fn render_column_header(ui: &mut egui::Ui, theme: &KlippTheme, columns: &mut Vec<Field>, sort_by: &mut SortBy, sort_ascending: &mut bool) {
-    let header_h = 20.0;
+    let header_h = crate::theme::control::COMPACT;
     let (rect, resp) = ui.allocate_exact_size(egui::vec2(ui.available_width(), header_h), egui::Sense::click());
     let painter = ui.painter_at(rect);
-    painter.rect_filled(rect, 0.0, theme.bg_deep);
-    let font = egui::FontId::proportional(10.0);
+    painter.rect_filled(rect, 0.0, theme.bg_panel_alt);
+    let font = egui::FontId::proportional(crate::theme::type_scale::CAPTION);
     let cy = rect.center().y;
     let pointer = ui.input(|i| i.pointer.interact_pos());
     let mut x = rect.min.x + LIST_TEXT_X;
@@ -915,7 +915,7 @@ fn render_column_header(ui: &mut egui::Ui, theme: &KlippTheme, columns: &mut Vec
         let col_rect = egui::Rect::from_min_size(egui::pos2(x, rect.min.y), egui::vec2(w, header_h));
         let under = pointer.is_some_and(|p| col_rect.contains(p));
         let sorted = *sort_by == *col;
-        let colour = if sorted { theme.accent } else if under && resp.hovered() { theme.text_primary } else { theme.text_dim };
+        let colour = if sorted { theme.accent } else if under && resp.hovered() { theme.text_primary } else { theme.text_secondary };
         let title = if sorted { format!("{} {}", col.label(), if *sort_ascending { "\u{25B4}" } else { "\u{25BE}" }) } else { col.label().to_string() };
         painter.text(egui::pos2(x + 2.0, cy), egui::Align2::LEFT_CENTER, truncate_to_width(&title, font.clone(), w - 6.0, ui), font.clone(), colour);
         if resp.clicked() && under {
@@ -932,7 +932,7 @@ fn render_column_header(ui: &mut egui::Ui, theme: &KlippTheme, columns: &mut Vec
         }
     }
     resp.context_menu(|ui| {
-        ui.label(egui::RichText::new("Columns").size(10.0).color(theme.text_dim));
+        ui.label(egui::RichText::new("Columns").size(crate::theme::type_scale::CAPTION).color(theme.text_dim));
         for f in Field::COLUMNS {
             let mut on = columns.contains(&f);
             if ui.checkbox(&mut on, f.label()).changed() {
@@ -975,11 +975,11 @@ fn render_list_view(
         if let Some(ref mut edit_text) = creating_bin {
             let resp = ui.horizontal(|ui| {
                 ui.add_space(10.0);
-                ui.add(Icon::Folder.image(10.0).tint(theme.text_dim));
+                ui.add(Icon::Folder.image(12.0).tint(theme.text_dim));
                 let text_resp = ui.add(
                     egui::TextEdit::singleline(edit_text)
-                        .desired_width(120.0)
-                        .font(egui::FontId::proportional(10.0)),
+                        .desired_width(140.0)
+                        .font(egui::FontId::proportional(crate::theme::type_scale::CONTROL)),
                 );
                 if text_resp.lost_focus() {
                     let name = edit_text.trim().to_string();
@@ -1112,7 +1112,7 @@ fn render_list_view(
             };
             ui.painter().rect_filled(row_rect, 0.0, bg);
 
-            // Selected: 2px amber left border
+            // Selected: a 2 px accent bar on the left edge
             if is_selected {
                 ui.painter().rect_filled(
                     egui::Rect::from_min_size(row_rect.min, egui::vec2(2.0, row_h)),
@@ -1161,7 +1161,7 @@ fn render_list_view(
                 };
                 ui.painter().image(tex.id(), thumb_rect, uv_rect, egui::Color32::WHITE);
             } else {
-                ui.painter().rect_filled(thumb_rect, 2.0, theme.bg_raised);
+                ui.painter().rect_filled(thumb_rect, crate::theme::radius::CONTROL, theme.bg_raised);
             }
 
             // Offline badge: dim the thumbnail and overlay an OFFLINE pill.
@@ -1169,7 +1169,7 @@ fn render_list_view(
                 paint_offline_badge(ui.painter(), thumb_rect, theme);
             }
 
-            // Usage indicators: source-loaded border + on-timeline dot.
+            // Usage indicators: source-loaded border + on-timeline bar.
             paint_usage_badges(
                 ui.painter(),
                 thumb_rect,
@@ -1184,7 +1184,8 @@ fn render_list_view(
 
             // Info: filename (single line, truncated) + metadata
             let text_x = thumb_rect.max.x + 8.0;
-            let text_max_w = row_rect.max.x - text_x - 24.0; // leave space for used dot
+            let text_max_w = row_rect.max.x - text_x - 8.0;
+            let name_font = egui::FontId::proportional(crate::theme::type_scale::CONTROL);
 
             // Filename — truncate to fit. Subclips are prefixed with "↳ "
             // so they read as a child of the item above them.
@@ -1193,17 +1194,12 @@ fn render_list_view(
             } else {
                 item.display_name.clone()
             };
-            let display_name = truncate_to_width(
-                &raw_name,
-                egui::FontId::proportional(13.0),
-                text_max_w,
-                ui,
-            );
+            let display_name = truncate_to_width(&raw_name, name_font.clone(), text_max_w, ui);
             ui.painter().text(
-                egui::pos2(text_x, row_rect.min.y + 10.0),
+                egui::pos2(text_x, row_rect.min.y + 11.0),
                 egui::Align2::LEFT_TOP,
                 &display_name,
-                egui::FontId::proportional(13.0),
+                name_font,
                 theme.text_primary,
             );
 
@@ -1211,24 +1207,22 @@ fn render_list_view(
             // clipped to the row.
             let row_painter = ui.painter_at(row_rect);
             let meta_y = row_rect.min.y + 30.0;
+            let meta_font = egui::FontId::monospace(crate::theme::type_scale::CAPTION);
             let mut cx = row_rect.min.x + LIST_TEXT_X;
             for (col, text) in columns.iter().zip(&item.columns) {
                 let w = col.column_width();
                 if !text.is_empty() {
-                    let colour = if *col == Field::Rating { theme.accent } else { theme.text_dim };
+                    let colour = if *col == Field::Rating { theme.text_secondary } else { theme.text_dim };
                     row_painter.text(
                         egui::pos2(cx + 2.0, meta_y),
                         egui::Align2::LEFT_TOP,
-                        truncate_to_width(text, egui::FontId::monospace(10.0), w - 6.0, ui),
-                        egui::FontId::monospace(10.0),
+                        truncate_to_width(text, meta_font.clone(), w - 6.0, ui),
+                        meta_font.clone(),
                         colour,
                     );
                 }
                 cx += w;
             }
-
-            // (Used indicator removed: the red "in use on timeline" bar on
-            // the thumbnail conveys this state already.)
 
             // Tooltip with extended metadata on hover
             resp.clone().on_hover_ui(|ui| {
@@ -1340,11 +1334,11 @@ fn render_grid_view(
         if let Some(ref mut edit_text) = creating_bin {
             ui.horizontal(|ui| {
                 ui.add_space(10.0);
-                ui.add(Icon::Folder.image(10.0).tint(theme.text_dim));
+                ui.add(Icon::Folder.image(12.0).tint(theme.text_dim));
                 let text_resp = ui.add(
                     egui::TextEdit::singleline(edit_text)
-                        .desired_width(120.0)
-                        .font(egui::FontId::proportional(10.0)),
+                        .desired_width(140.0)
+                        .font(egui::FontId::proportional(crate::theme::type_scale::CONTROL)),
                 );
                 if text_resp.lost_focus() {
                     let name = edit_text.trim().to_string();
@@ -1722,11 +1716,11 @@ fn render_bin_header(
             let old_clone = old_name.clone();
             let resp = ui.horizontal(|ui| {
                 ui.add_space(10.0);
-                ui.add(Icon::Folder.image(10.0).tint(theme.text_dim));
+                ui.add(Icon::Folder.image(12.0).tint(theme.text_dim));
                 let text_resp = ui.add(
                     egui::TextEdit::singleline(edit_text)
-                        .desired_width(120.0)
-                        .font(egui::FontId::proportional(10.0)),
+                        .desired_width(140.0)
+                        .font(egui::FontId::proportional(crate::theme::type_scale::CONTROL)),
                 );
                 // Commit on lost focus (Enter, click away, Escape)
                 if text_resp.lost_focus() {
@@ -1749,16 +1743,14 @@ fn render_bin_header(
     }
 
     // Normal header
+    // A caption-height group row: folder glyph, name in small caps.
     let resp = ui.horizontal(|ui| {
+        ui.set_min_height(crate::theme::control::COMPACT);
         ui.add_space(10.0);
-        ui.label(
-            egui::RichText::new("\u{1F4C1}")
-                .size(10.0)
-                .color(theme.text_dim),
-        );
+        ui.add(Icon::Folder.image(12.0).tint(theme.text_dim));
         ui.label(
             egui::RichText::new(bin_label.to_uppercase())
-                .size(10.0)
+                .size(crate::theme::type_scale::CAPTION)
                 .strong()
                 .color(theme.text_secondary),
         );
