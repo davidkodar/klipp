@@ -274,6 +274,9 @@ pub struct MediaItem {
     /// Notes, favourite stretches and rejected ones the editor marked.
     #[serde(default)]
     pub markers: Vec<klipp_core::MediaMarker>,
+    /// Which part of a split take this is, when it is one.
+    #[serde(default)]
+    pub span: Option<klipp_core::ClipSpan>,
     /// Path to skim-optimised file (all-keyframe transcode for instant seeking)
     #[serde(default)]
     pub skim_file: Option<PathBuf>,
@@ -407,6 +410,7 @@ impl MediaItem {
             log: Default::default(),
             synced_audio: None,
             markers: Vec::new(),
+            span: None,
         }
     }
 
@@ -583,6 +587,7 @@ mod subclip_tests {
             log: Default::default(),
             synced_audio: None,
             markers: Vec::new(),
+            span: None,
         }
     }
 
@@ -762,6 +767,7 @@ mod effective_rotation_tests {
             log: Default::default(),
             synced_audio: None,
             markers: Vec::new(),
+            span: None,
         }
     }
 
@@ -873,6 +879,7 @@ pub fn merge_reprobed(old: &MediaItem, fresh: &mut MediaItem) {
     fresh.log = old.log.clone();
     fresh.synced_audio = old.synced_audio.clone();
     fresh.markers = old.markers.clone();
+    fresh.span = old.span;
     if same_file_as_probed(old, fresh) {
         fresh.proxy_path = old.proxy_path.clone();
         fresh.proxy_ready = old.proxy_ready;
@@ -943,6 +950,7 @@ impl MediaItem {
             log: Default::default(),
             synced_audio: None,
             markers: Vec::new(),
+            span: None,
         }
     }
 }

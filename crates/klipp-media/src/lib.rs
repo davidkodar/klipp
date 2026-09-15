@@ -33,6 +33,7 @@ pub mod audio_cache;
 pub mod disk_cache;
 pub mod exif_read;
 pub mod field;
+pub mod card;
 pub mod smart_bin;
 pub mod sidecar;
 mod item;

@@ -1371,6 +1371,7 @@ impl KlippApp {
                         log: Default::default(),
                         synced_audio: None,
                         markers: Vec::new(),
+                        span: None,
                     };
 
                     // Auto-detect log format from metadata
@@ -1407,7 +1408,9 @@ impl KlippApp {
                             klipp_media::describe_secs(claimed),
                         ));
                     }
+                    let span_path = media_item.path.clone();
                     self.state.media_pool.add(media_item);
+                    self.refresh_spans_beside(&span_path);
                     // Imports stay off the timeline-edit undo stack (FCP /
                     // Premiere convention). Mixing them in caused two
                     // surprises: every drop-from-FILES tab took two ctrl+z
@@ -3544,6 +3547,40 @@ impl KlippApp {
     /// and so does appending a silent file, and the next clip with sound
     /// then goes in the hole rather than under itself. Found by doing
     /// exactly that on a real timeline.
+    /// Tell the parts of split takes in the folder `path` is in: every
+    /// clip there is placed in its run, or taken out of one it no longer
+    /// belongs to.
+    fn refresh_spans_beside(&mut self, path: &std::path::Path) {
+        let dir = path.parent().map(std::path::Path::to_path_buf);
+        let here: Vec<klipp_media::MediaItem> = self
+            .state
+            .media_pool
+            .all()
+            .filter(|m| matches!(m.kind, klipp_media::MediaItemKind::File) && m.path.parent().map(std::path::Path::to_path_buf) == dir)
+            .cloned()
+            .collect();
+        let refs: Vec<&klipp_media::MediaItem> = here.iter().collect();
+        let groups = klipp_media::card::spanned_groups(&refs);
+        let mut spans: std::collections::HashMap<klipp_core::MediaId, klipp_core::ClipSpan> = std::collections::HashMap::new();
+        for group in &groups {
+            for (i, id) in group.iter().enumerate() {
+                spans.insert(*id, klipp_core::ClipSpan { first: group[0], index: i as u32 + 1, count: group.len() as u32 });
+            }
+        }
+        for item in here {
+            let span = spans.get(&item.id).copied();
+            if let Some(m) = self.state.media_pool.get_mut(&item.id) {
+                if m.span != span {
+                    m.span = span;
+                    self.state.dirty = true;
+                }
+            }
+        }
+        if !groups.is_empty() {
+            tracing::info!("{} split take(s) beside {:?}", groups.len(), path.file_name().unwrap_or_default());
+        }
+    }
+
     /// A favourite or rejected stretch of the source clip: between its
     /// in and out points, or the whole clip when none are set.
     fn source_range_marker(&self, kind: klipp_core::MediaMarkerKind) -> Option<klipp_core::MediaMarker> {
@@ -10983,7 +11020,9 @@ impl KlippApp {
                 }
                 AppCommand::ImportMediaFolder { ref directory } => {
                     let media_extensions = klipp_core::media_extensions::all_media_extensions();
+                    let card = klipp_media::card::card_kind(directory);
                     let mut imported = 0u32;
+                    let mut skipped = 0u32;
                     for entry in walkdir::WalkDir::new(directory)
                         .into_iter()
                         .filter_map(|e| e.ok())
@@ -10991,6 +11030,12 @@ impl KlippApp {
                         if entry.file_type().is_file() {
                             if let Some(ext) = entry.path().extension().and_then(|e| e.to_str()) {
                                 if media_extensions.iter().any(|me| me.eq_ignore_ascii_case(ext)) {
+                                    // A card's proxies, thumbnails and
+                                    // indexes are not clips.
+                                    if klipp_media::card::is_card_side_file(entry.path()) {
+                                        skipped += 1;
+                                        continue;
+                                    }
                                     let media_id = klipp_core::MediaId::new();
                                     let _ = self.cmd_tx.send(AppCommand::LoadMediaFile {
                                         path: entry.path().to_path_buf(),
@@ -11002,9 +11047,12 @@ impl KlippApp {
                         }
                     }
                     if imported > 0 {
-                        self.state.toast.show(format!("Importing {imported} files from folder"));
+                        self.state.toast.show(match card {
+                            Some(kind) => format!("Importing {imported} clips from a {kind}"),
+                            None => format!("Importing {imported} files from folder"),
+                        });
                     }
-                    tracing::info!("Folder import: {} files from {:?}", imported, directory);
+                    tracing::info!("Folder import: {} files from {:?} ({} card extras skipped)", imported, directory, skipped);
                     true
                 }
                 AppCommand::AppendClip { media_id } => {
@@ -11894,8 +11942,11 @@ impl KlippApp {
                         log: Default::default(),
                         synced_audio: None,
                         markers: Vec::new(),
+                        span: None,
                     };
+                    let span_path = media_item.path.clone();
                     self.state.media_pool.add(media_item);
+                    self.refresh_spans_beside(&span_path);
                     // Imports stay off the timeline-edit undo stack (FCP /
                     // Premiere convention). Mixing them in caused two
                     // surprises: every drop-from-FILES tab took two ctrl+z
@@ -34548,6 +34599,7 @@ fn build_whoosh_media_item(
         log: Default::default(),
         synced_audio: None,
         markers: Vec::new(),
+        span: None,
     }
 }
 
@@ -38744,6 +38796,7 @@ mod insert_audio_media_clip_tests {
             log: Default::default(),
             synced_audio: None,
             markers: Vec::new(),
+            span: None,
         }
     }
 

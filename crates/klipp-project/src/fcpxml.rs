@@ -431,6 +431,7 @@ mod tests {
             log: Default::default(),
             synced_audio: None,
             markers: Vec::new(),
+            span: None,
         }
     }
 

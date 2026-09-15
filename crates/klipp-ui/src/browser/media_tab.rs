@@ -279,6 +279,15 @@ pub fn show(
             kind: m.kind.clone(),
             columns: columns.iter().map(|c| c.text(m)).collect(),
             synced_audio: m.synced_audio.is_some(),
+            span_parts: m.span.map(|sp| {
+                let mut parts: Vec<(u32, MediaId)> = state.media_pool.all().filter_map(|o| o.span.filter(|os| os.first == sp.first).map(|os| (os.index, o.id))).collect();
+                parts.sort_by_key(|(i, _)| *i);
+                parts.into_iter().map(|(_, id)| id).collect()
+            }).unwrap_or_default(),
+            display_name: match m.span {
+                Some(sp) => format!("{} \u{00B7} {}", m.filename, sp.label()),
+                None => m.filename.clone(),
+            },
         })
         .collect();
 
@@ -1180,9 +1189,9 @@ fn render_list_view(
             // Filename — truncate to fit. Subclips are prefixed with "↳ "
             // so they read as a child of the item above them.
             let raw_name = if is_subclip_row {
-                format!("\u{21B3} {}", item.filename)
+                format!("\u{21B3} {}", item.display_name)
             } else {
-                item.filename.clone()
+                item.display_name.clone()
             };
             let display_name = truncate_to_width(
                 &raw_name,
@@ -1271,7 +1280,7 @@ fn render_list_view(
                 if state.selected_media_ids.len() > 1 && state.selected_media_ids.contains(&item.id) {
                     show_multi_context_menu(ui, &state.selected_media_ids, sync_pair_of(state), cmds);
                 } else {
-                    show_context_menu(ui, item.id, &item.path, item.offline, &item.filename, item.has_zone, item.parent_media_id.is_some(), item.synced_audio, cmds);
+                    show_context_menu(ui, item.id, &item.path, item.offline, &item.filename, item.has_zone, item.parent_media_id.is_some(), item.synced_audio, &item.span_parts, cmds);
                 }
             });
         }
@@ -1675,7 +1684,7 @@ fn render_grid_view(
                 if state.selected_media_ids.len() > 1 && state.selected_media_ids.contains(&item.id) {
                     show_multi_context_menu(ui, &state.selected_media_ids, sync_pair_of(state), cmds);
                 } else {
-                    show_context_menu(ui, item.id, &item.path, item.offline, &item.filename, item.has_zone, item.parent_media_id.is_some(), item.synced_audio, cmds);
+                    show_context_menu(ui, item.id, &item.path, item.offline, &item.filename, item.has_zone, item.parent_media_id.is_some(), item.synced_audio, &item.span_parts, cmds);
                 }
             });
 
@@ -1956,6 +1965,11 @@ struct MediaRow {
     columns: Vec<String>,
     /// A separate recording is paired with the clip.
     synced_audio: bool,
+    /// The parts of the split take this clip belongs to, in order, when
+    /// it is one.
+    span_parts: Vec<MediaId>,
+    /// The name with its part, "C0001.MP4 · part 1 of 3", for display.
+    display_name: String,
 }
 
 fn show_context_menu(
@@ -1967,8 +1981,18 @@ fn show_context_menu(
     has_zone: bool,
     is_subclip: bool,
     synced_audio: bool,
+    span_parts: &[MediaId],
     cmds: &mut Vec<AppCommand>,
 ) {
+    if span_parts.len() >= 2 && ui.button(format!("Add All {} Parts to Timeline", span_parts.len()))
+        .on_hover_text("The take the camera split into numbered files, laid back to back.")
+        .clicked()
+    {
+        for id in span_parts {
+            cmds.push(AppCommand::ImportMediaLinked { media_id: *id, on_new_tracks: false });
+        }
+        ui.close_menu();
+    }
     if synced_audio && ui.button("Remove Synced Audio").on_hover_text("The clip goes back to its own sound.").clicked() {
         cmds.push(AppCommand::ClearSyncedAudio { video_id: media_id });
         ui.close_menu();
