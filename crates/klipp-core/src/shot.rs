@@ -109,9 +109,38 @@ pub fn civil_to_epoch(y: i64, m: u32, d: u32, h: u32, min: u32, s: u32) -> Optio
     u64::try_from(secs).ok()
 }
 
+/// The civil date and time of Unix seconds, in UTC: (year, month, day,
+/// hour, minute). The inverse of [`civil_to_epoch`].
+pub fn epoch_to_civil(secs: u64) -> (i64, u32, u32, u32, u32) {
+    let days = (secs / 86_400) as i64;
+    let rem = secs % 86_400;
+    // Civil from days, after Howard Hinnant.
+    let z = days + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
+    let y = if m <= 2 { y + 1 } else { y };
+    (y, m, d, (rem / 3600) as u32, ((rem % 3600) / 60) as u32)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unix_seconds_round_trip_through_the_civil_date() {
+        assert_eq!(epoch_to_civil(0), (1970, 1, 1, 0, 0));
+        assert_eq!(epoch_to_civil(1_710_498_600), (2024, 3, 15, 10, 30));
+        for secs in [951_782_400u64, 1_000_000_000, 1_704_067_199, 4_102_444_800] {
+            let (y, m, d, h, mi) = epoch_to_civil(secs);
+            assert_eq!(civil_to_epoch(y, m, d, h, mi, (secs % 60) as u32), Some(secs));
+        }
+    }
 
     #[test]
     fn the_exposure_reads_on_one_line_from_what_is_known() {

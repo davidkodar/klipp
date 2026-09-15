@@ -405,6 +405,9 @@ pub struct FileBrowserPrefs {
     /// User-pinned favorite folders shown in the Files-tab bookmarks bar.
     #[serde(default)]
     pub pinned_folders: Vec<std::path::PathBuf>,
+    /// The media list's columns, in order.
+    #[serde(default = "default_media_list_columns")]
+    pub media_list_columns: Vec<klipp_media::Field>,
     /// Enable hover-skim previews for VIDEO files in the file browser.
     /// When off, hovering a video row leaves the cached poster thumbnail
     /// in place — no per-frame decode happens. Off-by-default users:
@@ -508,6 +511,7 @@ impl Default for FileBrowserPrefs {
             file_sort_ascending: true,
             file_type_filter: Default::default(),
             pinned_folders: Vec::new(),
+            media_list_columns: default_media_list_columns(),
             file_browser_video_skim: true,
             file_browser_audio_skim: true,
             show_recent_files: true,
@@ -1817,6 +1821,10 @@ impl Default for ExternalToolsPrefs {
             round_trip_reload: true,
         }
     }
+}
+
+fn default_media_list_columns() -> Vec<klipp_media::Field> {
+    klipp_media::Field::DEFAULT_COLUMNS.to_vec()
 }
 
 #[cfg(test)]

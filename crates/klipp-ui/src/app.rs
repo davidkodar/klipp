@@ -807,6 +807,7 @@ impl KlippApp {
         app.browser.browser_view_mode = app.prefs.editing.media_browser_view_mode;
         app.browser.file_thumb_size = app.prefs.file_browser.file_thumb_size;
         app.browser.files_sort_by = app.prefs.file_browser.file_sort_by;
+        app.browser.list_columns = app.prefs.file_browser.media_list_columns.clone();
         app.browser.files_sort_ascending = app.prefs.file_browser.file_sort_ascending;
         app.browser.group_by_date = app.prefs.file_browser.group_by_date;
         app.browser.visible_columns = app.prefs.file_browser.visible_columns.clone();
@@ -31730,6 +31731,10 @@ impl KlippApp {
             }
             if self.browser.file_thumb_size != self.prefs.file_browser.file_thumb_size {
                 self.prefs.file_browser.file_thumb_size = self.browser.file_thumb_size;
+                let _ = self.prefs.save();
+            }
+            if self.browser.list_columns != self.prefs.file_browser.media_list_columns {
+                self.prefs.file_browser.media_list_columns = self.browser.list_columns.clone();
                 let _ = self.prefs.save();
             }
             if self.browser.files_sort_by != self.prefs.file_browser.file_sort_by

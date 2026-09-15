@@ -3,16 +3,13 @@ use crate::state::AppState;
 use crate::theme::KlippTheme;
 use klipp_core::{AppCommand, MediaId};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SortBy {
-    Name,
-    Duration,
-    Rating,
-    Codec,
-    FileSize,
-    DateAdded,
-    ShootDate,
-}
+/// What the pool is sorted by: any sortable [`Field`].
+pub type SortBy = klipp_media::Field;
+use klipp_media::Field;
+
+/// Where a list row's text starts: after the 12 px margin and the 80 px
+/// thumbnail. The column header lines up with it.
+const LIST_TEXT_X: f32 = 12.0 + 80.0 + 8.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub enum BrowserViewMode {
@@ -81,25 +78,44 @@ pub fn passes_metadata_filter(
         }
         MetadataFilter::Camera(c) => item.camera_make.as_deref()
             .is_some_and(|m| m.eq_ignore_ascii_case(c)),
+        MetadataFilter::Lens(l) => item.shot.lens.as_deref().is_some_and(|m| m.eq_ignore_ascii_case(l)),
+        MetadataFilter::Resolution(w, h) => item.resolution.width == *w && item.resolution.height == *h,
+        MetadataFilter::Reel(r) => item.reel().is_some_and(|m| m.eq_ignore_ascii_case(r)),
+        MetadataFilter::Scene(sc) => item.log.scene.eq_ignore_ascii_case(sc),
+        MetadataFilter::Keyword(k) => item.log.keywords.iter().any(|m| m.eq_ignore_ascii_case(k)),
+        MetadataFilter::GoodTake => item.log.good_take,
     }
 }
 
-/// Walk the media pool and return distinct values for each metadata
-/// dimension, sorted alphabetically / numerically. Empty / None values
-/// are skipped (a clip with no recorded camera-make doesn't show up
-/// in the camera dropdown). Used by the toolbar to populate the
-/// metadata filter dropdown.
-///
-/// Returns a tuple of (codecs, fps_pairs, cameras). Codec strings
-/// preserve their stored case for display but are matched
-/// case-insensitively in `passes_metadata_filter`.
-pub fn enumerate_metadata_filter_values(
-    items: &[klipp_media::MediaItem],
-) -> (Vec<String>, Vec<(u32, u32)>, Vec<String>) {
+/// The distinct values the pool holds for each filterable field, for
+/// the metadata dropdown: a project with one camera offers one camera.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct MetadataValues {
+    pub codecs: Vec<String>,
+    pub fps: Vec<(u32, u32)>,
+    pub cameras: Vec<String>,
+    pub lenses: Vec<String>,
+    pub resolutions: Vec<(u32, u32)>,
+    pub reels: Vec<String>,
+    pub scenes: Vec<String>,
+    pub keywords: Vec<String>,
+    pub any_good_take: bool,
+}
+
+/// Walk the media pool for the distinct values of every filterable
+/// field, each list sorted. Empty values are skipped: a clip with no
+/// recorded camera does not put a blank in the camera list.
+pub fn enumerate_metadata_filter_values(items: &[klipp_media::MediaItem]) -> MetadataValues {
     use std::collections::BTreeSet;
     let mut codecs: BTreeSet<String> = BTreeSet::new();
     let mut fps_set: BTreeSet<(u32, u32)> = BTreeSet::new();
     let mut cameras: BTreeSet<String> = BTreeSet::new();
+    let mut lenses: BTreeSet<String> = BTreeSet::new();
+    let mut resolutions: BTreeSet<(u32, u32)> = BTreeSet::new();
+    let mut reels: BTreeSet<String> = BTreeSet::new();
+    let mut scenes: BTreeSet<String> = BTreeSet::new();
+    let mut keywords: BTreeSet<String> = BTreeSet::new();
+    let mut any_good_take = false;
     for item in items {
         if !item.video_codec.is_empty() {
             codecs.insert(item.video_codec.clone());
@@ -109,13 +125,39 @@ pub fn enumerate_metadata_filter_values(
         if !(item.fps.num == 1 && item.fps.den == 1) {
             fps_set.insert((item.fps.num, item.fps.den));
         }
-        if let Some(make) = &item.camera_make {
-            if !make.is_empty() {
-                cameras.insert(make.clone());
-            }
+        if let Some(make) = item.camera_make.as_deref().filter(|m| !m.is_empty()) {
+            cameras.insert(make.to_string());
         }
+        if let Some(lens) = item.shot.lens.as_deref().filter(|l| !l.is_empty()) {
+            lenses.insert(lens.to_string());
+        }
+        if item.resolution.width > 0 && item.resolution.height > 0 {
+            resolutions.insert((item.resolution.width, item.resolution.height));
+        }
+        if let Some(reel) = item.reel().filter(|r| !r.is_empty()) {
+            reels.insert(reel.to_string());
+        }
+        if !item.log.scene.is_empty() {
+            scenes.insert(item.log.scene.clone());
+        }
+        for k in &item.log.keywords {
+            keywords.insert(k.clone());
+        }
+        any_good_take |= item.log.good_take;
     }
-    (codecs.into_iter().collect(), fps_set.into_iter().collect(), cameras.into_iter().collect())
+    let mut resolutions: Vec<(u32, u32)> = resolutions.into_iter().collect();
+    resolutions.sort_by_key(|(w, h)| std::cmp::Reverse(w * h));
+    MetadataValues {
+        codecs: codecs.into_iter().collect(),
+        fps: fps_set.into_iter().collect(),
+        cameras: cameras.into_iter().collect(),
+        lenses: lenses.into_iter().collect(),
+        resolutions,
+        reels: reels.into_iter().collect(),
+        scenes: scenes.into_iter().collect(),
+        keywords: keywords.into_iter().collect(),
+        any_good_take,
+    }
 }
 
 /// Format an (fps_num, fps_den) pair as a human-readable label —
@@ -144,6 +186,7 @@ pub fn show(
     sort_ascending: &mut bool,
     selected_bin: &mut Option<String>,
     view_mode: &mut BrowserViewMode,
+    columns: &mut Vec<Field>,
     renaming_bin: &mut Option<(String, String)>,
     creating_bin: &mut Option<String>,
     scroll_to_media_id: &mut Option<MediaId>,
@@ -205,18 +248,12 @@ pub fn show(
             id: m.id,
             filename: m.filename.clone(),
             duration: m.duration,
-            codec: m.video_codec.clone(),
             _resolution: m.resolution,
             rating: m.rating,
             _proxy_ready: m.proxy_ready,
             path: m.path.clone(),
             bin: m.bin.clone(),
             fps: m.fps,
-            file_size_bytes: m.file_size_bytes,
-            added_at: m.added_at,
-            shoot_date: m.media_created_at
-                .or(m.file_modified_at)
-                .unwrap_or(m.added_at),
             color_label: m.color_label,
             resolution: m.resolution,
             camera: {
@@ -234,18 +271,18 @@ pub fn show(
             parent_media_id: m.parent_media_id,
             has_zone: m.default_source_in.is_some() && m.default_source_out.is_some(),
             kind: m.kind.clone(),
+            columns: columns.iter().map(|c| c.text(m)).collect(),
         })
         .collect();
 
-    // Sort
-    match sort_by {
-        SortBy::Name => items.sort_by_key(|a| a.filename.to_lowercase()),
-        SortBy::Duration => items.sort_by_key(|a| a.duration.value),
-        SortBy::Rating => items.sort_by_key(|a| std::cmp::Reverse(a.rating)),
-        SortBy::Codec => items.sort_by(|a, b| a.codec.cmp(&b.codec)),
-        SortBy::FileSize => items.sort_by_key(|a| a.file_size_bytes),
-        SortBy::DateAdded => items.sort_by_key(|a| a.added_at),
-        SortBy::ShootDate => items.sort_by_key(|a| a.shoot_date),
+    // Sort by the chosen field's key; stars descending by default, as a
+    // rating sort is read.
+    let keys: std::collections::HashMap<MediaId, klipp_media::SortKey> =
+        state.media_pool.all().map(|m| (m.id, sort_by.sort_key(m))).collect();
+    let missing = klipp_media::SortKey::Text(String::new());
+    items.sort_by(|a, b| keys.get(&a.id).unwrap_or(&missing).cmp(keys.get(&b.id).unwrap_or(&missing)));
+    if *sort_by == SortBy::Rating {
+        items.reverse();
     }
     if !*sort_ascending {
         items.reverse();
@@ -281,7 +318,7 @@ pub fn show(
         } else {
             match view_mode {
                 BrowserViewMode::List => {
-                    render_list_view(ui, state, theme, &bins_seen, &items, &all_ordered_ids, &mut cmds, renaming_bin, creating_bin, scroll_to_media_id);
+                    render_list_view(ui, state, theme, &bins_seen, &items, &all_ordered_ids, &mut cmds, renaming_bin, creating_bin, scroll_to_media_id, columns, sort_by, sort_ascending);
                 }
                 BrowserViewMode::Grid => {
                     render_grid_view(ui, state, theme, &bins_seen, &items, &all_ordered_ids, &mut cmds, renaming_bin, creating_bin, scroll_to_media_id);
@@ -324,13 +361,9 @@ pub fn show(
             ui.separator();
 
             ui.menu_button("Sort By", |ui| {
-                ui.selectable_value(sort_by, SortBy::Name, "Name");
-                ui.selectable_value(sort_by, SortBy::DateAdded, "Date Added");
-                ui.selectable_value(sort_by, SortBy::ShootDate, "Shoot Date");
-                ui.selectable_value(sort_by, SortBy::Duration, "Duration");
-                ui.selectable_value(sort_by, SortBy::Rating, "Rating");
-                ui.selectable_value(sort_by, SortBy::Codec, "Codec");
-                ui.selectable_value(sort_by, SortBy::FileSize, "File Size");
+                for f in Field::SORTABLE {
+                    ui.selectable_value(sort_by, f, f.label());
+                }
             });
 
             ui.menu_button("View", |ui| {
@@ -848,6 +881,61 @@ fn paint_title_asset_badge(painter: &egui::Painter, thumb_rect: egui::Rect, them
 
 // ── List View ──
 
+/// The column titles over the list, lined up with the rows' columns. A
+/// click sorts by that column, a second click flips the order, and a
+/// right-click chooses which columns the list shows.
+fn render_column_header(ui: &mut egui::Ui, theme: &KlippTheme, columns: &mut Vec<Field>, sort_by: &mut SortBy, sort_ascending: &mut bool) {
+    let header_h = 20.0;
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(ui.available_width(), header_h), egui::Sense::click());
+    let painter = ui.painter_at(rect);
+    painter.rect_filled(rect, 0.0, theme.bg_deep);
+    let font = egui::FontId::proportional(10.0);
+    let cy = rect.center().y;
+    let pointer = ui.input(|i| i.pointer.interact_pos());
+    let mut x = rect.min.x + LIST_TEXT_X;
+    let mut clicked_col: Option<Field> = None;
+    for col in columns.iter() {
+        let w = col.column_width();
+        let col_rect = egui::Rect::from_min_size(egui::pos2(x, rect.min.y), egui::vec2(w, header_h));
+        let under = pointer.is_some_and(|p| col_rect.contains(p));
+        let sorted = *sort_by == *col;
+        let colour = if sorted { theme.accent } else if under && resp.hovered() { theme.text_primary } else { theme.text_dim };
+        let title = if sorted { format!("{} {}", col.label(), if *sort_ascending { "\u{25B4}" } else { "\u{25BE}" }) } else { col.label().to_string() };
+        painter.text(egui::pos2(x + 2.0, cy), egui::Align2::LEFT_CENTER, truncate_to_width(&title, font.clone(), w - 6.0, ui), font.clone(), colour);
+        if resp.clicked() && under {
+            clicked_col = Some(*col);
+        }
+        x += w;
+    }
+    if let Some(col) = clicked_col {
+        if *sort_by == col {
+            *sort_ascending = !*sort_ascending;
+        } else {
+            *sort_by = col;
+            *sort_ascending = true;
+        }
+    }
+    resp.context_menu(|ui| {
+        ui.label(egui::RichText::new("Columns").size(10.0).color(theme.text_dim));
+        for f in Field::COLUMNS {
+            let mut on = columns.contains(&f);
+            if ui.checkbox(&mut on, f.label()).changed() {
+                if on {
+                    columns.push(f);
+                } else {
+                    columns.retain(|c| *c != f);
+                }
+            }
+        }
+        ui.separator();
+        if ui.button("Default columns").clicked() {
+            *columns = Field::DEFAULT_COLUMNS.to_vec();
+            ui.close_menu();
+        }
+    });
+    painter.line_segment([egui::pos2(rect.min.x, rect.max.y), egui::pos2(rect.max.x, rect.max.y)], egui::Stroke::new(1.0_f32, theme.border));
+}
+
 #[allow(clippy::too_many_arguments)]
 fn render_list_view(
     ui: &mut egui::Ui,
@@ -860,7 +948,11 @@ fn render_list_view(
     renaming_bin: &mut Option<(String, String)>,
     creating_bin: &mut Option<String>,
     scroll_to_media_id: &mut Option<MediaId>,
+    columns: &mut Vec<Field>,
+    sort_by: &mut SortBy,
+    sort_ascending: &mut bool,
 ) {
+    render_column_header(ui, theme, columns, sort_by, sort_ascending);
     // Inline edit for new bin creation (triggered by "New Folder" context menu item)
     if creating_bin.is_some() {
         let mut should_clear = false;
@@ -1099,51 +1191,25 @@ fn render_list_view(
                 theme.text_primary,
             );
 
-            // Metadata line
-            let dur_str = format_duration(&item.duration);
-            let fps_str = format_fps(&item.fps);
-            let size_mb = item.file_size_bytes as f64 / (1024.0 * 1024.0);
-            let size_str = if size_mb >= 1024.0 {
-                format!("{:.1}GB", size_mb / 1024.0)
-            } else {
-                format!("{:.1}MB", size_mb)
-            };
-            // Metadata line. When the clip is rated, paint the stars in
-            // amber first so they pop against the dim grey of the rest of
-            // the metadata. `painter().text()` returns the rendered rect,
-            // which we use to advance the x cursor for the grey text.
+            // The columns, each in its width from where the header put it,
+            // clipped to the row.
+            let row_painter = ui.painter_at(row_rect);
             let meta_y = row_rect.min.y + 30.0;
-            let mut meta_x = text_x;
-            if item.rating > 0 {
-                let stars = "\u{2605}".repeat(item.rating as usize);
-                let stars_rect = ui.painter().text(
-                    egui::pos2(meta_x, meta_y),
-                    egui::Align2::LEFT_TOP,
-                    &stars,
-                    egui::FontId::monospace(10.0),
-                    theme.accent,
-                );
-                meta_x = stars_rect.max.x;
-                let sep_rect = ui.painter().text(
-                    egui::pos2(meta_x, meta_y),
-                    egui::Align2::LEFT_TOP,
-                    " \u{00b7} ",
-                    egui::FontId::monospace(10.0),
-                    theme.text_dim,
-                );
-                meta_x = sep_rect.max.x;
+            let mut cx = row_rect.min.x + LIST_TEXT_X;
+            for (col, text) in columns.iter().zip(&item.columns) {
+                let w = col.column_width();
+                if !text.is_empty() {
+                    let colour = if *col == Field::Rating { theme.accent } else { theme.text_dim };
+                    row_painter.text(
+                        egui::pos2(cx + 2.0, meta_y),
+                        egui::Align2::LEFT_TOP,
+                        truncate_to_width(text, egui::FontId::monospace(10.0), w - 6.0, ui),
+                        egui::FontId::monospace(10.0),
+                        colour,
+                    );
+                }
+                cx += w;
             }
-            let meta = format!(
-                "{} \u{00b7} {}fps \u{00b7} {} \u{00b7} {}",
-                dur_str, fps_str, item.codec, size_str
-            );
-            ui.painter().text(
-                egui::pos2(meta_x, meta_y),
-                egui::Align2::LEFT_TOP,
-                &meta,
-                egui::FontId::monospace(10.0),
-                theme.text_dim,
-            );
 
             // (Used indicator removed: the red "in use on timeline" bar on
             // the thumbnail conveys this state already.)
@@ -1853,17 +1919,12 @@ struct MediaRow {
     id: MediaId,
     filename: String,
     duration: klipp_core::RationalTime,
-    codec: String,
     _resolution: klipp_core::Resolution,
     rating: u8,
     _proxy_ready: bool,
     path: std::path::PathBuf,
     bin: Option<String>,
     fps: klipp_core::Fps,
-    file_size_bytes: u64,
-    added_at: u64,
-    /// Effective shoot date: media_created_at > file_modified_at > added_at
-    shoot_date: u64,
     color_label: klipp_media::ColorLabel,
     resolution: klipp_core::Resolution,
     camera: Option<String>,
@@ -1884,6 +1945,8 @@ struct MediaRow {
     /// a custom thumbnail + TITLE badge instead of trying to read
     /// from disk.
     kind: klipp_media::MediaItemKind,
+    /// The list's columns as text, in the order the list shows them.
+    columns: Vec<String>,
 }
 
 fn show_context_menu(
@@ -2359,7 +2422,7 @@ mod metadata_filter_tests {
         let mut c = item(); c.video_codec = "h264".into(); // dup
         let mut d = item(); d.video_codec.clear(); // skipped — empty
         let pool = vec![a, b, c, d];
-        let (codecs, _, _) = enumerate_metadata_filter_values(&pool);
+        let codecs = enumerate_metadata_filter_values(&pool).codecs;
         assert_eq!(codecs, vec!["h264".to_string(), "hevc".to_string()]);
     }
 
@@ -2368,7 +2431,7 @@ mod metadata_filter_tests {
         let mut a = item(); a.fps = Fps::film_24();
         let mut b = item(); b.fps = Fps { num: 1, den: 1 }; // fallback / unknown
         let pool = vec![a, b];
-        let (_, fps_pairs, _) = enumerate_metadata_filter_values(&pool);
+        let fps_pairs = enumerate_metadata_filter_values(&pool).fps;
         assert_eq!(fps_pairs, vec![(24, 1)]);
     }
 

@@ -604,6 +604,18 @@ pub enum MetadataFilter {
     /// chosen value (case-insensitive equal). Items with no recorded
     /// camera-make are excluded.
     Camera(String),
+    /// The lens the shot was made with, as the camera named it.
+    Lens(String),
+    /// A resolution, width by height.
+    Resolution(u32, u32),
+    /// The reel the clip goes under, the editor's or the file's.
+    Reel(String),
+    /// The scene the editor logged.
+    Scene(String),
+    /// A keyword the editor logged.
+    Keyword(String),
+    /// Only good takes.
+    GoodTake,
 }
 
 
@@ -647,6 +659,8 @@ pub struct BrowserPanel {
     pub files_search_query: String,
     // Media tab state (migrated from MediaPanel)
     pub media_sort_by: media_tab::SortBy,
+    /// The list view's columns, in order; kept in the preferences.
+    pub list_columns: Vec<klipp_media::Field>,
     pub media_sort_ascending: bool,
     pub media_selected_bin: Option<String>,
     pub smart_bin_filter: SmartBinFilter,
@@ -925,6 +939,7 @@ impl Default for BrowserPanel {
             search_query: String::new(),
             files_search_query: String::new(),
             media_sort_by: media_tab::SortBy::Name,
+            list_columns: klipp_media::Field::DEFAULT_COLUMNS.to_vec(),
             media_sort_ascending: true,
             media_selected_bin: None,
             smart_bin_filter: SmartBinFilter::None,
@@ -1268,28 +1283,16 @@ impl BrowserPanel {
                 }
 
                 // Sort dropdown
-                let sort_label = match self.media_sort_by {
-                    media_tab::SortBy::Name => "Name",
-                    media_tab::SortBy::Duration => "Duration",
-                    media_tab::SortBy::Rating => "Rating",
-                    media_tab::SortBy::Codec => "Codec",
-                    media_tab::SortBy::FileSize => "Size",
-                    media_tab::SortBy::DateAdded => "Date",
-                    media_tab::SortBy::ShootDate => "Shot",
-                };
+                let sort_label = self.media_sort_by.label();
                 egui::ComboBox::from_id_salt("browser_sort")
                     .selected_text(
                         egui::RichText::new(sort_label).size(10.0).color(theme.text_secondary),
                     )
                     .width(55.0)
                     .show_ui(ui, |ui| {
-                        ui.selectable_value(&mut self.media_sort_by, media_tab::SortBy::Name, "Name");
-                        ui.selectable_value(&mut self.media_sort_by, media_tab::SortBy::Duration, "Duration");
-                        ui.selectable_value(&mut self.media_sort_by, media_tab::SortBy::DateAdded, "Date Added");
-                        ui.selectable_value(&mut self.media_sort_by, media_tab::SortBy::FileSize, "File Size");
-                        ui.selectable_value(&mut self.media_sort_by, media_tab::SortBy::Rating, "Rating");
-                        ui.selectable_value(&mut self.media_sort_by, media_tab::SortBy::ShootDate, "Shoot Date");
-                        ui.selectable_value(&mut self.media_sort_by, media_tab::SortBy::Codec, "Codec");
+                        for f in klipp_media::Field::SORTABLE {
+                            ui.selectable_value(&mut self.media_sort_by, f, f.label());
+                        }
                     });
 
                 // Sort direction toggle
@@ -1494,6 +1497,7 @@ impl BrowserPanel {
                             &mut self.media_sort_ascending,
                             &mut self.media_selected_bin,
                             &mut self.browser_view_mode,
+                            &mut self.list_columns,
                             &mut self.renaming_bin,
                             &mut self.creating_bin,
                             &mut self.scroll_to_media_id,
@@ -1533,6 +1537,7 @@ impl BrowserPanel {
                         &mut self.media_sort_ascending,
                         &mut self.media_selected_bin,
                         &mut self.browser_view_mode,
+                        &mut self.list_columns,
                         &mut self.renaming_bin,
                         &mut self.creating_bin,
                         &mut self.scroll_to_media_id,
@@ -4197,8 +4202,8 @@ impl BrowserPanel {
             ui.add_space(8.0);
             ui.label(egui::RichText::new("Metadata:").size(10.0).color(theme.text_dim));
             let pool_snapshot: Vec<_> = state.media_pool.all().cloned().collect();
-            let (codecs, fps_pairs, cameras) =
-                media_tab::enumerate_metadata_filter_values(&pool_snapshot);
+            let values = media_tab::enumerate_metadata_filter_values(&pool_snapshot);
+            let (codecs, fps_pairs, cameras) = (&values.codecs, &values.fps, &values.cameras);
             let metadata_label = match &self.metadata_filter {
                 MetadataFilter::Any => "Any".to_string(),
                 MetadataFilter::Codec(c) => format!("Codec: {c}"),
@@ -4206,6 +4211,12 @@ impl BrowserPanel {
                     format!("FPS: {}", media_tab::format_fps_label(*num, *den))
                 }
                 MetadataFilter::Camera(c) => format!("Camera: {c}"),
+                MetadataFilter::Lens(l) => format!("Lens: {l}"),
+                MetadataFilter::Resolution(w, h) => format!("{w}x{h}"),
+                MetadataFilter::Reel(r) => format!("Reel: {r}"),
+                MetadataFilter::Scene(sc) => format!("Scene: {sc}"),
+                MetadataFilter::Keyword(k) => format!("Keyword: {k}"),
+                MetadataFilter::GoodTake => "Good takes".to_string(),
             };
             egui::ComboBox::from_id_salt("metadata_filter")
                 .selected_text(metadata_label)
@@ -4215,7 +4226,7 @@ impl BrowserPanel {
                     if !codecs.is_empty() {
                         ui.separator();
                         ui.label(egui::RichText::new("Codec").size(9.0).color(theme.text_dim));
-                        for c in &codecs {
+                        for c in codecs {
                             ui.selectable_value(
                                 &mut self.metadata_filter,
                                 MetadataFilter::Codec(c.clone()),
@@ -4226,7 +4237,7 @@ impl BrowserPanel {
                     if !fps_pairs.is_empty() {
                         ui.separator();
                         ui.label(egui::RichText::new("FPS").size(9.0).color(theme.text_dim));
-                        for (num, den) in &fps_pairs {
+                        for (num, den) in fps_pairs {
                             ui.selectable_value(
                                 &mut self.metadata_filter,
                                 MetadataFilter::Fps { num: *num, den: *den },
@@ -4237,13 +4248,40 @@ impl BrowserPanel {
                     if !cameras.is_empty() {
                         ui.separator();
                         ui.label(egui::RichText::new("Camera").size(9.0).color(theme.text_dim));
-                        for c in &cameras {
+                        for c in cameras {
                             ui.selectable_value(
                                 &mut self.metadata_filter,
                                 MetadataFilter::Camera(c.clone()),
                                 format!("Camera: {c}"),
                             );
                         }
+                    }
+                    let groups: [(&str, &Vec<String>, fn(String) -> MetadataFilter); 4] = [
+                        ("Lens", &values.lenses, MetadataFilter::Lens),
+                        ("Reel", &values.reels, MetadataFilter::Reel),
+                        ("Scene", &values.scenes, MetadataFilter::Scene),
+                        ("Keyword", &values.keywords, MetadataFilter::Keyword),
+                    ];
+                    for (title, list, make) in groups {
+                        if list.is_empty() {
+                            continue;
+                        }
+                        ui.separator();
+                        ui.label(egui::RichText::new(title).size(9.0).color(theme.text_dim));
+                        for v in list {
+                            ui.selectable_value(&mut self.metadata_filter, make(v.clone()), format!("{title}: {v}"));
+                        }
+                    }
+                    if !values.resolutions.is_empty() {
+                        ui.separator();
+                        ui.label(egui::RichText::new("Resolution").size(9.0).color(theme.text_dim));
+                        for (w, h) in &values.resolutions {
+                            ui.selectable_value(&mut self.metadata_filter, MetadataFilter::Resolution(*w, *h), format!("{w}x{h}"));
+                        }
+                    }
+                    if values.any_good_take {
+                        ui.separator();
+                        ui.selectable_value(&mut self.metadata_filter, MetadataFilter::GoodTake, "Good takes");
                     }
                 });
 
