@@ -341,6 +341,12 @@ impl ToolbarPanel {
                     cmds.push(AppCommand::ImportSubtitles { path });
                 }
             }
+            if ui.button("Import Metadata Sheet...").on_hover_text("A CSV or ALE: scene, shot, take, description, keywords, rating and the rest, matched to clips by file name.").clicked() {
+                ui.close_menu();
+                if let Some(path) = rfd::FileDialog::new().set_title("Import Metadata Sheet").add_filter("Metadata sheet", &["csv", "ale", "txt"]).pick_file() {
+                    cmds.push(AppCommand::ImportMetadataSheet { path });
+                }
+            }
             // Timeline-format imports (foreign NLE projects → a new Sequence).
             // Grouped under a submenu so adding formats (OTIO, FCPXML, EDL, AAF)
             // doesn't clutter the top level.
@@ -424,6 +430,20 @@ impl ToolbarPanel {
                     ui.close_menu();
                     if let Some(path) = rfd::FileDialog::new().set_title("Export EDL").add_filter("EDL", &["edl"]).set_file_name("export.edl").save_file() {
                         cmds.push(AppCommand::ExportEdl { path });
+                    }
+                }
+            });
+            ui.menu_button("Export Metadata Sheet", |ui| {
+                if ui.button("CSV...").clicked() {
+                    ui.close_menu();
+                    if let Some(path) = rfd::FileDialog::new().set_title("Export Metadata as CSV").add_filter("CSV", &["csv"]).set_file_name("metadata.csv").save_file() {
+                        cmds.push(AppCommand::ExportMetadataSheet { path, ale: false });
+                    }
+                }
+                if ui.button("ALE (Avid Log Exchange)...").clicked() {
+                    ui.close_menu();
+                    if let Some(path) = rfd::FileDialog::new().set_title("Export Metadata as ALE").add_filter("ALE", &["ale"]).set_file_name("metadata.ale").save_file() {
+                        cmds.push(AppCommand::ExportMetadataSheet { path, ale: true });
                     }
                 }
             });

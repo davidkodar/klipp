@@ -11508,6 +11508,59 @@ impl KlippApp {
 
     fn handle_media_relinking(&mut self, cmd: &AppCommand, _needs_refresh: &mut bool) -> bool {
         match cmd {
+                AppCommand::ExportMetadataSheet { path, ale } => {
+                    let mut items: Vec<&klipp_media::MediaItem> = self.state.media_pool.all().filter(|m| matches!(m.kind, klipp_media::MediaItemKind::File)).collect();
+                    items.sort_by(|a, b| a.filename.to_lowercase().cmp(&b.filename.to_lowercase()));
+                    let text = if *ale {
+                        klipp_project::metadata_sheet::export_ale(&items, self.state.fps)
+                    } else {
+                        klipp_project::metadata_sheet::export_csv(&items)
+                    };
+                    let n = items.len();
+                    match std::fs::write(path, text) {
+                        Ok(()) => self.state.toast.show(format!("Wrote the metadata of {n} clips to {}", path.file_name().unwrap_or_default().to_string_lossy())),
+                        Err(e) => self.state.toast.show(format!("Could not write the sheet: {e}")),
+                    }
+                    true
+                }
+                AppCommand::ImportMetadataSheet { path } => {
+                    let text = match std::fs::read_to_string(path) {
+                        Ok(t) => t,
+                        Err(e) => {
+                            self.state.toast.show(format!("Could not read the sheet: {e}"));
+                            return true;
+                        }
+                    };
+                    let rows = match klipp_project::metadata_sheet::parse_sheet(&text) {
+                        Ok(r) => r,
+                        Err(e) => {
+                            self.state.toast.show(format!("Could not read the sheet: {e}"));
+                            return true;
+                        }
+                    };
+                    let (mut applied, mut unmatched) = (0usize, 0usize);
+                    for row in &rows {
+                        let ids: Vec<klipp_core::MediaId> = self.state.media_pool.all().filter(|m| klipp_project::metadata_sheet::row_names(m, &row.name)).map(|m| m.id).collect();
+                        if ids.is_empty() {
+                            unmatched += 1;
+                        }
+                        for id in ids {
+                            if let Some(item) = self.state.media_pool.get_mut(&id) {
+                                if klipp_project::metadata_sheet::apply_row(item, row) {
+                                    applied += 1;
+                                }
+                            }
+                        }
+                    }
+                    if applied > 0 {
+                        self.state.dirty = true;
+                    }
+                    self.state.toast.show(match unmatched {
+                        0 => format!("Read the sheet into {applied} clips"),
+                        n => format!("Read the sheet into {applied} clips; {n} rows named no clip in the pool"),
+                    });
+                    true
+                }
                 AppCommand::RefreshMediaMetadata { media_ids } => {
                     // The same re-probe a relink uses: the file is read
                     // again and the item keeps what the user said about it.

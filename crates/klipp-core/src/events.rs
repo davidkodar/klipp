@@ -1316,6 +1316,10 @@ pub enum AppCommand {
     /// the shot (timecode, reel, exposure, sidecar, every tag), keeping
     /// what the user said about them.
     RefreshMediaMetadata { media_ids: Vec<MediaId> },
+    /// Write the pool's metadata as a sheet, CSV or ALE.
+    ExportMetadataSheet { path: PathBuf, ale: bool },
+    /// Read a sheet, CSV or ALE, into the clips it names.
+    ImportMetadataSheet { path: PathBuf },
     /// Relink all offline media by searching a directory recursively.
     RelinkAllFromDirectory { directory: PathBuf },
     /// Show the media relink dialog.
