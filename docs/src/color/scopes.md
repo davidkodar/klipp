@@ -65,6 +65,10 @@ Adjust scope rendering quality in preferences:
 - **Medium** — every other pixel; the default
 - **Low** — every fourth pixel; least work per refresh
 
+A frame is never sampled so coarsely that fewer than about two million of its pixels are measured: a small frame, such as a skim frame or a reduced playback frame, is measured whole at every quality.
+
+When a scope is drawn larger than its samples can fill, as when a small frame is shown in a fullscreen scope, the trace is blurred just enough that each pixel's brightness is measured rather than chance. With plenty of samples, as with a full frame at High quality, it is not blurred at all.
+
 A sampled column is spread over every scope column it stands for, so a lower quality changes how many samples are counted, not where the trace is.
 
 Scope quality does not affect the video output, only the precision of the scope displays.

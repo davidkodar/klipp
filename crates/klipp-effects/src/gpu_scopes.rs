@@ -305,9 +305,66 @@ struct ShadeParams {
     /// picture spread evenly over the levels reads density 1.
     norm: f32,
     floor: f32,
-    /// The samples a pixel's density estimate gathers before it stops
-    /// widening. (`target` is a reserved word in WGSL.)
-    gather: f32,
+    /// The density at which a pixel holds half a sample, after the blur
+    /// spreads one: above it the trace is never quite dark.
+    n_floor: f32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct BlurParams {
+    out_w: u32,
+    out_h: u32,
+    mode: u32,
+    gap: u32,
+    radius: u32,
+    _p0: u32,
+    sigma: f32,
+    _p1: f32,
+}
+
+/// The fewest of a frame's pixels a scope measures, whatever the quality
+/// asks: about a quarter of a 4K frame.
+pub const MIN_SAMPLES: u64 = 2_000_000;
+/// The samples an occupied pixel of a waveform should draw on, blurred
+/// together, before its brightness is more measurement than chance.
+const TRACE_GATHER: f64 = 8.0;
+/// The share of a waveform's pixels its samples occupy, for turning the
+/// sample count into samples per occupied pixel. A picture's levels
+/// cluster; a quarter of the height per column is typical.
+const TRACE_OCCUPANCY: f64 = 0.25;
+
+/// The step a frame is sampled at: the quality's, but never so coarse that
+/// fewer than [`MIN_SAMPLES`] of its pixels are measured. A small frame —
+/// a skim's, a reduced playback frame — is measured whole: skipping pixels
+/// of it saves almost nothing and leaves a large scope without samples.
+pub fn sample_step(width: u32, height: u32, quality_step: u32) -> u32 {
+    let want = (width as u64 * height as u64).min(MIN_SAMPLES);
+    let mut step = quality_step.max(1);
+    while step > 1 && (width.div_ceil(step) as u64) * (height.div_ceil(step) as u64) < want {
+        step -= 1;
+    }
+    step
+}
+
+/// How far to blur a waveform's densities, across and up, in output
+/// pixels; 0 for not at all.
+///
+/// A pixel's brightness is its density, and a density from a handful of
+/// samples is chance: a trace drawn larger than its samples cover breaks
+/// into specks. So the densities are blurred just enough that an occupied
+/// pixel draws on about [`TRACE_GATHER`] samples, and not at all when
+/// there are plenty, as a frame measured whole in a docked pane has.
+/// Across, the blur is at least half the pixels one sampled column is
+/// spread over, so a small frame's columns do not stand as bands. One
+/// Gaussian for the whole trace: nothing steps, so nothing shows as a box.
+fn trace_blur(sampled_w: f64, sampled_h: f64, trace_w: u32, out_h: u32) -> (f32, f32) {
+    let area = (trace_w as f64 * out_h as f64 * TRACE_OCCUPANCY).max(1.0);
+    let per_px = (sampled_w * sampled_h / area).max(1e-6);
+    let sigma = (TRACE_GATHER / (std::f64::consts::TAU * per_px)).sqrt();
+    let spread = trace_w as f64 / sampled_w.max(1.0);
+    let used = |s: f64| if s < 0.6 { 0.0 } else { s.min(8.0) as f32 };
+    (used(sigma.max(0.5 * spread)), used(sigma))
 }
 
 #[repr(C)]
@@ -614,33 +671,22 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 }
 "#;
 
-const WGSL_SHADE: &str = r#"
+/// A waveform's density at every output pixel: per channel, the samples
+/// in the bins the pixel covers, over whole 8-bit codes of level. Every
+/// code's bins sum in or out together, so an 8-bit picture's comb, one
+/// filled level in four, reads flat. Red, green, blue and Y' in the four
+/// components; a parade pixel carries only its panel's channel.
+const WGSL_TRACE_DENSITY: &str = r#"
 struct ShadeParams {
     out_w: u32, out_h: u32, cols: u32, rows: u32,
     mode: u32, channels: u32, envelope: u32, gap: u32,
-    gain: f32, norm: f32, floor: f32, gather: f32,
+    gain: f32, norm: f32, floor: f32, n_floor: f32,
 };
 @group(0) @binding(0) var<storage, read> sat: array<u32>;
 @group(0) @binding(1) var<storage, read> ext: array<u32>;
-@group(0) @binding(2) var<storage, read_write> out: array<vec4<f32>>;
+@group(0) @binding(2) var<storage, read_write> dens: array<vec4<f32>>;
 @group(0) @binding(3) var<uniform> p: ShadeParams;
 
-// The trace colours. Red, green and blue are kept a little off pure so a
-// lone blue trace reads on black and overlaps add towards white.
-fn tint(ch: u32) -> vec3<f32> {
-    switch ch {
-        case 0u: { return vec3<f32>(1.0, 0.16, 0.12); }
-        case 1u: { return vec3<f32>(0.18, 1.0, 0.22); }
-        case 2u: { return vec3<f32>(0.26, 0.44, 1.0); }
-        default: { return vec3<f32>(0.86, 0.93, 0.90); }
-    }
-}
-// Density to brightness. Logarithmic, so a lone sample, a thin trace
-// and a flat area are all visible at once and a dense core never turns
-// into a flat blob: eight doublings of density span dark to full.
-fn glow_of(n: f32) -> f32 {
-    return clamp(log2(1.0 + n * p.gain) / 8.0, 0.0, 1.0);
-}
 // The summed-area table at the corner below column `c` and level `l`: the
 // bins of columns [0, c) and levels [0, l) of the channel at `base`.
 fn corner(base: u32, c: i32, l: i32) -> u32 {
@@ -661,8 +707,139 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let ox = gid.x; let oy = gid.y;
     if (ox >= p.out_w || oy >= p.out_h) { return; }
     let oi = oy * p.out_w + ox;
+    var d = vec4<f32>(0.0);
 
-    // Which channels this pixel draws, and the panel it sits in.
+    var ch_first = 0u; var ch_last = 2u;
+    var panel_x0 = 0u; var panel_w = p.out_w;
+    if (p.mode == 0u) {
+        ch_first = 3u; ch_last = 3u;
+    } else if (p.mode == 2u) {
+        let pw = (p.out_w - 2u * p.gap) / 3u;
+        var panel = 0u;
+        if (ox >= pw + p.gap) { panel = 1u; }
+        if (ox >= 2u * (pw + p.gap)) { panel = 2u; }
+        panel_x0 = panel * (pw + p.gap);
+        panel_w = pw;
+        if (ox >= panel_x0 + pw) { dens[oi] = d; return; }
+        ch_first = panel; ch_last = panel;
+    }
+    let px = ox - panel_x0;
+    // The bins this pixel covers: columns by position, levels by value,
+    // the top row being level 1.0.
+    let c0 = (px * p.cols) / panel_w;
+    let c1 = max(((px + 1u) * p.cols) / panel_w, c0 + 1u);
+    let v_lo = 1.0 - f32(oy + 1u) / f32(p.out_h);
+    let v_hi = 1.0 - f32(oy) / f32(p.out_h);
+    let r0 = u32(floor(v_lo * f32(p.rows)));
+    let r1 = min(max(u32(ceil(v_hi * f32(p.rows))), r0 + 1u), p.rows);
+    let h2 = i32(((r1 - r0 + 3u) / 4u) * 2u);
+    let rc = i32((r0 + r1) / 2u);
+    for (var ch = ch_first; ch <= ch_last; ch = ch + 1u) {
+        if (ch < 3u && (p.channels & (1u << ch)) == 0u) { continue; }
+        let b = box_sum(ch * p.cols * p.rows, i32(c0), i32(c1), rc - h2, rc + h2);
+        if (b.y > 0.0) { d[ch] = b.x / 256.0 * p.norm / b.y; }
+    }
+    dens[oi] = d;
+}
+"#;
+
+/// The densities blurred along rows, within each parade panel: a Gaussian
+/// of the radius and sigma given, renormalised where it meets an edge, so
+/// the mean is kept. A radius of 0 copies.
+const WGSL_TRACE_BLUR_H: &str = r#"
+struct BlurParams { out_w: u32, out_h: u32, mode: u32, gap: u32, radius: u32, _p0: u32, sigma: f32, _p1: f32 };
+@group(0) @binding(0) var<storage, read> src: array<vec4<f32>>;
+@group(0) @binding(1) var<storage, read_write> dst: array<vec4<f32>>;
+@group(0) @binding(2) var<uniform> p: BlurParams;
+@compute @workgroup_size(16, 16)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let x = gid.x; let y = gid.y;
+    if (x >= p.out_w || y >= p.out_h) { return; }
+    let oi = y * p.out_w + x;
+    if (p.radius == 0u) { dst[oi] = src[oi]; return; }
+    var lo = 0; var hi = i32(p.out_w);
+    if (p.mode == 2u) {
+        let pw = (p.out_w - 2u * p.gap) / 3u;
+        var panel = 0u;
+        if (x >= pw + p.gap) { panel = 1u; }
+        if (x >= 2u * (pw + p.gap)) { panel = 2u; }
+        let x0 = panel * (pw + p.gap);
+        if (x >= x0 + pw) { dst[oi] = vec4<f32>(0.0); return; }
+        lo = i32(x0); hi = i32(x0 + pw);
+    }
+    var acc = vec4<f32>(0.0); var wsum = 0.0;
+    let r = i32(p.radius);
+    for (var d = -r; d <= r; d = d + 1) {
+        let sx = i32(x) + d;
+        if (sx < lo || sx >= hi) { continue; }
+        let w = exp(-f32(d * d) / (2.0 * p.sigma * p.sigma));
+        acc = acc + src[y * p.out_w + u32(sx)] * w;
+        wsum = wsum + w;
+    }
+    dst[oi] = acc / wsum;
+}
+"#;
+
+/// The densities blurred along columns, the same way.
+const WGSL_TRACE_BLUR_V: &str = r#"
+struct BlurParams { out_w: u32, out_h: u32, mode: u32, gap: u32, radius: u32, _p0: u32, sigma: f32, _p1: f32 };
+@group(0) @binding(0) var<storage, read> src: array<vec4<f32>>;
+@group(0) @binding(1) var<storage, read_write> dst: array<vec4<f32>>;
+@group(0) @binding(2) var<uniform> p: BlurParams;
+@compute @workgroup_size(16, 16)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let x = gid.x; let y = gid.y;
+    if (x >= p.out_w || y >= p.out_h) { return; }
+    let oi = y * p.out_w + x;
+    if (p.radius == 0u) { dst[oi] = src[oi]; return; }
+    var acc = vec4<f32>(0.0); var wsum = 0.0;
+    let r = i32(p.radius);
+    for (var d = -r; d <= r; d = d + 1) {
+        let sy = i32(y) + d;
+        if (sy < 0 || sy >= i32(p.out_h)) { continue; }
+        let w = exp(-f32(d * d) / (2.0 * p.sigma * p.sigma));
+        acc = acc + src[u32(sy) * p.out_w + x] * w;
+        wsum = wsum + w;
+    }
+    dst[oi] = acc / wsum;
+}
+"#;
+
+/// A waveform's picture from its blurred densities: brightness, the
+/// channels' colours, the envelope.
+const WGSL_TRACE_COLOUR: &str = r#"
+struct ShadeParams {
+    out_w: u32, out_h: u32, cols: u32, rows: u32,
+    mode: u32, channels: u32, envelope: u32, gap: u32,
+    gain: f32, norm: f32, floor: f32, n_floor: f32,
+};
+@group(0) @binding(0) var<storage, read> dens: array<vec4<f32>>;
+@group(0) @binding(1) var<storage, read> ext: array<u32>;
+@group(0) @binding(2) var<storage, read_write> out: array<vec4<f32>>;
+@group(0) @binding(3) var<uniform> p: ShadeParams;
+
+// The trace colours. Red, green and blue are kept a little off pure so a
+// lone blue trace reads on black and overlaps add towards white.
+fn tint(ch: u32) -> vec3<f32> {
+    switch ch {
+        case 0u: { return vec3<f32>(1.0, 0.16, 0.12); }
+        case 1u: { return vec3<f32>(0.18, 1.0, 0.22); }
+        case 2u: { return vec3<f32>(0.26, 0.44, 1.0); }
+        default: { return vec3<f32>(0.86, 0.93, 0.90); }
+    }
+}
+// Density to brightness. Logarithmic, so a lone sample, a thin trace
+// and a flat area are all visible at once and a dense core never turns
+// into a flat blob: eight doublings of density span dark to full.
+fn glow_of(n: f32) -> f32 {
+    return clamp(log2(1.0 + n * p.gain) / 8.0, 0.0, 1.0);
+}
+@compute @workgroup_size(16, 16)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let ox = gid.x; let oy = gid.y;
+    if (ox >= p.out_w || oy >= p.out_h) { return; }
+    let oi = oy * p.out_w + ox;
+
     var ch_first = 0u; var ch_last = 2u;
     var panel_x0 = 0u; var panel_w = p.out_w;
     if (p.mode == 0u) {
@@ -678,44 +855,16 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         ch_first = panel; ch_last = panel;
     }
     let px = ox - panel_x0;
-    // The bins this pixel covers: columns by position, levels by value,
-    // the top row being level 1.0.
     let c0 = (px * p.cols) / panel_w;
     let c1 = max(((px + 1u) * p.cols) / panel_w, c0 + 1u);
     let v_lo = 1.0 - f32(oy + 1u) / f32(p.out_h);
     let v_hi = 1.0 - f32(oy) / f32(p.out_h);
     let r0 = u32(floor(v_lo * f32(p.rows)));
     let r1 = min(max(u32(ceil(v_hi * f32(p.rows))), r0 + 1u), p.rows);
-    // How dense the trace is at this pixel, from as wide a neighbourhood as
-    // the samples there call for.
-    //
-    // A scope drawn at its pane's size can have fewer samples than pixels,
-    // and a pixel lit from its own one or two samples is chance: the trace
-    // breaks into specks. So the estimate widens until it has gathered
-    // `gather` samples. Each step is a box a step wider in columns and one
-    // 8-bit code taller either way, and the estimate is the average of the
-    // boxes so far, a pyramid, so the widening fades out instead of ending
-    // at an edge. Every box is a whole number of codes tall about the
-    // pixel, so an 8-bit picture's comb, one filled level in four, sums
-    // flat at every step. A dense trace stops at the first box and stays
-    // as sharp as the measurement; a sparse one is smoothed only as far as
-    // it must be, blended with the step before by how close that came.
-    //
-    // A step whose added ring is far denser than what it surrounds has
-    // reached another trace, not more of this pixel's own: the widening stops
-    // there. So a pixel beside a line, empty or nearly, keeps its own
-    // estimate and the line keeps its edge; only where the samples around
-    // are as sparse as the pixel's own is the gap between them filled.
-    let k = i32(max(c1 - c0, 1u));
-    let h2 = i32(((r1 - r0 + 3u) / 4u) * 2u);
-    let rc = i32((r0 + r1) / 2u);
-    var hs = array<i32, 6>(0, 1, 2, 3, 5, 8);
-    var js = array<i32, 6>(0, 1, 2, 3, 5, 8);
 
     var rgb = vec3<f32>(0.0);
     for (var ch = ch_first; ch <= ch_last; ch = ch + 1u) {
         if (ch < 3u && (p.channels & (1u << ch)) == 0u) { continue; }
-        let base = ch * p.cols * p.rows;
         var edge = false;
         if (p.envelope != 0u) {
             for (var c = c0; c < c1; c = c + 1u) {
@@ -724,39 +873,12 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
                 if ((lo >= r0 && lo < r1) || (hi >= r0 && hi < r1)) { edge = true; }
             }
         }
-        var acc = vec2<f32>(0.0, 0.0);
-        var prev_b = vec2<f32>(0.0, 0.0);
-        var dens = 0.0; var own = 0.0;
-        var prev_dens = 0.0; var prev_n = 0.0;
-        for (var s = 0; s < 6; s = s + 1) {
-            let hc = hs[s] * k;
-            let jl = 4 * js[s];
-            let b = box_sum(base, i32(c0) - hc, i32(c1) + hc, rc - h2 - jl, rc + h2 + jl);
-            if (s == 0) { own = b.x; }
-            if (s > 0) {
-                // The ring this step adds. Enough samples in it, far denser
-                // than the box inside it: the widening has reached another,
-                // denser trace, and this pixel keeps what it had.
-                let ring = (b.x - prev_b.x) / max(b.y - prev_b.y, 1.0);
-                let inner = select(0.0, prev_b.x / prev_b.y, prev_b.y > 0.0);
-                if ((b.x - prev_b.x) / 256.0 >= p.gather && ring > 4.0 * inner) { break; }
-            }
-            acc = acc + b;
-            prev_b = b;
-            let d = acc.x / 256.0 * p.norm / acc.y;
-            let n = b.x / 256.0;
-            if (n >= p.gather) {
-                dens = d;
-                if (s > 0 && prev_n > 0.0) { dens = mix(d, prev_dens, prev_n / p.gather); }
-                break;
-            }
-            dens = d;
-            prev_dens = d;
-            prev_n = n;
-        }
-        if (dens <= 0.0 && !edge) { continue; }
-        var i = glow_of(dens);
-        if (own > 0.0) { i = max(i, p.floor); }
+        let n = dens[oi][ch];
+        if (n <= 0.0 && !edge) { continue; }
+        var i = glow_of(n);
+        // A pixel holding half a sample or more is never quite dark, however
+        // faint the log curve makes it; the thin tail of the blur is.
+        if (n >= p.n_floor) { i = max(i, p.floor); }
         if (edge) { i = max(i, 0.9); }
         // The core of a dense trace goes to white, as a phosphor does.
         let t = tint(ch);
@@ -1008,6 +1130,10 @@ pub struct ScopeRenderer {
     ext_pipeline: wgpu::ComputePipeline,
     shade_layout: wgpu::BindGroupLayout,
     shade_pipeline: wgpu::ComputePipeline,
+    trace_colour_pipeline: wgpu::ComputePipeline,
+    trace_blur_layout: wgpu::BindGroupLayout,
+    trace_blur_h_pipeline: wgpu::ComputePipeline,
+    trace_blur_v_pipeline: wgpu::ComputePipeline,
     glow_h_layout: wgpu::BindGroupLayout,
     glow_h_pipeline: wgpu::ComputePipeline,
     glow_v_layout: wgpu::BindGroupLayout,
@@ -1026,6 +1152,8 @@ pub struct ScopeRenderer {
     sat_rows_pipeline: wgpu::ComputePipeline,
     shaded: Option<wgpu::Buffer>,
     blurred: Option<wgpu::Buffer>,
+    /// A waveform's per-pixel densities, blurred in place through `blurred`.
+    dens: Option<wgpu::Buffer>,
     float_size: u64,
     packed: Vec<wgpu::Buffer>,
     staging: Option<wgpu::Buffer>,
@@ -1100,7 +1228,11 @@ impl ScopeRenderer {
         let ext_layout = layout(&device, "scope_ext", &[storage(true), storage(false), UNIFORM]);
         let ext_pipeline = pipeline(&device, "scope_ext", &ext_layout, WGSL_EXTENTS);
         let shade_layout = layout(&device, "scope_shade", &[storage(true), storage(true), storage(false), UNIFORM]);
-        let shade_pipeline = pipeline(&device, "scope_shade", &shade_layout, WGSL_SHADE);
+        let shade_pipeline = pipeline(&device, "scope_trace_density", &shade_layout, WGSL_TRACE_DENSITY);
+        let trace_colour_pipeline = pipeline(&device, "scope_trace_colour", &shade_layout, WGSL_TRACE_COLOUR);
+        let trace_blur_layout = layout(&device, "scope_trace_blur", &[storage(true), storage(false), UNIFORM]);
+        let trace_blur_h_pipeline = pipeline(&device, "scope_trace_blur_h", &trace_blur_layout, WGSL_TRACE_BLUR_H);
+        let trace_blur_v_pipeline = pipeline(&device, "scope_trace_blur_v", &trace_blur_layout, WGSL_TRACE_BLUR_V);
         let glow_h_layout = layout(&device, "scope_glow_h", &[storage(true), storage(false), UNIFORM]);
         let glow_h_pipeline = pipeline(&device, "scope_glow_h", &glow_h_layout, WGSL_GLOW_H);
         let glow_v_layout = layout(&device, "scope_glow_v", &[storage(true), storage(true), storage(false), UNIFORM]);
@@ -1135,6 +1267,10 @@ impl ScopeRenderer {
             ext_pipeline,
             shade_layout,
             shade_pipeline,
+            trace_colour_pipeline,
+            trace_blur_layout,
+            trace_blur_h_pipeline,
+            trace_blur_v_pipeline,
             glow_h_layout,
             glow_h_pipeline,
             glow_v_layout,
@@ -1151,6 +1287,7 @@ impl ScopeRenderer {
             sat_rows_pipeline,
             shaded: None,
             blurred: None,
+            dens: None,
             float_size: 0,
             packed: Vec::new(),
             staging: None,
@@ -1185,6 +1322,7 @@ impl ScopeRenderer {
         // sampled every `step` pixels is decimated first so only the
         // samples travel, and a frame the device cannot bind whole (4K
         // DCI is past the default 128 MiB) is decimated by two besides.
+        let step = sample_step(width, height, step);
         let decimate = match input {
             ScopeInput::Linear { .. } => {
                 let need = (width as u64) * (height as u64) * 16;
@@ -1369,6 +1507,7 @@ impl ScopeRenderer {
         let staging = self.staging.as_ref().expect("staging");
         let shaded = self.shaded.as_ref().expect("shaded");
         let blurred = self.blurred.as_ref().expect("blurred");
+        let dens = self.dens.as_ref().expect("dens");
 
         let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("scopes") });
         if want_wave {
@@ -1424,8 +1563,15 @@ impl ScopeRenderer {
         let mut offset = 0u64;
         for (i, job) in jobs.iter().enumerate() {
             let (out_w, out_h) = job.out();
-            let (shade_pipeline, shade_bg, shade_params) = match job {
+            let (shade_pipeline, shade_bg, shade_params, trace) = match job {
                 ScopeJob::Waveform(job) => {
+                    let gap = if job.mode == WaveformMode::Parade { parade_gap(out_w) } else { 0 };
+                    let trace_w = if job.mode == WaveformMode::Parade { out_w.saturating_sub(2 * gap) / 3 } else { out_w }.max(1);
+                    let (sigma_h, sigma_v) = trace_blur(sw, sh, trace_w, out_h);
+                    // One sample's density in a pixel's box, spread over the
+                    // blur's area: half of that is half a sample.
+                    let cols_per_px = (cols as f32 / trace_w as f32).max(1.0);
+                    let blur_area = (std::f32::consts::TAU * sigma_h.max(0.4) * sigma_v.max(0.4)).max(1.0);
                     let shade = ShadeParams {
                         out_w,
                         out_h,
@@ -1434,24 +1580,64 @@ impl ScopeRenderer {
                         mode: job.mode as u32,
                         channels: if job.channels & 7 == 0 { 7 } else { job.channels & 7 },
                         envelope: job.envelope as u32,
-                        gap: if job.mode == WaveformMode::Parade { parade_gap(out_w) } else { 0 },
+                        gap,
                         gain: ScopeJob::Waveform(*job).gain(),
                         norm,
                         floor: 0.04,
-                        gather: 16.0,
+                        n_floor: 0.5 * norm / (cols_per_px * 4.0) / blur_area,
                     };
                     let params = self.uniform("scope_shade_params", &shade);
                     let bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                        label: Some("scope_shade_bg"),
+                        label: Some("scope_trace_density_bg"),
                         layout: &self.shade_layout,
                         entries: &[
                             wgpu::BindGroupEntry { binding: 0, resource: self.sat.as_entire_binding() },
+                            wgpu::BindGroupEntry { binding: 1, resource: self.extents.as_entire_binding() },
+                            wgpu::BindGroupEntry { binding: 2, resource: dens.as_entire_binding() },
+                            wgpu::BindGroupEntry { binding: 3, resource: params.as_entire_binding() },
+                        ],
+                    });
+                    let colour_bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                        label: Some("scope_trace_colour_bg"),
+                        layout: &self.shade_layout,
+                        entries: &[
+                            wgpu::BindGroupEntry { binding: 0, resource: dens.as_entire_binding() },
                             wgpu::BindGroupEntry { binding: 1, resource: self.extents.as_entire_binding() },
                             wgpu::BindGroupEntry { binding: 2, resource: shaded.as_entire_binding() },
                             wgpu::BindGroupEntry { binding: 3, resource: params.as_entire_binding() },
                         ],
                     });
-                    (&self.shade_pipeline, bg, params)
+                    let blur = |sigma: f32| BlurParams {
+                        out_w,
+                        out_h,
+                        mode: job.mode as u32,
+                        gap,
+                        radius: if sigma > 0.0 { (sigma * 2.5).ceil().min(20.0) as u32 } else { 0 },
+                        _p0: 0,
+                        sigma: sigma.max(0.001),
+                        _p1: 0.0,
+                    };
+                    let blur_h_params = self.uniform("scope_trace_blur_h_params", &blur(sigma_h));
+                    let blur_v_params = self.uniform("scope_trace_blur_v_params", &blur(sigma_v));
+                    let blur_h_bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                        label: Some("scope_trace_blur_h_bg"),
+                        layout: &self.trace_blur_layout,
+                        entries: &[
+                            wgpu::BindGroupEntry { binding: 0, resource: dens.as_entire_binding() },
+                            wgpu::BindGroupEntry { binding: 1, resource: blurred.as_entire_binding() },
+                            wgpu::BindGroupEntry { binding: 2, resource: blur_h_params.as_entire_binding() },
+                        ],
+                    });
+                    let blur_v_bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                        label: Some("scope_trace_blur_v_bg"),
+                        layout: &self.trace_blur_layout,
+                        entries: &[
+                            wgpu::BindGroupEntry { binding: 0, resource: blurred.as_entire_binding() },
+                            wgpu::BindGroupEntry { binding: 1, resource: dens.as_entire_binding() },
+                            wgpu::BindGroupEntry { binding: 2, resource: blur_v_params.as_entire_binding() },
+                        ],
+                    });
+                    (&self.shade_pipeline, bg, params, Some((blur_h_bg, blur_v_bg, colour_bg, [blur_h_params, blur_v_params])))
                 }
                 ScopeJob::Vectorscope(job) => {
                     let shade = VecShadeParams {
@@ -1475,7 +1661,7 @@ impl ScopeRenderer {
                             wgpu::BindGroupEntry { binding: 2, resource: params.as_entire_binding() },
                         ],
                     });
-                    (&self.vshade_pipeline, bg, params)
+                    (&self.vshade_pipeline, bg, params, None)
                 }
                 ScopeJob::Histogram(job) => {
                     let panels = histogram_panels(job.layout, out_w, out_h);
@@ -1513,7 +1699,7 @@ impl ScopeRenderer {
                             wgpu::BindGroupEntry { binding: 2, resource: params.as_entire_binding() },
                         ],
                     });
-                    (&self.hshade_pipeline, bg, params)
+                    (&self.hshade_pipeline, bg, params, None)
                 }
             };
             let glow = GlowParams {
@@ -1552,6 +1738,17 @@ impl ScopeRenderer {
                 pass.set_pipeline(shade_pipeline);
                 pass.set_bind_group(0, &shade_bg, &[]);
                 pass.dispatch_workgroups(gx, gy, 1);
+                if let Some((blur_h_bg, blur_v_bg, colour_bg, _)) = &trace {
+                    pass.set_pipeline(&self.trace_blur_h_pipeline);
+                    pass.set_bind_group(0, blur_h_bg, &[]);
+                    pass.dispatch_workgroups(gx, gy, 1);
+                    pass.set_pipeline(&self.trace_blur_v_pipeline);
+                    pass.set_bind_group(0, blur_v_bg, &[]);
+                    pass.dispatch_workgroups(gx, gy, 1);
+                    pass.set_pipeline(&self.trace_colour_pipeline);
+                    pass.set_bind_group(0, colour_bg, &[]);
+                    pass.dispatch_workgroups(gx, gy, 1);
+                }
                 pass.set_pipeline(&self.glow_h_pipeline);
                 pass.set_bind_group(0, &glow_h_bg, &[]);
                 pass.dispatch_workgroups(gx, gy, 1);
@@ -1565,6 +1762,9 @@ impl ScopeRenderer {
             offset += bytes.next_multiple_of(wgpu::COPY_BUFFER_ALIGNMENT);
             keep_alive.push(shade_params);
             keep_alive.push(glow_params);
+            if let Some((_, _, _, blur_params)) = trace {
+                keep_alive.extend(blur_params);
+            }
         }
         self.queue.submit(std::iter::once(encoder.finish()));
 
@@ -1613,6 +1813,7 @@ impl ScopeRenderer {
         if self.shaded.is_none() || self.float_size < bytes {
             self.shaded = Some(buffer(&self.device, "scope_shaded", bytes, wgpu::BufferUsages::STORAGE));
             self.blurred = Some(buffer(&self.device, "scope_blurred", bytes, wgpu::BufferUsages::STORAGE));
+            self.dens = Some(buffer(&self.device, "scope_dens", bytes, wgpu::BufferUsages::STORAGE));
             self.float_size = bytes;
         }
     }
@@ -1634,6 +1835,25 @@ mod tests {
     /// pipeline is invalid, its dispatches do nothing, and the scope is
     /// silently black.
     #[test]
+    fn a_small_frame_is_measured_whole() {
+        assert_eq!(sample_step(3840, 2160, 2), 2, "a 4K frame at medium quality: every second pixel, 2 M samples");
+        assert_eq!(sample_step(1214, 2160, 2), 1, "a reduced playback frame: every pixel");
+        assert_eq!(sample_step(608, 1080, 4), 1, "a skim frame: every pixel, whatever the quality");
+        assert_eq!(sample_step(7680, 4320, 4), 4, "an 8K frame at low quality keeps its step");
+        assert_eq!(sample_step(3840, 2160, 1), 1);
+    }
+
+    #[test]
+    fn a_trace_is_blurred_only_when_its_samples_are_few() {
+        // A 4K frame measured whole into a docked pane: plenty.
+        assert_eq!(trace_blur(3840.0, 2160.0, 1750, 875), (0.0, 0.0));
+        // A skim frame into a large pane: blurred, more across than the
+        // samples alone ask, as each column stands for five pixels.
+        let (h, v) = trace_blur(608.0, 1080.0, 2928, 880);
+        assert!(v > 0.6 && h >= v && h >= 2.4, "skim frame blurred: {h} across, {v} up");
+    }
+
+    #[test]
     fn every_scope_shader_validates() {
         let shaders = [
             ("acc_linear", format!("{WGSL_COMMON_ACC}{WGSL_ACC_LINEAR}")),
@@ -1644,7 +1864,10 @@ mod tests {
             ("extents", WGSL_EXTENTS.to_string()),
             ("sat_cols", WGSL_SAT_COLS.to_string()),
             ("sat_rows", WGSL_SAT_ROWS.to_string()),
-            ("shade", WGSL_SHADE.to_string()),
+            ("trace_density", WGSL_TRACE_DENSITY.to_string()),
+            ("trace_blur_h", WGSL_TRACE_BLUR_H.to_string()),
+            ("trace_blur_v", WGSL_TRACE_BLUR_V.to_string()),
+            ("trace_colour", WGSL_TRACE_COLOUR.to_string()),
             ("hist_reduce", WGSL_HIST_REDUCE.to_string()),
             ("hist_prep", WGSL_HIST_PREP.to_string()),
             ("shade_hist", WGSL_SHADE_HIST.to_string()),

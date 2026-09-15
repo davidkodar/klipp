@@ -141,8 +141,10 @@ fn the_parade_puts_each_channel_in_its_own_panel_and_measures_every_second_pixel
 #[test]
 fn glow_and_envelope_add_light_without_moving_the_trace() {
     let Some(mut gpu) = GpuEffectsPipeline::new() else { return };
-    let frame = flat(0.4);
-    let input = ScopeInput::Linear { rgba: &frame, width: W, height: H, matrix: IDENTITY, luma: REC709, transfer: ScopeTransfer::Srgb, scale: 1.0 };
+    // Enough samples that the trace is drawn unblurred, so the light beside
+    // the line is the glow's alone.
+    let frame: Vec<f32> = (0..W * 320).flat_map(|_| [0.4, 0.4, 0.4, 1.0]).collect();
+    let input = ScopeInput::Linear { rgba: &frame, width: W, height: 320, matrix: IDENTITY, luma: REC709, transfer: ScopeTransfer::Srgb, scale: 1.0 };
     let plain = job(WaveformMode::Luma, OUT);
     let ScopeJob::Waveform(inner) = plain else { unreachable!() };
     let glowing = ScopeJob::Waveform(WaveformJob { glow: true, envelope: true, ..inner });
@@ -386,11 +388,13 @@ fn log_levels_lift_a_small_population_and_clipped_samples_do_not_set_the_scale()
 fn drawn_at_a_pane_size_a_one_pixel_column_stays_one_column_and_the_parade_keeps_its_levels() {
     let Some(mut gpu) = GpuEffectsPipeline::new() else { return };
     // Black, but for one column of white pixels, measured at the width it
-    // is drawn at.
+    // is drawn at, from a full HD frame: samples enough that the trace is
+    // not blurred, so the column is as narrow as the measurement.
     const WW: u32 = 1920;
+    const WH: u32 = 1080;
     let (out_w, out_h) = (1920u32, 700u32);
-    let frame: Vec<f32> = (0..WW * H).flat_map(|i| if i % WW == 1000 { [1.0, 1.0, 1.0, 1.0] } else { [0.0, 0.0, 0.0, 1.0] }).collect();
-    let input = ScopeInput::Linear { rgba: &frame, width: WW, height: H, matrix: IDENTITY, luma: REC709, transfer: ScopeTransfer::Srgb, scale: 1.0 };
+    let frame: Vec<f32> = (0..WW * WH).flat_map(|i| if i % WW == 1000 { [1.0, 1.0, 1.0, 1.0] } else { [0.0, 0.0, 0.0, 1.0] }).collect();
+    let input = ScopeInput::Linear { rgba: &frame, width: WW, height: WH, matrix: IDENTITY, luma: REC709, transfer: ScopeTransfer::Srgb, scale: 1.0 };
     let job = ScopeJob::Waveform(WaveformJob { mode: WaveformMode::Luma, intensity: -1.0, channels: 7, envelope: false, glow: false, out_w, out_h });
     let out = gpu.scopes().render(&input, 1, &[job]);
     let img = out[0].as_ref().unwrap();
@@ -416,14 +420,18 @@ fn drawn_at_a_pane_size_a_one_pixel_column_stays_one_column_and_the_parade_keeps
     let panel_w = (pw - 2 * gap) / 3;
     for (panel, level) in [(0u32, 0.5f32), (1, 0.18), (2, 0.02)] {
         let x = panel * (panel_w + gap) + panel_w / 2;
-        let row = (0..ph)
-            .max_by_key(|y| {
-                let i = ((y * pw + x) * 4) as usize;
-                img[i] as u32 + img[i + 1] as u32 + img[i + 2] as u32
-            })
-            .unwrap();
+        // The centre of the line's light: a trace this sparse is blurred,
+        // and its brightest row is any of the saturated ones.
         let expect = (1.0 - linear_to_srgb(level)) * ph as f32;
-        assert!((row as f32 - expect).abs() <= 2.0, "panel {panel}: line at row {row}, expected {expect:.1}");
+        let (mut light, mut moment) = (0f32, 0f32);
+        for y in ((expect - 40.0).max(0.0) as u32)..((expect + 40.0) as u32).min(ph) {
+            let i = ((y * pw + x) * 4) as usize;
+            let l = (img[i] as u32 + img[i + 1] as u32 + img[i + 2] as u32) as f32;
+            light += l;
+            moment += l * y as f32;
+        }
+        let row = moment / light.max(1.0);
+        assert!((row - expect).abs() <= 2.0, "panel {panel}: line centred on row {row:.1}, expected {expect:.1}");
     }
 }
 
