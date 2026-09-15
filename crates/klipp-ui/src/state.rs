@@ -1683,6 +1683,8 @@ pub struct AppState {
     pub scope_mode: ScopeMode,
     pub scope_state: crate::widgets::scopes::ScopeState,
     pub scope_scale: ScopeScale,
+    /// Mark the legal range, codes 64 to 940, on the docked scopes.
+    pub scope_legal_range: bool,
     pub scope_show_r: bool,
     pub scope_show_g: bool,
     pub scope_show_b: bool,
@@ -2484,13 +2486,33 @@ pub enum ScopeMode {
     Histogram,
 }
 
-/// Scope scale display mode.
+/// The units a waveform, parade or histogram graticule is marked in. The
+/// trace always spans the full 10-bit code range, 0 to 1023; the units
+/// say what each height is called.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub enum ScopeScale {
     #[default]
     TenBit,
+    /// 0 IRE at code 64 and 100 IRE at code 940, the legal range of a
+    /// 10-bit signal: a full-range picture reaches from -7.3 to 109.5.
     Ire,
+    /// Percent of the full range: 0 at code 0, 100 at code 1023.
     Percent,
+    /// Display light in cd/m² on the PQ curve the scopes measure on
+    /// while HDR monitoring is on; the graticule takes it by itself then.
+    Nits,
+}
+
+/// The first and last legal codes of a 10-bit signal.
+pub const LEGAL_BLACK: f32 = 64.0;
+pub const LEGAL_WHITE: f32 = 940.0;
+
+/// One mark of a graticule: its value in the scale's units, and whether
+/// it is a major mark, drawn strong and labelled.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ScopeTick {
+    pub value: f32,
+    pub major: bool,
 }
 
 impl ScopeScale {
@@ -2499,13 +2521,78 @@ impl ScopeScale {
             Self::TenBit => "10-bit",
             Self::Ire => "0\u{2013}100 IRE",
             Self::Percent => "0\u{2013}100%",
+            Self::Nits => "nits (PQ)",
         }
     }
-    pub fn max_val(&self) -> f32 {
-        match self { Self::TenBit => 1023.0, _ => 100.0 }
-    }
     pub fn button_label(&self) -> &'static str {
-        match self { Self::TenBit => "10-bit", Self::Ire => "IRE", Self::Percent => "%" }
+        match self {
+            Self::TenBit => "10-bit",
+            Self::Ire => "IRE",
+            Self::Percent => "%",
+            Self::Nits => "nits",
+        }
+    }
+
+    /// Where `value`, in these units, sits on the trace: 0 at the bottom,
+    /// 1 at the top.
+    pub fn fraction(self, value: f32) -> f32 {
+        match self {
+            Self::TenBit => value / 1023.0,
+            Self::Percent => value / 100.0,
+            Self::Ire => (LEGAL_BLACK + value / 100.0 * (LEGAL_WHITE - LEGAL_BLACK)) / 1023.0,
+            Self::Nits => klipp_color::hdr::pq_encode_nits(value.max(0.0)),
+        }
+    }
+
+    /// The value in these units at `fraction` of the trace's height.
+    pub fn value(self, fraction: f32) -> f32 {
+        match self {
+            Self::TenBit => fraction * 1023.0,
+            Self::Percent => fraction * 100.0,
+            Self::Ire => (fraction * 1023.0 - LEGAL_BLACK) / (LEGAL_WHITE - LEGAL_BLACK) * 100.0,
+            Self::Nits => klipp_color::hdr::pq_decode_nits(fraction.clamp(0.0, 1.0)),
+        }
+    }
+
+    /// The graticule's marks, from the bottom of the trace up. Every mark
+    /// lies on the trace: IRE runs from -5 to 105, the codes a full-range
+    /// picture reaches.
+    pub fn ticks(self) -> Vec<ScopeTick> {
+        let tick = |value: f32, major: bool| ScopeTick { value, major };
+        match self {
+            Self::TenBit => {
+                let mut out: Vec<ScopeTick> = (0..1023).step_by(32).map(|v| tick(v as f32, v % 128 == 0)).collect();
+                out.push(tick(1023.0, true));
+                out
+            }
+            Self::Percent => (0..=20).map(|i| tick(i as f32 * 5.0, i % 2 == 0)).collect(),
+            Self::Ire => (-1..=21).map(|i| tick(i as f32 * 5.0, i % 2 == 0)).collect(),
+            Self::Nits => [
+                (0.0, true), (1.0, true), (2.0, false), (5.0, false), (10.0, true), (20.0, false), (50.0, false),
+                (100.0, true), (203.0, true), (500.0, false), (1000.0, true), (2000.0, false), (4000.0, false),
+                (10_000.0, true),
+            ]
+            .into_iter()
+            .map(|(v, m)| tick(v, m))
+            .collect(),
+        }
+    }
+
+    /// A mark's label: the value, thousands of nits as "k".
+    pub fn tick_label(self, value: f32) -> String {
+        match self {
+            Self::Nits if value >= 1000.0 => format!("{}k", (value / 1000.0).round() as i32),
+            _ => format!("{}", value.round() as i32),
+        }
+    }
+
+    /// The legal range, codes 64 to 940, in these units — none in nits,
+    /// where an HDR signal has no such range.
+    pub fn legal_range(self) -> Option<(f32, f32)> {
+        match self {
+            Self::Nits => None,
+            _ => Some((self.value(LEGAL_BLACK / 1023.0), self.value(LEGAL_WHITE / 1023.0))),
+        }
     }
 }
 
@@ -2853,10 +2940,9 @@ pub fn compute_reference_lines(settings: &PaneScopeSettings, height: f32) -> Vec
     if !settings.show_reference_levels {
         return Vec::new();
     }
-    let max = settings.scale.max_val();
     let draw_h = height - 14.0 - 16.0; // PAD_TOP, PAD_BOTTOM
     let val_to_y = |val: f32| -> f32 {
-        14.0 + (1.0 - val / max) * draw_h
+        14.0 + (1.0 - settings.scale.fraction(val)) * draw_h
     };
     vec![
         ReferenceLine { y: val_to_y(settings.reference_high), value: settings.reference_high },
@@ -2906,15 +2992,6 @@ impl PaneConfig {
         ];
         defaults[..layout.pane_count()].iter().map(|&t| PaneConfig::new(t)).collect()
     }
-}
-
-/// Waveform scale style (for ··· menu).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
-pub enum WaveformScaleStyle {
-    #[default]
-    TenBit,
-    Ire,
-    Percent,
 }
 
 /// Vectorscope scale style (for ··· menu).
@@ -2986,7 +3063,11 @@ pub struct ScopeWindowState {
     pub panes: Vec<PaneConfig>,
     pub global_low_pass: bool,
     pub global_quality: klipp_core::ScopeQuality,
-    pub waveform_scale: WaveformScaleStyle,
+    /// The units the ··· menu last set every level pane to.
+    pub waveform_scale: ScopeScale,
+    /// Mark the legal range, codes 64 to 940, on every level pane.
+    #[serde(default)]
+    pub show_legal_range: bool,
     pub vectorscope_scale: VectorscopeScaleStyle,
     pub qualifier_focus: bool,
 }
@@ -3000,7 +3081,8 @@ impl Default for ScopeWindowState {
             panes: PaneConfig::default_for_layout(layout),
             global_low_pass: false,
             global_quality: klipp_core::ScopeQuality::Medium,
-            waveform_scale: WaveformScaleStyle::default(),
+            waveform_scale: ScopeScale::default(),
+            show_legal_range: false,
             vectorscope_scale: VectorscopeScaleStyle::default(),
             qualifier_focus: false,
         }
@@ -3359,6 +3441,7 @@ impl Default for AppState {
             show_keyframe_editor: false,
             scope_mode: ScopeMode::Waveform,
             scope_scale: ScopeScale::TenBit,
+            scope_legal_range: false,
             scope_show_r: true,
             scope_show_g: true,
             scope_show_b: true,

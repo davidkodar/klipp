@@ -1,7 +1,6 @@
 use crate::state::{
     PaneConfig, PaneScopeSettings, ScopeOptions, ScopeLayout, ScopeScale,
     ScopeType, ScopeWindowState, VectorscopeScaleStyle, WaveformChannel, WaveformPaintMode,
-    WaveformScaleStyle,
 };
 use crate::theme::KlippTheme;
 use klipp_engine::SharedFrameBuffer;
@@ -27,6 +26,8 @@ pub struct ScopeWindowRuntime {
     /// Per pane, the engine scope mode it showed this frame and the
     /// physical size it drew the image at: what the engine is asked to draw.
     pub shown_sizes: [Option<(u8, (u32, u32))>; 9],
+    /// The scopes measure PQ light: level graticules are in nits.
+    pub hdr_levels: bool,
 }
 
 impl Default for ScopeWindowRuntime {
@@ -40,6 +41,7 @@ impl Default for ScopeWindowRuntime {
             dot_menu_open: false,
             pointer_over: false,
             shown_sizes: [None; 9],
+            hdr_levels: false,
         }
     }
 }
@@ -812,7 +814,8 @@ fn render_pane_scope(
             let (img_rect, px) = super::scopes::pixel_rect(ui.ctx(), super::scopes::histogram_image_rect(r));
             runtime.shown_sizes[pane_idx] = Some((3, px));
             painter.image(tex.id(), img_rect, uv, egui::Color32::WHITE);
-            super::scopes::draw_histogram_scale(&painter, img_rect, pane.settings.scale, histogram_display, theme);
+            let scale = super::scopes::graticule_scale(pane.settings.scale, runtime.hdr_levels);
+            super::scopes::draw_histogram_scale(&painter, img_rect, scale, state.show_legal_range, histogram_display, theme);
         } else if pane.scope_type == ScopeType::Spectrogram {
             // F-157: dedicated spectrogram branch. Fills the full
             // content rect (no Waveform-style AXIS_W margin) and
@@ -882,7 +885,7 @@ fn render_pane_scope(
             );
         } else {
             // Waveform/Parade: scope image in trace area + scale overlay
-            let scale = pane.settings.scale;
+            let scale = super::scopes::graticule_scale(pane.settings.scale, runtime.hdr_levels);
             let (img_rect, px) = super::scopes::pixel_rect(ui.ctx(), egui::Rect::from_min_max(
                 egui::pos2(r.min.x + super::scopes::AXIS_W, r.min.y + super::scopes::PAD_TOP),
                 egui::pos2(r.max.x - super::scopes::PAD_RIGHT, r.max.y - super::scopes::PAD_BOTTOM),
@@ -912,7 +915,7 @@ fn render_pane_scope(
             painter.image(tex.id(), img_rect, uv, tint);
 
             let is_parade = pane.scope_type == ScopeType::Parade;
-            super::scopes::draw_scale(ui, r, scale, is_parade, 3, theme);
+            super::scopes::draw_scale(ui, r, scale, state.show_legal_range, is_parade, 3, theme);
 
             // Reference level lines (amber dashed)
             if pane.settings.show_reference_levels {
@@ -1349,23 +1352,30 @@ fn draw_dot_menu(
                 ui.set_min_width(190.0);
                 ui.spacing_mut().item_spacing = egui::vec2(6.0, 3.0);
 
-                // Waveform Scale Style submenu
+                // The level units of every waveform, parade and histogram
+                // pane at once; a pane's own settings can still differ.
                 ui.menu_button("Waveform Scale Style", |ui| {
                     let scales = [
-                        (WaveformScaleStyle::TenBit, "0 \u{2013} 1023 (10-bit)"),
-                        (WaveformScaleStyle::Ire, "0 \u{2013} 100 IRE"),
-                        (WaveformScaleStyle::Percent, "0 \u{2013} 100%"),
+                        (ScopeScale::TenBit, "0 \u{2013} 1023 (10-bit)"),
+                        (ScopeScale::Ire, "0 \u{2013} 100 IRE"),
+                        (ScopeScale::Percent, "0 \u{2013} 100%"),
                     ];
                     for (val, label) in &scales {
                         let prefix = if state.waveform_scale == *val { "\u{2022} " } else { "   " };
                         if ui.button(format!("{prefix}{label}")).clicked() {
                             state.waveform_scale = *val;
+                            for pane in &mut state.panes {
+                                pane.settings.scale = *val;
+                            }
                             ui.close_menu();
                         }
                     }
                     ui.separator();
-                    let legal_prefix = if false { "\u{2022} " } else { "   " };
-                    let _ = ui.button(format!("{legal_prefix}Show legal range (64\u{2013}940)"));
+                    let legal_prefix = if state.show_legal_range { "\u{2022} " } else { "   " };
+                    if ui.button(format!("{legal_prefix}Show legal range (64\u{2013}940)")).clicked() {
+                        state.show_legal_range = !state.show_legal_range;
+                        ui.close_menu();
+                    }
                 });
 
                 // Vectorscope Scale Style submenu

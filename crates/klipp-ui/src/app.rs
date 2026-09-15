@@ -27038,6 +27038,7 @@ impl eframe::App for KlippApp {
                 self.state.scope_low_pass,
                 self.state.scope_bloom,
             );
+            self.scope_window_runtime.hdr_levels = self.state.hdr_monitor.renders_hdr();
             crate::widgets::scope_window::show_scope_window(
                 ctx,
                 &mut self.state.scope_window,
@@ -30959,6 +30960,8 @@ impl KlippApp {
                             // Semi-transparent dark background
                             ui.painter().rect_filled(overlay_rect, 6.0, egui::Color32::from_black_alpha(160));
                             self.state.scope_state.scale = self.state.scope_scale;
+                            self.state.scope_state.legal_range = self.state.scope_legal_range;
+                            self.state.scope_state.hdr_levels = self.state.hdr_monitor.renders_hdr();
                             crate::widgets::scopes::show_scopes(
                                 ui,
                                 &mut self.state.scope_state,
@@ -32208,7 +32211,7 @@ impl KlippApp {
 
                         egui::ComboBox::from_id_salt("scope_scale_sel")
                             .width(50.0)
-                            .selected_text(egui::RichText::new(self.state.scope_scale.button_label()).size(9.0))
+                            .selected_text(egui::RichText::new(crate::widgets::scopes::graticule_scale(self.state.scope_scale, self.state.hdr_monitor.renders_hdr()).button_label()).size(9.0))
                             .show_ui(ui, |ui| {
                                 for s in [ScopeScale::TenBit, ScopeScale::Ire, ScopeScale::Percent] {
                                     ui.selectable_value(&mut self.state.scope_scale, s, s.label());
@@ -32332,6 +32335,8 @@ impl KlippApp {
                 self.state.scope_state.increment_settings_generation();
             }
             self.state.scope_state.scale = self.state.scope_scale;
+            self.state.scope_state.legal_range = self.state.scope_legal_range;
+            self.state.scope_state.hdr_levels = self.state.hdr_monitor.renders_hdr();
             self.state.scope_state.low_pass = self.state.scope_low_pass;
             self.state.scope_state.bloom = self.state.scope_bloom;
             self.state.scope_state.show_r = self.state.scope_show_r;
@@ -32422,14 +32427,14 @@ impl KlippApp {
                     ui.radio_value(&mut self.state.scope_scale, ScopeScale::TenBit, "0 \u{2013} 1023 (10-bit)");
                     ui.radio_value(&mut self.state.scope_scale, ScopeScale::Ire, "0 \u{2013} 100 IRE");
                     ui.radio_value(&mut self.state.scope_scale, ScopeScale::Percent, "0 \u{2013} 100%");
+                    ui.checkbox(&mut self.state.scope_legal_range, "Show legal range (64\u{2013}940)")
+                        .on_hover_text("Mark codes 64 and 940, the legal range of a 10-bit signal, on the waveform, parade and histogram.");
+                    if self.state.hdr_monitor.renders_hdr() {
+                        ui.label(egui::RichText::new("HDR monitoring: the graticule is in nits.").size(9.0).color(theme.text_dim));
+                    }
 
-                    // Per-mode FFmpeg options — only meaningful when the
-                    // FFmpeg path is the active renderer (KLIPP_SCOPE_FFMPEG=1).
-                    // Section appears unconditionally because the values
-                    // persist across path swaps. Shared helper so the
-                    // same UI block also renders inside the floating
-                    // scope window's per-pane settings (single source
-                    // of truth — both surfaces mutate `state.scope_options`).
+                    // The scope options: the same block the floating scope
+                    // window's settings show, both editing `state.scope_options`.
                     ui.add_space(4.0);
                     crate::widgets::scope_window::draw_scope_options(
                         ui,

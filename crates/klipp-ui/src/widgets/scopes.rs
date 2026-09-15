@@ -16,6 +16,12 @@ pub struct ScopeState {
     frame_generations: [u64; 4],
     /// Current scale mode (synced from AppState each frame).
     pub scale: ScopeScale,
+    /// Mark the legal range, codes 64 to 940, on the waveform, parade
+    /// and histogram graticules.
+    pub legal_range: bool,
+    /// The scopes measure PQ light: the graticule is in nits, whatever
+    /// `scale` says.
+    pub hdr_levels: bool,
     /// Enable horizontal low pass filter on scope output.
     pub low_pass: bool,
     /// Enable bloom on dense regions.
@@ -58,6 +64,8 @@ impl Default for ScopeState {
             textures: [None, None, None, None],
             frame_generations: [u64::MAX; 4], // MAX ensures first frame always triggers render
             scale: ScopeScale::TenBit,
+            legal_range: false,
+            hdr_levels: false,
             low_pass: false,
             bloom: false,
             show_r: true,
@@ -80,17 +88,20 @@ pub(crate) const PAD_RIGHT: f32 = 8.0;
 
 
 fn val_to_y(val: f32, rect: &egui::Rect, scale: ScopeScale) -> f32 {
-    let max = scale.max_val();
     let draw_h = rect.height() - PAD_TOP - PAD_BOTTOM;
-    rect.min.y + PAD_TOP + (1.0 - val / max) * draw_h
+    rect.min.y + PAD_TOP + (1.0 - scale.fraction(val)) * draw_h
 }
 
-/// Return major tick values for the given scale mode.
-fn major_ticks(scale: ScopeScale) -> Vec<u32> {
-    match scale {
-        ScopeScale::TenBit => vec![0, 128, 256, 384, 512, 640, 768, 896, 1023],
-        _ => (0..=10).map(|i| i * 10).collect(),
-    }
+/// The colour the legal range is marked in: a cool line, apart from the
+/// amber graticule.
+fn legal_colour(a: u8) -> egui::Color32 {
+    egui::Color32::from_rgba_unmultiplied(120, 200, 255, a)
+}
+
+/// The units a scope's graticule is drawn in: nits while the scopes
+/// measure PQ light, the chosen units otherwise.
+pub(crate) fn graticule_scale(scale: ScopeScale, hdr_levels: bool) -> ScopeScale {
+    if hdr_levels { ScopeScale::Nits } else { scale }
 }
 
 /// The graticule colour at alpha `a`: the theme's `scope_grid` blended
@@ -152,60 +163,73 @@ pub(crate) fn histogram_screen_panels(img: egui::Rect, mode: klipp_core::Histogr
 }
 
 /// The histogram's graticule over its image `img`: a line up each panel
-/// at every level mark, and the marks labelled in `scale`'s units along
-/// the bottom.
+/// at every level mark, the major marks labelled in `scale`'s units along
+/// the bottom, and the legal range marked when `legal`.
 pub(crate) fn draw_histogram_scale(
     painter: &egui::Painter,
     img: egui::Rect,
     scale: ScopeScale,
+    legal: bool,
     mode: klipp_core::HistogramDisplayMode,
     theme: &KlippTheme,
 ) {
     let font = egui::FontId::monospace(9.0);
-    let max = scale.max_val();
-    let (majors, minor_step): (&[f32], f32) = match scale {
-        ScopeScale::TenBit => (&[0.0, 256.0, 512.0, 768.0, 1023.0], 64.0),
-        _ => (&[0.0, 25.0, 50.0, 75.0, 100.0], 5.0),
-    };
+    let ticks = scale.ticks();
+    let majors: Vec<f32> = ticks.iter().filter(|t| t.major).map(|t| t.value).collect();
     for (panel, _) in histogram_screen_panels(img, mode, painter.ctx().pixels_per_point()) {
-        let x_of = |v: f32| panel.min.x + v / max * panel.width();
+        let x_of = |v: f32| panel.min.x + scale.fraction(v) * panel.width();
         // Minor marks, only where they stay apart.
-        if minor_step / max * panel.width() >= 6.0 {
-            let mut v = minor_step;
-            while v < max {
-                if !majors.iter().any(|m| (m - v).abs() < 0.1) {
-                    let x = x_of(v);
-                    painter.line_segment([egui::pos2(x, panel.min.y), egui::pos2(x, panel.max.y)], egui::Stroke::new(0.5_f32, graticule_amber(theme, 22)));
-                }
-                v += minor_step;
+        let minor_px = ticks
+            .windows(2)
+            .map(|w| (scale.fraction(w[1].value) - scale.fraction(w[0].value)) * panel.width())
+            .fold(f32::MAX, f32::min);
+        for t in &ticks {
+            if t.major {
+                let x = x_of(t.value);
+                painter.line_segment([egui::pos2(x, panel.min.y), egui::pos2(x, panel.max.y)], egui::Stroke::new(1.0_f32, graticule_amber(theme, 90)));
+            } else if minor_px >= 6.0 {
+                let x = x_of(t.value);
+                painter.line_segment([egui::pos2(x, panel.min.y), egui::pos2(x, panel.max.y)], egui::Stroke::new(0.5_f32, graticule_amber(theme, 22)));
             }
         }
-        for &v in majors {
-            let x = x_of(v);
-            painter.line_segment([egui::pos2(x, panel.min.y), egui::pos2(x, panel.max.y)], egui::Stroke::new(1.0_f32, graticule_amber(theme, 90)));
+        if legal {
+            if let Some((lo, hi)) = scale.legal_range() {
+                for v in [lo, hi] {
+                    let x = x_of(v);
+                    painter.line_segment([egui::pos2(x, panel.min.y), egui::pos2(x, panel.max.y)], egui::Stroke::new(1.0_f32, legal_colour(150)));
+                }
+            }
         }
         painter.line_segment(
             [egui::pos2(panel.min.x, panel.max.y), egui::pos2(panel.max.x, panel.max.y)],
             egui::Stroke::new(1.0_f32, egui::Color32::from_rgba_unmultiplied(255, 255, 255, 24)),
         );
-        // Labels under the image; a narrow panel names only its ends and
-        // middle.
-        let wide = panel.width() >= 200.0;
+        // Labels under the image, as many as stay apart: every major in a
+        // wide panel, every other in a narrow one, and always the ends.
+        let major_px = majors
+            .windows(2)
+            .map(|w| (scale.fraction(w[1]) - scale.fraction(w[0])) * panel.width())
+            .fold(f32::MAX, f32::min);
+        let every = if major_px >= 36.0 { 1 } else { 2 };
+        let last = majors.len() - 1;
         for (i, &v) in majors.iter().enumerate() {
-            if !wide && i % 2 == 1 {
+            if i % every != 0 && i != last {
                 continue;
             }
             let align = match i {
                 0 => egui::Align2::LEFT_TOP,
-                _ if i == majors.len() - 1 => egui::Align2::RIGHT_TOP,
+                _ if i == last => egui::Align2::RIGHT_TOP,
                 _ => egui::Align2::CENTER_TOP,
             };
-            painter.text(egui::pos2(x_of(v), img.max.y + 2.0), align, format!("{}", v as u32), font.clone(), theme.scope_label);
+            painter.text(egui::pos2(x_of(v), img.max.y + 2.0), align, scale.tick_label(v), font.clone(), theme.scope_label);
         }
     }
 }
 
-pub(crate) fn draw_scale(ui: &egui::Ui, rect: egui::Rect, scale: ScopeScale, is_parade: bool, section_count: usize, theme: &KlippTheme) {
+/// The waveform's or parade's graticule over `rect`: level lines and
+/// labels in `scale`'s units, the legal range when `legal`, and the ruler
+/// along the bottom.
+pub(crate) fn draw_scale(ui: &egui::Ui, rect: egui::Rect, scale: ScopeScale, legal: bool, is_parade: bool, section_count: usize, theme: &KlippTheme) {
     let painter = ui.painter_at(rect);
     // Graticule colour. The theme's `scope_grid` is blended 50%
     // toward classic CRT-graticule gold (#e8a820) so guides land
@@ -221,30 +245,22 @@ pub(crate) fn draw_scale(ui: &egui::Ui, rect: egui::Rect, scale: ScopeScale, is_
     let warm_amber = |a: u8| graticule_amber(theme, a);
     let font = egui::FontId::monospace(9.0);
 
-    let major_vals: Vec<f32> = major_ticks(scale).into_iter().map(|v| v as f32).collect();
-    let minor_step: f32 = match scale {
-        ScopeScale::TenBit => 32.0,
-        _ => 5.0,
-    };
+    let ticks = scale.ticks();
+    let major_vals: Vec<f32> = ticks.iter().filter(|t| t.major).map(|t| t.value).collect();
 
     // Minor grid lines — pushed subtler (alpha 10 → 8, tick 64 → 48) so
     // major lines dominate and the hierarchy reads cleanly.
-    let max = scale.max_val();
-    let mut v = 0.0;
-    while v <= max {
-        let y = val_to_y(v, &rect, scale);
-        if !major_vals.iter().any(|&mv| (mv - v).abs() < 0.1) {
-            painter.line_segment(
-                [egui::pos2(rect.min.x + AXIS_W, y), egui::pos2(rect.max.x, y)],
-                egui::Stroke::new(0.5_f32, warm_amber(8)),
-            );
-            // 3px tick on axis
-            painter.line_segment(
-                [egui::pos2(rect.min.x + AXIS_W - 3.0, y), egui::pos2(rect.min.x + AXIS_W, y)],
-                egui::Stroke::new(0.5_f32, warm_amber(48)),
-            );
-        }
-        v += minor_step;
+    for t in ticks.iter().filter(|t| !t.major) {
+        let y = val_to_y(t.value, &rect, scale);
+        painter.line_segment(
+            [egui::pos2(rect.min.x + AXIS_W, y), egui::pos2(rect.max.x, y)],
+            egui::Stroke::new(0.5_f32, warm_amber(8)),
+        );
+        // 3px tick on axis
+        painter.line_segment(
+            [egui::pos2(rect.min.x + AXIS_W - 3.0, y), egui::pos2(rect.min.x + AXIS_W, y)],
+            egui::Stroke::new(0.5_f32, warm_amber(48)),
+        );
     }
 
     // Major grid lines + labels — pushed thicker (stroke 0.5 → 1.5)
@@ -263,10 +279,26 @@ pub(crate) fn draw_scale(ui: &egui::Ui, rect: egui::Rect, scale: ScopeScale, is_
             [egui::pos2(rect.min.x + AXIS_W - 6.0, y), egui::pos2(rect.min.x + AXIS_W, y)],
             egui::Stroke::new(1.5_f32, warm_amber(235)),
         );
-        // Label — right-aligned to axis, 0 sits BELOW (TOP baseline), others sit ABOVE (BOTTOM baseline)
-        let label = format!("{}", val as u32);
-        let align = if val < 0.1 { egui::Align2::RIGHT_TOP } else { egui::Align2::RIGHT_BOTTOM };
+        // Label — right-aligned to axis; the bottom mark sits BELOW its
+        // line (TOP baseline), the others ABOVE (BOTTOM baseline).
+        let label = scale.tick_label(val);
+        let align = if scale.fraction(val) < 0.02 { egui::Align2::RIGHT_TOP } else { egui::Align2::RIGHT_BOTTOM };
         painter.text(egui::pos2(rect.min.x + AXIS_W - 8.0, y), align, &label, font.clone(), label_color);
+    }
+
+    // The legal range, codes 64 and 940: two cool lines across the trace,
+    // named at the right in the scale's units.
+    if legal {
+        if let Some((lo, hi)) = scale.legal_range() {
+            for v in [lo, hi] {
+                let y = val_to_y(v, &rect, scale);
+                painter.line_segment(
+                    [egui::pos2(rect.min.x + AXIS_W, y), egui::pos2(rect.max.x, y)],
+                    egui::Stroke::new(1.0_f32, legal_colour(150)),
+                );
+                painter.text(egui::pos2(rect.max.x - 2.0, y - 1.0), egui::Align2::RIGHT_BOTTOM, scale.tick_label(v), font.clone(), legal_colour(220));
+            }
+        }
     }
 
     // Axis separator — 1px vertical at x=AXIS_W, rgba(255,255,255,0.08)
@@ -625,7 +657,8 @@ pub fn show_scopes(
             ui.painter().image(tex.id(), img_rect,
                 egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
                 egui::Color32::WHITE);
-            draw_histogram_scale(&ui.painter_at(full_rect), img_rect, state.scale, histogram_display, theme);
+            let scale = graticule_scale(state.scale, state.hdr_levels);
+            draw_histogram_scale(&ui.painter_at(full_rect), img_rect, scale, state.legal_range, histogram_display, theme);
         } else {
             // Waveform/Parade: scope image + scale overlay
             let (img_rect, px) = pixel_rect(ui.ctx(), egui::Rect::from_min_max(
@@ -639,9 +672,9 @@ pub fn show_scopes(
 
             // Draw scale system on top
             // Read scale from the scope_state (passed via the ScopeState struct)
-            let scale = state.scale;
+            let scale = graticule_scale(state.scale, state.hdr_levels);
             let is_parade = mode == ScopeMode::Parade;
-            draw_scale(ui, full_rect, scale, is_parade, 3, theme);
+            draw_scale(ui, full_rect, scale, state.legal_range, is_parade, 3, theme);
 
         }
 
@@ -1403,12 +1436,18 @@ mod tests {
     }
 
     #[test]
-    fn test_val_to_y_ire_range() {
+    fn ire_puts_zero_at_code_64_and_100_at_code_940() {
         let rect = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(400.0, 300.0));
-        let y_top = val_to_y(100.0, &rect, ScopeScale::Ire);
-        assert!((y_top - PAD_TOP).abs() < 1.0, "100 IRE at y={y_top}, expected ~{PAD_TOP}");
-        let y_bot = val_to_y(0.0, &rect, ScopeScale::Ire);
-        assert!((y_bot - (300.0 - PAD_BOTTOM)).abs() < 1.0, "0 IRE at y={y_bot}, expected ~{}", 300.0 - PAD_BOTTOM);
+        let draw_h = 300.0 - PAD_TOP - PAD_BOTTOM;
+        let y_100 = val_to_y(100.0, &rect, ScopeScale::Ire);
+        assert!((y_100 - (PAD_TOP + (1.0 - 940.0 / 1023.0) * draw_h)).abs() < 0.5, "100 IRE at y={y_100}");
+        let y_0 = val_to_y(0.0, &rect, ScopeScale::Ire);
+        assert!((y_0 - (PAD_TOP + (1.0 - 64.0 / 1023.0) * draw_h)).abs() < 0.5, "0 IRE at y={y_0}");
+        // Code 1023 is 109.5 IRE, code 0 is -7.3.
+        assert!((ScopeScale::Ire.value(1.0) - 109.47).abs() < 0.05);
+        assert!((ScopeScale::Ire.value(0.0) + 7.31).abs() < 0.05);
+        assert_eq!(ScopeScale::Ire.legal_range().map(|(a, b)| (a.round(), b.round())), Some((0.0, 100.0)));
+        assert_eq!(ScopeScale::TenBit.legal_range(), Some((64.0, 940.0)));
     }
 
     #[test]
@@ -1418,22 +1457,28 @@ mod tests {
         assert!(y >= PAD_TOP - 1.0, "1023 label at y={} is too close to top edge", y);
     }
 
-    #[test]
-    fn test_major_ticks_10bit() {
-        let ticks = major_ticks(ScopeScale::TenBit);
-        assert_eq!(ticks, vec![0, 128, 256, 384, 512, 640, 768, 896, 1023]);
+    fn majors(scale: ScopeScale) -> Vec<i32> {
+        scale.ticks().iter().filter(|t| t.major).map(|t| t.value.round() as i32).collect()
     }
 
     #[test]
-    fn test_major_ticks_ire() {
-        let ticks = major_ticks(ScopeScale::Ire);
-        assert_eq!(ticks, vec![0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100]);
-    }
-
-    #[test]
-    fn test_major_ticks_percent() {
-        let ticks = major_ticks(ScopeScale::Percent);
-        assert_eq!(ticks, vec![0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100]);
+    fn every_scale_marks_its_majors_and_every_mark_lies_on_the_trace() {
+        assert_eq!(majors(ScopeScale::TenBit), vec![0, 128, 256, 384, 512, 640, 768, 896, 1023]);
+        assert_eq!(majors(ScopeScale::Ire), vec![0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100]);
+        assert_eq!(majors(ScopeScale::Percent), vec![0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100]);
+        assert_eq!(majors(ScopeScale::Nits), vec![0, 1, 10, 100, 203, 1000, 10000]);
+        for scale in [ScopeScale::TenBit, ScopeScale::Ire, ScopeScale::Percent, ScopeScale::Nits] {
+            for t in scale.ticks() {
+                let f = scale.fraction(t.value);
+                assert!((0.0..=1.0).contains(&f), "{scale:?} mark {} at {f}", t.value);
+                assert!((scale.value(f) - t.value).abs() <= 0.01 * t.value.abs().max(1.0), "{scale:?} mark {} round-trips", t.value);
+            }
+        }
+        // Reference white sits at its PQ code; 10 000 nits is the top.
+        assert!((ScopeScale::Nits.fraction(203.0) - 0.58).abs() < 0.01);
+        assert!((ScopeScale::Nits.fraction(10_000.0) - 1.0).abs() < 1e-4);
+        assert_eq!(ScopeScale::Nits.tick_label(1000.0), "1k");
+        assert_eq!(ScopeScale::Nits.legal_range(), None);
     }
 
     #[test]
