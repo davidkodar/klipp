@@ -1729,8 +1729,10 @@ pub fn matte_channel(ch: klipp_nodes::params::MatteChannel) -> klipp_effects::tr
     }
 }
 
-/// Resample to the output size when a source arrives at another size
-/// (straight alpha): an area average when shrinking by more than half, so
+/// Place a source of another size in the output frame the way the
+/// suites do: scaled by one factor to fit, centred, the rest left empty
+/// (a portrait clip in a landscape sequence gets bars, not a stretch).
+/// Straight alpha; an area average when shrinking by more than half so
 /// a 4K overlay over a 1080p frame does not alias, bilinear otherwise.
 fn fit(p: Arc<Vec<f32>>, w: u32, h: u32, ow: u32, oh: u32) -> Arc<Vec<f32>> {
     use rayon::prelude::*;
@@ -1738,13 +1740,23 @@ fn fit(p: Arc<Vec<f32>>, w: u32, h: u32, ow: u32, oh: u32) -> Arc<Vec<f32>> {
         return p;
     }
     let (w, h, ow_u) = (w as usize, h as usize, ow as usize);
-    let (sx, sy) = (w as f32 / ow as f32, h as f32 / oh as f32);
+    let scale = (ow as f32 / w as f32).min(oh as f32 / h as f32);
+    // The picture's place in the frame, in whole output pixels.
+    let dw = ((w as f32 * scale).round() as usize).clamp(1, ow_u);
+    let dh = ((h as f32 * scale).round() as usize).clamp(1, oh as usize);
+    let (x_off, y_off) = ((ow_u - dw) / 2, (oh as usize - dh) / 2);
+    let (sx, sy) = (w as f32 / dw as f32, h as f32 / dh as f32);
     let mut out = vec![0.0f32; ow_u * (oh as usize) * 4];
-    out.par_chunks_exact_mut(ow_u * 4).enumerate().for_each(|(y, row)| {
+    out.par_chunks_exact_mut(ow_u * 4).enumerate().for_each(|(oy, row)| {
+        if oy < y_off || oy >= y_off + dh {
+            return;
+        }
+        let y = oy - y_off;
+        let dest = &mut row[x_off * 4..(x_off + dw) * 4];
         if sx >= 2.0 && sy >= 2.0 {
             let y0 = ((y as f32 * sy) as usize).min(h - 1);
             let y1 = (((y + 1) as f32 * sy) as usize).clamp(y0 + 1, h);
-            for x in 0..ow_u {
+            for x in 0..dw {
                 let x0 = ((x as f32 * sx) as usize).min(w - 1);
                 let x1 = (((x + 1) as f32 * sx) as usize).clamp(x0 + 1, w);
                 let mut acc = [0.0f32; 4];
@@ -1758,7 +1770,7 @@ fn fit(p: Arc<Vec<f32>>, w: u32, h: u32, ow: u32, oh: u32) -> Arc<Vec<f32>> {
                 }
                 let n = ((y1 - y0) * (x1 - x0)) as f32;
                 for c in 0..4 {
-                    row[x * 4 + c] = acc[c] / n;
+                    dest[x * 4 + c] = acc[c] / n;
                 }
             }
             return;
@@ -1766,7 +1778,7 @@ fn fit(p: Arc<Vec<f32>>, w: u32, h: u32, ow: u32, oh: u32) -> Arc<Vec<f32>> {
         let fy = ((y as f32 + 0.5) * sy - 0.5).clamp(0.0, (h - 1) as f32);
         let (y0, ty) = (fy.floor() as usize, fy.fract());
         let y1 = (y0 + 1).min(h - 1);
-        for x in 0..ow_u {
+        for x in 0..dw {
             let fx = ((x as f32 + 0.5) * sx - 0.5).clamp(0.0, (w - 1) as f32);
             let (x0, tx) = (fx.floor() as usize, fx.fract());
             let x1 = (x0 + 1).min(w - 1);
@@ -1774,11 +1786,65 @@ fn fit(p: Arc<Vec<f32>>, w: u32, h: u32, ow: u32, oh: u32) -> Arc<Vec<f32>> {
                 let at = |xx: usize, yy: usize| p[(yy * w + xx) * 4 + c];
                 let top = at(x0, y0) + (at(x1, y0) - at(x0, y0)) * tx;
                 let bot = at(x0, y1) + (at(x1, y1) - at(x0, y1)) * tx;
-                row[x * 4 + c] = top + (bot - top) * ty;
+                dest[x * 4 + c] = top + (bot - top) * ty;
             }
         }
     });
     Arc::new(out)
+}
+
+#[cfg(test)]
+mod fit_tests {
+    use super::*;
+
+    fn frame(w: usize, h: usize, rgb: [f32; 3]) -> Arc<Vec<f32>> {
+        Arc::new((0..w * h).flat_map(|_| [rgb[0], rgb[1], rgb[2], 1.0]).collect())
+    }
+
+    fn px(out: &[f32], ow: usize, x: usize, y: usize) -> [f32; 4] {
+        let i = (y * ow + x) * 4;
+        [out[i], out[i + 1], out[i + 2], out[i + 3]]
+    }
+
+    #[test]
+    fn a_portrait_clip_in_a_landscape_frame_is_centred_with_bars_not_stretched() {
+        // 9:16 into 16:9: the picture fills the height and sits in the
+        // middle at 9/16 of the height wide.
+        let src = frame(90, 160, [0.5, 0.25, 0.75]);
+        let out = fit(src, 90, 160, 320, 180);
+        let (ow, oh) = (320usize, 180usize);
+        let dw = (180.0 * 90.0 / 160.0_f32).round() as usize; // 101
+        let x_off = (ow - dw) / 2;
+        assert_eq!(px(&out, ow, x_off - 1, oh / 2), [0.0; 4], "bar on the left is empty");
+        assert_eq!(px(&out, ow, x_off + dw, oh / 2), [0.0; 4], "bar on the right is empty");
+        assert_eq!(px(&out, ow, ow / 2, 0), [0.5, 0.25, 0.75, 1.0], "the picture reaches the top");
+        assert_eq!(px(&out, ow, ow / 2, oh - 1), [0.5, 0.25, 0.75, 1.0], "and the bottom");
+        assert_eq!(px(&out, ow, x_off, oh / 2), [0.5, 0.25, 0.75, 1.0]);
+        assert_eq!(px(&out, ow, x_off + dw - 1, oh / 2), [0.5, 0.25, 0.75, 1.0]);
+    }
+
+    #[test]
+    fn a_landscape_clip_in_a_portrait_frame_gets_bars_above_and_below_and_a_same_size_frame_passes_through() {
+        let src = frame(160, 90, [1.0, 0.0, 0.0]);
+        let out = fit(src.clone(), 160, 90, 180, 320);
+        let (ow, oh) = (180usize, 320usize);
+        let dh = (180.0 * 90.0 / 160.0_f32).round() as usize; // 101
+        let y_off = (oh - dh) / 2;
+        assert_eq!(px(&out, ow, ow / 2, y_off - 1), [0.0; 4]);
+        assert_eq!(px(&out, ow, ow / 2, y_off + dh), [0.0; 4]);
+        assert_eq!(px(&out, ow, 0, oh / 2), [1.0, 0.0, 0.0, 1.0], "the picture fills the width");
+        assert_eq!(px(&out, ow, ow - 1, oh / 2), [1.0, 0.0, 0.0, 1.0]);
+        // A source that is already the output size is the output.
+        let same = fit(src.clone(), 160, 90, 160, 90);
+        assert!(Arc::ptr_eq(&same, &src));
+        // A shrink by more than half takes the area-average path and
+        // still keeps its aspect: 4K portrait into 640x360.
+        let big = frame(2160, 3840, [0.2, 0.4, 0.6]);
+        let out = fit(big, 2160, 3840, 640, 360);
+        assert_eq!(px(&out, 640, 10, 180), [0.0; 4], "bars at the sides");
+        let c = px(&out, 640, 320, 180);
+        assert!(c.iter().zip([0.2, 0.4, 0.6, 1.0]).all(|(a, b)| (a - b).abs() < 1e-4), "{c:?}");
+    }
 }
 
 /// A source frame as linear RGBA at the output size: scene-linear for
