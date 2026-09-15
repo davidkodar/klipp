@@ -7922,6 +7922,9 @@ impl PlaybackEngine {
     /// open so resuming is instant — only state + clock anchor flip.
     fn pause_source(&mut self) {
         if self.source_state != PlaybackState::Playing {
+            // Already paused: say so anyway, so a UI that thought
+            // otherwise falls back into step.
+            let _ = self.event_tx.send(AppEvent::SourcePlaybackPaused);
             return;
         }
         if let Some(ref dec) = self.source_decoder {
@@ -8028,6 +8031,13 @@ impl PlaybackEngine {
             m.tracks[self.source_mixer_track_index].muted = true;
         }
         self.source_path = None;
+        // A source stopped mid-play — another clip picked while one was
+        // playing — is a pause as far as the UI's play button knows;
+        // left untold, the button stayed on "playing" and every click
+        // sent a Pause the engine had nothing to pause.
+        if self.source_state == PlaybackState::Playing {
+            let _ = self.event_tx.send(AppEvent::SourcePlaybackPaused);
+        }
         self.source_state = PlaybackState::Idle;
         self.source_playhead_secs = 0.0;
     }
