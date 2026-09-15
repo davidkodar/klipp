@@ -312,6 +312,7 @@ fn make_otio_media_item(path: PathBuf, filename: String, fps: Fps, offline: bool
         waveform_data: None,
         audio_cache: None,
         shot: Default::default(),
+        metadata_read: false,
     }
 }
 

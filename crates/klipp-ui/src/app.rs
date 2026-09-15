@@ -1329,6 +1329,7 @@ impl KlippApp {
                         color_transfer,
                         pixel_format,
                         shot,
+                        metadata_read: true,
                         detected_log_format: Default::default(),
                         log_format_user_set: false,
                         skim_file: None,
@@ -11317,6 +11318,26 @@ impl KlippApp {
 
     fn handle_media_relinking(&mut self, cmd: &AppCommand, _needs_refresh: &mut bool) -> bool {
         match cmd {
+                AppCommand::RefreshMediaMetadata { media_ids } => {
+                    // The same re-probe a relink uses: the file is read
+                    // again and the item keeps what the user said about it.
+                    let files: Vec<(klipp_core::MediaId, std::path::PathBuf)> = media_ids
+                        .iter()
+                        .filter_map(|id| self.state.media_pool.get(id))
+                        .filter(|m| matches!(m.kind, klipp_media::MediaItemKind::File) && !m.offline)
+                        .map(|m| (m.id, m.path.clone()))
+                        .collect();
+                    let n = files.len();
+                    for (media_id, path) in files {
+                        let _ = self.cmd_tx.send(AppCommand::LoadMediaFile { path, media_id });
+                    }
+                    self.state.toast.show(match n {
+                        0 => "No online files to read".to_string(),
+                        1 => "Reading the file's metadata".to_string(),
+                        n => format!("Reading the metadata of {n} files"),
+                    });
+                    true
+                }
                 AppCommand::CleanOrphanedCaches => {
                     let cleaned = self.clean_orphaned_caches();
                     self.state.toast.show(cleaned);
@@ -11679,6 +11700,7 @@ impl KlippApp {
                         waveform_data: None,
                         audio_cache: None,
                         shot: Default::default(),
+                        metadata_read: false,
                     };
                     self.state.media_pool.add(media_item);
                     // Imports stay off the timeline-edit undo stack (FCP /
@@ -22893,6 +22915,28 @@ impl KlippApp {
         self.do_open_project_inner(path);
     }
 
+    /// Read the shot metadata of every item whose file was imported
+    /// before the probe read it — a project saved by an earlier build.
+    /// Each goes through the same re-probe a relink uses, which keeps
+    /// what the user said about the item; it happens once, since the
+    /// probe marks the item read.
+    fn probe_unread_metadata(&mut self) {
+        let unread: Vec<(klipp_core::MediaId, std::path::PathBuf)> = self
+            .state
+            .media_pool
+            .all()
+            .filter(|m| m.wants_metadata_probe())
+            .map(|m| (m.id, m.path.clone()))
+            .collect();
+        if unread.is_empty() {
+            return;
+        }
+        tracing::info!("Reading the shot metadata of {} clips imported before it was kept", unread.len());
+        for (media_id, path) in unread {
+            let _ = self.cmd_tx.send(AppCommand::LoadMediaFile { path, media_id });
+        }
+    }
+
     fn do_open_project_inner(&mut self, path: &std::path::Path) {
         match klipp_project::load_project(path) {
             Ok((sequences, media_pool, color_settings, active_id, created_at, notes,
@@ -22908,6 +22952,7 @@ impl KlippApp {
                 self.state.media_pool = media_pool;
                 self.state.title_assets = title_assets;
                 self.state.looks = klipp_project::load_looks(path);
+                self.probe_unread_metadata();
                 // Restore saved timeline view-state (zoom + scroll). Legacy
                 // project files don't carry these — leave the in-memory
                 // defaults alone in that case.
@@ -34257,6 +34302,7 @@ fn build_whoosh_media_item(
         waveform_data: None,
         audio_cache: None,
         shot: Default::default(),
+        metadata_read: false,
     }
 }
 
@@ -38448,6 +38494,7 @@ mod insert_audio_media_clip_tests {
             waveform_data: None,
             audio_cache: None,
             shot: Default::default(),
+            metadata_read: false,
         }
     }
 

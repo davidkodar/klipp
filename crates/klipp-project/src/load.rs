@@ -193,6 +193,7 @@ pub fn load_project(dir: &Path) -> Result<LoadResult, String> {
             waveform_data: None,
             audio_cache: None,
             shot: Default::default(),
+            metadata_read: false,
         };
         // Re-run the log-format heuristic now that the metadata
         // fields are restored, so files saved before #35 (or files

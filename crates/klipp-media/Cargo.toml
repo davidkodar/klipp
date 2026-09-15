@@ -15,5 +15,8 @@ dirs = { workspace = true }
 kamadak-exif = "0.6"
 roxmltree = "0.20"
 
+[dev-dependencies]
+serde_json = { workspace = true }
+
 [lints]
 workspace = true

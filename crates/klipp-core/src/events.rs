@@ -1312,6 +1312,10 @@ pub enum AppCommand {
     EndScrub,
     /// Relink a specific offline media item to a new path.
     RelinkMedia { media_id: MediaId, new_path: PathBuf },
+    /// Read these items' files again for what the camera recorded about
+    /// the shot (timecode, reel, exposure, sidecar, every tag), keeping
+    /// what the user said about them.
+    RefreshMediaMetadata { media_ids: Vec<MediaId> },
     /// Relink all offline media by searching a directory recursively.
     RelinkAllFromDirectory { directory: PathBuf },
     /// Show the media relink dialog.

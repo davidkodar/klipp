@@ -255,6 +255,11 @@ pub struct MediaItem {
     /// Timecode, reel, lens, exposure and every tag the file carried.
     #[serde(default)]
     pub shot: klipp_core::ShotMetadata,
+    /// The import probe has read `shot`. False for an item saved before
+    /// the probe read it, which is probed once more when its project
+    /// opens; see [`MediaItem::wants_metadata_probe`].
+    #[serde(default)]
+    pub metadata_read: bool,
     /// Path to skim-optimised file (all-keyframe transcode for instant seeking)
     #[serde(default)]
     pub skim_file: Option<PathBuf>,
@@ -383,6 +388,7 @@ impl MediaItem {
             waveform_data: None,
             audio_cache: None,
             shot: Default::default(),
+            metadata_read: false,
         }
     }
 
@@ -554,6 +560,7 @@ mod subclip_tests {
             waveform_data: None,
             audio_cache: None,
             shot: Default::default(),
+            metadata_read: false,
         }
     }
 
@@ -728,6 +735,7 @@ mod effective_rotation_tests {
             waveform_data: None,
             audio_cache: None,
             shot: Default::default(),
+            metadata_read: false,
         }
     }
 
@@ -789,6 +797,14 @@ pub fn same_file_as_probed(old: &MediaItem, fresh: &MediaItem) -> bool {
 /// It used to replace the item wholesale, so relinking a clip cost its
 /// rating, tags and bin; and a proxy keyed by media id survived a relink
 /// to a different file.
+impl MediaItem {
+    /// Whether the item's file should be probed again for its shot
+    /// metadata: a file on disk whose metadata was never read.
+    pub fn wants_metadata_probe(&self) -> bool {
+        matches!(self.kind, MediaItemKind::File) && !self.offline && !self.metadata_read && self.path.is_file()
+    }
+}
+
 pub fn merge_reprobed(old: &MediaItem, fresh: &mut MediaItem) {
     fresh.rating = old.rating;
     fresh.tags = old.tags.clone();
@@ -868,6 +884,7 @@ impl MediaItem {
             log_format_user_set: false,
             parent_media_id: None,
             shot: Default::default(),
+            metadata_read: false,
         }
     }
 }
@@ -904,5 +921,37 @@ mod reprobe_tests {
         merge_reprobed(&old, &mut other);
         assert_eq!(other.rating, 4);
         assert!(!other.proxy_ready && other.proxy_path.is_none() && other.skim_file.is_none());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_an_online_file_whose_metadata_was_never_read_wants_a_probe() {
+        let dir = std::env::temp_dir().join(format!("klipp-probe-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("clip.mp4");
+        std::fs::write(&file, b"").unwrap();
+        let mut item = MediaItem::synthetic_for_test(file.clone(), None);
+        item.kind = MediaItemKind::File;
+        item.metadata_read = false;
+        item.offline = false;
+        assert!(item.wants_metadata_probe(), "an online file never read");
+        item.metadata_read = true;
+        assert!(!item.wants_metadata_probe(), "read once is enough");
+        item.metadata_read = false;
+        item.offline = true;
+        assert!(!item.wants_metadata_probe(), "an offline file cannot be read");
+        item.offline = false;
+        item.path = dir.join("gone.mp4");
+        assert!(!item.wants_metadata_probe(), "a missing file cannot be read");
+        // An item saved before the field existed loads as never read.
+        let json = serde_json::to_string(&item).unwrap().replace("\"metadata_read\":false,", "");
+        assert!(!json.contains("metadata_read"));
+        let back: MediaItem = serde_json::from_str(&json).unwrap();
+        assert!(!back.metadata_read);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

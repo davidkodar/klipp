@@ -381,6 +381,7 @@ fn register_asset_media(
         waveform_data: None,
         audio_cache: None,
         shot: Default::default(),
+        metadata_read: false,
     };
     let id = media_pool.add(item);
     cache.insert(asset_id.to_string(), id);

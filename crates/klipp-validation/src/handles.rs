@@ -216,6 +216,7 @@ mod tests {
             audio_cache: None,
             parent_media_id: None,
             shot: Default::default(),
+            metadata_read: false,
         }
     }
 

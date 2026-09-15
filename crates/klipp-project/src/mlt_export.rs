@@ -385,6 +385,7 @@ mod tests {
             waveform_data: None,
             audio_cache: None,
             shot: Default::default(),
+            metadata_read: false,
         }
     }
 

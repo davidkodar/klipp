@@ -637,6 +637,7 @@ mod tests {
             log_format_user_set: false,
             parent_media_id: None,
             shot: Default::default(),
+            metadata_read: false,
         }
     }
 

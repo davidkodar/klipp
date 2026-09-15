@@ -60,6 +60,8 @@ Import records what the camera wrote about the shot, and the Info tab and clip p
 
 Cameras that write exposure only into their own container boxes, or into proprietary raw headers, are not read yet: their clips show what the container tags carry.
 
+A project saved before Klipp kept this metadata reads it the first time the project opens, one file at a time in the background, and saves it with the project. **Refresh Metadata** in a clip's right-click menu reads a file again at any time, for instance after copying its sidecar next to it.
+
 ## Subtitles
 
 - **SRT** (SubRip) — standard timed text format

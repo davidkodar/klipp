@@ -1952,6 +1952,13 @@ fn show_context_menu(
         cmds.push(AppCommand::RegenerateSkimTranscode { media_id });
         ui.close_menu();
     }
+    if ui.add_enabled(!offline, egui::Button::new("Refresh Metadata"))
+        .on_hover_text("Read the file again for what the camera recorded: timecode, reel, exposure, a sidecar copied beside it since, every tag.")
+        .clicked()
+    {
+        cmds.push(AppCommand::RefreshMediaMetadata { media_ids: vec![media_id] });
+        ui.close_menu();
+    }
     ui.separator();
     ui.menu_button("Set Rating", |ui| {
         for r in 0..=5u8 {
@@ -2066,6 +2073,10 @@ fn show_multi_context_menu(
         cmds.push(AppCommand::OpenBatchRenameDialog {
             media_ids: selected_ids.iter().copied().collect(),
         });
+    }
+    if ui.button("Refresh Metadata").on_hover_text("Read these files again for what the camera recorded.").clicked() {
+        ui.close_menu();
+        cmds.push(AppCommand::RefreshMediaMetadata { media_ids: selected_ids.iter().copied().collect() });
     }
     ui.separator();
     ui.menu_button("Move to bin", |ui| {

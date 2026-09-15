@@ -567,6 +567,7 @@ fn register_media(
         waveform_data: None,
         audio_cache: None,
         shot: Default::default(),
+        metadata_read: false,
     };
     Some(media_pool.add(item))
 }
