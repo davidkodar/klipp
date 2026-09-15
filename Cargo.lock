@@ -3078,6 +3078,7 @@ dependencies = [
  "klipp-project",
  "klipp-timeline",
  "klipp-title",
+ "klipp-transitions",
  "klipp-validation",
  "libc",
  "notify",

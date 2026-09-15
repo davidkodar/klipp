@@ -2,6 +2,10 @@
 
 Transitions provide smooth visual changes between adjacent clips on the timeline.
 
+## The Library
+
+**Library → Transitions** shows every transition as a card rendered by the same code the timeline uses, between two frames of your own footage: the posters of the first two clips in the media pool, or one poster and a darker copy of it when the project has a single clip. A card at rest shows the midpoint of the transition; hover it to play the whole move. Slides and wipes keep a small arrow for their direction.
+
 ## Adding Transitions
 
 To add a transition between two clips:

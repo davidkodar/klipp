@@ -6,6 +6,7 @@ pub mod library_card;
 pub mod audio_fx_tab;
 pub mod titles_tab;
 pub mod title_previews;
+pub mod transition_previews;
 pub mod transitions_tab;
 pub mod generators_tab;
 
@@ -757,6 +758,8 @@ pub struct BrowserPanel {
     pub titles_selected: Option<String>,
     /// Title cards rendered by the real title engine.
     title_previews: title_previews::TitlePreviews,
+    /// Transition cards rendered between two frames of the project.
+    transition_previews: transition_previews::TransitionPreviews,
     // ── Transitions tab state ──
     pub transitions_category: Option<transitions_tab::TransitionsCategory>,
     pub transitions_source_filter: transitions_tab::TransitionsSourceFilter,
@@ -979,6 +982,7 @@ impl Default for BrowserPanel {
             titles_sort: effects_tab::EffectSort::NameAsc,
             titles_selected: None,
             title_previews: title_previews::TitlePreviews::default(),
+            transition_previews: transition_previews::TransitionPreviews::default(),
             transitions_category: None,
             transitions_source_filter: transitions_tab::TransitionsSourceFilter::All,
             transitions_gpu_only: false,
@@ -1067,6 +1071,7 @@ impl BrowserPanel {
     /// race the device shutdown into a SIGSEGV.
     pub fn clear_textures_for_shutdown(&mut self) {
         self.title_previews.drain();
+        self.transition_previews.drain();
         self.file_thumb_textures.clear();
         self.file_filmstrip_textures.clear();
         for bucket in &mut self.deferred_texture_drops {
@@ -4756,6 +4761,14 @@ impl BrowserPanel {
                 )
             }
             LibraryCategory::Transitions => {
+                {
+                    let mut displaced = Vec::new();
+                    self.transition_previews.poll(ui.ctx(), &mut displaced);
+                    if let Some(frames) = transitions_tab::project_frames(state) {
+                        self.transition_previews.set_frames(frames, &mut displaced);
+                    }
+                    self.defer_drop_textures(displaced);
+                }
                 transitions_tab::show(
                     ui,
                     state,
@@ -4767,6 +4780,7 @@ impl BrowserPanel {
                     &mut self.transitions_view_mode,
                     &mut self.transitions_sort,
                     &mut self.transitions_selected,
+                    &mut self.transition_previews,
                 )
             }
             LibraryCategory::Generators => {

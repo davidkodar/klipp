@@ -1,3 +1,4 @@
+use crate::browser::transition_previews::TransitionPreviews;
 use crate::browser::effects_tab::{EffectSort, EffectViewMode};
 use crate::drag_drop::DragPayload;
 use crate::icons::Icon;
@@ -1497,6 +1498,7 @@ pub fn show(
     view_mode: &mut EffectViewMode,
     sort_mode: &mut EffectSort,
     selected: &mut Option<String>,
+    previews: &mut TransitionPreviews,
 ) -> Vec<AppCommand> {
     let mut cmds = Vec::new();
     let avail = ui.available_rect_before_wrap();
@@ -1700,9 +1702,10 @@ pub fn show(
                                 let spec = klipp_core::spec_for_kind(tr.kind);
                                 let is_selected = selected.as_deref() == Some(spec.display_name);
                                 let elapsed = tx_read_anim_elapsed(ui, spec.display_name);
+                                let tex = preview_texture(previews, tr, spec, elapsed);
                                 let resp = transition_card(
                                     ui, tr, spec, theme, card_w, card_h,
-                                    is_selected, elapsed,
+                                    is_selected, elapsed, tex.as_ref(),
                                 );
                                 let active = resp.hovered() || is_selected;
                                 tx_update_anim_state(ui, spec.display_name, active);
@@ -1722,8 +1725,9 @@ pub fn show(
                         let spec = klipp_core::spec_for_kind(tr.kind);
                         let is_selected = selected.as_deref() == Some(spec.display_name);
                         let elapsed = tx_read_anim_elapsed(ui, spec.display_name);
+                        let tex = preview_texture(previews, tr, spec, elapsed);
                         let resp = transition_list_row(
-                            ui, tr, spec, theme, is_selected, elapsed,
+                            ui, tr, spec, theme, is_selected, elapsed, tex.as_ref(),
                         );
                         let active = resp.hovered() || is_selected;
                         tx_update_anim_state(ui, spec.display_name, active);
@@ -1745,6 +1749,49 @@ pub fn show(
 /// `titles_tab` — we read the previous frame's hover state from
 /// memory, paint accordingly, then save the new state before the
 /// frame ends.
+/// The rendered picture for a card: the midpoint at rest, the eased
+/// progress while hovered, or the latest frame that has arrived.
+fn preview_texture(
+    previews: &mut TransitionPreviews,
+    tr: &TransitionDef,
+    spec: &klipp_core::TransitionSpec,
+    elapsed_secs: f32,
+) -> Option<egui::TextureHandle> {
+    let progress = if elapsed_secs > 0.0 {
+        TransitionPreviews::hover_progress(tx_progress(elapsed_secs))
+    } else {
+        crate::browser::transition_previews::REST_PROGRESS
+    };
+    let eased = if matches!(tr.kind, klipp_core::TransitionKind::CrossDissolve) {
+        klipp_transitions::apply_easing(progress, spec.default_params.param0)
+    } else {
+        progress
+    };
+    let key = TransitionPreviews::key(spec.display_name, progress);
+    previews
+        .get_or_request(&key, spec.kind_id as u32, eased, &spec.default_params)
+        .cloned()
+        .or_else(|| previews.latest_for(spec.display_name).cloned())
+}
+
+/// Two frames of the project's footage for the previews: the posters
+/// of the first two media items, or one poster and a darker copy, or
+/// nothing yet.
+pub fn project_frames(state: &AppState) -> Option<crate::browser::transition_previews::Frames> {
+    use crate::browser::transition_previews::{counterpart, frame_from_rgba, Frames};
+    let mut posters = state.media_pool.all().filter_map(|m| match state.thumbnail_cache.get(&m.id) {
+        Some(klipp_media::ThumbnailEntry::Ready { rgba, width, height }) => Some((m.id, rgba, *width, *height)),
+        _ => None,
+    });
+    let (id_a, rgba_a, wa, ha) = posters.next()?;
+    let from = frame_from_rgba(rgba_a, wa, ha);
+    let (source, to) = match posters.next() {
+        Some((id_b, rgba_b, wb, hb)) => (format!("{id_a:?}+{id_b:?}"), frame_from_rgba(rgba_b, wb, hb)),
+        None => (format!("{id_a:?}"), counterpart(&from)),
+    };
+    Some(Frames { from, to, source })
+}
+
 fn tx_read_anim_elapsed(ui: &egui::Ui, name: &str) -> f32 {
     let active_id = ui.id().with(("tx_anim_active", name));
     let start_id = ui.id().with(("tx_anim_start", name));
@@ -1852,6 +1899,7 @@ fn transition_card(
     height: f32,
     is_selected: bool,
     elapsed_secs: f32,
+    rendered: Option<&egui::TextureHandle>,
 ) -> egui::Response {
     let (rect, resp) =
         ui.allocate_exact_size(egui::vec2(width, height), egui::Sense::click_and_drag());
@@ -1868,11 +1916,16 @@ fn transition_card(
             // the per-transition closure paints its shape over them,
             // and the category overlay adds motion while hovered.
             let canvas = preview.shrink(1.0);
-            paint_ab_canvas(p, canvas, progress);
-            let clip_painter = p.with_clip_rect(canvas);
-            (tr.preview)(&clip_painter, canvas, theme, progress);
-            if elapsed_secs > 0.0 {
-                paint_kind_motion_overlay(&clip_painter, canvas, tr.kind, progress);
+            if let Some(t) = rendered {
+                p.rect_filled(canvas, 0.0, egui::Color32::BLACK);
+                p.image(t.id(), canvas, egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), egui::Color32::WHITE);
+            } else {
+                paint_ab_canvas(p, canvas, progress);
+                let clip_painter = p.with_clip_rect(canvas);
+                (tr.preview)(&clip_painter, canvas, theme, progress);
+                if elapsed_secs > 0.0 {
+                    paint_kind_motion_overlay(&clip_painter, canvas, tr.kind, progress);
+                }
             }
 
             // Direction indicator for slides and wipes with an axis.
@@ -1907,6 +1960,7 @@ fn transition_list_row(
     theme: &KlippTheme,
     is_selected: bool,
     elapsed_secs: f32,
+    rendered: Option<&egui::TextureHandle>,
 ) -> egui::Response {
     let avail_w = ui.available_width();
     let row_h = 56.0;
@@ -1929,11 +1983,16 @@ fn transition_list_row(
         egui::vec2(mini_w, row_h - 12.0),
     );
     let progress = if elapsed_secs > 0.0 { tx_progress(elapsed_secs) } else { 0.5 };
-    paint_ab_canvas(ui.painter(), mini_rect, progress);
-    let clip_painter = ui.painter().with_clip_rect(mini_rect);
-    (tr.preview)(&clip_painter, mini_rect, theme, progress);
-    if elapsed_secs > 0.0 {
-        paint_kind_motion_overlay(&clip_painter, mini_rect, tr.kind, progress);
+    if let Some(t) = rendered {
+        ui.painter().rect_filled(mini_rect, egui::Rounding::same(4.0), egui::Color32::BLACK);
+        ui.painter().image(t.id(), mini_rect, egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), egui::Color32::WHITE);
+    } else {
+        paint_ab_canvas(ui.painter(), mini_rect, progress);
+        let clip_painter = ui.painter().with_clip_rect(mini_rect);
+        (tr.preview)(&clip_painter, mini_rect, theme, progress);
+        if elapsed_secs > 0.0 {
+            paint_kind_motion_overlay(&clip_painter, mini_rect, tr.kind, progress);
+        }
     }
     let text_x = mini_rect.max.x + 12.0;
     let text_y = rect.center().y;
