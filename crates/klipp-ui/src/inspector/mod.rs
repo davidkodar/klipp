@@ -1647,6 +1647,9 @@ fn show_title_pinned_core_textbox(
             )
         })
         .inner;
+    if state.focus_title_text > 0 && !text_resp.has_focus() {
+        text_resp.request_focus();
+    }
     if text_resp.changed() {
         cmds.push(AppCommand::UpdateTitleData {
             clip_id,

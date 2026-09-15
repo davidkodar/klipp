@@ -14816,6 +14816,7 @@ impl KlippApp {
                     smoothed_trajectory: None,
                     track_points: Vec::new(),
                 };
+                let clip_id = clip.id;
                 // Apply baked-in title animation keyframes. Two
                 // sources, in order of priority:
                 //   1. The library template's TitleAnimationType
@@ -14869,6 +14870,17 @@ impl KlippApp {
                 });
                 self.sync_sequence_to_engine();
                 self.state.dirty = true;
+                // The new title is the selection, the inspector opens on
+                // its text, and the playhead parks where the title rests,
+                // past its entrance, so the viewer shows it.
+                self.state.selected_clip = Some(clip_id);
+                self.state.selected_clips = vec![clip_id];
+                self.state.selected_title_object = None;
+                self.state.focus_title_text = 3;
+                self.render_title_to_viewer(clip_id);
+                let settle = (duration.to_secs_f64() / 3.0).min(1.0);
+                let park = klipp_core::RationalTime::from_secs_f64(timeline_in.to_secs_f64() + settle, fps_rate);
+                let _ = self.cmd_tx.send(AppCommand::SeekTo(park));
                 true
             }
             AppCommand::ClearTitleOverlay => {
@@ -32088,6 +32100,7 @@ impl KlippApp {
                 all_cmds.extend(panel_cmds);
             }
         });
+        self.state.focus_title_text = self.state.focus_title_text.saturating_sub(1);
     }
 
     fn render_browser_panel(

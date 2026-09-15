@@ -5,6 +5,7 @@ pub mod effects_tab;
 pub mod library_card;
 pub mod audio_fx_tab;
 pub mod titles_tab;
+pub mod title_previews;
 pub mod transitions_tab;
 pub mod generators_tab;
 
@@ -754,6 +755,8 @@ pub struct BrowserPanel {
     pub titles_sort: effects_tab::EffectSort,
     /// Selected card name — drives the accent border highlight.
     pub titles_selected: Option<String>,
+    /// Title cards rendered by the real title engine.
+    title_previews: title_previews::TitlePreviews,
     // ── Transitions tab state ──
     pub transitions_category: Option<transitions_tab::TransitionsCategory>,
     pub transitions_source_filter: transitions_tab::TransitionsSourceFilter,
@@ -975,6 +978,7 @@ impl Default for BrowserPanel {
             titles_view_mode: effects_tab::EffectViewMode::Grid,
             titles_sort: effects_tab::EffectSort::NameAsc,
             titles_selected: None,
+            title_previews: title_previews::TitlePreviews::default(),
             transitions_category: None,
             transitions_source_filter: transitions_tab::TransitionsSourceFilter::All,
             transitions_gpu_only: false,
@@ -1062,6 +1066,7 @@ impl BrowserPanel {
     /// caches that would otherwise drop AFTER wgpu teardown and
     /// race the device shutdown into a SIGSEGV.
     pub fn clear_textures_for_shutdown(&mut self) {
+        self.title_previews.drain();
         self.file_thumb_textures.clear();
         self.file_filmstrip_textures.clear();
         for bucket in &mut self.deferred_texture_drops {
@@ -4729,6 +4734,11 @@ impl BrowserPanel {
                 )
             }
             LibraryCategory::Titles => {
+                {
+                    let mut displaced = Vec::new();
+                    self.title_previews.poll(ui.ctx(), &mut displaced);
+                    self.defer_drop_textures(displaced);
+                }
                 titles_tab::show(
                     ui,
                     state,
@@ -4742,6 +4752,7 @@ impl BrowserPanel {
                     &mut self.titles_view_mode,
                     &mut self.titles_sort,
                     &mut self.titles_selected,
+                    &mut self.title_previews,
                 )
             }
             LibraryCategory::Transitions => {

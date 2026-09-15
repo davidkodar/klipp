@@ -2230,6 +2230,9 @@ pub struct AppState {
 
     /// Pending title data for styled title creation (consumed by CreateTitleClip handler)
     pub pending_title_data: Option<klipp_timeline::TitleData>,
+    /// Frames left in which the Title inspector should take keyboard
+    /// focus on its text field: set when a title is added.
+    pub focus_title_text: u8,
     /// Title clip that needs its overlay texture refreshed on the next frame.
     pub pending_title_preview_clip: Option<klipp_core::ClipId>,
     /// Phase 4C — track-matte preview thumbnail wiring.
@@ -3731,6 +3734,7 @@ impl Default for AppState {
             ml_registry: crate::ai_tools::RegistryHandle::from_shared(shared_registry),
             available_fonts: Vec::new(),
             pending_title_data: None,
+            focus_title_text: 0,
             pending_title_preview_clip: None,
             matte_thumb_for: None,
             matte_thumb_handle: None,
