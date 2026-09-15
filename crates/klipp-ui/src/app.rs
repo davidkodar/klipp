@@ -599,6 +599,7 @@ impl KlippApp {
                 s.snap = layout.snap;
                 s.dual_viewers = layout.dual_viewers;
                 s.color_dual_viewers = layout.color_dual_viewers;
+                s.export_dual_viewers = layout.export_dual_viewers;
                 s
             },
             toolbar: ToolbarPanel { logo_texture: None },
@@ -31466,17 +31467,16 @@ impl KlippApp {
         }
         // Color's single viewer is the program viewer: the transport and
         // the keys follow it there, whatever the source viewer had.
-        if self.state.show_color_panel
-            && !self.state.viewers_side_by_side()
-            && self.state.viewer_mode == klipp_core::ViewerMode::Source
-        {
+        if self.state.single_viewer_is_program() && self.state.viewer_mode == klipp_core::ViewerMode::Source {
             self.state.viewer_mode = klipp_core::ViewerMode::Program;
         }
         if self.layout.dual_viewers != self.state.dual_viewers
             || self.layout.color_dual_viewers != self.state.color_dual_viewers
+            || self.layout.export_dual_viewers != self.state.export_dual_viewers
         {
             self.layout.dual_viewers = self.state.dual_viewers;
             self.layout.color_dual_viewers = self.state.color_dual_viewers;
+            self.layout.export_dual_viewers = self.state.export_dual_viewers;
             self.layout_dirty = true;
         }
         if self.layout_dirty

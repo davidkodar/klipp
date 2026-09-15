@@ -24,6 +24,9 @@ pub struct LayoutState {
     /// The Color workspace's viewer layout: one program viewer by default.
     #[serde(default)]
     pub color_dual_viewers: bool,
+    /// The Export workspace's viewer layout: one program viewer by default.
+    #[serde(default)]
+    pub export_dual_viewers: bool,
     /// The Color workspace's timeline is a strip under the viewer.
     #[serde(default = "default_color_timeline_h")]
     pub color_timeline_height: f32,
@@ -72,6 +75,7 @@ impl Default for LayoutState {
             skimming_enabled: true,
             dual_viewers: true,
             color_dual_viewers: false,
+            export_dual_viewers: false,
             color_timeline_height: default_color_timeline_h(),
             snap: SnapConfig::default(),
             color_panel_height: default_color_panel_height(),

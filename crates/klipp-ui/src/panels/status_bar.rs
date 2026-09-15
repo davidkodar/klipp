@@ -9,29 +9,14 @@ pub fn show(ui: &mut egui::Ui, state: &AppState, theme: &KlippTheme) {
         ui.add_space(10.0);
 
         // Status dot — uses role colors from theme
-        let (dot_color, dot_glow) = match state.playback {
-            PlaybackState::Playing => (
-                theme.role_dialogue, // green
-                egui::Color32::from_rgba_premultiplied(
-                    theme.role_dialogue.r(), theme.role_dialogue.g(), theme.role_dialogue.b(), 128,
-                ),
-            ),
-            PlaybackState::Idle => (
-                theme.role_sfx, // amber
-                egui::Color32::from_rgba_premultiplied(
-                    theme.role_sfx.r(), theme.role_sfx.g(), theme.role_sfx.b(), 80,
-                ),
-            ),
-            _ => (
-                theme.role_dialogue,
-                egui::Color32::from_rgba_premultiplied(
-                    theme.role_dialogue.r(), theme.role_dialogue.g(), theme.role_dialogue.b(), 128,
-                ),
-            ),
+        // Status dot: lit while the engine has something loaded, dim
+        // when idle. No glow, no role colour.
+        let dot_color = match state.playback {
+            PlaybackState::Idle => theme.text_dim,
+            _ => theme.marker_success,
         };
-        let (dot_rect, _) = ui.allocate_exact_size(egui::vec2(5.0, 5.0), egui::Sense::hover());
-        ui.painter().circle_filled(dot_rect.center(), 2.5, dot_color);
-        ui.painter().circle_filled(dot_rect.center(), 4.0, dot_glow);
+        let (dot_rect, _) = ui.allocate_exact_size(egui::vec2(6.0, 6.0), egui::Sense::hover());
+        ui.painter().circle_filled(dot_rect.center(), 3.0, dot_color);
 
         let status_label = match state.playback {
             PlaybackState::Playing => "Playing",
@@ -70,48 +55,6 @@ pub fn show(ui: &mut egui::Ui, state: &AppState, theme: &KlippTheme) {
         let total_bytes: u64 = state.media_pool.all().map(|m| m.file_size_bytes).sum();
         if total_bytes > 0 {
             status_label_value(ui, theme, "Media:", &format_size(total_bytes));
-        }
-
-        // Edit mode indicator. The badge is small + cryptic on its
-        // own ("INSERT" / "OVERWRITE" with no context), so the
-        // hover tooltip explains what each mode does. The badge
-        // is read-only here — the matching toolbar button at the
-        // top of the canvas is the click affordance for toggling.
-        {
-            let (mode_label, mode_color, tooltip) = match state.edit_mode {
-                klipp_timeline::magnetic::EditMode::Insert => (
-                    "INSERT",
-                    theme.text_secondary,
-                    "Insert mode — dropping a clip pushes existing clips later \
-                     in time to make room. Toggle from the toolbar's INS button.",
-                ),
-                klipp_timeline::magnetic::EditMode::Overwrite => (
-                    "OVERWRITE",
-                    theme.text_secondary,
-                    "Overwrite mode — dropping a clip replaces whatever sits \
-                     under the playhead. Toggle from the toolbar's OVR button.",
-                ),
-            };
-            let (badge_rect, badge_resp) =
-                ui.allocate_exact_size(egui::vec2(56.0, 14.0), egui::Sense::hover());
-            ui.painter().rect_filled(
-                badge_rect,
-                3.0,
-                mode_color.linear_multiply(0.18),
-            );
-            ui.painter().rect_stroke(
-                badge_rect,
-                3.0,
-                egui::Stroke::new(1.0_f32, mode_color.linear_multiply(0.4)),
-            );
-            ui.painter().text(
-                badge_rect.center(),
-                egui::Align2::CENTER_CENTER,
-                mode_label,
-                egui::FontId::monospace(8.5),
-                mode_color,
-            );
-            badge_resp.on_hover_text(tooltip);
         }
 
         // Link indicator for selected clip — green chain when the

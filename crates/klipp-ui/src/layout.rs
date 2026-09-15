@@ -218,8 +218,7 @@ pub(crate) fn compute_layout(
                 egui::pos2(center_left + center_w, viewer_row_bottom),
             ),
         )
-    } else if !in_color_ws && state.viewer_mode == klipp_core::ViewerMode::Source {
-        // Color grades the timeline: its single viewer is the program.
+    } else if !state.single_viewer_is_program() && state.viewer_mode == klipp_core::ViewerMode::Source {
         (full_row, egui::Rect::from_min_size(full_row.right_top(), egui::vec2(0.0, full_row.height())))
     } else {
         (egui::Rect::from_min_size(full_row.left_top(), egui::vec2(0.0, full_row.height())), full_row)

@@ -1683,6 +1683,8 @@ pub struct AppState {
     /// The same choice for the Color workspace, which starts with one
     /// program viewer so the picture gets the room.
     pub color_dual_viewers: bool,
+    /// And for Export, which reviews the output: one program viewer.
+    pub export_dual_viewers: bool,
     /// Render scopes as a semi-transparent overlay on the viewer instead of a separate panel.
     pub scope_overlay_mode: bool,
     pub show_keyframe_editor: bool,
@@ -3187,16 +3189,27 @@ impl AppState {
 
     /// Whether the viewers sit side by side in the current workspace.
     pub fn viewers_side_by_side(&self) -> bool {
-        if self.show_color_panel { self.color_dual_viewers } else { self.dual_viewers }
+        match self.active_workspace {
+            Workspace::Edit => self.dual_viewers,
+            Workspace::Color => self.color_dual_viewers,
+            Workspace::Export => self.export_dual_viewers,
+        }
     }
 
     /// Flip the viewer layout of the current workspace.
     pub fn toggle_viewer_layout(&mut self) {
-        if self.show_color_panel {
-            self.color_dual_viewers = !self.color_dual_viewers;
-        } else {
-            self.dual_viewers = !self.dual_viewers;
-        }
+        let flag = match self.active_workspace {
+            Workspace::Edit => &mut self.dual_viewers,
+            Workspace::Color => &mut self.color_dual_viewers,
+            Workspace::Export => &mut self.export_dual_viewers,
+        };
+        *flag = !*flag;
+    }
+
+    /// Only Edit works with a source clip; a single viewer in Color or
+    /// Export is the program viewer.
+    pub fn single_viewer_is_program(&self) -> bool {
+        !self.viewers_side_by_side() && self.active_workspace != Workspace::Edit
     }
 
     /// The scopes toggle (V, the toolbar icon, the View menu): the dock in
@@ -3482,6 +3495,7 @@ impl Default for AppState {
             show_scopes: false,
             dual_viewers: true,
             color_dual_viewers: false,
+            export_dual_viewers: false,
             scope_overlay_mode: false,
             scope_state: Default::default(),
             show_keyframe_editor: false,
