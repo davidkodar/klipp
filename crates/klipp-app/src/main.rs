@@ -103,6 +103,15 @@ fn main() -> Result<()> {
     // Anchor T0 for STARTUP_PERF measurements as the very first thing in main.
     mark_process_start();
 
+    // Which build this is, before anything logs: the log, About and the
+    // control socket report it.
+    klipp_core::build_info::set(klipp_core::build_info::BuildInfo::of_this_process(
+        env!("CARGO_PKG_VERSION"),
+        env!("KLIPP_GIT_COMMIT"),
+        env!("KLIPP_GIT_DIRTY") == "true",
+        env!("KLIPP_BUILD_PROFILE"),
+    ));
+
     // ── Auto-configured env vars ─────────────────────────────
     // Set BEFORE any thread spawns so `std::thread`'s lazy
     // RUST_MIN_STACK read picks up our value, and ort's
@@ -233,7 +242,12 @@ fn main() -> Result<()> {
     install_native_crash_handler();
 
     mark("main entered (logging up)");
-    info!("Klipp starting up");
+    let build = klipp_core::build_info::get();
+    info!(
+        "Klipp starting up: build {} (executable written {})",
+        build.label(),
+        build.built_at.map_or_else(|| "unknown".to_string(), klipp_core::build_info::format_utc)
+    );
 
     let (cmd_tx, cmd_rx) = crossbeam_channel::unbounded();
     let (event_tx, event_rx) = crossbeam_channel::unbounded();

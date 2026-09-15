@@ -1250,6 +1250,9 @@ pub struct PlaybackEngine {
     /// the waveform/parade modes so dense traces glow like the in-tree
     /// GPU path. Pushed by `AppCommand::SetScopeBloom`.
     scope_bloom_enabled: bool,
+    /// Whether the waveform and parade measure a low-passed copy of the
+    /// picture. Pushed by `AppCommand::SetScopeLowPass`.
+    scope_low_pass_enabled: bool,
     /// Union of scope modes the UI currently needs rendered per tick:
     /// (main dock active mode) ∪ (each floating-window pane's mode).
     /// Updated by `AppCommand::SetActiveScopeModes`. The engine renders
@@ -1633,6 +1636,7 @@ impl PlaybackEngine {
             scope_ffmpeg_settings: klipp_core::ScopeFfmpegSettings::default(),
             // Off: at a large scope's size a glow washes the trace out.
             scope_bloom_enabled: false,
+            scope_low_pass_enabled: true,
             active_scope_modes: std::collections::BTreeSet::new(),
             scope_sizes: std::collections::BTreeMap::new(),
             scopes_visible: false,
@@ -2677,6 +2681,11 @@ impl PlaybackEngine {
                 // (R/G/B pills, filter, intensity, opacities, …) only
                 // take visible effect when playback or a grade edit
                 // already triggers a re-grade.
+                self.current_grade_hash = 0;
+            }
+            AppCommand::SetScopeLowPass { enabled } => {
+                self.scope_low_pass_enabled = enabled;
+                self.scope_render_owed = true;
                 self.current_grade_hash = 0;
             }
             AppCommand::SetScopeBloom { enabled } => {
@@ -7258,6 +7267,7 @@ impl PlaybackEngine {
         // Paused, a frame is studied rather than watched: every pixel is
         // measured. The quality setting paces the scopes during playback.
         let step = if self.state == PlaybackState::Playing { settings.quality.sample_step() as u32 } else { 1 };
+        let low_pass = self.scope_low_pass_enabled;
         let gpu = self.renderer.executor().gpu_pipeline_or_init()?;
         let sizes: Vec<(u32, u32)> = jobs
             .iter()
@@ -7267,6 +7277,7 @@ impl PlaybackEngine {
                 ScopeJob::Histogram(h) => (h.out_w, h.out_h),
             })
             .collect();
+        gpu.scopes().set_low_pass(low_pass);
         let results = gpu.scopes().render(&input, step, &jobs);
         Some(results.into_iter().zip(sizes).map(|(r, (w, h))| r.map(|bytes| (bytes, w, h))).collect())
     }

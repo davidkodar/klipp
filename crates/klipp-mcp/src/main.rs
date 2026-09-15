@@ -386,8 +386,10 @@ fn tool(name: &str, description: &str, properties: Value, required: Vec<&str>) -
 fn tool_definitions() -> Vec<Value> {
     vec![
         tool("klipp_status",
-             "Transport state, timeline summary, viewer resolution and the latest \
-              performance sample from the running Klipp instance. Start here.",
+             "Which build is running (commit, dirty, when it was built, and whether \
+              a newer build is on disk so a restart is due), transport state, \
+              timeline summary, viewer resolution and the latest performance sample \
+              from the running Klipp instance. Start here.",
              json!({}), vec![]),
         tool("klipp_play", "Start playback.", json!({}), vec![]),
         tool("klipp_pause", "Pause playback.", json!({}), vec![]),

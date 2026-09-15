@@ -510,3 +510,62 @@ fn a_sparse_noisy_picture_draws_a_smooth_trace_not_specks() {
     let expect = 0.5 * oh as f64;
     assert!((row - expect).abs() <= 8.0, "the band's light centred on row {row:.1}, expected {expect}");
 }
+
+/// Fine texture: a checkerboard of two greys a pixel apart.
+fn checkerboard(w: u32, h: u32) -> Vec<f32> {
+    (0..w * h)
+        .flat_map(|i| {
+            let v = if (i % w + i / w).is_multiple_of(2) { 0.1 } else { 0.3 };
+            [v, v, v, 1.0]
+        })
+        .collect()
+}
+
+/// How far column `x`'s light spreads about its centre, in rows.
+fn light_spread(img: &[u8], out_w: u32, x: u32) -> f32 {
+    let centre = light_row(img, out_w, x);
+    let (mut light, mut moment) = (0f32, 0f32);
+    for y in 0..OUT as usize {
+        let i = (y * out_w as usize + x as usize) * 4;
+        let l = (img[i] as u32 + img[i + 1] as u32 + img[i + 2] as u32) as f32;
+        light += l;
+        moment += l * (y as f32 - centre).powi(2);
+    }
+    (moment / light).sqrt()
+}
+
+#[test]
+fn the_low_pass_filter_draws_fine_texture_as_one_line_at_its_mean() {
+    let Some(mut gpu) = GpuEffectsPipeline::new() else { return };
+    let (w, h) = (2048, 1080);
+    let frame = checkerboard(w, h);
+    let input = ScopeInput::Linear { rgba: &frame, width: w, height: h, matrix: IDENTITY, luma: REC709, transfer: ScopeTransfer::Srgb, scale: 1.0 };
+    let wave = [job(WaveformMode::Luma, OUT)];
+    let sharp = gpu.scopes().render(&input, 1, &wave).remove(0).expect("a waveform");
+    gpu.scopes().set_low_pass(true);
+    let smooth = gpu.scopes().render(&input, 1, &wave).remove(0).expect("a waveform");
+    gpu.scopes().set_low_pass(false);
+    let (sharp_spread, smooth_spread) = (light_spread(&sharp, OUT, 128), light_spread(&smooth, OUT, 128));
+    assert!(smooth_spread * 4.0 < sharp_spread, "two lines become one: spread {sharp_spread:.1} rows, then {smooth_spread:.1}");
+    // The line sits at the texture's mean level, between its two greys.
+    let expect = row_of((linear_to_srgb(0.1) + linear_to_srgb(0.3)) / 2.0);
+    let row = light_row(&smooth, OUT, 128);
+    assert!((row - expect).abs() <= 2.0, "line at row {row:.1}, expected {expect:.1}");
+}
+
+#[test]
+fn the_low_pass_filter_leaves_the_histogram_and_vectorscope_measuring_the_picture() {
+    let Some(mut gpu) = GpuEffectsPipeline::new() else { return };
+    let (w, h) = (2048, 1080);
+    let frame = checkerboard(w, h);
+    let input = ScopeInput::Linear { rgba: &frame, width: w, height: h, matrix: IDENTITY, luma: REC709, transfer: ScopeTransfer::Srgb, scale: 1.0 };
+    let hist = ScopeJob::Histogram(HistogramJob { layout: HistogramLayout::Overlay, log: false, fill: 0.7, glow: false, out_w: OUT, out_h: OUT });
+    let jobs = [job(WaveformMode::Luma, OUT), vector(1.0, true), hist];
+    let sharp = gpu.scopes().render(&input, 1, &jobs);
+    gpu.scopes().set_low_pass(true);
+    let smooth = gpu.scopes().render(&input, 1, &jobs);
+    gpu.scopes().set_low_pass(false);
+    assert_ne!(sharp[0], smooth[0], "the waveform measures the low-passed copy");
+    assert!(sharp[1] == smooth[1], "the vectorscope measures the picture itself");
+    assert!(sharp[2] == smooth[2], "the histogram counts the picture itself");
+}

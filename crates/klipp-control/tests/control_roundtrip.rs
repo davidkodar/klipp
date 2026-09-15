@@ -196,6 +196,7 @@ fn control_socket_reads_state_and_forwards_commands() {
     assert_eq!(status["viewer"]["width"], json!(64));
     assert_eq!(status["viewer"]["height"], json!(32));
     assert!(status["tracks"].as_u64().is_some(), "status reports track count");
+    assert!(status["build"]["commit"].is_string(), "status reports the build: {status}");
 
     let clips = h.ok(json!({ "method": "list_clips" }));
     assert!(clips["tracks"].is_array(), "list_clips returns a track array");

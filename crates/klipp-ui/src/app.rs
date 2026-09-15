@@ -359,6 +359,8 @@ pub struct KlippApp {
     /// Last `SetScopeBloom` value sent to the engine. Tracks the scope
     /// bloom toggle so the publish fires only on change.
     last_sent_scope_bloom: Option<bool>,
+    /// Last `SetScopeLowPass` value sent to the engine.
+    last_sent_scope_low_pass: Option<bool>,
     /// Same change-tracking pattern as `last_sent_scope_mode` for the
     /// scope-panel visibility flag. The engine uses this to skip the
     /// per-frame `linear_rgba_to_u8` re-encode and the GPU scope
@@ -629,6 +631,7 @@ impl KlippApp {
             last_sent_scope_sizes: None,
             last_sent_scope_ffmpeg_settings: None,
             last_sent_scope_bloom: None,
+            last_sent_scope_low_pass: None,
             last_sent_scopes_visible: None,
             theme,
             theme_registry,
@@ -26083,6 +26086,11 @@ impl eframe::App for KlippApp {
                 });
                 self.last_sent_scope_bloom = Some(bloom_enabled);
             }
+            let low_pass = self.state.scope_low_pass;
+            if self.last_sent_scope_low_pass != Some(low_pass) {
+                let _ = self.cmd_tx.send(AppCommand::SetScopeLowPass { enabled: low_pass });
+                self.last_sent_scope_low_pass = Some(low_pass);
+            }
         }
 
         // Sync scope-panel visibility to the engine — same change-
@@ -26891,7 +26899,11 @@ impl eframe::App for KlippApp {
                         }
                         ui.label(egui::RichText::new("Klipp").strong().size(20.0));
                         ui.add_space(4.0);
-                        ui.label(format!("Version {}-dev", env!("CARGO_PKG_VERSION")));
+                        let build = klipp_core::build_info::get();
+                        ui.label(format!("Version {}", build.label()));
+                        if let Some(at) = build.built_at {
+                            ui.label(format!("Built {}", klipp_core::build_info::format_utc(at)));
+                        }
                         ui.label("Free, open-source NLE for Linux");
                         ui.add_space(8.0);
                         ui.label("Built with:");

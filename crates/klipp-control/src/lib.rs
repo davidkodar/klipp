@@ -270,6 +270,23 @@ fn log_format_json(m: &klipp_media::MediaItem) -> serde_json::Value {
     })
 }
 
+/// Which build is running, and whether a rebuild has replaced its
+/// executable since it started, so a restart is due.
+fn build_json() -> serde_json::Value {
+    let build = klipp_core::build_info::get();
+    json!({
+        "label": build.label(),
+        "version": build.version,
+        "commit": build.commit,
+        "dirty": build.dirty,
+        "profile": build.profile,
+        "exe": build.exe.as_ref().map(|p| p.display().to_string()),
+        "built_at": build.built_at.map(klipp_core::build_info::format_utc),
+        "built_at_unix": build.built_at,
+        "newer_build_on_disk": build.newer_build_on_disk(),
+    })
+}
+
 fn handle(ctx: &ControlContext, cmd: ControlCommand) -> Result<serde_json::Value, String> {
     let send = |c: AppCommand| -> Result<serde_json::Value, String> {
         // Read the generation *before* queueing, so any frame rendered in
@@ -294,6 +311,7 @@ fn handle(ctx: &ControlContext, cmd: ControlCommand) -> Result<serde_json::Value
             "pong": true,
             "version": env!("CARGO_PKG_VERSION"),
             "pid": std::process::id(),
+            "build": build_json(),
         })),
 
         ControlCommand::Status => {
@@ -301,6 +319,7 @@ fn handle(ctx: &ControlContext, cmd: ControlCommand) -> Result<serde_json::Value
             let fb = ctx.frame_buffer.lock().map_err(|_| "frame buffer lock poisoned")?;
             let perf = ctx.perf_ring.lock().ok().and_then(|r| r.latest().cloned());
             Ok(json!({
+                "build": build_json(),
                 "tracks": seq.tracks.len(),
                 "clips": seq.tracks.iter().map(|t| t.clips.len()).sum::<usize>(),
                 "fps": seq.fps.as_f64(),

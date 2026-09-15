@@ -4020,9 +4020,15 @@ impl PreferencesPanel {
         // ── APPLICATION section ──
         Self::section_header(ui, "APPLICATION", theme);
 
+        let build = klipp_core::build_info::get();
         Self::setting_row(ui, "Version", theme, |ui| {
-            ui.label(egui::RichText::new(env!("CARGO_PKG_VERSION")).color(theme.text_dim));
+            ui.label(egui::RichText::new(build.label()).color(theme.text_dim));
         });
+        if let Some(at) = build.built_at {
+            Self::setting_row(ui, "Built", theme, |ui| {
+                ui.label(egui::RichText::new(klipp_core::build_info::format_utc(at)).color(theme.text_dim));
+            });
+        }
 
         Self::setting_row(ui, "Author", theme, |ui| {
             ui.label(egui::RichText::new("David Bolin").color(theme.text_dim));

@@ -116,9 +116,13 @@ fn draw_the_scopes_of_a_picture() {
     // the same crop scaled as a screenshot of a 4K screen at half size is.
     if let Ok(pane) = std::env::var("KLIPP_SCOPE_LOOK_PANE") {
         let (pw, ph) = pane.split_once('x').map(|(a, b)| (a.parse::<u32>().unwrap(), b.parse::<u32>().unwrap())).expect("WxH");
+        // The brightness slider (0..1) in KLIPP_SCOPE_LOOK_INTENSITY; the default otherwise.
+        // The low-pass filter on, as the app starts, unless KLIPP_SCOPE_LOOK_LOWPASS=0.
+        gpu.scopes().set_low_pass(std::env::var("KLIPP_SCOPE_LOOK_LOWPASS").map_or(true, |v| v != "0"));
+        let intensity = std::env::var("KLIPP_SCOPE_LOOK_INTENSITY").ok().and_then(|v| v.parse::<f32>().ok()).unwrap_or(-1.0);
         for step in [1u32, 2] {
             // As the app draws it by default: no glow.
-            let job = ScopeJob::Waveform(WaveformJob { mode: WaveformMode::RgbOverlay, intensity: -1.0, channels: 7, envelope: false, glow: false, out_w: pw, out_h: ph });
+            let job = ScopeJob::Waveform(WaveformJob { mode: WaveformMode::RgbOverlay, intensity, channels: 7, envelope: false, glow: false, out_w: pw, out_h: ph });
             let _ = gpu.scopes().render(&scope, step, &[job]);
             let t = Instant::now();
             let out = gpu.scopes().render(&scope, step, &[job]);

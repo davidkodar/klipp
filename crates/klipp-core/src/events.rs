@@ -1470,6 +1470,9 @@ pub enum AppCommand {
     /// waveform/parade scope textures so dense traces glow. Sent on
     /// UI-side change only.
     SetScopeBloom { enabled: bool },
+    /// Whether the GPU waveform and parade measure a low-passed copy of
+    /// the picture. Sent on UI-side change only.
+    SetScopeLowPass { enabled: bool },
     /// Tell the engine whether the scope panel is actually visible
     /// in the UI. The engine uses this to skip the per-frame
     /// `linear_rgba_to_u8` re-encode and the GPU scope shader pass —

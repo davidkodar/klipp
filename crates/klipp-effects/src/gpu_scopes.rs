@@ -226,9 +226,10 @@ impl ScopeJob {
         // times it.
         let slider = if intensity < 0.0 { 1.0 } else { 6.0f32.powf(intensity.clamp(0.0, 1.0) * 2.0 - 1.0) };
         // The waveform's saturating curve reaches three quarters of full
-        // brightness at a density of about 2.8; the vectorscope's log curve
-        // takes its gain per unit of density.
-        let base = if matches!(self, ScopeJob::Waveform(_)) { 0.5 } else { 1.5 };
+        // brightness at a density of about 5.5, so only a dense trace is
+        // bright and a busy picture stays readable; the vectorscope's log
+        // curve takes its gain per unit of density.
+        let base = if matches!(self, ScopeJob::Waveform(_)) { 0.25 } else { 1.5 };
         base * slider
     }
 }
@@ -311,6 +312,31 @@ struct ShadeParams {
     norm: f32,
     _f0: f32,
     _f1: f32,
+}
+
+/// The low-pass filter's width, in pixels of a picture 3840 pixels on its
+/// long side; a smaller picture's filter is narrower in proportion.
+const LOW_PASS_SIGMA: f32 = 4.0;
+
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct LpParams {
+    width: u32,
+    height: u32,
+    out_w: u32,
+    out_h: u32,
+    /// The copy keeps every `r`-th pixel each way.
+    r: u32,
+    radius: u32,
+    transfer: u32,
+    _p0: u32,
+    sigma: f32,
+    scale: f32,
+    _p1: f32,
+    _p2: f32,
+    m0: [f32; 4],
+    m1: [f32; 4],
+    m2: [f32; 4],
 }
 
 #[repr(C)]
@@ -609,6 +635,113 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let v = src[sy * p.width + sx];
     let e = vec3<f32>(f32(v & 0xffu), f32((v >> 8u) & 0xffu), f32((v >> 16u) & 0xffu)) / 255.0;
     bin_sample(sx, e);
+}
+"#;
+
+/// A low-passed copy's levels, already encoded, into the waveform bins.
+const WGSL_ACC_ENCODED: &str = r#"
+@group(0) @binding(0) var<storage, read> src: array<vec4<f32>>;
+@compute @workgroup_size(16, 16)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let sx = gid.x * p.step; let sy = gid.y * p.step;
+    if (sx >= p.width || sy >= p.height) { return; }
+    bin_sample(sx, src[sy * p.width + sx].rgb);
+}
+"#;
+
+/// The low-pass filter, a separable Gaussian over the encoded levels: what
+/// a waveform with its low-pass filter on measures, so fine texture, noise
+/// and the steps between 8-bit codes draw lines rather than a haze.
+const WGSL_LP_PARAMS: &str = r#"
+struct LpParams {
+    width: u32, height: u32, out_w: u32, out_h: u32,
+    r: u32, radius: u32, transfer: u32, _p0: u32,
+    sigma: f32, scale: f32, _p1: f32, _p2: f32,
+    m0: vec4<f32>, m1: vec4<f32>, m2: vec4<f32>,
+};
+@group(0) @binding(1) var<storage, read_write> dst: array<vec4<f32>>;
+@group(0) @binding(2) var<uniform> p: LpParams;
+fn tap_weight(d: i32) -> f32 {
+    return exp(-f32(d * d) / (2.0 * p.sigma * p.sigma));
+}
+"#;
+
+/// A linear picture's taps, encoded as the waveform measures them.
+const WGSL_LP_SRC_LINEAR: &str = r#"
+@group(0) @binding(0) var<storage, read> src: array<vec4<f32>>;
+fn lp_encode(v: f32) -> f32 {
+    let c = clamp(v, 0.0, 1.0);
+    switch p.transfer {
+        case 1u: { return pow(c, 1.0 / 2.4); }
+        case 2u: {
+            let y = clamp(v * p.scale, 0.0, 1.0);
+            let n = pow(y, 0.1593017578125);
+            return pow((0.8359375 + 18.8515625 * n) / (1.0 + 18.6875 * n), 78.84375);
+        }
+        default: {
+            if (c <= 0.0031308) { return c * 12.92; }
+            return 1.055 * pow(c, 1.0 / 2.4) - 0.055;
+        }
+    }
+}
+fn tap(x: u32, y: u32) -> vec3<f32> {
+    let c = src[y * p.width + x].rgb;
+    let m = vec3<f32>(dot(p.m0.xyz, c), dot(p.m1.xyz, c), dot(p.m2.xyz, c));
+    return vec3<f32>(lp_encode(m.r), lp_encode(m.g), lp_encode(m.b));
+}
+"#;
+
+/// A display picture's taps: its codes.
+const WGSL_LP_SRC_DISPLAY: &str = r#"
+@group(0) @binding(0) var<storage, read> src: array<u32>;
+fn tap(x: u32, y: u32) -> vec3<f32> {
+    let v = src[y * p.width + x];
+    return vec3<f32>(f32(v & 0xffu), f32((v >> 8u) & 0xffu), f32((v >> 16u) & 0xffu)) / 255.0;
+}
+"#;
+
+/// The rows the first pass smoothed.
+const WGSL_LP_SRC_ROWS: &str = r#"
+@group(0) @binding(0) var<storage, read> src: array<vec4<f32>>;
+"#;
+
+/// Across: every `r`-th column of each row, the Gaussian of its neighbours.
+const WGSL_LP_H: &str = r#"
+@compute @workgroup_size(16, 16)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let ox = gid.x; let y = gid.y;
+    if (ox >= p.out_w || y >= p.height) { return; }
+    let cx = i32(ox * p.r + (p.r - 1u) / 2u);
+    let last = i32(p.width) - 1;
+    let reach = i32(p.radius);
+    var sum = vec3<f32>(0.0);
+    var wsum = 0.0;
+    for (var d = -reach; d <= reach; d = d + 1) {
+        let w = tap_weight(d);
+        sum = sum + tap(u32(clamp(cx + d, 0, last)), y) * w;
+        wsum = wsum + w;
+    }
+    dst[y * p.out_w + ox] = vec4<f32>(sum / wsum, 0.0);
+}
+"#;
+
+/// Down: every `r`-th of the smoothed rows, the Gaussian of its neighbours.
+const WGSL_LP_V: &str = r#"
+@compute @workgroup_size(16, 16)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let x = gid.x; let oy = gid.y;
+    if (x >= p.out_w || oy >= p.out_h) { return; }
+    let cy = i32(oy * p.r + (p.r - 1u) / 2u);
+    let last = i32(p.height) - 1;
+    let reach = i32(p.radius);
+    var sum = vec3<f32>(0.0);
+    var wsum = 0.0;
+    for (var d = -reach; d <= reach; d = d + 1) {
+        let w = tap_weight(d);
+        sum = sum + src[u32(clamp(cy + d, 0, last)) * p.out_w + x].rgb * w;
+        wsum = wsum + w;
+    }
+    dst[oy * p.out_w + x] = vec4<f32>(sum / wsum, 0.0);
 }
 "#;
 
@@ -1114,6 +1247,21 @@ pub struct ScopeRenderer {
     acc_layout: wgpu::BindGroupLayout,
     acc_linear: wgpu::ComputePipeline,
     acc_display: wgpu::ComputePipeline,
+    acc_encoded: wgpu::ComputePipeline,
+    lp_layout: wgpu::BindGroupLayout,
+    lp_h_linear: wgpu::ComputePipeline,
+    lp_h_display: wgpu::ComputePipeline,
+    lp_v: wgpu::ComputePipeline,
+    /// Whether the waveform and parade measure a low-passed copy.
+    low_pass: bool,
+    /// The low-passed rows, then the low-passed copy.
+    lp_tmp: Option<wgpu::Buffer>,
+    lp_tmp_size: u64,
+    lp_out: Option<wgpu::Buffer>,
+    lp_out_size: u64,
+    /// The histogram's counts in one column, while the waveform bins hold
+    /// a low-passed copy's.
+    hist_bins: wgpu::Buffer,
     acc_vector_linear: wgpu::ComputePipeline,
     acc_vector_display: wgpu::ComputePipeline,
     vshade_layout: wgpu::BindGroupLayout,
@@ -1215,6 +1363,12 @@ impl ScopeRenderer {
         let acc_layout = layout(&device, "scope_acc", &[storage(true), storage(false), UNIFORM]);
         let acc_linear = pipeline(&device, "scope_acc_linear", &acc_layout, &format!("{WGSL_COMMON_ACC}{WGSL_ACC_LINEAR}"));
         let acc_display = pipeline(&device, "scope_acc_display", &acc_layout, &format!("{WGSL_COMMON_ACC}{WGSL_ACC_DISPLAY}"));
+        let acc_encoded = pipeline(&device, "scope_acc_encoded", &acc_layout, &format!("{WGSL_COMMON_ACC}{WGSL_ACC_ENCODED}"));
+        let lp_layout = layout(&device, "scope_lp", &[storage(true), storage(false), UNIFORM]);
+        let lp_h_linear = pipeline(&device, "scope_lp_h_linear", &lp_layout, &format!("{WGSL_LP_PARAMS}{WGSL_LP_SRC_LINEAR}{WGSL_LP_H}"));
+        let lp_h_display = pipeline(&device, "scope_lp_h_display", &lp_layout, &format!("{WGSL_LP_PARAMS}{WGSL_LP_SRC_DISPLAY}{WGSL_LP_H}"));
+        let lp_v = pipeline(&device, "scope_lp_v", &lp_layout, &format!("{WGSL_LP_PARAMS}{WGSL_LP_SRC_ROWS}{WGSL_LP_V}"));
+        let hist_bins = buffer(&device, "scope_hist_bins", 4 * BIN_ROWS as u64 * 4, wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST);
         let acc_vector_linear = pipeline(&device, "scope_acc_vector_linear", &acc_layout, &format!("{WGSL_COMMON_ACC}{WGSL_COMMON_VECTOR}{WGSL_ACC_VECTOR_LINEAR}"));
         let acc_vector_display = pipeline(&device, "scope_acc_vector_display", &acc_layout, &format!("{WGSL_COMMON_ACC}{WGSL_COMMON_VECTOR}{WGSL_ACC_VECTOR_DISPLAY}"));
         let vshade_layout = layout(&device, "scope_vshade", &[storage(true), storage(false), UNIFORM]);
@@ -1253,6 +1407,17 @@ impl ScopeRenderer {
             acc_layout,
             acc_linear,
             acc_display,
+            acc_encoded,
+            lp_layout,
+            lp_h_linear,
+            lp_h_display,
+            lp_v,
+            low_pass: false,
+            lp_tmp: None,
+            lp_tmp_size: 0,
+            lp_out: None,
+            lp_out_size: 0,
+            hist_bins,
             acc_vector_linear,
             acc_vector_display,
             vshade_layout,
@@ -1296,6 +1461,13 @@ impl ScopeRenderer {
             staging: None,
             staging_size: 0,
         }
+    }
+
+    /// Measure the waveform and parade from a low-passed copy of the
+    /// picture, so fine texture and noise draw lines rather than a haze.
+    /// The histogram and vectorscope still measure the picture itself.
+    pub fn set_low_pass(&mut self, on: bool) {
+        self.low_pass = on;
     }
 
     /// The largest input the device binds in one storage buffer.
@@ -1374,8 +1546,18 @@ impl ScopeRenderer {
             .max()
             .unwrap_or(MIN_BIN_COLS)
             .clamp(MIN_BIN_COLS, MAX_BIN_COLS);
+        // The low-pass filter: the waveform and parade measure a smoothed
+        // copy of the picture. Smoothed by sigma 4, every second pixel
+        // carries all the copy holds, so from there it keeps fewer.
+        let sigma = LOW_PASS_SIGMA * width.max(height) as f32 / 3840.0;
+        let lp = self.low_pass && sigma >= 0.5 && jobs.iter().any(|j| matches!(j, ScopeJob::Waveform(_)));
+        let lp_r = if lp { ((sigma / 2.0).floor() as u32).max(1) } else { 1 };
+        let (lp_w, lp_h) = (width.div_ceil(lp_r), height.div_ceil(lp_r));
         self.ensure_bins(cols);
         self.ensure_input(bytes.len() as u64);
+        if lp {
+            self.ensure_low_pass(lp_w as u64 * height as u64 * 16, lp_w as u64 * lp_h as u64 * 16);
+        }
         let input_buf = self.input.as_ref().expect("input buffer");
         self.queue.write_buffer(input_buf, 0, bytes);
 
@@ -1421,6 +1603,83 @@ impl ScopeRenderer {
                 wgpu::BindGroupEntry { binding: 2, resource: acc_params.as_entire_binding() },
             ],
         });
+        // With the filter on, the waveform bins take the low-passed copy and
+        // the histogram counts the picture itself, into one column.
+        let lp_groups = if lp {
+            let tmp = self.lp_tmp.as_ref().expect("low-pass rows");
+            let copy = self.lp_out.as_ref().expect("low-pass copy");
+            let lp_params = self.uniform(
+                "scope_lp_params",
+                &LpParams {
+                    width,
+                    height,
+                    out_w: lp_w,
+                    out_h: lp_h,
+                    r: lp_r,
+                    radius: (sigma * 3.0).ceil() as u32,
+                    transfer,
+                    _p0: 0,
+                    sigma,
+                    scale,
+                    _p1: 0.0,
+                    _p2: 0.0,
+                    m0: acc.m0,
+                    m1: acc.m1,
+                    m2: acc.m2,
+                },
+            );
+            let rows_bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("scope_lp_h_bg"),
+                layout: &self.lp_layout,
+                entries: &[
+                    wgpu::BindGroupEntry { binding: 0, resource: input_buf.as_entire_binding() },
+                    wgpu::BindGroupEntry { binding: 1, resource: tmp.as_entire_binding() },
+                    wgpu::BindGroupEntry { binding: 2, resource: lp_params.as_entire_binding() },
+                ],
+            });
+            let copy_bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("scope_lp_v_bg"),
+                layout: &self.lp_layout,
+                entries: &[
+                    wgpu::BindGroupEntry { binding: 0, resource: tmp.as_entire_binding() },
+                    wgpu::BindGroupEntry { binding: 1, resource: copy.as_entire_binding() },
+                    wgpu::BindGroupEntry { binding: 2, resource: lp_params.as_entire_binding() },
+                ],
+            });
+            let wave_params = self.uniform("scope_lp_acc_params", &AccParams { width: lp_w, height: lp_h, ..acc });
+            let wave_bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("scope_lp_acc_bg"),
+                layout: &self.acc_layout,
+                entries: &[
+                    wgpu::BindGroupEntry { binding: 0, resource: copy.as_entire_binding() },
+                    wgpu::BindGroupEntry { binding: 1, resource: self.bins.as_entire_binding() },
+                    wgpu::BindGroupEntry { binding: 2, resource: wave_params.as_entire_binding() },
+                ],
+            });
+            let count_params = self.uniform("scope_hist_acc_params", &AccParams { cols: 1, ..acc });
+            let count_bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("scope_hist_acc_bg"),
+                layout: &self.acc_layout,
+                entries: &[
+                    wgpu::BindGroupEntry { binding: 0, resource: input_buf.as_entire_binding() },
+                    wgpu::BindGroupEntry { binding: 1, resource: self.hist_bins.as_entire_binding() },
+                    wgpu::BindGroupEntry { binding: 2, resource: count_params.as_entire_binding() },
+                ],
+            });
+            let fold_params = self.uniform("scope_hist_one_params", &ExtParams { cols: 1, rows: BIN_ROWS, _p0: 0, _p1: 0 });
+            let fold_bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("scope_hist_one_bg"),
+                layout: &self.hist_reduce_layout,
+                entries: &[
+                    wgpu::BindGroupEntry { binding: 0, resource: self.hist_bins.as_entire_binding() },
+                    wgpu::BindGroupEntry { binding: 1, resource: self.hist_raw.as_entire_binding() },
+                    wgpu::BindGroupEntry { binding: 2, resource: fold_params.as_entire_binding() },
+                ],
+            });
+            Some((rows_bg, copy_bg, wave_bg, count_bg, fold_bg, [lp_params, wave_params, count_params, fold_params]))
+        } else {
+            None
+        };
         let vacc = AccParams { cols: VECTOR_BINS, rows: VECTOR_BINS, lo: vlo, hi: vhi, ..acc };
         let vacc_params = self.uniform("scope_vacc_params", &vacc);
         let vacc_bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -1482,11 +1741,12 @@ impl ScopeRenderer {
         // Samples per bin column, for the density normalisation; and for
         // the chroma plane, samples per cell were the picture spread over
         // the whole of it.
-        let sw = width.div_ceil(step) as f64;
-        let sh = height.div_ceil(step) as f64;
-        let total = (sw * sh).max(1.0);
-        let per_column = (total / cols as f64).max(1.0);
+        let (wave_w, wave_h) = if lp { (lp_w, lp_h) } else { (width, height) };
+        let sw = wave_w.div_ceil(step) as f64;
+        let sh = wave_h.div_ceil(step) as f64;
+        let per_column = (sw * sh / cols as f64).max(1.0);
         let norm = (BIN_ROWS as f64 / per_column) as f32;
+        let total = (width.div_ceil(step) as f64 * height.div_ceil(step) as f64).max(1.0);
         let vnorm = ((VECTOR_BINS as f64 * VECTOR_BINS as f64) / total) as f32;
 
         let max_px = jobs.iter().map(|j| { let (w, h) = j.out(); (w as u64) * (h as u64) }).max().unwrap_or(0);
@@ -1517,6 +1777,9 @@ impl ScopeRenderer {
             encoder.clear_buffer(&self.bins, 0, None);
             encoder.clear_buffer(&self.extents, 0, None);
         }
+        if lp && want_hist {
+            encoder.clear_buffer(&self.hist_bins, 0, None);
+        }
         if want_vector {
             encoder.clear_buffer(&self.vbins, 0, None);
         }
@@ -1524,12 +1787,33 @@ impl ScopeRenderer {
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("scope_measure"), timestamp_writes: None });
             let groups = (width.div_ceil(step).div_ceil(16), height.div_ceil(step).div_ceil(16));
             if want_wave {
-                pass.set_pipeline(match input {
+                let direct = match input {
                     ScopeInput::Linear { .. } => &self.acc_linear,
                     ScopeInput::Display { .. } => &self.acc_display,
-                });
-                pass.set_bind_group(0, &acc_bg, &[]);
-                pass.dispatch_workgroups(groups.0, groups.1, 1);
+                };
+                if let Some((rows_bg, copy_bg, wave_bg, count_bg, _, _)) = &lp_groups {
+                    pass.set_pipeline(match input {
+                        ScopeInput::Linear { .. } => &self.lp_h_linear,
+                        ScopeInput::Display { .. } => &self.lp_h_display,
+                    });
+                    pass.set_bind_group(0, rows_bg, &[]);
+                    pass.dispatch_workgroups(lp_w.div_ceil(16), height.div_ceil(16), 1);
+                    pass.set_pipeline(&self.lp_v);
+                    pass.set_bind_group(0, copy_bg, &[]);
+                    pass.dispatch_workgroups(lp_w.div_ceil(16), lp_h.div_ceil(16), 1);
+                    pass.set_pipeline(&self.acc_encoded);
+                    pass.set_bind_group(0, wave_bg, &[]);
+                    pass.dispatch_workgroups(lp_w.div_ceil(16), lp_h.div_ceil(16), 1);
+                    if want_hist {
+                        pass.set_pipeline(direct);
+                        pass.set_bind_group(0, count_bg, &[]);
+                        pass.dispatch_workgroups(groups.0, groups.1, 1);
+                    }
+                } else {
+                    pass.set_pipeline(direct);
+                    pass.set_bind_group(0, &acc_bg, &[]);
+                    pass.dispatch_workgroups(groups.0, groups.1, 1);
+                }
                 if jobs.iter().any(|j| matches!(j, ScopeJob::Waveform(w) if w.envelope)) {
                     pass.set_pipeline(&self.ext_pipeline);
                     pass.set_bind_group(0, &ext_bg, &[]);
@@ -1545,7 +1829,7 @@ impl ScopeRenderer {
                 }
                 if want_hist {
                     pass.set_pipeline(&self.hist_reduce_pipeline);
-                    pass.set_bind_group(0, &hist_reduce_bg, &[]);
+                    pass.set_bind_group(0, lp_groups.as_ref().map_or(&hist_reduce_bg, |g| &g.4), &[]);
                     pass.dispatch_workgroups(BIN_ROWS.div_ceil(64), 1, 1);
                     pass.set_pipeline(&self.hist_prep_pipeline);
                     pass.set_bind_group(0, &hist_prep_bg, &[]);
@@ -1817,6 +2101,17 @@ impl ScopeRenderer {
         }
     }
 
+    fn ensure_low_pass(&mut self, tmp_bytes: u64, out_bytes: u64) {
+        if self.lp_tmp.is_none() || self.lp_tmp_size < tmp_bytes {
+            self.lp_tmp = Some(buffer(&self.device, "scope_lp_tmp", tmp_bytes, wgpu::BufferUsages::STORAGE));
+            self.lp_tmp_size = tmp_bytes;
+        }
+        if self.lp_out.is_none() || self.lp_out_size < out_bytes {
+            self.lp_out = Some(buffer(&self.device, "scope_lp_out", out_bytes, wgpu::BufferUsages::STORAGE));
+            self.lp_out_size = out_bytes;
+        }
+    }
+
     fn ensure_staging(&mut self, bytes: u64) {
         if self.staging.is_none() || self.staging_size < bytes {
             self.staging = Some(buffer(&self.device, "scope_staging", bytes, wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST));
@@ -1857,6 +2152,10 @@ mod tests {
         let shaders = [
             ("acc_linear", format!("{WGSL_COMMON_ACC}{WGSL_ACC_LINEAR}")),
             ("acc_display", format!("{WGSL_COMMON_ACC}{WGSL_ACC_DISPLAY}")),
+            ("acc_encoded", format!("{WGSL_COMMON_ACC}{WGSL_ACC_ENCODED}")),
+            ("lp_h_linear", format!("{WGSL_LP_PARAMS}{WGSL_LP_SRC_LINEAR}{WGSL_LP_H}")),
+            ("lp_h_display", format!("{WGSL_LP_PARAMS}{WGSL_LP_SRC_DISPLAY}{WGSL_LP_H}")),
+            ("lp_v", format!("{WGSL_LP_PARAMS}{WGSL_LP_SRC_ROWS}{WGSL_LP_V}")),
             ("acc_vector_linear", format!("{WGSL_COMMON_ACC}{WGSL_COMMON_VECTOR}{WGSL_ACC_VECTOR_LINEAR}")),
             ("acc_vector_display", format!("{WGSL_COMMON_ACC}{WGSL_COMMON_VECTOR}{WGSL_ACC_VECTOR_DISPLAY}")),
             ("shade_vector", WGSL_SHADE_VECTOR.to_string()),
