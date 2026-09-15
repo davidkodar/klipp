@@ -393,20 +393,28 @@ impl Default for VectorscopeSettings {
 
 impl Eq for VectorscopeSettings {}
 
+/// How the histogram lays out its channels.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum HistogramDisplayMode {
-    #[default]
+    /// Red, green and blue side by side.
     Parade,
+    /// Red, green and blue in rows.
     Stack,
+    /// Red, green and blue over each other, additive.
+    #[default]
     Overlay,
+    /// One distribution of Y′.
+    Luma,
 }
 
 impl HistogramDisplayMode {
+    /// libavfilter's `display_mode=`. It has no luma mode: luma is its
+    /// overlay of a single Y′ component.
     pub fn keyword(&self) -> &'static str {
         match self {
             Self::Parade => "parade",
             Self::Stack => "stack",
-            Self::Overlay => "overlay",
+            Self::Overlay | Self::Luma => "overlay",
         }
     }
 }
@@ -430,17 +438,19 @@ impl HistogramLevels {
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct HistogramSettings {
     pub display_mode: HistogramDisplayMode,
+    /// Height by the count, or by its logarithm.
     pub levels: HistogramLevels,
-    /// Foreground (bar) opacity (FFmpeg `fgopacity=`). Default 0.7.
+    /// Brightness of the area under each curve, 0..1. Default 0.7.
     pub fgopacity: f32,
-    /// Background opacity (FFmpeg `bgopacity=`). Default 0.5.
+    /// Background opacity of the libavfilter histogram (`bgopacity=`),
+    /// drawn only without a GPU. Default 0.5.
     pub bgopacity: f32,
 }
 
 impl Default for HistogramSettings {
     fn default() -> Self {
         Self {
-            display_mode: HistogramDisplayMode::Parade,
+            display_mode: HistogramDisplayMode::Overlay,
             levels: HistogramLevels::Linear,
             fgopacity: 0.7,
             bgopacity: 0.5,

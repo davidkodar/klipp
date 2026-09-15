@@ -2722,18 +2722,6 @@ impl WaveformChannel {
 /// Skin tone indicator angle (degrees) — standard vectorscope convention.
 pub const SKIN_TONE_ANGLE_DEGREES: f32 = 123.0;
 
-/// Histogram Y-axis scaling mode.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
-pub enum HistogramScale {
-    /// Square-root compression — emphasises low counts, default NLE style.
-    #[default]
-    Sqrt,
-    /// Linear count — raw proportion, tall peaks dominate.
-    Linear,
-    /// Natural log — heaviest low-count emphasis, for spotting sparse outliers.
-    Log,
-}
-
 /// Waveform trace base colour (monochrome mode only).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub enum WaveformPaintMode {
@@ -2788,9 +2776,6 @@ pub struct PaneScopeSettings {
     /// Vectorscope: draw the NTSC I/Q axes (I = skin tone, Q = perpendicular).
     #[serde(default)]
     pub show_iq_lines: bool,
-    /// Histogram: Y-axis scaling mode (Sqrt/Linear/Log).
-    #[serde(default)]
-    pub histogram_scale: HistogramScale,
     /// Waveform: base trace colour in monochrome mode (Green/Yellow/White/Classic).
     #[serde(default)]
     pub waveform_paint_mode: WaveformPaintMode,
@@ -2835,7 +2820,6 @@ impl Default for PaneScopeSettings {
             scope_cursor_sample_radius: 2,
             // Additional reference / display options
             show_iq_lines: false,
-            histogram_scale: HistogramScale::Sqrt,
             waveform_paint_mode: WaveformPaintMode::Green,
             spectrogram_db_floor: default_spectrogram_db_floor(),
         }
@@ -2972,13 +2956,14 @@ pub struct ScopeFfmpegState {
     pub vectorscope_hthreshold: f32,
     /// Magnification of the vectorscope's chroma plane: 1, 2 or 4.
     pub vectorscope_zoom: f32,
-    /// FFmpeg histogram `display_mode=`.
+    /// How the histogram lays out its channels.
     pub histogram_display: klipp_core::HistogramDisplayMode,
-    /// FFmpeg histogram `levels_mode=`.
+    /// Histogram height by the count or by its logarithm.
     pub histogram_levels: klipp_core::HistogramLevels,
-    /// FFmpeg histogram `fgopacity=` (bar opacity). Default 0.7.
+    /// Brightness of the area under each histogram curve. Default 0.7.
     pub histogram_fgopacity: f32,
-    /// FFmpeg histogram `bgopacity=` (background opacity). Default 0.5.
+    /// libavfilter histogram `bgopacity=`, drawn only without a GPU.
+    /// Default 0.5.
     pub histogram_bgopacity: f32,
 }
 
@@ -2995,7 +2980,7 @@ impl Default for ScopeFfmpegState {
             vectorscope_lthreshold: 0.0,
             vectorscope_hthreshold: 1.0,
             vectorscope_zoom: 1.0,
-            histogram_display: klipp_core::HistogramDisplayMode::Parade,
+            histogram_display: klipp_core::HistogramDisplayMode::Overlay,
             histogram_levels: klipp_core::HistogramLevels::Linear,
             histogram_fgopacity: 0.7,
             histogram_bgopacity: 0.5,

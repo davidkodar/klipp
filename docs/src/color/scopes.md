@@ -32,11 +32,14 @@ A diagonal line at approximately 11 o'clock (~123°) represents the universal sk
 
 ## Histogram
 
-The histogram shows the distribution of pixel brightness values:
+The histogram shows how many pixels sit at each level, across the whole frame:
 
-- **X-axis** — Brightness (black on left, white on right)
-- **Y-axis** — Number of pixels at each brightness level
-- Separate RGB channels can be displayed overlaid or individually
+- **X-axis** — Level (black on the left, white on the right), marked in the scope's units: 10-bit codes, IRE or percent
+- **Y-axis** — How many pixels sit at that level
+
+It is drawn on the GPU from the same measurement as the waveform, at 10-bit resolution, as a filled curve per channel with a bright line along its top. Four layouts are offered: **RGB overlay** draws red, green and blue over each other, adding towards white where they agree; **RGB parade** puts them side by side and **RGB stacked** in rows; **Luma** shows Y′ alone, built with the working space's luminance weights. **Logarithmic count** sets the height by the logarithm of the count, so a small population beside a large one still shows, and **Fill** sets the brightness of the area under each curve.
+
+The tallest level fills nine tenths of the height. Pixels clipped at black or white pile up at the very ends; they are drawn as a spike to the top, but do not set the scale, so a clipped sky does not flatten the rest of the picture. The curve is smoothed over four 10-bit levels, the spacing of 8-bit codes: an 8-bit source reads as the smooth distribution it is rather than a comb, while a grade that stretches the codes further apart still shows its gaps.
 
 A well-exposed image typically has a histogram spread across the full range without hard clipping.
 
@@ -52,7 +55,7 @@ Particularly useful for white-balance correction: adjust temperature and tint un
 
 ## Working Colourspace
 
-The vectorscope measures Y′CbCr in the project's working space, with that space's own luminance weights, so its targets sit where the space's primaries land. The waveform and parade measure the delivered levels described above.
+The vectorscope measures Y′CbCr in the project's working space, with that space's own luminance weights, so its targets sit where the space's primaries land. The waveform, parade and histogram measure the delivered levels described above.
 
 ## Scope Quality Settings
 

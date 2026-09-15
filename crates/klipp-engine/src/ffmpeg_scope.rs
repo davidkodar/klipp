@@ -36,6 +36,19 @@ pub const SCOPE_OUT_H: u32 = 512;
 /// The GPU vectorscope's output: a square.
 pub const VECTOR_OUT: u32 = 1024;
 
+/// The GPU histogram's layout for a histogram display choice. The engine
+/// draws with it and the UI lays its graticule out with it, so the two
+/// agree on where each panel is.
+pub fn histogram_layout(mode: klipp_core::HistogramDisplayMode) -> klipp_effects::gpu_scopes::HistogramLayout {
+    use klipp_effects::gpu_scopes::HistogramLayout;
+    match mode {
+        klipp_core::HistogramDisplayMode::Overlay => HistogramLayout::Overlay,
+        klipp_core::HistogramDisplayMode::Parade => HistogramLayout::Parade,
+        klipp_core::HistogramDisplayMode::Stack => HistogramLayout::Stack,
+        klipp_core::HistogramDisplayMode::Luma => HistogramLayout::Luma,
+    }
+}
+
 /// The CIE chromaticity scope's place in `active_scope_modes`.
 ///
 /// Not a filter mode — libavfilter has no gamut scope, and this one is drawn
@@ -593,6 +606,8 @@ fn measures_chroma(mode: u8, settings: &ScopeFfmpegSettings) -> bool {
         0 | 1 => settings.luma_only,
         // The vectorscope is nothing but chroma.
         2 => true,
+        // The histogram of Y′.
+        3 => settings.histogram.display_mode == klipp_core::HistogramDisplayMode::Luma,
         _ => false,
     }
 }
@@ -696,8 +711,12 @@ fn scope_spec_for_mode(
             let levels = h.levels.keyword();
             let fg = h.fgopacity.clamp(0.0, 1.0);
             let bg = h.bgopacity.clamp(0.0, 1.0);
+            // Luma is the Y′ plane alone, of a frame built in the
+            // project's basis.
+            let (yuv, components) =
+                if h.display_mode == klipp_core::HistogramDisplayMode::Luma { (to_yuv, 1) } else { ("", 7) };
             Some(format!(
-                "histogram=display_mode={display}:levels_mode={levels}:fgopacity={fg:.3}:bgopacity={bg:.3}:colors_mode=coloronblack"
+                "{yuv}histogram=display_mode={display}:levels_mode={levels}:components={components}:fgopacity={fg:.3}:bgopacity={bg:.3}:colors_mode=coloronblack"
             ))
         }
         _ => None,

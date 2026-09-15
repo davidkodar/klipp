@@ -1,9 +1,10 @@
-//! Waveform, parade and vectorscope drawn on the GPU.
+//! Waveform, parade, vectorscope and histogram drawn on the GPU.
 //!
 //! A scope is a density plot: for every column of the picture, how many
 //! samples sit at each level — or, for the vectorscope, how many sit at
-//! each chroma. Drawing one well is two separate jobs, and this module
-//! keeps them apart.
+//! each chroma, and for the histogram, how many sit at each level across
+//! the whole picture. Drawing one well is two separate jobs, and this
+//! module keeps them apart.
 //!
 //! **Measuring** ([`ScopeRenderer::render`], the accumulate pass) reads
 //! every sample of the frame — or every second or fourth, by quality —
@@ -120,11 +121,71 @@ pub struct VectorscopeJob {
     pub out_h: u32,
 }
 
+/// How the histogram lays its channels out.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HistogramLayout {
+    /// Red, green and blue over each other in one panel, additive.
+    Overlay,
+    /// Red, green and blue side by side.
+    Parade,
+    /// Red, green and blue in rows, red on top.
+    Stack,
+    /// One distribution of Y′.
+    Luma,
+}
+
+/// One histogram picture: across the whole frame, how many samples sit
+/// at each level, level left to right and count upward.
+#[derive(Clone, Copy, Debug)]
+pub struct HistogramJob {
+    pub layout: HistogramLayout,
+    /// Height by the logarithm of the count, so a small population
+    /// beside a large one still shows.
+    pub log: bool,
+    /// Brightness of the area under each curve, 0..1. The curve itself is
+    /// always drawn in full.
+    pub fill: f32,
+    pub glow: bool,
+    pub out_w: u32,
+    pub out_h: u32,
+}
+
+/// One panel of a histogram, in output pixels.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct HistogramPanel {
+    pub x: u32,
+    pub y: u32,
+    pub w: u32,
+    pub h: u32,
+    /// The channels drawn in it: 1 red, 2 green, 4 blue, 8 Y′.
+    pub channels: u32,
+}
+
+/// Where a histogram of `layout` draws at `out_w × out_h`. The shader
+/// draws from exactly these rectangles, so a graticule laid on them lines
+/// up with the curves.
+pub fn histogram_panels(layout: HistogramLayout, out_w: u32, out_h: u32) -> Vec<HistogramPanel> {
+    let gap = parade_gap(out_w);
+    match layout {
+        HistogramLayout::Overlay => vec![HistogramPanel { x: 0, y: 0, w: out_w, h: out_h, channels: 7 }],
+        HistogramLayout::Luma => vec![HistogramPanel { x: 0, y: 0, w: out_w, h: out_h, channels: 8 }],
+        HistogramLayout::Parade => {
+            let w = out_w.saturating_sub(2 * gap) / 3;
+            (0..3).map(|i| HistogramPanel { x: i * (w + gap), y: 0, w, h: out_h, channels: 1 << i }).collect()
+        }
+        HistogramLayout::Stack => {
+            let h = out_h.saturating_sub(2 * gap) / 3;
+            (0..3).map(|i| HistogramPanel { x: 0, y: i * (h + gap), w: out_w, h, channels: 1 << i }).collect()
+        }
+    }
+}
+
 /// One picture to draw from a frame's measurement.
 #[derive(Clone, Copy, Debug)]
 pub enum ScopeJob {
     Waveform(WaveformJob),
     Vectorscope(VectorscopeJob),
+    Histogram(HistogramJob),
 }
 
 impl ScopeJob {
@@ -132,18 +193,29 @@ impl ScopeJob {
         match self {
             ScopeJob::Waveform(j) => (j.out_w, j.out_h),
             ScopeJob::Vectorscope(j) => (j.out_w, j.out_h),
+            ScopeJob::Histogram(j) => (j.out_w, j.out_h),
         }
     }
     fn glow(&self) -> bool {
         match self {
             ScopeJob::Waveform(j) => j.glow,
             ScopeJob::Vectorscope(j) => j.glow,
+            ScopeJob::Histogram(j) => j.glow,
+        }
+    }
+    /// How much of the glow is added back. A histogram's filled area is
+    /// large, so its glow is kept to the light off the curve.
+    fn glow_strength(&self) -> f32 {
+        match self {
+            ScopeJob::Histogram(_) => 0.35,
+            _ => 0.6,
         }
     }
     fn gain(&self) -> f32 {
         let intensity = match self {
             ScopeJob::Waveform(j) => j.intensity,
             ScopeJob::Vectorscope(j) => j.intensity,
+            ScopeJob::Histogram(_) => -1.0,
         };
         // Density per unit of brightness. The slider is geometric: 0 is
         // a sixth of the default, 1 six times it.
@@ -229,6 +301,25 @@ struct ShadeParams {
     norm: f32,
     floor: f32,
     _pad: f32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct HistShadeParams {
+    out_w: u32,
+    out_h: u32,
+    rows: u32,
+    panels: u32,
+    log: u32,
+    _p0: u32,
+    _p1: u32,
+    _p2: u32,
+    fill: f32,
+    headroom: f32,
+    _f0: f32,
+    _f1: f32,
+    rects: [[u32; 4]; 3],
+    chans: [u32; 4],
 }
 
 #[repr(C)]
@@ -581,6 +672,171 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 }
 "#;
 
+/// The histogram's counts: every column of the waveform's bins summed,
+/// per level and channel. The histogram is the waveform's measurement
+/// with the columns folded together, so it costs no pass over the frame.
+const WGSL_HIST_REDUCE: &str = r#"
+struct HistParams { cols: u32, rows: u32, _p0: u32, _p1: u32 };
+@group(0) @binding(0) var<storage, read> bins: array<u32>;
+@group(0) @binding(1) var<storage, read_write> raw: array<f32>;
+@group(0) @binding(2) var<uniform> p: HistParams;
+@compute @workgroup_size(64, 4)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let level = gid.x; let ch = gid.y;
+    if (level >= p.rows || ch >= 4u) { return; }
+    let base = ch * p.cols * p.rows;
+    var sum = 0.0;
+    for (var c = 0u; c < p.cols; c = c + 1u) {
+        sum = sum + f32(bins[base + c * p.rows + level]);
+    }
+    raw[ch * p.rows + level] = sum;
+}
+"#;
+
+/// Smooth the counts, and find the height that fills the panel.
+///
+/// The smoothing is a tent four levels to either side, weighted `1 − d/4`.
+/// An 8-bit picture's codes land four 10-bit levels apart, and that tent
+/// sums a comb of period four to a constant, so an untouched 8-bit
+/// picture reads as the smooth distribution it is; a grade that stretches
+/// the codes further apart still shows its gaps.
+///
+/// The peak ignores the outermost `EDGE` levels: samples clipped at black
+/// or white pile up there, and scaling to that pile would flatten the rest
+/// of the picture. The pile is still drawn, as a spike to the top.
+const WGSL_HIST_PREP: &str = r#"
+struct HistParams { cols: u32, rows: u32, _p0: u32, _p1: u32 };
+@group(0) @binding(0) var<storage, read> raw: array<f32>;
+@group(0) @binding(1) var<storage, read_write> hist: array<f32>;
+@group(0) @binding(2) var<uniform> p: HistParams;
+const EDGE: u32 = 10u;
+@compute @workgroup_size(1)
+fn main() {
+    let n = p.rows;
+    for (var ch = 0u; ch < 4u; ch = ch + 1u) {
+        var inner = 0.0; var whole = 0.0;
+        for (var l = 0u; l < n; l = l + 1u) {
+            var s = raw[ch * n + l];
+            for (var d = 1u; d < 4u; d = d + 1u) {
+                let w = 1.0 - f32(d) * 0.25;
+                if (l >= d) { s = s + raw[ch * n + l - d] * w; }
+                if (l + d < n) { s = s + raw[ch * n + l + d] * w; }
+            }
+            hist[ch * n + l] = s;
+            whole = max(whole, s);
+            if (l >= EDGE && l + EDGE < n) { inner = max(inner, s); }
+        }
+        hist[4u * n + ch] = inner;
+        hist[4u * n + 4u + ch] = whole;
+    }
+}
+"#;
+
+const WGSL_SHADE_HIST: &str = r#"
+struct HistShadeParams {
+    out_w: u32, out_h: u32, rows: u32, panels: u32,
+    log: u32, _p0: u32, _p1: u32, _p2: u32,
+    fill: f32, headroom: f32, _f0: f32, _f1: f32,
+    rect0: vec4<u32>, rect1: vec4<u32>, rect2: vec4<u32>,
+    chans: vec4<u32>,
+};
+@group(0) @binding(0) var<storage, read> hist: array<f32>;
+@group(0) @binding(1) var<storage, read_write> out: array<vec4<f32>>;
+@group(0) @binding(2) var<uniform> p: HistShadeParams;
+
+// The channel colours. Unlike the waveform's, each primary sums to the
+// same 1.28, so where red, green and blue fill the same area they add to
+// a neutral grey rather than a tint.
+fn tint(ch: u32) -> vec3<f32> {
+    switch ch {
+        case 0u: { return vec3<f32>(1.0, 0.12, 0.10); }
+        case 1u: { return vec3<f32>(0.12, 0.90, 0.18); }
+        case 2u: { return vec3<f32>(0.16, 0.26, 1.0); }
+        default: { return vec3<f32>(0.86, 0.93, 0.90); }
+    }
+}
+fn rect(i: u32) -> vec4<u32> {
+    switch i {
+        case 0u: { return p.rect0; }
+        case 1u: { return p.rect1; }
+        default: { return p.rect2; }
+    }
+}
+// The count every curve of this picture is scaled to: the tallest level
+// of the channels drawn, away from the clipped ends.
+fn peak() -> f32 {
+    let n = p.rows;
+    let mask = p.chans[0] | p.chans[1] | p.chans[2];
+    var inner = 0.0; var whole = 0.0;
+    for (var ch = 0u; ch < 4u; ch = ch + 1u) {
+        if ((mask & (1u << ch)) == 0u) { continue; }
+        inner = max(inner, hist[4u * n + ch]);
+        whole = max(whole, hist[4u * n + 4u + ch]);
+    }
+    if (inner > 0.0) { return inner; }
+    return max(whole, 1.0);
+}
+// The curve's height over pixel column `px` of a panel `pw` wide, as a
+// fraction of the panel: the tallest level the column covers, so a
+// narrow spike keeps its height at any panel width.
+fn height(ch: u32, px: i32, pw: u32, pk: f32) -> f32 {
+    let x = u32(clamp(px, 0, i32(pw) - 1));
+    let l0 = (x * p.rows) / pw;
+    let l1 = min(max(((x + 1u) * p.rows) / pw, l0 + 1u), p.rows);
+    var m = 0.0;
+    for (var l = l0; l < l1; l = l + 1u) {
+        m = max(m, hist[ch * p.rows + l]);
+    }
+    let v = m / pk;
+    if (p.log != 0u) {
+        // Three decades from the peak down to nothing.
+        return min(log2(1.0 + v * 1024.0) / log2(1025.0) * p.headroom, 1.0);
+    }
+    return min(v * p.headroom, 1.0);
+}
+@compute @workgroup_size(16, 16)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let ox = gid.x; let oy = gid.y;
+    if (ox >= p.out_w || oy >= p.out_h) { return; }
+    let oi = oy * p.out_w + ox;
+    let pk = peak();
+    var rgb = vec3<f32>(0.0);
+    for (var i = 0u; i < p.panels; i = i + 1u) {
+        let r = rect(i);
+        if (ox < r.x || ox >= r.x + r.z || oy < r.y || oy >= r.y + r.w) { continue; }
+        let px = i32(ox - r.x);
+        let ph = f32(r.w);
+        // This pixel's centre, in pixels above the panel's floor.
+        let yc = ph - (f32(oy - r.y) + 0.5);
+        for (var ch = 0u; ch < 4u; ch = ch + 1u) {
+            if ((p.chans[i] & (1u << ch)) == 0u) { continue; }
+            let h = height(ch, px, r.z, pk) * ph;
+            let hl = height(ch, px - 1, r.z, pk) * ph;
+            let hr = height(ch, px + 1, r.z, pk) * ph;
+            // The area under the curve, anti-aliased at its top.
+            let cover = clamp(h - (yc - 0.5), 0.0, 1.0);
+            // The curve: the span it passes through in this column, joined
+            // half way to each neighbour, so a steep flank is a continuous
+            // line rather than a dot per column. Nothing along an empty floor.
+            let lo = min(h, min((h + hl) * 0.5, (h + hr) * 0.5));
+            let hi = max(h, max((h + hl) * 0.5, (h + hr) * 0.5));
+            var line = 0.0;
+            if (hi >= 0.5) {
+                let d = max(max(lo - yc, yc - hi), 0.0);
+                line = clamp(1.25 - d, 0.0, 1.0);
+            }
+            // The fill brightens towards the curve, as light collects at a
+            // phosphor edge; at its fullest it stays dim enough that the
+            // curves drawn over it read.
+            let grad = 0.55 + 0.45 * clamp(yc / max(h, 1.0), 0.0, 1.0);
+            let t = tint(ch);
+            rgb = rgb + t * (cover * p.fill * 0.6 * grad) + mix(t, vec3<f32>(1.0), 0.35) * line;
+        }
+    }
+    out[oi] = vec4<f32>(min(rgb, vec3<f32>(1.0)), 1.0);
+}
+"#;
+
 const WGSL_GLOW_H: &str = r#"
 struct GlowParams { out_w: u32, out_h: u32, radius: u32, glow: u32, sigma: f32, strength: f32, _p0: f32, _p1: f32 };
 @group(0) @binding(0) var<storage, read> src: array<vec4<f32>>;
@@ -644,6 +900,16 @@ pub struct ScopeRenderer {
     vshade_layout: wgpu::BindGroupLayout,
     vshade_pipeline: wgpu::ComputePipeline,
     vbins: wgpu::Buffer,
+    hist_reduce_layout: wgpu::BindGroupLayout,
+    hist_reduce_pipeline: wgpu::ComputePipeline,
+    hist_prep_layout: wgpu::BindGroupLayout,
+    hist_prep_pipeline: wgpu::ComputePipeline,
+    hshade_layout: wgpu::BindGroupLayout,
+    hshade_pipeline: wgpu::ComputePipeline,
+    /// Per channel and level, the frame's count; then the smoothed count
+    /// with each channel's peaks after it.
+    hist_raw: wgpu::Buffer,
+    hist: wgpu::Buffer,
     ext_layout: wgpu::BindGroupLayout,
     ext_pipeline: wgpu::ComputePipeline,
     shade_layout: wgpu::BindGroupLayout,
@@ -721,6 +987,14 @@ impl ScopeRenderer {
         let vshade_layout = layout(&device, "scope_vshade", &[storage(true), storage(false), UNIFORM]);
         let vshade_pipeline = pipeline(&device, "scope_vshade", &vshade_layout, WGSL_SHADE_VECTOR);
         let vbins = buffer(&device, "scope_vbins", (VECTOR_BINS * VECTOR_BINS) as u64 * 4, wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST);
+        let hist_reduce_layout = layout(&device, "scope_hist_reduce", &[storage(true), storage(false), UNIFORM]);
+        let hist_reduce_pipeline = pipeline(&device, "scope_hist_reduce", &hist_reduce_layout, WGSL_HIST_REDUCE);
+        let hist_prep_layout = layout(&device, "scope_hist_prep", &[storage(true), storage(false), UNIFORM]);
+        let hist_prep_pipeline = pipeline(&device, "scope_hist_prep", &hist_prep_layout, WGSL_HIST_PREP);
+        let hshade_layout = layout(&device, "scope_hshade", &[storage(true), storage(false), UNIFORM]);
+        let hshade_pipeline = pipeline(&device, "scope_hshade", &hshade_layout, WGSL_SHADE_HIST);
+        let hist_raw = buffer(&device, "scope_hist_raw", 4 * BIN_ROWS as u64 * 4, wgpu::BufferUsages::STORAGE);
+        let hist = buffer(&device, "scope_hist", (4 * BIN_ROWS as u64 + 8) * 4, wgpu::BufferUsages::STORAGE);
         let ext_layout = layout(&device, "scope_ext", &[storage(true), storage(false), UNIFORM]);
         let ext_pipeline = pipeline(&device, "scope_ext", &ext_layout, WGSL_EXTENTS);
         let shade_layout = layout(&device, "scope_shade", &[storage(true), storage(true), storage(false), UNIFORM]);
@@ -742,6 +1016,14 @@ impl ScopeRenderer {
             vshade_layout,
             vshade_pipeline,
             vbins,
+            hist_reduce_layout,
+            hist_reduce_pipeline,
+            hist_prep_layout,
+            hist_prep_pipeline,
+            hshade_layout,
+            hshade_pipeline,
+            hist_raw,
+            hist,
             ext_layout,
             ext_pipeline,
             shade_layout,
@@ -833,7 +1115,8 @@ impl ScopeRenderer {
             ScopeInput::Linear { matrix, luma, transfer, scale, .. } => (*matrix, *luma, *transfer as u32, *scale),
             ScopeInput::Display { luma, .. } => ([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]], *luma, 0, 1.0),
         };
-        let want_wave = jobs.iter().any(|j| matches!(j, ScopeJob::Waveform(_)));
+        let want_hist = jobs.iter().any(|j| matches!(j, ScopeJob::Histogram(_)));
+        let want_wave = want_hist || jobs.iter().any(|j| matches!(j, ScopeJob::Waveform(_)));
         let want_vector = jobs.iter().any(|j| matches!(j, ScopeJob::Vectorscope(_)));
         let (vlo, vhi) = jobs
             .iter()
@@ -891,6 +1174,25 @@ impl ScopeRenderer {
                 wgpu::BindGroupEntry { binding: 2, resource: ext_params.as_entire_binding() },
             ],
         });
+        let hist_params = self.uniform("scope_hist_params", &ExtParams { cols: BIN_COLS, rows: BIN_ROWS, _p0: 0, _p1: 0 });
+        let hist_reduce_bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("scope_hist_reduce_bg"),
+            layout: &self.hist_reduce_layout,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: self.bins.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: self.hist_raw.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 2, resource: hist_params.as_entire_binding() },
+            ],
+        });
+        let hist_prep_bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("scope_hist_prep_bg"),
+            layout: &self.hist_prep_layout,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: self.hist_raw.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: self.hist.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 2, resource: hist_params.as_entire_binding() },
+            ],
+        });
 
         // Samples per bin column, for the density normalisation; and for
         // the chroma plane, samples per cell were the picture spread over
@@ -946,6 +1248,14 @@ impl ScopeRenderer {
                     pass.set_pipeline(&self.ext_pipeline);
                     pass.set_bind_group(0, &ext_bg, &[]);
                     pass.dispatch_workgroups(BIN_COLS.div_ceil(64), 4, 1);
+                }
+                if want_hist {
+                    pass.set_pipeline(&self.hist_reduce_pipeline);
+                    pass.set_bind_group(0, &hist_reduce_bg, &[]);
+                    pass.dispatch_workgroups(BIN_ROWS.div_ceil(64), 1, 1);
+                    pass.set_pipeline(&self.hist_prep_pipeline);
+                    pass.set_bind_group(0, &hist_prep_bg, &[]);
+                    pass.dispatch_workgroups(1, 1, 1);
                 }
             }
             if want_vector {
@@ -1015,6 +1325,44 @@ impl ScopeRenderer {
                     });
                     (&self.vshade_pipeline, bg, params)
                 }
+                ScopeJob::Histogram(job) => {
+                    let panels = histogram_panels(job.layout, out_w, out_h);
+                    let mut rects = [[0u32; 4]; 3];
+                    let mut chans = [0u32; 4];
+                    for (i, panel) in panels.iter().enumerate() {
+                        rects[i] = [panel.x, panel.y, panel.w, panel.h];
+                        chans[i] = panel.channels;
+                    }
+                    let shade = HistShadeParams {
+                        out_w,
+                        out_h,
+                        rows: BIN_ROWS,
+                        panels: panels.len() as u32,
+                        log: job.log as u32,
+                        _p0: 0,
+                        _p1: 0,
+                        _p2: 0,
+                        fill: job.fill.clamp(0.0, 1.0),
+                        // The peak fills nine tenths of the panel, so the
+                        // tallest curve still has its line below the top.
+                        headroom: 0.9,
+                        _f0: 0.0,
+                        _f1: 0.0,
+                        rects,
+                        chans,
+                    };
+                    let params = self.uniform("scope_hshade_params", &shade);
+                    let bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                        label: Some("scope_hshade_bg"),
+                        layout: &self.hshade_layout,
+                        entries: &[
+                            wgpu::BindGroupEntry { binding: 0, resource: self.hist.as_entire_binding() },
+                            wgpu::BindGroupEntry { binding: 1, resource: shaded.as_entire_binding() },
+                            wgpu::BindGroupEntry { binding: 2, resource: params.as_entire_binding() },
+                        ],
+                    });
+                    (&self.hshade_pipeline, bg, params)
+                }
             };
             let glow = GlowParams {
                 out_w,
@@ -1022,7 +1370,7 @@ impl ScopeRenderer {
                 radius: 8,
                 glow: job.glow() as u32,
                 sigma: 3.0,
-                strength: 0.6,
+                strength: job.glow_strength(),
                 _p0: 0.0,
                 _p1: 0.0,
             };

@@ -30922,6 +30922,7 @@ impl KlippApp {
                                     self.state.project_working_colorspace,
                                 ),
                                 self.state.scope_ffmpeg.vectorscope_zoom,
+                                self.state.scope_ffmpeg.histogram_display,
                             );
                         });
                     }
@@ -32300,6 +32301,7 @@ impl KlippApp {
                     self.state.project_working_colorspace,
                 ),
                 self.state.scope_ffmpeg.vectorscope_zoom,
+                self.state.scope_ffmpeg.histogram_display,
             );
         });
         // U-6: same guard as render_color_ws_bottom_tools. Scopes only

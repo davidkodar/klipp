@@ -1,10 +1,14 @@
-//! The GPU waveform and parade measure what they are given: a flat grey
-//! is a line at the grey's encoded level, a ramp is a ramp, the three
-//! parade panels each carry their channel, and the transfer moves the
-//! line where it should. Skips without a GPU.
+//! The GPU scopes measure what they are given: a flat grey is a line at
+//! the grey's encoded level, a ramp is a ramp, the three parade panels
+//! each carry their channel, the transfer moves the line where it should,
+//! and the histogram counts every level the picture holds. Skips without
+//! a GPU.
 
 use klipp_effects::gpu::GpuEffectsPipeline;
-use klipp_effects::gpu_scopes::{parade_gap, ScopeInput, ScopeJob, ScopeTransfer, VectorscopeJob, WaveformJob, WaveformMode};
+use klipp_effects::gpu_scopes::{
+    histogram_panels, parade_gap, HistogramJob, HistogramLayout, HistogramPanel, ScopeInput, ScopeJob, ScopeTransfer, VectorscopeJob, WaveformJob,
+    WaveformMode,
+};
 
 const W: u32 = 256;
 const H: u32 = 64;
@@ -219,4 +223,161 @@ fn the_vectorscope_luma_window_keeps_only_the_levels_asked_for() {
     let lit = |img: &[u8]| img.chunks_exact(4).filter(|p| p[0] as u32 + p[1] as u32 + p[2] as u32 > 0).count();
     let (a, d) = (a[0].as_ref().unwrap(), d[0].as_ref().unwrap());
     assert!(lit(a) > lit(d) && lit(d) > 0, "the window drops the bright red: {} vs {}", lit(a), lit(d));
+}
+
+const HW: u32 = 512;
+const HH: u32 = 256;
+
+fn histogram(layout: HistogramLayout, log: bool) -> ScopeJob {
+    ScopeJob::Histogram(HistogramJob { layout, log, fill: 0.5, glow: false, out_w: HW, out_h: HH })
+}
+
+/// How far up column `x` of `panel` anything is drawn, in pixels above
+/// the panel's floor.
+fn column_height(img: &[u8], panel: &HistogramPanel, x: u32) -> u32 {
+    for y in 0..panel.h {
+        let i = (((panel.y + y) * HW + panel.x + x) * 4) as usize;
+        if img[i] as u32 + img[i + 1] as u32 + img[i + 2] as u32 > 24 {
+            return panel.h - y;
+        }
+    }
+    0
+}
+
+/// The tallest column of a panel, and its height.
+fn tallest_column(img: &[u8], panel: &HistogramPanel) -> (u32, u32) {
+    (0..panel.w).map(|x| (x, column_height(img, panel, x))).max_by_key(|(_, h)| *h).unwrap()
+}
+
+/// The tallest column within two of `x`.
+fn height_near(img: &[u8], panel: &HistogramPanel, x: u32) -> u32 {
+    (x.saturating_sub(2)..=(x + 2).min(panel.w - 1)).map(|c| column_height(img, panel, c)).max().unwrap()
+}
+
+/// The panel column an encoded level lands in.
+fn column_of(level: f32, w: u32) -> u32 {
+    ((level * 1023.0).round() as u32 * w) / 1024
+}
+
+fn linear_input(frame: &[f32]) -> ScopeInput<'_> {
+    ScopeInput::Linear { rgba: frame, width: W, height: H, matrix: IDENTITY, luma: REC709, transfer: ScopeTransfer::Srgb, scale: 1.0 }
+}
+
+#[test]
+fn a_flat_grey_is_one_spike_at_its_level_filled_to_the_peak_height() {
+    let Some(mut gpu) = GpuEffectsPipeline::new() else { return };
+    let frame = flat(0.18);
+    let input = linear_input(&frame);
+    let panel = histogram_panels(HistogramLayout::Luma, HW, HH)[0];
+    let expect = column_of(linear_to_srgb(0.18), panel.w);
+    for step in [1u32, 2] {
+        let out = gpu.scopes().render(&input, step, &[histogram(HistogramLayout::Luma, false)]);
+        let img = out[0].as_ref().expect("a histogram");
+        assert_eq!(img.len(), (HW * HH * 4) as usize);
+        let (x, h) = tallest_column(img, &panel);
+        assert!((x as i32 - expect as i32).abs() <= 2, "step {step}: spike at column {x}, expected {expect}");
+        let peak = 0.9 * HH as f32;
+        assert!((h as f32 - peak).abs() <= 2.0, "step {step}: the peak fills nine tenths of the panel: {h} vs {peak}");
+        for far in [expect - 40, expect + 40] {
+            assert_eq!(column_height(img, &panel, far), 0, "step {step}: nothing drawn at column {far}");
+        }
+    }
+}
+
+#[test]
+fn every_8_bit_code_equally_often_is_a_flat_plateau_without_a_comb() {
+    let Some(mut gpu) = GpuEffectsPipeline::new() else { return };
+    // Every code 0..=255 in every row: 8-bit codes land four 10-bit levels
+    // apart, the comb a naive histogram draws.
+    let ramp: Vec<u8> = (0..W * H)
+        .flat_map(|i| {
+            let c = (i % W) as u8;
+            [c, c, c, 255]
+        })
+        .collect();
+    let input = ScopeInput::Display { rgba: &ramp, width: W, height: H, luma: REC709 };
+    let out = gpu.scopes().render(&input, 1, &[histogram(HistogramLayout::Luma, false)]);
+    let img = out[0].as_ref().unwrap();
+    let panel = histogram_panels(HistogramLayout::Luma, HW, HH)[0];
+    // Away from the two ends, where the smoothing is cut off.
+    let heights: Vec<u32> = (16..panel.w - 16).map(|x| column_height(img, &panel, x)).collect();
+    let (lo, hi) = (*heights.iter().min().unwrap(), *heights.iter().max().unwrap());
+    let peak = 0.9 * HH as f32;
+    assert!(hi - lo <= 3, "a flat plateau, not a comb: heights {lo}..{hi}");
+    assert!((hi as f32 - peak).abs() <= 3.0, "the plateau is the peak: {hi} vs {peak}");
+}
+
+#[test]
+fn the_parade_and_stack_draw_each_channel_in_its_own_panel_and_the_overlay_adds() {
+    let Some(mut gpu) = GpuEffectsPipeline::new() else { return };
+    let frame: Vec<f32> = (0..W * H).flat_map(|_| [0.5, 0.18, 0.02, 1.0]).collect();
+    let input = linear_input(&frame);
+    let levels = [linear_to_srgb(0.5), linear_to_srgb(0.18), linear_to_srgb(0.02)];
+    for layout in [HistogramLayout::Parade, HistogramLayout::Stack] {
+        let out = gpu.scopes().render(&input, 1, &[histogram(layout, false)]);
+        let img = out[0].as_ref().unwrap();
+        let panels = histogram_panels(layout, HW, HH);
+        assert_eq!(panels.len(), 3);
+        for (ch, panel) in panels.iter().enumerate() {
+            assert_eq!(panel.channels, 1 << ch);
+            let (x, h) = tallest_column(img, panel);
+            let expect = column_of(levels[ch], panel.w);
+            assert!((x as i32 - expect as i32).abs() <= 2, "{layout:?} panel {ch}: spike at {x}, expected {expect}");
+            assert!(h as f32 >= 0.75 * panel.h as f32, "{layout:?} panel {ch}: spike {h} of {}", panel.h);
+            let i = (((panel.y + panel.h - h / 2) * HW + panel.x + x) * 4) as usize;
+            let px = &img[i..i + 3];
+            assert!(px[ch] > px[(ch + 1) % 3] && px[ch] > px[(ch + 2) % 3], "{layout:?} panel {ch} is drawn in its colour: {px:?}");
+        }
+        // Between the panels is black.
+        let (a, b) = (panels[0], panels[1]);
+        let (gx, gy) = if layout == HistogramLayout::Parade { ((a.x + a.w + b.x) / 2, HH - 4) } else { (column_of(levels[0], HW), (a.y + a.h + b.y) / 2) };
+        let i = ((gy * HW + gx) * 4) as usize;
+        assert_eq!(&img[i..i + 3], &[0, 0, 0], "{layout:?}: gap at ({gx}, {gy})");
+    }
+    // Red and green at one level, drawn over each other, add to yellow.
+    let frame: Vec<f32> = (0..W * H).flat_map(|_| [0.5, 0.5, 0.0, 1.0]).collect();
+    let out = gpu.scopes().render(&linear_input(&frame), 1, &[histogram(HistogramLayout::Overlay, false)]);
+    let img = out[0].as_ref().unwrap();
+    let x = column_of(linear_to_srgb(0.5), HW);
+    let i = (((HH - 20) * HW + x) * 4) as usize;
+    let px = &img[i..i + 3];
+    assert!(px[0] > 2 * px[2] && px[1] > 2 * px[2], "red over green reads yellow: {px:?}");
+}
+
+#[test]
+fn log_levels_lift_a_small_population_and_clipped_samples_do_not_set_the_scale() {
+    let Some(mut gpu) = GpuEffectsPipeline::new() else { return };
+    let panel = histogram_panels(HistogramLayout::Luma, HW, HH)[0];
+    // Nine tenths at one grey, a tenth at a darker one.
+    let frame: Vec<f32> = (0..W * H)
+        .flat_map(|i| {
+            let v = if i % 10 == 0 { 0.05 } else { 0.4 };
+            [v, v, v, 1.0]
+        })
+        .collect();
+    let small = column_of(linear_to_srgb(0.05), panel.w);
+    let out = gpu.scopes().render(&linear_input(&frame), 1, &[histogram(HistogramLayout::Luma, false), histogram(HistogramLayout::Luma, true)]);
+    let lin = height_near(out[0].as_ref().unwrap(), &panel, small) as f32;
+    let log = height_near(out[1].as_ref().unwrap(), &panel, small) as f32;
+    // A spike's smoothed height depends on where between two levels it
+    // falls, by up to an eighth; the ratio of two spikes carries that.
+    let peak = 0.9 * HH as f32;
+    let expect_lin = peak / 9.0;
+    let expect_log = (1.0 + 1024.0 / 9.0f32).log2() / 1025.0f32.log2() * peak;
+    assert!((lin - expect_lin).abs() <= expect_lin * 0.15 + 2.0, "linear: a ninth of the peak, {lin} vs {expect_lin:.1}");
+    assert!((log - expect_log).abs() <= expect_log * 0.05 + 2.0, "log: {log} vs {expect_log:.1}");
+
+    // Six tenths clipped white, the rest a mid grey.
+    let frame: Vec<f32> = (0..W * H)
+        .flat_map(|i| {
+            let v = if i % 10 < 6 { 2.0 } else { 0.18 };
+            [v, v, v, 1.0]
+        })
+        .collect();
+    let out = gpu.scopes().render(&linear_input(&frame), 1, &[histogram(HistogramLayout::Luma, false)]);
+    let img = out[0].as_ref().unwrap();
+    let grey = height_near(img, &panel, column_of(linear_to_srgb(0.18), panel.w)) as f32;
+    // The curve's line sits up to two pixels above the fill it tops.
+    assert!(grey >= 0.78 * HH as f32 && grey <= peak + 2.5, "the grey still sets the scale: {grey}");
+    assert_eq!(column_height(img, &panel, panel.w - 1), panel.h, "the clipped pile is a spike to the top");
 }

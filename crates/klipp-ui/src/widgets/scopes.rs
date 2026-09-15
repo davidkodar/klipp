@@ -96,6 +96,95 @@ fn major_ticks(scale: ScopeScale) -> Vec<u32> {
     }
 }
 
+/// The graticule colour at alpha `a`: the theme's `scope_grid` blended
+/// half way toward the gold of a CRT graticule.
+fn graticule_amber(theme: &KlippTheme, a: u8) -> egui::Color32 {
+    let grid = theme.scope_grid;
+    let t = 0.50_f32;
+    let r = ((grid.r() as f32) * (1.0 - t) + 232.0 * t) as u8;
+    let g = ((grid.g() as f32) * (1.0 - t) + 168.0 * t) as u8;
+    let b = ((grid.b() as f32) * (1.0 - t) + 32.0 * t) as u8;
+    egui::Color32::from_rgba_unmultiplied(r, g, b, a)
+}
+
+/// Where the histogram's image sits in a scope panel: the panel's width
+/// less a margin each side, over a strip along the bottom for the level
+/// labels. The count has no units, so there is no axis at the side.
+pub(crate) fn histogram_image_rect(rect: egui::Rect) -> egui::Rect {
+    egui::Rect::from_min_max(
+        egui::pos2(rect.min.x + PAD_RIGHT, rect.min.y + PAD_TOP),
+        egui::pos2(rect.max.x - PAD_RIGHT, rect.max.y - PAD_BOTTOM),
+    )
+}
+
+/// The histogram's panels on screen when its image is drawn into `img`,
+/// each with the channels it carries (1 red, 2 green, 4 blue, 8 Y′).
+pub(crate) fn histogram_screen_panels(img: egui::Rect, mode: klipp_core::HistogramDisplayMode) -> Vec<(egui::Rect, u32)> {
+    use klipp_engine::ffmpeg_scope::{histogram_layout, SCOPE_OUT_H, SCOPE_OUT_W};
+    let (sx, sy) = (img.width() / SCOPE_OUT_W as f32, img.height() / SCOPE_OUT_H as f32);
+    klipp_effects::gpu_scopes::histogram_panels(histogram_layout(mode), SCOPE_OUT_W, SCOPE_OUT_H)
+        .into_iter()
+        .map(|p| {
+            let min = egui::pos2(img.min.x + p.x as f32 * sx, img.min.y + p.y as f32 * sy);
+            (egui::Rect::from_min_size(min, egui::vec2(p.w as f32 * sx, p.h as f32 * sy)), p.channels)
+        })
+        .collect()
+}
+
+/// The histogram's graticule over its image `img`: a line up each panel
+/// at every level mark, and the marks labelled in `scale`'s units along
+/// the bottom.
+pub(crate) fn draw_histogram_scale(
+    painter: &egui::Painter,
+    img: egui::Rect,
+    scale: ScopeScale,
+    mode: klipp_core::HistogramDisplayMode,
+    theme: &KlippTheme,
+) {
+    let font = egui::FontId::monospace(9.0);
+    let max = scale.max_val();
+    let (majors, minor_step): (&[f32], f32) = match scale {
+        ScopeScale::TenBit => (&[0.0, 256.0, 512.0, 768.0, 1023.0], 64.0),
+        _ => (&[0.0, 25.0, 50.0, 75.0, 100.0], 5.0),
+    };
+    for (panel, _) in histogram_screen_panels(img, mode) {
+        let x_of = |v: f32| panel.min.x + v / max * panel.width();
+        // Minor marks, only where they stay apart.
+        if minor_step / max * panel.width() >= 6.0 {
+            let mut v = minor_step;
+            while v < max {
+                if !majors.iter().any(|m| (m - v).abs() < 0.1) {
+                    let x = x_of(v);
+                    painter.line_segment([egui::pos2(x, panel.min.y), egui::pos2(x, panel.max.y)], egui::Stroke::new(0.5_f32, graticule_amber(theme, 22)));
+                }
+                v += minor_step;
+            }
+        }
+        for &v in majors {
+            let x = x_of(v);
+            painter.line_segment([egui::pos2(x, panel.min.y), egui::pos2(x, panel.max.y)], egui::Stroke::new(1.0_f32, graticule_amber(theme, 90)));
+        }
+        painter.line_segment(
+            [egui::pos2(panel.min.x, panel.max.y), egui::pos2(panel.max.x, panel.max.y)],
+            egui::Stroke::new(1.0_f32, egui::Color32::from_rgba_unmultiplied(255, 255, 255, 24)),
+        );
+        // Labels under the image; a narrow panel names only its ends and
+        // middle.
+        let wide = panel.width() >= 200.0;
+        for (i, &v) in majors.iter().enumerate() {
+            if !wide && i % 2 == 1 {
+                continue;
+            }
+            let align = match i {
+                0 => egui::Align2::LEFT_TOP,
+                _ if i == majors.len() - 1 => egui::Align2::RIGHT_TOP,
+                _ => egui::Align2::CENTER_TOP,
+            };
+            painter.text(egui::pos2(x_of(v), img.max.y + 2.0), align, format!("{}", v as u32), font.clone(), theme.scope_label);
+        }
+    }
+}
+
 pub(crate) fn draw_scale(ui: &egui::Ui, rect: egui::Rect, scale: ScopeScale, is_parade: bool, section_count: usize, theme: &KlippTheme) {
     let painter = ui.painter_at(rect);
     // Graticule colour. The theme's `scope_grid` is blended 50%
@@ -108,15 +197,8 @@ pub(crate) fn draw_scale(ui: &egui::Ui, rect: egui::Rect, scale: ScopeScale, is_
     // also bumped (see major/minor sites below) so the lines are
     // visibly the right colour rather than the right colour but
     // too faint to perceive.
-    let grid = theme.scope_grid;
     let label_color = theme.scope_label;
-    let warm_amber = |a: u8| -> egui::Color32 {
-        let t = 0.50_f32;
-        let r = ((grid.r() as f32) * (1.0 - t) + 232.0 * t) as u8;
-        let g = ((grid.g() as f32) * (1.0 - t) + 168.0 * t) as u8;
-        let b = ((grid.b() as f32) * (1.0 - t) + 32.0 * t) as u8;
-        egui::Color32::from_rgba_unmultiplied(r, g, b, a)
-    };
+    let warm_amber = |a: u8| graticule_amber(theme, a);
     let font = egui::FontId::monospace(9.0);
 
     let major_vals: Vec<f32> = major_ticks(scale).into_iter().map(|v| v as f32).collect();
@@ -307,6 +389,7 @@ pub fn show_scopes(
     theme: &KlippTheme,
     basis: klipp_color::scopes::ScopeBasis,
     vectorscope_zoom: f32,
+    histogram_display: klipp_core::HistogramDisplayMode,
 ) {
     let render_h: usize = 512;
 
@@ -681,8 +764,14 @@ pub fn show_scopes(
                 );
             }
 
+        } else if mode == ScopeMode::Histogram {
+            let img_rect = histogram_image_rect(full_rect);
+            ui.painter().image(tex.id(), img_rect,
+                egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                egui::Color32::WHITE);
+            draw_histogram_scale(&ui.painter_at(full_rect), img_rect, state.scale, histogram_display, theme);
         } else {
-            // Waveform/Parade/Histogram: scope image + scale overlay
+            // Waveform/Parade: scope image + scale overlay
             let img_rect = egui::Rect::from_min_max(
                 egui::pos2(full_rect.min.x + AXIS_W, full_rect.min.y + PAD_TOP),
                 egui::pos2(full_rect.max.x - PAD_RIGHT, full_rect.max.y - PAD_BOTTOM),
@@ -704,7 +793,7 @@ pub fn show_scopes(
             if let Some(ref cur) = scope_cursor {
                 let scope_type = crate::state::ScopeType::from(mode);
                 super::scope_window::draw_scope_cursor_indicator(
-                    &ui.painter_at(full_rect), scope_type, cur, full_rect, basis, vectorscope_zoom,
+                    &ui.painter_at(full_rect), scope_type, cur, full_rect, basis, vectorscope_zoom, histogram_display,
                 );
             }
         }
@@ -1684,31 +1773,6 @@ mod tests {
     // ── Scope enhancements (#75/#76/#77) ─────────────────────────────────
 
     #[test]
-    fn histogram_scale_sqrt_greater_than_linear() {
-        // Sqrt scaling lifts mid-range counts above linear scaling, which is
-        // the whole reason sqrt is the default — it keeps the tails visible.
-        let count = 1000u32;
-        let max = 4000u32;
-        let h = 256usize;
-        let sqrt_h = (count as f32 / max as f32).sqrt() * (h as f32 - 1.0);
-        let lin_h = (count as f32 / max as f32) * (h as f32 - 1.0);
-        assert!(sqrt_h > lin_h);
-        assert!(sqrt_h < h as f32);
-    }
-
-    #[test]
-    fn histogram_log_zero_count_is_zero() {
-        // The log branch must short-circuit on count==0 — ln(0) is -inf.
-        let count = 0u32;
-        let result = if count > 0 {
-            (count as f32).ln() / (1000f32).ln() * 255.0
-        } else {
-            0.0
-        };
-        assert_eq!(result, 0.0);
-    }
-
-    #[test]
     fn waveform_classic_channels_distinct() {
         // Classic paint mode must produce visibly different RGB colours
         // for the R/G/B channels (a user-facing invariant of #77).
@@ -1789,10 +1853,9 @@ mod tests {
     #[test]
     fn pane_settings_new_fields_default_correctly() {
         // Defaults must preserve the pre-enhancement behaviour: I/Q lines
-        // off, histogram sqrt, waveform green.
+        // off, waveform green.
         let settings = crate::state::PaneScopeSettings::default();
         assert!(!settings.show_iq_lines);
-        assert_eq!(settings.histogram_scale, crate::state::HistogramScale::Sqrt);
         assert_eq!(settings.waveform_paint_mode, crate::state::WaveformPaintMode::Green);
     }
 

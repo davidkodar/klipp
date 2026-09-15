@@ -6,7 +6,7 @@
 //! the time of each render, measured at the picture's own size.
 
 use klipp_effects::gpu::GpuEffectsPipeline;
-use klipp_effects::gpu_scopes::{ScopeInput, ScopeJob, ScopeTransfer, VectorscopeJob, WaveformJob, WaveformMode};
+use klipp_effects::gpu_scopes::{HistogramJob, HistogramLayout, ScopeInput, ScopeJob, ScopeTransfer, VectorscopeJob, WaveformJob, WaveformMode};
 use std::time::Instant;
 
 fn srgb_to_linear(c: f32) -> f32 {
@@ -53,14 +53,29 @@ fn draw_the_scopes_of_a_picture() {
             ScopeJob::Vectorscope(VectorscopeJob { zoom: 1.0, intensity: -1.0, colorize: true, luma_lo: 0.0, luma_hi: 1.0, glow: true, out_w: 1024, out_h: 1024 }),
             ScopeJob::Vectorscope(VectorscopeJob { zoom: 2.0, intensity: -1.0, colorize: true, luma_lo: 0.0, luma_hi: 1.0, glow: true, out_w: 1024, out_h: 1024 }),
             ScopeJob::Vectorscope(VectorscopeJob { zoom: 1.0, intensity: -1.0, colorize: false, luma_lo: 0.0, luma_hi: 1.0, glow: true, out_w: 1024, out_h: 1024 }),
+            ScopeJob::Histogram(HistogramJob { layout: HistogramLayout::Overlay, log: false, fill: 0.7, glow: true, out_w, out_h }),
+            ScopeJob::Histogram(HistogramJob { layout: HistogramLayout::Parade, log: false, fill: 0.7, glow: true, out_w, out_h }),
+            ScopeJob::Histogram(HistogramJob { layout: HistogramLayout::Stack, log: false, fill: 0.7, glow: true, out_w, out_h }),
+            ScopeJob::Histogram(HistogramJob { layout: HistogramLayout::Luma, log: false, fill: 0.7, glow: true, out_w, out_h }),
+            ScopeJob::Histogram(HistogramJob { layout: HistogramLayout::Overlay, log: true, fill: 0.7, glow: true, out_w, out_h }),
         ];
         let t = Instant::now();
         let out = gpu.scopes().render(&scope, step, &all);
-        println!("waveform + parade + vectorscope together, step {step}: {:.2} ms ({} results)", t.elapsed().as_secs_f64() * 1000.0, out.iter().filter(|o| o.is_some()).count());
+        println!("waveform + parade + vectorscope + histogram together, step {step}: {:.2} ms ({} results)", t.elapsed().as_secs_f64() * 1000.0, out.iter().filter(|o| o.is_some()).count());
         for (name, o) in [("vectorscope", &out[2]), ("vectorscope_zoom2", &out[3]), ("vectorscope_mono", &out[4])] {
             let file = format!("{out_dir}/{name}_step{step}.png");
             image::save_buffer(&file, o.as_ref().unwrap(), 1024, 1024, image::ColorType::Rgba8).unwrap();
         }
+        for (name, o) in [("histogram_overlay", &out[5]), ("histogram_parade", &out[6]), ("histogram_stack", &out[7]), ("histogram_luma", &out[8]), ("histogram_overlay_log", &out[9])] {
+            let file = format!("{out_dir}/{name}_step{step}.png");
+            image::save_buffer(&file, o.as_ref().unwrap(), out_w, out_h, image::ColorType::Rgba8).unwrap();
+        }
+        // The histogram alone, as the dock asks for it.
+        let hist = [ScopeJob::Histogram(HistogramJob { layout: HistogramLayout::Overlay, log: false, fill: 0.7, glow: true, out_w, out_h })];
+        let _ = gpu.scopes().render(&scope, step, &hist);
+        let t = Instant::now();
+        let _ = gpu.scopes().render(&scope, step, &hist);
+        println!("histogram alone, step {step}: {:.2} ms", t.elapsed().as_secs_f64() * 1000.0);
     }
     // The display-bytes path, as ACES projects and skims use it.
     let scope = ScopeInput::Display { rgba: &bytes, width: w, height: h, luma };

@@ -7021,11 +7021,11 @@ impl PlaybackEngine {
     /// failed — caller should leave the previous texture in place
     /// instead of clearing.
     ///
-    /// The waveform and parade are drawn on the GPU from `display` when it
-    /// is given (the bytes on screen, for a working space whose display
-    /// transform has no GPU form) and from `linear` otherwise. The other
-    /// scopes still run through libavfilter, which needs the linear
-    /// frame and linearises `display` when that is all there is.
+    /// The scopes are drawn on the GPU from `display` when it is given
+    /// (the bytes on screen, for a working space whose display transform
+    /// has no GPU form) and from `linear` otherwise. Without a GPU they
+    /// run through libavfilter, which needs the linear frame and
+    /// linearises `display` when that is all there is.
     fn render_active_scopes_pending(
         &mut self,
         linear: Option<&[f32]>,
@@ -7049,7 +7049,7 @@ impl PlaybackEngine {
         let bloom_enabled = self.scope_bloom_enabled;
         let mut rendered: Vec<(u8, Option<(Vec<u8>, u32, u32)>, bool)> = Vec::with_capacity(to_render.len());
 
-        let wanted: Vec<u8> = to_render.iter().copied().filter(|m| *m <= 2).collect();
+        let wanted: Vec<u8> = to_render.iter().copied().filter(|m| *m <= 3).collect();
         if !wanted.is_empty() {
             if let Some(results) = self.render_scopes_on_gpu(linear, display, src_w, src_h, &wanted) {
                 for (mode, result) in wanted.iter().zip(results) {
@@ -7113,8 +7113,9 @@ impl PlaybackEngine {
         rendered
     }
 
-    /// The waveform (mode 0), parade (1) and vectorscope (2) from the GPU
-    /// scope renderer, one result with its size per entry of `modes`.
+    /// The waveform (mode 0), parade (1), vectorscope (2) and histogram
+    /// (3) from the GPU scope renderer, one result with its size per entry
+    /// of `modes`.
     /// `None` when there is no GPU or nothing to measure.
     ///
     /// The picture is measured as it is delivered: the linear frame is
@@ -7129,7 +7130,7 @@ impl PlaybackEngine {
         src_h: u32,
         modes: &[u8],
     ) -> Option<Vec<Option<(Vec<u8>, u32, u32)>>> {
-        use klipp_effects::gpu_scopes::{ScopeInput, ScopeJob, ScopeTransfer, VectorscopeJob, WaveformJob, WaveformMode};
+        use klipp_effects::gpu_scopes::{HistogramJob, ScopeInput, ScopeJob, ScopeTransfer, VectorscopeJob, WaveformJob, WaveformMode};
         let settings = self.scope_ffmpeg_settings;
         let glow = self.scope_bloom_enabled;
         let ws = crate::video_decoder::working_colorspace();
@@ -7181,6 +7182,17 @@ impl PlaybackEngine {
                         out_h: crate::ffmpeg_scope::VECTOR_OUT,
                     });
                 }
+                if mode == 3 {
+                    let h = settings.histogram;
+                    return ScopeJob::Histogram(HistogramJob {
+                        layout: crate::ffmpeg_scope::histogram_layout(h.display_mode),
+                        log: h.levels == klipp_core::HistogramLevels::Logarithmic,
+                        fill: h.fgopacity,
+                        glow,
+                        out_w: crate::ffmpeg_scope::SCOPE_OUT_W,
+                        out_h: crate::ffmpeg_scope::SCOPE_OUT_H,
+                    });
+                }
                 let wp = if mode == 1 { settings.parade } else { settings.waveform };
                 let layout = match (settings.luma_only, mode) {
                     (true, _) => WaveformMode::Luma,
@@ -7205,6 +7217,7 @@ impl PlaybackEngine {
             .map(|j| match j {
                 ScopeJob::Waveform(w) => (w.out_w, w.out_h),
                 ScopeJob::Vectorscope(v) => (v.out_w, v.out_h),
+                ScopeJob::Histogram(h) => (h.out_w, h.out_h),
             })
             .collect();
         let results = gpu.scopes().render(&input, step, &jobs);

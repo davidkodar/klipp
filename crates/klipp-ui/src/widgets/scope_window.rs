@@ -1,5 +1,5 @@
 use crate::state::{
-    HistogramScale, PaneConfig, PaneScopeSettings, ScopeFfmpegState, ScopeLayout, ScopeScale,
+    PaneConfig, PaneScopeSettings, ScopeFfmpegState, ScopeLayout, ScopeScale,
     ScopeType, ScopeWindowState, VectorscopeScaleStyle, WaveformChannel, WaveformPaintMode,
     WaveformScaleStyle,
 };
@@ -464,7 +464,8 @@ fn draw_pane(
     }
 
     let vectorscope_zoom = scope_ffmpeg.vectorscope_zoom;
-    render_pane_scope(ui, pane_idx, state, runtime, frame_buffer, skin_tone_angle, is_playing, content_rect, scope_cursor, spectrum_bins, correlation_samples, lufs_history, lufs_target, spectrum_history, theme, basis, vectorscope_zoom);
+    let histogram_display = scope_ffmpeg.histogram_display;
+    render_pane_scope(ui, pane_idx, state, runtime, frame_buffer, skin_tone_angle, is_playing, content_rect, scope_cursor, spectrum_bins, correlation_samples, lufs_history, lufs_target, spectrum_history, theme, basis, vectorscope_zoom, histogram_display);
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -486,6 +487,7 @@ fn render_pane_scope(
     theme: &KlippTheme,
     basis: klipp_color::scopes::ScopeBasis,
     vectorscope_zoom: f32,
+    histogram_display: klipp_core::HistogramDisplayMode,
 ) {
     let pane = &state.panes[pane_idx];
     let render_h: usize = 256; // Smaller for multi-pane to stay fast
@@ -811,7 +813,9 @@ fn render_pane_scope(
                 }
             }
         } else if pane.scope_type == ScopeType::Histogram {
-            painter.image(tex.id(), r, uv, egui::Color32::WHITE);
+            let img_rect = super::scopes::histogram_image_rect(r);
+            painter.image(tex.id(), img_rect, uv, egui::Color32::WHITE);
+            super::scopes::draw_histogram_scale(&painter, img_rect, pane.settings.scale, histogram_display, theme);
         } else if pane.scope_type == ScopeType::Spectrogram {
             // F-157: dedicated spectrogram branch. Fills the full
             // content rect (no Waveform-style AXIS_W margin) and
@@ -933,7 +937,7 @@ fn render_pane_scope(
         // ── Scope cursor indicator ──
         if pane.settings.show_scope_cursor {
             if let Some(cur) = scope_cursor {
-                draw_scope_cursor_indicator(&painter, pane.scope_type, &cur, r, basis, vectorscope_zoom);
+                draw_scope_cursor_indicator(&painter, pane.scope_type, &cur, r, basis, vectorscope_zoom, histogram_display);
             }
         }
 
@@ -954,6 +958,7 @@ pub fn draw_scope_cursor_indicator(
     rect: egui::Rect,
     basis: klipp_color::scopes::ScopeBasis,
     vectorscope_zoom: f32,
+    histogram_display: klipp_core::HistogramDisplayMode,
 ) {
     let cursor_color = egui::Color32::from_rgb(0xff, 0xff, 0xff);
     let outline_color = egui::Color32::from_rgba_unmultiplied(0, 0, 0, 200);
@@ -1000,11 +1005,27 @@ pub fn draw_scope_cursor_indicator(
             painter.line_segment([egui::pos2(x, y - 10.0), egui::pos2(x, y + 10.0)], egui::Stroke::new(0.5_f32, ch_color));
         }
         ScopeType::Histogram => {
-            let x = rect.min.x + cur.luma * rect.width();
-            painter.line_segment(
-                [egui::pos2(x, rect.min.y), egui::pos2(x, rect.max.y)],
-                egui::Stroke::new(1.0_f32, amber),
-            );
+            // A mark at the pointer's level in each panel, one per channel
+            // the panel draws, in that channel's colour.
+            let img = super::scopes::histogram_image_rect(rect);
+            let marks = [
+                (1u32, cur.r, egui::Color32::from_rgb(255, 96, 84)),
+                (2, cur.g, egui::Color32::from_rgb(96, 255, 112)),
+                (4, cur.b, egui::Color32::from_rgb(112, 150, 255)),
+                (8, cur.luma, amber),
+            ];
+            for (panel, channels) in super::scopes::histogram_screen_panels(img, histogram_display) {
+                for (bit, value, color) in marks {
+                    if channels & bit == 0 {
+                        continue;
+                    }
+                    let x = panel.min.x + value.clamp(0.0, 1.0) * panel.width();
+                    painter.line_segment(
+                        [egui::pos2(x, panel.min.y), egui::pos2(x, panel.max.y)],
+                        egui::Stroke::new(1.0_f32, color),
+                    );
+                }
+            }
         }
         ScopeType::CIEChromaticity => {
             // Read the picture, exactly as the plot does — and draw nothing
@@ -1298,18 +1319,13 @@ fn draw_parade_settings(ui: &mut egui::Ui, pane_idx: usize, state: &mut ScopeWin
 fn draw_histogram_settings(ui: &mut egui::Ui, pane_idx: usize, state: &mut ScopeWindowState, theme: &KlippTheme) {
     let s = &mut state.panes[pane_idx].settings;
 
-    ui.label(egui::RichText::new("DISPLAY").size(9.0)
-        .color(theme.text_dim).strong());
-    ui.checkbox(&mut s.low_pass, "Low Pass Filter");
-    ui.checkbox(&mut s.bloom, "Bloom on dense regions");
-
-    ui.separator();
-
+    // The layout and count scale are global, in the options below; the
+    // level units are this pane's.
     ui.label(egui::RichText::new("SCALE").size(9.0)
         .color(theme.text_dim).strong());
-    ui.radio_value(&mut s.histogram_scale, HistogramScale::Sqrt, "\u{221A} Sqrt (default)");
-    ui.radio_value(&mut s.histogram_scale, HistogramScale::Linear, "Linear");
-    ui.radio_value(&mut s.histogram_scale, HistogramScale::Log, "Log");
+    ui.radio_value(&mut s.scale, ScopeScale::TenBit, "0 \u{2013} 1023 (10-bit)");
+    ui.radio_value(&mut s.scale, ScopeScale::Ire, "0 \u{2013} 100 IRE");
+    ui.radio_value(&mut s.scale, ScopeScale::Percent, "0 \u{2013} 100%");
 }
 
 // ── ··· Menu ─────────────────────────────────────────────────────────────
@@ -1559,27 +1575,25 @@ pub fn draw_ffmpeg_scope_options(
 
     ui.add_space(4.0);
     ui.label(egui::RichText::new("HISTOGRAM").size(9.0).color(theme.text_dim).strong());
-    ui.radio_value(&mut state.histogram_display, klipp_core::HistogramDisplayMode::Parade, "Parade");
-    ui.radio_value(&mut state.histogram_display, klipp_core::HistogramDisplayMode::Stack, "Stack");
-    ui.radio_value(&mut state.histogram_display, klipp_core::HistogramDisplayMode::Overlay, "Overlay");
+    for (mode, label) in [
+        (klipp_core::HistogramDisplayMode::Overlay, "RGB overlay"),
+        (klipp_core::HistogramDisplayMode::Parade, "RGB parade"),
+        (klipp_core::HistogramDisplayMode::Stack, "RGB stacked"),
+        (klipp_core::HistogramDisplayMode::Luma, "Luma"),
+    ] {
+        ui.radio_value(&mut state.histogram_display, mode, label);
+    }
     ui.add_space(2.0);
-    ui.radio_value(&mut state.histogram_levels, klipp_core::HistogramLevels::Linear, "Linear levels");
-    ui.radio_value(&mut state.histogram_levels, klipp_core::HistogramLevels::Logarithmic, "Logarithmic levels");
+    ui.radio_value(&mut state.histogram_levels, klipp_core::HistogramLevels::Linear, "Linear count");
+    ui.radio_value(&mut state.histogram_levels, klipp_core::HistogramLevels::Logarithmic, "Logarithmic count")
+        .on_hover_text("Height by the logarithm of the count, so a small population beside a large one still shows.");
     ui.add_space(2.0);
     ui.horizontal(|ui| {
-        ui.label(egui::RichText::new("Fg opacity").size(9.0).color(theme.text_dim));
+        ui.label(egui::RichText::new("Fill").size(9.0).color(theme.text_dim));
         ui.add(
             egui::Slider::new(&mut state.histogram_fgopacity, 0.0..=1.0)
                 .show_value(true)
                 .step_by(0.01),
-        ).on_hover_text("Histogram bar opacity (FFmpeg `fgopacity=`).");
-    });
-    ui.horizontal(|ui| {
-        ui.label(egui::RichText::new("Bg opacity").size(9.0).color(theme.text_dim));
-        ui.add(
-            egui::Slider::new(&mut state.histogram_bgopacity, 0.0..=1.0)
-                .show_value(true)
-                .step_by(0.01),
-        ).on_hover_text("Histogram background opacity (FFmpeg `bgopacity=`).");
+        ).on_hover_text("Brightness of the area under each curve. The curve itself is always drawn.");
     });
 }

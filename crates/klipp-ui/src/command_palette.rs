@@ -533,7 +533,7 @@ pub fn build(state: &AppState) -> Vec<PaletteEntry> {
     e.push(PaletteEntry { label: Cow::Borrowed("Scope: Reset FFmpeg Options"), shortcut: Cow::Borrowed(""),
         action: PaletteAction::ToggleState(|s| {
             s.scope_ffmpeg.vectorscope_mode = klipp_core::VectorscopeMode::Color3;
-            s.scope_ffmpeg.histogram_display = klipp_core::HistogramDisplayMode::Parade;
+            s.scope_ffmpeg.histogram_display = klipp_core::HistogramDisplayMode::Overlay;
             s.scope_ffmpeg.histogram_levels = klipp_core::HistogramLevels::Linear;
         }), enabled: true });
     e.push(PaletteEntry { label: Cow::Borrowed("Toggle Inspector Panel"), shortcut: Cow::Borrowed("Ctrl+Shift+I"),
