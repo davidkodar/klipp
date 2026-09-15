@@ -57,7 +57,7 @@ fn default_files_split_ratio() -> f32 { 0.5 }
 fn default_true() -> bool { true }
 fn default_color_timeline_h() -> f32 { 112.0 }
 fn default_color_panel_height() -> f32 { 200.0 }
-fn default_color_viewer_ratio() -> f32 { 0.55 }
+fn default_color_viewer_ratio() -> f32 { 0.66 }
 fn default_color_inspector_width() -> f32 { 300.0 }
 
 impl Default for LayoutState {
@@ -100,6 +100,12 @@ impl LayoutState {
         let Ok(raw) = std::fs::read_to_string(path) else { return Self::default(); };
         let Ok(mut v) = serde_json::from_str::<serde_json::Value>(&raw) else { return Self::default(); };
         if let Some(obj) = v.as_object_mut() {
+            // The Color split used to default to 0.55, which left the
+            // picture smaller than the scope dock. A file still carrying
+            // exactly that default takes the new one; a dragged value stays.
+            if obj.get("color_viewer_height_ratio").and_then(|r| r.as_f64()).is_some_and(|r| (r - 0.55).abs() < 1e-6) {
+                obj.insert("color_viewer_height_ratio".to_string(), serde_json::json!(default_color_viewer_ratio()));
+            }
             if !obj.contains_key("snap") {
                 if let Some(legacy) = obj.remove("snap_enabled").and_then(|val| val.as_bool()) {
                     let default = SnapConfig::default();
