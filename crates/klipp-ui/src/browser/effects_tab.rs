@@ -875,7 +875,7 @@ fn effect_card(
     let meta_y = name_y + name_galley.size().y + 2.0;
     let meta_text = format!(
         "{} \u{00B7} {}{}",
-        display_category_for(fx),
+        category_label(fx),
         fx.source_label,
         if supports_gpu { "" } else { " \u{00B7} CPU" },
     );
@@ -1659,6 +1659,11 @@ pub fn display_category_for(fx: &crate::browser::effect_registry::EffectEntry) -
     if !fx.grouping.is_empty() {
         return fx.grouping.clone();
     }
+    category_label(fx).to_string()
+}
+
+/// The category alone, never the maker: what a card's caption leads with.
+pub fn category_label(fx: &crate::browser::effect_registry::EffectEntry) -> &'static str {
     match fx.category {
         EffectCategory::Blur => "Blur",
         EffectCategory::Color => "Color",
@@ -1676,7 +1681,6 @@ pub fn display_category_for(fx: &crate::browser::effect_registry::EffectEntry) -
         EffectCategory::AudioUtility => "Utility",
         _ => "Effect",
     }
-    .to_string()
 }
 
 /// Hand-curated cleanups for the worst auto-generated OFX names. The

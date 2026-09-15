@@ -61,8 +61,27 @@ fn frei0r_preview(type_id: &str, frame: &ReferenceFrame) -> Option<Vec<u8>> {
             })
             .collect()
     };
+    // Colour points as a ramp: a balance filter with black, grey and
+    // white points wants exactly that, and a single colour lands white.
+    let n_colours = defaults.iter().filter(|v| matches!(v, V::Color(_))).count();
+    let ramped: Vec<V> = {
+        let mut i = 0usize;
+        defaults
+            .iter()
+            .map(|v| match v {
+                V::Double(_) => V::Double(0.5),
+                V::Color(_) => {
+                    let t = if n_colours > 1 { i as f32 / (n_colours - 1) as f32 } else { 1.0 };
+                    i += 1;
+                    V::Color([t, t, t])
+                }
+                other => other.clone(),
+            })
+            .collect()
+    };
     let candidates = [
         with(0.5, [1.0, 1.0, 1.0]),
+        ramped,
         with(0.5, [0.5, 0.5, 0.5]),
         with(0.25, [0.5, 0.5, 0.5]),
         with(0.75, [0.5, 0.5, 0.5]),

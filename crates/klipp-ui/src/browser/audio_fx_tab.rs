@@ -1882,14 +1882,15 @@ fn audio_fx_row(
     // plugin comes from (its format and maker), never a URI.
     let what = description_for(entry);
     let plugin_line = what.starts_with("LV2 plugin:") || what.starts_with("CLAP plugin:") || what.starts_with("LADSPA plugin:");
+    let category = crate::browser::effects_tab::category_label(entry);
     let sub_text = if plugin_line {
         if entry.grouping.is_empty() || entry.grouping == entry.source_label {
-            format!("{} \u{00B7} {}", crate::browser::effects_tab::display_category_for(entry), entry.source_label)
+            format!("{category} \u{00B7} {}", entry.source_label)
         } else {
-            format!("{} \u{00B7} {} \u{00B7} {}", crate::browser::effects_tab::display_category_for(entry), entry.source_label, entry.grouping)
+            format!("{category} \u{00B7} {} \u{00B7} {}", entry.source_label, entry.grouping)
         }
     } else {
-        format!("{} \u{00B7} {}", crate::browser::effects_tab::display_category_for(entry), what)
+        format!("{category} \u{00B7} {what}")
     };
     let sub_truncated = truncate_to_width(
         ui,
