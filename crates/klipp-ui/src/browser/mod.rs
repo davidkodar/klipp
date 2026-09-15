@@ -4538,49 +4538,20 @@ impl BrowserPanel {
         state: &mut AppState,
         theme: &KlippTheme,
     ) -> Vec<AppCommand> {
-        // ── Category tab-bar ──
-        // Outlined-rectangle tabs styled per the mockup. Tabs are
-        // label-only by default so all five fit in the typical
-        // dock-width panel; the optional decorative icon only appears
-        // when the panel is wide enough to host both without clipping
-        // (the docked panel sits around 380–520 px in practice; the
-        // mockup was drawn at ~870 px).
-        ui.add_space(4.0);
-        let categories: [(LibraryCategory, &str, Icon); 5] = [
-            (LibraryCategory::VideoFx, "Video FX", Icon::FilmStrip),
-            (LibraryCategory::AudioFx, "Audio FX", Icon::SpeakerHigh),
-            (LibraryCategory::Titles, "Titles", Icon::FilmSlate),
-            (LibraryCategory::Transitions, "Transitions", Icon::ArrowsOut),
-            (LibraryCategory::Generators, "Generators", Icon::Star),
+        // ── Category tabs: the same strip as every other tab row ──
+        let categories: [(LibraryCategory, &str, &str); 5] = [
+            (LibraryCategory::VideoFx, "VIDEO FX", "VFX"),
+            (LibraryCategory::AudioFx, "AUDIO FX", "AFX"),
+            (LibraryCategory::Titles, "TITLES", "TTL"),
+            (LibraryCategory::Transitions, "TRANSITIONS", "TRN"),
+            (LibraryCategory::Generators, "GENERATORS", "GEN"),
         ];
-        let avail_w = ui.available_width();
-        // Estimate label-only width: 5 tabs * (label + 2*pad) + 4
-        // gaps + leading. If even that doesn't fit we still render
-        // compact (clipping a tab is the lesser evil — the full-icon
-        // mode would be worse).
-        let icon_mode_threshold: f32 = 760.0; // generous: needs real screen estate
-        let show_icons = avail_w >= icon_mode_threshold;
-        let compact = !show_icons;
-        ui.horizontal(|ui| {
-            ui.add_space(6.0);
-            ui.spacing_mut().item_spacing.x = if compact { 4.0 } else { 6.0 };
-            for (cat, label, icon) in &categories {
-                let is_active = self.library_category == *cat;
-                if library_category_tab(ui, theme, *icon, label, is_active, compact) {
-                    self.library_category = *cat;
-                }
-            }
-        });
-        ui.add_space(4.0);
-        // Hairline divider under the tab-bar (separates the tab strip
-        // from the per-tab content body).
-        let avail = ui.available_rect_before_wrap();
-        let div_y = avail.min.y;
-        ui.painter().hline(
-            avail.x_range(),
-            div_y,
-            egui::Stroke::new(1.0_f32, theme.border),
-        );
+        let labels: Vec<&str> = categories.iter().map(|c| c.1).collect();
+        let brief: Vec<&str> = categories.iter().map(|c| c.2).collect();
+        let active = categories.iter().position(|c| c.0 == self.library_category).unwrap_or(0);
+        if let Some(i) = crate::widgets::inspector_group::tab_strip(ui, &labels, &brief, active, theme) {
+            self.library_category = categories[i].0;
+        }
         ui.add_space(2.0);
 
         // ── Category content ──
@@ -4804,86 +4775,6 @@ impl BrowserPanel {
     }
 }
 
-/// Single tab button for the Library category strip. Outlined rectangle
-/// with leading icon + label; active tab gets an accent border, an
-/// accent-tinted fill, and accent text/icon. Returns `true` on click so
-/// the caller can flip its state in one line.
-///
-/// `compact` drops the icon and trims paddings so all five tabs fit in
-/// narrow library panels (the mockup was drawn at ~870px; a real
-/// dock can sit at 380px). Caller decides which mode to use based on
-/// the available width — the icons are decorative anyway.
-fn library_category_tab(
-    ui: &mut egui::Ui,
-    theme: &KlippTheme,
-    icon: Icon,
-    label: &str,
-    is_active: bool,
-    compact: bool,
-) -> bool {
-    let font_size = if compact { 10.5 } else { 11.0 };
-    let label_galley = ui.painter().layout_no_wrap(
-        label.to_string(),
-        egui::FontId::proportional(font_size),
-        theme.text_secondary,
-    );
-    let show_icon = !compact;
-    let icon_size = 12.0;
-    let pad_x = if compact { 8.0 } else { 10.0 };
-    let gap = 5.0;
-    let height = if compact { 24.0 } else { 28.0 };
-    let icon_block = if show_icon { icon_size + gap } else { 0.0 };
-    let width = pad_x * 2.0 + icon_block + label_galley.size().x;
-
-    let (rect, resp) = ui.allocate_exact_size(
-        egui::vec2(width, height),
-        egui::Sense::click(),
-    );
-    let hovered = resp.hovered();
-
-    let (bg, border, fg) = if is_active {
-        (theme.accent_subtle, theme.accent, theme.accent)
-    } else if hovered {
-        (theme.bg_raised, theme.border, theme.text_primary)
-    } else {
-        (theme.bg_panel, theme.border, theme.text_secondary)
-    };
-
-    let rounding = egui::Rounding::same(4.0);
-    ui.painter().rect_filled(rect, rounding, bg);
-    ui.painter().rect_stroke(
-        rect,
-        rounding,
-        egui::Stroke::new(if is_active { 1.5_f32 } else { 1.0_f32 }, border),
-    );
-
-    let label_x = if show_icon {
-        let icon_rect = egui::Rect::from_min_size(
-            egui::pos2(rect.min.x + pad_x, rect.center().y - icon_size * 0.5),
-            egui::vec2(icon_size, icon_size),
-        );
-        let img = icon.image(icon_size).tint(fg);
-        ui.allocate_new_ui(
-            egui::UiBuilder::new().max_rect(icon_rect),
-            |ui| {
-                ui.add(img);
-            },
-        );
-        rect.min.x + pad_x + icon_size + gap
-    } else {
-        rect.min.x + pad_x
-    };
-
-    ui.painter().text(
-        egui::pos2(label_x, rect.center().y),
-        egui::Align2::LEFT_CENTER,
-        label,
-        egui::FontId::proportional(font_size),
-        fg,
-    );
-
-    resp.clicked()
-}
 
 // Computed once at startup from the canonical klipp_core constants. The old
 // `pub(super) const MEDIA_EXTENSIONS: &[&str] = &[...]` was a hardcoded

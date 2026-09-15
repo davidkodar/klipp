@@ -138,7 +138,7 @@ pub fn show(
                     .effect_registry
                     .filtered_with_favorites(EffectCategory::All, "", &[])
                     .len();
-                let audio_total = state
+                let _audio_total = state
                     .effect_registry
                     .filtered_with_favorites(EffectCategory::AudioAll, "", &[])
                     .len();
@@ -222,36 +222,6 @@ pub fn show(
                     );
                 }
 
-                ui.add_space(8.0);
-                sidebar_section_separator(ui, theme);
-
-                // ── AUDIO FX section ──
-                sidebar_section_header(ui, theme, Some(Icon::Waveform), "Audio FX");
-
-                let audio_categories: [(EffectCategory, &str, Option<Icon>); 4] = [
-                    (EffectCategory::AudioAll, "All", Some(Icon::List)),
-                    (EffectCategory::AudioEQ, "EQ", Some(Icon::Equalizer)),
-                    (EffectCategory::AudioDynamics, "Dynamics", Some(Icon::Waveform)),
-                    (EffectCategory::AudioReverb, "Reverb", Some(Icon::SpeakerHigh)),
-                ];
-                for (cat, label, icon) in &audio_categories {
-                    let count = if *cat == EffectCategory::AudioAll {
-                        audio_total
-                    } else {
-                        state.effect_registry.filtered_with_favorites(*cat, "", &[]).len()
-                    };
-                    sidebar_row(
-                        ui,
-                        theme,
-                        *icon,
-                        label,
-                        count,
-                        *active_category == *cat,
-                        &format!("audio_cat_{:?}", cat),
-                        &mut |c| *active_category = c,
-                        *cat,
-                    );
-                }
                 ui.add_space(8.0);
             });
     });

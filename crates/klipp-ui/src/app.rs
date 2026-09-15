@@ -29263,25 +29263,10 @@ impl KlippApp {
         }
     }
 
-    fn show_export_dialog(&mut self, ctx: &egui::Context) -> Vec<AppCommand> {
-        // Build combined preset list for the combo box
-        let all_presets: Vec<ExportPreset> = builtin_presets()
-            .into_iter()
-            .chain(self.prefs.export.custom_presets.iter().cloned())
-            .collect();
-        let mut cmds = Vec::new();
-
-        if !self.state.show_export_dialog {
-            return cmds;
-        }
-
-        let mut open = true;
-        egui::Window::new("Export Sequence")
-            .collapsible(false)
-            .resizable(false)
-            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
-            .open(&mut open)
-            .show(ctx, |ui| {
+    /// The export settings form: presets, output, codec, audio, range
+    /// and the Export button. Hosted by the Export workspace's right
+    /// column and by the Export dialog elsewhere.
+    fn export_settings_contents(&mut self, ui: &mut egui::Ui, all_presets: &[ExportPreset], cmds: &mut Vec<AppCommand>) {
                 // Preset selector
                 ui.horizontal(|ui| {
                     ui.label("Preset:");
@@ -29297,7 +29282,7 @@ impl KlippApp {
                                 self.export_dialog.selected_preset_id = None;
                             }
                             ui.separator();
-                            for preset in &all_presets {
+                            for preset in all_presets {
                                 let label = if preset.built_in {
                                     preset.name.clone()
                                 } else {
@@ -30019,11 +30004,37 @@ impl KlippApp {
                         }
                     }
                 });
-            });
+    }
 
-        if !open {
-            self.state.show_export_dialog = false;
-            self.export_dialog.confirm_overwrite = false;
+    fn show_export_dialog(&mut self, ctx: &egui::Context) -> Vec<AppCommand> {
+        // Build combined preset list for the combo box
+        let all_presets: Vec<ExportPreset> = builtin_presets()
+            .into_iter()
+            .chain(self.prefs.export.custom_presets.iter().cloned())
+            .collect();
+        let mut cmds = Vec::new();
+
+        let in_export_ws = self.state.active_workspace == crate::state::Workspace::Export;
+        if !self.state.show_export_dialog && !in_export_ws {
+            return cmds;
+        }
+
+        // Outside the Export workspace the settings are a dialog; the
+        // workspace hosts the same form in its right column.
+        if !in_export_ws {
+            let mut open = true;
+            egui::Window::new("Export Sequence")
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .open(&mut open)
+                .show(ctx, |ui| {
+                    self.export_settings_contents(ui, &all_presets, &mut cmds);
+                });
+            if !open {
+                self.state.show_export_dialog = false;
+                self.export_dialog.confirm_overwrite = false;
+            }
         }
 
         // Overwrite confirmation dialog
@@ -31742,6 +31753,22 @@ impl KlippApp {
             // and reads as a dark strip against the inspector's bg_panel. Override
             // it locally so the gutter blends into the inspector background.
             ui.style_mut().visuals.extreme_bg_color = bg_panel;
+
+            // The Export workspace's column is the export form.
+            if self.state.active_workspace == crate::state::Workspace::Export {
+                let theme = self.theme.clone();
+                crate::widgets::inspector_group::panel_title_row(ui, "Export", false, &theme);
+                let all_presets: Vec<ExportPreset> = builtin_presets()
+                    .into_iter()
+                    .chain(self.prefs.export.custom_presets.iter().cloned())
+                    .collect();
+                egui::ScrollArea::vertical().id_salt("export_ws_scroll").show(ui, |ui| {
+                    egui::Frame::none().inner_margin(egui::Margin::symmetric(12.0, 8.0)).show(ui, |ui| {
+                        self.export_settings_contents(ui, &all_presets, all_cmds);
+                    });
+                });
+                return;
+            }
 
             let in_color_workspace = self.state.show_color_panel
                 && self.state.selected_clip.is_some();

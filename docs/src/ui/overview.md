@@ -30,11 +30,13 @@ Three columns over a timeline, with one rule: every panel has one job and every 
 
 ## Workspaces
 
-Klipp provides workspace presets accessible from **Window → Workspaces**:
+The switch in the app bar chooses what the centre and right columns are for:
 
-- **Default** — Balanced layout for general editing with all primary panels visible.
-- **Color Grading** — Expanded viewer and color panel with scopes visible, timeline compressed.
-- **Audio Mixing** — Audio tracks prominent with expanded meters, EQ, and volume controls.
+- **Edit** — Source and program viewers, the full timeline with its toolbar and sequence tabs, the clip inspector.
+- **Color** — One program viewer, a timeline strip for moving between shots, the scope dock below, the grade in the right column.
+- **Export** — One program viewer, the timeline for the in/out range, the export settings in the right column. Ctrl+E opens the same settings as a dialog from the other workspaces.
+
+Each workspace remembers its own viewer layout (one or two viewers) and, for Color, its own timeline height. Panel presets are under **Window → Workspaces**.
 
 ## Panel Visibility
 
