@@ -13,9 +13,8 @@
 //! device holding one storage buffer per intermediate + one
 //! `apply_effects` dispatcher that chains effect passes via ping-pong
 //! buffers. See [`nv12_gpu`] for the HW-decode output fast-path (NV12 →
-//! RGBA on GPU). Scope rendering has moved to libavfilter — the
-//! legacy in-tree `gpu_scopes` module was removed in Phase 8 (see
-//! RECOVERY_SCOPES_INHOUSE.md).
+//! RGBA on GPU). The scopes are drawn on the same device by
+//! [`gpu_scopes::ScopeRenderer`].
 //!
 //! # WGSL uniform rule
 //!
