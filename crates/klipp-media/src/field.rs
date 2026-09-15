@@ -84,6 +84,12 @@ impl FieldValue for Field {
             Field::GoodTake => if item.log.good_take { "\u{2713}".to_string() } else { String::new() },
             Field::Kind => kind_text(item).to_string(),
             Field::Offline => if item.offline { "offline".to_string() } else { String::new() },
+            Field::Favourite => if item.has_marker(klipp_core::MediaMarkerKind::Favourite) { "\u{2665}".to_string() } else { String::new() },
+            Field::Rejected => if item.has_marker(klipp_core::MediaMarkerKind::Reject) { "\u{2717}".to_string() } else { String::new() },
+            Field::Markers => {
+                let n = item.markers.iter().filter(|m| m.kind == klipp_core::MediaMarkerKind::Note).count();
+                if n == 0 { String::new() } else { n.to_string() }
+            }
         }
     }
 
@@ -98,6 +104,9 @@ impl FieldValue for Field {
             Field::DateAdded => Some(item.added_at as f64),
             Field::GoodTake => Some(if item.log.good_take { 1.0 } else { 0.0 }),
             Field::Offline => Some(if item.offline { 1.0 } else { 0.0 }),
+            Field::Favourite => Some(if item.has_marker(klipp_core::MediaMarkerKind::Favourite) { 1.0 } else { 0.0 }),
+            Field::Rejected => Some(if item.has_marker(klipp_core::MediaMarkerKind::Reject) { 1.0 } else { 0.0 }),
+            Field::Markers => Some(item.markers.iter().filter(|m| m.kind == klipp_core::MediaMarkerKind::Note).count() as f64),
             Field::Take | Field::Scene | Field::Shot => self.text(item).trim().parse::<f64>().ok(),
             _ => None,
         }

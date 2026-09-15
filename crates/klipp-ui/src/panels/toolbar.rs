@@ -761,6 +761,27 @@ impl ToolbarPanel {
                 ui.close_menu();
             }
             ui.separator();
+            let source_media = state.source_media_id.and_then(|id| state.media_pool.get(&id));
+            let in_source = state.viewer_mode == klipp_core::ViewerMode::Source && source_media.is_some();
+            if ui.add_enabled(in_source, egui::Button::new("Add Source Marker").shortcut_text("M")).on_hover_text("A note on the pool clip at the source playhead; the source viewer must be active.").clicked() {
+                if let Some(id) = state.source_media_id {
+                    cmds.push(AppCommand::AddMediaMarker { media_id: id, marker: klipp_core::MediaMarker::note(state.source_playhead.to_secs_f64()) });
+                }
+                ui.close_menu();
+            }
+            for (label, key, kind) in [("Favourite Source Range", "Shift+F", klipp_core::MediaMarkerKind::Favourite), ("Reject Source Range", "Shift+R", klipp_core::MediaMarkerKind::Reject)] {
+                if ui.add_enabled(in_source, egui::Button::new(label).shortcut_text(key)).on_hover_text("The stretch between the source in and out points, or the whole clip when none are set.").clicked() {
+                    if let (Some(id), Some(media)) = (state.source_media_id, source_media) {
+                        let from = media.default_source_in.map(|t| t.to_secs_f64()).unwrap_or(0.0);
+                        let to = media.default_source_out.map(|t| t.to_secs_f64()).unwrap_or_else(|| media.duration.to_secs_f64());
+                        if to > from {
+                            cmds.push(AppCommand::AddMediaMarker { media_id: id, marker: klipp_core::MediaMarker::range(kind, from, to) });
+                        }
+                    }
+                    ui.close_menu();
+                }
+            }
+            ui.separator();
             if ui.button("Next Marker").clicked() {
                 let ph = state.playhead;
                 if let Some(next) = state.sequence().markers.iter().filter(|m| m.position > ph).min_by_key(|m| m.position) {

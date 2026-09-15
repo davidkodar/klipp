@@ -1370,6 +1370,7 @@ impl KlippApp {
                         audio_cache: None,
                         log: Default::default(),
                         synced_audio: None,
+                        markers: Vec::new(),
                     };
 
                     // Auto-detect log format from metadata
@@ -3543,6 +3544,15 @@ impl KlippApp {
     /// and so does appending a silent file, and the next clip with sound
     /// then goes in the hole rather than under itself. Found by doing
     /// exactly that on a real timeline.
+    /// A favourite or rejected stretch of the source clip: between its
+    /// in and out points, or the whole clip when none are set.
+    fn source_range_marker(&self, kind: klipp_core::MediaMarkerKind) -> Option<klipp_core::MediaMarker> {
+        let media = self.state.media_pool.get(&self.state.source_media_id?)?;
+        let from = media.default_source_in.map(|t| t.to_secs_f64()).unwrap_or(0.0);
+        let to = media.default_source_out.map(|t| t.to_secs_f64()).unwrap_or_else(|| media.duration.to_secs_f64());
+        (to > from).then(|| klipp_core::MediaMarker::range(kind, from, to))
+    }
+
     /// The recording synced to `media_id`, if any and if it is still in
     /// the pool.
     fn external_audio_of(&self, media_id: klipp_core::MediaId) -> Option<ExternalAudio> {
@@ -11093,14 +11103,12 @@ impl KlippApp {
                         self.state.toast.show("That clip's media has no audio");
                         return true;
                     }
-                    match {
-                        let external = self.state.sequences[seq_idx]
-                            .all_clips()
-                            .find(|c| c.id == *clip_id)
-                            .and_then(|c| c.media_id())
-                            .and_then(|m| self.external_audio_of(m));
-                        attach_linked_audio_to_clip(&mut self.state.sequences[seq_idx], *clip_id, external)
-                    } {
+                    let external = self.state.sequences[seq_idx]
+                        .all_clips()
+                        .find(|c| c.id == *clip_id)
+                        .and_then(|c| c.media_id())
+                        .and_then(|m| self.external_audio_of(m));
+                    match attach_linked_audio_to_clip(&mut self.state.sequences[seq_idx], *clip_id, external) {
                         Some(a) => {
                             self.state.push_history(EditCommand::LinkedImport {
                                 video: None,
@@ -11687,6 +11695,32 @@ impl KlippApp {
                     }
                     true
                 }
+                AppCommand::AddMediaMarker { media_id, marker } => {
+                    if let Some(item) = self.state.media_pool.get_mut(media_id) {
+                        item.markers.push(marker.clone());
+                        item.markers.sort_by(|a, b| a.secs.total_cmp(&b.secs));
+                        self.state.dirty = true;
+                    }
+                    true
+                }
+                AppCommand::RemoveMediaMarker { media_id, index } => {
+                    if let Some(item) = self.state.media_pool.get_mut(media_id) {
+                        if *index < item.markers.len() {
+                            item.markers.remove(*index);
+                            self.state.dirty = true;
+                        }
+                    }
+                    true
+                }
+                AppCommand::RenameMediaMarker { media_id, index, name } => {
+                    if let Some(m) = self.state.media_pool.get_mut(media_id).and_then(|i| i.markers.get_mut(*index)) {
+                        if m.name != *name {
+                            m.name = name.clone();
+                            self.state.dirty = true;
+                        }
+                    }
+                    true
+                }
                 AppCommand::SetMediaLog { media_id, log } => {
                     if let Some(item) = self.state.media_pool.get_mut(media_id) {
                         if item.log != *log {
@@ -11859,6 +11893,7 @@ impl KlippApp {
                         truncated_from_secs: None,
                         log: Default::default(),
                         synced_audio: None,
+                        markers: Vec::new(),
                     };
                     self.state.media_pool.add(media_item);
                     // Imports stay off the timeline-edit undo stack (FCP /
@@ -24211,8 +24246,10 @@ impl KlippApp {
                 tracing::debug!("V key pressed -> Select tool");
                 cmds.push(AppCommand::SetActiveTool(Tool::Select));
             }
-            // R — Range tool toggle
-            if !i.modifiers.ctrl && i.key_pressed(egui::Key::R) {
+            // R — Range tool toggle (Shift+R in the source viewer rejects
+            // a stretch instead; see the marker keys)
+            let rejecting = i.modifiers.shift && self.state.viewer_mode == ViewerMode::Source && self.state.source_media_id.is_some();
+            if !i.modifiers.ctrl && !rejecting && i.key_pressed(egui::Key::R) {
                 if self.state.active_tool == Tool::Range {
                     cmds.push(AppCommand::SetActiveTool(Tool::Select));
                 } else {
@@ -24266,8 +24303,10 @@ impl KlippApp {
                     }
                 }
             }
-            // F — Toggle fullscreen viewer
-            if i.key_pressed(egui::Key::F) && !i.modifiers.ctrl {
+            // F — Toggle fullscreen viewer (Shift+F in the source viewer
+            // favourites a stretch instead; see the marker keys)
+            let favouriting = i.modifiers.shift && self.state.viewer_mode == ViewerMode::Source && self.state.source_media_id.is_some();
+            if i.key_pressed(egui::Key::F) && !i.modifiers.ctrl && !favouriting {
                 cmds.push(AppCommand::ToggleFullscreen);
             }
             // P — Toggle performance overlay
@@ -24655,8 +24694,27 @@ impl KlippApp {
                     }
                 }
             }
+            // In the source viewer, marks go on the pool clip: M a note at
+            // the playhead, Shift+F a favourite stretch, Shift+R a rejected
+            // one — the stretch between the in and out points, or the
+            // whole clip when none are set.
+            let in_source = self.state.viewer_mode == ViewerMode::Source && self.state.source_media_id.is_some();
+            if in_source && i.key_pressed(egui::Key::M) && !i.modifiers.ctrl && !i.modifiers.alt && !i.modifiers.shift {
+                if let Some(media_id) = self.state.source_media_id {
+                    cmds.push(AppCommand::AddMediaMarker { media_id, marker: klipp_core::MediaMarker::note(self.state.source_playhead.to_secs_f64()) });
+                }
+            }
+            for (key, kind) in [(egui::Key::F, klipp_core::MediaMarkerKind::Favourite), (egui::Key::R, klipp_core::MediaMarkerKind::Reject)] {
+                if in_source && i.key_pressed(key) && i.modifiers.shift && !i.modifiers.ctrl && !i.modifiers.alt {
+                    if let Some(marker) = self.source_range_marker(kind) {
+                        if let Some(media_id) = self.state.source_media_id {
+                            cmds.push(AppCommand::AddMediaMarker { media_id, marker });
+                        }
+                    }
+                }
+            }
             // M — Add sequence marker (no modifiers, no shift)
-            if i.key_pressed(egui::Key::M) && !i.modifiers.ctrl && !i.modifiers.alt && !i.modifiers.shift {
+            if !in_source && i.key_pressed(egui::Key::M) && !i.modifiers.ctrl && !i.modifiers.alt && !i.modifiers.shift {
                 cmds.push(AppCommand::AddMarker {
                     position: self.state.playhead,
                     label: String::new(),
@@ -34489,6 +34547,7 @@ fn build_whoosh_media_item(
         truncated_from_secs: None,
         log: Default::default(),
         synced_audio: None,
+        markers: Vec::new(),
     }
 }
 
@@ -38684,6 +38743,7 @@ mod insert_audio_media_clip_tests {
             truncated_from_secs: None,
             log: Default::default(),
             synced_audio: None,
+            markers: Vec::new(),
         }
     }
 

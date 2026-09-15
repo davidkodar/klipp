@@ -641,6 +641,7 @@ mod tests {
             truncated_from_secs: None,
             log: Default::default(),
             synced_audio: None,
+            markers: Vec::new(),
         }
     }
 

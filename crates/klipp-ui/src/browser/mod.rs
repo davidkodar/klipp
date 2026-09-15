@@ -580,6 +580,10 @@ pub enum SmartBinFilter {
     /// loader and media-pool refresh paths set when stat fails on
     /// the recorded path. Useful for triaging broken-link projects.
     Offline,
+    /// Clips with a favourite stretch.
+    Favourites,
+    /// Clips with a rejected stretch.
+    Rejected,
     /// A saved smart bin, by id: the clips its rules gather.
     Saved(String),
 }
@@ -4255,6 +4259,8 @@ impl BrowserPanel {
                 SmartBinFilter::AudioOnly => "Audio Only".to_string(),
                 SmartBinFilter::StillsOnly => "Stills Only".to_string(),
                 SmartBinFilter::Offline => "Offline".to_string(),
+                SmartBinFilter::Favourites => "Favourites".to_string(),
+                SmartBinFilter::Rejected => "Rejected".to_string(),
                 SmartBinFilter::Saved(id) => saved_name(id).unwrap_or_else(|| "Smart bin".to_string()),
             };
             let mut open_editor: Option<klipp_core::SmartBin> = None;
@@ -4270,6 +4276,9 @@ impl BrowserPanel {
                     ui.selectable_value(&mut self.smart_bin_filter, SmartBinFilter::StillsOnly, "Stills Only");
                     ui.separator();
                     ui.selectable_value(&mut self.smart_bin_filter, SmartBinFilter::Offline, "Offline");
+                    ui.separator();
+                    ui.selectable_value(&mut self.smart_bin_filter, SmartBinFilter::Favourites, "Favourites");
+                    ui.selectable_value(&mut self.smart_bin_filter, SmartBinFilter::Rejected, "Rejected");
                     if !state.media_pool.smart_bins.is_empty() {
                         ui.separator();
                         ui.label(egui::RichText::new("Smart bins").size(9.0).color(theme.text_dim));

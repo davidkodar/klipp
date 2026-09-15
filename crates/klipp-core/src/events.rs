@@ -2196,6 +2196,10 @@ pub enum AppCommand {
     /// What the editor logged about a clip: scene, shot, take,
     /// description, comments, keywords, good take, reel.
     SetMediaLog { media_id: MediaId, log: crate::ClipLog },
+    /// A note, favourite stretch or rejected one on a pool clip.
+    AddMediaMarker { media_id: MediaId, marker: crate::MediaMarker },
+    RemoveMediaMarker { media_id: MediaId, index: usize },
+    RenameMediaMarker { media_id: MediaId, index: usize, name: String },
     /// Pair a camera clip with a separate recording: by timecode when
     /// both carry one, by the sound otherwise.
     SyncMediaPair { video_id: MediaId, audio_id: MediaId },

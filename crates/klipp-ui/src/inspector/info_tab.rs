@@ -527,6 +527,8 @@ pub fn show_bin_media(
 
     logging_section(ui, theme, theme.bg_deep, theme.bg_panel, media, cmds);
     ui.add_space(8.0);
+    markers_section(ui, theme, theme.bg_deep, theme.bg_panel, media, cmds);
+    ui.add_space(8.0);
 
     // ── TAGS ──
     let tag_count = media.tags.len();
@@ -950,6 +952,8 @@ pub fn show_clip(
 
     logging_section(ui, theme, section_bg, card_bg, media, cmds);
     ui.add_space(8.0);
+    markers_section(ui, theme, section_bg, card_bg, media, cmds);
+    ui.add_space(8.0);
 
     // ════════════════════════════════════════
     // TAGS
@@ -1153,6 +1157,52 @@ pub fn show_clip(
 // ── Helpers ──────────────────────────────────────────────
 
 /// Collapsible section card using egui's collapsing header state.
+/// The marks the editor left on the clip: notes, favourite stretches,
+/// rejected ones — each named in place and removable. Shown only when
+/// there are any.
+fn markers_section(ui: &mut egui::Ui, theme: &KlippTheme, header_bg: egui::Color32, card_bg: egui::Color32, media: &klipp_media::MediaItem, cmds: &mut Vec<AppCommand>) {
+    if media.markers.is_empty() {
+        return;
+    }
+    let pad = 12.0;
+    let dim = theme.text_dim;
+    let rate = media.fps.rate();
+    section_card(ui, "MARKERS", Some(format!("{}", media.markers.len())), header_bg, card_bg, theme, |ui| {
+        ui.add_space(4.0);
+        let mut remove: Option<usize> = None;
+        for (i, m) in media.markers.iter().enumerate() {
+            ui.horizontal(|ui| {
+                ui.add_space(pad);
+                let (glyph, colour) = match m.kind {
+                    klipp_core::MediaMarkerKind::Note => ("\u{25CF}", egui::Color32::from_rgb(90, 160, 255)),
+                    klipp_core::MediaMarkerKind::Favourite => ("\u{2665}", egui::Color32::from_rgb(80, 200, 120)),
+                    klipp_core::MediaMarkerKind::Reject => ("\u{2717}", egui::Color32::from_rgb(220, 70, 70)),
+                };
+                ui.label(egui::RichText::new(glyph).size(12.0).color(colour));
+                let when = klipp_core::Timecode::from_secs_f64(m.secs, rate).to_timecode_string();
+                let span = if m.is_range() {
+                    format!("{when} \u{2013} {}", klipp_core::Timecode::from_secs_f64(m.end_secs(), rate).to_timecode_string())
+                } else {
+                    when
+                };
+                ui.label(egui::RichText::new(span).monospace().size(10.0).color(dim));
+                let mut name = m.name.clone();
+                let w = (ui.available_width() - 28.0).max(60.0);
+                if ui.add(egui::TextEdit::singleline(&mut name).desired_width(w).font(egui::TextStyle::Small).hint_text(m.kind.label())).changed() {
+                    cmds.push(AppCommand::RenameMediaMarker { media_id: media.id, index: i, name });
+                }
+                if ui.add(egui::Button::new(egui::RichText::new("\u{00D7}").size(12.0).color(dim)).frame(false)).clicked() {
+                    remove = Some(i);
+                }
+            });
+        }
+        if let Some(i) = remove {
+            cmds.push(AppCommand::RemoveMediaMarker { media_id: media.id, index: i });
+        }
+        ui.add_space(6.0);
+    });
+}
+
 /// The editor's log of the clip — scene, shot, take, reel, keywords,
 /// description, comments, good take — edited in place. Each change goes
 /// out as one `SetMediaLog`; the keywords line is committed when it is

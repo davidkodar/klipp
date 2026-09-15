@@ -197,6 +197,7 @@ pub fn load_project(dir: &Path) -> Result<LoadResult, String> {
             truncated_from_secs: None,
             log: Default::default(),
             synced_audio: None,
+            markers: Vec::new(),
         };
         // Re-run the log-format heuristic now that the metadata
         // fields are restored, so files saved before #35 (or files

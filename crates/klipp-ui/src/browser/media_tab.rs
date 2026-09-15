@@ -61,6 +61,8 @@ pub fn passes_smart_bin_filter(
         super::SmartBinFilter::AudioOnly => item.has_audio && item.video_codec.is_empty(),
         super::SmartBinFilter::StillsOnly => item.is_still,
         super::SmartBinFilter::Offline => item.offline,
+        super::SmartBinFilter::Favourites => item.has_marker(klipp_core::MediaMarkerKind::Favourite),
+        super::SmartBinFilter::Rejected => item.has_marker(klipp_core::MediaMarkerKind::Reject),
         super::SmartBinFilter::Saved(id) => smart_bins.iter().find(|b| &b.id == id).is_some_and(|b| b.matches(item)),
     }
 }

@@ -271,6 +271,9 @@ pub struct MediaItem {
     /// placed under the clip instead of the camera's own sound.
     #[serde(default)]
     pub synced_audio: Option<klipp_core::SyncedAudio>,
+    /// Notes, favourite stretches and rejected ones the editor marked.
+    #[serde(default)]
+    pub markers: Vec<klipp_core::MediaMarker>,
     /// Path to skim-optimised file (all-keyframe transcode for instant seeking)
     #[serde(default)]
     pub skim_file: Option<PathBuf>,
@@ -403,6 +406,7 @@ impl MediaItem {
             truncated_from_secs: None,
             log: Default::default(),
             synced_audio: None,
+            markers: Vec::new(),
         }
     }
 
@@ -578,6 +582,7 @@ mod subclip_tests {
             truncated_from_secs: None,
             log: Default::default(),
             synced_audio: None,
+            markers: Vec::new(),
         }
     }
 
@@ -756,6 +761,7 @@ mod effective_rotation_tests {
             truncated_from_secs: None,
             log: Default::default(),
             synced_audio: None,
+            markers: Vec::new(),
         }
     }
 
@@ -818,6 +824,11 @@ pub fn same_file_as_probed(old: &MediaItem, fresh: &MediaItem) -> bool {
 /// rating, tags and bin; and a proxy keyed by media id survived a relink
 /// to a different file.
 impl MediaItem {
+    /// Whether the editor left a marker of this kind on the clip.
+    pub fn has_marker(&self, kind: klipp_core::MediaMarkerKind) -> bool {
+        self.markers.iter().any(|m| m.kind == kind)
+    }
+
     /// The reel the clip goes under: the editor's, or the file's own.
     pub fn reel(&self) -> Option<&str> {
         if !self.log.reel.is_empty() {
@@ -861,6 +872,7 @@ pub fn merge_reprobed(old: &MediaItem, fresh: &mut MediaItem) {
     fresh.kind = old.kind.clone();
     fresh.log = old.log.clone();
     fresh.synced_audio = old.synced_audio.clone();
+    fresh.markers = old.markers.clone();
     if same_file_as_probed(old, fresh) {
         fresh.proxy_path = old.proxy_path.clone();
         fresh.proxy_ready = old.proxy_ready;
@@ -930,6 +942,7 @@ impl MediaItem {
             truncated_from_secs: None,
             log: Default::default(),
             synced_audio: None,
+            markers: Vec::new(),
         }
     }
 }

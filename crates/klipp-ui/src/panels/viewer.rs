@@ -1915,6 +1915,41 @@ impl ViewerPanel {
         // Track background — full width.
         ui.painter().rect_filled(track_rect, 0.0, theme.bg_raised);
 
+        // The source clip's marks: favourite stretches in green and
+        // rejected ones in red along the track, notes as ticks above it.
+        if viewer_kind == ViewerMode::Source {
+            if let Some(media) = state.source_media_id.and_then(|mid| state.media_pool.get(&mid)) {
+                let dur = media.duration.to_secs_f64();
+                if dur > 0.0 {
+                    let x_of = |secs: f64| track_rect.min.x + (secs / dur).clamp(0.0, 1.0) as f32 * track_rect.width();
+                    for m in &media.markers {
+                        match m.kind {
+                            klipp_core::MediaMarkerKind::Note => {
+                                let x = x_of(m.secs);
+                                ui.painter().rect_filled(
+                                    egui::Rect::from_min_max(egui::pos2(x - 1.0, track_rect.min.y - 6.0), egui::pos2(x + 1.0, track_rect.max.y)),
+                                    0.0,
+                                    egui::Color32::from_rgb(90, 160, 255),
+                                );
+                            }
+                            kind => {
+                                let colour = if kind == klipp_core::MediaMarkerKind::Favourite {
+                                    egui::Color32::from_rgba_unmultiplied(80, 200, 120, 170)
+                                } else {
+                                    egui::Color32::from_rgba_unmultiplied(220, 70, 70, 170)
+                                };
+                                ui.painter().rect_filled(
+                                    egui::Rect::from_min_max(egui::pos2(x_of(m.secs), track_rect.min.y - 2.0), egui::pos2(x_of(m.end_secs()), track_rect.max.y + 2.0)),
+                                    1.0,
+                                    colour,
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         // Per-viewer playhead/duration. Source uses the loaded media's
         // total duration; Program uses the sequence duration.
         let (dur_secs, current_secs, rate): (f64, f64, u32) = match viewer_kind {

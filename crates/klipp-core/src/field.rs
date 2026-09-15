@@ -31,22 +31,26 @@ pub enum Field {
     GoodTake,
     Kind,
     Offline,
+    Favourite,
+    Rejected,
+    Markers,
 }
 
 impl Field {
-    pub const ALL: [Field; 24] = [
+    pub const ALL: [Field; 27] = [
         Field::Name, Field::Duration, Field::Resolution, Field::Fps, Field::Codec, Field::FileSize, Field::Rating,
         Field::ColourLabel, Field::Tags, Field::Camera, Field::Lens, Field::Timecode, Field::Reel, Field::ShootDate,
         Field::DateAdded, Field::Scene, Field::Shot, Field::Take, Field::Keywords, Field::Description, Field::Comments,
-        Field::GoodTake, Field::Kind, Field::Offline,
+        Field::GoodTake, Field::Kind, Field::Offline, Field::Favourite, Field::Rejected, Field::Markers,
     ];
 
     /// The fields the list view can show as columns; the name is always
     /// the first column and is not among them.
-    pub const COLUMNS: [Field; 21] = [
+    pub const COLUMNS: [Field; 24] = [
         Field::Rating, Field::Duration, Field::Resolution, Field::Fps, Field::Codec, Field::FileSize, Field::Camera,
         Field::Lens, Field::Timecode, Field::Reel, Field::ShootDate, Field::DateAdded, Field::Scene, Field::Shot,
         Field::Take, Field::Keywords, Field::Description, Field::Comments, Field::GoodTake, Field::ColourLabel, Field::Tags,
+        Field::Favourite, Field::Rejected, Field::Markers,
     ];
 
     /// The columns a fresh list shows.
@@ -87,6 +91,9 @@ impl Field {
             Field::GoodTake => "Good",
             Field::Kind => "Kind",
             Field::Offline => "Offline",
+            Field::Favourite => "Favourite",
+            Field::Rejected => "Rejected",
+            Field::Markers => "Markers",
         }
     }
 
@@ -94,7 +101,7 @@ impl Field {
     pub fn column_width(self) -> f32 {
         match self {
             Field::Rating => 48.0,
-            Field::Duration | Field::Fps | Field::Take | Field::GoodTake | Field::Offline | Field::Kind => 54.0,
+            Field::Duration | Field::Fps | Field::Take | Field::GoodTake | Field::Offline | Field::Kind | Field::Favourite | Field::Rejected | Field::Markers => 54.0,
             Field::Codec | Field::FileSize | Field::Scene | Field::Shot | Field::Reel | Field::ColourLabel => 64.0,
             Field::Resolution | Field::Timecode => 84.0,
             Field::ShootDate | Field::DateAdded => 110.0,
@@ -115,6 +122,6 @@ impl Field {
 
     /// Whether the field is a yes or no.
     pub fn is_flag(self) -> bool {
-        matches!(self, Field::GoodTake | Field::Offline)
+        matches!(self, Field::GoodTake | Field::Offline | Field::Favourite | Field::Rejected)
     }
 }
