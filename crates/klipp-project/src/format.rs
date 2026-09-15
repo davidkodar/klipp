@@ -632,6 +632,9 @@ pub struct MediaManifestJson {
     pub items: Vec<MediaItemJson>,
     #[serde(default)]
     pub bins: Vec<BinJson>,
+    /// The saved smart bins, as they are.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub smart_bins: Vec<klipp_core::SmartBin>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

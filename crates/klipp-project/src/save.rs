@@ -154,6 +154,7 @@ pub fn save_project_full(
             name: b.name.clone(),
             parent_id: b.parent_id.map(|p| p.to_string()),
         }).collect(),
+        smart_bins: media_pool.smart_bins.clone(),
     };
 
     let manifest_json = serde_json::to_string_pretty(&manifest)

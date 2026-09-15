@@ -2217,6 +2217,9 @@ pub enum AppCommand {
 
     // Bins
     CreateBin { name: String },
+    /// Save a smart bin: a new one, or the one with this id over again.
+    SaveSmartBin { bin: crate::SmartBin },
+    DeleteSmartBin { id: String },
     /// Create a child bin inside an existing bin.
     CreateSubBin { parent_id: BinId, name: String },
     /// Import a detected image sequence as a single video clip.

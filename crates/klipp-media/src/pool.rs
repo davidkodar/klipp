@@ -9,6 +9,9 @@ pub struct MediaPool {
     items: HashMap<MediaId, MediaItem>,
     #[serde(default)]
     pub bins: Vec<Bin>,
+    /// The saved smart bins: rules that gather clips.
+    #[serde(default)]
+    pub smart_bins: Vec<klipp_core::SmartBin>,
 }
 
 impl MediaPool {

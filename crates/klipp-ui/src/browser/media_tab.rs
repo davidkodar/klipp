@@ -5,7 +5,7 @@ use klipp_core::{AppCommand, MediaId};
 
 /// What the pool is sorted by: any sortable [`Field`].
 pub type SortBy = klipp_media::Field;
-use klipp_media::Field;
+use klipp_media::{Field, FieldValue};
 
 /// Where a list row's text starts: after the 12 px margin and the 80 px
 /// thumbnail. The column header lines up with it.
@@ -49,9 +49,11 @@ pub fn passes_color_filter(label: klipp_media::ColorLabel, filter: u8) -> bool {
 /// item — only consulted by `Unused`. Pure — testable without egui.
 pub fn passes_smart_bin_filter(
     item: &klipp_media::MediaItem,
-    filter: super::SmartBinFilter,
+    filter: &super::SmartBinFilter,
     usage_count: usize,
+    smart_bins: &[klipp_core::SmartBin],
 ) -> bool {
+    use klipp_media::SmartMatch;
     match filter {
         super::SmartBinFilter::None => true,
         super::SmartBinFilter::Unused => usage_count == 0,
@@ -59,6 +61,7 @@ pub fn passes_smart_bin_filter(
         super::SmartBinFilter::AudioOnly => item.has_audio && item.video_codec.is_empty(),
         super::SmartBinFilter::StillsOnly => item.is_still,
         super::SmartBinFilter::Offline => item.offline,
+        super::SmartBinFilter::Saved(id) => smart_bins.iter().find(|b| &b.id == id).is_some_and(|b| b.matches(item)),
     }
 }
 
@@ -190,7 +193,7 @@ pub fn show(
     renaming_bin: &mut Option<(String, String)>,
     creating_bin: &mut Option<String>,
     scroll_to_media_id: &mut Option<MediaId>,
-    smart_filter: super::SmartBinFilter,
+    smart_filter: &super::SmartBinFilter,
     min_rating_filter: Option<u8>,
     color_label_filter: u8,
     metadata_filter: &super::MetadataFilter,
@@ -206,6 +209,7 @@ pub fn show(
 
     // Collect and filter items
     let search_lower = search_query.to_lowercase();
+    let smart_bins = state.media_pool.smart_bins.clone();
     let mut items: Vec<_> = state
         .media_pool
         .all()
@@ -217,7 +221,7 @@ pub fn show(
             }
             // Smart bin filter (AND-combined with the rating filter below).
             let usage = state.media_usage_cache.get(&m.id).copied().unwrap_or(0);
-            if !passes_smart_bin_filter(m, smart_filter, usage) {
+            if !passes_smart_bin_filter(m, smart_filter, usage, &smart_bins) {
                 return false;
             }
             // Minimum star rating filter.
@@ -2318,8 +2322,8 @@ mod smart_bin_filter_tests {
     #[test]
     fn smart_bin_none_passes_everything() {
         let m = item();
-        assert!(passes_smart_bin_filter(&m, SmartBinFilter::None, 0));
-        assert!(passes_smart_bin_filter(&m, SmartBinFilter::None, 5));
+        assert!(passes_smart_bin_filter(&m, &SmartBinFilter::None, 0, &[]));
+        assert!(passes_smart_bin_filter(&m, &SmartBinFilter::None, 5, &[]));
     }
 
     #[test]
@@ -2328,8 +2332,8 @@ mod smart_bin_filter_tests {
         online.offline = false;
         let mut offline = item();
         offline.offline = true;
-        assert!(!passes_smart_bin_filter(&online, SmartBinFilter::Offline, 0));
-        assert!(passes_smart_bin_filter(&offline, SmartBinFilter::Offline, 0));
+        assert!(!passes_smart_bin_filter(&online, &SmartBinFilter::Offline, 0, &[]));
+        assert!(passes_smart_bin_filter(&offline, &SmartBinFilter::Offline, 0, &[]));
     }
 
     #[test]
@@ -2339,14 +2343,14 @@ mod smart_bin_filter_tests {
         // Even when used, an offline item still passes — usage_count is
         // only consulted by Unused. Otherwise the dropdown would never
         // show offline files that were once placed on the timeline.
-        assert!(passes_smart_bin_filter(&m, SmartBinFilter::Offline, 5));
+        assert!(passes_smart_bin_filter(&m, &SmartBinFilter::Offline, 5, &[]));
     }
 
     #[test]
     fn smart_bin_unused_uses_usage_count() {
         let m = item();
-        assert!(passes_smart_bin_filter(&m, SmartBinFilter::Unused, 0));
-        assert!(!passes_smart_bin_filter(&m, SmartBinFilter::Unused, 1));
+        assert!(passes_smart_bin_filter(&m, &SmartBinFilter::Unused, 0, &[]));
+        assert!(!passes_smart_bin_filter(&m, &SmartBinFilter::Unused, 1, &[]));
     }
 
     #[test]
@@ -2360,9 +2364,9 @@ mod smart_bin_filter_tests {
         let mut audio = item();
         audio.video_codec.clear();
         audio.has_audio = true;
-        assert!(passes_smart_bin_filter(&video, SmartBinFilter::VideoOnly, 0));
-        assert!(!passes_smart_bin_filter(&still, SmartBinFilter::VideoOnly, 0));
-        assert!(!passes_smart_bin_filter(&audio, SmartBinFilter::VideoOnly, 0));
+        assert!(passes_smart_bin_filter(&video, &SmartBinFilter::VideoOnly, 0, &[]));
+        assert!(!passes_smart_bin_filter(&still, &SmartBinFilter::VideoOnly, 0, &[]));
+        assert!(!passes_smart_bin_filter(&audio, &SmartBinFilter::VideoOnly, 0, &[]));
     }
 }
 

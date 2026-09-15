@@ -13,3 +13,6 @@ image = { version = "0.25", default-features = false, features = ["png"] }
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true

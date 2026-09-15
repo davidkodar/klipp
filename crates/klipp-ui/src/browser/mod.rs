@@ -568,7 +568,7 @@ fn sort_file_entries(entries: &mut [FileEntry], by: FileSortBy, ascending: bool)
 /// Smart bin filter criteria for auto-filtering media. The rating filter
 /// lives separately on `BrowserPanel.min_rating_filter` so the two
 /// dropdowns combine with AND semantics (e.g. "Video Only" + "3+ stars").
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SmartBinFilter {
     None,
     Unused,
@@ -580,6 +580,8 @@ pub enum SmartBinFilter {
     /// loader and media-pool refresh paths set when stat fails on
     /// the recorded path. Useful for triaging broken-link projects.
     Offline,
+    /// A saved smart bin, by id: the clips its rules gather.
+    Saved(String),
 }
 
 /// Parametric metadata filter for the bin — narrows by codec, source
@@ -664,6 +666,11 @@ pub struct BrowserPanel {
     pub media_sort_ascending: bool,
     pub media_selected_bin: Option<String>,
     pub smart_bin_filter: SmartBinFilter,
+    /// The smart bin being written or edited, while its window is open.
+    pub smart_bin_editor: Option<klipp_core::SmartBin>,
+    /// Commands raised by the toolbar and its windows, drained into
+    /// `show`'s return.
+    pending_cmds: Vec<AppCommand>,
     /// Minimum star rating the bin filters to. `None` = show all ratings.
     /// Session state only — deliberately not persisted to prefs for MVP.
     pub min_rating_filter: Option<u8>,
@@ -943,6 +950,8 @@ impl Default for BrowserPanel {
             media_sort_ascending: true,
             media_selected_bin: None,
             smart_bin_filter: SmartBinFilter::None,
+            smart_bin_editor: None,
+            pending_cmds: Vec::new(),
             min_rating_filter: None,
             color_label_filter: 0,
             metadata_filter: MetadataFilter::Any,
@@ -1501,7 +1510,7 @@ impl BrowserPanel {
                             &mut self.renaming_bin,
                             &mut self.creating_bin,
                             &mut self.scroll_to_media_id,
-                            self.smart_bin_filter,
+                            &self.smart_bin_filter,
                             self.min_rating_filter,
                             self.color_label_filter,
                             &self.metadata_filter,
@@ -1541,7 +1550,7 @@ impl BrowserPanel {
                         &mut self.renaming_bin,
                         &mut self.creating_bin,
                         &mut self.scroll_to_media_id,
-                        self.smart_bin_filter,
+                        &self.smart_bin_filter,
                         self.min_rating_filter,
                         self.color_label_filter,
                         &self.metadata_filter,
@@ -1555,6 +1564,8 @@ impl BrowserPanel {
             }
         }
 
+        self.show_smart_bin_editor(ui.ctx(), theme);
+        cmds.append(&mut self.pending_cmds);
         cmds
     }
 
@@ -4141,20 +4152,115 @@ impl BrowserPanel {
     ///
     /// Called from both the split-view right pane and the non-split Media
     /// tab so both layouts have the filters above the item list.
+    /// The window a smart bin is written in: its name, whether every
+    /// rule must match or any, and the rules, each a field, a comparison
+    /// and a value. Save sends the bin to the project and selects it.
+    fn show_smart_bin_editor(&mut self, ctx: &egui::Context, theme: &KlippTheme) {
+        let Some(mut bin) = self.smart_bin_editor.take() else { return };
+        let mut open = true;
+        let mut done: Option<bool> = None; // Some(true) = save, Some(false) = cancel
+        egui::Window::new("Smart Bin")
+            .id(egui::Id::new("smart_bin_editor"))
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(true)
+            .default_width(460.0)
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new("Name").color(theme.text_dim));
+                    ui.add(egui::TextEdit::singleline(&mut bin.name).desired_width(220.0));
+                });
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new("Gather clips matching").color(theme.text_dim));
+                    ui.radio_value(&mut bin.match_all, true, "all of the rules");
+                    ui.radio_value(&mut bin.match_all, false, "any rule");
+                });
+                ui.separator();
+                let mut remove: Option<usize> = None;
+                for (i, rule) in bin.rules.iter_mut().enumerate() {
+                    ui.horizontal(|ui| {
+                        egui::ComboBox::from_id_salt(("rule_field", i))
+                            .selected_text(rule.field.label())
+                            .width(110.0)
+                            .show_ui(ui, |ui| {
+                                for f in klipp_core::Field::ALL {
+                                    if ui.selectable_value(&mut rule.field, f, f.label()).changed()
+                                        && !klipp_core::RuleOp::for_field(rule.field).contains(&rule.op)
+                                    {
+                                        rule.op = klipp_core::RuleOp::for_field(rule.field)[0];
+                                    }
+                                }
+                            });
+                        egui::ComboBox::from_id_salt(("rule_op", i))
+                            .selected_text(rule.op.label())
+                            .width(130.0)
+                            .show_ui(ui, |ui| {
+                                for op in klipp_core::RuleOp::for_field(rule.field) {
+                                    ui.selectable_value(&mut rule.op, op, op.label());
+                                }
+                            });
+                        if rule.op.takes_value() {
+                            let hint = match rule.field {
+                                f if f.is_date() => "2024-03-15",
+                                klipp_core::Field::Duration => "1:30 or seconds",
+                                klipp_core::Field::FileSize => "MB",
+                                klipp_core::Field::Resolution => "3840x2160 or 4k",
+                                klipp_core::Field::Rating => "1 to 5",
+                                _ => "",
+                            };
+                            ui.add(egui::TextEdit::singleline(&mut rule.value).desired_width(120.0).hint_text(hint));
+                        }
+                        if ui.add(egui::Button::new(egui::RichText::new("\u{00D7}").color(theme.text_dim)).frame(false)).on_hover_text("Remove rule").clicked() {
+                            remove = Some(i);
+                        }
+                    });
+                }
+                if let Some(i) = remove {
+                    bin.rules.remove(i);
+                }
+                if ui.button("+ Add rule").clicked() {
+                    bin.rules.push(klipp_core::SmartRule::new(klipp_core::Field::Keywords));
+                }
+                ui.separator();
+                ui.horizontal(|ui| {
+                    let can_save = !bin.name.trim().is_empty() && !bin.rules.is_empty();
+                    if ui.add_enabled(can_save, egui::Button::new("Save")).clicked() {
+                        done = Some(true);
+                    }
+                    if ui.button("Cancel").clicked() {
+                        done = Some(false);
+                    }
+                    ui.label(egui::RichText::new(bin.describe()).size(10.0).color(theme.text_dim));
+                });
+            });
+        match done {
+            Some(true) => {
+                self.smart_bin_filter = SmartBinFilter::Saved(bin.id.clone());
+                self.pending_cmds.push(AppCommand::SaveSmartBin { bin });
+            }
+            Some(false) => {}
+            None if open => self.smart_bin_editor = Some(bin),
+            None => {}
+        }
+    }
+
     fn render_media_filter_toolbar(&mut self, ui: &mut egui::Ui, theme: &KlippTheme, state: &AppState) {
         ui.horizontal(|ui| {
             ui.label(egui::RichText::new("Filter:").size(10.0).color(theme.text_dim));
-            let filter_label = match self.smart_bin_filter {
-                SmartBinFilter::None => "All Media",
-                SmartBinFilter::Unused => "Unused",
-                SmartBinFilter::VideoOnly => "Video Only",
-                SmartBinFilter::AudioOnly => "Audio Only",
-                SmartBinFilter::StillsOnly => "Stills Only",
-                SmartBinFilter::Offline => "Offline",
+            let saved_name = |id: &str| state.media_pool.smart_bins.iter().find(|b| b.id == id).map(|b| b.name.clone());
+            let filter_label = match &self.smart_bin_filter {
+                SmartBinFilter::None => "All Media".to_string(),
+                SmartBinFilter::Unused => "Unused".to_string(),
+                SmartBinFilter::VideoOnly => "Video Only".to_string(),
+                SmartBinFilter::AudioOnly => "Audio Only".to_string(),
+                SmartBinFilter::StillsOnly => "Stills Only".to_string(),
+                SmartBinFilter::Offline => "Offline".to_string(),
+                SmartBinFilter::Saved(id) => saved_name(id).unwrap_or_else(|| "Smart bin".to_string()),
             };
+            let mut open_editor: Option<klipp_core::SmartBin> = None;
             egui::ComboBox::from_id_salt("smart_bin")
                 .selected_text(filter_label)
-                .width(110.0)
+                .width(130.0)
                 .show_ui(ui, |ui| {
                     ui.selectable_value(&mut self.smart_bin_filter, SmartBinFilter::None, "All Media");
                     ui.separator();
@@ -4164,7 +4270,36 @@ impl BrowserPanel {
                     ui.selectable_value(&mut self.smart_bin_filter, SmartBinFilter::StillsOnly, "Stills Only");
                     ui.separator();
                     ui.selectable_value(&mut self.smart_bin_filter, SmartBinFilter::Offline, "Offline");
+                    if !state.media_pool.smart_bins.is_empty() {
+                        ui.separator();
+                        ui.label(egui::RichText::new("Smart bins").size(9.0).color(theme.text_dim));
+                        for bin in &state.media_pool.smart_bins {
+                            ui.selectable_value(&mut self.smart_bin_filter, SmartBinFilter::Saved(bin.id.clone()), &bin.name)
+                                .on_hover_text(bin.describe());
+                        }
+                    }
+                    ui.separator();
+                    if ui.button("New smart bin\u{2026}").clicked() {
+                        open_editor = Some(klipp_core::SmartBin::new(uuid::Uuid::new_v4().to_string(), "Smart Bin"));
+                        ui.close_menu();
+                    }
+                    if let SmartBinFilter::Saved(id) = &self.smart_bin_filter {
+                        if let Some(bin) = state.media_pool.smart_bins.iter().find(|b| &b.id == id) {
+                            if ui.button(format!("Edit \"{}\"\u{2026}", bin.name)).clicked() {
+                                open_editor = Some(bin.clone());
+                                ui.close_menu();
+                            }
+                            if ui.button(format!("Delete \"{}\"", bin.name)).clicked() {
+                                self.pending_cmds.push(AppCommand::DeleteSmartBin { id: id.clone() });
+                                self.smart_bin_filter = SmartBinFilter::None;
+                                ui.close_menu();
+                            }
+                        }
+                    }
                 });
+            if let Some(bin) = open_editor {
+                self.smart_bin_editor = Some(bin);
+            }
 
             ui.add_space(8.0);
             ui.label(egui::RichText::new("Rating:").size(10.0).color(theme.text_dim));

@@ -33,6 +33,7 @@ pub mod audio_cache;
 pub mod disk_cache;
 pub mod exif_read;
 pub mod field;
+pub mod smart_bin;
 pub mod sidecar;
 mod item;
 mod pool;
@@ -45,4 +46,6 @@ pub use item::{describe_secs, merge_reprobed, same_file_as_probed, Bin, ColorLab
 pub use pool::MediaPool;
 pub use thumbnail::{FilmstripFrame, ThumbnailCache, ThumbnailEntry};
 pub use waveform::generate_waveform_from_samples;
-pub use field::{Field, SortKey};
+pub use field::{Field, FieldValue, SortKey};
+pub use smart_bin::SmartMatch;
+pub use klipp_core::{RuleOp, SmartBin, SmartRule};

@@ -218,6 +218,8 @@ pub fn load_project(dir: &Path) -> Result<LoadResult, String> {
         }
     }
 
+    media_pool.smart_bins = manifest.smart_bins.clone();
+
     // Migration: if items have bin (String) but no bin_id, create bins and assign IDs
     let items_needing_migration: Vec<(klipp_core::MediaId, String)> = media_pool.all()
         .filter(|m| m.bin.is_some() && m.bin_id.is_none())

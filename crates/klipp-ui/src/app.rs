@@ -11748,6 +11748,20 @@ impl KlippApp {
 
     fn handle_media_bins(&mut self, cmd: &AppCommand, _needs_refresh: &mut bool) -> bool {
         match cmd {
+                AppCommand::SaveSmartBin { bin } => {
+                    let bins = &mut self.state.media_pool.smart_bins;
+                    match bins.iter_mut().find(|b| b.id == bin.id) {
+                        Some(existing) => *existing = bin.clone(),
+                        None => bins.push(bin.clone()),
+                    }
+                    self.state.dirty = true;
+                    true
+                }
+                AppCommand::DeleteSmartBin { id } => {
+                    self.state.media_pool.smart_bins.retain(|b| b.id != *id);
+                    self.state.dirty = true;
+                    true
+                }
                 AppCommand::CreateBin { name } => {
                     // Create a root-level bin in the bins collection
                     let _bin_id = self.state.media_pool.find_or_create_bin(name);
