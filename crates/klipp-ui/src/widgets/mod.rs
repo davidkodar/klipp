@@ -9,6 +9,7 @@ pub mod scopes;
 pub mod scope_window;
 pub mod role_pill;
 pub mod scrubby_param;
+pub mod segmented;
 pub use scrubby_param::EasePreset;
 pub mod slider;
 pub mod toast;

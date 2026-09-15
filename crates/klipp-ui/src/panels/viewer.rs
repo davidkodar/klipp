@@ -2176,29 +2176,17 @@ impl ViewerPanel {
 
         // ── Single viewer: which one this is, and the way to the other ──
         if !state.dual_viewers {
-            let seg_w = 60.0;
+            let font = egui::FontId::proportional(crate::theme::type_scale::CAPTION);
+            let labels = ["Source", "Program"];
             let h = crate::theme::control::COMPACT;
-            let sw = egui::Rect::from_min_size(egui::pos2(rect.min.x + 126.0, cy - h / 2.0), egui::vec2(seg_w * 2.0 + 4.0, h));
-            let resp = ui.allocate_rect(sw, egui::Sense::click());
-            ui.painter().rect_filled(sw, crate::theme::radius::PANEL, theme.bg_panel);
-            ui.painter().rect_stroke(sw, crate::theme::radius::PANEL, egui::Stroke::new(1.0_f32, theme.border));
-            let pointer = ui.input(|i| i.pointer.interact_pos());
-            for (i, (mode, label)) in [(ViewerMode::Source, "Source"), (ViewerMode::Program, "Program")].into_iter().enumerate() {
-                let seg = egui::Rect::from_min_size(egui::pos2(sw.min.x + 2.0 + i as f32 * seg_w, sw.min.y + 2.0), egui::vec2(seg_w, h - 4.0));
-                let active = viewer_kind == mode;
-                let under = pointer.is_some_and(|p| seg.contains(p));
-                if active {
-                    ui.painter().rect_filled(seg, crate::theme::radius::CONTROL, theme.bg_raised);
-                } else if under && resp.hovered() {
-                    ui.painter().rect_filled(seg, crate::theme::radius::CONTROL, theme.bg_hover);
-                }
-                let colour = if active { theme.text_primary } else { theme.text_secondary };
-                ui.painter().text(seg.center(), egui::Align2::CENTER_CENTER, label, egui::FontId::proportional(crate::theme::type_scale::CAPTION), colour);
-                if resp.clicked() && under && !active {
-                    cmds.push(AppCommand::SetViewerMode(mode));
+            let size = crate::widgets::segmented::segmented_size(ui, &labels, &font, h);
+            let sw = egui::Rect::from_min_size(egui::pos2(rect.min.x + 126.0, cy - h / 2.0), size);
+            let active = if viewer_kind == ViewerMode::Source { 0 } else { 1 };
+            if let Some(i) = crate::widgets::segmented::segmented_in(ui, sw, &labels, active, theme, font) {
+                if i != active {
+                    cmds.push(AppCommand::SetViewerMode(if i == 0 { ViewerMode::Source } else { ViewerMode::Program }));
                 }
             }
-            resp.on_hover_text("Which viewer fills the row (dual viewers in the View menu)");
         }
 
         // ── Center: Transport buttons ──

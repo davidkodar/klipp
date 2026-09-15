@@ -108,7 +108,7 @@ pub(crate) fn compute_layout(
 
     // In Color workspace: allocate bottom space for toggle + scopes + nodes
     // Use ratio to split between viewer+timeline and bottom panels
-    let toggle_bar_h: f32 = if in_color_ws { 22.0 } else { 0.0 };
+    let toggle_bar_h: f32 = if in_color_ws { crate::widgets::inspector_group::SECTION_HEADER_H } else { 0.0 };
     let center_total = main_bottom - main_top;
     let has_bottom_panels = show_scopes_bar || show_nodes_bar;
 

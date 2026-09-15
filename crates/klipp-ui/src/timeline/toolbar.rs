@@ -35,35 +35,21 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState, theme: &KlippTheme, cmds: &
 
         // ── Insert / Overwrite: a two-segment switch, the active mode lit ──
         {
-            let seg_w = 34.0;
-            let h = crate::theme::control::COMPACT;
-            let (rect, resp) = ui.allocate_exact_size(egui::vec2(seg_w * 2.0 + 4.0, h), egui::Sense::click());
-            ui.painter().rect_filled(rect, crate::theme::radius::PANEL, theme.bg_panel);
-            ui.painter().rect_stroke(rect, crate::theme::radius::PANEL, egui::Stroke::new(1.0_f32, theme.border));
-            let pointer = ui.input(|i| i.pointer.interact_pos());
-            for (i, (mode, label)) in [(EditMode::Insert, "INS"), (EditMode::Overwrite, "OVR")].into_iter().enumerate() {
-                let seg = egui::Rect::from_min_size(egui::pos2(rect.min.x + 2.0 + i as f32 * seg_w, rect.min.y + 2.0), egui::vec2(seg_w, h - 4.0));
-                let active = state.edit_mode == mode;
-                let under = pointer.is_some_and(|p| seg.contains(p));
-                if active {
-                    ui.painter().rect_filled(seg, crate::theme::radius::CONTROL, theme.accent_subtle);
-                } else if under && resp.hovered() {
-                    ui.painter().rect_filled(seg, crate::theme::radius::CONTROL, theme.bg_hover);
-                }
-                let colour = if active { theme.accent } else { theme.text_dim };
-                ui.painter().text(seg.center(), egui::Align2::CENTER_CENTER, label, egui::FontId::monospace(crate::theme::type_scale::CAPTION), colour);
+            let active = if state.edit_mode == EditMode::Insert { 0 } else { 1 };
+            let before = ui.cursor().min;
+            if let Some(i) = crate::widgets::segmented::segmented(
+                ui, &["INS", "OVR"], active, theme,
+                egui::FontId::monospace(crate::theme::type_scale::CAPTION), crate::theme::control::COMPACT,
+            ) {
+                state.edit_mode = if i == 0 { EditMode::Insert } else { EditMode::Overwrite };
             }
             let tip = match state.edit_mode {
                 EditMode::Insert => "Edit Mode: Insert",
                 EditMode::Overwrite => "Edit Mode: Overwrite",
             };
-            styled_tooltip(&resp, theme, tip, Some("W"));
-            if resp.clicked() {
-                state.edit_mode = match state.edit_mode {
-                    EditMode::Insert => EditMode::Overwrite,
-                    EditMode::Overwrite => EditMode::Insert,
-                };
-            }
+            let rect = egui::Rect::from_min_max(before, ui.cursor().min + egui::vec2(0.0, crate::theme::control::COMPACT));
+            let hover = ui.interact(rect, ui.id().with("edit_mode_tip"), egui::Sense::hover());
+            styled_tooltip(&hover, theme, tip, Some("W"));
         }
 
         separator(ui, theme);

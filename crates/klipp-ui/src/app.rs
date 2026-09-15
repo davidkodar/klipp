@@ -32438,23 +32438,13 @@ impl KlippApp {
                 egui::Stroke::new(0.5_f32, theme.bg_void),
             );
             ui.horizontal_centered(|ui| {
+                ui.spacing_mut().item_spacing.x = 6.0;
                 ui.add_space(8.0);
-                let scope_label = if self.state.show_scopes {
-                    egui::RichText::new("Scopes").size(10.0).color(theme.text_accent)
-                } else {
-                    egui::RichText::new("Scopes").size(10.0).color(theme.text_dim)
-                };
-                if ui.selectable_label(self.state.show_scopes, scope_label).clicked() {
+                if ui.selectable_label(self.state.show_scopes, "Scopes").clicked() {
                     self.state.show_scopes = !self.state.show_scopes;
                     ui.ctx().request_repaint();
                 }
-                ui.separator();
-                let nodes_label = if self.state.show_node_strip {
-                    egui::RichText::new("Nodes").size(10.0).color(theme.text_accent)
-                } else {
-                    egui::RichText::new("Nodes").size(10.0).color(theme.text_dim)
-                };
-                if ui.selectable_label(self.state.show_node_strip, nodes_label)
+                if ui.selectable_label(self.state.show_node_strip, "Nodes")
                     .on_hover_text("Show / hide the node-graph strip below the timeline")
                     .clicked()
                 {
@@ -32465,24 +32455,14 @@ impl KlippApp {
                 {
                     use crate::state::ColorToolsPosition;
                     let is_bottom = self.state.color_tools_position == ColorToolsPosition::Bottom;
-                    // Read as a button (frame:true) and label what
-                    // CLICKING DOES rather than the current state —
-                    // "Dock right →" makes the toggle's outcome
-                    // obvious; "Tools: Right" just reads as a state
-                    // tag and previously confused users into not
-                    // realising it was interactive.
+                    // Labelled by what clicking does.
                     let label = if is_bottom { "Dock right \u{2192}" } else { "Dock bottom \u{2193}" };
                     let tooltip = if is_bottom {
                         "Move the color tools panel to the right side of the canvas (currently at the bottom)"
                     } else {
                         "Move the color tools panel to the bottom of the canvas (currently on the right)"
                     };
-                    if ui.add(
-                        egui::Button::new(
-                            egui::RichText::new(label).size(10.0).color(theme.text_secondary),
-                        ),
-                    ).on_hover_text(tooltip).clicked()
-                    {
+                    if ui.button(label).on_hover_text(tooltip).clicked() {
                         self.state.color_tools_position = if is_bottom {
                             ColorToolsPosition::Right
                         } else {
@@ -32495,39 +32475,39 @@ impl KlippApp {
                     ui.separator();
                     use crate::state::{ScopeMode, ScopeScale};
 
-                    for (mode, label) in [
+                    let modes = [
                         (ScopeMode::Waveform, "Wave"),
                         (ScopeMode::Parade, "Parade"),
                         (ScopeMode::Vectorscope, "Vector"),
                         (ScopeMode::Histogram, "Hist"),
-                    ] {
-                        let active = self.state.scope_mode == mode;
-                        let text = egui::RichText::new(label).size(10.0);
-                        let text = if active { text.color(theme.text_accent) } else { text.color(theme.text_dim) };
-                        if ui.selectable_label(active, text).clicked() {
-                            tracing::info!("UI: scope mode button clicked: {:?} (was {:?})", mode, self.state.scope_mode);
-                            self.state.scope_mode = mode;
-                            let mode_byte = match mode {
-                                ScopeMode::Waveform => 0u8,
-                                ScopeMode::Parade => 1,
-                                ScopeMode::Vectorscope => 2,
-                                ScopeMode::Histogram => 3,
-                            };
-                            let _ = self.cmd_tx.send(AppCommand::SetScopeRenderMode { mode: mode_byte });
-                            let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
-                            // Force the per-mode staleness check to invalidate
-                            // immediately so the scope dock re-renders this
-                            // mode on the next frame instead of displaying
-                            // its (possibly stale) cached texture.
-                            self.state.scope_state.increment_settings_generation();
-                            ui.ctx().request_repaint();
-                        }
+                    ];
+                    let labels: Vec<&str> = modes.iter().map(|m| m.1).collect();
+                    let active = modes.iter().position(|m| m.0 == self.state.scope_mode).unwrap_or(0);
+                    if let Some(i) = crate::widgets::segmented::segmented(
+                        ui, &labels, active, theme,
+                        egui::FontId::proportional(crate::theme::type_scale::CAPTION), crate::theme::control::COMPACT,
+                    ) {
+                        let mode = modes[i].0;
+                        tracing::info!("UI: scope mode button clicked: {:?} (was {:?})", mode, self.state.scope_mode);
+                        self.state.scope_mode = mode;
+                        let mode_byte = match mode {
+                            ScopeMode::Waveform => 0u8,
+                            ScopeMode::Parade => 1,
+                            ScopeMode::Vectorscope => 2,
+                            ScopeMode::Histogram => 3,
+                        };
+                        let _ = self.cmd_tx.send(AppCommand::SetScopeRenderMode { mode: mode_byte });
+                        let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
+                        // Force the per-mode staleness check to invalidate
+                        // immediately so the scope dock re-renders this
+                        // mode on the next frame instead of displaying
+                        // its (possibly stale) cached texture.
+                        self.state.scope_state.increment_settings_generation();
+                        ui.ctx().request_repaint();
                     }
 
                     if matches!(self.state.scope_mode, ScopeMode::Waveform | ScopeMode::Parade) {
-                        ui.add_space(4.0);
                         ui.separator();
-                        ui.add_space(2.0);
                         for (label, color, enabled) in [
                             ("R", egui::Color32::from_rgb(0xd0, 0x40, 0x40), &mut self.state.scope_show_r),
                             ("G", egui::Color32::from_rgb(0x40, 0xb0, 0x40), &mut self.state.scope_show_g),
@@ -32535,39 +32515,39 @@ impl KlippApp {
                         ] {
                             let bg = if *enabled { color } else { theme.bg_raised };
                             let text_c = if *enabled { egui::Color32::WHITE } else { theme.text_dim };
-                            let btn = egui::Button::new(egui::RichText::new(label).size(10.0).color(text_c).strong())
+                            let btn = egui::Button::new(egui::RichText::new(label).size(crate::theme::type_scale::CAPTION).color(text_c).strong())
                                 .fill(bg)
-                                .min_size(egui::vec2(20.0, 16.0))
-                                .rounding(2.0);
-                            if ui.add(btn).clicked() { *enabled = !*enabled; }
+                                .min_size(egui::vec2(20.0, crate::theme::control::COMPACT - 4.0))
+                                .rounding(crate::theme::radius::CONTROL);
+                            if ui.add(btn).on_hover_text(format!("Show the {label} channel")).clicked() { *enabled = !*enabled; }
                         }
                     }
 
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        let gear_color = if self.state.scope_settings_open { theme.text_accent } else { theme.text_dim };
-                        if ui.add(egui::Button::new(egui::RichText::new("\u{2699}").size(12.0).color(gear_color))
-                            .frame(false)).clicked() {
+                        ui.add_space(6.0);
+                        // Glyph buttons: settings, floating window, picker.
+                        let glyph = |ui: &mut egui::Ui, text: &str, on: bool, lit: bool| -> egui::Response {
+                            let (r, resp) = ui.allocate_exact_size(egui::vec2(crate::theme::control::COMPACT, crate::theme::control::COMPACT), egui::Sense::click());
+                            let (bg, fg) = if on {
+                                (theme.accent_subtle, theme.accent)
+                            } else if resp.hovered() {
+                                (theme.bg_hover, theme.text_primary)
+                            } else {
+                                (egui::Color32::TRANSPARENT, if lit { theme.text_primary } else { theme.text_secondary })
+                            };
+                            ui.painter().rect_filled(r, crate::theme::radius::CONTROL, bg);
+                            ui.painter().text(r.center(), egui::Align2::CENTER_CENTER, text, egui::FontId::proportional(13.0), fg);
+                            resp
+                        };
+                        if glyph(ui, "\u{2699}", self.state.scope_settings_open, false).on_hover_text("Scope settings").clicked() {
                             self.state.scope_settings_open = !self.state.scope_settings_open;
                         }
-
-                        let win_color = if self.state.scope_window.open { theme.text_accent } else { theme.text_dim };
-                        if ui.add(egui::Button::new(egui::RichText::new("\u{229e}").size(12.0).color(win_color))
-                            .frame(false)).on_hover_text("Floating scope window").clicked() {
+                        if glyph(ui, "\u{229e}", self.state.scope_window.open, false).on_hover_text("Floating scope window").clicked() {
                             self.state.scope_window.open = !self.state.scope_window.open;
                         }
-
                         let picker_active = self.state.scope_cursor_show;
                         let picker_locked = self.state.scope_cursor_locked;
-                        let picker_color = if picker_locked {
-                            theme.accent
-                        } else if picker_active {
-                            theme.text_accent
-                        } else {
-                            theme.text_dim
-                        };
-                        let picker_resp = ui.add(egui::Button::new(
-                            egui::RichText::new("\u{2295}").size(12.0).color(picker_color),
-                        ).frame(false));
+                        let picker_resp = glyph(ui, "\u{2295}", picker_locked, picker_active);
                         if picker_resp.clicked() {
                             if picker_locked {
                                 self.state.scope_cursor_locked = false;
@@ -32585,15 +32565,10 @@ impl KlippApp {
                             "Enable scope picker"
                         });
 
-                        let overlay_c = if self.state.scope_overlay_mode { theme.text_accent } else { theme.text_dim };
-                        if ui.add(egui::Button::new(egui::RichText::new("\u{25A3}").size(11.0).color(overlay_c))
-                            .frame(false)).on_hover_text("Overlay on viewer").clicked() {
-                            self.state.scope_overlay_mode = !self.state.scope_overlay_mode;
-                        }
-
                         egui::ComboBox::from_id_salt("scope_scale_sel")
-                            .width(50.0)
-                            .selected_text(egui::RichText::new(crate::widgets::scopes::graticule_scale(self.state.scope_scale, self.state.hdr_monitor.renders_hdr()).button_label()).size(10.0))
+                            .width(0.0)
+                            .wrap_mode(egui::TextWrapMode::Extend)
+                            .selected_text(crate::widgets::scopes::graticule_scale(self.state.scope_scale, self.state.hdr_monitor.renders_hdr()).button_label())
                             .show_ui(ui, |ui| {
                                 for s in [ScopeScale::TenBit, ScopeScale::Ire, ScopeScale::Percent] {
                                     ui.selectable_value(&mut self.state.scope_scale, s, s.label());

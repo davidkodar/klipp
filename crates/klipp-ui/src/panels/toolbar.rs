@@ -62,36 +62,17 @@ impl ToolbarPanel {
         // lit, sized to its titles so none is ever clipped.
         let workspaces = [(Workspace::Edit, "Edit"), (Workspace::Color, "Color"), (Workspace::Export, "Export")];
         let ws_font = egui::FontId::proportional(crate::theme::type_scale::CONTROL);
-        let seg_pad = 12.0;
-        let seg_w: Vec<f32> = workspaces
-            .iter()
-            .map(|(_, l)| ui.painter().layout_no_wrap(l.to_string(), ws_font.clone(), egui::Color32::WHITE).size().x + seg_pad * 2.0)
-            .collect();
-        let ws_tab_w: f32 = seg_w.iter().sum::<f32>() + 4.0;
-        let ws_h = crate::theme::control::REGULAR;
-        let ws_rect = egui::Rect::from_center_size(toolbar_rect.center(), egui::vec2(ws_tab_w, ws_h));
-        painter.rect_filled(ws_rect, crate::theme::radius::PANEL, theme.bg_panel);
-        painter.rect_stroke(ws_rect, crate::theme::radius::PANEL, egui::Stroke::new(1.0_f32, theme.border));
-        let mut x = ws_rect.min.x + 2.0;
-        for (i, (ws, label)) in workspaces.iter().enumerate() {
-            let seg = egui::Rect::from_min_size(egui::pos2(x, ws_rect.min.y + 2.0), egui::vec2(seg_w[i], ws_h - 4.0));
-            let resp = ui.allocate_rect(seg, egui::Sense::click());
-            let active = state.active_workspace == *ws;
-            if active {
-                painter.rect_filled(seg, crate::theme::radius::CONTROL, theme.bg_raised);
-            } else if resp.hovered() {
-                painter.rect_filled(seg, crate::theme::radius::CONTROL, theme.bg_hover);
+        let labels: Vec<&str> = workspaces.iter().map(|w| w.1).collect();
+        let ws_size = crate::widgets::segmented::segmented_size(ui, &labels, &ws_font, crate::theme::control::REGULAR);
+        let ws_rect = egui::Rect::from_center_size(toolbar_rect.center(), ws_size);
+        let active = workspaces.iter().position(|w| w.0 == state.active_workspace).unwrap_or(0);
+        if let Some(i) = crate::widgets::segmented::segmented_in(ui, ws_rect, &labels, active, theme, ws_font) {
+            let ws = workspaces[i].0;
+            state.active_workspace = ws;
+            state.show_color_panel = ws == Workspace::Color;
+            if ws == Workspace::Color {
+                state.show_scopes = true;
             }
-            let colour = if active { theme.text_primary } else { theme.text_secondary };
-            painter.text(seg.center(), egui::Align2::CENTER_CENTER, *label, ws_font.clone(), colour);
-            if resp.clicked() {
-                state.active_workspace = *ws;
-                state.show_color_panel = *ws == Workspace::Color;
-                if *ws == Workspace::Color {
-                    state.show_scopes = true;
-                }
-            }
-            x += seg_w[i];
         }
 
         // ═══════════════════════════════════════════
