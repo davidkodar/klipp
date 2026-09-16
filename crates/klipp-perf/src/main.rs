@@ -12,6 +12,7 @@
 //! runs are manual and intentional for this phase.
 
 mod fixtures;
+mod composite;
 mod scenarios;
 mod stats;
 

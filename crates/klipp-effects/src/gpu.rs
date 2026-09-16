@@ -308,6 +308,21 @@ pub struct GpuEffectsPipeline {
     hdr_nit_staging: Option<wgpu::Buffer>,
     /// Map-readable copy of `bridge_u8_out_buf` for the display readback.
     display_u8_staging: Option<wgpu::Buffer>,
+    /// The layer stack: one linear buffer per layer, two for the
+    /// accumulator (ping-pong), an RGBA8 upload buffer for sprites.
+    /// Sized by `stack_begin`, never shrunk.
+    stack_layers: Vec<wgpu::Buffer>,
+    stack_acc: Vec<wgpu::Buffer>,
+    stack_sprite_u8: Option<wgpu::Buffer>,
+    stack_buf_size: u64,
+    /// Which accumulator holds the composite so far, and whether
+    /// anything has been blended into it yet.
+    stack_acc_index: usize,
+    stack_acc_touched: bool,
+    stack_dims: (u32, u32),
+    blend_layer_pipeline: wgpu::ComputePipeline,
+    premultiply_pipeline: wgpu::ComputePipeline,
+    sprite_u8_to_linear_pipeline: wgpu::ComputePipeline,
     // Bind group layouts
     bind_group_layout: wgpu::BindGroupLayout,         // effects: input, output, params
     transition_bgl: wgpu::BindGroupLayout,             // transitions: from, to, output, params
@@ -1078,6 +1093,9 @@ impl GpuEffectsPipeline {
         let display_u8_pipeline = create_pipeline(
             &device, &pipeline_layout, "linear_to_display_u8", SHADER_LINEAR_TO_DISPLAY_U8,
         );
+        let blend_layer_pipeline = create_pipeline(&device, &transition_pl, "blend_layer", SHADER_BLEND_LAYER);
+        let premultiply_pipeline = create_pipeline(&device, &pipeline_layout, "premultiply", SHADER_PREMULTIPLY);
+        let sprite_u8_to_linear_pipeline = create_pipeline(&device, &pipeline_layout, "sprite_u8_to_linear", SHADER_U8_TO_LINEAR);
         // Same three-binding shape as every effect — in, out, params —
         // so it needs no layout of its own; its `out` is f32 rather than
         // packed bytes, which a bind group layout does not distinguish.
@@ -1223,6 +1241,16 @@ impl GpuEffectsPipeline {
             hdr_nit_buf: None,
             hdr_nit_staging: None,
             display_u8_staging: None,
+            stack_layers: Vec::new(),
+            stack_acc: Vec::new(),
+            stack_sprite_u8: None,
+            stack_buf_size: 0,
+            stack_acc_index: 0,
+            stack_acc_touched: false,
+            stack_dims: (0, 0),
+            blend_layer_pipeline,
+            premultiply_pipeline,
+            sprite_u8_to_linear_pipeline,
             bridge_u8_out_buf: None,
             bridge_u8_out_size: 0,
             bridge_u8_staging_buf: None,
@@ -4585,6 +4613,226 @@ impl GpuEffectsPipeline {
         }
     }
 
+    // ─── The layer stack ─────────────────────────────────────────────
+    //
+    // A frame's layers composited on the GPU, in the working linear
+    // space, the way `klipp_compose::Renderer::render_stack` does it on
+    // the CPU: each layer lands in its own buffer (from a chain output,
+    // a linear upload or an sRGB sprite), is blended onto the
+    // accumulator with its opacity and blend mode, and the accumulator
+    // is premultiplied and encoded at the end. The CPU stack is the
+    // twin; `blend_layer_gpu_matches_cpu` holds every mode to it.
+
+    /// Ready the stack for a frame of `width` × `height` with room for
+    /// `layers` layers. Buffers grow to the largest request and stay.
+    pub fn stack_begin(&mut self, width: u32, height: u32, layers: usize) -> bool {
+        if self.is_device_lost() || width == 0 || height == 0 {
+            return false;
+        }
+        let byte_size = (width as u64) * (height as u64) * 16;
+        let make = |device: &wgpu::Device, label: &str| {
+            device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some(label),
+                size: byte_size,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC,
+                mapped_at_creation: false,
+            })
+        };
+        if byte_size > self.stack_buf_size {
+            self.stack_layers.clear();
+            self.stack_acc.clear();
+            self.stack_buf_size = byte_size;
+        }
+        while self.stack_layers.len() < layers {
+            let label = format!("stack_layer_{}", self.stack_layers.len());
+            self.stack_layers.push(make(&self.device, &label));
+        }
+        while self.stack_acc.len() < 2 {
+            let label = format!("stack_acc_{}", self.stack_acc.len());
+            self.stack_acc.push(make(&self.device, &label));
+        }
+        // The chain buffers must exist at this size too: layers copy out
+        // of them and the finish copies into them.
+        self.ensure_buffers(byte_size);
+        self.stack_dims = (width, height);
+        self.stack_acc_index = 0;
+        self.stack_acc_touched = false;
+        true
+    }
+
+    fn stack_pixel_count(&self) -> u64 {
+        (self.stack_dims.0 as u64) * (self.stack_dims.1 as u64)
+    }
+
+    /// Layer `i` takes the chain's output slot (a grade's result, or a
+    /// seeded frame), as an on-GPU copy.
+    pub fn stack_layer_from_chain(&mut self, i: usize, slot_a: bool) -> bool {
+        if self.is_device_lost() || i >= self.stack_layers.len() {
+            return false;
+        }
+        let bytes = self.stack_pixel_count() * 16;
+        let src = if slot_a { self.buf_a.as_ref() } else { self.buf_b.as_ref() };
+        let Some(src) = src else { return false };
+        let mut enc = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("stack_layer_from_chain") });
+        enc.copy_buffer_to_buffer(src, 0, &self.stack_layers[i], 0, bytes);
+        self.queue.submit(std::iter::once(enc.finish()));
+        self.submit_count.fetch_add(1, Ordering::Relaxed);
+        true
+    }
+
+    /// Layer `i` takes a linear working-space frame from the CPU.
+    pub fn stack_layer_from_linear(&mut self, i: usize, linear_rgba: &[f32]) -> bool {
+        if self.is_device_lost() || i >= self.stack_layers.len() {
+            return false;
+        }
+        if linear_rgba.len() as u64 != self.stack_pixel_count() * 4 {
+            return false;
+        }
+        self.queue.write_buffer(&self.stack_layers[i], 0, bytemuck::cast_slice(linear_rgba));
+        true
+    }
+
+    /// Layer `i` takes an sRGB RGBA8 straight-alpha sprite from the CPU
+    /// (a title, a generator): uploaded as bytes, decoded to linear on
+    /// the GPU, alpha kept as it is.
+    pub fn stack_layer_from_srgb_u8(&mut self, i: usize, rgba: &[u8]) -> bool {
+        if self.is_device_lost() || i >= self.stack_layers.len() {
+            return false;
+        }
+        let pixel_count = self.stack_pixel_count();
+        if rgba.len() as u64 != pixel_count * 4 {
+            return false;
+        }
+        let (width, height) = self.stack_dims;
+        if self.stack_sprite_u8.as_ref().is_none_or(|b| b.size() < pixel_count * 4) {
+            self.stack_sprite_u8 = Some(self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("stack_sprite_u8"),
+                size: pixel_count * 4,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            }));
+        }
+        let sprite = self.stack_sprite_u8.as_ref().unwrap();
+        self.queue.write_buffer(sprite, 0, rgba);
+        self.write_params(&BridgeU8Params { width, height, _pad0: 0, _pad1: 0 });
+        let bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("stack_sprite_bg"),
+            layout: &self.bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: sprite.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: self.stack_layers[i].as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 2, resource: self.params_buf.as_entire_binding() },
+            ],
+        });
+        let mut enc = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("stack_sprite") });
+        {
+            let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: None, timestamp_writes: None });
+            pass.set_pipeline(&self.sprite_u8_to_linear_pipeline);
+            pass.set_bind_group(0, &bg, &[]);
+            pass.dispatch_workgroups((pixel_count as u32).div_ceil(WORKGROUP_SIZE), 1, 1);
+        }
+        self.queue.submit(std::iter::once(enc.finish()));
+        self.submit_count.fetch_add(1, Ordering::Relaxed);
+        true
+    }
+
+    /// Blend layer `i` onto the accumulator with `opacity` and `mode`
+    /// (`BlendMode as u32`, the order of `klipp_core::BlendMode`).
+    /// The first Normal layer at full opacity is copied in, as the CPU
+    /// stack moves it in.
+    pub fn stack_blend(&mut self, i: usize, opacity: f32, mode: u32) -> bool {
+        if self.is_device_lost() || i >= self.stack_layers.len() || self.stack_acc.len() < 2 {
+            return false;
+        }
+        let (width, height) = self.stack_dims;
+        let pixel_count = self.stack_pixel_count();
+        let acc_in = self.stack_acc_index;
+        let acc_out = 1 - acc_in;
+        if !self.stack_acc_touched && mode == 0 && opacity >= 1.0 {
+            let mut enc = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("stack_move_in") });
+            enc.copy_buffer_to_buffer(&self.stack_layers[i], 0, &self.stack_acc[acc_in], 0, pixel_count * 16);
+            self.queue.submit(std::iter::once(enc.finish()));
+            self.submit_count.fetch_add(1, Ordering::Relaxed);
+            self.stack_acc_touched = true;
+            return true;
+        }
+        if !self.stack_acc_touched {
+            // Blending onto nothing: clear the canvas first.
+            let mut enc = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("stack_clear") });
+            enc.clear_buffer(&self.stack_acc[acc_in], 0, Some(pixel_count * 16));
+            self.queue.submit(std::iter::once(enc.finish()));
+            self.stack_acc_touched = true;
+        }
+        self.write_params(&BlendLayerParams { width, height, opacity, mode });
+        let bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("stack_blend_bg"),
+            layout: &self.transition_bgl,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: self.stack_acc[acc_in].as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: self.stack_layers[i].as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 2, resource: self.stack_acc[acc_out].as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 3, resource: self.params_buf.as_entire_binding() },
+            ],
+        });
+        let mut enc = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("stack_blend") });
+        {
+            let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: None, timestamp_writes: None });
+            pass.set_pipeline(&self.blend_layer_pipeline);
+            pass.set_bind_group(0, &bg, &[]);
+            pass.dispatch_workgroups((pixel_count as u32).div_ceil(WORKGROUP_SIZE), 1, 1);
+        }
+        self.queue.submit(std::iter::once(enc.finish()));
+        self.submit_count.fetch_add(1, Ordering::Relaxed);
+        self.stack_acc_index = acc_out;
+        true
+    }
+
+    /// Close the stack: the accumulator (premultiplied unless
+    /// `keep_alpha`) moves into chain slot A, where every encode and
+    /// the LUT can take it. Returns false when nothing was blended.
+    pub fn stack_finish_into_chain(&mut self, keep_alpha: bool) -> bool {
+        if self.is_device_lost() || !self.stack_acc_touched || self.stack_acc.len() < 2 {
+            return false;
+        }
+        let (width, height) = self.stack_dims;
+        let pixel_count = self.stack_pixel_count();
+        let acc = &self.stack_acc[self.stack_acc_index];
+        let buf_a = self.buf_a.as_ref().expect("stack_begin sized the chain buffers");
+        if keep_alpha {
+            let mut enc = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("stack_finish_copy") });
+            enc.copy_buffer_to_buffer(acc, 0, buf_a, 0, pixel_count * 16);
+            self.queue.submit(std::iter::once(enc.finish()));
+            self.submit_count.fetch_add(1, Ordering::Relaxed);
+            return true;
+        }
+        self.write_params(&BridgeU8Params { width, height, _pad0: 0, _pad1: 0 });
+        let bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("stack_premultiply_bg"),
+            layout: &self.bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: acc.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: buf_a.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 2, resource: self.params_buf.as_entire_binding() },
+            ],
+        });
+        let mut enc = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("stack_premultiply") });
+        {
+            let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: None, timestamp_writes: None });
+            pass.set_pipeline(&self.premultiply_pipeline);
+            pass.set_bind_group(0, &bg, &[]);
+            pass.dispatch_workgroups((pixel_count as u32).div_ceil(WORKGROUP_SIZE), 1, 1);
+        }
+        self.queue.submit(std::iter::once(enc.finish()));
+        self.submit_count.fetch_add(1, Ordering::Relaxed);
+        true
+    }
+
+    /// The finished stack as linear working-space pixels, for tests and
+    /// the CPU twin comparison. Call after `stack_finish_into_chain`.
+    pub fn stack_download_linear(&self) -> Vec<f32> {
+        self.download_chain_output_linear(true, self.stack_pixel_count() as usize)
+    }
+
     /// Apply a chain of effects on the GPU. Returns the processed RGBA data.
     pub fn apply_effects(
         &mut self,
@@ -6011,6 +6259,16 @@ impl GpuEffectsPipeline {
 }
 
 // ─── Param structs (must be Pod for bytemuck) ────────────────────────────────
+
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct BlendLayerParams {
+    width: u32,
+    height: u32,
+    opacity: f32,
+    mode: u32,
+}
+
 
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -8170,6 +8428,97 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 // phase-4d GPU-resident decode → grade path: the decoder's output
 // buffer is plugged in as `input`, the grade chain's `buf_a` is the
 // `output`.
+// One layer onto the accumulator: `klipp_effects::composite::blend_layer_linear`
+// transcribed, mode by mode, in the same arithmetic order, so the stack
+// on the GPU is the CPU stack to the level.
+const SHADER_BLEND_LAYER: &str = concat!(
+    "
+struct Params { width: u32, height: u32, opacity: f32, mode: u32 }
+@group(0) @binding(0) var<storage, read> acc: array<vec4<f32>>;
+@group(0) @binding(1) var<storage, read> layer: array<vec4<f32>>;
+@group(0) @binding(2) var<storage, read_write> output: array<vec4<f32>>;
+@group(0) @binding(3) var<uniform> params: Params;
+",
+    shader_linear_helpers_wgsl!(),
+    "
+fn overlay_ch(base: f32, blend: f32) -> f32 {
+    if base < 0.5 { return 2.0 * base * blend; }
+    return 1.0 - 2.0 * (1.0 - base) * (1.0 - blend);
+}
+fn soft_light_ch(base: f32, blend: f32) -> f32 {
+    if blend < 0.5 { return base - (1.0 - 2.0 * blend) * base * (1.0 - base); }
+    var d: f32;
+    if base < 0.25 { d = ((16.0 * base - 12.0) * base + 4.0) * base; } else { d = sqrt(base); }
+    return base + (2.0 * blend - 1.0) * (d - base);
+}
+fn dodge_ch(base: f32, blend: f32) -> f32 {
+    if blend >= 1.0 { return 1.0; }
+    return min(base / (1.0 - blend), 1.0);
+}
+fn burn_ch(base: f32, blend: f32) -> f32 {
+    if blend <= 0.0 { return 0.0; }
+    return max(1.0 - (1.0 - base) / blend, 0.0);
+}
+fn blend3(mode: u32, d: vec3<f32>, s: vec3<f32>) -> vec3<f32> {
+    switch mode {
+        case 1u: { return d + s; }
+        case 2u: { return d * s; }
+        case 3u: { return vec3<f32>(1.0) - (vec3<f32>(1.0) - d) * (vec3<f32>(1.0) - s); }
+        case 4u: { return vec3<f32>(overlay_ch(d.x, s.x), overlay_ch(d.y, s.y), overlay_ch(d.z, s.z)); }
+        case 5u: { return vec3<f32>(soft_light_ch(d.x, s.x), soft_light_ch(d.y, s.y), soft_light_ch(d.z, s.z)); }
+        case 6u: { return vec3<f32>(overlay_ch(s.x, d.x), overlay_ch(s.y, d.y), overlay_ch(s.z, d.z)); }
+        case 7u: { return abs(d - s); }
+        case 8u: { return d + s - 2.0 * d * s; }
+        case 9u: { return vec3<f32>(dodge_ch(d.x, s.x), dodge_ch(d.y, s.y), dodge_ch(d.z, s.z)); }
+        case 10u: { return vec3<f32>(burn_ch(d.x, s.x), burn_ch(d.y, s.y), burn_ch(d.z, s.z)); }
+        case 11u: { return min(d, s); }
+        case 12u: { return max(d, s); }
+        default: { return s; }
+    }
+}
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let idx = gid.x;
+    if idx >= params.width * params.height { return; }
+    let d = unpack(acc[idx]);
+    let s = unpack(layer[idx]);
+    let sa = s.w * params.opacity;
+    if sa < 0.001 {
+        output[idx] = pack(d);
+        return;
+    }
+    let da = d.w;
+    let b = blend3(params.mode, d.xyz, s.xyz);
+    let out_a = sa + da * (1.0 - sa);
+    if out_a > 0.0 {
+        let c = (b * sa + d.xyz * da * (1.0 - sa)) / out_a;
+        output[idx] = pack(vec4<f32>(c, out_a));
+    } else {
+        output[idx] = pack(d);
+    }
+}
+"
+);
+
+// The composite's last step: colour times alpha, alpha to one.
+const SHADER_PREMULTIPLY: &str = concat!(
+    shader_pixel_storage_wgsl!(),
+    "
+struct Params { width: u32, height: u32, _pad0: u32, _pad1: u32 }
+@group(0) @binding(0) var<storage, read> input: array<vec4<f32>>;
+@group(0) @binding(1) var<storage, read_write> output: array<vec4<f32>>;
+@group(0) @binding(2) var<uniform> params: Params;
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let idx = gid.x;
+    if idx >= params.width * params.height { return; }
+    let p = unpack(input[idx]);
+    let a = clamp(p.w, 0.0, 1.0);
+    output[idx] = pack(vec4<f32>(p.xyz * a, 1.0));
+}
+"
+);
+
 const SHADER_U8_TO_LINEAR: &str = concat!(
     shader_pixel_storage_wgsl!(),
     "
@@ -14124,6 +14473,8 @@ pub fn shader_sources() -> Vec<(&'static str, &'static str)> {
         ("SHADER_GRADE_MIX", SHADER_GRADE_MIX),
         ("SHADER_APPLY_MATTE_CHAIN", SHADER_APPLY_MATTE_CHAIN),
         ("SHADER_CLARITY_APPLY", SHADER_CLARITY_APPLY),
+        ("SHADER_BLEND_LAYER", SHADER_BLEND_LAYER),
+        ("SHADER_PREMULTIPLY", SHADER_PREMULTIPLY),
     ]
 }
 

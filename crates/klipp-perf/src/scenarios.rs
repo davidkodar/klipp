@@ -73,6 +73,31 @@ pub const ALL: &[Scenario] = &[
         desc: "s01's graph fed from a GPU-resident u8 buffer (skips the CPU upload)",
         run: s04_colorbalance_1node_1080p_gpu_primed,
     },
+    Scenario {
+        name: "s10_composite_uhd_clip_credits",
+        desc: "Portrait UHD clip with a scrolling credits title, composite + display encode",
+        run: crate::composite::s10_uhd_clip_credits,
+    },
+    Scenario {
+        name: "s11_composite_uhd_clip_credits_grade3",
+        desc: "s10 with a three-node grade on the clip",
+        run: crate::composite::s11_uhd_clip_credits_grade3,
+    },
+    Scenario {
+        name: "s12_composite_uhd_two_layers_screen",
+        desc: "Two UHD video layers, the top at Screen and 50 % opacity",
+        run: crate::composite::s12_uhd_two_layers_blend,
+    },
+    Scenario {
+        name: "s13_composite_uhd_luma_matte",
+        desc: "Three UHD video layers, the middle one masked by a luma matte",
+        run: crate::composite::s13_uhd_luma_matte,
+    },
+    Scenario {
+        name: "s14_composite_1080p_five_layers",
+        desc: "1080p: two titles over three video layers, one graded, one at Overlay",
+        run: crate::composite::s14_hd_five_layers,
+    },
 ];
 
 // ─── Scenario implementations ───────────────────────────────────────

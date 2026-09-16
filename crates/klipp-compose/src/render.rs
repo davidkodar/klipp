@@ -767,6 +767,161 @@ impl Renderer {
     /// there is one. `false` if there is one and it could not run, which
     /// sends the frame down the ordinary path rather than exporting it
     /// ungraded by the look.
+    /// The frame composited on the GPU and encoded to display bytes
+    /// there: every layer lands in its own buffer (a decoded frame
+    /// seeded where it is, a title or generator as an sRGB sprite, anything
+    /// else rendered on the CPU and uploaded), is blended onto the
+    /// accumulator with its opacity and mode, and the accumulator is
+    /// premultiplied and encoded. `None` means the CPU path must take
+    /// this frame: HDR delivery, a global LUT, a transition, a matte, an
+    /// adjustment layer, frame blending, title motion blur, an OFX plugin
+    /// or an inspection request — the stages the GPU stack does not have
+    /// yet. `tests/render_rules.rs` holds it to the CPU render.
+    pub fn render_display_u8_on_gpu(
+        &mut self,
+        seq: &Sequence,
+        time: Timecode,
+        width: u32,
+        height: u32,
+        src: &mut dyn FrameSource,
+        opts: RenderOptions,
+    ) -> Option<(Vec<u8>, RenderStats)> {
+        if !self.allow_gpu || !gpu_composite_enabled() {
+            return None;
+        }
+        if opts.hdr_peak_nits.is_some() || self.global_lut.is_some() {
+            return None;
+        }
+        if self.working != WorkingColorspace::Rec709Linear {
+            return None;
+        }
+        let i = &self.inspect;
+        if i.clip.is_some() || i.ungraded || i.thumbs.is_some() || i.scope_tap.is_some() || i.matte_view.is_some() || i.solo.is_some() || i.matte_of.is_some() {
+            return None;
+        }
+        let t0 = Instant::now();
+        let fps = seq.fps.as_f64();
+        let stack = stack(seq, time);
+        if stack.is_empty() {
+            return None;
+        }
+        let mut clips: Vec<(&Track, &Clip)> = Vec::with_capacity(stack.len());
+        for (_, track, item) in &stack {
+            let TrackItem::Clip(c) = item else { return None };
+            if matches!(c.kind, ClipKind::AdjustmentLayer)
+                || c.consumed_as_matte
+                || c.matte_source.is_some()
+                || c.matte_stencil.is_some()
+                || !c.effects.is_empty()
+                || frame_blends(c, time)
+                || title_motion_blur(c).is_some()
+            {
+                return None;
+            }
+            clips.push((track, c));
+        }
+
+        let mut transforms: HashMap<ClipId, ResolvedTransform> = HashMap::new();
+        for (_, c) in &clips {
+            eval::resolve_clip_transform(
+                c, seq, time, fps, &mut transforms, &mut self.glyph_cache, &mut self.titles,
+                seq.resolution.width, seq.resolution.height,
+            );
+        }
+
+        self.executor.set_working_colorspace(self.working);
+        let n = clips.len();
+        if !self.executor.gpu_pipeline_or_init().is_some_and(|g| g.stack_begin(width, height, n)) {
+            return None;
+        }
+
+        let mut stats = RenderStats::default();
+        for (i, (track, c)) in clips.into_iter().enumerate() {
+            let (fx, opacity) = clip_effects(c, time, fps, transforms.get(&c.id).copied());
+            let opacity = opacity * track.opacity;
+            if opacity <= 0.001 {
+                continue;
+            }
+            let clip_time = eval_clip_time(c, time);
+            let placed = match &c.kind {
+                ClipKind::Media { .. } if fx.is_empty() => {
+                    let at = source_secs(c, time, fps);
+                    let Some(f) = src.frame(c, at, width, height) else { continue };
+                    if (f.width, f.height) != (width, height) {
+                        return None;
+                    }
+                    match f.pixels {
+                        SourcePixels::Gpu(g) if c.node_graph.is_identity() => {
+                            g.seed(&mut self.executor, width, height)
+                                && self.executor.take_seeded_input_as_output()
+                                && self.executor.gpu_pipeline_or_init().is_some_and(|p| p.stack_layer_from_chain(i, true))
+                        }
+                        SourcePixels::Gpu(g) => {
+                            let t = Instant::now();
+                            self.executor.request_output_on_gpu();
+                            let pixels = self.grade(c, GradeInput::Gpu(g), clip_time, fps, width, height);
+                            stats.grade_ms += ms_since(t);
+                            if pixels.is_empty() {
+                                let slot = self.executor.last_chain_final_slot().unwrap_or(true);
+                                self.executor.gpu_pipeline_or_init().is_some_and(|p| p.stack_layer_from_chain(i, slot))
+                            } else {
+                                self.executor.gpu_pipeline_or_init().is_some_and(|p| p.stack_layer_from_linear(i, &pixels))
+                            }
+                        }
+                        SourcePixels::Linear(p) => {
+                            let t = Instant::now();
+                            let pixels = if c.node_graph.is_identity() {
+                                unshare(p)
+                            } else {
+                                self.grade(c, GradeInput::Cpu(p), clip_time, fps, width, height)
+                            };
+                            stats.grade_ms += ms_since(t);
+                            self.executor.gpu_pipeline_or_init().is_some_and(|p| p.stack_layer_from_linear(i, &pixels))
+                        }
+                        SourcePixels::SceneReferred { .. } => return None,
+                    }
+                }
+                ClipKind::Title(td) if fx.is_empty() && c.node_graph.is_identity() => {
+                    let total = (c.timeline_out - c.timeline_in).to_secs_f64() as f32;
+                    let mut adapter = self.gpu.as_mut().map(crate::synth::GpuAlphaMaskAdapter);
+                    let gpu = adapter.as_mut().map(|a| a as &mut dyn klipp_title::AlphaMaskProcessor);
+                    let u8s = self.titles.render_with_window(td, width, height, gpu, clip_time as f32, Some(total));
+                    self.executor.gpu_pipeline_or_init().is_some_and(|p| p.stack_layer_from_srgb_u8(i, &u8s))
+                }
+                ClipKind::Generator(g) if fx.is_empty() && c.node_graph.is_identity() => {
+                    let total = (c.timeline_out - c.timeline_in).to_secs_f64();
+                    let u8s = crate::synth::render_generator_with_slate(&mut self.titles, g, width, height, clip_time, total);
+                    self.executor.gpu_pipeline_or_init().is_some_and(|p| p.stack_layer_from_srgb_u8(i, &u8s))
+                }
+                _ => {
+                    // Anything the stack has no seed for yet renders on
+                    // the CPU and goes up once.
+                    let Some((pixels, _)) = self.render_clip(c, time, fps, width, height, src, &transforms) else { continue };
+                    self.executor.gpu_pipeline_or_init().is_some_and(|p| p.stack_layer_from_linear(i, &pixels))
+                }
+            };
+            if !placed {
+                return None;
+            }
+            let t = Instant::now();
+            let mode = c.blend_mode as u32;
+            if !self.executor.gpu_pipeline_or_init().is_some_and(|p| p.stack_blend(i, opacity, mode)) {
+                return None;
+            }
+            stats.composite_ms += ms_since(t);
+        }
+
+        let t = Instant::now();
+        let gpu = self.executor.gpu_pipeline_or_init()?;
+        if !gpu.stack_finish_into_chain(opts.keep_alpha) {
+            return None;
+        }
+        let bytes = gpu.encode_chain_to_display_u8(true, width, height, None)?;
+        stats.composite_ms += ms_since(t);
+        stats.total_ms = ms_since(t0);
+        Some((bytes, stats))
+    }
+
     fn global_lut_on_chain(&mut self, width: u32, height: u32) -> bool {
         let Some(lut) = self.global_lut.take() else { return true };
         let ok = self.executor.apply_global_lut_to_output(
@@ -2028,6 +2183,13 @@ pub fn over_u8_straight(dst: &mut [u8], src: &[u8], width: u32) {
             }
         }
     });
+}
+
+/// `KLIPP_GPU_COMPOSITE=0` keeps every frame on the CPU stack.
+pub fn gpu_composite_enabled() -> bool {
+    use std::sync::OnceLock;
+    static GATE: OnceLock<bool> = OnceLock::new();
+    *GATE.get_or_init(|| std::env::var("KLIPP_GPU_COMPOSITE").ok().as_deref() != Some("0"))
 }
 
 fn unshare(p: Arc<Vec<f32>>) -> Vec<f32> {

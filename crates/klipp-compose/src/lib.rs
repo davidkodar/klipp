@@ -13,4 +13,4 @@ pub mod render;
 pub use render::{
     active_layers, frame_snapshot, ActiveLayer, FrameSource, GlobalLut, GpuPixels, Inspect, Inspection, RenderOptions,
     RenderStats, Renderer,
-    SourceFrame, SourcePixels, frame_index, frame_blends, over_u8_straight};
+    SourceFrame, SourcePixels, frame_index, frame_blends, over_u8_straight, gpu_composite_enabled};

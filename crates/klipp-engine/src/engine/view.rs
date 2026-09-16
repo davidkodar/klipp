@@ -310,6 +310,35 @@ impl PlaybackEngine {
     /// Render the timeline at the playhead. `primary` is the primary
     /// decoder's frame, when there is one; `width` × `height` the size to
     /// render at. A colour-grade drag renders at half size when enabled.
+    /// `render_timeline`'s GPU twin: display bytes straight off the GPU
+    /// stack, or `None` when the stack cannot take this frame.
+    fn render_composite_on_gpu(
+        &mut self,
+        seq: &Sequence,
+        primary: Option<(ClipId, &HeldFrame)>,
+        width: u32,
+        height: u32,
+    ) -> Option<(Vec<u8>, klipp_compose::RenderStats)> {
+        self.renderer.set_working_colorspace(crate::video_decoder::working_colorspace());
+        self.renderer.set_lut_tetrahedral(self.color_pipeline.use_tetrahedral);
+        self.push_global_lut();
+        let time = self.playhead;
+        let mut src = ViewerSource {
+            primary,
+            primary_queue: self.v1_decoder.as_ref().map(|d| d.frame_queue()),
+            streams: &self.streams,
+            media_pool: &self.media_pool,
+        };
+        let opts = RenderOptions {
+            hdr_peak_nits: self
+                .hdr_monitor
+                .renders_hdr()
+                .then_some(klipp_color::hdr::DEFAULT_MASTERING_MAX_LUMA_CD_M2),
+            ..Default::default()
+        };
+        self.renderer.render_display_u8_on_gpu(seq, time, width, height, &mut src, opts)
+    }
+
     fn render_timeline(
         &mut self,
         seq: &Sequence,
@@ -493,6 +522,20 @@ impl PlaybackEngine {
         let inspect = self.inspect_request(&seq, primary_clip);
         let inspected = inspect.clip;
         let primary_ref = primary_clip.zip(primary.as_ref());
+
+        // The GPU stack: the composite and the display encode on the
+        // GPU, one readback of display bytes. It declines what it cannot
+        // do yet and the full path below takes the frame.
+        if !progress && inspect_is_plain(&inspect) && self.gpu_composite_allowed() {
+            if let Some((bytes, stats)) = self.render_composite_on_gpu(&seq, primary_ref, w, h) {
+                self.show_rendered(
+                    Rendered { picture: Picture::Display(bytes), width: w, height: h, stats: Some(stats) },
+                    t_frame,
+                );
+                return;
+            }
+        }
+
         let (linear, found) = self.render_timeline(&seq, primary_ref, w, h, inspect);
         let cached = cache_key
             .filter(|_| self.state != PlaybackState::Playing)
@@ -899,3 +942,7 @@ fn matte_preview_event(consumer: ClipId, mask: &[f32], width: u32, height: u32) 
     AppEvent::MatteMaskReady { consumer_clip_id: consumer, rgba, width: PREVIEW_W, height: PREVIEW_H }
 }
 
+/// An inspection that asks for nothing: the plain picture.
+fn inspect_is_plain(i: &Inspect) -> bool {
+    i.clip.is_none() && !i.ungraded && i.thumbs.is_none() && i.scope_tap.is_none() && i.matte_view.is_none() && i.solo.is_none() && i.matte_of.is_none()
+}

@@ -6365,7 +6365,11 @@ impl PlaybackEngine {
         }
     }
 
-    fn fast_path_blockers_for(&self, mode: FastPath) -> Vec<&'static str> {
+    /// The reasons a frame cannot be shown from its GPU-side bytes that
+    /// have nothing to do with what is on the timeline: the switches,
+    /// the working space, the display transfer, the monitor and compare
+    /// modes. `fast_path_blockers_for` adds the layer analysis.
+    fn display_path_blockers(&self, mode: FastPath) -> Vec<&'static str> {
         if !direct_present_enabled() {
             return vec!["KLIPP_DIRECT_PRESENT=0"];
         }
@@ -6510,6 +6514,27 @@ impl PlaybackEngine {
         // the graded path does and a direct present does not.
         if self.sdr_transfer != klipp_core::SdrTransfer::Srgb {
             blockers.push("BT.1886 viewer transfer");
+        }
+        blockers
+    }
+
+    /// Whether the GPU stack may composite and encode this frame: the
+    /// display-side blockers are empty (the working space, the
+    /// transfer, the monitor, the compare modes) and the gate is on.
+    /// What the layers are is the stack's own business; it declines
+    /// what it cannot do and the CPU path takes over.
+    fn gpu_composite_allowed(&self) -> bool {
+        if !klipp_compose::gpu_composite_enabled() {
+            return false;
+        }
+        let mode = if self.state == PlaybackState::Playing { FastPath::Playing } else { FastPath::PausedPresent };
+        self.display_path_blockers(mode).iter().all(|b| *b == "KLIPP_DIRECT_PRESENT=0")
+    }
+
+    fn fast_path_blockers_for(&self, mode: FastPath) -> Vec<&'static str> {
+        let mut blockers = self.display_path_blockers(mode);
+        if blockers.iter().any(|b| matches!(*b, "KLIPP_DIRECT_PRESENT=0" | "not playing" | "not a slider drag on the parked frame")) {
+            return blockers;
         }
 
         // The fast paths show the primary decoder's frame, so they are the

@@ -2910,9 +2910,13 @@ dependencies = [
 name = "klipp-perf"
 version = "0.1.0"
 dependencies = [
+ "klipp-compose",
  "klipp-core",
  "klipp-effects",
  "klipp-nodes",
+ "klipp-plugin",
+ "klipp-timeline",
+ "klipp-title",
  "serde",
  "serde_json",
  "tracing",
