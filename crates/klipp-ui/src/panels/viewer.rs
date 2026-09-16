@@ -1266,17 +1266,20 @@ impl ViewerPanel {
             state.viewer_text_cursor = 0;
             state.viewer_text_select_anchor = None;
             state.viewer_text_edit_buffer = text;
-        } else {
-            // Legacy fallback: clip-wide editor (full-frame scrim).
-            // Keeps the old behaviour for any place that double-
-            // clicks the empty image area on a title clip.
+        } else if let Some((oid, text)) = td.objects.iter().find_map(|o| match &o.content {
+            klipp_timeline::TitleObjectContent::TextBox(tb) if o.visible && !o.locked => Some((o.id, tb.text.clone())),
+            _ => None,
+        }) {
+            // A double-click beside the text still edits: the first
+            // text layer, in place.
             cmds.push(AppCommand::BeginTitleEdit { clip_id });
-            state.viewer_text_edit_object = None;
+            cmds.push(AppCommand::SelectTitleObject { clip_id, object_id: Some(oid.0) });
+            state.viewer_text_edit_object = Some(oid);
             state.viewer_text_edit_request_focus = true;
             state.viewer_char_positions.clear();
-            state.viewer_text_cursor = 0;
+            state.viewer_text_cursor = text.chars().count();
             state.viewer_text_select_anchor = None;
-            state.viewer_text_edit_buffer = td.text().clone();
+            state.viewer_text_edit_buffer = text;
         }
     }
 
@@ -1304,252 +1307,215 @@ impl ViewerPanel {
         }
     }
 
+    /// Editing text on the render itself. The engine's overlay is the
+    /// text; an invisible `TextEdit` handles the keys, the clipboard
+    /// and undo; the caret and the selection are drawn from the
+    /// engine's own glyph boxes, and a click or a drag on the text
+    /// places them by those boxes too.
     fn draw_text_edit_widget(
         &mut self,
         ui: &mut egui::Ui,
         state: &mut AppState,
+        theme: &KlippTheme,
         frame: &ViewerFrameState,
         cmds: &mut Vec<AppCommand>,
     ) {
+        if !state.viewer_text_edit {
+            return;
+        }
         let image_rect = frame.image_rect;
-        let video_h = frame.video_h;
         let viewer_rect = frame.viewer_rect;
-        // ── Text editor: visible egui TextEdit overlaid on the viewer ──
-        // Uses egui's native TextEdit for ALL text operations (typing, cursor,
-        // selection, copy/paste, undo) — no custom event handling needed.
-        // The styled title overlay renders behind the TextEdit as a live preview.
-        if state.viewer_text_edit {
-            let edit_id = ui.id().with("viewer_text_edit");
-            let prev_buf = state.viewer_text_edit_buffer.clone();
+        let (video_w, video_h) = (frame.video_w.max(1.0), frame.video_h.max(1.0));
+        let edit_id = ui.id().with("viewer_text_edit");
+        let prev_buf = state.viewer_text_edit_buffer.clone();
+        let Some(clip_id) = state.viewer_text_edit_clip else { return };
+        let Some(td) = state.sequence().tracks.iter().find_map(|t| t.find_clip(clip_id)).and_then(|c| c.title_data()).cloned() else {
+            return;
+        };
+        // The layer being edited: the targeted one, else the first
+        // text layer.
+        let obj = state
+            .viewer_text_edit_object
+            .and_then(|oid| td.object(oid).cloned())
+            .or_else(|| td.objects.iter().find(|o| matches!(o.content, klipp_timeline::TitleObjectContent::TextBox(_))).cloned());
+        let Some(obj) = obj else { return };
+        if state.viewer_text_edit_object != Some(obj.id) {
+            state.viewer_text_edit_object = Some(obj.id);
+            state.viewer_char_positions.clear();
+        }
+        let bb = object_screen_bb(&obj, image_rect);
+        let to_screen = |x: f32, y: f32| {
+            egui::pos2(image_rect.min.x + x / video_w * image_rect.width(), image_rect.min.y + y / video_h * image_rect.height())
+        };
 
-            // ── Two paths ──
-            // - Inline (the new default when an object is targeted):
-            //   the TextEdit floats inside the object's bounding box.
-            //   No scrim, the rest of the viewer remains visible.
-            // - Clip-wide (legacy): full-frame scrim + centred TextEdit.
-            //   Kept as a fallback when the user double-clicks an
-            //   empty image area on a Title clip rather than on a
-            //   specific TextBox object.
-            let inline_object = state.viewer_text_edit_object.and_then(|oid| {
-                state.viewer_text_edit_clip.and_then(|cid| {
-                    state.sequence().tracks.iter()
-                        .find_map(|t| t.find_clip(cid))
-                        .and_then(|c| c.title_data())
-                        .and_then(|td| td.object(oid).cloned())
-                })
-            });
-
-            // Editor font size: tied to the active object's TextBox
-            // when inline, else falls back to the title's primary
-            // text font_size. Title renders at font_size *
-            // (height/1080) pixels in the frame, then the frame
-            // scales to image_rect.
-            let frame_scale = image_rect.height() / video_h;
-            let title_font_px = if let Some(obj) = &inline_object {
-                if let klipp_timeline::TitleObjectContent::TextBox(tb) = &obj.content {
-                    tb.font_size
-                } else {
-                    72.0
+        // ── The pointer on the text: caret and selection by glyph box ──
+        let hit = ui.interact(bb.expand(8.0), edit_id.with("hit"), egui::Sense::click_and_drag());
+        let index_at = |positions: &[klipp_title::CharPosition], p: egui::Pos2| -> Option<usize> {
+            if positions.is_empty() {
+                return None;
+            }
+            // The row under the pointer (nearest row when between
+            // lines), then the nearest glyph edge within it.
+            let row_of = |cp: &klipp_title::CharPosition| (to_screen(cp.x, cp.y).y, to_screen(cp.x, cp.y + cp.height).y);
+            let mut best_row: Option<(f32, f32)> = None;
+            for cp in positions.iter() {
+                let (top, bottom) = row_of(cp);
+                let d = if p.y < top { top - p.y } else if p.y > bottom { p.y - bottom } else { 0.0 };
+                if best_row.is_none_or(|(bd, _)| d < bd) {
+                    best_row = Some((d, top));
                 }
-            } else {
-                state.viewer_text_edit_clip
-                    .and_then(|cid| state.sequence().tracks.iter()
-                        .find_map(|t| t.find_clip(cid))
-                        .and_then(|c| c.title_data())
-                        .map(|td| td.font_size()))
-                    .unwrap_or(72.0)
-            };
-            let editor_font_px = (title_font_px * (video_h / 1080.0) * frame_scale).clamp(10.0, 200.0);
-
-            let te_rect = if let Some(obj) = &inline_object {
-                // Inline rect = the object's screen bounding box,
-                // shrunk slightly for breathing room.
-                let bb = object_screen_bb(obj, image_rect);
-                let pad = 4.0;
-                egui::Rect::from_min_max(
-                    egui::pos2(bb.min.x + pad, bb.min.y + pad),
-                    egui::pos2(bb.max.x - pad, bb.max.y - pad),
-                )
-            } else {
-                // Legacy: dark scrim + centred TextEdit on the whole image.
-                let fg_painter = ui.painter_at(image_rect).with_layer_id(
-                    egui::LayerId::new(egui::Order::Foreground, ui.id().with("text_edit_overlay")),
-                );
-                fg_painter.rect_filled(image_rect, 0.0,
-                    egui::Color32::from_rgba_unmultiplied(0, 0, 0, 100));
-
-                // Edit mode badge.
-                let badge_galley = ui.painter().layout_no_wrap(
-                    "Text Editing \u{2014} Esc to exit".to_string(),
-                    egui::FontId::proportional(11.0),
-                    egui::Color32::from_rgba_unmultiplied(200, 220, 255, 220),
-                );
-                let badge_rect = egui::Rect::from_min_size(
-                    egui::pos2(image_rect.left() + 1.0, image_rect.top() + 1.0),
-                    egui::vec2(badge_galley.rect.width() + 16.0, badge_galley.rect.height() + 6.0),
-                );
-                fg_painter.rect_filled(badge_rect, 0.0,
-                    egui::Color32::from_rgba_unmultiplied(30, 60, 120, 180));
-                fg_painter.galley(
-                    egui::pos2(badge_rect.left() + 8.0, badge_rect.top() + 3.0),
-                    badge_galley, egui::Color32::WHITE,
-                );
-
-                let edit_margin = 20.0;
-                image_rect.shrink2(egui::vec2(edit_margin, edit_margin + 20.0))
-            };
-
-            // Inline mode: paint a dashed accent stroke around the
-            // bbox so it's clear we're in editing mode (the on-canvas
-            // editor's solid stroke is replaced by this dashed one
-            // during edit). Plus a small "Esc to exit" badge above.
-            if inline_object.is_some() {
-                let edit_stroke = egui::Stroke::new(
-                    1.5_f32,
-                    ui.visuals().selection.stroke.color,
-                );
-                let bb = te_rect.expand(4.0);
-                ui.painter().rect_stroke(bb, 2.0, edit_stroke);
-                let badge_galley = ui.painter().layout_no_wrap(
-                    "Esc to exit".to_string(),
-                    egui::FontId::proportional(10.0),
-                    egui::Color32::from_rgba_unmultiplied(232, 200, 100, 220),
-                );
-                let bx = bb.min.x;
-                let by = (bb.min.y - badge_galley.size().y - 4.0).max(image_rect.min.y);
-                ui.painter().galley(
-                    egui::pos2(bx, by),
-                    badge_galley,
-                    egui::Color32::from_rgba_unmultiplied(232, 200, 100, 220),
-                );
             }
-
-            let mut te_ui = ui.new_child(
-                egui::UiBuilder::new().max_rect(te_rect),
-            );
-            te_ui.style_mut().visuals.extreme_bg_color = egui::Color32::from_rgba_unmultiplied(0, 0, 0, 40);
-            te_ui.style_mut().visuals.selection.bg_fill = egui::Color32::from_rgba_unmultiplied(50, 110, 230, 160);
-
-            let te_output = egui::TextEdit::multiline(&mut state.viewer_text_edit_buffer)
-                .id(edit_id)
-                .desired_width(te_rect.width())
-                .desired_rows(1)
-                .frame(false)
-                .margin(egui::Margin::symmetric(8.0, 8.0))
-                .text_color(egui::Color32::from_rgb(230, 230, 240))
-                .font(egui::FontId::proportional(editor_font_px))
-                .horizontal_align(egui::Align::Center)
-                .show(&mut te_ui);
-
-            // Request focus on first frame
-            if state.viewer_text_edit_request_focus {
-                state.viewer_text_edit_request_focus = false;
-                te_output.response.request_focus();
-            }
-
-            // Sync cursor/selection from egui's TextEdit to our state (for inspector)
-            if let Some(cursor_range) = te_output.cursor_range {
-                let primary = cursor_range.primary.ccursor.index;
-                let secondary = cursor_range.secondary.ccursor.index;
-                state.viewer_text_cursor = primary;
-                if primary != secondary {
-                    let (s, e) = if primary < secondary { (primary, secondary) } else { (secondary, primary) };
-                    state.viewer_text_selection = Some((s, e));
-                    state.viewer_text_selection_locked = Some((s, e));
-                } else {
-                    // Don't clear locked selection if pointer is down (inspector interactions)
-                    if !ui.input(|i| i.pointer.primary_down()) {
-                        state.viewer_text_selection = None;
-                        // Keep locked selection for inspector — only clear on explicit deselect
+            let row_top = best_row?.1;
+            let mut best: Option<(f32, usize)> = None;
+            for cp in positions.iter() {
+                if (row_of(cp).0 - row_top).abs() > 0.5 {
+                    continue;
+                }
+                let left = to_screen(cp.x, cp.y).x;
+                let right = to_screen(cp.x + cp.advance, cp.y).x;
+                for (edge, idx) in [(left, cp.char_index), (right, cp.char_index + 1)] {
+                    let d = (p.x - edge).abs();
+                    if best.is_none_or(|(bd, _)| d < bd) {
+                        best = Some((d, idx));
                     }
                 }
             }
-
-            // Detect text changes
-            let text_changed = state.viewer_text_edit_buffer != prev_buf;
-
-            // ── Resolve font size + color at cursor position for inspector ──
-            if let Some(clip_id) = state.viewer_text_edit_clip {
-                let style_info: Option<(Vec<klipp_timeline::StyleRun>, f32, [u8; 4])> = state.sequence().tracks.iter()
-                    .find_map(|t| t.find_clip(clip_id))
-                    .and_then(|c| c.title_data())
-                    .map(|td| (td.style_runs().clone(), td.font_size(), td.color()));
-                if let Some((runs, base_size, base_color)) = style_info {
-                    let cursor_byte = char_to_byte(&state.viewer_text_edit_buffer, state.viewer_text_cursor);
-                    let check_byte = if cursor_byte > 0 { cursor_byte - 1 } else { cursor_byte };
-                    let mut found_size = None;
-                    let mut found_color = None;
-                    for run in &runs {
-                        if check_byte >= run.start && check_byte < run.end {
-                            found_size = run.font_size;
-                            found_color = run.color;
-                            break;
-                        }
-                    }
-                    state.viewer_text_cursor_font_size = Some(found_size.unwrap_or(base_size));
-                    state.viewer_text_cursor_color = Some(found_color.unwrap_or(base_color));
+            best.map(|(_, i)| i)
+        };
+        let mut set_range: Option<(usize, usize)> = None;
+        if let Some(p) = hit.interact_pointer_pos() {
+            if hit.drag_started() || hit.clicked() {
+                if let Some(i) = index_at(&state.viewer_char_positions, p) {
+                    state.viewer_text_select_anchor = Some(i);
+                    set_range = Some((i, i));
+                }
+            } else if hit.dragged() {
+                if let (Some(a), Some(i)) = (state.viewer_text_select_anchor, index_at(&state.viewer_char_positions, p)) {
+                    set_range = Some((a, i));
                 }
             }
+        }
+        if hit.hovered() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::Text);
+        }
+        if let Some((a, b)) = set_range {
+            let len = state.viewer_text_edit_buffer.chars().count();
+            let (a, b) = (a.min(len), b.min(len));
+            let mut st = egui::TextEdit::load_state(ui.ctx(), edit_id).unwrap_or_default();
+            st.cursor.set_char_range(Some(egui::text::CCursorRange::two(egui::text::CCursor::new(a), egui::text::CCursor::new(b))));
+            egui::TextEdit::store_state(ui.ctx(), edit_id, st);
+            state.viewer_text_cursor_blink_time = ui.input(|i| i.time);
+        }
 
-            // Emit a text update when the buffer changes. Route to
-            // the per-object command in inline mode (preserves
-            // typography on the rest of the title's objects); fall
-            // back to the legacy clip-wide command otherwise.
-            if text_changed {
-                state.viewer_char_positions.clear();
-                if let Some(clip_id) = state.viewer_text_edit_clip {
-                    let update_text = state.viewer_text_edit_buffer.clone();
-                    if let Some(oid) = state.viewer_text_edit_object {
-                        cmds.push(AppCommand::SetTitleObjectText {
-                            clip_id,
-                            object_id: oid.0,
-                            text: update_text,
-                        });
-                    } else if let Some(td) = state.sequence().tracks.iter()
-                        .find_map(|t| t.find_clip(clip_id))
-                        .and_then(|c| c.title_data())
-                    {
-                        let font_style = match td.font_style() {
-                            klipp_timeline::FontStyle::Regular => 0u8,
-                            klipp_timeline::FontStyle::Bold => 1,
-                            klipp_timeline::FontStyle::Italic => 2,
-                            klipp_timeline::FontStyle::BoldItalic => 3,
-                        };
-                        cmds.push(AppCommand::UpdateTitleData {
-                            clip_id,
-                            text: update_text,
-                            font_size: td.font_size(),
-                            font_name: td.font_name().clone(),
-                            font_style,
-                            color: td.color(),
-                        });
-                    }
-                }
+        // ── The invisible editor: keys, clipboard, undo ──
+        let mut te_ui = ui.new_child(egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(bb.min, egui::vec2(1.0, 1.0))));
+        te_ui.style_mut().visuals.selection.bg_fill = egui::Color32::TRANSPARENT;
+        te_ui.style_mut().visuals.selection.stroke = egui::Stroke::NONE;
+        let te_output = egui::TextEdit::multiline(&mut state.viewer_text_edit_buffer)
+            .id(edit_id)
+            .desired_width(1.0)
+            .desired_rows(1)
+            .frame(false)
+            .margin(egui::Margin::ZERO)
+            .text_color(egui::Color32::TRANSPARENT)
+            .show(&mut te_ui);
+        if state.viewer_text_edit_request_focus || !te_output.response.has_focus() {
+            state.viewer_text_edit_request_focus = false;
+            te_output.response.request_focus();
+        }
+        if let Some(cursor_range) = te_output.cursor_range {
+            let primary = cursor_range.primary.ccursor.index;
+            let secondary = cursor_range.secondary.ccursor.index;
+            if primary != state.viewer_text_cursor {
+                state.viewer_text_cursor_blink_time = ui.input(|i| i.time);
             }
-
-            // Exit on Escape or when the user clicks outside the
-            // active edit rectangle (inline) or outside the image
-            // (legacy). The previous "click anywhere outside the
-            // image area" rule was too eager for inline mode — the
-            // user might want to click into another object's bbox
-            // to jump editing focus rather than exit entirely. For
-            // now, any click outside the active TextEdit's rect
-            // exits; jumping between objects re-triggers the
-            // double-click flow.
-            let exit_escape = ui.input(|i| i.key_pressed(egui::Key::Escape));
-            let click_outside = ui.input(|i| i.pointer.primary_clicked())
-                && ui.input(|i| i.pointer.interact_pos())
-                    .is_some_and(|pos| !te_rect.contains(pos) && viewer_rect.contains(pos));
-            if exit_escape || click_outside {
-                cmds.push(AppCommand::EndTitleEdit);
-                state.viewer_text_edit_buffer.clear();
+            state.viewer_text_cursor = primary;
+            if primary != secondary {
+                let (s, e) = if primary < secondary { (primary, secondary) } else { (secondary, primary) };
+                state.viewer_text_selection = Some((s, e));
+                state.viewer_text_selection_locked = Some((s, e));
+            } else if !ui.input(|i| i.pointer.primary_down()) {
                 state.viewer_text_selection = None;
-                state.viewer_text_selection_locked = None;
-                state.viewer_text_cursor = 0;
-                state.viewer_char_positions.clear();
-                state.viewer_text_select_anchor = None;
-                state.viewer_text_edit_object = None;
             }
+        }
+
+        // ── Style under the caret, for the inspector's selection-aware tools ──
+        if let klipp_timeline::TitleObjectContent::TextBox(tb) = &obj.content {
+            let cursor_byte = char_to_byte(&state.viewer_text_edit_buffer, state.viewer_text_cursor);
+            let check_byte = cursor_byte.saturating_sub(1);
+            let run = tb.style_runs.iter().find(|r| check_byte >= r.start && check_byte < r.end);
+            state.viewer_text_cursor_font_size = Some(run.and_then(|r| r.font_size).unwrap_or(tb.font_size));
+            state.viewer_text_cursor_color = Some(run.and_then(|r| r.color).unwrap_or(tb.color));
+        }
+
+        // ── Paint: box, selection, caret, badge ──
+        let painter = ui.painter_at(viewer_rect);
+        painter.rect_stroke(bb.expand(4.0), crate::theme::radius::CONTROL, egui::Stroke::new(1.5_f32, theme.accent));
+        let positions = &state.viewer_char_positions;
+        if let Some((s, e)) = state.viewer_text_selection {
+            let fill = egui::Color32::from_rgba_unmultiplied(theme.accent.r(), theme.accent.g(), theme.accent.b(), 90);
+            for cp in positions.iter().filter(|cp| cp.char_index >= s && cp.char_index < e) {
+                let r = egui::Rect::from_min_max(to_screen(cp.x, cp.y), to_screen(cp.x + cp.advance, cp.y + cp.height));
+                painter.rect_filled(r, 0.0, fill);
+            }
+        }
+        let caret = {
+            let c = state.viewer_text_cursor;
+            if let Some(cp) = positions.iter().find(|cp| cp.char_index == c) {
+                Some((cp.x, cp.y, cp.height))
+            } else {
+                positions.last().map(|l| (l.x + l.advance, l.y, l.height))
+            }
+        };
+        if let Some((x, y, h)) = caret {
+            let t = ui.input(|i| i.time);
+            let since = t - state.viewer_text_cursor_blink_time;
+            let on = since < 0.05 || (since * 2.0).fract() < 0.5;
+            if on {
+                painter.line_segment([to_screen(x, y), to_screen(x, y + h)], egui::Stroke::new(2.0_f32, theme.text_primary));
+            }
+            ui.ctx().request_repaint_after(std::time::Duration::from_millis(80));
+        } else if positions.is_empty() {
+            // Nothing laid out yet (empty text, or the boxes still
+            // coming): a caret at the box centre so the editor still
+            // reads as live.
+            painter.line_segment(
+                [egui::pos2(bb.center().x, bb.min.y + 4.0), egui::pos2(bb.center().x, bb.max.y - 4.0)],
+                egui::Stroke::new(2.0_f32, theme.text_primary),
+            );
+        }
+        {
+            let font = egui::FontId::proportional(crate::theme::type_scale::CAPTION);
+            let galley = painter.layout_no_wrap("Editing \u{2014} Esc to finish".to_string(), font, theme.text_primary);
+            let pad = egui::vec2(8.0, 3.0);
+            let size = galley.size() + pad * 2.0;
+            let x = bb.min.x.max(image_rect.min.x + 2.0);
+            let y = (bb.min.y - 8.0 - size.y).max(image_rect.min.y + 2.0);
+            let r = egui::Rect::from_min_size(egui::pos2(x, y), size);
+            painter.rect_filled(r, crate::theme::radius::CONTROL, theme.bg_panel);
+            painter.rect_stroke(r, crate::theme::radius::CONTROL, egui::Stroke::new(1.0_f32, theme.border));
+            painter.galley(r.min + pad, galley, theme.text_primary);
+        }
+
+        // ── Commit typing ──
+        if state.viewer_text_edit_buffer != prev_buf {
+            state.viewer_char_positions.clear();
+            cmds.push(AppCommand::SetTitleObjectText { clip_id, object_id: obj.id.0, text: state.viewer_text_edit_buffer.clone() });
+        }
+
+        // ── Leave: Esc, or a click elsewhere in the viewer ──
+        let exit_escape = ui.input(|i| i.key_pressed(egui::Key::Escape));
+        let click_outside = ui.input(|i| i.pointer.primary_clicked())
+            && ui.input(|i| i.pointer.interact_pos()).is_some_and(|pos| !bb.expand(8.0).contains(pos) && viewer_rect.contains(pos));
+        if exit_escape || click_outside {
+            cmds.push(AppCommand::EndTitleEdit);
+            state.viewer_text_edit_buffer.clear();
+            state.viewer_text_selection = None;
+            state.viewer_text_selection_locked = None;
+            state.viewer_text_cursor = 0;
+            state.viewer_char_positions.clear();
+            state.viewer_text_select_anchor = None;
+            state.viewer_text_edit_object = None;
         }
     }
 
@@ -1617,7 +1583,7 @@ impl ViewerPanel {
 
         self.handle_text_edit_entry(ui, state, &frame, cmds);
         self.handle_text_edit_exit(ui, state, cmds);
-        self.draw_text_edit_widget(ui, state, &frame, cmds);
+        self.draw_text_edit_widget(ui, state, theme, &frame, cmds);
 
         // ── On-screen transform controls ──
         // Suppress transform controls during text edit mode
@@ -3612,10 +3578,73 @@ impl ViewerPanel {
                     let (start_nx, start_ny) = to_norm(drag.drag_start_pos);
                     let dnx = nx - start_nx;
                     let dny = ny - start_ny;
-                    let new_t = compute_drag_transform(
+                    let mut new_t = compute_drag_transform(
                         &drag, dnx, dny,
                         (start_nx, start_ny), (nx, ny),
                     );
+                    // Snapping while the body moves: the frame's
+                    // centre lines, the title-safe edges and the other
+                    // layers' centres. Alt drags free.
+                    if drag.handle == crate::state::TitleObjectHandle::Body && !ui.input(|i| i.modifiers.alt) {
+                        let snap_x = 6.0 / image_rect.width().max(1.0);
+                        let snap_y = 6.0 / image_rect.height().max(1.0);
+                        let safe = state.viewer_prefs.title_safe_pct.clamp(0.5, 1.0);
+                        let (left, right) = (0.5 - safe * 0.5, 0.5 + safe * 0.5);
+                        let (top, bottom) = (0.5 - safe * 0.5, 0.5 + safe * 0.5);
+                        let (hw, hh) = (new_t.size.x * 0.5, new_t.size.y * 0.5);
+                        let mut guides: Vec<(bool, f32)> = Vec::new();
+                        // (value the centre lands on, where the guide is drawn)
+                        let mut xs: Vec<(f32, f32)> = vec![(0.5, 0.5), (left + hw, left), (right - hw, right)];
+                        let mut ys: Vec<(f32, f32)> = vec![(0.5, 0.5), (top + hh, top), (bottom - hh, bottom)];
+                        for o in td.objects.iter().filter(|o| o.id != drag.object_id && o.visible) {
+                            xs.push((o.transform.center.x, o.transform.center.x));
+                            ys.push((o.transform.center.y, o.transform.center.y));
+                        }
+                        let nearest = |cands: &[(f32, f32)], v: f32, snap: f32| {
+                            cands
+                                .iter()
+                                .filter(|(c, _)| (v - c).abs() < snap)
+                                .min_by(|a, b| (v - a.0).abs().partial_cmp(&(v - b.0).abs()).unwrap_or(std::cmp::Ordering::Equal))
+                                .copied()
+                        };
+                        if let Some((v, g)) = nearest(&xs, new_t.center.x, snap_x) {
+                            new_t.center.x = v;
+                            guides.push((true, g));
+                        }
+                        if let Some((v, g)) = nearest(&ys, new_t.center.y, snap_y) {
+                            new_t.center.y = v;
+                            guides.push((false, g));
+                        }
+                        let guide_stroke = egui::Stroke::new(1.0_f32, accent);
+                        for (vertical, g) in guides {
+                            if vertical {
+                                let x = to_screen(g, 0.0).x;
+                                painter.line_segment([egui::pos2(x, image_rect.min.y), egui::pos2(x, image_rect.max.y)], guide_stroke);
+                            } else {
+                                let y = to_screen(0.0, g).y;
+                                painter.line_segment([egui::pos2(image_rect.min.x, y), egui::pos2(image_rect.max.x, y)], guide_stroke);
+                            }
+                        }
+                    }
+                    // The readout: the layer's centre in frame pixels,
+                    // beside the pointer.
+                    {
+                        let res = state.sequence().resolution;
+                        let text = format!("x {:.0}  y {:.0}", new_t.center.x * res.width as f32, new_t.center.y * res.height as f32);
+                        let galley = painter.layout_no_wrap(text, egui::FontId::monospace(crate::theme::type_scale::CAPTION), egui::Color32::WHITE);
+                        let pad = egui::vec2(6.0, 3.0);
+                        let size = galley.size() + pad * 2.0;
+                        let mut at = p + egui::vec2(14.0, 14.0);
+                        if at.x + size.x > image_rect.max.x {
+                            at.x = p.x - 14.0 - size.x;
+                        }
+                        if at.y + size.y > image_rect.max.y {
+                            at.y = p.y - 14.0 - size.y;
+                        }
+                        let r = egui::Rect::from_min_size(at, size);
+                        painter.rect_filled(r, 2.0, egui::Color32::from_rgba_unmultiplied(20, 20, 24, 220));
+                        painter.galley(r.min + pad, galley, egui::Color32::WHITE);
+                    }
                     let new_font_size = if matches!(
                         drag.handle,
                         crate::state::TitleObjectHandle::CornerTopLeft

@@ -3471,8 +3471,7 @@ impl KlippApp {
 
             // Compute character positions for WYSIWYG text editing
             if self.state.viewer_text_edit {
-                self.state.viewer_char_positions =
-                    self.title_renderer.compute_char_positions(&td, w, h);
+                self.state.viewer_char_positions = self.char_positions_for_edit(&td, w, h);
             }
 
             ctx.request_repaint();
@@ -3498,9 +3497,28 @@ impl KlippApp {
             if let Some(td) = td {
                 let td = td.clone();
                 let (w, h) = (seq.resolution.width, seq.resolution.height);
-                self.state.viewer_char_positions =
-                    self.title_renderer.compute_char_positions(&td, w, h);
+                self.state.viewer_char_positions = self.char_positions_for_edit(&td, w, h);
             }
+        }
+    }
+
+    /// The glyph boxes of the layer being edited (the targeted object,
+    /// else the primary text), in frame pixels, for the viewer's caret
+    /// and selection.
+    fn char_positions_for_edit(&mut self, td: &klipp_timeline::TitleData, w: u32, h: u32) -> Vec<klipp_title::CharPosition> {
+        let single = self.state.viewer_text_edit_object.and_then(|oid| td.object(oid)).and_then(|o| match &o.content {
+            klipp_timeline::TitleObjectContent::TextBox(tb) => {
+                let mut s = klipp_timeline::TitleData::single_text(tb.clone());
+                if let Some(first) = s.objects.first_mut() {
+                    first.transform = o.transform.clone();
+                }
+                Some(s)
+            }
+            _ => None,
+        });
+        match single {
+            Some(s) => self.title_renderer.compute_char_positions(&s, w, h),
+            None => self.title_renderer.compute_char_positions(td, w, h),
         }
     }
 
