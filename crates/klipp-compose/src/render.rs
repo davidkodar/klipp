@@ -198,6 +198,15 @@ pub struct Inspection {
     pub stats: RenderStats,
 }
 
+/// Where the GPU stack's display frame goes: `texture` an `Rgba8Unorm`
+/// texture of the frame's size with a storage binding, and `bytes`
+/// whether the CPU gets a copy too.
+#[derive(Clone, Copy, Default)]
+pub struct DisplayDelivery<'a> {
+    pub texture: Option<&'a wgpu::Texture>,
+    pub bytes: bool,
+}
+
 /// Where a render's time went, in milliseconds.
 #[derive(Default, Clone, Copy, Debug)]
 pub struct RenderStats {
@@ -792,6 +801,25 @@ impl Renderer {
         src: &mut dyn FrameSource,
         opts: RenderOptions,
     ) -> Option<(Vec<u8>, RenderStats)> {
+        let out = DisplayDelivery { texture: None, bytes: true };
+        self.render_display_on_gpu(seq, time, width, height, src, opts, out)
+            .map(|(bytes, stats)| (bytes.unwrap_or_default(), stats))
+    }
+
+    /// [`Self::render_display_u8_on_gpu`], delivered as `out` asks: into
+    /// a texture the viewer samples, to the CPU, or both. With the
+    /// texture alone the frame never leaves the GPU.
+    #[allow(clippy::too_many_arguments)]
+    pub fn render_display_on_gpu(
+        &mut self,
+        seq: &Sequence,
+        time: Timecode,
+        width: u32,
+        height: u32,
+        src: &mut dyn FrameSource,
+        opts: RenderOptions,
+        out: DisplayDelivery<'_>,
+    ) -> Option<(Option<Vec<u8>>, RenderStats)> {
         if !self.allow_gpu || !gpu_composite_enabled() {
             return self.gpu_stack_declines("GPU off");
         }
@@ -1040,7 +1068,7 @@ impl Renderer {
             }
         }
         let gpu = self.executor.gpu_pipeline_or_init()?;
-        let bytes = gpu.encode_chain_to_display_u8(true, width, height, None)?;
+        let bytes = gpu.encode_chain_to_display(true, width, height, None, false, None, out.texture, out.bytes)?;
         stats.composite_ms += ms_since(t);
         stats.total_ms = ms_since(t0);
         self.last_gpu_stack_decline = None;

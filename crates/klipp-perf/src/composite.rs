@@ -159,11 +159,27 @@ fn run(name: &str, cpu_only: bool, budget_ms: f64, build: impl Fn(Option<&GpuCon
     let mut r = Renderer::new(klipp_plugin::OfxHost::new(), klipp_title::TitleRenderer::new());
     r.set_gpu_enabled(!cpu_only);
     let mut fell_back = 0usize;
+    // `KLIPP_PERF_ZERO_COPY=1`: the frame into a viewer texture, nothing
+    // read back — the app's playing path on a shared device.
+    let zero_copy = std::env::var("KLIPP_PERF_ZERO_COPY").ok().as_deref() == Some("1");
+    let texture = ctx.filter(|_| zero_copy).map(|ctx| {
+        ctx.device().create_texture(&wgpu::TextureDescriptor {
+            label: Some("perf_viewer"),
+            size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::STORAGE_BINDING,
+            view_formats: &[],
+        })
+    });
     let mut frame = |r: &mut Renderer, i: usize, count: bool, fell_back: &mut usize| {
         let t = tc(1.0 + i as f64 / 30.0);
         if !cpu_only {
-            if let Some((bytes, _)) = r.render_display_u8_on_gpu(&seq, t, w, h, &mut src, RenderOptions::default()) {
-                std::hint::black_box(bytes.len());
+            let out = klipp_compose::DisplayDelivery { texture: texture.as_ref(), bytes: texture.is_none() };
+            if let Some((bytes, _)) = r.render_display_on_gpu(&seq, t, w, h, &mut src, RenderOptions::default(), out) {
+                std::hint::black_box(bytes.map(|b| b.len()));
                 return;
             }
             if count {
@@ -183,7 +199,10 @@ fn run(name: &str, cpu_only: bool, budget_ms: f64, build: impl Fn(Option<&GpuCon
         frame(&mut r, WARMUP + i, true, &mut fell_back);
         samples.push(t0.elapsed().as_secs_f64() * 1000.0);
     }
-    let label = if fell_back > 0 { format!("{name} (CPU fallback {fell_back}/{FRAMES})") } else { name.to_string() };
+    let mut label = if fell_back > 0 { format!("{name} (CPU fallback {fell_back}/{FRAMES})") } else { name.to_string() };
+    if texture.is_some() {
+        label.push_str(" (zero-copy)");
+    }
     let mut result = summarise(&label, w, h, &samples, 0, budget_ms);
     result.warmup_frames = WARMUP;
     result

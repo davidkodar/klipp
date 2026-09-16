@@ -327,7 +327,8 @@ impl PlaybackEngine {
         primary: Option<(ClipId, &HeldFrame)>,
         width: u32,
         height: u32,
-    ) -> Option<(Vec<u8>, klipp_compose::RenderStats)> {
+        out: klipp_compose::DisplayDelivery<'_>,
+    ) -> Option<(Option<Vec<u8>>, klipp_compose::RenderStats)> {
         self.renderer.set_working_colorspace(crate::video_decoder::working_colorspace());
         self.renderer.set_lut_tetrahedral(self.color_pipeline.use_tetrahedral);
         self.push_global_lut();
@@ -345,7 +346,7 @@ impl PlaybackEngine {
                 .then_some(klipp_color::hdr::DEFAULT_MASTERING_MAX_LUMA_CD_M2),
             ..Default::default()
         };
-        self.renderer.render_display_u8_on_gpu(seq, time, width, height, &mut src, opts)
+        self.renderer.render_display_on_gpu(seq, time, width, height, &mut src, opts, out)
     }
 
     fn render_timeline(
@@ -455,7 +456,7 @@ impl PlaybackEngine {
         if let Some(key) = &cache_key {
             // The cached frame is 8-bit, so the display transform over it is
             // a table: no expansion to float on the way to the same bytes.
-            let lut = self.cached_frame_display_lut(w);
+            let lut = self.cached_frame_display_lut();
             // Read it where it lies. A 4K frame is 33 MB, and this path used
             // to copy it twice — once out of the cache, once back in to say
             // it had been used — before doing any work on it.
@@ -533,15 +534,30 @@ impl PlaybackEngine {
         let primary_ref = primary_clip.zip(primary.as_ref());
 
         // The GPU stack: the composite and the display encode on the
-        // GPU, one readback of display bytes. It declines what it cannot
-        // do yet and the full path below takes the frame.
+        // GPU, into the viewer's texture when the UI shares the device.
+        // Bytes come back only for a reader: the UI's paused-frame
+        // consumers (reference frame, eyedroppers, histogram), a scope
+        // pass that is due, or a viewer without the texture. The stack
+        // declines what it cannot do yet and the full path below takes
+        // the frame.
         if !progress && inspect_is_plain(&inspect) && self.gpu_composite_allowed() {
-            if let Some((bytes, stats)) = self.render_composite_on_gpu(&seq, primary_ref, w, h) {
-                self.note_composite_path("GPU stack");
-                self.show_rendered(
-                    Rendered { picture: Picture::Display(bytes), width: w, height: h, stats: Some(stats) },
-                    t_frame,
-                );
+            let target = self.gpu_viewer_target(w, h);
+            let want_bytes = target.is_none() || self.state != PlaybackState::Playing || self.should_render_scope();
+            let out = klipp_compose::DisplayDelivery { texture: target.as_deref(), bytes: want_bytes };
+            if let Some((bytes, stats)) = self.render_composite_on_gpu(&seq, primary_ref, w, h, out) {
+                match bytes {
+                    Some(bytes) => {
+                        self.note_composite_path(if target.is_some() { "GPU stack, bytes for a reader" } else { "GPU stack" });
+                        self.show_rendered(
+                            Rendered { picture: Picture::Display(bytes), width: w, height: h, stats: Some(stats) },
+                            t_frame,
+                        );
+                    }
+                    None => {
+                        self.note_composite_path("GPU stack, zero-copy");
+                        self.show_on_gpu(w, h, stats, t_frame);
+                    }
+                }
                 return;
             }
             self.note_composite_path("CPU (the stack declined, see the renderer's reason)");
@@ -677,16 +693,12 @@ impl PlaybackEngine {
     /// * the transform is per-channel — a BT.2020 or ACEScg project mixes
     ///   channels on the way to the display and cannot be a table;
     /// * HDR monitoring is off, since its readout needs the picture's light
-    ///   and a cached frame has been clamped to `[0, 1]` besides;
-    /// * the GPU viewer mirror is not in use, which wants linear floats.
+    ///   and a cached frame has been clamped to `[0, 1]` besides.
     ///
     /// The scopes are no reason to leave the table: they measure the bytes
     /// it makes, which are the bytes the float path makes.
-    fn cached_frame_display_lut(&self, w: u32) -> Option<[u8; 256]> {
+    fn cached_frame_display_lut(&self) -> Option<[u8; 256]> {
         if self.hdr_monitor.renders_hdr() {
-            return None;
-        }
-        if super::should_publish_gpu_viewer() && (w * 4).is_multiple_of(256) {
             return None;
         }
         klipp_color::display::display_transform_u8_lut_to(
@@ -798,20 +810,6 @@ impl PlaybackEngine {
                     scope_ms = self.draw_scopes(Some(&linear), None, w, h);
                 }
 
-                // Mirror the frame into the UI's GPU texture when that path is on.
-                if super::should_publish_gpu_viewer() && (w * 4) % 256 == 0 {
-                    if let Some(gpu) = self.renderer.executor().gpu_pipeline_mut() {
-                        let device = gpu.device();
-                        let tex = self
-                            .frame_buffer
-                            .lock()
-                            .unwrap_or_else(|e| e.into_inner())
-                            .ensure_gpu_output(&device, w, h);
-                        if let Some(tex) = tex {
-                            let _ = gpu.linear_rgba_to_texture_gpu(&linear, w, h, &tex);
-                        }
-                    }
-                }
                 // The reference output carries this same picture. Done
                 // here rather than in `encode_for_screen` because creating
                 // the shared frame needs `&mut self`, and because this is
@@ -845,7 +843,36 @@ impl PlaybackEngine {
             }
         }
         self.composite_scratch_u8 = bytes;
+        self.finish_view_frame(w, h, stats, encode_ms, scope_ms, t_frame);
+    }
 
+    /// The frame is in the viewer's texture already, written there by
+    /// the GPU stack with nothing read back: say so, and account for it
+    /// as [`Self::show_rendered`] would.
+    fn show_on_gpu(&mut self, w: u32, h: u32, stats: klipp_compose::RenderStats, t_frame: Instant) {
+        {
+            let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
+            fb.note_gpu_frame();
+            fb.set_presented(self.playhead);
+            if !fb.nit_map.is_empty() {
+                fb.nit_map = Vec::new();
+                (fb.nit_map_w, fb.nit_map_h) = (0, 0);
+            }
+        }
+        self.finish_view_frame(w, h, Some(stats), 0.0, 0.0, t_frame);
+    }
+
+    /// The frame's accounting once it is published: the perf ring, the
+    /// slow-frame log line, and the UI's wake-up.
+    fn finish_view_frame(
+        &mut self,
+        w: u32,
+        h: u32,
+        stats: Option<klipp_compose::RenderStats>,
+        encode_ms: f64,
+        scope_ms: f64,
+        t_frame: Instant,
+    ) {
         let total_ms = t_frame.elapsed().as_secs_f64() * 1000.0;
         let s = stats.unwrap_or_default();
         let target_fps = self.target_fps_for_overlay();

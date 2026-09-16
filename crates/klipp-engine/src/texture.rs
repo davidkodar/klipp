@@ -114,6 +114,12 @@ pub struct FrameBuffer {
     pub gpu_output_width: u32,
     pub gpu_output_height: u32,
     pub gpu_output_generation: u64,
+    /// Whether the newest frame the engine has produced is in
+    /// `gpu_output` rather than in `data` / `pending_data`: the GPU
+    /// stack wrote it there and read nothing back. A frame written as
+    /// bytes clears it. `gpu_output_frame` counts those frames.
+    pub gpu_output_live: bool,
+    pub gpu_output_frame: u64,
 
     /// Per-node output thumbnails for the V2 canvas, keyed by node
     /// id. Each entry is a ~96×54 sRGB u8 RGBA buffer. Populated by
@@ -161,6 +167,8 @@ impl FrameBuffer {
             gpu_output_width: 0,
             gpu_output_height: 0,
             gpu_output_generation: 0,
+            gpu_output_live: false,
+            gpu_output_frame: 0,
             node_thumbs: std::collections::HashMap::new(),
             node_thumbs_gen: 0,
         }
@@ -176,11 +184,10 @@ impl FrameBuffer {
     /// `GpuEffectsPipeline::encode_grade_to_texture` without holding
     /// the FrameBuffer lock across the submit.
     ///
-    /// Width must satisfy
-    /// `width * 4 % COPY_BYTES_PER_ROW_ALIGNMENT == 0` (256) —
-    /// same constraint `encode_grade_to_texture` enforces. Real
-    /// viewer frames are ≥ 1920 px wide so this holds by
-    /// construction.
+    /// The texture takes a storage binding as well, for
+    /// `GpuEffectsPipeline::encode_chain_to_display`, which stores
+    /// texels rather than copying rows and so has no row-pitch
+    /// condition on the width.
     pub fn ensure_gpu_output(
         &mut self,
         device: &std::sync::Arc<wgpu::Device>,
@@ -204,7 +211,8 @@ impl FrameBuffer {
                 dimension: wgpu::TextureDimension::D2,
                 format: wgpu::TextureFormat::Rgba8Unorm,
                 usage: wgpu::TextureUsages::TEXTURE_BINDING
-                    | wgpu::TextureUsages::COPY_DST,
+                    | wgpu::TextureUsages::COPY_DST
+                    | wgpu::TextureUsages::STORAGE_BINDING,
                 view_formats: &[],
             });
             self.gpu_output = Some(std::sync::Arc::new(tex));
@@ -215,8 +223,17 @@ impl FrameBuffer {
         self.gpu_output.as_ref().map(std::sync::Arc::clone)
     }
 
+    /// The newest frame is in `gpu_output`, written there by the GPU
+    /// stack; no bytes accompany it. The UI paints the texture until a
+    /// frame of bytes follows.
+    pub fn note_gpu_frame(&mut self) {
+        self.gpu_output_live = true;
+        self.gpu_output_frame = self.gpu_output_frame.wrapping_add(1);
+    }
+
     /// Engine writes to pending buffer — fast, minimal lock time.
     pub fn write_frame(&mut self, rgba_data: Vec<u8>, width: u32, height: u32) {
+        self.gpu_output_live = false;
         self.pending_data = rgba_data;
         self.pending_width = width;
         self.pending_height = height;
@@ -293,6 +310,7 @@ impl FrameBuffer {
     /// eliminating per-frame allocations). Same semantics as `write_frame`
     /// otherwise — the pending buffer becomes the engine's newest composite.
     pub fn write_frame_swap(&mut self, rgba_data: &mut Vec<u8>, width: u32, height: u32) {
+        self.gpu_output_live = false;
         std::mem::swap(&mut self.pending_data, rgba_data);
         self.pending_width = width;
         self.pending_height = height;

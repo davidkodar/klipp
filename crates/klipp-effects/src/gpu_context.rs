@@ -159,7 +159,18 @@ impl GpuContext {
             // the Option layer. The slot is only ever stored as
             // Some here, so opt is always Some.
             opt.expect("install_shared always stores Some")
-        })
+        })?;
+        SHARED_FROM_UI.store(true, std::sync::atomic::Ordering::Release);
+        Ok(())
+    }
+
+    /// Whether [`Self::shared`] is the UI's own device, installed by
+    /// [`Self::install_shared`]. Only then can a texture the engine
+    /// writes be sampled by the UI's renderer: wgpu tracks resources
+    /// per instance, and a view from another instance panics on
+    /// registration.
+    pub fn shared_is_ui_device() -> bool {
+        SHARED_FROM_UI.load(std::sync::atomic::Ordering::Acquire)
     }
 }
 
@@ -167,6 +178,7 @@ impl GpuContext {
 // slot. `None` in the `Some(...)` position means init was attempted
 // and failed — `shared()` returns None until end of process.
 static SHARED: std::sync::OnceLock<Option<GpuContext>> = std::sync::OnceLock::new();
+static SHARED_FROM_UI: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// Register the device's single uncaptured-error + device-lost
 /// callback pair, routing both into tracing and a shared flag.

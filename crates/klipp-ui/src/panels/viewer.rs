@@ -120,6 +120,12 @@ pub struct ViewerPanel {
     // (first use, resolution change).
     pub gpu_texture_id: Option<egui::TextureId>,
     pub gpu_texture_gen: u64,
+    /// Whether the newest frame is in that texture rather than in
+    /// `video_texture` (`FrameBuffer::gpu_output_live`), and its size.
+    /// A frame of bytes that follows one on the GPU paints from
+    /// `video_texture` again.
+    pub gpu_frame_live: bool,
+    pub gpu_frame_size: (u32, u32),
     /// Owned wgpu `TextureView` backing the registered `gpu_texture_id`.
     /// MUST stay alive for the lifetime of `gpu_texture_id`: wgpu 22's
     /// `BindGroup` records the view's storage Id without taking a
@@ -284,8 +290,14 @@ impl ViewerPanel {
         // parallel by `upload_frame_to_egui`, so `size_vec2()` is
         // still the correct dimensions even when we paint via
         // `gpu_texture_id`.
+        let gpu_id = self.gpu_frame_live.then_some(self.gpu_texture_id).flatten();
         if let Some(tex) = &self.video_texture {
-            let tex_size = tex.size_vec2();
+            let tex_size = match gpu_id {
+                Some(_) if self.gpu_frame_size.0 > 0 && self.gpu_frame_size.1 > 0 => {
+                    egui::vec2(self.gpu_frame_size.0 as f32, self.gpu_frame_size.1 as f32)
+                }
+                _ => tex.size_vec2(),
+            };
             if tex_size.x > 0.0 && tex_size.y > 0.0 {
                 let video_aspect = tex_size.x / tex_size.y;
                 let panel_aspect = available.x / available.y;
@@ -298,7 +310,7 @@ impl ViewerPanel {
                     panel_rect.center(),
                     egui::vec2(dw, dh),
                 );
-                let image_id = self.gpu_texture_id.unwrap_or_else(|| tex.id());
+                let image_id = gpu_id.unwrap_or_else(|| tex.id());
                 ui.painter().image(
                     image_id,
                     image_rect,
@@ -1553,7 +1565,9 @@ impl ViewerPanel {
             // `video_texture` when the GPU path isn't live (env gate
             // off, eframe running glow, shared device not installed,
             // or this frame's grade hasn't finished yet).
-            let image_id = self.gpu_texture_id
+            let image_id = self.gpu_frame_live
+                .then_some(self.gpu_texture_id)
+                .flatten()
                 .or_else(|| self.video_texture.as_ref().map(|t| t.id()));
             if let Some(id) = image_id {
                 // `painter_at(viewer_rect)` clips to the viewer's panel

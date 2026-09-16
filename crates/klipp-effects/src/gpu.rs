@@ -308,6 +308,11 @@ pub struct GpuEffectsPipeline {
     hdr_nit_staging: Option<wgpu::Buffer>,
     /// Map-readable copy of `bridge_u8_out_buf` for the display readback.
     display_u8_staging: Option<wgpu::Buffer>,
+    /// `bridge_u8_out_buf` into a storage texture, one texel per
+    /// invocation: the display bytes land in the viewer's texture
+    /// without a copy, so no row-pitch alignment applies.
+    u8_to_texture_pipeline: wgpu::ComputePipeline,
+    u8_to_texture_bgl: wgpu::BindGroupLayout,
     /// The layer stack: one linear buffer per layer, two for the
     /// accumulator (ping-pong), an RGBA8 upload buffer for sprites.
     /// Sized by `stack_begin`, never shrunk.
@@ -1096,6 +1101,47 @@ impl GpuEffectsPipeline {
         let display_u8_pipeline = create_pipeline(
             &device, &pipeline_layout, "linear_to_display_u8", SHADER_LINEAR_TO_DISPLAY_U8,
         );
+        let u8_to_texture_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("u8_to_texture_bgl"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::StorageTexture {
+                        access: wgpu::StorageTextureAccess::WriteOnly,
+                        format: wgpu::TextureFormat::Rgba8Unorm,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+            ],
+        });
+        let u8_to_texture_pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("u8_to_texture_pl"),
+            bind_group_layouts: &[&u8_to_texture_bgl],
+            push_constant_ranges: &[],
+        });
+        let u8_to_texture_pipeline = create_pipeline(&device, &u8_to_texture_pl, "u8_to_texture", SHADER_U8_TO_TEXTURE);
         let blend_layer_pipeline = create_pipeline(&device, &pipeline_layout, "blend_layer", SHADER_BLEND_LAYER);
         let premultiply_pipeline = create_pipeline(&device, &pipeline_layout, "premultiply", SHADER_PREMULTIPLY);
         let sprite_rows_pipeline = create_pipeline(&device, &pipeline_layout, "sprite_rows", SHADER_SPRITE_ROWS);
@@ -1263,6 +1309,8 @@ impl GpuEffectsPipeline {
             mask_min_v_pipeline,
             matte_apply_pipeline,
             scale_alpha_pipeline,
+            u8_to_texture_pipeline,
+            u8_to_texture_bgl,
             bridge_u8_out_buf: None,
             bridge_u8_out_size: 0,
             bridge_u8_staging_buf: None,
@@ -2867,9 +2915,46 @@ impl GpuEffectsPipeline {
         hdr_preview: bool,
         scene: Option<(u32, f32, f32, [f32; 3])>,
     ) -> Option<Vec<u8>> {
+        self.encode_chain_to_display(slot_a, width, height, tonemap_exposure, hdr_preview, scene, None, true)
+            .map(Option::unwrap_or_default)
+    }
+
+    /// The display encode of [`Self::encode_chain_to_display_u8_monitor`],
+    /// delivered where the caller wants it: into `target` — an
+    /// `Rgba8Unorm` texture of the frame's size with `STORAGE_BINDING`,
+    /// the viewer's own — and, when `want_bytes`, to the CPU as well.
+    /// Neither costs the other anything but the texel store; with no
+    /// bytes wanted the frame never leaves the GPU, which is the point.
+    ///
+    /// `None` on a lost device or a target of the wrong shape; otherwise
+    /// the bytes when they were wanted.
+    #[allow(clippy::too_many_arguments)]
+    pub fn encode_chain_to_display(
+        &mut self,
+        slot_a: bool,
+        width: u32,
+        height: u32,
+        tonemap_exposure: Option<f32>,
+        hdr_preview: bool,
+        scene: Option<(u32, f32, f32, [f32; 3])>,
+        target: Option<&wgpu::Texture>,
+        want_bytes: bool,
+    ) -> Option<Option<Vec<u8>>> {
         if self.is_device_lost() { return None; }
         let pixel_count = (width as u64) * (height as u64);
-        if pixel_count == 0 { return Some(Vec::new()); }
+        if pixel_count == 0 { return Some(want_bytes.then(Vec::new)); }
+        if let Some(t) = target {
+            let size = t.size();
+            if size.width != width || size.height != height || t.format() != wgpu::TextureFormat::Rgba8Unorm
+                || !t.usage().contains(wgpu::TextureUsages::STORAGE_BINDING)
+            {
+                tracing::warn!(
+                    "encode_chain_to_display: target {}x{} {:?} {:?} cannot take a {width}x{height} frame",
+                    size.width, size.height, t.format(), t.usage(),
+                );
+                return None;
+            }
+        }
         let out_bytes = pixel_count * 4;
         if self.bridge_u8_out_size < out_bytes {
             self.bridge_u8_out_buf = Some(self.device.create_buffer(&wgpu::BufferDescriptor {
@@ -2925,9 +3010,41 @@ impl GpuEffectsPipeline {
             pass.set_bind_group(0, &bg, &[]);
             pass.dispatch_workgroups((pixel_count as u32).div_ceil(WORKGROUP_SIZE), 1, 1);
         }
-        encoder.copy_buffer_to_buffer(out, 0, staging, 0, out_bytes);
+        if let Some(t) = target {
+            // Its own params buffer: the shared one is read by the encode
+            // pass ahead of this in the same encoder.
+            let view = t.create_view(&wgpu::TextureViewDescriptor::default());
+            let tex_params = self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("u8_to_texture_params"),
+                size: std::mem::size_of::<BridgeU8Params>() as u64,
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            self.queue.write_buffer(&tex_params, 0, bytemuck::bytes_of(&BridgeU8Params { width, height, _pad0: 0, _pad1: 0 }));
+            let bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("u8_to_texture_bg"),
+                layout: &self.u8_to_texture_bgl,
+                entries: &[
+                    wgpu::BindGroupEntry { binding: 0, resource: out.as_entire_binding() },
+                    wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&view) },
+                    wgpu::BindGroupEntry { binding: 2, resource: tex_params.as_entire_binding() },
+                ],
+            });
+            let mut pass = encoder.begin_compute_pass(
+                &wgpu::ComputePassDescriptor { label: Some("u8_to_texture"), timestamp_writes: None },
+            );
+            pass.set_pipeline(&self.u8_to_texture_pipeline);
+            pass.set_bind_group(0, &bg, &[]);
+            pass.dispatch_workgroups(width.div_ceil(16), height.div_ceil(16), 1);
+        }
+        if want_bytes {
+            encoder.copy_buffer_to_buffer(out, 0, staging, 0, out_bytes);
+        }
         self.queue.submit(std::iter::once(encoder.finish()));
         self.submit_count.fetch_add(1, Ordering::Relaxed);
+        if !want_bytes {
+            return Some(None);
+        }
 
         let slice = staging.slice(..out_bytes);
         let (tx, rx) = std::sync::mpsc::channel();
@@ -2936,7 +3053,7 @@ impl GpuEffectsPipeline {
             Ok(Ok(())) => {
                 let bytes = slice.get_mapped_range().to_vec();
                 staging.unmap();
-                Some(bytes)
+                Some(Some(bytes))
             }
             other => {
                 self.mark_device_lost(&format!("display_u8 map_async failed: {other:?}"));
@@ -8857,6 +8974,23 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 }
 "
 );
+
+// Packed sRGB RGBA8 bytes into a storage texture, a texel per
+// invocation. A `copy_buffer_to_texture` wants rows padded to 256
+// bytes, which a tightly packed frame of most widths is not; a store
+// has no such condition.
+const SHADER_U8_TO_TEXTURE: &str = "
+struct Params { width: u32, height: u32, _p0: u32, _p1: u32 }
+@group(0) @binding(0) var<storage, read> input: array<u32>;
+@group(0) @binding(1) var out_tex: texture_storage_2d<rgba8unorm, write>;
+@group(0) @binding(2) var<uniform> params: Params;
+@compute @workgroup_size(16, 16)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    if gid.x >= params.width || gid.y >= params.height { return; }
+    let packed = input[gid.y * params.width + gid.x];
+    textureStore(out_tex, vec2<i32>(i32(gid.x), i32(gid.y)), unpack4x8unorm(packed));
+}
+";
 
 // A layer's alpha times a factor, in place. Binding 0 is unused.
 const SHADER_SCALE_ALPHA: &str = concat!(
@@ -14858,6 +14992,7 @@ pub fn shader_sources() -> Vec<(&'static str, &'static str)> {
         ("SHADER_MASK_MIN_V", SHADER_MASK_MIN_V),
         ("SHADER_MATTE_APPLY", SHADER_MATTE_APPLY),
         ("SHADER_SCALE_ALPHA", SHADER_SCALE_ALPHA),
+        ("SHADER_U8_TO_TEXTURE", SHADER_U8_TO_TEXTURE),
     ]
 }
 

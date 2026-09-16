@@ -508,22 +508,17 @@ fn main() -> Result<()> {
             // the mouse — classic egui-idle symptom.
             let _ = repaint_ctx.set(cc.egui_ctx.clone());
 
-            // Optionally install eframe-wgpu's device as the shared
-            // `GpuContext` so the engine + decoder submit onto the
-            // same wgpu device the UI is rendering on. This enables
-            // the zero-copy viewer handoff, but on wgpu-22 Vulkan +
-            // NVIDIA it deadlocks: engine readbacks call
-            // `device.poll(...)`, and the shared queue is kept non-
-            // empty forever by the UI thread's continuous egui
-            // submits — our poll never returns, the engine thread
-            // hangs at PostProcessReencode, and the app is unusable.
-            //
-            // Gated behind `KLIPP_SHARED_GPU_DEVICE=1` so the default
-            // run keeps the separate-device behaviour. When wgpu /
-            // egui-wgpu lifetime semantics get stronger and the poll
-            // loop can make progress independent of UI pressure we
-            // flip the default.
-            let want_shared = std::env::var("KLIPP_SHARED_GPU_DEVICE").ok().as_deref() == Some("1");
+            // Install eframe-wgpu's device as the shared `GpuContext`
+            // so the engine and the decoders submit onto the device
+            // the UI renders on: the GPU stack then writes the viewer's
+            // texture and reads nothing back. This used to deadlock on
+            // wgpu 22: a readback's `device.poll(Wait)` never returned
+            // while the UI kept the queue busy. Every readback now spins
+            // on `Maintain::Poll` (`poll_until_mapped`), which the
+            // `shared_device_pressure` test holds under a thread that
+            // submits without pause. `KLIPP_SHARED_GPU_DEVICE=0` is the
+            // hatch back to two devices.
+            let want_shared = std::env::var("KLIPP_SHARED_GPU_DEVICE").ok().as_deref() != Some("0");
             if want_shared {
                 if let Some(rs) = cc.wgpu_render_state.as_ref() {
                     let ctx = klipp_effects::gpu_context::GpuContext::from_existing(

@@ -459,38 +459,24 @@ fn drag_downsample_enabled() -> bool {
     })
 }
 
+/// Whether the GPU stack may write the viewer's texture and skip the
+/// readback: the UI's own wgpu device is the shared one (see
+/// `GpuContext::install_shared`), and `KLIPP_GPU_VIEWER=0` has not
+/// closed the hatch. On two devices the UI could not sample a texture
+/// the engine wrote, so the frame comes back as bytes as before.
 fn should_publish_gpu_viewer() -> bool {
     use std::sync::OnceLock;
     static GATE: OnceLock<bool> = OnceLock::new();
     *GATE.get_or_init(|| {
-        let want_viewer = std::env::var("KLIPP_GPU_VIEWER").ok().as_deref() == Some("1");
-        if !want_viewer {
+        if std::env::var("KLIPP_GPU_VIEWER").ok().as_deref() == Some("0") {
+            tracing::info!("KLIPP_GPU_VIEWER=0: the viewer takes display bytes");
             return false;
         }
-        // The GPU viewer hand-off allocates `fb.gpu_output` on the
-        // engine's wgpu device, then the UI registers a TextureView
-        // of that texture with eframe-wgpu's renderer. wgpu-22's
-        // wgpu_core stores resources per `Instance`; engine and UI
-        // each have their own Instance unless the shared-device
-        // path is enabled. Cross-Hub TextureView lookups panic in
-        // `wgpu-core/src/storage.rs:79` ("TextureView[Id(N,vk)]
-        // does not exist") on the very first
-        // `register_native_texture` call. Until KLIPP_SHARED_GPU_DEVICE
-        // is fixed (deadlock on `device.poll` — see main.rs comments)
-        // the viewer path can ONLY engage when both env flags are on,
-        // so `KLIPP_GPU_VIEWER=1` alone silently no-ops instead of
-        // crashing.
-        let want_shared = std::env::var("KLIPP_SHARED_GPU_DEVICE").ok().as_deref() == Some("1");
-        if !want_shared {
-            tracing::warn!(
-                "KLIPP_GPU_VIEWER=1 ignored: requires KLIPP_SHARED_GPU_DEVICE=1 too. \
-                 Without device sharing, fb.gpu_output lives on the engine wgpu Hub \
-                 and egui-wgpu cannot register a TextureView from a different Hub — \
-                 the cross-device BindGroup creation panics in wgpu_core storage."
-            );
-            return false;
+        let shared = klipp_effects::gpu_context::GpuContext::shared_is_ui_device();
+        if !shared {
+            tracing::info!("GPU viewer off: the engine and the UI are on separate wgpu devices");
         }
-        true
+        shared
     })
 }
 
@@ -6526,6 +6512,17 @@ impl PlaybackEngine {
     /// transfer, the monitor, the compare modes) and the gate is on.
     /// What the layers are is the stack's own business; it declines
     /// what it cannot do and the CPU path takes over.
+    /// The viewer's texture for a `w`×`h` frame, when the GPU stack may
+    /// write the frame there and skip the readback; see
+    /// [`should_publish_gpu_viewer`].
+    fn gpu_viewer_target(&mut self, w: u32, h: u32) -> Option<std::sync::Arc<wgpu::Texture>> {
+        if !should_publish_gpu_viewer() {
+            return None;
+        }
+        let device = self.renderer.executor().gpu_pipeline_or_init()?.device();
+        self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner()).ensure_gpu_output(&device, w, h)
+    }
+
     fn gpu_composite_allowed(&self) -> bool {
         if !klipp_compose::gpu_composite_enabled() {
             return false;
