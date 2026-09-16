@@ -356,6 +356,8 @@ pub struct Renderer {
     titles: klipp_title::TitleRenderer,
     glyph_cache: HashMap<ClipId, klipp_title::GlyphCacheEntry>,
     working: WorkingColorspace,
+    /// Why the GPU stack last declined a frame, so the log says it once.
+    last_gpu_stack_decline: Option<&'static str>,
     global_lut: Option<GlobalLut>,
     /// Rolling-shutter motion per (clip, source millisecond): estimating
     /// it decodes three frames, and a paused viewer re-renders the same
@@ -413,6 +415,7 @@ impl Renderer {
             titles,
             glyph_cache: HashMap::new(),
             working: WorkingColorspace::default(),
+            last_gpu_stack_decline: None,
             global_lut: None,
             rsc_motion: HashMap::new(),
             inspect: Inspect::default(),
@@ -787,36 +790,45 @@ impl Renderer {
         opts: RenderOptions,
     ) -> Option<(Vec<u8>, RenderStats)> {
         if !self.allow_gpu || !gpu_composite_enabled() {
-            return None;
+            return self.gpu_stack_declines("GPU off");
         }
-        if opts.hdr_peak_nits.is_some() || self.global_lut.is_some() {
-            return None;
+        if opts.hdr_peak_nits.is_some() {
+            return self.gpu_stack_declines("HDR delivery");
+        }
+        if self.global_lut.is_some() {
+            return self.gpu_stack_declines("global LUT");
         }
         if self.working != WorkingColorspace::Rec709Linear {
-            return None;
+            return self.gpu_stack_declines("working space is not Rec.709");
         }
         let i = &self.inspect;
-        if i.clip.is_some() || i.ungraded || i.thumbs.is_some() || i.scope_tap.is_some() || i.matte_view.is_some() || i.solo.is_some() || i.matte_of.is_some() {
-            return None;
+        if i.ungraded || i.thumbs.is_some() || i.scope_tap.is_some() || i.matte_view.is_some() || i.solo.is_some() || i.matte_of.is_some() {
+            return self.gpu_stack_declines("inspection");
         }
         let t0 = Instant::now();
         let fps = seq.fps.as_f64();
         let stack = stack(seq, time);
         if stack.is_empty() {
-            return None;
+            return self.gpu_stack_declines("nothing on screen");
         }
         let mut clips: Vec<(&Track, &Clip)> = Vec::with_capacity(stack.len());
         for (_, track, item) in &stack {
-            let TrackItem::Clip(c) = item else { return None };
-            if matches!(c.kind, ClipKind::AdjustmentLayer)
-                || c.consumed_as_matte
-                || c.matte_source.is_some()
-                || c.matte_stencil.is_some()
-                || !c.effects.is_empty()
-                || frame_blends(c, time)
-                || title_motion_blur(c).is_some()
-            {
-                return None;
+            let TrackItem::Clip(c) = item else { return self.gpu_stack_declines("transition") };
+            let why = if matches!(c.kind, ClipKind::AdjustmentLayer) {
+                Some("adjustment layer")
+            } else if c.consumed_as_matte || c.matte_source.is_some() || c.matte_stencil.is_some() {
+                Some("matte")
+            } else if !c.effects.is_empty() {
+                Some("OFX plugin")
+            } else if frame_blends(c, time) {
+                Some("frame blending")
+            } else if title_motion_blur(c).is_some() {
+                Some("title motion blur")
+            } else {
+                None
+            };
+            if let Some(why) = why {
+                return self.gpu_stack_declines(why);
             }
             clips.push((track, c));
         }
@@ -848,7 +860,7 @@ impl Renderer {
                     let at = source_secs(c, time, fps);
                     let Some(f) = src.frame(c, at, width, height) else { continue };
                     if (f.width, f.height) != (width, height) {
-                        return None;
+                        return self.gpu_stack_declines("source frame is not the render size");
                     }
                     match f.pixels {
                         SourcePixels::Gpu(g) if c.node_graph.is_identity() => {
@@ -878,7 +890,7 @@ impl Renderer {
                             stats.grade_ms += ms_since(t);
                             self.executor.gpu_pipeline_or_init().is_some_and(|p| p.stack_layer_from_linear(i, &pixels))
                         }
-                        SourcePixels::SceneReferred { .. } => return None,
+                        SourcePixels::SceneReferred { .. } => return self.gpu_stack_declines("scene-referred source"),
                     }
                 }
                 ClipKind::Title(td) if fx.is_empty() && c.node_graph.is_identity() => {
@@ -901,7 +913,7 @@ impl Renderer {
                 }
             };
             if !placed {
-                return None;
+                return self.gpu_stack_declines("a layer could not be placed on the GPU");
             }
             let t = Instant::now();
             let mode = c.blend_mode as u32;
@@ -919,7 +931,18 @@ impl Renderer {
         let bytes = gpu.encode_chain_to_display_u8(true, width, height, None)?;
         stats.composite_ms += ms_since(t);
         stats.total_ms = ms_since(t0);
+        self.last_gpu_stack_decline = None;
         Some((bytes, stats))
+    }
+
+    /// The stack cannot take this frame: `None`, and the reason in the
+    /// log once, until it changes.
+    fn gpu_stack_declines<T>(&mut self, why: &'static str) -> Option<T> {
+        if self.last_gpu_stack_decline != Some(why) {
+            tracing::debug!("GPU stack declines the frame: {why}");
+            self.last_gpu_stack_decline = Some(why);
+        }
+        None
     }
 
     fn global_lut_on_chain(&mut self, width: u32, height: u32) -> bool {

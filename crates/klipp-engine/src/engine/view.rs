@@ -310,6 +310,15 @@ impl PlaybackEngine {
     /// Render the timeline at the playhead. `primary` is the primary
     /// decoder's frame, when there is one; `width` × `height` the size to
     /// render at. A colour-grade drag renders at half size when enabled.
+    /// One line in the log when the composite path changes, so a slow
+    /// frame says which path it took.
+    fn note_composite_path(&mut self, path: &'static str) {
+        if self.last_composite_path != Some(path) {
+            tracing::debug!("composite path: {path}");
+            self.last_composite_path = Some(path);
+        }
+    }
+
     /// `render_timeline`'s GPU twin: display bytes straight off the GPU
     /// stack, or `None` when the stack cannot take this frame.
     fn render_composite_on_gpu(
@@ -528,12 +537,16 @@ impl PlaybackEngine {
         // do yet and the full path below takes the frame.
         if !progress && inspect_is_plain(&inspect) && self.gpu_composite_allowed() {
             if let Some((bytes, stats)) = self.render_composite_on_gpu(&seq, primary_ref, w, h) {
+                self.note_composite_path("GPU stack");
                 self.show_rendered(
                     Rendered { picture: Picture::Display(bytes), width: w, height: h, stats: Some(stats) },
                     t_frame,
                 );
                 return;
             }
+            self.note_composite_path("CPU (the stack declined, see the renderer's reason)");
+        } else if !progress {
+            self.note_composite_path(if inspect_is_plain(&inspect) { "CPU (display blockers)" } else { "CPU (inspection)" });
         }
 
         let (linear, found) = self.render_timeline(&seq, primary_ref, w, h, inspect);
@@ -942,7 +955,9 @@ fn matte_preview_event(consumer: ClipId, mask: &[f32], width: u32, height: u32) 
     AppEvent::MatteMaskReady { consumer_clip_id: consumer, rgba, width: PREVIEW_W, height: PREVIEW_H }
 }
 
-/// An inspection that asks for nothing: the plain picture.
+/// An inspection that asks for nothing: the plain picture. `clip` alone
+/// names the primary and changes nothing until something else is asked
+/// of it.
 fn inspect_is_plain(i: &Inspect) -> bool {
-    i.clip.is_none() && !i.ungraded && i.thumbs.is_none() && i.scope_tap.is_none() && i.matte_view.is_none() && i.solo.is_none() && i.matte_of.is_none()
+    !i.ungraded && i.thumbs.is_none() && i.scope_tap.is_none() && i.matte_view.is_none() && i.solo.is_none() && i.matte_of.is_none()
 }

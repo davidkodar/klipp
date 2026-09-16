@@ -1263,6 +1263,8 @@ pub struct PlaybackEngine {
     /// A frame short of the playhead is being presented — a slow seek's
     /// progress — and must not be cached as the playhead's frame.
     presenting_progress: bool,
+    /// The composite path the last presented frame took, for the log.
+    last_composite_path: Option<&'static str>,
     /// What the pre-grade cache was filled under (see
     /// [`timeline_layout_fingerprint`]); a different layout empties it.
     layout_fingerprint: u64,
@@ -1607,6 +1609,7 @@ impl PlaybackEngine {
             cached_pregrade_frame: None,
             cached_pregrade_at: None,
             presenting_progress: false,
+            last_composite_path: None,
             layout_fingerprint: 0,
             sdr_transfer: klipp_core::SdrTransfer::Srgb,
             last_direct_present_blockers: Vec::new(),
