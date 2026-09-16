@@ -6561,9 +6561,15 @@ impl PlaybackEngine {
                     return blockers;
                 }
             },
-            // Titles drawn plainly above the primary ride the fast path:
-            // their sprites are laid over the presented bytes.
+            // Titles drawn plainly above the primary ride the fast path
+            // when the GPU stack cannot have them: their sprites are laid
+            // over the presented bytes. The stack keeps the sprite on the
+            // GPU and presents without a readback, so it takes them first.
             [bottom, rest @ ..] if !bottom.transition && rest.iter().all(|l| Self::title_overlay_layer(&seq, l)) => {
+                if self.gpu_composite_allowed() {
+                    blockers.push("title layers: the GPU stack");
+                    return blockers;
+                }
                 match bottom.clips.as_slice() {
                     [clip] if Some(clip.id) == primary => (bottom, *clip),
                     _ => {

@@ -132,6 +132,31 @@ struct CachedRender {
     buffer: std::sync::Arc<Vec<u8>>,
     /// The rows with any coverage, `y0..y1`.
     rows: (u32, u32),
+    /// Names this render to whoever keeps a copy of it elsewhere (a
+    /// GPU sprite): never reused within a renderer.
+    id: u64,
+}
+
+/// A title's resting render, as cached: frame-sized straight-alpha
+/// sRGB RGBA8, the rows with any coverage, and an id that names it.
+#[derive(Clone)]
+pub struct RestingSprite {
+    pub pixels: std::sync::Arc<Vec<u8>>,
+    pub rows: (u32, u32),
+    pub id: u64,
+}
+
+/// A title's frame at a time, in the cheapest form that is exact.
+pub enum TitleFrame {
+    /// The resting render moved by `(dx, dy)` pixels with its alpha
+    /// scaled by `opacity`: a static title, or one whose only motion at
+    /// this time is a scroll, crawl, shake, blink, pulse or fade. `rows`
+    /// are the destination rows the moved sprite covers. The frame's
+    /// bytes are those `shift_and_fade` would make; a compositor that
+    /// keeps the sprite can make them where it composites.
+    Placed { sprite: RestingSprite, dx: i32, dy: i32, opacity: f32, rows: (u32, u32) },
+    /// Rendered for this time alone.
+    Rendered { pixels: Vec<u8>, rows: (u32, u32) },
 }
 
 /// The rows of a frame-sized RGBA8 buffer that carry any alpha, as
@@ -172,6 +197,8 @@ pub struct TitleRenderer {
     render_cache: Vec<CachedRender>,
     /// The rows with coverage in the last render, `y0..y1`.
     last_rows: (u32, u32),
+    /// The next `CachedRender::id`.
+    next_cache_id: u64,
     /// The clip's length while rendering with `render_with_window`,
     /// which exit motion counts back from. `None` outside a clip.
     motion_window: Option<f32>,
@@ -210,6 +237,7 @@ impl TitleRenderer {
             texture_fill_cache: None,
             render_cache: Vec::with_capacity(RENDER_CACHE_CAP),
             last_rows: (0, 0),
+            next_cache_id: 1,
             motion_window: None,
             loop_wave: None,
             loop_waves: HashMap::new(),
@@ -1288,9 +1316,9 @@ impl TitleRenderer {
         height: u32,
         gpu: Option<&mut dyn AlphaMaskProcessor>,
     ) -> Vec<u8> {
-        if let Some((buf, rows)) = self.cache_lookup(title, width, height) {
-            self.last_rows = rows;
-            return buf;
+        if let Some(hit) = self.cache_lookup(title, width, height) {
+            self.last_rows = hit.rows;
+            return (*hit.pixels).clone();
         }
         let buf = self.render_inner(title, width, height, gpu, None);
         let rows = alpha_rows(&buf, width, height);
@@ -1340,6 +1368,26 @@ impl TitleRenderer {
         (out, self.last_rows)
     }
 
+    /// [`Self::render_with_window`]'s frame in the cheapest exact form:
+    /// the resting sprite and where it goes when that is all the frame
+    /// is, else the rendered pixels. `render_with_window` is this with
+    /// the placement applied on the CPU.
+    #[allow(clippy::too_many_arguments)]
+    pub fn frame_with_window(
+        &mut self,
+        title: &TitleData,
+        width: u32,
+        height: u32,
+        gpu: Option<&mut dyn AlphaMaskProcessor>,
+        time_secs: f32,
+        window_secs: Option<f32>,
+    ) -> TitleFrame {
+        self.motion_window = window_secs;
+        let out = self.frame_at(title, width, height, gpu, time_secs);
+        self.motion_window = None;
+        out
+    }
+
     pub fn render_with_time(
         &mut self,
         title: &TitleData,
@@ -1348,6 +1396,24 @@ impl TitleRenderer {
         gpu: Option<&mut dyn AlphaMaskProcessor>,
         time_secs: f32,
     ) -> Vec<u8> {
+        match self.frame_at(title, width, height, gpu, time_secs) {
+            TitleFrame::Placed { sprite, dx, dy, opacity, .. } => {
+                shift_and_fade((*sprite.pixels).clone(), width, height, dx, dy, opacity)
+            }
+            TitleFrame::Rendered { pixels, .. } => pixels,
+        }
+    }
+
+    /// The frame at `time_secs` as a [`TitleFrame`]; `last_rows` is set
+    /// either way.
+    fn frame_at(
+        &mut self,
+        title: &TitleData,
+        width: u32,
+        height: u32,
+        gpu: Option<&mut dyn AlphaMaskProcessor>,
+        time_secs: f32,
+    ) -> TitleFrame {
         // Time-varying inputs:
         //   - char_animation on any object (per-glyph entrance)
         //   - title-level ColorCycle (continuous hue rotation)
@@ -1497,25 +1563,26 @@ impl TitleRenderer {
             || any_outline_keyframes;
 
         if !any_render_time_override {
-            let (rest, rows) = match self.cache_lookup(title, width, height) {
+            let sprite = match self.cache_lookup(title, width, height) {
                 Some(hit) => hit,
                 None => {
                     let buf = self.render_inner(title, width, height, gpu, None);
                     let rows = alpha_rows(&buf, width, height);
-                    self.cache_store(title.clone(), width, height, buf.clone(), rows);
-                    (buf, rows)
+                    self.cache_store(title.clone(), width, height, buf, rows)
                 }
             };
+            let rows = sprite.rows;
             return match translate_only {
                 Some(pose) => {
                     let dy = pose.dy.round() as i32;
                     let shifted = |y: u32| (y as i64 + dy as i64).clamp(0, height as i64) as u32;
-                    self.last_rows = if pose.opacity <= 0.001 || rows.1 <= rows.0 { (0, 0) } else { (shifted(rows.0), shifted(rows.1)) };
-                    shift_and_fade(rest, width, height, pose.dx.round() as i32, dy, pose.opacity)
+                    let rows = if pose.opacity <= 0.001 || rows.1 <= rows.0 { (0, 0) } else { (shifted(rows.0), shifted(rows.1)) };
+                    self.last_rows = rows;
+                    TitleFrame::Placed { sprite, dx: pose.dx.round() as i32, dy, opacity: pose.opacity.clamp(0.0, 1.0), rows }
                 }
                 None => {
                     self.last_rows = rows;
-                    rest
+                    TitleFrame::Placed { sprite, dx: 0, dy: 0, opacity: 1.0, rows }
                 }
             };
         }
@@ -1574,7 +1641,7 @@ impl TitleRenderer {
         let out = self.render_inner(&derived, width, height, gpu, time_arg);
         self.loop_waves.clear();
         self.last_rows = alpha_rows(&out, width, height);
-        out
+        TitleFrame::Rendered { rows: self.last_rows, pixels: out }
     }
 
     /// Object-model composition: walk every layer in the title (back
@@ -1770,34 +1837,38 @@ impl TitleRenderer {
     /// Look up a cached rasterised buffer for the given title +
     /// dimensions. On hit, moves the entry to the front of the LRU
     /// (most-recently-used end) and returns a memcpy of the buffer.
-    fn cache_lookup(&mut self, title: &TitleData, width: u32, height: u32) -> Option<(Vec<u8>, (u32, u32))> {
+    fn cache_lookup(&mut self, title: &TitleData, width: u32, height: u32) -> Option<RestingSprite> {
         let pos = self.render_cache.iter().position(|c| {
             c.width == width && c.height == height && &c.title == title
         })?;
         // Move to front (LRU).
         let entry = self.render_cache.remove(pos);
-        let buf = (*entry.buffer).clone();
-        let rows = entry.rows;
+        let sprite = RestingSprite { pixels: std::sync::Arc::clone(&entry.buffer), rows: entry.rows, id: entry.id };
         self.render_cache.insert(0, entry);
-        Some((buf, rows))
+        Some(sprite)
     }
 
     /// Insert a freshly-rendered buffer into the cache, evicting the
     /// least-recently-used entry if at capacity.
-    fn cache_store(&mut self, title: TitleData, width: u32, height: u32, buffer: Vec<u8>, rows: (u32, u32)) {
+    fn cache_store(&mut self, title: TitleData, width: u32, height: u32, buffer: Vec<u8>, rows: (u32, u32)) -> RestingSprite {
         if self.render_cache.len() >= RENDER_CACHE_CAP {
             self.render_cache.pop();
         }
+        let id = self.next_cache_id;
+        self.next_cache_id += 1;
+        let pixels = std::sync::Arc::new(buffer);
         self.render_cache.insert(
             0,
             CachedRender {
                 title,
                 width,
                 height,
-                buffer: std::sync::Arc::new(buffer),
+                buffer: std::sync::Arc::clone(&pixels),
                 rows,
+                id,
             },
         );
+        RestingSprite { pixels, rows, id }
     }
 
     /// Drop every cached rasterised buffer. Useful when the host

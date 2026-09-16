@@ -251,3 +251,27 @@ fn a_global_lut_over_the_stack_matches() {
     let (no_lut, _) = plain.render_display_u8_on_gpu(&seq, tc(1.0), W, H, &mut src, RenderOptions::default()).unwrap();
     assert!(worst(&no_lut, &gpu) > 20, "the LUT is not reaching the stack's frame");
 }
+
+/// A rolling title mid-roll: the resting sprite placed by the GPU over
+/// the clip below, against the CPU renderer's shifted sprite.
+#[test]
+fn a_rolling_title_placed_on_the_gpu_matches() {
+    let (mut seq, mut src) = stack();
+    let td = klipp_timeline::TitleData::single_text(klipp_timeline::TextBox {
+        text: "Rolling\ncredits\nover the\npicture".into(),
+        font_size: 48.0,
+        loops: vec![klipp_timeline::TitleLoop::Scroll { direction: klipp_timeline::ScrollDirection::Up, speed_px_per_sec: 0.0 }],
+        ..Default::default()
+    });
+    seq.tracks[0].clips = vec![clip(ClipKind::Title(td), 0.0, 5.0)];
+    for t in [1.0, 2.5, 4.0] {
+        let mut r = renderer();
+        let Some((gpu, _)) = r.render_display_u8_on_gpu(&seq, tc(t), W, H, &mut src, RenderOptions::default()) else {
+            eprintln!("skipping: the GPU stack declined (no usable GPU?)");
+            return;
+        };
+        let cpu = display(&r.render(&seq, tc(t), W, H, &mut src, RenderOptions::default()));
+        let d = worst(&cpu, &gpu);
+        assert!(d <= 1, "rolling title at {t}s: GPU differs from the CPU renderer by {d} levels");
+    }
+}

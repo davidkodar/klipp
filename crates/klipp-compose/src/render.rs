@@ -1296,9 +1296,21 @@ impl Renderer {
                 let total = (c.timeline_out - c.timeline_in).to_secs_f64() as f32;
                 let mut adapter = self.gpu.as_mut().map(crate::synth::GpuAlphaMaskAdapter);
                 let gpu = adapter.as_mut().map(|a| a as &mut dyn klipp_title::AlphaMaskProcessor);
-                let (u8s, r) = self.titles.render_with_window_rows(td, width, height, gpu, clip_time as f32, Some(total));
-                rows = r;
-                self.executor.gpu_pipeline_or_init().is_some_and(|p| p.stack_layer_from_srgb_u8_rows(slot, &u8s, r.0, r.1))
+                // A title that is its resting render moved and faded
+                // keeps that render on the GPU: no raster, no upload, one
+                // pass. Anything else is rendered here and goes up as rows.
+                match self.titles.frame_with_window(td, width, height, gpu, clip_time as f32, Some(total)) {
+                    klipp_title::TitleFrame::Placed { sprite, dx, dy, opacity, rows: r } => {
+                        rows = r;
+                        self.executor.gpu_pipeline_or_init().is_some_and(|p| {
+                            p.stack_layer_place_sprite(slot, sprite.id, &sprite.pixels, dx, dy, opacity, r.0, r.1)
+                        })
+                    }
+                    klipp_title::TitleFrame::Rendered { pixels, rows: r } => {
+                        rows = r;
+                        self.executor.gpu_pipeline_or_init().is_some_and(|p| p.stack_layer_from_srgb_u8_rows(slot, &pixels, r.0, r.1))
+                    }
+                }
             }
             ClipKind::Generator(g) if fx_on_gpu && c.node_graph.is_identity() => {
                 let total = (c.timeline_out - c.timeline_in).to_secs_f64();

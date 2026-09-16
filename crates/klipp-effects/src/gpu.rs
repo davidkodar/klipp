@@ -319,6 +319,13 @@ pub struct GpuEffectsPipeline {
     stack_layers: Vec<std::sync::Arc<wgpu::Buffer>>,
     stack_acc: Option<std::sync::Arc<wgpu::Buffer>>,
     stack_sprite_u8: Option<wgpu::Buffer>,
+    /// Title sprites kept on the GPU by the id their renderer gave
+    /// them, so a title that only moves or fades from frame to frame is
+    /// uploaded once and placed by a pass. Frame-sized RGBA8; dropped
+    /// when the stack's size changes.
+    stack_sprites: Vec<ResidentSprite>,
+    stack_sprite_tick: u64,
+    sprite_place_pipeline: wgpu::ComputePipeline,
     stack_buf_size: u64,
     /// Whether anything has been blended into the accumulator yet.
     stack_acc_touched: bool,
@@ -1158,6 +1165,7 @@ impl GpuEffectsPipeline {
         let blend_layer_pipeline = create_pipeline(&device, &pipeline_layout, "blend_layer", SHADER_BLEND_LAYER);
         let premultiply_pipeline = create_pipeline(&device, &pipeline_layout, "premultiply", SHADER_PREMULTIPLY);
         let sprite_rows_pipeline = create_pipeline(&device, &pipeline_layout, "sprite_rows", SHADER_SPRITE_ROWS);
+        let sprite_place_pipeline = create_pipeline(&device, &pipeline_layout, "sprite_place", SHADER_SPRITE_PLACE);
         let matte_extract_pipeline = create_pipeline(&device, &pipeline_layout, "matte_extract", SHADER_MATTE_EXTRACT);
         let mask_min_h_pipeline = create_pipeline(&device, &pipeline_layout, "mask_min_h", SHADER_MASK_MIN_H);
         let mask_min_v_pipeline = create_pipeline(&device, &pipeline_layout, "mask_min_v", SHADER_MASK_MIN_V);
@@ -1321,6 +1329,9 @@ impl GpuEffectsPipeline {
             stack_layers: Vec::new(),
             stack_acc: None,
             stack_sprite_u8: None,
+            stack_sprites: Vec::new(),
+            stack_sprite_tick: 0,
+            sprite_place_pipeline,
             stack_buf_size: 0,
             stack_acc_touched: false,
             stack_dims: (0, 0),
@@ -4797,6 +4808,9 @@ impl GpuEffectsPipeline {
         // The chain buffers must exist at this size too: layers copy out
         // of them, effects run in them, the finish copies into them.
         self.ensure_buffers(byte_size);
+        if self.stack_dims != (width, height) {
+            self.stack_sprites.clear();
+        }
         self.stack_dims = (width, height);
         self.stack_acc_touched = false;
         true
@@ -4996,6 +5010,63 @@ impl GpuEffectsPipeline {
         let rows_px = (y1 - y0) * width;
         self.stack_pass(&self.sprite_rows_pipeline, sprite, &layer, rows_px.div_ceil(WORKGROUP_SIZE), "stack_sprite_rows");
         true
+    }
+
+    /// Layer `i` is the title sprite `id` moved by `(dx, dy)` with its
+    /// alpha scaled by `opacity` — `klipp_title`'s `shift_and_fade`,
+    /// done where the layer is. `pixels` is the sprite, uploaded only
+    /// when `id` is not resident; rows `y0..y1` are the destination rows
+    /// it covers, the rest of the layer is cleared.
+    #[allow(clippy::too_many_arguments)]
+    pub fn stack_layer_place_sprite(&mut self, i: usize, id: u64, pixels: &[u8], dx: i32, dy: i32, opacity: f32, y0: u32, y1: u32) -> bool {
+        if self.is_device_lost() || i >= self.stack_layers.len() {
+            return false;
+        }
+        let (width, height) = self.stack_dims;
+        let pixel_count = self.stack_pixel_count();
+        if pixels.len() as u64 != pixel_count * 4 {
+            return false;
+        }
+        let y0 = y0.min(height);
+        let y1 = y1.min(height);
+        let layer = std::sync::Arc::clone(&self.stack_layers[i]);
+        let mut enc = self.encoder(Some("stack_sprite_clear"));
+        enc.clear_buffer(&layer, 0, Some(pixel_count * 16));
+        self.submit(enc);
+        if y1 <= y0 || opacity <= 0.001 {
+            return true;
+        }
+        self.stack_sprite_tick += 1;
+        let tick = self.stack_sprite_tick;
+        let pos = match self.stack_sprites.iter().position(|r| r.id == id) {
+            Some(pos) => pos,
+            None => {
+                if self.stack_sprites.len() >= STACK_SPRITE_CAP {
+                    let oldest = self.stack_sprites.iter().enumerate().min_by_key(|(_, r)| r.used).map(|(i, _)| i).unwrap();
+                    self.stack_sprites.remove(oldest);
+                }
+                let buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("stack_resident_sprite"),
+                    size: pixel_count * 4,
+                    usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                    mapped_at_creation: false,
+                });
+                self.upload(&buffer, 0, pixels);
+                self.stack_sprites.push(ResidentSprite { id, buffer, used: tick });
+                self.stack_sprites.len() - 1
+            }
+        };
+        self.stack_sprites[pos].used = tick;
+        self.write_params(&SpritePlaceParams { width, height, y0, y1, dx, dy, opacity, _pad: 0 });
+        let rows_px = (y1 - y0) * width;
+        let sprite = &self.stack_sprites[pos].buffer;
+        self.stack_pass(&self.sprite_place_pipeline, sprite, &layer, rows_px.div_ceil(WORKGROUP_SIZE), "stack_sprite_place");
+        true
+    }
+
+    /// Whether title sprite `id` is on the GPU.
+    pub fn stack_sprite_resident(&self, id: u64) -> bool {
+        self.stack_sprites.iter().any(|r| r.id == id)
     }
 
     /// Run built-in effects on layer `i` where it is: through the chain
@@ -6666,6 +6737,29 @@ struct SpriteRowsParams {
     y0: u32,
     y1: u32,
 }
+
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct SpritePlaceParams {
+    width: u32,
+    height: u32,
+    y0: u32,
+    y1: u32,
+    dx: i32,
+    dy: i32,
+    opacity: f32,
+    _pad: u32,
+}
+
+/// A title's resting render on the GPU; see `stack_sprites`.
+struct ResidentSprite {
+    id: u64,
+    buffer: wgpu::Buffer,
+    used: u64,
+}
+
+/// Sprites kept on the GPU at once: a frame-sized RGBA8 buffer each.
+const STACK_SPRITE_CAP: usize = 4;
 
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -8955,6 +9049,48 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let b = f32((packed >> 16u) & 0xFFu) / 255.0;
     let a = f32((packed >> 24u) & 0xFFu) / 255.0;
     output[idx] = pack(vec4<f32>(srgb_to_linear_c(r), srgb_to_linear_c(g), srgb_to_linear_c(b), a));
+}
+"
+);
+
+// A resident sRGB RGBA8 sprite moved by (dx, dy) and faded, decoded to
+// linear with its alpha kept straight, over destination rows y0..y1:
+// `klipp_title`'s `shift_and_fade` then the sprite decode, in one. The
+// alpha rounds as the CPU rounds it (half away from zero, then a byte).
+const SHADER_SPRITE_PLACE: &str = concat!(
+    shader_pixel_storage_wgsl!(),
+    "
+struct Params { width: u32, height: u32, y0: u32, y1: u32, dx: i32, dy: i32, opacity: f32, _pad: u32 }
+@group(0) @binding(0) var<storage, read> sprite: array<u32>;
+@group(0) @binding(1) var<storage, read_write> output: array<vec4<f32>>;
+@group(0) @binding(2) var<uniform> params: Params;
+
+fn srgb_to_linear_c(c: f32) -> f32 {
+    if (c <= 0.04045) { return c / 12.92; }
+    return pow((c + 0.055) / 1.055, 2.4);
+}
+
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let idx = params.y0 * params.width + gid.x;
+    if idx >= params.y1 * params.width { return; }
+    let x = i32(idx % params.width);
+    let y = i32(idx / params.width);
+    let sx = x - params.dx;
+    let sy = y - params.dy;
+    if sx < 0 || sy < 0 || sx >= i32(params.width) || sy >= i32(params.height) {
+        output[idx] = pack(vec4<f32>(0.0));
+        return;
+    }
+    let packed = sprite[u32(sy) * params.width + u32(sx)];
+    let r = f32((packed >> 0u) & 0xFFu) / 255.0;
+    let g = f32((packed >> 8u) & 0xFFu) / 255.0;
+    let b = f32((packed >> 16u) & 0xFFu) / 255.0;
+    var a8 = f32((packed >> 24u) & 0xFFu);
+    if params.opacity < 0.9999 {
+        a8 = clamp(floor(a8 * params.opacity + 0.5), 0.0, 255.0);
+    }
+    output[idx] = pack(vec4<f32>(srgb_to_linear_c(r), srgb_to_linear_c(g), srgb_to_linear_c(b), a8 / 255.0));
 }
 "
 );
@@ -15082,6 +15218,7 @@ pub fn shader_sources() -> Vec<(&'static str, &'static str)> {
         ("SHADER_MATTE_APPLY", SHADER_MATTE_APPLY),
         ("SHADER_SCALE_ALPHA", SHADER_SCALE_ALPHA),
         ("SHADER_U8_TO_TEXTURE", SHADER_U8_TO_TEXTURE),
+        ("SHADER_SPRITE_PLACE", SHADER_SPRITE_PLACE),
     ]
 }
 

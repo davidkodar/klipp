@@ -111,3 +111,50 @@ fn the_finish_premultiplies_like_the_cpu_stack() {
     let worst = worst_level(&cpu, &got);
     assert!(worst <= 1.0, "premultiply differs by {worst:.2} levels");
 }
+
+/// A resident sprite placed by the GPU is the sprite shifted and faded
+/// on the CPU and decoded as rows: the same layer, and no second upload
+/// for the second placement.
+#[test]
+fn a_placed_sprite_is_the_shifted_and_faded_upload() {
+    let Some(mut gpu) = pipeline() else { return };
+    let mut rgba = Vec::with_capacity((W * H * 4) as usize);
+    for i in 0..(W * H) {
+        rgba.extend_from_slice(&[(i % 251) as u8, (i * 7 % 256) as u8, (i * 13 % 256) as u8, (i * 3 % 256) as u8]);
+    }
+    let (w, h) = (W as i32, H as i32);
+    for (dx, dy, opacity) in [(0, 0, 1.0f32), (5, -3, 1.0), (-7, 4, 0.5), (0, 9, 0.37)] {
+        // The CPU twin: `klipp_title`'s `shift_and_fade`.
+        let mut shifted = vec![0u8; rgba.len()];
+        for y in 0..h {
+            for x in 0..w {
+                let (sx, sy) = (x - dx, y - dy);
+                if sx < 0 || sy < 0 || sx >= w || sy >= h {
+                    continue;
+                }
+                let d = ((y * w + x) * 4) as usize;
+                let so = ((sy * w + sx) * 4) as usize;
+                shifted[d..d + 4].copy_from_slice(&rgba[so..so + 4]);
+                if opacity < 0.9999 {
+                    shifted[d + 3] = ((shifted[d + 3] as f32) * opacity).round().clamp(0.0, 255.0) as u8;
+                }
+            }
+        }
+        let y0 = dy.max(0) as u32;
+        let y1 = (h + dy.min(0)).max(0) as u32;
+        assert!(gpu.stack_begin(W, H, 1));
+        assert!(gpu.stack_layer_from_srgb_u8_rows(0, &shifted, y0, y1));
+        assert!(gpu.stack_blend(0, 1.0, 0));
+        assert!(gpu.stack_finish_into_chain(true));
+        let want = gpu.stack_download_linear();
+
+        assert!(gpu.stack_begin(W, H, 1));
+        assert!(gpu.stack_layer_place_sprite(0, 77, &rgba, dx, dy, opacity, y0, y1));
+        assert!(gpu.stack_sprite_resident(77));
+        assert!(gpu.stack_blend(0, 1.0, 0));
+        assert!(gpu.stack_finish_into_chain(true));
+        let got = gpu.stack_download_linear();
+        let worst = want.iter().zip(&got).map(|(a, b)| (a - b).abs()).fold(0.0f32, f32::max);
+        assert!(worst < 1e-5, "placed sprite ({dx}, {dy}, {opacity}) differs from the shifted upload by {worst}");
+    }
+}
