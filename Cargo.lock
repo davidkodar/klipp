@@ -3032,6 +3032,7 @@ dependencies = [
  "image",
  "klipp-core",
  "klipp-timeline",
+ "rayon",
  "serde",
  "serde_json",
  "tracing",
