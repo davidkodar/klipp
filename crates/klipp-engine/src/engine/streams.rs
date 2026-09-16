@@ -81,6 +81,18 @@ impl HeldFrame {
         Held::Gpu(Arc::new(GpuHeld { frame: g, srgb: OnceLock::new(), linear: OnceLock::new() }))
     }
 
+    /// A decoded frame whose picture is on the GPU, without taking it
+    /// over: the frame stays with the caller for the paths it may still
+    /// take. `None` for a frame with CPU or HDR pixels, which
+    /// [`Self::from_frame`] would have to own.
+    pub fn from_gpu_frame(f: &LinearFrame) -> Option<Self> {
+        if f.hdr.is_some() || !f.data.is_empty() {
+            return None;
+        }
+        let g = f.gpu_source.clone()?;
+        Some(Self::new(Self::gpu(g), f.width, f.height, Some(f.pts_secs())))
+    }
+
     /// A decoded frame, taken over.
     pub fn from_frame(f: LinearFrame) -> Self {
         let pts = Some(f.pts_secs());

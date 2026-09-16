@@ -79,6 +79,11 @@ pub const ALL: &[Scenario] = &[
         run: crate::composite::s10_uhd_clip_credits,
     },
     Scenario {
+        name: "s15_composite_uhd_single_clip",
+        desc: "Portrait UHD clip alone: the direct-present frame through the stack",
+        run: crate::composite::s15_uhd_single_clip,
+    },
+    Scenario {
         name: "s11_composite_uhd_clip_credits_grade3",
         desc: "s10 with a three-node grade on the clip",
         run: crate::composite::s11_uhd_clip_credits_grade3,

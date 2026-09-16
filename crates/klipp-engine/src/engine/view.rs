@@ -405,6 +405,16 @@ impl PlaybackEngine {
     /// primary decoder's frame (live or from the pre-grade cache), `None`
     /// when no media clip is under the primary decoder.
     pub(super) fn present_frame(&mut self, primary: Option<HeldFrame>) {
+        self.present_frame_with(primary, false);
+    }
+
+    /// [`Self::present_frame`], and with `stack_only` the frame is shown
+    /// by the GPU stack or not at all: `false` means the stack declined
+    /// and nothing was published, so the caller's fast paths take the
+    /// frame. The playing loop asks this first for a frame the fast
+    /// paths could show, because the stack presents it without the
+    /// readback and the UI upload they pay.
+    pub(super) fn present_frame_with(&mut self, primary: Option<HeldFrame>, stack_only: bool) -> bool {
         let t_frame = Instant::now();
         self.sync_streams();
         if self.state != PlaybackState::Playing {
@@ -423,7 +433,7 @@ impl PlaybackEngine {
             None => (seq.resolution.width, seq.resolution.height),
         };
         if w == 0 || h == 0 {
-            return;
+            return false;
         }
 
         // The ungraded frame, for compare modes, scrubbing back and the UI's
@@ -452,7 +462,7 @@ impl PlaybackEngine {
             self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner()).pregrade = Some(published);
         }
 
-        let cache_key = if progress { None } else { self.render_cache_key(&seq, primary_clip) };
+        let cache_key = if progress || stack_only { None } else { self.render_cache_key(&seq, primary_clip) };
         if let Some(key) = &cache_key {
             // The cached frame is 8-bit, so the display transform over it is
             // a table: no expansion to float on the way to the same bytes.
@@ -474,7 +484,7 @@ impl PlaybackEngine {
             if let Some(picture) = from_hot {
                 self.render_cache_hot.touch(key);
                 self.show_rendered(Rendered { picture, width: w, height: h, stats: None }, t_frame);
-                return;
+                return true;
             }
             let from_disk =
                 self.render_cache_disk.get(key).filter(|(_, cw, ch)| (*cw, *ch) == (w, h));
@@ -491,7 +501,7 @@ impl PlaybackEngine {
                     })
                     .expect("just inserted");
                 self.show_rendered(Rendered { picture, width: w, height: h, stats: None }, t_frame);
-                return;
+                return true;
             }
         }
 
@@ -503,7 +513,7 @@ impl PlaybackEngine {
         // present, for the same bytes. Everything the blockers name —
         // a grade, an effect, a LUT, a tone map, a scope tap, node
         // thumbnails — still takes the full path.
-        if let Some(p) = primary.as_ref() {
+        if let Some(p) = primary.as_ref().filter(|_| !stack_only) {
             let blockers = self.fast_path_blockers_for(super::FastPath::PausedPresent);
             if !blockers.is_empty() {
                 tracing::debug!("paused present: full path because {}", blockers.join(", "));
@@ -515,7 +525,7 @@ impl PlaybackEngine {
                         self.overlay_titles_onto(&mut display, w, h);
                         let picture = Picture::Display(display);
                         self.show_rendered(Rendered { picture, width: w, height: h, stats: None }, t_frame);
-                        return;
+                        return true;
                     }
                 }
             } else if !progress
@@ -525,7 +535,7 @@ impl PlaybackEngine {
                 // Only the clip's own graph stands between the decoded
                 // frame and the screen: graded on the GPU from the
                 // pre-grade captured above, the way a slider step is.
-                return;
+                return true;
             }
         }
 
@@ -558,9 +568,14 @@ impl PlaybackEngine {
                         self.show_on_gpu(w, h, stats, t_frame);
                     }
                 }
-                return;
+                return true;
+            }
+            if stack_only {
+                return false;
             }
             self.note_composite_path("CPU (the stack declined, see the renderer's reason)");
+        } else if stack_only {
+            return false;
         } else if !progress {
             self.note_composite_path(if inspect_is_plain(&inspect) { "CPU (display blockers)" } else { "CPU (inspection)" });
         }
@@ -583,6 +598,7 @@ impl PlaybackEngine {
             self.render_cache_disk.put(&key, &bytes, w, h);
             self.render_cache_hot.insert(key, bytes, w, h);
         }
+        true
     }
 
     /// The split views' left halves: this frame with stabilisation off, or

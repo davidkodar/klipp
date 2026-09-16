@@ -259,6 +259,16 @@ pub fn s10_uhd_clip_credits(cpu_only: bool) -> ScenarioResult {
     })
 }
 
+/// One clip and nothing else: the frame the direct-present fast path
+/// shows, as the stack shows it (seed, blend, encode).
+pub fn s15_uhd_single_clip(cpu_only: bool) -> ScenarioResult {
+    run("s15_composite_uhd_single_clip", cpu_only, UHD_BUDGET, |ctx| {
+        let mut b = sequence(2160, 3840, &[TrackKind::Video]);
+        add_media(&mut b, 0, 0.0, 48.0, 2160, 3840, ctx, None);
+        b
+    })
+}
+
 pub fn s11_uhd_clip_credits_grade3(cpu_only: bool) -> ScenarioResult {
     run("s11_composite_uhd_clip_credits_grade3", cpu_only, UHD_BUDGET, |ctx| {
         let mut b = sequence(2160, 3840, &[TrackKind::Text, TrackKind::Video]);

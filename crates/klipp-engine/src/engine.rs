@@ -4270,6 +4270,23 @@ impl PlaybackEngine {
                 }
                 self.last_direct_present_blockers = interesting;
             }
+            // The stack first, when it presents without a readback: the
+            // decoded frame seeded where it is, blended, encoded into the
+            // viewer's texture. The fast paths below read 33 MB back and
+            // the UI uploads them again; the stack does neither. It takes
+            // the frame the direct path would, and the one only a grade
+            // keeps off it. When it declines — HDR monitoring, another
+            // working space, a node with no GPU pass — the fast paths
+            // take the frame as before.
+            let stack_first = (blockers.is_empty() || Self::only_the_graded_path_handles(&blockers))
+                && self.stack_presents_zero_copy();
+            if stack_first {
+                if let Some(held) = streams::HeldFrame::from_gpu_frame(&frame) {
+                    if self.present_frame_with(Some(held), true) {
+                        return;
+                    }
+                }
+            }
             if blockers.is_empty() {
                 self.present_decoded_frame_directly(
                     gpu, final_w, final_h, current_source_secs, q_len,
@@ -6512,6 +6529,20 @@ impl PlaybackEngine {
     /// transfer, the monitor, the compare modes) and the gate is on.
     /// What the layers are is the stack's own business; it declines
     /// what it cannot do and the CPU path takes over.
+    /// Whether the GPU stack would show a playing frame without a
+    /// readback: the viewer's texture is its to write, nothing this
+    /// frame wants the bytes for (a scope pass), and the stack takes
+    /// this project's picture (Rec.709 SDR). The stack itself still
+    /// decides per frame; this is what makes it worth asking first.
+    fn stack_presents_zero_copy(&self) -> bool {
+        self.state == PlaybackState::Playing
+            && should_publish_gpu_viewer()
+            && !self.should_render_scope()
+            && !self.hdr_monitor.renders_hdr()
+            && crate::video_decoder::working_colorspace() == klipp_core::WorkingColorspace::Rec709Linear
+            && self.gpu_composite_allowed()
+    }
+
     /// The viewer's texture for a `w`×`h` frame, when the GPU stack may
     /// write the frame there and skip the readback; see
     /// [`should_publish_gpu_viewer`].
