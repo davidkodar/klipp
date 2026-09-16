@@ -22,6 +22,8 @@ pub mod report;
 pub mod service;
 pub mod shots;
 pub mod store;
+#[cfg(feature = "transcript")]
+pub mod transcript;
 
 use std::path::{Path, PathBuf};
 
@@ -66,7 +68,23 @@ impl AnalysisCtx {
 
 /// Every analyser this build ships, in the order they pay off.
 pub fn analysers() -> Vec<Box<dyn Analyser>> {
-    vec![Box::new(shots::ShotsAnalyser), Box::new(audio::AudioAnalyser)]
+    let mut v: Vec<Box<dyn Analyser>> = vec![Box::new(shots::ShotsAnalyser), Box::new(audio::AudioAnalyser)];
+    #[cfg(feature = "transcript")]
+    v.push(Box::new(transcript::TranscriptAnalyser));
+    v
+}
+
+/// Fetch the models the analysers can use but do not have, when asked.
+/// Nothing is downloaded otherwise: an analyser without its model
+/// simply does not want any item.
+pub fn download_models() -> Result<Vec<String>, String> {
+    let mut got = Vec::new();
+    #[cfg(feature = "transcript")]
+    {
+        transcript::ensure_model(true)?;
+        got.push(transcript::MODEL_ID.to_string());
+    }
+    Ok(got)
 }
 
 /// Run `ffmpeg` with `args` and return its stderr, which is where the

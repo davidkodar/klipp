@@ -52,6 +52,8 @@ pub enum ModelKind {
     MaskGenerator,
     VideoTracker,
     ObjectDetector,
+    /// Speech to text with timestamps: the transcript analyser.
+    Transcriber,
 }
 
 /// Which backend crate runs the model. Lets the registry pick the
@@ -71,6 +73,9 @@ pub enum ModelRuntime {
     Ort,
     /// `klipp-ml-tract` backend (Phase 2+, experimental).
     Tract,
+    /// whisper.cpp through `whisper-rs`, a ggml model file; C++ via
+    /// `unsafe` FFI, built from source.
+    WhisperCpp,
     /// In-process stub used by `StubMaskGenerator` and tests. No
     /// real inference, no network, no weights on disk.
     #[default]
@@ -83,7 +88,7 @@ impl ModelRuntime {
     /// of these is reachable from the default build, so a user / CI
     /// can audit which manifests force a non-default trust boundary.
     pub fn requires_unsafe_ffi(self) -> bool {
-        matches!(self, Self::Ort)
+        matches!(self, Self::Ort | Self::WhisperCpp)
     }
 }
 

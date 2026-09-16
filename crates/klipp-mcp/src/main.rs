@@ -327,6 +327,16 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
             if let Some(id) = args.get("media_id").and_then(|v| v.as_str()) {
                 v["media_id"] = json!(id);
             }
+            if let Some(d) = args.get("download_models").and_then(|v| v.as_bool()) {
+                v["download_models"] = json!(d);
+            }
+            v
+        }
+        "klipp_search_transcripts" => {
+            let mut v = json!({ "method": "search_transcripts", "query": arg_str(args, "query")? });
+            if let Some(n) = args.get("max_hits").and_then(|v| v.as_u64()) {
+                v["max_hits"] = json!(n as usize);
+            }
             v
         }
         "klipp_analysis_status" => json!({ "method": "analysis_status" }),
@@ -615,12 +625,23 @@ fn tool_definitions() -> Vec<Value> {
              vec![]),
         tool("klipp_analyze",
              "Find what is in the footage, in the background: shot boundaries (where the \
-              picture cuts), EBU R128 loudness and true peak, and the spans of silence. \
-              One media item by id, or every file in the pool when media_id is omitted. \
-              Returns at once; poll klipp_analysis_status, then read klipp_media_analysis. \
-              Items already analysed cost nothing. Runs on import too.",
-             json!({ "media_id": { "type": "string", "description": "From klipp_list_media; omit for every item" } }),
+              picture cuts), EBU R128 loudness and true peak, the spans of silence, and \
+              the transcript with word timestamps and the language when the speech model \
+              is downloaded. One media item by id, or every file in the pool when \
+              media_id is omitted. Returns at once; poll klipp_analysis_status, then read \
+              klipp_media_analysis. Items already analysed cost nothing. Runs on import \
+              too, without downloading anything: pass download_models to fetch the \
+              148 MB speech model once, with the user's knowledge.",
+             json!({
+                 "media_id": { "type": "string", "description": "From klipp_list_media; omit for every item" },
+                 "download_models": { "type": "boolean", "description": "Fetch missing models first (the user should know a download happens)" },
+             }),
              vec![]),
+        tool("klipp_search_transcripts",
+             "Find where something is said: every transcript segment containing the query, \
+              case-insensitively, with its media item and its start and end in the file.",
+             json!({ "query": { "type": "string" }, "max_hits": { "type": "integer" } }),
+             vec!["query"]),
         tool("klipp_analysis_status", "Where every requested analysis stands: queued, running, done, failed.",
              json!({}), vec![]),
         tool("klipp_media_analysis",

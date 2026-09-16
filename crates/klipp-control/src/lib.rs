@@ -620,10 +620,11 @@ fn handle(
             Ok(json!({ "fps": fps, "revision": ctx.shared.revision(), "tracks": tracks }))
         }
 
-        ControlCommand::Analyze { media_id } => {
+        ControlCommand::Analyze { media_id, download_models } => {
             if in_batch {
                 return read_in_batch("analyze");
             }
+            let downloaded = if download_models { klipp_analysis::download_models()? } else { Vec::new() };
             let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
             let items: Vec<&klipp_media::MediaItem> = match media_id {
                 Some(id) => {
@@ -633,7 +634,36 @@ fn handle(
                 None => pool.all().filter(|m| m.kind == klipp_media::MediaItemKind::File && !m.offline).collect(),
             };
             let statuses: Vec<klipp_analysis::service::Status> = items.into_iter().map(klipp_analysis::service::request).collect();
-            Ok(json!({ "items": statuses }))
+            Ok(json!({ "items": statuses, "models_downloaded": downloaded }))
+        }
+
+        ControlCommand::SearchTranscripts { query, max_hits } => {
+            if in_batch {
+                return read_in_batch("search_transcripts");
+            }
+            let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
+            let mut hits = Vec::new();
+            let max = max_hits.unwrap_or(50);
+            for m in pool.all() {
+                let report = klipp_analysis::report::MediaAnalysis::load(&m.path);
+                let Some(t) = report.transcript.as_ref() else { continue };
+                for seg in t.search(&query) {
+                    hits.push(json!({
+                        "media_id": m.id.0.to_string(),
+                        "filename": m.filename,
+                        "start_secs": seg.start_secs,
+                        "end_secs": seg.end_secs,
+                        "text": seg.text,
+                    }));
+                    if hits.len() >= max {
+                        break;
+                    }
+                }
+                if hits.len() >= max {
+                    break;
+                }
+            }
+            Ok(json!({ "query": query, "hits": hits }))
         }
 
         ControlCommand::AnalysisStatus => {
@@ -661,6 +691,7 @@ fn handle(
                 "state": status,
                 "shots": report.shots,
                 "audio": report.audio,
+                "transcript": report.transcript,
             }))
         }
 

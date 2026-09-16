@@ -684,6 +684,7 @@ pub fn show_ai_models_dialog(ctx: &egui::Context, state: &mut AppState, theme: &
                         (ModelKind::MaskGenerator, "MASK GENERATOR"),
                         (ModelKind::ObjectDetector, "OBJECT DETECTOR"),
                         (ModelKind::VideoTracker, "VIDEO TRACKER"),
+                        (ModelKind::Transcriber, "TRANSCRIBER"),
                     ];
                     for (kind, header) in kinds_in_order {
                         let entries: Vec<&ModelEntry> = visible_entries
@@ -2802,6 +2803,7 @@ fn kind_label(kind: klipp_ml::manifest::ModelKind) -> &'static str {
         ModelKind::MaskGenerator => "Mask Generator",
         ModelKind::VideoTracker => "Video Tracker",
         ModelKind::ObjectDetector => "Object Detector",
+        ModelKind::Transcriber => "Transcriber",
     }
 }
 

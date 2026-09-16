@@ -14,12 +14,21 @@ publish = false
 # analyser that is missing leaves its fields empty and nothing else
 # changes.
 
+[features]
+# The transcript analyser: whisper.cpp built from source through
+# whisper-rs (cmake and a C++ toolchain). On by default so the app has
+# it; `--no-default-features` leaves the ffmpeg analysers only.
+default = ["transcript"]
+transcript = ["dep:whisper-rs", "dep:klipp-ml"]
+
 [dependencies]
 klipp-core = { workspace = true }
 klipp-media = { workspace = true }
+klipp-ml = { workspace = true, optional = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }
+whisper-rs = { version = "0.16", optional = true }
 
 [lints]
 workspace = true

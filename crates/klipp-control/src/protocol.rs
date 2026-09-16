@@ -147,6 +147,18 @@ pub enum ControlCommand {
     Analyze {
         #[serde(default)]
         media_id: Option<String>,
+        /// Fetch the models the analysers lack first (the transcription
+        /// model, 148 MB); nothing is downloaded otherwise, and an
+        /// analyser without its model is skipped.
+        #[serde(default)]
+        download_models: bool,
+    },
+    /// Segments of every analysed item's transcript containing `query`,
+    /// case-insensitively, with where they are in the file.
+    SearchTranscripts {
+        query: String,
+        #[serde(default)]
+        max_hits: Option<usize>,
     },
     /// Where every requested item stands.
     AnalysisStatus,

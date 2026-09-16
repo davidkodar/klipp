@@ -67,3 +67,27 @@ fn shots_and_silence_are_found_in_a_synthetic_clip() {
     let line = report.clip_summary(0.0, 4.0);
     assert!(line.contains("shots 2") && line.contains("LUFS"), "{line}");
 }
+
+/// Every analyser on a real file named by `KLIPP_ANALYSIS_TRIAL`, the
+/// report printed: a way to see the transcript on real speech, since
+/// no synthesiser is at hand for a fixture. Skipped otherwise.
+#[test]
+fn trial_on_a_real_file_when_asked() {
+    let Ok(path) = std::env::var("KLIPP_ANALYSIS_TRIAL") else { return };
+    let path = PathBuf::from(path);
+    let mut item = klipp_media::MediaItem::synthetic_for_test(path.clone(), None);
+    // ffprobe for the duration: what import would have recorded.
+    let out = std::process::Command::new("ffprobe")
+        .args(["-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0"])
+        .arg(&path)
+        .output()
+        .expect("ffprobe");
+    let secs: f64 = String::from_utf8_lossy(&out.stdout).trim().parse().expect("duration");
+    item.duration = klipp_core::RationalTime::from_secs_f64(secs, 30);
+    item.video_codec = "hevc".into();
+    item.has_audio = true;
+    let t = std::time::Instant::now();
+    let report = klipp_analysis::service::run_now(&item, &AnalysisCtx::default()).expect("run now");
+    eprintln!("analysed {} s of footage in {:.1} s\n{}", secs, t.elapsed().as_secs_f64(), report.text(6000));
+    eprintln!("clip summary: {}", report.clip_summary(0.0, secs));
+}

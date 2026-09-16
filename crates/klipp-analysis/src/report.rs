@@ -8,6 +8,8 @@ use std::fmt::Write as _;
 pub struct MediaAnalysis {
     pub shots: Option<Shots>,
     pub audio: Option<AudioEnvelope>,
+    #[cfg(feature = "transcript")]
+    pub transcript: Option<crate::transcript::Transcript>,
 }
 
 impl MediaAnalysis {
@@ -21,10 +23,21 @@ impl MediaAnalysis {
     pub fn load_key(key: &str) -> Self {
         let shots = crate::store::load(key, crate::shots::ID, crate::shots::VERSION).and_then(|v| serde_json::from_value(v).ok());
         let audio = crate::store::load(key, crate::audio::ID, crate::audio::VERSION).and_then(|v| serde_json::from_value(v).ok());
-        Self { shots, audio }
+        #[cfg(feature = "transcript")]
+        let transcript = crate::store::load(key, crate::transcript::ID, crate::transcript::VERSION).and_then(|v| serde_json::from_value(v).ok());
+        Self {
+            shots,
+            audio,
+            #[cfg(feature = "transcript")]
+            transcript,
+        }
     }
 
     pub fn is_empty(&self) -> bool {
+        #[cfg(feature = "transcript")]
+        if self.transcript.is_some() {
+            return false;
+        }
         self.shots.is_none() && self.audio.is_none()
     }
 
@@ -67,6 +80,30 @@ impl MediaAnalysis {
                 let _ = write!(s, " silence {:.0}%", 100.0 * silence / span);
             }
         }
+        #[cfg(feature = "transcript")]
+        if let Some(t) = &self.transcript {
+            let words = t.words_within(from, to);
+            if !s.is_empty() {
+                s.push_str("  ");
+            }
+            if words.is_empty() {
+                s.push_str("no speech");
+            } else {
+                let spoken: Vec<&str> = words.iter().map(|w| w.text.as_str()).collect();
+                let mut shown = String::new();
+                for w in &spoken {
+                    if shown.chars().count() + w.chars().count() > 70 {
+                        shown.push('…');
+                        break;
+                    }
+                    if !shown.is_empty() {
+                        shown.push(' ');
+                    }
+                    shown.push_str(w);
+                }
+                let _ = write!(s, "speech {} words{}: \"{}\"", words.len(), t.language.as_deref().map(|l| format!(" ({l})")).unwrap_or_default(), shown);
+            }
+        }
         s
     }
 
@@ -99,6 +136,23 @@ impl MediaAnalysis {
                 let _ = writeln!(out, "  silence {:.2}-{:.2} s", sp.start_secs, sp.end_secs);
                 if out.len() > budget_chars {
                     let _ = writeln!(out, "  … {} more", a.silences.len() - i - 1);
+                    break;
+                }
+            }
+        }
+        #[cfg(feature = "transcript")]
+        if let Some(t) = &self.transcript {
+            let _ = writeln!(
+                out,
+                "Transcript ({}): {} segments, {} words",
+                t.language.as_deref().unwrap_or("language unknown"),
+                t.segments.len(),
+                t.words.len()
+            );
+            for (i, seg) in t.segments.iter().enumerate() {
+                let _ = writeln!(out, "  {:.2}-{:.2} s  {}", seg.start_secs, seg.end_secs, seg.text);
+                if out.len() > budget_chars {
+                    let _ = writeln!(out, "  … {} more segments", t.segments.len() - i - 1);
                     break;
                 }
             }

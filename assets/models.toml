@@ -176,3 +176,18 @@ kind = "mask_generator"
 runtime = "ort"
 prompts = ""
 
+# ── Transcription ─────────────────────────────────────────────────────
+
+[[model]]
+id = "whisper_base_ggml"
+display_name = "Whisper Base (whisper.cpp)"
+size_bytes = 147951465
+sha256 = "60ed5bc3dd14eea856493d334349b405782ddcaf0028d4b5df4088345fba2efe"
+license = "MIT"
+attribution = "OpenAI (Whisper); Georgi Gerganov (whisper.cpp, ggml conversion)"
+sources = [
+    { url = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin" },
+]
+prompts = ""
+kind = "transcriber"
+runtime = "whisper_cpp"
