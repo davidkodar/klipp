@@ -986,8 +986,6 @@ impl Renderer {
                 }
             }
             ClipKind::Title(td) => {
-                let over = crate::synth::typewriter_override(td, clip_time);
-                let td = over.as_ref().unwrap_or(td);
                 let mut adapter = self.gpu.as_mut().map(crate::synth::GpuAlphaMaskAdapter);
                 let gpu = adapter.as_mut().map(|a| a as &mut dyn klipp_title::AlphaMaskProcessor);
                 let total = (clip.timeline_out - clip.timeline_in).to_secs_f64() as f32;

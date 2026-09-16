@@ -33,7 +33,21 @@ Each text layer has an entrance and an exit, set in the inspector's **Motion** g
 - **Stagger** — all at once, or by line, word or character, with the gap between units.
 - **Travel** — how far the moving kinds move, as a fraction of the font size.
 
-The templates are built on this model, so a template's motion is fully editable after it is added. The older whole-title animations (scroll, crawl, flash, counter) and the per-character animation remain available in their own groups.
+Below the entrance and exit sit the layer's **Loops**: what it keeps doing while it is on screen. Add as many as you like from the **+ Add** list, each with its own timing, and they all run at once on top of the entrance and exit, so a credits roll can fade in, scroll and fade out, and an alert can blink while it slides in:
+
+| Loop | What it does |
+|---|---|
+| Scroll | The layer travels up or down through the frame. A speed of 0 fits the travel to the clip. |
+| Crawl | The layer travels across the frame, left or right, optionally repeating. |
+| Blink | Hard on and off at a rate, visible for a fraction of each period. |
+| Pulse | A smooth swell between a minimum opacity and full. |
+| Shake | The whole layer jitters, in font sizes. |
+| Wave | Each glyph bobs on a travelling sine. |
+| Colour cycle | The fill hue rotates. |
+| Colour blend | The fill swings between two colours. |
+| Counter | The text becomes a number counting from one value to another. |
+
+The templates are built on this model, so a template's motion is fully editable after it is added. Projects saved by earlier versions, which had a single whole-title animation and a separate per-character animation, are converted to entrances, exits and loops when they open.
 
 ## Text Properties
 

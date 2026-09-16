@@ -3323,15 +3323,16 @@ fn short_clip_id(id: &klipp_core::ClipId) -> String {
 /// holds. Only positional animations and typewriter-style
 /// reveals are caveat-worthy.
 fn title_data_has_animated_chars(td: &klipp_timeline::TitleData) -> bool {
-    use klipp_timeline::TitleAnimationType as Anim;
-    let title_level_animated = matches!(
-        td.animation_type,
-        Anim::ScrollUp { .. } | Anim::ScrollDown { .. }
-        | Anim::CrawlLeft { .. } | Anim::CrawlRight { .. }
-        | Anim::Typewriter { .. }
-    );
-    let char_level_animated = td.char_animation().is_some();
-    title_level_animated || char_level_animated
+    use klipp_timeline::{MotionKind, TitleLoop, TitleObjectContent};
+    td.objects.iter().any(|o| match &o.content {
+        TitleObjectContent::TextBox(tb) => {
+            let moves = |m: &klipp_timeline::Motion| !matches!(m.kind, MotionKind::Fade | MotionKind::Blur);
+            tb.motion.enter.as_ref().is_some_and(moves)
+                || tb.motion.exit.as_ref().is_some_and(moves)
+                || tb.loops.iter().any(|l| matches!(l, TitleLoop::Scroll { .. } | TitleLoop::Crawl { .. } | TitleLoop::Shake { .. } | TitleLoop::Wave { .. }))
+        }
+        _ => false,
+    })
 }
 
 fn show_ken_burns_section(ui: &mut egui::Ui, theme: &KlippTheme, clip: &Clip, cmds: &mut Vec<AppCommand>) {

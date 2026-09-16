@@ -5,8 +5,8 @@ use crate::state::AppState;
 use crate::theme::KlippTheme;
 use klipp_core::AppCommand;
 use klipp_timeline::{
-    FontStyle, TextAlignment, TitleAnimationType, TitleBackground, TitleData,
-    TitlePosition, TitleShadow,
+    FontStyle, ScrollDirection, TextAlignment, TitleAnimationType, TitleBackground, TitleData,
+    TitleLoop, TitlePosition, TitleShadow,
 };
 
 /// Preview canvas background used behind every title card. The user
@@ -45,16 +45,8 @@ pub(crate) struct TitleTemplate {
     #[allow(dead_code)]
     pub preview_text: &'static str,
     pub create_data: fn() -> TitleData,
-    /// Animation identifier applied when clip is created. None = static (no animation).
-    pub animation: Option<&'static str>,
 }
 
-/// Test-only handle to the TITLES registry so cross-module tests can
-/// walk every template's create_data and verify the contract that
-/// every animated template actually animates after going through the
-/// clip-creation path. Production code uses the private `TITLES`.
-#[cfg(test)]
-pub(crate) const TITLES_FOR_TESTS: &[TitleTemplate] = TITLES;
 
 // ---------------------------------------------------------------------------
 // The curated set: every template designed on the bundled faces, placed
@@ -352,7 +344,9 @@ fn cr_roll() -> TitleData {
         lifted(face("Director\n[Name]\n\nProducer\n[Name]\n\nEditor\n[Name]", GRO, FontStyle::Regular, 36.0, WHITE, TextAlignment::Center)),
         0.5, 0.5, 0.5,
     )]);
-    td.animation_type = TitleAnimationType::ScrollUp { speed_px_per_sec: 60.0 };
+    if let Some(tb) = td.primary_text_mut() {
+        tb.loops.push(TitleLoop::Scroll { direction: ScrollDirection::Up, speed_px_per_sec: 60.0 });
+    }
     td
 }
 
@@ -442,31 +436,31 @@ fn ut_label() -> TitleData {
 }
 
 const TITLES: &[TitleTemplate] = &[
-    TitleTemplate { name: "Name Bar", category: "Lower Thirds", preview_text: "[Name]", create_data: lt_name_bar, animation: None },
-    TitleTemplate { name: "Clean Line", category: "Lower Thirds", preview_text: "[Name]", create_data: lt_clean_line, animation: None },
-    TitleTemplate { name: "Broadcast", category: "Lower Thirds", preview_text: "[Name]", create_data: lt_broadcast, animation: None },
-    TitleTemplate { name: "Documentary", category: "Lower Thirds", preview_text: "[Name]", create_data: lt_documentary, animation: None },
-    TitleTemplate { name: "Location", category: "Lower Thirds", preview_text: "[City, Country]", create_data: lt_location, animation: None },
-    TitleTemplate { name: "Cinematic", category: "Openers", preview_text: "[Title]", create_data: op_cinematic, animation: None },
-    TitleTemplate { name: "Impact", category: "Openers", preview_text: "[BIG TITLE]", create_data: op_impact, animation: None },
-    TitleTemplate { name: "Editorial", category: "Openers", preview_text: "[Headline]", create_data: op_editorial, animation: None },
-    TitleTemplate { name: "Minimal", category: "Openers", preview_text: "[Title]", create_data: op_minimal, animation: None },
-    TitleTemplate { name: "Chapter", category: "Openers", preview_text: "[Chapter title]", create_data: op_chapter, animation: None },
-    TitleTemplate { name: "Statement", category: "Openers", preview_text: "[BOLD STATEMENT]", create_data: op_statement, animation: None },
-    TitleTemplate { name: "Quote", category: "Captions", preview_text: "[Quote]", create_data: cap_quote, animation: None },
-    TitleTemplate { name: "Caption", category: "Captions", preview_text: "[Caption]", create_data: cap_caption, animation: None },
-    TitleTemplate { name: "Subtitle", category: "Captions", preview_text: "[Subtitle]", create_data: cap_subtitle, animation: None },
-    TitleTemplate { name: "Callout", category: "Captions", preview_text: "[Callout]", create_data: cap_callout, animation: None },
-    TitleTemplate { name: "Credits Roll", category: "Credits", preview_text: "Director", create_data: cr_roll, animation: None },
-    TitleTemplate { name: "End Card", category: "Credits", preview_text: "The End", create_data: cr_end_card, animation: None },
-    TitleTemplate { name: "Cast", category: "Credits", preview_text: "[Name]", create_data: cr_cast, animation: None },
-    TitleTemplate { name: "Hook", category: "Social", preview_text: "[HOOK LINE]", create_data: so_hook, animation: None },
-    TitleTemplate { name: "Handle", category: "Social", preview_text: "@yourhandle", create_data: so_handle, animation: None },
-    TitleTemplate { name: "Subscribe", category: "Social", preview_text: "Subscribe", create_data: so_subscribe, animation: None },
-    TitleTemplate { name: "Slate", category: "Utility", preview_text: "PROJECT", create_data: ut_slate, animation: None },
-    TitleTemplate { name: "Timecode", category: "Utility", preview_text: "00:00:00:00", create_data: ut_timecode, animation: None },
-    TitleTemplate { name: "Watermark", category: "Utility", preview_text: "[Brand]", create_data: ut_watermark, animation: None },
-    TitleTemplate { name: "Label", category: "Utility", preview_text: "[Label]", create_data: ut_label, animation: None },
+    TitleTemplate { name: "Name Bar", category: "Lower Thirds", preview_text: "[Name]", create_data: lt_name_bar },
+    TitleTemplate { name: "Clean Line", category: "Lower Thirds", preview_text: "[Name]", create_data: lt_clean_line },
+    TitleTemplate { name: "Broadcast", category: "Lower Thirds", preview_text: "[Name]", create_data: lt_broadcast },
+    TitleTemplate { name: "Documentary", category: "Lower Thirds", preview_text: "[Name]", create_data: lt_documentary },
+    TitleTemplate { name: "Location", category: "Lower Thirds", preview_text: "[City, Country]", create_data: lt_location },
+    TitleTemplate { name: "Cinematic", category: "Openers", preview_text: "[Title]", create_data: op_cinematic },
+    TitleTemplate { name: "Impact", category: "Openers", preview_text: "[BIG TITLE]", create_data: op_impact },
+    TitleTemplate { name: "Editorial", category: "Openers", preview_text: "[Headline]", create_data: op_editorial },
+    TitleTemplate { name: "Minimal", category: "Openers", preview_text: "[Title]", create_data: op_minimal },
+    TitleTemplate { name: "Chapter", category: "Openers", preview_text: "[Chapter title]", create_data: op_chapter },
+    TitleTemplate { name: "Statement", category: "Openers", preview_text: "[BOLD STATEMENT]", create_data: op_statement },
+    TitleTemplate { name: "Quote", category: "Captions", preview_text: "[Quote]", create_data: cap_quote },
+    TitleTemplate { name: "Caption", category: "Captions", preview_text: "[Caption]", create_data: cap_caption },
+    TitleTemplate { name: "Subtitle", category: "Captions", preview_text: "[Subtitle]", create_data: cap_subtitle },
+    TitleTemplate { name: "Callout", category: "Captions", preview_text: "[Callout]", create_data: cap_callout },
+    TitleTemplate { name: "Credits Roll", category: "Credits", preview_text: "Director", create_data: cr_roll },
+    TitleTemplate { name: "End Card", category: "Credits", preview_text: "The End", create_data: cr_end_card },
+    TitleTemplate { name: "Cast", category: "Credits", preview_text: "[Name]", create_data: cr_cast },
+    TitleTemplate { name: "Hook", category: "Social", preview_text: "[HOOK LINE]", create_data: so_hook },
+    TitleTemplate { name: "Handle", category: "Social", preview_text: "@yourhandle", create_data: so_handle },
+    TitleTemplate { name: "Subscribe", category: "Social", preview_text: "Subscribe", create_data: so_subscribe },
+    TitleTemplate { name: "Slate", category: "Utility", preview_text: "PROJECT", create_data: ut_slate },
+    TitleTemplate { name: "Timecode", category: "Utility", preview_text: "00:00:00:00", create_data: ut_timecode },
+    TitleTemplate { name: "Watermark", category: "Utility", preview_text: "[Brand]", create_data: ut_watermark },
+    TitleTemplate { name: "Label", category: "Utility", preview_text: "[Label]", create_data: ut_label },
 ];
 
 /// Ordered list of categories for display.
@@ -885,7 +879,6 @@ fn handle_title_interaction(
     if resp.double_clicked() {
         let title_data = (title.create_data)();
         state.pending_title_data = Some(title_data);
-        state.pending_title_animation = title.animation.map(|s| s.to_string());
         let ph = state.playhead;
         let track_index = state.sequences[state.active_sequence_idx]
             .tracks
@@ -931,7 +924,6 @@ fn handle_title_interaction(
         state.drag_drop.begin(DragPayload::Title {
             template_name: title.name.to_string(),
             title_data: data,
-            animation: title.animation.map(|s| s.to_string()),
         });
     }
 }
@@ -1029,11 +1021,10 @@ fn preview_data(title: &TitleTemplate, text: &str) -> TitleData {
 /// Whether any layer of the template moves.
 fn template_is_animated(title: &TitleTemplate) -> bool {
     let td = (title.create_data)();
-    !matches!(td.animation_type, TitleAnimationType::Static)
-        || td.objects.iter().any(|o| match &o.content {
-            TitleObjectContent::TextBox(tb) => tb.motion.is_active() || tb.char_animation.is_some(),
-            _ => false,
-        })
+    td.objects.iter().any(|o| match &o.content {
+        TitleObjectContent::TextBox(tb) => tb.motion.is_active() || !tb.loops.is_empty(),
+        _ => false,
+    })
 }
 
 // ──────────────────────────── Animation tracking ────────────────────────────
@@ -1718,37 +1709,6 @@ mod tests {
     /// in the browser but dropped static text into the timeline.
     /// This test pins the contract that the animation badge means
     /// the template actually does something at render time.
-    #[test]
-    fn every_animated_template_actually_animates() {
-        for tpl in TITLES {
-            if tpl.animation.is_none() {
-                continue;
-            }
-            let td = (tpl.create_data)();
-            let has_animation_type =
-                !matches!(td.animation_type, klipp_timeline::TitleAnimationType::Static);
-            let has_text_effect = td.objects.iter().any(|obj| {
-                if let klipp_timeline::TitleObjectContent::TextBox(tb) = &obj.content {
-                    tb.glitch_intensity > 0.0
-                        || tb.chromatic_aberration_px > 0.0
-                        || tb.char_animation.is_some()
-                } else {
-                    false
-                }
-            });
-            assert!(
-                has_animation_type || has_text_effect,
-                "Template '{}' (category '{}') claims animation '{:?}' but its create_data \
-                 returns a fully-static title — set TitleData::animation_type or a TextBox \
-                 effect field, or change `animation` to None.",
-                tpl.name, tpl.category, tpl.animation,
-            );
-        }
-    }
-
-    /// Every template's stated category must appear in the
-    /// `CATEGORIES` sidebar list, otherwise the template is
-    /// invisible in the browser.
     #[test]
     fn every_template_category_is_in_sidebar() {
         for tpl in TITLES {

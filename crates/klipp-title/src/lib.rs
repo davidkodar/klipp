@@ -31,7 +31,7 @@ use fontdue::layout::{
 };
 use fontdue::Font;
 use klipp_timeline::{
-    CharAnimation, CharEntrance, FontStyle, ObjectTransform, Shape, ShapeKind, StyleRun,
+    FontStyle, ObjectTransform, Shape, ShapeKind, StyleRun,
     TextAlignment, TextDirection, TextPath, TextPattern, TitleBackground, TitleData,
     TitleObjectContent,
 };
@@ -150,6 +150,12 @@ pub struct TitleRenderer {
     /// The clip's length while rendering with `render_with_window`,
     /// which exit motion counts back from. `None` outside a clip.
     motion_window: Option<f32>,
+    /// Per-glyph wave of the layer being rendered, from its `Wave`
+    /// loop: (amplitude px, rate Hz). Set by `render_inner` per object.
+    loop_wave: Option<(f32, f32)>,
+    /// The waves of every layer of the title being rendered, by
+    /// object id; filled by `render_with_time`.
+    loop_waves: HashMap<u32, (f32, f32)>,
 }
 
 const RENDER_CACHE_CAP: usize = 4;
@@ -176,6 +182,8 @@ impl TitleRenderer {
             texture_fill_cache: None,
             render_cache: Vec::with_capacity(RENDER_CACHE_CAP),
             motion_window: None,
+            loop_wave: None,
+            loop_waves: HashMap::new(),
         }
     }
 
@@ -672,9 +680,9 @@ impl TitleRenderer {
         };
         let mask_x0 = ((text_min_x + offset_x).floor() as i32 - max_pad).max(0) as usize;
         let mask_y0 = ((text_min_y + offset_y).floor() as i32 - max_pad).max(0) as usize;
-        let mask_x1 = ((text_max_x + offset_x).ceil() as i32 + max_pad + 1).min(w as i32) as usize;
+        let mask_x1 = ((text_max_x + offset_x).ceil() as i32 + max_pad + 1).clamp(0, w as i32) as usize;
         let mask_y1 = ((text_max_y + offset_y).ceil() as i32 + max_pad + underline_pad + 1)
-            .min(h as i32) as usize;
+            .clamp(0, h as i32) as usize;
         let mask_w = mask_x1.saturating_sub(mask_x0);
         let mask_h = mask_y1.saturating_sub(mask_y0);
 
@@ -700,21 +708,13 @@ impl TitleRenderer {
         // rest of the pipeline (compose, outline, shadow, glow,
         // texture fill) consumes the resulting mask unmodified.
         let mut alpha_mask = vec![0u8; mask_w * mask_h];
-        match (time_secs, tb.char_animation.as_ref().filter(|c| c.enabled)) {
-            (Some(t), _) if tb.motion.is_active() => {
+        match time_secs {
+            Some(t) if tb.motion.is_active() || self.loop_wave.is_some() => {
                 rasterize_to_mask_motion(
                     font, glyphs,
                     offset_x, offset_y,
                     &mut alpha_mask, mask_w, mask_h, mask_x0, mask_y0,
-                    &tb.motion, t, font_px, self.motion_window,
-                );
-            }
-            (Some(t), Some(ca)) => {
-                rasterize_to_mask_animated(
-                    font, glyphs,
-                    offset_x, offset_y,
-                    &mut alpha_mask, mask_w, mask_h, mask_x0, mask_y0,
-                    ca, t, font_px,
+                    &tb.motion, t, font_px, self.motion_window, self.loop_wave,
                 );
             }
             _ => {
@@ -1318,28 +1318,11 @@ impl TitleRenderer {
         // cache every frame.
         let any_char_anim = title.objects.iter().any(|o| {
             if let TitleObjectContent::TextBox(tb) = &o.content {
-                tb.char_animation.as_ref().is_some_and(|c| c.enabled) || tb.motion.is_active()
+                tb.motion.is_active() || !tb.loops.is_empty()
             } else {
                 false
             }
         });
-        // Detect every per-frame override the renderer applies on
-        // top of `title`. We compute them up front so a single
-        // clone (when any are active) can apply all of them.
-        let color_cycle_rate = match title.animation_type {
-            klipp_timeline::TitleAnimationType::ColorCycle { rate_hz } => Some(rate_hz),
-            _ => None,
-        };
-        let color_blend = match title.animation_type {
-            klipp_timeline::TitleAnimationType::ColorBlend { color_a, color_b, rate_hz } => {
-                Some((color_a, color_b, rate_hz))
-            }
-            _ => None,
-        };
-        let outline_draw_on_dur = match title.animation_type {
-            klipp_timeline::TitleAnimationType::OutlineDrawOn { duration_secs } => Some(duration_secs),
-            _ => None,
-        };
 
         // Glitch is per-frame (deterministic seed bound to clip
         // time, but pattern shifts ~12 times/sec) so it bypasses
@@ -1417,9 +1400,6 @@ impl TitleRenderer {
         });
 
         let any_render_time_override = any_char_anim
-            || color_cycle_rate.is_some()
-            || color_blend.is_some()
-            || outline_draw_on_dur.is_some()
             || any_glitch_active
             || any_position_keyframes
             || any_glow_keyframes
@@ -1440,43 +1420,44 @@ impl TitleRenderer {
         // Build a one-frame derived TitleData that applies every
         // active render-time override. The clone is bounded to
         // exactly one allocation per render call.
+        // The loops of every layer, folded into a one-frame copy of
+        // the title: opacity, offset, colour and counter text on the
+        // object, the wave kept aside for the glyph rasteriser.
+        self.loop_waves.clear();
         let derived: TitleData = {
             let mut td = title.clone();
-            // ColorCycle: hue-rotate the resting colour.
-            if let Some(rate) = color_cycle_rate {
-                let resting = title.color();
-                let (_, sat, val) = rgba_u8_to_hsv(resting);
-                let hue = (time_secs * rate * 360.0).rem_euclid(360.0);
-                let new_color = hsv_to_rgba_u8(hue, sat, val, resting[3]);
-                for obj in &mut td.objects {
-                    if let TitleObjectContent::TextBox(tb) = &mut obj.content {
-                        tb.color = new_color;
-                    }
+            let scale = height as f32 / 1080.0;
+            for obj in &mut td.objects {
+                let TitleObjectContent::TextBox(tb) = &mut obj.content else { continue };
+                if tb.loops.is_empty() {
+                    continue;
                 }
-            }
-            // ColorBlend: lerp between two user-chosen colours.
-            if let Some((color_a, color_b, rate)) = color_blend {
-                let phase = time_secs * rate * std::f32::consts::TAU;
-                let mix = 0.5 + 0.5 * phase.sin();
-                let new_color = lerp_rgba_u8(color_a, color_b, mix);
-                for obj in &mut td.objects {
-                    if let TitleObjectContent::TextBox(tb) = &mut obj.content {
-                        tb.color = new_color;
-                    }
-                }
-            }
-            // OutlineDrawOn: ramp `outline_write_on` 0 → 1 over the
-            // configured duration.
-            if let Some(dur) = outline_draw_on_dur {
-                let progress = if dur <= 0.0 {
-                    1.0
-                } else {
-                    (time_secs / dur).clamp(0.0, 1.0)
+                let font_px = tb.font_size * scale;
+                let lines = tb.text.lines().count().max(1) as f32;
+                let max_chars = tb.text.lines().map(|l| l.chars().count()).max().unwrap_or(0).max(1) as f32;
+                let geo = klipp_timeline::LoopGeometry {
+                    frame_w: width as f32,
+                    frame_h: height as f32,
+                    text_w: max_chars * font_px * 0.55,
+                    text_h: lines * font_px * tb.line_spacing.max(0.5) * 1.4,
+                    font_px,
                 };
-                for obj in &mut td.objects {
-                    if let TitleObjectContent::TextBox(tb) = &mut obj.content {
-                        tb.outline_write_on = progress;
-                    }
+                let pose = klipp_core::title_motion::eval_loops(&tb.loops, time_secs, self.motion_window, geo, tb.color);
+                obj.opacity *= pose.opacity;
+                if obj.opacity <= 0.001 {
+                    obj.visible = false;
+                    continue;
+                }
+                obj.transform.center.x += pose.dx / width as f32;
+                obj.transform.center.y += pose.dy / height as f32;
+                if let Some(c) = pose.color {
+                    tb.color = c;
+                }
+                if let Some(text) = pose.text {
+                    tb.text = text;
+                }
+                if let Some(w) = pose.wave {
+                    self.loop_waves.insert(obj.id.0, w);
                 }
             }
             td
@@ -1501,7 +1482,9 @@ impl TitleRenderer {
         } else {
             None
         };
-        self.render_inner(&derived, width, height, gpu, time_arg)
+        let out = self.render_inner(&derived, width, height, gpu, time_arg);
+        self.loop_waves.clear();
+        out
     }
 
     /// Object-model composition: walk every layer in the title (back
@@ -1570,6 +1553,7 @@ impl TitleRenderer {
                     if let Some(o) = single.objects.first_mut() {
                         o.transform = effective_transform;
                     }
+                    self.loop_wave = self.loop_waves.get(&obj.id.0).copied();
                     let layer = self.render_text_layer(
                         &single,
                         width,
@@ -1577,6 +1561,7 @@ impl TitleRenderer {
                         gpu_for_first_text.take(),
                         time_secs,
                     );
+                    self.loop_wave = None;
                     if (obj.opacity - 1.0).abs() < 0.001 {
                         over_blend(&mut buf, &layer);
                     } else {
@@ -2605,63 +2590,8 @@ fn layout_drop_cap_wrap(
     out
 }
 
-/// Linearly interpolate two RGBA-u8 colours. `t = 0` returns `a`,
-/// `t = 1` returns `b`. Used by the two-colour blend animation.
-fn lerp_rgba_u8(a: [u8; 4], b: [u8; 4], t: f32) -> [u8; 4] {
-    let t = t.clamp(0.0, 1.0);
-    [
-        (a[0] as f32 * (1.0 - t) + b[0] as f32 * t).round().clamp(0.0, 255.0) as u8,
-        (a[1] as f32 * (1.0 - t) + b[1] as f32 * t).round().clamp(0.0, 255.0) as u8,
-        (a[2] as f32 * (1.0 - t) + b[2] as f32 * t).round().clamp(0.0, 255.0) as u8,
-        (a[3] as f32 * (1.0 - t) + b[3] as f32 * t).round().clamp(0.0, 255.0) as u8,
-    ]
-}
 
-/// HSV → RGBA-u8. Hue in degrees [0, 360), sat / val in [0, 1].
-fn hsv_to_rgba_u8(h: f32, s: f32, v: f32, alpha: u8) -> [u8; 4] {
-    let h = h.rem_euclid(360.0);
-    let s = s.clamp(0.0, 1.0);
-    let v = v.clamp(0.0, 1.0);
-    let c = v * s;
-    let h_prime = h / 60.0;
-    let x = c * (1.0 - (h_prime.rem_euclid(2.0) - 1.0).abs());
-    let (r1, g1, b1) = match h_prime as i32 {
-        0 => (c, x, 0.0),
-        1 => (x, c, 0.0),
-        2 => (0.0, c, x),
-        3 => (0.0, x, c),
-        4 => (x, 0.0, c),
-        _ => (c, 0.0, x),
-    };
-    let m = v - c;
-    [
-        ((r1 + m) * 255.0).round().clamp(0.0, 255.0) as u8,
-        ((g1 + m) * 255.0).round().clamp(0.0, 255.0) as u8,
-        ((b1 + m) * 255.0).round().clamp(0.0, 255.0) as u8,
-        alpha,
-    ]
-}
 
-/// RGBA-u8 → HSV (returning hue degrees, sat 0..1, val 0..1).
-fn rgba_u8_to_hsv(rgba: [u8; 4]) -> (f32, f32, f32) {
-    let r = rgba[0] as f32 / 255.0;
-    let g = rgba[1] as f32 / 255.0;
-    let b = rgba[2] as f32 / 255.0;
-    let max = r.max(g).max(b);
-    let min = r.min(g).min(b);
-    let delta = max - min;
-    let h = if delta < 1e-6 {
-        0.0
-    } else if (max - r).abs() < 1e-6 {
-        60.0 * (((g - b) / delta).rem_euclid(6.0))
-    } else if (max - g).abs() < 1e-6 {
-        60.0 * ((b - r) / delta + 2.0)
-    } else {
-        60.0 * ((r - g) / delta + 4.0)
-    };
-    let s = if max < 1e-6 { 0.0 } else { delta / max };
-    (h, s, max)
-}
 
 /// Multiply the alpha channel of every pixel in a layer by `factor`
 /// (clamped to 0..1). Used to apply per-object opacity to a fully-
@@ -3197,6 +3127,7 @@ fn rasterize_to_mask_motion(
     time_secs: f32,
     base_font_px: f32,
     window_secs: Option<f32>,
+    wave: Option<(f32, f32)>,
 ) {
     let enter_units = motion_units(glyphs, motion.enter.map(|m| m.stagger).unwrap_or_default());
     let exit_units = motion_units(glyphs, motion.exit.map(|m| m.stagger).unwrap_or_default());
@@ -3214,8 +3145,12 @@ fn rasterize_to_mask_motion(
         if alpha <= 0.001 {
             continue;
         }
+        let wave_dy = match wave {
+            Some((amp, rate)) => (time_secs * rate * std::f32::consts::TAU + i as f32 * 0.5).sin() * amp,
+            None => 0.0,
+        };
         let dx = dx1 + dx2;
-        let dy = dy1 + dy2;
+        let dy = dy1 + dy2 + wave_dy;
         let scale = s1 * s2;
         let sigma = b1.max(b2);
         let clip_to_rest = c1 || c2;
@@ -3255,163 +3190,6 @@ fn rasterize_to_mask_motion(
             for col in 0..raw_w {
                 let px_ = gx + col as i32;
                 let mx = px_ - mask_x0 as i32;
-                if mx < 0 || mx >= mask_w as i32 {
-                    continue;
-                }
-                let cov = coverage[row * raw_w + col];
-                if cov == 0 {
-                    continue;
-                }
-                let scaled_cov = (cov as f32 * alpha).round() as u8;
-                if scaled_cov == 0 {
-                    continue;
-                }
-                let idx = my as usize * mask_w + mx as usize;
-                mask[idx] = mask[idx].max(scaled_cov);
-            }
-        }
-    }
-}
-
-/// Rasterize the alpha mask with `CharAnimation` applied per-glyph.
-///
-/// For each glyph i, compute a `local_t ∈ [0, 1]` from
-/// `(time_secs - i × stagger) / entrance_dur` and use it to drive
-/// the entrance pose (alpha, offset, scale) for that glyph alone.
-/// Glyphs whose `local_t < 0` are not yet visible (entrance hasn't
-/// started); glyphs whose `local_t = 1` are fully resting at their
-/// final pose.
-///
-/// `entrance_dur` is the length of each glyph's entrance ramp. We
-/// hard-code 0.4 s as a sensible default — the field is reserved on
-/// `CharAnimation` for a future per-instance override.
-///
-/// Wave oscillation (when `wave_amplitude > 0`) is layered on top of
-/// the entrance pose as a steady sinusoidal y-bob, matching the
-/// browser hover preview's behaviour so the editor and the player
-/// agree on what the title looks like.
-#[allow(clippy::too_many_arguments)]
-fn rasterize_to_mask_animated(
-    font: &Font,
-    glyphs: &[fontdue::layout::GlyphPosition],
-    offset_x: f32,
-    offset_y: f32,
-    mask: &mut [u8],
-    mask_w: usize,
-    mask_h: usize,
-    mask_x0: usize,
-    mask_y0: usize,
-    char_anim: &CharAnimation,
-    time_secs: f32,
-    base_font_px: f32,
-) {
-    // Per-frame keyframes: each param may animate via its own kf vec.
-    // Empty vecs short-circuit to the static field (no-overhead path).
-    let t_secs = time_secs as f64;
-    let stagger = char_anim.evaluated_stagger(t_secs).max(0.0);
-    const ENTRANCE_DUR: f32 = 0.4;
-    let amp = char_anim.evaluated_wave_amplitude(t_secs);
-    let speed = char_anim.evaluated_wave_speed(t_secs);
-
-    for (i, glyph) in glyphs.iter().enumerate() {
-        if glyph.width == 0 || glyph.height == 0 {
-            continue;
-        }
-        let glyph_start = i as f32 * stagger;
-        let local_t = ((time_secs - glyph_start) / ENTRANCE_DUR).clamp(0.0, 1.0);
-
-        let wave_dy = if amp > 0.0 {
-            let phase = time_secs * speed * std::f32::consts::TAU + i as f32 * 0.5;
-            phase.sin() * amp * 0.3
-        } else {
-            0.0
-        };
-
-        let (alpha, dx, dy, scale) = match char_anim.entrance {
-            CharEntrance::None => (1.0, 0.0, 0.0, 1.0),
-            CharEntrance::FadeIn => (local_t, 0.0, 0.0, 1.0),
-            CharEntrance::SlideUp => (local_t, 0.0, (1.0 - local_t) * base_font_px * 0.5, 1.0),
-            CharEntrance::SlideDown => (local_t, 0.0, -(1.0 - local_t) * base_font_px * 0.5, 1.0),
-            CharEntrance::SlideLeft => (local_t, (1.0 - local_t) * base_font_px * 0.5, 0.0, 1.0),
-            CharEntrance::SlideRight => (local_t, -(1.0 - local_t) * base_font_px * 0.5, 0.0, 1.0),
-            CharEntrance::ScaleUp => (local_t, 0.0, 0.0, local_t.max(0.05)),
-            CharEntrance::ScaleDown => {
-                // Settle from 2× → 1×; clamp to keep the first frame
-                // from ballooning beyond the canvas.
-                (local_t, 0.0, 0.0, (2.0 - local_t).clamp(1.0, 2.0))
-            }
-            CharEntrance::Pop => {
-                // Overshoot scale: 0 → 1.4 (peak at local_t=0.6) → 1.0.
-                // Per-glyph version of the title-level BounceIn.
-                let scale = if local_t < 0.6 {
-                    // 0 .. 0.6 → ramp 0 → 1.4
-                    local_t / 0.6 * 1.4
-                } else {
-                    // 0.6 .. 1.0 → settle 1.4 → 1.0
-                    1.4 - (local_t - 0.6) / 0.4 * 0.4
-                };
-                (local_t, 0.0, 0.0, scale.max(0.05))
-            }
-            CharEntrance::BlurIn => {
-                // Real Gaussian blur entrance. Glyph renders at full
-                // scale; the per-glyph coverage gets a separable
-                // blur with sigma scaling 1.0 → 0 across local_t,
-                // so the glyph diffuses out at t=0 and snaps into
-                // sharp focus by t=1. Alpha ramps with local_t.
-                (local_t, 0.0, 0.0, 1.0)
-            }
-        };
-        if alpha <= 0.001 {
-            continue;
-        }
-
-        // For non-trivial scale we re-rasterize the glyph at the
-        // scaled size — fontdue's per-config cache only covers the
-        // base font size, so each scaled raster is a fresh kernel
-        // call. This is bounded: once the entrance ramp is over
-        // (local_t = 1) every glyph's scale settles to 1.0 and we
-        // fall back to the fast cached path.
-        let (coverage_base, base_w, base_h) = if (scale - 1.0).abs() > 0.001 {
-            let scaled_px = (base_font_px * scale).max(1.0);
-            let (m, cov) = font.rasterize(glyph.parent, scaled_px);
-            (cov, m.width, m.height)
-        } else {
-            let (_, cov) = font.rasterize_config(glyph.key);
-            (cov.to_vec(), glyph.width, glyph.height)
-        };
-
-        // BlurIn during entrance: apply a separable Gaussian blur
-        // to the coverage buffer with sigma scaling 1→0 across
-        // local_t. The blurred buffer expands by `ceil(2.5σ)` on
-        // every side so the soft tail doesn't get clipped at the
-        // original glyph bounds; gx/gy below recentre on the cell.
-        let (coverage, raw_w, raw_h) = if matches!(char_anim.entrance, CharEntrance::BlurIn)
-            && local_t < 0.999
-        {
-            let sigma = (1.0 - local_t) * base_font_px * 0.10;
-            gaussian_blur_expand(&coverage_base, base_w, base_h, sigma)
-        } else {
-            (coverage_base, base_w, base_h)
-        };
-
-        // Centre the (possibly scaled) glyph on the static glyph's
-        // visual midpoint plus the entrance offset, so scale changes
-        // pivot around the glyph centre rather than the top-left
-        // corner.
-        let cx = glyph.x + offset_x + dx + glyph.width as f32 * 0.5;
-        let cy = glyph.y + offset_y + dy + wave_dy + glyph.height as f32 * 0.5;
-        let gx = (cx - raw_w as f32 * 0.5).round() as i32;
-        let gy = (cy - raw_h as f32 * 0.5).round() as i32;
-
-        for row in 0..raw_h {
-            let py = gy + row as i32;
-            let my = py - mask_y0 as i32;
-            if my < 0 || my >= mask_h as i32 {
-                continue;
-            }
-            for col in 0..raw_w {
-                let px = gx + col as i32;
-                let mx = px - mask_x0 as i32;
                 if mx < 0 || mx >= mask_w as i32 {
                     continue;
                 }
@@ -4391,11 +4169,11 @@ mod tests {
 
         // Animation: half-drawn vs fully-drawn.
         let mut td_half = td.clone();
-        td_half.animation_type = klipp_timeline::TitleAnimationType::OutlineDrawOn {
-            duration_secs: 1.0,
-        };
+        if let Some(tb) = td_half.primary_text_mut() {
+            tb.outline_write_on = 0.5;
+        }
         let buf_half = renderer.render_with_time(&td_half, 1280, 720, None, 0.5);
-        let buf_full = renderer.render_with_time(&td_half, 1280, 720, None, 2.0);
+        let buf_full = renderer.render_with_time(&td, 1280, 720, None, 2.0);
 
         let n_half = count_red(&buf_half);
         let n_full = count_red(&buf_full);
@@ -4418,11 +4196,11 @@ mod tests {
             ..Default::default()
         };
         let mut td = klipp_timeline::TitleData::single_text(tb);
-        td.animation_type = klipp_timeline::TitleAnimationType::ColorBlend {
+        td.primary_text_mut().unwrap().loops.push(klipp_timeline::TitleLoop::ColorBlend {
             color_a: [255, 0, 0, 255],
             color_b: [0, 0, 255, 255],
             rate_hz: 1.0,
-        };
+        });
         let frame_t0 = renderer.render_with_time(&td, 1280, 720, None, 0.0);
         let frame_t_quarter = renderer.render_with_time(&td, 1280, 720, None, 0.25); // peak at sin = 1, mix = 1.0 → pure B
         let first_visible_rgb = |buf: &[u8]| -> Option<[u8; 3]> {
@@ -4517,7 +4295,7 @@ mod tests {
             ..Default::default()
         };
         let mut td = klipp_timeline::TitleData::single_text(tb);
-        td.animation_type = klipp_timeline::TitleAnimationType::ColorCycle { rate_hz: 1.0 };
+        td.primary_text_mut().unwrap().loops.push(klipp_timeline::TitleLoop::ColorCycle { rate_hz: 1.0 });
 
         let frame_t0 = renderer.render_with_time(&td, 1280, 720, None, 0.0);
         let frame_t_quarter = renderer.render_with_time(&td, 1280, 720, None, 0.25); // 90° hue shift
@@ -4545,16 +4323,7 @@ mod tests {
         let tb = klipp_timeline::TextBox {
             text: "X".to_string(),
             font_size: 100.0,
-            char_animation: Some(klipp_timeline::CharAnimation {
-                stagger: 0.0,
-                entrance: klipp_timeline::CharEntrance::BlurIn,
-                wave_amplitude: 0.0,
-                wave_speed: 1.0,
-                enabled: true,
-                stagger_keyframes: Vec::new(),
-                wave_amplitude_keyframes: Vec::new(),
-                wave_speed_keyframes: Vec::new(),
-            }),
+            motion: klipp_timeline::TitleMotion::enter(klipp_timeline::Motion::new(klipp_timeline::MotionKind::Blur).duration(0.4)),
             ..Default::default()
         };
         let td = klipp_timeline::TitleData::single_text(tb);
@@ -4734,16 +4503,9 @@ mod tests {
         let tb = klipp_timeline::TextBox {
             text: "ABCDEFG".to_string(),
             font_size: 80.0,
-            char_animation: Some(klipp_timeline::CharAnimation {
-                stagger: 0.05,
-                entrance: klipp_timeline::CharEntrance::FadeIn,
-                wave_amplitude: 0.0,
-                wave_speed: 1.0,
-                enabled: true,
-                stagger_keyframes: Vec::new(),
-                wave_amplitude_keyframes: Vec::new(),
-                wave_speed_keyframes: Vec::new(),
-            }),
+            motion: klipp_timeline::TitleMotion::enter(
+                klipp_timeline::Motion::new(klipp_timeline::MotionKind::Fade).duration(0.4).stagger(klipp_timeline::StaggerUnit::Char, 0.05),
+            ),
             ..Default::default()
         };
         let td = klipp_timeline::TitleData::single_text(tb);
@@ -4771,16 +4533,9 @@ mod tests {
         let tb = klipp_timeline::TextBox {
             text: "TEST".to_string(),
             font_size: 80.0,
-            char_animation: Some(klipp_timeline::CharAnimation {
-                stagger: 0.1,
-                entrance: klipp_timeline::CharEntrance::SlideUp,
-                wave_amplitude: 0.0,
-                wave_speed: 1.0,
-                enabled: true,
-                stagger_keyframes: Vec::new(),
-                wave_amplitude_keyframes: Vec::new(),
-                wave_speed_keyframes: Vec::new(),
-            }),
+            motion: klipp_timeline::TitleMotion::enter(
+                klipp_timeline::Motion::new(klipp_timeline::MotionKind::Rise).duration(0.4).stagger(klipp_timeline::StaggerUnit::Char, 0.1),
+            ),
             ..Default::default()
         };
         let td = klipp_timeline::TitleData::single_text(tb);
@@ -5177,75 +4932,65 @@ mod tests {
         );
     }
 
-    /// Same orthogonality contract as `glow_keyframes_unaffected_by_clip_animation_type`,
-    /// but for CharAnimation — defensive coverage since I rewrote the
-    /// soft-disable + cache-bypass semantics on this effect during
-    /// audit follow-up. Verifies a CharAnimation wave_amplitude
-    /// keyframe drives glyph displacement regardless of
-    /// `animation_type = FadeIn`.
+    /// A `Wave` loop moves the glyphs, and keeps moving them while
+    /// the layer is also fading in.
     #[test]
-    fn char_anim_keyframes_unaffected_by_clip_animation_type() {
-        use klipp_core::{Interpolation, Keyframe};
-
+    fn a_wave_loop_moves_the_glyphs_over_time() {
         let mut renderer = TitleRenderer::new();
-        let frame_w: u32 = 1280;
-        let frame_h: u32 = 720;
-
         let tb = klipp_timeline::TextBox {
             text: "ABCDE".to_string(),
             font_size: 80.0,
             color: [255, 255, 255, 255],
-            // CharAnimation with wave_amplitude ramping 0 → 30 px,
-            // entrance None so the only animation is the wave.
-            char_animation: Some(klipp_timeline::CharAnimation {
-                enabled: true,
-                entrance: klipp_timeline::CharEntrance::None,
-                stagger: 0.0, stagger_keyframes: Vec::new(),
-                wave_amplitude: 0.0,
-                wave_amplitude_keyframes: vec![
-                    Keyframe {
-                        time_secs: 0.0, value: 0.0,
-                        interpolation: Interpolation::Linear,
-                        tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0),
-                    },
-                    Keyframe {
-                        time_secs: 2.0, value: 30.0,
-                        interpolation: Interpolation::Linear,
-                        tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0),
-                    },
-                ],
-                // Fixed wave_speed so the wave actually visibly displaces.
-                wave_speed: 2.0, wave_speed_keyframes: Vec::new(),
-            }),
+            motion: klipp_timeline::TitleMotion::enter(klipp_timeline::Motion::new(klipp_timeline::MotionKind::Fade).duration(1.0)),
+            loops: vec![klipp_timeline::TitleLoop::Wave { amplitude: 0.3, rate_hz: 2.0 }],
             ..Default::default()
         };
-        let mut td = klipp_timeline::TitleData::single_text(tb);
-        // animation_type = FadeIn lives at the clip level, evaluated
-        // by the engine; the title renderer ignores it. Pinning that
-        // setting it here doesn't disturb char_anim keyframe behaviour.
-        td.animation_type = klipp_timeline::TitleAnimationType::FadeIn { duration_secs: 1.0 };
-
-        // At t=0 the wave amplitude is 0 → flat baseline; at t=2 the
-        // amplitude is 30 → glyphs displaced. Compare frame buffers —
-        // any difference proves the keyframe drove a render-time
-        // change, the orthogonality contract we care about.
-        let buf_t0 = renderer.render_with_time(&td, frame_w, frame_h, None, 0.0);
-        let buf_t2 = renderer.render_with_time(&td, frame_w, frame_h, None, 2.0);
-        assert_ne!(
-            &buf_t0[..],
-            &buf_t2[..],
-            "char_anim wave_amplitude keyframe must drive a render-time change at t=2 even with animation_type=FadeIn"
-        );
+        let td = klipp_timeline::TitleData::single_text(tb);
+        let buf_a = renderer.render_with_time(&td, 1280, 720, None, 2.0);
+        let buf_b = renderer.render_with_time(&td, 1280, 720, None, 2.1);
+        assert_ne!(&buf_a[..], &buf_b[..], "the wave must move the glyphs between two settled frames");
     }
 
-    /// Per-effect keyframes and clip-level `animation_type` are
-    /// orthogonal — they target different things (`animation_type`
-    /// generates clip-level keyframes for the engine to evaluate;
-    /// per-effect keyframes evaluate inside the title renderer). A
-    /// title with `animation_type = FadeIn` AND user-set
-    /// `glow.radius_keyframes` must still see its halo grow over time
-    /// in lockstep with the keyframes — neither system clobbers the
-    /// other. Pins the locked precedence rule from the audit.
+    /// A `Blink` loop switches the layer off for part of its period.
+    #[test]
+    fn a_blink_loop_hides_the_layer_off_phase() {
+        let mut renderer = TitleRenderer::new();
+        let tb = klipp_timeline::TextBox {
+            text: "X".to_string(),
+            font_size: 80.0,
+            loops: vec![klipp_timeline::TitleLoop::Blink { rate_hz: 1.0, duty: 0.5 }],
+            ..Default::default()
+        };
+        let td = klipp_timeline::TitleData::single_text(tb);
+        let on = renderer.render_with_time(&td, 640, 360, None, 0.25);
+        let off = renderer.render_with_time(&td, 640, 360, None, 0.75);
+        assert!(on.chunks_exact(4).any(|p| p[3] > 0));
+        assert!(off.chunks_exact(4).all(|p| p[3] == 0));
+    }
+
+    /// A `Scroll` loop with no speed carries the layer from below the
+    /// frame to above it over the clip.
+    #[test]
+    fn a_scroll_loop_travels_through_the_frame() {
+        let mut renderer = TitleRenderer::new();
+        let tb = klipp_timeline::TextBox {
+            text: "Roll".to_string(),
+            font_size: 80.0,
+            loops: vec![klipp_timeline::TitleLoop::Scroll { direction: klipp_timeline::ScrollDirection::Up, speed_px_per_sec: 0.0 }],
+            ..Default::default()
+        };
+        let td = klipp_timeline::TitleData::single_text(tb);
+        let row_of = |buf: &[u8]| -> Option<usize> {
+            buf.chunks_exact(4).position(|p| p[3] > 0).map(|i| i / 640)
+        };
+        let start = renderer.render_with_window(&td, 640, 360, None, 0.0, Some(4.0));
+        let mid = renderer.render_with_window(&td, 640, 360, None, 2.0, Some(4.0));
+        let end = renderer.render_with_window(&td, 640, 360, None, 4.0, Some(4.0));
+        assert!(row_of(&start).is_none(), "off screen below at the start");
+        assert!(row_of(&mid).is_some(), "in frame at the midpoint");
+        assert!(row_of(&end).is_none(), "off screen above at the end");
+    }
+
     #[test]
     fn glow_keyframes_unaffected_by_clip_animation_type() {
         use klipp_core::{Interpolation, Keyframe};
@@ -5282,14 +5027,7 @@ mod tests {
             intensity: 1.0,
             intensity_keyframes: Vec::new(),
         });
-        let mut td = klipp_timeline::TitleData::single_text(tb);
-        // Set the clip-level animation_type to FadeIn — this is what
-        // the engine inspects to generate clip.opacity_keyframes; it
-        // does NOT alter the title raster directly. The test pins
-        // that the title renderer ignores it AND honours the glow
-        // keyframes with the exact same separation as the no-anim
-        // baseline (D2 test).
-        td.animation_type = klipp_timeline::TitleAnimationType::FadeIn { duration_secs: 1.0 };
+        let td = klipp_timeline::TitleData::single_text(tb);
 
         let buf_t0 = renderer.render_with_time(&td, frame_w, frame_h, None, 0.0);
         let buf_t2 = renderer.render_with_time(&td, frame_w, frame_h, None, 2.0);

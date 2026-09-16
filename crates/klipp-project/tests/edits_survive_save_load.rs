@@ -75,8 +75,11 @@ fn a_disabled_builtin_effect_stays_disabled() {
 #[test]
 fn a_title_keeps_its_animation_and_every_object() {
     let mut seq = Sequence::new_default();
-    let mut td = TitleData::single_text(TextBox { text: "Headline".into(), ..TextBox::default() });
-    td.animation_type = TitleAnimationType::ColorCycle { rate_hz: 2.0 };
+    let mut td = TitleData::single_text(TextBox {
+        text: "Headline".into(),
+        loops: vec![klipp_timeline::TitleLoop::ColorCycle { rate_hz: 2.0 }],
+        ..TextBox::default()
+    });
     td.add_object(
         TitleObjectContent::TextBox(TextBox { text: "Subtitle".into(), font_size: 40.0, ..TextBox::default() }),
         klipp_timeline::default_text_transform(),
@@ -88,8 +91,31 @@ fn a_title_keeps_its_animation_and_every_object() {
     let back = round_trip("title", seq);
     let ClipKind::Title(loaded) = &back.tracks[0].clips[0].kind else { panic!("not a title") };
     assert_eq!(loaded.objects.len(), 2, "the second object was dropped");
-    assert_eq!(loaded.animation_type, TitleAnimationType::ColorCycle { rate_hz: 2.0 }, "the animation was dropped");
+    assert_eq!(loaded.primary_text().unwrap().loops, vec![klipp_timeline::TitleLoop::ColorCycle { rate_hz: 2.0 }], "the loop was dropped");
     assert_eq!(loaded, &td, "the title did not round-trip whole");
+}
+
+#[test]
+fn a_title_saved_with_the_old_animation_opens_with_loops() {
+    let mut seq = Sequence::new_default();
+    let mut td = TitleData::single_text(TextBox { text: "Roll".into(), ..TextBox::default() });
+    td.animation_type = TitleAnimationType::ScrollUp { speed_px_per_sec: 40.0 };
+    let mut c = Clip::gap(tc(0), tc(48));
+    c.kind = ClipKind::Title(td);
+    c.transform_pos_y_keyframes.push(klipp_core::Keyframe {
+        time_secs: 0.0, value: 1080.0, interpolation: klipp_core::Interpolation::Linear, tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0),
+    });
+    seq.tracks[0].clips = vec![c];
+
+    let back = round_trip("title-legacy", seq);
+    let clip = &back.tracks[0].clips[0];
+    let ClipKind::Title(loaded) = &clip.kind else { panic!("not a title") };
+    assert_eq!(loaded.animation_type, TitleAnimationType::Static, "the old kind should be folded away");
+    assert_eq!(
+        loaded.primary_text().unwrap().loops,
+        vec![klipp_timeline::TitleLoop::Scroll { direction: klipp_timeline::ScrollDirection::Up, speed_px_per_sec: 40.0 }]
+    );
+    assert!(clip.transform_pos_y_keyframes.is_empty(), "the baked keyframes should go with it");
 }
 
 #[test]

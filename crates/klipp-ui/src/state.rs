@@ -2299,9 +2299,6 @@ pub struct AppState {
     /// Currently active multicam angle index.
     pub multicam_active_angle: u8,
 
-    /// Pending animation identifier for title creation (consumed by CreateTitleClip handler).
-    pub pending_title_animation: Option<String>,
-
     // Viewer text edit mode (double-click title in viewer)
     /// When true, the viewer shows an editable text overlay for a title clip.
     pub viewer_text_edit: bool,
@@ -3748,7 +3745,6 @@ impl Default for AppState {
             multicam_viewer_active: false,
             multicam_angle_count: 0,
             multicam_active_angle: 0,
-            pending_title_animation: None,
             viewer_text_edit: false,
             viewer_text_edit_object: None,
             viewer_text_edit_buffer: String::new(),

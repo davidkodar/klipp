@@ -512,6 +512,20 @@ fn load_sequence_from_json(seq_json: &SequenceJson, project_dir: &Path) -> Resul
                     smoothed_trajectory: None,
                     track_points: c.track_points.clone(),
                 };
+                // Titles saved with the old whole-title or
+                // per-character animation get the layer model; the
+                // keyframes the old kinds baked onto the clip go
+                // with them, since the loops now do the moving.
+                if let ClipKind::Title(td) = &mut clip.kind {
+                    let m = td.migrate_legacy_animation();
+                    if m.clear_clip_keyframes {
+                        clip.opacity_keyframes.clear();
+                        clip.transform_pos_x_keyframes.clear();
+                        clip.transform_pos_y_keyframes.clear();
+                        clip.transform_scale_keyframes.clear();
+                        clip.transform_rotation_keyframes.clear();
+                    }
+                }
                 // Self-heal orphaned mask trackers from older
                 // projects that were saved before the inspector's
                 // delete-mask button routed through the centralized
@@ -769,6 +783,7 @@ fn load_clip_kind(c: &ClipJson, project_dir: &Path) -> ClipKind {
                     extrusion: ext,
                     text_path: tp,
                     char_animation: ca,
+                    loops: Vec::new(),
                     // Prefer the new TextureFill struct when present
                     // (post-migration saves). Fall back to the legacy
                     // bare path for old projects, synthesizing a

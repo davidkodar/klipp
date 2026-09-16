@@ -2026,7 +2026,6 @@ pub enum AppCommand {
     SetTitleTextPath { clip_id: ClipId, path_kind: u8, p1: f32, p2: f32, p3: f32 },
     /// Set per-character animation. entrance: 0=None, 1=FadeIn, 2=SlideUp, 3=SlideDown, 4=ScaleUp.
     /// Set enabled=false to disable entirely.
-    SetTitleCharAnimation { clip_id: ClipId, enabled: bool, stagger: f32, entrance: u8, wave_amplitude: f32, wave_speed: f32 },
     /// Set image texture fill path. `path: None` = disable texture fill.
     SetTitleTextureFill { clip_id: ClipId, path: Option<String> },
     /// Switch the texture source to one of the bundled procedural
@@ -2065,56 +2064,10 @@ pub enum AppCommand {
     /// Update the title animation fade duration stored in AppState.
     SetTitleFadeDuration { duration: f32 },
     ClearTitleOverlay,
-    /// Set the title motion animation. The handler picks which
-    /// clip-level keyframe channel(s) to write (`opacity_keyframes`
-    /// for fade/flash/blink/pulse, `transform_scale_keyframes` for
-    /// zoom, `transform_pos_x/y_keyframes` for scroll/crawl/slide-in)
-    /// based on the variant.
-    ///
-    /// `animation_kind` codes (see `decode_title_animation` in
-    /// klipp-ui/src/app.rs for the canonical mapping):
-    ///   0  Static
-    ///   1  ScrollUp        2  ScrollDown        3  CrawlLeft       4  CrawlRight
-    ///   5  Typewriter
-    ///   6  FadeIn          7  FadeOut           8  FadeInOut
-    ///   9  Flash          10  Blink            11  Pulse
-    ///  12  ZoomIn         13  ZoomOut
-    ///  14  SlideInLeft    15  SlideInRight    16  SlideInTop    17  SlideInBottom
-    ///
-    /// `speed` is the primary numeric parameter and meaning depends
-    /// on the variant: speed_px_per_sec for scroll/crawl, chars_per_sec
-    /// for Typewriter, duration_secs for fade/zoom/slide-in,
-    /// rate_hz for flash/blink/pulse.
-    /// `param2` is the secondary parameter used by variants that need
-    /// one (Blink: duty_cycle; Pulse: min_opacity; ZoomIn: from_scale;
-    /// ZoomOut: to_scale). Ignored otherwise.
-    SetTitleAnimation {
-        clip_id: ClipId,
-        animation_kind: u8,
-        speed: f32,
-        param2: f32,
-    },
-    /// Counter has more parameters than `SetTitleAnimation` carries,
-    /// so it gets its own event. `from_value` / `to_value` are the
-    /// interpolation endpoints (linearly tweened over `duration_secs`
-    /// from clip start; held at `to_value` after). `decimals` is the
-    /// formatted-output decimal-place count, clamped to 0..=3.
-    SetTitleCounterAnimation {
-        clip_id: ClipId,
-        from_value: f64,
-        to_value: f64,
-        duration_secs: f32,
-        decimals: u8,
-    },
-    /// ColorBlend has two RGBA colour endpoints + a rate, doesn't
-    /// fit `SetTitleAnimation`'s scalar pair. Direct event so the
-    /// Inspector's two colour pickers can drive both endpoints.
-    SetTitleColorBlend {
-        clip_id: ClipId,
-        color_a: [u8; 4],
-        color_b: [u8; 4],
-        rate_hz: f32,
-    },
+    /// Replace the loops of the primary text layer: what it keeps
+    /// doing while on screen (blink, pulse, shake, wave, colour
+    /// cycle, scroll, crawl, counter).
+    SetTitleLoops { clip_id: ClipId, loops: Vec<crate::title_motion::TitleLoop> },
 
     // Linked clips
     ImportMediaLinked {

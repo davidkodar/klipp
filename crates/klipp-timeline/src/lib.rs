@@ -51,7 +51,7 @@ pub mod magnetic_commands;
 mod marker;
 mod sequence;
 
-pub use klipp_core::title_motion::{Easing, Motion, MotionKind, StaggerUnit, TitleMotion};
+pub use klipp_core::title_motion::{CrawlDirection, Easing, LoopGeometry, LoopPose, Motion, MotionKind, ScrollDirection, StaggerUnit, TitleLoop, TitleMotion};
 pub use clip_kind::{
     adjust_style_runs_for_text_change, apply_style_to_range, default_text_transform,
     CharAnimation, CharEntrance, ClipKind, FontStyle, InnerShadow, MotionBlur, ObjectTransform,

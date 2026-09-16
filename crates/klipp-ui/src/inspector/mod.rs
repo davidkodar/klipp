@@ -1160,105 +1160,6 @@ fn handle_glow_layer_axis_response(
     }
 }
 
-/// Translate a `ScrubbyParamResponse` for one keyframable
-/// CharAnimation param into the right AppCommand(s). CharAnimation
-/// has three keyframable params (stagger, wave_amplitude, wave_speed)
-/// plus a non-keyframable enum entrance, so the static-fallback path
-/// must rebuild the full SetTitleCharAnimation command — this helper
-/// takes the current entrance idx as input.
-#[allow(clippy::too_many_arguments)]
-fn handle_char_anim_axis_response(
-    cmds: &mut Vec<AppCommand>,
-    clip_id: klipp_core::ClipId,
-    target_oid: Option<klipp_timeline::TitleObjectId>,
-    param_key: &'static str,
-    new_value: f32,
-    cur: &klipp_timeline::CharAnimation,
-    keyframes: &[klipp_core::Keyframe],
-    clip_time_secs: f64,
-    resp: &crate::widgets::scrubby_param::ScrubbyParamResponse,
-    entrance_idx: u8,
-) {
-    let to_static_triple = |new: f32| -> (f32, f32, f32) {
-        match param_key {
-            klipp_core::title_effect_keys::CHAR_ANIM_STAGGER => (new, cur.wave_amplitude, cur.wave_speed),
-            klipp_core::title_effect_keys::CHAR_ANIM_WAVE_AMPLITUDE => (cur.stagger, new, cur.wave_speed),
-            klipp_core::title_effect_keys::CHAR_ANIM_WAVE_SPEED => (cur.stagger, cur.wave_amplitude, new),
-            _ => (cur.stagger, cur.wave_amplitude, cur.wave_speed),
-        }
-    };
-    let Some(oid) = target_oid else {
-        if resp.changed {
-            let (stagger, wave_amplitude, wave_speed) = to_static_triple(new_value);
-            cmds.push(AppCommand::SetTitleCharAnimation {
-                clip_id, enabled: cur.enabled,
-                stagger, entrance: entrance_idx,
-                wave_amplitude, wave_speed,
-            });
-        }
-        return;
-    };
-    let object_id = oid.0;
-
-    if resp.keyframe_toggled {
-        if keyframes
-            .iter()
-            .any(|k| (k.time_secs - clip_time_secs).abs() < 0.02)
-        {
-            cmds.push(AppCommand::RemoveTitleObjectEffectKeyframe {
-                clip_id,
-                object_id,
-                param_key: param_key.to_string(),
-                time_secs: clip_time_secs,
-            });
-        } else {
-            cmds.push(AppCommand::AddTitleObjectEffectKeyframe {
-                clip_id,
-                object_id,
-                param_key: param_key.to_string(),
-                time_secs: clip_time_secs,
-                value: new_value,
-            });
-        }
-        return;
-    }
-
-    if resp.changed {
-        if keyframes.is_empty() {
-            let (stagger, wave_amplitude, wave_speed) = to_static_triple(new_value);
-            cmds.push(AppCommand::SetTitleCharAnimation {
-                clip_id, enabled: cur.enabled,
-                stagger, entrance: entrance_idx,
-                wave_amplitude, wave_speed,
-            });
-        } else {
-            cmds.push(AppCommand::AddTitleObjectEffectKeyframe {
-                clip_id,
-                object_id,
-                param_key: param_key.to_string(),
-                time_secs: clip_time_secs,
-                value: new_value,
-            });
-        }
-    }
-
-    if let Some(interp) = resp.keyframe_set_interpolation {
-        if let Some((idx, _)) = keyframes
-            .iter()
-            .enumerate()
-            .find(|(_, k)| (k.time_secs - clip_time_secs).abs() < 0.02)
-        {
-            cmds.push(AppCommand::SetTitleObjectEffectKeyframeInterpolation {
-                clip_id,
-                object_id,
-                param_key: param_key.to_string(),
-                keyframe_index: idx,
-                interpolation: interp,
-            });
-        }
-    }
-}
-
 /// Translate a `ScrubbyParamResponse` for the keyframable
 /// MotionBlur shutter_angle into the right AppCommand(s). MotionBlur
 /// has just one keyframable param, so this is the simplest of the
@@ -4138,9 +4039,111 @@ fn show_title_motion_editor(
     direction(ui, "Enter", &mut motion.enter, MotionKind::Rise, "title_motion_enter");
     ui.add_space(4.0);
     direction(ui, "Exit", &mut motion.exit, MotionKind::Fade, "title_motion_exit");
-    let _ = theme;
     if changed {
         cmds.push(AppCommand::SetTitleMotion { clip_id, motion });
+    }
+    ui.add_space(6.0);
+    show_title_loops_editor(ui, theme, clip_id, tb, cmds);
+}
+
+/// The loops of a text layer: rows the user adds, each with its own
+/// timing, all running at once while the layer is on screen.
+fn show_title_loops_editor(
+    ui: &mut egui::Ui,
+    theme: &KlippTheme,
+    clip_id: klipp_core::ClipId,
+    tb: &klipp_timeline::TextBox,
+    cmds: &mut Vec<AppCommand>,
+) {
+    use klipp_timeline::{CrawlDirection, ScrollDirection, TitleLoop};
+    let mut loops = tb.loops.clone();
+    let mut changed = false;
+    let mut remove: Option<usize> = None;
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new("Loops").size(crate::theme::type_scale::CAPTION).color(theme.text_secondary).strong());
+        egui::ComboBox::from_id_salt("title_loop_add")
+            .selected_text("+ Add")
+            .width(0.0)
+            .wrap_mode(egui::TextWrapMode::Extend)
+            .show_ui(ui, |ui| {
+                for l in TitleLoop::catalogue() {
+                    if ui.selectable_label(false, l.label()).clicked() {
+                        loops.push(l);
+                        changed = true;
+                    }
+                }
+            });
+    });
+    for (i, l) in loops.iter_mut().enumerate() {
+        ui.horizontal(|ui| {
+            ui.add_space(8.0);
+            ui.label(egui::RichText::new(l.label()).size(crate::theme::type_scale::CONTROL));
+            match l {
+                TitleLoop::Blink { rate_hz, duty } => {
+                    changed |= ui.add(egui::DragValue::new(rate_hz).range(0.1..=20.0).speed(0.05).suffix(" Hz").fixed_decimals(2)).changed();
+                    changed |= ui.add(egui::DragValue::new(duty).range(0.05..=0.95).speed(0.01).prefix("on ").fixed_decimals(2)).changed();
+                }
+                TitleLoop::Pulse { rate_hz, min_opacity } => {
+                    changed |= ui.add(egui::DragValue::new(rate_hz).range(0.05..=10.0).speed(0.02).suffix(" Hz").fixed_decimals(2)).changed();
+                    changed |= ui.add(egui::DragValue::new(min_opacity).range(0.0..=1.0).speed(0.01).prefix("min ").fixed_decimals(2)).changed();
+                }
+                TitleLoop::Shake { amplitude, rate_hz } | TitleLoop::Wave { amplitude, rate_hz } => {
+                    changed |= ui.add(egui::DragValue::new(amplitude).range(0.0..=2.0).speed(0.005).suffix("\u{00d7} font").fixed_decimals(3)).changed();
+                    changed |= ui.add(egui::DragValue::new(rate_hz).range(0.05..=30.0).speed(0.05).suffix(" Hz").fixed_decimals(2)).changed();
+                }
+                TitleLoop::ColorCycle { rate_hz } => {
+                    changed |= ui.add(egui::DragValue::new(rate_hz).range(0.01..=5.0).speed(0.01).suffix(" Hz").fixed_decimals(2)).changed();
+                }
+                TitleLoop::ColorBlend { color_a, color_b, rate_hz } => {
+                    let mut a = egui::Color32::from_rgba_unmultiplied(color_a[0], color_a[1], color_a[2], color_a[3]);
+                    if ui.color_edit_button_srgba(&mut a).changed() {
+                        *color_a = a.to_array();
+                        changed = true;
+                    }
+                    let mut b = egui::Color32::from_rgba_unmultiplied(color_b[0], color_b[1], color_b[2], color_b[3]);
+                    if ui.color_edit_button_srgba(&mut b).changed() {
+                        *color_b = b.to_array();
+                        changed = true;
+                    }
+                    changed |= ui.add(egui::DragValue::new(rate_hz).range(0.01..=5.0).speed(0.01).suffix(" Hz").fixed_decimals(2)).changed();
+                }
+                TitleLoop::Scroll { direction, speed_px_per_sec } => {
+                    let mut up = *direction == ScrollDirection::Up;
+                    if ui.selectable_label(up, "Up").clicked() { up = true; changed = true; }
+                    if ui.selectable_label(!up, "Down").clicked() { up = false; changed = true; }
+                    *direction = if up { ScrollDirection::Up } else { ScrollDirection::Down };
+                    changed |= ui.add(egui::DragValue::new(speed_px_per_sec).range(0.0..=2000.0).speed(1.0).suffix(" px/s").fixed_decimals(0)).on_hover_text("0 = fit the clip").changed();
+                }
+                TitleLoop::Crawl { direction, speed_px_per_sec, repeat } => {
+                    let mut left = *direction == CrawlDirection::Left;
+                    if ui.selectable_label(left, "\u{2190}").clicked() { left = true; changed = true; }
+                    if ui.selectable_label(!left, "\u{2192}").clicked() { left = false; changed = true; }
+                    *direction = if left { CrawlDirection::Left } else { CrawlDirection::Right };
+                    changed |= ui.add(egui::DragValue::new(speed_px_per_sec).range(0.0..=2000.0).speed(1.0).suffix(" px/s").fixed_decimals(0)).on_hover_text("0 = fit the clip").changed();
+                    changed |= ui.checkbox(repeat, "Repeat").changed();
+                }
+                TitleLoop::Counter { from, to, duration_secs, decimals } => {
+                    changed |= ui.add(egui::DragValue::new(from).speed(1.0).prefix("from ")).changed();
+                    changed |= ui.add(egui::DragValue::new(to).speed(1.0).prefix("to ")).changed();
+                    changed |= ui.add(egui::DragValue::new(duration_secs).range(0.1..=60.0).speed(0.05).suffix(" s").fixed_decimals(1)).changed();
+                    let mut d = *decimals as f32;
+                    if ui.add(egui::DragValue::new(&mut d).range(0.0..=3.0).speed(0.1).prefix("dec ").fixed_decimals(0)).changed() {
+                        *decimals = d.round() as u8;
+                        changed = true;
+                    }
+                }
+            }
+            if ui.small_button("\u{00d7}").on_hover_text("Remove").clicked() {
+                remove = Some(i);
+            }
+        });
+    }
+    if let Some(i) = remove {
+        loops.remove(i);
+        changed = true;
+    }
+    if changed {
+        cmds.push(AppCommand::SetTitleLoops { clip_id, loops });
     }
 }
 
@@ -4539,497 +4542,11 @@ fn show_title_editor(
     {
         let status = crate::widgets::inspector_group::GroupStatus {
             count: None,
-            active: !matches!(td.animation_type, klipp_timeline::TitleAnimationType::Static),
+            active: td.motion_blur().is_some_and(|m| m.enabled),
         };
-        if title_group_is_open(ui, theme, clip_id, "Animation", status) {
+        if title_group_is_open(ui, theme, clip_id, "Motion Blur", status) {
             ui.add_space(6.0);
-    // Animation
-    // Renamed from "Title Animation" so the direction picker reads as
-    // the canonical place to choose scroll direction — the browser
-    // ships generic Credits Roll / News Ticker presets and users
-    // change direction here rather than picking a per-direction
-    // template. Scroll/crawl variants auto-generate
-    // transform_pos_x/y_keyframes; Typewriter overrides write_on
-    // per-frame at render time; Static clears any existing keyframes.
-    {
-        use klipp_timeline::TitleAnimationType as T;
-        // Single source of truth: every variant's display label, kind
-        // code, primary parameter, and (where applicable) secondary
-        // parameter all flow through these helpers. Adding a new
-        // variant means extending the enum, then this block in one
-        // place — no risk of the combo, the spinner, and the encoder
-        // drifting out of sync.
-        let current_kind: u8 = match &td.animation_type {
-            T::Static => 0,
-            T::ScrollUp { .. } => 1,
-            T::ScrollDown { .. } => 2,
-            T::CrawlLeft { .. } => 3,
-            T::CrawlRight { .. } => 4,
-            T::Typewriter { .. } => 5,
-            T::FadeIn { .. } => 6,
-            T::FadeOut { .. } => 7,
-            T::FadeInOut { .. } => 8,
-            T::Flash { .. } => 9,
-            T::Blink { .. } => 10,
-            T::Pulse { .. } => 11,
-            T::ZoomIn { .. } => 12,
-            T::ZoomOut { .. } => 13,
-            T::SlideInLeft { .. } => 14,
-            T::SlideInRight { .. } => 15,
-            T::SlideInTop { .. } => 16,
-            T::SlideInBottom { .. } => 17,
-            T::SpinIn { .. } => 18,
-            T::BounceIn { .. } => 19,
-            T::Wave { .. } => 20,
-            T::Shake { .. } => 21,
-            T::ColorCycle { .. } => 22,
-            T::Marquee { .. } => 23,
-            T::TypewriterOut { .. } => 24,
-            T::Counter { .. } => 25,
-            T::OutlineDrawOn { .. } => 26,
-            T::ColorBlend { .. } => 27,
-        };
-        let kind_label = |k: u8| -> &'static str {
-            match k {
-                0 => "Static (no animation)",
-                1 => "Scroll \u{2191} (bottom \u{2192} top)",
-                2 => "Scroll \u{2193} (top \u{2192} bottom)",
-                3 => "Crawl \u{2190} (right \u{2192} left)",
-                4 => "Crawl \u{2192} (left \u{2192} right)",
-                5 => "Typewriter",
-                6 => "Fade In",
-                7 => "Fade Out",
-                8 => "Fade In + Out",
-                9 => "Flash",
-                10 => "Blink (custom duty)",
-                11 => "Pulse (smooth)",
-                12 => "Zoom In",
-                13 => "Zoom Out",
-                14 => "Slide In \u{2190} (from left)",
-                15 => "Slide In \u{2192} (from right)",
-                16 => "Slide In \u{2191} (from top)",
-                17 => "Slide In \u{2193} (from bottom)",
-                18 => "Spin In",
-                19 => "Bounce In",
-                20 => "Wave (continuous)",
-                21 => "Shake (continuous)",
-                22 => "Colour Cycle (continuous)",
-                23 => "Marquee (continuous loop)",
-                24 => "Typewriter Out (delete-on)",
-                25 => "Counter (animated value)",
-                26 => "Outline Draw-On",
-                27 => "Colour Blend (two-colour)",
-                _ => "Static (no animation)",
-            }
-        };
-        // Sensible defaults when switching kinds. Picked to look right
-        // out of the box on a typical 3-5s title clip.
-        let kind_defaults = |k: u8| -> (f32, f32) {
-            match k {
-                1..=4 => (0.0, 0.0),     // scroll/crawl: Auto
-                5 => (15.0, 0.0),                // Typewriter chars/sec
-                6 | 7 => (0.5, 0.0),             // FadeIn/Out 0.5s
-                8 => (0.5, 0.0),                 // FadeInOut fade_secs
-                9 => (4.0, 0.0),                 // Flash 4 Hz
-                10 => (4.0, 0.3),                // Blink 4 Hz, 30% on
-                11 => (1.0, 0.4),                // Pulse 1 Hz, min_op 0.4
-                12 => (0.5, 1.5),                // ZoomIn 0.5s from 1.5x
-                13 => (0.5, 1.5),                // ZoomOut 0.5s to 1.5x
-                14..=17 => (0.5, 0.0), // Slide 0.5s
-                18 => (0.5, -180.0),             // SpinIn 0.5s, from -180°
-                19 => (0.5, 0.0),                // BounceIn 0.5s
-                20 => (20.0, 1.0),               // Wave 20px @ 1Hz
-                21 => (10.0, 12.0),              // Shake 10px @ 12Hz
-                22 => (0.5, 0.0),                // ColorCycle 0.5 Hz hue rotation
-                23 => (200.0, 0.0),              // Marquee 200 px/s
-                24 => (15.0, 0.0),               // TypewriterOut 15 chars/sec
-                25 => (2.0, 0.0),                // Counter default duration 2s
-                26 => (0.5, 0.0),                // OutlineDrawOn 0.5s
-                27 => (1.0, 0.0),                // ColorBlend 1 Hz default
-                _ => (0.0, 0.0),
-            }
-        };
-
-        let mut selected = current_kind;
-        ui.horizontal(|ui| {
-            ui.label(egui::RichText::new("Animation:").size(11.0).color(theme.text_secondary));
-            egui::ComboBox::from_id_salt("title_animation")
-                .selected_text(kind_label(current_kind))
-                .show_ui(ui, |ui| {
-                    ui.selectable_value(&mut selected, 0, kind_label(0));
-                    ui.label(egui::RichText::new("Continuous").size(10.0).color(theme.text_dim));
-                    ui.selectable_value(&mut selected, 1, kind_label(1));
-                    ui.selectable_value(&mut selected, 2, kind_label(2));
-                    ui.selectable_value(&mut selected, 3, kind_label(3));
-                    ui.selectable_value(&mut selected, 4, kind_label(4));
-                    ui.selectable_value(&mut selected, 5, kind_label(5));
-                    ui.label(egui::RichText::new("Fade").size(10.0).color(theme.text_dim));
-                    ui.selectable_value(&mut selected, 6, kind_label(6));
-                    ui.selectable_value(&mut selected, 7, kind_label(7));
-                    ui.selectable_value(&mut selected, 8, kind_label(8));
-                    ui.label(egui::RichText::new("Flashing").size(10.0).color(theme.text_dim));
-                    ui.selectable_value(&mut selected, 9, kind_label(9));
-                    ui.selectable_value(&mut selected, 10, kind_label(10));
-                    ui.selectable_value(&mut selected, 11, kind_label(11));
-                    ui.label(egui::RichText::new("Zoom").size(10.0).color(theme.text_dim));
-                    ui.selectable_value(&mut selected, 12, kind_label(12));
-                    ui.selectable_value(&mut selected, 13, kind_label(13));
-                    ui.label(egui::RichText::new("Slide In").size(10.0).color(theme.text_dim));
-                    ui.selectable_value(&mut selected, 14, kind_label(14));
-                    ui.selectable_value(&mut selected, 15, kind_label(15));
-                    ui.selectable_value(&mut selected, 16, kind_label(16));
-                    ui.selectable_value(&mut selected, 17, kind_label(17));
-                    ui.label(egui::RichText::new("Pose Entrance").size(10.0).color(theme.text_dim));
-                    ui.selectable_value(&mut selected, 18, kind_label(18));
-                    ui.selectable_value(&mut selected, 19, kind_label(19));
-                    ui.label(egui::RichText::new("Continuous Motion").size(10.0).color(theme.text_dim));
-                    ui.selectable_value(&mut selected, 20, kind_label(20));
-                    ui.selectable_value(&mut selected, 21, kind_label(21));
-                    ui.label(egui::RichText::new("Colour").size(10.0).color(theme.text_dim));
-                    ui.selectable_value(&mut selected, 22, kind_label(22));
-                    ui.label(egui::RichText::new("Looping").size(10.0).color(theme.text_dim));
-                    ui.selectable_value(&mut selected, 23, kind_label(23));
-                    ui.label(egui::RichText::new("Reveal / Counter").size(10.0).color(theme.text_dim));
-                    ui.selectable_value(&mut selected, 24, kind_label(24));
-                    ui.selectable_value(&mut selected, 25, kind_label(25));
-                    ui.selectable_value(&mut selected, 26, kind_label(26));
-                    ui.label(egui::RichText::new("Two-Colour Blend").size(10.0).color(theme.text_dim));
-                    ui.selectable_value(&mut selected, 27, kind_label(27));
-                });
-        });
-        if selected != current_kind {
-            let (speed, param2) = kind_defaults(selected);
-            cmds.push(AppCommand::SetTitleAnimation {
-                clip_id,
-                animation_kind: selected,
-                speed,
-                param2,
-            });
-        }
-
-        // ── Per-variant parameter spinners ──
-        // The Static / Typewriter / scroll-crawl variants keep their
-        // existing UX. New variants get a single-purpose spinner per
-        // parameter so the user can tune the effect without leaving
-        // the Inspector.
-        match &td.animation_type {
-            T::ScrollUp { speed_px_per_sec }
-            | T::ScrollDown { speed_px_per_sec }
-            | T::CrawlLeft { speed_px_per_sec }
-            | T::CrawlRight { speed_px_per_sec } => {
-                let mut v = *speed_px_per_sec;
-                ui.horizontal(|ui| {
-                    ui.label("Speed:");
-                    let resp = ui.add(
-                        egui::DragValue::new(&mut v)
-                            .range(0.0..=2000.0)
-                            .speed(1.0)
-                            .min_decimals(0)
-                            .max_decimals(2)
-                            .custom_formatter(|n, _| {
-                                if n < 0.005 {
-                                    "Auto".to_string()
-                                } else if (n - n.round()).abs() < 1e-3 {
-                                    format!("{n:.0} px/s")
-                                } else {
-                                    format!("{n:.2} px/s")
-                                }
-                            })
-                            .custom_parser(|s| {
-                                let t = s.trim().to_lowercase();
-                                if t == "auto" || t.is_empty() {
-                                    Some(0.0)
-                                } else {
-                                    t.trim_end_matches("px/s").trim().parse::<f64>().ok()
-                                }
-                            }),
-                    );
-                    if resp.changed() {
-                        cmds.push(AppCommand::SetTitleAnimation {
-                            clip_id, animation_kind: current_kind, speed: v, param2: 0.0,
-                        });
-                    }
-                });
-            }
-            T::Typewriter { chars_per_sec } => {
-                let mut v = *chars_per_sec;
-                ui.horizontal(|ui| {
-                    ui.label("Chars/sec:");
-                    if ui.add(egui::DragValue::new(&mut v).range(1.0..=100.0).speed(0.5).fixed_decimals(1)).changed() {
-                        cmds.push(AppCommand::SetTitleAnimation {
-                            clip_id, animation_kind: 5, speed: v, param2: 0.0,
-                        });
-                    }
-                });
-            }
-            T::TypewriterOut { chars_per_sec } => {
-                let mut v = *chars_per_sec;
-                ui.horizontal(|ui| {
-                    ui.label("Chars/sec:");
-                    if ui.add(egui::DragValue::new(&mut v).range(1.0..=100.0).speed(0.5).fixed_decimals(1)).changed() {
-                        cmds.push(AppCommand::SetTitleAnimation {
-                            clip_id, animation_kind: 24, speed: v, param2: 0.0,
-                        });
-                    }
-                });
-            }
-            T::Counter { from_value, to_value, duration_secs, decimals } => {
-                let mut from_v = *from_value;
-                let mut to_v = *to_value;
-                let mut dur = *duration_secs;
-                let mut dec = *decimals as i32;
-                let dispatch = |cmds: &mut Vec<AppCommand>, from_v: f64, to_v: f64, dur: f32, dec: u8| {
-                    cmds.push(AppCommand::SetTitleCounterAnimation {
-                        clip_id,
-                        from_value: from_v,
-                        to_value: to_v,
-                        duration_secs: dur,
-                        decimals: dec,
-                    });
-                };
-                ui.horizontal(|ui| {
-                    ui.label("From:");
-                    if ui.add(egui::DragValue::new(&mut from_v).speed(1.0).max_decimals(3)).changed() {
-                        dispatch(cmds, from_v, to_v, dur, dec.clamp(0, 3) as u8);
-                    }
-                });
-                ui.horizontal(|ui| {
-                    ui.label("To:");
-                    if ui.add(egui::DragValue::new(&mut to_v).speed(1.0).max_decimals(3)).changed() {
-                        dispatch(cmds, from_v, to_v, dur, dec.clamp(0, 3) as u8);
-                    }
-                });
-                ui.horizontal(|ui| {
-                    ui.label("Duration:");
-                    if ui.add(egui::DragValue::new(&mut dur).range(0.05..=60.0).speed(0.1).fixed_decimals(2).suffix(" s")).changed() {
-                        dispatch(cmds, from_v, to_v, dur, dec.clamp(0, 3) as u8);
-                    }
-                });
-                ui.horizontal(|ui| {
-                    ui.label("Decimals:");
-                    if ui.add(egui::DragValue::new(&mut dec).range(0..=3).speed(0.05)).changed() {
-                        dispatch(cmds, from_v, to_v, dur, dec.clamp(0, 3) as u8);
-                    }
-                });
-            }
-            T::FadeIn { duration_secs } | T::FadeOut { duration_secs } | T::FadeInOut { fade_secs: duration_secs } => {
-                let mut v = *duration_secs;
-                ui.horizontal(|ui| {
-                    ui.label("Duration:");
-                    if ui.add(egui::DragValue::new(&mut v).range(0.05..=10.0).speed(0.05).fixed_decimals(2).suffix(" s")).changed() {
-                        cmds.push(AppCommand::SetTitleAnimation {
-                            clip_id, animation_kind: current_kind, speed: v, param2: 0.0,
-                        });
-                    }
-                });
-            }
-            T::Flash { rate_hz } => {
-                let mut v = *rate_hz;
-                ui.horizontal(|ui| {
-                    ui.label("Rate:");
-                    if ui.add(egui::DragValue::new(&mut v).range(0.5..=20.0).speed(0.1).fixed_decimals(1).suffix(" Hz")).changed() {
-                        cmds.push(AppCommand::SetTitleAnimation {
-                            clip_id, animation_kind: 9, speed: v, param2: 0.0,
-                        });
-                    }
-                });
-            }
-            T::Blink { rate_hz, duty_cycle } => {
-                let mut r = *rate_hz;
-                let mut d = *duty_cycle;
-                ui.horizontal(|ui| {
-                    ui.label("Rate:");
-                    if ui.add(egui::DragValue::new(&mut r).range(0.5..=20.0).speed(0.1).fixed_decimals(1).suffix(" Hz")).changed() {
-                        cmds.push(AppCommand::SetTitleAnimation {
-                            clip_id, animation_kind: 10, speed: r, param2: d,
-                        });
-                    }
-                });
-                ui.horizontal(|ui| {
-                    ui.label("Duty cycle:");
-                    if ui.add(egui::DragValue::new(&mut d).range(0.05..=0.95).speed(0.01).fixed_decimals(2)).changed() {
-                        cmds.push(AppCommand::SetTitleAnimation {
-                            clip_id, animation_kind: 10, speed: r, param2: d,
-                        });
-                    }
-                });
-            }
-            T::Pulse { rate_hz, min_opacity } => {
-                let mut r = *rate_hz;
-                let mut m = *min_opacity;
-                ui.horizontal(|ui| {
-                    ui.label("Rate:");
-                    if ui.add(egui::DragValue::new(&mut r).range(0.1..=10.0).speed(0.05).fixed_decimals(2).suffix(" Hz")).changed() {
-                        cmds.push(AppCommand::SetTitleAnimation {
-                            clip_id, animation_kind: 11, speed: r, param2: m,
-                        });
-                    }
-                });
-                ui.horizontal(|ui| {
-                    ui.label("Min opacity:");
-                    if ui.add(egui::DragValue::new(&mut m).range(0.0..=0.95).speed(0.01).fixed_decimals(2)).changed() {
-                        cmds.push(AppCommand::SetTitleAnimation {
-                            clip_id, animation_kind: 11, speed: r, param2: m,
-                        });
-                    }
-                });
-            }
-            T::ZoomIn { duration_secs, from_scale } | T::ZoomOut { duration_secs, to_scale: from_scale } => {
-                let mut dur = *duration_secs;
-                let mut scale = *from_scale;
-                let scale_label = if matches!(td.animation_type, T::ZoomIn { .. }) { "From scale:" } else { "To scale:" };
-                ui.horizontal(|ui| {
-                    ui.label("Duration:");
-                    if ui.add(egui::DragValue::new(&mut dur).range(0.05..=10.0).speed(0.05).fixed_decimals(2).suffix(" s")).changed() {
-                        cmds.push(AppCommand::SetTitleAnimation {
-                            clip_id, animation_kind: current_kind, speed: dur, param2: scale,
-                        });
-                    }
-                });
-                ui.horizontal(|ui| {
-                    ui.label(scale_label);
-                    if ui.add(egui::DragValue::new(&mut scale).range(0.05..=8.0).speed(0.02).fixed_decimals(2).suffix("\u{00d7}")).changed() {
-                        cmds.push(AppCommand::SetTitleAnimation {
-                            clip_id, animation_kind: current_kind, speed: dur, param2: scale,
-                        });
-                    }
-                });
-            }
-            T::SlideInLeft { duration_secs }
-            | T::SlideInRight { duration_secs }
-            | T::SlideInTop { duration_secs }
-            | T::SlideInBottom { duration_secs }
-            | T::BounceIn { duration_secs } => {
-                let mut v = *duration_secs;
-                ui.horizontal(|ui| {
-                    ui.label("Duration:");
-                    if ui.add(egui::DragValue::new(&mut v).range(0.05..=10.0).speed(0.05).fixed_decimals(2).suffix(" s")).changed() {
-                        cmds.push(AppCommand::SetTitleAnimation {
-                            clip_id, animation_kind: current_kind, speed: v, param2: 0.0,
-                        });
-                    }
-                });
-            }
-            T::SpinIn { duration_secs, from_degrees } => {
-                let mut dur = *duration_secs;
-                let mut deg = *from_degrees;
-                ui.horizontal(|ui| {
-                    ui.label("Duration:");
-                    if ui.add(egui::DragValue::new(&mut dur).range(0.05..=10.0).speed(0.05).fixed_decimals(2).suffix(" s")).changed() {
-                        cmds.push(AppCommand::SetTitleAnimation {
-                            clip_id, animation_kind: 18, speed: dur, param2: deg,
-                        });
-                    }
-                });
-                ui.horizontal(|ui| {
-                    ui.label("From angle:");
-                    if ui.add(egui::DragValue::new(&mut deg).range(-720.0..=720.0).speed(2.0).fixed_decimals(0).suffix("\u{00b0}")).changed() {
-                        cmds.push(AppCommand::SetTitleAnimation {
-                            clip_id, animation_kind: 18, speed: dur, param2: deg,
-                        });
-                    }
-                });
-            }
-            T::OutlineDrawOn { duration_secs } => {
-                let mut v = *duration_secs;
-                ui.horizontal(|ui| {
-                    ui.label("Duration:");
-                    if ui.add(egui::DragValue::new(&mut v).range(0.05..=10.0).speed(0.05).fixed_decimals(2).suffix(" s")).changed() {
-                        cmds.push(AppCommand::SetTitleAnimation {
-                            clip_id, animation_kind: 26, speed: v, param2: 0.0,
-                        });
-                    }
-                });
-            }
-            T::ColorBlend { color_a, color_b, rate_hz } => {
-                let mut a = egui::Color32::from_rgba_unmultiplied(color_a[0], color_a[1], color_a[2], color_a[3]);
-                let mut b = egui::Color32::from_rgba_unmultiplied(color_b[0], color_b[1], color_b[2], color_b[3]);
-                let mut rate = *rate_hz;
-                let dispatch = |cmds: &mut Vec<AppCommand>, a: egui::Color32, b: egui::Color32, rate: f32| {
-                    cmds.push(AppCommand::SetTitleColorBlend {
-                        clip_id,
-                        color_a: [a.r(), a.g(), a.b(), a.a()],
-                        color_b: [b.r(), b.g(), b.b(), b.a()],
-                        rate_hz: rate,
-                    });
-                };
-                ui.horizontal(|ui| {
-                    ui.label("Colour A:");
-                    if ui.color_edit_button_srgba(&mut a).changed() { dispatch(cmds, a, b, rate); }
-                });
-                ui.horizontal(|ui| {
-                    ui.label("Colour B:");
-                    if ui.color_edit_button_srgba(&mut b).changed() { dispatch(cmds, a, b, rate); }
-                });
-                ui.horizontal(|ui| {
-                    ui.label("Rate:");
-                    if ui.add(egui::DragValue::new(&mut rate).range(0.05..=10.0).speed(0.05).fixed_decimals(2).suffix(" Hz")).changed() {
-                        dispatch(cmds, a, b, rate);
-                    }
-                });
-            }
-            T::Marquee { speed_px_per_sec } => {
-                let mut v = *speed_px_per_sec;
-                ui.horizontal(|ui| {
-                    ui.label("Speed:");
-                    let resp = ui.add(
-                        egui::DragValue::new(&mut v)
-                            .range(-2000.0..=2000.0)
-                            .speed(2.0)
-                            .min_decimals(0)
-                            .max_decimals(0)
-                            .suffix(" px/s"),
-                    );
-                    if resp.changed() {
-                        cmds.push(AppCommand::SetTitleAnimation {
-                            clip_id, animation_kind: 23, speed: v, param2: 0.0,
-                        });
-                    }
-                });
-                ui.label(
-                    egui::RichText::new("Positive = right \u{2192} left, negative = left \u{2192} right")
-                        .size(10.0)
-                        .color(theme.text_dim),
-                );
-            }
-            T::ColorCycle { rate_hz } => {
-                let mut v = *rate_hz;
-                ui.horizontal(|ui| {
-                    ui.label("Rate:");
-                    if ui.add(egui::DragValue::new(&mut v).range(0.05..=10.0).speed(0.05).fixed_decimals(2).suffix(" Hz")).changed() {
-                        cmds.push(AppCommand::SetTitleAnimation {
-                            clip_id, animation_kind: 22, speed: v, param2: 0.0,
-                        });
-                    }
-                });
-            }
-            T::Wave { amplitude_px, rate_hz } | T::Shake { amplitude_px, rate_hz } => {
-                let mut amp = *amplitude_px;
-                let mut rate = *rate_hz;
-                ui.horizontal(|ui| {
-                    ui.label("Amplitude:");
-                    if ui.add(egui::DragValue::new(&mut amp).range(0.0..=200.0).speed(0.5).fixed_decimals(1).suffix(" px")).changed() {
-                        cmds.push(AppCommand::SetTitleAnimation {
-                            clip_id, animation_kind: current_kind, speed: amp, param2: rate,
-                        });
-                    }
-                });
-                ui.horizontal(|ui| {
-                    ui.label("Rate:");
-                    if ui.add(egui::DragValue::new(&mut rate).range(0.1..=30.0).speed(0.1).fixed_decimals(2).suffix(" Hz")).changed() {
-                        cmds.push(AppCommand::SetTitleAnimation {
-                            clip_id, animation_kind: current_kind, speed: amp, param2: rate,
-                        });
-                    }
-                });
-            }
-            T::Static => {}
-        }
-    }
-    ui.add_space(8.0);
-
     // ── Motion Blur ──
-    ui.label(egui::RichText::new("Motion Blur").strong().size(11.0));
     {
         let mut enabled = td.motion_blur().is_some();
         if ui.checkbox(&mut enabled, "Enable").changed() {
@@ -5079,94 +4596,6 @@ fn show_title_editor(
     }
     ui.add_space(12.0);
 
-    // ── Animation ──
-    ui.label(egui::RichText::new("Animation").strong().size(11.0));
-    ui.add_space(4.0);
-
-    let clip_dur_secs = clip.duration().to_secs_f64() as f32;
-
-    // Fade duration scrubby slider
-    let mut fade_dur = state.title_fade_duration;
-    ui.horizontal(|ui| {
-        ui.label("Duration:");
-        if ui.add(egui::DragValue::new(&mut fade_dur).range(0.1..=30.0).speed(0.05).suffix("s").fixed_decimals(2)).changed() {
-            // We store this via a mutable borrow trick — emit a command
-            cmds.push(AppCommand::SetTitleFadeDuration { duration: fade_dur });
-        }
-    });
-    ui.add_space(4.0);
-
-    // Fade presets row
-    ui.horizontal(|ui| {
-        if ui.small_button("Fade In").clicked() {
-            emit_fade_in(cmds, clip_id, fade_dur, clip_dur_secs);
-            cmds.push(AppCommand::ClearTitleOverlay);
-        }
-        if ui.small_button("Fade Out").clicked() {
-            cmds.push(AppCommand::ClearVideoParamKeyframes { clip_id, param: klipp_core::VideoParam::Opacity });
-            emit_fade_out(cmds, clip_id, fade_dur, clip_dur_secs);
-        }
-        if ui.small_button("Fade In+Out").clicked() {
-            emit_fade_in(cmds, clip_id, fade_dur, clip_dur_secs);
-            emit_fade_out(cmds, clip_id, fade_dur, clip_dur_secs);
-            cmds.push(AppCommand::ClearTitleOverlay);
-        }
-    });
-    ui.add_space(4.0);
-
-    // Slide presets row
-    ui.horizontal(|ui| {
-        ui.label("Slide:");
-        if ui.small_button("Left").on_hover_text("Slide in from left").clicked() {
-            emit_slide_in(cmds, clip_id, fade_dur, 0.0, 0.0, -960.0, 0.0, true);
-            cmds.push(AppCommand::ClearTitleOverlay);
-        }
-        if ui.small_button("Right").on_hover_text("Slide in from right").clicked() {
-            emit_slide_in(cmds, clip_id, fade_dur, 0.0, 0.0, 960.0, 0.0, true);
-            cmds.push(AppCommand::ClearTitleOverlay);
-        }
-        if ui.small_button("Up").on_hover_text("Slide in from bottom").clicked() {
-            emit_slide_in(cmds, clip_id, fade_dur, 0.0, 0.0, 0.0, 540.0, false);
-            cmds.push(AppCommand::ClearTitleOverlay);
-        }
-        if ui.small_button("Down").on_hover_text("Slide in from top").clicked() {
-            emit_slide_in(cmds, clip_id, fade_dur, 0.0, 0.0, 0.0, -540.0, false);
-            cmds.push(AppCommand::ClearTitleOverlay);
-        }
-    });
-    ui.add_space(4.0);
-
-    // Scale presets row
-    ui.horizontal(|ui| {
-        if ui.small_button("Pop In").clicked() {
-            emit_pop_in(cmds, clip_id, fade_dur);
-            cmds.push(AppCommand::ClearTitleOverlay);
-        }
-        if ui.small_button("Grow In").clicked() {
-            emit_grow_in(cmds, clip_id, fade_dur);
-            cmds.push(AppCommand::ClearTitleOverlay);
-        }
-    });
-    ui.add_space(4.0);
-
-    ui.add_space(4.0);
-
-    // Clear all animation
-    if ui.small_button("Clear Animation").clicked() {
-        // Remove all opacity, position, and scale keyframes
-        for kf in &clip.opacity_keyframes {
-            cmds.push(AppCommand::RemoveVideoKeyframe { clip_id, param: klipp_core::VideoParam::Opacity, time_secs: kf.time_secs });
-        }
-        for kf in &clip.transform_pos_x_keyframes {
-            cmds.push(AppCommand::RemoveVideoKeyframe { clip_id, param: klipp_core::VideoParam::PositionX, time_secs: kf.time_secs });
-        }
-        for kf in &clip.transform_pos_y_keyframes {
-            cmds.push(AppCommand::RemoveVideoKeyframe { clip_id, param: klipp_core::VideoParam::PositionY, time_secs: kf.time_secs });
-        }
-        for kf in &clip.transform_scale_keyframes {
-            cmds.push(AppCommand::RemoveVideoKeyframe { clip_id, param: klipp_core::VideoParam::Scale, time_secs: kf.time_secs });
-        }
-    }
             ui.add_space(8.0);
         }
     }
@@ -5386,250 +4815,6 @@ fn show_title_editor(
     }
     ui.add_space(2.0);
 
-    {
-        let status = crate::widgets::inspector_group::GroupStatus {
-            count: None,
-            active: td.char_animation().is_some_and(|c| c.enabled),
-        };
-        if title_group_is_open(ui, theme, clip_id, "Character Animation", status) {
-            ui.add_space(6.0);
-    // Character Animation
-    {
-        // Reflect soft-disable: the checkbox tracks `.enabled`, not
-        // mere presence — toggle off keeps the struct (and its
-        // keyframes) intact via the handler's mute semantics.
-        let cur_anim: Option<klipp_timeline::CharAnimation> = td.char_animation();
-        let mut enabled = cur_anim.as_ref().is_some_and(|c| c.enabled);
-        if ui.checkbox(&mut enabled, "Enable").changed() {
-            // Preserve existing values when toggling — only flip
-            // `enabled`. When no char_animation exists yet, send
-            // sensible defaults.
-            let (stagger, entrance, wave_amplitude, wave_speed) = match &cur_anim {
-                Some(c) => (
-                    c.stagger,
-                    match c.entrance {
-                        klipp_timeline::CharEntrance::None => 0u8,
-                        klipp_timeline::CharEntrance::FadeIn => 1,
-                        klipp_timeline::CharEntrance::SlideUp => 2,
-                        klipp_timeline::CharEntrance::SlideDown => 3,
-                        klipp_timeline::CharEntrance::SlideLeft => 4,
-                        klipp_timeline::CharEntrance::SlideRight => 5,
-                        klipp_timeline::CharEntrance::ScaleUp => 6,
-                        klipp_timeline::CharEntrance::ScaleDown => 7,
-                        klipp_timeline::CharEntrance::Pop => 8,
-                        klipp_timeline::CharEntrance::BlurIn => 9,
-                    },
-                    c.wave_amplitude,
-                    c.wave_speed,
-                ),
-                None => (0.05, 1u8, 0.0, 1.0),
-            };
-            cmds.push(AppCommand::SetTitleCharAnimation {
-                clip_id,
-                enabled,
-                stagger,
-                entrance,
-                wave_amplitude,
-                wave_speed,
-            });
-        }
-        if let Some(anim) = cur_anim.filter(|c| c.enabled) {
-            // Display animated values at the playhead.
-            let display_stagger = anim.evaluated_stagger(clip_time_secs);
-            let display_wave_amp = anim.evaluated_wave_amplitude(clip_time_secs);
-            let display_wave_spd = anim.evaluated_wave_speed(clip_time_secs);
-            let kfs_stagger: &[klipp_core::Keyframe] = td
-                .primary_text()
-                .and_then(|tb| tb.char_animation.as_ref())
-                .map(|c| c.stagger_keyframes.as_slice())
-                .unwrap_or(&[]);
-            let kfs_wave_amp: &[klipp_core::Keyframe] = td
-                .primary_text()
-                .and_then(|tb| tb.char_animation.as_ref())
-                .map(|c| c.wave_amplitude_keyframes.as_slice())
-                .unwrap_or(&[]);
-            let kfs_wave_spd: &[klipp_core::Keyframe] = td
-                .primary_text()
-                .and_then(|tb| tb.char_animation.as_ref())
-                .map(|c| c.wave_speed_keyframes.as_slice())
-                .unwrap_or(&[]);
-            let ks_stagger = title_object_keyframe_state(kfs_stagger, clip_time_secs);
-            let ks_wave_amp = title_object_keyframe_state(kfs_wave_amp, clip_time_secs);
-            let ks_wave_spd = title_object_keyframe_state(kfs_wave_spd, clip_time_secs);
-
-            let entrance_idx: usize = match anim.entrance {
-                klipp_timeline::CharEntrance::None => 0,
-                klipp_timeline::CharEntrance::FadeIn => 1,
-                klipp_timeline::CharEntrance::SlideUp => 2,
-                klipp_timeline::CharEntrance::SlideDown => 3,
-                klipp_timeline::CharEntrance::SlideLeft => 4,
-                klipp_timeline::CharEntrance::SlideRight => 5,
-                klipp_timeline::CharEntrance::ScaleUp => 6,
-                klipp_timeline::CharEntrance::ScaleDown => 7,
-                klipp_timeline::CharEntrance::Pop => 8,
-                klipp_timeline::CharEntrance::BlurIn => 9,
-            };
-            let entrance_labels = [
-                "None", "Fade In", "Slide Up", "Slide Down", "Slide Left", "Slide Right",
-                "Scale Up", "Scale Down", "Pop", "Blur In",
-            ];
-            let mut new_entrance_idx = entrance_idx;
-            egui::ComboBox::from_label("Entrance")
-                .selected_text(entrance_labels[entrance_idx])
-                .width(100.0)
-                .show_ui(ui, |ui| {
-                    for (i, label) in entrance_labels.iter().enumerate() {
-                        if ui.selectable_label(entrance_idx == i, *label).clicked() {
-                            new_entrance_idx = i;
-                        }
-                    }
-                });
-            // Entrance is enum-valued — not keyframable, dispatched as
-            // a static SetTitleCharAnimation with the current numeric
-            // params.
-            if new_entrance_idx != entrance_idx {
-                cmds.push(AppCommand::SetTitleCharAnimation {
-                    clip_id,
-                    enabled: true,
-                    stagger: anim.stagger,
-                    entrance: new_entrance_idx as u8,
-                    wave_amplitude: anim.wave_amplitude,
-                    wave_speed: anim.wave_speed,
-                });
-            }
-
-            let mut stagger = display_stagger;
-            let mut wave_amp = display_wave_amp;
-            let mut wave_spd = display_wave_spd;
-            let resp_stagger = crate::widgets::scrubby_param::scrubby_param_row(
-                ui, "Stagger", &mut stagger, 0.0..=0.5, 0.05, 0.005, 3, " s",
-                target_oid.map(|_| ks_stagger),
-            );
-            let resp_wave_amp = crate::widgets::scrubby_param::scrubby_param_row(
-                ui, "Wave Amp", &mut wave_amp, 0.0..=100.0, 0.0, 0.5, 1, " px",
-                target_oid.map(|_| ks_wave_amp),
-            );
-            let resp_wave_spd = crate::widgets::scrubby_param::scrubby_param_row(
-                ui, "Wave Speed", &mut wave_spd, 0.1..=10.0, 1.0, 0.05, 1, " Hz",
-                target_oid.map(|_| ks_wave_spd),
-            );
-            handle_char_anim_axis_response(
-                cmds, clip_id, target_oid,
-                klipp_core::title_effect_keys::CHAR_ANIM_STAGGER,
-                stagger, &anim, kfs_stagger, clip_time_secs, &resp_stagger,
-                new_entrance_idx as u8,
-            );
-            handle_char_anim_axis_response(
-                cmds, clip_id, target_oid,
-                klipp_core::title_effect_keys::CHAR_ANIM_WAVE_AMPLITUDE,
-                wave_amp, &anim, kfs_wave_amp, clip_time_secs, &resp_wave_amp,
-                new_entrance_idx as u8,
-            );
-            handle_char_anim_axis_response(
-                cmds, clip_id, target_oid,
-                klipp_core::title_effect_keys::CHAR_ANIM_WAVE_SPEED,
-                wave_spd, &anim, kfs_wave_spd, clip_time_secs, &resp_wave_spd,
-                new_entrance_idx as u8,
-            );
-        }
-    }
-    ui.add_space(8.0);
-
-            ui.add_space(8.0);
-        }
-    }
-    ui.add_space(2.0);
-
-}
-
-/// Emit opacity keyframes for a fade-in effect.
-fn emit_fade_in(cmds: &mut Vec<AppCommand>, clip_id: klipp_core::ClipId, fade_dur: f32, _clip_dur: f32) {
-    let d = fade_dur as f64;
-    cmds.push(AppCommand::ClearVideoParamKeyframes { clip_id, param: klipp_core::VideoParam::Opacity });
-    // Keyframe at t=0: opacity 0.0
-    cmds.push(AppCommand::AddVideoKeyframe { clip_id, param: klipp_core::VideoParam::Opacity, time_secs: 0.0, value: 0.0 });
-    // Keyframe at t=fade_dur: opacity 1.0
-    cmds.push(AppCommand::AddVideoKeyframe { clip_id, param: klipp_core::VideoParam::Opacity, time_secs: d, value: 1.0 });
-    // Set Bezier interpolation on both — index 0 is t=0, index 1 is t=fade_dur (ease-out: fast start, slow end)
-    cmds.push(AppCommand::SetVideoKeyframeInterpolation { clip_id, param: klipp_core::VideoParam::Opacity, keyframe_index: 0, interpolation: klipp_core::Interpolation::Bezier });
-    cmds.push(AppCommand::SetVideoKeyframeInterpolation { clip_id, param: klipp_core::VideoParam::Opacity, keyframe_index: 1, interpolation: klipp_core::Interpolation::Bezier });
-    // Ease-out tangents: out tangent on first KF points right, in tangent on second KF
-    let span = d;
-    cmds.push(AppCommand::SetVideoKeyframeTangent { clip_id, param: klipp_core::VideoParam::Opacity, keyframe_index: 0, tangent_in: None, tangent_out: Some((0.42 * span, 0.0)) });
-    cmds.push(AppCommand::SetVideoKeyframeTangent { clip_id, param: klipp_core::VideoParam::Opacity, keyframe_index: 1, tangent_in: Some((-0.42 * span, 0.0)), tangent_out: None });
-}
-
-/// Emit opacity keyframes for a fade-out effect.
-fn emit_fade_out(cmds: &mut Vec<AppCommand>, clip_id: klipp_core::ClipId, fade_dur: f32, clip_dur: f32) {
-    let d = fade_dur as f64;
-    let end = clip_dur as f64;
-    let start = (end - d).max(0.0);
-    // Keyframe at t=clip_dur-fade_dur: opacity 1.0
-    cmds.push(AppCommand::AddVideoKeyframe { clip_id, param: klipp_core::VideoParam::Opacity, time_secs: start, value: 1.0 });
-    // Keyframe at t=clip_dur: opacity 0.0
-    cmds.push(AppCommand::AddVideoKeyframe { clip_id, param: klipp_core::VideoParam::Opacity, time_secs: end, value: 0.0 });
-    // Set Bezier with ease-in tangents on ALL existing opacity keyframes (indices determined after add+sort)
-    // We emit for indices 0..4 to cover both fade-in+out case (4 KFs) and fade-out only (2 KFs)
-    // SetVideoKeyframeInterpolation silently ignores out-of-bounds indices
-    for i in 0..4 {
-        cmds.push(AppCommand::SetVideoKeyframeInterpolation { clip_id, param: klipp_core::VideoParam::Opacity, keyframe_index: i, interpolation: klipp_core::Interpolation::Bezier });
-    }
-}
-
-/// Emit position keyframes for slide-in effect.
-#[allow(clippy::too_many_arguments)]
-fn emit_slide_in(cmds: &mut Vec<AppCommand>, clip_id: klipp_core::ClipId, fade_dur: f32, dest_x: f32, dest_y: f32, start_x: f32, start_y: f32, is_x: bool) {
-    let d = fade_dur as f64;
-    let span = d;
-    if is_x {
-        cmds.push(AppCommand::ClearVideoParamKeyframes { clip_id, param: klipp_core::VideoParam::PositionX });
-        cmds.push(AppCommand::AddVideoKeyframe { clip_id, param: klipp_core::VideoParam::PositionX, time_secs: 0.0, value: start_x });
-        cmds.push(AppCommand::AddVideoKeyframe { clip_id, param: klipp_core::VideoParam::PositionX, time_secs: d, value: dest_x });
-        cmds.push(AppCommand::SetVideoKeyframeInterpolation { clip_id, param: klipp_core::VideoParam::PositionX, keyframe_index: 0, interpolation: klipp_core::Interpolation::Bezier });
-        cmds.push(AppCommand::SetVideoKeyframeInterpolation { clip_id, param: klipp_core::VideoParam::PositionX, keyframe_index: 1, interpolation: klipp_core::Interpolation::Bezier });
-        cmds.push(AppCommand::SetVideoKeyframeTangent { clip_id, param: klipp_core::VideoParam::PositionX, keyframe_index: 0, tangent_in: None, tangent_out: Some((0.42 * span, 0.0)) });
-        cmds.push(AppCommand::SetVideoKeyframeTangent { clip_id, param: klipp_core::VideoParam::PositionX, keyframe_index: 1, tangent_in: Some((-0.42 * span, 0.0)), tangent_out: None });
-    } else {
-        cmds.push(AppCommand::ClearVideoParamKeyframes { clip_id, param: klipp_core::VideoParam::PositionY });
-        cmds.push(AppCommand::AddVideoKeyframe { clip_id, param: klipp_core::VideoParam::PositionY, time_secs: 0.0, value: start_y });
-        cmds.push(AppCommand::AddVideoKeyframe { clip_id, param: klipp_core::VideoParam::PositionY, time_secs: d, value: dest_y });
-        cmds.push(AppCommand::SetVideoKeyframeInterpolation { clip_id, param: klipp_core::VideoParam::PositionY, keyframe_index: 0, interpolation: klipp_core::Interpolation::Bezier });
-        cmds.push(AppCommand::SetVideoKeyframeInterpolation { clip_id, param: klipp_core::VideoParam::PositionY, keyframe_index: 1, interpolation: klipp_core::Interpolation::Bezier });
-        cmds.push(AppCommand::SetVideoKeyframeTangent { clip_id, param: klipp_core::VideoParam::PositionY, keyframe_index: 0, tangent_in: None, tangent_out: Some((0.42 * span, 0.0)) });
-        cmds.push(AppCommand::SetVideoKeyframeTangent { clip_id, param: klipp_core::VideoParam::PositionY, keyframe_index: 1, tangent_in: Some((-0.42 * span, 0.0)), tangent_out: None });
-    }
-}
-
-/// Emit scale keyframes for a "pop in" effect with overshoot.
-fn emit_pop_in(cmds: &mut Vec<AppCommand>, clip_id: klipp_core::ClipId, anim_dur: f32) {
-    let d = anim_dur as f64;
-    let t_overshoot = d * 0.6;
-    let t_settle = d;
-    cmds.push(AppCommand::ClearVideoParamKeyframes { clip_id, param: klipp_core::VideoParam::Scale });
-    cmds.push(AppCommand::AddVideoKeyframe { clip_id, param: klipp_core::VideoParam::Scale, time_secs: 0.0, value: 0.0 });
-    cmds.push(AppCommand::AddVideoKeyframe { clip_id, param: klipp_core::VideoParam::Scale, time_secs: t_overshoot, value: 1.1 });
-    cmds.push(AppCommand::AddVideoKeyframe { clip_id, param: klipp_core::VideoParam::Scale, time_secs: t_settle, value: 1.0 });
-    for i in 0..3 {
-        cmds.push(AppCommand::SetVideoKeyframeInterpolation { clip_id, param: klipp_core::VideoParam::Scale, keyframe_index: i, interpolation: klipp_core::Interpolation::Bezier });
-    }
-    let span1 = t_overshoot;
-    let span2 = t_settle - t_overshoot;
-    cmds.push(AppCommand::SetVideoKeyframeTangent { clip_id, param: klipp_core::VideoParam::Scale, keyframe_index: 0, tangent_in: None, tangent_out: Some((0.42 * span1, 0.0)) });
-    cmds.push(AppCommand::SetVideoKeyframeTangent { clip_id, param: klipp_core::VideoParam::Scale, keyframe_index: 1, tangent_in: Some((-0.42 * span1, 0.0)), tangent_out: Some((0.42 * span2, 0.0)) });
-    cmds.push(AppCommand::SetVideoKeyframeTangent { clip_id, param: klipp_core::VideoParam::Scale, keyframe_index: 2, tangent_in: Some((-0.42 * span2, 0.0)), tangent_out: None });
-}
-
-/// Emit scale keyframes for a "grow in" effect.
-fn emit_grow_in(cmds: &mut Vec<AppCommand>, clip_id: klipp_core::ClipId, fade_dur: f32) {
-    let d = fade_dur as f64;
-    cmds.push(AppCommand::ClearVideoParamKeyframes { clip_id, param: klipp_core::VideoParam::Scale });
-    cmds.push(AppCommand::AddVideoKeyframe { clip_id, param: klipp_core::VideoParam::Scale, time_secs: 0.0, value: 0.5 });
-    cmds.push(AppCommand::AddVideoKeyframe { clip_id, param: klipp_core::VideoParam::Scale, time_secs: d, value: 1.0 });
-    cmds.push(AppCommand::SetVideoKeyframeInterpolation { clip_id, param: klipp_core::VideoParam::Scale, keyframe_index: 0, interpolation: klipp_core::Interpolation::Bezier });
-    cmds.push(AppCommand::SetVideoKeyframeInterpolation { clip_id, param: klipp_core::VideoParam::Scale, keyframe_index: 1, interpolation: klipp_core::Interpolation::Bezier });
-    let span = d;
-    cmds.push(AppCommand::SetVideoKeyframeTangent { clip_id, param: klipp_core::VideoParam::Scale, keyframe_index: 0, tangent_in: None, tangent_out: Some((0.42 * span, 0.0)) });
-    cmds.push(AppCommand::SetVideoKeyframeTangent { clip_id, param: klipp_core::VideoParam::Scale, keyframe_index: 1, tangent_in: Some((-0.42 * span, 0.0)), tangent_out: None });
 }
 
 fn transition_kind_id(kind: klipp_timeline::TransitionKind) -> u8 {

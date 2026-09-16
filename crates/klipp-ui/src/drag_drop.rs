@@ -26,7 +26,7 @@ pub enum DragPayload {
     /// per path before doing anything else with them.
     FilePaths { paths: Vec<std::path::PathBuf> },
     /// Dragging a title template from the titles browser tab.
-    Title { template_name: String, title_data: TitleData, animation: Option<String> },
+    Title { template_name: String, title_data: TitleData },
     /// Dragging a generator preset from the generators browser tab.
     Generator { name: String, data: klipp_core::GeneratorData },
 }

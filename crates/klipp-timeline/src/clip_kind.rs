@@ -454,13 +454,20 @@ pub struct TextBox {
     /// Text follows a geometric path (arc / circle / wave).
     #[serde(default)]
     pub text_path: Option<TextPath>,
-    /// Per-character entrance animation.
+    /// Legacy per-character entrance animation. Projects that carry
+    /// one are migrated into `motion` and `loops` on load
+    /// (`TitleData::migrate_legacy_animation`); nothing writes it.
     #[serde(default)]
     pub char_animation: Option<CharAnimation>,
     /// Entrance and exit motion, evaluated per glyph with easing and
-    /// stagger. Independent of `char_animation`, which it supersedes.
+    /// stagger.
     #[serde(default)]
     pub motion: TitleMotion,
+    /// What the layer keeps doing while on screen: blink, pulse,
+    /// shake, wave, colour cycle, scroll, crawl, counter. All of
+    /// them run at once, on top of the entrance and exit.
+    #[serde(default)]
+    pub loops: Vec<TitleLoop>,
     /// Texture fill — file path or procedural preset, plus the
     /// transform / blend params (scale, offset, rotation, opacity,
     /// tint, tile mode). `None` = no texture fill configured.
@@ -720,6 +727,7 @@ impl Default for TextBox {
             extrusion: None,
             text_path: None,
             char_animation: None,
+            loops: Vec::new(),
             motion: TitleMotion::default(),
             texture_fill: None,
             motion_blur: None,
@@ -779,9 +787,10 @@ pub struct TitleData {
     /// gaps in the id space, which is harmless.
     #[serde(default)]
     pub next_object_id: u32,
-    /// Title-level motion animation (scroll/crawl/typewriter)
-    /// applied to every object as a unit. Per-object animation
-    /// is a future extension.
+    /// Legacy whole-title animation. Projects that carry one are
+    /// migrated into the primary text layer's `motion` and `loops` on
+    /// load (`migrate_legacy_animation`); nothing writes it and the
+    /// renderer ignores it.
     #[serde(default)]
     pub animation_type: TitleAnimationType,
     /// Optional title-level background bar. Lower-third templates
@@ -793,7 +802,121 @@ pub struct TitleData {
     pub background: TitleBackground,
 }
 
+/// What `TitleData::migrate_legacy_animation` did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct LegacyMigration {
+    /// Something was converted; the title should be saved again.
+    pub changed: bool,
+    /// The old whole-title kind used to bake opacity, position, scale
+    /// or rotation keyframes onto the clip: the caller clears them,
+    /// since the loops now do the moving.
+    pub clear_clip_keyframes: bool,
+}
+
+/// One legacy `CharEntrance` as a motion kind and easing.
+fn char_entrance_motion(e: CharEntrance) -> Option<(MotionKind, Easing)> {
+    Some(match e {
+        CharEntrance::None => return None,
+        CharEntrance::FadeIn => (MotionKind::Fade, Easing::OutCubic),
+        CharEntrance::SlideUp => (MotionKind::Rise, Easing::OutCubic),
+        CharEntrance::SlideDown => (MotionKind::Drop, Easing::OutCubic),
+        CharEntrance::SlideLeft => (MotionKind::SlideLeft, Easing::OutCubic),
+        CharEntrance::SlideRight => (MotionKind::SlideRight, Easing::OutCubic),
+        CharEntrance::ScaleUp => (MotionKind::ScaleUp, Easing::OutCubic),
+        CharEntrance::ScaleDown => (MotionKind::ScaleDown, Easing::OutCubic),
+        CharEntrance::Pop => (MotionKind::ScaleUp, Easing::OutBack),
+        CharEntrance::BlurIn => (MotionKind::Blur, Easing::OutCubic),
+    })
+}
+
 impl TitleData {
+    /// Fold the two legacy animation systems (the whole-title
+    /// `animation_type` and each layer's `char_animation`) into the
+    /// layers' `motion` and `loops`, then clear them. Old projects
+    /// go through this once on load; a title with neither is
+    /// untouched.
+    pub fn migrate_legacy_animation(&mut self) -> LegacyMigration {
+        use TitleAnimationType as T;
+        let mut out = LegacyMigration::default();
+        let legacy = std::mem::take(&mut self.animation_type);
+        if !matches!(legacy, T::Static) {
+            out.changed = true;
+            out.clear_clip_keyframes = !matches!(
+                legacy,
+                T::Typewriter { .. } | T::TypewriterOut { .. } | T::Counter { .. }
+                    | T::ColorCycle { .. } | T::ColorBlend { .. } | T::OutlineDrawOn { .. }
+            );
+            let chars = self.text().chars().count().max(1) as f32;
+            if let Some(tb) = self.primary_text_mut() {
+                let font = tb.font_size.max(1.0);
+                let enter = |k: MotionKind, d: f32| Motion::new(k).duration(d.max(0.05));
+                let typing = |cps: f32| Motion::new(MotionKind::Typewriter).duration(0.05).stagger(StaggerUnit::Char, 1.0 / cps.max(0.5));
+                match legacy {
+                    T::Static => {}
+                    T::ScrollUp { speed_px_per_sec } => tb.loops.push(TitleLoop::Scroll { direction: ScrollDirection::Up, speed_px_per_sec }),
+                    T::ScrollDown { speed_px_per_sec } => tb.loops.push(TitleLoop::Scroll { direction: ScrollDirection::Down, speed_px_per_sec }),
+                    T::CrawlLeft { speed_px_per_sec } => tb.loops.push(TitleLoop::Crawl { direction: CrawlDirection::Left, speed_px_per_sec, repeat: false }),
+                    T::CrawlRight { speed_px_per_sec } => tb.loops.push(TitleLoop::Crawl { direction: CrawlDirection::Right, speed_px_per_sec, repeat: false }),
+                    T::Marquee { speed_px_per_sec } => tb.loops.push(TitleLoop::Crawl { direction: CrawlDirection::Left, speed_px_per_sec, repeat: true }),
+                    T::Typewriter { chars_per_sec } => tb.motion.enter = Some(typing(chars_per_sec)),
+                    T::TypewriterOut { chars_per_sec } => tb.motion.exit = Some(typing(chars_per_sec)),
+                    T::OutlineDrawOn { duration_secs } => {
+                        tb.motion.enter = Some(Motion::new(MotionKind::Typewriter).duration(0.05).stagger(StaggerUnit::Char, duration_secs.max(0.1) / chars));
+                    }
+                    T::FadeIn { duration_secs } => tb.motion.enter = Some(enter(MotionKind::Fade, duration_secs)),
+                    T::FadeOut { duration_secs } => tb.motion.exit = Some(enter(MotionKind::Fade, duration_secs)),
+                    T::FadeInOut { fade_secs } => {
+                        tb.motion.enter = Some(enter(MotionKind::Fade, fade_secs));
+                        tb.motion.exit = Some(enter(MotionKind::Fade, fade_secs));
+                    }
+                    T::Flash { rate_hz } => tb.loops.push(TitleLoop::Blink { rate_hz, duty: 0.5 }),
+                    T::Blink { rate_hz, duty_cycle } => tb.loops.push(TitleLoop::Blink { rate_hz, duty: duty_cycle }),
+                    T::Pulse { rate_hz, min_opacity } => tb.loops.push(TitleLoop::Pulse { rate_hz, min_opacity }),
+                    T::ZoomIn { duration_secs, from_scale } => {
+                        let k = if from_scale > 1.0 { MotionKind::ScaleDown } else { MotionKind::ScaleUp };
+                        tb.motion.enter = Some(enter(k, duration_secs));
+                    }
+                    T::ZoomOut { duration_secs, to_scale } => {
+                        let k = if to_scale > 1.0 { MotionKind::ScaleDown } else { MotionKind::ScaleUp };
+                        tb.motion.exit = Some(enter(k, duration_secs));
+                    }
+                    T::SlideInLeft { duration_secs } => tb.motion.enter = Some(enter(MotionKind::SlideRight, duration_secs).distance(6.0)),
+                    T::SlideInRight { duration_secs } => tb.motion.enter = Some(enter(MotionKind::SlideLeft, duration_secs).distance(6.0)),
+                    T::SlideInTop { duration_secs } => tb.motion.enter = Some(enter(MotionKind::Drop, duration_secs).distance(6.0)),
+                    T::SlideInBottom { duration_secs } => tb.motion.enter = Some(enter(MotionKind::Rise, duration_secs).distance(6.0)),
+                    T::SpinIn { duration_secs, .. } => tb.motion.enter = Some(enter(MotionKind::ScaleUp, duration_secs).easing(Easing::OutBack)),
+                    T::BounceIn { duration_secs } => tb.motion.enter = Some(enter(MotionKind::Rise, duration_secs).easing(Easing::OutBounce).distance(1.5)),
+                    T::Wave { amplitude_px, rate_hz } => tb.loops.push(TitleLoop::Wave { amplitude: amplitude_px / font, rate_hz }),
+                    T::Shake { amplitude_px, rate_hz } => tb.loops.push(TitleLoop::Shake { amplitude: amplitude_px / font, rate_hz }),
+                    T::ColorCycle { rate_hz } => tb.loops.push(TitleLoop::ColorCycle { rate_hz }),
+                    T::ColorBlend { color_a, color_b, rate_hz } => tb.loops.push(TitleLoop::ColorBlend { color_a, color_b, rate_hz }),
+                    T::Counter { from_value, to_value, duration_secs, decimals } => {
+                        tb.loops.push(TitleLoop::Counter { from: from_value, to: to_value, duration_secs, decimals })
+                    }
+                }
+            }
+        }
+        for obj in &mut self.objects {
+            if let TitleObjectContent::TextBox(tb) = &mut obj.content {
+                if let Some(ca) = tb.char_animation.take() {
+                    out.changed = true;
+                    if !ca.enabled {
+                        continue;
+                    }
+                    if let Some((kind, easing)) = char_entrance_motion(ca.entrance) {
+                        if tb.motion.enter.is_none() {
+                            tb.motion.enter = Some(Motion::new(kind).duration(0.4).easing(easing).stagger(StaggerUnit::Char, ca.stagger.max(0.0)));
+                        }
+                    }
+                    if ca.wave_amplitude > 0.0 {
+                        tb.loops.push(TitleLoop::Wave { amplitude: ca.wave_amplitude * 0.3 / tb.font_size.max(1.0), rate_hz: ca.wave_speed });
+                    }
+                }
+            }
+        }
+        out
+    }
+
     /// Create a TitleData with one default-styled TextBox at frame
     /// centre — the canonical "fresh title" shape used by `Default`
     /// and most templates.
@@ -1410,7 +1533,7 @@ pub enum CharEntrance {
     BlurIn,
 }
 
-use klipp_core::title_motion::TitleMotion;
+use klipp_core::title_motion::{CrawlDirection, Easing, Motion, MotionKind, ScrollDirection, StaggerUnit, TitleLoop, TitleMotion};
 
 fn default_one() -> f32 { 1.0 }
 
@@ -3326,5 +3449,75 @@ mod tests {
         assert!(tb
             .effect_keyframes_mut_for(title_effect_keys::SHADOW_BLUR)
             .is_none());
+    }
+}
+
+#[cfg(test)]
+mod legacy_animation_migration_tests {
+    use super::*;
+
+    fn title() -> TitleData {
+        TitleData::single_text(TextBox { text: "Roll\nCredits".into(), ..Default::default() })
+    }
+
+    #[test]
+    fn a_static_title_is_left_alone() {
+        let mut td = title();
+        let m = td.migrate_legacy_animation();
+        assert!(!m.changed && !m.clear_clip_keyframes);
+        assert!(td.primary_text().unwrap().loops.is_empty());
+    }
+
+    #[test]
+    fn a_scroll_becomes_a_loop_and_its_baked_keyframes_go() {
+        let mut td = title();
+        td.animation_type = TitleAnimationType::ScrollUp { speed_px_per_sec: 60.0 };
+        let m = td.migrate_legacy_animation();
+        assert!(m.changed && m.clear_clip_keyframes);
+        assert!(matches!(td.animation_type, TitleAnimationType::Static));
+        assert_eq!(
+            td.primary_text().unwrap().loops,
+            vec![TitleLoop::Scroll { direction: ScrollDirection::Up, speed_px_per_sec: 60.0 }]
+        );
+    }
+
+    #[test]
+    fn a_fade_in_out_becomes_an_entrance_and_an_exit() {
+        let mut td = title();
+        td.animation_type = TitleAnimationType::FadeInOut { fade_secs: 0.8 };
+        td.migrate_legacy_animation();
+        let tb = td.primary_text().unwrap();
+        assert_eq!(tb.motion.enter.map(|m| (m.kind, m.duration_secs)), Some((MotionKind::Fade, 0.8)));
+        assert_eq!(tb.motion.exit.map(|m| (m.kind, m.duration_secs)), Some((MotionKind::Fade, 0.8)));
+    }
+
+    #[test]
+    fn a_counter_keeps_the_clip_keyframes_it_never_wrote() {
+        let mut td = title();
+        td.animation_type = TitleAnimationType::Counter { from_value: 0.0, to_value: 9.0, duration_secs: 2.0, decimals: 1 };
+        let m = td.migrate_legacy_animation();
+        assert!(m.changed && !m.clear_clip_keyframes);
+        assert!(matches!(td.primary_text().unwrap().loops[0], TitleLoop::Counter { decimals: 1, .. }));
+    }
+
+    #[test]
+    fn a_character_animation_becomes_a_staggered_entrance_and_a_wave() {
+        let mut td = title();
+        td.primary_text_mut().unwrap().char_animation = Some(CharAnimation {
+            enabled: true,
+            entrance: CharEntrance::SlideUp,
+            stagger: 0.07,
+            stagger_keyframes: Vec::new(),
+            wave_amplitude: 24.0,
+            wave_amplitude_keyframes: Vec::new(),
+            wave_speed: 2.0,
+            wave_speed_keyframes: Vec::new(),
+        });
+        td.migrate_legacy_animation();
+        let tb = td.primary_text().unwrap();
+        assert!(tb.char_animation.is_none());
+        let e = tb.motion.enter.unwrap();
+        assert_eq!((e.kind, e.stagger, e.stagger_secs), (MotionKind::Rise, StaggerUnit::Char, 0.07));
+        assert!(matches!(tb.loops[0], TitleLoop::Wave { rate_hz, .. } if rate_hz == 2.0));
     }
 }
