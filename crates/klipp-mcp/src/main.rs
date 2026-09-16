@@ -315,6 +315,13 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
             }
             v
         }
+        "klipp_timeline" => {
+            let mut v = json!({ "method": "timeline" });
+            if let Some(n) = args.get("max_chars").and_then(|v| v.as_u64()) {
+                v["max_chars"] = json!(n as usize);
+            }
+            v
+        }
         "klipp_undo" => json!({ "method": "undo" }),
         "klipp_redo" => json!({ "method": "redo" }),
         "klipp_batch" => {
@@ -385,6 +392,12 @@ fn call_tool(name: &str, args: &Value) -> Result<Vec<Value>, String> {
         PENDING_WRITE_GENERATION.store(u64::MAX, std::sync::atomic::Ordering::Relaxed);
     }
 
+    // The timeline view is text for reading, not JSON for parsing.
+    if name == "klipp_timeline" {
+        if let Some(text) = result.get("text").and_then(|v| v.as_str()) {
+            return Ok(vec![json!({ "type": "text", "text": text })]);
+        }
+    }
     // Screenshots come back as a path; inline the image too when it is
     // small enough to be worth a context window.
     if name == "klipp_screenshot" || name == "klipp_frame_at" {
@@ -577,6 +590,13 @@ fn tool_definitions() -> Vec<Value> {
              "Tail of Klipp's debug log. The engine logs its decisions here, including \
               why the direct-present fast path did or did not engage.",
              json!({ "lines": { "type": "integer", "description": "How many lines (default 100)" } }),
+             vec![]),
+        tool("klipp_timeline",
+             "The timeline as text: tracks top first, every clip with its range in \
+              seconds and frames, what it is (media file, title text, generator), its \
+              grade and effects in a word, its id, and the markers. Read this before \
+              planning an edit; klipp_list_clips is the same as JSON with more fields.",
+             json!({ "max_chars": { "type": "integer", "description": "Cut on a line boundary at this many characters (default 12000)" } }),
              vec![]),
         tool("klipp_undo", "One step back in the active sequence's edit history. Every write \
               made through these tools is one step; a klipp_batch is one step as a whole.",

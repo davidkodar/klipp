@@ -264,6 +264,133 @@ fn parse_log_format(name: &str) -> Result<klipp_core::LogFormat, String> {
     })
 }
 
+/// The timeline as text: what a model reads before it plans. Tracks top
+/// first; every clip with its range in seconds and frames at the
+/// sequence's rate; the clip's kind and source; its grade and effects in
+/// a word; the markers. Ids are there because an operation needs them,
+/// at the end of the line where they cost the least attention.
+fn timeline_text(
+    seq: &klipp_timeline::Sequence,
+    pool: &klipp_media::MediaPool,
+    playhead_secs: Option<f64>,
+    revision: u64,
+) -> String {
+    use std::fmt::Write as _;
+    let fps = seq.fps.as_f64();
+    let frames = |t: klipp_core::Timecode| (t.to_secs_f64() * fps).round() as i64;
+    let range = |a: klipp_core::Timecode, b: klipp_core::Timecode| {
+        format!("{:.2}-{:.2} s | {}-{} f", a.to_secs_f64(), b.to_secs_f64(), frames(a), frames(b))
+    };
+    let mut out = String::new();
+    let dur = seq.total_duration();
+    let _ = writeln!(
+        out,
+        "Sequence \"{}\"  {}x{}  {:.3} fps  duration {:.2} s ({} f)  revision {}",
+        seq.name, seq.resolution.width, seq.resolution.height, fps, dur.to_secs_f64(), frames(dur), revision,
+    );
+    if let Some(p) = playhead_secs {
+        let _ = writeln!(out, "Playhead {:.2} s ({} f)", p, (p * fps).round() as i64);
+    }
+    let _ = writeln!(out, "Tracks, top first. Times are seconds and frames at {:.3} fps.", fps);
+    for (i, t) in seq.tracks.iter().enumerate() {
+        let mut head = format!("\n[{i}] {:?} \"{}\"", t.kind, t.name);
+        if (t.opacity - 1.0).abs() > 1e-6 {
+            let _ = write!(head, "  opacity {:.2}", t.opacity);
+        }
+        if t.locked {
+            head.push_str("  locked");
+        }
+        if t.clips.is_empty() {
+            head.push_str("  (empty)");
+        }
+        let _ = writeln!(out, "{head}");
+        for c in &t.clips {
+            let what = match &c.kind {
+                klipp_timeline::ClipKind::Media { media_id } => match pool.get(media_id) {
+                    Some(m) => format!("media {}  src {:.2}-{:.2} s", m.filename, c.source_in.to_secs_f64(), c.source_out.to_secs_f64()),
+                    None => "media (missing from pool)".to_string(),
+                },
+                klipp_timeline::ClipKind::Title(td) => {
+                    let text = td.text();
+                    let one_line: String = text.lines().collect::<Vec<_>>().join(" / ");
+                    let shown: String = one_line.chars().take(60).collect();
+                    format!("title \"{}{}\"", shown, if one_line.chars().count() > 60 { "…" } else { "" })
+                }
+                klipp_timeline::ClipKind::Generator(g) => format!("generator {:?}", g).chars().take(48).collect(),
+                klipp_timeline::ClipKind::AdjustmentLayer => "adjustment layer".to_string(),
+                klipp_timeline::ClipKind::Gap => "gap".to_string(),
+                klipp_timeline::ClipKind::Sequence { .. } => "nested sequence".to_string(),
+            };
+            let mut line = format!("  [{}]  {what}", range(c.timeline_in, c.timeline_out));
+            if !c.enabled {
+                line.push_str("  DISABLED");
+            }
+            if (c.speed - 1.0).abs() > 1e-6 {
+                let _ = write!(line, "  speed {:.2}", c.speed);
+            }
+            if !matches!(c.blend_mode, klipp_core::BlendMode::Normal) {
+                let _ = write!(line, "  blend {:?}", c.blend_mode);
+            }
+            let grade = if c.node_graph.is_identity() { "none".to_string() } else { format!("{} nodes", c.node_graph.nodes.len()) };
+            let _ = write!(line, "  grade {grade}");
+            if !c.builtin_effects.is_empty() {
+                let names: Vec<String> = c
+                    .builtin_effects
+                    .iter()
+                    .map(|e| {
+                        let d = format!("{e:?}");
+                        d.split(['{', '(', ' ']).next().unwrap_or("").to_string()
+                    })
+                    .collect();
+                let _ = write!(line, "  fx {}", names.join(","));
+            }
+            if !c.effects.is_empty() {
+                let _ = write!(line, "  plugins {}", c.effects.len());
+            }
+            if c.matte_source.is_some() {
+                line.push_str("  matted");
+            }
+            if c.consumed_as_matte {
+                line.push_str("  is-a-matte");
+            }
+            let _ = write!(line, "  id {}", c.id.0);
+            let _ = writeln!(out, "{line}");
+        }
+    }
+    if !seq.markers.is_empty() {
+        let _ = writeln!(out, "\nMarkers");
+        for m in &seq.markers {
+            let at = match m.duration {
+                Some(d) => format!("{:.2}-{:.2} s", m.position.to_secs_f64(), (m.position + d).to_secs_f64()),
+                None => format!("{:.2} s", m.position.to_secs_f64()),
+            };
+            let _ = writeln!(out, "  {at}  \"{}\"  {:?}", m.label, m.color);
+        }
+    }
+    out
+}
+
+/// `text` within `max_chars`, cut on a line boundary and saying so, and
+/// whether it was cut.
+fn cut_to_budget(text: &str, max_chars: usize) -> (String, bool) {
+    if text.chars().count() <= max_chars {
+        return (text.to_string(), false);
+    }
+    let mut kept = String::new();
+    for line in text.lines() {
+        if kept.chars().count() + line.chars().count() + 1 > max_chars.saturating_sub(120) {
+            break;
+        }
+        kept.push_str(line);
+        kept.push('\n');
+    }
+    kept.push_str(&format!(
+        "… cut at {max_chars} chars of {}; ask again with a larger max_chars, or list_clips for the rest.\n",
+        text.chars().count()
+    ));
+    (kept, true)
+}
+
 /// A frame rate from a number: the NTSC rates as their exact fractions,
 /// anything else to a thousandth.
 fn fps_from_f64(f: f64) -> klipp_core::Fps {
@@ -482,6 +609,18 @@ fn handle(
                 })
                 .collect();
             Ok(json!({ "fps": fps, "revision": ctx.shared.revision(), "tracks": tracks }))
+        }
+
+        ControlCommand::Timeline { max_chars } => {
+            if in_batch {
+                return read_in_batch("timeline");
+            }
+            let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
+            let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
+            let presented = ctx.frame_buffer.lock().ok().and_then(|fb| fb.latest_presented()).map(|t| t.to_secs_f64());
+            let full = timeline_text(&seq, &pool, presented, ctx.shared.revision());
+            let (text, cut) = cut_to_budget(&full, max_chars.unwrap_or(12_000));
+            Ok(json!({ "text": text, "cut": cut, "chars": full.len(), "revision": ctx.shared.revision() }))
         }
 
         ControlCommand::ListMedia => {

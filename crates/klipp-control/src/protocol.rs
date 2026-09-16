@@ -131,6 +131,15 @@ pub enum ControlCommand {
     /// Latest performance sample plus a short rolling average.
     Perf,
 
+    /// The timeline as text a model reads: tracks top first, every clip
+    /// with its range in seconds and frames, what it is, its grade and
+    /// effects in a word, the markers. Cut at `max_chars` (default
+    /// 12000) on a line boundary, and says so.
+    Timeline {
+        #[serde(default)]
+        max_chars: Option<usize>,
+    },
+
     // ── Edit history ──────────────────────────────────────────────
     /// One step back in the active sequence's history.
     Undo,

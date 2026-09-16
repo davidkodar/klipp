@@ -605,3 +605,24 @@ fn export_is_refused_where_it_would_go_wrong_and_status_reads_the_queue() {
     assert_eq!(st["jobs"][0]["status"], json!("rendering"));
     assert_eq!(st["jobs"][0]["progress"], json!(0.5));
 }
+
+/// The text view carries what a model needs to plan and respects its
+/// budget on a line boundary.
+#[test]
+fn the_timeline_reads_as_text_within_a_budget() {
+    let mut h = harness();
+    let v = h.ok(json!({ "method": "timeline" }));
+    let text = v["text"].as_str().unwrap();
+    assert_eq!(v["cut"], json!(false));
+    assert!(text.contains("Sequence \""), "{text}");
+    assert!(text.contains("Tracks, top first"), "{text}");
+    assert!(text.contains(" f]"), "ranges carry frames: {text}");
+    assert!(text.contains(&format!("id {}", h.ids.clip_a)), "clip ids are in the view: {text}");
+    assert!(text.contains("grade"), "{text}");
+
+    let v = h.ok(json!({ "method": "timeline", "max_chars": 200 }));
+    assert_eq!(v["cut"], json!(true));
+    let text = v["text"].as_str().unwrap();
+    assert!(text.chars().count() <= 200 + 40, "cut near the budget: {}", text.chars().count());
+    assert!(text.contains("cut at 200 chars"));
+}
