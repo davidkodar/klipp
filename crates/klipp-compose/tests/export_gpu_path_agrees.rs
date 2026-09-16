@@ -180,6 +180,12 @@ impl Flat {
         self
     }
 
+    /// The same fixture with its frames arriving on the GPU, as the
+    /// export's do.
+    fn clone_for_gpu(&self) -> Self {
+        Flat { colours: self.colours.clone(), scene: self.scene.clone(), on_gpu: true }
+    }
+
     fn linear(srgb: [u8; 3], n: usize) -> Vec<f32> {
         let c = |v: u8| klipp_color::transfer::srgb_to_linear(v as f32 / 255.0);
         [c(srgb[0]), c(srgb[1]), c(srgb[2]), 1.0].repeat(n)
@@ -438,14 +444,19 @@ fn a_bt2020_project_agrees_with_the_renderer() {
     );
 }
 
-/// Each shape the gate must refuse, because the renderer does something
-/// to the frame after the grade that this path cannot.
+/// Everything the single-clip path refuses, the GPU stack takes — and
+/// its planes carry the renderer's picture. Before the stack existed
+/// this test held that each of these shapes was *refused*, because the
+/// export would otherwise have written the uncomposited frame; the
+/// danger has not changed, only the answer, so now each shape has to
+/// agree with the renderer instead.
+///
+/// A clip that is nothing but a matte source, and an empty frame, are
+/// the two the stack still has nothing to blend for; they may decline.
 #[test]
-fn the_gate_refuses_everything_it_cannot_reproduce() {
-    // Every clip here is graded. An identity graph never starts the GPU
-    // chain, so an ungraded clip declines for want of a chain rather
-    // than because the gate refused it — and the whole file would pass
-    // while testing nothing.
+fn the_stack_takes_what_the_single_clip_path_refuses() {
+    // Every clip here is graded, so the single-clip path's gate — not
+    // its identity pass-through — is what hands them on.
     // A second layer to composite.
     let (a, b) = (graded(0.0, 1.0, 0.5), graded(0.0, 1.0, 0.5));
     let overlay = sequence(vec![vec![a.clone()], vec![b.clone()]]);
@@ -480,12 +491,14 @@ fn the_gate_refuses_everything_it_cannot_reproduce() {
     g.builtin_effects = vec![BuiltinEffect::GaussianBlur { radius: 3.0 }];
     let blurred = sequence(vec![vec![g.clone()]]);
 
-    // A blend mode other than Normal.
+    // A blend mode other than Normal, over a second layer.
     let mut h = graded(0.0, 1.0, 0.5);
     h.blend_mode = BlendMode::Screen;
-    let screened = sequence(vec![vec![h.clone()]]);
+    let under = graded(0.0, 1.0, 0.0);
+    let screened = sequence(vec![vec![under.clone()], vec![h.clone()]]);
+    let screened_src = Flat::default().with(&under, [60, 120, 180]).with(&h, [128, 128, 128]);
 
-    // A clip that is some other clip's matte.
+    // A clip that is some other clip's matte, with nothing to matte.
     let mut i = graded(0.0, 1.0, 0.5);
     i.consumed_as_matte = true;
     let matte_source = sequence(vec![vec![i.clone()]]);
@@ -518,26 +531,83 @@ fn the_gate_refuses_everything_it_cannot_reproduce() {
     // Nothing on screen.
     let empty = sequence(vec![vec![graded(2.0, 3.0, 0.5)]]);
 
-    let cases: Vec<(&str, Sequence, Flat)> = vec![
-        ("an overlay layer", overlay, overlay_src),
-        ("a dissolve", with_transition, transition_src),
-        ("track opacity 0.5", faded_track, Flat::default().with(&e, [128, 128, 128])),
-        ("a clip opacity effect", faded_clip, Flat::default().with(&f, [128, 128, 128])),
-        ("a gaussian blur", blurred, Flat::default().with(&g, [128, 128, 128])),
-        ("a screen blend", screened, Flat::default().with(&h, [128, 128, 128])),
-        ("a matte source", matte_source, Flat::default().with(&i, [128, 128, 128])),
-        ("a zoom", zoomed, Flat::default().with(&j, [128, 128, 128])),
-        ("a generator", generated, Flat::default()),
-        ("nothing on screen", empty, Flat::default()),
+    // (what, sequence, source, whether the stack must take it)
+    let cases: Vec<(&str, Sequence, Flat, bool)> = vec![
+        ("an overlay layer", overlay, overlay_src, true),
+        ("a dissolve", with_transition, transition_src, true),
+        ("track opacity 0.5", faded_track, Flat::default().with(&e, [128, 128, 128]), true),
+        ("a clip opacity effect", faded_clip, Flat::default().with(&f, [128, 128, 128]), true),
+        ("a gaussian blur", blurred, Flat::default().with(&g, [128, 128, 128]), true),
+        ("a screen blend", screened, screened_src, true),
+        ("a matte source", matte_source, Flat::default().with(&i, [128, 128, 128]), false),
+        ("a zoom", zoomed, Flat::default().with(&j, [128, 128, 128]), true),
+        ("a generator", generated, Flat::default(), true),
+        ("nothing on screen", empty, Flat::default(), false),
     ];
 
-    for (what, seq, mut src) in cases {
-        assert!(
-            gpu_planes(&seq, 0.5, &mut src).is_none(),
-            "the GPU path accepted {what}, which the renderer finishes on the CPU — \
-             the export would have written the ungraded or uncomposited frame"
-        );
+    let mut any = false;
+    for (what, seq, mut src, must) in cases {
+        let Some(planes) = gpu_planes(&seq, 0.5, &mut src.clone_for_gpu()) else {
+            assert!(!must, "the GPU stack declined {what}, which it composites for the viewer");
+            continue;
+        };
+        any = true;
+        let want = cpu_luma(&seq, 0.5, &mut src);
+        let got = &planes[..want.len()];
+        let worst = got.iter().zip(want.iter()).map(|(g, w)| (*g as i32 - *w as i32).abs()).max().unwrap_or(0);
+        assert!(worst <= 1, "{what}: the stack's export luma differs from the renderer by {worst} levels");
     }
+    if !any {
+        eprintln!("skipping: the GPU stack declined every shape (no usable GPU?)");
+    }
+}
+
+/// A composite with the timeline's LUT over it: the LUT runs on the
+/// stack's accumulator, on the same side of the premultiply as the
+/// renderer puts it.
+#[test]
+fn a_global_lut_over_a_composite_agrees_with_the_renderer() {
+    let (a, b) = (graded(0.0, 1.0, 0.3), graded(0.0, 1.0, -0.2));
+    let mut b = b;
+    b.blend_mode = BlendMode::Screen;
+    b.builtin_effects = vec![BuiltinEffect::Opacity { value: 0.6 }];
+    let seq = sequence(vec![vec![a.clone()], vec![b.clone()]]);
+    let mut src = Flat::default().with(&a, [190, 110, 70]).with(&b, [40, 160, 220]).on_gpu();
+    let lut = strong_lut();
+
+    let mut r = renderer();
+    r.set_global_lut(Some(klipp_compose::GlobalLut { lut: lut.clone(), opacity: 0.8 }));
+    let Some((planes, _)) =
+        r.render_yuv420_on_gpu(&seq, tc(0.5), W, H, &mut src, RenderOptions::default(), plain_target())
+    else {
+        eprintln!("skipping: the GPU stack declined (no usable GPU?)");
+        return;
+    };
+    let mut rr = renderer();
+    rr.set_global_lut(Some(klipp_compose::GlobalLut { lut, opacity: 0.8 }));
+    let px = rr.render(&seq, tc(0.5), W, H, &mut src, RenderOptions::default());
+    let display = klipp_color::display::ExportDisplay::new(
+        klipp_core::ToneMapOp::None,
+        klipp_core::WorkingColorspace::Rec709Linear,
+        klipp_core::OdtChoice::MatchViewer,
+    );
+    let want: Vec<u8> = px
+        .chunks_exact(4)
+        .map(|p| {
+            let e = display.encode([p[0], p[1], p[2]]);
+            let y = LUMA_709[0] * e[0] + LUMA_709[1] * e[1] + LUMA_709[2] * e[2];
+            (16.0 + y * 219.0 + 0.5).clamp(0.0, 255.0) as u8
+        })
+        .collect();
+    let got = &planes[..want.len()];
+    let worst = got.iter().zip(want.iter()).map(|(g, w)| (*g as i32 - *w as i32).abs()).max().unwrap_or(0);
+    assert!(worst <= 1, "the LUT'd composite differs from the renderer by {worst} levels");
+    let no_lut = renderer()
+        .render_yuv420_on_gpu(&seq, tc(0.5), W, H, &mut src, RenderOptions::default(), plain_target())
+        .expect("the same composite without a LUT")
+        .0;
+    let d = planes.iter().zip(no_lut.iter()).map(|(a, b)| (*a as i32 - *b as i32).abs()).max().unwrap_or(0);
+    assert!(d > 20, "only {d}: the LUT is not reaching the exported composite");
 }
 
 /// The render and the encode must be for the same delivery.

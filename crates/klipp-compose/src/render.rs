@@ -207,6 +207,21 @@ pub struct DisplayDelivery<'a> {
     pub bytes: bool,
 }
 
+/// What the single-clip export path made of a frame.
+enum Single {
+    Planes((Vec<u8>, Option<klipp_effects::gpu::GpuFrameLight>)),
+    /// Neither path can take it.
+    Refused,
+    /// More than one clip's grade: the stack's frame.
+    ForTheStack,
+}
+
+impl From<Option<(Vec<u8>, Option<klipp_effects::gpu::GpuFrameLight>)>> for Single {
+    fn from(planes: Option<(Vec<u8>, Option<klipp_effects::gpu::GpuFrameLight>)>) -> Self {
+        planes.map_or(Single::Refused, Single::Planes)
+    }
+}
+
 /// Where a render's time went, in milliseconds.
 #[derive(Default, Clone, Copy, Debug)]
 pub struct RenderStats {
@@ -367,6 +382,12 @@ pub struct Renderer {
     working: WorkingColorspace,
     /// Why the GPU stack last declined a frame, so the log says it once.
     last_gpu_stack_decline: Option<&'static str>,
+    /// Whether the GPU stack had begun a frame when it declined it: the
+    /// frame is then rendered twice, once here and once by the caller.
+    stack_work_started: bool,
+    /// Whether the last `render_yuv420_on_gpu` declined only after
+    /// rendering; see [`Self::gpu_export_declined_after_work`].
+    gpu_export_declined_after_work: bool,
     global_lut: Option<GlobalLut>,
     /// Rolling-shutter motion per (clip, source millisecond): estimating
     /// it decodes three frames, and a paused viewer re-renders the same
@@ -425,6 +446,8 @@ impl Renderer {
             glyph_cache: HashMap::new(),
             working: WorkingColorspace::default(),
             last_gpu_stack_decline: None,
+            stack_work_started: false,
+            gpu_export_declined_after_work: false,
             global_lut: None,
             rsc_motion: HashMap::new(),
             inspect: Inspect::default(),
@@ -592,6 +615,72 @@ impl Renderer {
         opts: RenderOptions,
         target: klipp_effects::gpu::Yuv420Target,
     ) -> Option<(Vec<u8>, Option<klipp_effects::gpu::GpuFrameLight>)> {
+        self.gpu_export_declined_after_work = false;
+        match self.render_yuv420_single(seq, time, width, height, src, opts, target) {
+            Single::Planes(planes) => Some(planes),
+            Single::Refused => None,
+            Single::ForTheStack => self.render_yuv420_from_stack(seq, time, width, height, src, opts, target),
+        }
+    }
+
+    /// Whether the last [`Self::render_yuv420_on_gpu`] declined only
+    /// after rendering — a grade that came back on the CPU, a stack that
+    /// failed part-way — so the caller rendered the frame twice. A
+    /// caller in a loop stops asking after that; a decline before any
+    /// work costs nothing and says nothing about the next frame.
+    pub fn gpu_export_declined_after_work(&self) -> bool {
+        self.gpu_export_declined_after_work
+    }
+
+    /// The export's frame from the GPU stack: the composite of
+    /// [`Self::composite_on_gpu`] encoded to the delivery's planes where
+    /// it lies. An SDR delivery only — the stack composites SDR linear,
+    /// and each layer has had its own display pass; the delivery's
+    /// transform is the encode's.
+    #[allow(clippy::too_many_arguments)]
+    fn render_yuv420_from_stack(
+        &mut self,
+        seq: &Sequence,
+        time: Timecode,
+        width: u32,
+        height: u32,
+        src: &mut dyn FrameSource,
+        opts: RenderOptions,
+        target: klipp_effects::gpu::Yuv420Target,
+    ) -> Option<(Vec<u8>, Option<klipp_effects::gpu::GpuFrameLight>)> {
+        if opts.hdr_peak_nits.is_some() || target.hdr_op != 0 {
+            return None;
+        }
+        let composited = self.composite_on_gpu(seq, time, width, height, src, opts).is_some();
+        if let Some(gpu) = self.executor.gpu_pipeline_mut() {
+            gpu.stack_end();
+        }
+        if !composited {
+            return None;
+        }
+        self.executor.set_output_in_chain_slot_a();
+        let target = klipp_effects::gpu::Yuv420Target { scene: None, ..target };
+        let planes = self.executor.encode_output_to_yuv420(width, height, target);
+        if planes.is_none() {
+            self.gpu_export_declined_after_work = true;
+        }
+        planes
+    }
+
+    /// [`Self::render_yuv420_on_gpu`] for the render that is one clip's
+    /// grade, which needs no stack at all: `ForTheStack` sends anything
+    /// else to the stack, `Refused` is a frame neither can take.
+    #[allow(clippy::too_many_arguments)]
+    fn render_yuv420_single(
+        &mut self,
+        seq: &Sequence,
+        time: Timecode,
+        width: u32,
+        height: u32,
+        src: &mut dyn FrameSource,
+        opts: RenderOptions,
+        target: klipp_effects::gpu::Yuv420Target,
+    ) -> Single {
         // The project-wide colour pipeline runs after the composite. A
         // single-clip render has no composite, so it can run as one more
         // chain pass — but only where its *position* is unambiguous, and
@@ -610,7 +699,7 @@ impl Renderer {
         // timeline *without* its global LUT, silently.
         let global_lut_here = self.global_lut.is_some();
         if global_lut_here && opts.hdr_peak_nits.is_some() {
-            return None;
+            return Single::Refused;
         }
         // The render and the encode have to be for the same delivery: the
         // target says whether the encoder wants HDR, `opts` says whether
@@ -620,7 +709,7 @@ impl Renderer {
         // picture, not an error, so it is checked rather than assumed.
         let hdr_delivery = opts.hdr_peak_nits.is_some();
         if (target.hdr_op != 0) != hdr_delivery {
-            return None;
+            return Single::Refused;
         }
         // Set below when the source is scene-referred, which is the one
         // case with a step of its own after the grade.
@@ -633,32 +722,32 @@ impl Renderer {
         let (track, clip) = match stack.as_slice() {
             [(_, track, TrackItem::Clip(c))] => (*track, *c),
             // Nothing, a transition, or more than one layer.
-            _ => return None,
+            _ => return Single::ForTheStack,
         };
         if (track.opacity - 1.0).abs() > 1e-6 {
-            return None;
+            return Single::ForTheStack;
         }
         if !matches!(clip.kind, ClipKind::Media { .. }) {
-            return None;
+            return Single::ForTheStack;
         }
         if !matches!(clip.blend_mode, klipp_core::BlendMode::Normal) {
-            return None;
+            return Single::ForTheStack;
         }
         if clip.consumed_as_matte || clip.matte_source.is_some() || clip.matte_stencil.is_some() {
-            return None;
+            return Single::ForTheStack;
         }
         // OFX plugins run on the CPU frame, and a temporal one wants
         // neighbouring frames too.
         if !clip.effects.is_empty() {
-            return None;
+            return Single::ForTheStack;
         }
         // Two frames blended for a speed ramp is a CPU operation on the
         // source, before the grade even starts.
         if frame_blends(clip, time) {
-            return None;
+            return Single::ForTheStack;
         }
         if title_motion_blur(clip).is_some() {
-            return None;
+            return Single::ForTheStack;
         }
         // Anything the grade panel asks for is read off the linear frame
         // or a node's output, neither of which this path produces.
@@ -671,7 +760,7 @@ impl Renderer {
             || i.solo.is_some()
             || i.matte_of.is_some()
         {
-            return None;
+            return Single::Refused;
         }
         // And the clip's own stack, answered by the code that builds it:
         // an empty effect list at full opacity means the grade's output is
@@ -684,16 +773,16 @@ impl Renderer {
         );
         let (fx, opacity) = clip_effects(clip, time, fps, Some(resolved));
         if !fx.is_empty() || (opacity - 1.0).abs() > 1e-6 {
-            return None;
+            return Single::ForTheStack;
         }
 
         // Everything checked. Run the clip's grade with its result left in
         // the chain, and convert it there.
         let clip_time = eval_clip_time(clip, time);
         let at = source_secs(clip, time, fps);
-        let f = src.frame(clip, at, width, height)?;
+        let Some(f) = src.frame(clip, at, width, height) else { return Single::Refused };
         if (f.width, f.height) != (width, height) {
-            return None;
+            return Single::Refused;
         }
         let input = match f.pixels {
             SourcePixels::Gpu(g) => GradeInput::Gpu(g),
@@ -712,7 +801,7 @@ impl Renderer {
                 // The LUT would have to follow this clip's display pass,
                 // and the fused writer runs that last.
                 if global_lut_here {
-                    return None;
+                    return Single::Refused;
                 }
                 scene_end = Some(klipp_effects::gpu::SceneReferredEnd {
                     display_light: hdr_delivery,
@@ -723,7 +812,7 @@ impl Renderer {
                 GradeInput::Scene { codes, transfer, source_to_working }
             }
             SourcePixels::Linear(pixels) => GradeInput::Cpu(pixels),
-            _ => return None,
+            _ => return Single::ForTheStack,
         };
 
         // An identity grade has nothing to run: the source frame is the
@@ -738,11 +827,11 @@ impl Renderer {
         // and a stale value there is a wrong picture rather than an error.
         self.executor.set_working_colorspace(self.working);
         if clip.node_graph.is_identity() {
-            let GradeInput::Gpu(g) = &input else { return None };
+            let GradeInput::Gpu(g) = &input else { return Single::Refused };
             if !g.seed(&mut self.executor, width, height)
                 || !self.executor.take_seeded_input_as_output()
             {
-                return None;
+                return Single::Refused;
             }
             let target = klipp_effects::gpu::Yuv420Target {
                 scene: scene_end,
@@ -750,9 +839,9 @@ impl Renderer {
                 ..target
             };
             if !self.global_lut_on_chain(width, height) {
-                return None;
+                return Single::Refused;
             }
-            return self.executor.encode_output_to_yuv420(width, height, target);
+            return Single::from(self.executor.encode_output_to_yuv420(width, height, target));
         }
 
         self.executor.request_output_on_gpu();
@@ -765,14 +854,15 @@ impl Renderer {
         // should stop asking after the first time it happens rather than
         // pay it on every frame.
         if !pixels.is_empty() {
-            return None;
+            self.gpu_export_declined_after_work = true;
+            return Single::Refused;
         }
         let target =
             klipp_effects::gpu::Yuv420Target { scene: scene_end, peak_nits: peak, ..target };
         if !self.global_lut_on_chain(width, height) {
-            return None;
+            return Single::Refused;
         }
-        self.executor.encode_output_to_yuv420(width, height, target)
+        Single::from(self.executor.encode_output_to_yuv420(width, height, target))
     }
 
     /// Run the timeline's global LUT over the chain's graded frame, if
@@ -841,14 +931,36 @@ impl Renderer {
         opts: RenderOptions,
         out: DisplayDelivery<'_>,
     ) -> Option<(Option<Vec<u8>>, RenderStats)> {
+        let t0 = Instant::now();
+        let mut stats = self.composite_on_gpu(seq, time, width, height, src, opts)?;
+        let t = Instant::now();
+        let gpu = self.executor.gpu_pipeline_or_init()?;
+        let bytes = gpu.encode_chain_to_display(true, width, height, None, false, None, out.texture, out.bytes)?;
+        stats.composite_ms += ms_since(t);
+        stats.total_ms = ms_since(t0);
+        Some((bytes, stats))
+    }
+
+    /// The frame composited on the GPU stack and left premultiplied in
+    /// chain slot A — the timeline's LUT applied over it as the CPU stack
+    /// does — for an encode to take from there: the viewer's display
+    /// bytes, or the export's Y'CbCr planes. `None`, with the reason
+    /// logged once, when the stack cannot take this frame.
+    fn composite_on_gpu(
+        &mut self,
+        seq: &Sequence,
+        time: Timecode,
+        width: u32,
+        height: u32,
+        src: &mut dyn FrameSource,
+        opts: RenderOptions,
+    ) -> Option<RenderStats> {
+        self.stack_work_started = false;
         if !self.allow_gpu || !gpu_composite_enabled() {
             return self.gpu_stack_declines("GPU off");
         }
         if opts.hdr_peak_nits.is_some() {
             return self.gpu_stack_declines("HDR delivery");
-        }
-        if self.global_lut.is_some() {
-            return self.gpu_stack_declines("global LUT");
         }
         if self.working != WorkingColorspace::Rec709Linear {
             return self.gpu_stack_declines("working space is not Rec.709");
@@ -947,6 +1059,7 @@ impl Renderer {
         }) {
             return self.gpu_stack_declines("the GPU stack would not start");
         }
+        self.stack_work_started = true;
 
         let mut stats = RenderStats::default();
         // ── 1. Every layer in its buffer, effects run on it there ──
@@ -1077,7 +1190,29 @@ impl Renderer {
             stats.composite_ms += ms_since(t);
         }
 
-        // ── 4. Premultiply and encode ──
+        // ── 4. The timeline's LUT, then premultiply ──
+        // The LUT goes over the composite while it is still straight
+        // alpha, as `render_stack` applies it: the accumulator through
+        // the chain and back.
+        if self.global_lut.is_some() {
+            let t = Instant::now();
+            let gpu = self.executor.gpu_pipeline_or_init()?;
+            if !gpu.stack_acc_to_chain() {
+                return self.gpu_stack_declines("the accumulator could not seed the LUT");
+            }
+            self.executor.set_output_in_chain_slot_a();
+            if !self.global_lut_on_chain(width, height) {
+                return self.gpu_stack_declines("global LUT");
+            }
+            let Some(slot_a) = self.executor.output_on_gpu() else {
+                return self.gpu_stack_declines("global LUT");
+            };
+            let gpu = self.executor.gpu_pipeline_or_init()?;
+            if !gpu.stack_mix_from_chain(slot_a, 1.0) {
+                return self.gpu_stack_declines("the LUT could not return to the accumulator");
+            }
+            stats.lut_ms += ms_since(t);
+        }
         let t = Instant::now();
         let gpu = self.executor.gpu_pipeline_or_init()?;
         if !gpu.stack_finish_into_chain(opts.keep_alpha) {
@@ -1088,12 +1223,11 @@ impl Renderer {
                 return self.gpu_stack_declines("nothing blended");
             }
         }
-        let gpu = self.executor.gpu_pipeline_or_init()?;
-        let bytes = gpu.encode_chain_to_display(true, width, height, None, false, None, out.texture, out.bytes)?;
         stats.composite_ms += ms_since(t);
         stats.total_ms = ms_since(t0);
         self.last_gpu_stack_decline = None;
-        Some((bytes, stats))
+        self.stack_work_started = false;
+        Some(stats)
     }
 
     /// One clip into layer `slot`: the source seeded, uploaded or
@@ -1266,6 +1400,7 @@ impl Renderer {
     /// The stack cannot take this frame: `None`, and the reason in the
     /// log once, until it changes.
     fn gpu_stack_declines<T>(&mut self, why: &'static str) -> Option<T> {
+        self.gpu_export_declined_after_work = self.stack_work_started;
         if self.last_gpu_stack_decline != Some(why) {
             tracing::debug!("GPU stack declines the frame: {why}");
             self.last_gpu_stack_decline = Some(why);

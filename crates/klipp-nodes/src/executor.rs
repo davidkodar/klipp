@@ -1016,6 +1016,14 @@ impl GraphExecutor {
         self.keep_output_on_gpu = true;
     }
 
+    /// Chain slot A holds a frame put there by something other than a
+    /// run — the compositor's stack — for the LUT and the encodes to take
+    /// from there as they would a run's result.
+    pub fn set_output_in_chain_slot_a(&mut self) {
+        self.output_on_gpu = Some(true);
+        self.last_chain_final_slot = Some(true);
+    }
+
     /// How much of the last run the GPU chain carried. A graph that
     /// round-trips every node produces the same picture as one that
     /// stays resident, only far slower, so this is the only way a test

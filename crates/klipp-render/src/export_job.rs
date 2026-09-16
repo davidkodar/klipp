@@ -321,10 +321,14 @@ impl ExportJob {
                 self.progress.store(export_frame_num, Ordering::Relaxed);
                 continue;
             }
-            if gpu_yuv.is_some() && export_frame_num > 0 {
-                // It worked and then stopped, which means the miss is not
-                // the gate — it is the grade coming back on the CPU, and
-                // that costs a double render every frame from here.
+            if gpu_yuv.is_some() && renderer.gpu_export_declined_after_work() {
+                // The miss came after the frame was rendered — a grade
+                // coming back on the CPU, a stack failing part-way — so
+                // this frame was rendered twice, and every frame after it
+                // would be. A miss at the gate costs nothing and is a
+                // property of this frame alone: a plugin clip's stretch of
+                // the timeline goes the ordinary way and the GPU path
+                // resumes after it.
                 gpu_yuv = None;
                 debug!(
                     "ExportJob {}: GPU frame conversion off from frame {frame_num}",

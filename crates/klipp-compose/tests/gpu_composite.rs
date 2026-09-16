@@ -211,3 +211,43 @@ fn a_title_with_an_effect_and_a_faded_layer_match() {
     seq.tracks[2].opacity = 0.6;
     assert_match("title effect", &seq, &mut src);
 }
+
+/// The timeline's LUT over the stack: applied on the accumulator before
+/// the premultiply, where `render_stack` applies it.
+#[test]
+fn a_global_lut_over_the_stack_matches() {
+    let (seq, mut src) = stack();
+    let size = 5usize;
+    let step = 1.0 / (size - 1) as f32;
+    let mut data = Vec::with_capacity(size * size * size * 3);
+    for b in 0..size {
+        for g in 0..size {
+            for r in 0..size {
+                let (rv, gv, bv) = (r as f32 * step, g as f32 * step, b as f32 * step);
+                data.extend_from_slice(&[
+                    (rv * 0.5 + 0.4 * gv * bv).clamp(0.0, 1.0),
+                    (gv * 0.7 + 0.2 * rv).clamp(0.0, 1.0),
+                    (bv * 0.45 + 0.3 * rv * gv).clamp(0.0, 1.0),
+                ]);
+            }
+        }
+    }
+    let lut = klipp_color::lut::LutData {
+        size,
+        data,
+        input_space: klipp_core::WorkingColorspace::Rec709Linear,
+        output_space: klipp_core::WorkingColorspace::Rec709Linear,
+    };
+    let mut r = renderer();
+    r.set_global_lut(Some(klipp_compose::GlobalLut { lut: lut.clone(), opacity: 0.9 }));
+    let Some((gpu, _)) = r.render_display_u8_on_gpu(&seq, tc(1.0), W, H, &mut src, RenderOptions::default()) else {
+        eprintln!("skipping: the GPU stack declined (no usable GPU?)");
+        return;
+    };
+    let cpu = display(&r.render(&seq, tc(1.0), W, H, &mut src, RenderOptions::default()));
+    let d = worst(&cpu, &gpu);
+    assert!(d <= 1, "LUT over the stack: GPU differs from the CPU renderer by {d} levels");
+    let mut plain = renderer();
+    let (no_lut, _) = plain.render_display_u8_on_gpu(&seq, tc(1.0), W, H, &mut src, RenderOptions::default()).unwrap();
+    assert!(worst(&no_lut, &gpu) > 20, "the LUT is not reaching the stack's frame");
+}

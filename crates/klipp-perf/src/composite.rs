@@ -177,9 +177,33 @@ fn run(name: &str, cpu_only: bool, budget_ms: f64, build: impl Fn(Option<&GpuCon
     // `KLIPP_PERF_GPU_WAIT=1`: wait for the GPU after each zero-copy
     // frame, so the time is the frame's and not only the engine's.
     let gpu_wait = zero_copy && std::env::var("KLIPP_PERF_GPU_WAIT").ok().as_deref() == Some("1");
+    // `KLIPP_PERF_YUV=1`: the export's frame instead — the composite
+    // encoded to 8-bit BT.709 Y'CbCr planes on the GPU and read back
+    // (12.4 MB at UHD), as `ExportJob` takes it.
+    let yuv = !cpu_only && std::env::var("KLIPP_PERF_YUV").ok().as_deref() == Some("1");
     let mut frame = |r: &mut Renderer, i: usize, count: bool, fell_back: &mut usize| {
         let t = tc(1.0 + i as f64 / 30.0);
-        if !cpu_only {
+        if yuv {
+            let target = klipp_effects::gpu::Yuv420Target {
+                tone_map_op: 0,
+                odt_tag: 0,
+                scene: None,
+                gamut_op: 0,
+                hdr_op: 0,
+                peak_nits: 0.0,
+                luma_coefs: [0.2126, 0.7152, 0.0722],
+                semi_planar: false,
+                bits: 8,
+                sample_shift: 0,
+            };
+            if let Some((planes, _)) = r.render_yuv420_on_gpu(&seq, t, w, h, &mut src, RenderOptions::default(), target) {
+                std::hint::black_box(planes.len());
+                return;
+            }
+            if count {
+                *fell_back += 1;
+            }
+        } else if !cpu_only {
             let out = klipp_compose::DisplayDelivery { texture: texture.as_ref(), bytes: texture.is_none() };
             if let Some((bytes, _)) = r.render_display_on_gpu(&seq, t, w, h, &mut src, RenderOptions::default(), out) {
                 std::hint::black_box(bytes.map(|b| b.len()));
@@ -214,6 +238,9 @@ fn run(name: &str, cpu_only: bool, budget_ms: f64, build: impl Fn(Option<&GpuCon
     let mut label = if fell_back > 0 { format!("{name} (CPU fallback {fell_back}/{FRAMES})") } else { name.to_string() };
     if texture.is_some() {
         label.push_str(" (zero-copy)");
+    }
+    if yuv {
+        label.push_str(" (Y'CbCr planes)");
     }
     let mut result = summarise(&label, w, h, &samples, 0, budget_ms);
     result.warmup_frames = WARMUP;
