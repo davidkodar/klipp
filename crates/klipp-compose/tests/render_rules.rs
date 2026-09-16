@@ -878,3 +878,43 @@ fn a_default_title_shows_on_a_portrait_uhd_stack() {
     let bright = img.chunks_exact(4).filter(|p| p[0] > 0.5).count();
     assert!(bright > 5000, "bright pixels: {bright}");
 }
+
+/// The viewer's fast path lays a title sprite over the presented bytes
+/// in display space. Where the text is solid or absent that is the full
+/// composite to the bit; only an anti-aliased edge may differ a little.
+#[test]
+fn a_title_laid_over_display_bytes_matches_the_full_composite() {
+    let mut seq = Sequence::new_default();
+    seq.resolution = klipp_core::Resolution { width: 320, height: 180 };
+    let mut text = Track::new("Text 1", TrackKind::Text);
+    let td = klipp_timeline::TitleData::single_text(klipp_timeline::TextBox { text: "Over".into(), font_size: 200.0, ..Default::default() });
+    let title = clip(ClipKind::Title(td), 0.0, 5.0);
+    text.clips = vec![title.clone()];
+    let mut video = Track::new("V1", TrackKind::Video);
+    let m = media(0.0, 10.0);
+    let mut src = Flat::default();
+    src.0.insert(m.id, Box::new(|| SourcePixels::Linear(Arc::new([0.2, 0.1, 0.05, 1.0].repeat((320 * 180) as usize)))));
+    video.clips = vec![m];
+    seq.tracks = vec![text, video];
+    let mut r = Renderer::new(klipp_plugin::OfxHost::new(), klipp_title::TitleRenderer::new());
+    r.set_gpu_enabled(false);
+    let full = klipp_effects::linear_f32_rgba_to_srgb_u8(&r.render(&seq, tc(1.0), 320, 180, &mut src, RenderOptions::default()));
+
+    let mut video_only = seq.clone();
+    video_only.tracks.remove(0);
+    let mut fast = klipp_effects::linear_f32_rgba_to_srgb_u8(&r.render(&video_only, tc(1.0), 320, 180, &mut src, RenderOptions::default()));
+    let sprite = r.render_title_layer_u8(&title, tc(1.0), 320, 180).expect("a title layer");
+    klipp_compose::over_u8_straight(&mut fast, &sprite, 320);
+
+    let (mut solid, mut clear, mut edge_worst) = (0usize, 0usize, 0i32);
+    for ((f, s), a) in full.chunks_exact(4).zip(fast.chunks_exact(4)).zip(sprite.chunks_exact(4).map(|p| p[3])) {
+        let d = (0..3).map(|i| (f[i] as i32 - s[i] as i32).abs()).max().unwrap();
+        match a {
+            255 => { solid += 1; assert!(d <= 1, "solid text pixel differs by {d}"); }
+            0 => { clear += 1; assert!(d <= 1, "clear pixel differs by {d}"); }
+            _ => edge_worst = edge_worst.max(d),
+        }
+    }
+    assert!(solid > 200 && clear > 10_000, "solid {solid} clear {clear}");
+    assert!(edge_worst <= 48, "edge pixels differ by up to {edge_worst}");
+}

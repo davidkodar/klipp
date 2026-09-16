@@ -6313,6 +6313,58 @@ impl PlaybackEngine {
     /// floats, composite and re-encode (17 ms of a 24 ms 1080p present)
     /// is skipped. The pre-grade capture itself is not a blocker there:
     /// it has happened.
+    /// A layer the fast path can lay over the presented frame itself:
+    /// title clips only, on a track at full opacity, blended Normal with
+    /// nothing else applied to them. Everything else needs the full
+    /// composite.
+    fn title_overlay_layer(seq: &klipp_timeline::Sequence, layer: &klipp_compose::ActiveLayer<'_>) -> bool {
+        if layer.transition {
+            return false;
+        }
+        let track_ok = seq.tracks.get(layer.track).is_some_and(|t| (t.opacity - 1.0).abs() < 1e-6);
+        track_ok
+            && layer.clips.iter().all(|c| {
+                matches!(c.kind, klipp_timeline::ClipKind::Title(_))
+                    && c.node_graph.is_identity()
+                    && c.effects.is_empty()
+                    && c.builtin_effects.is_empty()
+                    && c.param_modifiers.is_empty()
+                    && c.opacity_keyframes.is_empty()
+                    && c.transform_pos_x_keyframes.is_empty()
+                    && c.transform_pos_y_keyframes.is_empty()
+                    && c.transform_scale_keyframes.is_empty()
+                    && c.transform_rotation_keyframes.is_empty()
+                    && matches!(c.blend_mode, klipp_core::BlendMode::Normal)
+                    && c.matte_source.is_none()
+                    && c.matte_stencil.is_none()
+                    && !c.consumed_as_matte
+            })
+    }
+
+    /// Lay the title layers above the primary onto a presented frame's
+    /// bytes, in stacking order. The renderer's cache makes a resting
+    /// or scrolling title a row copy; the blend runs across threads.
+    pub(super) fn overlay_titles_onto(&mut self, bytes: &mut [u8], width: u32, height: u32) {
+        let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
+        let layers = klipp_compose::active_layers(&seq, self.playhead);
+        if layers.len() < 2 {
+            return;
+        }
+        let t = std::time::Instant::now();
+        let mut n = 0;
+        for layer in &layers[1..] {
+            for clip in &layer.clips {
+                if let Some(sprite) = self.renderer.render_title_layer_u8(clip, self.playhead, width, height) {
+                    klipp_compose::over_u8_straight(bytes, &sprite, width);
+                    n += 1;
+                }
+            }
+        }
+        if n > 0 {
+            tracing::trace!("fast path: {n} title layer(s) laid over the frame in {:.1} ms", t.elapsed().as_secs_f64() * 1e3);
+        }
+    }
+
     fn fast_path_blockers_for(&self, mode: FastPath) -> Vec<&'static str> {
         if !direct_present_enabled() {
             return vec!["KLIPP_DIRECT_PRESENT=0"];
@@ -6484,6 +6536,17 @@ impl PlaybackEngine {
                     return blockers;
                 }
             },
+            // Titles drawn plainly above the primary ride the fast path:
+            // their sprites are laid over the presented bytes.
+            [bottom, rest @ ..] if !bottom.transition && rest.iter().all(|l| Self::title_overlay_layer(&seq, l)) => {
+                match bottom.clips.as_slice() {
+                    [clip] if Some(clip.id) == primary => (bottom, *clip),
+                    _ => {
+                        blockers.push("another clip on screen");
+                        return blockers;
+                    }
+                }
+            }
             _ => {
                 blockers.push("overlay layers present");
                 return blockers;
@@ -6819,6 +6882,7 @@ impl PlaybackEngine {
         nits: Option<(Vec<f32>, u32, u32)>,
         scope_luma: [f32; 3],
     ) {
+        self.overlay_titles_onto(&mut bytes, width, height);
         // The scopes measure the bytes about to be shown, when due.
         let scope_ms = self.draw_due_scopes(DisplayScopeFrame { rgba: &bytes, luma: scope_luma }, width, height);
         let t_fb = std::time::Instant::now();

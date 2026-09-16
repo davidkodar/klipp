@@ -472,7 +472,9 @@ impl PlaybackEngine {
             if blockers.is_empty() {
                 if let super::PregradePixels::Srgb8(bytes) = &p.pregrade().pixels {
                     if bytes.len() == (w as usize) * (h as usize) * 4 {
-                        let picture = Picture::Display(bytes.as_ref().clone());
+                        let mut display = bytes.as_ref().clone();
+                        self.overlay_titles_onto(&mut display, w, h);
+                        let picture = Picture::Display(display);
                         self.show_rendered(Rendered { picture, width: w, height: h, stats: None }, t_frame);
                         return;
                     }

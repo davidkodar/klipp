@@ -443,6 +443,18 @@ impl Renderer {
         &mut self.titles
     }
 
+    /// A title clip's layer at `time` as straight-alpha sRGB bytes at
+    /// the frame size, for laying over a presented picture on the
+    /// viewer's fast path. `None` for any other clip kind.
+    pub fn render_title_layer_u8(&mut self, clip: &Clip, time: Timecode, width: u32, height: u32) -> Option<Vec<u8>> {
+        let ClipKind::Title(td) = &clip.kind else { return None };
+        let clip_time = eval_clip_time(clip, time);
+        let mut adapter = self.gpu.as_mut().map(crate::synth::GpuAlphaMaskAdapter);
+        let gpu = adapter.as_mut().map(|a| a as &mut dyn klipp_title::AlphaMaskProcessor);
+        let total = (clip.timeline_out - clip.timeline_in).to_secs_f64() as f32;
+        Some(self.titles.render_with_window(td, width, height, gpu, clip_time as f32, Some(total)))
+    }
+
     /// Use the GPU for grades, effects and transitions when available
     /// (default). Off, everything runs on the CPU paths — for tests, and
     /// machines without a usable GPU. The grade's executor opens its own
@@ -1984,6 +1996,40 @@ fn matte_mask(
 }
 
 /// Owned pixels, copied only if someone else still holds them.
+/// Straight-alpha "over" of `src` onto an opaque `dst`, both RGBA8 at
+/// `width` pixels a row, across threads; rows without coverage are
+/// skipped. The viewer's fast path lays title sprites onto a presented
+/// picture with this, in display space: exact where the text is solid,
+/// a hair off the linear composite only across an anti-aliased edge.
+pub fn over_u8_straight(dst: &mut [u8], src: &[u8], width: u32) {
+    use rayon::prelude::*;
+    let row = (width as usize) * 4;
+    if row == 0 || dst.len() != src.len() {
+        return;
+    }
+    dst.par_chunks_mut(row).zip(src.par_chunks(row)).for_each(|(d, s)| {
+        if s.chunks_exact(4).all(|p| p[3] == 0) {
+            return;
+        }
+        for (dp, sp) in d.chunks_exact_mut(4).zip(s.chunks_exact(4)) {
+            let sa = sp[3] as u32;
+            if sa == 0 {
+                continue;
+            }
+            if sa == 255 {
+                dp[0] = sp[0];
+                dp[1] = sp[1];
+                dp[2] = sp[2];
+                continue;
+            }
+            let inv = 255 - sa;
+            for i in 0..3 {
+                dp[i] = ((sp[i] as u32 * sa + dp[i] as u32 * inv + 127) / 255) as u8;
+            }
+        }
+    });
+}
+
 fn unshare(p: Arc<Vec<f32>>) -> Vec<f32> {
     Arc::try_unwrap(p).unwrap_or_else(|p| (*p).clone())
 }

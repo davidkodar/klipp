@@ -85,4 +85,6 @@ Klipp scans the system font directories on first launch and caches the result in
 
 ## Performance
 
-Glyphs are rasterised with `fontdue`; shadows, glows and blurs run on the GPU when one is available. A 1080p title with shadow and outline renders in well under a millisecond per frame.
+Glyphs are rasterised with `fontdue`; shadows, glows and blurs run on the GPU when one is available. A resting title renders once and is cached; an entrance or exit rasterises only during its own window; Scroll, Crawl, Shake, Blink and Pulse move and fade the cached render, so a scrolling credits roll costs a few milliseconds a frame even at UHD. Wave, Colour cycle, Colour blend and Counter rasterise every frame.
+
+In the viewer, a title with nothing but its own text on it (no effects, grade, keyframes or blend mode on the clip) is laid over the presented picture directly, so the frame stays on the decoder's fast path instead of going through the full composite. The export always takes the full composite, in linear light; the viewer's overlay matches it wherever the text is solid and differs only a hair across anti-aliased edges.
