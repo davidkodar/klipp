@@ -79,3 +79,7 @@ See [Importing Media](../editing/importing.md#what-klipp-reads-about-a-shot) for
 The inspector adapts to the available space. When the panel is narrow, controls reflow to a single column. Sliders use scrubby input — click and drag horizontally on any numeric value to adjust it smoothly. The cursor wraps at the screen edge so long drags don't run out of room.
 
 Hover any parameter for a tooltip with the parameter name, current value, and (where applicable) the range of valid values.
+
+## Title Tab
+
+Selected title clips get a Title tab in three tiers: the text, font and position and the Motion and Style cards always open, with every choice shown as a chip rendered on the clip's own text; the full effect stacks and the rest under Advanced. With nothing selected the tab offers **Add Title**. See [Titles](../editing/titles.md).

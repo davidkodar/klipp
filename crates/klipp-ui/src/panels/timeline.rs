@@ -8263,6 +8263,10 @@ impl TimelinePanel {
                     });
                 }
                 ui.separator();
+                if is_video_track && ui.button("Add Title Over Clip").clicked() {
+                    cmds.push(AppCommand::AddTitleAtPlayhead { over_clip: Some(clip_id) });
+                    ui.close_menu();
+                }
                 // Enable/Disable clip
                 let clip_enabled = state.sequence().tracks.iter()
                     .flat_map(|t| t.clips.iter())

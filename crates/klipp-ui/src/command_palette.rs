@@ -344,6 +344,8 @@ pub fn build(state: &AppState) -> Vec<PaletteEntry> {
         action: PaletteAction::Cmd(AppCommand::AddMarker {
             position: state.playhead, label: String::new(),
             color: klipp_core::MarkerColor::Blue }), enabled: true });
+    e.push(PaletteEntry { label: Cow::Borrowed("Add Title"), shortcut: Cow::Borrowed("Ctrl+T"),
+        action: PaletteAction::Cmd(AppCommand::AddTitleAtPlayhead { over_clip: None }), enabled: true });
     e.push(PaletteEntry { label: Cow::Borrowed("Set In Point"), shortcut: Cow::Borrowed("I"),
         action: PaletteAction::Cmd(AppCommand::SetSequenceInPoint(state.playhead)), enabled: true });
     e.push(PaletteEntry { label: Cow::Borrowed("Set Out Point"), shortcut: Cow::Borrowed("O"),

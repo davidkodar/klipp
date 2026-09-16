@@ -8,7 +8,33 @@ Klipp's titles are text layers rendered by the `klipp-title` engine and composit
 
 ## Adding a Title
 
-Double-click a card, or drag it onto the timeline. The title lands on a text track at the playhead with a five-second duration, becomes the selection, the inspector opens on its Title tab with the text field focused, and the playhead parks a little way into the clip so the viewer shows the title at rest rather than mid-entrance. Type to replace the placeholder text.
+Every way in lands the same: the title becomes the selection, the inspector opens on its Title tab with the text focused, and the playhead parks a little way into the clip so the viewer shows the title at rest rather than mid-entrance. Type to replace the placeholder text.
+
+- **Ctrl+T**, the **T** button in the timeline toolbar, **Add Title** in the command palette, or the **Add Title** button the Title tab shows when nothing is selected: a fresh five-second title on a free text track at the playhead.
+- **Right-click a video clip › Add Title Over Clip**: a title spanning exactly that clip.
+- **Library › Titles**: double-click a design, or drag it onto the timeline, for one of the curated designs.
+
+A new text track is made on top when no existing one has room.
+
+## Editing on the Picture
+
+Double-click a title in the viewer to edit its text where it is. The caret and the selection are drawn on the engine's own render, so what you see while typing is the title itself: the face, the shadows, the fill. Click or drag on the text to place the caret or select; Esc, or a click elsewhere in the viewer, finishes. A double-click beside the text edits the first text layer.
+
+Drag a layer to move it. It snaps to the frame's centre lines, the title-safe edges and the other layers' centres, with guide lines while it does and an x/y readout in frame pixels beside the pointer. Hold Alt to drag free.
+
+## The Title Tab
+
+The tab has three tiers. The first is always open: the text, the font, style, size, colour and alignment, the position, then **Motion** and **Style**.
+
+**Motion** has an **In** row and an **Out** row. Each shows a chip rendered by the title engine on the clip's own text; hover it and the motion plays. Click the chip or the name to open a gallery of every kind, each rendered on your text. The duration sits beside it, and **Details** opens the delay, easing, stagger and travel. Below them are the **Loops**, added from a chip gallery of their own.
+
+**Style** shows the presets as chips on your text (Neon, Classic, Bold Shadow, Outlined, VHS) and then one row each for **Fill** (with an optional gradient), **Stroke**, **Shadow** and **Glow**.
+
+**Advanced**, collapsed by default, holds everything else: the full effect stacks (several shadows, outlines and glows, inner shadows, pattern and texture fills), typography, background and layer opacity, motion blur, 3D extrusion and distortion, and text on a path.
+
+## Layers
+
+A title is a stack of layers: text, shapes and images. The **Layers** list at the top of the tab shows them back to front with an eye, a lock and reorder arrows; select one to edit it, in the list or by clicking it in the viewer. **+ Text**, **+ Shape** and **+ Image** add a layer. An image layer takes a PNG, JPEG or WebP from disk, a logo or a still, sized to a third of the frame at the picture's aspect; its editor offers **Fit**, **Fill** or **Stretch** inside its box and a **Replace…** button. Image paths are saved relative to the project.
 
 ## Fonts
 
@@ -51,7 +77,7 @@ The templates are built on this model, so a template's motion is fully editable 
 
 ## Text Properties
 
-Font family and style, size in pixels at 1080p, colour, alignment, tracking, line spacing, case, shadows, outlines, glows, gradients, inner shadows, pattern and texture fills, extrusion, text on a path and rich-text style runs are all in the Title tab. A title can hold several text and shape layers; select a layer in the viewer or the Layers list to edit it.
+Font family and style, size in pixels at 1080p, colour, alignment, tracking, line spacing, case, shadows, outlines, glows, gradients, inner shadows, pattern and texture fills, extrusion, text on a path and rich-text style runs are all in the Title tab, the everyday ones in the first tier and the rest under Advanced.
 
 ## Font Discovery
 

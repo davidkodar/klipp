@@ -1784,6 +1784,18 @@ pub enum AppCommand {
 
     // Title clips
     CreateTitleClip { track_index: usize, timeline_in: Timecode, duration_frames: u32 },
+    /// The one-gesture add: a fresh title on a free text track at the
+    /// playhead (five seconds), or over the whole of `over_clip`. The
+    /// clip is selected, the inspector opens on its text, the playhead
+    /// parks where the title is at rest.
+    AddTitleAtPlayhead { over_clip: Option<ClipId> },
+    /// Add an image layer (a logo, a still) to a title. The layer's
+    /// box takes the picture's aspect at a third of the frame width.
+    AddTitleImageObject { clip_id: ClipId, path: String },
+    /// Point an image layer at another file.
+    SetTitleImagePath { clip_id: ClipId, object_id: u32, path: String },
+    /// 0 = fit, 1 = fill, 2 = stretch.
+    SetTitleImageFit { clip_id: ClipId, object_id: u32, fit: u8 },
     /// Promote an existing title clip to a reusable Project Asset.
     /// Reads the clip's `TitleData`, builds a `TitleAsset` keyed by a
     /// fresh `MediaId`, inserts a synthetic `MediaItem` into the pool

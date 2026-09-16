@@ -371,6 +371,52 @@ fn default_true() -> bool { true }
 pub enum TitleObjectContent {
     TextBox(TextBox),
     Shape(Shape),
+    /// A picture from disk: a logo, a bug, a still.
+    Image(ImageLayer),
+}
+
+/// How an image layer fills its box.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum ImageFit {
+    /// Whole picture inside the box, letterboxed.
+    #[default]
+    Contain,
+    /// The box filled, the picture cropped.
+    Cover,
+    /// The picture stretched to the box.
+    Stretch,
+}
+
+impl ImageFit {
+    pub const ALL: [ImageFit; 3] = [ImageFit::Contain, ImageFit::Cover, ImageFit::Stretch];
+    pub fn label(self) -> &'static str {
+        match self {
+            ImageFit::Contain => "Fit",
+            ImageFit::Cover => "Fill",
+            ImageFit::Stretch => "Stretch",
+        }
+    }
+}
+
+/// An image layer's content: the file, and how it sits in its box.
+/// The layer's `ObjectTransform` places and sizes the box; the
+/// layer's `opacity` fades it.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ImageLayer {
+    /// Absolute in memory; project-relative in the file.
+    pub path: String,
+    #[serde(default)]
+    pub fit: ImageFit,
+}
+
+impl ImageLayer {
+    /// The file's name without its extension, for layer lists.
+    pub fn stem(&self) -> String {
+        std::path::Path::new(&self.path)
+            .file_stem()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_else(|| "Image".to_string())
+    }
 }
 
 /// A text layer's content + style. All the rich-text styling fields
@@ -944,6 +990,7 @@ impl TitleData {
         let name = match &content {
             TitleObjectContent::TextBox(_) => format!("Text {}", id.0 + 1),
             TitleObjectContent::Shape(_) => format!("Shape {}", id.0 + 1),
+            TitleObjectContent::Image(img) => img.stem(),
         };
         self.objects.push(TitleObject {
             id,

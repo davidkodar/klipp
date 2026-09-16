@@ -31,7 +31,7 @@ use fontdue::layout::{
 };
 use fontdue::Font;
 use klipp_timeline::{
-    FontStyle, ObjectTransform, Shape, ShapeKind, StyleRun,
+    FontStyle, ImageFit, ImageLayer, ObjectTransform, Shape, ShapeKind, StyleRun,
     TextAlignment, TextDirection, TextPath, TextPattern, TitleBackground, TitleData,
     TitleObjectContent,
 };
@@ -156,6 +156,9 @@ pub struct TitleRenderer {
     /// The waves of every layer of the title being rendered, by
     /// object id; filled by `render_with_time`.
     loop_waves: HashMap<u32, (f32, f32)>,
+    /// Decoded image layers by path; `None` for a file that would
+    /// not open, so it is not retried every frame.
+    image_cache: HashMap<String, Option<std::sync::Arc<DecodedImage>>>,
 }
 
 const RENDER_CACHE_CAP: usize = 4;
@@ -184,6 +187,7 @@ impl TitleRenderer {
             motion_window: None,
             loop_wave: None,
             loop_waves: HashMap::new(),
+            image_cache: HashMap::new(),
         }
     }
 
@@ -1588,9 +1592,40 @@ impl TitleRenderer {
                         over_blend(&mut buf, &layer);
                     }
                 }
+                TitleObjectContent::Image(img) => {
+                    if let Some(decoded) = self.decoded_image(img) {
+                        let mut layer = vec![0u8; (width as usize) * (height as usize) * 4];
+                        paint_image_layer(&mut layer, &decoded, img.fit, &effective_transform, width, height);
+                        if (obj.opacity - 1.0).abs() >= 0.001 {
+                            scale_layer_alpha(&mut layer, obj.opacity);
+                        }
+                        over_blend(&mut buf, &layer);
+                    }
+                }
             }
         }
         buf
+    }
+
+    /// The decoded pixels of an image layer, read once per path.
+    fn decoded_image(&mut self, img: &ImageLayer) -> Option<std::sync::Arc<DecodedImage>> {
+        if let Some(cached) = self.image_cache.get(&img.path) {
+            return cached.clone();
+        }
+        let decoded = image::open(&img.path).ok().map(|i| {
+            let rgba = i.to_rgba8();
+            std::sync::Arc::new(DecodedImage { w: rgba.width() as usize, h: rgba.height() as usize, rgba: rgba.into_raw() })
+        });
+        if decoded.is_none() {
+            tracing::warn!("title image layer could not be read: {}", img.path);
+        }
+        self.image_cache.insert(img.path.clone(), decoded.clone());
+        decoded
+    }
+
+    /// Forget a decoded image so a changed file is read again.
+    pub fn forget_image(&mut self, path: &str) {
+        self.image_cache.remove(path);
     }
 
     /// Single-text rasterisation: layout → compose → texture-fill,
@@ -2638,6 +2673,95 @@ fn over_blend(dst: &mut [u8], src: &[u8]) {
 /// Rotation is currently ignored (the on-canvas editor in commit 3
 /// will wire it through). Phase 1 supports only the rectangle
 /// primitive; future shape kinds extend the inner match.
+/// An image layer's pixels, straight-alpha RGBA.
+pub struct DecodedImage {
+    pub w: usize,
+    pub h: usize,
+    pub rgba: Vec<u8>,
+}
+
+impl DecodedImage {
+    /// Bilinear sample at source pixel coordinates, edges clamped.
+    fn sample(&self, u: f32, v: f32) -> [f32; 4] {
+        let u = u.clamp(0.0, (self.w - 1) as f32);
+        let v = v.clamp(0.0, (self.h - 1) as f32);
+        let (x0, y0) = (u.floor() as usize, v.floor() as usize);
+        let (x1, y1) = ((x0 + 1).min(self.w - 1), (y0 + 1).min(self.h - 1));
+        let (fx, fy) = (u - x0 as f32, v - y0 as f32);
+        let px = |x: usize, y: usize| {
+            let i = (y * self.w + x) * 4;
+            [self.rgba[i] as f32, self.rgba[i + 1] as f32, self.rgba[i + 2] as f32, self.rgba[i + 3] as f32]
+        };
+        let (a, b, c, d) = (px(x0, y0), px(x1, y0), px(x0, y1), px(x1, y1));
+        let mut out = [0.0; 4];
+        for i in 0..4 {
+            let top = a[i] + (b[i] - a[i]) * fx;
+            let bottom = c[i] + (d[i] - c[i]) * fx;
+            out[i] = top + (bottom - top) * fy;
+        }
+        out
+    }
+}
+
+/// Paint an image layer into its box: the picture fitted, filled or
+/// stretched, sampled bilinearly, composited over what is there.
+fn paint_image_layer(
+    buf: &mut [u8],
+    img: &DecodedImage,
+    fit: ImageFit,
+    transform: &ObjectTransform,
+    width: u32,
+    height: u32,
+) {
+    if img.w == 0 || img.h == 0 {
+        return;
+    }
+    let (w_f, h_f) = (width as f32, height as f32);
+    let bw = (transform.size.x * w_f).max(1.0);
+    let bh = (transform.size.y * h_f).max(1.0);
+    let cx = transform.center.x * w_f;
+    let cy = transform.center.y * h_f;
+    let (iw, ih) = (img.w as f32, img.h as f32);
+    let (dw, dh) = match fit {
+        ImageFit::Stretch => (bw, bh),
+        ImageFit::Contain => {
+            let s = (bw / iw).min(bh / ih);
+            (iw * s, ih * s)
+        }
+        ImageFit::Cover => {
+            let s = (bw / iw).max(bh / ih);
+            (iw * s, ih * s)
+        }
+    };
+    let (left, top) = (cx - dw * 0.5, cy - dh * 0.5);
+    let x0 = left.max(cx - bw * 0.5).floor().max(0.0) as i32;
+    let y0 = top.max(cy - bh * 0.5).floor().max(0.0) as i32;
+    let x1 = (cx + dw * 0.5).min(cx + bw * 0.5).ceil().min(w_f) as i32;
+    let y1 = (cy + dh * 0.5).min(cy + bh * 0.5).ceil().min(h_f) as i32;
+    if x1 <= x0 || y1 <= y0 {
+        return;
+    }
+    for y in y0..y1 {
+        let v = ((y as f32 + 0.5) - top) / dh * ih - 0.5;
+        for x in x0..x1 {
+            let u = ((x as f32 + 0.5) - left) / dw * iw - 0.5;
+            let src = img.sample(u, v);
+            let sa = src[3] / 255.0;
+            if sa <= 0.0 {
+                continue;
+            }
+            let idx = ((y as usize) * (width as usize) + (x as usize)) * 4;
+            let inv_sa = 1.0 - sa;
+            let da = buf[idx + 3] as f32 / 255.0;
+            let out_a = sa + da * inv_sa;
+            for i in 0..3 {
+                buf[idx + i] = (src[i] * sa + buf[idx + i] as f32 * inv_sa).round().clamp(0.0, 255.0) as u8;
+            }
+            buf[idx + 3] = (out_a * 255.0).round().clamp(0.0, 255.0) as u8;
+        }
+    }
+}
+
 fn paint_shape_layer(
     buf: &mut [u8],
     shape: &Shape,

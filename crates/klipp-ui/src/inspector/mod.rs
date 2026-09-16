@@ -313,8 +313,8 @@ impl NewInspectorPanel {
                     crate::inspector::color_and_luts::show_color_and_luts(ui, state, theme, &mut cmds);
                 }
                 InspectorTab::Title => {
-                    if let Some((_, clip)) = clip_info {
-                        if let klipp_timeline::ClipKind::Title(_) = &clip.kind {
+                    match clip_info {
+                        Some((_, clip)) if matches!(clip.kind, klipp_timeline::ClipKind::Title(_)) => {
                             // 12 px horizontal content rail — every row in
                             // show_title_editor inherits the same horizontal
                             // inset, so nothing touches the inspector edges.
@@ -325,11 +325,8 @@ impl NewInspectorPanel {
                                 .show(ui, |ui| {
                                     show_title_editor(ui, theme, clip, state, &mut cmds, &mut self.title_chips);
                                 });
-                        } else {
-                            no_selection(ui, theme);
                         }
-                    } else {
-                        no_selection(ui, theme);
+                        _ => title_empty_state(ui, theme, &mut cmds),
                     }
                 }
                 InspectorTab::Generator => {
@@ -3107,6 +3104,67 @@ fn show_title_effects_group(
 /// radius. Phase-1 ships only the rectangle primitive, so the
 /// editor is small. Future shape kinds (ellipse, polygon, path)
 /// add more controls inside the same `match shape.kind` arm.
+/// One image file, chosen by the user.
+fn pick_image_file() -> Option<String> {
+    rfd::FileDialog::new()
+        .add_filter("Images", &["png", "jpg", "jpeg", "webp"])
+        .pick_file()
+        .map(|p| p.to_string_lossy().to_string())
+}
+
+/// The editor of an image layer: the file, and how it sits in its box.
+fn show_title_image_editor(
+    ui: &mut egui::Ui,
+    theme: &KlippTheme,
+    clip_id: klipp_core::ClipId,
+    object_id: klipp_timeline::TitleObjectId,
+    img: &klipp_timeline::ImageLayer,
+    cmds: &mut Vec<AppCommand>,
+) {
+    ui.label(egui::RichText::new("Image").strong().size(12.0));
+    ui.add_space(6.0);
+    ui.horizontal(|ui| {
+        let name = std::path::Path::new(&img.path).file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+        ui.add(egui::Label::new(egui::RichText::new(name).size(crate::theme::type_scale::CONTROL)).truncate())
+            .on_hover_text(&img.path);
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if ui.add(egui::Button::new(egui::RichText::new("Replace\u{2026}").size(crate::theme::type_scale::CAPTION))).clicked() {
+                if let Some(path) = pick_image_file() {
+                    cmds.push(AppCommand::SetTitleImagePath { clip_id, object_id: object_id.0, path });
+                }
+            }
+        });
+    });
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new("In its box").size(crate::theme::type_scale::CONTROL).color(theme.text_secondary));
+        let labels: Vec<&str> = klipp_timeline::ImageFit::ALL.iter().map(|f| f.label()).collect();
+        let active = klipp_timeline::ImageFit::ALL.iter().position(|f| *f == img.fit).unwrap_or(0);
+        if let Some(i) = crate::widgets::segmented::segmented(ui, &labels, active, theme, egui::FontId::proportional(crate::theme::type_scale::CAPTION), crate::theme::control::COMPACT) {
+            cmds.push(AppCommand::SetTitleImageFit { clip_id, object_id: object_id.0, fit: i as u8 });
+        }
+    });
+}
+
+/// The Title tab with nothing to edit: the one-click way in.
+fn title_empty_state(ui: &mut egui::Ui, theme: &KlippTheme, cmds: &mut Vec<AppCommand>) {
+    ui.add_space(24.0);
+    ui.vertical_centered(|ui| {
+        ui.label(egui::RichText::new("No title selected").size(crate::theme::type_scale::TITLE).color(theme.text_secondary));
+        ui.add_space(4.0);
+        ui.label(
+            egui::RichText::new("Add one at the playhead, or pick a design in Library \u{203a} Titles.")
+                .size(crate::theme::type_scale::CAPTION)
+                .color(theme.text_dim),
+        );
+        ui.add_space(10.0);
+        let b = ui.add(egui::Button::new(egui::RichText::new("Add Title").size(crate::theme::type_scale::CONTROL)).min_size(egui::vec2(120.0, crate::theme::control::REGULAR)));
+        if b.on_hover_text("Ctrl+T").clicked() {
+            cmds.push(AppCommand::AddTitleAtPlayhead { over_clip: None });
+        }
+    });
+}
+
 fn show_title_shape_editor(
     ui: &mut egui::Ui,
     theme: &KlippTheme,
@@ -3257,12 +3315,13 @@ fn show_title_layers_panel(
     let btn_h = 32.0;
     let gap = 8.0;
     let avail = ui.available_width();
-    let col_w = ((avail - gap) * 0.5).floor();
+    let col_w = ((avail - gap * 2.0) / 3.0).floor();
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = gap;
         for (kind, label, hover) in [
-            (0u8, "\u{002B} Text", "Add a new TextBox layer"),
-            (1u8, "\u{002B} Shape", "Add a new Shape layer (rectangle)"),
+            (0u8, "\u{002B} Text", "Add a text layer"),
+            (1u8, "\u{002B} Shape", "Add a shape layer (rectangle)"),
+            (2u8, "\u{002B} Image", "Add an image layer: a logo, a bug, a still"),
         ] {
             let (rect, resp) = ui.allocate_exact_size(
                 egui::vec2(col_w, btn_h),
@@ -3288,7 +3347,13 @@ fn show_title_layers_panel(
                 label_color,
             );
             if resp.clicked() {
-                cmds.push(AppCommand::AddTitleObject { clip_id, kind });
+                if kind == 2 {
+                    if let Some(path) = pick_image_file() {
+                        cmds.push(AppCommand::AddTitleImageObject { clip_id, path });
+                    }
+                } else {
+                    cmds.push(AppCommand::AddTitleObject { clip_id, kind });
+                }
             }
         }
     });
@@ -3845,6 +3910,7 @@ fn show_title_layer_row(
     let (badge_fill, badge_text_color, badge_letter) = match &obj.content {
         TitleObjectContent::TextBox(_) => (theme.accent, theme.text_on_accent, "T"),
         TitleObjectContent::Shape(_) => (theme.bg_raised, theme.text_primary, "S"),
+        TitleObjectContent::Image(_) => (theme.bg_raised, theme.text_primary, "I"),
     };
     ui.painter().rect_filled(badge_rect, egui::Rounding::same(4.0), badge_fill);
     ui.painter().text(
@@ -3870,6 +3936,7 @@ fn show_title_layer_row(
                 }
             }
             TitleObjectContent::Shape(_) => format!("Shape {}", obj.id.0 + 1),
+            TitleObjectContent::Image(img) => img.stem(),
         }
     } else {
         obj.name.clone()
@@ -4075,6 +4142,14 @@ fn show_title_editor(
     if let Some(klipp_timeline::TitleObjectContent::Shape(shape)) = kind_ref {
         if let Some(oid) = target_oid {
             show_title_shape_editor(ui, theme, clip_id, oid, shape, cmds);
+            ui.add_space(8.0);
+            show_title_position_block(ui, theme, clip_id, td, state, cmds, clip_time_secs);
+        }
+        return;
+    }
+    if let Some(klipp_timeline::TitleObjectContent::Image(img)) = kind_ref {
+        if let Some(oid) = target_oid {
+            show_title_image_editor(ui, theme, clip_id, oid, img, cmds);
             ui.add_space(8.0);
             show_title_position_block(ui, theme, clip_id, td, state, cmds, clip_time_secs);
         }

@@ -672,12 +672,20 @@ fn load_clip_kind(c: &ClipJson, project_dir: &Path) -> ClipKind {
                             // Texture paths are stored project-relative;
                             // resolve them here as the flat fields are.
                             for obj in &mut td.objects {
-                                if let klipp_timeline::TitleObjectContent::TextBox(tb) = &mut obj.content {
-                                    if let Some(p) = tb.texture_fill.as_mut().and_then(|t| t.file_path_mut()) {
-                                        *p = crate::path_util::resolve_media_path(project_dir, Path::new(p))
+                                match &mut obj.content {
+                                    klipp_timeline::TitleObjectContent::TextBox(tb) => {
+                                        if let Some(p) = tb.texture_fill.as_mut().and_then(|t| t.file_path_mut()) {
+                                            *p = crate::path_util::resolve_media_path(project_dir, Path::new(p))
+                                                .to_string_lossy()
+                                                .to_string();
+                                        }
+                                    }
+                                    klipp_timeline::TitleObjectContent::Image(img) => {
+                                        img.path = crate::path_util::resolve_media_path(project_dir, Path::new(&img.path))
                                             .to_string_lossy()
                                             .to_string();
                                     }
+                                    klipp_timeline::TitleObjectContent::Shape(_) => {}
                                 }
                             }
                             return ClipKind::Title(td);

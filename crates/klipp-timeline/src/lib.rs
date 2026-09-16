@@ -60,8 +60,7 @@ pub use clip_kind::{
     TexturePresetId, TextureSource, TextureTileMode, TitleAnimationType,
     TitleAsset,
     TitleBackground, TitleData, TitleObject, TitleObjectContent, TitleObjectId, TitlePosition,
-    TitleShadow, GeneratorData,
-};
+    TitleShadow, GeneratorData, ImageFit, ImageLayer};
 pub use marker::Marker;
 pub use sequence::{
     effective_timeline_duration_for_keyframes, speed_at_keyframes, speed_integral_keyframes,

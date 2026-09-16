@@ -124,6 +124,13 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState, theme: &KlippTheme, cmds: &
             });
         }
 
+        // ── Add title ──
+        let resp = icon_button(ui, theme, btn, false, draw_tl_title_icon);
+        styled_tooltip(&resp, theme, "Add Title", Some("Ctrl+T"));
+        if resp.clicked() {
+            cmds.push(AppCommand::AddTitleAtPlayhead { over_clip: None });
+        }
+
         // ── Zoom (right-aligned): [−] [slider] [+] [Fit] ──
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             ui.add_space(8.0);
@@ -276,4 +283,16 @@ fn draw_tl_marker_icon(painter: &egui::Painter, btn: egui::Rect, c: egui::Color3
         egui::pos2(cx + 3.5, ir.min.y + 1.0),
         egui::pos2(cx, ir.min.y + 5.0),
     ], c, egui::Stroke::NONE));
+}
+
+/// A title: a bold T.
+fn draw_tl_title_icon(painter: &egui::Painter, btn: egui::Rect, c: egui::Color32) {
+    let a = icon_area(btn);
+    painter.text(
+        a.center(),
+        egui::Align2::CENTER_CENTER,
+        "T",
+        egui::FontId::proportional(a.height() * 1.05),
+        c,
+    );
 }

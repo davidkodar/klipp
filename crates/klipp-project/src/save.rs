@@ -373,10 +373,16 @@ fn effect_to_json(effect: &klipp_plugin::AppliedEffect) -> EffectJson {
 fn title_data_for_file(data: &klipp_timeline::TitleData, project_dir: &Path) -> klipp_timeline::TitleData {
     let mut copy = data.clone();
     for obj in &mut copy.objects {
-        if let klipp_timeline::TitleObjectContent::TextBox(tb) = &mut obj.content {
-            if let Some(p) = tb.texture_fill.as_mut().and_then(|t| t.file_path_mut()) {
-                *p = to_project_relative(project_dir, Path::new(p)).to_string_lossy().to_string();
+        match &mut obj.content {
+            klipp_timeline::TitleObjectContent::TextBox(tb) => {
+                if let Some(p) = tb.texture_fill.as_mut().and_then(|t| t.file_path_mut()) {
+                    *p = to_project_relative(project_dir, Path::new(p)).to_string_lossy().to_string();
+                }
             }
+            klipp_timeline::TitleObjectContent::Image(img) => {
+                img.path = to_project_relative(project_dir, Path::new(&img.path)).to_string_lossy().to_string();
+            }
+            klipp_timeline::TitleObjectContent::Shape(_) => {}
         }
     }
     copy

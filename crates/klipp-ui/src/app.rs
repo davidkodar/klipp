@@ -14773,6 +14773,41 @@ impl KlippApp {
                 }
                 true
             }
+            AppCommand::AddTitleAtPlayhead { over_clip } => {
+                let fps_rate = self.state.sequences[self.state.active_sequence_idx].fps.rate();
+                // Where and how long: the playhead and five seconds,
+                // or the span of the clip it goes over.
+                let (timeline_in, duration_frames) = over_clip
+                    .and_then(|cid| {
+                        self.state.sequences[self.state.active_sequence_idx]
+                            .tracks
+                            .iter()
+                            .flat_map(|t| t.clips.iter())
+                            .find(|c| c.id == cid)
+                            .map(|c| {
+                                let secs = (c.timeline_out - c.timeline_in).to_secs_f64().max(0.0);
+                                (c.timeline_in, ((secs * fps_rate as f64).round() as u32).max(1))
+                            })
+                    })
+                    .unwrap_or((self.state.playhead, fps_rate * 5));
+                let timeline_out = timeline_in.rescale_to(fps_rate) + klipp_core::RationalTime::from_frames(duration_frames as i64, fps_rate);
+                // A text track with room for the whole span, else a
+                // new one on top.
+                let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+                let free = seq.tracks.iter().position(|t| {
+                    t.kind == klipp_timeline::TrackKind::Text
+                        && !t.clips.iter().any(|c| c.timeline_in < timeline_out && c.timeline_out > timeline_in)
+                });
+                let track_index = match free {
+                    Some(i) => i,
+                    None => {
+                        let n = seq.tracks.iter().filter(|t| t.kind == klipp_timeline::TrackKind::Text).count() + 1;
+                        seq.tracks.insert(0, klipp_timeline::Track::new(&format!("Text {n}"), klipp_timeline::TrackKind::Text));
+                        0
+                    }
+                };
+                self.handle_title_lifecycle(&AppCommand::CreateTitleClip { track_index, timeline_in, duration_frames }, _needs_refresh)
+            }
             AppCommand::CreateTitleClip { track_index, timeline_in, duration_frames } => {
                 let ti = *track_index;
                 // Check if this track was just created (it's a fresh text track with no clips)
@@ -15784,6 +15819,99 @@ impl KlippApp {
                 }
                 if let Some(id) = new_id {
                     self.state.selected_title_object = Some((*clip_id, id));
+                }
+                self.render_title_to_viewer(*clip_id);
+                self.sync_sequence_to_engine();
+                let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
+                self.state.dirty = true;
+                true
+            }
+            AppCommand::AddTitleImageObject { clip_id, path } => {
+                let old = self.snapshot_title(*clip_id);
+                let res = self.state.sequences[self.state.active_sequence_idx].resolution;
+                // The box: a third of the frame wide, the picture's
+                // aspect, centred.
+                let (iw, ih) = image::image_dimensions(path).map(|(w, h)| (w as f32, h as f32)).unwrap_or((1.0, 1.0));
+                let box_w = 0.33_f32;
+                let box_h = (box_w * (ih / iw.max(1.0)) * (res.width as f32 / res.height.max(1) as f32)).clamp(0.02, 1.0);
+                let mut new_id: Option<klipp_timeline::TitleObjectId> = None;
+                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                    if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
+                        if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
+                            let xform = klipp_timeline::ObjectTransform {
+                                center: klipp_timeline::TitlePosition { x: 0.5, y: 0.5 },
+                                center_x_keyframes: Vec::new(),
+                                center_y_keyframes: Vec::new(),
+                                size: klipp_timeline::TitlePosition { x: box_w, y: box_h },
+                                rotation: 0.0,
+                                anchor_norm: klipp_timeline::TitlePosition { x: 0.5, y: 0.5 },
+                            };
+                            let content = klipp_timeline::TitleObjectContent::Image(klipp_timeline::ImageLayer {
+                                path: path.clone(),
+                                fit: klipp_timeline::ImageFit::Contain,
+                            });
+                            new_id = Some(td.add_object(content, xform));
+                        }
+                    }
+                }
+                if let Some(old) = old {
+                    self.push_title_undo(*clip_id, "Add Image Layer", old);
+                }
+                if let Some(id) = new_id {
+                    self.state.selected_title_object = Some((*clip_id, id));
+                }
+                self.title_renderer.forget_image(path);
+                self.render_title_to_viewer(*clip_id);
+                self.sync_sequence_to_engine();
+                let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
+                self.state.dirty = true;
+                true
+            }
+            AppCommand::SetTitleImagePath { clip_id, object_id, path } => {
+                let old = self.snapshot_title(*clip_id);
+                let target = klipp_timeline::TitleObjectId(*object_id);
+                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                    if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
+                        if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
+                            if let Some(o) = td.object_mut(target) {
+                                if let klipp_timeline::TitleObjectContent::Image(img) = &mut o.content {
+                                    img.path = path.clone();
+                                }
+                            }
+                        }
+                    }
+                }
+                if let Some(old) = old {
+                    self.push_title_undo(*clip_id, "Replace Image", old);
+                }
+                self.title_renderer.forget_image(path);
+                self.render_title_to_viewer(*clip_id);
+                self.sync_sequence_to_engine();
+                let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
+                self.state.dirty = true;
+                true
+            }
+            AppCommand::SetTitleImageFit { clip_id, object_id, fit } => {
+                let old = self.snapshot_title(*clip_id);
+                let target = klipp_timeline::TitleObjectId(*object_id);
+                let fit = match fit {
+                    1 => klipp_timeline::ImageFit::Cover,
+                    2 => klipp_timeline::ImageFit::Stretch,
+                    _ => klipp_timeline::ImageFit::Contain,
+                };
+                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                    if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
+                        if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
+                            if let Some(o) = td.object_mut(target) {
+                                if let klipp_timeline::TitleObjectContent::Image(img) = &mut o.content {
+                                    img.fit = fit;
+                                }
+                            }
+                        }
+                    }
+                }
+                if let Some(old) = old {
+                    self.push_title_undo(*clip_id, "Image Fit", old);
                 }
                 self.render_title_to_viewer(*clip_id);
                 self.sync_sequence_to_engine();
@@ -24206,39 +24334,9 @@ impl KlippApp {
     fn shortcuts_title_and_tools2(&mut self, ctx: &egui::Context, cmds: &mut Vec<AppCommand>) {
         let mut pending_perf_recording_toggle = false;
         ctx.input(|i| {
-            // Ctrl+T — Create title clip at playhead on a free text track (or create new one)
+            // Ctrl+T — a title at the playhead.
             if i.modifiers.ctrl && i.key_pressed(egui::Key::T) {
-                let ph = self.state.playhead;
-                // Find a text track that has no clip at the playhead
-                let track_index = self.state.sequences[self.state.active_sequence_idx].tracks.iter()
-                    .enumerate()
-                    .find(|(_, t)| {
-                        t.kind == klipp_timeline::TrackKind::Text
-                            && t.clip_at_timecode(ph).is_none()
-                    })
-                    .map(|(i, _)| i);
-                let track_index = match track_index {
-                    Some(i) => i,
-                    None => {
-                        // No free text track — create one
-                        let track_num = self.state.sequences[self.state.active_sequence_idx].tracks.iter()
-                            .filter(|t| t.kind == klipp_timeline::TrackKind::Text)
-                            .count() + 1;
-                        let track = klipp_timeline::Track::new(
-                            &format!("Text {track_num}"),
-                            klipp_timeline::TrackKind::Text,
-                        );
-                        self.state.sequences[self.state.active_sequence_idx].tracks.insert(0, track); // insert at top
-                        0
-                    }
-                };
-                let fps_rate = self.state.sequences[self.state.active_sequence_idx].fps.rate();
-                let duration_frames = fps_rate * 5; // 5 seconds default
-                cmds.push(AppCommand::CreateTitleClip {
-                    track_index,
-                    timeline_in: ph,
-                    duration_frames,
-                });
+                cmds.push(AppCommand::AddTitleAtPlayhead { over_clip: None });
             }
             // B — Blade tool
             if !i.modifiers.ctrl && i.key_pressed(egui::Key::B) {
