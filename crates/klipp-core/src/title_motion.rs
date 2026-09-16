@@ -455,13 +455,15 @@ pub fn eval_loops(loops: &[TitleLoop], t: f32, window: Option<f32>, geo: LoopGeo
                 }
                 pose.color = Some(c);
             }
+            // The travel runs from just past one edge to just past the
+            // other, so the text is on its way in from the first frame.
             TitleLoop::Scroll { direction, speed_px_per_sec } => {
-                let offset = ((geo.frame_h + geo.text_h) * 0.5 * 1.1).max(geo.frame_h);
+                let offset = (geo.frame_h + geo.text_h) * 0.5 + geo.frame_h * 0.02;
                 let y = travel(offset, *speed_px_per_sec, t, window, false);
                 pose.dy += match direction { ScrollDirection::Up => y, ScrollDirection::Down => -y };
             }
             TitleLoop::Crawl { direction, speed_px_per_sec, repeat } => {
-                let offset = ((geo.frame_w + geo.text_w) * 0.5 * 1.1).max(geo.frame_w);
+                let offset = (geo.frame_w + geo.text_w) * 0.5 + geo.frame_w * 0.02;
                 let x = travel(offset, *speed_px_per_sec, t, window, *repeat);
                 pose.dx += match direction { CrawlDirection::Left => x, CrawlDirection::Right => -x };
             }
@@ -494,8 +496,12 @@ mod loop_tests {
         let loops = [TitleLoop::Scroll { direction: ScrollDirection::Up, speed_px_per_sec: 0.0 }];
         let start = eval_loops(&loops, 0.0, Some(4.0), geo(), [255; 4]);
         let end = eval_loops(&loops, 4.0, Some(4.0), geo(), [255; 4]);
-        assert!(start.dy > 1000.0 && end.dy < -1000.0, "{} {}", start.dy, end.dy);
-        assert!((start.dy + end.dy).abs() < 0.01);
+        // At the start the text's top edge sits just below the frame;
+        // at the end its bottom edge sits just above it.
+        let g = geo();
+        let just_past = (g.frame_h + g.text_h) * 0.5;
+        assert!(start.dy > just_past && start.dy < just_past + g.frame_h * 0.05, "{}", start.dy);
+        assert!((start.dy + end.dy).abs() < 0.01, "{} {}", start.dy, end.dy);
     }
 
     #[test]

@@ -531,7 +531,7 @@ fn show_loops(
                         *direction = if i == 0 { ScrollDirection::Up } else { ScrollDirection::Down };
                         changed = true;
                     }
-                    changed |= ui.add(egui::DragValue::new(speed_px_per_sec).range(0.0..=2000.0).speed(1.0).suffix(" px/s").fixed_decimals(0)).on_hover_text("0 fits the travel to the clip").changed();
+                    changed |= speed_or_fit(ui, speed_px_per_sec);
                 }
                 TitleLoop::Crawl { direction, speed_px_per_sec, repeat } => {
                     let left = *direction == CrawlDirection::Left;
@@ -539,7 +539,7 @@ fn show_loops(
                         *direction = if i == 0 { CrawlDirection::Left } else { CrawlDirection::Right };
                         changed = true;
                     }
-                    changed |= ui.add(egui::DragValue::new(speed_px_per_sec).range(0.0..=2000.0).speed(1.0).suffix(" px/s").fixed_decimals(0)).on_hover_text("0 fits the travel to the clip").changed();
+                    changed |= speed_or_fit(ui, speed_px_per_sec);
                     changed |= ui.checkbox(repeat, "Repeat").changed();
                 }
                 TitleLoop::Counter { from, to, duration_secs, decimals } => {
@@ -565,6 +565,21 @@ fn show_loops(
     if changed {
         cmds.push(AppCommand::SetTitleLoops { clip_id, loops });
     }
+}
+
+/// A travelling loop's speed: fitted to the clip, or a rate in px/s at
+/// 1080p. Returns true when it changed.
+fn speed_or_fit(ui: &mut egui::Ui, speed: &mut f32) -> bool {
+    let mut changed = false;
+    let mut fit = *speed <= 0.0;
+    if ui.checkbox(&mut fit, "Fit clip").on_hover_text("The whole travel over the clip's length").changed() {
+        *speed = if fit { 0.0 } else { 120.0 };
+        changed = true;
+    }
+    if !fit {
+        changed |= ui.add(egui::DragValue::new(speed).range(1.0..=2000.0).speed(1.0).suffix(" px/s").fixed_decimals(0)).changed();
+    }
+    changed
 }
 
 // ─── Style card ──────────────────────────────────────────────────────

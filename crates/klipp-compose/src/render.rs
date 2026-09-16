@@ -990,6 +990,13 @@ impl Renderer {
                 let gpu = adapter.as_mut().map(|a| a as &mut dyn klipp_title::AlphaMaskProcessor);
                 let total = (clip.timeline_out - clip.timeline_in).to_secs_f64() as f32;
                 let u8s = self.titles.render_with_window(td, width, height, gpu, clip_time as f32, Some(total));
+                if tracing::enabled!(tracing::Level::DEBUG) {
+                    let opaque = u8s.chunks_exact(4).step_by(64).filter(|p| p[3] > 0).count() * 64;
+                    tracing::debug!(
+                        "TITLE_LAYER clip={} t={clip_time:.2}/{total:.2} {width}x{height} objects={} text={:?} font={} size={} opaque_px~{opaque}",
+                        clip.id, td.objects.len(), td.text(), td.font_name(), td.font_size(),
+                    );
+                }
                 let mut linear = klipp_effects::srgb_u8_to_linear_f32_rgba(&u8s);
                 self.authored_to_working(&mut linear);
                 (GradeInput::Cpu(Arc::new(linear)), None)

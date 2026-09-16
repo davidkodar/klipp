@@ -345,7 +345,7 @@ fn cr_roll() -> TitleData {
         0.5, 0.5, 0.5,
     )]);
     if let Some(tb) = td.primary_text_mut() {
-        tb.loops.push(TitleLoop::Scroll { direction: ScrollDirection::Up, speed_px_per_sec: 60.0 });
+        tb.loops.push(TitleLoop::Scroll { direction: ScrollDirection::Up, speed_px_per_sec: 0.0 });
     }
     td
 }

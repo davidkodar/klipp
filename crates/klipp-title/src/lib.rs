@@ -6394,3 +6394,15 @@ mod tests {
         assert_eq!(entry.frame_h, 720, "cache picked up frame_h change");
     }
 }
+
+#[cfg(test)]
+mod default_title_probe {
+    #[test]
+    fn a_default_title_is_visible_on_a_portrait_frame() {
+        let mut r = super::TitleRenderer::new();
+        let td = klipp_timeline::TitleData::default();
+        let buf = r.render_with_window(&td, 2160, 3840, None, 1.3, Some(5.0));
+        let visible = buf.chunks_exact(4).filter(|p| p[3] > 0).count();
+        assert!(visible > 1000, "visible pixels: {visible}");
+    }
+}

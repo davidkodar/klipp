@@ -184,7 +184,7 @@ fn main() -> Result<()> {
                      klipp_core=debug,klipp_effects=debug,klipp_media=debug,\
                      klipp_color=debug,klipp_audio=debug,\
                      klipp_timeline=debug,klipp_jobs=debug,klipp_title=debug,\
-                     klipp_nodes=debug,\
+                     klipp_nodes=debug,klipp_compose=debug,\
                      klipp_ml=debug,klipp_ml_candle=debug,klipp_ml_ort=debug,\
                      wgpu=warn,naga=warn",
                 )

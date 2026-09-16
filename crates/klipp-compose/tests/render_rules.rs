@@ -808,3 +808,73 @@ fn every_transition_renders_the_same_with_and_without_a_gpu() {
         assert!(worst < 2e-3, "{kind:?}: CPU and GPU differ by {worst}");
     }
 }
+
+/// A default title on a text track above a solid shows up in the
+/// composite: the layer model composites titles like any other layer.
+#[test]
+fn a_title_on_a_text_track_shows_over_the_video() {
+    let mut seq = Sequence::new_default();
+    let mut text = Track::new("Text 1", TrackKind::Text);
+    let td = klipp_timeline::TitleData::single_text(klipp_timeline::TextBox { font_size: 240.0, ..Default::default() });
+    text.clips = vec![clip(ClipKind::Title(td), 0.3, 5.3)];
+    let mut video = Track::new("V1", TrackKind::Video);
+    video.clips = vec![solid([40, 40, 40], 0.0, 10.0)];
+    seq.tracks = vec![text, video];
+    let mut src = Flat(HashMap::new());
+    let mut r = Renderer::new(klipp_plugin::OfxHost::new(), klipp_title::TitleRenderer::new());
+    r.set_gpu_enabled(false);
+    let img = r.render(&seq, tc(2.0), 320, 180, &mut src, RenderOptions::default());
+    let bright = img.chunks_exact(4).filter(|p| p[0] > 0.5).count();
+    assert!(bright > 400, "the title's white glyphs should be in the frame, bright pixels: {bright}");
+}
+
+/// The same over a media clip, on both paths: the engine's frame is
+/// a media clip, and its path runs with the GPU on.
+#[test]
+fn a_title_on_a_text_track_shows_over_a_media_clip_on_both_paths() {
+    let mut seq = Sequence::new_default();
+    let mut text = Track::new("Text 1", TrackKind::Text);
+    let td = klipp_timeline::TitleData::single_text(klipp_timeline::TextBox { font_size: 240.0, ..Default::default() });
+    text.clips = vec![clip(ClipKind::Title(td), 0.3, 5.3)];
+    let mut video = Track::new("V1", TrackKind::Video);
+    let m = media(0.0, 10.0);
+    let mut src = Flat::default();
+    src.0.insert(m.id, Box::new(|| SourcePixels::Linear(Arc::new([0.02, 0.02, 0.02, 1.0].repeat((320 * 180) as usize)))));
+    video.clips = vec![m];
+    seq.tracks = vec![text, video];
+    for gpu in [false, true] {
+        let mut r = Renderer::new(klipp_plugin::OfxHost::new(), klipp_title::TitleRenderer::new());
+        r.set_gpu_enabled(gpu);
+        let img = r.render(&seq, tc(2.0), 320, 180, &mut src, RenderOptions::default());
+        let bright = img.chunks_exact(4).filter(|p| p[0] > 0.5).count();
+        assert!(bright > 400, "gpu={gpu}: the title should be over the media clip, bright pixels: {bright}");
+    }
+}
+
+/// The live shape that showed nothing: a portrait UHD sequence, the
+/// default 72 px title on a text track above two video tracks that
+/// carry the same media, GPU on.
+#[test]
+fn a_default_title_shows_on_a_portrait_uhd_stack() {
+    let mut seq = Sequence::new_default();
+    seq.resolution = klipp_core::Resolution { width: 2160, height: 3840 };
+    let mut text = Track::new("Text 1", TrackKind::Text);
+    text.clips = vec![clip(ClipKind::Title(klipp_timeline::TitleData::default()), 0.3, 5.3)];
+    let mid = klipp_core::MediaId::new();
+    let mut v1 = Track::new("V1", TrackKind::Video);
+    let mut v2 = Track::new("V2", TrackKind::Video);
+    let a = clip(ClipKind::Media { media_id: mid }, 0.0, 48.0);
+    let b = clip(ClipKind::Media { media_id: mid }, 0.0, 48.0);
+    let mut src = Flat::default();
+    for c in [&a, &b] {
+        src.0.insert(c.id, Box::new(|| SourcePixels::Linear(Arc::new([0.02, 0.02, 0.02, 1.0].repeat((2160 * 3840) as usize)))));
+    }
+    v1.clips = vec![a];
+    v2.clips = vec![b];
+    seq.tracks = vec![text, v1, v2];
+    let mut r = Renderer::new(klipp_plugin::OfxHost::new(), klipp_title::TitleRenderer::new());
+    r.set_gpu_enabled(true);
+    let img = r.render(&seq, tc(2.0), 2160, 3840, &mut src, RenderOptions::default());
+    let bright = img.chunks_exact(4).filter(|p| p[0] > 0.5).count();
+    assert!(bright > 5000, "bright pixels: {bright}");
+}
