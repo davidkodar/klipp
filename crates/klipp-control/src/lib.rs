@@ -750,10 +750,21 @@ fn handle(
                 {
                     let fb = ctx.frame_buffer.lock().map_err(|_| "frame buffer lock poisoned")?;
                     let (d, w, h, g) = fb.latest_frame();
-                    if min_generation.is_none_or(|m| g >= m) {
+                    // The UI takes the bytes out of the buffer while it
+                    // uploads them and puts them back after; in between
+                    // the frame is there but its bytes are not. Wait for
+                    // them like a frame that has not arrived.
+                    if min_generation.is_none_or(|m| g >= m) && !d.is_empty() {
                         break (d.to_vec(), w, h, g);
                     }
                     if std::time::Instant::now() >= deadline {
+                        if d.is_empty() {
+                            return Err(format!(
+                                "the viewer has no frame bytes within {} ms (generation {g}): \
+                                 while playing, frames stay on the GPU; pause first.",
+                                timeout_ms.unwrap_or(3000),
+                            ));
+                        }
                         // Say so rather than hand back the old frame as if
                         // it were the new one. A timeout here is itself a
                         // finding: the change did not trigger a re-render.
@@ -768,7 +779,7 @@ fn handle(
                 // Lock released while waiting so the engine can write.
                 std::thread::sleep(std::time::Duration::from_millis(10));
             };
-            if width == 0 || height == 0 || data.is_empty() {
+            if width == 0 || height == 0 {
                 return Err("viewer has no frame yet".into());
             }
             let expected = (width as usize) * (height as usize) * 4;
