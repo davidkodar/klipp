@@ -24,6 +24,7 @@ ai-candle-cuda = ["ai-candle", "klipp-ml-candle/cuda"]
 klipp-color = { workspace = true }
 klipp-grade-model = { workspace = true }
 klipp-core = { workspace = true }
+klipp-document = { workspace = true }
 klipp-effects = { workspace = true }
 klipp-frei0r = { workspace = true }
 klipp-engine = { workspace = true }

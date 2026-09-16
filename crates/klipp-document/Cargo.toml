@@ -1,0 +1,26 @@
+[package]
+name = "klipp-document"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# The document: what a project is when nothing is looking at it. The
+# edit history (every undoable command with its forward and inverse
+# application), and the view of the sequences and the media pool those
+# applications run against. The UI, the control socket and any
+# assistant are clients of this; the playback engine reads snapshots
+# of it and never edits.
+#
+# No egui, no engine, no device: a test drives an edit and undoes it
+# with nothing but a sequence in memory.
+
+[dependencies]
+klipp-core = { workspace = true }
+klipp-timeline = { workspace = true }
+klipp-media = { workspace = true }
+klipp-nodes = { workspace = true }
+klipp-effects = { workspace = true }
+tracing = { workspace = true }
+
+[lints]
+workspace = true

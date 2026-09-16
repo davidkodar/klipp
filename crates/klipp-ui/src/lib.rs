@@ -53,7 +53,9 @@ pub mod cache_manager;
 pub mod command_palette;
 pub mod drag_drop;
 pub mod model_download;
-pub mod history;
+/// The edit history lives in the document crate now; the UI's paths
+/// (`crate::history::…`) still resolve.
+pub use klipp_document::history;
 pub mod cut_templates;
 pub mod hyperzoom;
 pub mod hyperzoom_presets;
