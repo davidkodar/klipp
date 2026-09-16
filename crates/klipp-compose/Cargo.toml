@@ -13,6 +13,8 @@ klipp-color       = { workspace = true }
 klipp-title       = { workspace = true }
 klipp-transitions = { workspace = true }
 klipp-plugin      = { workspace = true }
+wgpu = { workspace = true }
+bytemuck = { workspace = true }
 rayon             = { workspace = true }
 tracing           = { workspace = true }
 

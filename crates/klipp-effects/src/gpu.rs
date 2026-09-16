@@ -311,18 +311,21 @@ pub struct GpuEffectsPipeline {
     /// The layer stack: one linear buffer per layer, two for the
     /// accumulator (ping-pong), an RGBA8 upload buffer for sprites.
     /// Sized by `stack_begin`, never shrunk.
-    stack_layers: Vec<wgpu::Buffer>,
-    stack_acc: Vec<wgpu::Buffer>,
+    stack_layers: Vec<std::sync::Arc<wgpu::Buffer>>,
+    stack_acc: Option<std::sync::Arc<wgpu::Buffer>>,
     stack_sprite_u8: Option<wgpu::Buffer>,
     stack_buf_size: u64,
-    /// Which accumulator holds the composite so far, and whether
-    /// anything has been blended into it yet.
-    stack_acc_index: usize,
+    /// Whether anything has been blended into the accumulator yet.
     stack_acc_touched: bool,
     stack_dims: (u32, u32),
     blend_layer_pipeline: wgpu::ComputePipeline,
     premultiply_pipeline: wgpu::ComputePipeline,
-    sprite_u8_to_linear_pipeline: wgpu::ComputePipeline,
+    sprite_rows_pipeline: wgpu::ComputePipeline,
+    matte_extract_pipeline: wgpu::ComputePipeline,
+    mask_min_h_pipeline: wgpu::ComputePipeline,
+    mask_min_v_pipeline: wgpu::ComputePipeline,
+    matte_apply_pipeline: wgpu::ComputePipeline,
+    scale_alpha_pipeline: wgpu::ComputePipeline,
     // Bind group layouts
     bind_group_layout: wgpu::BindGroupLayout,         // effects: input, output, params
     transition_bgl: wgpu::BindGroupLayout,             // transitions: from, to, output, params
@@ -1093,9 +1096,14 @@ impl GpuEffectsPipeline {
         let display_u8_pipeline = create_pipeline(
             &device, &pipeline_layout, "linear_to_display_u8", SHADER_LINEAR_TO_DISPLAY_U8,
         );
-        let blend_layer_pipeline = create_pipeline(&device, &transition_pl, "blend_layer", SHADER_BLEND_LAYER);
+        let blend_layer_pipeline = create_pipeline(&device, &pipeline_layout, "blend_layer", SHADER_BLEND_LAYER);
         let premultiply_pipeline = create_pipeline(&device, &pipeline_layout, "premultiply", SHADER_PREMULTIPLY);
-        let sprite_u8_to_linear_pipeline = create_pipeline(&device, &pipeline_layout, "sprite_u8_to_linear", SHADER_U8_TO_LINEAR);
+        let sprite_rows_pipeline = create_pipeline(&device, &pipeline_layout, "sprite_rows", SHADER_SPRITE_ROWS);
+        let matte_extract_pipeline = create_pipeline(&device, &pipeline_layout, "matte_extract", SHADER_MATTE_EXTRACT);
+        let mask_min_h_pipeline = create_pipeline(&device, &pipeline_layout, "mask_min_h", SHADER_MASK_MIN_H);
+        let mask_min_v_pipeline = create_pipeline(&device, &pipeline_layout, "mask_min_v", SHADER_MASK_MIN_V);
+        let matte_apply_pipeline = create_pipeline(&device, &pipeline_layout, "matte_apply", SHADER_MATTE_APPLY);
+        let scale_alpha_pipeline = create_pipeline(&device, &pipeline_layout, "scale_alpha", SHADER_SCALE_ALPHA);
         // Same three-binding shape as every effect — in, out, params —
         // so it needs no layout of its own; its `out` is f32 rather than
         // packed bytes, which a bind group layout does not distinguish.
@@ -1242,15 +1250,19 @@ impl GpuEffectsPipeline {
             hdr_nit_staging: None,
             display_u8_staging: None,
             stack_layers: Vec::new(),
-            stack_acc: Vec::new(),
+            stack_acc: None,
             stack_sprite_u8: None,
             stack_buf_size: 0,
-            stack_acc_index: 0,
             stack_acc_touched: false,
             stack_dims: (0, 0),
             blend_layer_pipeline,
             premultiply_pipeline,
-            sprite_u8_to_linear_pipeline,
+            sprite_rows_pipeline,
+            matte_extract_pipeline,
+            mask_min_h_pipeline,
+            mask_min_v_pipeline,
+            matte_apply_pipeline,
+            scale_alpha_pipeline,
             bridge_u8_out_buf: None,
             bridge_u8_out_size: 0,
             bridge_u8_staging_buf: None,
@@ -4618,10 +4630,13 @@ impl GpuEffectsPipeline {
     // A frame's layers composited on the GPU, in the working linear
     // space, the way `klipp_compose::Renderer::render_stack` does it on
     // the CPU: each layer lands in its own buffer (from a chain output,
-    // a linear upload or an sRGB sprite), is blended onto the
-    // accumulator with its opacity and blend mode, and the accumulator
-    // is premultiplied and encoded at the end. The CPU stack is the
-    // twin; `blend_layer_gpu_matches_cpu` holds every mode to it.
+    // a linear upload or an sRGB sprite), may have effects run on it in
+    // place, a matte multiplied into its alpha, and is blended onto the
+    // accumulator in place with its opacity and blend mode; a transition
+    // is a two-input pass between two layers; an adjustment layer runs
+    // its chain on a copy of the accumulator and mixes back; the
+    // accumulator is premultiplied and encoded at the end. The CPU stack
+    // is the twin; `gpu_stack_parity.rs` and `gpu_composite.rs` hold it.
 
     /// Ready the stack for a frame of `width` × `height` with room for
     /// `layers` layers. Buffers grow to the largest request and stay.
@@ -4631,31 +4646,29 @@ impl GpuEffectsPipeline {
         }
         let byte_size = (width as u64) * (height as u64) * 16;
         let make = |device: &wgpu::Device, label: &str| {
-            device.create_buffer(&wgpu::BufferDescriptor {
+            std::sync::Arc::new(device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some(label),
                 size: byte_size,
                 usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC,
                 mapped_at_creation: false,
-            })
+            }))
         };
         if byte_size > self.stack_buf_size {
             self.stack_layers.clear();
-            self.stack_acc.clear();
+            self.stack_acc = None;
             self.stack_buf_size = byte_size;
         }
         while self.stack_layers.len() < layers {
             let label = format!("stack_layer_{}", self.stack_layers.len());
             self.stack_layers.push(make(&self.device, &label));
         }
-        while self.stack_acc.len() < 2 {
-            let label = format!("stack_acc_{}", self.stack_acc.len());
-            self.stack_acc.push(make(&self.device, &label));
+        if self.stack_acc.is_none() {
+            self.stack_acc = Some(make(&self.device, "stack_acc"));
         }
         // The chain buffers must exist at this size too: layers copy out
-        // of them and the finish copies into them.
+        // of them, effects run in them, the finish copies into them.
         self.ensure_buffers(byte_size);
         self.stack_dims = (width, height);
-        self.stack_acc_index = 0;
         self.stack_acc_touched = false;
         true
     }
@@ -4664,19 +4677,68 @@ impl GpuEffectsPipeline {
         (self.stack_dims.0 as u64) * (self.stack_dims.1 as u64)
     }
 
+    fn stack_submit(&self, enc: wgpu::CommandEncoder) {
+        self.queue.submit(std::iter::once(enc.finish()));
+        self.submit_count.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// One compute pass over `workgroups`, bound as (read, read_write,
+    /// params) on the effects layout.
+    fn stack_pass(&self, pipeline: &wgpu::ComputePipeline, read: &wgpu::Buffer, rw: &wgpu::Buffer, workgroups: u32, label: &str) {
+        let bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some(label),
+            layout: &self.bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: read.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: rw.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 2, resource: self.params_buf.as_entire_binding() },
+            ],
+        });
+        let mut enc = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some(label) });
+        {
+            let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: None, timestamp_writes: None });
+            pass.set_pipeline(pipeline);
+            pass.set_bind_group(0, &bg, &[]);
+            pass.dispatch_workgroups(workgroups, 1, 1);
+        }
+        self.stack_submit(enc);
+    }
+
+    fn stack_copy(&self, from: &wgpu::Buffer, to: &wgpu::Buffer, label: &str) {
+        let mut enc = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some(label) });
+        enc.copy_buffer_to_buffer(from, 0, to, 0, self.stack_pixel_count() * 16);
+        self.stack_submit(enc);
+    }
+
+    /// The accumulator, a canvas if nothing has been laid on it yet,
+    /// for a chain to seed from (an adjustment layer).
+    pub fn stack_acc_buffer(&mut self) -> Option<std::sync::Arc<wgpu::Buffer>> {
+        if !self.stack_ensure_acc() {
+            return None;
+        }
+        self.stack_acc.clone()
+    }
+
+    /// Layer `i` cleared to transparent black.
+    pub fn stack_layer_clear(&mut self, i: usize) -> bool {
+        if self.is_device_lost() || i >= self.stack_layers.len() {
+            return false;
+        }
+        let mut enc = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("stack_layer_clear") });
+        enc.clear_buffer(&self.stack_layers[i], 0, Some(self.stack_pixel_count() * 16));
+        self.stack_submit(enc);
+        true
+    }
+
     /// Layer `i` takes the chain's output slot (a grade's result, or a
     /// seeded frame), as an on-GPU copy.
     pub fn stack_layer_from_chain(&mut self, i: usize, slot_a: bool) -> bool {
         if self.is_device_lost() || i >= self.stack_layers.len() {
             return false;
         }
-        let bytes = self.stack_pixel_count() * 16;
         let src = if slot_a { self.buf_a.as_ref() } else { self.buf_b.as_ref() };
         let Some(src) = src else { return false };
-        let mut enc = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("stack_layer_from_chain") });
-        enc.copy_buffer_to_buffer(src, 0, &self.stack_layers[i], 0, bytes);
-        self.queue.submit(std::iter::once(enc.finish()));
-        self.submit_count.fetch_add(1, Ordering::Relaxed);
+        self.stack_copy(src, &self.stack_layers[i], "stack_layer_from_chain");
         true
     }
 
@@ -4693,17 +4755,33 @@ impl GpuEffectsPipeline {
     }
 
     /// Layer `i` takes an sRGB RGBA8 straight-alpha sprite from the CPU
-    /// (a title, a generator): uploaded as bytes, decoded to linear on
-    /// the GPU, alpha kept as it is.
+    /// (a title, a generator): decoded to linear on the GPU, alpha kept.
     pub fn stack_layer_from_srgb_u8(&mut self, i: usize, rgba: &[u8]) -> bool {
+        let h = self.stack_dims.1;
+        self.stack_layer_from_srgb_u8_rows(i, rgba, 0, h)
+    }
+
+    /// `stack_layer_from_srgb_u8` for a sprite that only covers rows
+    /// `y0..y1` of the full-frame `rgba`: only those rows go up and are
+    /// decoded; the rest of the layer is cleared.
+    pub fn stack_layer_from_srgb_u8_rows(&mut self, i: usize, rgba: &[u8], y0: u32, y1: u32) -> bool {
         if self.is_device_lost() || i >= self.stack_layers.len() {
             return false;
         }
+        let (width, height) = self.stack_dims;
         let pixel_count = self.stack_pixel_count();
         if rgba.len() as u64 != pixel_count * 4 {
             return false;
         }
-        let (width, height) = self.stack_dims;
+        let y0 = y0.min(height);
+        let y1 = y1.min(height);
+        let layer = std::sync::Arc::clone(&self.stack_layers[i]);
+        let mut enc = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("stack_sprite_clear") });
+        enc.clear_buffer(&layer, 0, Some(pixel_count * 16));
+        self.stack_submit(enc);
+        if y1 <= y0 {
+            return true;
+        }
         if self.stack_sprite_u8.as_ref().is_none_or(|b| b.size() < pixel_count * 4) {
             self.stack_sprite_u8 = Some(self.device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("stack_sprite_u8"),
@@ -4713,77 +4791,193 @@ impl GpuEffectsPipeline {
             }));
         }
         let sprite = self.stack_sprite_u8.as_ref().unwrap();
-        self.queue.write_buffer(sprite, 0, rgba);
-        self.write_params(&BridgeU8Params { width, height, _pad0: 0, _pad1: 0 });
+        let row_bytes = (width as u64) * 4;
+        let (b0, b1) = ((y0 as u64 * row_bytes) as usize, (y1 as u64 * row_bytes) as usize);
+        self.queue.write_buffer(sprite, b0 as u64, &rgba[b0..b1]);
+        self.write_params(&SpriteRowsParams { width, height, y0, y1 });
+        let rows_px = (y1 - y0) * width;
+        self.stack_pass(&self.sprite_rows_pipeline, sprite, &layer, rows_px.div_ceil(WORKGROUP_SIZE), "stack_sprite_rows");
+        true
+    }
+
+    /// Run built-in effects on layer `i` where it is: through the chain
+    /// buffers and back, no readback.
+    pub fn stack_layer_apply_effects(&mut self, i: usize, effects: &[BuiltinEffect]) -> bool {
+        if self.is_device_lost() || i >= self.stack_layers.len() {
+            return false;
+        }
+        if effects.is_empty() {
+            return true;
+        }
+        let (width, height) = self.stack_dims;
+        let layer = std::sync::Arc::clone(&self.stack_layers[i]);
+        self.stack_copy(&layer, self.buf_a.as_ref().unwrap(), "stack_layer_to_chain");
+        let in_a = self.run_effects_in_chain(effects, width, height);
+        let out = if in_a { self.buf_a.as_ref().unwrap() } else { self.buf_b.as_ref().unwrap() };
+        self.stack_copy(out, &layer, "stack_chain_to_layer");
+        true
+    }
+
+    /// Multiply layer `i`'s alpha by `factor` (a transition side's
+    /// opacity, a missing matte source).
+    pub fn stack_scale_alpha(&mut self, i: usize, factor: f32) -> bool {
+        if self.is_device_lost() || i >= self.stack_layers.len() {
+            return false;
+        }
+        let (width, height) = self.stack_dims;
+        self.write_params(&ScaleAlphaParams { width, height, factor, _pad: 0 });
+        let wg = (self.stack_pixel_count() as u32).div_ceil(WORKGROUP_SIZE);
+        let layer = std::sync::Arc::clone(&self.stack_layers[i]);
+        self.stack_pass(&self.scale_alpha_pipeline, self.matte_buf.as_ref().unwrap(), &layer, wg, "stack_scale_alpha");
+        true
+    }
+
+    /// Mask layer `consumer`'s alpha by a matte taken from layer
+    /// `source`: `channel` (0 alpha, 1 luminance, 2 red, 3 green, 4
+    /// blue), inverted or not, choked by `choke_px` (a square minimum),
+    /// feathered by `feather_px` (the same box-Gaussian the CPU uses).
+    #[allow(clippy::too_many_arguments)]
+    pub fn stack_matte(&mut self, consumer: usize, source: usize, channel: u32, invert: bool, feather_px: f32, choke_px: f32) -> bool {
+        if self.is_device_lost() || consumer >= self.stack_layers.len() || source >= self.stack_layers.len() {
+            return false;
+        }
+        let (width, height) = self.stack_dims;
+        let wg = (self.stack_pixel_count() as u32).div_ceil(WORKGROUP_SIZE);
+        let luma = self.luma_coefs;
+        let source_buf = std::sync::Arc::clone(&self.stack_layers[source]);
+        let consumer_buf = std::sync::Arc::clone(&self.stack_layers[consumer]);
+        self.write_params(&MatteExtractParams { width, height, channel, invert: invert as u32, luma_r: luma[0], luma_g: luma[1], luma_b: luma[2], _pad: 0 });
+        self.stack_pass(&self.matte_extract_pipeline, &source_buf, self.matte_buf.as_ref().unwrap(), wg, "stack_matte_extract");
+        if choke_px >= 0.5 {
+            let radius = (choke_px.round() as u32).max(1);
+            self.write_params(&MaskPoolParams { width, height, radius, _pad: 0 });
+            self.stack_pass(&self.mask_min_h_pipeline, self.matte_buf.as_ref().unwrap(), self.buf_c.as_ref().unwrap(), wg, "stack_mask_min_h");
+            self.write_params(&MaskPoolParams { width, height, radius, _pad: 0 });
+            self.stack_pass(&self.mask_min_v_pipeline, self.buf_c.as_ref().unwrap(), self.matte_buf.as_ref().unwrap(), wg, "stack_mask_min_v");
+        }
+        if feather_px >= 0.25 {
+            for r in crate::blur::boxes_for_gaussian(feather_px) {
+                self.write_params(&BlurParams { width, height, radius: r as i32, _pad: 0 });
+                self.stack_pass(&self.blur_h_pipeline, self.matte_buf.as_ref().unwrap(), self.buf_c.as_ref().unwrap(), wg, "stack_feather_h");
+                self.write_params(&BlurParams { width, height, radius: r as i32, _pad: 0 });
+                self.stack_pass(&self.blur_v_pipeline, self.buf_c.as_ref().unwrap(), self.matte_buf.as_ref().unwrap(), wg, "stack_feather_v");
+            }
+        }
+        self.write_params(&ScaleAlphaParams { width, height, factor: 1.0, _pad: 0 });
+        self.stack_pass(&self.matte_apply_pipeline, self.matte_buf.as_ref().unwrap(), &consumer_buf, wg, "stack_matte_apply");
+        true
+    }
+
+    /// A transition between layers `from` and `to` into layer `out`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn stack_transition(&mut self, from: usize, to: usize, out: usize, kind_id: u32, progress: f32, p: [f32; 4], color: [f32; 4]) -> bool {
+        if self.is_device_lost() || from >= self.stack_layers.len() || to >= self.stack_layers.len() || out >= self.stack_layers.len() {
+            return false;
+        }
+        let (width, height) = self.stack_dims;
+        self.write_params(&TransitionParams {
+            width, height, progress, kind_id,
+            param0: p[0], param1: p[1], param2: p[2], param3: p[3],
+            color_r: color[0], color_g: color[1], color_b: color[2], color_a: color[3],
+        });
         let bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("stack_sprite_bg"),
-            layout: &self.bind_group_layout,
+            label: Some("stack_transition_bg"),
+            layout: &self.transition_bgl,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: sprite.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: self.stack_layers[i].as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 2, resource: self.params_buf.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 0, resource: self.stack_layers[from].as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: self.stack_layers[to].as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 2, resource: self.buf_c.as_ref().unwrap().as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 3, resource: self.params_buf.as_entire_binding() },
             ],
         });
-        let mut enc = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("stack_sprite") });
+        let mut enc = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("stack_transition") });
         {
             let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: None, timestamp_writes: None });
-            pass.set_pipeline(&self.sprite_u8_to_linear_pipeline);
+            pass.set_pipeline(&self.transition_pipeline);
             pass.set_bind_group(0, &bg, &[]);
-            pass.dispatch_workgroups((pixel_count as u32).div_ceil(WORKGROUP_SIZE), 1, 1);
+            pass.dispatch_workgroups((self.stack_pixel_count() as u32).div_ceil(WORKGROUP_SIZE), 1, 1);
         }
-        self.queue.submit(std::iter::once(enc.finish()));
-        self.submit_count.fetch_add(1, Ordering::Relaxed);
+        enc.copy_buffer_to_buffer(self.buf_c.as_ref().unwrap(), 0, &self.stack_layers[out], 0, self.stack_pixel_count() * 16);
+        self.stack_submit(enc);
+        true
+    }
+
+    /// The accumulator exists and is a canvas if nothing has been laid
+    /// on it yet.
+    fn stack_ensure_acc(&mut self) -> bool {
+        let Some(acc) = self.stack_acc.clone() else { return false };
+        if !self.stack_acc_touched {
+            let mut enc = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("stack_clear") });
+            enc.clear_buffer(&acc, 0, Some(self.stack_pixel_count() * 16));
+            self.stack_submit(enc);
+            self.stack_acc_touched = true;
+        }
         true
     }
 
     /// Blend layer `i` onto the accumulator with `opacity` and `mode`
-    /// (`BlendMode as u32`, the order of `klipp_core::BlendMode`).
-    /// The first Normal layer at full opacity is copied in, as the CPU
-    /// stack moves it in.
+    /// (`BlendMode as u32`, the order of `klipp_effects::BlendMode`; 13
+    /// is a plain lerp). The first Normal layer at full opacity is
+    /// copied in, as the CPU stack moves it in.
     pub fn stack_blend(&mut self, i: usize, opacity: f32, mode: u32) -> bool {
-        if self.is_device_lost() || i >= self.stack_layers.len() || self.stack_acc.len() < 2 {
+        let h = self.stack_dims.1;
+        self.stack_blend_rows(i, opacity, mode, 0, h)
+    }
+
+    /// `stack_blend` over rows `y0..y1` only.
+    pub fn stack_blend_rows(&mut self, i: usize, opacity: f32, mode: u32, y0: u32, y1: u32) -> bool {
+        if self.is_device_lost() || i >= self.stack_layers.len() {
             return false;
         }
         let (width, height) = self.stack_dims;
-        let pixel_count = self.stack_pixel_count();
-        let acc_in = self.stack_acc_index;
-        let acc_out = 1 - acc_in;
-        if !self.stack_acc_touched && mode == 0 && opacity >= 1.0 {
-            let mut enc = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("stack_move_in") });
-            enc.copy_buffer_to_buffer(&self.stack_layers[i], 0, &self.stack_acc[acc_in], 0, pixel_count * 16);
-            self.queue.submit(std::iter::once(enc.finish()));
-            self.submit_count.fetch_add(1, Ordering::Relaxed);
+        let (y0, y1) = (y0.min(height), y1.min(height));
+        if !self.stack_acc_touched && mode == 0 && opacity >= 1.0 && y0 == 0 && y1 == height {
+            let acc = self.stack_acc.clone().unwrap();
+            self.stack_copy(&self.stack_layers[i], &acc, "stack_move_in");
             self.stack_acc_touched = true;
             return true;
         }
-        if !self.stack_acc_touched {
-            // Blending onto nothing: clear the canvas first.
-            let mut enc = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("stack_clear") });
-            enc.clear_buffer(&self.stack_acc[acc_in], 0, Some(pixel_count * 16));
-            self.queue.submit(std::iter::once(enc.finish()));
-            self.stack_acc_touched = true;
+        if !self.stack_ensure_acc() || y1 <= y0 {
+            return self.stack_acc.is_some();
         }
-        self.write_params(&BlendLayerParams { width, height, opacity, mode });
-        let bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("stack_blend_bg"),
-            layout: &self.transition_bgl,
-            entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: self.stack_acc[acc_in].as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: self.stack_layers[i].as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 2, resource: self.stack_acc[acc_out].as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 3, resource: self.params_buf.as_entire_binding() },
-            ],
-        });
-        let mut enc = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("stack_blend") });
-        {
-            let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: None, timestamp_writes: None });
-            pass.set_pipeline(&self.blend_layer_pipeline);
-            pass.set_bind_group(0, &bg, &[]);
-            pass.dispatch_workgroups((pixel_count as u32).div_ceil(WORKGROUP_SIZE), 1, 1);
+        self.write_params(&BlendLayerParams { width, height, opacity, mode, y0, y1, _p0: 0, _p1: 0 });
+        let acc = self.stack_acc.clone().unwrap();
+        let rows_px = (y1 - y0) * width;
+        let layer = std::sync::Arc::clone(&self.stack_layers[i]);
+        self.stack_pass(&self.blend_layer_pipeline, &layer, &acc, rows_px.div_ceil(WORKGROUP_SIZE), "stack_blend");
+        true
+    }
+
+    /// The accumulator into chain slot A, for an adjustment layer's
+    /// chain to run on.
+    pub fn stack_acc_to_chain(&mut self) -> bool {
+        if !self.stack_ensure_acc() {
+            return false;
         }
-        self.queue.submit(std::iter::once(enc.finish()));
-        self.submit_count.fetch_add(1, Ordering::Relaxed);
-        self.stack_acc_index = acc_out;
+        let acc = self.stack_acc.clone().unwrap();
+        self.stack_copy(&acc, self.buf_a.as_ref().unwrap(), "stack_acc_to_chain");
+        true
+    }
+
+    /// Chain slot B into slot A, so an effects run can start from A.
+    pub fn stack_chain_to_slot_a(&mut self, slot_a: bool) {
+        if !slot_a {
+            self.stack_copy(self.buf_b.as_ref().unwrap(), self.buf_a.as_ref().unwrap(), "stack_chain_b_to_a");
+        }
+    }
+
+    /// Mix the chain's slot back into the accumulator: acc = acc + (chain
+    /// - acc) × opacity, every channel — an adjustment layer's opacity.
+    pub fn stack_mix_from_chain(&mut self, slot_a: bool, opacity: f32) -> bool {
+        if !self.stack_ensure_acc() {
+            return false;
+        }
+        let (width, height) = self.stack_dims;
+        self.write_params(&BlendLayerParams { width, height, opacity, mode: 13, y0: 0, y1: height, _p0: 0, _p1: 0 });
+        let src = if slot_a { self.buf_a.as_ref().unwrap() } else { self.buf_b.as_ref().unwrap() };
+        let acc = self.stack_acc.clone().unwrap();
+        let wg = (self.stack_pixel_count() as u32).div_ceil(WORKGROUP_SIZE);
+        self.stack_pass(&self.blend_layer_pipeline, src, &acc, wg, "stack_mix");
         true
     }
 
@@ -4791,39 +4985,18 @@ impl GpuEffectsPipeline {
     /// `keep_alpha`) moves into chain slot A, where every encode and
     /// the LUT can take it. Returns false when nothing was blended.
     pub fn stack_finish_into_chain(&mut self, keep_alpha: bool) -> bool {
-        if self.is_device_lost() || !self.stack_acc_touched || self.stack_acc.len() < 2 {
+        if self.is_device_lost() || !self.stack_acc_touched {
             return false;
         }
         let (width, height) = self.stack_dims;
-        let pixel_count = self.stack_pixel_count();
-        let acc = &self.stack_acc[self.stack_acc_index];
-        let buf_a = self.buf_a.as_ref().expect("stack_begin sized the chain buffers");
+        let acc = self.stack_acc.clone().unwrap();
         if keep_alpha {
-            let mut enc = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("stack_finish_copy") });
-            enc.copy_buffer_to_buffer(acc, 0, buf_a, 0, pixel_count * 16);
-            self.queue.submit(std::iter::once(enc.finish()));
-            self.submit_count.fetch_add(1, Ordering::Relaxed);
+            self.stack_copy(&acc, self.buf_a.as_ref().unwrap(), "stack_finish_copy");
             return true;
         }
         self.write_params(&BridgeU8Params { width, height, _pad0: 0, _pad1: 0 });
-        let bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("stack_premultiply_bg"),
-            layout: &self.bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: acc.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: buf_a.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 2, resource: self.params_buf.as_entire_binding() },
-            ],
-        });
-        let mut enc = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("stack_premultiply") });
-        {
-            let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: None, timestamp_writes: None });
-            pass.set_pipeline(&self.premultiply_pipeline);
-            pass.set_bind_group(0, &bg, &[]);
-            pass.dispatch_workgroups((pixel_count as u32).div_ceil(WORKGROUP_SIZE), 1, 1);
-        }
-        self.queue.submit(std::iter::once(enc.finish()));
-        self.submit_count.fetch_add(1, Ordering::Relaxed);
+        let wg = (self.stack_pixel_count() as u32).div_ceil(WORKGROUP_SIZE);
+        self.stack_pass(&self.premultiply_pipeline, &acc, self.buf_a.as_ref().unwrap(), wg, "stack_premultiply");
         true
     }
 
@@ -4850,15 +5023,25 @@ impl GpuEffectsPipeline {
 
         let byte_size = (width * height * 16) as u64;
         self.ensure_buffers(byte_size);
+        self.queue.write_buffer(self.buf_a.as_ref().unwrap(), 0, bytemuck::cast_slice(linear_rgba));
+        let in_a = self.run_effects_in_chain(effects, width, height);
+        let final_buf = if in_a { self.buf_a.as_ref().unwrap() } else { self.buf_b.as_ref().unwrap() };
+        self.download_linear_rgba_f32(final_buf, (width * height) as usize)
+    }
 
+    /// Run `effects` on the frame in chain slot A, ping-ponging between
+    /// the chain buffers. Returns whether the result sits in slot A.
+    /// `apply_effects` wraps this in an upload and a download; the layer
+    /// stack runs it on a resident layer.
+    pub fn run_effects_in_chain(&mut self, effects: &[BuiltinEffect], width: u32, height: u32) -> bool {
+        if self.is_device_lost() || effects.is_empty() {
+            return true;
+        }
+        let byte_size = (width * height * 16) as u64;
+        self.ensure_buffers(byte_size);
         let buf_a = self.buf_a.as_ref().unwrap();
         let buf_b = self.buf_b.as_ref().unwrap();
 
-        // Upload frame data to buf_a (already linear-f32 — direct upload).
-        self.queue
-            .write_buffer(buf_a, 0, bytemuck::cast_slice(linear_rgba));
-
-        // Track which buffer has the current data (true = buf_a, false = buf_b)
         let mut current_in_a = true;
         let pixel_count = width * height;
         let workgroups = pixel_count.div_ceil(WORKGROUP_SIZE);
@@ -5713,11 +5896,7 @@ impl GpuEffectsPipeline {
             }
         }
 
-        // Download result from GPU as linear-f32 directly. The caller
-        // owns the boundary — engine paths stay linear, export / scope
-        // paths bridge at their own seam.
-        let final_buf = if current_in_a { buf_a } else { buf_b };
-        self.download_linear_rgba_f32(final_buf, (width * height) as usize)
+        current_in_a
     }
 
     /// Blur an alpha mask on the GPU. Input/output are single-channel u8 buffers.
@@ -6267,6 +6446,50 @@ struct BlendLayerParams {
     height: u32,
     opacity: f32,
     mode: u32,
+    y0: u32,
+    y1: u32,
+    _p0: u32,
+    _p1: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct SpriteRowsParams {
+    width: u32,
+    height: u32,
+    y0: u32,
+    y1: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct MatteExtractParams {
+    width: u32,
+    height: u32,
+    channel: u32,
+    invert: u32,
+    luma_r: f32,
+    luma_g: f32,
+    luma_b: f32,
+    _pad: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct MaskPoolParams {
+    width: u32,
+    height: u32,
+    radius: u32,
+    _pad: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct ScaleAlphaParams {
+    width: u32,
+    height: u32,
+    factor: f32,
+    _pad: u32,
 }
 
 
@@ -8428,16 +8651,16 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 // phase-4d GPU-resident decode → grade path: the decoder's output
 // buffer is plugged in as `input`, the grade chain's `buf_a` is the
 // `output`.
-// One layer onto the accumulator: `klipp_effects::composite::blend_layer_linear`
+// One layer onto the accumulator, in place: `klipp_effects::composite::blend_layer_linear`
 // transcribed, mode by mode, in the same arithmetic order, so the stack
-// on the GPU is the CPU stack to the level.
+// on the GPU is the CPU stack to the level. Mode 13 is a plain lerp of
+// every channel, an adjustment layer's opacity. Rows `y0..y1` only.
 const SHADER_BLEND_LAYER: &str = concat!(
     "
-struct Params { width: u32, height: u32, opacity: f32, mode: u32 }
-@group(0) @binding(0) var<storage, read> acc: array<vec4<f32>>;
-@group(0) @binding(1) var<storage, read> layer: array<vec4<f32>>;
-@group(0) @binding(2) var<storage, read_write> output: array<vec4<f32>>;
-@group(0) @binding(3) var<uniform> params: Params;
+struct Params { width: u32, height: u32, opacity: f32, mode: u32, y0: u32, y1: u32, _p0: u32, _p1: u32 }
+@group(0) @binding(0) var<storage, read> layer: array<vec4<f32>>;
+@group(0) @binding(1) var<storage, read_write> acc: array<vec4<f32>>;
+@group(0) @binding(2) var<uniform> params: Params;
 ",
     shader_linear_helpers_wgsl!(),
     "
@@ -8478,13 +8701,16 @@ fn blend3(mode: u32, d: vec3<f32>, s: vec3<f32>) -> vec3<f32> {
 }
 @compute @workgroup_size(256)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
-    let idx = gid.x;
-    if idx >= params.width * params.height { return; }
+    let idx = params.y0 * params.width + gid.x;
+    if idx >= params.y1 * params.width { return; }
     let d = unpack(acc[idx]);
     let s = unpack(layer[idx]);
+    if params.mode == 13u {
+        acc[idx] = pack(d + (s - d) * params.opacity);
+        return;
+    }
     let sa = s.w * params.opacity;
     if sa < 0.001 {
-        output[idx] = pack(d);
         return;
     }
     let da = d.w;
@@ -8492,10 +8718,161 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let out_a = sa + da * (1.0 - sa);
     if out_a > 0.0 {
         let c = (b * sa + d.xyz * da * (1.0 - sa)) / out_a;
-        output[idx] = pack(vec4<f32>(c, out_a));
-    } else {
-        output[idx] = pack(d);
+        acc[idx] = pack(vec4<f32>(c, out_a));
     }
+}
+"
+);
+
+// An sRGB RGBA8 sprite, rows y0..y1, decoded to linear with its alpha
+// kept straight.
+const SHADER_SPRITE_ROWS: &str = concat!(
+    shader_pixel_storage_wgsl!(),
+    "
+struct Params { width: u32, height: u32, y0: u32, y1: u32 }
+@group(0) @binding(0) var<storage, read> input: array<u32>;
+@group(0) @binding(1) var<storage, read_write> output: array<vec4<f32>>;
+@group(0) @binding(2) var<uniform> params: Params;
+
+fn srgb_to_linear_c(c: f32) -> f32 {
+    if (c <= 0.04045) { return c / 12.92; }
+    return pow((c + 0.055) / 1.055, 2.4);
+}
+
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let idx = params.y0 * params.width + gid.x;
+    if idx >= params.y1 * params.width { return; }
+    let packed = input[idx];
+    let r = f32((packed >> 0u) & 0xFFu) / 255.0;
+    let g = f32((packed >> 8u) & 0xFFu) / 255.0;
+    let b = f32((packed >> 16u) & 0xFFu) / 255.0;
+    let a = f32((packed >> 24u) & 0xFFu) / 255.0;
+    output[idx] = pack(vec4<f32>(srgb_to_linear_c(r), srgb_to_linear_c(g), srgb_to_linear_c(b), a));
+}
+"
+);
+
+// A matte from a layer: `track_matte::extract_mask_linear` — the source
+// is premultiplied, so colour channels are divided by alpha first;
+// channel 0 alpha, 1 luminance, 2 red, 3 green, 4 blue; then inverted.
+// Written to every channel of the matte buffer.
+const SHADER_MATTE_EXTRACT: &str = concat!(
+    shader_pixel_storage_wgsl!(),
+    "
+struct Params { width: u32, height: u32, channel: u32, invert: u32, luma_r: f32, luma_g: f32, luma_b: f32, _pad: u32 }
+@group(0) @binding(0) var<storage, read> source: array<vec4<f32>>;
+@group(0) @binding(1) var<storage, read_write> matte: array<vec4<f32>>;
+@group(0) @binding(2) var<uniform> params: Params;
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let idx = gid.x;
+    if idx >= params.width * params.height { return; }
+    let p = unpack(source[idx]);
+    var rgb = p.xyz;
+    if params.channel != 0u && p.w > 0.0001 {
+        rgb = clamp(rgb / p.w, vec3<f32>(0.0), vec3<f32>(1.0));
+    }
+    var raw: f32;
+    switch params.channel {
+        case 0u: { raw = p.w; }
+        case 1u: { raw = params.luma_r * rgb.x + params.luma_g * rgb.y + params.luma_b * rgb.z; }
+        case 2u: { raw = rgb.x; }
+        case 3u: { raw = rgb.y; }
+        default: { raw = rgb.z; }
+    }
+    var m = clamp(raw, 0.0, 1.0);
+    if params.invert != 0u { m = 1.0 - m; }
+    matte[idx] = pack(vec4<f32>(m, m, m, m));
+}
+"
+);
+
+// A choke: the minimum over a (2r+1)-wide window, one axis per pass.
+const SHADER_MASK_MIN_H: &str = concat!(
+    shader_pixel_storage_wgsl!(),
+    "
+struct Params { width: u32, height: u32, radius: u32, _pad: u32 }
+@group(0) @binding(0) var<storage, read> input: array<vec4<f32>>;
+@group(0) @binding(1) var<storage, read_write> output: array<vec4<f32>>;
+@group(0) @binding(2) var<uniform> params: Params;
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let idx = gid.x;
+    if idx >= params.width * params.height { return; }
+    let y = idx / params.width;
+    let x = i32(idx % params.width);
+    let r = i32(params.radius);
+    var m = 1.0e30;
+    for (var dx = -r; dx <= r; dx++) {
+        let sx = x + dx;
+        if sx < 0 || sx >= i32(params.width) { continue; }
+        m = min(m, unpack(input[y * params.width + u32(sx)]).x);
+    }
+    output[idx] = pack(vec4<f32>(m, m, m, m));
+}
+"
+);
+
+const SHADER_MASK_MIN_V: &str = concat!(
+    shader_pixel_storage_wgsl!(),
+    "
+struct Params { width: u32, height: u32, radius: u32, _pad: u32 }
+@group(0) @binding(0) var<storage, read> input: array<vec4<f32>>;
+@group(0) @binding(1) var<storage, read_write> output: array<vec4<f32>>;
+@group(0) @binding(2) var<uniform> params: Params;
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let idx = gid.x;
+    if idx >= params.width * params.height { return; }
+    let y = i32(idx / params.width);
+    let x = idx % params.width;
+    let r = i32(params.radius);
+    var m = 1.0e30;
+    for (var dy = -r; dy <= r; dy++) {
+        let sy = y + dy;
+        if sy < 0 || sy >= i32(params.height) { continue; }
+        m = min(m, unpack(input[u32(sy) * params.width + x]).x);
+    }
+    output[idx] = pack(vec4<f32>(m, m, m, m));
+}
+"
+);
+
+// The matte into a layer's alpha, in place.
+const SHADER_MATTE_APPLY: &str = concat!(
+    shader_pixel_storage_wgsl!(),
+    "
+struct Params { width: u32, height: u32, factor: f32, _pad: u32 }
+@group(0) @binding(0) var<storage, read> matte: array<vec4<f32>>;
+@group(0) @binding(1) var<storage, read_write> layer: array<vec4<f32>>;
+@group(0) @binding(2) var<uniform> params: Params;
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let idx = gid.x;
+    if idx >= params.width * params.height { return; }
+    let p = unpack(layer[idx]);
+    let m = clamp(unpack(matte[idx]).x, 0.0, 1.0);
+    layer[idx] = pack(vec4<f32>(p.xyz, p.w * m));
+}
+"
+);
+
+// A layer's alpha times a factor, in place. Binding 0 is unused.
+const SHADER_SCALE_ALPHA: &str = concat!(
+    shader_pixel_storage_wgsl!(),
+    "
+struct Params { width: u32, height: u32, factor: f32, _pad: u32 }
+@group(0) @binding(0) var<storage, read> unused: array<vec4<f32>>;
+@group(0) @binding(1) var<storage, read_write> layer: array<vec4<f32>>;
+@group(0) @binding(2) var<uniform> params: Params;
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let idx = gid.x;
+    if idx >= params.width * params.height { return; }
+    let p = unpack(layer[idx]);
+    if idx == 0u && arrayLength(&unused) == 0u { return; }
+    layer[idx] = pack(vec4<f32>(p.xyz, p.w * params.factor));
 }
 "
 );
@@ -14475,6 +14852,12 @@ pub fn shader_sources() -> Vec<(&'static str, &'static str)> {
         ("SHADER_CLARITY_APPLY", SHADER_CLARITY_APPLY),
         ("SHADER_BLEND_LAYER", SHADER_BLEND_LAYER),
         ("SHADER_PREMULTIPLY", SHADER_PREMULTIPLY),
+        ("SHADER_SPRITE_ROWS", SHADER_SPRITE_ROWS),
+        ("SHADER_MATTE_EXTRACT", SHADER_MATTE_EXTRACT),
+        ("SHADER_MASK_MIN_H", SHADER_MASK_MIN_H),
+        ("SHADER_MASK_MIN_V", SHADER_MASK_MIN_V),
+        ("SHADER_MATTE_APPLY", SHADER_MATTE_APPLY),
+        ("SHADER_SCALE_ALPHA", SHADER_SCALE_ALPHA),
     ]
 }
 

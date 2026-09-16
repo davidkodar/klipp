@@ -771,15 +771,18 @@ impl Renderer {
     /// sends the frame down the ordinary path rather than exporting it
     /// ungraded by the look.
     /// The frame composited on the GPU and encoded to display bytes
-    /// there: every layer lands in its own buffer (a decoded frame
-    /// seeded where it is, a title or generator as an sRGB sprite, anything
-    /// else rendered on the CPU and uploaded), is blended onto the
-    /// accumulator with its opacity and mode, and the accumulator is
-    /// premultiplied and encoded. `None` means the CPU path must take
-    /// this frame: HDR delivery, a global LUT, a transition, a matte, an
-    /// adjustment layer, frame blending, title motion blur, an OFX plugin
-    /// or an inspection request — the stages the GPU stack does not have
-    /// yet. `tests/render_rules.rs` holds it to the CPU render.
+    /// there. Every clip lands in its own layer buffer — a decoded frame
+    /// seeded where it is, a title or generator as an sRGB sprite over
+    /// only the rows it covers, anything else rendered on the CPU and
+    /// uploaded — with its built-in effects run on it there; a matte or a
+    /// stencil above it multiplies into its alpha; a transition is a pass
+    /// between its two sides; an adjustment layer runs its chain on the
+    /// accumulator and mixes back; each layer blends on with its opacity
+    /// and mode; the accumulator is premultiplied and encoded. `None`
+    /// means the CPU path must take this frame — HDR delivery, a global
+    /// LUT, an OFX or Frei0r plugin, frame blending, title motion blur,
+    /// an inspection request — and the log says which.
+    /// `tests/gpu_composite.rs` holds it to the CPU render.
     pub fn render_display_u8_on_gpu(
         &mut self,
         seq: &Sequence,
@@ -811,14 +814,10 @@ impl Renderer {
         if stack.is_empty() {
             return self.gpu_stack_declines("nothing on screen");
         }
-        let mut clips: Vec<(&Track, &Clip)> = Vec::with_capacity(stack.len());
-        for (_, track, item) in &stack {
-            let TrackItem::Clip(c) = item else { return self.gpu_stack_declines("transition") };
-            let why = if matches!(c.kind, ClipKind::AdjustmentLayer) {
-                Some("adjustment layer")
-            } else if c.consumed_as_matte || c.matte_source.is_some() || c.matte_stencil.is_some() {
-                Some("matte")
-            } else if !c.effects.is_empty() {
+
+        // What a clip needs that the stack does not have.
+        let blocker = |c: &Clip| -> Option<&'static str> {
+            if !c.effects.is_empty() {
                 Some("OFX plugin")
             } else if frame_blends(c, time) {
                 Some("frame blending")
@@ -826,113 +825,393 @@ impl Renderer {
                 Some("title motion blur")
             } else {
                 None
-            };
-            if let Some(why) = why {
-                return self.gpu_stack_declines(why);
             }
-            clips.push((track, c));
+        };
+        // Slots: a clip takes one layer, a transition three (both sides
+        // and the result).
+        enum Item<'a> {
+            Clip { c: &'a Clip, slot: usize },
+            Transition { a: &'a Clip, b: &'a Clip, kind: klipp_core::TransitionKind, progress: f32, params: klipp_core::TransitionUserParams, slots: [usize; 3] },
+        }
+        let mut items: Vec<(&Track, Item)> = Vec::with_capacity(stack.len());
+        let mut n_slots = 0usize;
+        let mut sources: HashSet<ClipId> = HashSet::new();
+        for (_, track, item) in &stack {
+            match item {
+                TrackItem::Clip(c) => {
+                    if let Some(why) = blocker(c) {
+                        return self.gpu_stack_declines(why);
+                    }
+                    if let Some(b) = &c.matte_source {
+                        sources.insert(b.source_clip_id);
+                    }
+                    if c.matte_stencil.is_some() {
+                        sources.insert(c.id);
+                    }
+                    items.push((track, Item::Clip { c, slot: n_slots }));
+                    n_slots += 1;
+                }
+                TrackItem::Transition { a, b, kind, progress, params } => {
+                    for side in [a, b] {
+                        if let Some(why) = blocker(side) {
+                            return self.gpu_stack_declines(why);
+                        }
+                        if side.consumed_as_matte || side.matte_source.is_some() || side.matte_stencil.is_some() || matches!(side.kind, ClipKind::AdjustmentLayer) {
+                            return self.gpu_stack_declines("matte or adjustment inside a transition");
+                        }
+                    }
+                    items.push((track, Item::Transition { a, b, kind: *kind, progress: *progress, params: *params, slots: [n_slots, n_slots + 1, n_slots + 2] }));
+                    n_slots += 3;
+                }
+            }
+        }
+        // A matte source that is itself matted would be read after it
+        // was cut: the CPU stack reads sources untouched.
+        for (_, item) in &items {
+            if let Item::Clip { c, .. } = item {
+                let is_source = c.consumed_as_matte || sources.contains(&c.id);
+                if is_source && c.matte_source.is_some() {
+                    return self.gpu_stack_declines("a matte source with a matte of its own");
+                }
+            }
         }
 
         let mut transforms: HashMap<ClipId, ResolvedTransform> = HashMap::new();
-        for (_, c) in &clips {
-            eval::resolve_clip_transform(
-                c, seq, time, fps, &mut transforms, &mut self.glyph_cache, &mut self.titles,
-                seq.resolution.width, seq.resolution.height,
-            );
+        for (_, item) in &items {
+            let clips: Vec<&Clip> = match item {
+                Item::Clip { c, .. } => vec![c],
+                Item::Transition { a, b, .. } => vec![a, b],
+            };
+            for c in clips {
+                eval::resolve_clip_transform(
+                    c, seq, time, fps, &mut transforms, &mut self.glyph_cache, &mut self.titles,
+                    seq.resolution.width, seq.resolution.height,
+                );
+            }
         }
 
         self.executor.set_working_colorspace(self.working);
-        let n = clips.len();
-        if !self.executor.gpu_pipeline_or_init().is_some_and(|g| g.stack_begin(width, height, n)) {
-            return None;
+        let luma = klipp_color::linear::luma_coefs(self.working);
+        if !self.executor.gpu_pipeline_or_init().is_some_and(|g| {
+            g.set_luma_coefs(luma);
+            g.stack_begin(width, height, n_slots)
+        }) {
+            return self.gpu_stack_declines("the GPU stack would not start");
         }
 
         let mut stats = RenderStats::default();
-        for (i, (track, c)) in clips.into_iter().enumerate() {
-            let (fx, opacity) = clip_effects(c, time, fps, transforms.get(&c.id).copied());
-            let opacity = opacity * track.opacity;
-            if opacity <= 0.001 {
+        // ── 1. Every layer in its buffer, effects run on it there ──
+        let mut placed: HashMap<usize, Placed> = HashMap::new();
+        let mut slot_of_clip: HashMap<ClipId, usize> = HashMap::new();
+        for (_, item) in &items {
+            match item {
+                Item::Clip { c, slot } => {
+                    if matches!(c.kind, ClipKind::AdjustmentLayer) {
+                        continue;
+                    }
+                    match self.place_layer(*slot, c, time, fps, width, height, src, &transforms, &mut stats) {
+                        Ok(Some(p)) => {
+                            placed.insert(*slot, p);
+                            slot_of_clip.insert(c.id, *slot);
+                        }
+                        Ok(None) => {}
+                        Err(why) => return self.gpu_stack_declines(why),
+                    }
+                }
+                Item::Transition { a, b, kind, progress, params, slots } => {
+                    for (side, slot) in [(a, slots[0]), (b, slots[1])] {
+                        match self.place_layer(slot, side, time, fps, width, height, src, &transforms, &mut stats) {
+                            Ok(Some(p)) => {
+                                if p.opacity < 0.999 && !self.executor.gpu_pipeline_or_init().is_some_and(|g| g.stack_scale_alpha(slot, p.opacity)) {
+                                    return self.gpu_stack_declines("a transition side could not be faded");
+                                }
+                            }
+                            Ok(None) => {
+                                if !self.executor.gpu_pipeline_or_init().is_some_and(|g| g.stack_layer_clear(slot)) {
+                                    return self.gpu_stack_declines("a transition side could not be cleared");
+                                }
+                            }
+                            Err(why) => return self.gpu_stack_declines(why),
+                        }
+                    }
+                    let kind_id = klipp_core::spec_for_kind(*kind).kind_id as u32;
+                    let eased = if matches!(kind, klipp_core::TransitionKind::CrossDissolve) {
+                        klipp_transitions::apply_easing(*progress, params.param0)
+                    } else {
+                        *progress
+                    };
+                    let p = [params.param0, params.param1, params.param2, params.param3];
+                    let t = Instant::now();
+                    if !self.executor.gpu_pipeline_or_init().is_some_and(|g| g.stack_transition(slots[0], slots[1], slots[2], kind_id, eased, p, params.color)) {
+                        return self.gpu_stack_declines("the transition pass failed");
+                    }
+                    stats.composite_ms += ms_since(t);
+                    placed.insert(slots[2], Placed { opacity: 1.0, rows: (0, height) });
+                }
+            }
+        }
+
+        // ── 2. Mattes and stencils, multiplied into the consumers' alpha ──
+        let t = Instant::now();
+        let stencils: Vec<(usize, &Clip)> = items
+            .iter()
+            .enumerate()
+            .filter_map(|(i, (_, item))| match item {
+                Item::Clip { c, .. } if c.matte_stencil.is_some() => Some((i, *c)),
+                _ => None,
+            })
+            .collect();
+        for (i, (_, item)) in items.iter().enumerate() {
+            let Item::Clip { c, slot } = item else { continue };
+            if matches!(c.kind, ClipKind::AdjustmentLayer) || c.consumed_as_matte || c.matte_stencil.is_some() || !placed.contains_key(slot) {
                 continue;
             }
-            let clip_time = eval_clip_time(c, time);
-            let placed = match &c.kind {
-                ClipKind::Media { .. } if fx.is_empty() => {
-                    let at = source_secs(c, time, fps);
-                    let Some(f) = src.frame(c, at, width, height) else { continue };
-                    if (f.width, f.height) != (width, height) {
-                        return self.gpu_stack_declines("source frame is not the render size");
-                    }
-                    match f.pixels {
-                        SourcePixels::Gpu(g) if c.node_graph.is_identity() => {
-                            g.seed(&mut self.executor, width, height)
-                                && self.executor.take_seeded_input_as_output()
-                                && self.executor.gpu_pipeline_or_init().is_some_and(|p| p.stack_layer_from_chain(i, true))
-                        }
-                        SourcePixels::Gpu(g) => {
-                            let t = Instant::now();
-                            self.executor.request_output_on_gpu();
-                            let pixels = self.grade(c, GradeInput::Gpu(g), clip_time, fps, width, height);
-                            stats.grade_ms += ms_since(t);
-                            if pixels.is_empty() {
-                                let slot = self.executor.last_chain_final_slot().unwrap_or(true);
-                                self.executor.gpu_pipeline_or_init().is_some_and(|p| p.stack_layer_from_chain(i, slot))
-                            } else {
-                                self.executor.gpu_pipeline_or_init().is_some_and(|p| p.stack_layer_from_linear(i, &pixels))
-                            }
-                        }
-                        SourcePixels::Linear(p) => {
-                            let t = Instant::now();
-                            let pixels = if c.node_graph.is_identity() {
-                                unshare(p)
-                            } else {
-                                self.grade(c, GradeInput::Cpu(p), clip_time, fps, width, height)
-                            };
-                            stats.grade_ms += ms_since(t);
-                            self.executor.gpu_pipeline_or_init().is_some_and(|p| p.stack_layer_from_linear(i, &pixels))
-                        }
-                        SourcePixels::SceneReferred { .. } => return self.gpu_stack_declines("scene-referred source"),
-                    }
+            for (si, st) in &stencils {
+                if *si <= i {
+                    continue;
                 }
-                ClipKind::Title(td) if fx.is_empty() && c.node_graph.is_identity() => {
-                    let total = (c.timeline_out - c.timeline_in).to_secs_f64() as f32;
-                    let mut adapter = self.gpu.as_mut().map(crate::synth::GpuAlphaMaskAdapter);
-                    let gpu = adapter.as_mut().map(|a| a as &mut dyn klipp_title::AlphaMaskProcessor);
-                    let u8s = self.titles.render_with_window(td, width, height, gpu, clip_time as f32, Some(total));
-                    self.executor.gpu_pipeline_or_init().is_some_and(|p| p.stack_layer_from_srgb_u8(i, &u8s))
+                let s = st.matte_stencil.as_ref().unwrap();
+                let source = slot_of_clip.get(&st.id).copied();
+                if !self.stack_apply_matte(*slot, source, matte_channel_index(s.channel), s.invert, s.feather_px, s.choke_px) {
+                    return self.gpu_stack_declines("a stencil pass failed");
                 }
-                ClipKind::Generator(g) if fx.is_empty() && c.node_graph.is_identity() => {
-                    let total = (c.timeline_out - c.timeline_in).to_secs_f64();
-                    let u8s = crate::synth::render_generator_with_slate(&mut self.titles, g, width, height, clip_time, total);
-                    self.executor.gpu_pipeline_or_init().is_some_and(|p| p.stack_layer_from_srgb_u8(i, &u8s))
-                }
-                _ => {
-                    // Anything the stack has no seed for yet renders on
-                    // the CPU and goes up once.
-                    let Some((pixels, _)) = self.render_clip(c, time, fps, width, height, src, &transforms) else { continue };
-                    self.executor.gpu_pipeline_or_init().is_some_and(|p| p.stack_layer_from_linear(i, &pixels))
-                }
-            };
-            if !placed {
-                return self.gpu_stack_declines("a layer could not be placed on the GPU");
             }
+            if let Some(b) = &c.matte_source {
+                let ct = eval_clip_time(c, time);
+                let feather = klipp_core::keyframe::evaluate(&c.matte_feather_keyframes, ct, b.feather_px);
+                let choke = klipp_core::keyframe::evaluate(&c.matte_choke_keyframes, ct, b.choke_px);
+                let source = slot_of_clip.get(&b.source_clip_id).copied();
+                if !self.stack_apply_matte(*slot, source, matte_channel_index(b.channel), b.invert, feather, choke) {
+                    return self.gpu_stack_declines("a matte pass failed");
+                }
+            }
+        }
+        stats.composite_ms += ms_since(t);
+
+        // ── 3. Bottom to top onto the accumulator ──
+        for (track, item) in &items {
             let t = Instant::now();
-            let mode = c.blend_mode as u32;
-            if !self.executor.gpu_pipeline_or_init().is_some_and(|p| p.stack_blend(i, opacity, mode)) {
-                return None;
+            match item {
+                Item::Clip { c, .. } if matches!(c.kind, ClipKind::AdjustmentLayer) => {
+                    let opacity = eval::evaluate_clip_opacity(c, time, fps) * track.opacity;
+                    if opacity <= 0.001 {
+                        continue;
+                    }
+                    if let Err(why) = self.stack_adjust(c, opacity, time, fps, width, height, &transforms, &mut stats) {
+                        return self.gpu_stack_declines(why);
+                    }
+                }
+                Item::Clip { c, slot } => {
+                    if c.consumed_as_matte || c.matte_stencil.is_some() {
+                        continue;
+                    }
+                    let Some(p) = placed.get(slot) else { continue };
+                    let opacity = p.opacity * track.opacity;
+                    if opacity <= 0.001 {
+                        continue;
+                    }
+                    let (y0, y1) = p.rows;
+                    let mode = c.blend_mode as u32;
+                    if !self.executor.gpu_pipeline_or_init().is_some_and(|g| g.stack_blend_rows(*slot, opacity, mode, y0, y1)) {
+                        return self.gpu_stack_declines("the blend pass failed");
+                    }
+                }
+                Item::Transition { slots, .. } => {
+                    if track.opacity <= 0.001 {
+                        continue;
+                    }
+                    if !self.executor.gpu_pipeline_or_init().is_some_and(|g| g.stack_blend(slots[2], track.opacity, 0)) {
+                        return self.gpu_stack_declines("the blend pass failed");
+                    }
+                }
             }
             stats.composite_ms += ms_since(t);
         }
 
+        // ── 4. Premultiply and encode ──
         let t = Instant::now();
         let gpu = self.executor.gpu_pipeline_or_init()?;
         if !gpu.stack_finish_into_chain(opts.keep_alpha) {
-            return None;
+            // Nothing was laid on the canvas: an empty frame.
+            let acc = gpu.stack_acc_buffer()?;
+            let _ = acc;
+            if !gpu.stack_finish_into_chain(opts.keep_alpha) {
+                return self.gpu_stack_declines("nothing blended");
+            }
         }
+        let gpu = self.executor.gpu_pipeline_or_init()?;
         let bytes = gpu.encode_chain_to_display_u8(true, width, height, None)?;
         stats.composite_ms += ms_since(t);
         stats.total_ms = ms_since(t0);
         self.last_gpu_stack_decline = None;
         Some((bytes, stats))
+    }
+
+    /// One clip into layer `slot`: the source seeded, uploaded or
+    /// rendered, then its built-in effects run on it there. `Ok(None)`
+    /// when the source has no frame (the layer is skipped, as on the
+    /// CPU); `Err` names what the stack cannot do.
+    #[allow(clippy::too_many_arguments)]
+    fn place_layer(
+        &mut self,
+        slot: usize,
+        c: &Clip,
+        time: Timecode,
+        fps: f64,
+        width: u32,
+        height: u32,
+        src: &mut dyn FrameSource,
+        transforms: &HashMap<ClipId, ResolvedTransform>,
+        stats: &mut RenderStats,
+    ) -> Result<Option<Placed>, &'static str> {
+        let (mut fx, opacity) = clip_effects(c, time, fps, transforms.get(&c.id).copied());
+        self.authored_colours(&mut fx);
+        let temporal = fx.iter().any(|e| matches!(e, BuiltinEffect::RollingShutterCorrection { .. } | BuiltinEffect::VideoStabilization { .. }));
+        let fx_on_gpu = fx.is_empty() || (klipp_effects::chain_supports_gpu(&fx) && !temporal);
+        let clip_time = eval_clip_time(c, time);
+        let mut rows = (0, height);
+        let mut effects_done = false;
+        let placed = match &c.kind {
+            ClipKind::Media { .. } if fx_on_gpu => {
+                let at = source_secs(c, time, fps);
+                let Some(f) = src.frame(c, at, width, height) else { return Ok(None) };
+                if (f.width, f.height) != (width, height) {
+                    return Err("source frame is not the render size");
+                }
+                match f.pixels {
+                    SourcePixels::Gpu(g) if c.node_graph.is_identity() => {
+                        g.seed(&mut self.executor, width, height)
+                            && self.executor.take_seeded_input_as_output()
+                            && self.executor.gpu_pipeline_or_init().is_some_and(|p| p.stack_layer_from_chain(slot, true))
+                    }
+                    SourcePixels::Gpu(g) => {
+                        let t = Instant::now();
+                        self.executor.request_output_on_gpu();
+                        let pixels = self.grade(c, GradeInput::Gpu(g), clip_time, fps, width, height);
+                        stats.grade_ms += ms_since(t);
+                        if pixels.is_empty() {
+                            let slot_a = self.executor.last_chain_final_slot().unwrap_or(true);
+                            self.executor.gpu_pipeline_or_init().is_some_and(|p| p.stack_layer_from_chain(slot, slot_a))
+                        } else {
+                            self.executor.gpu_pipeline_or_init().is_some_and(|p| p.stack_layer_from_linear(slot, &pixels))
+                        }
+                    }
+                    SourcePixels::Linear(p) => {
+                        let t = Instant::now();
+                        let pixels = if c.node_graph.is_identity() {
+                            unshare(p)
+                        } else {
+                            self.grade(c, GradeInput::Cpu(p), clip_time, fps, width, height)
+                        };
+                        stats.grade_ms += ms_since(t);
+                        self.executor.gpu_pipeline_or_init().is_some_and(|p| p.stack_layer_from_linear(slot, &pixels))
+                    }
+                    SourcePixels::SceneReferred { .. } => return Err("scene-referred source"),
+                }
+            }
+            ClipKind::Title(td) if fx_on_gpu && c.node_graph.is_identity() => {
+                let total = (c.timeline_out - c.timeline_in).to_secs_f64() as f32;
+                let mut adapter = self.gpu.as_mut().map(crate::synth::GpuAlphaMaskAdapter);
+                let gpu = adapter.as_mut().map(|a| a as &mut dyn klipp_title::AlphaMaskProcessor);
+                let (u8s, r) = self.titles.render_with_window_rows(td, width, height, gpu, clip_time as f32, Some(total));
+                rows = r;
+                self.executor.gpu_pipeline_or_init().is_some_and(|p| p.stack_layer_from_srgb_u8_rows(slot, &u8s, r.0, r.1))
+            }
+            ClipKind::Generator(g) if fx_on_gpu && c.node_graph.is_identity() => {
+                let total = (c.timeline_out - c.timeline_in).to_secs_f64();
+                let u8s = crate::synth::render_generator_with_slate(&mut self.titles, g, width, height, clip_time, total);
+                self.executor.gpu_pipeline_or_init().is_some_and(|p| p.stack_layer_from_srgb_u8(slot, &u8s))
+            }
+            _ => {
+                // Anything the stack has no seed for, or a CPU-only
+                // effect: rendered on the CPU, effects included, up once.
+                let Some((pixels, _)) = self.render_clip(c, time, fps, width, height, src, transforms) else { return Ok(None) };
+                effects_done = true;
+                self.executor.gpu_pipeline_or_init().is_some_and(|p| p.stack_layer_from_linear(slot, &pixels))
+            }
+        };
+        if !placed {
+            return Err("a layer could not be placed on the GPU");
+        }
+        if !effects_done && !fx.is_empty() {
+            let t = Instant::now();
+            if !self.executor.gpu_pipeline_or_init().is_some_and(|p| p.stack_layer_apply_effects(slot, &fx)) {
+                return Err("an effect pass failed");
+            }
+            stats.effects_ms += ms_since(t);
+            // A blur or a transform can reach outside the sprite's rows.
+            rows = (0, height);
+        }
+        Ok(Some(Placed { opacity, rows }))
+    }
+
+    /// A matte from layer `source` into layer `consumer`'s alpha; a
+    /// source that is not on screen leaves the consumer invisible, as
+    /// on the CPU.
+    fn stack_apply_matte(&mut self, consumer: usize, source: Option<usize>, channel: u32, invert: bool, feather_px: f32, choke_px: f32) -> bool {
+        let Some(gpu) = self.executor.gpu_pipeline_or_init() else { return false };
+        match source {
+            Some(s) => gpu.stack_matte(consumer, s, channel, invert, feather_px, choke_px),
+            None => gpu.stack_scale_alpha(consumer, 0.0),
+        }
+    }
+
+    /// An adjustment layer on the GPU: the accumulator seeds the clip's
+    /// grade, its effects run on the result, and the result mixes back
+    /// with the layer's opacity.
+    #[allow(clippy::too_many_arguments)]
+    fn stack_adjust(
+        &mut self,
+        c: &Clip,
+        opacity: f32,
+        time: Timecode,
+        fps: f64,
+        width: u32,
+        height: u32,
+        transforms: &HashMap<ClipId, ResolvedTransform>,
+        stats: &mut RenderStats,
+    ) -> Result<(), &'static str> {
+        let clip_time = eval_clip_time(c, time);
+        let (mut fx, _) = clip_effects(c, time, fps, transforms.get(&c.id).copied());
+        self.authored_colours(&mut fx);
+        let temporal = fx.iter().any(|e| matches!(e, BuiltinEffect::RollingShutterCorrection { .. } | BuiltinEffect::VideoStabilization { .. }));
+        if !fx.is_empty() && !(klipp_effects::chain_supports_gpu(&fx) && !temporal) {
+            return Err("adjustment layer with a CPU-only effect");
+        }
+        let mut slot_a = true;
+        if c.node_graph.is_identity() {
+            if !self.executor.gpu_pipeline_or_init().is_some_and(|g| g.stack_acc_to_chain()) {
+                return Err("the accumulator could not seed the chain");
+            }
+        } else {
+            let t = Instant::now();
+            let seed: Option<Arc<AccSeed>> = self.executor.gpu_pipeline_or_init().and_then(|g| {
+                let buffer = g.stack_acc_buffer()?;
+                Some(Arc::new(AccSeed { buffer, device: g.device(), queue: g.queue(), width, height }))
+            });
+            let Some(seed) = seed else { return Err("the accumulator could not seed the chain") };
+            self.executor.request_output_on_gpu();
+            let pixels = self.grade(c, GradeInput::Gpu(seed), clip_time, fps, width, height);
+            stats.grade_ms += ms_since(t);
+            if pixels.is_empty() {
+                slot_a = self.executor.last_chain_final_slot().unwrap_or(true);
+            } else if let Some(g) = self.executor.gpu_pipeline_or_init() {
+                g.upload_chain_input_linear(&pixels);
+            }
+        }
+        if !fx.is_empty() {
+            let t = Instant::now();
+            let Some(g) = self.executor.gpu_pipeline_or_init() else { return Err("GPU gone") };
+            g.stack_chain_to_slot_a(slot_a);
+            slot_a = g.run_effects_in_chain(&fx, width, height);
+            stats.effects_ms += ms_since(t);
+        }
+        let t = Instant::now();
+        if !self.executor.gpu_pipeline_or_init().is_some_and(|g| g.stack_mix_from_chain(slot_a, opacity)) {
+            return Err("the adjustment mix failed");
+        }
+        stats.composite_ms += ms_since(t);
+        Ok(())
     }
 
     /// The stack cannot take this frame: `None`, and the reason in the
@@ -2206,6 +2485,69 @@ pub fn over_u8_straight(dst: &mut [u8], src: &[u8], width: u32) {
             }
         }
     });
+}
+
+/// A layer placed on the GPU stack: its own opacity (the track's is
+/// applied at the blend) and the rows it covers.
+struct Placed {
+    opacity: f32,
+    rows: (u32, u32),
+}
+
+/// A matte channel as the GPU matte pass numbers it.
+fn matte_channel_index(ch: klipp_nodes::params::MatteChannel) -> u32 {
+    use klipp_nodes::params::MatteChannel as N;
+    match ch {
+        N::Alpha => 0,
+        N::Luminance => 1,
+        N::Red => 2,
+        N::Green => 3,
+        N::Blue => 4,
+    }
+}
+
+/// The stack's accumulator as a grade chain's source: seeded by an
+/// on-GPU copy, read back only if a node insists on CPU pixels.
+struct AccSeed {
+    buffer: Arc<wgpu::Buffer>,
+    device: Arc<wgpu::Device>,
+    queue: Arc<wgpu::Queue>,
+    width: u32,
+    height: u32,
+}
+
+impl GpuPixels for AccSeed {
+    fn seed(&self, exec: &mut klipp_nodes::GraphExecutor, width: u32, height: u32) -> bool {
+        exec.prime_chain_from_gpu_linear_buffer(&self.buffer, width, height)
+    }
+    fn read(&self) -> Arc<Vec<f32>> {
+        let bytes = (self.width as u64) * (self.height as u64) * 16;
+        let staging = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("acc_seed_readback"),
+            size: bytes,
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let mut enc = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("acc_seed_readback") });
+        enc.copy_buffer_to_buffer(&self.buffer, 0, &staging, 0, bytes);
+        self.queue.submit(std::iter::once(enc.finish()));
+        let slice = staging.slice(..bytes);
+        let (tx, rx) = std::sync::mpsc::channel();
+        slice.map_async(wgpu::MapMode::Read, move |r| {
+            let _ = tx.send(r);
+        });
+        let out = match klipp_effects::gpu::poll_until_mapped(&self.device, &rx) {
+            Ok(Ok(())) => {
+                let data = slice.get_mapped_range();
+                let v: Vec<f32> = bytemuck::cast_slice(&data).to_vec();
+                drop(data);
+                staging.unmap();
+                v
+            }
+            _ => vec![0.0; (self.width as usize) * (self.height as usize) * 4],
+        };
+        Arc::new(out)
+    }
 }
 
 /// `KLIPP_GPU_COMPOSITE=0` keeps every frame on the CPU stack.

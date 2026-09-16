@@ -2663,6 +2663,7 @@ dependencies = [
 name = "klipp-compose"
 version = "0.1.0"
 dependencies = [
+ "bytemuck",
  "klipp-color",
  "klipp-core",
  "klipp-effects",
@@ -2673,6 +2674,7 @@ dependencies = [
  "klipp-transitions",
  "rayon",
  "tracing",
+ "wgpu",
 ]
 
 [[package]]

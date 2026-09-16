@@ -130,6 +130,29 @@ struct CachedRender {
     width: u32,
     height: u32,
     buffer: std::sync::Arc<Vec<u8>>,
+    /// The rows with any coverage, `y0..y1`.
+    rows: (u32, u32),
+}
+
+/// The rows of a frame-sized RGBA8 buffer that carry any alpha, as
+/// `y0..y1` (empty when nothing does). Scanned across threads.
+fn alpha_rows(buf: &[u8], width: u32, height: u32) -> (u32, u32) {
+    use rayon::prelude::*;
+    let row = (width as usize) * 4;
+    if row == 0 || buf.len() < row * height as usize {
+        return (0, height);
+    }
+    let (lo, hi) = buf
+        .par_chunks(row)
+        .enumerate()
+        .filter(|(_, r)| r.chunks_exact(4).any(|p| p[3] != 0))
+        .map(|(y, _)| (y as u32, y as u32 + 1))
+        .reduce(|| (u32::MAX, 0), |a, b| (a.0.min(b.0), a.1.max(b.1)));
+    if lo == u32::MAX {
+        (0, 0)
+    } else {
+        (lo, hi)
+    }
 }
 
 /// Renders title clips to RGBA pixel buffers.
@@ -147,6 +170,8 @@ pub struct TitleRenderer {
     /// title clips are visited (e.g. scrubbing across a long credits
     /// sequence).
     render_cache: Vec<CachedRender>,
+    /// The rows with coverage in the last render, `y0..y1`.
+    last_rows: (u32, u32),
     /// The clip's length while rendering with `render_with_window`,
     /// which exit motion counts back from. `None` outside a clip.
     motion_window: Option<f32>,
@@ -184,6 +209,7 @@ impl TitleRenderer {
             font_registry: registry,
             texture_fill_cache: None,
             render_cache: Vec::with_capacity(RENDER_CACHE_CAP),
+            last_rows: (0, 0),
             motion_window: None,
             loop_wave: None,
             loop_waves: HashMap::new(),
@@ -1245,12 +1271,7 @@ impl TitleRenderer {
     /// the full shaping + rasterisation; cache hit cost is one
     /// memcpy of the rasterised buffer.
     pub fn render(&mut self, title: &TitleData, width: u32, height: u32) -> Vec<u8> {
-        if let Some(buf) = self.cache_lookup(title, width, height) {
-            return buf;
-        }
-        let buf = self.render_inner(title, width, height, None, None);
-        self.cache_store(title.clone(), width, height, buf.clone());
-        buf
+        self.render_with_gpu(title, width, height, None)
     }
 
     /// Render with optional GPU-accelerated alpha mask processing.
@@ -1267,11 +1288,14 @@ impl TitleRenderer {
         height: u32,
         gpu: Option<&mut dyn AlphaMaskProcessor>,
     ) -> Vec<u8> {
-        if let Some(buf) = self.cache_lookup(title, width, height) {
+        if let Some((buf, rows)) = self.cache_lookup(title, width, height) {
+            self.last_rows = rows;
             return buf;
         }
         let buf = self.render_inner(title, width, height, gpu, None);
-        self.cache_store(title.clone(), width, height, buf.clone());
+        let rows = alpha_rows(&buf, width, height);
+        self.last_rows = rows;
+        self.cache_store(title.clone(), width, height, buf.clone(), rows);
         buf
     }
 
@@ -1298,6 +1322,22 @@ impl TitleRenderer {
         let out = self.render_with_time(title, width, height, gpu, time_secs);
         self.motion_window = None;
         out
+    }
+
+    /// `render_with_window`, with the rows that carry any pixel as
+    /// `y0..y1`, so a compositor can upload and blend only those.
+    #[allow(clippy::too_many_arguments)]
+    pub fn render_with_window_rows(
+        &mut self,
+        title: &TitleData,
+        width: u32,
+        height: u32,
+        gpu: Option<&mut dyn AlphaMaskProcessor>,
+        time_secs: f32,
+        window_secs: Option<f32>,
+    ) -> (Vec<u8>, (u32, u32)) {
+        let out = self.render_with_window(title, width, height, gpu, time_secs, window_secs);
+        (out, self.last_rows)
     }
 
     pub fn render_with_time(
@@ -1457,17 +1497,26 @@ impl TitleRenderer {
             || any_outline_keyframes;
 
         if !any_render_time_override {
-            let rest = match self.cache_lookup(title, width, height) {
-                Some(buf) => buf,
+            let (rest, rows) = match self.cache_lookup(title, width, height) {
+                Some(hit) => hit,
                 None => {
                     let buf = self.render_inner(title, width, height, gpu, None);
-                    self.cache_store(title.clone(), width, height, buf.clone());
-                    buf
+                    let rows = alpha_rows(&buf, width, height);
+                    self.cache_store(title.clone(), width, height, buf.clone(), rows);
+                    (buf, rows)
                 }
             };
             return match translate_only {
-                Some(pose) => shift_and_fade(rest, width, height, pose.dx.round() as i32, pose.dy.round() as i32, pose.opacity),
-                None => rest,
+                Some(pose) => {
+                    let dy = pose.dy.round() as i32;
+                    let shifted = |y: u32| (y as i64 + dy as i64).clamp(0, height as i64) as u32;
+                    self.last_rows = if pose.opacity <= 0.001 || rows.1 <= rows.0 { (0, 0) } else { (shifted(rows.0), shifted(rows.1)) };
+                    shift_and_fade(rest, width, height, pose.dx.round() as i32, dy, pose.opacity)
+                }
+                None => {
+                    self.last_rows = rows;
+                    rest
+                }
             };
         }
 
@@ -1524,6 +1573,7 @@ impl TitleRenderer {
         };
         let out = self.render_inner(&derived, width, height, gpu, time_arg);
         self.loop_waves.clear();
+        self.last_rows = alpha_rows(&out, width, height);
         out
     }
 
@@ -1720,20 +1770,21 @@ impl TitleRenderer {
     /// Look up a cached rasterised buffer for the given title +
     /// dimensions. On hit, moves the entry to the front of the LRU
     /// (most-recently-used end) and returns a memcpy of the buffer.
-    fn cache_lookup(&mut self, title: &TitleData, width: u32, height: u32) -> Option<Vec<u8>> {
+    fn cache_lookup(&mut self, title: &TitleData, width: u32, height: u32) -> Option<(Vec<u8>, (u32, u32))> {
         let pos = self.render_cache.iter().position(|c| {
             c.width == width && c.height == height && &c.title == title
         })?;
         // Move to front (LRU).
         let entry = self.render_cache.remove(pos);
         let buf = (*entry.buffer).clone();
+        let rows = entry.rows;
         self.render_cache.insert(0, entry);
-        Some(buf)
+        Some((buf, rows))
     }
 
     /// Insert a freshly-rendered buffer into the cache, evicting the
     /// least-recently-used entry if at capacity.
-    fn cache_store(&mut self, title: TitleData, width: u32, height: u32, buffer: Vec<u8>) {
+    fn cache_store(&mut self, title: TitleData, width: u32, height: u32, buffer: Vec<u8>, rows: (u32, u32)) {
         if self.render_cache.len() >= RENDER_CACHE_CAP {
             self.render_cache.pop();
         }
@@ -1744,6 +1795,7 @@ impl TitleRenderer {
                 width,
                 height,
                 buffer: std::sync::Arc::new(buffer),
+                rows,
             },
         );
     }
