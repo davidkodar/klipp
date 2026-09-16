@@ -418,6 +418,16 @@ pub struct GpuEffectsPipeline {
     /// downstream-crate tests can observe it without coupling to this
     /// crate's test harness — an atomic counter is ~free in release.
     submit_count: Arc<std::sync::atomic::AtomicU64>,
+    /// A stack frame's passes, recorded into one encoder and handed to
+    /// the queue once ([`Self::encoder`] / [`Self::submit`]); `batching`
+    /// while a stack frame is open. `stack_params_ring` gives each pass
+    /// its own params slot, since a `write_buffer` lands before the next
+    /// submit whatever was recorded in between (the chain has its own
+    /// ring for the same reason).
+    batch: std::cell::RefCell<Option<wgpu::CommandEncoder>>,
+    batching: std::cell::Cell<bool>,
+    stack_params_ring: Vec<wgpu::Buffer>,
+    stack_params_slot: std::cell::Cell<usize>,
     /// The waveform and parade scopes, made on first use: they share
     /// the device so a frame the chain graded can be measured in place.
     scopes: Option<crate::gpu_scopes::ScopeRenderer>,
@@ -440,6 +450,9 @@ const PARAMS_SIZE: u64 = 256;
 /// like clarity (3 slots) fits comfortably. Bump if a future graph ever
 /// asserts in `next_params_slot`.
 const CHAIN_PARAMS_RING_SIZE: usize = 32;
+/// Params slots a stack frame may use before its passes so far are
+/// handed to the queue and the ring starts over.
+const STACK_PARAMS_RING_SIZE: usize = 64;
 const WORKGROUP_SIZE: u32 = 256;
 
 /// Maximum time to spin waiting for a `map_async` callback before
@@ -1180,6 +1193,16 @@ impl GpuEffectsPipeline {
         // Ring of per-dispatch params buffers for the chain path. Each
         // chain dispatch claims its own slot so the params write lands
         // in a buffer no later dispatch in the same submit reads from.
+        let stack_params_ring: Vec<wgpu::Buffer> = (0..STACK_PARAMS_RING_SIZE)
+            .map(|i| {
+                device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some(&format!("stack_params_{i}")),
+                    size: PARAMS_SIZE,
+                    usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                    mapped_at_creation: false,
+                })
+            })
+            .collect();
         let params_ring: Vec<wgpu::Buffer> = (0..CHAIN_PARAMS_RING_SIZE)
             .map(|i| {
                 device.create_buffer(&wgpu::BufferDescriptor {
@@ -1340,6 +1363,10 @@ impl GpuEffectsPipeline {
             current_buf_size: 0,
             device_lost,
             submit_count: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            batch: std::cell::RefCell::new(None),
+            batching: std::cell::Cell::new(false),
+            stack_params_ring,
+            stack_params_slot: std::cell::Cell::new(0),
             scopes: None,
             luma_coefs: [0.2126, 0.7152, 0.0722],
         })
@@ -1386,6 +1413,7 @@ impl GpuEffectsPipeline {
         if byte_size <= self.current_buf_size {
             return;
         }
+        self.flush();
         debug!("GPU effects: resizing buffers to {byte_size} bytes");
         self.buf_a = Some(self.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("fx_a"),
@@ -1563,7 +1591,7 @@ impl GpuEffectsPipeline {
                 },
                 wgpu::BindGroupEntry {
                     binding: 2,
-                    resource: self.params_buf.as_entire_binding(),
+                    resource: self.params_binding(),
                 },
             ],
         })
@@ -1749,7 +1777,7 @@ impl GpuEffectsPipeline {
             .write_buffer(buf_a, 0, bytemuck::cast_slice(linear_rgba));
 
         // Upload curve LUT data
-        self.queue.write_buffer(&self.rgb_curves_lut_buf, 0, bytemuck::cast_slice(lut_data));
+        self.upload(&self.rgb_curves_lut_buf, 0, bytemuck::cast_slice(lut_data));
 
         self.write_params(&GpuRgbCurvesParams {
             width, height,
@@ -1771,12 +1799,12 @@ impl GpuEffectsPipeline {
             entries: &[
                 wgpu::BindGroupEntry { binding: 0, resource: buf_a.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 1, resource: buf_b.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 2, resource: self.params_buf.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 2, resource: self.params_binding() },
                 wgpu::BindGroupEntry { binding: 3, resource: self.rgb_curves_lut_buf.as_entire_binding() },
             ],
         });
 
-        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        let mut encoder = self.encoder(None);
         {
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: None, timestamp_writes: None,
@@ -1785,7 +1813,7 @@ impl GpuEffectsPipeline {
             pass.set_bind_group(0, &bind_group, &[]);
             pass.dispatch_workgroups(workgroups, 1, 1);
         }
-        self.queue.submit(std::iter::once(encoder.finish()));
+        self.submit(encoder);
         // Non-blocking driver nudge so NVIDIA Vulkan's deferred-destruction
         // queue drains between submits. See submit_chain for context.
         self.device.poll(wgpu::Maintain::Poll);
@@ -1838,7 +1866,7 @@ impl GpuEffectsPipeline {
         let staging = self.bridge_u8_staging_buf.as_ref().expect("bridge_u8_staging_buf just created");
 
         // Upload input + write params.
-        self.queue.write_buffer(buf_a, 0, bytemuck::cast_slice(linear_rgba));
+        self.upload(buf_a, 0, bytemuck::cast_slice(linear_rgba));
         self.write_params(&BridgeU8Params { width, height, _pad0: 0, _pad1: 0 });
 
         // Bind group: input(buf_a, read), output(out_buf, write), params(uniform).
@@ -1848,7 +1876,7 @@ impl GpuEffectsPipeline {
             entries: &[
                 wgpu::BindGroupEntry { binding: 0, resource: buf_a.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 1, resource: out_buf.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 2, resource: self.params_buf.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 2, resource: self.params_binding() },
             ],
         });
 
@@ -1856,9 +1884,7 @@ impl GpuEffectsPipeline {
         // readback. Same one-submit pattern as flush_chain — halves
         // NVIDIA Vulkan driver overhead vs two separate submits.
         let workgroups = (pixel_count as u32).div_ceil(WORKGROUP_SIZE);
-        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("bridge_u8_enc"),
-        });
+        let mut encoder = self.encoder(Some("bridge_u8_enc"));
         {
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: Some("bridge_u8_pass"), timestamp_writes: None,
@@ -1868,12 +1894,12 @@ impl GpuEffectsPipeline {
             pass.dispatch_workgroups(workgroups, 1, 1);
         }
         encoder.copy_buffer_to_buffer(out_buf, 0, staging, 0, out_bytes);
-        self.queue.submit(std::iter::once(encoder.finish()));
-        self.submit_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.submit(encoder);
 
         mark_gpu_stage(GpuStage::LinearRgbaToU8);
         let slice = staging.slice(..out_bytes);
         let (tx, rx) = std::sync::mpsc::channel();
+        self.flush();
         slice.map_async(wgpu::MapMode::Read, move |r| { let _ = tx.send(r); });
         // Non-blocking poll loop instead of `Maintain::Wait` — on a
         // UI-shared device, Wait never returns because eframe-wgpu
@@ -1910,12 +1936,14 @@ impl GpuEffectsPipeline {
     }
 
     pub fn device(&self) -> std::sync::Arc<wgpu::Device> {
+        self.flush();
         std::sync::Arc::clone(&self.device)
     }
 
     /// Clone the Arc-wrapped queue, for writing into buffers made on
     /// [`Self::device`].
     pub fn queue(&self) -> std::sync::Arc<wgpu::Queue> {
+        self.flush();
         std::sync::Arc::clone(&self.queue)
     }
 
@@ -1943,7 +1971,7 @@ impl GpuEffectsPipeline {
         let byte_size = pixel_count * 16;
         self.ensure_buffers(byte_size);
         let buf_a = self.buf_a.as_ref().expect("ensure_buffers established buf_a");
-        self.queue.write_buffer(buf_a, 0, bytemuck::cast_slice(linear_rgba));
+        self.upload(buf_a, 0, bytemuck::cast_slice(linear_rgba));
         self.encode_grade_to_texture(true, width, height, target)
     }
 
@@ -2034,13 +2062,11 @@ impl GpuEffectsPipeline {
             entries: &[
                 wgpu::BindGroupEntry { binding: 0, resource: src_buf.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 1, resource: out_buf.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 2, resource: self.params_buf.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 2, resource: self.params_binding() },
             ],
         });
         let workgroups = (pixel_count as u32).div_ceil(WORKGROUP_SIZE);
-        let mut encoder = self.device.create_command_encoder(
-            &wgpu::CommandEncoderDescriptor { label: Some("encode_grade_to_texture") },
-        );
+        let mut encoder = self.encoder(Some("encode_grade_to_texture"));
         {
             let mut pass = encoder.begin_compute_pass(
                 &wgpu::ComputePassDescriptor { label: None, timestamp_writes: None },
@@ -2069,8 +2095,7 @@ impl GpuEffectsPipeline {
             },
             wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
         );
-        self.queue.submit(std::iter::once(encoder.finish()));
-        self.submit_count.fetch_add(1, Ordering::Relaxed);
+        self.submit(encoder);
         true
     }
 
@@ -2118,14 +2143,12 @@ impl GpuEffectsPipeline {
                 // binding 1: output linear buffer (chain's buf_a, read-write)
                 wgpu::BindGroupEntry { binding: 1, resource: buf_a.as_entire_binding() },
                 // binding 2: params uniform
-                wgpu::BindGroupEntry { binding: 2, resource: self.params_buf.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 2, resource: self.params_binding() },
             ],
         });
 
         let workgroups = (pixel_count as u32).div_ceil(WORKGROUP_SIZE);
-        let mut encoder = self.device.create_command_encoder(
-            &wgpu::CommandEncoderDescriptor { label: Some("bridge_u8_to_linear") },
-        );
+        let mut encoder = self.encoder(Some("bridge_u8_to_linear"));
         {
             let mut pass = encoder.begin_compute_pass(
                 &wgpu::ComputePassDescriptor { label: None, timestamp_writes: None },
@@ -2134,8 +2157,7 @@ impl GpuEffectsPipeline {
             pass.set_bind_group(0, &bg, &[]);
             pass.dispatch_workgroups(workgroups, 1, 1);
         }
-        self.queue.submit(std::iter::once(encoder.finish()));
-        self.submit_count.fetch_add(1, Ordering::Relaxed);
+        self.submit(encoder);
         true
     }
 
@@ -2329,7 +2351,7 @@ impl GpuEffectsPipeline {
             entries: &[
                 wgpu::BindGroupEntry { binding: 0, resource: source.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 1, resource: planes.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 2, resource: self.params_buf.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 2, resource: self.params_binding() },
                 wgpu::BindGroupEntry { binding: 3, resource: tables.as_entire_binding() },
                 wgpu::BindGroupEntry {
                     binding: 4,
@@ -2357,8 +2379,7 @@ impl GpuEffectsPipeline {
             pass.set_bind_group(0, &bg, &[]);
             pass.dispatch_workgroups(wg_x, wg_y, 1);
         }
-        self.queue.submit(std::iter::once(encoder.finish()));
-        self.submit_count.fetch_add(1, Ordering::Relaxed);
+        self.submit(encoder);
 
         // `staging_read` is sized for a whole linear frame, which is ten
         // times these planes, so the chain having run means it fits.
@@ -2433,7 +2454,7 @@ impl GpuEffectsPipeline {
             entries: &[
                 wgpu::BindGroupEntry { binding: 0, resource: src.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 1, resource: out.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 2, resource: self.params_buf.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 2, resource: self.params_binding() },
             ],
         });
         let mut enc = self
@@ -2449,10 +2470,10 @@ impl GpuEffectsPipeline {
             pass.dispatch_workgroups((mw * mh).div_ceil(WORKGROUP_SIZE), 1, 1);
         }
         enc.copy_buffer_to_buffer(out, 0, staging, 0, bytes);
-        self.queue.submit(std::iter::once(enc.finish()));
-        self.submit_count.fetch_add(1, Ordering::Relaxed);
+        self.submit(enc);
 
         let slice = staging.slice(..bytes);
+        self.flush();
         slice.map_async(wgpu::MapMode::Read, |_| {});
         self.device.poll(wgpu::Maintain::Wait);
         let data = slice.get_mapped_range();
@@ -2511,7 +2532,7 @@ impl GpuEffectsPipeline {
             entries: &[
                 wgpu::BindGroupEntry { binding: 0, resource: source.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 1, resource: out.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 2, resource: self.params_buf.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 2, resource: self.params_binding() },
                 wgpu::BindGroupEntry { binding: 3, resource: data.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 4, resource: self.no_light.as_entire_binding() },
             ],
@@ -2530,8 +2551,7 @@ impl GpuEffectsPipeline {
             pass.set_bind_group(0, &bg, &[]);
             pass.dispatch_workgroups((pixel_count as u32).div_ceil(WORKGROUP_SIZE), 1, 1);
         }
-        self.queue.submit(std::iter::once(encoder.finish()));
-        self.submit_count.fetch_add(1, Ordering::Relaxed);
+        self.submit(encoder);
 
         self.with_downloaded(&out, out_bytes, |bytes| bytes.to_vec())
     }
@@ -2685,7 +2705,7 @@ impl GpuEffectsPipeline {
             entries: &[
                 wgpu::BindGroupEntry { binding: 0, resource: source.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 1, resource: out.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 2, resource: self.params_buf.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 2, resource: self.params_binding() },
                 wgpu::BindGroupEntry { binding: 3, resource: data.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 4, resource: self.no_light.as_entire_binding() },
             ],
@@ -2704,8 +2724,7 @@ impl GpuEffectsPipeline {
             pass.set_bind_group(0, &bg, &[]);
             pass.dispatch_workgroups((pixel_count as u32).div_ceil(WORKGROUP_SIZE), 1, 1);
         }
-        self.queue.submit(std::iter::once(encoder.finish()));
-        self.submit_count.fetch_add(1, Ordering::Relaxed);
+        self.submit(encoder);
 
         self.with_downloaded(&out, out_bytes, |bytes| bytes.to_vec())
     }
@@ -2734,12 +2753,9 @@ impl GpuEffectsPipeline {
         if input.size() < byte_size { return false; }
 
         let buf_a = self.buf_a.as_ref().expect("ensure_buffers established buf_a");
-        let mut encoder = self.device.create_command_encoder(
-            &wgpu::CommandEncoderDescriptor { label: Some("copy_linear_into_chain") },
-        );
+        let mut encoder = self.encoder(Some("copy_linear_into_chain"));
         encoder.copy_buffer_to_buffer(input, 0, buf_a, 0, byte_size);
-        self.queue.submit(std::iter::once(encoder.finish()));
-        self.submit_count.fetch_add(1, Ordering::Relaxed);
+        self.submit(encoder);
         true
     }
 
@@ -2787,14 +2803,12 @@ impl GpuEffectsPipeline {
             entries: &[
                 wgpu::BindGroupEntry { binding: 0, resource: input_rgba64.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 1, resource: buf_a.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 2, resource: self.params_buf.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 2, resource: self.params_binding() },
             ],
         });
 
         let workgroups = (pixel_count as u32).div_ceil(WORKGROUP_SIZE);
-        let mut encoder = self.device.create_command_encoder(
-            &wgpu::CommandEncoderDescriptor { label: Some("bridge_rgba64_to_linear") },
-        );
+        let mut encoder = self.encoder(Some("bridge_rgba64_to_linear"));
         {
             let mut pass = encoder.begin_compute_pass(
                 &wgpu::ComputePassDescriptor { label: None, timestamp_writes: None },
@@ -2803,8 +2817,7 @@ impl GpuEffectsPipeline {
             pass.set_bind_group(0, &bg, &[]);
             pass.dispatch_workgroups(workgroups, 1, 1);
         }
-        self.queue.submit(std::iter::once(encoder.finish()));
-        self.submit_count.fetch_add(1, Ordering::Relaxed);
+        self.submit(encoder);
         true
     }
 
@@ -2840,12 +2853,10 @@ impl GpuEffectsPipeline {
             entries: &[
                 wgpu::BindGroupEntry { binding: 0, resource: codes.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 1, resource: buf_a.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 2, resource: self.params_buf.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 2, resource: self.params_binding() },
             ],
         });
-        let mut encoder = self.device.create_command_encoder(
-            &wgpu::CommandEncoderDescriptor { label: Some("bridge_hdr10_to_linear") },
-        );
+        let mut encoder = self.encoder(Some("bridge_hdr10_to_linear"));
         {
             let mut pass = encoder.begin_compute_pass(
                 &wgpu::ComputePassDescriptor { label: None, timestamp_writes: None },
@@ -2854,8 +2865,7 @@ impl GpuEffectsPipeline {
             pass.set_bind_group(0, &bg, &[]);
             pass.dispatch_workgroups((pixel_count as u32).div_ceil(WORKGROUP_SIZE), 1, 1);
         }
-        self.queue.submit(std::iter::once(encoder.finish()));
-        self.submit_count.fetch_add(1, Ordering::Relaxed);
+        self.submit(encoder);
         true
     }
 
@@ -2996,12 +3006,10 @@ impl GpuEffectsPipeline {
             entries: &[
                 wgpu::BindGroupEntry { binding: 0, resource: src.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 1, resource: out.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 2, resource: self.params_buf.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 2, resource: self.params_binding() },
             ],
         });
-        let mut encoder = self.device.create_command_encoder(
-            &wgpu::CommandEncoderDescriptor { label: Some("linear_to_display_u8") },
-        );
+        let mut encoder = self.encoder(Some("linear_to_display_u8"));
         {
             let mut pass = encoder.begin_compute_pass(
                 &wgpu::ComputePassDescriptor { label: None, timestamp_writes: None },
@@ -3040,14 +3048,16 @@ impl GpuEffectsPipeline {
         if want_bytes {
             encoder.copy_buffer_to_buffer(out, 0, staging, 0, out_bytes);
         }
-        self.queue.submit(std::iter::once(encoder.finish()));
-        self.submit_count.fetch_add(1, Ordering::Relaxed);
+        self.submit(encoder);
+        // The frame is encoded: everything recorded goes to the queue.
+        self.stack_end();
         if !want_bytes {
             return Some(None);
         }
 
         let slice = staging.slice(..out_bytes);
         let (tx, rx) = std::sync::mpsc::channel();
+        self.flush();
         slice.map_async(wgpu::MapMode::Read, move |r| { let _ = tx.send(r); });
         match poll_until_mapped(&self.device, &rx) {
             Ok(Ok(())) => {
@@ -3070,7 +3080,7 @@ impl GpuEffectsPipeline {
         self.ensure_buffers(byte_size);
         let buf_a = self.buf_a.as_ref().unwrap();
         let buf_b = self.buf_b.as_ref().unwrap();
-        self.queue.write_buffer(buf_a, 0, bytemuck::cast_slice(linear_rgba));
+        self.upload(buf_a, 0, bytemuck::cast_slice(linear_rgba));
         let workgroups = (width * height).div_ceil(WORKGROUP_SIZE);
         self.write_params(&GpuVibranceParams { width, height, amount, _pad: 0, luma_yr: self.luma_coefs[0], luma_yg: self.luma_coefs[1], luma_yb: self.luma_coefs[2], _pad1: 0 });
         self.dispatch(&self.vibrance_pipeline, buf_a, buf_b, workgroups);
@@ -3086,7 +3096,7 @@ impl GpuEffectsPipeline {
         self.ensure_buffers(byte_size);
         let buf_a = self.buf_a.as_ref().unwrap();
         let buf_b = self.buf_b.as_ref().unwrap();
-        self.queue.write_buffer(buf_a, 0, bytemuck::cast_slice(linear_rgba));
+        self.upload(buf_a, 0, bytemuck::cast_slice(linear_rgba));
         let workgroups = (width * height).div_ceil(WORKGROUP_SIZE);
         self.write_params(&GpuColorWarperParams {
             width, height, _pad0: 0, _pad1: 0,
@@ -3118,7 +3128,7 @@ impl GpuEffectsPipeline {
         let buf_b = self.buf_b.as_ref().unwrap();
         let buf_c = self.buf_c.as_ref().unwrap();
 
-        self.queue.write_buffer(buf_a, 0, bytemuck::cast_slice(linear_rgba));
+        self.upload(buf_a, 0, bytemuck::cast_slice(linear_rgba));
         let workgroups = (width * height).div_ceil(WORKGROUP_SIZE);
         let radius = 20u32;
 
@@ -3137,18 +3147,18 @@ impl GpuEffectsPipeline {
             entries: &[
                 wgpu::BindGroupEntry { binding: 0, resource: buf_a.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 1, resource: buf_b.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 2, resource: self.params_buf.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 2, resource: self.params_binding() },
                 wgpu::BindGroupEntry { binding: 3, resource: buf_c.as_entire_binding() },
             ],
         });
-        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        let mut encoder = self.encoder(None);
         {
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: None, timestamp_writes: None });
             pass.set_pipeline(&self.clarity_apply_pipeline);
             pass.set_bind_group(0, &bind_group, &[]);
             pass.dispatch_workgroups(workgroups, 1, 1);
         }
-        self.queue.submit(std::iter::once(encoder.finish()));
+        self.submit(encoder);
         // Non-blocking driver nudge so NVIDIA Vulkan's deferred-destruction
         // queue drains between submits. See submit_chain for context.
         self.device.poll(wgpu::Maintain::Poll);
@@ -3173,7 +3183,7 @@ impl GpuEffectsPipeline {
         let buf_a = self.buf_a.as_ref().unwrap();
         let buf_b = self.buf_b.as_ref().unwrap();
 
-        self.queue.write_buffer(buf_a, 0, bytemuck::cast_slice(linear_rgba));
+        self.upload(buf_a, 0, bytemuck::cast_slice(linear_rgba));
 
         let pixel_count = width * height;
         let workgroups = pixel_count.div_ceil(WORKGROUP_SIZE);
@@ -3332,8 +3342,8 @@ impl GpuEffectsPipeline {
             .expect("ensure_mask_storage_buffers must run before dispatch_mask_v2");
         let points_buf = self.mask_points_buf.as_ref()
             .expect("ensure_mask_storage_buffers must run before dispatch_mask_v2");
-        self.queue.write_buffer(records_buf, 0, records_bytes_to_write);
-        self.queue.write_buffer(points_buf, 0, points_bytes_to_write);
+        self.upload(records_buf, 0, records_bytes_to_write);
+        self.upload(points_buf, 0, points_bytes_to_write);
 
         // write_params is &mut self elsewhere; inline the small
         // uniform write here so this helper stays &self.
@@ -3342,7 +3352,7 @@ impl GpuEffectsPipeline {
             mask_count,
             _pad: 0,
         };
-        self.queue.write_buffer(&self.params_buf, 0, bytemuck::bytes_of(&params));
+        self.write_params(&params);
 
         // Pull the bind group layout straight off the pipeline so
         // we don't have to keep a second handle around in the
@@ -3353,14 +3363,12 @@ impl GpuEffectsPipeline {
             layout: &bgl,
             entries: &[
                 wgpu::BindGroupEntry { binding: 0, resource: dest.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: self.params_buf.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: self.params_binding() },
                 wgpu::BindGroupEntry { binding: 2, resource: records_buf.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 3, resource: points_buf.as_entire_binding() },
             ],
         });
-        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("mask_v2_enc"),
-        });
+        let mut encoder = self.encoder(Some("mask_v2_enc"));
         {
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: Some("mask_v2_pass"),
@@ -3370,7 +3378,7 @@ impl GpuEffectsPipeline {
             pass.set_bind_group(0, &bind_group, &[]);
             pass.dispatch_workgroups(workgroups, 1, 1);
         }
-        self.queue.submit(std::iter::once(encoder.finish()));
+        self.submit(encoder);
         self.device.poll(wgpu::Maintain::Poll);
     }
 
@@ -3394,10 +3402,10 @@ impl GpuEffectsPipeline {
         let buf_a = self.buf_a.as_ref().unwrap();
         let buf_b = self.buf_b.as_ref().unwrap();
 
-        self.queue.write_buffer(buf_a, 0, bytemuck::cast_slice(linear_rgba));
+        self.upload(buf_a, 0, bytemuck::cast_slice(linear_rgba));
 
         // Upload LUT data
-        self.queue.write_buffer(&self.huesat_lut_buf, 0, bytemuck::cast_slice(lut_data));
+        self.upload(&self.huesat_lut_buf, 0, bytemuck::cast_slice(lut_data));
 
         // Write params
         self.write_params(&GpuHueSatParams {
@@ -3417,12 +3425,12 @@ impl GpuEffectsPipeline {
             entries: &[
                 wgpu::BindGroupEntry { binding: 0, resource: buf_a.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 1, resource: buf_b.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 2, resource: self.params_buf.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 2, resource: self.params_binding() },
                 wgpu::BindGroupEntry { binding: 3, resource: self.huesat_lut_buf.as_entire_binding() },
             ],
         });
 
-        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        let mut encoder = self.encoder(None);
         {
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: None, timestamp_writes: None,
@@ -3431,7 +3439,7 @@ impl GpuEffectsPipeline {
             pass.set_bind_group(0, &bind_group, &[]);
             pass.dispatch_workgroups(workgroups, 1, 1);
         }
-        self.queue.submit(std::iter::once(encoder.finish()));
+        self.submit(encoder);
         // Non-blocking driver nudge so NVIDIA Vulkan's deferred-destruction
         // queue drains between submits. See submit_chain for context.
         self.device.poll(wgpu::Maintain::Poll);
@@ -3464,7 +3472,7 @@ impl GpuEffectsPipeline {
         let buf_a = self.buf_a.as_ref().unwrap();
         let buf_b = self.buf_b.as_ref().unwrap();
 
-        self.queue.write_buffer(buf_a, 0, bytemuck::cast_slice(linear_rgba));
+        self.upload(buf_a, 0, bytemuck::cast_slice(linear_rgba));
 
         // (Re-)create LUT buffer if needed
         let lut_byte_size = (lut_data.len() * 4) as u64;
@@ -3478,7 +3486,7 @@ impl GpuEffectsPipeline {
             self.lut3d_buf_size = lut_byte_size;
         }
         let lut_buf = self.lut3d_buf.as_ref().unwrap();
-        self.queue.write_buffer(lut_buf, 0, bytemuck::cast_slice(lut_data));
+        self.upload(lut_buf, 0, bytemuck::cast_slice(lut_data));
 
         self.write_params(&GpuLut3dParams {
             width,
@@ -3498,12 +3506,12 @@ impl GpuEffectsPipeline {
             entries: &[
                 wgpu::BindGroupEntry { binding: 0, resource: buf_a.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 1, resource: buf_b.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 2, resource: self.params_buf.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 2, resource: self.params_binding() },
                 wgpu::BindGroupEntry { binding: 3, resource: lut_buf.as_entire_binding() },
             ],
         });
 
-        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        let mut encoder = self.encoder(None);
         {
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: None, timestamp_writes: None,
@@ -3512,7 +3520,7 @@ impl GpuEffectsPipeline {
             pass.set_bind_group(0, &bind_group, &[]);
             pass.dispatch_workgroups(workgroups, 1, 1);
         }
-        self.queue.submit(std::iter::once(encoder.finish()));
+        self.submit(encoder);
         // Non-blocking driver nudge so NVIDIA Vulkan's deferred-destruction
         // queue drains between submits. See submit_chain for context.
         self.device.poll(wgpu::Maintain::Poll);
@@ -3544,7 +3552,7 @@ impl GpuEffectsPipeline {
         let buf_a = self.buf_a.as_ref().unwrap();
         let buf_b = self.buf_b.as_ref().unwrap();
 
-        self.queue.write_buffer(buf_a, 0, bytemuck::cast_slice(linear_rgba));
+        self.upload(buf_a, 0, bytemuck::cast_slice(linear_rgba));
 
         self.write_params(&GpuQualifierParams {
             width,
@@ -3601,7 +3609,7 @@ impl GpuEffectsPipeline {
         let buf_a = self.buf_a.as_ref().unwrap();
         let buf_b = self.buf_b.as_ref().unwrap();
 
-        self.queue.write_buffer(buf_a, 0, bytemuck::cast_slice(linear_rgba));
+        self.upload(buf_a, 0, bytemuck::cast_slice(linear_rgba));
 
         self.write_params(&GpuLumaKeyParams {
             width,
@@ -3643,7 +3651,7 @@ impl GpuEffectsPipeline {
         let buf_a = self.buf_a.as_ref().unwrap();
         let buf_b = self.buf_b.as_ref().unwrap();
 
-        self.queue.write_buffer(buf_a, 0, bytemuck::cast_slice(linear_rgba));
+        self.upload(buf_a, 0, bytemuck::cast_slice(linear_rgba));
 
         self.write_params(&GpuSoftClipParams {
             width,
@@ -3683,7 +3691,7 @@ impl GpuEffectsPipeline {
         let buf_a = self.buf_a.as_ref().unwrap();
         let buf_b = self.buf_b.as_ref().unwrap();
 
-        self.queue.write_buffer(buf_a, 0, bytemuck::cast_slice(linear_rgba));
+        self.upload(buf_a, 0, bytemuck::cast_slice(linear_rgba));
 
         self.write_params(&GpuGrainParams {
             width,
@@ -3750,13 +3758,13 @@ impl GpuEffectsPipeline {
         if let Some(enc) = self.chain_encoder.take() {
             // Recover from a missed submit_chain. Should be unreachable
             // in well-formed callers.
-            self.queue.submit(std::iter::once(enc.finish()));
-            self.submit_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            self.submit(enc);
         }
         self.chain_slot_idx = 0;
-        let enc = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("chain_encoder"),
-        });
+        // A stack frame's passes so far go first: the chain reads what
+        // they wrote, and its own ring starts over.
+        self.flush();
+        let enc = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("chain_encoder") });
         self.chain_encoder = Some(enc);
     }
 
@@ -3765,8 +3773,7 @@ impl GpuEffectsPipeline {
     /// (covers short-circuit / device-lost paths).
     pub fn submit_chain(&mut self) {
         if let Some(enc) = self.chain_encoder.take() {
-            self.queue.submit(std::iter::once(enc.finish()));
-            self.submit_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            self.submit(enc);
             // Non-blocking nudge to the driver to reclaim deferred
             // resources (command buffers, staging allocations) between
             // chain segments. On NVIDIA Vulkan these otherwise
@@ -3988,7 +3995,7 @@ impl GpuEffectsPipeline {
         if self.is_device_lost() {
             return;
         }
-        self.queue.write_buffer(&self.rgb_curves_lut_buf, 0, bytemuck::cast_slice(lut_data));
+        self.upload(&self.rgb_curves_lut_buf, 0, bytemuck::cast_slice(lut_data));
         let slot = self.next_params_slot();
         self.write_chain_params(slot, &GpuRgbCurvesParams {
             width, height,
@@ -4346,7 +4353,7 @@ impl GpuEffectsPipeline {
             return;
         }
         if let Some(buf) = self.plate_buf.as_ref() {
-            self.queue.write_buffer(buf, 0, bytemuck::cast_slice(plate_linear));
+            self.upload(buf, 0, bytemuck::cast_slice(plate_linear));
             self.plate_key = Some(key);
         }
     }
@@ -4515,7 +4522,7 @@ impl GpuEffectsPipeline {
         if self.is_device_lost() {
             return;
         }
-        self.queue.write_buffer(&self.huesat_lut_buf, 0, bytemuck::cast_slice(lut_data));
+        self.upload(&self.huesat_lut_buf, 0, bytemuck::cast_slice(lut_data));
         let slot = self.next_params_slot();
         self.write_chain_params(slot, &GpuHueSatParams { width, height, mix, active });
         let workgroups = (width * height).div_ceil(WORKGROUP_SIZE);
@@ -4577,7 +4584,7 @@ impl GpuEffectsPipeline {
             _pad0: 0, _pad1: 0, _pad2: 0,
         });
         let lut_buf = self.lut3d_buf.as_ref().unwrap();
-        self.queue.write_buffer(lut_buf, 0, bytemuck::cast_slice(lut_data));
+        self.upload(lut_buf, 0, bytemuck::cast_slice(lut_data));
         let workgroups = (width * height).div_ceil(WORKGROUP_SIZE);
         let (input, output) = self.chain_in_out(in_is_a);
         // NOTE: lut3d_buf is dynamically sized (different LUT dimensions
@@ -4644,7 +4651,7 @@ impl GpuEffectsPipeline {
             return;
         }
         let buf_a = self.buf_a.as_ref().expect("ensure_chain_buffers must be called first");
-        self.queue.write_buffer(buf_a, 0, bytemuck::cast_slice(linear_rgba));
+        self.upload(buf_a, 0, bytemuck::cast_slice(linear_rgba));
     }
 
     /// Download the final linear-f32 RGBA frame. `slot_a` selects `buf_a`
@@ -4694,15 +4701,15 @@ impl GpuEffectsPipeline {
         // Pull the chain encoder if one is open; otherwise create a
         // fresh encoder for the readback copy.
         let mut encoder = self.chain_encoder.take().unwrap_or_else(|| {
-            self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("flush_chain_dl") })
+            self.encoder(Some("flush_chain_dl"))
         });
         encoder.copy_buffer_to_buffer(source_buf, 0, staging, 0, byte_size);
-        self.queue.submit(std::iter::once(encoder.finish()));
-        self.submit_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.submit(encoder);
 
         let t_submit = std::time::Instant::now();
         let slice = staging.slice(..byte_size);
         let (tx, rx) = std::sync::mpsc::channel();
+        self.flush();
         slice.map_async(wgpu::MapMode::Read, move |r| { let _ = tx.send(r); });
 
         mark_gpu_stage(GpuStage::FlushChain);
@@ -4758,6 +4765,11 @@ impl GpuEffectsPipeline {
     /// Ready the stack for a frame of `width` × `height` with room for
     /// `layers` layers. Buffers grow to the largest request and stay.
     pub fn stack_begin(&mut self, width: u32, height: u32, layers: usize) -> bool {
+        // Whatever the last frame left goes to the queue; this frame's
+        // passes record into one encoder from here.
+        self.stack_end();
+        self.batching.set(true);
+        self.stack_params_slot.set(0);
         if self.is_device_lost() || width == 0 || height == 0 {
             return false;
         }
@@ -4794,9 +4806,77 @@ impl GpuEffectsPipeline {
         (self.stack_dims.0 as u64) * (self.stack_dims.1 as u64)
     }
 
-    fn stack_submit(&self, enc: wgpu::CommandEncoder) {
+    /// The encoder a pass records into: while a stack frame is open, the
+    /// frame's one encoder (taken out here, given back by
+    /// [`Self::submit`]); otherwise a new one for this pass alone.
+    fn encoder(&self, label: Option<&str>) -> wgpu::CommandEncoder {
+        if self.batching.get() {
+            if let Some(enc) = self.batch.borrow_mut().take() {
+                return enc;
+            }
+        }
+        self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label })
+    }
+
+    /// A pass is recorded: hand it to the queue, or while a stack frame
+    /// is open keep it as the frame's encoder for the next pass to
+    /// continue. An encoder already waiting there was recorded while
+    /// `enc` was open (a pass inside another's recording) and goes to
+    /// the queue first, the order every pass had when each submitted
+    /// itself.
+    fn submit(&self, enc: wgpu::CommandEncoder) {
+        if !self.batching.get() {
+            self.submit_now(enc);
+            return;
+        }
+        if let Some(prev) = self.batch.borrow_mut().take() {
+            self.submit_now(prev);
+        }
+        *self.batch.borrow_mut() = Some(enc);
+    }
+
+    /// Every command buffer this pipeline hands the queue goes through
+    /// here, so the count in [`Self::submit_count`] is every submit.
+    fn submit_now(&self, enc: wgpu::CommandEncoder) {
         self.queue.submit(std::iter::once(enc.finish()));
         self.submit_count.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Hand the queue what a stack frame has recorded so far. Before
+    /// anything that must see those passes done or ordered: an upload
+    /// into a buffer they read, a readback, a chain segment, a buffer
+    /// handed to code outside this pipeline.
+    pub fn flush(&self) {
+        if let Some(enc) = self.batch.borrow_mut().take() {
+            self.submit_now(enc);
+        }
+    }
+
+    /// A stack frame is over: its passes go to the queue and passes
+    /// submit themselves again until the next [`Self::stack_begin`].
+    pub fn stack_end(&self) {
+        self.flush();
+        self.batching.set(false);
+    }
+
+    /// `queue.write_buffer` into a buffer passes may read: the passes
+    /// recorded so far go first, since the write lands before the next
+    /// submit whatever was recorded ahead of it.
+    fn upload(&self, buffer: &wgpu::Buffer, offset: u64, data: &[u8]) {
+        self.flush();
+        self.queue.write_buffer(buffer, offset, data);
+    }
+
+    /// The uniform the next pass binds as its params: the slot
+    /// [`Self::write_params`] last filled while a stack frame is open,
+    /// else the one shared params buffer.
+    fn params_binding(&self) -> wgpu::BindingResource<'_> {
+        if self.batching.get() {
+            if let Some(i) = self.stack_params_slot.get().checked_sub(1) {
+                return self.stack_params_ring[i].as_entire_binding();
+            }
+        }
+        self.params_buf.as_entire_binding()
     }
 
     /// One compute pass over `workgroups`, bound as (read, read_write,
@@ -4808,23 +4888,23 @@ impl GpuEffectsPipeline {
             entries: &[
                 wgpu::BindGroupEntry { binding: 0, resource: read.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 1, resource: rw.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 2, resource: self.params_buf.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 2, resource: self.params_binding() },
             ],
         });
-        let mut enc = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some(label) });
+        let mut enc = self.encoder(Some(label));
         {
             let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: None, timestamp_writes: None });
             pass.set_pipeline(pipeline);
             pass.set_bind_group(0, &bg, &[]);
             pass.dispatch_workgroups(workgroups, 1, 1);
         }
-        self.stack_submit(enc);
+        self.submit(enc);
     }
 
     fn stack_copy(&self, from: &wgpu::Buffer, to: &wgpu::Buffer, label: &str) {
-        let mut enc = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some(label) });
+        let mut enc = self.encoder(Some(label));
         enc.copy_buffer_to_buffer(from, 0, to, 0, self.stack_pixel_count() * 16);
-        self.stack_submit(enc);
+        self.submit(enc);
     }
 
     /// The accumulator, a canvas if nothing has been laid on it yet,
@@ -4833,6 +4913,7 @@ impl GpuEffectsPipeline {
         if !self.stack_ensure_acc() {
             return None;
         }
+        self.flush();
         self.stack_acc.clone()
     }
 
@@ -4841,9 +4922,9 @@ impl GpuEffectsPipeline {
         if self.is_device_lost() || i >= self.stack_layers.len() {
             return false;
         }
-        let mut enc = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("stack_layer_clear") });
+        let mut enc = self.encoder(Some("stack_layer_clear"));
         enc.clear_buffer(&self.stack_layers[i], 0, Some(self.stack_pixel_count() * 16));
-        self.stack_submit(enc);
+        self.submit(enc);
         true
     }
 
@@ -4867,7 +4948,7 @@ impl GpuEffectsPipeline {
         if linear_rgba.len() as u64 != self.stack_pixel_count() * 4 {
             return false;
         }
-        self.queue.write_buffer(&self.stack_layers[i], 0, bytemuck::cast_slice(linear_rgba));
+        self.upload(&self.stack_layers[i], 0, bytemuck::cast_slice(linear_rgba));
         true
     }
 
@@ -4893,9 +4974,9 @@ impl GpuEffectsPipeline {
         let y0 = y0.min(height);
         let y1 = y1.min(height);
         let layer = std::sync::Arc::clone(&self.stack_layers[i]);
-        let mut enc = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("stack_sprite_clear") });
+        let mut enc = self.encoder(Some("stack_sprite_clear"));
         enc.clear_buffer(&layer, 0, Some(pixel_count * 16));
-        self.stack_submit(enc);
+        self.submit(enc);
         if y1 <= y0 {
             return true;
         }
@@ -4910,7 +4991,7 @@ impl GpuEffectsPipeline {
         let sprite = self.stack_sprite_u8.as_ref().unwrap();
         let row_bytes = (width as u64) * 4;
         let (b0, b1) = ((y0 as u64 * row_bytes) as usize, (y1 as u64 * row_bytes) as usize);
-        self.queue.write_buffer(sprite, b0 as u64, &rgba[b0..b1]);
+        self.upload(sprite, b0 as u64, &rgba[b0..b1]);
         self.write_params(&SpriteRowsParams { width, height, y0, y1 });
         let rows_px = (y1 - y0) * width;
         self.stack_pass(&self.sprite_rows_pipeline, sprite, &layer, rows_px.div_ceil(WORKGROUP_SIZE), "stack_sprite_rows");
@@ -5004,10 +5085,10 @@ impl GpuEffectsPipeline {
                 wgpu::BindGroupEntry { binding: 0, resource: self.stack_layers[from].as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 1, resource: self.stack_layers[to].as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 2, resource: self.buf_c.as_ref().unwrap().as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 3, resource: self.params_buf.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 3, resource: self.params_binding() },
             ],
         });
-        let mut enc = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("stack_transition") });
+        let mut enc = self.encoder(Some("stack_transition"));
         {
             let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: None, timestamp_writes: None });
             pass.set_pipeline(&self.transition_pipeline);
@@ -5015,7 +5096,7 @@ impl GpuEffectsPipeline {
             pass.dispatch_workgroups((self.stack_pixel_count() as u32).div_ceil(WORKGROUP_SIZE), 1, 1);
         }
         enc.copy_buffer_to_buffer(self.buf_c.as_ref().unwrap(), 0, &self.stack_layers[out], 0, self.stack_pixel_count() * 16);
-        self.stack_submit(enc);
+        self.submit(enc);
         true
     }
 
@@ -5024,9 +5105,9 @@ impl GpuEffectsPipeline {
     fn stack_ensure_acc(&mut self) -> bool {
         let Some(acc) = self.stack_acc.clone() else { return false };
         if !self.stack_acc_touched {
-            let mut enc = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("stack_clear") });
+            let mut enc = self.encoder(Some("stack_clear"));
             enc.clear_buffer(&acc, 0, Some(self.stack_pixel_count() * 16));
-            self.stack_submit(enc);
+            self.submit(enc);
             self.stack_acc_touched = true;
         }
         true
@@ -5140,7 +5221,7 @@ impl GpuEffectsPipeline {
 
         let byte_size = (width * height * 16) as u64;
         self.ensure_buffers(byte_size);
-        self.queue.write_buffer(self.buf_a.as_ref().unwrap(), 0, bytemuck::cast_slice(linear_rgba));
+        self.upload(self.buf_a.as_ref().unwrap(), 0, bytemuck::cast_slice(linear_rgba));
         let in_a = self.run_effects_in_chain(effects, width, height);
         let final_buf = if in_a { self.buf_a.as_ref().unwrap() } else { self.buf_b.as_ref().unwrap() };
         self.download_linear_rgba_f32(final_buf, (width * height) as usize)
@@ -5398,9 +5479,9 @@ impl GpuEffectsPipeline {
                     // Copy input to buf_c first
                     let byte_size = (width * height * 16) as u64;
                     {
-                        let mut enc = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+                        let mut enc = self.encoder(None);
                         enc.copy_buffer_to_buffer(input, 0, buf_c, 0, byte_size);
-                        self.queue.submit(Some(enc.finish()));
+                        self.submit(enc);
                         // Non-blocking driver nudge so NVIDIA Vulkan's deferred-destruction
                         // queue drains between submits. See submit_chain for context.
                         self.device.poll(wgpu::Maintain::Poll);
@@ -5473,9 +5554,9 @@ impl GpuEffectsPipeline {
                     let buf_c = self.buf_c.as_ref().unwrap();
                     let byte_size = (width * height * 16) as u64;
                     {
-                        let mut enc = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+                        let mut enc = self.encoder(None);
                         enc.copy_buffer_to_buffer(input, 0, buf_c, 0, byte_size);
-                        self.queue.submit(Some(enc.finish()));
+                        self.submit(enc);
                         // Non-blocking driver nudge so NVIDIA Vulkan's deferred-destruction
                         // queue drains between submits. See submit_chain for context.
                         self.device.poll(wgpu::Maintain::Poll);
@@ -5532,16 +5613,16 @@ impl GpuEffectsPipeline {
                             wgpu::BindGroupEntry { binding: 0, resource: input.as_entire_binding() },
                             wgpu::BindGroupEntry { binding: 1, resource: buf_c.as_entire_binding() },
                             wgpu::BindGroupEntry { binding: 2, resource: output.as_entire_binding() },
-                            wgpu::BindGroupEntry { binding: 3, resource: self.params_buf.as_entire_binding() },
+                            wgpu::BindGroupEntry { binding: 3, resource: self.params_binding() },
                         ],
                     });
-                    let mut enc = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+                    let mut enc = self.encoder(None);
                     { let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor::default());
                       pass.set_pipeline(&self.film_halation_blend_pipeline);
                       pass.set_bind_group(0, &bind_group, &[]);
                       pass.dispatch_workgroups(workgroups, 1, 1);
                     }
-                    self.queue.submit(Some(enc.finish()));
+                    self.submit(enc);
                     // Non-blocking driver nudge so NVIDIA Vulkan's deferred-destruction
                     // queue drains between submits. See submit_chain for context.
                     self.device.poll(wgpu::Maintain::Poll);
@@ -5794,7 +5875,7 @@ impl GpuEffectsPipeline {
                     // Step 4: Upload CDF as storage buffer and dispatch GPU remap shader
                     let cdf_bytes = bytemuck::cast_slice(&cdf);
                     // Reuse huesat_lut_buf (1024 bytes = 256 × 4 fits in 6144 byte huesat buf)
-                    self.queue.write_buffer(&self.huesat_lut_buf, 0, cdf_bytes);
+                    self.upload(&self.huesat_lut_buf, 0, cdf_bytes);
 
                     self.write_params(&EqualizeParams {
                         width,
@@ -5813,19 +5894,19 @@ impl GpuEffectsPipeline {
                         entries: &[
                             wgpu::BindGroupEntry { binding: 0, resource: input.as_entire_binding() },
                             wgpu::BindGroupEntry { binding: 1, resource: output.as_entire_binding() },
-                            wgpu::BindGroupEntry { binding: 2, resource: self.params_buf.as_entire_binding() },
+                            wgpu::BindGroupEntry { binding: 2, resource: self.params_binding() },
                             wgpu::BindGroupEntry { binding: 3, resource: self.huesat_lut_buf.as_entire_binding() },
                         ],
                     });
 
-                    let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+                    let mut encoder = self.encoder(None);
                     {
                         let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor::default());
                         pass.set_pipeline(&self.equalize_pipeline);
                         pass.set_bind_group(0, &bg, &[]);
                         pass.dispatch_workgroups(workgroups, 1, 1);
                     }
-                    self.queue.submit(std::iter::once(encoder.finish()));
+                    self.submit(encoder);
                     // Non-blocking driver nudge so NVIDIA Vulkan's deferred-destruction
                     // queue drains between submits. See submit_chain for context.
                     self.device.poll(wgpu::Maintain::Poll);
@@ -5934,18 +6015,18 @@ impl GpuEffectsPipeline {
                         entries: &[
                             wgpu::BindGroupEntry { binding: 0, resource: input.as_entire_binding() },
                             wgpu::BindGroupEntry { binding: 1, resource: output.as_entire_binding() },
-                            wgpu::BindGroupEntry { binding: 2, resource: self.params_buf.as_entire_binding() },
+                            wgpu::BindGroupEntry { binding: 2, resource: self.params_binding() },
                             wgpu::BindGroupEntry { binding: 3, resource: row_buf.as_entire_binding() },
                         ],
                     });
-                    let mut enc = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+                    let mut enc = self.encoder(None);
                     {
                         let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor::default());
                         pass.set_pipeline(&self.rsc_pipeline);
                         pass.set_bind_group(0, &bg, &[]);
                         pass.dispatch_workgroups(workgroups, 1, 1);
                     }
-                    self.queue.submit(std::iter::once(enc.finish()));
+                    self.submit(enc);
                     // Non-blocking driver nudge so NVIDIA Vulkan's deferred-destruction
                     // queue drains between submits. See submit_chain for context.
                     self.device.poll(wgpu::Maintain::Poll);
@@ -5964,18 +6045,18 @@ impl GpuEffectsPipeline {
                         entries: &[
                             wgpu::BindGroupEntry { binding: 0, resource: input.as_entire_binding() },
                             wgpu::BindGroupEntry { binding: 1, resource: output.as_entire_binding() },
-                            wgpu::BindGroupEntry { binding: 2, resource: self.params_buf.as_entire_binding() },
+                            wgpu::BindGroupEntry { binding: 2, resource: self.params_binding() },
                             wgpu::BindGroupEntry { binding: 3, resource: hom_buf.as_entire_binding() },
                         ],
                     });
-                    let mut enc = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+                    let mut enc = self.encoder(None);
                     {
                         let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor::default());
                         pass.set_pipeline(&self.stabilization_pipeline);
                         pass.set_bind_group(0, &bg, &[]);
                         pass.dispatch_workgroups(workgroups, 1, 1);
                     }
-                    self.queue.submit(std::iter::once(enc.finish()));
+                    self.submit(enc);
                     // Non-blocking driver nudge so NVIDIA Vulkan's deferred-destruction
                     // queue drains between submits. See submit_chain for context.
                     self.device.poll(wgpu::Maintain::Poll);
@@ -6030,7 +6111,7 @@ impl GpuEffectsPipeline {
         let buf_a = self.buf_a.as_ref().unwrap();
         let buf_b = self.buf_b.as_ref().unwrap();
 
-        self.queue.write_buffer(buf_a, 0, bytemuck::cast_slice(&input_u32));
+        self.upload(buf_a, 0, bytemuck::cast_slice(&input_u32));
 
         let workgroups = (w * h).div_ceil(WORKGROUP_SIZE);
 
@@ -6075,7 +6156,7 @@ impl GpuEffectsPipeline {
         let buf_a = self.buf_a.as_ref().unwrap();
         let buf_b = self.buf_b.as_ref().unwrap();
 
-        self.queue.write_buffer(buf_a, 0, bytemuck::cast_slice(&input_u32));
+        self.upload(buf_a, 0, bytemuck::cast_slice(&input_u32));
 
         let workgroups = (w * h).div_ceil(WORKGROUP_SIZE);
 
@@ -6089,7 +6170,17 @@ impl GpuEffectsPipeline {
 
     fn write_params<T: bytemuck::Pod>(&self, data: &T) {
         let bytes = bytemuck::bytes_of(data);
-        self.queue.write_buffer(&self.params_buf, 0, bytes);
+        if !self.batching.get() {
+            self.queue.write_buffer(&self.params_buf, 0, bytes);
+            return;
+        }
+        let mut slot = self.stack_params_slot.get();
+        if slot >= STACK_PARAMS_RING_SIZE {
+            self.flush();
+            slot = 0;
+        }
+        self.queue.write_buffer(&self.stack_params_ring[slot], 0, bytes);
+        self.stack_params_slot.set(slot + 1);
     }
 
     fn dispatch(
@@ -6112,7 +6203,7 @@ impl GpuEffectsPipeline {
             pass.set_bind_group(0, &bind_group, &[]);
             pass.dispatch_workgroups(workgroups, 1, 1);
         }
-        self.queue.submit(std::iter::once(encoder.finish()));
+        self.submit(encoder);
     }
 
     pub fn upload_rsc_row_transforms(&mut self, row_transforms: &[crate::rolling_shutter::RowTransform]) {
@@ -6126,7 +6217,7 @@ impl GpuEffectsPipeline {
             }));
             self.rsc_row_buf_size = byte_size;
         }
-        self.queue.write_buffer(self.rsc_row_buf.as_ref().unwrap(), 0, bytemuck::cast_slice(row_transforms));
+        self.upload(self.rsc_row_buf.as_ref().unwrap(), 0, bytemuck::cast_slice(row_transforms));
     }
 
     pub fn has_rsc_data(&self) -> bool {
@@ -6144,7 +6235,7 @@ impl GpuEffectsPipeline {
             }));
             self.stabilization_buf_size = byte_size;
         }
-        self.queue.write_buffer(self.stabilization_buf.as_ref().unwrap(), 0, bytemuck::cast_slice(h));
+        self.upload(self.stabilization_buf.as_ref().unwrap(), 0, bytemuck::cast_slice(h));
     }
 
     pub fn has_stabilization_data(&self) -> bool {
@@ -6179,11 +6270,11 @@ impl GpuEffectsPipeline {
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
         encoder.copy_buffer_to_buffer(source, 0, staging, 0, byte_size);
-        self.queue.submit(std::iter::once(encoder.finish()));
-        self.submit_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.submit(encoder);
 
         let buffer_slice = staging.slice(..byte_size);
         let (tx, rx) = std::sync::mpsc::channel();
+        self.flush();
         buffer_slice.map_async(wgpu::MapMode::Read, move |result| {
             let _ = tx.send(result);
         });
@@ -6356,14 +6447,14 @@ impl GpuEffectsPipeline {
                 wgpu::BindGroupEntry { binding: 0, resource: buf_a.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 1, resource: buf_c.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 2, resource: buf_b.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 3, resource: self.params_buf.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 3, resource: self.params_binding() },
             ],
         });
 
         let pixel_count = width * height;
         let workgroups = pixel_count.div_ceil(WORKGROUP_SIZE);
 
-        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        let mut encoder = self.encoder(None);
         {
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: None,
@@ -6373,7 +6464,7 @@ impl GpuEffectsPipeline {
             pass.set_bind_group(0, &bind_group, &[]);
             pass.dispatch_workgroups(workgroups, 1, 1);
         }
-        self.queue.submit(std::iter::once(encoder.finish()));
+        self.submit(encoder);
         // Non-blocking driver nudge so NVIDIA Vulkan's deferred-destruction
         // queue drains between submits. See submit_chain for context.
         self.device.poll(wgpu::Maintain::Poll);
@@ -6420,8 +6511,8 @@ impl GpuEffectsPipeline {
         let buf_c = self.buf_c.as_ref().unwrap();
 
         // Upload linear-f32 directly — no sRGB conversion needed.
-        self.queue.write_buffer(buf_a, 0, bytemuck::cast_slice(from_linear));
-        self.queue.write_buffer(buf_c, 0, bytemuck::cast_slice(to_linear));
+        self.upload(buf_a, 0, bytemuck::cast_slice(from_linear));
+        self.upload(buf_c, 0, bytemuck::cast_slice(to_linear));
 
         self.write_params(&TransitionParams {
             width,
@@ -6445,16 +6536,14 @@ impl GpuEffectsPipeline {
                 wgpu::BindGroupEntry { binding: 0, resource: buf_a.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 1, resource: buf_c.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 2, resource: buf_b.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 3, resource: self.params_buf.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 3, resource: self.params_binding() },
             ],
         });
 
         let pixel_count = width * height;
         let workgroups = pixel_count.div_ceil(WORKGROUP_SIZE);
 
-        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("render_transition_linear"),
-        });
+        let mut encoder = self.encoder(Some("render_transition_linear"));
         {
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: None,
@@ -6464,7 +6553,7 @@ impl GpuEffectsPipeline {
             pass.set_bind_group(0, &bind_group, &[]);
             pass.dispatch_workgroups(workgroups, 1, 1);
         }
-        self.queue.submit(std::iter::once(encoder.finish()));
+        self.submit(encoder);
         self.device.poll(wgpu::Maintain::Poll);
 
         self.download_linear_rgba_f32(buf_b, (width * height) as usize)
@@ -6483,17 +6572,17 @@ impl GpuEffectsPipeline {
                 wgpu::BindGroupEntry { binding: 0, resource: input.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 1, resource: bright.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 2, resource: output.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 3, resource: self.params_buf.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 3, resource: self.params_binding() },
             ],
         });
-        let mut enc = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+        let mut enc = self.encoder(None);
         {
             let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor::default());
             pass.set_pipeline(&self.bloom_blend_pipeline);
             pass.set_bind_group(0, &bind_group, &[]);
             pass.dispatch_workgroups(workgroups, 1, 1);
         }
-        self.queue.submit(Some(enc.finish()));
+        self.submit(enc);
         // Non-blocking driver nudge so NVIDIA Vulkan's deferred-destruction
         // queue drains between submits. See submit_chain for context.
         self.device.poll(wgpu::Maintain::Poll);
@@ -6513,17 +6602,17 @@ impl GpuEffectsPipeline {
                 wgpu::BindGroupEntry { binding: 0, resource: input.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 1, resource: blurred.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 2, resource: output.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 3, resource: self.params_buf.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 3, resource: self.params_binding() },
             ],
         });
-        let mut enc = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+        let mut enc = self.encoder(None);
         {
             let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor::default());
             pass.set_pipeline(&self.glow_blend_pipeline);
             pass.set_bind_group(0, &bind_group, &[]);
             pass.dispatch_workgroups(workgroups, 1, 1);
         }
-        self.queue.submit(Some(enc.finish()));
+        self.submit(enc);
         // Non-blocking driver nudge so NVIDIA Vulkan's deferred-destruction
         // queue drains between submits. See submit_chain for context.
         self.device.poll(wgpu::Maintain::Poll);
@@ -6539,17 +6628,17 @@ impl GpuEffectsPipeline {
                 wgpu::BindGroupEntry { binding: 0, resource: a.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 1, resource: b.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 2, resource: output.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 3, resource: self.params_buf.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 3, resource: self.params_binding() },
             ],
         });
-        let mut enc = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+        let mut enc = self.encoder(None);
         {
             let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor::default());
             pass.set_pipeline(pipeline);
             pass.set_bind_group(0, &bind_group, &[]);
             pass.dispatch_workgroups(workgroups, 1, 1);
         }
-        self.queue.submit(Some(enc.finish()));
+        self.submit(enc);
         self.device.poll(wgpu::Maintain::Poll);
     }
 }

@@ -820,6 +820,27 @@ impl Renderer {
         opts: RenderOptions,
         out: DisplayDelivery<'_>,
     ) -> Option<(Option<Vec<u8>>, RenderStats)> {
+        let result = self.render_display_on_gpu_inner(seq, time, width, height, src, opts, out);
+        // A frame's passes record into one encoder from `stack_begin`;
+        // a decline part-way must not leave them waiting for the next
+        // frame.
+        if let Some(gpu) = self.executor.gpu_pipeline_mut() {
+            gpu.stack_end();
+        }
+        result
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn render_display_on_gpu_inner(
+        &mut self,
+        seq: &Sequence,
+        time: Timecode,
+        width: u32,
+        height: u32,
+        src: &mut dyn FrameSource,
+        opts: RenderOptions,
+        out: DisplayDelivery<'_>,
+    ) -> Option<(Option<Vec<u8>>, RenderStats)> {
         if !self.allow_gpu || !gpu_composite_enabled() {
             return self.gpu_stack_declines("GPU off");
         }

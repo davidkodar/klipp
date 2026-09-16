@@ -174,12 +174,20 @@ fn run(name: &str, cpu_only: bool, budget_ms: f64, build: impl Fn(Option<&GpuCon
             view_formats: &[],
         })
     });
+    // `KLIPP_PERF_GPU_WAIT=1`: wait for the GPU after each zero-copy
+    // frame, so the time is the frame's and not only the engine's.
+    let gpu_wait = zero_copy && std::env::var("KLIPP_PERF_GPU_WAIT").ok().as_deref() == Some("1");
     let mut frame = |r: &mut Renderer, i: usize, count: bool, fell_back: &mut usize| {
         let t = tc(1.0 + i as f64 / 30.0);
         if !cpu_only {
             let out = klipp_compose::DisplayDelivery { texture: texture.as_ref(), bytes: texture.is_none() };
             if let Some((bytes, _)) = r.render_display_on_gpu(&seq, t, w, h, &mut src, RenderOptions::default(), out) {
                 std::hint::black_box(bytes.map(|b| b.len()));
+                if gpu_wait {
+                    if let Some(ctx) = ctx {
+                        ctx.device().poll(wgpu::Maintain::Wait);
+                    }
+                }
                 return;
             }
             if count {
@@ -193,12 +201,16 @@ fn run(name: &str, cpu_only: bool, budget_ms: f64, build: impl Fn(Option<&GpuCon
     for i in 0..WARMUP {
         frame(&mut r, i, false, &mut fell_back);
     }
+    let submits = |r: &mut Renderer| r.executor().gpu_pipeline_mut().map_or(0, |g| g.submit_count());
+    let submits_before = submits(&mut r);
     let mut samples = Vec::with_capacity(FRAMES);
     for i in 0..FRAMES {
         let t0 = Instant::now();
         frame(&mut r, WARMUP + i, true, &mut fell_back);
         samples.push(t0.elapsed().as_secs_f64() * 1000.0);
     }
+    let submits_per_frame = (submits(&mut r) - submits_before) as f64 / FRAMES as f64;
+    eprintln!("{name}: {submits_per_frame:.1} queue submits per frame{}", if gpu_wait { ", GPU waited on" } else { "" });
     let mut label = if fell_back > 0 { format!("{name} (CPU fallback {fell_back}/{FRAMES})") } else { name.to_string() };
     if texture.is_some() {
         label.push_str(" (zero-copy)");
