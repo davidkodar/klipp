@@ -1320,13 +1320,57 @@ impl TitleRenderer {
         // in the rasterize path). Cache-bypass must respect that or
         // muted char_anim with stale keyframes pointlessly busts the
         // cache every frame.
-        let any_char_anim = title.objects.iter().any(|o| {
-            if let TitleObjectContent::TextBox(tb) = &o.content {
-                tb.motion.is_active() || !tb.loops.is_empty()
-            } else {
-                false
-            }
+        // An entrance or exit only changes the frame inside its own
+        // window; at rest the render is the resting one and cacheable.
+        let window = self.motion_window;
+        let motion_live = |tb: &klipp_timeline::TextBox| -> bool {
+            let n = tb.text.chars().filter(|c| !c.is_whitespace()).count().max(1) as f32;
+            let span = |m: &klipp_timeline::Motion| m.delay_secs + m.duration_secs + n * m.stagger_secs + 0.05;
+            let enter = tb.motion.enter.as_ref().is_some_and(|m| time_secs < span(m));
+            let exit = match (tb.motion.exit.as_ref(), window) {
+                (Some(m), Some(w)) => (w - time_secs) < span(m),
+                _ => false,
+            };
+            enter || exit
+        };
+        // The loops, evaluated up front: a loop that only moves or
+        // fades the layer can be applied to the cached resting render.
+        let scale = height as f32 / 1080.0;
+        let poses: Vec<(usize, klipp_timeline::LoopPose)> = title
+            .objects
+            .iter()
+            .enumerate()
+            .filter_map(|(i, o)| {
+                let TitleObjectContent::TextBox(tb) = &o.content else { return None };
+                if tb.loops.is_empty() || !o.visible {
+                    return None;
+                }
+                let font_px = tb.font_size * scale;
+                let lines = tb.text.lines().count().max(1) as f32;
+                let max_chars = tb.text.lines().map(|l| l.chars().count()).max().unwrap_or(0).max(1) as f32;
+                let geo = klipp_timeline::LoopGeometry {
+                    frame_w: width as f32,
+                    frame_h: height as f32,
+                    text_w: max_chars * font_px * 0.55,
+                    text_h: lines * font_px * tb.line_spacing.max(0.5) * 1.4,
+                    font_px,
+                };
+                Some((i, klipp_core::title_motion::eval_loops(&tb.loops, time_secs, window, geo, tb.color)))
+            })
+            .collect();
+        let loops_need_raster = poses.iter().any(|(_, p)| p.wave.is_some() || p.color.is_some() || p.text.is_some());
+        let any_motion_live = title.objects.iter().any(|o| match &o.content {
+            TitleObjectContent::TextBox(tb) => o.visible && motion_live(tb),
+            _ => false,
         });
+        // One visible layer carrying the only pose: the cached resting
+        // render, shifted and faded, is the frame.
+        let visible = title.objects.iter().filter(|o| o.visible).count();
+        let translate_only = match poses.as_slice() {
+            [(_, p)] => (!loops_need_raster && visible == 1 && !matches!(title.background, TitleBackground::FullFrame { .. })).then(|| p.clone()),
+            _ => None,
+        };
+        let any_char_anim = any_motion_live || (!poses.is_empty() && translate_only.is_none());
 
         // Glitch is per-frame (deterministic seed bound to clip
         // time, but pattern shifts ~12 times/sec) so it bypasses
@@ -1413,12 +1457,18 @@ impl TitleRenderer {
             || any_outline_keyframes;
 
         if !any_render_time_override {
-            if let Some(buf) = self.cache_lookup(title, width, height) {
-                return buf;
-            }
-            let buf = self.render_inner(title, width, height, gpu, None);
-            self.cache_store(title.clone(), width, height, buf.clone());
-            return buf;
+            let rest = match self.cache_lookup(title, width, height) {
+                Some(buf) => buf,
+                None => {
+                    let buf = self.render_inner(title, width, height, gpu, None);
+                    self.cache_store(title.clone(), width, height, buf.clone());
+                    buf
+                }
+            };
+            return match translate_only {
+                Some(pose) => shift_and_fade(rest, width, height, pose.dx.round() as i32, pose.dy.round() as i32, pose.opacity),
+                None => rest,
+            };
         }
 
         // Build a one-frame derived TitleData that applies every
@@ -1430,23 +1480,9 @@ impl TitleRenderer {
         self.loop_waves.clear();
         let derived: TitleData = {
             let mut td = title.clone();
-            let scale = height as f32 / 1080.0;
-            for obj in &mut td.objects {
+            for (i, pose) in poses {
+                let obj = &mut td.objects[i];
                 let TitleObjectContent::TextBox(tb) = &mut obj.content else { continue };
-                if tb.loops.is_empty() {
-                    continue;
-                }
-                let font_px = tb.font_size * scale;
-                let lines = tb.text.lines().count().max(1) as f32;
-                let max_chars = tb.text.lines().map(|l| l.chars().count()).max().unwrap_or(0).max(1) as f32;
-                let geo = klipp_timeline::LoopGeometry {
-                    frame_w: width as f32,
-                    frame_h: height as f32,
-                    text_w: max_chars * font_px * 0.55,
-                    text_h: lines * font_px * tb.line_spacing.max(0.5) * 1.4,
-                    font_px,
-                };
-                let pose = klipp_core::title_motion::eval_loops(&tb.loops, time_secs, self.motion_window, geo, tb.color);
                 obj.opacity *= pose.opacity;
                 if obj.opacity <= 0.001 {
                     obj.visible = false;
@@ -1527,10 +1563,16 @@ impl TitleRenderer {
             }
         }
 
+        // Until something is painted, `buf` is empty (unless a full
+        // frame background filled it): the first text layer is the
+        // buffer, no blend needed.
+        let mut buf_untouched = !matches!(title.background, TitleBackground::FullFrame { .. });
         for obj in &title.objects {
             if !obj.visible {
                 continue;
             }
+            let first_layer = buf_untouched;
+            buf_untouched = false;
             // Per-layer position keyframes: when present, override the
             // static `center` for this frame. Empty keyframe vecs
             // short-circuit to the static value via `evaluated_center`,
@@ -1566,7 +1608,9 @@ impl TitleRenderer {
                         time_secs,
                     );
                     self.loop_wave = None;
-                    if (obj.opacity - 1.0).abs() < 0.001 {
+                    if first_layer && (obj.opacity - 1.0).abs() < 0.001 {
+                        buf = layer;
+                    } else if (obj.opacity - 1.0).abs() < 0.001 {
                         over_blend(&mut buf, &layer);
                     } else {
                         // Per-object opacity: scale the layer's alpha
@@ -2633,18 +2677,68 @@ fn layout_drop_cap_wrap(
 /// rendered layer before it gets `over_blend`-composited onto the
 /// running buffer.
 fn scale_layer_alpha(layer: &mut [u8], factor: f32) {
+    use rayon::prelude::*;
     let f = factor.clamp(0.0, 1.0);
     if f >= 0.9999 {
         return;
     }
-    for px in layer.chunks_exact_mut(4) {
-        px[3] = ((px[3] as f32) * f).round().clamp(0.0, 255.0) as u8;
+    layer.par_chunks_mut(4 * 4096).for_each(|chunk| {
+        for px in chunk.chunks_exact_mut(4) {
+            px[3] = ((px[3] as f32) * f).round().clamp(0.0, 255.0) as u8;
+        }
+    });
+}
+
+/// The resting render moved by `(dx, dy)` pixels and faded to
+/// `opacity`: what a scroll, crawl, shake, blink or pulse frame is,
+/// without rasterising again. Rows are copied in parallel; what moves
+/// out of the frame is dropped, what moves in is empty.
+fn shift_and_fade(rest: Vec<u8>, width: u32, height: u32, dx: i32, dy: i32, opacity: f32) -> Vec<u8> {
+    use rayon::prelude::*;
+    if opacity <= 0.001 {
+        return vec![0u8; rest.len()];
     }
+    if dx == 0 && dy == 0 {
+        let mut out = rest;
+        scale_layer_alpha(&mut out, opacity);
+        return out;
+    }
+    let (w, h) = (width as usize, height as usize);
+    let row_bytes = w * 4;
+    let mut out = vec![0u8; rest.len()];
+    let f = opacity.clamp(0.0, 1.0);
+    out.par_chunks_mut(row_bytes).enumerate().for_each(|(y, row)| {
+        let sy = y as i64 - dy as i64;
+        if sy < 0 || sy >= h as i64 {
+            return;
+        }
+        let src = &rest[sy as usize * row_bytes..(sy as usize + 1) * row_bytes];
+        // Destination columns [dx0, dx1) come from source [dx0 - dx, dx1 - dx).
+        let dx0 = dx.max(0) as usize;
+        let dx1 = (w as i64 + (dx as i64).min(0)).max(0) as usize;
+        if dx1 <= dx0 {
+            return;
+        }
+        let sx0 = (dx0 as i64 - dx as i64) as usize;
+        let n = dx1 - dx0;
+        row[dx0 * 4..dx1 * 4].copy_from_slice(&src[sx0 * 4..(sx0 + n) * 4]);
+        if f < 0.9999 {
+            for px in row[dx0 * 4..dx1 * 4].chunks_exact_mut(4) {
+                px[3] = ((px[3] as f32) * f).round().clamp(0.0, 255.0) as u8;
+            }
+        }
+    });
+    out
 }
 
 fn over_blend(dst: &mut [u8], src: &[u8]) {
+    use rayon::prelude::*;
     debug_assert_eq!(dst.len(), src.len());
     debug_assert_eq!(dst.len() % 4, 0);
+    dst.par_chunks_mut(4 * 4096).zip(src.par_chunks(4 * 4096)).for_each(|(dc, sc)| over_blend_chunk(dc, sc));
+}
+
+fn over_blend_chunk(dst: &mut [u8], src: &[u8]) {
     for (d, s) in dst.chunks_exact_mut(4).zip(src.chunks_exact(4)) {
         let sa = s[3] as f32 / 255.0;
         if sa <= 0.0 {
@@ -2656,11 +2750,14 @@ fn over_blend(dst: &mut [u8], src: &[u8]) {
         if out_a <= 0.0 {
             continue;
         }
-        // Straight-alpha "over" on RGB.
+        // Straight-alpha "over": the colour is the alpha-weighted mix,
+        // divided back out of the result's alpha, so a layer over
+        // nothing keeps its own colour at every edge pixel instead of
+        // darkening where it is translucent.
         for i in 0..3 {
             let sc = s[i] as f32;
             let dc = d[i] as f32;
-            d[i] = (sc * sa + dc * inv_sa).round().clamp(0.0, 255.0) as u8;
+            d[i] = ((sc * sa + dc * da * inv_sa) / out_a).round().clamp(0.0, 255.0) as u8;
         }
         d[3] = (out_a * 255.0).round().clamp(0.0, 255.0) as u8;
     }
@@ -3294,13 +3391,19 @@ fn rasterize_to_mask_motion(
         };
 
         // The resting box, for the mask kinds.
-        let rest_top = (glyph.y + offset_y).floor() as i32;
-        let rest_bottom = (glyph.y + offset_y + glyph.height as f32).ceil() as i32;
+        // The resting box, exactly the rows the resting rasteriser
+        // paints for this glyph.
+        let rest_top = (glyph.y + offset_y) as i32;
+        let rest_bottom = rest_top + glyph.height as i32;
 
-        let cx = glyph.x + offset_x + dx + glyph.width as f32 * 0.5;
-        let cy = glyph.y + offset_y + dy + glyph.height as f32 * 0.5;
-        let gx = (cx - raw_w as f32 * 0.5).round() as i32;
-        let gy = (cy - raw_h as f32 * 0.5).round() as i32;
+        // Placed the way the resting rasteriser places a glyph (the
+        // position truncated), with a scaled or blurred bitmap centred
+        // on that box, so the frame after an entrance ends matches the
+        // cached resting render to the pixel.
+        let base_x = (glyph.x + offset_x + dx) as i32;
+        let base_y = (glyph.y + offset_y + dy) as i32;
+        let gx = base_x - (raw_w as i32 - glyph.width as i32) / 2;
+        let gy = base_y - (raw_h as i32 - glyph.height as i32) / 2;
 
         for row in 0..raw_h {
             let py = gy + row as i32;
@@ -3636,16 +3739,20 @@ fn blend_pixel(buf: &mut [u8], idx: usize, src: &[u8; 4]) {
     }
     let da = buf[idx + 3] as u32;
     let inv_sa = 255 - sa;
-    let out_a = sa + da * inv_sa / 255;
+    // Straight-alpha "over", in 1/255 units: the result's alpha, and
+    // the colour as the alpha-weighted mix divided back out of it, so a
+    // translucent edge keeps its colour instead of going dark.
+    let out_a = sa * 255 + da * inv_sa; // ×255
     if out_a == 0 {
         return;
     }
-    for c in 0..3 {
-        let sc = src[c] as u32;
-        let dc = buf[idx + c] as u32;
-        buf[idx + c] = ((sc * sa + dc * da * inv_sa / 255) / out_a).min(255) as u8;
+    for i in 0..3 {
+        let sc = src[i] as u32;
+        let dc = buf[idx + i] as u32;
+        let mixed = sc * sa * 255 + dc * da * inv_sa; // ×255²
+        buf[idx + i] = ((mixed + out_a / 2) / out_a).min(255) as u8;
     }
-    buf[idx + 3] = out_a.min(255) as u8;
+    buf[idx + 3] = ((out_a + 127) / 255).min(255) as u8;
 }
 
 /// Per-clip cache entry for [`ensure_glyph_positions`]. Holds the
@@ -5523,12 +5630,12 @@ mod tests {
         // not keyframed. Green (outline 1) coverage grows.
         let blue_count = |buf: &[u8]| -> usize {
             buf.chunks_exact(4)
-                .filter(|p| p[3] > 0 && p[2] > 200 && p[1] < 150 && p[0] < 80)
+                .filter(|p| p[3] > 200 && p[2] > 200 && p[1] < 150 && p[0] < 80)
                 .count()
         };
         let green_count = |buf: &[u8]| -> usize {
             buf.chunks_exact(4)
-                .filter(|p| p[3] > 0 && p[1] > 200 && p[0] < 80 && p[2] < 80)
+                .filter(|p| p[3] > 200 && p[1] > 200 && p[0] < 80 && p[2] < 80)
                 .count()
         };
         let blue_t0 = blue_count(&buf_t0);
@@ -5758,12 +5865,12 @@ mod tests {
 
         let blue_count = |buf: &[u8]| -> usize {
             buf.chunks_exact(4)
-                .filter(|p| p[3] > 0 && p[2] > 200 && p[1] < 150 && p[0] < 80)
+                .filter(|p| p[3] > 200 && p[2] > 200 && p[1] < 150 && p[0] < 80)
                 .count()
         };
         let green_count = |buf: &[u8]| -> usize {
             buf.chunks_exact(4)
-                .filter(|p| p[3] > 0 && p[1] > 200 && p[0] < 80 && p[2] < 80)
+                .filter(|p| p[3] > 200 && p[1] > 200 && p[0] < 80 && p[2] < 80)
                 .count()
         };
         // Stack disabled drops the green secondary outline entirely.

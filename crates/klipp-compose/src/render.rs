@@ -1203,7 +1203,12 @@ impl Renderer {
         let inspecting = self.inspect.clip == Some(clip.id);
         let matte_view = if inspecting { self.inspect.matte_view } else { None };
         if clip.node_graph.is_identity() && matte_view.is_none() {
-            return unshare(input.pixels());
+            // Take the buffer rather than clone the handle: a layer this
+            // renderer just made is held once, and moves out for free.
+            return match input {
+                GradeInput::Cpu(p) => unshare(p),
+                other => unshare(other.pixels()),
+            };
         }
         let t = Instant::now();
         self.executor.prepare_clip(&clip.node_graph);
