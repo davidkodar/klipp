@@ -28,7 +28,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::sync::{Arc, Mutex, RwLock};
 
-use klipp_core::AppCommand;
+use klipp_core::{AppCommand, ControlAck, ControlEnvelope, ControlShared};
 use protocol::{ControlCommand, Request, Response};
 use serde_json::json;
 
@@ -38,7 +38,10 @@ use serde_json::json;
 pub struct ControlContext {
     /// Into the UI's command router, *not* the engine's channel — see the
     /// module docs for why the difference matters.
-    pub commands: crossbeam_channel::Sender<AppCommand>,
+    pub commands: crossbeam_channel::Sender<ControlEnvelope>,
+    /// The document revision and the render queue, as the UI publishes
+    /// them.
+    pub shared: Arc<ControlShared>,
     /// Wakes the UI so it drains `commands`. egui repaints reactively; an
     /// idle window would otherwise sit on a queued command until the
     /// mouse next moved.
@@ -127,7 +130,7 @@ fn serve_connection(stream: UnixStream, ctx: ControlContext) {
         let response = match serde_json::from_str::<Request>(&line) {
             Ok(req) => {
                 let id = req.id;
-                match handle(&ctx, req.command) {
+                match handle(&ctx, req.command, &mut None) {
                     Ok(v) => Response::ok(id, v),
                     Err(e) => Response::err(id, e),
                 }
@@ -261,6 +264,29 @@ fn parse_log_format(name: &str) -> Result<klipp_core::LogFormat, String> {
     })
 }
 
+/// A frame rate from a number: the NTSC rates as their exact fractions,
+/// anything else to a thousandth.
+fn fps_from_f64(f: f64) -> klipp_core::Fps {
+    for (num, den) in [(24000u32, 1001u32), (30000, 1001), (60000, 1001), (48000, 1001)] {
+        if (f - num as f64 / den as f64).abs() < 0.005 {
+            return klipp_core::Fps::new(num, den);
+        }
+    }
+    klipp_core::Fps::new((f * 1000.0).round().max(1.0) as u32, 1000)
+}
+
+/// A clip's kind as a client reads it.
+fn clip_kind_name(c: &klipp_timeline::Clip) -> &'static str {
+    match &c.kind {
+        klipp_timeline::ClipKind::Media { .. } => "media",
+        klipp_timeline::ClipKind::Title(_) => "title",
+        klipp_timeline::ClipKind::Generator(_) => "generator",
+        klipp_timeline::ClipKind::AdjustmentLayer => "adjustment",
+        klipp_timeline::ClipKind::Gap => "gap",
+        klipp_timeline::ClipKind::Sequence { .. } => "sequence",
+    }
+}
+
 fn log_format_json(m: &klipp_media::MediaItem) -> serde_json::Value {
     json!({
         // What the file's metadata says, and what Klipp decodes it as —
@@ -287,23 +313,69 @@ fn build_json() -> serde_json::Value {
     })
 }
 
-fn handle(ctx: &ControlContext, cmd: ControlCommand) -> Result<serde_json::Value, String> {
-    let send = |c: AppCommand| -> Result<serde_json::Value, String> {
-        // Read the generation *before* queueing, so any frame rendered in
-        // response to this command is guaranteed to be newer than it.
-        let generation = ctx
-            .frame_buffer
-            .lock()
-            .map(|fb| fb.latest_generation())
-            .unwrap_or(0);
-        ctx.commands
-            .send(c)
-            .map_err(|e| format!("app command channel closed: {e}"))?;
-        (ctx.wake_ui)();
-        // Commands are queued for the UI's next frame, not executed
-        // inline, so "accepted" is the honest answer. To see the effect,
-        // screenshot with `min_generation: generation + 1`.
-        Ok(json!({ "accepted": true, "generation": generation }))
+/// How long a write waits for the UI to apply it before answering
+/// "accepted" instead of "applied". The UI drains the inbox every frame
+/// and is woken for it; anything longer than this means it is busy
+/// (a modal, a load) and the client should not block on it.
+const ACK_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(2000);
+
+/// Hand `commands` to the UI as one envelope and wait for it to apply
+/// them. The reply carries `applied` (false only if the UI did not answer
+/// in time, in which case the commands are still queued), the document
+/// `revision` after them, and the viewer `generation` from before them so
+/// a frame newer than that reflects the change.
+fn send_envelope(ctx: &ControlContext, commands: Vec<AppCommand>, batch: bool) -> Result<serde_json::Value, String> {
+    // Read the generation *before* queueing, so any frame rendered in
+    // response to this command is guaranteed to be newer than it.
+    let generation = ctx
+        .frame_buffer
+        .lock()
+        .map(|fb| fb.latest_generation())
+        .unwrap_or(0);
+    let count = commands.len();
+    let (tx, rx) = std::sync::mpsc::channel::<ControlAck>();
+    ctx.commands
+        .send(ControlEnvelope { commands, batch, ack: Some(tx) })
+        .map_err(|e| format!("app command channel closed: {e}"))?;
+    (ctx.wake_ui)();
+    match rx.recv_timeout(ACK_TIMEOUT) {
+        Ok(ack) => Ok(json!({
+            "applied": true,
+            "accepted": true,
+            "commands": count,
+            "revision": ack.revision,
+            "generation": generation,
+        })),
+        Err(_) => Ok(json!({
+            "applied": false,
+            "accepted": true,
+            "commands": count,
+            "revision": ctx.shared.revision(),
+            "generation": generation,
+            "note": "queued for the UI's next frame; it did not answer within the timeout",
+        })),
+    }
+}
+
+/// `collect` is `Some` inside a batch: writes are gathered there instead
+/// of being sent, so the batch goes to the UI whole or not at all.
+fn handle(
+    ctx: &ControlContext,
+    cmd: ControlCommand,
+    collect: &mut Option<Vec<AppCommand>>,
+) -> Result<serde_json::Value, String> {
+    let in_batch = collect.is_some();
+    let mut send = |c: AppCommand| -> Result<serde_json::Value, String> {
+        if let Some(buf) = collect.as_mut() {
+            buf.push(c);
+            return Ok(json!({ "queued": true }));
+        }
+        send_envelope(ctx, vec![c], false)
+    };
+    // A read inside a batch would answer before the writes it follows
+    // are applied, which is a lie; refuse it.
+    let read_in_batch = |what: &str| -> Result<serde_json::Value, String> {
+        Err(format!("{what} cannot be part of a batch; a batch is for writes"))
     };
 
     match cmd {
@@ -315,14 +387,26 @@ fn handle(ctx: &ControlContext, cmd: ControlCommand) -> Result<serde_json::Value
         })),
 
         ControlCommand::Status => {
+            if in_batch {
+                return read_in_batch("status");
+            }
             let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
             let fb = ctx.frame_buffer.lock().map_err(|_| "frame buffer lock poisoned")?;
             let perf = ctx.perf_ring.lock().ok().and_then(|r| r.latest().cloned());
+            let fps = seq.fps.as_f64();
+            let presented = fb.latest_presented().map(|t| t.to_secs_f64());
             Ok(json!({
                 "build": build_json(),
+                "revision": ctx.shared.revision(),
                 "tracks": seq.tracks.len(),
                 "clips": seq.tracks.iter().map(|t| t.clips.len()).sum::<usize>(),
-                "fps": seq.fps.as_f64(),
+                "fps": fps,
+                "resolution": { "width": seq.resolution.width, "height": seq.resolution.height },
+                "duration_secs": seq.total_duration().to_secs_f64(),
+                // The frame on screen: where the playhead was when it was
+                // made. Seconds and, at the sequence's rate, frames.
+                "playhead_secs": presented,
+                "playhead_frame": presented.map(|s| (s * fps).round() as i64),
                 "viewer": {
                     "width": fb.width,
                     "height": fb.height,
@@ -354,8 +438,12 @@ fn handle(ctx: &ControlContext, cmd: ControlCommand) -> Result<serde_json::Value
         }
 
         ControlCommand::ListClips => {
+            if in_batch {
+                return read_in_batch("list_clips");
+            }
             let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
             let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
+            let fps = seq.fps.as_f64();
             let tracks: Vec<serde_json::Value> = seq
                 .tracks
                 .iter()
@@ -364,11 +452,17 @@ fn handle(ctx: &ControlContext, cmd: ControlCommand) -> Result<serde_json::Value
                     json!({
                         "index": i,
                         "opacity": t.opacity,
+                        "kind": format!("{:?}", t.kind),
+                        "name": t.name,
+                        "locked": t.locked,
                         "clips": t.clips.iter().map(|c| json!({
                             "clip_id": c.id.0.to_string(),
+                            "kind": clip_kind_name(c),
                             "enabled": c.enabled,
                             "timeline_in_secs": c.timeline_in.to_secs_f64(),
                             "timeline_out_secs": c.timeline_out.to_secs_f64(),
+                            "timeline_in_frame": (c.timeline_in.to_secs_f64() * fps).round() as i64,
+                            "timeline_out_frame": (c.timeline_out.to_secs_f64() * fps).round() as i64,
                             "source_in_secs": c.source_in.to_secs_f64(),
                             "source_out_secs": c.source_out.to_secs_f64(),
                             "speed": c.speed,
@@ -387,7 +481,7 @@ fn handle(ctx: &ControlContext, cmd: ControlCommand) -> Result<serde_json::Value
                     })
                 })
                 .collect();
-            Ok(json!({ "tracks": tracks }))
+            Ok(json!({ "fps": fps, "revision": ctx.shared.revision(), "tracks": tracks }))
         }
 
         ControlCommand::ListMedia => {
@@ -508,6 +602,9 @@ fn handle(ctx: &ControlContext, cmd: ControlCommand) -> Result<serde_json::Value
         }
 
         ControlCommand::Screenshot { path, max_width, min_generation, timeout_ms } => {
+            if in_batch {
+                return read_in_batch("screenshot");
+            }
             let deadline = std::time::Instant::now()
                 + std::time::Duration::from_millis(timeout_ms.unwrap_or(3000));
             let (data, width, height, generation) = loop {
@@ -580,7 +677,119 @@ fn handle(ctx: &ControlContext, cmd: ControlCommand) -> Result<serde_json::Value
             }))
         }
 
+        ControlCommand::Undo => send(AppCommand::Undo),
+        ControlCommand::Redo => send(AppCommand::Redo),
+
+        ControlCommand::Batch { commands } => {
+            if in_batch {
+                return Err("a batch cannot contain a batch".into());
+            }
+            if commands.is_empty() {
+                return Err("an empty batch".into());
+            }
+            let mut buf = Some(Vec::with_capacity(commands.len()));
+            for (i, c) in commands.into_iter().enumerate() {
+                // Every command checked and translated before any is sent:
+                // a bad one refuses the batch whole.
+                handle(ctx, c, &mut buf).map_err(|e| format!("batch command {i}: {e}"))?;
+            }
+            let cmds = buf.take().unwrap_or_default();
+            send_envelope(ctx, cmds, true)
+        }
+
+        ControlCommand::Export { path, width, height, fps, crf, target_lufs } => {
+            let out = std::path::PathBuf::from(&path);
+            if !out.is_absolute() {
+                return Err(format!("export path must be absolute (got {path:?})"));
+            }
+            let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
+            let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
+            let offline: Vec<String> = seq
+                .tracks
+                .iter()
+                .flat_map(|t| t.clips.iter())
+                .filter_map(|c| c.media_id().and_then(|id| pool.get(&id)))
+                .filter(|m| m.offline)
+                .map(|m| m.filename.clone())
+                .collect();
+            if !offline.is_empty() {
+                return Err(format!("media offline, export refused: {}", offline.join(", ")));
+            }
+            if pool.all().any(|m| m.path == out) {
+                return Err(format!("{path} is a media file of this project; an export cannot overwrite its own source"));
+            }
+            drop(pool);
+            drop(seq);
+            let format = match out.extension().and_then(|e| e.to_str()).map(|e| e.to_ascii_lowercase()).as_deref() {
+                Some("mp4") | None => klipp_core::ExportFormat::Mp4,
+                Some("mov") => klipp_core::ExportFormat::Mov,
+                Some("mkv") => klipp_core::ExportFormat::Mkv,
+                Some("webm") => klipp_core::ExportFormat::WebM,
+                Some(other) => return Err(format!("unsupported container .{other}; use mp4, mov, mkv or webm")),
+            };
+            let mut settings = klipp_core::ExportSettings { output_path: out, format, ..Default::default() };
+            if let (Some(w), Some(h)) = (width, height) {
+                settings.resolution = Some(klipp_core::Resolution { width: w, height: h });
+            }
+            if let Some(f) = fps {
+                settings.fps = Some(fps_from_f64(f));
+            }
+            if let Some(c) = crf {
+                settings.crf = c;
+            }
+            if target_lufs.is_some() {
+                settings.target_lufs = target_lufs;
+            }
+            send(AppCommand::ExportSequence { settings })
+        }
+
+        ControlCommand::ExportStatus => {
+            if in_batch {
+                return read_in_batch("export_status");
+            }
+            let jobs = ctx.shared.exports.lock().map_err(|_| "export status lock poisoned")?;
+            Ok(json!({ "jobs": *jobs }))
+        }
+
+        ControlCommand::ExportSubtitles { path } => {
+            let p = std::path::PathBuf::from(&path);
+            if !p.is_absolute() {
+                return Err(format!("subtitle path must be absolute (got {path:?})"));
+            }
+            send(AppCommand::ExportSubtitles { path: p })
+        }
+
+        ControlCommand::FrameAt { secs, path, max_width, timeout_ms } => {
+            if in_batch {
+                return read_in_batch("frame_at");
+            }
+            let (was_at, fps) = {
+                let fb = ctx.frame_buffer.lock().map_err(|_| "frame buffer lock poisoned")?;
+                let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
+                (fb.latest_presented(), seq.fps)
+            };
+            let target = klipp_core::Timecode::from_secs_f64(secs.max(0.0), fps.rate());
+            let queued = send_envelope(ctx, vec![AppCommand::SeekTo(target)], false)?;
+            let generation = queued.get("generation").and_then(|g| g.as_u64()).unwrap_or(0);
+            let shot = handle(
+                ctx,
+                ControlCommand::Screenshot { path, max_width, min_generation: Some(generation + 1), timeout_ms },
+                &mut None,
+            );
+            // Back where the playhead was, whatever the capture did.
+            if let Some(t) = was_at {
+                let _ = send_envelope(ctx, vec![AppCommand::SeekTo(t)], false);
+            }
+            let mut v = shot?;
+            v["secs"] = json!(secs);
+            v["frame"] = json!((secs * fps.as_f64()).round() as i64);
+            Ok(v)
+        }
+
         ControlCommand::Perf => {
+            if in_batch {
+                return read_in_batch("perf");
+            }
             let ring = ctx.perf_ring.lock().map_err(|_| "perf ring lock poisoned")?;
             let latest = ring.latest().cloned();
             let avg = ring.averages(60);

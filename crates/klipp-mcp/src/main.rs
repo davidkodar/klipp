@@ -44,6 +44,7 @@ const WRITE_TOOLS: &[&str] = &[
     "klipp_append_clip", "klipp_remove_clip", "klipp_attach_audio", "klipp_set_append_audio", "klipp_select_clip",
     "klipp_add_node", "klipp_remove_node", "klipp_connect_nodes",
     "klipp_set_node_param", "klipp_toggle_node", "klipp_set_log_format",
+    "klipp_undo", "klipp_redo", "klipp_batch", "klipp_export", "klipp_export_subtitles",
 ];
 
 fn main() {
@@ -198,8 +199,10 @@ fn arg_str(args: &Value, key: &str) -> Result<String, String> {
         .ok_or_else(|| format!("missing required argument: {key}"))
 }
 
-fn call_tool(name: &str, args: &Value) -> Result<Vec<Value>, String> {
-    let cmd = match name {
+/// The socket command a tool call is. Shared by a single call and by the
+/// calls inside a batch.
+fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
+    Ok(match name {
         "klipp_status" => json!({ "method": "status" }),
         "klipp_play" => json!({ "method": "play" }),
         "klipp_pause" => json!({ "method": "pause" }),
@@ -312,9 +315,58 @@ fn call_tool(name: &str, args: &Value) -> Result<Vec<Value>, String> {
             }
             v
         }
+        "klipp_undo" => json!({ "method": "undo" }),
+        "klipp_redo" => json!({ "method": "redo" }),
+        "klipp_batch" => {
+            let calls = args.get("calls").and_then(|v| v.as_array()).ok_or("missing required argument: calls")?;
+            let mut commands = Vec::with_capacity(calls.len());
+            for (i, call) in calls.iter().enumerate() {
+                let tool = call.get("tool").and_then(|v| v.as_str()).ok_or_else(|| format!("calls[{i}]: missing tool"))?;
+                if tool == "klipp_batch" {
+                    return Err(format!("calls[{i}]: a batch cannot contain a batch"));
+                }
+                let inner = call.get("args").cloned().unwrap_or_else(|| json!({}));
+                commands.push(tool_to_command(tool, &inner).map_err(|e| format!("calls[{i}] ({tool}): {e}"))?);
+            }
+            json!({ "method": "batch", "commands": commands })
+        }
+        "klipp_export" => {
+            let mut v = json!({ "method": "export", "path": arg_str(args, "path")? });
+            for key in ["width", "height", "crf"] {
+                if let Some(n) = args.get(key).and_then(|v| v.as_u64()) {
+                    v[key] = json!(n);
+                }
+            }
+            if let Some(f) = args.get("fps").and_then(|v| v.as_f64()) {
+                v["fps"] = json!(f);
+            }
+            if let Some(l) = args.get("target_lufs").and_then(|v| v.as_f64()) {
+                v["target_lufs"] = json!(l);
+            }
+            v
+        }
+        "klipp_export_status" => json!({ "method": "export_status" }),
+        "klipp_export_subtitles" => json!({ "method": "export_subtitles", "path": arg_str(args, "path")? }),
+        "klipp_frame_at" => {
+            let mut v = json!({
+                "method": "frame_at",
+                "secs": args.get("secs").and_then(|v| v.as_f64()).ok_or("missing required argument: secs")?,
+                "max_width": args.get("max_width").and_then(|v| v.as_u64()).unwrap_or(1280),
+            });
+            if let Some(p) = args.get("path").and_then(|v| v.as_str()) {
+                v["path"] = json!(p);
+            }
+            if let Some(t) = args.get("timeout_ms").and_then(|v| v.as_u64()) {
+                v["timeout_ms"] = json!(t);
+            }
+            v
+        }
         other => return Err(format!("unknown tool: {other}")),
-    };
+    })
+}
 
+fn call_tool(name: &str, args: &Value) -> Result<Vec<Value>, String> {
+    let cmd = tool_to_command(name, args)?;
     let result = control_call(cmd)?;
 
     if WRITE_TOOLS.contains(&name) {
@@ -335,7 +387,7 @@ fn call_tool(name: &str, args: &Value) -> Result<Vec<Value>, String> {
 
     // Screenshots come back as a path; inline the image too when it is
     // small enough to be worth a context window.
-    if name == "klipp_screenshot" {
+    if name == "klipp_screenshot" || name == "klipp_frame_at" {
         if let Some(path) = result.get("path").and_then(|v| v.as_str()) {
             let mut content = text_content(&result);
             if let Ok(bytes) = std::fs::read(path) {
@@ -526,5 +578,52 @@ fn tool_definitions() -> Vec<Value> {
               why the direct-present fast path did or did not engage.",
              json!({ "lines": { "type": "integer", "description": "How many lines (default 100)" } }),
              vec![]),
+        tool("klipp_undo", "One step back in the active sequence's edit history. Every write \
+              made through these tools is one step; a klipp_batch is one step as a whole.",
+             json!({}), vec![]),
+        tool("klipp_redo", "One step forward in the edit history.", json!({}), vec![]),
+        tool("klipp_batch",
+             "Several write tools applied together in one frame and recorded as ONE undo \
+              step: use it for anything that is one action in your plan (an append and \
+              its grade, a set of parameter changes). Every call is checked before any \
+              is applied; a bad one refuses the whole batch and nothing changes. Reads \
+              (status, lists, screenshots) are refused inside a batch. Replies with the \
+              document revision after the batch.",
+             json!({ "calls": { "type": "array", "description": "In order. Each: {\"tool\": name, \"args\": {...}}",
+                 "items": { "type": "object", "properties": {
+                     "tool": { "type": "string" }, "args": { "type": "object" } }, "required": ["tool"] } } }),
+             vec!["calls"]),
+        tool("klipp_export",
+             "Render the active sequence to a file with Klipp's default export settings; \
+              the container comes from the extension (mp4, mov, mkv, webm). Refused when \
+              a clip's media is offline or the path is one of the project's media files. \
+              Asynchronous: poll klipp_export_status until the job is complete, then the \
+              file is done. The path must be absolute.",
+             json!({
+                 "path": { "type": "string", "description": "Absolute output path" },
+                 "width": { "type": "integer" }, "height": { "type": "integer" },
+                 "fps": { "type": "number" },
+                 "crf": { "type": "integer", "description": "Quality, lower is better (default 23)" },
+                 "target_lufs": { "type": "number", "description": "Loudness normalisation target, e.g. -14 for the web, -23 for broadcast" },
+             }),
+             vec!["path"]),
+        tool("klipp_export_status",
+             "Every render job Klipp knows: status (queued, rendering, complete, failed, \
+              cancelled), progress 0 to 1, frames, stage, error, loudness result.",
+             json!({}), vec![]),
+        tool("klipp_export_subtitles",
+             "Write the sequence's subtitle and text clips as an SRT file at an absolute path.",
+             json!({ "path": { "type": "string" } }), vec!["path"]),
+        tool("klipp_frame_at",
+             "The frame at a time on the timeline, as a PNG, without leaving the playhead \
+              where it was: seeks there, waits for the frame, captures, seeks back. Use \
+              it to look at what you did at a specific point. Seconds from timeline start.",
+             json!({
+                 "secs": { "type": "number" },
+                 "max_width": { "type": "integer", "description": "Downscale to at most this wide (default 1280)" },
+                 "path": { "type": "string", "description": "Absolute PNG path; temp dir when omitted" },
+                 "timeout_ms": { "type": "integer" },
+             }),
+             vec!["secs"]),
     ]
 }

@@ -13,11 +13,19 @@ use std::sync::{Arc, Mutex, RwLock};
 use klipp_control::{protocol, ControlContext};
 use serde_json::{json, Value};
 
+/// The server reads the socket path from a process-wide variable, so
+/// two harnesses at once would bind each other's path: one at a time.
+static SERIAL: Mutex<()> = Mutex::new(());
+
 struct Harness {
+    _serial: std::sync::MutexGuard<'static, ()>,
     stream: UnixStream,
     frame_buffer: Arc<Mutex<klipp_engine::FrameBuffer>>,
     reader: BufReader<UnixStream>,
     cmd_rx: crossbeam_channel::Receiver<klipp_core::AppCommand>,
+    /// Every envelope the stand-in UI took: (batch, command count).
+    envelopes: Arc<Mutex<Vec<(bool, usize)>>>,
+    shared: Arc<klipp_core::ControlShared>,
     _log: std::path::PathBuf,
     next_id: u64,
     /// Two clips, each with its own Corrector, and a node nested inside
@@ -61,6 +69,7 @@ impl Harness {
 }
 
 fn harness() -> Harness {
+    let serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let stamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
@@ -73,7 +82,28 @@ fn harness() -> Harness {
     std::env::set_var("KLIPP_CONTROL_SOCKET", &sock);
     std::env::remove_var("KLIPP_CONTROL");
 
-    let (cmd_tx, cmd_rx) = crossbeam_channel::unbounded();
+    // A stand-in for the UI's inbox: takes each envelope, forwards its
+    // commands one by one for the assertions below, advances the
+    // revision as a recorded edit would, and acknowledges.
+    let (env_tx, env_rx) = crossbeam_channel::unbounded::<klipp_core::ControlEnvelope>();
+    let (cmd_tx, cmd_rx) = crossbeam_channel::unbounded::<klipp_core::AppCommand>();
+    let envelopes: Arc<Mutex<Vec<(bool, usize)>>> = Arc::new(Mutex::new(Vec::new()));
+    let shared = Arc::new(klipp_core::ControlShared::default());
+    {
+        let (envelopes, shared) = (Arc::clone(&envelopes), Arc::clone(&shared));
+        std::thread::spawn(move || {
+            for env in env_rx {
+                envelopes.lock().unwrap().push((env.batch, env.commands.len()));
+                for c in env.commands {
+                    let _ = cmd_tx.send(c);
+                }
+                let revision = shared.bump_revision();
+                if let Some(ack) = env.ack {
+                    let _ = ack.send(klipp_core::ControlAck { revision });
+                }
+            }
+        });
+    }
     // A viewer frame with a recognisable first pixel, so the screenshot
     // is checked for content and not merely for existing.
     let mut fb = klipp_engine::FrameBuffer::new(64, 32);
@@ -90,7 +120,8 @@ fn harness() -> Harness {
     let (sequence, ids) = sequence_with_two_clips();
     let frame_buffer = Arc::new(Mutex::new(fb));
     let ctx = ControlContext {
-        commands: cmd_tx,
+        commands: env_tx,
+        shared: Arc::clone(&shared),
         wake_ui: Arc::new(|| {}),
         sequence: Arc::new(RwLock::new(sequence)),
         media_pool: Arc::new(RwLock::new(klipp_media::MediaPool::new())),
@@ -109,7 +140,7 @@ fn harness() -> Harness {
         match UnixStream::connect(&sock) {
             Ok(stream) => {
                 let reader = BufReader::new(stream.try_clone().expect("clone"));
-                return Harness { stream, frame_buffer, reader, cmd_rx, _log: log, next_id: 0, ids };
+                return Harness { _serial: serial, stream, frame_buffer, reader, cmd_rx, envelopes, shared, _log: log, next_id: 0, ids };
             }
             Err(e) => {
                 last_err = Some(e);
@@ -471,4 +502,106 @@ fn control_socket_reads_state_and_forwards_commands() {
     assert!(reply["error"].as_str().unwrap().contains("bad request"));
 
     let _ = std::fs::remove_file(protocol::socket_path());
+}
+
+/// A batch reaches the UI as one envelope, recorded as one undo step, or
+/// not at all: a bad command anywhere in it refuses the whole batch
+/// before anything is sent. Writes answer with the document revision
+/// after them, and the timeline reads in seconds and frames.
+#[test]
+fn a_batch_is_one_envelope_or_nothing_and_writes_answer_with_the_revision() {
+    let mut h = harness();
+    let before = h.shared.revision();
+
+    // A single write: applied, and the revision moved.
+    let r = h.ok(json!({ "method": "seek", "secs": 1.0 }));
+    assert_eq!(r["applied"], json!(true));
+    assert_eq!(r["revision"], json!(before + 1));
+    assert!(matches!(h.cmd_rx.recv_timeout(std::time::Duration::from_secs(1)), Ok(klipp_core::AppCommand::SeekTo(_))));
+    assert_eq!(h.envelopes.lock().unwrap().last(), Some(&(false, 1)));
+
+    // A batch of two: one envelope, both commands, one revision step.
+    let r = h.ok(json!({ "method": "batch", "commands": [
+        { "method": "seek", "secs": 2.0 },
+        { "method": "play" },
+    ]}));
+    assert_eq!(r["applied"], json!(true));
+    assert_eq!(r["commands"], json!(2));
+    assert_eq!(r["revision"], json!(before + 2));
+    assert_eq!(h.envelopes.lock().unwrap().last(), Some(&(true, 2)));
+    assert!(matches!(h.cmd_rx.recv_timeout(std::time::Duration::from_secs(1)), Ok(klipp_core::AppCommand::SeekTo(_))));
+    assert!(matches!(h.cmd_rx.recv_timeout(std::time::Duration::from_secs(1)), Ok(klipp_core::AppCommand::Play)));
+
+    // A bad command inside a batch refuses it whole: nothing sent.
+    let sent = h.envelopes.lock().unwrap().len();
+    let reply = h.call(json!({ "method": "batch", "commands": [
+        { "method": "play" },
+        { "method": "set_node_param", "clip_id": "not-a-clip", "node_id": "x", "param": "exposure", "value": 1.0 },
+    ]}));
+    assert_eq!(reply["ok"], json!(false));
+    assert!(reply["error"].as_str().unwrap().contains("batch command 1"), "{}", reply["error"]);
+    assert_eq!(h.envelopes.lock().unwrap().len(), sent, "a refused batch sends nothing");
+    assert!(h.cmd_rx.try_recv().is_err());
+
+    // A read inside a batch is refused too.
+    let reply = h.call(json!({ "method": "batch", "commands": [ { "method": "status" } ] }));
+    assert_eq!(reply["ok"], json!(false));
+    assert!(reply["error"].as_str().unwrap().contains("cannot be part of a batch"));
+
+    // Undo is a write like any other.
+    let r = h.ok(json!({ "method": "undo" }));
+    assert_eq!(r["applied"], json!(true));
+    assert!(matches!(h.cmd_rx.recv_timeout(std::time::Duration::from_secs(1)), Ok(klipp_core::AppCommand::Undo)));
+
+    // Reads carry the revision and editorial units.
+    let status = h.ok(json!({ "method": "status" }));
+    assert_eq!(status["revision"], json!(h.shared.revision()));
+    assert!(status.get("playhead_secs").is_some());
+    assert!(status.get("duration_secs").is_some());
+    let clips = h.ok(json!({ "method": "list_clips" }));
+    let first = &clips["tracks"][0]["clips"][0];
+    assert!(first["timeline_in_frame"].is_i64(), "{first}");
+    assert_eq!(first["kind"], json!("gap"), "the fixture's clips are gaps with a grade");
+    assert!(clips["fps"].is_f64());
+}
+
+/// An export is refused where it would go wrong, and otherwise reaches
+/// the UI as the app's own export command; the queue reads back through
+/// the shared state.
+#[test]
+fn export_is_refused_where_it_would_go_wrong_and_status_reads_the_queue() {
+    let mut h = harness();
+    let reply = h.call(json!({ "method": "export", "path": "relative.mp4" }));
+    assert_eq!(reply["ok"], json!(false));
+    assert!(reply["error"].as_str().unwrap().contains("absolute"));
+    let reply = h.call(json!({ "method": "export", "path": "/tmp/out.avi" }));
+    assert_eq!(reply["ok"], json!(false));
+    assert!(reply["error"].as_str().unwrap().contains("container"));
+
+    let r = h.ok(json!({ "method": "export", "path": "/tmp/klipp-control-test-out.mp4", "target_lufs": -14.0, "crf": 20 }));
+    assert_eq!(r["applied"], json!(true));
+    match h.cmd_rx.recv_timeout(std::time::Duration::from_secs(1)) {
+        Ok(klipp_core::AppCommand::ExportSequence { settings }) => {
+            assert_eq!(settings.output_path, std::path::PathBuf::from("/tmp/klipp-control-test-out.mp4"));
+            assert_eq!(settings.target_lufs, Some(-14.0));
+            assert_eq!(settings.crf, 20);
+            assert!(matches!(settings.format, klipp_core::ExportFormat::Mp4));
+        }
+        other => panic!("expected ExportSequence, got {other:?}"),
+    }
+
+    h.shared.exports.lock().unwrap().push(klipp_core::ExportStatus {
+        job_id: "j1".into(),
+        path: "/tmp/klipp-control-test-out.mp4".into(),
+        status: "rendering".into(),
+        progress: 0.5,
+        frames_done: 50,
+        total_frames: 100,
+        stage: "Encoding".into(),
+        error: None,
+        loudness: None,
+    });
+    let st = h.ok(json!({ "method": "export_status" }));
+    assert_eq!(st["jobs"][0]["status"], json!("rendering"));
+    assert_eq!(st["jobs"][0]["progress"], json!(0.5));
 }

@@ -130,6 +130,51 @@ pub enum ControlCommand {
     },
     /// Latest performance sample plus a short rolling average.
     Perf,
+
+    // ── Edit history ──────────────────────────────────────────────
+    /// One step back in the active sequence's history.
+    Undo,
+    Redo,
+    /// Several commands applied in one frame, recorded as one undo step:
+    /// what an agent's action is. Every command is checked before any is
+    /// sent, so a bad one refuses the whole batch and nothing happens.
+    /// Reads inside a batch are refused; a batch is for writes.
+    Batch { commands: Vec<ControlCommand> },
+
+    // ── Delivery ──────────────────────────────────────────────────
+    /// Render the active sequence to `path` with the app's default export
+    /// settings, the container from the path's extension. Refused when a
+    /// clip's media is offline or the path is one of the project's media
+    /// files. Asynchronous: poll `export_status` for the job.
+    Export {
+        path: String,
+        #[serde(default)]
+        width: Option<u32>,
+        #[serde(default)]
+        height: Option<u32>,
+        #[serde(default)]
+        fps: Option<f64>,
+        #[serde(default)]
+        crf: Option<u32>,
+        /// Integrated loudness target in LUFS; none leaves the mix as it is.
+        #[serde(default)]
+        target_lufs: Option<f32>,
+    },
+    /// Every render job the app knows: status, progress, result.
+    ExportStatus,
+    /// Write the sequence's subtitle and text clips as an SRT file.
+    ExportSubtitles { path: String },
+    /// The frame at `secs`, as a PNG, without leaving the playhead where
+    /// it was: seeks there, waits for the frame, captures, seeks back.
+    FrameAt {
+        secs: f64,
+        #[serde(default)]
+        path: Option<String>,
+        #[serde(default)]
+        max_width: Option<u32>,
+        #[serde(default)]
+        timeout_ms: Option<u64>,
+    },
     /// Tail of the app's debug log.
     LogTail {
         #[serde(default)]

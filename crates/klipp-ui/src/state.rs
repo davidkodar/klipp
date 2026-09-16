@@ -1057,6 +1057,10 @@ pub struct AppState {
     /// project-save path. Lives on AppState (not on CommandHistory)
     /// because autosave fires on total project mutations.
     pub history_ops_since_save: u64,
+    /// What the control socket reads without the UI: the document
+    /// revision (advanced by every recorded edit, undo and redo) and the
+    /// render queue's jobs. Shared with `klipp_control` by the app.
+    pub control_shared: std::sync::Arc<klipp_core::ControlShared>,
     /// Mirrors the `editing.undo_limit` pref so newly-created sequences
     /// can be initialised with the same per-sequence cap. Updated
     /// alongside `set_max_size` calls on existing histories.
@@ -3290,6 +3294,7 @@ impl Default for AppState {
             dirty: false,
             command_histories: std::collections::HashMap::new(),
             history_ops_since_save: 0,
+            control_shared: std::sync::Arc::new(klipp_core::ControlShared::default()),
             history_max_size: 1000,
             viewer_inspector_split: 0.6,
             upper_timeline_split: 0.65,
@@ -3829,6 +3834,7 @@ impl AppState {
     pub fn push_history(&mut self, command: EditCommand) {
         self.active_history_mut().push(HistoryEntry { command });
         self.history_ops_since_save = self.history_ops_since_save.saturating_add(1);
+        self.control_shared.bump_revision();
     }
     /// Reset the project-level autosave counter. Call from the
     /// project-save path.

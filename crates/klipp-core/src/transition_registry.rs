@@ -983,7 +983,6 @@ mod tests {
     /// IS the registry's domain — but we can pin the *release-mode*
     /// behaviour of the existing implementation, which is what
     /// matters for end-user safety.
-
     #[cfg(not(debug_assertions))]
     #[test]
     fn spec_for_kind_in_release_never_panics_for_any_registered_variant() {

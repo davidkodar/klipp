@@ -293,7 +293,7 @@ pub struct KlippApp {
     /// `AppCommand`s — colour, clip, media — are handled *here* by the
     /// UI's routers and never reach the engine's channel, so a control
     /// server that wrote to the engine directly saw them silently vanish.
-    control_inbox: Option<Receiver<AppCommand>>,
+    control_inbox: Option<Receiver<klipp_core::ControlEnvelope>>,
     frame_buffer: SharedFrameBuffer,
     /// Source-viewer frame buffer — engine writes decoded source
     /// media frames here during source playback / seek; the source
@@ -1183,7 +1183,7 @@ impl KlippApp {
     }
 
     /// Attach the control socket's command inbox. See `control_inbox`.
-    pub fn set_control_inbox(&mut self, inbox: Receiver<AppCommand>) {
+    pub fn set_control_inbox(&mut self, inbox: Receiver<klipp_core::ControlEnvelope>) {
         self.control_inbox = Some(inbox);
     }
 
@@ -1201,12 +1201,22 @@ impl KlippApp {
     /// drag-and-drop.
     fn drain_control_inbox(&mut self) {
         let Some(inbox) = self.control_inbox.as_ref() else { return };
-        let cmds: Vec<AppCommand> = inbox.try_iter().collect();
-        for cmd in cmds {
+        let envelopes: Vec<klipp_core::ControlEnvelope> = inbox.try_iter().collect();
+        for env in envelopes {
             self.suppress_fps_prompt = true;
-            self.send_commands(vec![cmd]);
+            let cmds = expand_control_commands(env.commands, env.batch);
+            self.send_commands(cmds);
+            self.suppress_fps_prompt = false;
+            if let Some(ack) = env.ack {
+                let _ = ack.send(klipp_core::ControlAck { revision: self.state.control_shared.revision() });
+            }
         }
-        self.suppress_fps_prompt = false;
+    }
+
+    /// Share the document revision and the render queue's state with the
+    /// control socket.
+    pub fn set_control_shared(&mut self, shared: std::sync::Arc<klipp_core::ControlShared>) {
+        self.state.control_shared = shared;
     }
 
     fn drain_events(&mut self, ctx: &egui::Context) {
@@ -20242,6 +20252,14 @@ impl KlippApp {
                 self.apply_redo();
                 true
             }
+            AppCommand::BeginHistoryBatch => {
+                self.state.active_history_mut().begin_batch();
+                true
+            }
+            AppCommand::EndHistoryBatch => {
+                self.state.active_history_mut().end_batch();
+                true
+            }
             AppCommand::SetRubberBandParam(param) => {
                 self.state.rubber_band_param = crate::state::RubberBandParam::ClipParam(*param);
                 true
@@ -21610,6 +21628,7 @@ impl KlippApp {
             self.sync_sequence_to_engine();
             self.state.dirty = true;
             self.state.media_usage_cache_dirty = true;
+            self.state.control_shared.bump_revision();
         }
     }
 
@@ -21619,6 +21638,7 @@ impl KlippApp {
             self.sync_sequence_to_engine();
             self.state.dirty = true;
             self.state.media_usage_cache_dirty = true;
+            self.state.control_shared.bump_revision();
         }
     }
 
@@ -25470,6 +25490,64 @@ fn apply_multicam_show_angles(prefs: &mut crate::prefs::Preferences, state: &mut
 // The handler arms in the AppCommand match call these helpers and
 // add `prefs_dirty = true` — the dirty flag is the App's
 // responsibility, not the helper's, so it isn't tested here.
+/// The commands of one control envelope as the router applies them. A
+/// parameter write is bracketed the way a slider drag is, so it records
+/// history (without the brackets it never did); a batch wraps everything
+/// in one history batch, so an agent's action is one undo step.
+pub fn expand_control_commands(commands: Vec<AppCommand>, batch: bool) -> Vec<AppCommand> {
+    let mut out = Vec::with_capacity(commands.len() * 3 + 2);
+    if batch {
+        out.push(AppCommand::BeginHistoryBatch);
+    }
+    for cmd in commands {
+        match &cmd {
+            AppCommand::SetNodeParam { clip_id, .. } => {
+                let clip_id = *clip_id;
+                out.push(AppCommand::BeginNodeParamEdit { clip_id });
+                out.push(cmd);
+                out.push(AppCommand::EndNodeParamEdit { clip_id });
+            }
+            _ => out.push(cmd),
+        }
+    }
+    if batch {
+        out.push(AppCommand::EndHistoryBatch);
+    }
+    out
+}
+
+#[cfg(test)]
+mod control_envelope_tests {
+    use super::*;
+    use klipp_core::ClipId;
+
+    #[test]
+    fn a_parameter_write_over_the_socket_is_bracketed_like_a_drag() {
+        let clip_id = ClipId::new();
+        let cmds = expand_control_commands(
+            vec![AppCommand::SetNodeParam { clip_id, node_id: klipp_nodes::NodeId::new_v4(), param: "exposure".into(), value: 0.5 }],
+            false,
+        );
+        assert!(matches!(cmds.as_slice(), [AppCommand::BeginNodeParamEdit { .. }, AppCommand::SetNodeParam { .. }, AppCommand::EndNodeParamEdit { .. }]));
+    }
+
+    #[test]
+    fn a_batch_is_one_history_entry() {
+        let cmds = expand_control_commands(vec![AppCommand::Play, AppCommand::Pause], true);
+        assert!(matches!(cmds.first(), Some(AppCommand::BeginHistoryBatch)));
+        assert!(matches!(cmds.last(), Some(AppCommand::EndHistoryBatch)));
+        assert_eq!(cmds.len(), 4);
+        // And the history collects what a batch pushes into one entry.
+        let mut h = crate::history::CommandHistory::new();
+        h.begin_batch();
+        h.push(crate::history::HistoryEntry { command: crate::history::EditCommand::Batch(vec![]) });
+        h.push(crate::history::HistoryEntry { command: crate::history::EditCommand::Batch(vec![]) });
+        h.end_batch();
+        assert!(h.undo().is_some());
+        assert!(h.undo().is_none(), "two pushes inside a batch are one undo step");
+    }
+}
+
 #[cfg(test)]
 mod prefs_apply_tests {
     use super::*;
@@ -29145,6 +29223,29 @@ impl KlippApp {
         self.state.render_queue.max_parallel =
             self.prefs.export.parallel_render_jobs.max(1);
         let events = self.state.render_queue.poll();
+        // The queue as the control socket sees it, refreshed every frame
+        // the queue is polled; cheap, the queue is short.
+        if let Ok(mut exports) = self.state.control_shared.exports.lock() {
+            exports.clear();
+            exports.extend(self.state.render_queue.jobs.iter().map(|j| klipp_core::ExportStatus {
+                job_id: j.id.to_string(),
+                path: j.output_path.clone(),
+                status: match j.status {
+                    klipp_export::RenderJobStatus::Queued => "queued",
+                    klipp_export::RenderJobStatus::Rendering => "rendering",
+                    klipp_export::RenderJobStatus::Complete => "complete",
+                    klipp_export::RenderJobStatus::Failed => "failed",
+                    klipp_export::RenderJobStatus::Cancelled => "cancelled",
+                }
+                .to_string(),
+                progress: j.progress,
+                frames_done: j.frames_done,
+                total_frames: j.total_frames,
+                stage: j.render_stage.clone(),
+                error: j.error.clone(),
+                loudness: j.loudness_result.clone(),
+            }));
+        }
         for event in events {
             match event {
                 klipp_export::RenderQueueEvent::Complete { id, output_path } => {
