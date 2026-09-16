@@ -7,6 +7,7 @@ pub mod color_and_luts;
 pub mod effects_tab;
 pub mod info_tab;
 pub mod modifier_ui;
+pub mod title_tab;
 
 use crate::icons::Icon;
 use crate::layout_state::InspectorTab;
@@ -25,6 +26,16 @@ pub struct NewInspectorPanel {
     /// choice) so every new clip gets sensible starting values without
     /// overriding the user's in-session adjustments on the current clip.
     pub last_duck_clip: Option<klipp_core::ClipId>,
+    /// Chips for the Title tab, rendered by the title engine.
+    pub title_chips: title_tab::TitleChips,
+}
+
+impl NewInspectorPanel {
+    /// Drop every cached texture this panel owns, while wgpu is
+    /// still alive. Same contract as the browser's.
+    pub fn clear_textures_for_shutdown(&mut self) {
+        self.title_chips.drain();
+    }
 }
 
 
@@ -38,6 +49,7 @@ impl NewInspectorPanel {
         active_tab: &mut InspectorTab,
     ) -> Vec<AppCommand> {
         let mut cmds = Vec::new();
+        self.title_chips.begin_frame(ui.ctx());
 
         // ── Transition inspector (short-circuit clip inspector) ──
         if let Some((track_idx, trans_id)) = state.selected_transition {
@@ -311,7 +323,7 @@ impl NewInspectorPanel {
                                     left: 12.0, right: 12.0, top: 0.0, bottom: 0.0,
                                 })
                                 .show(ui, |ui| {
-                                    show_title_editor(ui, theme, clip, state, &mut cmds);
+                                    show_title_editor(ui, theme, clip, state, &mut cmds, &mut self.title_chips);
                                 });
                         } else {
                             no_selection(ui, theme);
@@ -3951,208 +3963,13 @@ fn show_title_layer_row(
     );
 }
 
-/// One row per direction: on/off, the kind, timing, easing and stagger.
-/// Every change sends the whole `TitleMotion` so undo has one step.
-fn show_title_motion_editor(
-    ui: &mut egui::Ui,
-    theme: &KlippTheme,
-    clip_id: klipp_core::ClipId,
-    tb: &klipp_timeline::TextBox,
-    cmds: &mut Vec<AppCommand>,
-) {
-    use klipp_timeline::{Easing, Motion, MotionKind, StaggerUnit, TitleMotion};
-    let mut motion: TitleMotion = tb.motion;
-    let mut changed = false;
-
-    let mut direction = |ui: &mut egui::Ui, label: &str, slot: &mut Option<Motion>, default_kind: MotionKind, id: &str| {
-        ui.horizontal(|ui| {
-            let mut on = slot.is_some();
-            if ui.checkbox(&mut on, label).changed() {
-                *slot = if on { Some(Motion::new(default_kind)) } else { None };
-                changed = true;
-            }
-            if let Some(m) = slot.as_mut() {
-                egui::ComboBox::from_id_salt(format!("{id}_kind"))
-                    .selected_text(m.kind.label())
-                    .width(0.0)
-                    .wrap_mode(egui::TextWrapMode::Extend)
-                    .show_ui(ui, |ui| {
-                        for k in MotionKind::ALL {
-                            if ui.selectable_value(&mut m.kind, k, k.label()).changed() {
-                                changed = true;
-                            }
-                        }
-                    });
-            }
-        });
-        if let Some(m) = slot.as_mut() {
-            ui.horizontal(|ui| {
-                ui.add_space(20.0);
-                if ui.add(egui::DragValue::new(&mut m.duration_secs).range(0.05..=5.0).speed(0.02).suffix(" s").prefix("Duration ").fixed_decimals(2)).changed() {
-                    changed = true;
-                }
-                if ui.add(egui::DragValue::new(&mut m.delay_secs).range(0.0..=10.0).speed(0.02).suffix(" s").prefix("Delay ").fixed_decimals(2)).changed() {
-                    changed = true;
-                }
-            });
-            ui.horizontal(|ui| {
-                ui.add_space(20.0);
-                egui::ComboBox::from_id_salt(format!("{id}_easing"))
-                    .selected_text(m.easing.label())
-                    .width(0.0)
-                    .wrap_mode(egui::TextWrapMode::Extend)
-                    .show_ui(ui, |ui| {
-                        for e in Easing::ALL {
-                            if ui.selectable_value(&mut m.easing, e, e.label()).changed() {
-                                changed = true;
-                            }
-                        }
-                    });
-                egui::ComboBox::from_id_salt(format!("{id}_stagger"))
-                    .selected_text(m.stagger.label())
-                    .width(0.0)
-                    .wrap_mode(egui::TextWrapMode::Extend)
-                    .show_ui(ui, |ui| {
-                        for u in StaggerUnit::ALL {
-                            if ui.selectable_value(&mut m.stagger, u, u.label()).changed() {
-                                changed = true;
-                            }
-                        }
-                    });
-                if m.stagger != StaggerUnit::None
-                    && ui.add(egui::DragValue::new(&mut m.stagger_secs).range(0.0..=1.0).speed(0.005).suffix(" s").fixed_decimals(3)).changed()
-                {
-                    changed = true;
-                }
-            });
-            let moves = matches!(m.kind, MotionKind::Rise | MotionKind::Drop | MotionKind::SlideLeft | MotionKind::SlideRight);
-            if moves {
-                ui.horizontal(|ui| {
-                    ui.add_space(20.0);
-                    if ui.add(egui::DragValue::new(&mut m.distance).range(0.1..=4.0).speed(0.02).suffix("\u{00d7} font").prefix("Travel ").fixed_decimals(2)).changed() {
-                        changed = true;
-                    }
-                });
-            }
-        }
-    };
-    direction(ui, "Enter", &mut motion.enter, MotionKind::Rise, "title_motion_enter");
-    ui.add_space(4.0);
-    direction(ui, "Exit", &mut motion.exit, MotionKind::Fade, "title_motion_exit");
-    if changed {
-        cmds.push(AppCommand::SetTitleMotion { clip_id, motion });
-    }
-    ui.add_space(6.0);
-    show_title_loops_editor(ui, theme, clip_id, tb, cmds);
-}
-
-/// The loops of a text layer: rows the user adds, each with its own
-/// timing, all running at once while the layer is on screen.
-fn show_title_loops_editor(
-    ui: &mut egui::Ui,
-    theme: &KlippTheme,
-    clip_id: klipp_core::ClipId,
-    tb: &klipp_timeline::TextBox,
-    cmds: &mut Vec<AppCommand>,
-) {
-    use klipp_timeline::{CrawlDirection, ScrollDirection, TitleLoop};
-    let mut loops = tb.loops.clone();
-    let mut changed = false;
-    let mut remove: Option<usize> = None;
-    ui.horizontal(|ui| {
-        ui.label(egui::RichText::new("Loops").size(crate::theme::type_scale::CAPTION).color(theme.text_secondary).strong());
-        egui::ComboBox::from_id_salt("title_loop_add")
-            .selected_text("+ Add")
-            .width(0.0)
-            .wrap_mode(egui::TextWrapMode::Extend)
-            .show_ui(ui, |ui| {
-                for l in TitleLoop::catalogue() {
-                    if ui.selectable_label(false, l.label()).clicked() {
-                        loops.push(l);
-                        changed = true;
-                    }
-                }
-            });
-    });
-    for (i, l) in loops.iter_mut().enumerate() {
-        ui.horizontal(|ui| {
-            ui.add_space(8.0);
-            ui.label(egui::RichText::new(l.label()).size(crate::theme::type_scale::CONTROL));
-            match l {
-                TitleLoop::Blink { rate_hz, duty } => {
-                    changed |= ui.add(egui::DragValue::new(rate_hz).range(0.1..=20.0).speed(0.05).suffix(" Hz").fixed_decimals(2)).changed();
-                    changed |= ui.add(egui::DragValue::new(duty).range(0.05..=0.95).speed(0.01).prefix("on ").fixed_decimals(2)).changed();
-                }
-                TitleLoop::Pulse { rate_hz, min_opacity } => {
-                    changed |= ui.add(egui::DragValue::new(rate_hz).range(0.05..=10.0).speed(0.02).suffix(" Hz").fixed_decimals(2)).changed();
-                    changed |= ui.add(egui::DragValue::new(min_opacity).range(0.0..=1.0).speed(0.01).prefix("min ").fixed_decimals(2)).changed();
-                }
-                TitleLoop::Shake { amplitude, rate_hz } | TitleLoop::Wave { amplitude, rate_hz } => {
-                    changed |= ui.add(egui::DragValue::new(amplitude).range(0.0..=2.0).speed(0.005).suffix("\u{00d7} font").fixed_decimals(3)).changed();
-                    changed |= ui.add(egui::DragValue::new(rate_hz).range(0.05..=30.0).speed(0.05).suffix(" Hz").fixed_decimals(2)).changed();
-                }
-                TitleLoop::ColorCycle { rate_hz } => {
-                    changed |= ui.add(egui::DragValue::new(rate_hz).range(0.01..=5.0).speed(0.01).suffix(" Hz").fixed_decimals(2)).changed();
-                }
-                TitleLoop::ColorBlend { color_a, color_b, rate_hz } => {
-                    let mut a = egui::Color32::from_rgba_unmultiplied(color_a[0], color_a[1], color_a[2], color_a[3]);
-                    if ui.color_edit_button_srgba(&mut a).changed() {
-                        *color_a = a.to_array();
-                        changed = true;
-                    }
-                    let mut b = egui::Color32::from_rgba_unmultiplied(color_b[0], color_b[1], color_b[2], color_b[3]);
-                    if ui.color_edit_button_srgba(&mut b).changed() {
-                        *color_b = b.to_array();
-                        changed = true;
-                    }
-                    changed |= ui.add(egui::DragValue::new(rate_hz).range(0.01..=5.0).speed(0.01).suffix(" Hz").fixed_decimals(2)).changed();
-                }
-                TitleLoop::Scroll { direction, speed_px_per_sec } => {
-                    let mut up = *direction == ScrollDirection::Up;
-                    if ui.selectable_label(up, "Up").clicked() { up = true; changed = true; }
-                    if ui.selectable_label(!up, "Down").clicked() { up = false; changed = true; }
-                    *direction = if up { ScrollDirection::Up } else { ScrollDirection::Down };
-                    changed |= ui.add(egui::DragValue::new(speed_px_per_sec).range(0.0..=2000.0).speed(1.0).suffix(" px/s").fixed_decimals(0)).on_hover_text("0 = fit the clip").changed();
-                }
-                TitleLoop::Crawl { direction, speed_px_per_sec, repeat } => {
-                    let mut left = *direction == CrawlDirection::Left;
-                    if ui.selectable_label(left, "\u{2190}").clicked() { left = true; changed = true; }
-                    if ui.selectable_label(!left, "\u{2192}").clicked() { left = false; changed = true; }
-                    *direction = if left { CrawlDirection::Left } else { CrawlDirection::Right };
-                    changed |= ui.add(egui::DragValue::new(speed_px_per_sec).range(0.0..=2000.0).speed(1.0).suffix(" px/s").fixed_decimals(0)).on_hover_text("0 = fit the clip").changed();
-                    changed |= ui.checkbox(repeat, "Repeat").changed();
-                }
-                TitleLoop::Counter { from, to, duration_secs, decimals } => {
-                    changed |= ui.add(egui::DragValue::new(from).speed(1.0).prefix("from ")).changed();
-                    changed |= ui.add(egui::DragValue::new(to).speed(1.0).prefix("to ")).changed();
-                    changed |= ui.add(egui::DragValue::new(duration_secs).range(0.1..=60.0).speed(0.05).suffix(" s").fixed_decimals(1)).changed();
-                    let mut d = *decimals as f32;
-                    if ui.add(egui::DragValue::new(&mut d).range(0.0..=3.0).speed(0.1).prefix("dec ").fixed_decimals(0)).changed() {
-                        *decimals = d.round() as u8;
-                        changed = true;
-                    }
-                }
-            }
-            if ui.small_button("\u{00d7}").on_hover_text("Remove").clicked() {
-                remove = Some(i);
-            }
-        });
-    }
-    if let Some(i) = remove {
-        loops.remove(i);
-        changed = true;
-    }
-    if changed {
-        cmds.push(AppCommand::SetTitleLoops { clip_id, loops });
-    }
-}
-
 fn show_title_editor(
     ui: &mut egui::Ui,
     theme: &KlippTheme,
     clip: &klipp_timeline::Clip,
     state: &AppState,
     cmds: &mut Vec<AppCommand>,
+    chips: &mut title_tab::TitleChips,
 ) {
     let clip_id = clip.id;
     let td = match &clip.kind {
@@ -4234,51 +4051,6 @@ fn show_title_editor(
         }
     }
 
-    // ── Preset dropdown ──
-    // Quick-style picker. Selecting a preset flattens its mutations
-    // into the active TextBox via ApplyTitlePreset; there's no
-    // "currently selected" preset on the data, so the combobox
-    // resets to "None" after each apply. Adding a new preset =
-    // extend PRESET_REGISTRY here AND the matching arm in
-    // apply_title_preset (app.rs).
-    {
-        ui.horizontal(|ui| {
-            ui.label(
-                egui::RichText::new("PRESET")
-                    .size(10.0)
-                    .color(theme.text_dim),
-            );
-            ui.add_space(8.0);
-            let combo_w = ui.available_width() - 8.0;
-            egui::ComboBox::from_id_salt("title_preset_dropdown")
-                .selected_text("None")
-                .width(combo_w)
-                .show_ui(ui, |ui| {
-                    for (id, label) in PRESET_REGISTRY {
-                        if *id == 0 {
-                            // "None" sentinel — keeps the closed combobox
-                            // showing a stable label without dispatching
-                            // anything when the user reopens it.
-                            let _ = ui.selectable_label(true, *label);
-                        } else if ui.selectable_label(false, *label).clicked() {
-                            cmds.push(AppCommand::ApplyTitlePreset {
-                                clip_id,
-                                preset_id: *id,
-                            });
-                        }
-                    }
-                });
-        });
-        ui.add_space(8.0);
-    }
-
-    // ── Layers panel ──
-    // Shows every object in the title (back → front), with
-    // visibility / lock toggles, click-to-select, delete. This is
-    // the primary entry point to multi-object titles — the user
-    // adds new TextBox / Shape layers here and switches between
-    // them. Selection feeds `state.selected_title_object`, which
-    // both the inspector and the on-canvas editor share.
     ui.label(
         egui::RichText::new("LAYERS")
             .size(10.0)
@@ -4317,20 +4089,22 @@ fn show_title_editor(
     }
     ui.add_space(8.0);
 
-    // ── Motion: how the text enters and leaves ──
+    // ── Motion and Style: the first tier, always open ──
     if let Some(tb) = tb_target {
-        let n = tb.motion.enter.is_some() as u32 + tb.motion.exit.is_some() as u32;
-        let status = crate::widgets::inspector_group::GroupStatus {
-            count: if n > 0 { Some(n) } else { None },
-            active: tb.motion.is_active(),
-        };
-        if title_group_is_open(ui, theme, clip_id, "Motion", status) {
-            ui.add_space(6.0);
-            show_title_motion_editor(ui, theme, clip_id, tb, cmds);
-            ui.add_space(8.0);
-        }
-        ui.add_space(2.0);
+        title_tab::show_motion_card(ui, theme, clip_id, tb, chips, cmds);
+        ui.add_space(10.0);
+        title_tab::show_style_card(ui, theme, clip_id, tb, chips, cmds);
+        ui.add_space(10.0);
     }
+
+    // ── Advanced: every other group, collapsed by default ──
+    {
+        let status = crate::widgets::inspector_group::GroupStatus { count: None, active: false };
+        if !title_group_is_open(ui, theme, clip_id, "Advanced", status) {
+            return;
+        }
+    }
+    ui.add_space(4.0);
 
     // ── Effects group ──
     if let Some(tb) = tb_target {

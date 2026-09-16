@@ -25768,6 +25768,7 @@ impl KlippApp {
         self.viewer.title_overlay_texture = None;
         self.viewer.logo_texture = None;
         self.browser.clear_textures_for_shutdown();
+        self.new_inspector.clear_textures_for_shutdown();
         for bucket in &mut self.state.deferred_texture_drops {
             bucket.clear();
         }
@@ -25932,6 +25933,7 @@ impl eframe::App for KlippApp {
 
         // Browser caches.
         self.browser.clear_textures_for_shutdown();
+        self.new_inspector.clear_textures_for_shutdown();
 
         // Empty every bucket of the AppState-side deferred-drop ring;
         // any handle queued in the last two frames hasn't been
@@ -33513,7 +33515,7 @@ fn target_textbox_mut(
 /// applied-and-flattened settings — there's no "currently-selected
 /// preset" recorded on the data, so the inspector dropdown is a
 /// quick-style picker rather than a slot.
-fn apply_title_preset(tb: &mut klipp_timeline::TextBox, preset_id: u8) {
+pub(crate) fn apply_title_preset(tb: &mut klipp_timeline::TextBox, preset_id: u8) {
     use klipp_timeline::{InnerShadow, TextGlow, TextOutline, TitleShadow};
     match preset_id {
         // 0 = "None" sentinel — no-op so the dropdown's default

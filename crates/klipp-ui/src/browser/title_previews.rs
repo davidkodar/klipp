@@ -23,11 +23,15 @@ struct Job {
     key: String,
     td: klipp_timeline::TitleData,
     time: f32,
+    w: u32,
+    h: u32,
 }
 
 struct Done {
     key: String,
     rgba: Vec<u8>,
+    w: u32,
+    h: u32,
 }
 
 pub struct TitlePreviews {
@@ -54,8 +58,8 @@ impl Default for TitlePreviews {
             .spawn(move || {
                 let mut renderer = klipp_title::TitleRenderer::new();
                 while let Ok(job) = job_rx.recv() {
-                    let rgba = renderer.render_with_window(&job.td, PREVIEW_W, PREVIEW_H, None, job.time, Some(PREVIEW_WINDOW));
-                    if done_tx.send(Done { key: job.key, rgba }).is_err() {
+                    let rgba = renderer.render_with_window(&job.td, job.w, job.h, None, job.time, Some(PREVIEW_WINDOW));
+                    if done_tx.send(Done { key: job.key, rgba, w: job.w, h: job.h }).is_err() {
                         break;
                     }
                 }
@@ -86,14 +90,20 @@ impl TitlePreviews {
         time: f32,
         make: impl FnOnce() -> klipp_timeline::TitleData,
     ) -> Option<&egui::TextureHandle> {
-        self.wanted.insert(key.to_string());
-        if let Some(i) = key.rfind('\u{1}') {
-            self.wanted_prefixes.insert(key[..=i].to_string());
-        }
-        if !self.textures.contains_key(key) && !self.pending.contains(key) {
-            self.pending.insert(key.to_string());
-            let _ = self.jobs.send(Job { key: key.to_string(), td: make(), time });
-        }
+        self.get_or_request_sized(key, time, PREVIEW_W, PREVIEW_H, make)
+    }
+
+    /// `get_or_request` at another frame size, for the inspector's
+    /// chips.
+    pub fn get_or_request_sized(
+        &mut self,
+        key: &str,
+        time: f32,
+        w: u32,
+        h: u32,
+        make: impl FnOnce() -> klipp_timeline::TitleData,
+    ) -> Option<&egui::TextureHandle> {
+        self.request_sized(key, time, w, h, make);
         self.textures.get(key)
     }
 
@@ -114,13 +124,18 @@ impl TitlePreviews {
     /// Queue a moment without reading it, so the frames a hover is
     /// about to need are rendering before they are asked for.
     pub fn request(&mut self, key: &str, time: f32, make: impl FnOnce() -> klipp_timeline::TitleData) {
+        self.request_sized(key, time, PREVIEW_W, PREVIEW_H, make);
+    }
+
+    /// `request` at another frame size.
+    pub fn request_sized(&mut self, key: &str, time: f32, w: u32, h: u32, make: impl FnOnce() -> klipp_timeline::TitleData) {
         self.wanted.insert(key.to_string());
         if let Some(i) = key.rfind('\u{1}') {
             self.wanted_prefixes.insert(key[..=i].to_string());
         }
         if !self.textures.contains_key(key) && !self.pending.contains(key) {
             self.pending.insert(key.to_string());
-            let _ = self.jobs.send(Job { key: key.to_string(), td: make(), time });
+            let _ = self.jobs.send(Job { key: key.to_string(), td: make(), time, w, h });
         }
     }
 
@@ -135,7 +150,7 @@ impl TitlePreviews {
                 .chunks_exact(4)
                 .map(|p| egui::Color32::from_rgba_unmultiplied(p[0], p[1], p[2], p[3]))
                 .collect();
-            let image = egui::ColorImage { size: [PREVIEW_W as usize, PREVIEW_H as usize], pixels };
+            let image = egui::ColorImage { size: [done.w as usize, done.h as usize], pixels };
             let tex = crate::app::alloc_texture_logged(ctx, "title_preview", image, egui::TextureOptions::LINEAR);
             if let Some(old) = self.textures.insert(done.key, tex) {
                 displaced.push(old);
