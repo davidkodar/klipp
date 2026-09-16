@@ -1204,9 +1204,17 @@ impl KlippApp {
         let envelopes: Vec<klipp_core::ControlEnvelope> = inbox.try_iter().collect();
         for env in envelopes {
             self.suppress_fps_prompt = true;
+            let touches_params = env.commands.iter().any(|c| matches!(c, AppCommand::SetNodeParam { .. }));
             let cmds = expand_control_commands(env.commands, env.batch);
             self.send_commands(cmds);
             self.suppress_fps_prompt = false;
+            // A parameter write reaches the engine through a queue it
+            // drains on its next frame; the socket's reads look at the
+            // engine's sequence. Push the mirror now, so what the client
+            // reads after the acknowledgement is what it wrote.
+            if touches_params {
+                self.sync_sequence_to_engine();
+            }
             if let Some(ack) = env.ack {
                 let _ = ack.send(klipp_core::ControlAck { revision: self.state.control_shared.revision() });
             }
@@ -1216,7 +1224,11 @@ impl KlippApp {
     /// Share the document revision and the render queue's state with the
     /// control socket.
     pub fn set_control_shared(&mut self, shared: std::sync::Arc<klipp_core::ControlShared>) {
-        self.state.control_shared = shared;
+        self.state.control_shared = std::sync::Arc::clone(&shared);
+        // Histories made before this arrived point at the default counter.
+        for h in self.state.command_histories.values_mut() {
+            h.set_revision_shared(std::sync::Arc::clone(&shared));
+        }
     }
 
     fn drain_events(&mut self, ctx: &egui::Context) {
@@ -3722,6 +3734,12 @@ impl KlippApp {
     }
 
     fn sync_sequence_to_engine(&self) {
+        // Parameter changes still queued for the engine are already in
+        // the mirror this pushes; left in the queue they would land
+        // *after* it and overwrite it — an undo of a grade change lost
+        // to the change itself, seen over the control socket and
+        // possible for a fast ctrl+z too. The queue is multi-consumer.
+        while self.param_change_queue.pop().is_some() {}
         // ROOT CAUSE FIX (2026-04-28): a plain `self.sequence.write()`
         // on Linux uses pthread_rwlock_t, which is reader-preferring
         // by default. The engine acquires `sequence.read()` every
@@ -21628,7 +21646,6 @@ impl KlippApp {
             self.sync_sequence_to_engine();
             self.state.dirty = true;
             self.state.media_usage_cache_dirty = true;
-            self.state.control_shared.bump_revision();
         }
     }
 
@@ -21638,7 +21655,6 @@ impl KlippApp {
             self.sync_sequence_to_engine();
             self.state.dirty = true;
             self.state.media_usage_cache_dirty = true;
-            self.state.control_shared.bump_revision();
         }
     }
 

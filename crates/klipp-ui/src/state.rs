@@ -3821,11 +3821,19 @@ impl AppState {
     }
     pub fn history_for_mut(&mut self, seq_id: SequenceId) -> &mut CommandHistory {
         let max = self.history_max_size;
-        self.command_histories.entry(seq_id).or_insert_with(|| {
+        let shared = std::sync::Arc::clone(&self.control_shared);
+        let h = self.command_histories.entry(seq_id).or_insert_with(|| {
             let mut h = CommandHistory::new();
             h.set_max_size(max);
             h
-        })
+        });
+        // Every push, undo and redo advances the document revision,
+        // whichever path pushed it. Set here rather than at creation
+        // because the shared counter can arrive after the histories do.
+        if !h.has_revision_shared() {
+            h.set_revision_shared(shared);
+        }
+        h
     }
     /// Push a single edit onto the active sequence's undo stack and
     /// bump the project-level autosave counter. Replaces the prior
@@ -3834,7 +3842,6 @@ impl AppState {
     pub fn push_history(&mut self, command: EditCommand) {
         self.active_history_mut().push(HistoryEntry { command });
         self.history_ops_since_save = self.history_ops_since_save.saturating_add(1);
-        self.control_shared.bump_revision();
     }
     /// Reset the project-level autosave counter. Call from the
     /// project-save path.

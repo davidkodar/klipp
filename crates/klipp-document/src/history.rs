@@ -676,6 +676,10 @@ pub struct CommandHistory {
     /// intervening edits cleanly break the burst).
     last_title_text_edit: Option<(ClipId, Instant)>,
 
+    /// The document revision to advance on every push, undo and redo:
+    /// what a client asks to learn whether anything changed.
+    revision: Option<std::sync::Arc<klipp_core::ControlShared>>,
+
     /// While a batch is open, pushes collect here instead of landing on
     /// the stack; `end_batch` pushes them as one `Batch` entry.
     batch: Option<Vec<EditCommand>>,
@@ -690,6 +694,7 @@ impl CommandHistory {
             pending_coalesce_key: None,
             pending_old_entry: None,
             last_title_text_edit: None,
+            revision: None,
             batch: None,
         }
     }
@@ -733,6 +738,7 @@ impl CommandHistory {
         }
         self.undo_stack.push_back(entry);
         self.redo_stack.clear();
+        self.bump_revision();
         if self.max_size > 0 && self.undo_stack.len() > self.max_size {
             self.undo_stack.pop_front();
         }
@@ -856,13 +862,31 @@ impl CommandHistory {
     pub fn undo(&mut self) -> Option<HistoryEntry> {
         let entry = self.undo_stack.pop_back()?;
         self.redo_stack.push_back(entry.clone());
+        self.bump_revision();
         Some(entry)
     }
 
     pub fn redo(&mut self) -> Option<HistoryEntry> {
         let entry = self.redo_stack.pop_back()?;
         self.undo_stack.push_back(entry.clone());
+        self.bump_revision();
         Some(entry)
+    }
+
+    /// Advance the shared document revision on every push, undo and
+    /// redo of this history.
+    pub fn set_revision_shared(&mut self, shared: std::sync::Arc<klipp_core::ControlShared>) {
+        self.revision = Some(shared);
+    }
+
+    pub fn has_revision_shared(&self) -> bool {
+        self.revision.is_some()
+    }
+
+    fn bump_revision(&self) {
+        if let Some(r) = &self.revision {
+            r.bump_revision();
+        }
     }
 
     pub fn can_undo(&self) -> bool {
