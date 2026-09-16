@@ -322,6 +322,21 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
             }
             v
         }
+        "klipp_analyze" => {
+            let mut v = json!({ "method": "analyze" });
+            if let Some(id) = args.get("media_id").and_then(|v| v.as_str()) {
+                v["media_id"] = json!(id);
+            }
+            v
+        }
+        "klipp_analysis_status" => json!({ "method": "analysis_status" }),
+        "klipp_media_analysis" => {
+            let mut v = json!({ "method": "media_analysis", "media_id": arg_str(args, "media_id")? });
+            if let Some(n) = args.get("max_chars").and_then(|v| v.as_u64()) {
+                v["max_chars"] = json!(n as usize);
+            }
+            v
+        }
         "klipp_undo" => json!({ "method": "undo" }),
         "klipp_redo" => json!({ "method": "redo" }),
         "klipp_batch" => {
@@ -393,7 +408,7 @@ fn call_tool(name: &str, args: &Value) -> Result<Vec<Value>, String> {
     }
 
     // The timeline view is text for reading, not JSON for parsing.
-    if name == "klipp_timeline" {
+    if name == "klipp_timeline" || name == "klipp_media_analysis" {
         if let Some(text) = result.get("text").and_then(|v| v.as_str()) {
             return Ok(vec![json!({ "type": "text", "text": text })]);
         }
@@ -598,6 +613,23 @@ fn tool_definitions() -> Vec<Value> {
               planning an edit; klipp_list_clips is the same as JSON with more fields.",
              json!({ "max_chars": { "type": "integer", "description": "Cut on a line boundary at this many characters (default 12000)" } }),
              vec![]),
+        tool("klipp_analyze",
+             "Find what is in the footage, in the background: shot boundaries (where the \
+              picture cuts), EBU R128 loudness and true peak, and the spans of silence. \
+              One media item by id, or every file in the pool when media_id is omitted. \
+              Returns at once; poll klipp_analysis_status, then read klipp_media_analysis. \
+              Items already analysed cost nothing. Runs on import too.",
+             json!({ "media_id": { "type": "string", "description": "From klipp_list_media; omit for every item" } }),
+             vec![]),
+        tool("klipp_analysis_status", "Where every requested analysis stands: queued, running, done, failed.",
+             json!({}), vec![]),
+        tool("klipp_media_analysis",
+             "What is known about a media item, as text: its shots with their ranges, \
+              its loudness, range and true peak, and its silences. The timeline view \
+              shows the same facts per clip in brief. Times are seconds from the file's \
+              start; a clip's source_in maps them to the timeline.",
+             json!({ "media_id": { "type": "string" }, "max_chars": { "type": "integer", "description": "Cut at this many characters (default 8000)" } }),
+             vec!["media_id"]),
         tool("klipp_undo", "One step back in the active sequence's edit history. Every write \
               made through these tools is one step; a klipp_batch is one step as a whole.",
              json!({}), vec![]),

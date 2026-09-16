@@ -140,6 +140,24 @@ pub enum ControlCommand {
         max_chars: Option<usize>,
     },
 
+    // ── Analysis ──────────────────────────────────────────────────
+    /// Analyse a media item, or every item in the pool, in the
+    /// background: shot boundaries, loudness, silence. Returns at once
+    /// with each item's state; results already stored cost nothing.
+    Analyze {
+        #[serde(default)]
+        media_id: Option<String>,
+    },
+    /// Where every requested item stands.
+    AnalysisStatus,
+    /// What is known about a media item, as text: the shot list, the
+    /// loudness, the silences. Cut at `max_chars` (default 8000).
+    MediaAnalysis {
+        media_id: String,
+        #[serde(default)]
+        max_chars: Option<usize>,
+    },
+
     // ── Edit history ──────────────────────────────────────────────
     /// One step back in the active sequence's history.
     Undo,

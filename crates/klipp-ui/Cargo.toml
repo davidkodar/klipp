@@ -32,6 +32,7 @@ klipp-jobs = { path = "../klipp-jobs" }
 klipp-nodes = { workspace = true }
 klipp-timeline = { workspace = true }
 klipp-media = { workspace = true }
+klipp-analysis = { workspace = true }
 klipp-transitions = { workspace = true }
 klipp-compose = { workspace = true }
 klipp-validation = { workspace = true }

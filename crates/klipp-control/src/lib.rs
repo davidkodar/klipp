@@ -307,7 +307,16 @@ fn timeline_text(
         for c in &t.clips {
             let what = match &c.kind {
                 klipp_timeline::ClipKind::Media { media_id } => match pool.get(media_id) {
-                    Some(m) => format!("media {}  src {:.2}-{:.2} s", m.filename, c.source_in.to_secs_f64(), c.source_out.to_secs_f64()),
+                    Some(m) => {
+                        let mut line = format!("media {}  src {:.2}-{:.2} s", m.filename, c.source_in.to_secs_f64(), c.source_out.to_secs_f64());
+                        // What analysis knows about this part of the file.
+                        let known = klipp_analysis::report::MediaAnalysis::load(&m.path)
+                            .clip_summary(c.source_in.to_secs_f64(), c.source_out.to_secs_f64());
+                        if !known.is_empty() {
+                            let _ = write!(line, "  [{known}]");
+                        }
+                        line
+                    }
                     None => "media (missing from pool)".to_string(),
                 },
                 klipp_timeline::ClipKind::Title(td) => {
@@ -609,6 +618,50 @@ fn handle(
                 })
                 .collect();
             Ok(json!({ "fps": fps, "revision": ctx.shared.revision(), "tracks": tracks }))
+        }
+
+        ControlCommand::Analyze { media_id } => {
+            if in_batch {
+                return read_in_batch("analyze");
+            }
+            let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
+            let items: Vec<&klipp_media::MediaItem> = match media_id {
+                Some(id) => {
+                    let id = klipp_core::MediaId(id.parse().map_err(|e| format!("media_id is not a uuid: {e}"))?);
+                    vec![pool.get(&id).ok_or_else(|| format!("no media item {}", id.0))?]
+                }
+                None => pool.all().filter(|m| m.kind == klipp_media::MediaItemKind::File && !m.offline).collect(),
+            };
+            let statuses: Vec<klipp_analysis::service::Status> = items.into_iter().map(klipp_analysis::service::request).collect();
+            Ok(json!({ "items": statuses }))
+        }
+
+        ControlCommand::AnalysisStatus => {
+            if in_batch {
+                return read_in_batch("analysis_status");
+            }
+            Ok(json!({ "items": klipp_analysis::service::all() }))
+        }
+
+        ControlCommand::MediaAnalysis { media_id, max_chars } => {
+            if in_batch {
+                return read_in_batch("media_analysis");
+            }
+            let id = klipp_core::MediaId(media_id.parse().map_err(|e| format!("media_id is not a uuid: {e}"))?);
+            let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
+            let item = pool.get(&id).ok_or_else(|| format!("no media item {}", id.0))?;
+            let report = klipp_analysis::report::MediaAnalysis::load(&item.path);
+            let status = klipp_analysis::service::status(id).map(|s| s.state);
+            let full = format!("{}  {:.2} s\n{}", item.filename, item.duration.to_secs_f64(), report.text(max_chars.unwrap_or(8000)));
+            let (text, cut) = cut_to_budget(&full, max_chars.unwrap_or(8000));
+            Ok(json!({
+                "text": text,
+                "cut": cut,
+                "analysed": !report.is_empty(),
+                "state": status,
+                "shots": report.shots,
+                "audio": report.audio,
+            }))
         }
 
         ControlCommand::Timeline { max_chars } => {

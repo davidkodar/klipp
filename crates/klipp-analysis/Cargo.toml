@@ -1,0 +1,25 @@
+[package]
+name = "klipp-analysis"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# What is in the footage, as facts: shot boundaries, loudness and
+# silence, later the words and the framing. Deterministic passes over a
+# media file, cached beside Klipp's other caches by the file's cache
+# key, read by the control socket, the timeline view and the UI.
+#
+# Each analyser is a plugin behind one trait with a versioned output;
+# what runs it (ffmpeg here, a model later) is its own business, and an
+# analyser that is missing leaves its fields empty and nothing else
+# changes.
+
+[dependencies]
+klipp-core = { workspace = true }
+klipp-media = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+
+[lints]
+workspace = true

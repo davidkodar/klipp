@@ -1434,6 +1434,12 @@ impl KlippApp {
                         ));
                     }
                     let span_path = media_item.path.clone();
+                    // What is in the footage, found in the background as it
+                    // arrives: shots, loudness, silence. Stored by the file's
+                    // cache key, so a file seen before costs nothing.
+                    if media_item.kind == klipp_media::MediaItemKind::File {
+                        klipp_analysis::service::request(&media_item);
+                    }
                     self.state.media_pool.add(media_item);
                     self.refresh_spans_beside(&span_path);
                     // Imports stay off the timeline-edit undo stack (FCP /

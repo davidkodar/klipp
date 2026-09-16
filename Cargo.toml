@@ -29,6 +29,7 @@ members = [
     "crates/klipp-smoke",
     "crates/klipp-control",
     "crates/klipp-document",
+    "crates/klipp-analysis",
     "crates/klipp-hdr-out",
     "crates/klipp-mcp",
 ]
@@ -222,6 +223,7 @@ klipp-ui      = { path = "crates/klipp-ui" }
 klipp-testing = { path = "crates/klipp-testing" }
 klipp-control = { path = "crates/klipp-control" }
 klipp-document = { path = "crates/klipp-document" }
+klipp-analysis = { path = "crates/klipp-analysis" }
 klipp-hdr-out = { path = "crates/klipp-hdr-out" }
 klipp-mcp = { path = "crates/klipp-mcp" }
 

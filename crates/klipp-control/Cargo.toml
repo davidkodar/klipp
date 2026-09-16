@@ -21,6 +21,7 @@ klipp-core = { workspace = true }
 klipp-timeline = { workspace = true }
 klipp-media = { workspace = true }
 klipp-engine = { workspace = true }
+klipp-analysis = { workspace = true }
 klipp-nodes = { workspace = true }
 crossbeam-channel = { workspace = true }
 serde = { workspace = true }
