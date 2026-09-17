@@ -1192,7 +1192,10 @@ fn handle(
                 let fb = ctx.frame_buffer.lock().map_err(|_| "frame buffer lock poisoned")?;
                 fb.latest_generation()
             };
-            send_envelope(ctx, vec![AppCommand::SeekTo(target)], false)?;
+            // Paused first: a frame of a time cannot be taken from a viewer
+            // that is moving, and a grab during playback used to wait out
+            // its whole timeout while the playhead ran on past the target.
+            send_envelope(ctx, vec![AppCommand::Pause, AppCommand::SeekTo(target)], false)?;
             // The frame this asks for: rendered after the seek, at the
             // time asked for, with every clip under the playhead in it.
             // A frame's generation alone said none of that: a late

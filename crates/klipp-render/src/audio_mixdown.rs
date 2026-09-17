@@ -309,6 +309,24 @@ fn get_track_samples(
     output
 }
 
+/// A clip's volume, gain and pan at `clip_pos` seconds into it.
+fn levels_at(shape: &AudioClipShape, clip_pos: f64, timeline_secs: f64, fps: f64) -> (f32, f32) {
+    let ctx = klipp_core::EvalContext {
+        clip_time_secs: clip_pos,
+        clip_duration_secs: shape.clip_duration_secs,
+        timeline_time_secs: timeline_secs,
+        fps,
+        seed: shape.seed,
+    };
+    let eval = |kfs: &[klipp_core::Keyframe], p: klipp_core::ParamId, base: f32| {
+        klipp_compose::eval::eval_with_modifiers(kfs, &shape.param_modifiers, &p, clip_pos, base, &ctx)
+    };
+    let volume = eval(&shape.volume_keyframes, klipp_core::ParamId::Volume, shape.volume);
+    let gain = eval(&shape.gain_keyframes, klipp_core::ParamId::Gain, shape.gain);
+    let pan = eval(&shape.pan_keyframes, klipp_core::ParamId::Pan, shape.pan);
+    (volume * gain, pan)
+}
+
 /// A curve over a `0..=1` ramp: `0` linear, `1` exponential, `2`
 /// logarithmic, `3` S-curve. The playback feeder's.
 fn fade_curve(t: f64, curve: u8) -> f64 {
@@ -344,28 +362,23 @@ fn fade_envelope(pos: f64, dur: f64, fade_in: f64, fade_out: f64, in_curve: u8, 
 /// Apply `shape` to `samples`, interleaved stereo starting `clip_pos`
 /// seconds into the clip at timeline time `timeline_secs`.
 fn shape_samples(samples: &mut [f32], shape: &AudioClipShape, clip_pos: f64, timeline_secs: f64, fps: f64, sample_rate: u32) {
-    let ctx = klipp_core::EvalContext {
-        clip_time_secs: clip_pos,
-        clip_duration_secs: shape.clip_duration_secs,
-        timeline_time_secs: timeline_secs,
-        fps,
-        seed: shape.seed,
-    };
-    let eval = |kfs: &[klipp_core::Keyframe], p: klipp_core::ParamId, base: f32| {
-        klipp_compose::eval::eval_with_modifiers(kfs, &shape.param_modifiers, &p, clip_pos, base, &ctx)
-    };
-    let volume = eval(&shape.volume_keyframes, klipp_core::ParamId::Volume, shape.volume);
-    let gain = eval(&shape.gain_keyframes, klipp_core::ParamId::Gain, shape.gain);
-    let pan = eval(&shape.pan_keyframes, klipp_core::ParamId::Pan, shape.pan);
-    // Balance, as the output applies a clip's pan: centre is unity and
-    // a side attenuates the other.
-    let pan_l = if pan <= 0.0 { 1.0 } else { 1.0 - pan };
-    let pan_r = if pan >= 0.0 { 1.0 } else { 1.0 + pan };
+    // The levels at the frame's first sample and at the next frame's,
+    // and a straight line between: keyframes move a level across a
+    // frame, and holding it for the frame turned a duck into a staircase
+    // of steps a frame long, each one a click.
+    let frame_secs = (samples.len() / 2) as f64 / sample_rate as f64;
+    let (vol, pan) = levels_at(shape, clip_pos, timeline_secs, fps);
+    let animated = !shape.volume_keyframes.is_empty() || !shape.gain_keyframes.is_empty() || !shape.pan_keyframes.is_empty() || !shape.param_modifiers.is_empty();
+    let (vol_end, pan_end) = if animated { levels_at(shape, clip_pos + frame_secs, timeline_secs + frame_secs, fps) } else { (vol, pan) };
+    let moving = (vol_end - vol).abs() > 1e-6 || (pan_end - pan).abs() > 1e-6;
     let has_fade = shape.fade_in_secs > 0.001 || shape.fade_out_secs > 0.001 || clip_pos < ANTI_CLICK_SECS;
-    let vol = volume * gain;
-    if !has_fade && (vol - 1.0).abs() < 1e-6 && pan.abs() < 1e-6 && shape.channel_config == 0 {
+    if !has_fade && !moving && (vol - 1.0).abs() < 1e-6 && pan.abs() < 1e-6 && shape.channel_config == 0 {
         return;
     }
+    // Balance, as the output applies a clip's pan: centre is unity and
+    // a side attenuates the other.
+    let balance = |pan: f32| (if pan <= 0.0 { 1.0 } else { 1.0 - pan }, if pan >= 0.0 { 1.0 } else { 1.0 + pan });
+    let n = (samples.len() / 2).max(1) as f32;
     let dur = shape.clip_duration_secs;
     for (i, pair) in samples.chunks_mut(2).enumerate() {
         let fade = if has_fade {
@@ -374,7 +387,9 @@ fn shape_samples(samples: &mut [f32], shape: &AudioClipShape, clip_pos: f64, tim
         } else {
             1.0
         };
-        let m = vol * fade;
+        let t = if moving { i as f32 / n } else { 0.0 };
+        let m = (vol + (vol_end - vol) * t) * fade;
+        let (pan_l, pan_r) = balance(pan + (pan_end - pan) * t);
         if let [l, r] = pair {
             *l *= m * pan_l;
             *r *= m * pan_r;
@@ -722,6 +737,14 @@ mod tests {
         let mut s = ones(2);
         shape_samples(&mut s, &shape, 1.0, 1.0, 25.0, sr);
         assert!((s[0] - 0.5).abs() < 1e-3, "{}", s[0]);
+        // And it moves across the frame, not in a step at its start: a
+        // tenth of a second on, the level is a twentieth lower, with
+        // every sample between on the line.
+        let mut s = ones(4800);
+        shape_samples(&mut s, &shape, 1.0, 1.0, 25.0, sr);
+        assert!((s[0] - 0.5).abs() < 1e-3 && (s[4799 * 2] - 0.45).abs() < 1e-3, "{} then {}", s[0], s[4799 * 2]);
+        assert!((s[2400 * 2] - 0.475).abs() < 1e-3, "{}", s[2400 * 2]);
+        assert!(s.chunks(2).collect::<Vec<_>>().windows(2).all(|w| w[1][0] <= w[0][0]), "never a step up on the way down");
     }
 
     #[test]
