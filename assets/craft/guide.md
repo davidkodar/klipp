@@ -103,6 +103,14 @@ exist until the plan runs.
   another clip is heard over it, and moves there and back over half a
   second. Set the music's own volume first and place the speech first:
   the duck is written as keyframes from what is on the timeline then.
+- `style {clip_id | track, from?, to?, size?, color?, font?, bold?, align?, x?, y?, backing?, outline?}`:
+  the look and place of one title, or of every title on a track
+  (`"subtitle"` for all the captions), between `from` and `to` when
+  given. `size` is pixels of a 1080-line frame, `color` is `#rrggbb`,
+  `x` and `y` are where the text's centre goes (0 to 1 of the frame),
+  `backing` is how dark a panel sits behind the text (0 none, 1 black),
+  `outline` a width in pixels. Lift the captions with it for as long as
+  a lower third is up, so the two do not share the bottom of the frame.
 - `lower_third {name, role?, at, secs?, track?, side?, x?, y?}`: a name
   and a role bottom left in title-safe, four seconds unless you say
   otherwise, fading in and out, on a text track with room (one is made

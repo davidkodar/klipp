@@ -836,6 +836,12 @@ fn tool_definitions() -> Vec<Value> {
               down (9 dB by default) wherever another clip is heard over it, moving over \
               fade_secs (0.5) each way, as volume keyframes. Set the music's volume first, \
               place the speech first.\n\
+              style {clip_id | track, from?, to?, size?, color?, font?, bold?, align?, x?, y?, backing?, outline?} \
+              — the look and place of one title, or of every title on a track (\"subtitle\" for \
+              all the captions), between from and to when given: size in pixels of a 1080-line \
+              frame, color #rrggbb, x and y where the text's centre goes (0 to 1), backing how \
+              dark a panel sits behind it (0 none to 1 black), outline a width in pixels. It is \
+              how captions are lifted clear of a lower third while it is up.\n\
               lower_third {name, role?, at, secs?, track?, side?, x?, y?} — a name with a role \
               under it, bottom left in title-safe, four seconds by default, fading in and out, on \
               a text track with room (made on top if none: every other index then moves down by \
@@ -896,6 +902,12 @@ fn tool_definitions() -> Vec<Value> {
               down (9 dB by default) wherever another clip is heard over it, moving over \
               fade_secs (0.5) each way, as volume keyframes. Set the music's volume first, \
               place the speech first.\n\
+              style {clip_id | track, from?, to?, size?, color?, font?, bold?, align?, x?, y?, backing?, outline?} \
+              — the look and place of one title, or of every title on a track (\"subtitle\" for \
+              all the captions), between from and to when given: size in pixels of a 1080-line \
+              frame, color #rrggbb, x and y where the text's centre goes (0 to 1), backing how \
+              dark a panel sits behind it (0 none to 1 black), outline a width in pixels. It is \
+              how captions are lifted clear of a lower third while it is up.\n\
               lower_third {name, role?, at, secs?, track?, side?, x?, y?} — a name with a role \
               under it, bottom left in title-safe, four seconds by default, fading in and out, on \
               a text track with room (made on top if none: every other index then moves down by \

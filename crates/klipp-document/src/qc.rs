@@ -194,7 +194,7 @@ pub fn check(seq: &Sequence, pool: &MediaPool, transcripts: &dyn Transcripts) ->
         if low {
             if let Some(cap) = captions.iter().find(|k| secs(k.timeline_in) < b && secs(k.timeline_out) > a) {
                 let from = a.max(secs(cap.timeline_in));
-                add(Severity::Warning, "captions_under_title", Some(from), format!("{} and the captions share the bottom of the frame from {from:.2} s", clip_label(pool, c)), "Put the title up where nobody is speaking, or take the captions out from under it");
+                add(Severity::Warning, "captions_under_title", Some(from), format!("{} and the captions share the bottom of the frame from {from:.2} s", clip_label(pool, c)), "Lift the captions for that stretch (style the subtitle track with from, to and a y of about 0.7), or put the title up where nobody is speaking");
             }
         }
     }

@@ -216,6 +216,57 @@ pub enum Op {
     /// a name spelt as the cast list spells it. The first text box of
     /// the clip takes `text`; its look, place and timing stay.
     SetText { clip_id: ClipRef, text: String },
+    /// The look and place of titles: one clip, or every title on a track
+    /// (the captions, all at once), between `from` and `to` when given —
+    /// which is how the captions are lifted clear of a lower third for
+    /// as long as it is up. What is left out stays as it is. `size` is
+    /// in pixels of a 1080-line frame; `color` is `#rrggbb` or
+    /// `#rrggbbaa`; `x` and `y` are where the text's centre goes, 0 to 1
+    /// of the frame, everything in the title moving with it; `backing`
+    /// is how dark a panel sits behind the text as the eye sees it, 0
+    /// (none) to 1 (black); `outline` is a width in pixels, 0 for none.
+    Style {
+        #[serde(default)]
+        clip_id: Option<ClipRef>,
+        #[serde(default)]
+        track: Option<TrackRef>,
+        #[serde(default)]
+        from: Option<Anchor>,
+        #[serde(default)]
+        to: Option<Anchor>,
+        #[serde(default)]
+        size: Option<f32>,
+        #[serde(default)]
+        color: Option<String>,
+        #[serde(default)]
+        font: Option<String>,
+        #[serde(default)]
+        bold: Option<bool>,
+        #[serde(default)]
+        align: Option<String>,
+        #[serde(default)]
+        x: Option<f32>,
+        #[serde(default)]
+        y: Option<f32>,
+        #[serde(default)]
+        backing: Option<f32>,
+        #[serde(default)]
+        outline: Option<f32>,
+    },
+}
+
+/// What a `style` op changes, gathered.
+#[derive(Debug, Clone, Default, PartialEq)]
+struct Look {
+    size: Option<f32>,
+    color: Option<[u8; 4]>,
+    font: Option<String>,
+    bold: Option<bool>,
+    align: Option<klipp_timeline::TextAlignment>,
+    x: Option<f32>,
+    y: Option<f32>,
+    backing: Option<f32>,
+    outline: Option<f32>,
 }
 
 fn default_caption_chars() -> usize {
@@ -564,6 +615,32 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
         Op::Duck { clip_id, by_db, fade_secs } => {
             let (ti, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
             duck(seq, pool, i, ti, clip, *by_db, *fade_secs)
+        }
+        Op::Style { clip_id, track, from, to, size, color, font, bold, align, x, y, backing, outline } => {
+            let look = Look {
+                size: *size,
+                color: color.as_deref().map(|c| parse_color(c).ok_or_else(|| refuse(i, format!("\"{c}\" is not a colour"), "write it as #rrggbb or #rrggbbaa"))).transpose()?,
+                font: font.clone(),
+                bold: *bold,
+                align: align
+                    .as_deref()
+                    .map(|a| match a.to_lowercase().as_str() {
+                        "left" => Ok(klipp_timeline::TextAlignment::Left),
+                        "center" | "centre" => Ok(klipp_timeline::TextAlignment::Center),
+                        "right" => Ok(klipp_timeline::TextAlignment::Right),
+                        other => Err(refuse(i, format!("\"{other}\" is not an alignment"), "use left, center or right")),
+                    })
+                    .transpose()?,
+                x: *x,
+                y: *y,
+                backing: *backing,
+                outline: *outline,
+            };
+            let from = from.as_ref().map(|a| resolve_anchor(seq, fps, a, i)).transpose()?;
+            let to = to.as_ref().map(|a| resolve_anchor(seq, fps, a, i)).transpose()?;
+            let one = clip_id.as_ref().map(|r| resolve_clip(seq, fps, r, i)).transpose()?;
+            let ti = track.as_ref().map(|t| resolve_track(seq, t, i)).transpose()?;
+            style(seq, pool, i, one.map(|(ti, _, c)| (ti, c)), ti, from, to, &look)
         }
         Op::LowerThird { name, role, at, secs: hold, track, side, x, y } => {
             let at = resolve_anchor(seq, fps, at, i)?;
@@ -1384,6 +1461,144 @@ fn set_text(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip, 
     Ok((what, edit, vec![clip.id]))
 }
 
+/// `#rrggbb` or `#rrggbbaa`.
+fn parse_color(c: &str) -> Option<[u8; 4]> {
+    let hex = c.trim().strip_prefix('#')?;
+    if !(hex.len() == 6 || hex.len() == 8) || !hex.chars().all(|ch| ch.is_ascii_hexdigit()) {
+        return None;
+    }
+    let byte = |k: usize| u8::from_str_radix(&hex[k..k + 2], 16).ok();
+    Some([byte(0)?, byte(2)?, byte(4)?, if hex.len() == 8 { byte(6)? } else { 255 }])
+}
+
+/// `look` on one title: its text boxes take the size, colour, face and
+/// alignment, every layer moves with the first text's centre, the
+/// panel behind it is as dark as asked.
+fn restyle(td: &klipp_timeline::TitleData, look: &Look) -> klipp_timeline::TitleData {
+    use klipp_timeline::{FontStyle, TitleBackground, TitleObjectContent};
+    let mut new = td.clone();
+    let first_centre = new.objects.iter().find(|o| matches!(o.content, TitleObjectContent::TextBox(_))).map(|o| (o.transform.center.x, o.transform.center.y));
+    // Sizes keep their proportions: a lower third's role stays smaller than its name.
+    let first_size = new.objects.iter().find_map(|o| match &o.content { TitleObjectContent::TextBox(tb) => Some(tb.font_size), _ => None }).unwrap_or(1.0).max(1.0);
+    for o in new.objects.iter_mut() {
+        if let (Some((cx, cy)), true) = (first_centre, look.x.is_some() || look.y.is_some()) {
+            let (dx, dy) = (look.x.map(|x| x - cx).unwrap_or(0.0), look.y.map(|y| y - cy).unwrap_or(0.0));
+            o.transform.center.x = (o.transform.center.x + dx).clamp(0.02, 0.98);
+            o.transform.center.y = (o.transform.center.y + dy).clamp(0.02, 0.98);
+        }
+        let TitleObjectContent::TextBox(tb) = &mut o.content else { continue };
+        if let Some(size) = look.size {
+            tb.font_size = (tb.font_size / first_size * size).max(6.0);
+        }
+        if let Some(c) = look.color {
+            tb.color = c;
+        }
+        if let Some(f) = &look.font {
+            tb.font_name = f.clone();
+        }
+        if let Some(b) = look.bold {
+            tb.font_style = match (tb.font_style, b) {
+                (FontStyle::Italic | FontStyle::BoldItalic, true) => FontStyle::BoldItalic,
+                (FontStyle::Italic | FontStyle::BoldItalic, false) => FontStyle::Italic,
+                (_, true) => FontStyle::Bold,
+                (_, false) => FontStyle::Regular,
+            };
+        }
+        if let Some(a) = look.align {
+            tb.alignment = a;
+        }
+        if let Some(w) = look.outline {
+            tb.outlines.clear();
+            if w > 0.0 {
+                tb.outlines.push(klipp_timeline::TextOutline { color: [0, 0, 0, 200], width: w, enabled: true, width_keyframes: Vec::new() });
+            }
+        }
+    }
+    if let Some(dark) = look.backing {
+        new.background = if dark <= 0.0 {
+            TitleBackground::None
+        } else {
+            // Composited in linear light: an alpha of 0.72 only halves the
+            // picture's brightness to the eye. This is the alpha that
+            // looks as dark as asked.
+            let alpha = 1.0 - (1.0 - dark.min(1.0)).powf(2.2);
+            TitleBackground::Color { color: [0, 0, 0, (alpha * 255.0).round() as u8], padding: 12.0 }
+        };
+    }
+    new
+}
+
+#[allow(clippy::too_many_arguments)]
+fn style(
+    seq: &Sequence,
+    pool: &MediaPool,
+    i: usize,
+    one: Option<(usize, &Clip)>,
+    track: Option<usize>,
+    from: Option<Timecode>,
+    to: Option<Timecode>,
+    look: &Look,
+) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
+    if *look == Look::default() {
+        return Err(refuse(i, "nothing to change", "give size, color, font, bold, align, x, y, backing or outline"));
+    }
+    for (name, v, lo, hi) in [("size", look.size, 6.0, 400.0), ("x", look.x, 0.0, 1.0), ("y", look.y, 0.0, 1.0), ("backing", look.backing, 0.0, 1.0), ("outline", look.outline, 0.0, 40.0)] {
+        if let Some(v) = v {
+            if !v.is_finite() || v < lo || v > hi {
+                return Err(refuse(i, format!("{name} {v} is out of range"), format!("give {name} between {lo} and {hi}")));
+            }
+        }
+    }
+    let targets: Vec<(usize, &Clip)> = match (one, track) {
+        (Some(_), Some(_)) => return Err(refuse(i, "both a clip and a track were named", "name one clip, or a track for every title on it")),
+        (None, None) => return Err(refuse(i, "no clip or track was named", "name a clip, or a track such as \"subtitle\" for all the captions")),
+        (Some((ti, c)), None) => vec![(ti, c)],
+        (None, Some(ti)) => seq.tracks[ti]
+            .clips
+            .iter()
+            .filter(|c| c.title_data().is_some())
+            .filter(|c| from.is_none_or(|f| c.timeline_out > f) && to.is_none_or(|t| c.timeline_in < t))
+            .map(|c| (ti, c))
+            .collect(),
+    };
+    if targets.is_empty() {
+        return Err(refuse(i, "there is no title there to restyle", "name a text or subtitle track that has titles in that range"));
+    }
+    let mut edits = Vec::new();
+    let mut ids = Vec::new();
+    for (ti, c) in &targets {
+        let Some(old) = c.title_data() else {
+            return Err(refuse(i, format!("{} is not a title or a caption", clip_name(seq, pool, c)), "name a clip on a text or subtitle track"));
+        };
+        if seq.tracks[*ti].locked {
+            return Err(refuse(i, format!("track {ti} is locked"), "unlock it first"));
+        }
+        let new = restyle(old, look);
+        if new != *old {
+            edits.push(EditCommand::EditTitle { clip_id: c.id, description: "Restyle Title", old_data: old.clone(), new_data: new });
+            ids.push(c.id);
+        }
+    }
+    if edits.is_empty() {
+        return Err(refuse(i, "they look like that already", "nothing to do"));
+    }
+    let mut said = Vec::new();
+    if let Some(v) = look.size { said.push(format!("size {v:.0}")); }
+    if let Some(c) = look.color { said.push(format!("colour #{:02x}{:02x}{:02x}", c[0], c[1], c[2])); }
+    if let Some(f) = &look.font { said.push(format!("face {f}")); }
+    if let Some(b) = look.bold { said.push(if b { "bold".into() } else { "not bold".into() }); }
+    if let Some(a) = look.align { said.push(format!("{a:?}").to_lowercase()); }
+    if look.x.is_some() || look.y.is_some() { said.push(format!("centre at {}, {}", look.x.map(|x| format!("{x:.2}")).unwrap_or_else(|| "its x".into()), look.y.map(|y| format!("{y:.2}")).unwrap_or_else(|| "its y".into()))); }
+    if let Some(d) = look.backing { said.push(if d <= 0.0 { "no backing".into() } else { format!("backing {:.0}% dark", d * 100.0) }); }
+    if let Some(w) = look.outline { said.push(if w <= 0.0 { "no outline".into() } else { format!("outline {w:.0} px") }); }
+    let first = targets.first().map(|(_, c)| secs(c.timeline_in)).unwrap_or(0.0);
+    let last = targets.last().map(|(_, c)| secs(c.timeline_out)).unwrap_or(0.0);
+    let what = format!("restyle {} title{} from {first:.2} to {last:.2} s: {}", edits.len(), if edits.len() == 1 { "" } else { "s" }, said.join(", "));
+    let touched: Vec<ClipId> = ids.first().into_iter().chain(ids.last().filter(|_| ids.len() > 1)).copied().collect();
+    let edit = if edits.len() == 1 { edits.remove(0) } else { EditCommand::Batch(edits) };
+    Ok((what, edit, touched))
+}
+
 /// A two-line lower third, bottom left inside title-safe: the name, and
 /// the role smaller and spaced under it, both lifted off the picture by
 /// a soft shadow, fading in and out.
@@ -1873,6 +2088,58 @@ mod tests {
         let err = resolve(&seq, &pool, &[ops[0].clone(), Op::SetText { clip_id: ClipRef::At { track: 1, secs: 1.0 }, text: "x".into() }]).unwrap_err();
         assert!(err.why.contains("not a title"), "{err}");
         assert!(resolve(&seq, &pool, &[ops[0].clone(), Op::SetText { clip_id: ClipRef::At { track: 0, secs: 1.0 }, text: " ".into() }]).is_err());
+    }
+
+    #[test]
+    fn titles_are_restyled_one_at_a_time_or_a_track_at_once() {
+        let (seq, pool, _, _, _) = fixture();
+        // Captions, then every one of them made larger, yellow and raised while a lower third is up.
+        let ops: Vec<Op> = serde_json::from_str(r##"[
+            {"op":"captions","max_chars":30},
+            {"op":"style","track":"subtitle","size":48,"color":"#ffe14d","backing":0.75,"outline":0},
+            {"op":"style","track":"subtitle","from":{"secs":4.0},"to":{"secs":6.0},"y":0.7}
+        ]"##).unwrap();
+        let plan = resolve_with(&seq, &pool, &ops, &Spoken).unwrap();
+        assert!(plan.steps[1].what.starts_with("restyle 3 titles") && plan.steps[1].what.contains("backing 75% dark"), "{}", plan.steps[1].what);
+        assert!(plan.steps[2].what.starts_with("restyle 1 title") && plan.steps[2].what.contains("its x, 0.70"), "{}", plan.steps[2].what);
+        let mut seqs = vec![seq.clone()];
+        let mut p = pool.clone();
+        let mut fps = seq.fps;
+        let mut view = crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut p, fps: &mut fps };
+        for st in &plan.steps {
+            view.apply_forward(&st.edit);
+        }
+        let after = view.sequences[0].clone();
+        let caps = &after.tracks.last().unwrap().clips;
+        let look = |c: &Clip| {
+            let td = c.title_data().unwrap();
+            let klipp_timeline::TitleObjectContent::TextBox(tb) = &td.objects[0].content else { panic!("text") };
+            (tb.font_size, tb.color, tb.outlines.len(), td.objects[0].transform.center.y, td.background.clone())
+        };
+        let (size, color, outlines, y0, backing) = look(&caps[0]);
+        assert_eq!((size, color, outlines), (48.0, [0xff, 0xe1, 0x4d, 255], 0));
+        assert!((y0 - 0.88).abs() < 1e-6, "outside the range it stays low");
+        assert!((look(&caps[1]).3 - 0.7).abs() < 1e-6, "the cue from 4.4 s is raised");
+        // Three-quarters dark to the eye is an alpha of 0.95 in linear light.
+        assert!(matches!(backing, klipp_timeline::TitleBackground::Color { color: [0, 0, 0, a], .. } if (240..=245).contains(&a)), "{backing:?}");
+        // Undone, they look as they did.
+        view.apply_inverse(&plan.steps[2].edit);
+        view.apply_inverse(&plan.steps[1].edit);
+        let again = view.sequences[0].tracks.last().unwrap().clips[0].title_data().unwrap().clone();
+        assert_eq!(again, plan_caption(&plan, 0), "the caption as it was made");
+
+        // Refusals: nothing named, nothing asked, a colour that is not one, a track with no titles.
+        let bad = |json: &str| resolve_with(&seq, &pool, &serde_json::from_str::<Vec<Op>>(json).unwrap(), &Spoken).unwrap_err();
+        assert!(bad(r##"[{"op":"style","size":40}]"##).why.contains("no clip or track"));
+        assert!(bad(r##"[{"op":"style","track":"video"}]"##).why.contains("nothing to change"));
+        assert!(bad(r##"[{"op":"style","track":"video","color":"yellow"}]"##).why.contains("not a colour"));
+        assert!(bad(r##"[{"op":"style","track":"video","size":40}]"##).why.contains("no title there"));
+    }
+
+    /// The `k`th caption as the plan's captions step made it.
+    fn plan_caption(plan: &Plan, k: usize) -> klipp_timeline::TitleData {
+        let EditCommand::Batch(edits) = &plan.steps[0].edit else { panic!("a batch") };
+        edits.iter().filter_map(|e| match e { EditCommand::LegacyAppendClip { clip, .. } => clip.title_data().cloned(), _ => None }).nth(k).expect("a caption")
     }
 
     #[test]
