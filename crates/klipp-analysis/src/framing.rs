@@ -170,6 +170,16 @@ fn frames_at(ffmpeg: &std::path::Path, media: &std::path::Path, times: &[f64]) -
     if times.is_empty() {
         return Ok(Vec::new());
     }
+    // ffmpeg's expression parser has a limit a long file's sample list
+    // runs past; a long list is decoded in slices instead, each a pass.
+    const MAX_PICKS: usize = 24;
+    if times.len() > MAX_PICKS {
+        let mut out = Vec::with_capacity(times.len());
+        for chunk in times.chunks(MAX_PICKS) {
+            out.extend(frames_at(ffmpeg, media, chunk)?);
+        }
+        return Ok(out);
+    }
     // One frame per time: the first frame within a fortieth of a second
     // of it, which at any frame rate is at most one frame.
     let picks: Vec<String> = times.iter().map(|t| format!("lt(abs(t-{t:.3}),0.02)")).collect();

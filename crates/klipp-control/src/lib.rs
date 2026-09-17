@@ -750,6 +750,8 @@ fn handle(
                 "shots": report.shots,
                 "audio": report.audio,
                 "transcript": report.transcript,
+                "motion": report.motion,
+                "framing": report.framing,
             }))
         }
 

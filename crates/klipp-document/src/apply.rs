@@ -53,6 +53,13 @@ impl DocumentView<'_> {
                     effects.merge(self.apply_inverse(c));
                 }
             }
+            EditCommand::AddTrack { index, track } => {
+                let seq = &mut self.sequences[self.active];
+                if seq.tracks.get(*index).is_some_and(|t| t.id == track.id) {
+                    seq.tracks.remove(*index);
+                    seq.renumber_tracks();
+                }
+            }
             EditCommand::AddTitleClip { clip, track_index, created_track } => {
                 let seq = &mut self.sequences[self.active];
                 if *created_track {
@@ -579,6 +586,12 @@ impl DocumentView<'_> {
                 for c in commands {
                     effects.merge(self.apply_forward(c));
                 }
+            }
+            EditCommand::AddTrack { index, track } => {
+                let seq = &mut self.sequences[self.active];
+                let idx = (*index).min(seq.tracks.len());
+                seq.tracks.insert(idx, track.clone());
+                seq.renumber_tracks();
             }
             EditCommand::AddTitleClip { clip, track_index, created_track } => {
                 let seq = &mut self.sequences[self.active];

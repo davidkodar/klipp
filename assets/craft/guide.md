@@ -48,18 +48,31 @@ frames.
 `{"clip_end": id}`, `{"marker": "Intro"}`, or
 `{"offset": {"from": anchor, "secs": -0.5}}`.
 
+A clip is named by its id string, or by where it is:
+`{"track": 1, "secs": 30.0}` is the clip covering that time on that
+track as the plan stands at that step. That is how a later step names
+the half a split made or the clip a place put down, whose ids do not
+exist until the plan runs.
+
 ## Ops
 
-- `place {media_id, track, at, source_in?, source_out?, insert?}`: a
-  media item onto a track (`"video"`, `"audio"`, `"text"` for the first
-  of that kind, or a track index from the timeline view) at an anchor.
-  With `insert`, every unlocked track is rippled later to make room
-  and a clip straddling the anchor is split there.
+- `place {media_id, track, at, source_in?, source_out?, insert?, with_audio?}`:
+  a media item onto a track (`"video"`, `"audio"`, `"text"` for the
+  first of that kind, or a track index from the timeline view) at an
+  anchor. Its sound comes along, linked, on the first audio track,
+  which is made if there is none; `with_audio: false` leaves it out,
+  which is what B-roll over a voice wants. An empty sequence takes the
+  first picture's size and rate. With `insert`, every unlocked track is
+  rippled later to make room and a clip straddling the anchor is split
+  there.
+- `add_track {kind, name?}`: a video or text track on top, which
+  becomes track 0 and moves every other index down by one; an audio
+  track at the bottom.
 - `trim {clip_id, edge, to, ripple?}`: the in or out edge to an anchor;
   the other edge stays; the source moves with the edge. With `ripple`,
   the later clips on the track close up by the change; a head trim
   then keeps the clip's start and shortens it from the front.
-- `split {clip_id, at}`: into two.
+- `split {clip_id, at}`: into two, the linked sound with it.
 - `remove {clip_id, ripple?}`: off the track; with ripple, later clips
   close the gap.
 - `move {clip_id, to}`: the clip's start to an anchor; a linked audio

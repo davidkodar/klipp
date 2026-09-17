@@ -39,6 +39,16 @@ pub enum Anchor {
     Offset { from: Box<Anchor>, secs: f64 },
 }
 
+/// A clip, by its id or by where it is: the clip covering `secs` on
+/// track `track`, as the document stands when the op runs. The latter
+/// is how a step names the halves a split before it made.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum ClipRef {
+    Id(ClipId),
+    At { track: usize, secs: f64 },
+}
+
 /// Which track a clip goes on.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
@@ -76,6 +86,19 @@ pub enum Op {
         source_out: Option<f64>,
         #[serde(default)]
         insert: bool,
+        /// The file's sound with it, as a linked clip on the first audio
+        /// track (made if there is none), at the same place. On by
+        /// default; off for B-roll over a voice.
+        #[serde(default = "default_true")]
+        with_audio: bool,
+    },
+    /// A track: a video or text track goes on top (it becomes track 0
+    /// and every other index moves down by one), an audio track at the
+    /// bottom.
+    AddTrack {
+        kind: String,
+        #[serde(default)]
+        name: Option<String>,
     },
     /// One edge of a clip to an anchor. The clip's other edge stays;
     /// the source moves with the edge, so the picture at the other edge
@@ -84,7 +107,7 @@ pub enum Op {
     /// track by the change in the clip's length (a head trim then keeps
     /// the clip where it starts and shortens it from the front).
     Trim {
-        clip_id: ClipId,
+        clip_id: ClipRef,
         edge: Edge,
         to: Anchor,
         #[serde(default)]
@@ -94,23 +117,27 @@ pub enum Op {
     /// picture, over the end of the clip before it. Both clips need
     /// linked audio, adjacent on one audio track: the outgoing audio is
     /// shortened by `frames`, the incoming audio starts that much earlier.
-    JCut { incoming_clip: ClipId, frames: i64 },
+    JCut { incoming_clip: ClipRef, frames: i64 },
     /// An L-cut: the sound of `outgoing_clip` stays `frames` past its
     /// picture, under the start of the clip after it. The outgoing audio
     /// runs on by `frames`, the incoming audio starts that much later.
-    LCut { outgoing_clip: ClipId, frames: i64 },
+    LCut { outgoing_clip: ClipRef, frames: i64 },
     /// A clip into two at an anchor strictly inside it.
-    Split { clip_id: ClipId, at: Anchor },
+    Split { clip_id: ClipRef, at: Anchor },
     /// A clip off its track; with `ripple`, the clips after it on that
     /// track close the gap.
     Remove {
-        clip_id: ClipId,
+        clip_id: ClipRef,
         #[serde(default)]
         ripple: bool,
     },
     /// A clip's start to an anchor, its length unchanged; a linked audio
     /// or video partner goes with it. Refused into another clip.
-    Move { clip_id: ClipId, to: Anchor },
+    Move { clip_id: ClipRef, to: Anchor },
+}
+
+fn default_true() -> bool {
+    true
 }
 
 /// A clip as a plan reports it, after a step.
@@ -209,6 +236,27 @@ fn find_clip(seq: &Sequence, id: ClipId) -> Option<(usize, usize, &Clip)> {
     seq.tracks.iter().enumerate().find_map(|(ti, t)| t.clips.iter().position(|c| c.id == id).map(|ci| (ti, ci, &t.clips[ci])))
 }
 
+/// The clip a step names, by id or by place, or a refusal saying which.
+fn resolve_clip<'a>(seq: &'a Sequence, fps: Fps, r: &ClipRef, step: usize) -> Result<(usize, usize, &'a Clip), Refusal> {
+    match r {
+        ClipRef::Id(id) => find_clip(seq, *id).ok_or_else(|| refuse(step, format!("no clip {}", id.0), "clip ids are in the timeline view; a clip made by an earlier step can be named by {track, secs}")),
+        ClipRef::At { track, secs: at } => {
+            let t = seq.tracks.get(*track).ok_or_else(|| refuse(step, format!("no track {track}"), format!("the sequence has tracks 0 to {}", seq.tracks.len().saturating_sub(1))))?;
+            let tc = snap(*at, fps);
+            let ci = t
+                .clips
+                .iter()
+                .position(|c| c.timeline_in <= tc && tc < c.timeline_out)
+                .ok_or_else(|| refuse(step, format!("nothing on track {track} at {at:.2} s"), "give a time inside a clip on that track"))?;
+            Ok((*track, ci, &t.clips[ci]))
+        }
+    }
+}
+
+fn clip_ref_id(seq: &Sequence, fps: Fps, r: &ClipRef, step: usize) -> Result<ClipId, Refusal> {
+    resolve_clip(seq, fps, r, step).map(|(_, _, c)| c.id)
+}
+
 fn clip_name(seq: &Sequence, pool: &MediaPool, clip: &Clip) -> String {
     match &clip.kind {
         ClipKind::Media { media_id } => pool.get(media_id).map(|m| m.filename.clone()).unwrap_or_else(|| "media".into()),
@@ -297,7 +345,22 @@ pub fn resolve(seq: &Sequence, pool: &MediaPool, ops: &[Op]) -> Result<Plan, Ref
 
 fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
     match op {
-        Op::Place { media_id, track, at, source_in, source_out, insert } => {
+        Op::AddTrack { kind, name } => {
+            let (want, at_top) = match kind.to_lowercase().as_str() {
+                "video" => (TrackKind::Video, true),
+                "audio" => (TrackKind::Audio, false),
+                "text" | "title" => (TrackKind::Text, true),
+                other => return Err(refuse(i, format!("\"{other}\" is not a track kind"), "use video, audio or text")),
+            };
+            let count = seq.tracks.iter().filter(|t| t.kind == want).count();
+            let name = name.clone().unwrap_or_else(|| format!("{} {}", match want { TrackKind::Video => "Video", TrackKind::Audio => "Audio", _ => "Text" }, count + 1));
+            let track = klipp_timeline::Track::new(&name, want);
+            let index = if at_top { 0 } else { seq.tracks.len() };
+            let what = format!("add {} track \"{name}\" as track {index}{}", kind.to_lowercase(), if at_top && !seq.tracks.is_empty() { "; every other track's index moves down by one" } else { "" });
+            Ok((what, EditCommand::AddTrack { index, track }, Vec::new()))
+        }
+
+        Op::Place { media_id, track, at, source_in, source_out, insert, with_audio } => {
             let item = pool.get(media_id).ok_or_else(|| refuse(i, format!("no media item {}", media_id.0), "media ids are in list_media"))?;
             if item.offline {
                 return Err(refuse(i, format!("{} is offline", item.filename), "relink the media first"));
@@ -336,15 +399,57 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize) ->
             }
             let tl_in = resolve_anchor(seq, fps, at, i)?;
             let tl_out = tl_in + (src_out - src_in);
+            let mut clip = Clip::media(*media_id, tl_in, tl_out, src_in, src_out);
+            // The sound with the picture, linked both ways, on the first
+            // audio track — made at the bottom when there is none.
+            let bring_audio = *with_audio && item.has_audio && t.kind != TrackKind::Audio;
+            let mut audio: Option<(Clip, usize)> = None;
+            let mut created_audio_track_at = None;
+            if bring_audio {
+                let ati = match seq.tracks.iter().position(|t| t.kind == TrackKind::Audio) {
+                    Some(ati) => ati,
+                    None => {
+                        created_audio_track_at = Some(seq.tracks.len());
+                        seq.tracks.len()
+                    }
+                };
+                if created_audio_track_at.is_none() {
+                    if seq.tracks[ati].locked {
+                        return Err(refuse(i, format!("audio track {ati} is locked"), "unlock it, or place with with_audio false"));
+                    }
+                    if !*insert {
+                        if let Some(c) = overlapping(seq, ati, tl_in, tl_out, None) {
+                            return Err(refuse(i, format!("its sound would overlap {} at {:.2}-{:.2} s on track {ati}", clip_name(seq, pool, c), secs(c.timeline_in), secs(c.timeline_out)), "place it later, or with with_audio false"));
+                        }
+                    }
+                }
+                let mut a = Clip::media(*media_id, tl_in, tl_out, src_in, src_out);
+                a.linked_clip_id = Some(clip.id);
+                clip.linked_clip_id = Some(a.id);
+                audio = Some((a, ati));
+            }
+            // An empty sequence takes the first picture's size and rate,
+            // as an append in the app does.
+            let no_video_yet = !seq.tracks.iter().any(|t| t.kind == TrackKind::Video && !t.clips.is_empty());
+            let autoset = if no_video_yet && item.resolution.width > 0 && item.fps.as_f64() > 0.0 && (seq.resolution != item.resolution || seq.fps != item.fps) {
+                Some(((seq.resolution, seq.fps), (item.resolution, item.fps)))
+            } else {
+                None
+            };
+            let sound_note = match (&audio, created_audio_track_at) {
+                (Some(_), Some(ati)) => format!(", its sound linked on a new audio track {ati}"),
+                (Some((_, ati)), None) => format!(", its sound linked on track {ati}"),
+                _ => String::new(),
+            };
+            let format_note = autoset.map(|(_, (r, f))| format!("; the sequence becomes {}x{} at {:.3} fps", r.width, r.height, f.as_f64())).unwrap_or_default();
+            let ids: Vec<ClipId> = std::iter::once(clip.id).chain(audio.iter().map(|(a, _)| a.id)).collect();
             if *insert {
-                let clip = Clip::media(*media_id, tl_in, tl_out, src_in, src_out);
-                let id = clip.id;
                 let mut scratch = seq.clone();
                 let edit = scratch
                     .insert_edit(ti, clip, tl_in)
                     .ok_or_else(|| refuse(i, format!("track {ti} would not take an insert"), "unlock the track, or place without insert"))?;
                 let what = format!(
-                    "insert {} on track {ti} at {:.2} s ({:.2}-{:.2} s of the file), ending at {:.2} s; {} clip(s) split, {} moved {:.2} s later",
+                    "insert {} on track {ti} at {:.2} s ({:.2}-{:.2} s of the file), ending at {:.2} s; {} clip(s) split, {} moved {:.2} s later{sound_note}",
                     item.filename,
                     secs(tl_in),
                     secs(src_in),
@@ -354,7 +459,7 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize) ->
                     edit.shifted.len(),
                     secs(tl_out - tl_in)
                 );
-                return Ok((what, EditCommand::LegacyInsertEdit { edit, audio: None, created_audio_track_at: None }, vec![id]));
+                return Ok((what, EditCommand::LegacyInsertEdit { edit, audio, created_audio_track_at }, ids));
             }
             if let Some(c) = overlapping(seq, ti, tl_in, tl_out, None) {
                 return Err(refuse(
@@ -363,21 +468,25 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize) ->
                     format!("place it at clip_end of {}, remove that clip first, or place with insert", c.id.0),
                 ));
             }
-            let clip = Clip::media(*media_id, tl_in, tl_out, src_in, src_out);
             let what = format!(
-                "place {} on track {ti} at {:.2} s ({:.2}-{:.2} s of the file), ending at {:.2} s",
+                "place {} on track {ti} at {:.2} s ({:.2}-{:.2} s of the file), ending at {:.2} s{sound_note}{format_note}",
                 item.filename,
                 secs(tl_in),
                 secs(src_in),
                 secs(src_out),
                 secs(tl_out)
             );
-            let id = clip.id;
-            Ok((what, EditCommand::LegacyAppendClip { clip, track_index: ti }, vec![id]))
+            let edit = if audio.is_some() || autoset.is_some() {
+                EditCommand::LinkedImport { video: Some((clip, ti)), audio, created_video_track_at: None, created_audio_track_at, autoset }
+            } else {
+                EditCommand::LegacyAppendClip { clip, track_index: ti }
+            };
+            Ok((what, edit, ids))
         }
 
-        Op::Trim { clip_id, edge, to, ripple } => {
-            let (ti, ci, clip) = find_clip(seq, *clip_id).ok_or_else(|| refuse(i, format!("no clip {}", clip_id.0), "clip ids are in the timeline view"))?;
+        Op::Trim { clip_id: clip_ref, edge, to, ripple } => {
+            let (ti, ci, clip) = resolve_clip(seq, fps, clip_ref, i)?;
+            let clip_id = &clip.id;
             if seq.tracks[ti].locked {
                 return Err(refuse(i, format!("track {ti} is locked"), "unlock it first"));
             }
@@ -471,30 +580,63 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize) ->
             Ok((what, edit, vec![*clip_id]))
         }
 
-        Op::JCut { incoming_clip, frames } => split_edit(seq, pool, fps, i, *incoming_clip, *frames, true),
-        Op::LCut { outgoing_clip, frames } => split_edit(seq, pool, fps, i, *outgoing_clip, *frames, false),
+        Op::JCut { incoming_clip, frames } => split_edit(seq, pool, fps, i, clip_ref_id(seq, fps, incoming_clip, i)?, *frames, true),
+        Op::LCut { outgoing_clip, frames } => split_edit(seq, pool, fps, i, clip_ref_id(seq, fps, outgoing_clip, i)?, *frames, false),
 
-        Op::Split { clip_id, at } => {
-            let (ti, ci, clip) = find_clip(seq, *clip_id).ok_or_else(|| refuse(i, format!("no clip {}", clip_id.0), "clip ids are in the timeline view"))?;
+        Op::Split { clip_id: clip_ref, at } => {
+            let (ti, ci, clip) = resolve_clip(seq, fps, clip_ref, i)?;
+            let clip_id = &clip.id;
             if seq.tracks[ti].locked {
                 return Err(refuse(i, format!("track {ti} is locked"), "unlock it first"));
             }
             let cut = resolve_anchor(seq, fps, at, i)?;
             let mut scratch = seq.tracks[ti].clone();
-            let Some((a, b)) = scratch.blade_at(*clip_id, cut) else {
+            let Some((mut a, mut b)) = scratch.blade_at(*clip_id, cut) else {
                 return Err(refuse(
                     i,
                     format!("{:.2} s is not inside {} ({:.2}-{:.2} s) by at least a frame", secs(cut), clip_name(seq, pool, clip), secs(clip.timeline_in), secs(clip.timeline_out)),
                     "split at a time strictly inside the clip",
                 ));
             };
-            let what = format!("split {} at {:.2} s into {:.2}-{:.2} s and {:.2}-{:.2} s", clip_name(seq, pool, clip), secs(cut), secs(a.timeline_in), secs(a.timeline_out), secs(b.timeline_in), secs(b.timeline_out));
-            let ids = vec![a.id, b.id];
-            Ok((what, EditCommand::LegacyBladeClip { track_index: ti, original_clip: clip.clone(), clip_a: a, clip_b: b, position: ci }, ids))
+            // The linked sound (or picture) is cut at the same time, and
+            // the halves are linked crosswise, as one split in the app is.
+            let mut partner_edit = None;
+            let mut ids = vec![a.id, b.id];
+            if let Some((pti, pci, partner)) = clip.linked_clip_id.and_then(|pid| find_clip(seq, pid)) {
+                if !seq.tracks[pti].locked {
+                    let mut pscratch = seq.tracks[pti].clone();
+                    if let Some((mut pa, mut pb)) = pscratch.blade_at(partner.id, cut) {
+                        a.linked_clip_id = Some(pa.id);
+                        pa.linked_clip_id = Some(a.id);
+                        b.linked_clip_id = Some(pb.id);
+                        pb.linked_clip_id = Some(b.id);
+                        ids.push(pa.id);
+                        ids.push(pb.id);
+                        partner_edit = Some(EditCommand::LegacyBladeClip { track_index: pti, original_clip: partner.clone(), clip_a: pa, clip_b: pb, position: pci });
+                    }
+                }
+            }
+            let what = format!(
+                "split {} at {:.2} s into {:.2}-{:.2} s and {:.2}-{:.2} s{}",
+                clip_name(seq, pool, clip),
+                secs(cut),
+                secs(a.timeline_in),
+                secs(a.timeline_out),
+                secs(b.timeline_in),
+                secs(b.timeline_out),
+                if partner_edit.is_some() { ", its linked sound with it" } else { "" }
+            );
+            let main = EditCommand::LegacyBladeClip { track_index: ti, original_clip: clip.clone(), clip_a: a, clip_b: b, position: ci };
+            let edit = match partner_edit {
+                Some(p) => EditCommand::Batch(vec![main, p]),
+                None => main,
+            };
+            Ok((what, edit, ids))
         }
 
-        Op::Remove { clip_id, ripple } => {
-            let (ti, ci, clip) = find_clip(seq, *clip_id).ok_or_else(|| refuse(i, format!("no clip {}", clip_id.0), "clip ids are in the timeline view"))?;
+        Op::Remove { clip_id: clip_ref, ripple } => {
+            let (ti, ci, clip) = resolve_clip(seq, fps, clip_ref, i)?;
+            let _ = clip_ref;
             if seq.tracks[ti].locked {
                 return Err(refuse(i, format!("track {ti} is locked"), "unlock it first"));
             }
@@ -512,8 +654,9 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize) ->
             }
         }
 
-        Op::Move { clip_id, to } => {
-            let (ti, _, clip) = find_clip(seq, *clip_id).ok_or_else(|| refuse(i, format!("no clip {}", clip_id.0), "clip ids are in the timeline view"))?;
+        Op::Move { clip_id: clip_ref, to } => {
+            let (ti, _, clip) = resolve_clip(seq, fps, clip_ref, i)?;
+            let clip_id = &clip.id;
             if seq.tracks[ti].locked {
                 return Err(refuse(i, format!("track {ti} is locked"), "unlock it first"));
             }
@@ -688,9 +831,9 @@ mod tests {
     fn a_plan_runs_in_order_and_reads_as_text() {
         let (seq, pool, media, a, b) = fixture();
         let ops = vec![
-            Op::Split { clip_id: b, at: Anchor::Marker("intro".into()) },
-            Op::Place { media_id: media, track: TrackRef::Kind("video".into()), at: Anchor::ClipEnd(b), source_in: Some(8.0), source_out: Some(9.0), insert: false },
-            Op::Trim { clip_id: a, edge: Edge::Out, to: Anchor::Secs(3.0), ripple: false },
+            Op::Split { clip_id: ClipRef::Id(b), at: Anchor::Marker("intro".into()) },
+            Op::Place { media_id: media, track: TrackRef::Kind("video".into()), at: Anchor::ClipEnd(b), source_in: Some(8.0), source_out: Some(9.0), insert: false, with_audio: false },
+            Op::Trim { clip_id: ClipRef::Id(a), edge: Edge::Out, to: Anchor::Secs(3.0), ripple: false },
         ];
         // The split replaces b, so its end no longer exists as `b`:
         // the plan must refuse the place with a reason naming that.
@@ -699,14 +842,14 @@ mod tests {
         assert!(err.why.contains("no clip"), "{err}");
 
         let ops = vec![
-            Op::Place { media_id: media, track: TrackRef::Index(0), at: Anchor::ClipEnd(b), source_in: Some(8.0), source_out: Some(9.0), insert: false },
-            Op::Split { clip_id: b, at: Anchor::Marker("intro".into()) },
-            Op::Trim { clip_id: a, edge: Edge::Out, to: Anchor::Secs(3.0), ripple: false },
+            Op::Place { media_id: media, track: TrackRef::Index(0), at: Anchor::ClipEnd(b), source_in: Some(8.0), source_out: Some(9.0), insert: false, with_audio: false },
+            Op::Split { clip_id: ClipRef::Id(b), at: Anchor::Marker("intro".into()) },
+            Op::Trim { clip_id: ClipRef::Id(a), edge: Edge::Out, to: Anchor::Secs(3.0), ripple: false },
         ];
         let plan = resolve(&seq, &pool, &ops).unwrap();
         assert_eq!(plan.steps.len(), 3);
         assert!((plan.duration_secs - 9.0).abs() < 1e-9, "{}", plan.text());
-        assert_eq!(plan.steps[1].after.len(), 2, "a split reports both halves");
+        assert_eq!(plan.steps[1].after.len(), 4, "a split reports both halves of the picture and of its linked sound");
         assert!((plan.steps[1].after[0].timeline_out_secs - 6.0).abs() < 1e-9);
         assert!((plan.steps[2].after[0].timeline_out_secs - 3.0).abs() < 1e-9);
         assert!((plan.steps[2].after[0].source_out_secs - 3.0).abs() < 1e-9, "the source moves with the edge");
@@ -720,23 +863,23 @@ mod tests {
     #[test]
     fn refusals_say_why_and_what_would_help() {
         let (seq, pool, media, a, b) = fixture();
-        let over = resolve(&seq, &pool, &[Op::Place { media_id: media, track: TrackRef::Index(0), at: Anchor::Secs(2.0), source_in: None, source_out: Some(1.0), insert: false }]).unwrap_err();
+        let over = resolve(&seq, &pool, &[Op::Place { media_id: media, track: TrackRef::Index(0), at: Anchor::Secs(2.0), source_in: None, source_out: Some(1.0), insert: false, with_audio: false }]).unwrap_err();
         assert!(over.why.contains("overlap"), "{over}");
         assert!(over.hint.contains("clip_end"), "{over}");
-        let past = resolve(&seq, &pool, &[Op::Trim { clip_id: b, edge: Edge::Out, to: Anchor::Secs(11.0), ripple: false }]).unwrap_err();
+        let past = resolve(&seq, &pool, &[Op::Trim { clip_id: ClipRef::Id(b), edge: Edge::Out, to: Anchor::Secs(11.0), ripple: false }]).unwrap_err();
         assert!(past.why.contains("after this clip's out point"), "{past}");
-        let into = resolve(&seq, &pool, &[Op::Move { clip_id: a, to: Anchor::Secs(1.0) }]).unwrap_err();
+        let into = resolve(&seq, &pool, &[Op::Move { clip_id: ClipRef::Id(a), to: Anchor::Secs(1.0) }]).unwrap_err();
         assert!(into.why.contains("overlap"), "{into}");
-        let outside = resolve(&seq, &pool, &[Op::Split { clip_id: a, at: Anchor::Secs(4.0) }]).unwrap_err();
+        let outside = resolve(&seq, &pool, &[Op::Split { clip_id: ClipRef::Id(a), at: Anchor::Secs(4.0) }]).unwrap_err();
         assert!(outside.why.contains("not inside"), "{outside}");
-        let no_marker = resolve(&seq, &pool, &[Op::Move { clip_id: a, to: Anchor::Marker("outro".into()) }]).unwrap_err();
+        let no_marker = resolve(&seq, &pool, &[Op::Move { clip_id: ClipRef::Id(a), to: Anchor::Marker("outro".into()) }]).unwrap_err();
         assert!(no_marker.why.contains("no marker"), "{no_marker}");
     }
 
     #[test]
     fn a_ripple_remove_closes_the_gap_and_the_commands_replay_on_the_document() {
         let (seq, pool, _, a, b) = fixture();
-        let plan = resolve(&seq, &pool, &[Op::Remove { clip_id: a, ripple: true }]).unwrap();
+        let plan = resolve(&seq, &pool, &[Op::Remove { clip_id: ClipRef::Id(a), ripple: true }]).unwrap();
         assert_eq!(plan.steps[0].after[0].clip_id, b);
         assert!((plan.steps[0].after[0].timeline_in_secs).abs() < 1e-9, "b moved to the start");
         // Applying the plan's commands to the real document gives the
@@ -774,7 +917,7 @@ mod tests {
         let (seq, pool, media, a, b) = fixture();
         // Insert one second of the file at 2 s: a is split there and
         // everything after moves a second later, on every track.
-        let plan = resolve(&seq, &pool, &[Op::Place { media_id: media, track: TrackRef::Index(0), at: Anchor::Secs(2.0), source_in: Some(9.0), source_out: Some(10.0), insert: true }]).unwrap();
+        let plan = resolve(&seq, &pool, &[Op::Place { media_id: media, track: TrackRef::Index(0), at: Anchor::Secs(2.0), source_in: Some(9.0), source_out: Some(10.0), insert: true, with_audio: false }]).unwrap();
         assert!(plan.steps[0].what.contains("2 clip(s) split"), "the picture and its audio: {}", plan.steps[0].what);
         assert!((plan.duration_secs - 9.0).abs() < 1e-9, "{}", plan.text());
         let mut seqs = vec![seq.clone()];
@@ -789,12 +932,12 @@ mod tests {
         assert_eq!(seqs[0].tracks[1].clips[2].timeline_in, tc(5.0), "and its audio with it (its own audio was split too)");
 
         // A ripple out trim of a by a second: b closes up.
-        let plan = resolve(&seq, &pool, &[Op::Trim { clip_id: a, edge: Edge::Out, to: Anchor::Secs(3.0), ripple: true }]).unwrap();
+        let plan = resolve(&seq, &pool, &[Op::Trim { clip_id: ClipRef::Id(a), edge: Edge::Out, to: Anchor::Secs(3.0), ripple: true }]).unwrap();
         let after = &plan.steps[0].after;
         assert_eq!(after.len(), 2);
         assert!((after[1].timeline_in_secs - 3.0).abs() < 1e-9, "{after:?}");
         // A ripple head trim keeps the start and shortens from the front.
-        let plan = resolve(&seq, &pool, &[Op::Trim { clip_id: b, edge: Edge::In, to: Anchor::Secs(5.0), ripple: true }]).unwrap();
+        let plan = resolve(&seq, &pool, &[Op::Trim { clip_id: ClipRef::Id(b), edge: Edge::In, to: Anchor::Secs(5.0), ripple: true }]).unwrap();
         let after = &plan.steps[0].after;
         assert!((after[0].timeline_in_secs - 4.0).abs() < 1e-9 && (after[0].timeline_out_secs - 7.0).abs() < 1e-9, "{after:?}");
         assert!((after[0].source_in_secs - 5.0).abs() < 1e-9, "{after:?}");
@@ -803,7 +946,7 @@ mod tests {
     #[test]
     fn j_and_l_cuts_move_the_audio_edge_and_leave_the_picture() {
         let (seq, pool, _, a, b) = fixture();
-        let plan = resolve(&seq, &pool, &[Op::JCut { incoming_clip: b, frames: 10 }]).unwrap();
+        let plan = resolve(&seq, &pool, &[Op::JCut { incoming_clip: ClipRef::Id(b), frames: 10 }]).unwrap();
         assert!(plan.steps[0].what.starts_with("J-cut of 10 frames"), "{}", plan.steps[0].what);
         let after = &plan.steps[0].after;
         assert!((after[0].timeline_out_secs - 3.6).abs() < 1e-9, "outgoing audio ends 10 frames early: {after:?}");
@@ -816,14 +959,59 @@ mod tests {
         assert_eq!(seqs[0].tracks[0].clips[1].timeline_in, tc(4.0), "the picture cut has not moved");
         assert_eq!(seqs[0].tracks[1].clips[1].timeline_in, tc(3.6));
 
-        let plan = resolve(&seq, &pool, &[Op::LCut { outgoing_clip: a, frames: 5 }]).unwrap();
+        let plan = resolve(&seq, &pool, &[Op::LCut { outgoing_clip: ClipRef::Id(a), frames: 5 }]).unwrap();
         let after = &plan.steps[0].after;
         assert!((after[0].timeline_out_secs - 4.2).abs() < 1e-9 && (after[0].source_out_secs - 4.2).abs() < 1e-9, "{after:?}");
         assert!((after[1].timeline_in_secs - 4.2).abs() < 1e-9, "{after:?}");
 
-        let too_far = resolve(&seq, &pool, &[Op::JCut { incoming_clip: b, frames: 120 }]).unwrap_err();
+        let too_far = resolve(&seq, &pool, &[Op::JCut { incoming_clip: ClipRef::Id(b), frames: 120 }]).unwrap_err();
         assert!(too_far.why.contains("shorter than a frame"), "{too_far}");
-        let no_cut = resolve(&seq, &pool, &[Op::JCut { incoming_clip: a, frames: 5 }]).unwrap_err();
+        let no_cut = resolve(&seq, &pool, &[Op::JCut { incoming_clip: ClipRef::Id(a), frames: 5 }]).unwrap_err();
         assert!(no_cut.why.contains("no clip cut before"), "{no_cut}");
+    }
+
+    #[test]
+    fn a_place_brings_linked_sound_sets_an_empty_sequence_and_a_split_half_is_named_by_place() {
+        let (seq, pool, media, _, _) = fixture();
+        // An empty sequence at 25 fps with a 24 fps item to place.
+        let mut empty = Sequence::new_default();
+        empty.fps = Fps::new(25, 1);
+        empty.tracks = vec![Track::new("V1", TrackKind::Video)];
+        let mut pool2 = pool.clone();
+        let mut item = klipp_media::MediaItem::synthetic_for_test("/tmp/b.mov".into(), None);
+        item.duration = RationalTime::from_secs_f64(10.0, 24);
+        item.fps = Fps::new(24, 1);
+        item.resolution = klipp_core::Resolution { width: 1280, height: 720 };
+        item.video_codec = "hevc".into();
+        item.has_audio = true;
+        let media2 = pool2.add(item);
+        let plan = resolve(&empty, &pool2, &[
+            Op::Place { media_id: media2, track: TrackRef::Kind("video".into()), at: Anchor::Secs(0.0), source_in: Some(1.0), source_out: Some(3.0), insert: false, with_audio: true },
+            Op::Split { clip_id: ClipRef::At { track: 0, secs: 0.5 }, at: Anchor::Secs(1.0) },
+            Op::JCut { incoming_clip: ClipRef::At { track: 0, secs: 1.5 }, frames: 6 },
+        ]).unwrap();
+        let w = &plan.steps[0].what;
+        assert!(w.contains("new audio track 1") && w.contains("1280x720 at 24.000 fps"), "{w}");
+        assert_eq!(plan.steps[0].after.len(), 2, "picture and sound");
+        assert_eq!(plan.steps[0].after[1].track, 1);
+        assert!(plan.steps[2].what.starts_with("J-cut of 6 frames"), "{}", plan.steps[2].what);
+        // Replay on a document: the audio track exists, the clips are linked, the rate is the item's.
+        let mut seqs = vec![empty.clone()];
+        let mut p = pool2.clone();
+        let mut fps = empty.fps;
+        let mut view = crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut p, fps: &mut fps };
+        for st in &plan.steps {
+            view.apply_forward(&st.edit);
+        }
+        assert_eq!(seqs[0].tracks.len(), 2);
+        assert_eq!(seqs[0].fps, Fps::new(24, 1));
+        assert_eq!(seqs[0].tracks[0].clips.len(), 2);
+        let v0 = &seqs[0].tracks[0].clips[0];
+        assert!(v0.linked_clip_id.is_some());
+
+        // An add_track on top shifts the indices, and says so.
+        let plan = resolve(&seq, &pool, &[Op::AddTrack { kind: "video".into(), name: None }]).unwrap();
+        assert!(plan.steps[0].what.contains("as track 0") && plan.steps[0].what.contains("moves down"), "{}", plan.steps[0].what);
+        let _ = media;
     }
 }

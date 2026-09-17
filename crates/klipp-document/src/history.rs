@@ -139,6 +139,9 @@ pub enum EditCommand {
         /// empty-sequence autoset. Undo restores prev; redo restores new.
         autoset: Option<((Resolution, Fps), (Resolution, Fps))>,
     },
+    /// A track added at `index` (the plan's add_track). Undo removes it,
+    /// which is safe because a batch undoes its clips first.
+    AddTrack { index: usize, track: klipp_timeline::Track },
     /// Title clip added (with optional track creation for undo)
     AddTitleClip {
         clip: Clip,
@@ -599,6 +602,7 @@ impl EditCommand {
     pub fn label(&self) -> &'static str {
         match self {
             EditCommand::AddTitleClip { .. } => "Add Title",
+            EditCommand::AddTrack { .. } => "Add Track",
             EditCommand::LegacyAppendClip { .. } => "Append Clip",
             EditCommand::LinkedImport { .. } => "Add to Timeline",
             EditCommand::LegacyRemoveClip { .. } | EditCommand::LegacyRippleRemove { .. } => "Remove Clip",
