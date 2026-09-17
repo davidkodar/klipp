@@ -111,8 +111,19 @@ fn trial_on_a_real_file_when_asked() {
     item.duration = klipp_core::RationalTime::from_secs_f64(secs, 30);
     item.video_codec = "hevc".into();
     item.has_audio = true;
+    // How things are spelt, as the brief would say it: KLIPP_ANALYSIS_VOCAB="Omarchy, DHH".
+    #[cfg(feature = "transcript")]
+    if let Ok(words) = std::env::var("KLIPP_ANALYSIS_VOCAB") {
+        klipp_analysis::transcript::set_vocabulary(words.split(',').map(|w| w.to_string()).collect());
+    }
     let t = std::time::Instant::now();
     let report = klipp_analysis::service::run_now(&item, &AnalysisCtx::default()).expect("run now");
     eprintln!("analysed {} s of footage in {:.1} s\n{}", secs, t.elapsed().as_secs_f64(), report.text(6000));
     eprintln!("clip summary: {}", report.clip_summary(0.0, secs));
+    #[cfg(feature = "transcript")]
+    if let Some(tr) = &report.transcript {
+        eprintln!("model {} vocabulary {:?}", tr.model, tr.vocabulary);
+        let line: Vec<String> = tr.words.iter().take(60).map(|w| format!("{}@{:.2}-{:.2}", w.text, w.start_secs, w.end_secs)).collect();
+        eprintln!("first words: {}", line.join(" "));
+    }
 }

@@ -673,7 +673,10 @@ fn analysis_queries_answer_empty_without_analysed_media() {
 fn plans_are_dry_runs_and_applies_are_one_envelope_of_edits() {
     let mut h = harness();
     let clip = h.ids.clip_a.clone();
-    let v = h.ok(json!({ "method": "plan", "ops": [ { "op": "split", "clip_id": clip, "at": { "secs": 1.0 } } ] }));
+    // The plan is its text; the steps as JSON come when asked for.
+    let brief = h.ok(json!({ "method": "plan", "ops": [ { "op": "split", "clip_id": clip, "at": { "secs": 1.0 } } ] }));
+    assert!(brief.get("steps").is_none() && brief["steps_resolved"] == json!(1) && brief["text"].as_str().unwrap().starts_with("1. "), "{brief}");
+    let v = h.ok(json!({ "method": "plan", "detail": true, "ops": [ { "op": "split", "clip_id": clip, "at": { "secs": 1.0 } } ] }));
     assert_eq!(v["applied"], json!(false));
     assert!(v["text"].as_str().unwrap().contains("1. split"), "{}", v["text"]);
     assert_eq!(v["steps"][0]["after"].as_array().map(|a| a.len()), Some(2));

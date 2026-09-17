@@ -251,6 +251,12 @@ pub struct SpokenWord {
 pub trait Transcripts {
     /// The words of `item`, in order, or `None` when it has no transcript.
     fn words(&self, item: &klipp_media::MediaItem) -> Option<Vec<SpokenWord>>;
+    /// Where `item`'s sound was measured silent, in the file's seconds.
+    /// A cut there is clean whatever the words' times say: those are a
+    /// model's estimate, the silence is a measurement.
+    fn silences(&self, _item: &klipp_media::MediaItem) -> Vec<(f64, f64)> {
+        Vec::new()
+    }
 }
 
 /// No transcripts at all: `captions` is refused.
@@ -306,6 +312,35 @@ pub struct Plan {
 impl Plan {
     pub fn report(&self) -> Vec<StepReport> {
         self.steps.iter().map(|s| StepReport { op: s.op.clone(), what: s.what.clone(), after: s.after.clone() }).collect()
+    }
+
+    /// [`Self::text`] with long runs of one kind of step folded: the
+    /// first two and the last of a run of five or more, and how many
+    /// were left out. A sixty-step assembly said every step twice, in
+    /// text and as JSON, and cost its caller fifteen thousand tokens.
+    pub fn text_folded(&self) -> String {
+        let kind = |s: &Step| std::mem::discriminant(&s.op);
+        let mut out = String::new();
+        let mut i = 0;
+        while i < self.steps.len() {
+            let mut j = i;
+            while j + 1 < self.steps.len() && kind(&self.steps[j + 1]) == kind(&self.steps[i]) {
+                j += 1;
+            }
+            let run = j - i + 1;
+            for k in i..=j {
+                if run >= 5 && k > i + 1 && k < j {
+                    if k == i + 2 {
+                        out.push_str(&format!("   … {} more like these …\n", run - 3));
+                    }
+                    continue;
+                }
+                out.push_str(&format!("{}. {}\n", k + 1, self.steps[k].what));
+            }
+            i = j + 1;
+        }
+        out.push_str(&format!("Timeline afterwards: {:.2} s\n", self.duration_secs));
+        out
     }
 
     /// The plan in a few lines, for a person or a model to read.
@@ -383,9 +418,22 @@ fn clip_ref_id(seq: &Sequence, fps: Fps, r: &ClipRef, step: usize) -> Result<Cli
     resolve_clip(seq, fps, r, step).map(|(_, _, c)| c.id)
 }
 
+/// A file's name short enough to say forty times in a plan: a long one
+/// keeps its start and its extension. The ids say which file it is.
+fn short_name(filename: &str) -> String {
+    const KEEP: usize = 22;
+    let n = filename.chars().count();
+    if n <= KEEP + 8 {
+        return filename.to_string();
+    }
+    let ext = filename.rsplit_once('.').map(|(_, e)| e).filter(|e| e.len() <= 5).unwrap_or("");
+    let head: String = filename.chars().take(KEEP).collect();
+    format!("{}…{}{ext}", head.trim_end(), if ext.is_empty() { "" } else { "." })
+}
+
 fn clip_name(seq: &Sequence, pool: &MediaPool, clip: &Clip) -> String {
     match &clip.kind {
-        ClipKind::Media { media_id } => pool.get(media_id).map(|m| m.filename.clone()).unwrap_or_else(|| "media".into()),
+        ClipKind::Media { media_id } => pool.get(media_id).map(|m| short_name(&m.filename)).unwrap_or_else(|| "media".into()),
         ClipKind::Title(td) => format!("title \"{}\"", td.text().lines().next().unwrap_or("").chars().take(24).collect::<String>()),
         ClipKind::Generator(_) => "generator".into(),
         ClipKind::AdjustmentLayer => "adjustment layer".into(),
@@ -629,7 +677,7 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
                     .ok_or_else(|| refuse(i, format!("track {ti} would not take an insert"), "unlock the track, or place without insert"))?;
                 let what = format!(
                     "insert {} on track {ti} at {:.2} s ({:.2}-{:.2} s of the file), ending at {:.2} s; {} clip(s) split, {} moved {:.2} s later{sound_note}",
-                    item.filename,
+                    short_name(&item.filename),
                     secs(tl_in),
                     secs(src_in),
                     secs(src_out),
@@ -649,7 +697,7 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
             }
             let what = format!(
                 "place {} on track {ti} at {:.2} s ({:.2}-{:.2} s of the file), ending at {:.2} s{sound_note}{format_note}",
-                item.filename,
+                short_name(&item.filename),
                 secs(tl_in),
                 secs(src_in),
                 secs(src_out),
@@ -1651,6 +1699,22 @@ mod tests {
             };
             Some([say(0.5, "Nobody is afraid of the machine."), say(4.4, "What changed it for me was agents, and that is the long and the short of it."), say(9.0, "Never used.")].concat())
         }
+    }
+
+    #[test]
+    fn a_long_plan_folds_its_runs_and_says_long_names_once_shortly() {
+        let (seq, pool, media, _, _) = fixture();
+        let ops: Vec<Op> = (0..9)
+            .map(|k| Op::Place { media_id: media, track: TrackRef::Index(0), at: Anchor::TrackEnd(TrackRef::Index(0)), source_in: Some(k as f64 * 0.5), source_out: Some(k as f64 * 0.5 + 0.4), insert: false, with_audio: true })
+            .collect();
+        let plan = resolve(&seq, &pool, &ops).unwrap();
+        let folded = plan.text_folded();
+        let lines: Vec<&str> = folded.lines().collect();
+        assert_eq!(lines.len(), 5, "two, the fold, the last, the length:\n{folded}");
+        assert!(lines[0].starts_with("1. ") && lines[1].starts_with("2. ") && lines[2].contains("6 more like these") && lines[3].starts_with("9. "), "{folded}");
+        assert_eq!(plan.text().lines().count(), 10, "in full when asked");
+        assert_eq!(short_name("Omarchy Is Not Afraid Of AI Code [CLFeu9AcfKk].webm"), "Omarchy Is Not Afraid…webm".replace("…webm", "….webm"));
+        assert_eq!(short_name("a.mov"), "a.mov");
     }
 
     #[test]

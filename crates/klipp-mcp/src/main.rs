@@ -398,9 +398,17 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
             }
             v
         }
-        "klipp_plan" => json!({ "method": "plan", "ops": args.get("ops").cloned().ok_or("missing required argument: ops")? }),
+        "klipp_plan" => json!({
+            "method": "plan",
+            "ops": args.get("ops").cloned().ok_or("missing required argument: ops")?,
+            "detail": args.get("detail").and_then(|v| v.as_bool()).unwrap_or(false),
+        }),
         "klipp_apply" => {
-            let mut v = json!({ "method": "apply", "ops": args.get("ops").cloned().ok_or("missing required argument: ops")? });
+            let mut v = json!({
+                "method": "apply",
+                "ops": args.get("ops").cloned().ok_or("missing required argument: ops")?,
+                "detail": args.get("detail").and_then(|v| v.as_bool()).unwrap_or(false),
+            });
             if let Some(l) = args.get("label").and_then(|v| v.as_str()) {
                 v["label"] = json!(l);
             }
@@ -510,9 +518,18 @@ fn call_tool(name: &str, args: &Value) -> Result<Vec<Value>, String> {
     }
 
     // The timeline view is text for reading, not JSON for parsing.
-    if name == "klipp_timeline" || name == "klipp_media_analysis" || name == "klipp_plan" {
+    if name == "klipp_timeline" || name == "klipp_media_analysis" || name == "klipp_plan" || name == "klipp_check" || name == "klipp_brief" {
         if let Some(text) = result.get("text").and_then(|v| v.as_str()) {
             return Ok(vec![json!({ "type": "text", "text": text })]);
+        }
+    }
+    // An apply says what it did as the plan would, and that it is done:
+    // the steps as JSON on top of that cost a long assembly's caller
+    // fifteen thousand tokens. `detail` asks for them.
+    if name == "klipp_apply" && result.get("steps").is_none() {
+        if let Some(text) = result.get("text").and_then(|v| v.as_str()) {
+            let done = format!("{text}Applied as one undo step; revision {}.", result.get("revision").and_then(|r| r.as_u64()).unwrap_or(0));
+            return Ok(vec![json!({ "type": "text", "text": done })]);
         }
     }
     // Pictures and sound come back as a path; inline them too when
@@ -848,7 +865,8 @@ fn tool_definitions() -> Vec<Value> {
               Ops run in order, each seeing the ones before it (a split's halves are new ids, \
               reported in the reply). Times snap to frames. Overlaps, locked tracks and edges \
               past the media are refused with why and what would help, and nothing is applied."),
-             json!({ "ops": { "type": "array", "items": { "type": "object" } } }),
+             json!({ "ops": { "type": "array", "items": { "type": "object" } },
+                     "detail": { "type": "boolean", "description": "every step in full and each touched clip's range as JSON; off by default, when long runs of one kind of step are folded" } }),
              vec!["ops"]),
         tool("klipp_apply",
              concat!("Apply a list of editorial operations as ONE undo step, after resolving them the \
@@ -908,7 +926,8 @@ fn tool_definitions() -> Vec<Value> {
               reported in the reply). Times snap to frames. Overlaps, locked tracks and edges \
               past the media are refused with why and what would help, and nothing is applied."),
              json!({ "ops": { "type": "array", "items": { "type": "object" } },
-                     "label": { "type": "string", "description": "A name for the history entry" } }),
+                     "label": { "type": "string", "description": "A name for the history entry" },
+                     "detail": { "type": "boolean", "description": "every step in full and each touched clip's range as JSON; off by default, when the reply is the plan as text with long runs of one kind of step folded" } }),
              vec!["ops"]),
         tool("klipp_undo", "One step back in the active sequence's edit history. Every write \
               made through these tools is one step; a klipp_batch is one step as a whole.",
@@ -957,7 +976,8 @@ fn tool_definitions() -> Vec<Value> {
               about (what the piece is about), tone, platform, target_secs, width and height \
               (the delivery's picture), loudness_lufs (about -14 for the web, -23 for \
               broadcast), captions (bool), music (bool), cast (a list of {name, role, \
-              described}), notes. What is left out asks for nothing. Names in lower thirds \
+              described}), vocabulary (names, products and terms as they are spelt, for the \
+              speech-to-text: run klipp_analyze after setting it), notes. What is left out asks for nothing. Names in lower thirds \
               come from the cast, klipp_check holds the piece to the brief, and an export \
               that names no size or loudness takes the brief's.",
              json!({ "brief": { "type": "object" } }), vec!["brief"]),

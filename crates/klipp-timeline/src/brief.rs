@@ -54,6 +54,11 @@ pub struct Brief {
     pub music: bool,
     #[serde(default)]
     pub cast: Vec<CastMember>,
+    /// How things are spelt: names, products and terms of art the
+    /// speech-to-text would otherwise guess at ("Omarchy", "QML"). The
+    /// cast's names count without being listed.
+    #[serde(default)]
+    pub vocabulary: Vec<String>,
     /// Anything else the editor should know.
     #[serde(default)]
     pub notes: String,
@@ -64,6 +69,12 @@ impl Brief {
     pub fn cast_member(&self, name: &str) -> Option<&CastMember> {
         let want = name.trim().to_lowercase();
         self.cast.iter().find(|c| c.name.trim().to_lowercase() == want)
+    }
+
+    /// Every name and term whose spelling the brief settles: the cast's
+    /// names, then the vocabulary.
+    pub fn spellings(&self) -> Vec<String> {
+        self.cast.iter().map(|c| c.name.clone()).chain(self.vocabulary.iter().cloned()).filter(|w| !w.trim().is_empty()).collect()
     }
 
     /// How far a length may be from the target and still be the brief's:
@@ -98,6 +109,9 @@ impl Brief {
                 who.push_str(&format!(" ({})", c.described));
             }
             out.push(format!("Cast: {who}"));
+        }
+        if !self.vocabulary.is_empty() {
+            out.push(format!("Spelt: {}", self.vocabulary.join(", ")));
         }
         if !self.notes.trim().is_empty() {
             out.push(format!("Notes: {}", self.notes));

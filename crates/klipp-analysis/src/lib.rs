@@ -46,6 +46,20 @@ pub trait Analyser: Send + Sync {
     fn wants(&self, item: &klipp_media::MediaItem) -> bool;
     /// The result as JSON, or why it could not be made.
     fn run(&self, item: &klipp_media::MediaItem, ctx: &AnalysisCtx) -> Result<serde_json::Value, String>;
+    /// Whether a stored result, of the right version, should be made
+    /// again all the same: a better model has been installed since, or
+    /// what the analyser was told has changed.
+    fn stale(&self, _stored: &serde_json::Value) -> bool {
+        false
+    }
+}
+
+/// Whether `a` has a stored result for `key` that still stands.
+pub(crate) fn has_fresh(a: &dyn Analyser, key: &str) -> bool {
+    match store::load(key, a.id(), a.schema_version()) {
+        Some(v) => !a.stale(&v),
+        None => false,
+    }
 }
 
 /// What an analyser may use.

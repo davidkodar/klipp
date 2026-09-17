@@ -451,6 +451,10 @@ impl klipp_document::ops::Transcripts for AnalysedTranscripts {
         let t = klipp_analysis::report::MediaAnalysis::load(&item.path).transcript?;
         Some(t.words.into_iter().map(|w| klipp_document::ops::SpokenWord { start_secs: w.start_secs, end_secs: w.end_secs, text: w.text }).collect())
     }
+
+    fn silences(&self, item: &klipp_media::MediaItem) -> Vec<(f64, f64)> {
+        klipp_analysis::report::MediaAnalysis::load(&item.path).audio.map(|a| a.silences.iter().map(|s| (s.start_secs, s.end_secs)).collect()).unwrap_or_default()
+    }
 }
 
 /// A media item's file and duration, by id.
@@ -727,6 +731,10 @@ fn handle(
                 return read_in_batch("analyze");
             }
             let downloaded = if download_models { klipp_analysis::download_models()? } else { Vec::new() };
+            // How the brief spells things goes to the transcriber; a
+            // transcript made without those spellings is made again.
+            let spellings = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?.brief.as_ref().map(|b| b.spellings()).unwrap_or_default();
+            klipp_analysis::transcript::set_vocabulary(spellings);
             let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
             let items: Vec<&klipp_media::MediaItem> = match media_id {
                 Some(id) => {
@@ -1109,23 +1117,29 @@ fn handle(
             }))
         }
 
-        ControlCommand::Plan { ops } => {
+        ControlCommand::Plan { ops, detail } => {
             if in_batch {
                 return read_in_batch("plan");
             }
             let (plan, revision) = resolve_plan(ctx, &ops)?;
-            Ok(json!({ "text": plan.text(), "steps": plan.report(), "duration_secs": plan.duration_secs, "revision": revision, "applied": false }))
+            let mut v = json!({ "text": if detail { plan.text() } else { plan.text_folded() }, "steps_resolved": plan.steps.len(), "duration_secs": plan.duration_secs, "revision": revision, "applied": false });
+            if detail {
+                v["steps"] = json!(plan.report());
+            }
+            Ok(v)
         }
 
-        ControlCommand::Apply { ops, label } => {
+        ControlCommand::Apply { ops, label, detail } => {
             if in_batch {
                 return Err("apply is its own batch; send it on its own".into());
             }
             let (plan, revision) = resolve_plan(ctx, &ops)?;
             let edits: Vec<klipp_document::history::EditCommand> = plan.steps.iter().map(|s| s.edit.clone()).collect();
             let mut v = send_full_envelope(ctx, Vec::new(), edits, true, Some(revision), label)?;
-            v["text"] = json!(plan.text());
-            v["steps"] = json!(plan.report());
+            v["text"] = json!(if detail { plan.text() } else { plan.text_folded() });
+            if detail {
+                v["steps"] = json!(plan.report());
+            }
             v["duration_secs"] = json!(plan.duration_secs);
             Ok(v)
         }
@@ -1166,9 +1180,14 @@ fn handle(
             }
             let old = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?.brief.clone();
             let text = brief.text();
-            let edit = klipp_document::history::EditCommand::SetBrief { old: old.map(Box::new), new: Some(Box::new(brief)) };
+            let new_spellings = brief.spellings();
+            let edit = klipp_document::history::EditCommand::SetBrief { old: old.clone().map(Box::new), new: Some(Box::new(brief)) };
+            let respelt = old.as_ref().map(|b| b.spellings()).unwrap_or_default() != new_spellings;
             let mut v = send_full_envelope(ctx, Vec::new(), vec![edit], true, None, Some("Set Brief".into()))?;
             v["text"] = json!(text);
+            if respelt && !new_spellings.is_empty() {
+                v["note"] = json!("the spellings changed: run analyze to have the speech transcribed again with them, before captions or a transcript search");
+            }
             Ok(v)
         }
 

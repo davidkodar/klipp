@@ -203,6 +203,7 @@ pub fn check(seq: &Sequence, pool: &MediaPool, transcripts: &dyn Transcripts) ->
     let mut speech_spans: Vec<(f64, f64)> = Vec::new();
     let mut musics: Vec<&Clip> = Vec::new();
     let mut cache: std::collections::HashMap<klipp_core::MediaId, Option<Vec<SpokenWord>>> = std::collections::HashMap::new();
+    let mut silence_cache: std::collections::HashMap<klipp_core::MediaId, Vec<(f64, f64)>> = std::collections::HashMap::new();
     for t in &seq.tracks {
         for c in t.clips.iter().filter(|c| is_heard(seq, pool, t, c)) {
             let Some(media_id) = c.media_id() else { continue };
@@ -218,7 +219,12 @@ pub fn check(seq: &Sequence, pool: &MediaPool, transcripts: &dyn Transcripts) ->
             }
             speech_spans.push((secs(c.timeline_in), secs(c.timeline_out)));
             const INTO: f64 = 0.06;
+            let silences = silence_cache.entry(media_id).or_insert_with(|| transcripts.silences(item));
             for (edge, at, name) in [(s_in, secs(c.timeline_in), "starts"), (s_out, secs(c.timeline_out), "ends")] {
+                // In measured silence the cut is clean, whatever the words' times say.
+                if silences.iter().any(|(a, b)| edge >= *a - 0.01 && edge <= *b + 0.01) {
+                    continue;
+                }
                 if let Some(w) = inside.iter().find(|w| w.start_secs + INTO < edge && w.end_secs - INTO > edge) {
                     let to = if name == "starts" { w.start_secs } else { w.end_secs };
                     add(Severity::Warning, "word_cut", Some(at), format!("the sound {name} inside the word \"{}\"", w.text.trim()), &format!("Trim that edge to {to:.2} s of the file, the word's own edge, plus a beat"));
@@ -282,6 +288,18 @@ mod tests {
 
     fn tc(s: f64) -> Timecode {
         RationalTime::from_secs_f64(s, 25)
+    }
+
+    /// The same interview, measured silent around 5.3 and 9.3 s, where the second select is cut.
+    struct Gated(klipp_core::MediaId);
+
+    impl Transcripts for Gated {
+        fn words(&self, item: &klipp_media::MediaItem) -> Option<Vec<SpokenWord>> {
+            Spoken(self.0).words(item)
+        }
+        fn silences(&self, item: &klipp_media::MediaItem) -> Vec<(f64, f64)> {
+            if item.id == self.0 { vec![(5.2, 5.4), (9.2, 9.4)] } else { Vec::new() }
+        }
     }
 
     /// An interview file that says a sentence, and a music file that says nothing.
@@ -353,6 +371,9 @@ mod tests {
         assert!(rules(&r).contains(&"black") && r.errors == 1, "{}", r.text());
         let word = r.findings.iter().find(|f| f.rule == "word_cut").expect("a cut inside a word");
         assert!(word.what.contains("\"six\"") && word.hint.contains("5.00 s"), "{word:?}");
+        // Measured silent at that edge, the cut is clean: the words' times are a
+        // model's estimate, and whisper lets a word run across a pause.
+        assert!(!rules(&check(&seq, &pool, &Gated(talk))).contains(&"word_cut"));
 
         // Closed up, it is a jump cut; B-roll across the join covers it.
         for t in seq.tracks.iter_mut() {

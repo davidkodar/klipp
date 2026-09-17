@@ -231,13 +231,22 @@ pub enum ControlCommand {
     /// `{"offset": {"from": anchor, "secs": s}}`. Ops run in order, each
     /// seeing what the ones before did; the first that cannot be done
     /// refuses the plan with why and what would help.
-    Plan { ops: Vec<klipp_document::ops::Op> },
+    Plan {
+        ops: Vec<klipp_document::ops::Op>,
+        /// Every step in full, and each touched clip's range as JSON.
+        /// Without it the reply is the plan as text, long runs folded.
+        #[serde(default)]
+        detail: bool,
+    },
     /// The same, then applied as one undo step — unless the document
     /// changed since it was resolved, in which case nothing is applied.
     Apply {
         ops: Vec<klipp_document::ops::Op>,
         #[serde(default)]
         label: Option<String>,
+        /// As for `plan`.
+        #[serde(default)]
+        detail: bool,
     },
 
     // ── Edit history ──────────────────────────────────────────────

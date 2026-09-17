@@ -11,9 +11,33 @@
 use serde::{Deserialize, Serialize};
 
 pub const ID: &str = "transcript";
-pub const VERSION: u32 = 3;
-/// The manifest entry the analyser runs with.
-pub const MODEL_ID: &str = "whisper_base_ggml";
+pub const VERSION: u32 = 4;
+
+/// The models the analyser can run with, best first; it uses the best
+/// one installed. The small one is what came first; on real speech it
+/// mishears names ("a matchy" for Omarchy), drops words and places
+/// them loosely, and every caption made from it had to be rewritten.
+pub const MODELS: [&str; 2] = ["whisper_large_v3_turbo_q5", "whisper_base_ggml"];
+/// The model a download fetches.
+pub const MODEL_ID: &str = MODELS[0];
+
+/// How things are spelt: names and terms given to whisper as its
+/// prompt, so "Omarchy" is not "a matchy". Set by whoever asks for
+/// analysis, from the brief; a transcript made with another list is
+/// stale.
+static VOCABULARY: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+/// Replace the list. Order and case are kept as given; duplicates and
+/// blanks go.
+pub fn set_vocabulary(words: Vec<String>) {
+    let mut seen = std::collections::HashSet::new();
+    let words: Vec<String> = words.into_iter().map(|w| w.trim().to_string()).filter(|w| !w.is_empty() && seen.insert(w.to_lowercase())).collect();
+    *VOCABULARY.lock().unwrap_or_else(|e| e.into_inner()) = words;
+}
+
+pub fn vocabulary() -> Vec<String> {
+    VOCABULARY.lock().unwrap_or_else(|e| e.into_inner()).clone()
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Segment {
@@ -37,6 +61,9 @@ pub struct Transcript {
     /// ISO 639-1 where whisper knows it, e.g. "en", "sv".
     pub language: Option<String>,
     pub model: String,
+    /// The names and terms whisper was given.
+    #[serde(default)]
+    pub vocabulary: Vec<String>,
     pub segments: Vec<Segment>,
     pub words: Vec<Word>,
 }
@@ -120,31 +147,46 @@ fn decode_audio(ffmpeg: &std::path::Path, path: &std::path::Path) -> Result<Vec<
 }
 
 /// The model file in the app's model cache, if it is there.
-pub fn model_path() -> Option<std::path::PathBuf> {
+/// The best model installed: its manifest id and its file.
+pub fn installed_model() -> Option<(&'static str, std::path::PathBuf)> {
     let manifest = klipp_ml::manifest::load_effective().ok()?;
-    let entry = manifest.get(MODEL_ID)?;
     let cache = klipp_ml::cache::ModelCache::open().ok()?;
-    // Presence only: the download verified the bytes, and hashing
-    // 148 MB on every import would not be worth what it proves.
-    let path = cache.path_for(entry);
-    path.is_file().then_some(path)
+    MODELS.iter().find_map(|id| {
+        let entry = manifest.get(id)?;
+        // Presence only: the download verified the bytes, and hashing
+        // half a gigabyte on every import would not be worth what it proves.
+        let path = cache.path_for(entry);
+        path.is_file().then_some((*id, path))
+    })
 }
 
-/// The model file, downloaded and verified against the manifest when
-/// `download` and it is not there yet.
-pub fn ensure_model(download: bool) -> Result<std::path::PathBuf, String> {
-    if let Some(p) = model_path() {
-        return Ok(p);
-    }
-    if !download {
-        return Err(format!("the transcription model {MODEL_ID} is not downloaded; ask with download_models"));
+pub fn model_path() -> Option<std::path::PathBuf> {
+    installed_model().map(|(_, p)| p)
+}
+
+/// The model to run with. With `download`, the best one, fetched and
+/// verified against the manifest if it is not there yet; without, the
+/// best one installed.
+pub fn ensure_model(download: bool) -> Result<(&'static str, std::path::PathBuf), String> {
+    match installed_model() {
+        Some(found) if !download || found.0 == MODEL_ID => return Ok(found),
+        None if !download => return Err(format!("no transcription model is downloaded; ask with download_models ({MODEL_ID})")),
+        _ => {}
     }
     let manifest = klipp_ml::manifest::load_effective().map_err(|e| format!("model manifest: {e:?}"))?;
     let entry = manifest.get(MODEL_ID).ok_or_else(|| format!("no manifest entry {MODEL_ID}"))?;
     let cache = klipp_ml::cache::ModelCache::open().map_err(|e| format!("model cache: {e:?}"))?;
     let cancel = std::sync::atomic::AtomicBool::new(false);
     let mut progress = klipp_ml::download::NoOpProgress;
-    klipp_ml::download::download_to_cache(&cache, entry, &mut progress, &cancel).map_err(|e| format!("download of {MODEL_ID}: {e:?}"))
+    let path = klipp_ml::download::download_to_cache(&cache, entry, &mut progress, &cancel).map_err(|e| format!("download of {MODEL_ID}: {e:?}"))?;
+    Ok((MODEL_ID, path))
+}
+
+/// Whether a transcript made with the spellings `given` lacks any of
+/// the ones `wanted` now, whatever their case.
+pub fn lacks_spellings(given: &[String], wanted: &[String]) -> bool {
+    let given: std::collections::HashSet<String> = given.iter().map(|w| w.to_lowercase()).collect();
+    wanted.iter().any(|w| !given.contains(&w.to_lowercase()))
 }
 
 pub struct TranscriptAnalyser;
@@ -159,14 +201,24 @@ impl crate::Analyser for TranscriptAnalyser {
     fn wants(&self, item: &klipp_media::MediaItem) -> bool {
         item.has_audio && item.duration.to_secs_f64() > 0.0 && model_path().is_some()
     }
+    /// Made by a lesser model than the one installed now, or with
+    /// another list of how things are spelt.
+    fn stale(&self, stored: &serde_json::Value) -> bool {
+        let model = stored.get("model").and_then(|m| m.as_str()).unwrap_or("");
+        let words: Vec<String> = stored.get("vocabulary").and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default();
+        // Spellings asked for now that the stored one was not given. One
+        // made with more is as good; with none asked for, any will do.
+        installed_model().is_some_and(|(best, _)| best != model) || lacks_spellings(&words, &vocabulary())
+    }
     fn run(&self, item: &klipp_media::MediaItem, ctx: &crate::AnalysisCtx) -> Result<serde_json::Value, String> {
-        let model = ensure_model(false)?;
+        let (model_id, model) = ensure_model(false)?;
+        let words = vocabulary();
         let audio = decode_audio(&ctx.ffmpeg, &item.path)?;
         if audio.len() < 16000 / 2 {
-            let t = Transcript { duration_secs: item.duration.to_secs_f64(), model: MODEL_ID.into(), ..Default::default() };
+            let t = Transcript { duration_secs: item.duration.to_secs_f64(), model: model_id.into(), vocabulary: words, ..Default::default() };
             return serde_json::to_value(t).map_err(|e| e.to_string());
         }
-        let mut transcript = transcribe(&model, &audio, item.duration.to_secs_f64())?;
+        let mut transcript = transcribe(model_id, &model, &audio, item.duration.to_secs_f64(), &words)?;
         // The sound analyser has already found where the file is silent;
         // words whisper places there are its invention, whatever it
         // thinks of them.
@@ -175,21 +227,37 @@ impl crate::Analyser for TranscriptAnalyser {
             .and_then(|v| serde_json::from_value::<crate::audio::AudioEnvelope>(v).ok())
         {
             drop_words_in_silence(&mut transcript, &env);
+            trim_words_to_sound(&mut transcript, &env);
         }
         serde_json::to_value(transcript).map_err(|e| e.to_string())
     }
 }
 
-fn transcribe(model: &std::path::Path, audio: &[f32], duration_secs: f64) -> Result<Transcript, String> {
-    use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
+fn transcribe(model_id: &str, model: &std::path::Path, audio: &[f32], duration_secs: f64, words: &[String]) -> Result<Transcript, String> {
+    use whisper_rs::{DtwMode, DtwModelPreset, DtwParameters, FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
     whisper_rs::install_logging_hooks();
     let mut cparams = WhisperContextParameters::default();
     cparams.use_gpu(false);
+    // Word times from the model's alignment heads (DTW over the
+    // cross-attention), not from its timestamp tokens: those put a
+    // word anywhere inside its half-second bucket, which is no use for
+    // cutting on.
+    let preset = match model_id {
+        "whisper_large_v3_turbo_q5" => DtwModelPreset::LargeV3Turbo,
+        _ => DtwModelPreset::Base,
+    };
+    cparams.dtw_parameters(DtwParameters { mode: DtwMode::ModelPreset { model_preset: preset }, ..Default::default() });
     let ctx = WhisperContext::new_with_params(model, cparams).map_err(|e| format!("whisper model: {e}"))?;
     let mut state = ctx.create_state().map_err(|e| format!("whisper state: {e}"))?;
     let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
-    let threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4).min(8) as i32;
+    // Half the machine, up to sixteen: whisper stops gaining past that,
+    // and the app is still being used while this runs.
+    let threads = (std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4) / 2).clamp(4, 16) as i32;
     params.set_n_threads(threads);
+    let prompt = if words.is_empty() { String::new() } else { format!("Names and terms: {}.", words.join(", ")) };
+    if !prompt.is_empty() {
+        params.set_initial_prompt(&prompt);
+    }
     params.set_language(Some("auto"));
     params.set_translate(false);
     params.set_token_timestamps(true);
@@ -222,13 +290,60 @@ fn transcribe(model: &std::path::Path, audio: &[f32], duration_secs: f64) -> Res
             let Some(tok) = seg.get_token(j) else { continue };
             let d = tok.token_data();
             let text = tok.to_str_lossy().map(|c| c.into_owned()).unwrap_or_default();
-            tokens.push(Token { text, t0: d.t0 as f64 / 100.0, t1: d.t1 as f64 / 100.0, p: d.p });
+            // The aligned time when there is one: where the token is
+            // said. Its end is the next token's start, settled below.
+            let (t0, t1) = if d.t_dtw >= 0 { (d.t_dtw as f64 / 100.0, f64::NAN) } else { (d.t0 as f64 / 100.0, d.t1 as f64 / 100.0) };
+            tokens.push(Token { text, t0, t1, p: d.p });
         }
     }
-    let words = group_words(&tokens);
+    settle_token_ends(&mut tokens, &segments);
+    let spoken = group_words(&tokens);
     // A language detected over silence is a guess; say nothing instead.
     let language = if segments.is_empty() { None } else { lang };
-    Ok(Transcript { duration_secs, language, model: MODEL_ID.into(), segments, words })
+    Ok(Transcript { duration_secs, language, model: model_id.into(), vocabulary: words.to_vec(), segments, words: spoken })
+}
+
+/// An aligned token has a time and no end: it ends where the next one
+/// starts, or a little after its own start at the end of a segment —
+/// never past the segment it is in.
+fn settle_token_ends(tokens: &mut [Token], segments: &[Segment]) {
+    const LAST_TOKEN_SECS: f64 = 0.45;
+    for i in 0..tokens.len() {
+        if !tokens[i].t1.is_nan() {
+            continue;
+        }
+        let start = tokens[i].t0;
+        let seg_end = segments.iter().find(|s| start >= s.start_secs - 0.05 && start <= s.end_secs + 0.05).map(|s| s.end_secs);
+        let next = tokens[i + 1..].iter().map(|t| t.t0).find(|t| *t > start);
+        let mut end = next.unwrap_or(start + LAST_TOKEN_SECS).min(start + 1.5);
+        if let Some(e) = seg_end {
+            end = end.min(e.max(start + 0.05));
+        }
+        tokens[i].t1 = end.max(start + 0.02);
+    }
+}
+
+/// A word does not reach into measured silence: its edges come in to
+/// where the sound is. Whisper let "Oh," run across 1.2 s of nothing,
+/// and a cut in that nothing read as a cut inside the word.
+pub fn trim_words_to_sound(t: &mut Transcript, env: &crate::audio::AudioEnvelope) {
+    for w in &mut t.words {
+        for s in &env.silences {
+            if s.end_secs <= w.start_secs || s.start_secs >= w.end_secs {
+                continue;
+            }
+            let covers_head = s.start_secs <= w.start_secs;
+            let covers_tail = s.end_secs >= w.end_secs;
+            if covers_head && !covers_tail {
+                w.start_secs = s.end_secs.min(w.end_secs - 0.02);
+            } else if !covers_head {
+                // Silence over the word's tail, or inside it: the word's
+                // time is its onset, so it is the sound before the
+                // silence, and what follows the silence is the next word's.
+                w.end_secs = s.start_secs.max(w.start_secs + 0.02);
+            }
+        }
+    }
 }
 
 /// Above this probability of no speech, whisper's words for a segment
@@ -272,6 +387,35 @@ mod tests {
 
     fn tok(text: &str, t0: f64, t1: f64, p: f32) -> Token {
         Token { text: text.into(), t0, t1, p }
+    }
+
+    #[test]
+    fn aligned_tokens_end_where_the_next_begins_and_words_stay_out_of_silence() {
+        // Aligned tokens come with a time and no end.
+        let mut tokens = vec![tok(" Oh", 10.2, f64::NAN, 0.9), tok(",", 10.5, f64::NAN, 0.9), tok(" I", 12.0, f64::NAN, 0.9), tok(" hope", 12.2, f64::NAN, 0.9)];
+        let segments = vec![Segment { start_secs: 10.0, end_secs: 12.5, text: "Oh, I hope".into() }];
+        settle_token_ends(&mut tokens, &segments);
+        assert_eq!(tokens[0].t1, 10.5, "to the next token");
+        assert_eq!(tokens[1].t1, 12.0);
+        assert_eq!(tokens[3].t1, 12.5, "the last one to a little after it, inside its segment");
+        let mut t = Transcript { words: group_words(&tokens), ..Default::default() };
+        assert_eq!(t.words.iter().map(|w| w.text.as_str()).collect::<Vec<_>>(), ["Oh,", "I", "hope"]);
+        assert_eq!((t.words[0].start_secs, t.words[0].end_secs), (10.2, 12.0), "the comma drags it across the pause");
+
+        // The sound analyser measured nothing from 10.6 to 11.9 s: the word ends where the sound does.
+        let env = crate::audio::AudioEnvelope { duration_secs: 20.0, silences: vec![crate::audio::Span { start_secs: 10.6, end_secs: 11.9 }, crate::audio::Span { start_secs: 0.0, end_secs: 10.25 }], ..Default::default() };
+        trim_words_to_sound(&mut t, &env);
+        assert_eq!((t.words[0].start_secs, t.words[0].end_secs), (10.25, 10.6));
+        assert_eq!((t.words[1].start_secs, t.words[1].end_secs), (12.0, 12.2), "a word in the sound is left alone");
+    }
+
+    #[test]
+    fn a_transcript_is_stale_only_for_spellings_it_was_not_given() {
+        let given = vec!["Omarchy".to_string(), "DHH".to_string()];
+        assert!(!lacks_spellings(&given, &[]), "nothing asked for");
+        assert!(!lacks_spellings(&given, &["omarchy".into()]), "a subset, whatever the case");
+        assert!(lacks_spellings(&given, &["Omarchy".into(), "QML".into()]));
+        assert!(lacks_spellings(&[], &["QML".into()]));
     }
 
     #[test]

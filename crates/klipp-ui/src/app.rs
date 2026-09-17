@@ -1522,6 +1522,10 @@ impl KlippApp {
                     // arrives: shots, loudness, silence. Stored by the file's
                     // cache key, so a file seen before costs nothing.
                     if media_item.kind == klipp_media::MediaItemKind::File {
+                        // With the brief's spellings, when there is one.
+                        if let Some(b) = self.state.sequences.get(self.state.active_sequence_idx).and_then(|s| s.brief.as_ref()) {
+                            klipp_analysis::transcript::set_vocabulary(b.spellings());
+                        }
                         klipp_analysis::service::request(&media_item);
                     }
                     self.state.media_pool.add(media_item);

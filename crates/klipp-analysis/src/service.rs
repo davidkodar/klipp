@@ -57,7 +57,7 @@ pub fn request(item: &MediaItem) -> Status {
     // Everything stored already: done without a thread.
     if let Some(key) = crate::store::key_for(&item.path) {
         let wanted: Vec<_> = analysers().into_iter().filter(|a| a.wants(item)).collect();
-        if !wanted.is_empty() && wanted.iter().all(|a| crate::store::exists(&key, a.id(), a.schema_version())) {
+        if !wanted.is_empty() && wanted.iter().all(|a| crate::has_fresh(a.as_ref(), &key)) {
             let st = Status {
                 media_id: item.id.0.to_string(),
                 filename: item.filename.clone(),
@@ -120,7 +120,7 @@ fn run_all(item: &MediaItem, ctx: &AnalysisCtx) -> (Vec<&'static str>, Vec<(Stri
         if !a.wants(item) {
             continue;
         }
-        if crate::store::exists(&key, a.id(), a.schema_version()) {
+        if crate::has_fresh(a.as_ref(), &key) {
             done.push(a.id());
             continue;
         }
