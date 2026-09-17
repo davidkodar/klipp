@@ -50,16 +50,24 @@ frames.
 
 ## Ops
 
-- `place {media_id, track, at, source_in?, source_out?}`: a media item
-  onto a track (`"video"`, `"audio"`, `"text"` for the first of that
-  kind, or a track index from the timeline view) at an anchor.
-- `trim {clip_id, edge, to}`: the in or out edge to an anchor; the
-  other edge stays; the source moves with the edge.
+- `place {media_id, track, at, source_in?, source_out?, insert?}`: a
+  media item onto a track (`"video"`, `"audio"`, `"text"` for the first
+  of that kind, or a track index from the timeline view) at an anchor.
+  With `insert`, every unlocked track is rippled later to make room
+  and a clip straddling the anchor is split there.
+- `trim {clip_id, edge, to, ripple?}`: the in or out edge to an anchor;
+  the other edge stays; the source moves with the edge. With `ripple`,
+  the later clips on the track close up by the change; a head trim
+  then keeps the clip's start and shortens it from the front.
 - `split {clip_id, at}`: into two.
 - `remove {clip_id, ripple?}`: off the track; with ripple, later clips
   close the gap.
 - `move {clip_id, to}`: the clip's start to an anchor; a linked audio
   or video partner goes with it.
+- `j_cut {incoming_clip, frames}`: the incoming clip's sound starts so
+  many frames before its picture. `l_cut {outgoing_clip, frames}`: the
+  outgoing clip's sound stays so many frames past its picture. Both
+  need the clips' linked audio, adjacent on one audio track.
 
 Ops run in order and each sees what the ones before did. Overlaps,
 locked tracks, edges past the media and cuts outside a clip are refused.

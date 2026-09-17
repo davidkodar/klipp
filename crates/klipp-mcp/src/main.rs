@@ -781,15 +781,21 @@ fn tool_definitions() -> Vec<Value> {
               touched clip's range afterwards. Nothing changes. Use it before klipp_apply. ",
               "Editorial operations, resolved by Klipp into frame-exact edits. Give a list of ops; \
               each is an object with \"op\" and its fields:\n\
-              place {media_id, track, at, source_in?, source_out?} — a media item onto a track \
-              (an index from klipp_timeline, or \"video\"/\"audio\"/\"text\" for the first of that \
-              kind) at an anchor; source_in/out in seconds of the file, the whole file by default.\n\
-              trim {clip_id, edge: \"in\"|\"out\", to} — one edge to an anchor, the other stays; \
-              the source moves with the edge.\n\
+              place {media_id, track, at, source_in?, source_out?, insert?} — a media item onto \
+              a track (an index from klipp_timeline, or \"video\"/\"audio\"/\"text\" for the first \
+              of that kind) at an anchor; source_in/out in seconds of the file, the whole file by \
+              default; with insert, every unlocked track is rippled later to make room and a \
+              clip straddling the anchor is split.\n\
+              trim {clip_id, edge: \"in\"|\"out\", to, ripple?} — one edge to an anchor, the \
+              other stays, the source moves with the edge; with ripple the later clips on the \
+              track close up by the change (a head trim then keeps the clip's start).\n\
               split {clip_id, at} — into two.\n\
               remove {clip_id, ripple?} — off the track; with ripple the later clips close the gap.\n\
               move {clip_id, to} — the clip's start to an anchor, length unchanged, a linked \
               partner with it.\n\
+              j_cut {incoming_clip, frames} — the incoming clip's sound starts so many frames \
+              before its picture; l_cut {outgoing_clip, frames} — the outgoing clip's sound \
+              stays so many frames past its picture. Both need linked audio on one track.\n\
               Anchors: {\"secs\": s}, {\"frame\": n}, {\"clip_start\": id}, {\"clip_end\": id}, \
               {\"marker\": label}, {\"offset\": {\"from\": anchor, \"secs\": s}}.\n\
               Ops run in order, each seeing the ones before it (a split's halves are new ids, \
@@ -803,15 +809,21 @@ fn tool_definitions() -> Vec<Value> {
               changed since the plan was resolved. Replies with the steps and the revision. ",
               "Editorial operations, resolved by Klipp into frame-exact edits. Give a list of ops; \
               each is an object with \"op\" and its fields:\n\
-              place {media_id, track, at, source_in?, source_out?} — a media item onto a track \
-              (an index from klipp_timeline, or \"video\"/\"audio\"/\"text\" for the first of that \
-              kind) at an anchor; source_in/out in seconds of the file, the whole file by default.\n\
-              trim {clip_id, edge: \"in\"|\"out\", to} — one edge to an anchor, the other stays; \
-              the source moves with the edge.\n\
+              place {media_id, track, at, source_in?, source_out?, insert?} — a media item onto \
+              a track (an index from klipp_timeline, or \"video\"/\"audio\"/\"text\" for the first \
+              of that kind) at an anchor; source_in/out in seconds of the file, the whole file by \
+              default; with insert, every unlocked track is rippled later to make room and a \
+              clip straddling the anchor is split.\n\
+              trim {clip_id, edge: \"in\"|\"out\", to, ripple?} — one edge to an anchor, the \
+              other stays, the source moves with the edge; with ripple the later clips on the \
+              track close up by the change (a head trim then keeps the clip's start).\n\
               split {clip_id, at} — into two.\n\
               remove {clip_id, ripple?} — off the track; with ripple the later clips close the gap.\n\
               move {clip_id, to} — the clip's start to an anchor, length unchanged, a linked \
               partner with it.\n\
+              j_cut {incoming_clip, frames} — the incoming clip's sound starts so many frames \
+              before its picture; l_cut {outgoing_clip, frames} — the outgoing clip's sound \
+              stays so many frames past its picture. Both need linked audio on one track.\n\
               Anchors: {\"secs\": s}, {\"frame\": n}, {\"clip_start\": id}, {\"clip_end\": id}, \
               {\"marker\": label}, {\"offset\": {\"from\": anchor, \"secs\": s}}.\n\
               Ops run in order, each seeing the ones before it (a split's halves are new ids, \

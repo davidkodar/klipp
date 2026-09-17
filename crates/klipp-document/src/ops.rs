@@ -62,7 +62,10 @@ pub enum Edge {
 pub enum Op {
     /// A media item onto a track at an anchor, the whole file unless
     /// `source_in` and `source_out` (seconds in the file) say otherwise.
-    /// Refused where it would overlap a clip already on the track.
+    /// Refused where it would overlap a clip already on the track —
+    /// unless `insert`, which makes room: every unlocked track is
+    /// rippled later by the clip's length from the anchor, and a clip
+    /// straddling the anchor is split there.
     Place {
         media_id: MediaId,
         track: TrackRef,
@@ -71,12 +74,31 @@ pub enum Op {
         source_in: Option<f64>,
         #[serde(default)]
         source_out: Option<f64>,
+        #[serde(default)]
+        insert: bool,
     },
     /// One edge of a clip to an anchor. The clip's other edge stays;
     /// the source moves with the edge, so the picture at the other edge
     /// does not change. Refused past the media's start or end, or into
-    /// a neighbour.
-    Trim { clip_id: ClipId, edge: Edge, to: Anchor },
+    /// a neighbour — unless `ripple`, which moves the later clips on the
+    /// track by the change in the clip's length (a head trim then keeps
+    /// the clip where it starts and shortens it from the front).
+    Trim {
+        clip_id: ClipId,
+        edge: Edge,
+        to: Anchor,
+        #[serde(default)]
+        ripple: bool,
+    },
+    /// A J-cut: the sound of `incoming_clip` starts `frames` before its
+    /// picture, over the end of the clip before it. Both clips need
+    /// linked audio, adjacent on one audio track: the outgoing audio is
+    /// shortened by `frames`, the incoming audio starts that much earlier.
+    JCut { incoming_clip: ClipId, frames: i64 },
+    /// An L-cut: the sound of `outgoing_clip` stays `frames` past its
+    /// picture, under the start of the clip after it. The outgoing audio
+    /// runs on by `frames`, the incoming audio starts that much later.
+    LCut { outgoing_clip: ClipId, frames: i64 },
     /// A clip into two at an anchor strictly inside it.
     Split { clip_id: ClipId, at: Anchor },
     /// A clip off its track; with `ripple`, the clips after it on that
@@ -275,7 +297,7 @@ pub fn resolve(seq: &Sequence, pool: &MediaPool, ops: &[Op]) -> Result<Plan, Ref
 
 fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
     match op {
-        Op::Place { media_id, track, at, source_in, source_out } => {
+        Op::Place { media_id, track, at, source_in, source_out, insert } => {
             let item = pool.get(media_id).ok_or_else(|| refuse(i, format!("no media item {}", media_id.0), "media ids are in list_media"))?;
             if item.offline {
                 return Err(refuse(i, format!("{} is offline", item.filename), "relink the media first"));
@@ -314,11 +336,31 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize) ->
             }
             let tl_in = resolve_anchor(seq, fps, at, i)?;
             let tl_out = tl_in + (src_out - src_in);
+            if *insert {
+                let clip = Clip::media(*media_id, tl_in, tl_out, src_in, src_out);
+                let id = clip.id;
+                let mut scratch = seq.clone();
+                let edit = scratch
+                    .insert_edit(ti, clip, tl_in)
+                    .ok_or_else(|| refuse(i, format!("track {ti} would not take an insert"), "unlock the track, or place without insert"))?;
+                let what = format!(
+                    "insert {} on track {ti} at {:.2} s ({:.2}-{:.2} s of the file), ending at {:.2} s; {} clip(s) split, {} moved {:.2} s later",
+                    item.filename,
+                    secs(tl_in),
+                    secs(src_in),
+                    secs(src_out),
+                    secs(tl_out),
+                    edit.splits.len(),
+                    edit.shifted.len(),
+                    secs(tl_out - tl_in)
+                );
+                return Ok((what, EditCommand::LegacyInsertEdit { edit, audio: None, created_audio_track_at: None }, vec![id]));
+            }
             if let Some(c) = overlapping(seq, ti, tl_in, tl_out, None) {
                 return Err(refuse(
                     i,
                     format!("it would overlap {} at {:.2}-{:.2} s", clip_name(seq, pool, c), secs(c.timeline_in), secs(c.timeline_out)),
-                    format!("place it at clip_end of {}, or remove that clip first", c.id.0),
+                    format!("place it at clip_end of {}, remove that clip first, or place with insert", c.id.0),
                 ));
             }
             let clip = Clip::media(*media_id, tl_in, tl_out, src_in, src_out);
@@ -334,8 +376,8 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize) ->
             Ok((what, EditCommand::LegacyAppendClip { clip, track_index: ti }, vec![id]))
         }
 
-        Op::Trim { clip_id, edge, to } => {
-            let (ti, _, clip) = find_clip(seq, *clip_id).ok_or_else(|| refuse(i, format!("no clip {}", clip_id.0), "clip ids are in the timeline view"))?;
+        Op::Trim { clip_id, edge, to, ripple } => {
+            let (ti, ci, clip) = find_clip(seq, *clip_id).ok_or_else(|| refuse(i, format!("no clip {}", clip_id.0), "clip ids are in the timeline view"))?;
             if seq.tracks[ti].locked {
                 return Err(refuse(i, format!("track {ti} is locked"), "unlock it first"));
             }
@@ -351,7 +393,13 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize) ->
                     if src_in.value < 0 {
                         return Err(refuse(i, format!("only {:.2} s of the file lies before this clip's in point", secs(clip.source_in)), "trim less, or move the clip instead"));
                     }
-                    (target, clip.timeline_out, src_in, clip.source_out)
+                    if *ripple {
+                        // The clip stays where it starts and is shorter from
+                        // the front: the later clips close up by the change.
+                        (clip.timeline_in, clip.timeline_out - delta, src_in, clip.source_out)
+                    } else {
+                        (target, clip.timeline_out, src_in, clip.source_out)
+                    }
                 }
                 Edge::Out => {
                     if target <= clip.timeline_in + one_frame(fps) {
@@ -367,8 +415,39 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize) ->
                     (clip.timeline_in, target, clip.source_in, src_out)
                 }
             };
+            if *ripple {
+                let shifted: Vec<(ClipId, Timecode, Timecode)> =
+                    seq.tracks[ti].clips[ci + 1..].iter().map(|c| (c.id, c.timeline_in, c.timeline_out)).collect();
+                let delta = new_tl_out - clip.timeline_out;
+                // The earlier neighbour must not be run into by a head trim
+                // that makes the clip longer (it cannot: the start stays).
+                let what = format!(
+                    "ripple trim the {} of {} to {:.2} s (now {:.2}-{:.2} s); {} later clip(s) move {:.2} s",
+                    match edge { Edge::In => "in", Edge::Out => "out" },
+                    clip_name(seq, pool, clip),
+                    secs(target),
+                    secs(new_tl_in),
+                    secs(new_tl_out),
+                    shifted.len(),
+                    secs(delta)
+                );
+                let ids: Vec<ClipId> = std::iter::once(*clip_id).chain(shifted.iter().map(|s| s.0)).collect();
+                let edit = EditCommand::LegacyRippleTrimClip {
+                    clip_id: *clip_id,
+                    old_source_in: clip.source_in,
+                    old_source_out: clip.source_out,
+                    old_timeline_in: clip.timeline_in,
+                    old_timeline_out: clip.timeline_out,
+                    new_source_in: new_src_in,
+                    new_source_out: new_src_out,
+                    new_timeline_in: new_tl_in,
+                    new_timeline_out: new_tl_out,
+                    shifted_clips: shifted,
+                };
+                return Ok((what, edit, ids));
+            }
             if let Some(c) = overlapping(seq, ti, new_tl_in, new_tl_out, Some(*clip_id)) {
-                return Err(refuse(i, format!("it would run into {} at {:.2} s", clip_name(seq, pool, c), secs(c.timeline_in)), "trim less, or move that clip"));
+                return Err(refuse(i, format!("it would run into {} at {:.2} s", clip_name(seq, pool, c), secs(c.timeline_in)), "trim less, move that clip, or trim with ripple"));
             }
             let what = format!(
                 "trim the {} of {} to {:.2} s (now {:.2}-{:.2} s)",
@@ -391,6 +470,9 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize) ->
             };
             Ok((what, edit, vec![*clip_id]))
         }
+
+        Op::JCut { incoming_clip, frames } => split_edit(seq, pool, fps, i, *incoming_clip, *frames, true),
+        Op::LCut { outgoing_clip, frames } => split_edit(seq, pool, fps, i, *outgoing_clip, *frames, false),
 
         Op::Split { clip_id, at } => {
             let (ti, ci, clip) = find_clip(seq, *clip_id).ok_or_else(|| refuse(i, format!("no clip {}", clip_id.0), "clip ids are in the timeline view"))?;
@@ -475,6 +557,85 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize) ->
     }
 }
 
+/// A J-cut (`j`) on the cut into `clip` or an L-cut out of it, `frames`
+/// long: the two clips' linked audio, adjacent on one audio track, get
+/// their shared edge moved — earlier for a J-cut, later for an L-cut —
+/// as two trims recorded in one batch.
+fn split_edit(seq: &Sequence, pool: &MediaPool, fps: Fps, i: usize, clip_id: ClipId, frames: i64, j: bool) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
+    if frames <= 0 {
+        return Err(refuse(i, "the lead has to be at least one frame", "give frames above zero"));
+    }
+    let (ti, ci, clip) = find_clip(seq, clip_id).ok_or_else(|| refuse(i, format!("no clip {}", clip_id.0), "clip ids are in the timeline view"))?;
+    // The picture's neighbour: before it for a J-cut, after it for an L-cut.
+    let track = &seq.tracks[ti];
+    let neighbour = if j { ci.checked_sub(1).map(|p| &track.clips[p]) } else { track.clips.get(ci + 1) };
+    let Some(neighbour) = neighbour.filter(|n| if j { n.timeline_out == clip.timeline_in } else { n.timeline_in == clip.timeline_out }) else {
+        return Err(refuse(i, format!("{} has no clip cut {} it on its track", clip_name(seq, pool, clip), if j { "before" } else { "after" }), "a J-cut or L-cut needs two clips meeting at a cut"));
+    };
+    let (outgoing, incoming) = if j { (neighbour, clip) } else { (clip, neighbour) };
+    let audio_of = |c: &Clip| -> Result<(usize, Clip), Refusal> {
+        let aid = c.linked_clip_id.ok_or_else(|| refuse(i, format!("{} has no linked audio", clip_name(seq, pool, c)), "attach its audio first (attach_audio)"))?;
+        let (ati, _, a) = find_clip(seq, aid).ok_or_else(|| refuse(i, format!("the audio linked to {} is not on the timeline", clip_name(seq, pool, c)), "attach its audio again"))?;
+        Ok((ati, a.clone()))
+    };
+    let (out_ti, out_a) = audio_of(outgoing)?;
+    let (in_ti, in_a) = audio_of(incoming)?;
+    if out_ti != in_ti {
+        return Err(refuse(i, "the two clips' audio is on different tracks", "put both audio clips on one track"));
+    }
+    if seq.tracks[out_ti].locked {
+        return Err(refuse(i, format!("audio track {out_ti} is locked"), "unlock it first"));
+    }
+    if out_a.timeline_out != in_a.timeline_in {
+        return Err(refuse(i, format!("the audio clips do not meet: {:.2} s and {:.2} s", secs(out_a.timeline_out), secs(in_a.timeline_in)), "line the audio up with the picture first"));
+    }
+    let lead = frame_tc(frames, fps);
+    let (new_edge, out_src_out, in_src_in) = if j {
+        (out_a.timeline_out - lead, out_a.source_out - lead, in_a.source_in - lead)
+    } else {
+        (out_a.timeline_out + lead, out_a.source_out + lead, in_a.source_in + lead)
+    };
+    if new_edge <= out_a.timeline_in + one_frame(fps) {
+        return Err(refuse(i, "the outgoing audio would be shorter than a frame", "use fewer frames"));
+    }
+    if new_edge >= in_a.timeline_out - one_frame(fps) {
+        return Err(refuse(i, "the incoming audio would be shorter than a frame", "use fewer frames"));
+    }
+    if in_src_in.value < 0 {
+        return Err(refuse(i, format!("only {:.2} s of sound lies before the incoming clip's in point", secs(in_a.source_in)), "use fewer frames"));
+    }
+    if let Some(d) = outgoing.media_id().and_then(|m| pool.get(&m)).map(|m| m.duration) {
+        if out_src_out > d {
+            return Err(refuse(i, format!("only {:.2} s of sound lies after the outgoing clip's out point", secs(d - out_a.source_out)), "use fewer frames"));
+        }
+    }
+    let trim = |a: &Clip, src_in: Timecode, src_out: Timecode, tl_in: Timecode, tl_out: Timecode| EditCommand::LegacyTrimClip {
+        clip_id: a.id,
+        old_source_in: a.source_in,
+        old_source_out: a.source_out,
+        old_timeline_in: a.timeline_in,
+        old_timeline_out: a.timeline_out,
+        new_source_in: src_in,
+        new_source_out: src_out,
+        new_timeline_in: tl_in,
+        new_timeline_out: tl_out,
+    };
+    let edits = vec![
+        trim(&out_a, out_a.source_in, out_src_out, out_a.timeline_in, new_edge),
+        trim(&in_a, in_src_in, in_a.source_out, new_edge, in_a.timeline_out),
+    ];
+    let what = format!(
+        "{} of {} frames at the cut between {} and {}: the audio now changes at {:.2} s, the picture at {:.2} s",
+        if j { "J-cut" } else { "L-cut" },
+        frames,
+        clip_name(seq, pool, outgoing),
+        clip_name(seq, pool, incoming),
+        secs(new_edge),
+        secs(incoming.timeline_in)
+    );
+    Ok((what, EditCommand::Batch(edits), vec![out_a.id, in_a.id]))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -497,11 +658,19 @@ mod tests {
         item.has_audio = true;
         let media_id = pool.add(item);
         let mut v = Track::new("V1", TrackKind::Video);
-        let a = Clip::media(media_id, tc(0.0), tc(4.0), tc(0.0), tc(4.0));
-        let b = Clip::media(media_id, tc(4.0), tc(8.0), tc(4.0), tc(8.0));
+        let mut a = Clip::media(media_id, tc(0.0), tc(4.0), tc(0.0), tc(4.0));
+        let mut b = Clip::media(media_id, tc(4.0), tc(8.0), tc(4.0), tc(8.0));
         let (ia, ib) = (a.id, b.id);
+        // Linked audio under each, meeting at the same cut.
+        let mut audio = Track::new("A1", TrackKind::Audio);
+        let mut aa = Clip::media(media_id, tc(0.0), tc(4.0), tc(0.0), tc(4.0));
+        let mut ab = Clip::media(media_id, tc(4.0), tc(8.0), tc(4.0), tc(8.0));
+        a.linked_clip_id = Some(aa.id);
+        aa.linked_clip_id = Some(ia);
+        b.linked_clip_id = Some(ab.id);
+        ab.linked_clip_id = Some(ib);
+        audio.clips = vec![aa, ab];
         v.clips = vec![a, b];
-        let audio = Track::new("A1", TrackKind::Audio);
         seq.tracks = vec![v, audio];
         seq.markers.push(klipp_timeline::Marker {
             id: klipp_core::MarkerId::new(),
@@ -520,8 +689,8 @@ mod tests {
         let (seq, pool, media, a, b) = fixture();
         let ops = vec![
             Op::Split { clip_id: b, at: Anchor::Marker("intro".into()) },
-            Op::Place { media_id: media, track: TrackRef::Kind("video".into()), at: Anchor::ClipEnd(b), source_in: Some(8.0), source_out: Some(9.0) },
-            Op::Trim { clip_id: a, edge: Edge::Out, to: Anchor::Secs(3.0) },
+            Op::Place { media_id: media, track: TrackRef::Kind("video".into()), at: Anchor::ClipEnd(b), source_in: Some(8.0), source_out: Some(9.0), insert: false },
+            Op::Trim { clip_id: a, edge: Edge::Out, to: Anchor::Secs(3.0), ripple: false },
         ];
         // The split replaces b, so its end no longer exists as `b`:
         // the plan must refuse the place with a reason naming that.
@@ -530,9 +699,9 @@ mod tests {
         assert!(err.why.contains("no clip"), "{err}");
 
         let ops = vec![
-            Op::Place { media_id: media, track: TrackRef::Index(0), at: Anchor::ClipEnd(b), source_in: Some(8.0), source_out: Some(9.0) },
+            Op::Place { media_id: media, track: TrackRef::Index(0), at: Anchor::ClipEnd(b), source_in: Some(8.0), source_out: Some(9.0), insert: false },
             Op::Split { clip_id: b, at: Anchor::Marker("intro".into()) },
-            Op::Trim { clip_id: a, edge: Edge::Out, to: Anchor::Secs(3.0) },
+            Op::Trim { clip_id: a, edge: Edge::Out, to: Anchor::Secs(3.0), ripple: false },
         ];
         let plan = resolve(&seq, &pool, &ops).unwrap();
         assert_eq!(plan.steps.len(), 3);
@@ -551,10 +720,10 @@ mod tests {
     #[test]
     fn refusals_say_why_and_what_would_help() {
         let (seq, pool, media, a, b) = fixture();
-        let over = resolve(&seq, &pool, &[Op::Place { media_id: media, track: TrackRef::Index(0), at: Anchor::Secs(2.0), source_in: None, source_out: Some(1.0) }]).unwrap_err();
+        let over = resolve(&seq, &pool, &[Op::Place { media_id: media, track: TrackRef::Index(0), at: Anchor::Secs(2.0), source_in: None, source_out: Some(1.0), insert: false }]).unwrap_err();
         assert!(over.why.contains("overlap"), "{over}");
         assert!(over.hint.contains("clip_end"), "{over}");
-        let past = resolve(&seq, &pool, &[Op::Trim { clip_id: b, edge: Edge::Out, to: Anchor::Secs(11.0) }]).unwrap_err();
+        let past = resolve(&seq, &pool, &[Op::Trim { clip_id: b, edge: Edge::Out, to: Anchor::Secs(11.0), ripple: false }]).unwrap_err();
         assert!(past.why.contains("after this clip's out point"), "{past}");
         let into = resolve(&seq, &pool, &[Op::Move { clip_id: a, to: Anchor::Secs(1.0) }]).unwrap_err();
         assert!(into.why.contains("overlap"), "{into}");
@@ -598,5 +767,63 @@ mod tests {
         let ops_json = r#"[{"op":"move","clip_id":"00000000-0000-0000-0000-000000000000","to":{"offset":{"from":{"clip_end":"00000000-0000-0000-0000-000000000001"},"secs":-0.5}}}]"#;
         let ops: Vec<Op> = serde_json::from_str(ops_json).unwrap();
         assert!(matches!(&ops[0], Op::Move { to: Anchor::Offset { .. }, .. }));
+    }
+
+    #[test]
+    fn an_insert_makes_room_and_a_ripple_trim_closes_up() {
+        let (seq, pool, media, a, b) = fixture();
+        // Insert one second of the file at 2 s: a is split there and
+        // everything after moves a second later, on every track.
+        let plan = resolve(&seq, &pool, &[Op::Place { media_id: media, track: TrackRef::Index(0), at: Anchor::Secs(2.0), source_in: Some(9.0), source_out: Some(10.0), insert: true }]).unwrap();
+        assert!(plan.steps[0].what.contains("2 clip(s) split"), "the picture and its audio: {}", plan.steps[0].what);
+        assert!((plan.duration_secs - 9.0).abs() < 1e-9, "{}", plan.text());
+        let mut seqs = vec![seq.clone()];
+        let mut p = pool.clone();
+        let mut fps = seq.fps;
+        let mut view = crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut p, fps: &mut fps };
+        view.apply_forward(&plan.steps[0].edit);
+        let v = &seqs[0].tracks[0].clips;
+        assert_eq!(v.len(), 4, "a's two halves, the insert, b");
+        assert_eq!(v[1].timeline_in, tc(2.0));
+        assert_eq!(v[3].timeline_in, tc(5.0), "b moved a second later");
+        assert_eq!(seqs[0].tracks[1].clips[2].timeline_in, tc(5.0), "and its audio with it (its own audio was split too)");
+
+        // A ripple out trim of a by a second: b closes up.
+        let plan = resolve(&seq, &pool, &[Op::Trim { clip_id: a, edge: Edge::Out, to: Anchor::Secs(3.0), ripple: true }]).unwrap();
+        let after = &plan.steps[0].after;
+        assert_eq!(after.len(), 2);
+        assert!((after[1].timeline_in_secs - 3.0).abs() < 1e-9, "{after:?}");
+        // A ripple head trim keeps the start and shortens from the front.
+        let plan = resolve(&seq, &pool, &[Op::Trim { clip_id: b, edge: Edge::In, to: Anchor::Secs(5.0), ripple: true }]).unwrap();
+        let after = &plan.steps[0].after;
+        assert!((after[0].timeline_in_secs - 4.0).abs() < 1e-9 && (after[0].timeline_out_secs - 7.0).abs() < 1e-9, "{after:?}");
+        assert!((after[0].source_in_secs - 5.0).abs() < 1e-9, "{after:?}");
+    }
+
+    #[test]
+    fn j_and_l_cuts_move_the_audio_edge_and_leave_the_picture() {
+        let (seq, pool, _, a, b) = fixture();
+        let plan = resolve(&seq, &pool, &[Op::JCut { incoming_clip: b, frames: 10 }]).unwrap();
+        assert!(plan.steps[0].what.starts_with("J-cut of 10 frames"), "{}", plan.steps[0].what);
+        let after = &plan.steps[0].after;
+        assert!((after[0].timeline_out_secs - 3.6).abs() < 1e-9, "outgoing audio ends 10 frames early: {after:?}");
+        assert!((after[1].timeline_in_secs - 3.6).abs() < 1e-9 && (after[1].source_in_secs - 3.6).abs() < 1e-9, "{after:?}");
+        let mut seqs = vec![seq.clone()];
+        let mut p = pool.clone();
+        let mut fps = seq.fps;
+        let mut view = crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut p, fps: &mut fps };
+        view.apply_forward(&plan.steps[0].edit);
+        assert_eq!(seqs[0].tracks[0].clips[1].timeline_in, tc(4.0), "the picture cut has not moved");
+        assert_eq!(seqs[0].tracks[1].clips[1].timeline_in, tc(3.6));
+
+        let plan = resolve(&seq, &pool, &[Op::LCut { outgoing_clip: a, frames: 5 }]).unwrap();
+        let after = &plan.steps[0].after;
+        assert!((after[0].timeline_out_secs - 4.2).abs() < 1e-9 && (after[0].source_out_secs - 4.2).abs() < 1e-9, "{after:?}");
+        assert!((after[1].timeline_in_secs - 4.2).abs() < 1e-9, "{after:?}");
+
+        let too_far = resolve(&seq, &pool, &[Op::JCut { incoming_clip: b, frames: 120 }]).unwrap_err();
+        assert!(too_far.why.contains("shorter than a frame"), "{too_far}");
+        let no_cut = resolve(&seq, &pool, &[Op::JCut { incoming_clip: a, frames: 5 }]).unwrap_err();
+        assert!(no_cut.why.contains("no clip cut before"), "{no_cut}");
     }
 }
