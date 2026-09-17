@@ -156,6 +156,35 @@ pub enum Op {
         #[serde(default = "default_caption_lines")]
         max_lines: usize,
     },
+    /// A clip's sound: its volume and pre-fader gain in decibels, its
+    /// pan (-1 left to 1 right), a fade in and out in seconds. What is
+    /// left out stays as it is. For an audio clip linked to a video
+    /// clip the settings live on the video clip, where the app and the
+    /// render read them, and that is the clip changed.
+    Audio {
+        clip_id: ClipRef,
+        #[serde(default)]
+        volume_db: Option<f32>,
+        #[serde(default)]
+        gain_db: Option<f32>,
+        #[serde(default)]
+        pan: Option<f32>,
+        #[serde(default)]
+        fade_in: Option<f32>,
+        #[serde(default)]
+        fade_out: Option<f32>,
+    },
+    /// Music under speech: the volume of `clip_id` drops by `by_db`
+    /// (9 by default) wherever another clip is heard over it, moving
+    /// there and back over `fade_secs` (0.5 by default), never as a step.
+    /// Written as volume keyframes on the clip; any it had are replaced.
+    Duck {
+        clip_id: ClipRef,
+        #[serde(default = "default_duck_db")]
+        by_db: f32,
+        #[serde(default = "default_duck_fade")]
+        fade_secs: f64,
+    },
     /// A lower third: `name`, and `role` under it, bottom left inside
     /// title-safe, for `secs` from `at`, fading in and out. It goes on a
     /// text track where it fits (one is made on top if none does).
@@ -183,6 +212,14 @@ fn default_caption_lines() -> usize {
 
 fn default_lower_third_secs() -> f64 {
     4.0
+}
+
+fn default_duck_db() -> f32 {
+    9.0
+}
+
+fn default_duck_fade() -> f64 {
+    0.5
 }
 
 /// A word of a media file's transcript, in the file's seconds.
@@ -455,6 +492,14 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
             let from = from.as_ref().map(|a| resolve_anchor(seq, fps, a, i)).transpose()?;
             let to = to.as_ref().map(|a| resolve_anchor(seq, fps, a, i)).transpose()?;
             captions(seq, pool, fps, i, transcripts, track.as_ref(), from, to, (*max_chars).max(8), (*max_lines).max(1))
+        }
+        Op::Audio { clip_id, volume_db, gain_db, pan, fade_in, fade_out } => {
+            let (_, _, given) = resolve_clip(seq, fps, clip_id, i)?;
+            audio_settings(seq, pool, i, given, *volume_db, *gain_db, *pan, *fade_in, *fade_out)
+        }
+        Op::Duck { clip_id, by_db, fade_secs } => {
+            let (ti, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
+            duck(seq, pool, i, ti, clip, *by_db, *fade_secs)
         }
         Op::LowerThird { name, role, at, secs: hold, track } => {
             let at = resolve_anchor(seq, fps, at, i)?;
@@ -811,6 +856,187 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
             Ok((what, edit, touched))
         }
     }
+}
+
+fn db_to_linear(db: f32) -> f32 {
+    10f32.powf(db / 20.0)
+}
+
+fn linear_to_db(v: f32) -> f32 {
+    if v <= 0.0 { f32::NEG_INFINITY } else { 20.0 * v.log10() }
+}
+
+/// The clip whose sound settings `clip` plays with: the video clip it
+/// is linked to when it has one, else itself. Playback and the render
+/// read them there.
+fn sound_settings_clip<'a>(seq: &'a Sequence, clip: &'a Clip) -> &'a Clip {
+    clip.linked_clip_id
+        .and_then(|lid| seq.tracks.iter().filter(|t| t.kind == TrackKind::Video).flat_map(|t| t.clips.iter()).find(|c| c.id == lid))
+        .unwrap_or(clip)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn audio_settings(
+    seq: &Sequence,
+    pool: &MediaPool,
+    i: usize,
+    given: &Clip,
+    volume_db: Option<f32>,
+    gain_db: Option<f32>,
+    pan: Option<f32>,
+    fade_in: Option<f32>,
+    fade_out: Option<f32>,
+) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
+    let clip = sound_settings_clip(seq, given);
+    if !clip.media_id().and_then(|id| pool.get(&id)).is_some_and(|m| m.has_audio) {
+        return Err(refuse(i, format!("{} has no sound", clip_name(seq, pool, clip)), "name a clip whose media has audio"));
+    }
+    if volume_db.is_none() && gain_db.is_none() && pan.is_none() && fade_in.is_none() && fade_out.is_none() {
+        return Err(refuse(i, "nothing to change", "give volume_db, gain_db, pan, fade_in or fade_out"));
+    }
+    for (name, v, lo, hi) in [("volume_db", volume_db, -96.0, 12.0), ("gain_db", gain_db, -96.0, 24.0), ("pan", pan, -1.0, 1.0)] {
+        if let Some(v) = v {
+            if !v.is_finite() || v < lo || v > hi {
+                return Err(refuse(i, format!("{name} {v} is out of range"), format!("give {name} between {lo} and {hi}")));
+            }
+        }
+    }
+    let length = secs(clip.timeline_out - clip.timeline_in);
+    let (fi, fo) = (fade_in.unwrap_or(clip.fade_in_secs), fade_out.unwrap_or(clip.fade_out_secs));
+    if fi < 0.0 || fo < 0.0 || !fi.is_finite() || !fo.is_finite() {
+        return Err(refuse(i, "a fade cannot be negative", "give fades in seconds, zero or more"));
+    }
+    if (fi + fo) as f64 > length + 1e-6 {
+        return Err(refuse(i, format!("fades of {fi:.2} and {fo:.2} s do not fit a clip of {length:.2} s"), "shorten the fades"));
+    }
+    let new_volume = volume_db.map(db_to_linear).unwrap_or(clip.volume);
+    let new_gain = gain_db.map(db_to_linear).unwrap_or(clip.gain);
+    let new_pan = pan.unwrap_or(clip.pan);
+    let mut parts = Vec::new();
+    if volume_db.is_some() {
+        parts.push(format!("volume {:.1} dB (was {:.1})", linear_to_db(new_volume), linear_to_db(clip.volume)));
+    }
+    if gain_db.is_some() {
+        parts.push(format!("gain {:.1} dB (was {:.1})", linear_to_db(new_gain), linear_to_db(clip.gain)));
+    }
+    if pan.is_some() {
+        parts.push(format!("pan {new_pan:.2}"));
+    }
+    if fade_in.is_some() {
+        parts.push(format!("fade in {fi:.2} s"));
+    }
+    if fade_out.is_some() {
+        parts.push(format!("fade out {fo:.2} s"));
+    }
+    let on = if clip.id == given.id { String::new() } else { " (set on the video clip it is linked to)".to_string() };
+    let what = format!("sound of {}: {}{on}", clip_name(seq, pool, given), parts.join(", "));
+    let edit = EditCommand::EditClipAudio {
+        clip_id: clip.id,
+        old_gain: clip.gain,
+        old_volume: clip.volume,
+        old_pan: clip.pan,
+        old_fade_in: clip.fade_in_secs,
+        old_fade_out: clip.fade_out_secs,
+        old_channel_config: clip.channel_config,
+        new_gain,
+        new_volume,
+        new_pan,
+        new_fade_in: fi,
+        new_fade_out: fo,
+        new_channel_config: clip.channel_config,
+    };
+    Ok((what, edit, vec![given.id]))
+}
+
+/// Whether `clip` on `track` is heard: enabled, with sound, not silent,
+/// and — on a video track — not standing in for a linked audio clip.
+fn is_heard(seq: &Sequence, pool: &MediaPool, track: &klipp_timeline::Track, clip: &Clip) -> bool {
+    if track.muted || !clip.enabled || !matches!(track.kind, TrackKind::Audio | TrackKind::Video) {
+        return false;
+    }
+    if !clip.media_id().and_then(|id| pool.get(&id)).is_some_and(|m| m.has_audio) {
+        return false;
+    }
+    if track.kind == TrackKind::Video {
+        let partner_on_audio = clip.linked_clip_id.is_some_and(|lid| seq.tracks.iter().any(|t| t.kind == TrackKind::Audio && t.clips.iter().any(|c| c.id == lid)));
+        if partner_on_audio {
+            return false;
+        }
+    }
+    sound_settings_clip(seq, clip).volume > 0.0
+}
+
+fn duck(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, music: &Clip, by_db: f32, fade_secs: f64) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
+    if !(1.0..=40.0).contains(&by_db) {
+        return Err(refuse(i, format!("{by_db} dB is not a duck"), "music under speech comes down six to twelve decibels"));
+    }
+    if !(0.05..=5.0).contains(&fade_secs) {
+        return Err(refuse(i, format!("a move of {fade_secs} s"), "give fade_secs between 0.05 and 5; a duck is a fade, never a step"));
+    }
+    if !is_heard(seq, pool, &seq.tracks[ti], music) {
+        return Err(refuse(i, format!("{} is not heard", clip_name(seq, pool, music)), "name the music clip: one with sound, not muted"));
+    }
+    let settings = sound_settings_clip(seq, music);
+    let (m_in, m_out) = (secs(music.timeline_in), secs(music.timeline_out));
+    // Where anything else is heard over the music, merged where the
+    // gaps are too short to come up and go down again.
+    let mut over: Vec<(f64, f64)> = seq
+        .tracks
+        .iter()
+        .flat_map(|t| t.clips.iter().map(move |c| (t, c)))
+        .filter(|(t, c)| c.id != music.id && Some(c.id) != music.linked_clip_id && is_heard(seq, pool, t, c))
+        .map(|(_, c)| (secs(c.timeline_in).max(m_in), secs(c.timeline_out).min(m_out)))
+        .filter(|(a, b)| b > a)
+        .collect();
+    if over.is_empty() {
+        return Err(refuse(i, "nothing is heard over it", "place the speech first; a duck follows what is on the timeline"));
+    }
+    over.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+    let mut spans: Vec<(f64, f64)> = Vec::new();
+    for (a, b) in over {
+        match spans.last_mut() {
+            Some(last) if a - last.1 < fade_secs * 2.5 => last.1 = last.1.max(b),
+            _ => spans.push((a, b)),
+        }
+    }
+    let base = settings.volume;
+    let low = base * db_to_linear(-by_db);
+    // Keyframes in the clip's own time: down before the speech starts,
+    // up after it ends.
+    let mut kfs: Vec<klipp_core::Keyframe> = Vec::new();
+    let mut put = |t: f64, v: f32| klipp_core::keyframe::upsert_keyframe(&mut kfs, (t - m_in).clamp(0.0, m_out - m_in), v);
+    for (a, b) in &spans {
+        if *a - fade_secs > m_in {
+            put(a - fade_secs, base);
+        }
+        put(*a, low);
+        put(*b, low);
+        if *b + fade_secs < m_out {
+            put(b + fade_secs, base);
+        }
+    }
+    kfs.sort_by(|a, b| a.time_secs.partial_cmp(&b.time_secs).unwrap_or(std::cmp::Ordering::Equal));
+    let old_state = crate::history::KeyframeSnapshot::from_clip(settings);
+    let mut new_state = old_state.clone();
+    new_state.volume_keyframes = kfs;
+    let on = if settings.id == music.id { String::new() } else { " (on the video clip it is linked to)".to_string() };
+    let what = format!(
+        "duck {} by {by_db:.0} dB under {} stretch{} of other sound ({}), moving over {fade_secs:.2} s{on}",
+        clip_name(seq, pool, music),
+        spans.len(),
+        if spans.len() == 1 { "" } else { "es" },
+        spans.iter().map(|(a, b)| format!("{a:.2}-{b:.2} s")).collect::<Vec<_>>().join(", "),
+    );
+    let edit = EditCommand::EditKeyframes {
+        clip_id: settings.id,
+        linked_clip_id: None,
+        description: "Duck",
+        old_state,
+        new_state,
+        old_linked_state: None,
+        new_linked_state: None,
+    };
+    Ok((what, edit, vec![music.id]))
 }
 
 /// A word placed on the timeline, and whether a cut in the sound comes
@@ -1378,6 +1604,51 @@ mod tests {
         let err = resolve_with(&seq, &pool, &twice, &Spoken).unwrap_err();
         assert_eq!(err.step, 1);
         assert!(err.why.contains("overlap"), "{err}");
+    }
+
+    #[test]
+    fn sound_settings_land_where_they_are_read_and_a_duck_follows_the_speech() {
+        let (mut seq, pool, media, a, _) = fixture();
+        // A music bed under the whole piece, on an audio track of its own.
+        let mut music_track = Track::new("A2", TrackKind::Audio);
+        let music = Clip::media(media, tc(0.0), tc(10.0), tc(0.0), tc(10.0));
+        let music_id = music.id;
+        music_track.clips = vec![music];
+        seq.tracks.push(music_track);
+
+        // Named by its audio clip, the speech's settings go on the video
+        // clip it is linked to: that is where playback and the render read them.
+        let plan = resolve(&seq, &pool, &[Op::Audio { clip_id: ClipRef::At { track: 1, secs: 1.0 }, volume_db: Some(-6.0), gain_db: None, pan: Some(-0.5), fade_in: Some(0.5), fade_out: None }]).unwrap();
+        let EditCommand::EditClipAudio { clip_id, new_volume, new_pan, new_fade_in, new_fade_out, new_gain, .. } = &plan.steps[0].edit else { panic!("an audio edit") };
+        assert_eq!(*clip_id, a, "{}", plan.steps[0].what);
+        assert!((new_volume - 0.5012).abs() < 1e-3 && *new_pan == -0.5 && *new_fade_in == 0.5 && *new_fade_out == 0.0 && *new_gain == 1.0);
+        assert!(plan.steps[0].what.contains("linked"), "{}", plan.steps[0].what);
+        // Fades that do not fit, a level out of range, nothing to change: refused.
+        let bad = |op: Op| resolve(&seq, &pool, &[op]).unwrap_err();
+        assert!(bad(Op::Audio { clip_id: ClipRef::Id(a), volume_db: None, gain_db: None, pan: None, fade_in: Some(3.0), fade_out: Some(2.0) }).why.contains("do not fit"));
+        assert!(bad(Op::Audio { clip_id: ClipRef::Id(a), volume_db: Some(40.0), gain_db: None, pan: None, fade_in: None, fade_out: None }).why.contains("out of range"));
+        assert!(bad(Op::Audio { clip_id: ClipRef::Id(a), volume_db: None, gain_db: None, pan: None, fade_in: None, fade_out: None }).why.contains("nothing"));
+
+        // The duck: speech runs 0 to 8 s in two clips that meet, one stretch;
+        // the music comes back up over half a second after it.
+        let plan = resolve(&seq, &pool, &[
+            Op::Audio { clip_id: ClipRef::Id(music_id), volume_db: Some(-6.0), gain_db: None, pan: None, fade_in: None, fade_out: Some(1.0) },
+            Op::Duck { clip_id: ClipRef::Id(music_id), by_db: 12.0, fade_secs: 0.5 },
+        ]).unwrap();
+        assert!(plan.steps[1].what.contains("1 stretch") && plan.steps[1].what.contains("0.00-8.00"), "{}", plan.steps[1].what);
+        let EditCommand::EditKeyframes { clip_id, new_state, .. } = &plan.steps[1].edit else { panic!("keyframes") };
+        assert_eq!(*clip_id, music_id);
+        let at = |t: f64| klipp_core::keyframe::evaluate(&new_state.volume_keyframes, t, 1.0);
+        let (base, low) = (0.5012f32, 0.5012 * 0.2512);
+        assert!((at(4.0) - low).abs() < 1e-3, "under the speech: {}", at(4.0));
+        assert!((at(9.5) - base).abs() < 1e-3, "after it: {}", at(9.5));
+        assert!(at(8.25) > low && at(8.25) < base, "on the way up: {}", at(8.25));
+        // A duck of nothing, a step, a clip that is not heard: refused.
+        let alone = { let mut s2 = seq.clone(); s2.tracks = vec![seq.tracks[2].clone()]; s2 };
+        assert!(resolve(&alone, &pool, &[Op::Duck { clip_id: ClipRef::Id(music_id), by_db: 9.0, fade_secs: 0.5 }]).unwrap_err().why.contains("nothing is heard"));
+        assert!(bad(Op::Duck { clip_id: ClipRef::Id(music_id), by_db: 9.0, fade_secs: 0.0 }).hint.contains("never a step"));
+        // As the tools send them.
+        let _: Vec<Op> = serde_json::from_str(r#"[{"op":"audio","clip_id":{"track":2,"secs":1.0},"volume_db":-8,"fade_in":2},{"op":"duck","clip_id":{"track":2,"secs":1.0}}]"#).unwrap();
     }
 
     #[test]

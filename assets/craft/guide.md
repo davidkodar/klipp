@@ -76,6 +76,16 @@ exist until the plan runs.
   first subtitle track, made at the bottom if there is none. Do it
   last, once the speech is where it will stay: a trim afterwards does
   not move them.
+- `audio {clip_id, volume_db?, gain_db?, pan?, fade_in?, fade_out?}`:
+  a clip's sound. Volume and pre-fader gain in decibels, pan from -1
+  (left) to 1, fades in seconds; what you leave out stays as it is.
+  Name the clip you mean: for an audio clip linked to a video clip the
+  settings are kept on the video clip, and the op puts them there.
+- `duck {clip_id, by_db?, fade_secs?}`: music under speech. The clip's
+  volume comes down, nine decibels unless you say otherwise, wherever
+  another clip is heard over it, and moves there and back over half a
+  second. Set the music's own volume first and place the speech first:
+  the duck is written as keyframes from what is on the timeline then.
 - `lower_third {name, role?, at, secs?, track?}`: a name and a role
   bottom left in title-safe, four seconds unless you say otherwise,
   fading in and out, on a text track with room (one is made on top if

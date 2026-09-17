@@ -795,6 +795,14 @@ fn tool_definitions() -> Vec<Value> {
               where its clip puts it, cues close at sentences, pauses and cuts, two lines of 42 \
               by default; on the first subtitle track, made at the bottom if there is none. Do \
               it after the speech is placed and trimmed.\n\
+              audio {clip_id, volume_db?, gain_db?, pan?, fade_in?, fade_out?} — a clip's sound: \
+              volume and pre-fader gain in dB, pan -1..1, fades in seconds; what is left out \
+              stays. For an audio clip linked to a video clip the settings go on the video \
+              clip, where playback and the render read them.\n\
+              duck {clip_id, by_db?, fade_secs?} — music under speech: the clip's volume comes \
+              down (9 dB by default) wherever another clip is heard over it, moving over \
+              fade_secs (0.5) each way, as volume keyframes. Set the music's volume first, \
+              place the speech first.\n\
               lower_third {name, role?, at, secs?, track?} — a name with a role under it, bottom \
               left in title-safe, four seconds by default, fading in and out, on a text track \
               with room (made on top if none: every other index then moves down by one). \
@@ -841,6 +849,14 @@ fn tool_definitions() -> Vec<Value> {
               where its clip puts it, cues close at sentences, pauses and cuts, two lines of 42 \
               by default; on the first subtitle track, made at the bottom if there is none. Do \
               it after the speech is placed and trimmed.\n\
+              audio {clip_id, volume_db?, gain_db?, pan?, fade_in?, fade_out?} — a clip's sound: \
+              volume and pre-fader gain in dB, pan -1..1, fades in seconds; what is left out \
+              stays. For an audio clip linked to a video clip the settings go on the video \
+              clip, where playback and the render read them.\n\
+              duck {clip_id, by_db?, fade_secs?} — music under speech: the clip's volume comes \
+              down (9 dB by default) wherever another clip is heard over it, moving over \
+              fade_secs (0.5) each way, as volume keyframes. Set the music's volume first, \
+              place the speech first.\n\
               lower_third {name, role?, at, secs?, track?} — a name with a role under it, bottom \
               left in title-safe, four seconds by default, fading in and out, on a text track \
               with room (made on top if none: every other index then moves down by one). \

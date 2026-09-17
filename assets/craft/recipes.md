@@ -31,8 +31,11 @@ The brief says: length, tone, what the piece is about, who is who.
    and title from the brief, four seconds, a beat after the cut; it is
    refused across a shot change, B-roll included, so place it once the
    cover is down.
-7. **Sound.** Music under the open and close if the brief wants it,
-   ducked under speech. Loudness to the delivery.
+7. **Sound.** Music under the open and close if the brief wants it:
+   `place` it on an audio track of its own, `audio` for its level and
+   its fades, then `duck` it under the speech. `audio` with a short
+   `fade_in` and `fade_out` on a select whose cut is not on a silence.
+   Loudness to the delivery.
 8. **Check.** `klipp_contact_sheet` over each join; `klipp_frame_at` on
    the titles; `klipp_timeline` for the whole.
 9. **Deliver.** `klipp_export` with the brief's loudness;
