@@ -1,5 +1,5 @@
 use crate::error::RenderError;
-use crate::snapshot::{AudioClipSnapshot, SequenceSnapshot};
+use crate::snapshot::{AudioClipSnapshot, AudioClipShape, SequenceSnapshot};
 use klipp_audio::dsp::{AudioEffectChain, AudioProcessContext};
 use tracing::{debug, warn};
 
@@ -151,6 +151,7 @@ impl AudioMixdown {
                 self.sample_rate,
                 self.fps_num,
                 self.fps_den,
+                self.fps_num as f64 / self.fps_den as f64,
             );
 
             if track_samples.is_empty() {
@@ -208,6 +209,7 @@ fn first_sample_of_frame(frame: u64, sample_rate: u32, fps_num: u64, fps_den: u6
 
 /// Get interleaved stereo f32 samples for one video frame from a track.
 /// `first..end` is the frame's mono sample range on the timeline.
+#[allow(clippy::too_many_arguments)]
 fn get_track_samples(
     state: &mut TrackAudioState,
     frame_num: u64,
@@ -216,6 +218,7 @@ fn get_track_samples(
     sample_rate: u32,
     fps_num: u64,
     fps_den: u64,
+    fps: f64,
 ) -> Vec<f32> {
     let stereo_count = (end - first) as usize * 2;
 
@@ -297,7 +300,97 @@ fn get_track_samples(
         );
     }
     output.resize(stereo_count, 0.0);
+    // The clip's own settings, as playback applies them: this frame's
+    // volume, gain and pan from the keyframes, the fade envelope per
+    // sample, then the channel layout.
+    let clip_pos_secs = (first - clip_first) as f64 / sample_rate as f64;
+    let timeline_secs = frame_num as f64 * fps_den as f64 / fps_num as f64;
+    shape_samples(&mut output, &state.clips[clip_idx].shape, clip_pos_secs, timeline_secs, fps, sample_rate);
     output
+}
+
+/// A curve over a `0..=1` ramp: `0` linear, `1` exponential, `2`
+/// logarithmic, `3` S-curve. The playback feeder's.
+fn fade_curve(t: f64, curve: u8) -> f64 {
+    match curve {
+        1 => t * t,
+        2 => 1.0 - (1.0 - t) * (1.0 - t),
+        3 => t * t * (3.0 - 2.0 * t),
+        _ => t,
+    }
+}
+
+/// The two-millisecond ramp playback puts at a clip's start so a cut
+/// into sound does not click. Its end is left alone, as playback leaves
+/// it: the next clip carries on.
+const ANTI_CLICK_SECS: f64 = 0.002;
+
+/// The fade envelope at `pos` seconds into a clip of `dur` seconds, as
+/// the playback feeder computes it.
+fn fade_envelope(pos: f64, dur: f64, fade_in: f64, fade_out: f64, in_curve: u8, out_curve: u8) -> f32 {
+    let mut g = 1.0;
+    let eff_in = fade_in.max(ANTI_CLICK_SECS);
+    if pos < eff_in {
+        let t = (pos / eff_in).clamp(0.0, 1.0);
+        g = fade_curve(t, if fade_in > 0.001 { in_curve } else { 0 });
+    }
+    if fade_out > 0.001 && pos > dur - fade_out {
+        let t = ((dur - pos) / fade_out).clamp(0.0, 1.0);
+        g *= fade_curve(t, out_curve);
+    }
+    g as f32
+}
+
+/// Apply `shape` to `samples`, interleaved stereo starting `clip_pos`
+/// seconds into the clip at timeline time `timeline_secs`.
+fn shape_samples(samples: &mut [f32], shape: &AudioClipShape, clip_pos: f64, timeline_secs: f64, fps: f64, sample_rate: u32) {
+    let ctx = klipp_core::EvalContext {
+        clip_time_secs: clip_pos,
+        clip_duration_secs: shape.clip_duration_secs,
+        timeline_time_secs: timeline_secs,
+        fps,
+        seed: shape.seed,
+    };
+    let eval = |kfs: &[klipp_core::Keyframe], p: klipp_core::ParamId, base: f32| {
+        klipp_compose::eval::eval_with_modifiers(kfs, &shape.param_modifiers, &p, clip_pos, base, &ctx)
+    };
+    let volume = eval(&shape.volume_keyframes, klipp_core::ParamId::Volume, shape.volume);
+    let gain = eval(&shape.gain_keyframes, klipp_core::ParamId::Gain, shape.gain);
+    let pan = eval(&shape.pan_keyframes, klipp_core::ParamId::Pan, shape.pan);
+    // Balance, as the output applies a clip's pan: centre is unity and
+    // a side attenuates the other.
+    let pan_l = if pan <= 0.0 { 1.0 } else { 1.0 - pan };
+    let pan_r = if pan >= 0.0 { 1.0 } else { 1.0 + pan };
+    let has_fade = shape.fade_in_secs > 0.001 || shape.fade_out_secs > 0.001 || clip_pos < ANTI_CLICK_SECS;
+    let vol = volume * gain;
+    if !has_fade && (vol - 1.0).abs() < 1e-6 && pan.abs() < 1e-6 && shape.channel_config == 0 {
+        return;
+    }
+    let dur = shape.clip_duration_secs;
+    for (i, pair) in samples.chunks_mut(2).enumerate() {
+        let fade = if has_fade {
+            let pos = clip_pos + i as f64 / sample_rate as f64;
+            fade_envelope(pos, dur, shape.fade_in_secs as f64, shape.fade_out_secs as f64, shape.fade_in_curve, shape.fade_out_curve)
+        } else {
+            1.0
+        };
+        let m = vol * fade;
+        if let [l, r] = pair {
+            *l *= m * pan_l;
+            *r *= m * pan_r;
+            match shape.channel_config {
+                1 => {
+                    let mono = (*l + *r) * 0.5;
+                    *l = mono;
+                    *r = mono;
+                }
+                2 => std::mem::swap(l, r),
+                _ => {}
+            }
+        } else if let [l] = pair {
+            *l *= m;
+        }
+    }
 }
 
 /// Decode all audio from a clip into interleaved stereo f32 samples.
@@ -561,6 +654,67 @@ mod tests {
         assert_eq!(lengths, [1601, 1602].into_iter().collect());
     }
 
+    /// The clip's settings shape its samples as playback does: gain and
+    /// volume multiply, pan is a balance, a fade-in ramps from the clip's
+    /// start along its curve, a fade-out to its end, mono sums.
+    #[test]
+    fn a_clip_shapes_its_samples_as_playback_does() {
+        let sr = 48000;
+        let ones = |n: usize| vec![1.0f32; n * 2];
+
+        // Volume and gain multiply; a full-right balance silences the left.
+        let shape = AudioClipShape { volume: 0.5, gain: 2.0, pan: 1.0, clip_duration_secs: 10.0, ..Default::default() };
+        let mut s = ones(4);
+        shape_samples(&mut s, &shape, 1.0, 1.0, 25.0, sr);
+        assert_eq!(&s[..4], &[0.0, 1.0, 0.0, 1.0]);
+
+        // A one-second linear fade-in: half way through, half the level.
+        let shape = AudioClipShape { fade_in_secs: 1.0, clip_duration_secs: 10.0, ..Default::default() };
+        let mut s = ones(2);
+        shape_samples(&mut s, &shape, 0.5, 0.5, 25.0, sr);
+        assert!((s[0] - 0.5).abs() < 1e-3, "{}", s[0]);
+        // An exponential fade-in is the square of the ramp.
+        let shape = AudioClipShape { fade_in_secs: 1.0, fade_in_curve: 1, clip_duration_secs: 10.0, ..Default::default() };
+        let mut s = ones(2);
+        shape_samples(&mut s, &shape, 0.5, 0.5, 25.0, sr);
+        assert!((s[0] - 0.25).abs() < 1e-3, "{}", s[0]);
+
+        // A fade-out of two seconds on a ten-second clip: at nine seconds, half.
+        let shape = AudioClipShape { fade_out_secs: 2.0, clip_duration_secs: 10.0, ..Default::default() };
+        let mut s = ones(2);
+        shape_samples(&mut s, &shape, 9.0, 9.0, 25.0, sr);
+        assert!((s[0] - 0.5).abs() < 1e-3, "{}", s[0]);
+
+        // At the very start, the anti-click ramp: the first sample is silent,
+        // two milliseconds in it is full.
+        let shape = AudioClipShape { clip_duration_secs: 10.0, ..Default::default() };
+        let mut s = ones(200);
+        shape_samples(&mut s, &shape, 0.0, 0.0, 25.0, sr);
+        assert_eq!(s[0], 0.0);
+        assert!((s[199 * 2] - 1.0).abs() < 1e-3, "{}", s[199 * 2]);
+
+        // Mono downmix sums the sides after the balance.
+        let shape = AudioClipShape { channel_config: 1, clip_duration_secs: 10.0, ..Default::default() };
+        let mut s = vec![1.0f32, 0.0, 1.0, 0.0];
+        shape_samples(&mut s, &shape, 1.0, 1.0, 25.0, sr);
+        assert_eq!(&s[..], &[0.5, 0.5, 0.5, 0.5]);
+
+        // Keyframed volume: from 1 at 0 s to 0 at 2 s, read at 1 s.
+        let shape = AudioClipShape {
+            volume_keyframes: {
+                let mut kfs = Vec::new();
+                klipp_core::keyframe::upsert_keyframe(&mut kfs, 0.0, 1.0);
+                klipp_core::keyframe::upsert_keyframe(&mut kfs, 2.0, 0.0);
+                kfs
+            },
+            clip_duration_secs: 10.0,
+            ..Default::default()
+        };
+        let mut s = ones(2);
+        shape_samples(&mut s, &shape, 1.0, 1.0, 25.0, sr);
+        assert!((s[0] - 0.5).abs() < 1e-3, "{}", s[0]);
+    }
+
     #[test]
     #[ignore = "requires TEST_MEDIA_FILE env var pointing to a video file with audio"]
     fn decode_real_audio() {
@@ -579,6 +733,7 @@ mod tests {
             path,
             audio_effects: vec![],
             audio_effect_keyframes: std::collections::HashMap::new(),
+            shape: AudioClipShape::default(),
         });
 
         let mut mixdown = AudioMixdown::new(&snapshot).unwrap();

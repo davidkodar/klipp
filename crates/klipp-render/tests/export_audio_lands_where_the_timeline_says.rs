@@ -85,6 +85,7 @@ fn clip(path: PathBuf, start_frame: u64, end_frame: u64, source_start_secs: f64)
         path,
         audio_effects: vec![],
         audio_effect_keyframes: Default::default(),
+        shape: Default::default(),
     }
 }
 
@@ -93,12 +94,20 @@ fn clip(path: PathBuf, start_frame: u64, end_frame: u64, source_start_secs: f64)
 /// tens of milliseconds.
 const TOL_SECS: f64 = 0.0005;
 
+/// The source time at a clip's first frame. The mixdown ramps the first
+/// two milliseconds of a clip up from silence, as playback does against
+/// clicks, so the start is read a little past that and moved back.
+fn start_of(frame: &[f32]) -> f64 {
+    const PAST: usize = 200;
+    secs_of(frame[PAST * 2]) - PAST as f64 / RATE as f64
+}
+
 #[test]
 fn a_trimmed_clip_starts_at_its_in_point() {
     let Some(path) = ramp() else { return };
     let mut mix = AudioMixdown::new(&snapshot(24, 1, clip(path, 0, 96, 1.0))).unwrap();
     let f0 = mix.get_frame_audio(0);
-    assert!((secs_of(f0[0]) - 1.0).abs() < TOL_SECS, "frame 0 starts at source {:.4}s, not 1.0s", secs_of(f0[0]));
+    assert!((start_of(&f0) - 1.0).abs() < TOL_SECS, "frame 0 starts at source {:.4}s, not 1.0s", start_of(&f0));
     let f48 = mix.get_frame_audio(48);
     assert!((secs_of(f48[0]) - 3.0).abs() < TOL_SECS, "frame 48 starts at source {:.4}s, not 3.0s", secs_of(f48[0]));
 }
@@ -122,7 +131,7 @@ fn a_clip_placed_later_on_the_timeline_starts_at_its_in_point() {
     let mut mix = AudioMixdown::new(&snapshot(25, 1, clip(path, 50, 150, 2.0))).unwrap();
     assert!(mix.get_frame_audio(49).iter().all(|&s| s == 0.0), "silence before the clip");
     let f50 = mix.get_frame_audio(50);
-    assert!((secs_of(f50[0]) - 2.0).abs() < TOL_SECS, "frame 50 starts at source {:.4}s, not 2.0s", secs_of(f50[0]));
+    assert!((start_of(&f50) - 2.0).abs() < TOL_SECS, "frame 50 starts at source {:.4}s, not 2.0s", start_of(&f50));
     let f100 = mix.get_frame_audio(100);
     assert!((secs_of(f100[0]) - 4.0).abs() < TOL_SECS, "frame 100 starts at source {:.4}s, not 4.0s", secs_of(f100[0]));
 }

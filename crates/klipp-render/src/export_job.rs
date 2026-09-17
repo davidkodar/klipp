@@ -153,7 +153,7 @@ impl ExportJob {
         let end_frame = self.snapshot.end_frame();
 
         // ─── Pass 1: Loudness measurement (if normalization enabled) ──
-        let loudness_gain_linear = if let Some(target_lufs) = self.settings.target_lufs {
+        let mut delivery = if let Some(target_lufs) = self.settings.target_lufs {
             Self::set_stage(&self.render_stage, "Measuring loudness\u{2026}");
             let mut measure_mixdown = AudioMixdown::new(&self.snapshot)?;
             // Always request 4× true-peak oversampling for export — the
@@ -191,21 +191,18 @@ impl ExportJob {
             );
             if analysis.peak_limited {
                 info!(
-                    "ExportJob {}: peak fallback engaged — requested {:.1} LUFS but achieved {:.1} LUFS \
-                     to stay within -1 dBFS ceiling",
-                    self.id, target_lufs, analysis.achieved_lufs,
+                    "ExportJob {}: the peaks would pass the ceiling at {:.1} dB of gain; a limiter holds them",
+                    self.id, analysis.applied_gain_db,
                 );
             }
-            // Store result string for the render queue details panel
-            let result_str = if analysis.peak_limited {
-                format!("Loudness: {:.1} LUFS (requested {:.1}, peak limited)", analysis.achieved_lufs, target_lufs)
-            } else {
-                format!("Loudness: {:.1} LUFS", analysis.achieved_lufs)
-            };
-            if let Ok(mut r) = self.loudness_result.lock() { *r = Some(result_str); }
-            db_to_linear(analysis.applied_gain_db)
+            // Provisional, for the queue panel while the render runs; the
+            // measurement of what was written replaces it at the end.
+            if let Ok(mut r) = self.loudness_result.lock() {
+                *r = Some(format!("Loudness: {target_lufs:.1} LUFS requested\u{2026}"));
+            }
+            DeliveryChain::normalising(self.snapshot.sample_rate, target_lufs, analysis.applied_gain_db, analysis.peak_limited)
         } else {
-            1.0 // No normalization — unity gain
+            DeliveryChain::unity()
         };
 
         let mut export_frame_num: u64 = 0;
@@ -309,11 +306,7 @@ impl ExportJob {
 
                 let t3 = std::time::Instant::now();
                 let mut audio = audio_mixdown.get_frame_audio(frame_num);
-                if loudness_gain_linear != 1.0 {
-                    for s in &mut audio {
-                        *s *= loudness_gain_linear;
-                    }
-                }
+                delivery.process(&mut audio);
                 encoder.encode_audio_samples(&audio)?;
                 t_audio += t3.elapsed();
 
@@ -361,9 +354,7 @@ impl ExportJob {
             // ─── Encode audio (with loudness normalization gain if enabled) ──
             let t3 = std::time::Instant::now();
             let mut audio = audio_mixdown.get_frame_audio(frame_num);
-            if loudness_gain_linear != 1.0 {
-                for s in &mut audio { *s *= loudness_gain_linear; }
-            }
+            delivery.process(&mut audio);
             encoder.encode_audio_samples(&audio)?;
             t_audio += t3.elapsed();
 
@@ -389,6 +380,14 @@ impl ExportJob {
             "ExportJob {}: inside decode — download + colour {:.1}ms, rotation {:.1}ms",
             self.id, per(dl), per(rot),
         );
+
+        // What the file measures, from the meter on the samples written.
+        if let Some(report) = delivery.report() {
+            info!("ExportJob {}: {report}", self.id);
+            if let Ok(mut r) = self.loudness_result.lock() {
+                *r = Some(report);
+            }
+        }
 
         Self::set_stage(&self.render_stage, "Finalizing file\u{2026}");
 
@@ -636,10 +635,96 @@ fn fit_to_target(src_w: u32, src_h: u32, target_w: u32, target_h: u32) -> (u32, 
 // EBU R128 loudness normalization — two-pass measurement + static gain
 // ═══════════════════════════════════════════════════════════════════
 
-/// -1 dBFS as a linear amplitude value. Used as the peak ceiling for
-/// the honest-fallback approach: if gain-adjusted audio would exceed
-/// this level, the gain is reduced so the loudest sample lands here.
+/// -1 dBFS as a linear amplitude value: the true-peak ceiling of a
+/// delivery. Gain that would push the measured peak past it is still
+/// applied in full, and a limiter holds the peaks under it.
 const PEAK_CEILING_LINEAR: f32 = 0.891; // 10^(-1.0/20.0) ≈ 0.891
+
+/// The limiter that holds a normalised delivery under the ceiling. It
+/// detects sample peaks, so its ceiling sits under the true-peak one:
+/// inter-sample peaks of limited speech and music run a few tenths of a
+/// decibel over the samples.
+const LIMITER_THRESHOLD_DB: f32 = -2.5;
+const LIMITER_CEILING_DB: f32 = -1.3;
+
+/// The delivery's sound: the normalisation gain, a limiter when that
+/// gain would push the peaks past the ceiling, and a meter on what is
+/// written so the job reports what the file measures, not what the
+/// arithmetic promised.
+struct DeliveryChain {
+    gain: f32,
+    limiter: Option<klipp_audio::dsp::limiter::Limiter>,
+    ctx: klipp_audio::dsp::AudioProcessContext,
+    meter: Option<klipp_audio::LufsMeter>,
+    target_lufs: Option<f32>,
+}
+
+impl DeliveryChain {
+    /// No normalisation: the mix as it is.
+    fn unity() -> Self {
+        Self {
+            gain: 1.0,
+            limiter: None,
+            ctx: klipp_audio::dsp::AudioProcessContext { sample_rate: 48000, channels: 2, clip_time_secs: 0.0 },
+            meter: None,
+            target_lufs: None,
+        }
+    }
+
+    /// `gain_db` towards `target_lufs`; with `limit`, a limiter after it.
+    fn normalising(sample_rate: u32, target_lufs: f32, gain_db: f32, limit: bool) -> Self {
+        use klipp_audio::dsp::AudioEffect;
+        let limiter = limit.then(|| {
+            let mut l = klipp_audio::dsp::limiter::Limiter::new(sample_rate);
+            l.set_param("threshold", LIMITER_THRESHOLD_DB);
+            l.set_param("ceiling", LIMITER_CEILING_DB);
+            // No lookahead: it would delay the sound against the picture.
+            // The ceiling is a hard stop, so a transient the envelope has
+            // not caught yet cannot pass it either.
+            l.set_param("lookahead", 0.0);
+            l.set_param("attack", 0.5);
+            l.set_param("release", 80.0);
+            l
+        });
+        Self {
+            gain: db_to_linear(gain_db),
+            limiter,
+            ctx: klipp_audio::dsp::AudioProcessContext { sample_rate, channels: 2, clip_time_secs: 0.0 },
+            meter: Some(klipp_audio::LufsMeter::new(sample_rate as f32, true)),
+            target_lufs: Some(target_lufs),
+        }
+    }
+
+    /// One frame's interleaved stereo, in place.
+    fn process(&mut self, audio: &mut [f32]) {
+        use klipp_audio::dsp::AudioEffect;
+        if self.gain != 1.0 {
+            for s in audio.iter_mut() {
+                *s *= self.gain;
+            }
+        }
+        if let Some(l) = &mut self.limiter {
+            l.process(audio, &self.ctx);
+        }
+        if let Some(m) = &mut self.meter {
+            m.process(audio);
+        }
+    }
+
+    /// What was written, measured. `None` without normalisation.
+    fn report(&self) -> Option<String> {
+        let r = self.meter.as_ref()?.readings();
+        let target = self.target_lufs?;
+        Some(if self.limiter.is_some() {
+            format!(
+                "Loudness: {:.1} LUFS, true peak {:.1} dBTP (requested {target:.1}; the peaks were limited to reach it)",
+                r.integrated, r.true_peak_dbfs
+            )
+        } else {
+            format!("Loudness: {:.1} LUFS, true peak {:.1} dBTP", r.integrated, r.true_peak_dbfs)
+        })
+    }
+}
 
 /// Convert a gain in decibels to a linear amplitude multiplier.
 /// Shared with klipp-audio's normalize DSP — same formula as
@@ -649,6 +734,7 @@ fn db_to_linear(db: f32) -> f32 {
 }
 
 /// Convert a linear amplitude to decibels.
+#[cfg(test)]
 fn linear_to_db(linear: f32) -> f32 {
     if linear <= 0.0 { f32::NEG_INFINITY } else { 20.0 * linear.log10() }
 }
@@ -685,15 +771,17 @@ impl LoudnessAnalysis {
                 peak_limited: false,
             }
         } else {
-            // Peak fallback — reduce gain so loudest sample lands at -1 dBFS
-            let safe_gain_linear = PEAK_CEILING_LINEAR / peak_sample;
-            let safe_gain_db = linear_to_db(safe_gain_linear);
+            // The peaks would pass the ceiling: the gain is applied in full
+            // and a limiter holds them. It used to be reduced so the loudest
+            // sample landed at the ceiling, which delivered a file five
+            // decibels under what was asked for whenever the source was
+            // already near full scale, which speech recordings are.
             Self {
                 integrated_lufs,
                 peak_sample,
                 requested_gain_db,
-                applied_gain_db: safe_gain_db,
-                achieved_lufs: integrated_lufs + safe_gain_db,
+                applied_gain_db: requested_gain_db,
+                achieved_lufs: target_lufs,
                 peak_limited: true,
             }
         }
@@ -817,18 +905,46 @@ mod tests {
     }
 
     #[test]
-    fn loudness_peak_fallback_engaged() {
-        // Mix at -20 LUFS, peak at 0.9 (-0.9 dBFS). Target -14.
-        // Requested gain: +6 dB → peak after gain: 0.9 * 2.0 = 1.8 > 0.891 → limited
+    fn loudness_over_the_ceiling_keeps_the_gain_and_limits() {
+        // Mix at -20 LUFS, peak at 0.9 (-0.9 dBFS). Target -14: +6 dB
+        // would put the peak at 1.8. The gain stays and a limiter holds
+        // the peaks; it used to be cut to -0.08 dB, delivering -19.9 LUFS.
         let a = LoudnessAnalysis::compute(-14.0, -20.0, 0.9);
         assert!(a.peak_limited);
         assert!((a.requested_gain_db - 6.0).abs() < 0.01);
-        // Safe gain: 0.891 / 0.9 ≈ 0.99 → ~-0.08 dB
-        assert!(a.applied_gain_db < a.requested_gain_db);
-        assert!(a.achieved_lufs < -14.0); // Couldn't reach target — achieved is quieter
-        // Peak after applied gain should be at ceiling
-        let peak_after = a.peak_sample * db_to_linear(a.applied_gain_db);
-        assert!((peak_after - PEAK_CEILING_LINEAR).abs() < 0.001);
+        assert!((a.applied_gain_db - 6.0).abs() < 0.01);
+        assert!((a.achieved_lufs - (-14.0)).abs() < 0.01);
+    }
+
+    #[test]
+    fn a_limited_delivery_stays_under_the_ceiling() {
+        // A tone near full scale, six decibels of gain on it: without
+        // the limiter every sample would clip.
+        let sr = 48000;
+        let mut chain = DeliveryChain::normalising(sr, -14.0, 6.0, true);
+        let mut peak: f32 = 0.0;
+        for block in 0..50 {
+            let mut audio: Vec<f32> = (0..1600)
+                .flat_map(|i| {
+                    let t = (block * 1600 + i) as f32 / sr as f32;
+                    let v = 0.9 * (2.0 * std::f32::consts::PI * 440.0 * t).sin();
+                    [v, v]
+                })
+                .collect();
+            chain.process(&mut audio);
+            peak = audio.iter().fold(peak, |p, s| p.max(s.abs()));
+        }
+        assert!(peak <= db_to_linear(LIMITER_CEILING_DB) + 1e-4, "peak {peak}");
+        assert!(peak > 0.5, "the tone is still there: {peak}");
+        let report = chain.report().unwrap();
+        assert!(report.contains("true peak") && report.contains("limited"), "{report}");
+
+        // Gain that fits needs no limiter and passes the samples as they are.
+        let mut plain = DeliveryChain::normalising(sr, -14.0, 0.0, false);
+        let mut audio = vec![0.25f32; 400];
+        plain.process(&mut audio);
+        assert!(audio.iter().all(|s| (*s - 0.25).abs() < 1e-6));
+        assert!(DeliveryChain::unity().report().is_none());
     }
 
     #[test]

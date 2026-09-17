@@ -313,6 +313,7 @@ fn export_real_media_h264() {
                 path: media_path.clone(),
                 audio_effects: vec![],
                 audio_effect_keyframes: std::collections::HashMap::new(),
+                shape: Default::default(),
             }],
         }],
         global_lut_path: None,

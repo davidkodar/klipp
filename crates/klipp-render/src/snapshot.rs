@@ -127,6 +127,110 @@ pub struct AudioClipSnapshot {
     pub audio_effects: Vec<klipp_core::AudioEffectInstance>,
     /// Per-audio-effect keyframes: maps "{effect_index}:{param_name}" to keyframe track.
     pub audio_effect_keyframes: HashMap<String, Vec<Keyframe>>,
+    /// What the clip does to its sound: playback applies this per clip,
+    /// and the render applies the same.
+    pub shape: AudioClipShape,
+}
+
+/// A clip's own sound settings — gain, fades, volume, pan, channel
+/// layout, with their keyframes and modifiers — as playback applies
+/// them in the PCM feeder and the output. Carried on the snapshot so a
+/// render is the mix the viewer played, not a mix of raw files.
+///
+/// For an audio clip linked to a video clip the settings are the video
+/// clip's, as in playback: the user sets them on the picture.
+#[derive(Clone, Debug)]
+pub struct AudioClipShape {
+    pub volume: f32,
+    /// Pre-fader gain.
+    pub gain: f32,
+    /// Balance: `-1` full left, `0` centre at unity, `1` full right.
+    pub pan: f32,
+    pub fade_in_secs: f32,
+    pub fade_out_secs: f32,
+    /// `0` linear, `1` exponential, `2` logarithmic, `3` S-curve.
+    pub fade_in_curve: u8,
+    pub fade_out_curve: u8,
+    /// `0` as decoded, `1` mono downmix, `2` left and right swapped.
+    pub channel_config: u8,
+    /// The clip's length in seconds, which is where its fade-out ends.
+    pub clip_duration_secs: f64,
+    pub volume_keyframes: Vec<Keyframe>,
+    pub gain_keyframes: Vec<Keyframe>,
+    pub pan_keyframes: Vec<Keyframe>,
+    pub param_modifiers: HashMap<klipp_core::ParamId, klipp_core::ModifierStack>,
+    /// The modifiers' random seed, the clip id's.
+    pub seed: u64,
+}
+
+impl Default for AudioClipShape {
+    fn default() -> Self {
+        Self {
+            volume: 1.0,
+            gain: 1.0,
+            pan: 0.0,
+            fade_in_secs: 0.0,
+            fade_out_secs: 0.0,
+            fade_in_curve: 0,
+            fade_out_curve: 0,
+            channel_config: 0,
+            clip_duration_secs: f64::MAX,
+            volume_keyframes: Vec::new(),
+            gain_keyframes: Vec::new(),
+            pan_keyframes: Vec::new(),
+            param_modifiers: HashMap::new(),
+            seed: 0,
+        }
+    }
+}
+
+impl AudioClipShape {
+    /// `clip`'s settings, over `duration_secs` of sound.
+    pub fn of(clip: &klipp_timeline::Clip, duration_secs: f64) -> Self {
+        use klipp_timeline::{ChannelConfig, FadeCurve};
+        let curve = |c: FadeCurve| match c {
+            FadeCurve::Linear => 0,
+            FadeCurve::Exponential => 1,
+            FadeCurve::Logarithmic => 2,
+            FadeCurve::SCurve => 3,
+        };
+        Self {
+            volume: clip.volume,
+            gain: clip.gain,
+            pan: clip.pan,
+            fade_in_secs: clip.fade_in_secs,
+            fade_out_secs: clip.fade_out_secs,
+            fade_in_curve: curve(clip.fade_in_curve),
+            fade_out_curve: curve(clip.fade_out_curve),
+            channel_config: match clip.channel_config {
+                ChannelConfig::Default | ChannelConfig::Surround51 | ChannelConfig::Surround71 => 0,
+                ChannelConfig::MonoDownmix => 1,
+                ChannelConfig::SwapLR => 2,
+            },
+            clip_duration_secs: duration_secs,
+            volume_keyframes: clip.volume_keyframes.clone(),
+            gain_keyframes: clip.gain_keyframes.clone(),
+            pan_keyframes: clip.pan_keyframes.clone(),
+            param_modifiers: clip.param_modifiers.clone(),
+            seed: clip.id.0.as_u64_pair().0,
+        }
+    }
+
+    /// Whether the clip can never be heard: volume zero with nothing
+    /// animating it. Such a clip need not be decoded.
+    pub fn is_silent(&self) -> bool {
+        self.volume == 0.0
+            && self.volume_keyframes.is_empty()
+            && !self.param_modifiers.contains_key(&klipp_core::ParamId::Volume)
+    }
+}
+
+/// The clip whose sound settings `clip` plays with: its linked video
+/// clip when it has one on the timeline, else itself.
+fn sound_settings_source<'a>(seq: &'a Sequence, clip: &'a klipp_timeline::Clip) -> &'a klipp_timeline::Clip {
+    clip.linked_clip_id
+        .and_then(|lid| seq.tracks.iter().flat_map(|t| t.clips.iter()).find(|c| c.id == lid))
+        .unwrap_or(clip)
 }
 
 #[derive(Debug, Clone)]
@@ -237,7 +341,16 @@ impl SequenceSnapshot {
         let mut audio_tracks = Vec::new();
         for track in seq.tracks.iter().rev() {
             if track.kind == TrackKind::Audio {
-                audio_tracks.push(snapshot_audio_track(track, all_sequences, media_pool, fps, 0)?);
+                audio_tracks.push(snapshot_audio_track(track, seq, all_sequences, media_pool, fps, 0)?);
+            }
+        }
+        // A video clip with no audio clip linked to it plays the sound
+        // in its file, as it does in the viewer.
+        for track in seq.tracks.iter().rev() {
+            if track.kind == TrackKind::Video {
+                if let Some(t) = snapshot_video_track_sound(track, seq, media_pool, fps) {
+                    audio_tracks.push(t);
+                }
             }
         }
 
@@ -393,6 +506,7 @@ const MAX_COMPOUND_DEPTH: u8 = 8;
 
 fn snapshot_audio_track(
     track: &Track,
+    seq: &Sequence,
     all_sequences: &[Sequence],
     media_pool: &MediaPool,
     fps: f64,
@@ -425,6 +539,10 @@ fn snapshot_audio_track(
         if let Some(media_id) = clip.media_id() {
             if let Some(media) = media_pool.get(&media_id) {
                 if media.has_audio {
+                    let shape = AudioClipShape::of(sound_settings_source(seq, clip), clip.duration().to_secs_f64());
+                    if shape.is_silent() {
+                        continue;
+                    }
                     clips.push(AudioClipSnapshot {
                         timeline_start_frame: time_to_frame(&clip.timeline_in, fps),
                         timeline_end_frame: time_to_frame(&clip.timeline_out, fps),
@@ -432,6 +550,7 @@ fn snapshot_audio_track(
                         path: media.path.clone(),
                         audio_effects: clip.audio_effects.clone(),
                         audio_effect_keyframes: clip.audio_effect_keyframes.clone(),
+                        shape,
                     });
                 }
             }
@@ -445,6 +564,45 @@ fn snapshot_audio_track(
         solo: track.solo,
         clips,
     })
+}
+
+/// The sound of a video track's clips that have no audio clip linked to
+/// them: those play the sound in their files, as in the viewer, with
+/// their own settings. `None` when the track has no such clip.
+fn snapshot_video_track_sound(track: &Track, seq: &Sequence, media_pool: &MediaPool, fps: f64) -> Option<AudioTrackSnapshot> {
+    let mut clips = Vec::new();
+    for clip in &track.clips {
+        if !clip.enabled || clip.multicam_group.is_some() || matches!(clip.kind, ClipKind::Sequence { .. }) {
+            continue;
+        }
+        let Some(media) = clip.media_id().and_then(|id| media_pool.get(&id)) else { continue };
+        if !media.has_audio {
+            continue;
+        }
+        let partner_on_audio = clip.linked_clip_id.is_some_and(|lid| {
+            seq.tracks.iter().any(|t| t.kind == TrackKind::Audio && t.clips.iter().any(|c| c.id == lid))
+        });
+        if partner_on_audio {
+            continue;
+        }
+        let shape = AudioClipShape::of(clip, clip.duration().to_secs_f64());
+        if shape.is_silent() {
+            continue;
+        }
+        clips.push(AudioClipSnapshot {
+            timeline_start_frame: time_to_frame(&clip.timeline_in, fps),
+            timeline_end_frame: time_to_frame(&clip.timeline_out, fps),
+            source_start_secs: clip.source_in.to_secs_f64(),
+            path: media.path.clone(),
+            audio_effects: clip.audio_effects.clone(),
+            audio_effect_keyframes: clip.audio_effect_keyframes.clone(),
+            shape,
+        });
+    }
+    if clips.is_empty() {
+        return None;
+    }
+    Some(AudioTrackSnapshot { volume: track.volume, pan: track.pan, muted: track.muted, solo: track.solo, clips })
 }
 
 /// Flatten a compound clip's inner sequence audio tracks into the parent audio clip list.
@@ -477,6 +635,7 @@ fn flatten_compound_audio_clips(
             path: media.path.clone(),
             audio_effects: clip.audio_effects.clone(),
             audio_effect_keyframes: clip.audio_effect_keyframes.clone(),
+            shape: AudioClipShape::of(&clip, clip.duration().to_secs_f64()),
         });
     }
     Ok(())
@@ -548,6 +707,7 @@ fn flatten_multicam_audio_clips(
             path: media.path.clone(),
             audio_effects: angle_clip.audio_effects.clone(),
             audio_effect_keyframes: angle_clip.audio_effect_keyframes.clone(),
+            shape: AudioClipShape::of(angle_clip, seg_end - seg_start),
         });
     }
 
