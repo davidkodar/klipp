@@ -44,9 +44,10 @@ frames.
 
 ## Anchors
 
-`{"secs": 12.5}`, `{"frame": 300}`, `{"clip_start": id}`,
-`{"clip_end": id}`, `{"marker": "Intro"}`, or
-`{"offset": {"from": anchor, "secs": -0.5}}`.
+`{"secs": 12.5}`, `{"frame": 300}`, `{"clip_start": clip}`,
+`{"clip_end": clip}`, `{"track_end": "video"}` (where the last clip on
+a track ends, which is where an assembly's next select goes),
+`{"marker": "Intro"}`, or `{"offset": {"from": anchor, "secs": -0.5}}`.
 
 A clip is named by its id string, or by where it is:
 `{"track": 1, "secs": 30.0}` is the clip covering that time on that
@@ -66,8 +67,20 @@ exist until the plan runs.
   rippled later to make room and a clip straddling the anchor is split
   there.
 - `add_track {kind, name?}`: a video or text track on top, which
-  becomes track 0 and moves every other index down by one; an audio
-  track at the bottom.
+  becomes track 0 and moves every other index down by one; an audio or
+  subtitle track at the bottom.
+- `captions {track?, from?, to?, max_chars?, max_lines?}`: captions for
+  what is heard on the timeline, from the transcripts. Each word lands
+  where its clip puts it; a cue closes at a sentence, a pause or a cut;
+  two lines of 42 characters unless you say otherwise. They go on the
+  first subtitle track, made at the bottom if there is none. Do it
+  last, once the speech is where it will stay: a trim afterwards does
+  not move them.
+- `lower_third {name, role?, at, secs?, track?}`: a name and a role
+  bottom left in title-safe, four seconds unless you say otherwise,
+  fading in and out, on a text track with room (one is made on top if
+  none has, which moves every other index down by one). Refused across
+  a shot change, and the refusal names the cut.
 - `trim {clip_id, edge, to, ripple?}`: the in or out edge to an anchor;
   the other edge stays; the source moves with the edge. With `ripple`,
   the later clips on the track close up by the change; a head trim

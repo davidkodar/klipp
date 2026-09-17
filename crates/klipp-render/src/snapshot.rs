@@ -382,8 +382,13 @@ impl SequenceSnapshot {
         // Collect subtitle tracks regardless of burn_in setting.
         // Subtitle text + timing is always available for soft embedding.
         let mut subtitle_tracks = Vec::new();
+        // Subtitle tracks are the captions; text tracks stand in only when
+        // there are none, or an embedded subtitle stream would carry the
+        // titles and lower thirds too.
+        let has_subtitles = seq.tracks.iter().any(|t| t.kind == TrackKind::Subtitle && !t.clips.is_empty());
         for track in seq.tracks.iter() {
-            if !matches!(track.kind, TrackKind::Subtitle | TrackKind::Text) {
+            let wanted = if has_subtitles { track.kind == TrackKind::Subtitle } else { track.kind == TrackKind::Text };
+            if !wanted {
                 continue;
             }
             let mut clips = Vec::new();

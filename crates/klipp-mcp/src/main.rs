@@ -789,7 +789,16 @@ fn tool_definitions() -> Vec<Value> {
               takes the first picture's size and rate; with insert, every unlocked track is \
               rippled later to make room and a clip straddling the anchor is split.\n\
               add_track {kind, name?} — a video or text track on top (it becomes track 0, every \
-              other index moves down by one), an audio track at the bottom.\n\
+              other index moves down by one), an audio or subtitle track at the bottom.\n\
+              captions {track?, from?, to?, max_chars?, max_lines?} — captions for what is heard \
+              on the timeline, from the transcripts (run klipp_analyze first): each word lands \
+              where its clip puts it, cues close at sentences, pauses and cuts, two lines of 42 \
+              by default; on the first subtitle track, made at the bottom if there is none. Do \
+              it after the speech is placed and trimmed.\n\
+              lower_third {name, role?, at, secs?, track?} — a name with a role under it, bottom \
+              left in title-safe, four seconds by default, fading in and out, on a text track \
+              with room (made on top if none: every other index then moves down by one). \
+              Refused across a shot change. Names come from the brief, never a guess.\n\
               trim {clip_id, edge: \"in\"|\"out\", to, ripple?} — one edge to an anchor, the \
               other stays, the source moves with the edge; with ripple the later clips on the \
               track close up by the change (a head trim then keeps the clip's start).\n\
@@ -800,8 +809,10 @@ fn tool_definitions() -> Vec<Value> {
               j_cut {incoming_clip, frames} — the incoming clip's sound starts so many frames \
               before its picture; l_cut {outgoing_clip, frames} — the outgoing clip's sound \
               stays so many frames past its picture. Both need linked audio on one track.\n\
-              Anchors: {\"secs\": s}, {\"frame\": n}, {\"clip_start\": id}, {\"clip_end\": id}, \
-              {\"marker\": label}, {\"offset\": {\"from\": anchor, \"secs\": s}}. A clip_id (and \
+              Anchors: {\"secs\": s}, {\"frame\": n}, {\"clip_start\": clip}, {\"clip_end\": clip}, \
+              {\"track_end\": track} (where the last clip on a track ends: where an assembly's \
+              next select goes), {\"marker\": label}, {\"offset\": {\"from\": anchor, \"secs\": s}}. \
+              A clip in an anchor, a clip_id (and \
               incoming_clip, outgoing_clip) is an id string, or {\"track\": n, \"secs\": s} for the \
               clip covering that time on that track as the plan stands at that step — how a \
               later step names a half a split made or a clip a place put down.\n\
@@ -824,7 +835,16 @@ fn tool_definitions() -> Vec<Value> {
               takes the first picture's size and rate; with insert, every unlocked track is \
               rippled later to make room and a clip straddling the anchor is split.\n\
               add_track {kind, name?} — a video or text track on top (it becomes track 0, every \
-              other index moves down by one), an audio track at the bottom.\n\
+              other index moves down by one), an audio or subtitle track at the bottom.\n\
+              captions {track?, from?, to?, max_chars?, max_lines?} — captions for what is heard \
+              on the timeline, from the transcripts (run klipp_analyze first): each word lands \
+              where its clip puts it, cues close at sentences, pauses and cuts, two lines of 42 \
+              by default; on the first subtitle track, made at the bottom if there is none. Do \
+              it after the speech is placed and trimmed.\n\
+              lower_third {name, role?, at, secs?, track?} — a name with a role under it, bottom \
+              left in title-safe, four seconds by default, fading in and out, on a text track \
+              with room (made on top if none: every other index then moves down by one). \
+              Refused across a shot change. Names come from the brief, never a guess.\n\
               trim {clip_id, edge: \"in\"|\"out\", to, ripple?} — one edge to an anchor, the \
               other stays, the source moves with the edge; with ripple the later clips on the \
               track close up by the change (a head trim then keeps the clip's start).\n\
@@ -835,8 +855,10 @@ fn tool_definitions() -> Vec<Value> {
               j_cut {incoming_clip, frames} — the incoming clip's sound starts so many frames \
               before its picture; l_cut {outgoing_clip, frames} — the outgoing clip's sound \
               stays so many frames past its picture. Both need linked audio on one track.\n\
-              Anchors: {\"secs\": s}, {\"frame\": n}, {\"clip_start\": id}, {\"clip_end\": id}, \
-              {\"marker\": label}, {\"offset\": {\"from\": anchor, \"secs\": s}}. A clip_id (and \
+              Anchors: {\"secs\": s}, {\"frame\": n}, {\"clip_start\": clip}, {\"clip_end\": clip}, \
+              {\"track_end\": track} (where the last clip on a track ends: where an assembly's \
+              next select goes), {\"marker\": label}, {\"offset\": {\"from\": anchor, \"secs\": s}}. \
+              A clip in an anchor, a clip_id (and \
               incoming_clip, outgoing_clip) is an id string, or {\"track\": n, \"secs\": s} for the \
               clip covering that time on that track as the plan stands at that step — how a \
               later step names a half a split made or a clip a place put down.\n\

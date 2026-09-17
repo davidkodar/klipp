@@ -19980,8 +19980,14 @@ impl KlippApp {
                 let path = path.clone();
                 let seq = &self.state.sequences[self.state.active_sequence_idx];
                 let mut subs = Vec::new();
+                // Subtitle tracks are the captions. Text tracks stand in
+                // only when there are none: with both, the text tracks
+                // hold titles and lower thirds, and a speaker's name does
+                // not belong in a subtitle file.
+                let has_subtitles = seq.tracks.iter().any(|t| t.kind == klipp_timeline::TrackKind::Subtitle && !t.clips.is_empty());
                 for track in &seq.tracks {
-                    if track.kind != klipp_timeline::TrackKind::Subtitle && track.kind != klipp_timeline::TrackKind::Text {
+                    let wanted = if has_subtitles { track.kind == klipp_timeline::TrackKind::Subtitle } else { track.kind == klipp_timeline::TrackKind::Text };
+                    if !wanted {
                         continue;
                     }
                     for clip in &track.clips {

@@ -410,8 +410,18 @@ fn resolve_plan(ctx: &ControlContext, ops: &[klipp_document::ops::Op]) -> Result
     let revision = ctx.shared.revision();
     let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
     let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
-    let plan = klipp_document::ops::resolve(&seq, &pool, ops).map_err(|r| format!("{r} (step {} refused; nothing applied)", r.step + 1))?;
+    let plan = klipp_document::ops::resolve_with(&seq, &pool, ops, &AnalysedTranscripts).map_err(|r| format!("{r} (step {} refused; nothing applied)", r.step + 1))?;
     Ok((plan, revision))
+}
+
+/// The transcripts analysis has made, for the resolver's `captions`.
+struct AnalysedTranscripts;
+
+impl klipp_document::ops::Transcripts for AnalysedTranscripts {
+    fn words(&self, item: &klipp_media::MediaItem) -> Option<Vec<klipp_document::ops::SpokenWord>> {
+        let t = klipp_analysis::report::MediaAnalysis::load(&item.path).transcript?;
+        Some(t.words.into_iter().map(|w| klipp_document::ops::SpokenWord { start_secs: w.start_secs, end_secs: w.end_secs, text: w.text }).collect())
+    }
 }
 
 /// A media item's file and duration, by id.

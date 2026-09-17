@@ -17,7 +17,7 @@ The brief says: length, tone, what the piece is about, who is who.
    boundaries, plus a beat). Check a doubtful take with
    `klipp_audio_excerpt`.
 3. **Assemble the spine.** For each select, `place` it on the video
-   track at `clip_end` of the previous one, with `source_in` and
+   track at `{"track_end": "video"}`, with `source_in` and
    `source_out` at the sentence's edges; the audio track gets the same
    ranges, so speech is never cut mid-word. Plan first, apply once.
 4. **Cover the joins.** Where two selects from the same set-up meet,
@@ -27,8 +27,10 @@ The brief says: length, tone, what the piece is about, who is who.
    prefer it.
 5. **Open and close.** A wide shot at the top, held to read the place;
    the last line, then a beat, then out.
-6. **Titles.** A lower third on each speaker's first appearance, name
-   and title from the brief, four seconds, not across a cut.
+6. **Titles.** `lower_third` on each speaker's first appearance, name
+   and title from the brief, four seconds, a beat after the cut; it is
+   refused across a shot change, B-roll included, so place it once the
+   cover is down.
 7. **Sound.** Music under the open and close if the brief wants it,
    ducked under speech. Loudness to the delivery.
 8. **Check.** `klipp_contact_sheet` over each join; `klipp_frame_at` on
@@ -49,7 +51,8 @@ The brief says: platform, length (thirty to ninety seconds), aspect.
 4. If the aspect changes, reframe every shot so the speaker stays in
    the frame (a task of its own until the reframe op exists: check
    each shot with a contact sheet).
-5. Captions burnt in: most viewers will not hear it.
+5. `captions`, burnt in: most viewers will not hear it. Last, once
+   the speech is where it will stay.
 6. Loudness to the platform (-14 LUFS is the usual), export, check the
    length against the brief.
 

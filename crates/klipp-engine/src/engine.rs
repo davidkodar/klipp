@@ -1085,6 +1085,11 @@ pub struct PlaybackEngine {
     /// A paused frame was shown before every clip stream had its frame;
     /// re-render when they do.
     pending_stream_refresh: bool,
+    /// A paused seek's audio, owed: the timecode to bring the sources to,
+    /// the source time for the scrub chirp, and since when. Opening the
+    /// sources for another clip takes half a second, and the picture does
+    /// not wait for it; see [`Self::reposition_audio_or_defer`].
+    pending_audio_reposition: Option<(Timecode, f64, std::time::Instant)>,
     /// The global LUT last handed to the renderer, to hand it over again
     /// only when it changes.
     pushed_lut_sig: Option<(bool, Option<PathBuf>, u32, Option<(usize, usize)>)>,
@@ -1550,6 +1555,7 @@ impl PlaybackEngine {
             visible_node_thumbs: std::collections::HashSet::new(),
             inspect_clip: None,
             pending_stream_refresh: false,
+            pending_audio_reposition: None,
             pushed_lut_sig: None,
             render_hashes: HashMap::new(),
             thumb_capture_suspended: false,
@@ -1880,6 +1886,7 @@ impl PlaybackEngine {
                 // A paused frame shown before every clip stream had its
                 // frame: re-render once they have.
                 self.tick_stream_refresh();
+                self.tick_audio_reposition();
                 if self.pending_paused_refresh {
                     // A previous seek (Pause / SetPlayhead / SeekTo
                     // while paused) left the decoder running because
@@ -2061,6 +2068,8 @@ impl PlaybackEngine {
 
             AppCommand::Play => {
                 debug!("Play command received, state={:?}", self.state);
+                // A paused seek may still owe its audio.
+                self.flush_pending_audio_reposition();
                 // Mutual-exclusion: stop the source viewer if it owns
                 // audio right now, then hand audio back to the
                 // timeline tracks. Without this both viewers would
@@ -3169,6 +3178,59 @@ impl PlaybackEngine {
     /// in place and `seek_all_audio_to_timecode` already reopens when a
     /// clip's media or effect chain differs. That rebuild was most of a
     /// seek's cost, so a scrub ran at a handful of positions a second.
+    /// [`Self::reposition_audio`], unless that means opening sources and
+    /// nothing is waiting to hear them: paused, not scrubbing, the sound
+    /// at `tc` coming from other clips than the open sources. Then the
+    /// frame is shown first and the sources follow once the playhead has
+    /// rested a moment ([`Self::tick_audio_reposition`]), or at once when
+    /// playback starts. A click along the timeline showed its frame half
+    /// a second late for this, and a frame grab that seeks there and back
+    /// paid it twice.
+    ///
+    /// `true` when the sources are at `tc` on return.
+    fn reposition_audio_or_defer(&mut self, tc: Timecode, source_secs: f64) -> bool {
+        let cheap = !self.audio_sources.is_empty()
+            && self.audio_output.is_some()
+            && self.audio_fingerprint_at(tc) == self.last_audio_fingerprint
+            && self.audio_sources.len() == self.audio_source_count_at(tc);
+        let nobody_listening = self.state != PlaybackState::Playing && !self.is_scrubbing;
+        if nobody_listening && !cheap {
+            self.pending_audio_reposition = Some((tc, source_secs, std::time::Instant::now()));
+            return false;
+        }
+        self.pending_audio_reposition = None;
+        self.reposition_audio(tc);
+        true
+    }
+
+    /// Bring the sources to a deferred seek's time, now.
+    fn flush_pending_audio_reposition(&mut self) {
+        if let Some((tc, _, _)) = self.pending_audio_reposition.take() {
+            self.reposition_audio(tc);
+        }
+    }
+
+    /// The paused tick's share of a deferred audio reposition: once the
+    /// playhead has rested, open the sources and play the scrub chirp the
+    /// seek would have.
+    fn tick_audio_reposition(&mut self) {
+        const REST: Duration = Duration::from_millis(250);
+        let Some((tc, source_secs, since)) = self.pending_audio_reposition else { return };
+        if since.elapsed() < REST {
+            return;
+        }
+        self.pending_audio_reposition = None;
+        self.reposition_audio(tc);
+        if self.scrub_audio_enabled {
+            if let Some(active) = self.audio_sources.first() {
+                active.source.chirp(source_secs, 0.04);
+                if let Some(aout) = &self.audio_output {
+                    aout.0.start_chirp();
+                }
+            }
+        }
+    }
+
     fn reposition_audio(&mut self, tc: Timecode) {
         let fingerprint = self.audio_fingerprint_at(tc);
         let same_set = !self.audio_sources.is_empty()
@@ -3209,6 +3271,7 @@ impl PlaybackEngine {
     }
 
     fn start_all_audio(&mut self, tc: Timecode) {
+        self.pending_audio_reposition = None;
         // Update fingerprint so SequenceUpdated knows the current audio state
         // (prevents redundant restart on the next SequenceUpdated after a seek/play).
         self.last_audio_fingerprint = self.compute_audio_fingerprint();
@@ -3419,6 +3482,7 @@ impl PlaybackEngine {
         self.v1_decoder = None;
         self.streams.clear();
         self.pending_stream_refresh = false;
+        self.pending_audio_reposition = None;
         if let Some(mut dec) = self.preroll_decoder.take() {
             dec.stop_detached();
         }
@@ -5338,8 +5402,9 @@ impl PlaybackEngine {
                 aout.0.pause();
             }
 
-            // 2. Put the audio at the new time
-            self.reposition_audio(tc);
+            // 2. Put the audio at the new time — or owe it, when that
+            // means opening sources nobody is listening to yet.
+            let audio_in_place = self.reposition_audio_or_defer(tc, source_secs);
 
             // 3. Set master clock to target
             let target_us = (source_secs * 1_000_000.0) as u64;
@@ -5407,7 +5472,7 @@ impl PlaybackEngine {
                 }
                 // Play scrub chirp (~40ms snippet at the seek position) unless
                 // the user has disabled audio during a scrub.
-                if !self.is_scrubbing || self.scrub_audio_enabled {
+                if audio_in_place && (!self.is_scrubbing || self.scrub_audio_enabled) {
                     if let Some(active) = self.audio_sources.first() {
                         active.source.chirp(source_secs, 0.04);
                         if let Some(aout) = &self.audio_output {
@@ -7563,11 +7628,19 @@ impl PlaybackEngine {
                 let mut audio_channels: Option<u16> = None;
                 let mut colour_space: u8 = 0; // 0=Unknown, 1=SDR, 2=HDR10, 3=HLG
 
+                // The file's picture: the stream the decoders will open. An
+                // MP4 with embedded cover art has a second video stream, one
+                // MJPEG frame marked as an attached picture; read in stream
+                // order, it came last and the item took its codec and size.
+                let picture_stream = picture_stream_index(&format_ctx);
                 for stream in format_ctx.streams() {
                     let params = stream.parameters();
                     let medium = params.medium();
                     match medium {
                         ffmpeg_next::media::Type::Video => {
+                            if Some(stream.index()) != picture_stream {
+                                continue;
+                            }
                             let decoder = ffmpeg_next::codec::context::Context::from_parameters(params.clone())
                                 .and_then(|ctx| ctx.decoder().video());
                             if let Ok(dec) = decoder {
@@ -8381,6 +8454,22 @@ impl PlaybackEngine {
                 t.muted = source_owns;
             }
         }
+    }
+}
+
+/// The index of the video stream that is the file's picture: the one
+/// ffmpeg ranks best, unless that is an attached picture (cover art)
+/// and another video stream is not.
+fn picture_stream_index(ictx: &ffmpeg_next::format::context::Input) -> Option<usize> {
+    let attached = |s: &ffmpeg_next::Stream| s.disposition().contains(ffmpeg_next::format::stream::Disposition::ATTACHED_PIC);
+    let best = ictx.streams().best(ffmpeg_next::media::Type::Video);
+    match best {
+        Some(s) if !attached(&s) => Some(s.index()),
+        best => ictx
+            .streams()
+            .find(|s| s.parameters().medium() == ffmpeg_next::media::Type::Video && !attached(s))
+            .map(|s| s.index())
+            .or(best.map(|s| s.index())),
     }
 }
 

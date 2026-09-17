@@ -29,10 +29,14 @@ pub enum Anchor {
     Secs(f64),
     /// A frame number at the sequence's rate.
     Frame(i64),
-    /// Where a clip starts.
-    ClipStart(ClipId),
+    /// Where a clip starts: the clip by id, or by where it is, which is
+    /// how a step names a clip an earlier step of the same plan placed.
+    ClipStart(ClipRef),
     /// Where a clip ends.
-    ClipEnd(ClipId),
+    ClipEnd(ClipRef),
+    /// Where the last clip on a track ends (the start, on an empty
+    /// track): where the next select of an assembly goes.
+    TrackEnd(TrackRef),
     /// A timeline marker, by its label (case-insensitive).
     Marker(String),
     /// Another anchor moved by some seconds, negative for earlier.
@@ -134,6 +138,75 @@ pub enum Op {
     /// A clip's start to an anchor, its length unchanged; a linked audio
     /// or video partner goes with it. Refused into another clip.
     Move { clip_id: ClipRef, to: Anchor },
+    /// Captions for what is said on the timeline, from the transcripts of
+    /// the clips whose sound is heard: each word lands where its clip
+    /// puts it, words gather into cues of at most `max_lines` lines of
+    /// `max_chars`, a cue ends at a sentence, a pause or a cut. They go
+    /// on a subtitle track (the first, made at the bottom if there is
+    /// none, or `track`), between `from` and `to` when given.
+    Captions {
+        #[serde(default)]
+        track: Option<TrackRef>,
+        #[serde(default)]
+        from: Option<Anchor>,
+        #[serde(default)]
+        to: Option<Anchor>,
+        #[serde(default = "default_caption_chars")]
+        max_chars: usize,
+        #[serde(default = "default_caption_lines")]
+        max_lines: usize,
+    },
+    /// A lower third: `name`, and `role` under it, bottom left inside
+    /// title-safe, for `secs` from `at`, fading in and out. It goes on a
+    /// text track where it fits (one is made on top if none does).
+    /// Refused across a shot change. The name comes from the brief or
+    /// the cast list, never from a guess.
+    LowerThird {
+        name: String,
+        #[serde(default)]
+        role: Option<String>,
+        at: Anchor,
+        #[serde(default = "default_lower_third_secs")]
+        secs: f64,
+        #[serde(default)]
+        track: Option<TrackRef>,
+    },
+}
+
+fn default_caption_chars() -> usize {
+    42
+}
+
+fn default_caption_lines() -> usize {
+    2
+}
+
+fn default_lower_third_secs() -> f64 {
+    4.0
+}
+
+/// A word of a media file's transcript, in the file's seconds.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SpokenWord {
+    pub start_secs: f64,
+    pub end_secs: f64,
+    pub text: String,
+}
+
+/// Where the resolver gets transcripts from. The document does not know
+/// how speech is recognised; whoever asks for a plan does.
+pub trait Transcripts {
+    /// The words of `item`, in order, or `None` when it has no transcript.
+    fn words(&self, item: &klipp_media::MediaItem) -> Option<Vec<SpokenWord>>;
+}
+
+/// No transcripts at all: `captions` is refused.
+pub struct NoTranscripts;
+
+impl Transcripts for NoTranscripts {
+    fn words(&self, _item: &klipp_media::MediaItem) -> Option<Vec<SpokenWord>> {
+        None
+    }
 }
 
 fn default_true() -> bool {
@@ -270,6 +343,29 @@ fn clip_name(seq: &Sequence, pool: &MediaPool, clip: &Clip) -> String {
         + &seq.tracks.iter().enumerate().find(|(_, t)| t.clips.iter().any(|c| c.id == clip.id)).map(|(i, _)| format!(" on track {i}")).unwrap_or_default()
 }
 
+/// A track kind by the name the ops use for it.
+fn track_kind(name: &str) -> Option<TrackKind> {
+    match name.to_lowercase().as_str() {
+        "video" => Some(TrackKind::Video),
+        "audio" => Some(TrackKind::Audio),
+        "text" | "title" => Some(TrackKind::Text),
+        "subtitle" | "subtitles" | "captions" => Some(TrackKind::Subtitle),
+        _ => None,
+    }
+}
+
+/// A track's index: the one given, or the first of a kind.
+fn resolve_track(seq: &Sequence, t: &TrackRef, step: usize) -> Result<usize, Refusal> {
+    match t {
+        TrackRef::Index(n) if *n < seq.tracks.len() => Ok(*n),
+        TrackRef::Index(n) => Err(refuse(step, format!("no track {n}"), format!("the sequence has tracks 0 to {}", seq.tracks.len().saturating_sub(1)))),
+        TrackRef::Kind(kind) => {
+            let want = track_kind(kind).ok_or_else(|| refuse(step, format!("\"{kind}\" is not a track kind"), "use video, audio, text or subtitle, or a track index"))?;
+            seq.tracks.iter().position(|t| t.kind == want).ok_or_else(|| refuse(step, format!("no {} track", kind.to_lowercase()), "add one with add_track, or give a track index"))
+        }
+    }
+}
+
 fn resolve_anchor(seq: &Sequence, fps: Fps, a: &Anchor, step: usize) -> Result<Timecode, Refusal> {
     Ok(match a {
         Anchor::Secs(s) => {
@@ -284,8 +380,12 @@ fn resolve_anchor(seq: &Sequence, fps: Fps, a: &Anchor, step: usize) -> Result<T
             }
             frame_tc(*f, fps)
         }
-        Anchor::ClipStart(id) => find_clip(seq, *id).ok_or_else(|| refuse(step, format!("no clip {}", id.0), "clip ids are in the timeline view"))?.2.timeline_in,
-        Anchor::ClipEnd(id) => find_clip(seq, *id).ok_or_else(|| refuse(step, format!("no clip {}", id.0), "clip ids are in the timeline view"))?.2.timeline_out,
+        Anchor::ClipStart(r) => resolve_clip(seq, fps, r, step)?.2.timeline_in,
+        Anchor::ClipEnd(r) => resolve_clip(seq, fps, r, step)?.2.timeline_out,
+        Anchor::TrackEnd(t) => {
+            let ti = resolve_track(seq, t, step)?;
+            seq.tracks[ti].clips.iter().map(|c| c.timeline_out).max().unwrap_or_else(|| frame_tc(0, fps))
+        }
         Anchor::Marker(label) => {
             let want = label.to_lowercase();
             seq.markers
@@ -327,6 +427,11 @@ fn after_of(seq: &Sequence, ids: &[ClipId]) -> Vec<ClipAfter> {
 /// Resolve `ops` against `seq` and `pool`, in order, each seeing the
 /// ones before it. Nothing given is changed.
 pub fn resolve(seq: &Sequence, pool: &MediaPool, ops: &[Op]) -> Result<Plan, Refusal> {
+    resolve_with(seq, pool, ops, &NoTranscripts)
+}
+
+/// [`resolve`], with the transcripts `captions` reads.
+pub fn resolve_with(seq: &Sequence, pool: &MediaPool, ops: &[Op], transcripts: &dyn Transcripts) -> Result<Plan, Refusal> {
     let mut sims = vec![seq.clone()];
     let mut sim_pool = pool.clone();
     let mut sim_fps = seq.fps;
@@ -335,7 +440,7 @@ pub fn resolve(seq: &Sequence, pool: &MediaPool, ops: &[Op]) -> Result<Plan, Ref
         let sim = &sims[0];
         // The rate as the plan stands at this step: a place that set an
         // empty sequence's format changed it for every step after.
-        let (what, edit, touched) = resolve_one(sim, &sim_pool, sim.fps, op, i)?;
+        let (what, edit, touched) = resolve_one(sim, &sim_pool, sim.fps, op, i, transcripts)?;
         let mut view = crate::apply::DocumentView { sequences: &mut sims, active: 0, media_pool: &mut sim_pool, fps: &mut sim_fps };
         view.apply_forward(&edit);
         let after = after_of(&sims[0], &touched);
@@ -344,17 +449,31 @@ pub fn resolve(seq: &Sequence, pool: &MediaPool, ops: &[Op]) -> Result<Plan, Ref
     Ok(Plan { steps, duration_secs: secs(sims[0].total_duration()) })
 }
 
-fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
+fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, transcripts: &dyn Transcripts) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
     match op {
+        Op::Captions { track, from, to, max_chars, max_lines } => {
+            let from = from.as_ref().map(|a| resolve_anchor(seq, fps, a, i)).transpose()?;
+            let to = to.as_ref().map(|a| resolve_anchor(seq, fps, a, i)).transpose()?;
+            captions(seq, pool, fps, i, transcripts, track.as_ref(), from, to, (*max_chars).max(8), (*max_lines).max(1))
+        }
+        Op::LowerThird { name, role, at, secs: hold, track } => {
+            let at = resolve_anchor(seq, fps, at, i)?;
+            lower_third(seq, fps, i, name, role.as_deref(), at, *hold, track.as_ref())
+        }
         Op::AddTrack { kind, name } => {
-            let (want, at_top) = match kind.to_lowercase().as_str() {
-                "video" => (TrackKind::Video, true),
-                "audio" => (TrackKind::Audio, false),
-                "text" | "title" => (TrackKind::Text, true),
-                other => return Err(refuse(i, format!("\"{other}\" is not a track kind"), "use video, audio or text")),
-            };
+            let want = track_kind(kind).ok_or_else(|| refuse(i, format!("\"{kind}\" is not a track kind"), "use video, audio, text or subtitle"))?;
+            // Pictures and titles go on top; sound and subtitles at the bottom.
+            let at_top = matches!(want, TrackKind::Video | TrackKind::Text);
             let count = seq.tracks.iter().filter(|t| t.kind == want).count();
-            let name = name.clone().unwrap_or_else(|| format!("{} {}", match want { TrackKind::Video => "Video", TrackKind::Audio => "Audio", _ => "Text" }, count + 1));
+            let name = name.clone().unwrap_or_else(|| {
+                let label = match want {
+                    TrackKind::Video => "Video",
+                    TrackKind::Audio => "Audio",
+                    TrackKind::Text => "Text",
+                    TrackKind::Subtitle => "Subtitle",
+                };
+                format!("{label} {}", count + 1)
+            });
             let track = klipp_timeline::Track::new(&name, want);
             let index = if at_top { 0 } else { seq.tracks.len() };
             let what = format!("add {} track \"{name}\" as track {index}{}", kind.to_lowercase(), if at_top && !seq.tracks.is_empty() { "; every other track's index moves down by one" } else { "" });
@@ -366,23 +485,7 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize) ->
             if item.offline {
                 return Err(refuse(i, format!("{} is offline", item.filename), "relink the media first"));
             }
-            let ti = match track {
-                TrackRef::Index(n) => {
-                    if *n >= seq.tracks.len() {
-                        return Err(refuse(i, format!("no track {n}"), format!("the sequence has tracks 0 to {}", seq.tracks.len().saturating_sub(1))));
-                    }
-                    *n
-                }
-                TrackRef::Kind(kind) => {
-                    let want = match kind.to_lowercase().as_str() {
-                        "video" => TrackKind::Video,
-                        "audio" => TrackKind::Audio,
-                        "text" | "title" => TrackKind::Text,
-                        other => return Err(refuse(i, format!("\"{other}\" is not a track kind"), "use video, audio or text, or a track index")),
-                    };
-                    seq.tracks.iter().position(|t| t.kind == want).ok_or_else(|| refuse(i, format!("no {} track", kind.to_lowercase()), "add one in the app, or give a track index"))?
-                }
-            };
+            let ti = resolve_track(seq, track, i)?;
             let t = &seq.tracks[ti];
             if t.locked {
                 return Err(refuse(i, format!("track {ti} is locked"), "unlock it, or use another track"));
@@ -710,6 +813,367 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize) ->
     }
 }
 
+/// A word placed on the timeline, and whether a cut in the sound comes
+/// before it.
+struct HeardWord {
+    start: f64,
+    end: f64,
+    text: String,
+    after_cut: bool,
+}
+
+/// The words heard on the timeline, in order: every enabled clip whose
+/// sound plays — audio-track clips, and video clips with no audio clip
+/// linked to them — that is not muted, its transcript's words moved from
+/// the file's time to where the clip puts them.
+fn heard_words(seq: &Sequence, pool: &MediaPool, transcripts: &dyn Transcripts) -> Vec<HeardWord> {
+    let mut cache: std::collections::HashMap<MediaId, Option<Vec<SpokenWord>>> = std::collections::HashMap::new();
+    let mut out = Vec::new();
+    for track in &seq.tracks {
+        if track.muted || !matches!(track.kind, TrackKind::Audio | TrackKind::Video) {
+            continue;
+        }
+        for clip in &track.clips {
+            let ClipKind::Media { media_id } = &clip.kind else { continue };
+            if !clip.enabled || clip.volume == 0.0 {
+                continue;
+            }
+            if track.kind == TrackKind::Video {
+                let partner_on_audio = clip.linked_clip_id.is_some_and(|lid| {
+                    seq.tracks.iter().any(|t| t.kind == TrackKind::Audio && t.clips.iter().any(|c| c.id == lid))
+                });
+                if partner_on_audio {
+                    continue;
+                }
+            }
+            let Some(item) = pool.get(media_id) else { continue };
+            let Some(words) = cache.entry(*media_id).or_insert_with(|| transcripts.words(item)).as_ref() else { continue };
+            let (s_in, s_out) = (secs(clip.source_in), secs(clip.source_out));
+            let (t_in, t_out) = (secs(clip.timeline_in), secs(clip.timeline_out));
+            let speed = if clip.speed > 0.0 { clip.speed } else { 1.0 };
+            let mut first = true;
+            for w in words.iter().filter(|w| w.start_secs >= s_in - 0.05 && w.start_secs < s_out) {
+                let text = w.text.trim();
+                if text.is_empty() {
+                    continue;
+                }
+                let start = (t_in + (w.start_secs - s_in) / speed).max(t_in);
+                let end = (t_in + (w.end_secs - s_in) / speed).clamp(start, t_out);
+                out.push(HeardWord { start, end, text: text.to_string(), after_cut: first });
+                first = false;
+            }
+        }
+    }
+    out.sort_by(|a, b| a.start.partial_cmp(&b.start).unwrap_or(std::cmp::Ordering::Equal));
+    out
+}
+
+/// A caption: its time on the timeline and its lines.
+#[derive(Debug, Clone, PartialEq)]
+struct Cue {
+    start: f64,
+    end: f64,
+    text: String,
+}
+
+/// Gather words into cues: a cue closes at a cut in the sound, a pause,
+/// the end of a sentence once it has some length, when it is full, or
+/// when it has been up long enough.
+fn cues_from_words(words: &[HeardWord], max_chars: usize, max_lines: usize) -> Vec<Cue> {
+    const PAUSE_SECS: f64 = 0.7;
+    const LONGEST_SECS: f64 = 6.0;
+    const SENTENCE_MIN_CHARS: usize = 18;
+    let room = max_chars * max_lines;
+    let mut cues: Vec<Cue> = Vec::new();
+    let mut cur: Vec<&HeardWord> = Vec::new();
+    let close = |cur: &mut Vec<&HeardWord>, cues: &mut Vec<Cue>| {
+        if let (Some(a), Some(b)) = (cur.first(), cur.last()) {
+            let text = cur.iter().map(|w| w.text.as_str()).collect::<Vec<_>>().join(" ");
+            cues.push(Cue { start: a.start, end: b.end, text });
+        }
+        cur.clear();
+    };
+    for w in words {
+        if let Some(last) = cur.last() {
+            let len: usize = cur.iter().map(|x| x.text.chars().count() + 1).sum();
+            let sentence_done = last.text.ends_with(['.', '?', '!']) && len >= SENTENCE_MIN_CHARS;
+            let full = len + w.text.chars().count() > room;
+            let long = w.end - cur[0].start > LONGEST_SECS;
+            if w.after_cut || w.start - last.end > PAUSE_SECS || sentence_done || full || long {
+                close(&mut cur, &mut cues);
+            }
+        }
+        cur.push(w);
+    }
+    close(&mut cur, &mut cues);
+    // Held a moment past the last word, at least long enough to read,
+    // and never into the next cue.
+    let n = cues.len();
+    for k in 0..n {
+        let next = if k + 1 < n { cues[k + 1].start } else { f64::MAX };
+        let want = (cues[k].end + 0.2).max(cues[k].start + 1.0);
+        cues[k].end = want.min(next).max(cues[k].start);
+        cues[k].text = wrap_lines(&cues[k].text, max_chars, max_lines);
+    }
+    cues
+}
+
+/// `text` on at most `max_lines` lines of about `max_chars`, the lines
+/// as even as the words allow.
+fn wrap_lines(text: &str, max_chars: usize, max_lines: usize) -> String {
+    let total = text.chars().count();
+    if total <= max_chars || max_lines <= 1 {
+        return text.to_string();
+    }
+    let lines_needed = total.div_ceil(max_chars).clamp(2, max_lines);
+    let target = total.div_ceil(lines_needed);
+    let mut lines: Vec<String> = vec![String::new()];
+    for word in text.split_whitespace() {
+        let more_lines = lines.len() < lines_needed;
+        let cur = lines.last_mut().expect("one line at least");
+        let len = cur.chars().count();
+        if len > 0 && len + 1 + word.chars().count() > target.max(1) + 3 && more_lines {
+            lines.push(word.to_string());
+        } else {
+            if len > 0 {
+                cur.push(' ');
+            }
+            cur.push_str(word);
+        }
+    }
+    lines.join("\n")
+}
+
+/// A caption's look: white, centred low in the frame, outlined so it
+/// reads over any picture. The look a subtitle file imports with.
+fn caption_title(text: &str) -> klipp_timeline::TitleData {
+    let mut tb = klipp_timeline::TextBox {
+        text: text.to_string(),
+        font_size: 36.0,
+        font_name: String::new(),
+        alignment: klipp_timeline::TextAlignment::Center,
+        ..Default::default()
+    };
+    tb.outlines.push(klipp_timeline::TextOutline { color: [0, 0, 0, 200], width: 2.0, enabled: true, width_keyframes: Vec::new() });
+    let mut td = klipp_timeline::TitleData::single_text(tb);
+    if let Some(o) = td.objects.first_mut() {
+        o.transform.center = klipp_timeline::TitlePosition { x: 0.5, y: 0.88 };
+    }
+    td
+}
+
+fn title_clip(td: klipp_timeline::TitleData, tl_in: Timecode, tl_out: Timecode, fps: Fps) -> Clip {
+    Clip {
+        id: ClipId::new(),
+        kind: ClipKind::Title(td),
+        source_in: frame_tc(0, fps),
+        source_out: tl_out - tl_in,
+        ..Clip::gap(tl_in, tl_out)
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn captions(
+    seq: &Sequence,
+    pool: &MediaPool,
+    fps: Fps,
+    i: usize,
+    transcripts: &dyn Transcripts,
+    track: Option<&TrackRef>,
+    from: Option<Timecode>,
+    to: Option<Timecode>,
+    max_chars: usize,
+    max_lines: usize,
+) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
+    let (from_s, to_s) = (from.map(secs).unwrap_or(0.0), to.map(secs).unwrap_or(f64::MAX));
+    if to_s <= from_s {
+        return Err(refuse(i, "the range ends before it starts", "give from before to"));
+    }
+    let words: Vec<HeardWord> = heard_words(seq, pool, transcripts).into_iter().filter(|w| w.start >= from_s && w.start < to_s).collect();
+    if words.is_empty() {
+        return Err(refuse(i, "no transcribed speech is heard on the timeline there", "captions come from the transcripts: run analyze and wait for it, and place the speech first"));
+    }
+    let cues = cues_from_words(&words, max_chars, max_lines);
+    // The track: the one named, else the first subtitle track, else a new one at the bottom.
+    let existing = match track {
+        Some(t) => Some(resolve_track(seq, t, i)?),
+        None => seq.tracks.iter().position(|t| t.kind == TrackKind::Subtitle),
+    };
+    if let Some(ti) = existing {
+        let t = &seq.tracks[ti];
+        if !matches!(t.kind, TrackKind::Subtitle | TrackKind::Text) {
+            return Err(refuse(i, format!("track {ti} is not a subtitle or text track"), "name a subtitle track, or leave the track out"));
+        }
+        if t.locked {
+            return Err(refuse(i, format!("track {ti} is locked"), "unlock it, or use another track"));
+        }
+    }
+    let ti = existing.unwrap_or(seq.tracks.len());
+    let mut edits = Vec::with_capacity(cues.len() + 1);
+    if existing.is_none() {
+        let n = seq.tracks.iter().filter(|t| t.kind == TrackKind::Subtitle).count() + 1;
+        edits.push(EditCommand::AddTrack { index: ti, track: klipp_timeline::Track::new(&format!("Subtitle {n}"), TrackKind::Subtitle) });
+    }
+    let mut ids = Vec::new();
+    let mut last_out: Option<Timecode> = None;
+    for cue in &cues {
+        let mut tl_in = snap(cue.start, fps);
+        if let Some(prev) = last_out {
+            if tl_in < prev {
+                tl_in = prev;
+            }
+        }
+        let tl_out = snap(cue.end, fps).max(tl_in + one_frame(fps));
+        if existing.is_some() {
+            if let Some(c) = overlapping(seq, ti, tl_in, tl_out, None) {
+                return Err(refuse(i, format!("a caption at {:.2}-{:.2} s would overlap {} on track {ti}", secs(tl_in), secs(tl_out), clip_name(seq, pool, c)), "remove the captions that are there, give from and to around them, or name another track"));
+            }
+        }
+        let clip = title_clip(caption_title(&cue.text), tl_in, tl_out, fps);
+        ids.push(clip.id);
+        last_out = Some(tl_out);
+        edits.push(EditCommand::LegacyAppendClip { clip, track_index: ti });
+    }
+    let first = cues.first().map(|c| c.text.replace('\n', " / ")).unwrap_or_default();
+    let what = format!(
+        "captions: {} cues from {:.2} to {:.2} s on {}subtitle track {ti}, at most {max_lines} lines of {max_chars}; the first reads \"{first}\"",
+        cues.len(),
+        cues.first().map(|c| c.start).unwrap_or(0.0),
+        cues.last().map(|c| c.end).unwrap_or(0.0),
+        if existing.is_none() { "a new " } else { "" },
+    );
+    // The plan reports the first and last cue, not hundreds.
+    let touched: Vec<ClipId> = ids.first().into_iter().chain(ids.last().filter(|_| ids.len() > 1)).copied().collect();
+    Ok((what, EditCommand::Batch(edits), touched))
+}
+
+/// A two-line lower third, bottom left inside title-safe: the name, and
+/// the role smaller and spaced under it, both lifted off the picture by
+/// a soft shadow, fading in and out.
+fn lower_third_title(name: &str, role: Option<&str>) -> klipp_timeline::TitleData {
+    use klipp_timeline::{default_text_transform, Easing, FontStyle, Motion, MotionKind, ObjectTransform, TextAlignment, TextBox, TitleMotion, TitleObjectContent, TitlePosition};
+    let lift = klipp_timeline::TitleShadow {
+        color: [0, 0, 0, 120],
+        offset_x: 0.0,
+        offset_y: 3.0,
+        blur: 12.0,
+        enabled: true,
+        offset_x_keyframes: Vec::new(),
+        offset_y_keyframes: Vec::new(),
+        blur_keyframes: Vec::new(),
+    };
+    let motion = |delay: f32| {
+        TitleMotion::both(
+            Motion::new(MotionKind::Fade).duration(0.4).easing(Easing::OutCubic).delay(delay),
+            Motion::new(MotionKind::Fade).duration(0.4).easing(Easing::InCubic),
+        )
+    };
+    let at = |y: f32| ObjectTransform { center: TitlePosition { x: 0.08, y }, anchor_norm: TitlePosition { x: 0.0, y: 0.5 }, ..default_text_transform() };
+    let mut td = klipp_timeline::TitleData {
+        objects: Vec::new(),
+        next_object_id: 0,
+        animation_type: Default::default(),
+        background: klipp_timeline::TitleBackground::None,
+    };
+    let mut name_box = TextBox {
+        text: name.to_string(),
+        font_size: 46.0,
+        font_name: "Inter".into(),
+        font_style: FontStyle::Bold,
+        color: [255, 255, 255, 255],
+        alignment: TextAlignment::Left,
+        ..Default::default()
+    };
+    name_box.shadows.push(lift.clone());
+    name_box.motion = motion(0.0);
+    td.add_object(TitleObjectContent::TextBox(name_box), at(if role.is_some() { 0.815 } else { 0.85 }));
+    if let Some(role) = role {
+        let mut role_box = TextBox {
+            text: role.to_string(),
+            font_size: 24.0,
+            font_name: "Inter".into(),
+            font_style: FontStyle::Regular,
+            color: [205, 205, 212, 255],
+            alignment: TextAlignment::Left,
+            ..Default::default()
+        };
+        role_box.case_transform = klipp_timeline::TextCase::Uppercase;
+        role_box.tracking = 3.0;
+        role_box.shadows.push(lift);
+        role_box.motion = motion(0.1);
+        td.add_object(TitleObjectContent::TextBox(role_box), at(0.868));
+    }
+    td
+}
+
+#[allow(clippy::too_many_arguments)]
+fn lower_third(
+    seq: &Sequence,
+    fps: Fps,
+    i: usize,
+    name: &str,
+    role: Option<&str>,
+    at: Timecode,
+    hold_secs: f64,
+    track: Option<&TrackRef>,
+) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
+    let name = name.trim();
+    let role = role.map(str::trim).filter(|r| !r.is_empty());
+    if name.is_empty() {
+        return Err(refuse(i, "a lower third needs a name", "names come from the brief or the cast list"));
+    }
+    if !hold_secs.is_finite() || hold_secs < 1.5 {
+        return Err(refuse(i, format!("{hold_secs} s is too short to read a name"), "hold it about four seconds, never under two"));
+    }
+    let tl_in = at;
+    let tl_out = tl_in + snap(hold_secs, fps);
+    if tl_out > seq.total_duration() {
+        return Err(refuse(i, format!("it would run to {:.2} s, past the end of the timeline at {:.2} s", secs(tl_out), secs(seq.total_duration())), "start it earlier or hold it shorter"));
+    }
+    // Never across a shot change: a clip edge on a video track while it is up.
+    let cut = seq
+        .tracks
+        .iter()
+        .filter(|t| t.kind == TrackKind::Video && t.visible)
+        .flat_map(|t| t.clips.iter())
+        .flat_map(|c| [c.timeline_in, c.timeline_out])
+        .filter(|e| *e > tl_in && *e < tl_out)
+        .min();
+    if let Some(cut) = cut {
+        return Err(refuse(i, format!("the picture changes at {:.2} s while it is up ({:.2}-{:.2} s)", secs(cut), secs(tl_in), secs(tl_out)), "a lower third does not run across a shot change: start it after the cut, or end it before"));
+    }
+    // The track: the one named, else a text track with room, else a new one on top.
+    let fits = |ti: usize| overlapping(seq, ti, tl_in, tl_out, None).is_none() && !seq.tracks[ti].locked;
+    let existing = match track {
+        Some(t) => {
+            let ti = resolve_track(seq, t, i)?;
+            if !matches!(seq.tracks[ti].kind, TrackKind::Text | TrackKind::Video) {
+                return Err(refuse(i, format!("track {ti} is not a text or video track"), "name a text track, or leave the track out"));
+            }
+            if !fits(ti) {
+                return Err(refuse(i, format!("track {ti} is locked or has a clip there"), "leave the track out and one with room is found or made"));
+            }
+            Some(ti)
+        }
+        None => (0..seq.tracks.len()).find(|ti| seq.tracks[*ti].kind == TrackKind::Text && fits(*ti)),
+    };
+    let clip = title_clip(lower_third_title(name, role), tl_in, tl_out, fps);
+    let id = clip.id;
+    let what = format!(
+        "lower third \"{name}\"{} at {:.2}-{:.2} s on {}",
+        role.map(|r| format!(", \"{r}\"")).unwrap_or_default(),
+        secs(tl_in),
+        secs(tl_out),
+        match existing {
+            Some(ti) => format!("track {ti}"),
+            None if seq.tracks.is_empty() => "a new text track 0".to_string(),
+            None => "a new text track 0; every other track's index moves down by one".to_string(),
+        },
+    );
+    let edit = EditCommand::AddTitleClip { clip, track_index: existing.unwrap_or(0), created_track: existing.is_none() };
+    Ok((what, edit, vec![id]))
+}
+
 /// A J-cut (`j`) on the cut into `clip` or an L-cut out of it, `frames`
 /// long: the two clips' linked audio, adjacent on one audio track, get
 /// their shared edge moved — earlier for a J-cut, later for an L-cut —
@@ -840,12 +1304,116 @@ mod tests {
         (seq, pool, media_id, ia, ib)
     }
 
+    /// The fixture's file says a sentence in each clip and one the
+    /// timeline never uses.
+    struct Spoken;
+
+    impl Transcripts for Spoken {
+        fn words(&self, _item: &klipp_media::MediaItem) -> Option<Vec<SpokenWord>> {
+            let say = |at: f64, text: &str| -> Vec<SpokenWord> {
+                text.split(' ').enumerate().map(|(k, w)| SpokenWord { start_secs: at + k as f64 * 0.2, end_secs: at + k as f64 * 0.2 + 0.18, text: format!(" {w}") }).collect()
+            };
+            Some([say(0.5, "Nobody is afraid of the machine."), say(4.4, "What changed it for me was agents, and that is the long and the short of it."), say(9.0, "Never used.")].concat())
+        }
+    }
+
+    #[test]
+    fn an_assembly_names_its_own_clips_and_the_end_of_a_track() {
+        let (seq, pool, media, _, _) = fixture();
+        let plan = resolve(&seq, &pool, &[
+            Op::Place { media_id: media, track: TrackRef::Index(0), at: Anchor::TrackEnd(TrackRef::Kind("video".into())), source_in: Some(1.0), source_out: Some(2.0), insert: false, with_audio: true },
+            // The clip that place made, by where it is: the next goes at its end.
+            Op::Place { media_id: media, track: TrackRef::Index(0), at: Anchor::ClipEnd(ClipRef::At { track: 0, secs: 8.5 }), source_in: Some(2.0), source_out: Some(3.0), insert: false, with_audio: true },
+            Op::Place { media_id: media, track: TrackRef::Index(0), at: Anchor::ClipStart(ClipRef::At { track: 0, secs: 9.5 }), source_in: Some(2.0), source_out: Some(3.0), insert: false, with_audio: true },
+        ]);
+        // The first two land end to end; the third names the second's start, where the second is.
+        let err = plan.unwrap_err();
+        assert_eq!(err.step, 2);
+        assert!(err.why.contains("overlap"), "{err}");
+        let plan = resolve(&seq, &pool, &[
+            Op::Place { media_id: media, track: TrackRef::Index(0), at: Anchor::TrackEnd(TrackRef::Index(0)), source_in: Some(1.0), source_out: Some(2.0), insert: false, with_audio: true },
+            Op::Place { media_id: media, track: TrackRef::Index(0), at: Anchor::ClipEnd(ClipRef::At { track: 0, secs: 8.5 }), source_in: Some(2.0), source_out: Some(3.0), insert: false, with_audio: true },
+        ]).unwrap();
+        assert_eq!((plan.steps[0].after[0].timeline_in_secs, plan.steps[0].after[0].timeline_out_secs), (8.0, 9.0));
+        assert_eq!((plan.steps[1].after[0].timeline_in_secs, plan.steps[1].after[0].timeline_out_secs), (9.0, 10.0));
+    }
+
+    #[test]
+    fn captions_follow_the_sound_and_break_at_cuts_and_sentences() {
+        let (seq, pool, _, _, _) = fixture();
+        // Without transcripts there is nothing to caption, and it says what would help.
+        let err = resolve(&seq, &pool, &[Op::Captions { track: None, from: None, to: None, max_chars: 42, max_lines: 2 }]).unwrap_err();
+        assert!(err.hint.contains("analyze"), "{err}");
+
+        let plan = resolve_with(&seq, &pool, &[Op::Captions { track: None, from: None, to: None, max_chars: 30, max_lines: 2 }], &Spoken).unwrap();
+        assert!(plan.steps[0].what.starts_with("captions: 3 cues"), "{}", plan.steps[0].what);
+        let mut seqs = vec![seq.clone()];
+        let mut p = pool.clone();
+        let mut fps = seq.fps;
+        let mut view = crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut p, fps: &mut fps };
+        view.apply_forward(&plan.steps[0].edit);
+        let after = view.sequences[0].clone();
+        let track = after.tracks.last().unwrap();
+        assert_eq!(track.kind, TrackKind::Subtitle, "a subtitle track at the bottom");
+        let texts: Vec<String> = track.clips.iter().map(|c| c.title_data().unwrap().text()).collect();
+        // Thirty-two characters on lines of thirty: two even lines.
+        assert_eq!(texts[0], "Nobody is afraid of\nthe machine.");
+        // The second sentence is over sixty characters: two cues, each on two lines at most.
+        assert!(texts[1].starts_with("What changed it for me") && texts[1].contains('\n'), "{texts:?}");
+        assert!(texts.iter().all(|t| t.lines().count() <= 2 && !t.contains("Never")), "{texts:?}");
+        // On the timeline where the clip puts the words, in order, never overlapping.
+        assert!((secs(track.clips[0].timeline_in) - 0.52).abs() < 0.021, "{}", secs(track.clips[0].timeline_in));
+        assert!((secs(track.clips[1].timeline_in) - 4.4).abs() < 0.021);
+        assert!(track.clips.windows(2).all(|w| w[0].timeline_out <= w[1].timeline_in));
+        // Undone, the track goes with them.
+        view.apply_inverse(&plan.steps[0].edit);
+        assert_eq!(view.sequences[0].tracks.len(), 2);
+
+        // A second time onto the same track is refused where cues are already.
+        let twice = [Op::Captions { track: None, from: None, to: None, max_chars: 30, max_lines: 2 }, Op::Captions { track: None, from: None, to: None, max_chars: 30, max_lines: 2 }];
+        let err = resolve_with(&seq, &pool, &twice, &Spoken).unwrap_err();
+        assert_eq!(err.step, 1);
+        assert!(err.why.contains("overlap"), "{err}");
+    }
+
+    #[test]
+    fn a_lower_third_sits_inside_a_shot() {
+        let (seq, pool, _, _, _) = fixture();
+        let lt = |at: f64, secs: f64| Op::LowerThird { name: "David Heinemeier Hansson".into(), role: Some("Creator of Omarchy".into()), at: Anchor::Secs(at), secs, track: None };
+        let plan = resolve(&seq, &pool, &[lt(4.4, 3.0)]).unwrap();
+        assert!(plan.steps[0].what.contains("a new text track 0"), "{}", plan.steps[0].what);
+        assert_eq!((plan.steps[0].after[0].track, plan.steps[0].after[0].timeline_in_secs, plan.steps[0].after[0].timeline_out_secs), (0, 4.4, 7.4));
+        let EditCommand::AddTitleClip { clip, .. } = &plan.steps[0].edit else { panic!("a title clip") };
+        let td = clip.title_data().unwrap();
+        assert_eq!(td.objects.len(), 2, "the name and the role");
+        assert_eq!(td.text(), "David Heinemeier Hansson");
+
+        // Across the cut at 4 s it is refused, with the cut named.
+        let err = resolve(&seq, &pool, &[lt(2.0, 4.0)]).unwrap_err();
+        assert!(err.why.contains("4.00 s") && err.hint.contains("shot change"), "{err}");
+        // Too short to read, no name, past the end: refused.
+        assert!(resolve(&seq, &pool, &[lt(4.5, 1.0)]).is_err());
+        assert!(resolve(&seq, &pool, &[lt(6.0, 3.0)]).unwrap_err().why.contains("past the end"));
+        let nameless = Op::LowerThird { name: " ".into(), role: None, at: Anchor::Secs(4.5), secs: 3.0, track: None };
+        assert!(resolve(&seq, &pool, &[nameless]).unwrap_err().hint.contains("cast list"));
+
+        // A second one finds the text track the first made; the ops read as JSON the way the tools send them.
+        let ops: Vec<Op> = serde_json::from_str(r#"[
+            {"op":"lower_third","name":"Brodie","at":{"secs":0.5},"secs":3},
+            {"op":"lower_third","name":"DHH","role":"Omarchy","at":{"clip_start":{"track":1,"secs":5.0}}},
+            {"op":"captions"},
+            {"op":"place","media_id":"00000000-0000-0000-0000-000000000000","track":"video","at":{"track_end":"video"}}
+        ]"#).unwrap();
+        let plan = resolve_with(&seq, &pool, &ops[..3], &Spoken).unwrap();
+        assert!(plan.steps[1].what.contains("on track 0") && plan.steps[1].what.contains("4.00-8.00"), "{}", plan.steps[1].what);
+    }
+
     #[test]
     fn a_plan_runs_in_order_and_reads_as_text() {
         let (seq, pool, media, a, b) = fixture();
         let ops = vec![
             Op::Split { clip_id: ClipRef::Id(b), at: Anchor::Marker("intro".into()) },
-            Op::Place { media_id: media, track: TrackRef::Kind("video".into()), at: Anchor::ClipEnd(b), source_in: Some(8.0), source_out: Some(9.0), insert: false, with_audio: false },
+            Op::Place { media_id: media, track: TrackRef::Kind("video".into()), at: Anchor::ClipEnd(ClipRef::Id(b)), source_in: Some(8.0), source_out: Some(9.0), insert: false, with_audio: false },
             Op::Trim { clip_id: ClipRef::Id(a), edge: Edge::Out, to: Anchor::Secs(3.0), ripple: false },
         ];
         // The split replaces b, so its end no longer exists as `b`:
@@ -855,7 +1423,7 @@ mod tests {
         assert!(err.why.contains("no clip"), "{err}");
 
         let ops = vec![
-            Op::Place { media_id: media, track: TrackRef::Index(0), at: Anchor::ClipEnd(b), source_in: Some(8.0), source_out: Some(9.0), insert: false, with_audio: false },
+            Op::Place { media_id: media, track: TrackRef::Index(0), at: Anchor::ClipEnd(ClipRef::Id(b)), source_in: Some(8.0), source_out: Some(9.0), insert: false, with_audio: false },
             Op::Split { clip_id: ClipRef::Id(b), at: Anchor::Marker("intro".into()) },
             Op::Trim { clip_id: ClipRef::Id(a), edge: Edge::Out, to: Anchor::Secs(3.0), ripple: false },
         ];
