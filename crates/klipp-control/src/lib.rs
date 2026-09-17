@@ -1178,11 +1178,48 @@ fn handle(
                 (fb.latest_presented(), seq.fps)
             };
             let target = klipp_core::Timecode::from_secs_f64(secs.max(0.0), fps.rate());
-            let queued = send_envelope(ctx, vec![AppCommand::SeekTo(target)], false)?;
-            let generation = queued.get("generation").and_then(|g| g.as_u64()).unwrap_or(0);
+            let before = {
+                let fb = ctx.frame_buffer.lock().map_err(|_| "frame buffer lock poisoned")?;
+                fb.latest_generation()
+            };
+            send_envelope(ctx, vec![AppCommand::SeekTo(target)], false)?;
+            // The frame this asks for: rendered after the seek, at the
+            // time asked for, with every clip under the playhead in it.
+            // A frame's generation alone said none of that: a late
+            // re-render of the previous position passed as this one, and
+            // a frame shown before the other tracks' decoders had their
+            // pictures — the engine fills those in when they arrive — was
+            // handed back as the record of the timeline.
+            let wait = std::time::Duration::from_millis(timeout_ms.unwrap_or(3000));
+            let deadline = std::time::Instant::now() + wait;
+            let generation = loop {
+                let (g, at, complete) = {
+                    let fb = ctx.frame_buffer.lock().map_err(|_| "frame buffer lock poisoned")?;
+                    (fb.latest_generation(), fb.latest_presented(), fb.latest_complete())
+                };
+                let at_target = at.is_some_and(|a| a.cmp(&target) == std::cmp::Ordering::Equal);
+                if g != before && at_target && complete {
+                    break g;
+                }
+                if std::time::Instant::now() >= deadline {
+                    if let Some(t) = was_at {
+                        let _ = send_envelope(ctx, vec![AppCommand::SeekTo(t)], false);
+                    }
+                    let state = match (at_target, complete) {
+                        (false, _) => format!(
+                            "the viewer is at {} s, not {secs:.3} s",
+                            at.map(|a| format!("{:.3}", a.to_secs_f64())).unwrap_or_else(|| "nowhere".into())
+                        ),
+                        (true, false) => "the frame is there but the other tracks' clips are still decoding".to_string(),
+                        (true, true) => "no frame was rendered after the seek".to_string(),
+                    };
+                    return Err(format!("no frame at {secs:.3} s within {} ms: {state}; give a longer timeout_ms", wait.as_millis()));
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            };
             let shot = handle(
                 ctx,
-                ControlCommand::Screenshot { path, max_width, min_generation: Some(generation + 1), timeout_ms },
+                ControlCommand::Screenshot { path, max_width, min_generation: Some(generation), timeout_ms },
                 &mut None,
             );
             // Back where the playhead was, whatever the capture did.

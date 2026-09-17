@@ -60,8 +60,8 @@ exist until the plan runs.
   a media item onto a track (`"video"`, `"audio"`, `"text"` for the
   first of that kind, or a track index from the timeline view) at an
   anchor. Its sound comes along, linked, on the first audio track,
-  which is made if there is none; `with_audio: false` leaves it out,
-  which is what B-roll over a voice wants. An empty sequence takes the
+  which is made if there is none; `with_audio: false` leaves it out
+  and mutes the clip, which is what B-roll over a voice wants. An empty sequence takes the
   first picture's size and rate. With `insert`, every unlocked track is
   rippled later to make room and a clip straddling the anchor is split
   there.

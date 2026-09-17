@@ -327,14 +327,15 @@ fn after_of(seq: &Sequence, ids: &[ClipId]) -> Vec<ClipAfter> {
 /// Resolve `ops` against `seq` and `pool`, in order, each seeing the
 /// ones before it. Nothing given is changed.
 pub fn resolve(seq: &Sequence, pool: &MediaPool, ops: &[Op]) -> Result<Plan, Refusal> {
-    let fps = seq.fps;
     let mut sims = vec![seq.clone()];
     let mut sim_pool = pool.clone();
-    let mut sim_fps = fps;
+    let mut sim_fps = seq.fps;
     let mut steps = Vec::with_capacity(ops.len());
     for (i, op) in ops.iter().enumerate() {
         let sim = &sims[0];
-        let (what, edit, touched) = resolve_one(sim, &sim_pool, fps, op, i)?;
+        // The rate as the plan stands at this step: a place that set an
+        // empty sequence's format changed it for every step after.
+        let (what, edit, touched) = resolve_one(sim, &sim_pool, sim.fps, op, i)?;
         let mut view = crate::apply::DocumentView { sequences: &mut sims, active: 0, media_pool: &mut sim_pool, fps: &mut sim_fps };
         view.apply_forward(&edit);
         let after = after_of(&sims[0], &touched);
@@ -392,6 +393,16 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize) ->
             if !(0.0..media_dur).contains(&s_in) || s_out <= s_in || s_out > media_dur + 1e-6 {
                 return Err(refuse(i, format!("source {s_in:.2}-{s_out:.2} s is not inside {} ({media_dur:.2} s)", item.filename), "give source_in and source_out within the file, in order"));
             }
+            // An empty sequence takes the first picture's size and rate,
+            // as an append in the app does; that place is already snapped
+            // at the rate the sequence is about to have.
+            let no_video_yet = !seq.tracks.iter().any(|t| t.kind == TrackKind::Video && !t.clips.is_empty());
+            let autoset = if no_video_yet && item.resolution.width > 0 && item.fps.as_f64() > 0.0 && (seq.resolution != item.resolution || seq.fps != item.fps) {
+                Some(((seq.resolution, seq.fps), (item.resolution, item.fps)))
+            } else {
+                None
+            };
+            let fps = autoset.map(|(_, (_, f))| f).unwrap_or(fps);
             let src_in = snap(s_in, fps);
             let src_out = snap(s_out, fps);
             if src_out <= src_in {
@@ -403,6 +414,12 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize) ->
             // The sound with the picture, linked both ways, on the first
             // audio track — made at the bottom when there is none.
             let bring_audio = *with_audio && item.has_audio && t.kind != TrackKind::Audio;
+            // A video clip with no linked audio clip plays the sound in
+            // its file; left out means silent, so the clip is muted.
+            let muted = !*with_audio && item.has_audio && t.kind != TrackKind::Audio;
+            if muted {
+                clip.volume = 0.0;
+            }
             let mut audio: Option<(Clip, usize)> = None;
             let mut created_audio_track_at = None;
             if bring_audio {
@@ -428,17 +445,10 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize) ->
                 clip.linked_clip_id = Some(a.id);
                 audio = Some((a, ati));
             }
-            // An empty sequence takes the first picture's size and rate,
-            // as an append in the app does.
-            let no_video_yet = !seq.tracks.iter().any(|t| t.kind == TrackKind::Video && !t.clips.is_empty());
-            let autoset = if no_video_yet && item.resolution.width > 0 && item.fps.as_f64() > 0.0 && (seq.resolution != item.resolution || seq.fps != item.fps) {
-                Some(((seq.resolution, seq.fps), (item.resolution, item.fps)))
-            } else {
-                None
-            };
             let sound_note = match (&audio, created_audio_track_at) {
                 (Some(_), Some(ati)) => format!(", its sound linked on a new audio track {ati}"),
                 (Some((_, ati)), None) => format!(", its sound linked on track {ati}"),
+                _ if muted => ", its sound muted".to_string(),
                 _ => String::new(),
             };
             let format_note = autoset.map(|(_, (r, f))| format!("; the sequence becomes {}x{} at {:.3} fps", r.width, r.height, f.as_f64())).unwrap_or_default();
@@ -712,7 +722,10 @@ fn split_edit(seq: &Sequence, pool: &MediaPool, fps: Fps, i: usize, clip_id: Cli
     // The picture's neighbour: before it for a J-cut, after it for an L-cut.
     let track = &seq.tracks[ti];
     let neighbour = if j { ci.checked_sub(1).map(|p| &track.clips[p]) } else { track.clips.get(ci + 1) };
-    let Some(neighbour) = neighbour.filter(|n| if j { n.timeline_out == clip.timeline_in } else { n.timeline_in == clip.timeline_out }) else {
+    // Compared as times, not as fields: a clip placed before the sequence
+    // changed rate carries the old rate in its timecodes.
+    let same = |a: Timecode, b: Timecode| a.cmp(&b) == std::cmp::Ordering::Equal;
+    let Some(neighbour) = neighbour.filter(|n| if j { same(n.timeline_out, clip.timeline_in) } else { same(n.timeline_in, clip.timeline_out) }) else {
         return Err(refuse(i, format!("{} has no clip cut {} it on its track", clip_name(seq, pool, clip), if j { "before" } else { "after" }), "a J-cut or L-cut needs two clips meeting at a cut"));
     };
     let (outgoing, incoming) = if j { (neighbour, clip) } else { (clip, neighbour) };
@@ -729,7 +742,7 @@ fn split_edit(seq: &Sequence, pool: &MediaPool, fps: Fps, i: usize, clip_id: Cli
     if seq.tracks[out_ti].locked {
         return Err(refuse(i, format!("audio track {out_ti} is locked"), "unlock it first"));
     }
-    if out_a.timeline_out != in_a.timeline_in {
+    if !same(out_a.timeline_out, in_a.timeline_in) {
         return Err(refuse(i, format!("the audio clips do not meet: {:.2} s and {:.2} s", secs(out_a.timeline_out), secs(in_a.timeline_in)), "line the audio up with the picture first"));
     }
     let lead = frame_tc(frames, fps);
@@ -943,6 +956,22 @@ mod tests {
         assert!((after[0].source_in_secs - 5.0).abs() < 1e-9, "{after:?}");
     }
 
+    /// A clip placed before the sequence changed rate keeps the old rate
+    /// in its timecodes; the cut between it and a clip at the new rate is
+    /// still a cut.
+    #[test]
+    fn a_j_cut_meets_a_neighbour_at_another_rate() {
+        let (mut seq, pool, _, _, b) = fixture();
+        for t in seq.tracks.iter_mut() {
+            let c = &mut t.clips[0];
+            c.timeline_in = c.timeline_in.rescale_to(50);
+            c.timeline_out = c.timeline_out.rescale_to(50);
+            assert_ne!(c.timeline_out, tc(4.0), "the fields differ");
+        }
+        let plan = resolve(&seq, &pool, &[Op::JCut { incoming_clip: ClipRef::Id(b), frames: 10 }]).unwrap();
+        assert!(plan.steps[0].what.starts_with("J-cut of 10 frames"), "{}", plan.steps[0].what);
+    }
+
     #[test]
     fn j_and_l_cuts_move_the_audio_edge_and_leave_the_picture() {
         let (seq, pool, _, a, b) = fixture();
@@ -989,9 +1018,15 @@ mod tests {
             Op::Place { media_id: media2, track: TrackRef::Kind("video".into()), at: Anchor::Secs(0.0), source_in: Some(1.0), source_out: Some(3.0), insert: false, with_audio: true },
             Op::Split { clip_id: ClipRef::At { track: 0, secs: 0.5 }, at: Anchor::Secs(1.0) },
             Op::JCut { incoming_clip: ClipRef::At { track: 0, secs: 1.5 }, frames: 6 },
+            // Frames count at the rate the sequence has by now, 24, not
+            // the 25 it started with: 48 frames is 2.0 s, the first clip's
+            // end, and the source range was snapped at 24 too.
+            Op::Place { media_id: media2, track: TrackRef::Index(0), at: Anchor::Frame(48), source_in: Some(4.0), source_out: Some(5.0), insert: false, with_audio: true },
         ]).unwrap();
         let w = &plan.steps[0].what;
         assert!(w.contains("new audio track 1") && w.contains("1280x720 at 24.000 fps"), "{w}");
+        assert_eq!((plan.steps[0].after[0].timeline_in_secs, plan.steps[0].after[0].timeline_out_secs), (0.0, 2.0));
+        assert_eq!((plan.steps[3].after[0].timeline_in_secs, plan.steps[3].after[0].timeline_out_secs), (2.0, 3.0));
         assert_eq!(plan.steps[0].after.len(), 2, "picture and sound");
         assert_eq!(plan.steps[0].after[1].track, 1);
         assert!(plan.steps[2].what.starts_with("J-cut of 6 frames"), "{}", plan.steps[2].what);
@@ -1005,9 +1040,19 @@ mod tests {
         }
         assert_eq!(seqs[0].tracks.len(), 2);
         assert_eq!(seqs[0].fps, Fps::new(24, 1));
-        assert_eq!(seqs[0].tracks[0].clips.len(), 2);
+        assert_eq!(seqs[0].tracks[0].clips.len(), 3, "two halves and the second place");
         let v0 = &seqs[0].tracks[0].clips[0];
         assert!(v0.linked_clip_id.is_some());
+
+        // Without its sound, a video clip is muted: the engine would
+        // otherwise play the sound in its file.
+        let plan = resolve(&seq, &pool, &[Op::Place { media_id: media, track: TrackRef::Index(0), at: Anchor::Secs(20.0), source_in: Some(1.0), source_out: Some(2.0), insert: false, with_audio: false }]).unwrap();
+        assert!(plan.steps[0].what.ends_with("its sound muted"), "{}", plan.steps[0].what);
+        assert_eq!(plan.steps[0].after.len(), 1);
+        match &plan.steps[0].edit {
+            EditCommand::LegacyAppendClip { clip, .. } => assert_eq!(clip.volume, 0.0),
+            other => panic!("expected an append, got {other:?}"),
+        }
 
         // An add_track on top shifts the indices, and says so.
         let plan = resolve(&seq, &pool, &[Op::AddTrack { kind: "video".into(), name: None }]).unwrap();

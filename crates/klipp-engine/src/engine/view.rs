@@ -845,7 +845,7 @@ impl PlaybackEngine {
         {
             let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
             fb.write_frame_swap(&mut bytes, w, h);
-            fb.set_presented(self.playhead);
+            fb.set_presented(self.playhead, !self.pending_stream_refresh);
             match nits {
                 Some((map, mw, mh, step)) => {
                     fb.nit_map = map;
@@ -869,7 +869,7 @@ impl PlaybackEngine {
         {
             let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
             fb.note_gpu_frame();
-            fb.set_presented(self.playhead);
+            fb.set_presented(self.playhead, !self.pending_stream_refresh);
             if !fb.nit_map.is_empty() {
                 fb.nit_map = Vec::new();
                 (fb.nit_map_w, fb.nit_map_h) = (0, 0);

@@ -90,6 +90,13 @@ pub struct FrameBuffer {
     /// moves on while a frame is still being shown).
     pub presented: Option<klipp_core::RationalTime>,
     pending_presented: Option<klipp_core::RationalTime>,
+    /// Whether the frame in `data` shows every clip under the playhead.
+    /// `false` while the other clips' streams were still seeking when it
+    /// rendered: the engine re-renders once they arrive, and anything
+    /// that captures the viewer as a record of the timeline waits for
+    /// that.
+    pub complete: bool,
+    pending_complete: bool,
 
     // ── GPU-resident viewer path ──
     // When the engine and UI share one `wgpu::Device` (installed via
@@ -163,6 +170,8 @@ impl FrameBuffer {
             nit_map_step: 1,
             presented: None,
             pending_presented: None,
+            complete: true,
+            pending_complete: true,
             gpu_output: None,
             gpu_output_width: 0,
             gpu_output_height: 0,
@@ -297,11 +306,19 @@ impl FrameBuffer {
         if self.pending_ready { self.pending_presented } else { self.presented }
     }
 
+    /// Whether [`Self::latest_frame`] shows every clip under its playhead.
+    pub fn latest_complete(&self) -> bool {
+        if self.pending_ready { self.pending_complete } else { self.complete }
+    }
+
     /// Say which frame the next write is of. The engine calls this with
-    /// every frame it publishes.
-    pub fn set_presented(&mut self, at: klipp_core::RationalTime) {
+    /// every frame it publishes; a frame rendered before every clip's
+    /// stream had its picture says so with `complete` false.
+    pub fn set_presented(&mut self, at: klipp_core::RationalTime, complete: bool) {
         self.pending_presented = Some(at);
         self.presented = Some(at);
+        self.pending_complete = complete;
+        self.complete = complete;
     }
 
     /// Swap-based write — the engine provides a `&mut Vec<u8>` that is swapped
@@ -337,6 +354,7 @@ impl FrameBuffer {
         self.height = self.pending_height;
         self.generation = self.pending_generation;
         self.presented = self.pending_presented;
+        self.complete = self.pending_complete;
         self.dirty = true;
         self.pending_ready = false;
         true
