@@ -311,7 +311,7 @@ fn timeline_text(
                         let mut line = format!("media {}  src {:.2}-{:.2} s", m.filename, c.source_in.to_secs_f64(), c.source_out.to_secs_f64());
                         // What analysis knows about this part of the file.
                         let known = klipp_analysis::report::MediaAnalysis::load(&m.path)
-                            .clip_summary(c.source_in.to_secs_f64(), c.source_out.to_secs_f64());
+                            .clip_summary_with(c.source_in.to_secs_f64(), c.source_out.to_secs_f64(), t.kind != klipp_timeline::TrackKind::Audio);
                         if !known.is_empty() {
                             let _ = write!(line, "  [{known}]");
                         }

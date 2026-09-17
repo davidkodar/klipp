@@ -11,7 +11,7 @@
 use serde::{Deserialize, Serialize};
 
 pub const ID: &str = "transcript";
-pub const VERSION: u32 = 1;
+pub const VERSION: u32 = 2;
 /// The manifest entry the analyser runs with.
 pub const MODEL_ID: &str = "whisper_base_ggml";
 
@@ -189,6 +189,12 @@ fn transcribe(model: &std::path::Path, audio: &[f32], duration_secs: f64) -> Res
     params.set_print_realtime(false);
     params.set_print_timestamps(false);
     params.set_suppress_blank(true);
+    // Whisper writes captions for sound that is not speech — "[Music]",
+    // "(coughing)", a date it has seen too often — and does so most of
+    // all over silence. Keep its non-speech tokens out, and drop what it
+    // says where it thinks nobody is speaking.
+    params.set_suppress_nst(true);
+    params.set_no_speech_thold(NO_SPEECH_THRESHOLD);
     state.full(params, audio).map_err(|e| format!("whisper run: {e}"))?;
 
     let lang = whisper_rs::get_lang_str(state.full_lang_id_from_state()).map(|s| s.to_string());
@@ -199,9 +205,10 @@ fn transcribe(model: &std::path::Path, audio: &[f32], duration_secs: f64) -> Res
         let Some(seg) = state.get_segment(i) else { continue };
         let text = seg.to_str_lossy().map(|c| c.into_owned()).unwrap_or_default();
         let (t0, t1) = (seg.start_timestamp() as f64 / 100.0, seg.end_timestamp() as f64 / 100.0);
-        if !text.trim().is_empty() {
-            segments.push(Segment { start_secs: t0, end_secs: t1, text: text.trim().to_string() });
+        if seg.no_speech_probability() > NO_SPEECH_THRESHOLD || !is_speech(&text) {
+            continue;
         }
+        segments.push(Segment { start_secs: t0, end_secs: t1, text: text.trim().to_string() });
         for j in 0..seg.n_tokens() {
             let Some(tok) = seg.get_token(j) else { continue };
             let d = tok.token_data();
@@ -210,7 +217,27 @@ fn transcribe(model: &std::path::Path, audio: &[f32], duration_secs: f64) -> Res
         }
     }
     let words = group_words(&tokens);
-    Ok(Transcript { duration_secs, language: lang, model: MODEL_ID.into(), segments, words })
+    // A language detected over silence is a guess; say nothing instead.
+    let language = if segments.is_empty() { None } else { lang };
+    Ok(Transcript { duration_secs, language, model: MODEL_ID.into(), segments, words })
+}
+
+/// Above this probability of no speech, whisper's words for a segment
+/// are dropped.
+const NO_SPEECH_THRESHOLD: f32 = 0.6;
+
+/// Whether a segment's text is words rather than one of whisper's
+/// sound captions: `[Music]`, `(coughing)`, `*släpp*`, `♪`.
+pub fn is_speech(text: &str) -> bool {
+    let t = text.trim();
+    if t.is_empty() {
+        return false;
+    }
+    let wrapped = |a: char, b: char| t.starts_with(a) && t.ends_with(b);
+    if wrapped('[', ']') || wrapped('(', ')') || wrapped('*', '*') || wrapped('♪', '♪') {
+        return false;
+    }
+    t.chars().any(|c| c.is_alphanumeric())
 }
 
 #[cfg(test)]
@@ -219,6 +246,16 @@ mod tests {
 
     fn tok(text: &str, t0: f64, t1: f64, p: f32) -> Token {
         Token { text: text.into(), t0, t1, p }
+    }
+
+    #[test]
+    fn sound_captions_are_not_speech() {
+        assert!(!is_speech("[Music]"));
+        assert!(!is_speech("(coughing)"));
+        assert!(!is_speech("*släpp*"));
+        assert!(!is_speech(" ♪ "));
+        assert!(is_speech("- Grab the gun when he was nine."));
+        assert!(is_speech("Hej."));
     }
 
     #[test]

@@ -45,8 +45,14 @@ impl MediaAnalysis {
     /// clip's line in the timeline view: shot count and where the cuts
     /// fall, loudness, silence. Empty when nothing is known.
     pub fn clip_summary(&self, from: f64, to: f64) -> String {
+        self.clip_summary_with(from, to, true)
+    }
+
+    /// [`Self::clip_summary`], with the picture's facts left out for a
+    /// clip that carries only the sound.
+    pub fn clip_summary_with(&self, from: f64, to: f64, with_picture: bool) -> String {
         let mut s = String::new();
-        if let Some(shots) = &self.shots {
+        if let Some(shots) = self.shots.as_ref().filter(|_| with_picture) {
             let within = shots.within(from, to);
             let cuts: Vec<String> = shots
                 .boundaries
