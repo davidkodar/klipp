@@ -200,7 +200,36 @@ impl ExportJob {
             if let Ok(mut r) = self.loudness_result.lock() {
                 *r = Some(format!("Loudness: {target_lufs:.1} LUFS requested\u{2026}"));
             }
-            DeliveryChain::normalising(self.snapshot.sample_rate, target_lufs, analysis.applied_gain_db, analysis.peak_limited)
+            // A limiter takes loudness with the peaks it holds, so the gain
+            // that reaches the target through it is a little more than the
+            // arithmetic says. Measured, not guessed: the mix goes through
+            // the chain again and the gain takes up the shortfall.
+            let mut gain_db = analysis.applied_gain_db;
+            if analysis.peak_limited {
+                for pass in 0..LIMITED_GAIN_PASSES {
+                    let mut trial = DeliveryChain::normalising(self.snapshot.sample_rate, target_lufs, gain_db, true);
+                    let mut trial_mix = AudioMixdown::new(&self.snapshot)?;
+                    for frame_num in start_frame..end_frame {
+                        if self.cancel.load(Ordering::Relaxed) {
+                            return Err(RenderError::Cancelled);
+                        }
+                        let mut audio = trial_mix.get_frame_audio(frame_num);
+                        trial.process(&mut audio);
+                    }
+                    let Some(got) = trial.measured_lufs().filter(|l| l.is_finite()) else { break };
+                    let shortfall = target_lufs - got;
+                    info!(
+                        "ExportJob {}: limited pass {}: {gain_db:.2} dB of gain measures {got:.2} LUFS, {shortfall:+.2} from the target",
+                        self.id, pass + 1,
+                    );
+                    if shortfall.abs() < 0.1 {
+                        break;
+                    }
+                    // Never more than the limiter can take without pumping.
+                    gain_db = (gain_db + shortfall).min(analysis.applied_gain_db + LIMITED_GAIN_EXTRA_DB);
+                }
+            }
+            DeliveryChain::normalising(self.snapshot.sample_rate, target_lufs, gain_db, analysis.peak_limited)
         } else {
             DeliveryChain::unity()
         };
@@ -646,6 +675,11 @@ const PEAK_CEILING_LINEAR: f32 = 0.891; // 10^(-1.0/20.0) ≈ 0.891
 /// decibel over the samples.
 const LIMITER_THRESHOLD_DB: f32 = -2.5;
 const LIMITER_CEILING_DB: f32 = -1.3;
+/// How many times a limited delivery's gain is corrected against a
+/// measurement through the limiter, and how far past the arithmetic
+/// gain the corrections may take it.
+const LIMITED_GAIN_PASSES: usize = 3;
+const LIMITED_GAIN_EXTRA_DB: f32 = 3.0;
 
 /// The delivery's sound: the normalisation gain, a limiter when that
 /// gain would push the peaks past the ceiling, and a meter on what is
@@ -709,6 +743,11 @@ impl DeliveryChain {
         if let Some(m) = &mut self.meter {
             m.process(audio);
         }
+    }
+
+    /// The integrated loudness of what went through so far.
+    fn measured_lufs(&self) -> Option<f32> {
+        self.meter.as_ref().map(|m| m.readings().integrated)
     }
 
     /// What was written, measured. `None` without normalisation.
