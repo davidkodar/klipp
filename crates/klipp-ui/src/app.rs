@@ -1250,6 +1250,13 @@ impl KlippApp {
                 }
             }
             if let Some(ack) = env.ack {
+                // The project's state as of this write, for a status read
+                // straight after it: the per-frame mirror had not run yet,
+                // and the project read as saved a moment after an edit.
+                if let Ok(mut project) = self.state.control_shared.project.lock() {
+                    project.path = self.state.project_path.clone();
+                    project.dirty = self.state.dirty;
+                }
                 let _ = ack.send(klipp_document::control::ControlAck { revision: self.state.control_shared.revision(), refused });
             }
         }
@@ -1281,6 +1288,7 @@ impl KlippApp {
             if report.is_empty() {
                 continue;
             }
+            let before = item.markers.clone();
             item.markers.retain(|m| m.kind != klipp_core::MediaMarkerKind::Analysis);
             if let Some(shots) = &report.shots {
                 for b in &shots.boundaries {
@@ -1295,7 +1303,10 @@ impl KlippApp {
                 }
             }
             item.markers.sort_by(|a, b| a.secs.total_cmp(&b.secs));
-            changed = true;
+            // The same markers again are no change: a project opened with
+            // its analysis already cached came up with unsaved changes,
+            // and asked to be saved before it could be closed.
+            changed |= item.markers != before;
         }
         if changed {
             self.state.dirty = true;
