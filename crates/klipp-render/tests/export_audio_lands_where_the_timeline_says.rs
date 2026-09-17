@@ -151,3 +151,40 @@ fn ntsc_audio_stays_with_the_picture() {
     assert!((secs_of(f150[0]) - expected).abs() < TOL_SECS, "frame 150 starts at source {:.5}s, not {expected:.5}s", secs_of(f150[0]));
     assert_eq!(total, (150u64 * 48000 * 1001 / 30000) as usize, "the frames before it do not add up to its start");
 }
+
+/// The same ramp as 16-bit PCM in a WAV, which is what a music bed or a
+/// sound effect usually is.
+fn ramp_wav() -> Option<PathBuf> {
+    static RAMP: std::sync::OnceLock<Option<PathBuf>> = std::sync::OnceLock::new();
+    RAMP.get_or_init(|| {
+        if !ffmpeg_ok() {
+            return None;
+        }
+        let out = klipp_testing::scratch::scratch_file("klipp-export-audio", "ramp.wav");
+        let ok = std::process::Command::new("ffmpeg")
+            .args(["-nostdin", "-y", "-v", "error", "-f", "lavfi", "-i"])
+            .arg(format!("aevalsrc=t/4-1|t/4-1:s={RATE}:d={SECS}"))
+            .args(["-c:a", "pcm_s16le"])
+            .arg(&out)
+            .status()
+            .ok()?
+            .success();
+        ok.then_some(out)
+    })
+    .clone()
+}
+
+/// A WAV on the timeline is heard in the render, at the right place. A
+/// PCM decoder's frames name no channel layout; the resampler took
+/// each as a change of input and refused it, so every WAV rendered as
+/// silence — found when a music bed of one exported as nothing at all.
+#[test]
+fn a_wav_is_heard_and_lands_at_its_in_point() {
+    let Some(path) = ramp_wav() else { return };
+    let mut mix = AudioMixdown::new(&snapshot(24, 1, clip(path, 0, 96, 1.0))).unwrap();
+    let f0 = mix.get_frame_audio(0);
+    assert!(f0.iter().any(|s| *s != 0.0), "the WAV rendered as silence");
+    assert!((start_of(&f0) - 1.0).abs() < TOL_SECS, "frame 0 starts at source {:.4}s, not 1.0s", start_of(&f0));
+    let f48 = mix.get_frame_audio(48);
+    assert!((secs_of(f48[0]) - 3.0).abs() < TOL_SECS, "frame 48 starts at source {:.4}s, not 3.0s", secs_of(f48[0]));
+}

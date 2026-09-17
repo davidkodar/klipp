@@ -483,12 +483,12 @@ fn decode_clip_audio(
             continue;
         }
 
-        drain_audio_frames(&mut decoder, &mut resampler, &mut buffer, &mut first_pts);
+        drain_audio_frames(&mut decoder, &mut resampler, src_layout, &mut buffer, &mut first_pts);
     }
 
     // Flush decoder
     let _ = decoder.send_eof();
-    drain_audio_frames(&mut decoder, &mut resampler, &mut buffer, &mut first_pts);
+    drain_audio_frames(&mut decoder, &mut resampler, src_layout, &mut buffer, &mut first_pts);
 
     // Line the buffer up so its first sample is `source_start_secs`:
     // drop what the seek delivered before the in point, or pad with
@@ -526,6 +526,7 @@ fn decode_clip_audio(
 fn drain_audio_frames(
     decoder: &mut ffmpeg_next::codec::decoder::Audio,
     resampler: &mut ffmpeg_next::software::resampling::Context,
+    src_layout: ffmpeg_next::ChannelLayout,
     buffer: &mut Vec<f32>,
     first_pts: &mut Option<i64>,
 ) {
@@ -533,6 +534,14 @@ fn drain_audio_frames(
     while decoder.receive_frame(&mut frame).is_ok() {
         if first_pts.is_none() {
             *first_pts = frame.pts().or_else(|| frame.timestamp());
+        }
+        // A PCM decoder's frames say how many channels they have and not
+        // how they are laid out. The resampler was built with the layout
+        // worked out above; a frame that names none reads to it as a
+        // change of input, every frame is refused, and a WAV on the
+        // timeline rendered as silence.
+        if frame.channel_layout().bits() == 0 {
+            frame.set_channel_layout(src_layout);
         }
         let mut resampled = ffmpeg_next::frame::Audio::empty();
         if resampler.run(&frame, &mut resampled).is_ok() {
