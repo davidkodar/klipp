@@ -1231,8 +1231,47 @@ impl KlippApp {
         }
     }
 
+    /// Analysis that finished since the last frame, put on its media
+    /// items as markers: a cut between shots, a stretch of silence.
+    /// The item's analysis markers are replaced whole, and the editor's
+    /// own are not touched.
+    fn apply_analysis_markers(&mut self) {
+        let done = klipp_analysis::service::take_completed();
+        if done.is_empty() {
+            return;
+        }
+        let mut changed = false;
+        for id in done {
+            let Some(item) = self.state.media_pool.get_mut(&id) else { continue };
+            let report = klipp_analysis::report::MediaAnalysis::load(&item.path);
+            if report.is_empty() {
+                continue;
+            }
+            item.markers.retain(|m| m.kind != klipp_core::MediaMarkerKind::Analysis);
+            if let Some(shots) = &report.shots {
+                for b in &shots.boundaries {
+                    item.markers.push(klipp_core::MediaMarker { secs: *b, duration_secs: 0.0, name: "cut".into(), kind: klipp_core::MediaMarkerKind::Analysis });
+                }
+            }
+            if let Some(audio) = &report.audio {
+                for sp in audio.silences.iter().filter(|s| s.end_secs - s.start_secs >= 0.8) {
+                    let mut m = klipp_core::MediaMarker::range(klipp_core::MediaMarkerKind::Analysis, sp.start_secs, sp.end_secs);
+                    m.name = "silence".into();
+                    item.markers.push(m);
+                }
+            }
+            item.markers.sort_by(|a, b| a.secs.total_cmp(&b.secs));
+            changed = true;
+        }
+        if changed {
+            self.state.dirty = true;
+            self.sync_media_pool_to_engine();
+        }
+    }
+
     fn drain_events(&mut self, ctx: &egui::Context) {
         self.drain_control_inbox();
+        self.apply_analysis_markers();
         while let Ok(event) = self.event_rx.try_recv() {
             match event {
                 AppEvent::PlaybackStarted => {

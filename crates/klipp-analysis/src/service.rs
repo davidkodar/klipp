@@ -35,11 +35,14 @@ struct Service {
     queue: Vec<MediaItem>,
     running: usize,
     ctx: AnalysisCtx,
+    /// Items whose analysis finished since the host last asked, so it
+    /// can read the results once rather than poll every item.
+    completed: Vec<MediaId>,
 }
 
 fn service() -> &'static Mutex<Service> {
     static S: OnceLock<Mutex<Service>> = OnceLock::new();
-    S.get_or_init(|| Mutex::new(Service { statuses: HashMap::new(), queue: Vec::new(), running: 0, ctx: AnalysisCtx::default() }))
+    S.get_or_init(|| Mutex::new(Service { statuses: HashMap::new(), queue: Vec::new(), running: 0, ctx: AnalysisCtx::default(), completed: Vec::new() }))
 }
 
 /// Ask for `item` to be analysed. Returns at once with its state;
@@ -63,6 +66,7 @@ pub fn request(item: &MediaItem) -> Status {
                 failed: Vec::new(),
             };
             s.statuses.insert(item.id, st.clone());
+            s.completed.push(item.id);
             return st;
         }
     }
@@ -88,10 +92,14 @@ fn pump(s: &mut Service) {
                 let (done, failed) = run_all(&item, &ctx);
                 let mut s = service().lock().unwrap_or_else(|e| e.into_inner());
                 s.running = s.running.saturating_sub(1);
+                let any_done = !done.is_empty();
                 if let Some(st) = s.statuses.get_mut(&item.id) {
                     st.state = if failed.is_empty() { State::Done } else { State::Failed };
                     st.done = done;
                     st.failed = failed;
+                }
+                if any_done {
+                    s.completed.push(item.id);
                 }
                 pump(&mut s);
             })
@@ -132,6 +140,11 @@ fn run_all(item: &MediaItem, ctx: &AnalysisCtx) -> (Vec<&'static str>, Vec<(Stri
         }
     }
     (done, failed)
+}
+
+/// The items whose analysis finished since the last call.
+pub fn take_completed() -> Vec<MediaId> {
+    std::mem::take(&mut service().lock().unwrap_or_else(|e| e.into_inner()).completed)
 }
 
 pub fn status(media_id: MediaId) -> Option<Status> {

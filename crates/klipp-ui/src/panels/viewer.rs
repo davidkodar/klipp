@@ -1912,6 +1912,25 @@ impl ViewerPanel {
                                     egui::Color32::from_rgb(90, 160, 255),
                                 );
                             }
+                            klipp_core::MediaMarkerKind::Analysis => {
+                                // Analysis marks are quieter than the editor's: a
+                                // thin grey line for a cut, a faint band for a silence.
+                                let colour = egui::Color32::from_rgba_unmultiplied(170, 180, 200, 110);
+                                if m.is_range() {
+                                    ui.painter().rect_filled(
+                                        egui::Rect::from_min_max(egui::pos2(x_of(m.secs), track_rect.min.y + 1.0), egui::pos2(x_of(m.end_secs()), track_rect.max.y - 1.0)),
+                                        0.0,
+                                        colour,
+                                    );
+                                } else {
+                                    let x = x_of(m.secs);
+                                    ui.painter().rect_filled(
+                                        egui::Rect::from_min_max(egui::pos2(x - 0.5, track_rect.min.y - 4.0), egui::pos2(x + 0.5, track_rect.max.y)),
+                                        0.0,
+                                        colour,
+                                    );
+                                }
+                            }
                             kind => {
                                 let colour = if kind == klipp_core::MediaMarkerKind::Favourite {
                                     egui::Color32::from_rgba_unmultiplied(80, 200, 120, 170)

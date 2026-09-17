@@ -10,6 +10,10 @@ pub enum MediaMarkerKind {
     Note,
     Favourite,
     Reject,
+    /// Left by analysis, not by the editor: a cut between shots, a
+    /// stretch of silence. Drawn apart from the editor's own, and
+    /// replaced whole when the analysis re-runs.
+    Analysis,
 }
 
 impl MediaMarkerKind {
@@ -18,6 +22,7 @@ impl MediaMarkerKind {
             MediaMarkerKind::Note => "Marker",
             MediaMarkerKind::Favourite => "Favourite",
             MediaMarkerKind::Reject => "Reject",
+            MediaMarkerKind::Analysis => "Analysis",
         }
     }
 }

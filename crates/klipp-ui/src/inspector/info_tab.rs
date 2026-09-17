@@ -1178,6 +1178,7 @@ fn markers_section(ui: &mut egui::Ui, theme: &KlippTheme, header_bg: egui::Color
                     klipp_core::MediaMarkerKind::Note => ("\u{25CF}", egui::Color32::from_rgb(90, 160, 255)),
                     klipp_core::MediaMarkerKind::Favourite => ("\u{2665}", egui::Color32::from_rgb(80, 200, 120)),
                     klipp_core::MediaMarkerKind::Reject => ("\u{2717}", egui::Color32::from_rgb(220, 70, 70)),
+                    klipp_core::MediaMarkerKind::Analysis => ("\u{25C6}", egui::Color32::from_rgb(170, 180, 200)),
                 };
                 ui.label(egui::RichText::new(glyph).size(12.0).color(colour));
                 let when = klipp_core::Timecode::from_secs_f64(m.secs, rate).to_timecode_string();
