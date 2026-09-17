@@ -16,6 +16,10 @@ rustflags = [
 # kept suggesting larger values until 512 MB, which holds. The
 # stack is per-rustc-thread so the wall-clock cost is minimal.
 RUST_MIN_STACK = "536870912"
+# The speech model runs on the GPU through Vulkan (any vendor's), and
+# whisper.cpp's build wants an SDK directory: scripts/vulkan-sdk.sh lays
+# one out here from the system's headers, or Khronos's when it has none.
+VULKAN_SDK = { value = "vendor/vulkan-sdk", relative = true }
 
 [alias]
 r = "run -p klipp-app"

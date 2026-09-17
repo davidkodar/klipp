@@ -353,17 +353,33 @@ fn transcribe(model_id: &str, model: &std::path::Path, audio: &[f32], duration_s
     use whisper_rs::{DtwMode, DtwModelPreset, DtwParameters, FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
     whisper_rs::install_logging_hooks();
     let mut cparams = WhisperContextParameters::default();
-    cparams.use_gpu(false);
+    // On the GPU, through Vulkan, whichever vendor's it is: the app
+    // needs one to run at all. `KLIPP_TRANSCRIBE_ON_CPU=1` keeps it off.
+    let on_gpu = std::env::var("KLIPP_TRANSCRIBE_ON_CPU").map(|v| v != "1").unwrap_or(true);
+    cparams.use_gpu(on_gpu);
     // Word times from the model's alignment heads (DTW over the
     // cross-attention), not from its timestamp tokens: those put a
     // word anywhere inside its half-second bucket, which is no use for
     // cutting on.
-    let preset = match model_id {
+    let preset = || match model_id {
         "whisper_large_v3_turbo_q5" => DtwModelPreset::LargeV3Turbo,
         _ => DtwModelPreset::Base,
     };
-    cparams.dtw_parameters(DtwParameters { mode: DtwMode::ModelPreset { model_preset: preset }, ..Default::default() });
-    let ctx = WhisperContext::new_with_params(model, cparams).map_err(|e| format!("whisper model: {e}"))?;
+    cparams.dtw_parameters(DtwParameters { mode: DtwMode::ModelPreset { model_preset: preset() }, ..Default::default() });
+    let ctx = match WhisperContext::new_with_params(model, cparams) {
+        Ok(ctx) => ctx,
+        // A GPU that will not have it (no memory left, a driver without
+        // what the shaders need) is not the end: the CPU does the same
+        // work in about a third of the file's length.
+        Err(e) if on_gpu => {
+            tracing::warn!("whisper could not start on the GPU ({e}); running on the CPU");
+            let mut cpu = WhisperContextParameters::default();
+            cpu.use_gpu(false);
+            cpu.dtw_parameters(DtwParameters { mode: DtwMode::ModelPreset { model_preset: preset() }, ..Default::default() });
+            WhisperContext::new_with_params(model, cpu).map_err(|e| format!("whisper model: {e}"))?
+        }
+        Err(e) => return Err(format!("whisper model: {e}")),
+    };
     let mut state = ctx.create_state().map_err(|e| format!("whisper state: {e}"))?;
     let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
     // Half the machine, up to sixteen: whisper stops gaining past that,

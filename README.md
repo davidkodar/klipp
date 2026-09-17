@@ -30,14 +30,16 @@ If you're looking for a Linux NLE you can rely on today, use Kdenlive, DaVinci R
 
 ```bash
 # CachyOS / Arch Linux
-sudo pacman -S rust ffmpeg clang lld pkg-config vulkan-icd-loader vulkan-headers
+sudo pacman -S rust ffmpeg clang lld cmake pkg-config vulkan-icd-loader vulkan-headers shaderc
 
 # Ubuntu / Debian
 sudo apt install rustup ffmpeg libavcodec-dev libavformat-dev libavutil-dev \
     libavfilter-dev libswscale-dev libswresample-dev libavdevice-dev \
-    libclang-dev lld pkg-config libvulkan-dev libasound2-dev \
+    libclang-dev lld cmake pkg-config libvulkan-dev glslc libasound2-dev \
     libpipewire-0.3-dev
 ```
+
+The Vulkan headers and `glslc` are needed to build only: the speech model runs on the GPU through Vulkan (NVIDIA, AMD or Intel), and its shaders are compiled into the binary. A built Klipp needs nothing beyond the GPU driver it already requires.
 
 For NVIDIA GPU acceleration of AI inference (recommended; not strictly required — Klipp falls back to CPU):
 
@@ -54,6 +56,7 @@ sudo apt install libcudnn9-cuda-12
 ```bash
 git clone https://github.com/davidkodar/klipp
 cd klipp
+./scripts/vulkan-sdk.sh   # once: lays out the Vulkan SDK directory the speech model's build expects
 cargo r          # debug build
 cargo rr         # release build
 ```

@@ -22,3 +22,5 @@ PHASE_*_PLAN.md
 # In-progress render output written next to the project
 *.partial
 .partial
+# Laid out by scripts/vulkan-sdk.sh: headers fetched or linked, not ours to keep.
+vendor/vulkan-sdk/
