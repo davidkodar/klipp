@@ -455,7 +455,25 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
     })
 }
 
+/// How to work here, the craft, and the recipes: files shipped with
+/// the app that a user can read and change, served to the agent as
+/// text. Not a prompt hidden in code.
+const GUIDE: &str = include_str!("../../../assets/craft/guide.md");
+const CRAFT: &str = include_str!("../../../assets/craft/reference.md");
+const RECIPES: &str = include_str!("../../../assets/craft/recipes.md");
+
 fn call_tool(name: &str, args: &Value) -> Result<Vec<Value>, String> {
+    if name == "klipp_guide" {
+        let topic = args.get("topic").and_then(|v| v.as_str()).unwrap_or("guide");
+        let text = match topic {
+            "guide" => GUIDE.to_string(),
+            "craft" => CRAFT.to_string(),
+            "recipes" => RECIPES.to_string(),
+            "all" => format!("{GUIDE}\n\n---\n\n{CRAFT}\n\n---\n\n{RECIPES}"),
+            other => return Err(format!("unknown topic {other}; use guide, craft, recipes or all")),
+        };
+        return Ok(vec![json!({ "type": "text", "text": text })]);
+    }
     let cmd = tool_to_command(name, args)?;
     let result = control_call(cmd)?;
 
@@ -539,6 +557,14 @@ fn tool(name: &str, description: &str, properties: Value, required: Vec<&str>) -
 
 fn tool_definitions() -> Vec<Value> {
     vec![
+        tool("klipp_guide",
+             "Read this first. How to work in Klipp as an agent (the loop: read, learn the \
+              footage, plan, apply, look, deliver; units, ids, anchors, ops, manners), the \
+              craft reference (what a professional does without being asked), and the \
+              recipes (worked plans for an interview with B-roll, a social cut-down, a \
+              montage). Files the user can read and change.",
+             json!({ "topic": { "type": "string", "description": "guide (default), craft, recipes, or all" } }),
+             vec![]),
         tool("klipp_status",
              "Which build is running (commit, dirty, when it was built, and whether \
               a newer build is on disk so a restart is due), transport state, \
