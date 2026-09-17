@@ -819,10 +819,15 @@ fn tool_definitions() -> Vec<Value> {
               down (9 dB by default) wherever another clip is heard over it, moving over \
               fade_secs (0.5) each way, as volume keyframes. Set the music's volume first, \
               place the speech first.\n\
-              lower_third {name, role?, at, secs?, track?} — a name with a role under it, bottom \
-              left in title-safe, four seconds by default, fading in and out, on a text track \
-              with room (made on top if none: every other index then moves down by one). \
-              Refused across a shot change. Names come from the brief, never a guess.\n\
+              lower_third {name, role?, at, secs?, track?, side?, x?, y?} — a name with a role \
+              under it, bottom left in title-safe, four seconds by default, fading in and out, on \
+              a text track with room (made on top if none: every other index then moves down by \
+              one). Refused across a shot change. Names come from the brief, never a guess. Where \
+              the speaker is not on the left or the picture has its own name burnt in there, \
+              side \"right\" sets it against the right edge, x is that edge and y the name's line, \
+              as fractions of the frame inside title-safe.\n\
+              set_text {clip_id, text} — the words of a title or a caption, its look, place and \
+              timing kept: for a cue the transcript misheard or a name it cannot spell.\n\
               trim {clip_id, edge: \"in\"|\"out\", to, ripple?} — one edge to an anchor, the \
               other stays, the source moves with the edge; with ripple the later clips on the \
               track close up by the change (a head trim then keeps the clip's start).\n\
@@ -873,10 +878,15 @@ fn tool_definitions() -> Vec<Value> {
               down (9 dB by default) wherever another clip is heard over it, moving over \
               fade_secs (0.5) each way, as volume keyframes. Set the music's volume first, \
               place the speech first.\n\
-              lower_third {name, role?, at, secs?, track?} — a name with a role under it, bottom \
-              left in title-safe, four seconds by default, fading in and out, on a text track \
-              with room (made on top if none: every other index then moves down by one). \
-              Refused across a shot change. Names come from the brief, never a guess.\n\
+              lower_third {name, role?, at, secs?, track?, side?, x?, y?} — a name with a role \
+              under it, bottom left in title-safe, four seconds by default, fading in and out, on \
+              a text track with room (made on top if none: every other index then moves down by \
+              one). Refused across a shot change. Names come from the brief, never a guess. Where \
+              the speaker is not on the left or the picture has its own name burnt in there, \
+              side \"right\" sets it against the right edge, x is that edge and y the name's line, \
+              as fractions of the frame inside title-safe.\n\
+              set_text {clip_id, text} — the words of a title or a caption, its look, place and \
+              timing kept: for a cue the transcript misheard or a name it cannot spell.\n\
               trim {clip_id, edge: \"in\"|\"out\", to, ripple?} — one edge to an anchor, the \
               other stays, the source moves with the edge; with ripple the later clips on the \
               track close up by the change (a head trim then keeps the clip's start).\n\

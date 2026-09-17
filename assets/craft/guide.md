@@ -91,7 +91,8 @@ exist until the plan runs.
   two lines of 42 characters unless you say otherwise. They go on the
   first subtitle track, made at the bottom if there is none. Do it
   last, once the speech is where it will stay: a trim afterwards does
-  not move them.
+  not move them. They say what the transcript says, mishearings and
+  all: read them, and correct a cue with `set_text`.
 - `audio {clip_id, volume_db?, gain_db?, pan?, fade_in?, fade_out?}`:
   a clip's sound. Volume and pre-fader gain in decibels, pan from -1
   (left) to 1, fades in seconds; what you leave out stays as it is.
@@ -102,11 +103,20 @@ exist until the plan runs.
   another clip is heard over it, and moves there and back over half a
   second. Set the music's own volume first and place the speech first:
   the duck is written as keyframes from what is on the timeline then.
-- `lower_third {name, role?, at, secs?, track?}`: a name and a role
-  bottom left in title-safe, four seconds unless you say otherwise,
-  fading in and out, on a text track with room (one is made on top if
-  none has, which moves every other index down by one). Refused across
-  a shot change, and the refusal names the cut.
+- `lower_third {name, role?, at, secs?, track?, side?, x?, y?}`: a name
+  and a role bottom left in title-safe, four seconds unless you say
+  otherwise, fading in and out, on a text track with room (one is made
+  on top if none has, which moves every other index down by one).
+  Refused across a shot change, and the refusal names the cut. Look at
+  the frame first: where the speaker is on the right, or the picture
+  has a name of its own burnt in down there (a split-screen podcast),
+  `side: "right"` sets it against the right edge, and `x` (that edge)
+  and `y` (the name's line) place it, as fractions of the frame inside
+  title-safe. A name under the wrong person is worse than none.
+- `set_text {clip_id, text}`: the words of a title or a caption; its
+  look, place and timing stay. For the cue the transcript misheard and
+  the name it cannot spell: read the captions once they are made
+  (`klipp_timeline`) and put right what is wrong.
 - `trim {clip_id, edge, to, ripple?}`: the in or out edge to an anchor;
   the other edge stays; the source moves with the edge. With `ripple`,
   the later clips on the track close up by the change; a head trim

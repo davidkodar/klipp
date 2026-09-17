@@ -190,6 +190,12 @@ pub enum Op {
     /// text track where it fits (one is made on top if none does).
     /// Refused across a shot change. The name comes from the brief or
     /// the cast list, never from a guess.
+    ///
+    /// Where the speaker is not on the left, or the picture has a name
+    /// of its own burnt in down there (a split-screen podcast), it is
+    /// put where it belongs: `side` "right" sets it against the right
+    /// edge, `x` is that edge and `y` the name's line, both as a
+    /// fraction of the frame and kept inside title-safe.
     LowerThird {
         name: String,
         #[serde(default)]
@@ -199,7 +205,17 @@ pub enum Op {
         secs: f64,
         #[serde(default)]
         track: Option<TrackRef>,
+        #[serde(default)]
+        side: Option<String>,
+        #[serde(default)]
+        x: Option<f32>,
+        #[serde(default)]
+        y: Option<f32>,
     },
+    /// The words of a title or a caption: a cue the transcript misheard,
+    /// a name spelt as the cast list spells it. The first text box of
+    /// the clip takes `text`; its look, place and timing stay.
+    SetText { clip_id: ClipRef, text: String },
 }
 
 fn default_caption_chars() -> usize {
@@ -501,9 +517,14 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
             let (ti, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
             duck(seq, pool, i, ti, clip, *by_db, *fade_secs)
         }
-        Op::LowerThird { name, role, at, secs: hold, track } => {
+        Op::LowerThird { name, role, at, secs: hold, track, side, x, y } => {
             let at = resolve_anchor(seq, fps, at, i)?;
-            lower_third(seq, fps, i, name, role.as_deref(), at, *hold, track.as_ref())
+            let place = lower_third_place(i, side.as_deref(), *x, *y, role.as_deref().is_some_and(|r| !r.trim().is_empty()))?;
+            lower_third(seq, fps, i, name, role.as_deref(), at, *hold, track.as_ref(), place)
+        }
+        Op::SetText { clip_id, text } => {
+            let (ti, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
+            set_text(seq, pool, i, ti, clip, text)
         }
         Op::AddTrack { kind, name } => {
             let want = track_kind(kind).ok_or_else(|| refuse(i, format!("\"{kind}\" is not a track kind"), "use video, audio, text or subtitle"))?;
@@ -657,10 +678,16 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
                     }
                     let delta = target - clip.timeline_in;
                     let src_in = clip.source_in + delta;
-                    if src_in.value < 0 {
+                    if media_dur.is_none() {
+                        // A title or a generator has no file behind it and
+                        // so no head to run out of: it starts when it is
+                        // told to and is as long as its place on the track.
+                        let len = clip.timeline_out - target;
+                        let tl_in = if *ripple { clip.timeline_in } else { target };
+                        (tl_in, tl_in + len, clip.source_in, clip.source_in + len)
+                    } else if src_in.value < 0 {
                         return Err(refuse(i, format!("only {:.2} s of the file lies before this clip's in point", secs(clip.source_in)), "trim less, or move the clip instead"));
-                    }
-                    if *ripple {
+                    } else if *ripple {
                         // The clip stays where it starts and is shorter from
                         // the front: the later clips close up by the change.
                         (clip.timeline_in, clip.timeline_out - delta, src_in, clip.source_out)
@@ -1172,18 +1199,24 @@ fn wrap_lines(text: &str, max_chars: usize, max_lines: usize) -> String {
     lines.join("\n")
 }
 
-/// A caption's look: white, centred low in the frame, outlined so it
-/// reads over any picture. The look a subtitle file imports with.
+/// A caption's look: white on a dark backing, centred low in the
+/// frame. The backing is what keeps it readable over a picture with
+/// writing of its own down there (a name plate, a ticker); an outline
+/// alone is lost in it.
 fn caption_title(text: &str) -> klipp_timeline::TitleData {
     let mut tb = klipp_timeline::TextBox {
         text: text.to_string(),
-        font_size: 36.0,
+        font_size: 40.0,
         font_name: String::new(),
         alignment: klipp_timeline::TextAlignment::Center,
         ..Default::default()
     };
     tb.outlines.push(klipp_timeline::TextOutline { color: [0, 0, 0, 200], width: 2.0, enabled: true, width_keyframes: Vec::new() });
     let mut td = klipp_timeline::TitleData::single_text(tb);
+    // Composited in linear light, where an alpha of 0.72 leaves the
+    // picture at half its brightness to the eye; 0.92 is what looks
+    // like a three-quarters black.
+    td.background = klipp_timeline::TitleBackground::Color { color: [0, 0, 0, 235], padding: 12.0 };
     if let Some(o) = td.objects.first_mut() {
         o.transform.center = klipp_timeline::TitlePosition { x: 0.5, y: 0.88 };
     }
@@ -1276,10 +1309,70 @@ fn captions(
     Ok((what, EditCommand::Batch(edits), touched))
 }
 
+/// New words for a title or a caption: the clip's first text box takes
+/// them, and nothing else about it changes.
+fn set_text(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip, text: &str) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
+    let Some(old) = clip.title_data() else {
+        return Err(refuse(i, format!("{} is not a title or a caption", clip_name(seq, pool, clip)), "name a clip on a text or subtitle track"));
+    };
+    if seq.tracks[ti].locked {
+        return Err(refuse(i, format!("track {ti} is locked"), "unlock it first"));
+    }
+    let text = text.trim();
+    if text.is_empty() {
+        return Err(refuse(i, "a title needs words", "to take it away, remove the clip"));
+    }
+    let mut new = old.clone();
+    let Some(tb) = new.objects.iter_mut().find_map(|o| match &mut o.content {
+        klipp_timeline::TitleObjectContent::TextBox(tb) => Some(tb),
+        _ => None,
+    }) else {
+        return Err(refuse(i, format!("{} has no text in it", clip_name(seq, pool, clip)), "name a clip with a text box"));
+    };
+    let was = tb.text.replace('\n', " / ");
+    tb.text = text.to_string();
+    let what = format!("the text at {:.2}-{:.2} s on track {ti} reads \"{}\" (was \"{was}\")", secs(clip.timeline_in), secs(clip.timeline_out), text.replace('\n', " / "));
+    let edit = EditCommand::EditTitle { clip_id: clip.id, description: "Edit Title Text", old_data: old.clone(), new_data: new };
+    Ok((what, edit, vec![clip.id]))
+}
+
 /// A two-line lower third, bottom left inside title-safe: the name, and
 /// the role smaller and spaced under it, both lifted off the picture by
 /// a soft shadow, fading in and out.
-fn lower_third_title(name: &str, role: Option<&str>) -> klipp_timeline::TitleData {
+/// Where a lower third sits: the edge its text is set against, the
+/// name's line, and whether that edge is the right one.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct LowerThirdPlace {
+    right: bool,
+    x: Option<f32>,
+    y: Option<f32>,
+}
+
+/// The role sits this far under the name.
+const LOWER_THIRD_ROLE_DROP: f32 = 0.053;
+
+fn lower_third_place(i: usize, side: Option<&str>, x: Option<f32>, y: Option<f32>, with_role: bool) -> Result<LowerThirdPlace, Refusal> {
+    let right = match side.map(|s| s.trim().to_lowercase()).as_deref() {
+        None | Some("") | Some("left") => false,
+        Some("right") => true,
+        Some(other) => return Err(refuse(i, format!("\"{other}\" is not a side"), "use left or right")),
+    };
+    // Title-safe is the inner nine tenths of the frame.
+    if let Some(x) = x {
+        if !(0.05..=0.95).contains(&x) {
+            return Err(refuse(i, format!("x {x} is outside title-safe"), "x is a fraction of the width, from 0.05 to 0.95"));
+        }
+    }
+    if let Some(y) = y {
+        let lowest = if with_role { 0.95 - LOWER_THIRD_ROLE_DROP - 0.02 } else { 0.93 };
+        if !(0.05..=lowest).contains(&y) {
+            return Err(refuse(i, format!("y {y} is outside title-safe"), format!("y is the name's line as a fraction of the height, from 0.05 to {lowest:.2}")));
+        }
+    }
+    Ok(LowerThirdPlace { right, x, y })
+}
+
+fn lower_third_title(name: &str, role: Option<&str>, place: LowerThirdPlace) -> klipp_timeline::TitleData {
     use klipp_timeline::{default_text_transform, Easing, FontStyle, Motion, MotionKind, ObjectTransform, TextAlignment, TextBox, TitleMotion, TitleObjectContent, TitlePosition};
     let lift = klipp_timeline::TitleShadow {
         color: [0, 0, 0, 120],
@@ -1297,7 +1390,10 @@ fn lower_third_title(name: &str, role: Option<&str>) -> klipp_timeline::TitleDat
             Motion::new(MotionKind::Fade).duration(0.4).easing(Easing::InCubic),
         )
     };
-    let at = |y: f32| ObjectTransform { center: TitlePosition { x: 0.08, y }, anchor_norm: TitlePosition { x: 0.0, y: 0.5 }, ..default_text_transform() };
+    let edge = place.x.unwrap_or(if place.right { 0.92 } else { 0.08 });
+    let name_y = place.y.unwrap_or(if role.is_some() { 0.815 } else { 0.85 });
+    let alignment = if place.right { TextAlignment::Right } else { TextAlignment::Left };
+    let at = |y: f32| ObjectTransform { center: TitlePosition { x: edge, y }, anchor_norm: TitlePosition { x: if place.right { 1.0 } else { 0.0 }, y: 0.5 }, ..default_text_transform() };
     let mut td = klipp_timeline::TitleData {
         objects: Vec::new(),
         next_object_id: 0,
@@ -1310,12 +1406,12 @@ fn lower_third_title(name: &str, role: Option<&str>) -> klipp_timeline::TitleDat
         font_name: "Inter".into(),
         font_style: FontStyle::Bold,
         color: [255, 255, 255, 255],
-        alignment: TextAlignment::Left,
+        alignment,
         ..Default::default()
     };
     name_box.shadows.push(lift.clone());
     name_box.motion = motion(0.0);
-    td.add_object(TitleObjectContent::TextBox(name_box), at(if role.is_some() { 0.815 } else { 0.85 }));
+    td.add_object(TitleObjectContent::TextBox(name_box), at(name_y));
     if let Some(role) = role {
         let mut role_box = TextBox {
             text: role.to_string(),
@@ -1323,14 +1419,14 @@ fn lower_third_title(name: &str, role: Option<&str>) -> klipp_timeline::TitleDat
             font_name: "Inter".into(),
             font_style: FontStyle::Regular,
             color: [205, 205, 212, 255],
-            alignment: TextAlignment::Left,
+            alignment,
             ..Default::default()
         };
         role_box.case_transform = klipp_timeline::TextCase::Uppercase;
         role_box.tracking = 3.0;
         role_box.shadows.push(lift);
         role_box.motion = motion(0.1);
-        td.add_object(TitleObjectContent::TextBox(role_box), at(0.868));
+        td.add_object(TitleObjectContent::TextBox(role_box), at(name_y + LOWER_THIRD_ROLE_DROP));
     }
     td
 }
@@ -1345,6 +1441,7 @@ fn lower_third(
     at: Timecode,
     hold_secs: f64,
     track: Option<&TrackRef>,
+    place: LowerThirdPlace,
 ) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
     let name = name.trim();
     let role = role.map(str::trim).filter(|r| !r.is_empty());
@@ -1396,7 +1493,7 @@ fn lower_third(
         }
         None => (0..seq.tracks.len()).find(|ti| seq.tracks[*ti].kind == TrackKind::Text && fits(*ti)),
     };
-    let clip = title_clip(lower_third_title(name, role), tl_in, tl_out, fps);
+    let clip = title_clip(lower_third_title(name, role, place), tl_in, tl_out, fps);
     let id = clip.id;
     let what = format!(
         "lower third \"{name}\"{} at {:.2}-{:.2} s on {}",
@@ -1662,9 +1759,62 @@ mod tests {
     }
 
     #[test]
+    fn a_lower_third_goes_where_the_speaker_is() {
+        let (seq, pool, _, _, _) = fixture();
+        let ops: Vec<Op> = serde_json::from_str(r#"[{"op":"lower_third","name":"DHH","role":"Creator of Omarchy","at":{"secs":4.4},"secs":3,"side":"right","x":0.9,"y":0.7}]"#).unwrap();
+        let plan = resolve(&seq, &pool, &ops).unwrap();
+        let EditCommand::AddTitleClip { clip, .. } = &plan.steps[0].edit else { panic!("a title clip") };
+        let td = clip.title_data().unwrap();
+        let (name, role) = (&td.objects[0].transform, &td.objects[1].transform);
+        assert_eq!((name.center.x, name.center.y, name.anchor_norm.x), (0.9, 0.7, 1.0));
+        assert!((role.center.y - 0.753).abs() < 1e-4 && role.center.x == 0.9);
+        // Left alone it is where it always was.
+        let plain: Vec<Op> = serde_json::from_str(r#"[{"op":"lower_third","name":"DHH","role":"x","at":{"secs":4.4},"secs":3}]"#).unwrap();
+        let plan = resolve(&seq, &pool, &plain).unwrap();
+        let EditCommand::AddTitleClip { clip, .. } = &plan.steps[0].edit else { panic!("a title clip") };
+        let t = &clip.title_data().unwrap().objects[0].transform;
+        assert_eq!((t.center.x, t.center.y, t.anchor_norm.x), (0.08, 0.815, 0.0));
+        // Outside title-safe, or a side that is not one: refused.
+        for bad in [r#""x":0.99"#, r#""y":0.93"#, r#""side":"middle""#] {
+            let ops: Vec<Op> = serde_json::from_str(&format!(r#"[{{"op":"lower_third","name":"DHH","role":"x","at":{{"secs":4.4}},"secs":3,{bad}}}]"#)).unwrap();
+            assert!(resolve(&seq, &pool, &ops).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn a_title_starts_earlier_when_its_head_is_trimmed_back() {
+        let (seq, pool, _, _, _) = fixture();
+        let ops: Vec<Op> = serde_json::from_str(r#"[
+            {"op":"lower_third","name":"Brodie","at":{"secs":1.0},"secs":2},
+            {"op":"trim","clip_id":{"track":0,"secs":1.5},"edge":"in","to":{"secs":0.6}}
+        ]"#).unwrap();
+        let plan = resolve(&seq, &pool, &ops).unwrap();
+        let after = &plan.steps[1].after[0];
+        assert_eq!((after.timeline_in_secs, after.timeline_out_secs, after.source_in_secs, after.source_out_secs), (0.6, 3.0, 0.0, 2.4));
+    }
+
+    #[test]
+    fn a_caption_is_put_right() {
+        let (seq, pool, _, _, _) = fixture();
+        let ops: Vec<Op> = serde_json::from_str(r#"[
+            {"op":"lower_third","name":"Brodie","at":{"secs":0.5},"secs":3},
+            {"op":"set_text","clip_id":{"track":0,"secs":1.0},"text":"Brodie Robertson"}
+        ]"#).unwrap();
+        let plan = resolve(&seq, &pool, &ops).unwrap();
+        assert!(plan.steps[1].what.contains("\"Brodie Robertson\" (was \"Brodie\")"), "{}", plan.steps[1].what);
+        let EditCommand::EditTitle { old_data, new_data, .. } = &plan.steps[1].edit else { panic!("a title edit") };
+        assert_eq!((old_data.text(), new_data.text()), ("Brodie".to_string(), "Brodie Robertson".to_string()));
+        assert_eq!(old_data.objects[0].transform, new_data.objects[0].transform, "only the words change");
+        // A picture has no words to set, and a title is not emptied this way.
+        let err = resolve(&seq, &pool, &[ops[0].clone(), Op::SetText { clip_id: ClipRef::At { track: 1, secs: 1.0 }, text: "x".into() }]).unwrap_err();
+        assert!(err.why.contains("not a title"), "{err}");
+        assert!(resolve(&seq, &pool, &[ops[0].clone(), Op::SetText { clip_id: ClipRef::At { track: 0, secs: 1.0 }, text: " ".into() }]).is_err());
+    }
+
+    #[test]
     fn a_lower_third_sits_inside_a_shot() {
         let (seq, pool, _, _, _) = fixture();
-        let lt = |at: f64, secs: f64| Op::LowerThird { name: "David Heinemeier Hansson".into(), role: Some("Creator of Omarchy".into()), at: Anchor::Secs(at), secs, track: None };
+        let lt = |at: f64, secs: f64| Op::LowerThird { name: "David Heinemeier Hansson".into(), role: Some("Creator of Omarchy".into()), at: Anchor::Secs(at), secs, track: None, side: None, x: None, y: None };
         let plan = resolve(&seq, &pool, &[lt(4.4, 3.0)]).unwrap();
         assert!(plan.steps[0].what.contains("a new text track 0"), "{}", plan.steps[0].what);
         assert_eq!((plan.steps[0].after[0].track, plan.steps[0].after[0].timeline_in_secs, plan.steps[0].after[0].timeline_out_secs), (0, 4.4, 7.4));
@@ -1679,7 +1829,7 @@ mod tests {
         // Too short to read, no name, past the end: refused.
         assert!(resolve(&seq, &pool, &[lt(4.5, 1.0)]).is_err());
         assert!(resolve(&seq, &pool, &[lt(6.0, 3.0)]).unwrap_err().why.contains("past the end"));
-        let nameless = Op::LowerThird { name: " ".into(), role: None, at: Anchor::Secs(4.5), secs: 3.0, track: None };
+        let nameless = Op::LowerThird { name: " ".into(), role: None, at: Anchor::Secs(4.5), secs: 3.0, track: None, side: None, x: None, y: None };
         assert!(resolve(&seq, &pool, &[nameless]).unwrap_err().hint.contains("cast list"));
 
         // With a cast list in the brief, the name is the list's and so is the role.
@@ -1688,10 +1838,10 @@ mod tests {
             cast: vec![klipp_timeline::CastMember { name: "David Heinemeier Hansson".into(), role: "Creator of Omarchy".into(), described: "on the right".into() }],
             ..Default::default()
         });
-        let from_cast = Op::LowerThird { name: "david heinemeier hansson".into(), role: None, at: Anchor::Secs(4.4), secs: 3.0, track: None };
+        let from_cast = Op::LowerThird { name: "david heinemeier hansson".into(), role: None, at: Anchor::Secs(4.4), secs: 3.0, track: None, side: None, x: None, y: None };
         let plan = resolve(&briefed, &pool, &[from_cast]).unwrap();
         assert!(plan.steps[0].what.contains("\"David Heinemeier Hansson\", \"Creator of Omarchy\""), "{}", plan.steps[0].what);
-        let stranger = Op::LowerThird { name: "Brodie".into(), role: None, at: Anchor::Secs(4.4), secs: 3.0, track: None };
+        let stranger = Op::LowerThird { name: "Brodie".into(), role: None, at: Anchor::Secs(4.4), secs: 3.0, track: None, side: None, x: None, y: None };
         let err = resolve(&briefed, &pool, &[stranger]).unwrap_err();
         assert!(err.why.contains("not in the brief's cast") && err.hint.contains("David Heinemeier Hansson"), "{err}");
 

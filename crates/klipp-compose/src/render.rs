@@ -342,14 +342,22 @@ fn clip_references(c: &Clip) -> Vec<ClipId> {
 }
 
 /// Visible tracks with something on them at `time`, bottom first.
+///
+/// Subtitle tracks are over everything wherever they are in the list:
+/// they are kept at the bottom of it, under the sound, and painted in
+/// that place the picture covered every caption.
 fn stack(seq: &Sequence, time: Timecode) -> Vec<(usize, &Track, TrackItem<'_>)> {
-    seq.tracks
+    let mut stack: Vec<_> = seq
+        .tracks
         .iter()
         .enumerate()
         .rev()
         .filter(|(_, t)| is_visual(t))
         .filter_map(|(i, t)| active_item(t, time).map(|item| (i, t, item)))
-        .collect()
+        .collect();
+    // Stable: subtitle tracks keep their order among themselves.
+    stack.sort_by_key(|(_, t, _)| t.kind == TrackKind::Subtitle);
+    stack
 }
 
 /// The timeline's global LUT.
@@ -2845,5 +2853,29 @@ mod frame_index_tests {
         assert_eq!(frame_index(0.5 / 24.0, 24.0), 0);
         assert_eq!(frame_index(1.9 / 24.0, 24.0), 1);
         assert_eq!(frame_index(-0.5, 24.0), -12);
+    }
+}
+
+#[cfg(test)]
+mod stack_order_tests {
+    use super::*;
+    use klipp_timeline::{Clip, ClipKind, TitleData};
+
+    /// Captions are made on a subtitle track at the bottom of the list,
+    /// under the sound. They are still the last thing painted.
+    #[test]
+    fn a_subtitle_track_is_over_the_picture_wherever_it_is_in_the_list() {
+        let tc = |s: f64| Timecode::from_secs_f64(s, 24);
+        let mut seq = Sequence::new_default();
+        let title = |text: &str| Clip { kind: ClipKind::Title(TitleData::single_text(klipp_timeline::TextBox { text: text.into(), ..Default::default() })), ..Clip::gap(tc(0.0), tc(2.0)) };
+        let mut text = Track::new("T1", TrackKind::Text);
+        text.clips = vec![title("a name")];
+        let mut picture = Track::new("V1", TrackKind::Video);
+        picture.clips = vec![Clip { kind: ClipKind::AdjustmentLayer, ..Clip::gap(tc(0.0), tc(2.0)) }];
+        let mut subs = Track::new("S1", TrackKind::Subtitle);
+        subs.clips = vec![title("a caption")];
+        seq.tracks = vec![text, picture, Track::new("A1", TrackKind::Audio), subs];
+        let order: Vec<usize> = active_layers(&seq, tc(1.0)).iter().map(|l| l.track).collect();
+        assert_eq!(order, vec![1, 0, 3], "bottom first: the picture, the title, and the captions last");
     }
 }

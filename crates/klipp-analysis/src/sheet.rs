@@ -47,7 +47,11 @@ pub fn contact_sheet(
     let span = (to_secs - from_secs).max(0.1);
     // One frame every span/frames seconds, the first at the start.
     let step = span / frames as f64;
-    let mut vf = format!("fps={}/{:.4},scale={}:-2", frames, span, tile_width.clamp(64, 1024));
+    // Rounded up, a tile is the frame at its time. The filter's default
+    // rounds to the nearest tick, and each tile then shows the picture
+    // half a step after the time burnt into it: half a minute on a
+    // sheet of a half-hour file.
+    let mut vf = format!("fps={}/{:.4}:round=up,scale={}:-2", frames, span, tile_width.clamp(64, 1024));
     if let Some(font) = any_font() {
         vf.push_str(&format!(
             ",drawtext=fontfile={}:text='%{{pts\\:hms\\:{:.3}}}':x=6:y=6:fontsize={}:fontcolor=white:box=1:boxcolor=black@0.5",

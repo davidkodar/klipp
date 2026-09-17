@@ -1697,6 +1697,10 @@ impl TitleRenderer {
         // frame background filled it): the first text layer is the
         // buffer, no blend needed.
         let mut buf_untouched = !matches!(title.background, TitleBackground::FullFrame { .. });
+        // A colour backing is a box round the words, so it is the text
+        // layer that knows where it goes: the first text box carries it.
+        // Dropped from every layer, as it was, it was never painted.
+        let mut backing = matches!(title.background, TitleBackground::Color { .. }).then(|| title.background.clone());
         for obj in &title.objects {
             if !obj.visible {
                 continue;
@@ -1720,12 +1724,11 @@ impl TitleRenderer {
                     // Synthesise a one-object TitleData carrying just
                     // this TextBox + its transform centre, then route
                     // through the existing single-text raster path.
-                    // The clip-level `background` is intentionally
-                    // dropped from the synthesised view so background
-                    // paint happens once at the outer compose, not
-                    // per text layer.
+                    // A full-frame `background` is painted once, above,
+                    // and not per text layer; a colour backing goes with
+                    // the first text box.
                     let mut single = TitleData::single_text(tb.clone());
-                    single.background = TitleBackground::None;
+                    single.background = backing.take().unwrap_or(TitleBackground::None);
                     if let Some(o) = single.objects.first_mut() {
                         o.transform = effective_transform;
                     }
@@ -4066,6 +4069,20 @@ mod tests {
         let buf = renderer.render(&title, 320, 240);
         // Corner pixel should be the background color (no text there)
         assert_eq!(&buf[0..4], &[0, 0, 128, 255]);
+    }
+
+    #[test]
+    fn a_colour_backing_is_painted_round_the_words() {
+        let mut renderer = TitleRenderer::new();
+        let mut td = klipp_timeline::TitleData::single_text(klipp_timeline::TextBox { text: "BG".to_string(), ..Default::default() });
+        td.background = TitleBackground::Color { color: [0, 0, 0, 200], padding: 20.0 };
+        let (w, h) = (320usize, 240usize);
+        let buf = renderer.render(&td, w as u32, h as u32);
+        // Dark, mostly opaque pixels that are no part of a white glyph:
+        // the box. And it is a box round the text, not the whole frame.
+        let boxed = buf.chunks_exact(4).filter(|p| p[3] >= 190 && p[0] < 20).count();
+        assert!(boxed > 200, "the backing was not painted ({boxed} px)");
+        assert_eq!(buf[3], 0, "the corner of the frame is outside it");
     }
 
     #[test]
