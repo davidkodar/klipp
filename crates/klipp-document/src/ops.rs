@@ -879,7 +879,7 @@ struct Cue {
 /// Gather words into cues: a cue closes at a cut in the sound, a pause,
 /// the end of a sentence once it has some length, when it is full, or
 /// when it has been up long enough.
-fn cues_from_words(words: &[HeardWord], max_chars: usize, max_lines: usize) -> Vec<Cue> {
+fn cues_from_words(words: &[HeardWord], max_chars: usize, max_lines: usize, sound_ends: f64) -> Vec<Cue> {
     const PAUSE_SECS: f64 = 0.7;
     const LONGEST_SECS: f64 = 6.0;
     const SENTENCE_MIN_CHARS: usize = 18;
@@ -910,7 +910,9 @@ fn cues_from_words(words: &[HeardWord], max_chars: usize, max_lines: usize) -> V
     // and never into the next cue.
     let n = cues.len();
     for k in 0..n {
-        let next = if k + 1 < n { cues[k + 1].start } else { f64::MAX };
+        // The last cue ends with the sound: a caption held past it would
+        // make the timeline longer than the piece.
+        let next = if k + 1 < n { cues[k + 1].start } else { sound_ends };
         let want = (cues[k].end + 0.2).max(cues[k].start + 1.0);
         cues[k].end = want.min(next).max(cues[k].start);
         cues[k].text = wrap_lines(&cues[k].text, max_chars, max_lines);
@@ -993,7 +995,8 @@ fn captions(
     if words.is_empty() {
         return Err(refuse(i, "no transcribed speech is heard on the timeline there", "captions come from the transcripts: run analyze and wait for it, and place the speech first"));
     }
-    let cues = cues_from_words(&words, max_chars, max_lines);
+    let sound_ends = secs(seq.total_duration());
+    let cues = cues_from_words(&words, max_chars, max_lines, sound_ends);
     // The track: the one named, else the first subtitle track, else a new one at the bottom.
     let existing = match track {
         Some(t) => Some(resolve_track(seq, t, i)?),
@@ -1347,6 +1350,7 @@ mod tests {
 
         let plan = resolve_with(&seq, &pool, &[Op::Captions { track: None, from: None, to: None, max_chars: 30, max_lines: 2 }], &Spoken).unwrap();
         assert!(plan.steps[0].what.starts_with("captions: 3 cues"), "{}", plan.steps[0].what);
+        assert_eq!(plan.duration_secs, 8.0, "captions do not lengthen the piece");
         let mut seqs = vec![seq.clone()];
         let mut p = pool.clone();
         let mut fps = seq.fps;

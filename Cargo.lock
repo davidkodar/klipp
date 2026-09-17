@@ -2631,6 +2631,7 @@ dependencies = [
  "klipp-core",
  "klipp-media",
  "klipp-ml",
+ "klipp-ml-ort",
  "serde",
  "serde_json",
  "tracing",
@@ -2648,6 +2649,7 @@ dependencies = [
  "ffmpeg-next",
  "klipp-control",
  "klipp-core",
+ "klipp-document",
  "klipp-effects",
  "klipp-engine",
  "klipp-jobs",
@@ -2714,6 +2716,7 @@ dependencies = [
  "crossbeam-channel",
  "klipp-analysis",
  "klipp-core",
+ "klipp-document",
  "klipp-engine",
  "klipp-media",
  "klipp-nodes",
@@ -2747,6 +2750,8 @@ dependencies = [
  "klipp-media",
  "klipp-nodes",
  "klipp-timeline",
+ "serde",
+ "serde_json",
  "tracing",
 ]
 
@@ -6177,8 +6182,6 @@ dependencies = [
 [[package]]
 name = "wgpu-core"
 version = "22.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0348c840d1051b8e86c3bcd31206080c5e71e5933dabd79be1ce732b0b2f089a"
 dependencies = [
  "arrayvec",
  "bit-vec 0.7.0",
@@ -6189,7 +6192,7 @@ dependencies = [
  "log",
  "naga",
  "once_cell",
- "parking_lot 0.12.5",
+ "parking_lot 0.11.2",
  "profiling",
  "raw-window-handle",
  "rustc-hash 1.1.0",

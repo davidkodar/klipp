@@ -1323,6 +1323,10 @@ fn write_png(
     let mut encoder = png::Encoder::new(std::io::BufWriter::new(file), width, height);
     encoder.set_color(png::ColorType::Rgba);
     encoder.set_depth(png::BitDepth::Eight);
+    // A frame someone is waiting to look at: the default compression
+    // spent several hundred milliseconds on a 1080p frame to save a
+    // file that is read once and thrown away.
+    encoder.set_compression(png::Compression::Fast);
     let mut writer = encoder.write_header().map_err(|e| format!("png header: {e}"))?;
     writer.write_image_data(rgba).map_err(|e| format!("png data: {e}"))?;
     Ok(())

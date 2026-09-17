@@ -265,3 +265,8 @@ egui-wgpu = { path = "vendor/egui-wgpu" }
 # vendor/winit/KLIPP-PATCH.md). Unbounded, Hyprland's once-a-second callbacks
 # on an idle desktop left the app painting once a second under input.
 winit = { path = "vendor/winit" }
+# wgpu-core 22.1.0 with the queue's write paths taking the snatch lock before
+# `pending_writes`, as `queue_submit` does (see vendor/wgpu-core/KLIPP-PATCH.md).
+# The other order deadlocked the engine, a decoder and the UI on the shared
+# device: playback froze at a cut under an overlay.
+wgpu-core = { path = "vendor/wgpu-core" }

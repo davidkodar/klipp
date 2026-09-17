@@ -382,6 +382,9 @@ pub struct Renderer {
     working: WorkingColorspace,
     /// Why the GPU stack last declined a frame, so the log says it once.
     last_gpu_stack_decline: Option<&'static str>,
+    /// The clips the GPU stack had to render on the CPU, so the log says
+    /// so once per clip and not per frame.
+    cpu_layers_said: std::collections::HashSet<ClipId>,
     /// Whether the GPU stack had begun a frame when it declined it: the
     /// frame is then rendered twice, once here and once by the caller.
     stack_work_started: bool,
@@ -446,6 +449,7 @@ impl Renderer {
             glyph_cache: HashMap::new(),
             working: WorkingColorspace::default(),
             last_gpu_stack_decline: None,
+            cpu_layers_said: std::collections::HashSet::new(),
             stack_work_started: false,
             gpu_export_declined_after_work: false,
             global_lut: None,
@@ -1337,6 +1341,22 @@ impl Renderer {
             _ => {
                 // Anything the stack has no seed for, or a CPU-only
                 // effect: rendered on the CPU, effects included, up once.
+                // Said once per clip, with why: this is the slow way in —
+                // a full frame rendered here and uploaded as floats — and
+                // a title or a plain clip landing on it is worth knowing.
+                if self.cpu_layers_said.len() < 256 && self.cpu_layers_said.insert(c.id) {
+                    let kind = match &c.kind {
+                        ClipKind::Media { .. } => "media",
+                        ClipKind::Title(_) => "title",
+                        ClipKind::Generator(_) => "generator",
+                        _ => "other",
+                    };
+                    let names: Vec<String> = fx.iter().map(|e| format!("{e:?}").split([' ', '{', '(']).next().unwrap_or("").to_string()).collect();
+                    tracing::debug!(
+                        "GPU stack: a {kind} layer rendered on the CPU and uploaded: effects on gpu {fx_on_gpu} {names:?}, temporal {temporal}, graph identity {}",
+                        c.node_graph.is_identity(),
+                    );
+                }
                 let Some((pixels, _)) = self.render_clip(c, time, fps, width, height, src, transforms) else { return Ok(None) };
                 effects_done = true;
                 self.executor.gpu_pipeline_or_init().is_some_and(|p| p.stack_layer_from_linear(slot, &pixels))
