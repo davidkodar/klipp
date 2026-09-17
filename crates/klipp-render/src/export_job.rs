@@ -672,9 +672,10 @@ const PEAK_CEILING_LINEAR: f32 = 0.891; // 10^(-1.0/20.0) ≈ 0.891
 /// The limiter that holds a normalised delivery under the ceiling. It
 /// detects sample peaks, so its ceiling sits under the true-peak one:
 /// inter-sample peaks of limited speech and music run a few tenths of a
-/// decibel over the samples.
-const LIMITER_THRESHOLD_DB: f32 = -2.5;
-const LIMITER_CEILING_DB: f32 = -1.3;
+/// decibel over the samples, and a lossy encode adds a tenth or two of
+/// its own: at -1.3 the AAC of a limited interview measured -0.9 dBTP.
+const LIMITER_THRESHOLD_DB: f32 = -3.0;
+const LIMITER_CEILING_DB: f32 = -1.7;
 /// How many times a limited delivery's gain is corrected against a
 /// measurement through the limiter, and how far past the arithmetic
 /// gain the corrections may take it.
