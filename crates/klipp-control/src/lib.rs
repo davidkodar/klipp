@@ -723,6 +723,73 @@ fn handle(
             }))
         }
 
+        ControlCommand::FindShots { framing, min_people, object, motion, with_speech, min_secs, max_hits } => {
+            if in_batch {
+                return read_in_batch("find_shots");
+            }
+            let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
+            let max = max_hits.unwrap_or(50);
+            let mut hits = Vec::new();
+            let object = object.map(|o| o.to_lowercase());
+            let framing = framing.map(|f| f.to_lowercase());
+            let motion = motion.map(|m| m.to_lowercase());
+            'items: for m in pool.all().filter(|m| m.kind == klipp_media::MediaItemKind::File) {
+                let report = klipp_analysis::report::MediaAnalysis::load(&m.path);
+                let Some(shots) = report.shots.as_ref() else { continue };
+                for (i, shot) in shots.shots.iter().enumerate() {
+                    let (a, b) = (shot.start_secs, shot.end_secs);
+                    if min_secs.is_some_and(|s| b - a < s) {
+                        continue;
+                    }
+                    let fr = report.framing.as_ref().and_then(|f| f.shots.iter().find(|s| (s.start_secs - a).abs() < 0.05));
+                    if let Some(want) = &framing {
+                        if !fr.is_some_and(|f| f.framing == *want) {
+                            continue;
+                        }
+                    }
+                    if let Some(n) = min_people {
+                        if !fr.is_some_and(|f| f.people >= n) {
+                            continue;
+                        }
+                    }
+                    if let Some(o) = &object {
+                        if !fr.is_some_and(|f| f.objects.iter().any(|x| x.to_lowercase() == *o)) {
+                            continue;
+                        }
+                    }
+                    let motion_class = report.motion.as_ref().and_then(|mo| mo.class_within(a, b));
+                    if let Some(want) = &motion {
+                        if motion_class != Some(want.as_str()) {
+                            continue;
+                        }
+                    }
+                    let words = report.transcript.as_ref().map(|t| t.words_within(a, b).len()).unwrap_or(0);
+                    if let Some(want) = with_speech {
+                        if (words > 0) != want {
+                            continue;
+                        }
+                    }
+                    hits.push(json!({
+                        "media_id": m.id.0.to_string(),
+                        "filename": m.filename,
+                        "shot": i + 1,
+                        "start_secs": a,
+                        "end_secs": b,
+                        "framing": fr.map(|f| f.framing.clone()),
+                        "people": fr.map(|f| f.people),
+                        "position": fr.map(|f| f.position.clone()),
+                        "objects": fr.map(|f| f.objects.clone()),
+                        "motion": motion_class,
+                        "words": words,
+                    }));
+                    if hits.len() >= max {
+                        break 'items;
+                    }
+                }
+            }
+            Ok(json!({ "hits": hits }))
+        }
+
         ControlCommand::ContactSheet { media_id, from_secs, to_secs, frames, cols, tile_width, path } => {
             if in_batch {
                 return read_in_batch("contact_sheet");

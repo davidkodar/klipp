@@ -626,3 +626,16 @@ fn the_timeline_reads_as_text_within_a_budget() {
     assert!(text.chars().count() <= 200 + 40, "cut near the budget: {}", text.chars().count());
     assert!(text.contains("cut at 200 chars"));
 }
+
+/// The analysis reads answer without analysed media: nothing found,
+/// nothing wrong.
+#[test]
+fn analysis_queries_answer_empty_without_analysed_media() {
+    let mut h = harness();
+    let v = h.ok(json!({ "method": "find_shots", "framing": "wide" }));
+    assert_eq!(v["hits"].as_array().map(|a| a.len()), Some(0));
+    let v = h.ok(json!({ "method": "search_transcripts", "query": "anything" }));
+    assert_eq!(v["hits"].as_array().map(|a| a.len()), Some(0));
+    let v = h.ok(json!({ "method": "analysis_status" }));
+    assert!(v["items"].is_array());
+}

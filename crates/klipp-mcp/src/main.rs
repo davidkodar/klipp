@@ -347,6 +347,27 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
             }
             v
         }
+        "klipp_find_shots" => {
+            let mut v = json!({ "method": "find_shots" });
+            for key in ["framing", "object", "motion"] {
+                if let Some(x) = args.get(key).and_then(|v| v.as_str()) {
+                    v[key] = json!(x);
+                }
+            }
+            if let Some(n) = args.get("min_people").and_then(|v| v.as_u64()) {
+                v["min_people"] = json!(n as u32);
+            }
+            if let Some(b) = args.get("with_speech").and_then(|v| v.as_bool()) {
+                v["with_speech"] = json!(b);
+            }
+            if let Some(x) = args.get("min_secs").and_then(|v| v.as_f64()) {
+                v["min_secs"] = json!(x);
+            }
+            if let Some(n) = args.get("max_hits").and_then(|v| v.as_u64()) {
+                v["max_hits"] = json!(n as usize);
+            }
+            v
+        }
         "klipp_contact_sheet" => {
             let mut v = json!({ "method": "contact_sheet", "media_id": arg_str(args, "media_id")? });
             for key in ["from_secs", "to_secs"] {
@@ -686,6 +707,20 @@ fn tool_definitions() -> Vec<Value> {
               start; a clip's source_in maps them to the timeline.",
              json!({ "media_id": { "type": "string" }, "max_chars": { "type": "integer", "description": "Cut at this many characters (default 8000)" } }),
              vec!["media_id"]),
+        tool("klipp_find_shots",
+             "Find shots across every analysed media item: by framing (close-up, medium \
+              close-up, medium, wide, very wide, no people), at least so many people, an \
+              object the detector named (cat, car, cup…), motion (static, gentle, \
+              moving, busy), whether anything is said, a minimum length. Every condition \
+              given must hold. Each hit has the media id and the shot's start and end in \
+              the file, ready for an edit.",
+             json!({
+                 "framing": { "type": "string" }, "min_people": { "type": "integer" },
+                 "object": { "type": "string" }, "motion": { "type": "string" },
+                 "with_speech": { "type": "boolean" }, "min_secs": { "type": "number" },
+                 "max_hits": { "type": "integer" },
+             }),
+             vec![]),
         tool("klipp_contact_sheet",
              "Look at a media file: a grid of frames evenly spaced over a range (the whole \
               file by default), each with its time in the file burnt in, as one JPEG, \

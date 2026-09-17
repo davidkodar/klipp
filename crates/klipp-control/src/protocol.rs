@@ -170,6 +170,28 @@ pub enum ControlCommand {
         max_chars: Option<usize>,
     },
 
+    /// Shots across every analysed item matching what is asked: a
+    /// framing word (close-up, medium close-up, medium, wide, very
+    /// wide, no people), at least so many people, an object the
+    /// detector named, a motion word (static, gentle, moving, busy),
+    /// whether anything is said in the shot, a minimum length. Every
+    /// condition given must hold; none given lists every shot.
+    FindShots {
+        #[serde(default)]
+        framing: Option<String>,
+        #[serde(default)]
+        min_people: Option<u32>,
+        #[serde(default)]
+        object: Option<String>,
+        #[serde(default)]
+        motion: Option<String>,
+        #[serde(default)]
+        with_speech: Option<bool>,
+        #[serde(default)]
+        min_secs: Option<f64>,
+        #[serde(default)]
+        max_hits: Option<usize>,
+    },
     /// A contact sheet of a range of a media file: `frames` frames
     /// evenly spaced between `from_secs` and `to_secs` (the whole file
     /// when omitted), `cols` to a row, each `tile_width` wide, their
