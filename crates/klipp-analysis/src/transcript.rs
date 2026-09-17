@@ -11,7 +11,7 @@
 use serde::{Deserialize, Serialize};
 
 pub const ID: &str = "transcript";
-pub const VERSION: u32 = 2;
+pub const VERSION: u32 = 3;
 /// The manifest entry the analyser runs with.
 pub const MODEL_ID: &str = "whisper_base_ggml";
 
@@ -166,7 +166,16 @@ impl crate::Analyser for TranscriptAnalyser {
             let t = Transcript { duration_secs: item.duration.to_secs_f64(), model: MODEL_ID.into(), ..Default::default() };
             return serde_json::to_value(t).map_err(|e| e.to_string());
         }
-        let transcript = transcribe(&model, &audio, item.duration.to_secs_f64())?;
+        let mut transcript = transcribe(&model, &audio, item.duration.to_secs_f64())?;
+        // The sound analyser has already found where the file is silent;
+        // words whisper places there are its invention, whatever it
+        // thinks of them.
+        if let Some(env) = crate::store::key_for(&item.path)
+            .and_then(|key| crate::store::load(&key, crate::audio::ID, crate::audio::VERSION))
+            .and_then(|v| serde_json::from_value::<crate::audio::AudioEnvelope>(v).ok())
+        {
+            drop_words_in_silence(&mut transcript, &env);
+        }
         serde_json::to_value(transcript).map_err(|e| e.to_string())
     }
 }
@@ -226,6 +235,23 @@ fn transcribe(model: &std::path::Path, audio: &[f32], duration_secs: f64) -> Res
 /// are dropped.
 const NO_SPEECH_THRESHOLD: f32 = 0.6;
 
+/// Segments and words lying almost wholly inside measured silence are
+/// dropped: nobody spoke there. A segment is kept unless silence covers
+/// at least this share of it.
+const SILENT_SHARE: f64 = 0.8;
+
+pub fn drop_words_in_silence(t: &mut Transcript, env: &crate::audio::AudioEnvelope) {
+    let silent = |a: f64, b: f64| -> bool {
+        let span = (b - a).max(0.01);
+        env.silence_within(a, b) / span >= SILENT_SHARE
+    };
+    t.segments.retain(|s| !silent(s.start_secs, s.end_secs));
+    t.words.retain(|w| !silent(w.start_secs, w.end_secs));
+    if t.segments.is_empty() {
+        t.language = None;
+    }
+}
+
 /// Whether a segment's text is words rather than one of whisper's
 /// sound captions: `[Music]`, `(coughing)`, `*släpp*`, `♪`.
 pub fn is_speech(text: &str) -> bool {
@@ -246,6 +272,34 @@ mod tests {
 
     fn tok(text: &str, t0: f64, t1: f64, p: f32) -> Token {
         Token { text: text.into(), t0, t1, p }
+    }
+
+    #[test]
+    fn words_inside_measured_silence_are_dropped() {
+        let env = crate::audio::AudioEnvelope {
+            duration_secs: 10.0,
+            silences: vec![crate::audio::Span { start_secs: 0.0, end_secs: 4.0 }],
+            ..Default::default()
+        };
+        let mut t = Transcript {
+            language: Some("nn".into()),
+            segments: vec![
+                Segment { start_secs: 1.0, end_secs: 3.0, text: "encounters n".into() },
+                Segment { start_secs: 5.0, end_secs: 7.0, text: "hello".into() },
+            ],
+            words: vec![
+                Word { start_secs: 1.0, end_secs: 2.0, text: "encounters".into(), confidence: 0.5 },
+                Word { start_secs: 5.0, end_secs: 5.5, text: "hello".into(), confidence: 0.9 },
+            ],
+            ..Default::default()
+        };
+        drop_words_in_silence(&mut t, &env);
+        assert_eq!(t.segments.len(), 1);
+        assert_eq!(t.words.len(), 1);
+        assert_eq!(t.language.as_deref(), Some("nn"), "speech remains, so the language stays");
+        t.segments.clear();
+        drop_words_in_silence(&mut t, &env);
+        assert!(t.language.is_none());
     }
 
     #[test]
