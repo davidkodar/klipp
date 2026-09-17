@@ -28,7 +28,8 @@ use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::sync::{Arc, Mutex, RwLock};
 
-use klipp_core::{AppCommand, ControlAck, ControlEnvelope, ControlShared};
+use klipp_core::{AppCommand, ControlShared};
+use klipp_document::control::{ControlAck, ControlEnvelope};
 use protocol::{ControlCommand, Request, Response};
 use serde_json::json;
 
@@ -400,6 +401,19 @@ fn cut_to_budget(text: &str, max_chars: usize) -> (String, bool) {
     (kept, true)
 }
 
+/// `ops` resolved against the document as the socket sees it, with the
+/// revision that view had.
+fn resolve_plan(ctx: &ControlContext, ops: &[klipp_document::ops::Op]) -> Result<(klipp_document::ops::Plan, u64), String> {
+    if ops.is_empty() {
+        return Err("no ops given".into());
+    }
+    let revision = ctx.shared.revision();
+    let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
+    let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
+    let plan = klipp_document::ops::resolve(&seq, &pool, ops).map_err(|r| format!("{r} (step {} refused; nothing applied)", r.step + 1))?;
+    Ok((plan, revision))
+}
+
 /// A media item's file and duration, by id.
 fn media_path_and_duration(ctx: &ControlContext, media_id: &str) -> Result<(std::path::PathBuf, f64), String> {
     let id = klipp_core::MediaId(media_id.parse().map_err(|e| format!("media_id is not a uuid: {e}"))?);
@@ -489,6 +503,17 @@ const ACK_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(2000);
 /// `revision` after them, and the viewer `generation` from before them so
 /// a frame newer than that reflects the change.
 fn send_envelope(ctx: &ControlContext, commands: Vec<AppCommand>, batch: bool) -> Result<serde_json::Value, String> {
+    send_full_envelope(ctx, commands, Vec::new(), batch, None, None)
+}
+
+fn send_full_envelope(
+    ctx: &ControlContext,
+    commands: Vec<AppCommand>,
+    edits: Vec<klipp_document::history::EditCommand>,
+    batch: bool,
+    expected_revision: Option<u64>,
+    label: Option<String>,
+) -> Result<serde_json::Value, String> {
     // Read the generation *before* queueing, so any frame rendered in
     // response to this command is guaranteed to be newer than it.
     let generation = ctx
@@ -496,20 +521,25 @@ fn send_envelope(ctx: &ControlContext, commands: Vec<AppCommand>, batch: bool) -
         .lock()
         .map(|fb| fb.latest_generation())
         .unwrap_or(0);
-    let count = commands.len();
+    let count = commands.len() + edits.len();
     let (tx, rx) = std::sync::mpsc::channel::<ControlAck>();
     ctx.commands
-        .send(ControlEnvelope { commands, batch, ack: Some(tx) })
+        .send(ControlEnvelope { commands, edits, batch, expected_revision, label, ack: Some(tx) })
         .map_err(|e| format!("app command channel closed: {e}"))?;
     (ctx.wake_ui)();
     match rx.recv_timeout(ACK_TIMEOUT) {
-        Ok(ack) => Ok(json!({
-            "applied": true,
-            "accepted": true,
-            "commands": count,
-            "revision": ack.revision,
-            "generation": generation,
-        })),
+        Ok(ack) => {
+            if let Some(why) = ack.refused {
+                return Err(format!("not applied: {why}"));
+            }
+            Ok(json!({
+                "applied": true,
+                "accepted": true,
+                "commands": count,
+                "revision": ack.revision,
+                "generation": generation,
+            }))
+        }
         Err(_) => Ok(json!({
             "applied": false,
             "accepted": true,
@@ -1031,6 +1061,27 @@ fn handle(
                 "height": height,
                 "generation": generation,
             }))
+        }
+
+        ControlCommand::Plan { ops } => {
+            if in_batch {
+                return read_in_batch("plan");
+            }
+            let (plan, revision) = resolve_plan(ctx, &ops)?;
+            Ok(json!({ "text": plan.text(), "steps": plan.report(), "duration_secs": plan.duration_secs, "revision": revision, "applied": false }))
+        }
+
+        ControlCommand::Apply { ops, label } => {
+            if in_batch {
+                return Err("apply is its own batch; send it on its own".into());
+            }
+            let (plan, revision) = resolve_plan(ctx, &ops)?;
+            let edits: Vec<klipp_document::history::EditCommand> = plan.steps.iter().map(|s| s.edit.clone()).collect();
+            let mut v = send_full_envelope(ctx, Vec::new(), edits, true, Some(revision), label)?;
+            v["text"] = json!(plan.text());
+            v["steps"] = json!(plan.report());
+            v["duration_secs"] = json!(plan.duration_secs);
+            Ok(v)
         }
 
         ControlCommand::Undo => send(AppCommand::Undo),

@@ -25,6 +25,7 @@ struct Harness {
     cmd_rx: crossbeam_channel::Receiver<klipp_core::AppCommand>,
     /// Every envelope the stand-in UI took: (batch, command count).
     envelopes: Arc<Mutex<Vec<(bool, usize)>>>,
+    edits_seen: Arc<Mutex<Vec<klipp_document::history::EditCommand>>>,
     shared: Arc<klipp_core::ControlShared>,
     _log: std::path::PathBuf,
     next_id: u64,
@@ -85,21 +86,32 @@ fn harness() -> Harness {
     // A stand-in for the UI's inbox: takes each envelope, forwards its
     // commands one by one for the assertions below, advances the
     // revision as a recorded edit would, and acknowledges.
-    let (env_tx, env_rx) = crossbeam_channel::unbounded::<klipp_core::ControlEnvelope>();
+    let (env_tx, env_rx) = crossbeam_channel::unbounded::<klipp_document::control::ControlEnvelope>();
     let (cmd_tx, cmd_rx) = crossbeam_channel::unbounded::<klipp_core::AppCommand>();
     let envelopes: Arc<Mutex<Vec<(bool, usize)>>> = Arc::new(Mutex::new(Vec::new()));
+    let edits_seen: Arc<Mutex<Vec<klipp_document::history::EditCommand>>> = Arc::new(Mutex::new(Vec::new()));
     let shared = Arc::new(klipp_core::ControlShared::default());
     {
-        let (envelopes, shared) = (Arc::clone(&envelopes), Arc::clone(&shared));
+        let (envelopes, shared, edits_seen) = (Arc::clone(&envelopes), Arc::clone(&shared), Arc::clone(&edits_seen));
         std::thread::spawn(move || {
             for env in env_rx {
-                envelopes.lock().unwrap().push((env.batch, env.commands.len()));
-                for c in env.commands {
-                    let _ = cmd_tx.send(c);
+                envelopes.lock().unwrap().push((env.batch, env.commands.len() + env.edits.len()));
+                // A plan made for another revision is refused, as the UI does.
+                let refused = match env.expected_revision {
+                    Some(r) if r != shared.revision() => Some(format!("revision moved from {r}")),
+                    _ => None,
+                };
+                if refused.is_none() {
+                    for c in env.commands {
+                        let _ = cmd_tx.send(c);
+                    }
+                    for e in env.edits {
+                        edits_seen.lock().unwrap().push(e);
+                    }
                 }
-                let revision = shared.bump_revision();
+                let revision = if refused.is_none() { shared.bump_revision() } else { shared.revision() };
                 if let Some(ack) = env.ack {
-                    let _ = ack.send(klipp_core::ControlAck { revision });
+                    let _ = ack.send(klipp_document::control::ControlAck { revision, refused });
                 }
             }
         });
@@ -140,7 +152,7 @@ fn harness() -> Harness {
         match UnixStream::connect(&sock) {
             Ok(stream) => {
                 let reader = BufReader::new(stream.try_clone().expect("clone"));
-                return Harness { _serial: serial, stream, frame_buffer, reader, cmd_rx, envelopes, shared, _log: log, next_id: 0, ids };
+                return Harness { _serial: serial, stream, frame_buffer, reader, cmd_rx, envelopes, edits_seen, shared, _log: log, next_id: 0, ids };
             }
             Err(e) => {
                 last_err = Some(e);
@@ -638,4 +650,30 @@ fn analysis_queries_answer_empty_without_analysed_media() {
     assert_eq!(v["hits"].as_array().map(|a| a.len()), Some(0));
     let v = h.ok(json!({ "method": "analysis_status" }));
     assert!(v["items"].is_array());
+}
+
+/// A plan is resolved against the timeline and applied as one envelope
+/// of edits; a refused op applies nothing; a plan made for an older
+/// revision is refused by the host.
+#[test]
+fn plans_are_dry_runs_and_applies_are_one_envelope_of_edits() {
+    let mut h = harness();
+    let clip = h.ids.clip_a.clone();
+    let v = h.ok(json!({ "method": "plan", "ops": [ { "op": "split", "clip_id": clip, "at": { "secs": 1.0 } } ] }));
+    assert_eq!(v["applied"], json!(false));
+    assert!(v["text"].as_str().unwrap().contains("1. split"), "{}", v["text"]);
+    assert_eq!(v["steps"][0]["after"].as_array().map(|a| a.len()), Some(2));
+    assert!(h.edits_seen.lock().unwrap().is_empty(), "a plan applies nothing");
+
+    let reply = h.call(json!({ "method": "plan", "ops": [ { "op": "split", "clip_id": clip, "at": { "secs": 99.0 } } ] }));
+    assert_eq!(reply["ok"], json!(false));
+    assert!(reply["error"].as_str().unwrap().contains("not inside"), "{}", reply["error"]);
+
+    let before = h.shared.revision();
+    let v = h.ok(json!({ "method": "apply", "label": "split for the test", "ops": [ { "op": "split", "clip_id": clip, "at": { "secs": 1.0 } } ] }));
+    assert_eq!(v["applied"], json!(true));
+    assert_eq!(v["revision"], json!(before + 1));
+    assert_eq!(h.envelopes.lock().unwrap().last(), Some(&(true, 1)));
+    let edits = h.edits_seen.lock().unwrap();
+    assert!(matches!(edits.as_slice(), [klipp_document::history::EditCommand::LegacyBladeClip { .. }]));
 }

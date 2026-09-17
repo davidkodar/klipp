@@ -293,7 +293,7 @@ pub struct KlippApp {
     /// `AppCommand`s — colour, clip, media — are handled *here* by the
     /// UI's routers and never reach the engine's channel, so a control
     /// server that wrote to the engine directly saw them silently vanish.
-    control_inbox: Option<Receiver<klipp_core::ControlEnvelope>>,
+    control_inbox: Option<Receiver<klipp_document::control::ControlEnvelope>>,
     frame_buffer: SharedFrameBuffer,
     /// Source-viewer frame buffer — engine writes decoded source
     /// media frames here during source playback / seek; the source
@@ -1183,7 +1183,7 @@ impl KlippApp {
     }
 
     /// Attach the control socket's command inbox. See `control_inbox`.
-    pub fn set_control_inbox(&mut self, inbox: Receiver<klipp_core::ControlEnvelope>) {
+    pub fn set_control_inbox(&mut self, inbox: Receiver<klipp_document::control::ControlEnvelope>) {
         self.control_inbox = Some(inbox);
     }
 
@@ -1201,22 +1201,52 @@ impl KlippApp {
     /// drag-and-drop.
     fn drain_control_inbox(&mut self) {
         let Some(inbox) = self.control_inbox.as_ref() else { return };
-        let envelopes: Vec<klipp_core::ControlEnvelope> = inbox.try_iter().collect();
+        let envelopes: Vec<klipp_document::control::ControlEnvelope> = inbox.try_iter().collect();
         for env in envelopes {
-            self.suppress_fps_prompt = true;
-            let touches_params = env.commands.iter().any(|c| matches!(c, AppCommand::SetNodeParam { .. }));
-            let cmds = expand_control_commands(env.commands, env.batch);
-            self.send_commands(cmds);
-            self.suppress_fps_prompt = false;
-            // A parameter write reaches the engine through a queue it
-            // drains on its next frame; the socket's reads look at the
-            // engine's sequence. Push the mirror now, so what the client
-            // reads after the acknowledgement is what it wrote.
-            if touches_params {
-                self.sync_sequence_to_engine();
+            let mut refused = None;
+            // A resolved plan: its commands forward, in order, as one
+            // history entry — unless the document moved since it was
+            // resolved, in which case it was made for a document that no
+            // longer exists and nothing of it is applied.
+            if !env.edits.is_empty() {
+                let now = self.state.control_shared.revision();
+                match env.expected_revision {
+                    Some(r) if r != now => {
+                        refused = Some(format!("the document is at revision {now}, the plan was made at {r}; plan again"));
+                    }
+                    _ => {
+                        self.state.active_history_mut().begin_batch();
+                        for e in &env.edits {
+                            self.apply_edit_forward(e);
+                            self.state.push_history(e.clone());
+                        }
+                        self.state.active_history_mut().end_batch();
+                        self.state.dirty = true;
+                        self.state.media_usage_cache_dirty = true;
+                        self.sync_sequence_to_engine();
+                        let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
+                        if let Some(label) = &env.label {
+                            tracing::info!("applied plan \"{label}\": {} edits", env.edits.len());
+                        }
+                    }
+                }
+            }
+            if refused.is_none() && !env.commands.is_empty() {
+                self.suppress_fps_prompt = true;
+                let touches_params = env.commands.iter().any(|c| matches!(c, AppCommand::SetNodeParam { .. }));
+                let cmds = expand_control_commands(env.commands, env.batch);
+                self.send_commands(cmds);
+                self.suppress_fps_prompt = false;
+                // A parameter write reaches the engine through a queue it
+                // drains on its next frame; the socket's reads look at the
+                // engine's sequence. Push the mirror now, so what the client
+                // reads after the acknowledgement is what it wrote.
+                if touches_params {
+                    self.sync_sequence_to_engine();
+                }
             }
             if let Some(ack) = env.ack {
-                let _ = ack.send(klipp_core::ControlAck { revision: self.state.control_shared.revision() });
+                let _ = ack.send(klipp_document::control::ControlAck { revision: self.state.control_shared.revision(), refused });
             }
         }
     }

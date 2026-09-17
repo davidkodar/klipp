@@ -18,6 +18,7 @@ publish = false
 
 [dependencies]
 klipp-core = { workspace = true }
+klipp-document = { workspace = true }
 klipp-timeline = { workspace = true }
 klipp-media = { workspace = true }
 klipp-engine = { workspace = true }
@@ -31,6 +32,7 @@ uuid = { workspace = true }
 png = "0.18"
 
 [dev-dependencies]
+klipp-document = { workspace = true }
 klipp-timeline = { workspace = true }
 
 [lints]

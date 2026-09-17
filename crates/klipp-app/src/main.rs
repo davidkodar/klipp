@@ -465,7 +465,7 @@ fn main() -> Result<()> {
     // Control commands go to the UI's router, not straight to the engine:
     // most editing commands are handled by the UI and never reach the
     // engine's channel. The UI drains this inbox every frame.
-    let (control_tx, control_rx) = crossbeam_channel::unbounded::<klipp_core::ControlEnvelope>();
+    let (control_tx, control_rx) = crossbeam_channel::unbounded::<klipp_document::control::ControlEnvelope>();
     let control_shared = std::sync::Arc::new(klipp_core::ControlShared::default());
     let repaint_ctx_for_control = std::sync::Arc::clone(&repaint_ctx);
     match klipp_control::spawn(klipp_control::ControlContext {

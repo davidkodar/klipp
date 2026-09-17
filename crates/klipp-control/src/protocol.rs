@@ -222,6 +222,24 @@ pub enum ControlCommand {
         path: Option<String>,
     },
 
+    // ── Operations ────────────────────────────────────────────────
+    /// Resolve editorial operations against the timeline and say what
+    /// they would do, applying nothing: the dry run. Each op is one of
+    /// place, trim, split, remove, move (see `klipp_document::ops::Op`);
+    /// anchors are `{"secs": s}`, `{"frame": n}`, `{"clip_start": id}`,
+    /// `{"clip_end": id}`, `{"marker": label}` or
+    /// `{"offset": {"from": anchor, "secs": s}}`. Ops run in order, each
+    /// seeing what the ones before did; the first that cannot be done
+    /// refuses the plan with why and what would help.
+    Plan { ops: Vec<klipp_document::ops::Op> },
+    /// The same, then applied as one undo step — unless the document
+    /// changed since it was resolved, in which case nothing is applied.
+    Apply {
+        ops: Vec<klipp_document::ops::Op>,
+        #[serde(default)]
+        label: Option<String>,
+    },
+
     // ── Edit history ──────────────────────────────────────────────
     /// One step back in the active sequence's history.
     Undo,

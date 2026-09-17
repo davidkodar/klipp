@@ -9,10 +9,18 @@
 //! sequence pushed to the engine, a title re-rendered — so the
 //! document never reaches into a window or a device.
 //!
+//! `ops` is intent in, geometry out: an edit said in editorial terms,
+//! resolved against a copy of the document into the recorded commands
+//! that make it, or refused with a reason; a plan is one undo step.
+//! `control` carries a client's commands and plans to the host that
+//! owns the document, and its acknowledgement back.
+//!
 //! This is the first step of the document owning what the UI used to:
 //! the code moved here verbatim from `klipp-ui`, the UI calls it, and
 //! the next steps route the control socket and an assistant through
 //! the same path.
 
 pub mod apply;
+pub mod control;
 pub mod history;
+pub mod ops;

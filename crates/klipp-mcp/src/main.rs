@@ -44,7 +44,7 @@ const WRITE_TOOLS: &[&str] = &[
     "klipp_append_clip", "klipp_remove_clip", "klipp_attach_audio", "klipp_set_append_audio", "klipp_select_clip",
     "klipp_add_node", "klipp_remove_node", "klipp_connect_nodes",
     "klipp_set_node_param", "klipp_toggle_node", "klipp_set_log_format",
-    "klipp_undo", "klipp_redo", "klipp_batch", "klipp_export", "klipp_export_subtitles",
+    "klipp_undo", "klipp_redo", "klipp_batch", "klipp_export", "klipp_export_subtitles", "klipp_apply",
 ];
 
 fn main() {
@@ -397,6 +397,14 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
             }
             v
         }
+        "klipp_plan" => json!({ "method": "plan", "ops": args.get("ops").cloned().ok_or("missing required argument: ops")? }),
+        "klipp_apply" => {
+            let mut v = json!({ "method": "apply", "ops": args.get("ops").cloned().ok_or("missing required argument: ops")? });
+            if let Some(l) = args.get("label").and_then(|v| v.as_str()) {
+                v["label"] = json!(l);
+            }
+            v
+        }
         "klipp_undo" => json!({ "method": "undo" }),
         "klipp_redo" => json!({ "method": "redo" }),
         "klipp_batch" => {
@@ -468,7 +476,7 @@ fn call_tool(name: &str, args: &Value) -> Result<Vec<Value>, String> {
     }
 
     // The timeline view is text for reading, not JSON for parsing.
-    if name == "klipp_timeline" || name == "klipp_media_analysis" {
+    if name == "klipp_timeline" || name == "klipp_media_analysis" || name == "klipp_plan" {
         if let Some(text) = result.get("text").and_then(|v| v.as_str()) {
             return Ok(vec![json!({ "type": "text", "text": text })]);
         }
@@ -742,6 +750,50 @@ fn tool_definitions() -> Vec<Value> {
              json!({ "media_id": { "type": "string" }, "from_secs": { "type": "number" }, "to_secs": { "type": "number" },
                      "path": { "type": "string" } }),
              vec!["media_id", "from_secs", "to_secs"]),
+        tool("klipp_plan",
+             concat!("Dry run: what a list of editorial operations would do, step by step, with each \
+              touched clip's range afterwards. Nothing changes. Use it before klipp_apply. ",
+              "Editorial operations, resolved by Klipp into frame-exact edits. Give a list of ops; \
+              each is an object with \"op\" and its fields:\n\
+              place {media_id, track, at, source_in?, source_out?} — a media item onto a track \
+              (an index from klipp_timeline, or \"video\"/\"audio\"/\"text\" for the first of that \
+              kind) at an anchor; source_in/out in seconds of the file, the whole file by default.\n\
+              trim {clip_id, edge: \"in\"|\"out\", to} — one edge to an anchor, the other stays; \
+              the source moves with the edge.\n\
+              split {clip_id, at} — into two.\n\
+              remove {clip_id, ripple?} — off the track; with ripple the later clips close the gap.\n\
+              move {clip_id, to} — the clip's start to an anchor, length unchanged, a linked \
+              partner with it.\n\
+              Anchors: {\"secs\": s}, {\"frame\": n}, {\"clip_start\": id}, {\"clip_end\": id}, \
+              {\"marker\": label}, {\"offset\": {\"from\": anchor, \"secs\": s}}.\n\
+              Ops run in order, each seeing the ones before it (a split's halves are new ids, \
+              reported in the reply). Times snap to frames. Overlaps, locked tracks and edges \
+              past the media are refused with why and what would help, and nothing is applied."),
+             json!({ "ops": { "type": "array", "items": { "type": "object" } } }),
+             vec!["ops"]),
+        tool("klipp_apply",
+             concat!("Apply a list of editorial operations as ONE undo step, after resolving them the \
+              way klipp_plan does; refused whole if any op cannot be done or if the timeline \
+              changed since the plan was resolved. Replies with the steps and the revision. ",
+              "Editorial operations, resolved by Klipp into frame-exact edits. Give a list of ops; \
+              each is an object with \"op\" and its fields:\n\
+              place {media_id, track, at, source_in?, source_out?} — a media item onto a track \
+              (an index from klipp_timeline, or \"video\"/\"audio\"/\"text\" for the first of that \
+              kind) at an anchor; source_in/out in seconds of the file, the whole file by default.\n\
+              trim {clip_id, edge: \"in\"|\"out\", to} — one edge to an anchor, the other stays; \
+              the source moves with the edge.\n\
+              split {clip_id, at} — into two.\n\
+              remove {clip_id, ripple?} — off the track; with ripple the later clips close the gap.\n\
+              move {clip_id, to} — the clip's start to an anchor, length unchanged, a linked \
+              partner with it.\n\
+              Anchors: {\"secs\": s}, {\"frame\": n}, {\"clip_start\": id}, {\"clip_end\": id}, \
+              {\"marker\": label}, {\"offset\": {\"from\": anchor, \"secs\": s}}.\n\
+              Ops run in order, each seeing the ones before it (a split's halves are new ids, \
+              reported in the reply). Times snap to frames. Overlaps, locked tracks and edges \
+              past the media are refused with why and what would help, and nothing is applied."),
+             json!({ "ops": { "type": "array", "items": { "type": "object" } },
+                     "label": { "type": "string", "description": "A name for the history entry" } }),
+             vec!["ops"]),
         tool("klipp_undo", "One step back in the active sequence's edit history. Every write \
               made through these tools is one step; a klipp_batch is one step as a whole.",
              json!({}), vec![]),

@@ -3709,24 +3709,6 @@ mod codec_hint_tests {
     }
 }
 
-/// Commands from the control socket, with the channel their
-/// acknowledgement goes back on once the UI has applied them. The UI
-/// applies every command of one envelope in one frame; `batch` collects
-/// their history into one undo entry.
-pub struct ControlEnvelope {
-    pub commands: Vec<AppCommand>,
-    pub batch: bool,
-    pub ack: Option<std::sync::mpsc::Sender<ControlAck>>,
-}
-
-/// What the UI says once an envelope is applied.
-#[derive(Debug, Clone, Copy)]
-pub struct ControlAck {
-    /// The document revision after the envelope: every recorded edit,
-    /// undo and redo advances it.
-    pub revision: u64,
-}
-
 /// State the control socket reads without a round trip through the UI:
 /// the document revision, and the render queue's jobs as the UI last saw
 /// them.
