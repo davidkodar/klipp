@@ -3259,9 +3259,15 @@ fn effect_padding(title: &TitleData, scale: f32) -> i32 {
         pad = pad.max(sx + sb + 1);
         pad = pad.max(sy + sb + 1);
     }
-    // Extra padding for tracking (text extends further right)
+    // Extra padding for tracking: each glyph is pushed right by the
+    // tracking times its index, so the text grows by the tracking times
+    // the glyphs there are. This was the tracking times 200 whatever the
+    // text: 600 px on every side of an 18-letter role line, and every
+    // pass over the layer — its shadow's blur above all — ran over
+    // sixty times the pixels, 72 ms a frame against 8.
     if tb.tracking > 0.0 {
-        pad = pad.max((tb.tracking * scale * 200.0).ceil() as i32); // generous for long text
+        let glyphs = tb.text.chars().count().max(1) as f32;
+        pad = pad.max((tb.tracking * scale * glyphs).ceil() as i32 + 2);
     }
     // Extra padding for extrusion depth — worst-case across the
     // clip. The horizontal/vertical extent depends on both depth and

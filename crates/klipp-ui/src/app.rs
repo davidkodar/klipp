@@ -315,6 +315,9 @@ pub struct KlippApp {
     source_frame_tx: Sender<SourceFrameResult>,
     source_frame_rx: Receiver<SourceFrameResult>,
     filmstrip_tx: Sender<FilmstripResult>,
+    /// The files a filmstrip refinement pass is running for; see
+    /// `AppCommand::RefineFilmstrip`.
+    filmstrip_refining: std::sync::Arc<std::sync::Mutex<std::collections::HashSet<MediaId>>>,
     filmstrip_rx: Receiver<FilmstripResult>,
     audio_conform_tx: Sender<AudioConformResult>,
     audio_conform_rx: Receiver<AudioConformResult>,
@@ -621,6 +624,7 @@ impl KlippApp {
             source_frame_tx,
             source_frame_rx,
             filmstrip_tx,
+            filmstrip_refining: Default::default(),
             filmstrip_rx,
             audio_conform_tx,
             audio_conform_rx,
@@ -19205,7 +19209,23 @@ impl KlippApp {
                 true
             }
             AppCommand::RefineFilmstrip { media_id, start_secs, end_secs, interval_secs } => {
-                // Spawn a targeted filmstrip pass for the requested range
+                // A targeted filmstrip pass for the requested range. One
+                // at a time per file and a few in all: the timeline asks
+                // again every half second while its tiles are sparse, and
+                // each pass is a thread with a hardware decoder of its
+                // own. Unbounded, a half-hour source piled up a thousand
+                // of them in ten minutes, each with a CUDA context, and
+                // the driver fell over on one (a SIGSEGV on a filmstrip
+                // thread, 1106 threads, 2026-09-17). A request that finds
+                // its file busy is dropped; the timeline asks again.
+                const REFINES_AT_ONCE: usize = 2;
+                let busy = {
+                    let running = self.filmstrip_refining.lock().unwrap_or_else(|e| e.into_inner());
+                    running.contains(media_id) || running.len() >= REFINES_AT_ONCE
+                };
+                if busy {
+                    return true;
+                }
                 if let Some(item) = self.state.media_pool.get(media_id) {
                     let path = item.path.clone();
                     let tx = self.filmstrip_tx.clone();
@@ -19213,11 +19233,23 @@ impl KlippApp {
                     let s = *start_secs;
                     let e = *end_secs;
                     let iv = *interval_secs;
-                    std::thread::Builder::new()
+                    let running = std::sync::Arc::clone(&self.filmstrip_refining);
+                    running.lock().unwrap_or_else(|e| e.into_inner()).insert(mid);
+                    /// Takes the file off the running set however the pass ends.
+                    struct Running(std::sync::Arc<std::sync::Mutex<std::collections::HashSet<MediaId>>>, MediaId);
+                    impl Drop for Running {
+                        fn drop(&mut self) {
+                            self.0.lock().unwrap_or_else(|e| e.into_inner()).remove(&self.1);
+                        }
+                    }
+                    let guard = Running(running, mid);
+                    let _ = std::thread::Builder::new()
                         .name("klipp-filmstrip-refine".into())
                         .spawn(move || {
-                            let outcome = klipp_engine::generate_filmstrip_incremental(
+                            let _guard = guard;
+                            let outcome = klipp_engine::generate_filmstrip_range(
                                 &path,
+                                s,
                                 e,
                                 iv,
                                 48,

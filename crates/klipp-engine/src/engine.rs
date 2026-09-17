@@ -9693,9 +9693,28 @@ pub fn generate_filmstrip_incremental(
     duration_secs: f64,
     interval_secs: f64,
     target_height: u32,
+    on_frame: impl FnMut(f64, Vec<u8>, u32, u32),
+    pause_token: Option<Arc<klipp_jobs::PauseToken>>,
+) -> Result<FilmstripOutcome, String> {
+    generate_filmstrip_range(path, 0.0, duration_secs, interval_secs, target_height, on_frame, pause_token)
+}
+
+/// [`generate_filmstrip_incremental`] over `start_secs..=end_secs` of the
+/// file only: the tiles a zoomed-in timeline is missing. A refinement
+/// used to walk every tile from the start of the file to the end of the
+/// range and throw away the ones before it — on a half-hour source,
+/// hundreds of decodes for a dozen tiles.
+pub fn generate_filmstrip_range(
+    path: &std::path::Path,
+    start_secs: f64,
+    end_secs: f64,
+    interval_secs: f64,
+    target_height: u32,
     mut on_frame: impl FnMut(f64, Vec<u8>, u32, u32),
     pause_token: Option<Arc<klipp_jobs::PauseToken>>,
 ) -> Result<FilmstripOutcome, String> {
+    let start_secs = start_secs.max(0.0);
+    let duration_secs = end_secs;
     let mut format_ctx = ffmpeg_next::format::input(path)
         .map_err(|e| format!("ffmpeg open: {e}"))?;
 
@@ -9744,7 +9763,7 @@ pub fn generate_filmstrip_incremental(
     let mut sws_cache = SwsCacheGuard(None);
     let mut outcome = FilmstripOutcome::default();
 
-    let num_frames = ((duration_secs / interval_secs).ceil() as usize).min(500);
+    let num_frames = (((duration_secs - start_secs).max(0.0) / interval_secs).ceil() as usize).min(500);
     let accel_label = if is_hw { "GPU" } else { "CPU" };
     tracing::info!("Filmstrip: generating {} frames via {} decode for {:?}", num_frames, accel_label, path);
 
@@ -9756,7 +9775,7 @@ pub fn generate_filmstrip_incremental(
         frame.timestamp().unwrap_or(0) * 1_000_000 * tb.numerator() as i64 / tb.denominator() as i64
     };
     for i in 0..=num_frames {
-        let seek_secs = i as f64 * interval_secs;
+        let seek_secs = start_secs + i as f64 * interval_secs;
         if seek_secs > duration_secs {
             break;
         }
