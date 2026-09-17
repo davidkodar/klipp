@@ -11,7 +11,7 @@
 use serde::{Deserialize, Serialize};
 
 pub const ID: &str = "transcript";
-pub const VERSION: u32 = 4;
+pub const VERSION: u32 = 5;
 
 /// The models the analyser can run with, best first; it uses the best
 /// one installed. The small one is what came first; on real speech it
@@ -182,6 +182,117 @@ pub fn ensure_model(download: bool) -> Result<(&'static str, std::path::PathBuf)
     Ok((MODEL_ID, path))
 }
 
+/// Letters and digits, lower case: what two spellings of a name share.
+fn plain(s: &str) -> String {
+    s.chars().filter(|c| c.is_alphanumeric()).flat_map(|c| c.to_lowercase()).collect()
+}
+
+/// A word's consonants: how it sounds to a model that spells by ear.
+/// "clawed" and "Claude" are both `cld`.
+fn skeleton(s: &str) -> String {
+    plain(s).chars().filter(|c| !"aeiouywh".contains(*c)).collect()
+}
+
+fn edit_distance(a: &str, b: &str) -> usize {
+    let (a, b): (Vec<char>, Vec<char>) = (a.chars().collect(), b.chars().collect());
+    let mut row: Vec<usize> = (0..=b.len()).collect();
+    for i in 1..=a.len() {
+        let mut prev = row[0];
+        row[0] = i;
+        for j in 1..=b.len() {
+            let cur = row[j];
+            row[j] = if a[i - 1] == b[j - 1] { prev } else { 1 + prev.min(row[j]).min(row[j - 1]) };
+            prev = cur;
+        }
+    }
+    row[b.len()]
+}
+
+fn similarity(a: &str, b: &str) -> f32 {
+    let n = a.chars().count().max(b.chars().count()).max(1);
+    1.0 - edit_distance(a, b) as f32 / n as f32
+}
+
+/// Whether what was heard, `heard` (one word of the transcript), is
+/// `term` (one word of a spelling) written by ear.
+fn sounds_like(heard: &str, term: &str) -> bool {
+    let (h, t) = (plain(heard), plain(term));
+    if h == t {
+        return true;
+    }
+    if t.chars().count() < 5 || h.chars().count().abs_diff(t.chars().count()) > 1 {
+        return false;
+    }
+    let (sh, st) = (skeleton(heard), skeleton(term));
+    let by_ear = similarity(&sh, &st);
+    0.5 * similarity(&h, &t) + 0.5 * by_ear >= 0.6 || (sh == st && sh.chars().count() >= 3)
+}
+
+/// Write the brief's spellings over what whisper wrote by ear. Its
+/// prompt only reaches the first half minute, and past that a name it
+/// does not know comes out as "Amachi", "Umachi" and "Omachi" in turn,
+/// each with full confidence. A run of words is a spelling when it is
+/// the same letters (whatever the case and spacing: "quick shell" is
+/// Quickshell), or — one word for one word — sounds like it, provided
+/// the heard word is capitalised or another word of the term is there
+/// letter for letter ("clawed code" is Claude Code; "march" is not
+/// Omarchy).
+pub fn respell(t: &mut Transcript, spellings: &[String]) {
+    let mut terms: Vec<Vec<&str>> = spellings.iter().map(|s| s.split_whitespace().collect::<Vec<_>>()).filter(|w| !w.is_empty()).collect();
+    terms.sort_by_key(|w| std::cmp::Reverse(w.len()));
+    let mut fixes: Vec<(String, String)> = Vec::new();
+    let mut i = 0;
+    while i < t.words.len() {
+        let mut took = 0;
+        for term in &terms {
+            let whole: String = plain(&term.join(""));
+            // The same letters, over up to three words of the transcript.
+            for n in (1..=3usize.min(t.words.len() - i)).rev() {
+                let heard: String = t.words[i..i + n].iter().map(|w| plain(&w.text)).collect();
+                if heard == whole && whole.chars().count() >= 3 {
+                    took = n;
+                    break;
+                }
+            }
+            // Word for word, by ear.
+            if took == 0 && i + term.len() <= t.words.len() {
+                let heard = &t.words[i..i + term.len()];
+                let exact = heard.iter().zip(term.iter()).filter(|(h, w)| plain(&h.text) == plain(w)).count();
+                let all_sound = heard.iter().zip(term.iter()).all(|(h, w)| sounds_like(&h.text, w));
+                let named = heard.iter().all(|h| h.text.chars().next().is_some_and(|c| c.is_uppercase()));
+                if all_sound && exact < term.len() && (named || exact >= 1) {
+                    took = term.len();
+                }
+            }
+            if took > 0 {
+                let was: Vec<String> = t.words[i..i + took].iter().map(|w| w.text.clone()).collect();
+                let last = was.last().cloned().unwrap_or_default();
+                let tail: String = last.chars().rev().take_while(|c| !c.is_alphanumeric()).collect::<Vec<_>>().into_iter().rev().collect();
+                let now = format!("{}{tail}", term.join(" "));
+                if was.join(" ") != now {
+                    fixes.push((was.join(" "), now.clone()));
+                    let (start, end) = (t.words[i].start_secs, t.words[i + took - 1].end_secs);
+                    let confidence = t.words[i..i + took].iter().map(|w| w.confidence).fold(1.0, f32::min);
+                    t.words.splice(i..i + took, [Word { start_secs: start, end_secs: end, text: now, confidence }]);
+                    took = 1;
+                }
+                break;
+            }
+        }
+        i += took.max(1);
+    }
+    // The segments read the same way.
+    fixes.sort();
+    fixes.dedup();
+    for seg in &mut t.segments {
+        for (was, now) in &fixes {
+            if seg.text.contains(was.as_str()) {
+                seg.text = seg.text.replace(was.as_str(), now);
+            }
+        }
+    }
+}
+
 /// Whether a transcript made with the spellings `given` lacks any of
 /// the ones `wanted` now, whatever their case.
 pub fn lacks_spellings(given: &[String], wanted: &[String]) -> bool {
@@ -226,9 +337,14 @@ impl crate::Analyser for TranscriptAnalyser {
             .and_then(|key| crate::store::load(&key, crate::audio::ID, crate::audio::VERSION))
             .and_then(|v| serde_json::from_value::<crate::audio::AudioEnvelope>(v).ok())
         {
-            drop_words_in_silence(&mut transcript, &env);
+            // Trimmed first: an aligned word runs to the next word's
+            // start, so the last word before a pause was mostly pause,
+            // and dropping by share of silence took it for an invention
+            // — "developer.", "that.", "it." went missing from captions.
             trim_words_to_sound(&mut transcript, &env);
+            drop_words_in_silence(&mut transcript, &env);
         }
+        respell(&mut transcript, &words);
         serde_json::to_value(transcript).map_err(|e| e.to_string())
     }
 }
@@ -407,6 +523,29 @@ mod tests {
         trim_words_to_sound(&mut t, &env);
         assert_eq!((t.words[0].start_secs, t.words[0].end_secs), (10.25, 10.6));
         assert_eq!((t.words[1].start_secs, t.words[1].end_secs), (12.0, 12.2), "a word in the sound is left alone");
+    }
+
+    #[test]
+    fn names_written_by_ear_are_respelt_and_ordinary_words_are_not() {
+        let say = |text: &str| -> Transcript {
+            let words = text.split(' ').enumerate().map(|(k, w)| Word { start_secs: k as f64, end_secs: k as f64 + 0.5, text: w.into(), confidence: 1.0 }).collect();
+            Transcript { segments: vec![Segment { start_secs: 0.0, end_secs: 99.0, text: text.into() }], words, ..Default::default() }
+        };
+        let spell: Vec<String> = ["Omarchy", "Quickshell", "Hyprland", "Claude Code", "Ruby on Rails", "QML", "DHH"].iter().map(|s| s.to_string()).collect();
+        let mut t = say("I install Amachi, then Umachi and Omachi. QuickShell plus Hyperland, the quick shell, was an clawed code harness on ruby on rails.");
+        respell(&mut t, &spell);
+        let text: Vec<&str> = t.words.iter().map(|w| w.text.as_str()).collect();
+        assert_eq!(text.join(" "), "I install Omarchy, then Omarchy and Omarchy. Quickshell plus Hyprland, the Quickshell, was an Claude Code harness on Ruby on Rails.");
+        assert_eq!(t.segments[0].text, text.join(" "), "the segment reads the same");
+        // Three words became one: it runs from the first to the last of them.
+        let rails = t.words.last().unwrap();
+        assert_eq!((rails.start_secs, rails.end_secs), (19.0, 21.5));
+
+        // Ordinary words that happen to be near a spelling are left alone.
+        let mut t = say("In March the monarchy moved very quickly to the code and the rails of a hyper land.");
+        let before = t.clone();
+        respell(&mut t, &spell);
+        assert_eq!(t, before);
     }
 
     #[test]

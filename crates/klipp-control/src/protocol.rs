@@ -277,11 +277,27 @@ pub enum ControlCommand {
         /// Integrated loudness target in LUFS; none leaves the mix as it is.
         #[serde(default)]
         target_lufs: Option<f32>,
+        /// Whether captions and titles are burnt into the picture. Left
+        /// out, they are, which is what the app's own export does.
+        #[serde(default)]
+        burn_captions: Option<bool>,
     },
     /// Every render job the app knows: status, progress, result.
     ExportStatus,
     /// Write the sequence's subtitle and text clips as an SRT file.
     ExportSubtitles { path: String },
+    /// What is said in a media file between two times, with when: the
+    /// segments, and with `words` every word and its start and end, in
+    /// the file's seconds. For setting a cut on the edge of a word.
+    Transcript {
+        media_id: String,
+        #[serde(default)]
+        from_secs: Option<f64>,
+        #[serde(default)]
+        to_secs: Option<f64>,
+        #[serde(default)]
+        words: bool,
+    },
     /// The sequence's brief: what the piece is for.
     Brief,
     /// Replace the brief, as one undo step. Fields left out ask for nothing.

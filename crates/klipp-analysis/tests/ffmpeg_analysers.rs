@@ -127,3 +127,14 @@ fn trial_on_a_real_file_when_asked() {
         eprintln!("first words: {}", line.join(" "));
     }
 }
+
+/// A sheet across a long real file, timed: `KLIPP_SHEET_TRIAL=<file>`.
+#[test]
+fn a_sheet_of_a_long_file_when_asked() {
+    let Ok(path) = std::env::var("KLIPP_SHEET_TRIAL") else { return };
+    let ctx = AnalysisCtx::default();
+    let out = std::env::temp_dir().join("klipp-sheet-trial.jpg");
+    let t = std::time::Instant::now();
+    let sheet = klipp_analysis::sheet::contact_sheet(&ctx.ffmpeg, std::path::Path::new(&path), 0.0, 1680.0, 24, 6, 320, &out).expect("sheet");
+    eprintln!("24 tiles across 28 minutes in {:.1} s: {}x{} at {}", t.elapsed().as_secs_f64(), sheet.width, sheet.height, out.display());
+}

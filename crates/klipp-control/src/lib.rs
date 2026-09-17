@@ -383,6 +383,10 @@ fn timeline_text(
 /// `text` within `max_chars`, cut on a line boundary and saying so, and
 /// whether it was cut.
 fn cut_to_budget(text: &str, max_chars: usize) -> (String, bool) {
+    cut_to_budget_with(text, max_chars, "ask again with a larger max_chars, or list_clips for the rest")
+}
+
+fn cut_to_budget_with(text: &str, max_chars: usize, rest: &str) -> (String, bool) {
     if text.chars().count() <= max_chars {
         return (text.to_string(), false);
     }
@@ -394,10 +398,7 @@ fn cut_to_budget(text: &str, max_chars: usize) -> (String, bool) {
         kept.push_str(line);
         kept.push('\n');
     }
-    kept.push_str(&format!(
-        "… cut at {max_chars} chars of {}; ask again with a larger max_chars, or list_clips for the rest.\n",
-        text.chars().count()
-    ));
+    kept.push_str(&format!("… cut at {max_chars} chars of {}; {rest}.\n", text.chars().count()));
     (kept, true)
 }
 
@@ -780,7 +781,16 @@ fn handle(
             if in_batch {
                 return read_in_batch("analysis_status");
             }
-            Ok(json!({ "items": klipp_analysis::service::all() }))
+            // Which models are there says what analysis can be had at all:
+            // with no speech model, a transcript is not late, it is not coming.
+            Ok(json!({
+                "items": klipp_analysis::service::all(),
+                "models": {
+                    "speech": klipp_analysis::transcript::installed_model().map(|(id, _)| id),
+                    "detection": klipp_analysis::framing::model_path().map(|(id, _)| id),
+                },
+                "note": "current is the analyser at work and current_for_secs how long it has been; a transcript takes about a third of the file's length",
+            }))
         }
 
         ControlCommand::MediaAnalysis { media_id, max_chars } => {
@@ -792,8 +802,10 @@ fn handle(
             let item = pool.get(&id).ok_or_else(|| format!("no media item {}", id.0))?;
             let report = klipp_analysis::report::MediaAnalysis::load(&item.path);
             let status = klipp_analysis::service::status(id).map(|s| s.state);
-            let full = format!("{}  {:.2} s\n{}", item.filename, item.duration.to_secs_f64(), report.text(max_chars.unwrap_or(8000)));
-            let (text, cut) = cut_to_budget(&full, max_chars.unwrap_or(8000));
+            // The whole of it, then cut: cut twice, the note gave the
+            // length of the first cut as the length of the whole.
+            let full = format!("{}  {:.2} s\n{}", item.filename, item.duration.to_secs_f64(), report.text(usize::MAX));
+            let (text, cut) = cut_to_budget_with(&full, max_chars.unwrap_or(8000), "ask again with a larger max_chars, or read a stretch of the speech with transcript (from_secs, to_secs)");
             Ok(json!({
                 "text": text,
                 "cut": cut,
@@ -1144,6 +1156,36 @@ fn handle(
             Ok(v)
         }
 
+        ControlCommand::Transcript { media_id, from_secs, to_secs, words } => {
+            if in_batch {
+                return read_in_batch("transcript");
+            }
+            let id = klipp_core::MediaId(media_id.parse().map_err(|e| format!("media_id is not a uuid: {e}"))?);
+            let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
+            let item = pool.get(&id).ok_or_else(|| format!("no media item {}", id.0))?;
+            let report = klipp_analysis::report::MediaAnalysis::load(&item.path);
+            let Some(t) = report.transcript else {
+                let state = klipp_analysis::service::status(id).map(|s| format!("{:?}", s.state).to_lowercase()).unwrap_or_else(|| "not asked for".into());
+                return Err(format!("{} has no transcript yet (analysis: {state}); analyze it, and see analysis_status", item.filename));
+            };
+            let (a, b) = (from_secs.unwrap_or(0.0), to_secs.unwrap_or(f64::MAX));
+            let silences: Vec<(f64, f64)> = report.audio.map(|au| au.silences.iter().map(|s| (s.start_secs, s.end_secs)).filter(|(x, y)| *y > a && *x < b).collect()).unwrap_or_default();
+            let mut out = format!("{}  speech {} ({}), times in seconds of the file\n", item.filename, t.language.as_deref().unwrap_or("?"), t.model);
+            for seg in t.segments.iter().filter(|s| s.end_secs > a && s.start_secs < b) {
+                out.push_str(&format!("[{:.2}-{:.2}] {}\n", seg.start_secs, seg.end_secs, seg.text));
+                if words {
+                    let line: Vec<String> = t.words.iter().filter(|w| w.start_secs >= seg.start_secs - 0.01 && w.start_secs < seg.end_secs && w.end_secs > a && w.start_secs < b).map(|w| format!("{}@{:.2}-{:.2}", w.text, w.start_secs, w.end_secs)).collect();
+                    out.push_str(&format!("    {}\n", line.join(" ")));
+                }
+            }
+            if !silences.is_empty() {
+                let line: Vec<String> = silences.iter().map(|(x, y)| format!("{x:.2}-{y:.2}")).collect();
+                out.push_str(&format!("Measured silence (a cut there is clean): {}\n", line.join(", ")));
+            }
+            let (text, cut) = cut_to_budget_with(&out, 12_000, "ask for a shorter stretch with from_secs and to_secs");
+            Ok(json!({ "text": text, "cut": cut }))
+        }
+
         ControlCommand::Brief => {
             if in_batch {
                 return read_in_batch("brief");
@@ -1221,7 +1263,7 @@ fn handle(
             send_envelope(ctx, cmds, true)
         }
 
-        ControlCommand::Export { path, width, height, fps, crf, target_lufs } => {
+        ControlCommand::Export { path, width, height, fps, crf, target_lufs, burn_captions } => {
             let out = std::path::PathBuf::from(&path);
             if !out.is_absolute() {
                 return Err(format!("export path must be absolute (got {path:?})"));
@@ -1271,7 +1313,19 @@ fn handle(
             if target_lufs.is_some() {
                 settings.target_lufs = target_lufs;
             }
-            send(AppCommand::ExportSequence { settings })
+            if let Some(burn) = burn_captions {
+                settings.burn_in_subtitles = burn;
+            }
+            // Said, because it cannot be seen from the reply otherwise and
+            // decides whether a sidecar file is needed.
+            let said = json!({
+                "captions_and_titles_burnt_in": settings.burn_in_subtitles,
+                "target_lufs": settings.target_lufs,
+                "size": settings.resolution.map(|r| format!("{}x{}", r.width, r.height)),
+            });
+            let mut v = send(AppCommand::ExportSequence { settings })?;
+            v["export"] = said;
+            Ok(v)
         }
 
         ControlCommand::ExportStatus => {
@@ -1350,6 +1404,10 @@ fn handle(
             if in_batch {
                 return read_in_batch("frame_at");
             }
+            // One at a time: there is one playhead, and two grabs at once
+            // seek it out from under each other and the second fails.
+            static ONE_GRAB: std::sync::Mutex<()> = std::sync::Mutex::new(());
+            let _one = ONE_GRAB.lock().unwrap_or_else(|e| e.into_inner());
             let (was_at, fps) = {
                 let fb = ctx.frame_buffer.lock().map_err(|_| "frame buffer lock poisoned")?;
                 let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;

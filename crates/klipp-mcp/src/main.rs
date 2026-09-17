@@ -442,6 +442,18 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
             if let Some(l) = args.get("target_lufs").and_then(|v| v.as_f64()) {
                 v["target_lufs"] = json!(l);
             }
+            if let Some(b) = args.get("burn_captions").and_then(|v| v.as_bool()) {
+                v["burn_captions"] = json!(b);
+            }
+            v
+        }
+        "klipp_transcript" => {
+            let mut v = json!({ "method": "transcript", "media_id": arg_str(args, "media_id")?, "words": args.get("words").and_then(|v| v.as_bool()).unwrap_or(false) });
+            for key in ["from_secs", "to_secs"] {
+                if let Some(x) = args.get(key).and_then(|v| v.as_f64()) {
+                    v[key] = json!(x);
+                }
+            }
             v
         }
         "klipp_export_status" => json!({ "method": "export_status" }),
@@ -518,7 +530,7 @@ fn call_tool(name: &str, args: &Value) -> Result<Vec<Value>, String> {
     }
 
     // The timeline view is text for reading, not JSON for parsing.
-    if name == "klipp_timeline" || name == "klipp_media_analysis" || name == "klipp_plan" || name == "klipp_check" || name == "klipp_brief" {
+    if name == "klipp_timeline" || name == "klipp_media_analysis" || name == "klipp_plan" || name == "klipp_check" || name == "klipp_brief" || name == "klipp_transcript" {
         if let Some(text) = result.get("text").and_then(|v| v.as_str()) {
             return Ok(vec![json!({ "type": "text", "text": text })]);
         }
@@ -823,11 +835,12 @@ fn tool_definitions() -> Vec<Value> {
               rippled later to make room and a clip straddling the anchor is split.\n\
               add_track {kind, name?} — a video or text track on top (it becomes track 0, every \
               other index moves down by one), an audio or subtitle track at the bottom.\n\
-              captions {track?, from?, to?, max_chars?, max_lines?} — captions for what is heard \
+              captions {track?, from?, to?, max_chars?, max_lines?, replace?} — captions for what is heard \
               on the timeline, from the transcripts (run klipp_analyze first): each word lands \
               where its clip puts it, cues close at sentences, pauses and cuts, two lines of 42 \
-              by default; on the first subtitle track, made at the bottom if there is none. Do \
-              it after the speech is placed and trimmed.\n\
+              by default; on the first subtitle track, made at the bottom if there is none. The \
+              reply lists every cue to be read; correct one with set_text. Do it after the \
+              speech is placed and trimmed; after a re-cut, make them again with replace true.\n\
               audio {clip_id, volume_db?, gain_db?, pan?, fade_in?, fade_out?} — a clip's sound: \
               volume and pre-fader gain in dB, pan -1..1, fades in seconds; what is left out \
               stays. For an audio clip linked to a video clip the settings go on the video \
@@ -851,8 +864,9 @@ fn tool_definitions() -> Vec<Value> {
               as fractions of the frame inside title-safe.\n\
               set_text {clip_id, text} — the words of a title or a caption, its look, place and \
               timing kept: for a cue the transcript misheard or a name it cannot spell.\n\
-              trim {clip_id, edge: \"in\"|\"out\", to, ripple?} — one edge to an anchor, the \
-              other stays, the source moves with the edge; with ripple the later clips on the \
+              trim {clip_id, edge: \"in\"|\"out\", to, ripple?, linked?} — one edge to an anchor, the \
+              other stays, the source moves with the edge; the clip it is linked to (a \
+              picture's sound) is trimmed with it by the same amount unless linked is false; with ripple the later clips on the \
               track close up by the change (a head trim then keeps the clip's start).\n\
               split {clip_id, at} — into two, the linked sound with it.\n\
               remove {clip_id, ripple?} — off the track; with ripple the later clips close the gap.\n\
@@ -889,11 +903,12 @@ fn tool_definitions() -> Vec<Value> {
               rippled later to make room and a clip straddling the anchor is split.\n\
               add_track {kind, name?} — a video or text track on top (it becomes track 0, every \
               other index moves down by one), an audio or subtitle track at the bottom.\n\
-              captions {track?, from?, to?, max_chars?, max_lines?} — captions for what is heard \
+              captions {track?, from?, to?, max_chars?, max_lines?, replace?} — captions for what is heard \
               on the timeline, from the transcripts (run klipp_analyze first): each word lands \
               where its clip puts it, cues close at sentences, pauses and cuts, two lines of 42 \
-              by default; on the first subtitle track, made at the bottom if there is none. Do \
-              it after the speech is placed and trimmed.\n\
+              by default; on the first subtitle track, made at the bottom if there is none. The \
+              reply lists every cue to be read; correct one with set_text. Do it after the \
+              speech is placed and trimmed; after a re-cut, make them again with replace true.\n\
               audio {clip_id, volume_db?, gain_db?, pan?, fade_in?, fade_out?} — a clip's sound: \
               volume and pre-fader gain in dB, pan -1..1, fades in seconds; what is left out \
               stays. For an audio clip linked to a video clip the settings go on the video \
@@ -917,8 +932,9 @@ fn tool_definitions() -> Vec<Value> {
               as fractions of the frame inside title-safe.\n\
               set_text {clip_id, text} — the words of a title or a caption, its look, place and \
               timing kept: for a cue the transcript misheard or a name it cannot spell.\n\
-              trim {clip_id, edge: \"in\"|\"out\", to, ripple?} — one edge to an anchor, the \
-              other stays, the source moves with the edge; with ripple the later clips on the \
+              trim {clip_id, edge: \"in\"|\"out\", to, ripple?, linked?} — one edge to an anchor, the \
+              other stays, the source moves with the edge; the clip it is linked to (a \
+              picture's sound) is trimmed with it by the same amount unless linked is false; with ripple the later clips on the \
               track close up by the change (a head trim then keeps the clip's start).\n\
               split {clip_id, at} — into two, the linked sound with it.\n\
               remove {clip_id, ripple?} — off the track; with ripple the later clips close the gap.\n\
@@ -967,7 +983,8 @@ fn tool_definitions() -> Vec<Value> {
                  "width": { "type": "integer" }, "height": { "type": "integer" },
                  "fps": { "type": "number" },
                  "crf": { "type": "integer", "description": "Quality, lower is better (default 23)" },
-                 "target_lufs": { "type": "number", "description": "Loudness normalisation target, e.g. -14 for the web, -23 for broadcast" },
+                 "target_lufs": { "type": "number", "description": "Loudness normalisation target, e.g. -14 for the web, -23 for broadcast; left out, the brief's" },
+                 "burn_captions": { "type": "boolean", "description": "Captions and titles burnt into the picture; on unless you say otherwise. The reply says which it was, so you know whether a sidecar subtitle file is needed." },
              }),
              vec!["path"]),
         tool("klipp_export_status",
@@ -977,6 +994,14 @@ fn tool_definitions() -> Vec<Value> {
         tool("klipp_export_subtitles",
              "Write the sequence's subtitle and text clips as an SRT file at an absolute path.",
              json!({ "path": { "type": "string" } }), vec!["path"]),
+        tool("klipp_transcript",
+             "What is said in a media file between two times, with when, in seconds of the \
+              file: the segments, and with words true every word with its start and end, and \
+              the stretches measured silent in that range. Use it to put a cut on the edge of \
+              a word or in a silence (a cut in measured silence is clean), and to read a \
+              stretch the analysis text cut short.",
+             json!({ "media_id": { "type": "string" }, "from_secs": { "type": "number" }, "to_secs": { "type": "number" }, "words": { "type": "boolean" } }),
+             vec!["media_id"]),
         tool("klipp_brief",
              "The brief: what the piece is for. Its length, platform, picture size, loudness, \
               whether it is captioned and has music, and the cast with names and roles as \

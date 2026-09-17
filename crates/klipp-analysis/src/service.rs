@@ -28,6 +28,15 @@ pub struct Status {
     pub done: Vec<&'static str>,
     /// Analysers that failed, with why.
     pub failed: Vec<(String, String)>,
+    /// The analyser at work now, and since when: a transcript of a long
+    /// file is minutes, and "running" with nothing else said read as
+    /// stuck.
+    #[serde(default)]
+    pub current: Option<&'static str>,
+    #[serde(default)]
+    pub current_for_secs: Option<u64>,
+    #[serde(skip)]
+    current_since: Option<std::time::Instant>,
 }
 
 struct Service {
@@ -64,13 +73,16 @@ pub fn request(item: &MediaItem) -> Status {
                 state: State::Done,
                 done: wanted.iter().map(|a| a.id()).collect(),
                 failed: Vec::new(),
+                current: None,
+                current_for_secs: None,
+                current_since: None,
             };
             s.statuses.insert(item.id, st.clone());
             s.completed.push(item.id);
             return st;
         }
     }
-    let st = Status { media_id: item.id.0.to_string(), filename: item.filename.clone(), state: State::Queued, done: Vec::new(), failed: Vec::new() };
+    let st = Status { media_id: item.id.0.to_string(), filename: item.filename.clone(), state: State::Queued, done: Vec::new(), failed: Vec::new(), current: None, current_for_secs: None, current_since: None };
     s.statuses.insert(item.id, st.clone());
     s.queue.push(item.clone());
     pump(&mut s);
@@ -97,6 +109,8 @@ fn pump(s: &mut Service) {
                     st.state = if failed.is_empty() { State::Done } else { State::Failed };
                     st.done = done;
                     st.failed = failed;
+                    st.current = None;
+                    st.current_since = None;
                 }
                 if any_done {
                     s.completed.push(item.id);
@@ -124,6 +138,14 @@ fn run_all(item: &MediaItem, ctx: &AnalysisCtx) -> (Vec<&'static str>, Vec<(Stri
             done.push(a.id());
             continue;
         }
+        // Said as it goes: what is done so far, and what is running.
+        if let Ok(mut s) = service().lock() {
+            if let Some(st) = s.statuses.get_mut(&item.id) {
+                st.done = done.clone();
+                st.current = Some(a.id());
+                st.current_since = Some(std::time::Instant::now());
+            }
+        }
         let t = std::time::Instant::now();
         match a.run(item, ctx) {
             Ok(v) => match crate::store::save(&key, a.id(), a.schema_version(), &v) {
@@ -147,13 +169,19 @@ pub fn take_completed() -> Vec<MediaId> {
     std::mem::take(&mut service().lock().unwrap_or_else(|e| e.into_inner()).completed)
 }
 
+/// A status as handed out: how long the running analyser has been at it.
+fn timed(mut st: Status) -> Status {
+    st.current_for_secs = st.current_since.map(|t| t.elapsed().as_secs());
+    st
+}
+
 pub fn status(media_id: MediaId) -> Option<Status> {
-    service().lock().unwrap_or_else(|e| e.into_inner()).statuses.get(&media_id).cloned()
+    service().lock().unwrap_or_else(|e| e.into_inner()).statuses.get(&media_id).cloned().map(timed)
 }
 
 pub fn all() -> Vec<Status> {
     let s = service().lock().unwrap_or_else(|e| e.into_inner());
-    let mut v: Vec<Status> = s.statuses.values().cloned().collect();
+    let mut v: Vec<Status> = s.statuses.values().cloned().map(timed).collect();
     v.sort_by(|a, b| a.filename.cmp(&b.filename));
     v
 }

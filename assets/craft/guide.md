@@ -24,7 +24,11 @@ frames.
    shots, motion, loudness, silences and transcript;
    `klipp_search_transcripts` to find where something is said;
    `klipp_find_shots` to find shots by framing, people, objects,
-   motion, speech or length. `klipp_contact_sheet` to see a range with
+   motion, speech or length. `klipp_transcript` for a stretch of the
+   speech with every word's time and the measured silences: cut on a
+   word's edge or, better, in a silence. `klipp_analysis_status` says
+   which analyser is at work and for how long, and which models are
+   installed; a transcript takes about a third of the file's length. `klipp_contact_sheet` to see a range with
    times burnt in; `klipp_audio_excerpt` to hear one.
 3. **Plan.** `klipp_plan` with a list of ops: a dry run that says what
    each step would do and each touched clip's range afterwards.
@@ -85,13 +89,14 @@ exist until the plan runs.
 - `add_track {kind, name?}`: a video or text track on top, which
   becomes track 0 and moves every other index down by one; an audio or
   subtitle track at the bottom.
-- `captions {track?, from?, to?, max_chars?, max_lines?}`: captions for
+- `captions {track?, from?, to?, max_chars?, max_lines?, replace?}`: captions for
   what is heard on the timeline, from the transcripts. Each word lands
   where its clip puts it; a cue closes at a sentence, a pause or a cut;
   two lines of 42 characters unless you say otherwise. They go on the
-  first subtitle track, made at the bottom if there is none. Do it
+  first subtitle track, made at the bottom if there is none. The reply
+  lists every cue: read them, and correct one with `set_text`. Do it
   last, once the speech is where it will stay: a trim afterwards does
-  not move them. They say what the transcript says, mishearings and
+  not move them, and `replace: true` makes them again. They say what the transcript says, mishearings and
   all: read them, and correct a cue with `set_text`.
 - `audio {clip_id, volume_db?, gain_db?, pan?, fade_in?, fade_out?}`:
   a clip's sound. Volume and pre-fader gain in decibels, pan from -1
@@ -125,8 +130,11 @@ exist until the plan runs.
   look, place and timing stay. For the cue the transcript misheard and
   the name it cannot spell: read the captions once they are made
   (`klipp_timeline`) and put right what is wrong.
-- `trim {clip_id, edge, to, ripple?}`: the in or out edge to an anchor;
-  the other edge stays; the source moves with the edge. With `ripple`,
+- `trim {clip_id, edge, to, ripple?, linked?}`: the in or out edge to an
+  anchor; the other edge stays; the source moves with the edge. The
+  clip it is linked to, a picture's sound, is trimmed with it by the
+  same amount, so they stay in step and a J-cut keeps its lead;
+  `linked: false` moves the one clip alone. With `ripple`,
   the later clips on the track close up by the change; a head trim
   then keeps the clip's start and shortens it from the front.
 - `split {clip_id, at}`: into two, the linked sound with it.

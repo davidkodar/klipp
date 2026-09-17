@@ -31,6 +31,45 @@ fn any_font() -> Option<PathBuf> {
 /// evenly spaced, `cols` to a row, each `tile_width` wide, as a JPEG
 /// at `out`.
 #[allow(clippy::too_many_arguments)]
+/// A sheet whose tiles are far apart: the file opened once per tile and
+/// sought to its time, one frame taken from each, laid out together.
+fn sheet_by_seeking(ffmpeg: &Path, media: &Path, tiles_secs: &[f64], cols: u32, rows: u32, tile_width: u32, out: &Path) -> Result<(), String> {
+    let mut cmd = std::process::Command::new(ffmpeg);
+    cmd.args(["-hide_banner", "-nostats", "-loglevel", "error", "-y"]);
+    for t in tiles_secs {
+        cmd.arg("-ss").arg(format!("{t:.3}")).arg("-i").arg(media);
+    }
+    let w = tile_width.clamp(64, 1024);
+    let font = any_font();
+    let size = (tile_width / 14).clamp(10, 28);
+    let mut graph = String::new();
+    for (k, t) in tiles_secs.iter().enumerate() {
+        graph.push_str(&format!("[{k}:v]trim=end_frame=1,scale={w}:-2,setsar=1"));
+        if let Some(font) = &font {
+            let (h, m, sec) = ((*t / 3600.0) as u64, ((*t / 60.0) as u64) % 60, *t % 60.0);
+            graph.push_str(&format!(
+                ",drawtext=fontfile={}:text='{h:02}\\:{m:02}\\:{sec:06.3}':x=6:y=6:fontsize={size}:fontcolor=white:box=1:boxcolor=black@0.5",
+                font.display()
+            ));
+        }
+        graph.push_str(&format!("[t{k}];"));
+    }
+    for k in 0..tiles_secs.len() {
+        graph.push_str(&format!("[t{k}]"));
+    }
+    graph.push_str(&format!("concat=n={}:v=1:a=0,tile={cols}x{rows}", tiles_secs.len()));
+    let status = cmd
+        .args(["-an", "-sn", "-filter_complex", &graph, "-frames:v", "1", "-q:v", "4"])
+        .arg(out)
+        .stderr(std::process::Stdio::piped())
+        .output()
+        .map_err(|e| format!("could not run {}: {e}", ffmpeg.display()))?;
+    if !status.status.success() || !out.is_file() {
+        return Err(format!("ffmpeg could not make the sheet: {}", String::from_utf8_lossy(&status.stderr).trim()));
+    }
+    Ok(())
+}
+
 pub fn contact_sheet(
     ffmpeg: &Path,
     media: &Path,
@@ -51,6 +90,15 @@ pub fn contact_sheet(
     // rounds to the nearest tick, and each tile then shows the picture
     // half a step after the time burnt into it: half a minute on a
     // sheet of a half-hour file.
+    // Tiles more than a couple of seconds apart are fetched one seek
+    // each: the filter below decodes every frame of the span to keep one
+    // in hundreds, which on a half-hour 1440p file was over two minutes.
+    if step >= 2.0 {
+        let tiles_secs: Vec<f64> = (0..frames).map(|i| from_secs + i as f64 * step).collect();
+        sheet_by_seeking(ffmpeg, media, &tiles_secs, cols, rows, tile_width, out)?;
+        let (width, height) = image_size(out).unwrap_or((0, 0));
+        return Ok(ContactSheet { path: out.to_path_buf(), width, height, cols, rows, tile_width, tiles_secs, from_secs, to_secs });
+    }
     let mut vf = format!("fps={}/{:.4}:round=up,scale={}:-2", frames, span, tile_width.clamp(64, 1024));
     if let Some(font) = any_font() {
         vf.push_str(&format!(
