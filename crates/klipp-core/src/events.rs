@@ -928,6 +928,11 @@ pub enum AppCommand {
     SaveProject,
     SaveProjectAs { path: PathBuf },
     OpenProject { path: PathBuf },
+    /// Open `path` as it is, with no dialog: not the unsaved-changes
+    /// question (the caller has settled that) and not the autosave
+    /// recovery offer. For the control socket, where nobody is there to
+    /// answer one.
+    OpenProjectNow { path: PathBuf },
     CreateProject {
         name: String,
         location: PathBuf,
@@ -3716,6 +3721,22 @@ mod codec_hint_tests {
 pub struct ControlShared {
     pub revision: std::sync::atomic::AtomicU64,
     pub exports: std::sync::Mutex<Vec<ExportStatus>>,
+    /// The open project as the UI last saw it.
+    pub project: std::sync::Mutex<ProjectStatus>,
+}
+
+/// The open project as a client sees it.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct ProjectStatus {
+    /// Where it is saved; `None` for a project never saved.
+    pub path: Option<PathBuf>,
+    /// Changes since the last save.
+    pub dirty: bool,
+    /// How many times a project has been opened or saved this session:
+    /// a client that asks for one waits for this to move.
+    pub generation: u64,
+    /// Why the last save or open failed, until the next one succeeds.
+    pub last_error: Option<String>,
 }
 
 impl ControlShared {

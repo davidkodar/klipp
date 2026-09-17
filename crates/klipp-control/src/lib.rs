@@ -414,6 +414,35 @@ fn resolve_plan(ctx: &ControlContext, ops: &[klipp_document::ops::Op]) -> Result
     Ok((plan, revision))
 }
 
+fn project_status(ctx: &ControlContext) -> Result<klipp_core::ProjectStatus, String> {
+    Ok(ctx.shared.project.lock().map_err(|_| "project status lock poisoned")?.clone())
+}
+
+/// Wait for the UI to report a save or an open: its generation moves
+/// when one ends, well or badly.
+fn wait_for_project_event(ctx: &ControlContext, before: u64, timeout_ms: u64) -> Result<klipp_core::ProjectStatus, String> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(timeout_ms);
+    loop {
+        let now = project_status(ctx)?;
+        if now.generation != before {
+            return Ok(now);
+        }
+        if std::time::Instant::now() >= deadline {
+            return Err(format!("the app did not report back within {timeout_ms} ms; see the log"));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+}
+
+/// A project is a folder whose name ends in `.klipp`.
+fn with_klipp_extension(mut path: std::path::PathBuf) -> std::path::PathBuf {
+    if path.extension().and_then(|e| e.to_str()) != Some("klipp") {
+        let name = path.file_name().unwrap_or_default().to_string_lossy().to_string();
+        path.set_file_name(format!("{name}.klipp"));
+    }
+    path
+}
+
 /// The transcripts analysis has made, for the resolver's `captions`.
 struct AnalysedTranscripts;
 
@@ -594,6 +623,7 @@ fn handle(
             if in_batch {
                 return read_in_batch("status");
             }
+            let project = project_status(ctx)?;
             let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
             let fb = ctx.frame_buffer.lock().map_err(|_| "frame buffer lock poisoned")?;
             let perf = ctx.perf_ring.lock().ok().and_then(|r| r.latest().cloned());
@@ -602,6 +632,10 @@ fn handle(
             Ok(json!({
                 "build": build_json(),
                 "revision": ctx.shared.revision(),
+                "project": {
+                    "path": project.path.as_ref().map(|p| p.to_string_lossy().to_string()),
+                    "unsaved_changes": project.dirty,
+                },
                 "tracks": seq.tracks.len(),
                 "clips": seq.tracks.iter().map(|t| t.clips.len()).sum::<usize>(),
                 "fps": fps,
@@ -1176,6 +1210,62 @@ fn handle(
                 return Err(format!("subtitle path must be absolute (got {path:?})"));
             }
             send(AppCommand::ExportSubtitles { path: p })
+        }
+
+        ControlCommand::SaveProject { path } => {
+            if in_batch {
+                return Err("save_project is not part of a batch; send it on its own".into());
+            }
+            let before = project_status(ctx)?;
+            let target = match path {
+                Some(p) => {
+                    let p = std::path::PathBuf::from(&p);
+                    if !p.is_absolute() {
+                        return Err(format!("project path must be absolute (got {p:?})"));
+                    }
+                    with_klipp_extension(p)
+                }
+                None => before.path.clone().ok_or("the project has never been saved: give a path, a folder ending in .klipp")?,
+            };
+            send_envelope(ctx, vec![AppCommand::SaveProjectAs { path: target.clone() }], false)?;
+            let after = wait_for_project_event(ctx, before.generation, 30_000)?;
+            if let Some(e) = after.last_error {
+                return Err(e);
+            }
+            Ok(json!({ "saved": true, "path": target.to_string_lossy(), "revision": ctx.shared.revision() }))
+        }
+
+        ControlCommand::OpenProject { path, discard_changes } => {
+            if in_batch {
+                return Err("open_project is not part of a batch; send it on its own".into());
+            }
+            let p = std::path::PathBuf::from(&path);
+            if !p.is_absolute() {
+                return Err(format!("project path must be absolute (got {path:?})"));
+            }
+            if !p.exists() {
+                return Err(format!("no project at {path:?}"));
+            }
+            let before = project_status(ctx)?;
+            if before.dirty && !discard_changes {
+                return Err("the open project has unsaved changes: save_project first, or pass discard_changes true to lose them".into());
+            }
+            send_envelope(ctx, vec![AppCommand::OpenProjectNow { path: p.clone() }], false)?;
+            let after = wait_for_project_event(ctx, before.generation, 60_000)?;
+            if let Some(e) = after.last_error {
+                return Err(e);
+            }
+            let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
+            let clips: usize = seq.tracks.iter().map(|t| t.clips.len()).sum();
+            Ok(json!({
+                "opened": true,
+                "path": p.to_string_lossy(),
+                "sequence": seq.name,
+                "tracks": seq.tracks.len(),
+                "clips": clips,
+                "duration_secs": seq.total_duration().to_secs_f64(),
+                "revision": ctx.shared.revision(),
+            }))
         }
 
         ControlCommand::FrameAt { secs, path, max_width, timeout_ms } => {

@@ -103,6 +103,20 @@ fn harness() -> Harness {
                 };
                 if refused.is_none() {
                     for c in env.commands {
+                        // A save or an open reports back as the UI does: the
+                        // path, no unsaved changes, the generation moved. A
+                        // path with "broken" in it fails, to see that said.
+                        if let klipp_core::AppCommand::SaveProjectAs { path } | klipp_core::AppCommand::OpenProjectNow { path } = &c {
+                            let mut p = shared.project.lock().unwrap();
+                            p.generation += 1;
+                            if path.to_string_lossy().contains("broken") {
+                                p.last_error = Some("could not save: the disk said no".into());
+                            } else {
+                                p.path = Some(path.clone());
+                                p.dirty = false;
+                                p.last_error = None;
+                            }
+                        }
                         let _ = cmd_tx.send(c);
                     }
                     for e in env.edits {
@@ -676,4 +690,48 @@ fn plans_are_dry_runs_and_applies_are_one_envelope_of_edits() {
     assert_eq!(h.envelopes.lock().unwrap().last(), Some(&(true, 1)));
     let edits = h.edits_seen.lock().unwrap();
     assert!(matches!(edits.as_slice(), [klipp_document::history::EditCommand::LegacyBladeClip { .. }]));
+}
+
+/// A project is saved and opened over the socket with nobody to answer
+/// a dialog: a save names its path the first time, an open refuses to
+/// throw unsaved work away unless told to, and a failure comes back as
+/// one.
+#[test]
+fn a_project_is_saved_and_opened_without_a_dialog() {
+    let mut h = harness();
+    let dir = std::env::temp_dir().join(format!("klipp-control-project-{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&dir);
+    let at = |name: &str| dir.join(name).to_string_lossy().to_string();
+
+    // Never saved: status says so, and a save with no path is refused.
+    let st = h.ok(json!({ "method": "status" }));
+    assert_eq!(st["project"]["path"], json!(null));
+    let r = h.call(json!({ "method": "save_project" }));
+    assert!(r["error"].as_str().unwrap().contains("give a path"), "{r}");
+    let r = h.call(json!({ "method": "save_project", "path": "relative/cut" }));
+    assert!(r["error"].as_str().unwrap().contains("absolute"), "{r}");
+
+    // With a path: the folder gets the extension, and the next save needs none.
+    let r = h.ok(json!({ "method": "save_project", "path": at("cut") }));
+    assert!(r["path"].as_str().unwrap().ends_with("cut.klipp"), "{r}");
+    assert!(matches!(h.cmd_rx.try_iter().last(), Some(klipp_core::AppCommand::SaveProjectAs { .. })));
+    let r = h.ok(json!({ "method": "save_project" }));
+    assert!(r["path"].as_str().unwrap().ends_with("cut.klipp"), "{r}");
+    assert_eq!(h.ok(json!({ "method": "status" }))["project"]["unsaved_changes"], json!(false));
+
+    // A save that fails says so.
+    let r = h.call(json!({ "method": "save_project", "path": at("broken") }));
+    assert!(r["error"].as_str().unwrap().contains("the disk said no"), "{r}");
+
+    // Opening: the path has to exist, and unsaved work is not thrown away unasked.
+    let r = h.call(json!({ "method": "open_project", "path": at("nowhere.klipp") }));
+    assert!(r["error"].as_str().unwrap().contains("no project"), "{r}");
+    std::fs::create_dir_all(dir.join("other.klipp")).unwrap();
+    h.shared.project.lock().unwrap().dirty = true;
+    let r = h.call(json!({ "method": "open_project", "path": at("other.klipp") }));
+    assert!(r["error"].as_str().unwrap().contains("unsaved changes"), "{r}");
+    let r = h.ok(json!({ "method": "open_project", "path": at("other.klipp"), "discard_changes": true }));
+    assert_eq!(r["opened"], json!(true));
+    assert!(matches!(h.cmd_rx.try_iter().last(), Some(klipp_core::AppCommand::OpenProjectNow { .. })));
+    let _ = std::fs::remove_dir_all(&dir);
 }

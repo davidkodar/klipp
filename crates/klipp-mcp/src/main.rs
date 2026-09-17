@@ -45,6 +45,7 @@ const WRITE_TOOLS: &[&str] = &[
     "klipp_add_node", "klipp_remove_node", "klipp_connect_nodes",
     "klipp_set_node_param", "klipp_toggle_node", "klipp_set_log_format",
     "klipp_undo", "klipp_redo", "klipp_batch", "klipp_export", "klipp_export_subtitles", "klipp_apply",
+    "klipp_open_project",
 ];
 
 fn main() {
@@ -437,6 +438,18 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
         }
         "klipp_export_status" => json!({ "method": "export_status" }),
         "klipp_export_subtitles" => json!({ "method": "export_subtitles", "path": arg_str(args, "path")? }),
+        "klipp_save_project" => {
+            let mut v = json!({ "method": "save_project" });
+            if let Some(p) = args.get("path").and_then(|v| v.as_str()) {
+                v["path"] = json!(p);
+            }
+            v
+        }
+        "klipp_open_project" => json!({
+            "method": "open_project",
+            "path": arg_str(args, "path")?,
+            "discard_changes": args.get("discard_changes").and_then(|v| v.as_bool()).unwrap_or(false),
+        }),
         "klipp_frame_at" => {
             let mut v = json!({
                 "method": "frame_at",
@@ -920,6 +933,17 @@ fn tool_definitions() -> Vec<Value> {
         tool("klipp_export_subtitles",
              "Write the sequence's subtitle and text clips as an SRT file at an absolute path.",
              json!({ "path": { "type": "string" } }), vec!["path"]),
+        tool("klipp_save_project",
+             "Save the project: to an absolute path (a folder ending in .klipp, made if \
+              needed), or where it was last saved when no path is given. Save before a long \
+              piece of work and when you are done, so the user can carry on by hand. \
+              klipp_status says where the project is saved and whether it has unsaved changes.",
+             json!({ "path": { "type": "string" } }), vec![]),
+        tool("klipp_open_project",
+             "Open the project at an absolute path, replacing the one that is open. Refused \
+              while the open project has unsaved changes: save it first, or pass \
+              discard_changes true to lose them on purpose.",
+             json!({ "path": { "type": "string" }, "discard_changes": { "type": "boolean" } }), vec!["path"]),
         tool("klipp_frame_at",
              "The frame at a time on the timeline, as a PNG, without leaving the playhead \
               where it was: seeks there, waits for the frame, captures, seeks back. Use \

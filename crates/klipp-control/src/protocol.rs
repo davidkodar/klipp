@@ -273,6 +273,22 @@ pub enum ControlCommand {
     ExportStatus,
     /// Write the sequence's subtitle and text clips as an SRT file.
     ExportSubtitles { path: String },
+    /// Save the project: to `path` (a `.klipp` folder, made if needed),
+    /// or where it was last saved when `path` is left out. Refused for a
+    /// project never saved when no path is given.
+    SaveProject {
+        #[serde(default)]
+        path: Option<String>,
+    },
+    /// Open the project at `path`, replacing the one that is open.
+    /// Refused while the open one has unsaved changes, unless
+    /// `discard_changes`: nobody is there to answer a dialog, so the
+    /// caller says which it wants.
+    OpenProject {
+        path: String,
+        #[serde(default)]
+        discard_changes: bool,
+    },
     /// The frame at `secs`, as a PNG, without leaving the playhead where
     /// it was: seeks there, waits for the frame, captures, seeks back.
     FrameAt {

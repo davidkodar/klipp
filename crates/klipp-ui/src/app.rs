@@ -17446,6 +17446,10 @@ impl KlippApp {
                 self.do_save_project(&path);
                 true
             }
+            AppCommand::OpenProjectNow { path } => {
+                self.do_open_project_inner(path);
+                true
+            }
             AppCommand::OpenProject { path } => {
                 if self.state.dirty {
                     self.state.show_unsaved_dialog = true;
@@ -22313,6 +22317,17 @@ impl KlippApp {
     /// Write the project to `path`. `true` when it is on disk; a failure
     /// is shown to the user, not just logged — the caller may be about to
     /// close the project on the strength of this.
+    /// Tell the control socket how a save or an open went: it waits for
+    /// the generation to move, and reads the path and the error then.
+    fn note_project_event(&self, error: Option<String>) {
+        if let Ok(mut project) = self.state.control_shared.project.lock() {
+            project.path = self.state.project_path.clone();
+            project.dirty = self.state.dirty;
+            project.generation += 1;
+            project.last_error = error;
+        }
+    }
+
     fn do_save_project(&mut self, path: &std::path::Path) -> bool {
         let color = klipp_project::ColorSettings {
             global_lut_path: self.state.global_lut_path.clone(),
@@ -22333,6 +22348,7 @@ impl KlippApp {
                 self.state.dirty = false;
                 self.state.reset_ops_since_save();
                 tracing::info!("Project saved to {:?}", path);
+                self.note_project_event(None);
                 let rp = crate::prefs::RecentProject {
                     path: path.to_path_buf(),
                     name: self.state.sequences[self.state.active_sequence_idx].name.clone(),
@@ -22369,6 +22385,7 @@ impl KlippApp {
             }
             Err(e) => {
                 tracing::error!("Failed to save project: {e}");
+                self.note_project_event(Some(format!("could not save: {e}")));
                 self.state.toast.show(format!("Could not save the project: {e}"));
                 false
             }
@@ -22652,6 +22669,7 @@ impl KlippApp {
                 }
 
                 tracing::info!("Project loaded from {:?}", path);
+                self.note_project_event(None);
 
                 // Start file watcher for all media paths
                 let media_paths: Vec<std::path::PathBuf> = self.state.media_pool.all()
@@ -22665,6 +22683,7 @@ impl KlippApp {
             }
             Err(e) => {
                 tracing::error!("Failed to load project: {e}");
+                self.note_project_event(Some(format!("could not open: {e}")));
             }
         }
     }
@@ -28311,6 +28330,11 @@ impl KlippApp {
         self.state.render_queue.max_parallel =
             self.prefs.export.parallel_render_jobs.max(1);
         let events = self.state.render_queue.poll();
+        // The project as the control socket sees it.
+        if let Ok(mut project) = self.state.control_shared.project.lock() {
+            project.path = self.state.project_path.clone();
+            project.dirty = self.state.dirty;
+        }
         // The queue as the control socket sees it, refreshed every frame
         // the queue is polled; cheap, the queue is short.
         if let Ok(mut exports) = self.state.control_shared.exports.lock() {
