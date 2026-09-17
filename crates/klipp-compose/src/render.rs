@@ -1258,14 +1258,31 @@ impl Renderer {
             ClipKind::Media { .. } if fx_on_gpu => {
                 let at = source_secs(c, time, fps);
                 let Some(f) = src.frame(c, at, width, height) else { return Ok(None) };
-                if (f.width, f.height) != (width, height) {
-                    return Err("source frame is not the render size");
-                }
-                match f.pixels {
+                // A source of another size is fitted into the frame, as on
+                // the CPU: on the GPU when the source can seed at another
+                // size, else fitted here and sent up. It used to be
+                // declined, which sent every frame with a 1440p overlay
+                // on a 1080p timeline down the CPU path.
+                let other_size = (f.width, f.height) != (width, height);
+                let pixels = match f.pixels {
+                    SourcePixels::Gpu(g) if other_size => {
+                        SourcePixels::Gpu(Arc::new(FittedGpu { inner: g, w: f.width, h: f.height, ow: width, oh: height, fitted: std::sync::OnceLock::new() }))
+                    }
+                    SourcePixels::Linear(p) if other_size => SourcePixels::Linear(fit(p, f.width, f.height, width, height)),
+                    SourcePixels::SceneReferred { .. } if other_size => return Err("scene-referred source of another size"),
+                    other => other,
+                };
+                match pixels {
                     SourcePixels::Gpu(g) if c.node_graph.is_identity() => {
-                        g.seed(&mut self.executor, width, height)
-                            && self.executor.take_seeded_input_as_output()
-                            && self.executor.gpu_pipeline_or_init().is_some_and(|p| p.stack_layer_from_chain(slot, true))
+                        if g.seed(&mut self.executor, width, height) {
+                            self.executor.take_seeded_input_as_output()
+                                && self.executor.gpu_pipeline_or_init().is_some_and(|p| p.stack_layer_from_chain(slot, true))
+                        } else if other_size {
+                            let fitted = g.read();
+                            self.executor.gpu_pipeline_or_init().is_some_and(|p| p.stack_layer_from_linear(slot, &fitted))
+                        } else {
+                            false
+                        }
                     }
                     SourcePixels::Gpu(g) => {
                         let t = Instant::now();
@@ -2432,6 +2449,28 @@ pub fn matte_channel(ch: klipp_nodes::params::MatteChannel) -> klipp_effects::tr
         N::Red => E::Red,
         N::Green => E::Green,
         N::Blue => E::Blue,
+    }
+}
+
+/// A GPU frame of another size than the render, standing in for one of
+/// the render's size: seeded, the source fits it on the GPU; read, it
+/// is fitted here, once.
+struct FittedGpu {
+    inner: Arc<dyn GpuPixels>,
+    w: u32,
+    h: u32,
+    ow: u32,
+    oh: u32,
+    fitted: std::sync::OnceLock<Arc<Vec<f32>>>,
+}
+
+impl GpuPixels for FittedGpu {
+    fn seed(&self, exec: &mut klipp_nodes::GraphExecutor, width: u32, height: u32) -> bool {
+        (width, height) == (self.ow, self.oh) && self.inner.seed(exec, width, height)
+    }
+
+    fn read(&self) -> Arc<Vec<f32>> {
+        Arc::clone(self.fitted.get_or_init(|| fit(self.inner.read(), self.w, self.h, self.ow, self.oh)))
     }
 }
 

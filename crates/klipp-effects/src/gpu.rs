@@ -271,6 +271,9 @@ pub struct GpuEffectsPipeline {
     // slot. Enables phase 4d's GPU-resident decode → grade path —
     // without this bridge the grade chain can only consume CPU data.
     bridge_u8_to_linear_pipeline: wgpu::ComputePipeline,
+    /// [`Self::bridge_u8_fit_to_linear_into_chain`]: the same decode, from
+    /// a frame of another size, fitted into the chain's.
+    bridge_u8_fit_pipeline: wgpu::ComputePipeline,
     /// The same bridge at 16 bits a sample, with the source primaries
     /// folded in: sRGB-encoded RGBA64 → linear working-space f32. This
     /// is how a software-decoded export frame reaches the chain, since
@@ -1003,6 +1006,9 @@ impl GpuEffectsPipeline {
         let bridge_u8_to_linear_pipeline = create_pipeline(
             &device, &pipeline_layout, "bridge_u8_to_linear", SHADER_U8_TO_LINEAR,
         );
+        let bridge_u8_fit_pipeline = create_pipeline(
+            &device, &pipeline_layout, "bridge_u8_fit_to_linear", SHADER_U8_FIT_TO_LINEAR,
+        );
         // Same again at 16 bits a sample, for the export's software-decoded
         // frames — two u32 of input per pixel instead of one.
         let bridge_rgba64_to_linear_pipeline = create_pipeline(
@@ -1310,6 +1316,7 @@ impl GpuEffectsPipeline {
             transition_pipeline,
             bridge_u8_pipeline,
             bridge_u8_to_linear_pipeline,
+            bridge_u8_fit_pipeline,
             bridge_rgba64_to_linear_pipeline,
             linear_to_yuv420_pipeline,
             aces_rec709_pipeline,
@@ -2165,6 +2172,56 @@ impl GpuEffectsPipeline {
                 &wgpu::ComputePassDescriptor { label: None, timestamp_writes: None },
             );
             pass.set_pipeline(&self.bridge_u8_to_linear_pipeline);
+            pass.set_bind_group(0, &bg, &[]);
+            pass.dispatch_workgroups(workgroups, 1, 1);
+        }
+        self.submit(encoder);
+        true
+    }
+
+    /// [`Self::bridge_u8_to_linear_into_chain`] from a frame of another
+    /// size: `src_w` by `src_h` sRGB bytes fitted into the chain's
+    /// `width` by `height` the way the CPU compositor fits a source —
+    /// one scale factor, centred, the rest transparent; an area average
+    /// when shrinking by two or more, bilinear otherwise, both in linear
+    /// light.
+    ///
+    /// A 1440p overlay on a 1080p timeline used to send every frame it
+    /// was on down to the CPU path, a readback and an upload each: 24 ms
+    /// a frame against one.
+    pub fn bridge_u8_fit_to_linear_into_chain(
+        &mut self,
+        input_u8: &wgpu::Buffer,
+        src_w: u32,
+        src_h: u32,
+        width: u32,
+        height: u32,
+    ) -> bool {
+        if self.is_device_lost() || src_w == 0 || src_h == 0 || width == 0 || height == 0 {
+            return false;
+        }
+        if input_u8.size() < (src_w as u64) * (src_h as u64) * 4 {
+            return false;
+        }
+        let pixel_count = (width as u64) * (height as u64);
+        self.ensure_buffers(pixel_count * 16);
+        let (dst_w, dst_h, x_off, y_off) = fit_rect(src_w, src_h, width, height);
+        let buf_a = self.buf_a.as_ref().expect("ensure_buffers established buf_a");
+        self.write_params(&BridgeU8FitParams { src_w, src_h, out_w: width, out_h: height, dst_w, dst_h, x_off, y_off });
+        let bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("bridge_u8_fit_bg"),
+            layout: &self.bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: input_u8.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: buf_a.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 2, resource: self.params_binding() },
+            ],
+        });
+        let workgroups = (pixel_count as u32).div_ceil(WORKGROUP_SIZE);
+        let mut encoder = self.encoder(Some("bridge_u8_fit_to_linear"));
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: None, timestamp_writes: None });
+            pass.set_pipeline(&self.bridge_u8_fit_pipeline);
             pass.set_bind_group(0, &bg, &[]);
             pass.dispatch_workgroups(workgroups, 1, 1);
         }
@@ -6886,6 +6943,30 @@ struct BridgeU8Params {
     _pad1: u32,
 }
 
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct BridgeU8FitParams {
+    src_w: u32,
+    src_h: u32,
+    out_w: u32,
+    out_h: u32,
+    dst_w: u32,
+    dst_h: u32,
+    x_off: u32,
+    y_off: u32,
+}
+
+/// Where a `w` by `h` picture sits when fitted into `ow` by `oh`: its
+/// size there and its offset, in whole output pixels. One factor, so
+/// the shape is kept; centred. The CPU compositor's arithmetic, which
+/// the GPU fit has to land on to the pixel.
+pub fn fit_rect(w: u32, h: u32, ow: u32, oh: u32) -> (u32, u32, u32, u32) {
+    let scale = (ow as f32 / w as f32).min(oh as f32 / h as f32);
+    let dw = ((w as f32 * scale).round() as u32).clamp(1, ow);
+    let dh = ((h as f32 * scale).round() as u32).clamp(1, oh);
+    (dw, dh, (ow - dw) / 2, (oh - dh) / 2)
+}
+
 /// How a frame has to be laid out for the encoder that will take it.
 ///
 /// One value rather than five arguments: it travels from the encoder
@@ -9283,6 +9364,79 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let a = f32(a_u) / 255.0;
     // sRGB transfer on RGB; alpha stays linear per sRGB spec.
     output[idx] = pack(vec4<f32>(srgb_to_linear_c(r), srgb_to_linear_c(g), srgb_to_linear_c(b), a));
+}
+"
+);
+
+// A frame of another size fitted into the chain's, as the CPU
+// compositor's `fit` does: outside the picture transparent; inside, an
+// area average of the source pixels an output pixel covers when the
+// source is at least twice the size both ways, bilinear otherwise, on
+// linear values with straight alpha.
+const SHADER_U8_FIT_TO_LINEAR: &str = concat!(
+    shader_pixel_storage_wgsl!(),
+    "
+struct Params {
+    src_w: u32, src_h: u32, out_w: u32, out_h: u32,
+    dst_w: u32, dst_h: u32, x_off: u32, y_off: u32,
+}
+@group(0) @binding(0) var<storage, read> input: array<u32>;
+@group(0) @binding(1) var<storage, read_write> output: array<vec4<f32>>;
+@group(0) @binding(2) var<uniform> params: Params;
+
+fn srgb_to_linear_c(c: f32) -> f32 {
+    if (c <= 0.04045) { return c / 12.92; }
+    return pow((c + 0.055) / 1.055, 2.4);
+}
+
+fn tap(x: u32, y: u32) -> vec4<f32> {
+    let packed = input[y * params.src_w + x];
+    let r = f32((packed >> 0u) & 0xFFu) / 255.0;
+    let g = f32((packed >> 8u) & 0xFFu) / 255.0;
+    let b = f32((packed >> 16u) & 0xFFu) / 255.0;
+    let a = f32((packed >> 24u) & 0xFFu) / 255.0;
+    return vec4<f32>(srgb_to_linear_c(r), srgb_to_linear_c(g), srgb_to_linear_c(b), a);
+}
+
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let idx = gid.x;
+    if idx >= params.out_w * params.out_h { return; }
+    let ox = idx % params.out_w;
+    let oy = idx / params.out_w;
+    if ox < params.x_off || ox >= params.x_off + params.dst_w || oy < params.y_off || oy >= params.y_off + params.dst_h {
+        output[idx] = pack(vec4<f32>(0.0));
+        return;
+    }
+    let x = ox - params.x_off;
+    let y = oy - params.y_off;
+    let sx = f32(params.src_w) / f32(params.dst_w);
+    let sy = f32(params.src_h) / f32(params.dst_h);
+    if sx >= 2.0 && sy >= 2.0 {
+        let x0 = min(u32(f32(x) * sx), params.src_w - 1u);
+        let x1 = clamp(u32(f32(x + 1u) * sx), x0 + 1u, params.src_w);
+        let y0 = min(u32(f32(y) * sy), params.src_h - 1u);
+        let y1 = clamp(u32(f32(y + 1u) * sy), y0 + 1u, params.src_h);
+        var acc = vec4<f32>(0.0);
+        for (var yy = y0; yy < y1; yy = yy + 1u) {
+            for (var xx = x0; xx < x1; xx = xx + 1u) {
+                acc = acc + tap(xx, yy);
+            }
+        }
+        output[idx] = pack(acc / f32((y1 - y0) * (x1 - x0)));
+        return;
+    }
+    let fx = clamp((f32(x) + 0.5) * sx - 0.5, 0.0, f32(params.src_w - 1u));
+    let fy = clamp((f32(y) + 0.5) * sy - 0.5, 0.0, f32(params.src_h - 1u));
+    let xa = u32(floor(fx));
+    let ya = u32(floor(fy));
+    let xb = min(xa + 1u, params.src_w - 1u);
+    let yb = min(ya + 1u, params.src_h - 1u);
+    let tx = fract(fx);
+    let ty = fract(fy);
+    let top = mix(tap(xa, ya), tap(xb, ya), tx);
+    let bot = mix(tap(xa, yb), tap(xb, yb), tx);
+    output[idx] = pack(mix(top, bot, ty));
 }
 "
 );
@@ -15219,6 +15373,7 @@ pub fn shader_sources() -> Vec<(&'static str, &'static str)> {
         ("SHADER_SCALE_ALPHA", SHADER_SCALE_ALPHA),
         ("SHADER_U8_TO_TEXTURE", SHADER_U8_TO_TEXTURE),
         ("SHADER_SPRITE_PLACE", SHADER_SPRITE_PLACE),
+        ("SHADER_U8_FIT_TO_LINEAR", SHADER_U8_FIT_TO_LINEAR),
     ]
 }
 

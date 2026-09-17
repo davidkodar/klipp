@@ -275,3 +275,75 @@ fn a_rolling_title_placed_on_the_gpu_matches() {
         assert!(d <= 1, "rolling title at {t}s: GPU differs from the CPU renderer by {d} levels");
     }
 }
+
+/// A decoded frame on the GPU that is not the timeline's size: sRGB
+/// bytes `w` by `h`, seeding by the GPU fit, read back as linear.
+struct OtherSize {
+    srgb: Arc<Vec<u8>>,
+    w: u32,
+    h: u32,
+}
+
+impl klipp_compose::GpuPixels for OtherSize {
+    fn seed(&self, exec: &mut klipp_nodes::GraphExecutor, width: u32, height: u32) -> bool {
+        exec.prime_chain_fit_from_srgb8(&self.srgb, self.w, self.h, width, height)
+    }
+
+    fn read(&self) -> Arc<Vec<f32>> {
+        Arc::new(klipp_effects::srgb_u8_to_linear_f32_rgba(&self.srgb))
+    }
+}
+
+/// A base of the timeline's size on the CPU and one clip above it from
+/// the GPU at its own size.
+struct Mixed {
+    base: (ClipId, Arc<Vec<f32>>),
+    top: (ClipId, Arc<Vec<u8>>, u32, u32),
+}
+
+impl FrameSource for Mixed {
+    fn frame(&mut self, clip: &Clip, _secs: f64, width: u32, height: u32) -> Option<SourceFrame> {
+        if clip.id == self.base.0 {
+            return Some(SourceFrame { pixels: SourcePixels::Linear(Arc::clone(&self.base.1)), width, height, pts: None });
+        }
+        let (_, srgb, w, h) = &self.top;
+        Some(SourceFrame {
+            pixels: SourcePixels::Gpu(Arc::new(OtherSize { srgb: Arc::clone(srgb), w: *w, h: *h })),
+            width: *w,
+            height: *h,
+            pts: None,
+        })
+    }
+}
+
+/// A clip of another size over one of the timeline's is fitted on the
+/// GPU as the CPU fits it: half again as large (bilinear), four times
+/// as large (an area average), and portrait (bars either side). The
+/// stack used to decline such a frame, which sent a 1440p overlay on a
+/// 1080p timeline down the CPU path every frame.
+#[test]
+fn a_layer_of_another_size_is_fitted_on_the_gpu() {
+    for (w, h) in [(480u32, 270u32), (1280, 720), (90, 160), (200, 180)] {
+        let srgb: Vec<u8> = (0..h)
+            .flat_map(|y| (0..w).flat_map(move |x| [(x * 255 / w) as u8, (y * 255 / h) as u8, ((x + y) * 7 % 256) as u8, 255]))
+            .collect();
+        let mut seq = Sequence::new_default();
+        seq.resolution = klipp_core::Resolution { width: W, height: H };
+        let mut top = Track::new("V2", TrackKind::Video);
+        let t = clip(ClipKind::Media { media_id: klipp_core::MediaId::new() }, 0.0, 10.0);
+        let mut base = Track::new("V1", TrackKind::Video);
+        let b = clip(ClipKind::Media { media_id: klipp_core::MediaId::new() }, 0.0, 10.0);
+        let mut src = Mixed { base: (b.id, picture(0.0)), top: (t.id, Arc::new(srgb), w, h) };
+        top.clips = vec![t];
+        base.clips = vec![b];
+        seq.tracks = vec![top, base];
+
+        let mut r = renderer();
+        let Some((gpu, _)) = r.render_display_u8_on_gpu(&seq, tc(1.0), W, H, &mut src, RenderOptions::default()) else {
+            panic!("{w}x{h}: the GPU stack declined a layer of another size");
+        };
+        let cpu = display(&r.render(&seq, tc(1.0), W, H, &mut src, RenderOptions::default()));
+        let d = worst(&cpu, &gpu);
+        assert!(d <= 1, "{w}x{h}: GPU fit differs from the CPU fit by {d} levels");
+    }
+}

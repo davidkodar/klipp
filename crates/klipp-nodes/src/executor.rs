@@ -685,6 +685,27 @@ impl GraphExecutor {
         ok
     }
 
+    /// [`Self::prime_chain_from_gpu_u8_buffer`] from a frame of another
+    /// size, fitted into `width` by `height` on the GPU as the compositor
+    /// fits a source on the CPU.
+    pub fn prime_chain_fit_from_gpu_u8_buffer(
+        &mut self,
+        input_u8: &wgpu::Buffer,
+        src_width: u32,
+        src_height: u32,
+        width: u32,
+        height: u32,
+    ) -> bool {
+        self.ensure_gpu();
+        let Some(gpu) = self.gpu.as_mut() else { return false };
+        let ok = gpu.bridge_u8_fit_to_linear_into_chain(input_u8, src_width, src_height, width, height);
+        if ok {
+            self.gpu_chain_preseeded = true;
+            self.gpu_chain_preseed_dims = Some((width, height));
+        }
+        ok
+    }
+
     /// [`Self::prime_chain_from_gpu_hdr10_buffer`] from codes in memory:
     /// uploaded to a buffer the executor keeps, and not again while the
     /// same codes (the same `Arc`) come back — a paused frame regraded at
@@ -720,6 +741,21 @@ impl GraphExecutor {
         }
         let (Some(gpu), Some(seed)) = (self.gpu.as_mut(), self.uploaded_seed.as_ref()) else { return false };
         let ok = gpu.bridge_u8_to_linear_into_chain(&seed.buffer, width, height);
+        if ok {
+            self.gpu_chain_preseeded = true;
+            self.gpu_chain_preseed_dims = Some((width, height));
+        }
+        ok
+    }
+
+    /// [`Self::prime_chain_from_srgb8`] from a frame of another size,
+    /// fitted into `width` by `height` on the GPU.
+    pub fn prime_chain_fit_from_srgb8(&mut self, rgba: &Arc<Vec<u8>>, src_width: u32, src_height: u32, width: u32, height: u32) -> bool {
+        if rgba.len() != (src_width as usize) * (src_height as usize) * 4 || !self.upload_seed(SeedPixels::Srgb8(Arc::clone(rgba))) {
+            return false;
+        }
+        let (Some(gpu), Some(seed)) = (self.gpu.as_mut(), self.uploaded_seed.as_ref()) else { return false };
+        let ok = gpu.bridge_u8_fit_to_linear_into_chain(&seed.buffer, src_width, src_height, width, height);
         if ok {
             self.gpu_chain_preseeded = true;
             self.gpu_chain_preseed_dims = Some((width, height));

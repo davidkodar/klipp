@@ -63,8 +63,13 @@ impl GpuHeld {
 
 impl klipp_compose::GpuPixels for GpuHeld {
     fn seed(&self, exec: &mut klipp_nodes::GraphExecutor, width: u32, height: u32) -> bool {
-        (self.frame.width, self.frame.height) == (width, height)
-            && exec.prime_chain_from_gpu_u8_buffer(&self.frame.rgba_buffer, width, height)
+        if (self.frame.width, self.frame.height) == (width, height) {
+            exec.prime_chain_from_gpu_u8_buffer(&self.frame.rgba_buffer, width, height)
+        } else {
+            // A source of another size — a 1440p clip over a 1080p
+            // timeline — is fitted where it is, not read back to be.
+            exec.prime_chain_fit_from_gpu_u8_buffer(&self.frame.rgba_buffer, self.frame.width, self.frame.height, width, height)
+        }
     }
 
     fn read(&self) -> Arc<Vec<f32>> {
