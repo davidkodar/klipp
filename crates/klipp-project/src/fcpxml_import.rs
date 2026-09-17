@@ -574,6 +574,7 @@ pub fn parse_fcpxml(xml: &str) -> Result<ImportResult, FcpxmlImportError> {
                 out_point: None,
                 markers: Vec::new(),
                 last_playhead: None,
+                brief: None,
             };
             return Ok(ImportResult {
                 sequence,
@@ -641,6 +642,7 @@ pub fn parse_fcpxml(xml: &str) -> Result<ImportResult, FcpxmlImportError> {
         out_point: None,
         markers: collect_sequence_markers(seq_node, seq_fps),
         last_playhead: None,
+        brief: None,
     };
 
     // Touch MarkerId so it isn't a dead import if no sequence markers are

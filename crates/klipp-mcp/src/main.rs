@@ -438,6 +438,9 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
         }
         "klipp_export_status" => json!({ "method": "export_status" }),
         "klipp_export_subtitles" => json!({ "method": "export_subtitles", "path": arg_str(args, "path")? }),
+        "klipp_brief" => json!({ "method": "brief" }),
+        "klipp_set_brief" => json!({ "method": "set_brief", "brief": args.get("brief").cloned().ok_or("missing required argument: brief")? }),
+        "klipp_check" => json!({ "method": "check" }),
         "klipp_save_project" => {
             let mut v = json!({ "method": "save_project" });
             if let Some(p) = args.get("path").and_then(|v| v.as_str()) {
@@ -933,6 +936,30 @@ fn tool_definitions() -> Vec<Value> {
         tool("klipp_export_subtitles",
              "Write the sequence's subtitle and text clips as an SRT file at an absolute path.",
              json!({ "path": { "type": "string" } }), vec!["path"]),
+        tool("klipp_brief",
+             "The brief: what the piece is for. Its length, platform, picture size, loudness, \
+              whether it is captioned and has music, and the cast with names and roles as \
+              they should appear on screen. Read it before you plan; if there is none, ask \
+              the user for what it should say and set it.",
+             json!({}), vec![]),
+        tool("klipp_set_brief",
+             "Replace the brief, as one undo step. A brief is an object with any of: title, \
+              about (what the piece is about), tone, platform, target_secs, width and height \
+              (the delivery's picture), loudness_lufs (about -14 for the web, -23 for \
+              broadcast), captions (bool), music (bool), cast (a list of {name, role, \
+              described}), notes. What is left out asks for nothing. Names in lower thirds \
+              come from the cast, klipp_check holds the piece to the brief, and an export \
+              that names no size or loudness takes the brief's.",
+             json!({ "brief": { "type": "object" } }), vec!["brief"]),
+        tool("klipp_check",
+             "The check before delivery, as an editor would watch it once: black and flash \
+              frames, jump cuts with nothing over the join, titles across a cut or too short \
+              to read, captions under a lower third, sound cut inside a word, music left at \
+              full level under speech, picture and sound ending apart, offline media, and \
+              the brief: length, size, captions, cast, music. Every finding says where, \
+              what, and what would put it right. Changes nothing. Run it before klipp_export, \
+              fix the errors, decide about the warnings.",
+             json!({}), vec![]),
         tool("klipp_save_project",
              "Save the project: to an absolute path (a folder ending in .klipp, made if \
               needed), or where it was last saved when no path is given. Save before a long \

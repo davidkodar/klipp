@@ -36,8 +36,9 @@ The brief says: length, tone, what the piece is about, who is who.
    its fades, then `duck` it under the speech. `audio` with a short
    `fade_in` and `fade_out` on a select whose cut is not on a silence.
    Loudness to the delivery.
-8. **Check.** `klipp_contact_sheet` over each join; `klipp_frame_at` on
-   the titles; `klipp_timeline` for the whole.
+8. **Check.** `klipp_check` for what the rules can see;
+   `klipp_contact_sheet` over each join and `klipp_frame_at` on the
+   titles for what only eyes can.
 9. **Deliver.** `klipp_export` with the brief's loudness;
    `klipp_export_subtitles`; read `klipp_export_status` until complete.
 

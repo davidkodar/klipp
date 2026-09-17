@@ -60,6 +60,9 @@ impl DocumentView<'_> {
                     seq.renumber_tracks();
                 }
             }
+            EditCommand::SetBrief { old, .. } => {
+                self.sequences[self.active].brief = old.as_deref().cloned();
+            }
             EditCommand::AddTitleClip { clip, track_index, created_track } => {
                 let seq = &mut self.sequences[self.active];
                 if *created_track {
@@ -592,6 +595,9 @@ impl DocumentView<'_> {
                 let idx = (*index).min(seq.tracks.len());
                 seq.tracks.insert(idx, track.clone());
                 seq.renumber_tracks();
+            }
+            EditCommand::SetBrief { new, .. } => {
+                self.sequences[self.active].brief = new.as_deref().cloned();
             }
             EditCommand::AddTitleClip { clip, track_index, created_track } => {
                 let seq = &mut self.sequences[self.active];

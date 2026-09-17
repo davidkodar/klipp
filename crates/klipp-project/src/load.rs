@@ -588,6 +588,7 @@ fn load_sequence_from_json(seq_json: &SequenceJson, project_dir: &Path) -> Resul
             })
         }).collect(),
         last_playhead: seq_json.last_playhead.as_ref().map(|tc| RationalTime { value: tc.value, rate: tc.rate }),
+        brief: seq_json.brief.clone(),
     };
     // A file from before roles were saved carries none: give it the roles
     // a new sequence gets, which is what it had when it was made and what

@@ -273,6 +273,14 @@ pub enum ControlCommand {
     ExportStatus,
     /// Write the sequence's subtitle and text clips as an SRT file.
     ExportSubtitles { path: String },
+    /// The sequence's brief: what the piece is for.
+    Brief,
+    /// Replace the brief, as one undo step. Fields left out ask for nothing.
+    SetBrief { brief: klipp_timeline::Brief },
+    /// The check before delivery: the timeline read against the craft's
+    /// rules and the brief, every finding with where, what and what
+    /// would put it right. Changes nothing.
+    Check,
     /// Save the project: to `path` (a `.klipp` folder, made if needed),
     /// or where it was last saved when `path` is left out. Refused for a
     /// project never saved when no path is given.

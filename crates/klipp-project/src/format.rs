@@ -97,6 +97,9 @@ pub struct SequenceJson {
     /// Per-project skim transcode override. None = use global pref.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auto_generate_skim: Option<bool>,
+    /// What the piece is for. Absent in projects saved before there was one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub brief: Option<klipp_timeline::Brief>,
 }
 
 fn default_header_width() -> f32 { 160.0 }

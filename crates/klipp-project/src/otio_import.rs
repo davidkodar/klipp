@@ -784,6 +784,7 @@ pub fn load_otio(path: &Path) -> Result<ImportResult, OtioImportError> {
         out_point: None,
         markers: sequence_markers,
         last_playhead: None,
+        brief: None,
     };
 
     tracing::info!(

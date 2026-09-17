@@ -1130,6 +1130,58 @@ fn handle(
             Ok(v)
         }
 
+        ControlCommand::Brief => {
+            if in_batch {
+                return read_in_batch("brief");
+            }
+            let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
+            Ok(match &seq.brief {
+                Some(b) => json!({ "brief": b, "text": b.text() }),
+                None => json!({ "brief": null, "text": "There is no brief. Set one with set_brief: what the piece is about, its length, platform, loudness, whether it is captioned, and the cast with names and roles as they should appear." }),
+            })
+        }
+
+        ControlCommand::SetBrief { brief } => {
+            if in_batch {
+                return Err("set_brief is its own undo step; send it on its own".into());
+            }
+            if let Some(t) = brief.target_secs {
+                if !t.is_finite() || t <= 0.0 {
+                    return Err(format!("a length of {t} s is not a length"));
+                }
+            }
+            if let Some(l) = brief.loudness_lufs {
+                if !(-40.0..=-5.0).contains(&l) {
+                    return Err(format!("{l} LUFS is not a delivery loudness; the web is about -14, broadcast -23"));
+                }
+            }
+            if brief.width.is_some() != brief.height.is_some() {
+                return Err("give both width and height, or neither".into());
+            }
+            if let Some(dup) = brief.cast.iter().enumerate().find(|(i, c)| brief.cast[..*i].iter().any(|d| d.name.trim().eq_ignore_ascii_case(c.name.trim()))) {
+                return Err(format!("{} is in the cast twice", dup.1.name));
+            }
+            if brief.cast.iter().any(|c| c.name.trim().is_empty()) {
+                return Err("a cast member needs a name".into());
+            }
+            let old = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?.brief.clone();
+            let text = brief.text();
+            let edit = klipp_document::history::EditCommand::SetBrief { old: old.map(Box::new), new: Some(Box::new(brief)) };
+            let mut v = send_full_envelope(ctx, Vec::new(), vec![edit], true, None, Some("Set Brief".into()))?;
+            v["text"] = json!(text);
+            Ok(v)
+        }
+
+        ControlCommand::Check => {
+            if in_batch {
+                return read_in_batch("check");
+            }
+            let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
+            let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
+            let report = klipp_document::qc::check(&seq, &pool, &AnalysedTranscripts);
+            Ok(json!({ "text": report.text(), "errors": report.errors, "warnings": report.warnings, "findings": report.findings, "duration_secs": report.duration_secs, "revision": ctx.shared.revision() }))
+        }
+
         ControlCommand::Undo => send(AppCommand::Undo),
         ControlCommand::Redo => send(AppCommand::Redo),
 
@@ -1171,8 +1223,15 @@ fn handle(
             if pool.all().any(|m| m.path == out) {
                 return Err(format!("{path} is a media file of this project; an export cannot overwrite its own source"));
             }
+            // What the export does not say for itself, the brief says.
+            let brief = seq.brief.clone();
             drop(pool);
             drop(seq);
+            let (width, height) = match (width, height, brief.as_ref()) {
+                (None, None, Some(b)) => (b.width, b.height),
+                _ => (width, height),
+            };
+            let target_lufs = target_lufs.or(brief.as_ref().and_then(|b| b.loudness_lufs));
             let format = match out.extension().and_then(|e| e.to_str()).map(|e| e.to_ascii_lowercase()).as_deref() {
                 Some("mp4") | None => klipp_core::ExportFormat::Mp4,
                 Some("mov") => klipp_core::ExportFormat::Mov,

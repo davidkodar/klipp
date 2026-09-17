@@ -43,6 +43,7 @@
 //!   duplicates `MagneticEditor` logic and bypasses undo — prefer the
 //!   magnetic entry points for any new call.
 
+mod brief;
 mod clip_kind;
 pub mod flatten;
 pub mod insert_edit;
@@ -61,6 +62,7 @@ pub use clip_kind::{
     TitleAsset,
     TitleBackground, TitleData, TitleObject, TitleObjectContent, TitleObjectId, TitlePosition,
     TitleShadow, GeneratorData, ImageFit, ImageLayer};
+pub use brief::{Brief, CastMember};
 pub use marker::Marker;
 pub use sequence::{
     effective_timeline_duration_for_keyframes, speed_at_keyframes, speed_integral_keyframes,

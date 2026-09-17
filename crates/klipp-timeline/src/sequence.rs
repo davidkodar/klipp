@@ -62,6 +62,9 @@ pub struct Sequence {
     /// Remembered playhead position for multi-sequence tab switching.
     #[serde(default)]
     pub last_playhead: Option<RationalTime>,
+    /// What the piece is for; see [`crate::Brief`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub brief: Option<crate::Brief>,
 }
 
 impl Sequence {
@@ -84,6 +87,7 @@ impl Sequence {
             out_point: None,
             markers: Vec::new(),
             last_playhead: None,
+            brief: None,
         }
     }
 
@@ -2973,6 +2977,7 @@ mod tests {
             out_point: None,
             markers: Vec::new(),
             last_playhead: None,
+            brief: None,
         }
     }
 

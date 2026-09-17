@@ -331,6 +331,7 @@ mod tests {
             out_point: None,
             markers: Vec::new(),
             last_playhead: None,
+            brief: None,
         }
     }
 

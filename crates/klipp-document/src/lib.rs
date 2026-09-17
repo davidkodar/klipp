@@ -24,3 +24,4 @@ pub mod apply;
 pub mod control;
 pub mod history;
 pub mod ops;
+pub mod qc;

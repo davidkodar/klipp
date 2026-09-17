@@ -862,14 +862,14 @@ fn db_to_linear(db: f32) -> f32 {
     10f32.powf(db / 20.0)
 }
 
-fn linear_to_db(v: f32) -> f32 {
+pub(crate) fn linear_to_db(v: f32) -> f32 {
     if v <= 0.0 { f32::NEG_INFINITY } else { 20.0 * v.log10() }
 }
 
 /// The clip whose sound settings `clip` plays with: the video clip it
 /// is linked to when it has one, else itself. Playback and the render
 /// read them there.
-fn sound_settings_clip<'a>(seq: &'a Sequence, clip: &'a Clip) -> &'a Clip {
+pub(crate) fn sound_settings_clip<'a>(seq: &'a Sequence, clip: &'a Clip) -> &'a Clip {
     clip.linked_clip_id
         .and_then(|lid| seq.tracks.iter().filter(|t| t.kind == TrackKind::Video).flat_map(|t| t.clips.iter()).find(|c| c.id == lid))
         .unwrap_or(clip)
@@ -950,7 +950,7 @@ fn audio_settings(
 
 /// Whether `clip` on `track` is heard: enabled, with sound, not silent,
 /// and — on a video track — not standing in for a linked audio clip.
-fn is_heard(seq: &Sequence, pool: &MediaPool, track: &klipp_timeline::Track, clip: &Clip) -> bool {
+pub(crate) fn is_heard(seq: &Sequence, pool: &MediaPool, track: &klipp_timeline::Track, clip: &Clip) -> bool {
     if track.muted || !clip.enabled || !matches!(track.kind, TrackKind::Audio | TrackKind::Video) {
         return false;
     }
@@ -1351,6 +1351,16 @@ fn lower_third(
     if name.is_empty() {
         return Err(refuse(i, "a lower third needs a name", "names come from the brief or the cast list"));
     }
+    // With a cast list, the name is one of the cast's, spelt as the list
+    // spells it, and the role is the list's unless another is given.
+    let cast = seq.brief.as_ref().map(|b| b.cast.as_slice()).unwrap_or(&[]);
+    let member = seq.brief.as_ref().and_then(|b| b.cast_member(name));
+    if !cast.is_empty() && member.is_none() {
+        let names: Vec<&str> = cast.iter().map(|c| c.name.as_str()).collect();
+        return Err(refuse(i, format!("\"{name}\" is not in the brief's cast"), format!("the cast is: {}; use a name as it is spelt there, or add the person to the brief", names.join(", "))));
+    }
+    let name = member.map(|m| m.name.trim()).unwrap_or(name);
+    let role = role.or_else(|| member.map(|m| m.role.trim()).filter(|r| !r.is_empty()));
     if !hold_secs.is_finite() || hold_secs < 1.5 {
         return Err(refuse(i, format!("{hold_secs} s is too short to read a name"), "hold it about four seconds, never under two"));
     }
@@ -1671,6 +1681,19 @@ mod tests {
         assert!(resolve(&seq, &pool, &[lt(6.0, 3.0)]).unwrap_err().why.contains("past the end"));
         let nameless = Op::LowerThird { name: " ".into(), role: None, at: Anchor::Secs(4.5), secs: 3.0, track: None };
         assert!(resolve(&seq, &pool, &[nameless]).unwrap_err().hint.contains("cast list"));
+
+        // With a cast list in the brief, the name is the list's and so is the role.
+        let mut briefed = seq.clone();
+        briefed.brief = Some(klipp_timeline::Brief {
+            cast: vec![klipp_timeline::CastMember { name: "David Heinemeier Hansson".into(), role: "Creator of Omarchy".into(), described: "on the right".into() }],
+            ..Default::default()
+        });
+        let from_cast = Op::LowerThird { name: "david heinemeier hansson".into(), role: None, at: Anchor::Secs(4.4), secs: 3.0, track: None };
+        let plan = resolve(&briefed, &pool, &[from_cast]).unwrap();
+        assert!(plan.steps[0].what.contains("\"David Heinemeier Hansson\", \"Creator of Omarchy\""), "{}", plan.steps[0].what);
+        let stranger = Op::LowerThird { name: "Brodie".into(), role: None, at: Anchor::Secs(4.4), secs: 3.0, track: None };
+        let err = resolve(&briefed, &pool, &[stranger]).unwrap_err();
+        assert!(err.why.contains("not in the brief's cast") && err.hint.contains("David Heinemeier Hansson"), "{err}");
 
         // A second one finds the text track the first made; the ops read as JSON the way the tools send them.
         let ops: Vec<Op> = serde_json::from_str(r#"[

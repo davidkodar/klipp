@@ -9,6 +9,12 @@ frames.
 
 ## The loop
 
+0. **The brief.** `klipp_brief` says what the piece is for: its
+   length, platform, loudness, whether it is captioned, and the cast
+   with their names and roles. If there is none, ask the user what it
+   should say and set it with `klipp_set_brief`. Names on screen come
+   from its cast list, the check holds the piece to it, and an export
+   takes its size and loudness from it.
 1. **Read.** `klipp_status` for the build, the revision and the
    playhead. `klipp_timeline` for the tracks and clips with their
    ranges in seconds and frames, each clip's id, and what analysis
@@ -30,9 +36,14 @@ frames.
 5. **Look.** `klipp_frame_at` for the frame at a time (the playhead
    comes back where it was), `klipp_screenshot` for the viewer,
    `klipp_contact_sheet` over the range you cut.
-6. **Deliver.** `klipp_export` to a file, `klipp_export_status` until
+6. **Check.** `klipp_check` reads the finished timeline the way an
+   editor watches it once: black frames, flashes, jump cuts with
+   nothing over them, titles across a cut, sound cut inside a word,
+   music at full level under speech, and the brief. Fix the errors;
+   decide about the warnings, and say which you kept and why.
+7. **Deliver.** `klipp_export` to a file, `klipp_export_status` until
    it is complete, `klipp_export_subtitles` for captions.
-7. **Save.** `klipp_save_project` with a path the first time, without
+8. **Save.** `klipp_save_project` with a path the first time, without
    one after. The user carries on from your project, and an unsaved one
    is gone when the app closes. `klipp_status` says where the project
    is saved and whether it has unsaved changes; `klipp_open_project`

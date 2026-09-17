@@ -735,3 +735,37 @@ fn a_project_is_saved_and_opened_without_a_dialog() {
     assert!(matches!(h.cmd_rx.try_iter().last(), Some(klipp_core::AppCommand::OpenProjectNow { .. })));
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// The brief is set as a recorded edit and read back, a bad one is
+/// refused with why, and the check answers with findings.
+#[test]
+fn a_brief_is_set_and_the_piece_is_checked_against_it() {
+    let mut h = harness();
+    let r = h.ok(json!({ "method": "brief" }));
+    assert_eq!(r["brief"], json!(null));
+    assert!(r["text"].as_str().unwrap().contains("no brief"));
+
+    let before = h.ok(json!({ "method": "status" }))["revision"].as_u64().unwrap();
+    let r = h.ok(json!({ "method": "set_brief", "brief": {
+        "title": "Why Omarchy is not afraid of AI code", "platform": "web", "target_secs": 90, "loudness_lufs": -14,
+        "captions": true, "cast": [{ "name": "David Heinemeier Hansson", "role": "Creator of Omarchy" }] } }));
+    assert_eq!(r["revision"], json!(before + 1));
+    assert!(r["text"].as_str().unwrap().contains("Cast: David Heinemeier Hansson, Creator of Omarchy"), "{r}");
+    assert!(matches!(h.edits_seen.lock().unwrap().last(), Some(klipp_document::history::EditCommand::SetBrief { new: Some(_), .. })));
+
+    for (bad, why) in [
+        (json!({ "loudness_lufs": 3 }), "not a delivery loudness"),
+        (json!({ "width": 1080 }), "both width and height"),
+        (json!({ "cast": [{ "name": "Ada" }, { "name": "ada " }] }), "twice"),
+        (json!({ "target_secs": -5 }), "not a length"),
+    ] {
+        let r = h.call(json!({ "method": "set_brief", "brief": bad }));
+        assert!(r["error"].as_str().unwrap().contains(why), "{r}");
+    }
+
+    // The stand-in UI does not apply edits, so the check sees no brief; it
+    // still answers with a report and its findings.
+    let r = h.ok(json!({ "method": "check" }));
+    assert!(r["text"].as_str().unwrap().starts_with("Checked "), "{r}");
+    assert!(r["findings"].as_array().unwrap().iter().any(|f| f["rule"] == "no_brief"), "{r}");
+}
