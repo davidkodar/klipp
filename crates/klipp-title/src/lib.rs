@@ -1430,8 +1430,21 @@ impl TitleRenderer {
         // window; at rest the render is the resting one and cacheable.
         let window = self.motion_window;
         let motion_live = |tb: &klipp_timeline::TextBox| -> bool {
-            let n = tb.text.chars().filter(|c| !c.is_whitespace()).count().max(1) as f32;
-            let span = |m: &klipp_timeline::Motion| m.delay_secs + m.duration_secs + n * m.stagger_secs + 0.05;
+            // How long a motion runs: its own time, plus the stagger of
+            // its last unit — and only when it staggers. The stagger time
+            // has a default of its own, and counting it for a motion with
+            // no stagger made a 0.4 s fade on a 22-letter name "live" for
+            // 1.55 s at each end: a four-second lower third was rastered
+            // afresh on three frames in four, 110 ms each.
+            let units = |m: &klipp_timeline::Motion| -> f32 {
+                match m.stagger {
+                    klipp_timeline::StaggerUnit::None => 0.0,
+                    klipp_timeline::StaggerUnit::Line => tb.text.lines().count().max(1) as f32,
+                    klipp_timeline::StaggerUnit::Word => tb.text.split_whitespace().count().max(1) as f32,
+                    klipp_timeline::StaggerUnit::Char => tb.text.chars().filter(|c| !c.is_whitespace()).count().max(1) as f32,
+                }
+            };
+            let span = |m: &klipp_timeline::Motion| m.delay_secs + m.duration_secs + units(m) * m.stagger_secs + 0.05;
             let enter = tb.motion.enter.as_ref().is_some_and(|m| time_secs < span(m));
             let exit = match (tb.motion.exit.as_ref(), window) {
                 (Some(m), Some(w)) => (w - time_secs) < span(m),

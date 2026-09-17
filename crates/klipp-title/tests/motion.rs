@@ -125,3 +125,34 @@ fn a_placed_frame_is_the_rendered_frame() {
     }
     assert!(ids.windows(2).all(|p| p[0] == p[1]), "one resting render serves every frame: {ids:?}");
 }
+
+/// A motion rests once it has run: its delay and duration, plus the
+/// stagger of its last unit only when it staggers. The stagger time has
+/// a default of its own, and counting it for a plain fade kept a
+/// 22-letter name "moving" for a second and a half at each end of a
+/// four-second lower third, rastered afresh on every frame of it.
+#[test]
+fn a_motion_without_stagger_rests_as_soon_as_it_has_run() {
+    let placed = |td: &TitleData, t: f32| {
+        let mut r = TitleRenderer::new();
+        matches!(r.frame_with_window(td, 320, 180, None, t, Some(4.0)), klipp_title::TitleFrame::Placed { .. })
+    };
+    let fade = || Motion::new(MotionKind::Fade).duration(0.4);
+    let mut td = title(TitleMotion::both(fade(), fade()));
+    if let klipp_timeline::TitleObjectContent::TextBox(tb) = &mut td.objects[0].content {
+        tb.text = "David Heinemeier Hansson".into();
+    }
+    assert!(!placed(&td, 0.2), "fading in: rendered");
+    assert!(placed(&td, 0.6), "at rest just after a 0.4 s fade: the cached render");
+    assert!(placed(&td, 3.4), "and until the exit starts");
+    assert!(!placed(&td, 3.8), "fading out: rendered");
+
+    // Staggered by character, the last letter arrives late, and the
+    // title is not at rest until it has.
+    let mut staggered = title(TitleMotion::enter(fade().stagger(StaggerUnit::Char, 0.05)));
+    if let klipp_timeline::TitleObjectContent::TextBox(tb) = &mut staggered.objects[0].content {
+        tb.text = "David Heinemeier Hansson".into();
+    }
+    assert!(!placed(&staggered, 1.0), "the last of 22 letters starts at 1.05 s");
+    assert!(placed(&staggered, 1.7));
+}
