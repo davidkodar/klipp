@@ -11,6 +11,8 @@ pub struct MediaAnalysis {
     pub motion: Option<Motion>,
     #[cfg(feature = "transcript")]
     pub transcript: Option<crate::transcript::Transcript>,
+    #[cfg(feature = "framing")]
+    pub framing: Option<crate::framing::Framing>,
 }
 
 impl MediaAnalysis {
@@ -27,18 +29,26 @@ impl MediaAnalysis {
         let motion = crate::store::load(key, crate::motion::ID, crate::motion::VERSION).and_then(|v| serde_json::from_value(v).ok());
         #[cfg(feature = "transcript")]
         let transcript = crate::store::load(key, crate::transcript::ID, crate::transcript::VERSION).and_then(|v| serde_json::from_value(v).ok());
+        #[cfg(feature = "framing")]
+        let framing = crate::store::load(key, crate::framing::ID, crate::framing::VERSION).and_then(|v| serde_json::from_value(v).ok());
         Self {
             shots,
             audio,
             motion,
             #[cfg(feature = "transcript")]
             transcript,
+            #[cfg(feature = "framing")]
+            framing,
         }
     }
 
     pub fn is_empty(&self) -> bool {
         #[cfg(feature = "transcript")]
         if self.transcript.is_some() {
+            return false;
+        }
+        #[cfg(feature = "framing")]
+        if self.framing.is_some() {
             return false;
         }
         self.shots.is_none() && self.audio.is_none() && self.motion.is_none()
@@ -76,6 +86,27 @@ impl MediaAnalysis {
                     s.push_str("  ");
                 }
                 let _ = write!(s, "motion {class}");
+            }
+        }
+        #[cfg(feature = "framing")]
+        if let Some(f) = self.framing.as_ref().filter(|_| with_picture) {
+            let shots = f.within(from, to);
+            if let Some(first) = shots.first() {
+                if !s.is_empty() {
+                    s.push_str("  ");
+                }
+                // The first shot's framing, and how many framings the range holds.
+                let distinct: std::collections::BTreeSet<&str> = shots.iter().map(|x| x.framing.as_str()).collect();
+                let _ = write!(s, "framing {}", first.framing);
+                if first.people > 0 {
+                    let _ = write!(s, " {} {}{}", first.people, if first.people == 1 { "person" } else { "people" }, if first.position.is_empty() { String::new() } else { format!(" {}", first.position) });
+                }
+                if !first.objects.is_empty() {
+                    let _ = write!(s, " with {}", first.objects.iter().take(3).cloned().collect::<Vec<_>>().join(", "));
+                }
+                if distinct.len() > 1 {
+                    let _ = write!(s, " (+{} other framings)", distinct.len() - 1);
+                }
             }
         }
         if let Some(audio) = &self.audio {
@@ -175,6 +206,19 @@ impl MediaAnalysis {
                 let _ = writeln!(out, "  {:.2}-{:.2} s  {}", seg.start_secs, seg.end_secs, seg.text);
                 if out.len() > budget_chars {
                     let _ = writeln!(out, "  … {} more segments", t.segments.len() - i - 1);
+                    break;
+                }
+            }
+        }
+        #[cfg(feature = "framing")]
+        if let Some(f) = &self.framing {
+            let _ = writeln!(out, "Framing: {} shots looked at ({} frames)", f.shots.len(), f.frames_looked_at);
+            for (i, sh) in f.shots.iter().enumerate() {
+                let who = if sh.people == 0 { String::new() } else { format!(", {} {} {}", sh.people, if sh.people == 1 { "person" } else { "people" }, sh.position) };
+                let what = if sh.objects.is_empty() { String::new() } else { format!("; {}", sh.objects.join(", ")) };
+                let _ = writeln!(out, "  {:.2}-{:.2} s  {}{}{}", sh.start_secs, sh.end_secs, sh.framing, who, what);
+                if out.len() > budget_chars {
+                    let _ = writeln!(out, "  … {} more shots", f.shots.len() - i - 1);
                     break;
                 }
             }

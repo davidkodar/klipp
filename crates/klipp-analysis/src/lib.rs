@@ -15,8 +15,9 @@
 //! The ffmpeg analysers: [`shots`] (scene change detection), [`audio`]
 //! (EBU R128 loudness, true peak, silence spans) and [`motion`] (how
 //! much the picture moves, second by second). [`transcript`] is the
-//! words, through whisper.cpp with the model from the registry. A
-//! framing classifier comes next, behind the same trait. [`sheet`]
+//! words, through whisper.cpp with the model from the registry;
+//! [`framing`] is who is in each shot and how large, through an object
+//! detector from the registry. [`sheet`]
 //! makes what a model that can see or hear is shown: contact sheets
 //! and audio excerpts, on demand.
 
@@ -29,6 +30,8 @@ pub mod shots;
 pub mod store;
 #[cfg(feature = "transcript")]
 pub mod transcript;
+#[cfg(feature = "framing")]
+pub mod framing;
 
 use std::path::{Path, PathBuf};
 
@@ -76,6 +79,8 @@ pub fn analysers() -> Vec<Box<dyn Analyser>> {
     let mut v: Vec<Box<dyn Analyser>> = vec![Box::new(shots::ShotsAnalyser), Box::new(audio::AudioAnalyser), Box::new(motion::MotionAnalyser)];
     #[cfg(feature = "transcript")]
     v.push(Box::new(transcript::TranscriptAnalyser));
+    #[cfg(feature = "framing")]
+    v.push(Box::new(framing::FramingAnalyser));
     v
 }
 
@@ -88,6 +93,11 @@ pub fn download_models() -> Result<Vec<String>, String> {
     {
         transcript::ensure_model(true)?;
         got.push(transcript::MODEL_ID.to_string());
+    }
+    #[cfg(feature = "framing")]
+    {
+        framing::ensure_model(true)?;
+        got.push(framing::MODEL_ID.to_string());
     }
     Ok(got)
 }

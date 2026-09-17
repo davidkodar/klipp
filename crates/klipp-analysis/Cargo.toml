@@ -18,13 +18,17 @@ publish = false
 # The transcript analyser: whisper.cpp built from source through
 # whisper-rs (cmake and a C++ toolchain). On by default so the app has
 # it; `--no-default-features` leaves the ffmpeg analysers only.
-default = ["transcript"]
+default = ["transcript", "framing"]
 transcript = ["dep:whisper-rs", "dep:klipp-ml"]
+# The framing analyser: RF-DETR through ONNX Runtime (`load-dynamic`:
+# the library is found at run time, never downloaded at build time).
+framing = ["dep:klipp-ml-ort", "klipp-ml-ort/ort", "dep:klipp-ml"]
 
 [dependencies]
 klipp-core = { workspace = true }
 klipp-media = { workspace = true }
 klipp-ml = { workspace = true, optional = true }
+klipp-ml-ort = { workspace = true, optional = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }
