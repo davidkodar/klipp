@@ -1,13 +1,14 @@
 //! What a reader gets for a media item: every stored result, and the
 //! text a model reads.
 
-use crate::{audio::AudioEnvelope, shots::Shots};
+use crate::{audio::AudioEnvelope, motion::Motion, shots::Shots};
 use std::fmt::Write as _;
 
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct MediaAnalysis {
     pub shots: Option<Shots>,
     pub audio: Option<AudioEnvelope>,
+    pub motion: Option<Motion>,
     #[cfg(feature = "transcript")]
     pub transcript: Option<crate::transcript::Transcript>,
 }
@@ -23,11 +24,13 @@ impl MediaAnalysis {
     pub fn load_key(key: &str) -> Self {
         let shots = crate::store::load(key, crate::shots::ID, crate::shots::VERSION).and_then(|v| serde_json::from_value(v).ok());
         let audio = crate::store::load(key, crate::audio::ID, crate::audio::VERSION).and_then(|v| serde_json::from_value(v).ok());
+        let motion = crate::store::load(key, crate::motion::ID, crate::motion::VERSION).and_then(|v| serde_json::from_value(v).ok());
         #[cfg(feature = "transcript")]
         let transcript = crate::store::load(key, crate::transcript::ID, crate::transcript::VERSION).and_then(|v| serde_json::from_value(v).ok());
         Self {
             shots,
             audio,
+            motion,
             #[cfg(feature = "transcript")]
             transcript,
         }
@@ -38,7 +41,7 @@ impl MediaAnalysis {
         if self.transcript.is_some() {
             return false;
         }
-        self.shots.is_none() && self.audio.is_none()
+        self.shots.is_none() && self.audio.is_none() && self.motion.is_none()
     }
 
     /// One line about the part of the file `from..to` (seconds), for a
@@ -65,6 +68,14 @@ impl MediaAnalysis {
             if !cuts.is_empty() {
                 let more = shots.boundaries.iter().filter(|b| **b > from && **b < to).count().saturating_sub(cuts.len());
                 let _ = write!(s, " (cuts at +{} s{})", cuts.join(", +"), if more > 0 { format!(", {more} more") } else { String::new() });
+            }
+        }
+        if let Some(m) = self.motion.as_ref().filter(|_| with_picture) {
+            if let Some(class) = m.class_within(from, to) {
+                if !s.is_empty() {
+                    s.push_str("  ");
+                }
+                let _ = write!(s, "motion {class}");
             }
         }
         if let Some(audio) = &self.audio {
@@ -126,6 +137,11 @@ impl MediaAnalysis {
                     break;
                 }
             }
+        }
+        if let Some(m) = &self.motion {
+            let _ = writeln!(out, "Motion: {} overall (mean {:.1}, p95 {:.1} on ffmpeg's YDIF scale); per second: {}",
+                crate::motion::class_for(m.mean), m.mean, m.p95,
+                m.per_second.iter().take(120).map(|v| format!("{v:.0}")).collect::<Vec<_>>().join(" "));
         }
         if let Some(a) = &self.audio {
             let _ = writeln!(

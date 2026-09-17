@@ -170,6 +170,36 @@ pub enum ControlCommand {
         max_chars: Option<usize>,
     },
 
+    /// A contact sheet of a range of a media file: `frames` frames
+    /// evenly spaced between `from_secs` and `to_secs` (the whole file
+    /// when omitted), `cols` to a row, each `tile_width` wide, their
+    /// time in the file burnt in, as a JPEG. What a model that can see
+    /// is shown before it plans.
+    ContactSheet {
+        media_id: String,
+        #[serde(default)]
+        from_secs: Option<f64>,
+        #[serde(default)]
+        to_secs: Option<f64>,
+        #[serde(default)]
+        frames: Option<u32>,
+        #[serde(default)]
+        cols: Option<u32>,
+        #[serde(default)]
+        tile_width: Option<u32>,
+        #[serde(default)]
+        path: Option<String>,
+    },
+    /// The sound of a range of a media file (at most sixty seconds) as
+    /// 16 kHz mono WAV: what a model that can hear is given.
+    AudioExcerpt {
+        media_id: String,
+        from_secs: f64,
+        to_secs: f64,
+        #[serde(default)]
+        path: Option<String>,
+    },
+
     // ── Edit history ──────────────────────────────────────────────
     /// One step back in the active sequence's history.
     Undo,

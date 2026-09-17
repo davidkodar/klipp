@@ -400,6 +400,34 @@ fn cut_to_budget(text: &str, max_chars: usize) -> (String, bool) {
     (kept, true)
 }
 
+/// A media item's file and duration, by id.
+fn media_path_and_duration(ctx: &ControlContext, media_id: &str) -> Result<(std::path::PathBuf, f64), String> {
+    let id = klipp_core::MediaId(media_id.parse().map_err(|e| format!("media_id is not a uuid: {e}"))?);
+    let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
+    let item = pool.get(&id).ok_or_else(|| format!("no media item {}", id.0))?;
+    if item.offline || item.kind != klipp_media::MediaItemKind::File {
+        return Err(format!("{} has no file to read", item.filename));
+    }
+    Ok((item.path.clone(), item.duration.to_secs_f64()))
+}
+
+/// An absolute output path the caller gave, or one in the temp dir.
+fn temp_output(path: Option<String>, stem: &str, ext: &str) -> Result<std::path::PathBuf, String> {
+    match path {
+        Some(p) => {
+            let p = std::path::PathBuf::from(p);
+            if !p.is_absolute() {
+                return Err(format!("path must be absolute (got {})", p.display()));
+            }
+            Ok(p)
+        }
+        None => Ok(std::env::temp_dir().join(format!(
+            "{stem}-{}.{ext}",
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0)
+        ))),
+    }
+}
+
 /// A frame rate from a number: the NTSC rates as their exact fractions,
 /// anything else to a thousandth.
 fn fps_from_f64(f: f64) -> klipp_core::Fps {
@@ -693,6 +721,33 @@ fn handle(
                 "audio": report.audio,
                 "transcript": report.transcript,
             }))
+        }
+
+        ControlCommand::ContactSheet { media_id, from_secs, to_secs, frames, cols, tile_width, path } => {
+            if in_batch {
+                return read_in_batch("contact_sheet");
+            }
+            let (media_path, duration) = media_path_and_duration(ctx, &media_id)?;
+            let out = temp_output(path, "klipp-sheet", "jpg")?;
+            let from = from_secs.unwrap_or(0.0).clamp(0.0, duration);
+            let to = to_secs.unwrap_or(duration).clamp(from, duration);
+            let sheet = klipp_analysis::sheet::contact_sheet(
+                std::path::Path::new("ffmpeg"), &media_path, from, to, frames.unwrap_or(12), cols.unwrap_or(4), tile_width.unwrap_or(240), &out,
+            )?;
+            Ok(serde_json::to_value(sheet).map_err(|e| e.to_string())?)
+        }
+
+        ControlCommand::AudioExcerpt { media_id, from_secs, to_secs, path } => {
+            if in_batch {
+                return read_in_batch("audio_excerpt");
+            }
+            let (media_path, duration) = media_path_and_duration(ctx, &media_id)?;
+            let out = temp_output(path, "klipp-excerpt", "wav")?;
+            let from = from_secs.clamp(0.0, duration);
+            let to = to_secs.clamp(from, duration);
+            let p = klipp_analysis::sheet::audio_excerpt(std::path::Path::new("ffmpeg"), &media_path, from, to, &out)?;
+            let bytes = std::fs::metadata(&p).map(|m| m.len()).unwrap_or(0);
+            Ok(json!({ "path": p.to_string_lossy(), "from_secs": from, "to_secs": to, "bytes": bytes, "format": "wav 16 kHz mono 16-bit" }))
         }
 
         ControlCommand::Timeline { max_chars } => {

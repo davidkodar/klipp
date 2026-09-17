@@ -2,6 +2,8 @@
 //! two seconds, a tone with a gap in it. Skipped without ffmpeg.
 
 use klipp_analysis::{audio, shots, AnalysisCtx, Analyser};
+#[allow(unused_imports)]
+use klipp_analysis::motion;
 use std::path::PathBuf;
 
 fn synthetic_clip() -> Option<PathBuf> {
@@ -66,6 +68,29 @@ fn shots_and_silence_are_found_in_a_synthetic_clip() {
     assert!(text.contains("silence 1."), "{text}");
     let line = report.clip_summary(0.0, 4.0);
     assert!(line.contains("shots 2") && line.contains("LUFS"), "{line}");
+}
+
+/// A contact sheet and an excerpt of the synthetic clip.
+#[test]
+fn a_contact_sheet_and_an_excerpt_come_out_of_a_clip() {
+    let Some(path) = synthetic_clip() else { return };
+    let ctx = AnalysisCtx::default();
+    let dir = path.parent().unwrap();
+    let sheet = klipp_analysis::sheet::contact_sheet(&ctx.ffmpeg, &path, 0.0, 4.0, 8, 4, 160, &dir.join("sheet.jpg")).expect("sheet");
+    assert_eq!(sheet.tiles_secs.len(), 8);
+    assert_eq!((sheet.cols, sheet.rows), (4, 2));
+    assert!(sheet.width >= 640 && sheet.height > 0, "{sheet:?}");
+    assert!((sheet.tiles_secs[1] - 0.5).abs() < 1e-9);
+    let wav = klipp_analysis::sheet::audio_excerpt(&ctx.ffmpeg, &path, 1.5, 3.0, &dir.join("ex.wav")).expect("excerpt");
+    let bytes = std::fs::metadata(&wav).unwrap().len();
+    // 1.5 s at 16 kHz mono 16-bit is 48 000 bytes plus a header.
+    assert!((44_000..60_000).contains(&bytes), "{bytes}");
+
+    // Motion: the picture is two still images, so almost none moves.
+    let item = item_for(&path);
+    let v = klipp_analysis::motion::MotionAnalyser.run(&item, &ctx).expect("motion");
+    let m: klipp_analysis::motion::Motion = serde_json::from_value(v).unwrap();
+    assert_eq!(m.per_second.len(), 4);
 }
 
 /// Every analyser on a real file named by `KLIPP_ANALYSIS_TRIAL`, the

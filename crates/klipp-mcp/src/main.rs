@@ -347,6 +347,35 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
             }
             v
         }
+        "klipp_contact_sheet" => {
+            let mut v = json!({ "method": "contact_sheet", "media_id": arg_str(args, "media_id")? });
+            for key in ["from_secs", "to_secs"] {
+                if let Some(x) = args.get(key).and_then(|v| v.as_f64()) {
+                    v[key] = json!(x);
+                }
+            }
+            for key in ["frames", "cols", "tile_width"] {
+                if let Some(n) = args.get(key).and_then(|v| v.as_u64()) {
+                    v[key] = json!(n as u32);
+                }
+            }
+            if let Some(p) = args.get("path").and_then(|v| v.as_str()) {
+                v["path"] = json!(p);
+            }
+            v
+        }
+        "klipp_audio_excerpt" => {
+            let mut v = json!({
+                "method": "audio_excerpt",
+                "media_id": arg_str(args, "media_id")?,
+                "from_secs": args.get("from_secs").and_then(|v| v.as_f64()).ok_or("missing required argument: from_secs")?,
+                "to_secs": args.get("to_secs").and_then(|v| v.as_f64()).ok_or("missing required argument: to_secs")?,
+            });
+            if let Some(p) = args.get("path").and_then(|v| v.as_str()) {
+                v["path"] = json!(p);
+            }
+            v
+        }
         "klipp_undo" => json!({ "method": "undo" }),
         "klipp_redo" => json!({ "method": "redo" }),
         "klipp_batch" => {
@@ -423,17 +452,23 @@ fn call_tool(name: &str, args: &Value) -> Result<Vec<Value>, String> {
             return Ok(vec![json!({ "type": "text", "text": text })]);
         }
     }
-    // Screenshots come back as a path; inline the image too when it is
+    // Pictures and sound come back as a path; inline them too when
     // small enough to be worth a context window.
-    if name == "klipp_screenshot" || name == "klipp_frame_at" {
+    let inline = match name {
+        "klipp_screenshot" | "klipp_frame_at" => Some(("image", "image/png")),
+        "klipp_contact_sheet" => Some(("image", "image/jpeg")),
+        "klipp_audio_excerpt" => Some(("audio", "audio/wav")),
+        _ => None,
+    };
+    if let Some((kind, mime)) = inline {
         if let Some(path) = result.get("path").and_then(|v| v.as_str()) {
             let mut content = text_content(&result);
             if let Ok(bytes) = std::fs::read(path) {
                 if bytes.len() <= INLINE_IMAGE_MAX_BYTES {
                     content.push(json!({
-                        "type": "image",
+                        "type": kind,
                         "data": base64_encode(&bytes),
-                        "mimeType": "image/png",
+                        "mimeType": mime,
                     }));
                 }
             }
@@ -651,6 +686,27 @@ fn tool_definitions() -> Vec<Value> {
               start; a clip's source_in maps them to the timeline.",
              json!({ "media_id": { "type": "string" }, "max_chars": { "type": "integer", "description": "Cut at this many characters (default 8000)" } }),
              vec!["media_id"]),
+        tool("klipp_contact_sheet",
+             "Look at a media file: a grid of frames evenly spaced over a range (the whole \
+              file by default), each with its time in the file burnt in, as one JPEG, \
+              inlined when small enough. Use it to see what a clip is before planning, \
+              and to check a range you cut to. Twelve frames, four to a row, 240 px \
+              tiles by default; the reply lists each tile's time.",
+             json!({
+                 "media_id": { "type": "string" },
+                 "from_secs": { "type": "number" }, "to_secs": { "type": "number" },
+                 "frames": { "type": "integer" }, "cols": { "type": "integer" },
+                 "tile_width": { "type": "integer" },
+                 "path": { "type": "string", "description": "Absolute JPEG path; temp dir when omitted" },
+             }),
+             vec!["media_id"]),
+        tool("klipp_audio_excerpt",
+             "Hear a media file: the sound between two times (at most sixty seconds) as \
+              16 kHz mono WAV, inlined when small enough (about thirty seconds). For \
+              judging a take, a noise, a music bed.",
+             json!({ "media_id": { "type": "string" }, "from_secs": { "type": "number" }, "to_secs": { "type": "number" },
+                     "path": { "type": "string" } }),
+             vec!["media_id", "from_secs", "to_secs"]),
         tool("klipp_undo", "One step back in the active sequence's edit history. Every write \
               made through these tools is one step; a klipp_batch is one step as a whole.",
              json!({}), vec![]),

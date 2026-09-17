@@ -12,13 +12,18 @@
 //! every analyser's result that exists for an item, and the text a
 //! model reads.
 //!
-//! The first analysers are ffmpeg's: [`shots`] (scene change detection)
-//! and [`audio`] (EBU R128 loudness, true peak, silence spans). A
-//! transcript and a framing classifier come next, through the model
-//! registry, behind the same trait.
+//! The ffmpeg analysers: [`shots`] (scene change detection), [`audio`]
+//! (EBU R128 loudness, true peak, silence spans) and [`motion`] (how
+//! much the picture moves, second by second). [`transcript`] is the
+//! words, through whisper.cpp with the model from the registry. A
+//! framing classifier comes next, behind the same trait. [`sheet`]
+//! makes what a model that can see or hear is shown: contact sheets
+//! and audio excerpts, on demand.
 
 pub mod audio;
+pub mod motion;
 pub mod report;
+pub mod sheet;
 pub mod service;
 pub mod shots;
 pub mod store;
@@ -68,7 +73,7 @@ impl AnalysisCtx {
 
 /// Every analyser this build ships, in the order they pay off.
 pub fn analysers() -> Vec<Box<dyn Analyser>> {
-    let mut v: Vec<Box<dyn Analyser>> = vec![Box::new(shots::ShotsAnalyser), Box::new(audio::AudioAnalyser)];
+    let mut v: Vec<Box<dyn Analyser>> = vec![Box::new(shots::ShotsAnalyser), Box::new(audio::AudioAnalyser), Box::new(motion::MotionAnalyser)];
     #[cfg(feature = "transcript")]
     v.push(Box::new(transcript::TranscriptAnalyser));
     v
