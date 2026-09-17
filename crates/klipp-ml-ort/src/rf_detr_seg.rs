@@ -388,9 +388,10 @@ impl RfDetrSeg {
         };
         let mask_pixels = mask_h * mask_w;
 
-        // Last-class is the DETR "no_object" slot. We skip
-        // detections whose argmax lands there.
-        let no_object_class = n_classes.saturating_sub(1);
+        // With 91 logits the classes are COCO's own category ids
+        // (1 to 90, with gaps) and slot 0 is unused; with 80 they are
+        // contiguous and the last slot is DETR's "no object".
+        let no_object_class = if n_classes == 91 { 0 } else { n_classes.saturating_sub(1) };
 
         // Filter candidates by score; convert each surviving
         // detection into a MaskCandidate. Cap so a low threshold
@@ -434,7 +435,7 @@ impl RfDetrSeg {
                 h: (bh).min(1.0 - y0),
             };
 
-            let label_str = Some(coco_label(class_id).to_string());
+            let label_str = Some(coco_label_for(class_id, n_classes).to_string());
 
             // Per-detection mask is already assembled; just sigmoid
             // + bilinear-resample the (mask_h × mask_w) logit map
@@ -781,12 +782,42 @@ pub const COCO_LABELS: &[&str] = &[
     "scissors", "teddy bear", "hair drier", "toothbrush",
 ];
 
-/// Look up a class label by RF-DETR's `class_id`. Returns
-/// `"unknown"` for ids outside the COCO-80 range — defensive in
-/// case a future variant trains on a different class set and we
-/// haven't updated [`COCO_LABELS`] to match yet.
+/// COCO's own category ids, 1 to 90 with the eleven gaps the dataset
+/// left when categories were dropped; slot 0 unused. What a model
+/// exported with 91 logits means by a class index — the RF-DETR
+/// exports in the registry do — and read against the contiguous list
+/// above, every label past "fire hydrant" came out wrong: a cat was a
+/// horse, a potted plant a mouse.
+pub const COCO_91_LABELS: &[&str] = &[
+    "", "person", "bicycle", "car", "motorcycle", "airplane", "bus", "train", "truck", "boat",
+    "traffic light", "fire hydrant", "", "stop sign", "parking meter", "bench", "bird", "cat", "dog", "horse",
+    "sheep", "cow", "elephant", "bear", "zebra", "giraffe", "", "backpack", "umbrella", "",
+    "", "handbag", "tie", "suitcase", "frisbee", "skis", "snowboard", "sports ball", "kite", "baseball bat",
+    "baseball glove", "skateboard", "surfboard", "tennis racket", "bottle", "", "wine glass", "cup", "fork", "knife",
+    "spoon", "bowl", "banana", "apple", "sandwich", "orange", "broccoli", "carrot", "hot dog", "pizza",
+    "donut", "cake", "chair", "couch", "potted plant", "bed", "", "dining table", "", "",
+    "toilet", "", "tv", "laptop", "mouse", "remote", "keyboard", "cell phone", "microwave", "oven",
+    "toaster", "sink", "refrigerator", "", "book", "clock", "vase", "scissors", "teddy bear", "hair drier",
+    "toothbrush",
+];
+
+/// Look up a class label by RF-DETR's `class_id` in the contiguous
+/// COCO-80 list. Returns `"unknown"` for ids outside it.
 pub fn coco_label(class_id: usize) -> &'static str {
     COCO_LABELS.get(class_id).copied().unwrap_or("unknown")
+}
+
+/// The label for `class_id` given how many classes the model has: 91
+/// means COCO's own ids, anything else the contiguous list.
+pub fn coco_label_for(class_id: usize, n_classes: usize) -> &'static str {
+    if n_classes == 91 {
+        match COCO_91_LABELS.get(class_id).copied() {
+            Some("") | None => "unknown",
+            Some(l) => l,
+        }
+    } else {
+        coco_label(class_id)
+    }
 }
 
 #[cfg(test)]
@@ -948,6 +979,15 @@ mod tests {
     #[test]
     fn coco_label_lookup_returns_known_classes() {
         assert_eq!(coco_label(0), "person");
+        // COCO-91: the dataset's own ids, gaps and all.
+        assert_eq!(coco_label_for(1, 91), "person");
+        assert_eq!(coco_label_for(17, 91), "cat");
+        assert_eq!(coco_label_for(64, 91), "potted plant");
+        assert_eq!(coco_label_for(90, 91), "toothbrush");
+        assert_eq!(coco_label_for(12, 91), "unknown");
+        assert_eq!(coco_label_for(0, 91), "unknown");
+        assert_eq!(COCO_91_LABELS.len(), 91);
+        assert_eq!(coco_label_for(15, 80), "cat");
         assert_eq!(coco_label(15), "cat");
         assert_eq!(coco_label(16), "dog");
         assert_eq!(coco_label(79), "toothbrush");
