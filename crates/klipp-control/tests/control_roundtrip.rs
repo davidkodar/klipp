@@ -691,6 +691,7 @@ fn plans_are_dry_runs_and_applies_are_one_envelope_of_edits() {
 
     let before = h.shared.revision();
     let v = h.ok(json!({ "method": "apply", "label": "split for the test", "ops": [ { "op": "split", "clip_id": clip, "at": { "secs": 1.0 } } ] }));
+    assert!(v["next"].as_str().unwrap().contains("check"), "apply points at the next step: {v}");
     assert_eq!(v["applied"], json!(true));
     assert_eq!(v["revision"], json!(before + 1));
     assert_eq!(h.envelopes.lock().unwrap().last(), Some(&(true, 1)));
@@ -773,6 +774,7 @@ fn a_brief_is_set_and_the_piece_is_checked_against_it() {
     // still answers with a report and its findings.
     let r = h.ok(json!({ "method": "check" }));
     assert!(r["text"].as_str().unwrap().starts_with("Checked "), "{r}");
+    assert!(r["next"].is_string(), "check points at the next step: {r}");
     assert!(r["findings"].as_array().unwrap().iter().any(|f| f["rule"] == "no_brief"), "{r}");
 }
 

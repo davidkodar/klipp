@@ -555,9 +555,20 @@ fn content_for(name: &str, result: &Value) -> Result<Vec<Value>, String> {
     }
 
     // The timeline view is text for reading, not JSON for parsing.
+    // The next-step hint, kept in the text views where the JSON is not
+    // shown: it is the whole point of the hint that the agent reads it.
+    let with_next = |mut text: String| -> Vec<Value> {
+        if let Some(n) = result.get("next").and_then(|v| v.as_str()) {
+            text.push_str(&format!("\n\nNext: {n}"));
+        }
+        if let Some(n) = result.get("note").and_then(|v| v.as_str()) {
+            text.push_str(&format!("\n\nNote: {n}"));
+        }
+        vec![json!({ "type": "text", "text": text })]
+    };
     if name == "klipp_timeline" || name == "klipp_media_analysis" || name == "klipp_plan" || name == "klipp_check" || name == "klipp_brief" || name == "klipp_transcript" {
         if let Some(text) = result.get("text").and_then(|v| v.as_str()) {
-            return Ok(vec![json!({ "type": "text", "text": text })]);
+            return Ok(with_next(text.to_string()));
         }
     }
     // An apply says what it did as the plan would, and that it is done:
@@ -566,7 +577,7 @@ fn content_for(name: &str, result: &Value) -> Result<Vec<Value>, String> {
     if name == "klipp_apply" && result.get("steps").is_none() {
         if let Some(text) = result.get("text").and_then(|v| v.as_str()) {
             let done = format!("{text}Applied as one undo step; revision {}.", result.get("revision").and_then(|r| r.as_u64()).unwrap_or(0));
-            return Ok(vec![json!({ "type": "text", "text": done })]);
+            return Ok(with_next(done));
         }
     }
     // Pictures and sound come back as a path; inline them too when

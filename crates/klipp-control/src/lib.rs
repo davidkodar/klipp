@@ -472,6 +472,27 @@ impl klipp_document::ops::Transcripts for AnalysedTranscripts {
     }
 }
 
+/// What to do after a batch of ops was applied, from the ops in it: the
+/// reply points at the next step so a session follows a trail rather
+/// than recalling a recipe.
+fn next_after_ops(ops: &[klipp_document::ops::Op]) -> Option<&'static str> {
+    use klipp_document::ops::Op;
+    let has = |f: &dyn Fn(&Op) -> bool| ops.iter().any(f);
+    if has(&|o| matches!(o, Op::Place { with_audio: true, .. })) && ops.len() >= 2 {
+        Some("The selects are down. Where two from the same set-up meet is a jump cut: cover the joins with B-roll on a track above (place with_audio false), or j_cut the sound. Then captions, then check.")
+    } else if has(&|o| matches!(o, Op::Captions { .. })) {
+        Some("Captions are down. Read the cues in the reply and correct any the transcript misheard with set_text. Then check, and export with the brief's loudness.")
+    } else if has(&|o| matches!(o, Op::LowerThird { .. })) {
+        Some("The lower third is placed. Look at a frame with frame_at to see it sits clear of anything burnt into the picture, then move it with style if not.")
+    } else if has(&|o| matches!(o, Op::Duck { .. } | Op::Audio { .. })) {
+        Some("The sound is set. Check holds the mix to the craft; then export at the brief's loudness.")
+    } else if has(&|o| matches!(o, Op::Place { .. })) {
+        Some("Placed. Look with frame_at or contact_sheet, and run check when the cut is together.")
+    } else {
+        Some("Run check to hold the cut to the brief and the craft before you export.")
+    }
+}
+
 /// A media item's file and duration, by id.
 fn media_path_and_duration(ctx: &ControlContext, media_id: &str) -> Result<(std::path::PathBuf, f64), String> {
     let id = klipp_core::MediaId(media_id.parse().map_err(|e| format!("media_id is not a uuid: {e}"))?);
@@ -760,7 +781,13 @@ fn handle(
                 None => pool.all().filter(|m| m.kind == klipp_media::MediaItemKind::File && !m.offline).collect(),
             };
             let statuses: Vec<klipp_analysis::service::Status> = items.into_iter().map(klipp_analysis::service::request).collect();
-            Ok(json!({ "items": statuses, "models_downloaded": downloaded }))
+            let all_done = statuses.iter().all(|s| matches!(s.state, klipp_analysis::service::State::Done));
+            let next = if all_done {
+                "Already analysed. Read a transcript (with words) to choose the selects, and find_shots with no people for B-roll."
+            } else {
+                "Analysis runs in the background — shots, sound, motion, the transcript, framing. Watch analysis_status; a transcript of a long file is about a third of its length. Read each file's transcript and shots when it is done."
+            };
+            Ok(json!({ "items": statuses, "models_downloaded": downloaded, "next": next }))
         }
 
         ControlCommand::SearchTranscripts { query, max_hits } => {
@@ -982,7 +1009,9 @@ fn handle(
                 return Ok(json!({ "already_imported": true, "media_id": item.id.0.to_string(), "filename": item.filename }));
             }
             drop(pool);
-            send(AppCommand::ImportMedia { path: p })
+            let mut v = send(AppCommand::ImportMedia { path: p })?;
+            v["next"] = json!("Imported. Analysis runs on import; set the brief first (set_brief) so the transcript gets the cast's names and the spellings. Watch analysis_status, then read the transcript and shots.");
+            Ok(v)
         }
 
         ControlCommand::RenameSequence { name } => {
@@ -1195,6 +1224,9 @@ fn handle(
                 v["steps"] = json!(plan.report());
             }
             v["duration_secs"] = json!(plan.duration_secs);
+            if let Some(next) = next_after_ops(&ops) {
+                v["next"] = json!(next);
+            }
             Ok(v)
         }
 
@@ -1362,7 +1394,14 @@ fn handle(
             let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
             let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
             let report = klipp_document::qc::check(&seq, &pool, &AnalysedTranscripts);
-            Ok(json!({ "text": report.text(), "errors": report.errors, "warnings": report.warnings, "findings": report.findings, "duration_secs": report.duration_secs, "revision": ctx.shared.revision() }))
+            let next = if report.errors > 0 {
+                "Fix the errors before you deliver — each finding says what and where. Then check again."
+            } else if report.warnings > 0 {
+                "No errors. Decide each warning: fix it, or keep it on purpose and be able to say why. Then export."
+            } else {
+                "Clean. Export at the brief's loudness, poll export_status, then save_project."
+            };
+            Ok(json!({ "text": report.text(), "errors": report.errors, "warnings": report.warnings, "findings": report.findings, "duration_secs": report.duration_secs, "revision": ctx.shared.revision(), "next": next }))
         }
 
         ControlCommand::Undo => send(AppCommand::Undo),
@@ -1445,8 +1484,13 @@ fn handle(
                 "target_lufs": settings.target_lufs,
                 "size": settings.resolution.map(|r| format!("{}x{}", r.width, r.height)),
             });
+            let burnt = said["captions_and_titles_burnt_in"].as_bool().unwrap_or(true);
             let mut v = send(AppCommand::ExportSequence { settings })?;
             v["export"] = said;
+            v["next"] = json!(format!(
+                "Rendering. Poll export_status until it is complete — it carries the frames a second and an ETA — then the file is on disk and its measured loudness is reported.{}",
+                if burnt { "" } else { " Captions are not burnt in: write export_subtitles for a sidecar SRT." }
+            ));
             Ok(v)
         }
 
