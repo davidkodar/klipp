@@ -13,7 +13,7 @@
 use serde::{Deserialize, Serialize};
 
 pub const ID: &str = "framing";
-pub const VERSION: u32 = 1;
+pub const VERSION: u32 = 2;
 /// The detectors in the registry, best first: the medium tier where it
 /// is downloaded, else the preview tier. `MODEL_ID` names what
 /// `download_models` fetches.
@@ -35,7 +35,8 @@ const FRAME_SIZE: u32 = 640;
 pub struct ShotFraming {
     pub start_secs: f64,
     pub end_secs: f64,
-    /// close-up, medium close-up, medium, wide, very wide, no people.
+    /// close-up, medium close-up, medium, wide, very wide, inset (a small
+    /// figure in a corner: a face cam over a screen), no people.
     pub framing: String,
     /// The most people seen in one frame of the shot.
     pub people: u32,
@@ -79,6 +80,13 @@ pub fn framing_for(people: &[(f32, f32, f32, f32)]) -> &'static str {
     };
     let h = largest.3;
     let w = largest.2;
+    // A small figure in a corner is a face cam inset over something
+    // else, not a wide shot of a person: B-roll with one is not clean.
+    let (cx, cy) = (largest.0 + w / 2.0, largest.1 + h / 2.0);
+    let in_a_corner = (cx < 0.28 || cx > 0.72) && (cy < 0.32 || cy > 0.68);
+    if h < 0.3 && w < 0.25 && in_a_corner {
+        return "inset";
+    }
     if h >= 0.9 && w >= 0.55 {
         "close-up"
     } else if h >= 0.75 {
@@ -121,8 +129,16 @@ pub fn shot_framing(start_secs: f64, end_secs: f64, frames: &[FrameFacts]) -> Sh
         counts.sort_by_key(|c| std::cmp::Reverse(c.1));
         counts.first().map(|(k, _)| k.to_string()).unwrap_or_default()
     }
-    let framing = commonest(frames.iter().map(|f| framing_for(&f.people)));
     let people = frames.iter().map(|f| f.people.len() as u32).max().unwrap_or(0);
+    // A small figure the detector loses in half the frames still makes
+    // the shot one with a person in it: the framing is the commonest of
+    // the frames that saw someone, when any did. "no people, 1 person"
+    // was what a shot read as before.
+    let framing = if people == 0 {
+        "no people".to_string()
+    } else {
+        commonest(frames.iter().filter(|f| !f.people.is_empty()).map(|f| framing_for(&f.people)))
+    };
     let position = if people == 0 { String::new() } else { commonest(frames.iter().map(|f| position_for(&f.people)).filter(|p| !p.is_empty())) };
     let mut objects: Vec<(String, f32)> = Vec::new();
     for f in frames {
@@ -356,6 +372,9 @@ mod tests {
         assert_eq!(framing_for(&[(0.3, 0.2, 0.2, 0.5)]), "medium");
         assert_eq!(framing_for(&[(0.1, 0.3, 0.1, 0.3)]), "wide");
         assert_eq!(framing_for(&[(0.1, 0.3, 0.05, 0.1)]), "very wide");
+        // A small figure in a corner is a face cam over a screen.
+        assert_eq!(framing_for(&[(0.85, 0.75, 0.12, 0.2)]), "inset");
+        assert_eq!(framing_for(&[(0.45, 0.75, 0.12, 0.15)]), "very wide", "small, but mid-frame");
         assert_eq!(position_for(&[(0.05, 0.2, 0.2, 0.5)]), "left");
         assert_eq!(position_for(&[(0.7, 0.2, 0.2, 0.5)]), "right");
         // Two people: the largest decides the position.

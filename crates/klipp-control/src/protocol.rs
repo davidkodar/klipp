@@ -298,6 +298,10 @@ pub enum ControlCommand {
         #[serde(default)]
         words: bool,
     },
+    /// Name the active sequence: what the timeline is called in the app
+    /// and in the project. A new project's sequence keeps a default name
+    /// until someone names it.
+    RenameSequence { name: String },
     /// The sequence's brief: what the piece is for.
     Brief,
     /// Replace the brief, as one undo step. Fields left out ask for nothing.

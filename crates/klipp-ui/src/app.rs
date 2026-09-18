@@ -17720,9 +17720,15 @@ impl KlippApp {
                 true
             }
             AppCommand::RenameSequence { sequence_idx, new_name } => {
-                if *sequence_idx < self.state.sequences.len() {
-                    self.state.sequences[*sequence_idx].name = new_name.clone();
+                // usize::MAX names the active sequence: the control socket
+                // does not know the index, only that it is the one open.
+                let idx = if *sequence_idx == usize::MAX { self.state.active_sequence_idx } else { *sequence_idx };
+                if idx < self.state.sequences.len() {
+                    self.state.sequences[idx].name = new_name.clone();
                     self.state.dirty = true;
+                    if idx == self.state.active_sequence_idx {
+                        self.sync_sequence_to_engine();
+                    }
                 }
                 true
             }
@@ -21684,6 +21690,9 @@ impl KlippApp {
     fn do_new_project(&mut self) {
         self.reset_project_state();
         self.sync_sequence_to_engine();
+        // The socket's clients are told, as for a save or an open: an
+        // agent mid-edit found its media gone and nothing said why.
+        self.note_project_event(None);
     }
 
     /// Close the current project and return to the Project Manager (launch screen).
@@ -21693,6 +21702,7 @@ impl KlippApp {
         self.reset_project_state();
         self.state.fullscreen_viewer = false;
         self.sync_sequence_to_engine();
+        self.note_project_event(None);
     }
 
     /// Wipe all project-scoped state on both the UI and engine sides so the

@@ -295,6 +295,9 @@ impl RenderQueue {
                     if let Some(job) = self.jobs.iter_mut().find(|j| j.id == id) {
                         job.status = RenderJobStatus::Complete;
                         job.progress = 1.0;
+                        // The stage was the render thread's last word,
+                        // "Finalizing file…", which read as still at it.
+                        job.render_stage = "Complete".to_string();
                         job.completed_at = Some(std::time::Instant::now());
                         job.loudness_result = loudness_result;
                         events.push(RenderQueueEvent::Complete {

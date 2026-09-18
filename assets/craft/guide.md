@@ -47,8 +47,9 @@ frames.
    decide about the warnings, and say which you kept and why.
 7. **Deliver.** `klipp_export` to a file, `klipp_export_status` until
    it is complete, `klipp_export_subtitles` for captions.
-8. **Save.** `klipp_save_project` with a path the first time, without
-   one after. The user carries on from your project, and an unsaved one
+8. **Save.** `klipp_rename_sequence` so the timeline is called what
+   the piece is, then `klipp_save_project` with a path the first time,
+   without one after. The user carries on from your project, and an unsaved one
    is gone when the app closes. `klipp_status` says where the project
    is saved and whether it has unsaved changes; `klipp_open_project`
    opens another, and will not throw unsaved work away unless told to.

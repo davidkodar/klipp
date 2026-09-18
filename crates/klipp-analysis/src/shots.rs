@@ -5,10 +5,14 @@
 use serde::{Deserialize, Serialize};
 
 pub const ID: &str = "shots";
-pub const VERSION: u32 = 1;
+pub const VERSION: u32 = 2;
 
 /// Scene-change score above which a frame starts a new shot; ffmpeg's
 /// `scene` is 0 to 1, and 0.3 is the customary threshold.
+/// At two frames a second a slow change adds up; this is what it has
+/// to add up to.
+const SLOW_THRESHOLD: f32 = 0.22;
+
 const THRESHOLD: f32 = 0.3;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -30,7 +34,9 @@ impl Shots {
     pub fn from_boundaries(duration_secs: f64, mut boundaries: Vec<f64>) -> Self {
         boundaries.retain(|b| *b > 0.0 && *b < duration_secs);
         boundaries.sort_by(|a, b| a.partial_cmp(b).unwrap());
-        boundaries.dedup_by(|a, b| (*a - *b).abs() < 0.04);
+        // Within half a second of each other, the same change: the two
+        // passes see a cut half a frame apart.
+        boundaries.dedup_by(|a, b| (*a - *b).abs() < 0.6);
         let mut shots = Vec::with_capacity(boundaries.len() + 1);
         let mut start = 0.0;
         for b in &boundaries {
@@ -79,21 +85,29 @@ impl crate::Analyser for ShotsAnalyser {
         !item.is_still && !item.video_codec.is_empty() && item.duration.to_secs_f64() > 0.0
     }
     fn run(&self, item: &klipp_media::MediaItem, ctx: &crate::AnalysisCtx) -> Result<serde_json::Value, String> {
-        let args = vec![
-            "-hide_banner".to_string(),
-            "-nostats".to_string(),
-            "-i".to_string(),
-            item.path.to_string_lossy().into_owned(),
-            "-an".to_string(),
-            "-sn".to_string(),
-            "-vf".to_string(),
-            format!("scale=320:-2,select='gt(scene,{THRESHOLD})',showinfo"),
-            "-f".to_string(),
-            "null".to_string(),
-            "-".to_string(),
-        ];
-        let stderr = crate::ffmpeg_stderr(&ctx.ffmpeg, &args)?;
-        let boundaries = parse_showinfo(&stderr);
+        // Two passes: frame to frame for cuts, and at two frames a second
+        // for a change that takes a moment — a split screen becoming a
+        // stacked one, a share opening — which frame to frame is a run
+        // of small scores and never a cut. A podcast whose layout
+        // changed four times came back as two shots.
+        let pass = |vf: String| -> Result<Vec<f64>, String> {
+            let args = vec![
+                "-hide_banner".to_string(),
+                "-nostats".to_string(),
+                "-i".to_string(),
+                item.path.to_string_lossy().into_owned(),
+                "-an".to_string(),
+                "-sn".to_string(),
+                "-vf".to_string(),
+                vf,
+                "-f".to_string(),
+                "null".to_string(),
+                "-".to_string(),
+            ];
+            Ok(parse_showinfo(&crate::ffmpeg_stderr(&ctx.ffmpeg, &args)?))
+        };
+        let mut boundaries = pass(format!("scale=320:-2,select='gt(scene,{THRESHOLD})',showinfo"))?;
+        boundaries.extend(pass(format!("fps=2,scale=320:-2,select='gt(scene,{SLOW_THRESHOLD})',showinfo"))?);
         let shots = Shots::from_boundaries(item.duration.to_secs_f64(), boundaries);
         serde_json::to_value(shots).map_err(|e| e.to_string())
     }

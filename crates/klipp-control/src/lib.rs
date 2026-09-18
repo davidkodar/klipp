@@ -132,7 +132,7 @@ fn serve_connection(stream: UnixStream, ctx: ControlContext) {
             Ok(req) => {
                 let id = req.id;
                 match handle(&ctx, req.command, &mut None) {
-                    Ok(v) => Response::ok(id, v),
+                    Ok(v) => Response::ok(id, with_project_generation(&ctx, v)),
                     Err(e) => Response::err(id, e),
                 }
             }
@@ -413,6 +413,16 @@ fn resolve_plan(ctx: &ControlContext, ops: &[klipp_document::ops::Op]) -> Result
     let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
     let plan = klipp_document::ops::resolve_with(&seq, &pool, ops, &AnalysedTranscripts).map_err(|r| format!("{r} (step {} refused; nothing applied)", r.step + 1))?;
     Ok((plan, revision))
+}
+
+/// Every reply carries which project it is about: the generation moves
+/// when a project is made, opened or saved, and a client that sees it
+/// move knows the timeline and the pool it was working on are gone.
+fn with_project_generation(ctx: &ControlContext, mut v: serde_json::Value) -> serde_json::Value {
+    if let (Some(obj), Ok(p)) = (v.as_object_mut(), ctx.shared.project.lock()) {
+        obj.insert("project_generation".into(), json!(p.generation));
+    }
+    v
 }
 
 fn project_status(ctx: &ControlContext) -> Result<klipp_core::ProjectStatus, String> {
@@ -948,7 +958,22 @@ fn handle(
             if !p.exists() {
                 return Err(format!("file not found: {path}"));
             }
+            // A file already in the pool is not imported again: the second
+            // copy would be a second id for the same footage.
+            let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
+            if let Some(item) = pool.find_by_path(&p) {
+                return Ok(json!({ "already_imported": true, "media_id": item.id.0.to_string(), "filename": item.filename }));
+            }
+            drop(pool);
             send(AppCommand::ImportMedia { path: p })
+        }
+
+        ControlCommand::RenameSequence { name } => {
+            let name = name.trim().to_string();
+            if name.is_empty() {
+                return Err("a sequence needs a name".into());
+            }
+            send(AppCommand::RenameSequence { sequence_idx: usize::MAX, new_name: name })
         }
 
         ControlCommand::AppendClip { media_id, track } => {

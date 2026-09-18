@@ -34,6 +34,8 @@ const INLINE_IMAGE_MAX_BYTES: usize = 1_000_000;
 /// screenshot taken straight after a grade change captures the *old*
 /// frame, and a "change then look" check silently compares a frame with
 /// itself. That is exactly what happened the first time this was used.
+/// The project generation the last reply carried; `u64::MAX` before any.
+static LAST_PROJECT_GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(u64::MAX);
 static PENDING_WRITE_GENERATION: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(u64::MAX);
 
@@ -461,6 +463,7 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
         "klipp_brief" => json!({ "method": "brief" }),
         "klipp_set_brief" => json!({ "method": "set_brief", "brief": args.get("brief").cloned().ok_or("missing required argument: brief")? }),
         "klipp_check" => json!({ "method": "check" }),
+        "klipp_rename_sequence" => json!({ "method": "rename_sequence", "name": arg_str(args, "name")? }),
         "klipp_save_project" => {
             let mut v = json!({ "method": "save_project" });
             if let Some(p) = args.get("path").and_then(|v| v.as_str()) {
@@ -512,7 +515,28 @@ fn call_tool(name: &str, args: &Value) -> Result<Vec<Value>, String> {
     }
     let cmd = tool_to_command(name, args)?;
     let result = control_call(cmd)?;
+    // The project changed under this session — made new, opened or saved
+    // as — since its last call: said, so what it knew about the timeline
+    // and the pool is not trusted a moment longer.
+    let mut notice: Option<String> = None;
+    if let Some(g) = result.get("project_generation").and_then(|v| v.as_u64()) {
+        let seen = LAST_PROJECT_GENERATION.swap(g, std::sync::atomic::Ordering::Relaxed);
+        if seen != u64::MAX && seen != g && !matches!(name, "klipp_open_project" | "klipp_save_project") {
+            notice = Some("Note: the project changed under you since your last call (a new project, or one opened or saved as another) — the timeline, the media pool and their ids are not what they were. Read klipp_status, klipp_list_media and klipp_timeline again before going on.".into());
+        }
+    }
 
+    let mut content = content_for(name, &result)?;
+    if let Some(n) = notice {
+        content.insert(0, json!({ "type": "text", "text": n }));
+    }
+    Ok(content)
+}
+
+/// A reply's content: the frame-wait bookkeeping for writes, text for
+/// the views that are text, pictures and sound inlined when small.
+fn content_for(name: &str, result: &Value) -> Result<Vec<Value>, String> {
+    let result = result.clone();
     if WRITE_TOOLS.contains(&name) {
         if let Some(g) = result.get("generation").and_then(|v| v.as_u64()) {
             // Keep the *latest* outstanding write: after a burst of edits
@@ -788,7 +812,8 @@ fn tool_definitions() -> Vec<Value> {
              vec!["media_id"]),
         tool("klipp_find_shots",
              "Find shots across every analysed media item: by framing (close-up, medium \
-              close-up, medium, wide, very wide, no people), at least so many people, an \
+              close-up, medium, wide, very wide, inset — a small figure in a corner, a face \
+              cam over a screen — or no people; B-roll wants no people), at least so many people, an \
               object the detector named (cat, car, cup…), motion (static, gentle, \
               moving, busy), whether anything is said, a minimum length. Every condition \
               given must hold. Each hit has the media id and the shot's start and end in \
@@ -1027,6 +1052,11 @@ fn tool_definitions() -> Vec<Value> {
               what, and what would put it right. Changes nothing. Run it before klipp_export, \
               fix the errors, decide about the warnings.",
              json!({}), vec![]),
+        tool("klipp_rename_sequence",
+             "Name the active sequence: what the timeline is called in the app and in the \
+              project file. A new project's sequence has a default or inherited name until \
+              it is named; the brief's title does not rename it.",
+             json!({ "name": { "type": "string" } }), vec!["name"]),
         tool("klipp_save_project",
              "Save the project: to an absolute path (a folder ending in .klipp, made if \
               needed), or where it was last saved when no path is given. Save before a long \
