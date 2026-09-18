@@ -779,6 +779,13 @@ pub struct BrowserPanel {
     pub generators_selected: Option<String>,
     // Library tab category
     pub library_category: LibraryCategory,
+    // Audio Library (royalty-free music / SFX search) state
+    pub audio_search_query: String,
+    /// false = music (Jamendo), true = sound effects (Freesound).
+    pub audio_search_sfx: bool,
+    pub audio_search_results: Vec<klipp_audio_search::Track>,
+    pub audio_search_receiver: Option<std::sync::mpsc::Receiver<Result<Vec<klipp_audio_search::Track>, String>>>,
+    pub audio_search_error: Option<String>,
     // Scroll-to request from RevealMediaInBrowser
     pub scroll_to_media_id: Option<klipp_core::MediaId>,
     // Files tab state
@@ -1008,6 +1015,11 @@ impl Default for BrowserPanel {
             audio_fx_auditioning: None,
             audio_fx_hide_unsupported: false,
             library_category: LibraryCategory::default(),
+            audio_search_query: String::new(),
+            audio_search_sfx: false,
+            audio_search_results: Vec::new(),
+            audio_search_receiver: None,
+            audio_search_error: None,
             scroll_to_media_id: None,
             files_current_path: dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("/")),
             files_entries: Vec::new(),
@@ -1268,6 +1280,7 @@ impl BrowserPanel {
                 LibraryCategory::Titles => "Search titles\u{2026}",
                 LibraryCategory::Transitions => "Search transitions\u{2026}",
                 LibraryCategory::Generators => "Search generators\u{2026}",
+                LibraryCategory::Audio => "",
             },
         };
 
@@ -4555,12 +4568,13 @@ impl BrowserPanel {
         theme: &KlippTheme,
     ) -> Vec<AppCommand> {
         // ── Category tabs: the same strip as every other tab row ──
-        let categories: [(LibraryCategory, &str, &str); 5] = [
+        let categories: [(LibraryCategory, &str, &str); 6] = [
             (LibraryCategory::VideoFx, "VIDEO FX", "VFX"),
             (LibraryCategory::AudioFx, "AUDIO FX", "AFX"),
             (LibraryCategory::Titles, "TITLES", "TTL"),
             (LibraryCategory::Transitions, "TRANSITIONS", "TRN"),
             (LibraryCategory::Generators, "GENERATORS", "GEN"),
+            (LibraryCategory::Audio, "MUSIC & SFX", "AUD"),
         ];
         let labels: Vec<&str> = categories.iter().map(|c| c.1).collect();
         let brief: Vec<&str> = categories.iter().map(|c| c.2).collect();
@@ -4808,7 +4822,149 @@ impl BrowserPanel {
                     &mut self.generator_previews,
                 )
             }
+            LibraryCategory::Audio => self.show_audio_library(ui, state, theme),
         }
+    }
+
+    /// The Audio Library sub-tab: search royalty-free music and sound
+    /// effects, preview them on their source page, and add one into the
+    /// pool. The search runs on a thread and its result arrives through
+    /// `audio_search_receiver`, so the UI never blocks on the network.
+    fn show_audio_library(&mut self, ui: &mut egui::Ui, state: &mut AppState, theme: &KlippTheme) -> Vec<AppCommand> {
+        let mut cmds = Vec::new();
+
+        // Collect an async search result if one has arrived.
+        if let Some(rx) = &self.audio_search_receiver {
+            if let Ok(res) = rx.try_recv() {
+                match res {
+                    Ok(tracks) => {
+                        self.audio_search_results = tracks;
+                        self.audio_search_error = None;
+                    }
+                    Err(e) => {
+                        self.audio_search_error = Some(e);
+                        self.audio_search_results.clear();
+                    }
+                }
+                self.audio_search_receiver = None;
+            }
+        }
+        let searching = self.audio_search_receiver.is_some();
+
+        ui.add_space(6.0);
+        // Music / sound-effects toggle.
+        ui.horizontal(|ui| {
+            ui.add_space(8.0);
+            if ui.selectable_label(!self.audio_search_sfx, "Music").clicked() {
+                self.audio_search_sfx = false;
+            }
+            if ui.selectable_label(self.audio_search_sfx, "Sound effects").clicked() {
+                self.audio_search_sfx = true;
+            }
+        });
+
+        // Search box + button.
+        let mut do_search = false;
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            ui.add_space(8.0);
+            let hint = if self.audio_search_sfx {
+                "whoosh, impact, rain, door slam…"
+            } else {
+                "upbeat, cinematic, calm piano…"
+            };
+            let field_w = (ui.available_width() - 84.0).max(120.0);
+            let resp = ui.add(egui::TextEdit::singleline(&mut self.audio_search_query).hint_text(hint).desired_width(field_w));
+            if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                do_search = true;
+            }
+            if ui.add_enabled(!searching, egui::Button::new(if searching { "…" } else { "Search" })).clicked() {
+                do_search = true;
+            }
+        });
+
+        // Whether this build has a key for the chosen source.
+        let configured = if self.audio_search_sfx {
+            klipp_audio_search::sfx_available()
+        } else {
+            klipp_audio_search::music_available()
+        };
+        if !configured {
+            ui.add_space(10.0);
+            ui.horizontal(|ui| {
+                ui.add_space(8.0);
+                ui.label(egui::RichText::new("Search isn't set up on this build (no API key).").color(theme.text_secondary));
+            });
+            return cmds;
+        }
+
+        if do_search && !self.audio_search_query.trim().is_empty() {
+            let (tx, rx) = std::sync::mpsc::channel();
+            let query = self.audio_search_query.clone();
+            let sfx = self.audio_search_sfx;
+            std::thread::Builder::new().name("klipp-audio-search".into()).spawn(move || {
+                let r = if sfx {
+                    klipp_audio_search::search_sfx(&query, 20)
+                } else {
+                    klipp_audio_search::search_music(&query, 20)
+                };
+                let _ = tx.send(r);
+            }).ok();
+            self.audio_search_receiver = Some(rx);
+            self.audio_search_error = None;
+            ui.ctx().request_repaint();
+        }
+
+        if let Some(e) = &self.audio_search_error {
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                ui.add_space(8.0);
+                ui.label(egui::RichText::new(e).color(theme.text_secondary));
+            });
+        }
+
+        ui.add_space(6.0);
+        // Results — cloned out so the row buttons can borrow `self`/`state`.
+        let results = self.audio_search_results.clone();
+        if results.is_empty() && !searching && self.audio_search_error.is_none() {
+            ui.horizontal(|ui| {
+                ui.add_space(8.0);
+                ui.label(egui::RichText::new("Search royalty-free music and sound effects, preview, and add.").color(theme.text_secondary));
+            });
+        }
+        egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+            for t in &results {
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    ui.add_space(8.0);
+                    ui.vertical(|ui| {
+                        ui.label(egui::RichText::new(&t.title).strong().color(theme.text_primary));
+                        let commercial = if t.commercial_ok { String::new() } else { "  ·  non-commercial".to_string() };
+                        ui.label(egui::RichText::new(format!("{}  ·  {:.0}s  ·  {}{}", t.artist, t.duration_secs, t.license, commercial)).small().color(theme.text_secondary));
+                    });
+                });
+                ui.horizontal(|ui| {
+                    ui.add_space(8.0);
+                    if !t.page_url.is_empty() && ui.button("Preview").on_hover_text("Open the source page to listen").clicked() {
+                        ui.ctx().open_url(egui::OpenUrl::new_tab(&t.page_url));
+                    }
+                    if ui.button("Add").on_hover_text("Download into the pool, with its credit kept").clicked() {
+                        match klipp_audio_search::download_track(t, &klipp_audio_search::download_dir()) {
+                            Ok(path) => {
+                                cmds.push(AppCommand::ImportMedia { path });
+                                state.toast.show(format!("Added \u{201c}{}\u{201d}", t.title));
+                            }
+                            Err(e) => {
+                                state.toast.show(format!("Couldn't add it: {e}"));
+                            }
+                        }
+                    }
+                });
+                ui.add_space(4.0);
+                ui.separator();
+            }
+        });
+        cmds
     }
 }
 

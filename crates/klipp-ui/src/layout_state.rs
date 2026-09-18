@@ -160,6 +160,8 @@ pub enum LibraryCategory {
     Titles,
     Transitions,
     Generators,
+    /// Royalty-free music and sound-effect search (Jamendo, Freesound).
+    Audio,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

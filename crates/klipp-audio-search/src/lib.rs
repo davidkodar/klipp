@@ -317,8 +317,10 @@ mod tests {
         assert_eq!(encode("lo-fi"), "lo-fi");
     }
 
-    /// Hits the live Freesound API — only when a token is configured.
+    /// Hits the live Freesound API — run on demand (`--ignored`), so a
+    /// network blip never blocks the workspace test run.
     #[test]
+    #[ignore = "hits the live Freesound API"]
     fn live_sfx_search_when_configured() {
         if !sfx_available() {
             eprintln!("skipping: no Freesound token");
@@ -330,8 +332,10 @@ mod tests {
         assert!(!t.title.is_empty() && !t.preview_url.is_empty(), "effect has a title and a preview: {t:?}");
     }
 
-    /// Hits the live Jamendo API — only when a client id is configured.
+    /// Hits the live Jamendo API — run on demand (`--ignored`), so a
+    /// network blip never blocks the workspace test run.
     #[test]
+    #[ignore = "hits the live Jamendo API"]
     fn live_music_search_when_configured() {
         if !music_available() {
             eprintln!("skipping: no Jamendo client id");
