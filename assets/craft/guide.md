@@ -113,6 +113,20 @@ exist until the plan runs.
   another clip is heard over it, and moves there and back over half a
   second. Set the music's own volume first and place the speech first:
   the duck is written as keyframes from what is on the timeline then.
+- `grade {clip_id, exposure?, contrast?, saturation?, temperature?, tint?, lift?, gamma?, gain?, highlights?, shadows?, reset?}`:
+  a picture clip's primary grade. What you give is set, the rest stays.
+  Every knob is 0 at neutral, except `saturation` and `contrast`, whose
+  neutral is 1. `exposure` is in stops; `temperature` and `tint` are the
+  white balance; `lift`, `gamma`, `gain` move the shadows, mids and
+  highlights; `reset` takes the clip to neutral first. Match shots to
+  each other before making any of them look better.
+- `transition {clip_id, kind?, secs?}`: a transition between a clip and
+  the one after it, `secs` long, on the cut. `cross_dissolve` is the
+  default and the only one an interview or a documentary wants; a
+  dissolve marks a passage of time or place. `dip_to_black` and
+  `dip_to_white` mark a break. A stylised kind (`zoom`, `whip`,
+  `glitch`, `film_burn`) is a style choice the brief has to ask for.
+  Both clips need footage beyond the cut to overlap.
 - `style {clip_id | track, from?, to?, size?, color?, font?, bold?, align?, x?, y?, backing?, outline?}`:
   the look and place of one title, or of every title on a track
   (`"subtitle"` for all the captions), between `from` and `to` when

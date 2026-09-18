@@ -390,6 +390,20 @@ pub enum EditCommand {
         new_out: Option<RationalTime>,
     },
 
+    // === TRANSITIONS ===
+    /// A transition added between two adjacent clips on a track, with
+    /// the audio crossfade it sets on them. Undo removes it, restores
+    /// the fades, and puts back any transition it replaced.
+    AddTransition {
+        track_index: usize,
+        transition: klipp_timeline::Transition,
+        clip_a_id: ClipId,
+        clip_b_id: ClipId,
+        old_fade_out_a: f32,
+        old_fade_in_b: f32,
+        replaced: Option<klipp_timeline::Transition>,
+    },
+
     // === NODE GRAPH (color grading) ===
     SetNodeGraph {
         clip_id: ClipId,
@@ -636,6 +650,7 @@ impl EditCommand {
             }
             EditCommand::CreateSubclip { .. } => "Create Subclip",
             EditCommand::SetRange { .. } => "Set Range",
+            EditCommand::AddTransition { .. } => "Add Transition",
             EditCommand::SetNodeGraph { .. } => "Color Grade",
             EditCommand::EditKeyframes { description, .. } => description,
             EditCommand::EditClipAudio { .. } => "Edit Audio",

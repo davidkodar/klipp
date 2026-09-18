@@ -467,6 +467,20 @@ impl DocumentView<'_> {
                 seq.in_point = *old_in;
                 seq.out_point = *old_out;
             }
+            EditCommand::AddTransition { track_index, transition, clip_a_id, clip_b_id, old_fade_out_a, old_fade_in_b, replaced } => {
+                if let Some(track) = self.sequences[self.active].tracks.get_mut(*track_index) {
+                    track.transitions.retain(|t| t.id != transition.id);
+                    if let Some(prev) = replaced {
+                        track.transitions.push(*prev);
+                    }
+                    if let Some(c) = track.clips.iter_mut().find(|c| c.id == *clip_a_id) {
+                        c.fade_out_secs = *old_fade_out_a;
+                    }
+                    if let Some(c) = track.clips.iter_mut().find(|c| c.id == *clip_b_id) {
+                        c.fade_in_secs = *old_fade_in_b;
+                    }
+                }
+            }
             EditCommand::SetNodeGraph { clip_id, old_graph, .. } => {
                 for track in &mut self.sequences[self.active].tracks {
                     if let Some(clip) = track.find_clip_mut(*clip_id) {
@@ -997,6 +1011,19 @@ impl DocumentView<'_> {
                 let seq = &mut self.sequences[self.active];
                 seq.in_point = *new_in;
                 seq.out_point = *new_out;
+            }
+            EditCommand::AddTransition { track_index, transition, clip_a_id, clip_b_id, .. } => {
+                let dur_secs = transition.duration.to_secs_f64() as f32;
+                if let Some(track) = self.sequences[self.active].tracks.get_mut(*track_index) {
+                    track.transitions.retain(|t| !(t.clip_a_id == *clip_a_id && t.clip_b_id == *clip_b_id));
+                    track.transitions.push(*transition);
+                    if let Some(c) = track.clips.iter_mut().find(|c| c.id == *clip_a_id) {
+                        c.fade_out_secs = dur_secs;
+                    }
+                    if let Some(c) = track.clips.iter_mut().find(|c| c.id == *clip_b_id) {
+                        c.fade_in_secs = dur_secs;
+                    }
+                }
             }
             EditCommand::SetNodeGraph { clip_id, new_graph, .. } => {
                 for track in &mut self.sequences[self.active].tracks {

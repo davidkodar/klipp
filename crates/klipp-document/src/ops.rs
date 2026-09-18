@@ -228,6 +228,54 @@ pub enum Op {
     /// a name spelt as the cast list spells it. The first text box of
     /// the clip takes `text`; its look, place and timing stay.
     SetText { clip_id: ClipRef, text: String },
+    /// A clip's colour grade, as a professional would name it: what is
+    /// given is set on the clip's primary grade, the rest is left. Every
+    /// knob is zero at neutral, save `saturation` and `contrast`, whose
+    /// neutral is one. `exposure` is in stops; `temperature` and `tint`
+    /// warm/cool and green/magenta the white balance; `lift`, `gamma`,
+    /// `gain` move the shadows, mids and highlights (their master);
+    /// `saturation` at zero is grey, at one is as shot, above one is more.
+    Grade {
+        clip_id: ClipRef,
+        #[serde(default)]
+        exposure: Option<f32>,
+        #[serde(default)]
+        contrast: Option<f32>,
+        #[serde(default)]
+        saturation: Option<f32>,
+        #[serde(default)]
+        temperature: Option<f32>,
+        #[serde(default)]
+        tint: Option<f32>,
+        #[serde(default)]
+        lift: Option<f32>,
+        #[serde(default)]
+        gamma: Option<f32>,
+        #[serde(default)]
+        gain: Option<f32>,
+        #[serde(default)]
+        highlights: Option<f32>,
+        #[serde(default)]
+        shadows: Option<f32>,
+        /// Take the grade back to neutral first, then set what is given.
+        #[serde(default)]
+        reset: bool,
+    },
+    /// A transition between `clip_id` and the clip after it on its track,
+    /// `secs` long, centred on the cut. `kind` is a transition's name.
+    /// `cross_dissolve` is the default, and the only one an interview or
+    /// a documentary wants. `dip_to_black` and `dip_to_white` mark a
+    /// break. A stylised one (`zoom`, `whip`, `glitch`, `film_burn`) a
+    /// piece asks for by its style, never by default. Both clips need
+    /// source beyond the cut to overlap; a dissolve on a clip with no
+    /// handle there is refused.
+    Transition {
+        clip_id: ClipRef,
+        #[serde(default = "default_transition_kind")]
+        kind: String,
+        #[serde(default = "default_transition_secs")]
+        secs: f64,
+    },
     /// The look and place of titles: one clip, or every title on a track
     /// (the captions, all at once), between `from` and `to` when given —
     /// which is how the captions are lifted clear of a lower third for
@@ -291,6 +339,14 @@ fn default_caption_lines() -> usize {
 
 fn default_lower_third_secs() -> f64 {
     4.0
+}
+
+fn default_transition_kind() -> String {
+    "cross_dissolve".to_string()
+}
+
+fn default_transition_secs() -> f64 {
+    0.5
 }
 
 fn default_duck_db() -> f32 {
@@ -647,6 +703,26 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
         Op::Duck { clip_id, by_db, fade_secs } => {
             let (ti, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
             duck(seq, pool, i, ti, clip, *by_db, *fade_secs)
+        }
+        Op::Transition { clip_id, kind, secs } => {
+            let (ti, ci, clip) = resolve_clip(seq, fps, clip_id, i)?;
+            transition(seq, pool, fps, i, ti, ci, clip, kind, *secs)
+        }
+        Op::Grade { clip_id, exposure, contrast, saturation, temperature, tint, lift, gamma, gain, highlights, shadows, reset } => {
+            let (ti, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
+            let knobs: [(&str, &str, Option<f32>, f32, f32); 10] = [
+                ("exposure", "exposure", *exposure, -6.0, 6.0),
+                ("contrast", "contrast", *contrast, 0.0, 4.0),
+                ("saturation", "saturation", *saturation, 0.0, 4.0),
+                ("temperature", "temperature", *temperature, -1.0, 1.0),
+                ("tint", "tint", *tint, -1.0, 1.0),
+                ("lift", "lift_master", *lift, -1.0, 1.0),
+                ("gamma", "gamma_master", *gamma, -1.0, 1.0),
+                ("gain", "gain_master", *gain, -1.0, 1.0),
+                ("highlights", "highlights", *highlights, -1.0, 1.0),
+                ("shadows", "shadows", *shadows, -1.0, 1.0),
+            ];
+            grade(seq, pool, i, ti, clip, &knobs, *reset)
         }
         Op::Style { clip_id, track, from, to, size, color, font, bold, align, x, y, backing, outline } => {
             let look = Look {
@@ -1531,6 +1607,160 @@ fn set_text(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip, 
     Ok((what, edit, vec![clip.id]))
 }
 
+/// A transition between `clip` and the clip after it on its track. The
+/// registry names the kind; a stylised one is spelt by its key or a
+/// friendly alias. Both clips need source beyond the cut to overlap by.
+#[allow(clippy::too_many_arguments)]
+fn transition(
+    seq: &Sequence,
+    pool: &MediaPool,
+    fps: Fps,
+    i: usize,
+    ti: usize,
+    ci: usize,
+    clip: &Clip,
+    kind: &str,
+    secs: f64,
+) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
+    if seq.tracks[ti].locked {
+        return Err(refuse(i, format!("track {ti} is locked"), "unlock it first"));
+    }
+    let Some(next) = seq.tracks[ti].clips.get(ci + 1) else {
+        return Err(refuse(i, format!("{} has no clip after it on its track", clip_name(seq, pool, clip)), "a transition goes between two clips meeting at a cut"));
+    };
+    if clip.timeline_out != next.timeline_in {
+        return Err(refuse(i, format!("{} and the clip after it do not meet at a cut", clip_name(seq, pool, clip)), "a transition needs two clips edge to edge"));
+    }
+    let spec = resolve_transition_kind(kind).ok_or_else(|| {
+        refuse(i, format!("\"{kind}\" is not a transition"), "use cross_dissolve, dip_to_black, dip_to_white, or a stylised one like zoom, whip, glitch, film_burn; a straight cut needs no transition")
+    })?;
+    if !(0.06..=4.0).contains(&secs) {
+        return Err(refuse(i, format!("a transition of {secs} s"), "give secs between 0.06 and 4"));
+    }
+    let dur = snap(secs, fps).max(one_frame(fps));
+    // Both clips overlap the cut by half the transition: each needs that
+    // much source beyond its edge, and to stay longer than the overlap.
+    let half = dur.to_secs_f64() / 2.0;
+    let half_tc = snap(half, fps);
+    let media_dur = |c: &Clip| c.media_id().and_then(|m| pool.get(&m)).map(|m| m.duration);
+    let a_room = media_dur(clip).is_none_or(|d| clip.source_out + half_tc <= d);
+    let _ = media_dur;
+    let b_room = next.source_in >= half_tc;
+    if !a_room || !b_room {
+        let who = if !a_room { clip_name(seq, pool, clip) } else { clip_name(seq, pool, next) };
+        return Err(refuse(i, format!("{who} has no footage beyond the cut to make the {secs:.2} s overlap"), "shorten the transition, or trim the clip so there is a handle"));
+    }
+    if dur >= clip.timeline_out - clip.timeline_in || dur >= next.timeline_out - next.timeline_in {
+        return Err(refuse(i, "the transition is as long as one of its clips", "shorten it, or lengthen the clips"));
+    }
+    let replaced = seq.tracks[ti].transitions.iter().find(|t| t.clip_a_id == clip.id && t.clip_b_id == next.id).cloned();
+    let transition = klipp_timeline::Transition {
+        id: klipp_core::TransitionId::new(),
+        kind: spec.kind,
+        duration: dur,
+        clip_a_id: clip.id,
+        clip_b_id: next.id,
+        user_params: klipp_core::TransitionUserParams::default_for_kind(spec.kind_id),
+        alignment: klipp_core::TransitionAlignment::default(),
+    };
+    let at = clip.timeline_out.to_secs_f64();
+    let what = format!(
+        "{} of {:.2} s between {} and {} at {at:.2} s",
+        spec.display_name,
+        dur.to_secs_f64(),
+        clip_name(seq, pool, clip),
+        clip_name(seq, pool, next),
+    );
+    let edit = EditCommand::AddTransition {
+        track_index: ti,
+        transition,
+        clip_a_id: clip.id,
+        clip_b_id: next.id,
+        old_fade_out_a: clip.fade_out_secs,
+        old_fade_in_b: next.fade_in_secs,
+        replaced,
+    };
+    Ok((what, edit, vec![clip.id, next.id]))
+}
+
+/// A transition spec from a name: its registry key (any case), or a
+/// friendly alias for the ones people ask for by feel.
+fn resolve_transition_kind(name: &str) -> Option<&'static klipp_core::TransitionSpec> {
+    let key = name.trim().to_lowercase().replace([' ', '-'], "_");
+    let alias = match key.as_str() {
+        "dissolve" | "crossfade" | "cross_fade" => "CrossDissolve",
+        "dip_to_black" | "dip_black" | "fade_to_black" | "fade_black" => "DipToBlack",
+        "dip_to_white" | "dip_white" | "fade_to_white" | "flash_white" => "DipToWhite",
+        "zoom" | "zoom_in" | "punch_in" => "ZoomInDissolve",
+        "zoom_out" => "ZoomOutDissolve",
+        "whip" | "whip_pan" | "swish" | "shake" => "CrossZoom",
+        "glitch" | "digital" => "GlitchDissolve",
+        "film_burn" | "burn" | "light_leak" => "FilmBurn",
+        "vanish" | "dip" => "DipToBlack",
+        "blur" => "BlurDissolve",
+        "spin" => "Spin",
+        other => {
+            // The registry key itself, matched without case.
+            return klipp_core::TRANSITION_SPECS.iter().find(|s| s.string_key.eq_ignore_ascii_case(&other.replace('_', "")));
+        }
+    };
+    klipp_core::spec_for_string_key(alias)
+}
+
+/// A clip's primary grade set from named knobs: what is given lands on
+/// the clip's Corrector node, the rest of the grade stays, recorded as
+/// one whole-graph edit so a single undo takes it back.
+fn grade(
+    seq: &Sequence,
+    pool: &MediaPool,
+    i: usize,
+    ti: usize,
+    clip: &Clip,
+    knobs: &[(&str, &str, Option<f32>, f32, f32)],
+    reset: bool,
+) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
+    if seq.tracks[ti].locked {
+        return Err(refuse(i, format!("track {ti} is locked"), "unlock it first"));
+    }
+    if !matches!(clip.kind, ClipKind::Media { .. }) {
+        return Err(refuse(i, format!("{} is not a picture clip", clip_name(seq, pool, clip)), "grade a media clip; a title or a generator has no grade"));
+    }
+    if !reset && knobs.iter().all(|(_, _, v, _, _)| v.is_none()) {
+        return Err(refuse(i, "nothing to grade", "give exposure, contrast, saturation, temperature, tint, lift, gamma, gain, highlights or shadows"));
+    }
+    for (name, _, v, lo, hi) in knobs {
+        if let Some(v) = v {
+            if !v.is_finite() || v < lo || v > hi {
+                return Err(refuse(i, format!("{name} {v} is out of range"), format!("give {name} between {lo} and {hi}")));
+            }
+        }
+    }
+    let mut graph = if reset { klipp_nodes::defaults::default_graph() } else { clip.node_graph.clone() };
+    // A clip that has never been graded has an empty graph: it needs the
+    // primary chain before there is a grade to set.
+    if graph.is_identity() || !graph.nodes.iter().any(|n| n.kind == klipp_nodes::NodeKind::Corrector) {
+        graph = klipp_nodes::defaults::default_graph();
+    }
+    let corrector = graph.ensure_corrector();
+    let node = graph.nodes.iter_mut().find(|n| n.id == corrector).expect("ensure_corrector made it");
+    let mut said = Vec::new();
+    for (name, param, v, _, _) in knobs {
+        if let Some(v) = v {
+            if !node.params.apply_override(param, *v) {
+                return Err(refuse(i, format!("the grade has no \"{param}\""), "this is a bug: tell the user the grade param went nowhere"));
+            }
+            said.push(format!("{name} {v}"));
+        }
+    }
+    let what = format!(
+        "grade {}: {}",
+        clip_name(seq, pool, clip),
+        if said.is_empty() { "back to neutral".to_string() } else { format!("{}{}", if reset { "neutral, then " } else { "" }, said.join(", ")) },
+    );
+    let edit = EditCommand::SetNodeGraph { clip_id: clip.id, old_graph: clip.node_graph.clone(), new_graph: graph };
+    Ok((what, edit, vec![clip.id]))
+}
+
 /// `#rrggbb` or `#rrggbbaa`.
 fn parse_color(c: &str) -> Option<[u8; 4]> {
     let hex = c.trim().strip_prefix('#')?;
@@ -2209,6 +2439,77 @@ mod tests {
         let err = resolve(&seq, &pool, &[ops[0].clone(), Op::SetText { clip_id: ClipRef::At { track: 1, secs: 1.0 }, text: "x".into() }]).unwrap_err();
         assert!(err.why.contains("not a title"), "{err}");
         assert!(resolve(&seq, &pool, &[ops[0].clone(), Op::SetText { clip_id: ClipRef::At { track: 0, secs: 1.0 }, text: " ".into() }]).is_err());
+    }
+
+    #[test]
+    fn a_transition_goes_between_two_clips_and_undo_removes_it() {
+        let (seq, pool, _, a, b) = fixture();
+        // The two clips meet at 4 s and each is 4 s long with source beyond.
+        let plan = resolve(&seq, &pool, &[Op::Transition { clip_id: ClipRef::Id(a), kind: "dissolve".into(), secs: 0.4 }]).unwrap();
+        assert!(plan.steps[0].what.starts_with("Cross Dissolve of 0.40 s") && plan.steps[0].what.contains("at 4.00 s"), "{}", plan.steps[0].what);
+        let EditCommand::AddTransition { transition, .. } = &plan.steps[0].edit else { panic!("a transition edit") };
+        assert_eq!(transition.clip_a_id, a);
+        assert_eq!(transition.clip_b_id, b);
+        assert_eq!(transition.kind, klipp_core::TransitionKind::CrossDissolve);
+
+        // Replay and undo: the transition and the crossfades come and go.
+        let mut seqs = vec![seq.clone()];
+        let mut p = pool.clone();
+        let mut fps = seq.fps;
+        let mut view = crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut p, fps: &mut fps };
+        view.apply_forward(&plan.steps[0].edit);
+        assert_eq!(view.sequences[0].tracks[0].transitions.len(), 1);
+        assert!((view.sequences[0].tracks[0].clips[0].fade_out_secs - 0.4).abs() < 1e-6);
+        view.apply_inverse(&plan.steps[0].edit);
+        assert_eq!(view.sequences[0].tracks[0].transitions.len(), 0);
+        assert_eq!(view.sequences[0].tracks[0].clips[0].fade_out_secs, 0.0);
+
+        // A stylised name by its alias.
+        let plan = resolve(&seq, &pool, &[Op::Transition { clip_id: ClipRef::Id(a), kind: "whip".into(), secs: 0.4 }]).unwrap();
+        let EditCommand::AddTransition { transition, .. } = &plan.steps[0].edit else { panic!() };
+        assert_eq!(transition.kind, klipp_core::TransitionKind::CrossZoom);
+
+        // Refusals: the last clip has no next; an unknown kind; too long.
+        let bad = |op: Op| resolve(&seq, &pool, &[op]).unwrap_err();
+        assert!(bad(Op::Transition { clip_id: ClipRef::Id(b), kind: "dissolve".into(), secs: 0.5 }).why.contains("no clip after"));
+        assert!(bad(Op::Transition { clip_id: ClipRef::Id(a), kind: "sparkle".into(), secs: 0.5 }).why.contains("not a transition"));
+        assert!(bad(Op::Transition { clip_id: ClipRef::Id(a), kind: "dissolve".into(), secs: 4.0 }).why.contains("as long as one of its clips"));
+
+        // As the tools send it, kind and secs optional.
+        let ops: Vec<Op> = serde_json::from_str(r#"[{"op":"transition","clip_id":{"track":0,"secs":2.0}}]"#).unwrap();
+        assert!(matches!(&ops[0], Op::Transition { kind, secs, .. } if kind == "cross_dissolve" && (*secs - 0.5).abs() < 1e-9));
+    }
+
+    #[test]
+    fn a_grade_sets_the_primary_knobs_and_undo_takes_it_back() {
+        let (seq, pool, media, a, _) = fixture();
+        let plan = resolve(&seq, &pool, &[Op::Grade { clip_id: ClipRef::Id(a), exposure: Some(0.5), contrast: Some(1.2), saturation: Some(1.3), temperature: Some(0.1), tint: None, lift: Some(0.05), gamma: None, gain: Some(-0.1), highlights: None, shadows: Some(0.2), reset: false }]).unwrap();
+        assert!(plan.steps[0].what.contains("exposure 0.5") && plan.steps[0].what.contains("gain -0.1"), "{}", plan.steps[0].what);
+        let EditCommand::SetNodeGraph { new_graph, .. } = &plan.steps[0].edit else { panic!("a node-graph edit") };
+        let node = new_graph.nodes.iter().find(|n| n.kind == klipp_nodes::NodeKind::Corrector).expect("a corrector");
+        assert_eq!(node.params.exposure, Some(0.5));
+        assert_eq!(node.params.saturation, Some(1.3));
+        assert_eq!(node.params.gain_master, Some(-0.1));
+        assert_eq!(node.params.shadows, Some(0.2));
+
+        // Replay on a document, then undo.
+        let mut seqs = vec![seq.clone()];
+        let mut p = pool.clone();
+        let mut fps = seq.fps;
+        let mut view = crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut p, fps: &mut fps };
+        view.apply_forward(&plan.steps[0].edit);
+        assert!(!view.sequences[0].tracks[0].clips[0].node_graph.is_identity());
+        view.apply_inverse(&plan.steps[0].edit);
+        assert!(view.sequences[0].tracks[0].clips[0].node_graph.is_identity(), "undo restores the ungraded clip");
+
+        // Out of range, nothing to change, a title: refused.
+        let bad = |op: Op| resolve(&seq, &pool, &[op]).unwrap_err();
+        assert!(bad(Op::Grade { clip_id: ClipRef::Id(a), exposure: Some(99.0), contrast: None, saturation: None, temperature: None, tint: None, lift: None, gamma: None, gain: None, highlights: None, shadows: None, reset: false }).why.contains("out of range"));
+        assert!(bad(Op::Grade { clip_id: ClipRef::Id(a), exposure: None, contrast: None, saturation: None, temperature: None, tint: None, lift: None, gamma: None, gain: None, highlights: None, shadows: None, reset: false }).why.contains("nothing to grade"));
+
+        // As the tools send it.
+        let _: Vec<Op> = serde_json::from_str(r#"[{"op":"grade","clip_id":{"track":0,"secs":1.0},"exposure":0.3,"saturation":1.1,"reset":true}]"#).unwrap();
+        let _ = media;
     }
 
     #[test]

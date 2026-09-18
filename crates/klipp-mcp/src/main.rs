@@ -886,6 +886,17 @@ fn tool_definitions() -> Vec<Value> {
               down (9 dB by default) wherever another clip is heard over it, moving over \
               fade_secs (0.5) each way, as volume keyframes. Set the music's volume first, \
               place the speech first.\n\
+              grade {clip_id, exposure?, contrast?, saturation?, temperature?, tint?, lift?, gamma?, \
+              gain?, highlights?, shadows?, reset?} — a picture clip's primary grade: what is \
+              given is set, the rest stays. Every knob is 0 at neutral except saturation and \
+              contrast (1). exposure in stops; temperature/tint the white balance; lift/gamma/gain \
+              the shadows/mids/highlights; reset takes it to neutral first. Grade for continuity \
+              first — shots that follow each other should match — then for the look.\n\
+              transition {clip_id, kind?, secs?} — a transition between a clip and the one after \
+              it on its track, secs long (0.5 default), centred on the cut. kind is cross_dissolve \
+              (the default, and all an interview or documentary wants), dip_to_black, dip_to_white, \
+              or a stylised one (zoom, whip, glitch, film_burn) a piece asks for by its style, \
+              never by default. Both clips need footage beyond the cut to overlap.\n\
               style {clip_id | track, from?, to?, size?, color?, font?, bold?, align?, x?, y?, backing?, outline?} \
               — the look and place of one title, or of every title on a track (\"subtitle\" for \
               all the captions), between from and to when given: size in pixels of a 1080-line \
@@ -954,6 +965,17 @@ fn tool_definitions() -> Vec<Value> {
               down (9 dB by default) wherever another clip is heard over it, moving over \
               fade_secs (0.5) each way, as volume keyframes. Set the music's volume first, \
               place the speech first.\n\
+              grade {clip_id, exposure?, contrast?, saturation?, temperature?, tint?, lift?, gamma?, \
+              gain?, highlights?, shadows?, reset?} — a picture clip's primary grade: what is \
+              given is set, the rest stays. Every knob is 0 at neutral except saturation and \
+              contrast (1). exposure in stops; temperature/tint the white balance; lift/gamma/gain \
+              the shadows/mids/highlights; reset takes it to neutral first. Grade for continuity \
+              first — shots that follow each other should match — then for the look.\n\
+              transition {clip_id, kind?, secs?} — a transition between a clip and the one after \
+              it on its track, secs long (0.5 default), centred on the cut. kind is cross_dissolve \
+              (the default, and all an interview or documentary wants), dip_to_black, dip_to_white, \
+              or a stylised one (zoom, whip, glitch, film_burn) a piece asks for by its style, \
+              never by default. Both clips need footage beyond the cut to overlap.\n\
               style {clip_id | track, from?, to?, size?, color?, font?, bold?, align?, x?, y?, backing?, outline?} \
               — the look and place of one title, or of every title on a track (\"subtitle\" for \
               all the captions), between from and to when given: size in pixels of a 1080-line \
