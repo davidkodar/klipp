@@ -899,3 +899,21 @@ fn looks_resolve_by_name_and_path() {
     let miss = klipp_control::resolve_look("no-such-look-zzz").unwrap_err();
     assert!(miss.contains("no look matches"), "{miss}");
 }
+
+/// suggest_selects splits speech at the real pauses and flags filler and
+/// too-short runs to drop.
+#[test]
+fn selects_split_a_take_and_drop_the_filler() {
+    let words = vec![
+        (0.0f64, 0.4, "So".into()), (0.45, 0.9, "here".into()), (0.95, 1.4, "we".into()), (1.45, 1.9, "go".into()),
+        // a long pause, then a filler-only run
+        (3.0, 3.2, "um".into()),
+        // another pause, then the real second select
+        (5.0, 5.4, "the".into()), (5.45, 5.9, "point".into()), (5.95, 6.6, "stands".into()),
+    ];
+    let sel = klipp_control::suggest_selects(&words, 0.6, 0.35);
+    assert_eq!(sel.len(), 3, "{sel:?}");
+    assert!(!sel[0].filler && sel[0].text == "So here we go");
+    assert!(sel[1].filler, "a lone 'um' is a drop: {:?}", sel[1]);
+    assert!(!sel[2].filler && sel[2].text.contains("point stands"));
+}

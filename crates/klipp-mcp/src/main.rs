@@ -467,6 +467,11 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
             }
             v
         }
+        "klipp_selects" => {
+            let mut v = json!({ "method": "selects", "media_id": arg_str(args, "media_id")? });
+            if let Some(x) = args.get("min_gap_secs").and_then(|v| v.as_f64()) { v["min_gap_secs"] = json!(x); }
+            v
+        }
         "klipp_match_grade" => json!({ "method": "match_grade", "clip_id": arg_str(args, "clip_id")?, "reference_clip_id": arg_str(args, "reference_clip_id")? }),
         "klipp_looks" => {
             let mut v = json!({ "method": "looks" });
@@ -588,7 +593,7 @@ fn content_for(name: &str, result: &Value) -> Result<Vec<Value>, String> {
         }
         vec![json!({ "type": "text", "text": text })]
     };
-    if name == "klipp_timeline" || name == "klipp_media_analysis" || name == "klipp_plan" || name == "klipp_check" || name == "klipp_brief" || name == "klipp_transcript" || name == "klipp_cut_points" || name == "klipp_looks" || name == "klipp_frame_stats" {
+    if name == "klipp_timeline" || name == "klipp_media_analysis" || name == "klipp_plan" || name == "klipp_check" || name == "klipp_brief" || name == "klipp_transcript" || name == "klipp_cut_points" || name == "klipp_selects" || name == "klipp_looks" || name == "klipp_frame_stats" {
         if let Some(text) = result.get("text").and_then(|v| v.as_str()) {
             return Ok(with_next(text.to_string()));
         }
@@ -1111,6 +1116,15 @@ fn tool_definitions() -> Vec<Value> {
               before you trim or place a spoken clip, so a cut never lands through a word or \
               the middle of a sentence. from_secs and to_secs narrow the range.",
              json!({ "media_id": { "type": "string" }, "near_secs": { "type": "number" }, "from_secs": { "type": "number" }, "to_secs": { "type": "number" } }),
+             vec!["media_id"]),
+        tool("klipp_selects",
+             "Cut a long take down to its selects: the runs of speech between the real pauses, \
+              each with the time it runs from and to and what is said, marked keep or drop (a \
+              run that is only filler — um, uh — or too short to use is a drop). Use it to build \
+              a tight cut from a loose recording: place each keep range in order and close the \
+              gaps. min_gap_secs sets the pause that starts a new select (0.6 by default). A \
+              read; changes nothing.",
+             json!({ "media_id": { "type": "string" }, "min_gap_secs": { "type": "number", "description": "the pause length that splits one select from the next, seconds" } }),
              vec!["media_id"]),
         tool("klipp_match_grade",
              "Match one shot's grade to another's. It reads a frame of each clip through the \

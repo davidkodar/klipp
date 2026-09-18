@@ -597,6 +597,55 @@ pub fn match_grade_knobs(target: &serde_json::Value, reference: &serde_json::Val
     MatchKnobs { exposure, lift, gain, temperature, tint }
 }
 
+/// A keep-range cut out of a long take: where it starts and ends in the
+/// file, and what is said in it.
+#[derive(Debug, Clone, serde::Serialize, PartialEq)]
+pub struct Select {
+    pub in_secs: f64,
+    pub out_secs: f64,
+    pub text: String,
+    /// True when the range is only filler (um, uh) or too short to use —
+    /// a candidate to drop, not to keep.
+    pub filler: bool,
+}
+
+fn is_filler_word(w: &str) -> bool {
+    let t: String = w.chars().filter(|c| c.is_alphanumeric()).collect::<String>().to_lowercase();
+    matches!(t.as_str(), "um" | "uh" | "uhh" | "umm" | "erm" | "er" | "hmm" | "mm" | "mmm" | "ah" | "eh")
+}
+
+/// Group a long take's words into selects — the runs of speech between
+/// the real pauses — so an agent can keep the good takes and drop the
+/// dead air and the filler, building a tight cut from a loose one. A gap
+/// of `min_gap` seconds or more starts a new select; a run that is only
+/// filler, or shorter than `min_len`, is flagged to drop.
+pub fn suggest_selects(words: &[(f64, f64, String)], min_gap: f64, min_len: f64) -> Vec<Select> {
+    let mut selects: Vec<Select> = Vec::new();
+    let mut cur: Vec<&(f64, f64, String)> = Vec::new();
+    let flush = |cur: &mut Vec<&(f64, f64, String)>, out: &mut Vec<Select>| {
+        if cur.is_empty() {
+            return;
+        }
+        let in_secs = cur.first().unwrap().0;
+        let out_secs = cur.last().unwrap().1;
+        let text = cur.iter().map(|w| w.2.trim()).collect::<Vec<_>>().join(" ");
+        let all_filler = cur.iter().all(|w| is_filler_word(&w.2));
+        let too_short = out_secs - in_secs < min_len;
+        out.push(Select { in_secs, out_secs, text, filler: all_filler || too_short });
+        cur.clear();
+    };
+    for w in words {
+        if let Some(prev) = cur.last() {
+            if w.0 - prev.1 >= min_gap {
+                flush(&mut cur, &mut selects);
+            }
+        }
+        cur.push(w);
+    }
+    flush(&mut cur, &mut selects);
+    selects
+}
+
 /// Where a cut is clean, and where it is not. Folds the measured
 /// silences, the transcript's sentence boundaries, and the shot changes
 /// into ranked cut opportunities, and — when `near` is given —
@@ -1786,6 +1835,43 @@ reference:   {}",
             v["knobs_moved"] = json!(moved);
             v["next"] = json!("A first pass. Run check with color, or frame_stats on both shots, to see the match; nudge exposure/temperature/tint with grade if it is not there yet.");
             Ok(v)
+        }
+
+        ControlCommand::Selects { media_id, min_gap_secs } => {
+            if in_batch {
+                return read_in_batch("selects");
+            }
+            let id = klipp_core::MediaId(media_id.parse().map_err(|e| format!("media_id is not a uuid: {e}"))?);
+            let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
+            let item = pool.get(&id).ok_or_else(|| format!("no media item {}", id.0))?;
+            let report = klipp_analysis::report::MediaAnalysis::load(&item.path);
+            let Some(t) = report.transcript.as_ref() else {
+                let state = klipp_analysis::service::status(id).map(|s| format!("{:?}", s.state).to_lowercase()).unwrap_or_else(|| "not asked for".into());
+                return Err(format!("{} has no transcript yet (analysis: {state}); analyze it first", item.filename));
+            };
+            let words: Vec<(f64, f64, String)> = t.words.iter().map(|w| (w.start_secs, w.end_secs, w.text.clone())).collect();
+            if words.is_empty() {
+                return Err(format!("{} has no speech to cut down", item.filename));
+            }
+            let gap = min_gap_secs.unwrap_or(0.6).max(0.1);
+            let selects = suggest_selects(&words, gap, 0.35);
+            let keep: Vec<&Select> = selects.iter().filter(|s| !s.filler).collect();
+            let kept_secs: f64 = keep.iter().map(|s| s.out_secs - s.in_secs).sum();
+            let dur = item.duration.to_secs_f64();
+            let mut text = format!("{}: {} selects to keep out of {} runs, {:.1} s of {:.1} s ({:.0}%). Place each keep range, in order, closing the gaps.\n", item.filename, keep.len(), selects.len(), kept_secs, dur, if dur > 0.0 { 100.0 * kept_secs / dur } else { 0.0 });
+            for s in &selects {
+                let mark = if s.filler { "drop" } else { "keep" };
+                let mut line = s.text.clone();
+                if line.chars().count() > 80 { line = line.chars().take(79).collect::<String>() + "…"; }
+                text.push_str(&format!("  [{mark}] {:.2}-{:.2} s  \"{}\"\n", s.in_secs, s.out_secs, line));
+            }
+            let (text, cut) = cut_to_budget_with(&text, 12_000, "narrow with a larger min_gap_secs");
+            Ok(json!({
+                "text": text, "cut": cut, "media_id": media_id, "filename": item.filename,
+                "selects": selects.iter().map(|s| json!({ "in_secs": s.in_secs, "out_secs": s.out_secs, "text": s.text, "keep": !s.filler })).collect::<Vec<_>>(),
+                "kept_secs": kept_secs, "duration_secs": dur,
+                "next": "Place each keep range (place with the clip's source in/out at these times), in order, on the timeline; drop the rest. Then cover any jump cuts and check.",
+            }))
         }
 
         ControlCommand::CutPoints { media_id, near_secs, from_secs, to_secs } => {

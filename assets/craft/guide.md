@@ -37,7 +37,11 @@ frames.
    `near_secs`, says whether that moment is clean, mid-sentence or
    mid-word and where the nearest clean point is. Use it before you
    trim or place a spoken clip, so a cut never lands through a word or
-   a sentence. `klipp_analysis_status` says
+   a sentence. `klipp_selects` goes one further for a long take: it
+   splits the speech into the runs between real pauses, marks each keep
+   or drop (filler and dead air are drops), and reports how much is worth
+   keeping — build a tight cut by placing the keep ranges in order.
+   `klipp_analysis_status` says
    which analyser is at work and for how long, and which models are
    installed; a transcript takes about a third of the file's length. `klipp_contact_sheet` to see a range with
    times burnt in; `klipp_audio_excerpt` to hear one.

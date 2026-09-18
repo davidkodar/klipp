@@ -325,6 +325,14 @@ pub enum ControlCommand {
         clip_id: String,
         reference_clip_id: String,
     },
+    /// Cut a long take down to its selects: the runs of speech between
+    /// the real pauses, so the good takes are kept and the dead air and
+    /// filler dropped. A read; changes nothing.
+    Selects {
+        media_id: String,
+        #[serde(default)]
+        min_gap_secs: Option<f64>,
+    },
     /// The clean places to cut in a piece of media: the measured pauses,
     /// the sentence boundaries from the transcript, and the shot changes,
     /// ranked. With `near_secs`, it also says whether that moment is
