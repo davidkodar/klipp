@@ -52,15 +52,17 @@ makepkg -si          # builds from source, then installs klipp-git via pacman
 ### Prerequisites
 
 ```bash
-# CachyOS / Arch Linux
-sudo pacman -S rust ffmpeg clang lld cmake pkg-config vulkan-icd-loader vulkan-headers shaderc
+# Omarchy / Arch / CachyOS (the primary target)
+sudo pacman -S rust ffmpeg clang lld cmake pkg-config vulkan-icd-loader vulkan-headers shaderc lilv
 
 # Ubuntu / Debian
 sudo apt install rustup ffmpeg libavcodec-dev libavformat-dev libavutil-dev \
     libavfilter-dev libswscale-dev libswresample-dev libavdevice-dev \
     libclang-dev lld cmake pkg-config libvulkan-dev glslc libasound2-dev \
-    libpipewire-0.3-dev
+    libpipewire-0.3-dev liblilv-dev
 ```
+
+Omarchy is Arch-based, so the `pacman` line covers it directly. On Omarchy or Arch you can skip the manual step entirely and use the [`packaging/`](packaging/) recipe above, which pulls these itself.
 
 The Vulkan headers and `glslc` are build-time only: the speech model runs on the GPU through Vulkan (NVIDIA, AMD or Intel) and its shaders are compiled into the binary. A built Klipp needs nothing beyond the GPU driver it already requires.
 

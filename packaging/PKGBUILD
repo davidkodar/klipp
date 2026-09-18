@@ -47,8 +47,9 @@ makedepends=(
   'git'
 )
 optdepends=(
+  'onnxruntime: CPU execution for the ONNX vision models (BiRefNet, RF-DETR); MobileSAM works without it'
+  'cudnn: NVIDIA GPU acceleration for the ONNX vision models (with a CUDA onnxruntime)'
   'pipewire: PipeWire audio output (ALSA is used otherwise)'
-  'cudnn: NVIDIA GPU acceleration for the ONNX / Candle AI models'
   'frei0r-plugins: extra video effects through the frei0r host'
   'lsp-plugins-lv2: a large set of audio effects for the LV2 host'
   'calf: more LV2 audio effects'

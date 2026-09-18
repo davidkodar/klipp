@@ -43,6 +43,11 @@ Linux resolves through `/proc/self/exe`, so the lookup still lands in
 - **The AI model weights are not bundled** (licensing): they download on
   first use, verified by SHA-256 against the manifest baked into the
   binary, into `~/.cache/klipp/models/`.
+- **Vision-model runtime.** Speech (Whisper) and one masking model
+  (MobileSAM, pure-Rust Candle on CPU) work with nothing extra. The two
+  ONNX models (BiRefNet, RF-DETR) load a system `libonnxruntime.so` at
+  runtime; install the `onnxruntime` optdepend to enable them on CPU. The
+  app detects the GPU vendor and points the user at the right runtime.
 
 ## Dependencies and credits
 
