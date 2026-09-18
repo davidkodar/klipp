@@ -298,6 +298,15 @@ pub enum ControlCommand {
         #[serde(default)]
         words: bool,
     },
+    /// Match a picture clip's grade to a reference clip's: read a frame
+    /// of each through the scopes and set the target's exposure, lift,
+    /// gain, temperature and tint to bring its black, mid and white
+    /// points and its balance toward the reference. A first pass to
+    /// verify with the colour check and refine, not a final grade.
+    MatchGrade {
+        clip_id: String,
+        reference_clip_id: String,
+    },
     /// The clean places to cut in a piece of media: the measured pauses,
     /// the sentence boundaries from the transcript, and the shot changes,
     /// ranked. With `near_secs`, it also says whether that moment is

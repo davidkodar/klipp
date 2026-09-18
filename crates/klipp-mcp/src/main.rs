@@ -467,6 +467,7 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
             }
             v
         }
+        "klipp_match_grade" => json!({ "method": "match_grade", "clip_id": arg_str(args, "clip_id")?, "reference_clip_id": arg_str(args, "reference_clip_id")? }),
         "klipp_export_status" => json!({ "method": "export_status" }),
         "klipp_export_subtitles" => json!({ "method": "export_subtitles", "path": arg_str(args, "path")? }),
         "klipp_orient" => json!({ "method": "orient" }),
@@ -1100,6 +1101,15 @@ fn tool_definitions() -> Vec<Value> {
               the middle of a sentence. from_secs and to_secs narrow the range.",
              json!({ "media_id": { "type": "string" }, "near_secs": { "type": "number" }, "from_secs": { "type": "number" }, "to_secs": { "type": "number" } }),
              vec!["media_id"]),
+        tool("klipp_match_grade",
+             "Match one shot's grade to another's. It reads a frame of each clip through the \
+              scopes and sets the target's exposure, lift, gain, temperature and tint to bring \
+              its black, mid and white points and its colour balance toward the reference — the \
+              continuity grade, so shots that sit next to each other look like one scene. A \
+              first pass, applied as one undo step; verify with klipp_check color or \
+              klipp_frame_stats and refine with grade. Both must be picture clips.",
+             json!({ "clip_id": { "type": "string", "description": "the shot to grade" }, "reference_clip_id": { "type": "string", "description": "the shot to match it to" } }),
+             vec!["clip_id", "reference_clip_id"]),
         tool("klipp_orient",
              "Start here. One call for where you are: the build, the project and whether it is \
               saved, the brief, every media item with its analysis state, the sequence so far, \

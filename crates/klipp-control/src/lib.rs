@@ -473,6 +473,48 @@ pub fn color_faults(stats: &serde_json::Value, secs: f64) -> Vec<(f64, String, S
     out
 }
 
+/// The grade knobs that move a shot toward a reference shot, from the
+/// two frames' scope readings: lift from the black-point gap, gain from
+/// the white-point gap, exposure from the mid gap, and temperature and
+/// tint from the RGB balance. A first pass a colourist would refine, not
+/// a final answer — verify with the colour check and nudge. A knob whose
+/// gap is within tolerance is left alone (`None`).
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct MatchKnobs {
+    pub exposure: Option<f32>,
+    pub lift: Option<f32>,
+    pub gain: Option<f32>,
+    pub temperature: Option<f32>,
+    pub tint: Option<f32>,
+}
+
+impl MatchKnobs {
+    /// Nothing to do: every knob is within tolerance.
+    pub fn is_empty(&self) -> bool {
+        self.exposure.is_none() && self.lift.is_none() && self.gain.is_none() && self.temperature.is_none() && self.tint.is_none()
+    }
+}
+
+pub fn match_grade_knobs(target: &serde_json::Value, reference: &serde_json::Value) -> MatchKnobs {
+    let ire = |v: &serde_json::Value, k: &str| v.get("luma_ire").and_then(|x| x.get(k)).and_then(|x| x.as_f64()).unwrap_or(0.0);
+    let bal = |v: &serde_json::Value, k: &str| v.get("rgb_balance").and_then(|x| x.get(k)).and_then(|x| x.as_f64()).unwrap_or(0.0);
+    let some_if = |v: f32, thresh: f32| if v.abs() > thresh { Some(v) } else { None };
+
+    // Black and white points: the gap in IRE, as a lift/gain offset.
+    let lift = some_if(((ire(reference, "black") - ire(target, "black")) / 100.0).clamp(-0.3, 0.3) as f32, 0.015);
+    let gain = some_if(((ire(reference, "white") - ire(target, "white")) / 100.0).clamp(-0.3, 0.3) as f32, 0.015);
+    // Mid: the exposure in stops that brings the mid grey together.
+    let (tm, rm) = (ire(target, "mid").max(0.5), ire(reference, "mid").max(0.5));
+    let exposure = some_if((rm / tm).log2().clamp(-1.0, 1.0) as f32, 0.05);
+    // Balance: warmth is red minus blue, tint is green against the rest.
+    let warm = |v: &serde_json::Value| bal(v, "red") - bal(v, "blue");
+    let green = |v: &serde_json::Value| bal(v, "green") - (bal(v, "red") + bal(v, "blue")) / 2.0;
+    let temperature = some_if(((warm(reference) - warm(target)) * 4.0).clamp(-0.6, 0.6) as f32, 0.02);
+    let tint = some_if(((green(reference) - green(target)) * 4.0).clamp(-0.6, 0.6) as f32, 0.02);
+
+    MatchKnobs { exposure, lift, gain, temperature, tint }
+}
+
 /// Where a cut is clean, and where it is not. Folds the measured
 /// silences, the transcript's sentence boundaries, and the shot changes
 /// into ranked cut opportunities, and — when `near` is given —
@@ -1547,6 +1589,72 @@ fn handle(
             }
             let (text, cut) = cut_to_budget_with(&out, 12_000, "ask for a shorter stretch with from_secs and to_secs");
             Ok(json!({ "text": text, "cut": cut }))
+        }
+
+        ControlCommand::MatchGrade { clip_id: c, reference_clip_id: r } => {
+            if in_batch {
+                return Err("match_grade applies a grade; send it on its own, not in a batch".into());
+            }
+            let target_id = clip_id(&c)?;
+            let ref_id = clip_id(&r)?;
+            // The two midpoints, and a name for the reply — read, then let the lock go.
+            let (t_mid, r_mid, t_name) = {
+                let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
+                let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
+                let find = |id: klipp_core::ClipId| seq.tracks.iter().flat_map(|t| t.clips.iter()).find(move |cl| cl.id == id).cloned();
+                let tc = find(target_id).ok_or_else(|| format!("no clip with id {c}"))?;
+                let rc = find(ref_id).ok_or_else(|| format!("no clip with id {r}"))?;
+                for (cl, which) in [(&tc, "target"), (&rc, "reference")] {
+                    if !matches!(cl.kind, klipp_timeline::ClipKind::Media { .. }) {
+                        return Err(format!("the {which} clip is not a picture clip; match the grade of two shots"));
+                    }
+                }
+                let mid = |cl: &klipp_timeline::Clip| (cl.timeline_in.to_secs_f64() + cl.timeline_out.to_secs_f64()) / 2.0;
+                let name = pool.get(&tc.media_id().unwrap_or(klipp_core::MediaId(uuid::Uuid::nil()))).map(|m| m.filename.clone()).unwrap_or_else(|| "the clip".into());
+                (mid(&tc), mid(&rc), name)
+            };
+            let (td, tw, th) = grab_frame_rgba(ctx, t_mid, Some(4000))?;
+            let target_stats = frame_stats(&td, tw, th, t_mid);
+            let (rd, rw, rh) = grab_frame_rgba(ctx, r_mid, Some(4000))?;
+            let ref_stats = frame_stats(&rd, rw, rh, r_mid);
+            let knobs = match_grade_knobs(&target_stats, &ref_stats);
+            if knobs.is_empty() {
+                return Ok(json!({
+                    "text": format!("{t_name} already matches the reference within tolerance; nothing to change.
+target:    {}
+reference: {}", target_stats["text"].as_str().unwrap_or(""), ref_stats["text"].as_str().unwrap_or("")),
+                    "applied": false,
+                    "target": target_stats, "reference": ref_stats,
+                }));
+            }
+            use klipp_document::ops::{ClipRef, Op};
+            let op = Op::Grade {
+                clip_id: ClipRef::Id(target_id),
+                exposure: knobs.exposure, contrast: None, saturation: None,
+                temperature: knobs.temperature, tint: knobs.tint,
+                lift: knobs.lift, gamma: None, gain: knobs.gain,
+                highlights: None, shadows: None, vibrance: None, reset: false,
+            };
+            let (plan, revision) = resolve_plan(ctx, std::slice::from_ref(&op))?;
+            let edits: Vec<klipp_document::history::EditCommand> = plan.steps.iter().map(|s| s.edit.clone()).collect();
+            let mut v = send_full_envelope(ctx, Vec::new(), edits, true, Some(revision), Some(format!("match {t_name}")))?;
+            let mut moved: Vec<String> = Vec::new();
+            for (name, val) in [("exposure", knobs.exposure), ("lift", knobs.lift), ("gain", knobs.gain), ("temperature", knobs.temperature), ("tint", knobs.tint)] {
+                if let Some(x) = val { moved.push(format!("{name} {x:+.2}")); }
+            }
+            v["text"] = json!(format!(
+                "Matched {t_name} to the reference: {}.
+target was:  {}
+reference:   {}",
+                moved.join(", "),
+                target_stats["text"].as_str().unwrap_or(""),
+                ref_stats["text"].as_str().unwrap_or(""),
+            ));
+            v["target_before"] = target_stats;
+            v["reference"] = ref_stats;
+            v["knobs_moved"] = json!(moved);
+            v["next"] = json!("A first pass. Run check with color, or frame_stats on both shots, to see the match; nudge exposure/temperature/tint with grade if it is not there yet.");
+            Ok(v)
         }
 
         ControlCommand::CutPoints { media_id, near_secs, from_secs, to_secs } => {

@@ -53,6 +53,10 @@ frames.
    for the scope readings a colourist grades to: the black, mid and
    white points, the balance, the clipping, the skin tones. Grade to
    those numbers, and match a shot to its neighbours by them.
+   `klipp_match_grade` does that match in one call: it reads both shots
+   and sets the target's exposure, lift, gain, temperature and tint to
+   bring it toward a reference shot — the continuity grade first, then
+   the look. Verify with `klipp_check color` and refine.
 6. **Check.** `klipp_check` reads the finished timeline the way an
    editor watches it once: black frames, flashes, jump cuts with
    nothing over them, titles across a cut, sound cut inside a word,

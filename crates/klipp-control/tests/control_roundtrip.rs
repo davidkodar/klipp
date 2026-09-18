@@ -862,3 +862,22 @@ fn cut_points_find_the_clean_joins() {
     // The shot change is a clean strength-2 point.
     assert!(v2["points"].as_array().unwrap().iter().any(|p| p["kind"] == "shot_change" && p["strength"] == 2));
 }
+
+/// match_grade_knobs moves the right knobs in the right direction: a
+/// target darker and cooler than the reference gets positive gain/lift
+/// and a warm temperature; a matched pair moves nothing.
+#[test]
+fn match_grade_knobs_close_the_gap() {
+    use klipp_control::match_grade_knobs;
+    // A neutral reference: white 90, mid 50, black 5, balanced.
+    let reference = klipp_control::frame_stats(&std::iter::repeat_n([230u8, 128, 12, 255], 320*180).flatten().collect::<Vec<u8>>(), 320, 180, 0.0);
+    // A darker, bluer target: everything lower, blue lifted.
+    let target = klipp_control::frame_stats(&std::iter::repeat_n([120u8, 120, 170, 255], 320*180).flatten().collect::<Vec<u8>>(), 320, 180, 1.0);
+    let k = match_grade_knobs(&target, &reference);
+    assert!(k.gain.unwrap() > 0.0, "target is darker at the top: raise gain, got {:?}", k.gain);
+    assert!(k.temperature.unwrap() > 0.0, "target is cooler: warm it, got {:?}", k.temperature);
+
+    // A clip matched to itself moves nothing.
+    let same = match_grade_knobs(&reference, &reference);
+    assert!(same.is_empty(), "no gap, no grade: {same:?}");
+}
