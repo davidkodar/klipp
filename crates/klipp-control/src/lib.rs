@@ -435,6 +435,44 @@ fn grab_frame_rgba(ctx: &ControlContext, secs: f64, timeout_ms: Option<u64>) -> 
 /// waveforms are read. Everything is measured on a grid of samples, not
 /// every pixel — enough to be exact to a fraction and cheap on a 4K
 /// frame.
+/// The colour faults in a frame's [`frame_stats`] reading, each as
+/// (secs, what, hint): what a colourist would flag before delivery.
+pub fn color_faults(stats: &serde_json::Value, secs: f64) -> Vec<(f64, String, String)> {
+    let mut out = Vec::new();
+    let f = |v: &serde_json::Value, a: &str, b: &str| v.get(a).and_then(|x| x.get(b)).and_then(|x| x.as_f64());
+    let g = |v: &serde_json::Value, a: &str| v.get(a).and_then(|x| x.as_f64());
+    if let Some(hi) = f(stats, "clipping_pct", "high") {
+        if hi > 2.0 {
+            out.push((secs, format!("{hi:.0}% of the frame is clipped white"), "Bring the highlights down (grade highlights or gain negative) so detail comes back".into()));
+        }
+    }
+    if let Some(lo) = f(stats, "clipping_pct", "low") {
+        if lo > 2.0 {
+            out.push((secs, format!("{lo:.0}% of the frame is crushed to black"), "Lift the shadows (grade shadows or lift positive) so detail comes back".into()));
+        }
+    }
+    if let Some(white) = f(stats, "luma_ire", "white") {
+        if white < 70.0 {
+            out.push((secs, format!("the brightest part reaches only {white:.0} IRE — the picture is dull"), "Raise the white point (grade gain or contrast) toward 100".into()));
+        }
+    }
+    if let Some(sat) = g(stats, "saturation_pct") {
+        if sat > 60.0 {
+            out.push((secs, format!("saturation is high at {sat:.0}% — colours may be over-cooked"), "Bring saturation down, or use vibrance which protects skin".into()));
+        }
+    }
+    if let Some(note) = stats.get("skin").and_then(|s| s.as_str()) {
+        if note.contains("sit on") {
+            if let Some(pct) = note.split('%').next().and_then(|n| n.trim().parse::<f64>().ok()) {
+                if pct < 60.0 {
+                    out.push((secs, format!("only {pct:.0}% of skin tones sit on the skin-tone line"), "Nudge the white balance (temperature, tint) until faces land on the line".into()));
+                }
+            }
+        }
+    }
+    out
+}
+
 /// Public for tests and tools that measure a frame without the socket.
 pub fn frame_stats(data: &[u8], width: u32, height: u32, secs: f64) -> serde_json::Value {
     let (w, h) = (width as usize, height as usize);
@@ -1526,13 +1564,35 @@ fn handle(
             Ok(v)
         }
 
-        ControlCommand::Check => {
+        ControlCommand::Check { color } => {
             if in_batch {
                 return read_in_batch("check");
             }
-            let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
-            let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
-            let report = klipp_document::qc::check(&seq, &pool, &AnalysedTranscripts);
+            // The colour pass grabs frames, so it takes the sequence read
+            // lock for a moment only; work out the times first, then let go.
+            let (report, color_times) = {
+                let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
+                let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
+                let report = klipp_document::qc::check(&seq, &pool, &AnalysedTranscripts);
+                // One time per picture clip on the top video track: its
+                // middle, where the grade is fairly judged.
+                let times: Vec<f64> = if color {
+                    seq.tracks.iter().find(|t| t.kind == klipp_timeline::TrackKind::Video && t.visible)
+                        .map(|t| t.clips.iter().filter(|c| c.enabled && matches!(c.kind, klipp_timeline::ClipKind::Media { .. }))
+                            .map(|c| (c.timeline_in.to_secs_f64() + c.timeline_out.to_secs_f64()) / 2.0).take(24).collect())
+                        .unwrap_or_default()
+                } else {
+                    Vec::new()
+                };
+                (report, times)
+            };
+            let mut color_findings = Vec::new();
+            for t in &color_times {
+                if let Ok((data, w, h)) = grab_frame_rgba(ctx, *t, Some(4000)) {
+                    color_findings.extend(color_faults(&frame_stats(&data, w, h, *t), *t));
+                }
+            }
+
             let next = if report.errors > 0 {
                 "Fix the errors before you deliver — each finding says what and where. Then check again."
             } else if report.warnings > 0 {
@@ -1540,7 +1600,19 @@ fn handle(
             } else {
                 "Clean. Export at the brief's loudness, poll export_status, then save_project."
             };
-            Ok(json!({ "text": report.text(), "errors": report.errors, "warnings": report.warnings, "findings": report.findings, "duration_secs": report.duration_secs, "revision": ctx.shared.revision(), "next": next }))
+            let mut text = report.text();
+            if color {
+                text.push_str(&format!("\n\nColour (measured on {} shot{}):", color_times.len(), if color_times.len() == 1 { "" } else { "s" }));
+                if color_findings.is_empty() {
+                    text.push_str(" nothing amiss.");
+                } else {
+                    for f in &color_findings {
+                        text.push_str(&format!("\n[warning] {:.2} s  {}. {}", f.0, f.1, f.2));
+                    }
+                }
+            }
+            let findings_json: Vec<serde_json::Value> = color_findings.iter().map(|f| json!({ "severity": "warning", "rule": "color", "at_secs": f.0, "what": f.1, "hint": f.2 })).collect();
+            Ok(json!({ "text": text, "errors": report.errors, "warnings": report.warnings + color_findings.len(), "findings": report.findings, "color_findings": findings_json, "duration_secs": report.duration_secs, "revision": ctx.shared.revision(), "next": next }))
         }
 
         ControlCommand::Undo => send(AppCommand::Undo),

@@ -51,7 +51,11 @@ frames.
    editor watches it once: black frames, flashes, jump cuts with
    nothing over them, titles across a cut, sound cut inside a word,
    music at full level under speech, and the brief. Fix the errors;
-   decide about the warnings, and say which you kept and why.
+   decide about the warnings, and say which you kept and why. Pass
+   `color:true` to also read a frame of every shot through the scopes,
+   for clipped highlights, crushed blacks, a dull or over-saturated
+   picture, and skin off the skin-tone line — so the grade is checked to
+   the numbers, not by eye.
 7. **Deliver.** `klipp_export` to a file, `klipp_export_status` until
    it is complete, `klipp_export_subtitles` for captions.
 8. **Save.** `klipp_rename_sequence` so the timeline is called what
@@ -131,6 +135,11 @@ exist until the plan runs.
 - `retime {clip_id, speed}`: change a clip's speed. Above 1 is faster
   and shorter, below 1 slower and longer. The clips after it keep their
   place, so close the gap or overlap with move or ripple.
+- `reframe {clip_id, scale?, x?, y?}`: punch in and reposition a
+  picture. `scale` zooms (1 as shot, up to 4); `x` and `y` pan the frame
+  from -1 to 1. Use it to salvage a wide or badly-framed shot, to fit a
+  vertical delivery, or to set a slow push. It sits before other
+  effects, so a vignette or grade after it sees the reframed picture.
 - `clean_audio {clip_id, wind?, hiss?, hum?, deess?}`: clean a clip's
   sound. Each flag adds the right tool: wind and rumble, tape or air
   hiss, mains hum, harsh sibilance. The beach-in-a-gale clip wants

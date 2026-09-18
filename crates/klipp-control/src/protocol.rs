@@ -313,8 +313,14 @@ pub enum ControlCommand {
     SetBrief { brief: klipp_timeline::Brief },
     /// The check before delivery: the timeline read against the craft's
     /// rules and the brief, every finding with where, what and what
-    /// would put it right. Changes nothing.
-    Check,
+    /// would put it right. Changes nothing. With `color`, it also
+    /// measures a frame of each shot for blown highlights, crushed
+    /// blacks, over-saturation and skin off the skin-tone line — slower,
+    /// since it renders frames.
+    Check {
+        #[serde(default)]
+        color: bool,
+    },
     /// Save the project: to `path` (a `.klipp` folder, made if needed),
     /// or where it was last saved when `path` is left out. Refused for a
     /// project never saved when no path is given.

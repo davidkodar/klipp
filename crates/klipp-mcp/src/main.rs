@@ -463,7 +463,7 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
         "klipp_orient" => json!({ "method": "orient" }),
         "klipp_brief" => json!({ "method": "brief" }),
         "klipp_set_brief" => json!({ "method": "set_brief", "brief": args.get("brief").cloned().ok_or("missing required argument: brief")? }),
-        "klipp_check" => json!({ "method": "check" }),
+        "klipp_check" => json!({ "method": "check", "color": args.get("color").and_then(|v| v.as_bool()).unwrap_or(false) }),
         "klipp_rename_sequence" => json!({ "method": "rename_sequence", "name": arg_str(args, "name")? }),
         "klipp_save_project" => {
             let mut v = json!({ "method": "save_project" });
@@ -899,7 +899,10 @@ fn tool_definitions() -> Vec<Value> {
               clip's sound: wind/rumble, tape hiss, mains hum, harsh sibilance, each its tool. \
               stabilize {clip_id, smoothing?} — steady a shaky clip (0-1, crops a little). \
               retime {clip_id, speed} — change speed (>1 faster/shorter, <1 slower/longer); the \
-              clips after keep their place, close the gap or overlap yourself.\n\
+              clips after keep their place, close the gap or overlap yourself. \
+              reframe {clip_id, scale?, x?, y?} — punch in and reposition a picture: scale zooms \
+              (1 as shot, up to 4), x and y pan -1..1. Salvage a wide or badly-framed shot, \
+              or set a slow push; it sits before other effects.\n\
               transition {clip_id, kind?, secs?} — a transition between a clip and the one after \
               it on its track, secs long (0.5 default), centred on the cut. kind is cross_dissolve \
               (the default, and all an interview or documentary wants), dip_to_black, dip_to_white, \
@@ -985,7 +988,10 @@ fn tool_definitions() -> Vec<Value> {
               clip's sound: wind/rumble, tape hiss, mains hum, harsh sibilance, each its tool. \
               stabilize {clip_id, smoothing?} — steady a shaky clip (0-1, crops a little). \
               retime {clip_id, speed} — change speed (>1 faster/shorter, <1 slower/longer); the \
-              clips after keep their place, close the gap or overlap yourself.\n\
+              clips after keep their place, close the gap or overlap yourself. \
+              reframe {clip_id, scale?, x?, y?} — punch in and reposition a picture: scale zooms \
+              (1 as shot, up to 4), x and y pan -1..1. Salvage a wide or badly-framed shot, \
+              or set a slow push; it sits before other effects.\n\
               transition {clip_id, kind?, secs?} — a transition between a clip and the one after \
               it on its track, secs long (0.5 default), centred on the cut. kind is cross_dissolve \
               (the default, and all an interview or documentary wants), dip_to_black, dip_to_white, \
@@ -1105,8 +1111,11 @@ fn tool_definitions() -> Vec<Value> {
               full level under speech, picture and sound ending apart, offline media, and \
               the brief: length, size, captions, cast, music. Every finding says where, \
               what, and what would put it right. Changes nothing. Run it before klipp_export, \
-              fix the errors, decide about the warnings.",
-             json!({}), vec![]),
+              fix the errors, decide about the warnings. Pass color:true to also read a \
+              frame of each shot on the top track through the scopes — clipped highlights, \
+              crushed blacks, a dull picture, over-saturation, skin off the skin-tone line \
+              — so the grade is checked to the numbers, not by eye. Slower: it renders frames.",
+             json!({ "color": { "type": "boolean", "description": "also measure a frame of every shot through the scopes for grade faults (slower)" } }), vec![]),
         tool("klipp_rename_sequence",
              "Name the active sequence: what the timeline is called in the app and in the \
               project file. A new project's sequence has a default or inherited name until \

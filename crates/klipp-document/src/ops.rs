@@ -285,6 +285,20 @@ pub enum Op {
         #[serde(default = "default_stabilize")]
         smoothing: f32,
     },
+    /// Reframe a picture: `scale` zooms in (1 is as shot, 1.5 is a
+    /// tighter crop), `x` and `y` pan the frame (0 centre, -1 to 1),
+    /// keeping the subject in frame when the delivery aspect is not the
+    /// footage's — a wide interview cut for a vertical feed. Read
+    /// `frame_stats` or the framing analysis to know where the subject is.
+    Reframe {
+        clip_id: ClipRef,
+        #[serde(default = "default_reframe_scale")]
+        scale: f32,
+        #[serde(default)]
+        x: f32,
+        #[serde(default)]
+        y: f32,
+    },
     /// Change a clip's speed. `speed` above 1 is faster and shorter, below
     /// 1 slower and longer (0.5 is half speed); the clips after it on the
     /// track keep their place, so a gap or an overlap is yours to close.
@@ -398,6 +412,10 @@ fn default_transition_secs() -> f64 {
 
 fn default_stabilize() -> f32 {
     0.5
+}
+
+fn default_reframe_scale() -> f32 {
+    1.0
 }
 
 fn default_duck_db() -> f32 {
@@ -766,6 +784,10 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
         Op::Stabilize { clip_id, smoothing } => {
             let (ti, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
             stabilize(seq, pool, i, ti, clip, *smoothing)
+        }
+        Op::Reframe { clip_id, scale, x, y } => {
+            let (ti, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
+            reframe(seq, pool, i, ti, clip, *scale, *x, *y)
         }
         Op::Retime { clip_id, speed } => {
             let (ti, ci, clip) = resolve_clip(seq, fps, clip_id, i)?;
@@ -1721,6 +1743,29 @@ fn picture_effect(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &
     let what = format!("{} {a:.2} on {}", kind.to_lowercase(), clip_name(seq, pool, clip));
     let edit = set_builtin_effects(clip, effects);
     Ok((what, edit, vec![clip.id]))
+}
+
+fn reframe(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip, scale: f32, x: f32, y: f32) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
+    require_picture(seq, pool, i, ti, clip, "reframe")?;
+    if !scale.is_finite() || !(1.0..=4.0).contains(&scale) {
+        return Err(refuse(i, format!("a scale of {scale}"), "give scale between 1 and 4"));
+    }
+    for (name, v) in [("x", x), ("y", y)] {
+        if !v.is_finite() || !(-1.0..=1.0).contains(&v) {
+            return Err(refuse(i, format!("{name} {v} is out of range"), format!("give {name} between -1 and 1")));
+        }
+    }
+    if (scale - 1.0).abs() < 1e-4 && x.abs() < 1e-4 && y.abs() < 1e-4 {
+        return Err(refuse(i, "nothing to reframe", "give a scale above 1, or an x or y to pan"));
+    }
+    use klipp_effects::BuiltinEffect as E;
+    // Position is a fraction of the frame; a pan of 1 moves by half a frame.
+    let fx = E::Transform { position_x: x * 0.5, position_y: y * 0.5, scale_x: scale, scale_y: scale, rotation: 0.0, anchor_x: 0.5, anchor_y: 0.5, rotation_x: 0.0, rotation_y: 0.0, perspective: 0.0, focal_ref: None };
+    let mut effects: Vec<E> = clip.builtin_effects.iter().filter(|e| !matches!(e, E::Transform { .. })).cloned().collect();
+    // Transform goes first, so a crop or effect after it sees the reframed picture.
+    effects.insert(0, fx);
+    let what = format!("reframe {}: scale {scale:.2}, pan {x:.2}, {y:.2}", clip_name(seq, pool, clip));
+    Ok((what, set_builtin_effects(clip, effects), vec![clip.id]))
 }
 
 fn stabilize(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip, smoothing: f32) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
@@ -2736,6 +2781,42 @@ mod tests {
         assert!(bad(Op::CleanAudio { clip_id: ClipRef::Id(a), wind: false, hiss: false, hum: false, deess: false }).why.contains("nothing to clean"));
         let _: Vec<Op> = serde_json::from_str(r#"[{"op":"effect","clip_id":{"track":0,"secs":1.0},"kind":"glow"},{"op":"retime","clip_id":{"track":0,"secs":1.0},"speed":0.5},{"op":"clean_audio","clip_id":{"track":0,"secs":1.0},"wind":true}]"#).unwrap();
         let _ = media;
+    }
+
+    #[test]
+    fn reframe_punches_in_with_a_transform_first_and_undoes() {
+        let (seq, pool, _media, a, _) = fixture();
+        use klipp_effects::BuiltinEffect as E;
+
+        // A punch-in with a pan inserts a Transform at the front of the chain.
+        let plan = resolve(&seq, &pool, &[Op::Reframe { clip_id: ClipRef::Id(a), scale: 1.5, x: 0.2, y: -0.1 }]).unwrap();
+        assert!(plan.steps[0].what.contains("scale 1.50") && plan.steps[0].what.contains("pan 0.20, -0.10"), "{}", plan.steps[0].what);
+        let EditCommand::SetBuiltinEffects { new_effects, .. } = &plan.steps[0].edit else { panic!("effects edit") };
+        let Some(E::Transform { scale_x, position_x, .. }) = new_effects.first() else { panic!("transform first") };
+        assert!((scale_x - 1.5).abs() < 1e-4 && (position_x - 0.1).abs() < 1e-4, "pan is half the frame: {position_x}");
+
+        // Re-reframing replaces the earlier Transform, never stacks a second.
+        let mut seqs = vec![seq.clone()];
+        let mut p = pool.clone();
+        let mut fps = seq.fps;
+        {
+            let mut view = crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut p, fps: &mut fps };
+            view.apply_forward(&plan.steps[0].edit);
+        }
+        let plan2 = resolve(&seqs[0], &p, &[Op::Reframe { clip_id: ClipRef::Id(a), scale: 2.0, x: 0.0, y: 0.0 }]).unwrap();
+        let EditCommand::SetBuiltinEffects { new_effects: e2, .. } = &plan2.steps[0].edit else { panic!("effects edit") };
+        assert_eq!(e2.iter().filter(|e| matches!(e, E::Transform { .. })).count(), 1, "one transform, not two");
+        {
+            let mut view = crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut p, fps: &mut fps };
+            view.apply_inverse(&plan.steps[0].edit);
+        }
+        assert!(seqs[0].tracks[0].clips[0].builtin_effects.is_empty(), "undo clears the reframe");
+
+        // Out of range and a no-op reframe are refused.
+        let bad = |op: Op| resolve(&seq, &pool, &[op]).unwrap_err();
+        assert!(bad(Op::Reframe { clip_id: ClipRef::Id(a), scale: 9.0, x: 0.0, y: 0.0 }).why.contains("scale"));
+        assert!(bad(Op::Reframe { clip_id: ClipRef::Id(a), scale: 1.0, x: 0.0, y: 0.0 }).why.contains("nothing to reframe"));
+        let _: Vec<Op> = serde_json::from_str(r#"[{"op":"reframe","clip_id":{"track":0,"secs":1.0},"scale":1.3}]"#).unwrap();
     }
 
     #[test]
