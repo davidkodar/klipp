@@ -4931,6 +4931,9 @@ impl BrowserPanel {
             if ui.add_enabled(!searching, egui::Button::new(if searching { "…" } else { "Search" })).clicked() {
                 do_search = true;
             }
+            if ui.button("Pause").on_hover_text("Pause or resume the preview").clicked() {
+                klipp_audio_search::preview_toggle_pause();
+            }
             if ui.button("Stop").on_hover_text("Stop the preview").clicked() {
                 klipp_audio_search::preview_stop();
             }

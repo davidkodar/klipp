@@ -8475,18 +8475,22 @@ impl PlaybackEngine {
 }
 
 /// The index of the video stream that is the file's picture: the one
-/// ffmpeg ranks best, unless that is an attached picture (cover art)
-/// and another video stream is not.
+/// ffmpeg ranks best, unless that is an attached picture (cover art). A
+/// file whose *only* video stream is cover art — an MP3 or FLAC with
+/// embedded album art — has no picture: it is audio, and returning `None`
+/// keeps it off the video track (otherwise the cover art becomes a bogus
+/// video clip linked to the sound, which cannot be dragged).
 fn picture_stream_index(ictx: &ffmpeg_next::format::context::Input) -> Option<usize> {
     let attached = |s: &ffmpeg_next::Stream| s.disposition().contains(ffmpeg_next::format::stream::Disposition::ATTACHED_PIC);
     let best = ictx.streams().best(ffmpeg_next::media::Type::Video);
     match best {
         Some(s) if !attached(&s) => Some(s.index()),
-        best => ictx
+        // The best video stream is cover art: use another real video
+        // stream if there is one, else treat the file as audio (None).
+        _ => ictx
             .streams()
             .find(|s| s.parameters().medium() == ffmpeg_next::media::Type::Video && !attached(s))
-            .map(|s| s.index())
-            .or(best.map(|s| s.index())),
+            .map(|s| s.index()),
     }
 }
 

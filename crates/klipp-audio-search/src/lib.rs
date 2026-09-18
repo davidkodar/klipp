@@ -359,6 +359,28 @@ pub fn preview_play(bytes: Vec<u8>) -> Result<(), String> {
     })
 }
 
+/// Pause or resume the current preview. Returns whether it is now paused.
+pub fn preview_toggle_pause() -> bool {
+    PREVIEW.with(|cell| {
+        if let Some(p) = cell.borrow().as_ref() {
+            if p.sink.is_paused() {
+                p.sink.play();
+                false
+            } else {
+                p.sink.pause();
+                true
+            }
+        } else {
+            false
+        }
+    })
+}
+
+/// Whether a preview is currently playing (not stopped, not paused).
+pub fn preview_is_playing() -> bool {
+    PREVIEW.with(|cell| cell.borrow().as_ref().is_some_and(|p| !p.sink.empty() && !p.sink.is_paused()))
+}
+
 /// Stop the current preview.
 pub fn preview_stop() {
     PREVIEW.with(|cell| {
