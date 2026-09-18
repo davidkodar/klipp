@@ -10,3 +10,5 @@ ureq = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 dirs = { workspace = true }
+# mp3 preview playback (previews are mp3); cpal backend matches the workspace 0.15
+rodio = { version = "0.19", default-features = false, features = ["symphonia-mp3"] }

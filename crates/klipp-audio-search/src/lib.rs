@@ -159,6 +159,7 @@ pub fn search_sfx(query: &str, limit: u32) -> Result<Vec<Track>, String> {
         "https://freesound.org/apiv2/search/text/?query={q}&token={token}&page_size={limit}&sort=rating_desc&fields=id,name,username,duration,license,previews,url,tags"
     );
     let text = ureq::get(&url)
+        .timeout(std::time::Duration::from_secs(30))
         .call()
         .map_err(|e| format!("Freesound request failed: {e}"))?
         .into_string()
@@ -207,6 +208,7 @@ pub fn search_music(query: &str, limit: u32) -> Result<Vec<Track>, String> {
         "https://api.jamendo.com/v3.0/tracks/?client_id={cid}&format=json&limit={limit}&order=popularity_total&include=musicinfo+licenses&audioformat=mp32&fuzzytags={q}"
     );
     let text = ureq::get(&url)
+        .timeout(std::time::Duration::from_secs(30))
         .call()
         .map_err(|e| format!("Jamendo request failed: {e}"))?
         .into_string()
@@ -276,7 +278,7 @@ pub fn download_track(track: &Track, dest_dir: &std::path::Path) -> Result<std::
     std::fs::create_dir_all(dest_dir).map_err(|e| format!("creating {}: {e}", dest_dir.display()))?;
     let base = format!("{}-{}-{}", safe_name(&track.artist), safe_name(&track.title), track.id);
     let audio_path = dest_dir.join(format!("{base}.mp3"));
-    let resp = ureq::get(url).call().map_err(|e| format!("download failed: {e}"))?;
+    let resp = ureq::get(url).timeout(std::time::Duration::from_secs(45)).call().map_err(|e| format!("download failed: {e}"))?;
     let mut reader = resp.into_reader();
     let mut bytes = Vec::new();
     std::io::Read::read_to_end(&mut reader, &mut bytes).map_err(|e| format!("reading audio: {e}"))?;
@@ -291,6 +293,79 @@ Source page: {}
 ", track.attribution(), track.license, track.license_url, track.page_url);
     let _ = std::fs::write(dest_dir.join(format!("{base}.klipp-credit.txt")), credit);
     Ok(audio_path)
+}
+
+/// Download a URL's bytes into memory — for a quick preview that plays
+/// without touching disk.
+pub fn download_bytes(url: &str) -> Result<Vec<u8>, String> {
+    if url.is_empty() {
+        return Err("nothing to preview".into());
+    }
+    let resp = ureq::get(url).timeout(std::time::Duration::from_secs(30)).call().map_err(|e| format!("preview download failed: {e}"))?;
+    let mut reader = resp.into_reader();
+    let mut bytes = Vec::new();
+    std::io::Read::read_to_end(&mut reader, &mut bytes).map_err(|e| format!("reading preview: {e}"))?;
+    Ok(bytes)
+}
+
+/// A one-clip audio previewer, held per-thread so its (non-Send) audio
+/// output never has to live in a UI struct.
+struct Preview {
+    _stream: rodio::OutputStream,
+    handle: rodio::OutputStreamHandle,
+    sink: rodio::Sink,
+}
+
+impl Preview {
+    fn new() -> Option<Self> {
+        let (stream, handle) = rodio::OutputStream::try_default().ok()?;
+        let sink = rodio::Sink::try_new(&handle).ok()?;
+        Some(Self { _stream: stream, handle, sink })
+    }
+
+    fn play(&mut self, bytes: Vec<u8>) -> Result<(), String> {
+        // Stop whatever is playing, then start fresh on a new sink.
+        self.sink.stop();
+        let sink = rodio::Sink::try_new(&self.handle).map_err(|e| format!("audio sink: {e}"))?;
+        let decoder = rodio::Decoder::new(std::io::Cursor::new(bytes)).map_err(|e| format!("could not decode the preview: {e}"))?;
+        sink.append(decoder);
+        sink.play();
+        self.sink = sink;
+        Ok(())
+    }
+
+    fn stop(&self) {
+        self.sink.stop();
+    }
+}
+
+thread_local! {
+    static PREVIEW: std::cell::RefCell<Option<Preview>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Play preview audio (decoded mp3 bytes) through the default output,
+/// replacing anything already previewing. Best-effort: a machine with no
+/// audio output returns an error the caller can show.
+pub fn preview_play(bytes: Vec<u8>) -> Result<(), String> {
+    PREVIEW.with(|cell| {
+        let mut slot = cell.borrow_mut();
+        if slot.is_none() {
+            *slot = Preview::new();
+        }
+        match slot.as_mut() {
+            Some(p) => p.play(bytes),
+            None => Err("no audio output device for preview".into()),
+        }
+    })
+}
+
+/// Stop the current preview.
+pub fn preview_stop() {
+    PREVIEW.with(|cell| {
+        if let Some(p) = cell.borrow().as_ref() {
+            p.stop();
+        }
+    });
 }
 
 /// The directory downloaded audio lands in: the user's cache.

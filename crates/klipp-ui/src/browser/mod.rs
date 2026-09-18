@@ -786,6 +786,10 @@ pub struct BrowserPanel {
     pub audio_search_results: Vec<klipp_audio_search::Track>,
     pub audio_search_receiver: Option<std::sync::mpsc::Receiver<Result<Vec<klipp_audio_search::Track>, String>>>,
     pub audio_search_error: Option<String>,
+    /// Downloaded preview bytes on their way from a worker thread to the player.
+    pub audio_preview_receiver: Option<std::sync::mpsc::Receiver<Result<Vec<u8>, String>>>,
+    /// A track being downloaded to add: `(path, title)` when it lands.
+    pub audio_download_receiver: Option<std::sync::mpsc::Receiver<Result<(std::path::PathBuf, String), String>>>,
     // Scroll-to request from RevealMediaInBrowser
     pub scroll_to_media_id: Option<klipp_core::MediaId>,
     // Files tab state
@@ -1020,6 +1024,8 @@ impl Default for BrowserPanel {
             audio_search_results: Vec::new(),
             audio_search_receiver: None,
             audio_search_error: None,
+            audio_preview_receiver: None,
+            audio_download_receiver: None,
             scroll_to_media_id: None,
             files_current_path: dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("/")),
             files_entries: Vec::new(),
@@ -4849,7 +4855,36 @@ impl BrowserPanel {
                 self.audio_search_receiver = None;
             }
         }
+        // A downloaded preview arriving: play it in the app.
+        if let Some(rx) = &self.audio_preview_receiver {
+            if let Ok(res) = rx.try_recv() {
+                match res {
+                    Ok(bytes) => {
+                        if let Err(e) = klipp_audio_search::preview_play(bytes) {
+                            state.toast.show(format!("Preview: {e}"));
+                        }
+                    }
+                    Err(e) => state.toast.show(format!("Preview: {e}")),
+                }
+                self.audio_preview_receiver = None;
+            }
+        }
+        // A track finished downloading: import it through the normal path.
+        if let Some(rx) = &self.audio_download_receiver {
+            if let Ok(res) = rx.try_recv() {
+                match res {
+                    Ok((path, title)) => {
+                        cmds.push(AppCommand::ImportMedia { path });
+                        state.toast.show(format!("Added \u{201c}{}\u{201d}", title));
+                    }
+                    Err(e) => state.toast.show(format!("Couldn't add it: {e}")),
+                }
+                self.audio_download_receiver = None;
+            }
+        }
         let searching = self.audio_search_receiver.is_some();
+        let previewing = self.audio_preview_receiver.is_some();
+        let adding = self.audio_download_receiver.is_some();
 
         ui.add_space(6.0);
         // Music / sound-effects toggle.
@@ -4880,6 +4915,9 @@ impl BrowserPanel {
             }
             if ui.add_enabled(!searching, egui::Button::new(if searching { "…" } else { "Search" })).clicked() {
                 do_search = true;
+            }
+            if ui.button("Stop").on_hover_text("Stop the preview").clicked() {
+                klipp_audio_search::preview_stop();
             }
         });
 
@@ -4932,6 +4970,8 @@ impl BrowserPanel {
                 ui.label(egui::RichText::new("Search royalty-free music and sound effects, preview, and add.").color(theme.text_secondary));
             });
         }
+        let mut preview_req: Option<String> = None;
+        let mut add_req: Option<klipp_audio_search::Track> = None;
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
             for t in &results {
                 ui.add_space(4.0);
@@ -4945,25 +4985,40 @@ impl BrowserPanel {
                 });
                 ui.horizontal(|ui| {
                     ui.add_space(8.0);
-                    if !t.page_url.is_empty() && ui.button("Preview").on_hover_text("Open the source page to listen").clicked() {
-                        ui.ctx().open_url(egui::OpenUrl::new_tab(&t.page_url));
+                    let can_preview = !t.preview_url.is_empty() && !previewing;
+                    if ui.add_enabled(can_preview, egui::Button::new(if previewing { "…" } else { "Preview" })).on_hover_text("Listen in the app").clicked() {
+                        preview_req = Some(t.preview_url.clone());
                     }
-                    if ui.button("Add").on_hover_text("Download into the pool, with its credit kept").clicked() {
-                        match klipp_audio_search::download_track(t, &klipp_audio_search::download_dir()) {
-                            Ok(path) => {
-                                cmds.push(AppCommand::ImportMedia { path });
-                                state.toast.show(format!("Added \u{201c}{}\u{201d}", t.title));
-                            }
-                            Err(e) => {
-                                state.toast.show(format!("Couldn't add it: {e}"));
-                            }
-                        }
+                    if ui.add_enabled(!adding, egui::Button::new(if adding { "…" } else { "Add" })).on_hover_text("Download into the pool, with its credit kept").clicked() {
+                        add_req = Some(t.clone());
                     }
                 });
                 ui.add_space(4.0);
                 ui.separator();
             }
         });
+        // A preview download runs off-thread and plays when it arrives.
+        if let Some(url) = preview_req {
+            let (tx, rx) = std::sync::mpsc::channel();
+            std::thread::Builder::new().name("klipp-audio-preview".into()).spawn(move || {
+                let _ = tx.send(klipp_audio_search::download_bytes(&url));
+            }).ok();
+            self.audio_preview_receiver = Some(rx);
+            ui.ctx().request_repaint();
+        }
+        // Add downloads off-thread (a blocking download here would freeze
+        // the UI); it imports when the file lands.
+        if let Some(t) = add_req {
+            let (tx, rx) = std::sync::mpsc::channel();
+            state.toast.show(format!("Downloading \u{201c}{}\u{201d}\u{2026}", t.title));
+            std::thread::Builder::new().name("klipp-audio-add".into()).spawn(move || {
+                let title = t.title.clone();
+                let r = klipp_audio_search::download_track(&t, &klipp_audio_search::download_dir()).map(|p| (p, title));
+                let _ = tx.send(r);
+            }).ok();
+            self.audio_download_receiver = Some(rx);
+            ui.ctx().request_repaint();
+        }
         cmds
     }
 }
