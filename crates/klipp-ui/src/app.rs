@@ -454,6 +454,12 @@ pub struct KlippApp {
     /// Must be kept alive — dropping stops watching.
     #[allow(dead_code)]
     media_watcher: Option<notify::RecommendedWatcher>,
+    /// Watches Omarchy's theme state while `follow_system_theme` is
+    /// on; `None` otherwise, so a switch in Omarchy cannot reach the
+    /// UI when the user has opted out. See `theme/omarchy.rs`.
+    system_theme_watcher: Option<notify::RecommendedWatcher>,
+    /// Set by the watcher thread, cleared by `sync_system_theme`.
+    system_theme_changed: std::sync::Arc<std::sync::atomic::AtomicBool>,
     // Curve editor panel (spline editor for keyframe animation)
     curve_editor: crate::panels::curve_editor::CurveEditorPanel,
     // Floating scope window runtime (textures, UI state)
@@ -693,6 +699,8 @@ impl KlippApp {
             last_gesture_sync: std::time::Instant::now(),
             scope_executor: klipp_nodes::GraphExecutor::new_cpu_only(),
             media_watcher: None,
+            system_theme_watcher: None,
+            system_theme_changed: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             curve_editor: crate::panels::curve_editor::CurveEditorPanel::new(),
             scope_window_runtime: crate::widgets::scope_window::ScopeWindowRuntime::default(),
             perf_ring,
@@ -1328,7 +1336,57 @@ impl KlippApp {
         }
     }
 
+    /// Keep the system-theme watcher in step with the preference and
+    /// apply a changed Omarchy palette. Runs once per frame; cheap
+    /// unless the flag is set.
+    fn sync_system_theme(&mut self, ctx: &egui::Context) {
+        use std::sync::atomic::Ordering;
+
+        let follow = self.prefs.appearance.follow_system_theme
+            && self.theme_registry.omarchy_name().is_some();
+        match (follow, self.system_theme_watcher.is_some()) {
+            (true, false) => {
+                if let Some(state) = crate::theme::omarchy::detect() {
+                    self.system_theme_watcher = crate::theme::omarchy::start_watcher(
+                        &state,
+                        std::sync::Arc::clone(&self.system_theme_changed),
+                        ctx.clone(),
+                    );
+                    // The desktop may have changed since the registry
+                    // was built (before the watcher existed).
+                    self.system_theme_changed.store(true, Ordering::Release);
+                }
+            }
+            (false, true) => {
+                self.system_theme_watcher = None;
+                self.system_theme_changed.store(false, Ordering::Release);
+            }
+            _ => {}
+        }
+
+        if !self.system_theme_changed.swap(false, Ordering::AcqRel) {
+            return;
+        }
+        match self.theme_registry.reload_omarchy() {
+            Some(name) => {
+                tracing::info!("System theme: now following Omarchy '{name}'");
+                if follow {
+                    self.theme = KlippTheme::from_prefs(&self.prefs.appearance, &self.theme_registry);
+                    self.theme.apply_to_egui(ctx);
+                }
+            }
+            None => {
+                // Mid-switch (the directory is being rebuilt) or an
+                // unparseable palette: keep the previous theme and
+                // look again next frame.
+                self.system_theme_changed.store(true, Ordering::Release);
+                ctx.request_repaint_after(std::time::Duration::from_millis(50));
+            }
+        }
+    }
+
     fn drain_events(&mut self, ctx: &egui::Context) {
+        self.sync_system_theme(ctx);
         self.drain_control_inbox();
         self.apply_analysis_markers();
         while let Ok(event) = self.event_rx.try_recv() {

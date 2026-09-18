@@ -2299,12 +2299,31 @@ impl PreferencesPanel {
         // ── THEME section ──
         Self::section_header(ui, "THEME", theme);
 
+        // Follow the desktop theme. Shown only where a system theme
+        // is available (Omarchy today); the preference is ignored
+        // elsewhere. While it is on, the picker below stays visible
+        // but inactive so the user sees what they get back.
+        let system_theme = theme_registry.omarchy_name().map(str::to_string);
+        if let Some(name) = &system_theme {
+            let subtitle = format!("Omarchy: {name}. Switching the theme in Omarchy changes Klipp live.");
+            Self::setting_row_with_subtitle(ui, "Follow system theme", &subtitle, theme, |ui| {
+                let mut val = prefs.appearance.follow_system_theme;
+                if ui.add(crate::widgets::toggle::toggle(&mut val)).changed() {
+                    prefs.appearance.follow_system_theme = val;
+                    *dirty = true;
+                }
+            });
+        }
+        let following = system_theme.is_some() && prefs.appearance.follow_system_theme;
+
         // Theme picker — lists every entry in the theme registry
         // (built-ins + user TOMLs from ~/.config/klipp/themes/).
         // Drop a TOML file in that directory and restart the app to
         // see it appear here. The selected name is stored as
         // `prefs.appearance.theme_name`; the registry on the
         // appended live-reload path resolves it back to a KlippTheme.
+        // The live system entry is not offered: picking it by hand
+        // would freeze one snapshot of the desktop palette.
         Self::setting_row_with_subtitle(
             ui,
             "Theme",
@@ -2314,25 +2333,29 @@ impl PreferencesPanel {
                 let current = prefs.appearance.theme_name.clone();
                 let names: Vec<(String, crate::theme::ThemeSource)> = theme_registry
                     .iter()
+                    .filter(|(_, s)| *s != crate::theme::ThemeSource::Omarchy)
                     .map(|(n, s)| (n.to_string(), s))
                     .collect();
-                egui::ComboBox::from_id_salt("theme_picker")
-                    .selected_text(&current)
-                    .width(180.0)
-                    .show_ui(ui, |ui| {
-                        for (name, source) in names {
-                            let label = match source {
-                                crate::theme::ThemeSource::Builtin => name.clone(),
-                                crate::theme::ThemeSource::User => format!("{name}  •  user"),
-                            };
-                            if ui
-                                .selectable_value(&mut prefs.appearance.theme_name, name, label)
-                                .changed()
-                            {
-                                *dirty = true;
+                ui.add_enabled_ui(!following, |ui| {
+                    egui::ComboBox::from_id_salt("theme_picker")
+                        .selected_text(&current)
+                        .width(180.0)
+                        .show_ui(ui, |ui| {
+                            for (name, source) in names {
+                                let label = match source {
+                                    crate::theme::ThemeSource::Builtin => name.clone(),
+                                    crate::theme::ThemeSource::User => format!("{name}  •  user"),
+                                    crate::theme::ThemeSource::Omarchy => continue,
+                                };
+                                if ui
+                                    .selectable_value(&mut prefs.appearance.theme_name, name, label)
+                                    .changed()
+                                {
+                                    *dirty = true;
+                                }
                             }
-                        }
-                    });
+                        });
+                });
             },
         );
 

@@ -2,6 +2,7 @@ use egui::Color32;
 use serde::{Deserialize, Serialize};
 
 mod color_serde;
+pub mod omarchy;
 mod registry;
 
 pub use color_serde::HexColor;
@@ -247,6 +248,23 @@ impl KlippTheme {
         prefs: &crate::prefs::AppearancePrefs,
         registry: &ThemeRegistry,
     ) -> Self {
+        // Following the system theme: the Omarchy entry is the theme
+        // while it exists, and `theme_name` keeps the user's own
+        // choice untouched for when following is switched off (or the
+        // preferences travel to a machine without Omarchy).
+        if prefs.follow_system_theme {
+            if let Some(t) = registry.get(omarchy::THEME_ID) {
+                let mut t = t.clone();
+                // The system palette supplies the role defaults; a
+                // user who has picked their own role colours keeps
+                // them, exactly as with every other theme.
+                if !prefs.roles_are_default() {
+                    t.apply_role_prefs(prefs);
+                }
+                return t;
+            }
+        }
+
         let mut t: KlippTheme = registry
             .get(&prefs.theme_name)
             .or_else(|| registry.get(registry::DEFAULT_NAME))
@@ -265,6 +283,12 @@ impl KlippTheme {
 
         // Role colours — user prefs always win (themes specify role
         // defaults but the per-clip-role picker is universal).
+        t.apply_role_prefs(prefs);
+        t
+    }
+
+    fn apply_role_prefs(&mut self, prefs: &crate::prefs::AppearancePrefs) {
+        let t = self;
         let c = |rgb: [u8; 3]| Color32::from_rgb(rgb[0], rgb[1], rgb[2]);
         t.role_video = c(prefs.role_video);
         t.role_dialogue = c(prefs.role_dialogue);
@@ -276,7 +300,6 @@ impl KlippTheme {
         t.role_foley = c(prefs.role_foley);
         t.role_voiceover = c(prefs.role_voiceover);
         t.role_graphics = c(prefs.role_graphics);
-        t
     }
 
     /// Polarity-aware "soft chrome overlay" — translucent white on

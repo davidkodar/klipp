@@ -830,7 +830,14 @@ impl Preferences {
             }
             Err(_) => {
                 tracing::info!("No preferences file found, using defaults");
-                Self::default()
+                let mut prefs = Self::default();
+                // A fresh install on Omarchy matches the desktop from
+                // the first launch. Existing installs keep their theme.
+                if crate::theme::omarchy::detect().is_some() {
+                    tracing::info!("Omarchy detected: following the system theme by default");
+                    prefs.appearance.follow_system_theme = true;
+                }
+                prefs
             }
         }
     }
@@ -1229,6 +1236,15 @@ pub struct AppearancePrefs {
     /// appear here by their TOML `name` field.
     #[serde(default = "default_theme_name")]
     pub theme_name: String,
+    /// Follow the desktop's theme instead of `theme_name`. Only
+    /// Omarchy is understood today (`theme/omarchy.rs`); on a desktop
+    /// without it the flag is ignored and `theme_name` applies, so
+    /// preferences travel between machines. `theme_name` is left
+    /// untouched while following, so switching it off restores the
+    /// user's own choice. Defaults to on for a fresh install under
+    /// Omarchy (see `Preferences::load`), off otherwise.
+    #[serde(default)]
+    pub follow_system_theme: bool,
     /// Legacy: pre-registry theme mode enum. If present, the
     /// post-load migration in `Preferences::load` translates it to
     /// `theme_name` and clears this field. Kept Serialize so existing
@@ -1274,6 +1290,7 @@ impl Default for AppearancePrefs {
             ui_text_size: default_ui_text_size(),
             ui_scale_percent: 0, // Auto
             theme_name: default_theme_name(),
+            follow_system_theme: false,
             theme_mode: None,
             accent_color: default_accent_color(),
             playhead_color: default_playhead_color(),
@@ -1287,6 +1304,23 @@ impl Default for AppearancePrefs {
 }
 
 impl AppearancePrefs {
+    /// True while every role colour is still the shipped default,
+    /// i.e. the user has never picked their own. A theme that carries
+    /// role colours (the Omarchy system theme) may then supply them.
+    pub fn roles_are_default(&self) -> bool {
+        let d = AppearancePrefs::default();
+        self.role_video == d.role_video
+            && self.role_dialogue == d.role_dialogue
+            && self.role_music == d.role_music
+            && self.role_sfx == d.role_sfx
+            && self.role_title == d.role_title
+            && self.role_broll == d.role_broll
+            && self.role_ambience == d.role_ambience
+            && self.role_foley == d.role_foley
+            && self.role_voiceover == d.role_voiceover
+            && self.role_graphics == d.role_graphics
+    }
+
     /// Translate the legacy `theme_mode` enum to the registry-based
     /// `theme_name`. Run once during `Preferences::load` so the
     /// pre-registry preferences.json migrates forward without

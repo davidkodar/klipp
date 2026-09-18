@@ -67,6 +67,11 @@ pub type ThemeId = String;
 pub enum ThemeSource {
     Builtin,
     User,
+    /// The live Omarchy system theme (`theme/omarchy.rs`). One entry,
+    /// present only when Omarchy is detected, replaced in place on
+    /// every switch. Selected through
+    /// `AppearancePrefs::follow_system_theme`, not the picker.
+    Omarchy,
 }
 
 #[derive(Debug, Clone)]
@@ -86,6 +91,8 @@ pub struct ThemeRegistry {
     /// stable across runs (matters for the keyboard-driven cmd-K
     /// fuzzy picker we'll likely add later).
     entries: BTreeMap<ThemeId, RegistryEntry>,
+    /// See [`ThemeRegistry::omarchy_name`].
+    omarchy_name: Option<String>,
 }
 
 impl ThemeRegistry {
@@ -97,8 +104,37 @@ impl ThemeRegistry {
     pub fn load() -> Self {
         let mut reg = Self::default();
         reg.load_builtins();
+        // Before the user scan so a user theme called "Omarchy" gets
+        // the usual "(user)" suffix instead of shadowing the live one.
+        reg.reload_omarchy();
         reg.scan_user_themes();
         reg
+    }
+
+    /// Re-read the Omarchy system palette and replace (or add) its
+    /// entry. Returns the Omarchy theme's display name when it
+    /// loaded; on any failure the previous entry is kept so the UI
+    /// never shows a half-swapped palette.
+    pub fn reload_omarchy(&mut self) -> Option<String> {
+        let state = super::omarchy::detect()?;
+        let colors = super::omarchy::load(&state)?;
+        let name = state.display_name();
+        self.entries.insert(
+            super::omarchy::THEME_ID.to_string(),
+            RegistryEntry {
+                theme: colors.into(),
+                source: ThemeSource::Omarchy,
+                path: Some(state.colors_path()),
+            },
+        );
+        self.omarchy_name = Some(name.clone());
+        Some(name)
+    }
+
+    /// Display name of the Omarchy theme currently loaded, e.g.
+    /// "Tokyo Night". `None` when Omarchy was not detected.
+    pub fn omarchy_name(&self) -> Option<&str> {
+        self.omarchy_name.as_deref()
     }
 
     fn load_builtins(&mut self) {
