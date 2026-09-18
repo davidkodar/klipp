@@ -99,6 +99,7 @@ fn a_contact_sheet_and_an_excerpt_come_out_of_a_clip() {
 #[test]
 fn trial_on_a_real_file_when_asked() {
     let Ok(path) = std::env::var("KLIPP_ANALYSIS_TRIAL") else { return };
+    let _ = tracing_subscriber::fmt().with_env_filter(tracing_subscriber::EnvFilter::new("info")).with_writer(std::io::stderr).try_init();
     let path = PathBuf::from(path);
     let mut item = klipp_media::MediaItem::synthetic_for_test(path.clone(), None);
     // ffprobe for the duration: what import would have recorded.

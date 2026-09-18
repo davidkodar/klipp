@@ -36,3 +36,6 @@ whisper-rs = { version = "0.16", optional = true, features = ["vulkan"] }
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+tracing-subscriber = { workspace = true }

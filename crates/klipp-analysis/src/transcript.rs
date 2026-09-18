@@ -384,7 +384,10 @@ fn transcribe(model_id: &str, model: &std::path::Path, audio: &[f32], duration_s
     let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
     // Half the machine, up to sixteen: whisper stops gaining past that,
     // and the app is still being used while this runs.
-    let threads = (std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4) / 2).clamp(4, 16) as i32;
+    let threads = std::env::var("KLIPP_TRANSCRIBE_THREADS")
+        .ok()
+        .and_then(|v| v.parse::<i32>().ok())
+        .unwrap_or((std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4) / 2).clamp(4, 16) as i32);
     params.set_n_threads(threads);
     let prompt = if words.is_empty() { String::new() } else { format!("Names and terms: {}.", words.join(", ")) };
     if !prompt.is_empty() {
@@ -404,7 +407,17 @@ fn transcribe(model_id: &str, model: &std::path::Path, audio: &[f32], duration_s
     // says where it thinks nobody is speaking.
     params.set_suppress_nst(true);
     params.set_no_speech_thold(NO_SPEECH_THRESHOLD);
+    let t_run = std::time::Instant::now();
     state.full(params, audio).map_err(|e| format!("whisper run: {e}"))?;
+    tracing::info!(
+        "whisper: {:.1} s of audio in {:.1} s on the {} with {threads} threads, model {model_id}",
+        audio.len() as f64 / 16000.0,
+        t_run.elapsed().as_secs_f64(),
+        if on_gpu { "GPU" } else { "CPU" },
+    );
+    if std::env::var("KLIPP_WHISPER_TIMINGS").is_ok() {
+        ctx.print_timings();
+    }
 
     let lang = whisper_rs::get_lang_str(state.full_lang_id_from_state()).map(|s| s.to_string());
     let n = state.full_n_segments();
