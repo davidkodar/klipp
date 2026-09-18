@@ -39,6 +39,8 @@ pub struct Preferences {
     pub advanced: AdvancedPrefs,
     #[serde(default)]
     pub external_tools: ExternalToolsPrefs,
+    #[serde(default)]
+    pub ai: AiPrefs,
 }
 
 /// Rich recent project entry with cached metadata for the launch screen.
@@ -1803,6 +1805,26 @@ impl Default for ExternalToolsPrefs {
             video_editor: String::new(),
             round_trip_reload: true,
         }
+    }
+}
+
+/// On-device AI: the opt-out switch and how speech transcription runs.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AiPrefs {
+    /// Master switch for the on-device AI. Off means transcription and
+    /// subject detection never run on import, and the assistant / AI
+    /// tools stay out of the way. Nothing here ever leaves the machine.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// Run speech transcription on the CPU instead of the GPU: slower,
+    /// but works without a working Vulkan GPU.
+    #[serde(default)]
+    pub transcribe_on_cpu: bool,
+}
+
+impl Default for AiPrefs {
+    fn default() -> Self {
+        Self { enabled: true, transcribe_on_cpu: false }
     }
 }
 

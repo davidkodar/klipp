@@ -89,13 +89,32 @@ impl AnalysisCtx {
     }
 }
 
-/// Every analyser this build ships, in the order they pay off.
+/// Whether the on-device AI analysers (speech transcription, framing) run.
+/// The non-AI analysers — shots, audio, motion — always run. A user can
+/// opt out of AI in preferences; this is how that reaches the pipeline.
+static AI_ENABLED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+
+/// Turn the AI analysers on or off. Off by preference means transcription
+/// and framing never run on import; shots, audio and motion still do.
+pub fn set_ai_enabled(on: bool) {
+    AI_ENABLED.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Whether the AI analysers are enabled.
+pub fn ai_enabled() -> bool {
+    AI_ENABLED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Every analyser this build ships, in the order they pay off. The AI
+/// analysers are left out when AI is disabled in preferences.
 pub fn analysers() -> Vec<Box<dyn Analyser>> {
     let mut v: Vec<Box<dyn Analyser>> = vec![Box::new(shots::ShotsAnalyser), Box::new(audio::AudioAnalyser), Box::new(motion::MotionAnalyser)];
-    #[cfg(feature = "transcript")]
-    v.push(Box::new(transcript::TranscriptAnalyser));
-    #[cfg(feature = "framing")]
-    v.push(Box::new(framing::FramingAnalyser));
+    if ai_enabled() {
+        #[cfg(feature = "transcript")]
+        v.push(Box::new(transcript::TranscriptAnalyser));
+        #[cfg(feature = "framing")]
+        v.push(Box::new(framing::FramingAnalyser));
+    }
     v
 }
 
@@ -132,4 +151,21 @@ pub(crate) fn ffmpeg_stderr(ffmpeg: &Path, args: &[String]) -> Result<String, St
         return Err(format!("ffmpeg failed ({}): {tail}", out.status));
     }
     Ok(text)
+}
+
+#[cfg(test)]
+mod ai_toggle_tests {
+    /// Disabling AI drops the transcript and framing analysers but keeps
+    /// shots, audio and motion; re-enabling restores them.
+    #[test]
+    fn ai_toggle_gates_only_the_ai_analysers() {
+        super::set_ai_enabled(true);
+        let on: Vec<&str> = super::analysers().iter().map(|a| a.id()).collect();
+        assert!(on.contains(&"shots") && on.contains(&"audio") && on.contains(&"motion"));
+        super::set_ai_enabled(false);
+        let off: Vec<&str> = super::analysers().iter().map(|a| a.id()).collect();
+        assert!(off.contains(&"shots") && off.contains(&"audio") && off.contains(&"motion"), "non-AI analysers stay");
+        assert!(!off.contains(&"transcript") && !off.contains(&"framing"), "AI analysers gone: {off:?}");
+        super::set_ai_enabled(true);
+    }
 }

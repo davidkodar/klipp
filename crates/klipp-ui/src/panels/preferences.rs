@@ -5,6 +5,7 @@ use klipp_core::{AppCommand, MarkerColor, ProxyResolution};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PrefsTab {
     General,
+    Ai,
     System,
     Appearance,
     Playback,
@@ -228,6 +229,7 @@ impl PreferencesPanel {
                             ("EDITING", &[(PrefsTab::Editing, "\u{2702}", "Editing"), (PrefsTab::Timeline, "\u{1F39E}", "Timeline"), (PrefsTab::Viewer, "\u{1F5B5}", "Viewer")]),
                             ("MEDIA & AUDIO", &[(PrefsTab::FileBrowser, "\u{1F4C2}", "File Browser"), (PrefsTab::Audio, "\u{1F3B5}", "Audio"), (PrefsTab::AudioHardware, "\u{1F50A}", "Audio HW"), (PrefsTab::Proxy, "\u{1F4F9}", "Proxy"), (PrefsTab::ExternalTools, "\u{1F517}", "External Tools")]),
                             ("COLOR & EXPORT", &[(PrefsTab::Color, "\u{1F3A8}", "Color"), (PrefsTab::Export, "\u{2B07}", "Export")]),
+                            ("AI", &[(PrefsTab::Ai, "\u{2728}", "AI")]),
                             ("INTERFACE", &[(PrefsTab::Title, "T", "Titles"), (PrefsTab::Keyboard, "\u{2328}", "Keyboard"), (PrefsTab::Advanced, "\u{2699}", "Advanced")]),
                             ("ABOUT", &[(PrefsTab::About, "\u{2139}", "About Klipp")]),
                         ];
@@ -281,6 +283,7 @@ impl PreferencesPanel {
                             PrefsTab::Export => self.show_export(ui, prefs, prefs_dirty, &mut cmds, theme),
                             PrefsTab::Proxy => self.show_proxy(ui, prefs, prefs_dirty, &mut cmds, theme),
                             PrefsTab::ExternalTools => self.show_external_tools(ui, prefs, prefs_dirty, theme),
+                            PrefsTab::Ai => self.show_ai(ui, prefs, prefs_dirty, &mut cmds, theme),
                             PrefsTab::System => self.show_system(ui, prefs, prefs_dirty, theme),
                             PrefsTab::Appearance => self.show_appearance(ui, prefs, prefs_dirty, theme_registry, theme),
                             PrefsTab::AudioHardware => self.show_audio_hardware(ui, prefs, prefs_dirty, theme),
@@ -366,6 +369,7 @@ impl PreferencesPanel {
         match tab {
             PrefsTab::General => &["general", "auto-save", "backup", "recent projects", "project", "default folder", "inspector", "startup", "launch", "open last"],
             PrefsTab::Appearance => &["appearance", "theme", "ui scale", "accent color", "role colors", "video", "dialogue", "music", "sfx"],
+            PrefsTab::Ai => &["ai", "artificial intelligence", "transcription", "transcribe", "whisper", "speech", "subtitles", "captions", "model", "models", "download", "gpu", "cpu", "mcp", "assistant", "opt out", "disable", "enable", "vision", "onnx"],
             PrefsTab::System => &["system", "gpu", "hardware", "decode", "threads", "frame queue", "playback resolution", "nvdec", "vaapi", "cuda"],
             PrefsTab::Playback => &["playback", "quality", "background render", "pre-roll", "jkl", "speed", "loop"],
             PrefsTab::MediaCache => &["cache", "thumbnail", "waveform", "render cache", "cache size", "transcode", "clear cache"],
@@ -2070,6 +2074,85 @@ impl PreferencesPanel {
     // ══════════════════════════════════════════════
     // NEW PREFERENCE TABS (Phase 2)
     // ══════════════════════════════════════════════
+
+    fn show_ai(&mut self, ui: &mut egui::Ui, prefs: &mut Preferences, dirty: &mut bool, cmds: &mut Vec<AppCommand>, theme: &KlippTheme) {
+        ui.horizontal(|ui| {
+            ui.add_space(14.0);
+            ui.label(egui::RichText::new("AI").strong().size(16.0).color(theme.text_primary));
+        });
+        ui.add_space(4.0);
+
+        // ── Master switch ──
+        Self::section_header(ui, "ON-DEVICE AI", theme);
+        Self::setting_row_with_subtitle(ui, "Enable AI features", "Transcription, subject detection and the assistant. All on-device — nothing leaves your machine.", theme, |ui| {
+            let mut val = prefs.ai.enabled;
+            if ui.add(crate::widgets::toggle::toggle(&mut val)).changed() {
+                prefs.ai.enabled = val;
+                klipp_analysis::set_ai_enabled(val);
+                *dirty = true;
+            }
+        });
+
+        if !prefs.ai.enabled {
+            ui.add_space(10.0);
+            ui.horizontal(|ui| {
+                ui.add_space(14.0);
+                ui.label(egui::RichText::new("AI is off. Turn it on to transcribe speech, detect subjects, and use the assistant. The non-AI analysis (shots, silence, loudness) still runs.").color(theme.text_secondary));
+            });
+            return;
+        }
+
+        // ── Status ──
+        Self::section_header(ui, "STATUS", theme);
+        let speech_status = match klipp_analysis::transcript::installed_model() {
+            Some((id, _)) => format!("Ready — {}", model_display_name(id)),
+            None => "No speech model downloaded — get one below".to_string(),
+        };
+        Self::setting_row(ui, "Speech (transcription)", theme, |ui| {
+            ui.label(egui::RichText::new(speech_status).color(theme.text_secondary));
+        });
+        Self::setting_row(ui, "Vision runtime", theme, |ui| {
+            ui.label(egui::RichText::new(ai_vision_status()).color(theme.text_secondary));
+        });
+        Self::setting_row_with_subtitle(ui, "Assistant (MCP)", "Point an MCP client at the klipp-mcp command while Klipp is running.", theme, |ui| {
+            ui.label(egui::RichText::new("Ready").color(theme.text_secondary));
+        });
+
+        // ── Transcription (speech) ──
+        Self::section_header(ui, "TRANSCRIPTION (SPEECH)", theme);
+        Self::setting_row_with_subtitle(ui, "Transcribe on CPU", "Slower, but works without a Vulkan GPU.", theme, |ui| {
+            let mut val = prefs.ai.transcribe_on_cpu;
+            if ui.add(crate::widgets::toggle::toggle(&mut val)).changed() {
+                prefs.ai.transcribe_on_cpu = val;
+                klipp_analysis::transcript::set_transcribe_on_cpu(val);
+                *dirty = true;
+            }
+        });
+        let active = klipp_analysis::transcript::installed_model().map(|(id, _)| id);
+        for id in klipp_analysis::transcript::MODELS {
+            let (name, size, installed) = model_row_info(id);
+            let sub = if active == Some(id) {
+                format!("{}  •  in use", whisper_blurb(id))
+            } else {
+                whisper_blurb(id).to_string()
+            };
+            Self::setting_row_with_subtitle(ui, &format!("{name}  ({size})"), &sub, theme, |ui| {
+                if installed {
+                    ui.label(egui::RichText::new("Installed").color(theme.text_secondary));
+                } else if ui.button("Download").clicked() {
+                    cmds.push(AppCommand::OpenModelDownloadDialog { model_id: id.to_string() });
+                }
+            });
+        }
+
+        // ── All models ──
+        Self::section_header(ui, "MODELS", theme);
+        Self::setting_row_with_subtitle(ui, "All AI models", "Browse, download, switch and remove every model — speech and vision — with sizes and details.", theme, |ui| {
+            if ui.button("Manage models\u{2026}").clicked() {
+                cmds.push(AppCommand::OpenAiModelsDialog);
+            }
+        });
+    }
 
     fn show_system(&mut self, ui: &mut egui::Ui, prefs: &mut Preferences, dirty: &mut bool, theme: &KlippTheme) {
         // Page heading with "Restart required" badge
@@ -4142,5 +4225,57 @@ impl PreferencesPanel {
             ui.add_space(14.0);
             ui.label(egui::RichText::new("\u{00a9} 2025\u{2013}2026 David Bolin. All rights reserved.").size(10.0).color(theme.text_dim));
         });
+    }
+}
+
+
+/// The human name of an AI model from the manifest, or its id.
+fn model_display_name(id: &str) -> String {
+    klipp_ml::manifest::load_effective().ok()
+        .and_then(|m| m.get(id).map(|e| e.display_name.clone()))
+        .unwrap_or_else(|| id.to_string())
+}
+
+/// A model row's `(display name, human size, installed)` for the AI tab.
+fn model_row_info(id: &str) -> (String, String, bool) {
+    let Ok(manifest) = klipp_ml::manifest::load_effective() else {
+        return (id.to_string(), "?".to_string(), false);
+    };
+    let Some(entry) = manifest.get(id) else {
+        return (id.to_string(), "?".to_string(), false);
+    };
+    let installed = klipp_ml::cache::ModelCache::open().ok()
+        .map(|c| c.path_for(entry).is_file())
+        .unwrap_or(false);
+    (entry.display_name.clone(), fmt_bytes(entry.size_bytes), installed)
+}
+
+/// A one-line capability note for a bundled Whisper model.
+fn whisper_blurb(id: &str) -> &'static str {
+    match id {
+        "whisper_large_v3_turbo_q5" => "The most accurate, and still fast on a GPU. The default choice.",
+        "whisper_base_ggml" => "Small and quick, less accurate. A good fallback on a slow machine.",
+        _ => "Speech-to-text model.",
+    }
+}
+
+/// The ONNX vision runtime's status line for the AI tab.
+fn ai_vision_status() -> String {
+    #[cfg(feature = "ai-ort")]
+    {
+        klipp_ml_ort::resolve_runtime_status().label()
+    }
+    #[cfg(not(feature = "ai-ort"))]
+    {
+        "CPU (built without the ONNX GPU runtime)".to_string()
+    }
+}
+
+/// Bytes as a short human size (MB/GB) for model listings.
+fn fmt_bytes(bytes: u64) -> String {
+    if bytes >= 1_000_000_000 {
+        format!("{:.1} GB", bytes as f64 / 1e9)
+    } else {
+        format!("{} MB", (bytes as f64 / 1e6).round() as u64)
     }
 }

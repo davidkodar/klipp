@@ -792,6 +792,10 @@ impl KlippApp {
         app.state.viewer_prefs = app.prefs.viewer.clone();
         app.state.toast_duration_secs = app.prefs.advanced.toast_duration_secs;
         app.state.toast.visible_duration = app.prefs.advanced.toast_duration_secs;
+        // Carry the AI preferences into the analysis pipeline at startup,
+        // so a saved opt-out or CPU choice takes effect before any import.
+        klipp_analysis::set_ai_enabled(app.prefs.ai.enabled);
+        klipp_analysis::transcript::set_transcribe_on_cpu(app.prefs.ai.transcribe_on_cpu);
         let _ = app.cmd_tx.send(AppCommand::SetPanLaw(app.prefs.audio.pan_law));
         klipp_engine::pcm_reader::set_anti_click_fade_ms(app.prefs.advanced.anti_click_fade_ms);
         klipp_engine::video_decoder::set_hardware_decode(app.prefs.system.hardware_decode);

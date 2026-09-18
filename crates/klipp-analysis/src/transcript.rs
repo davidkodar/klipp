@@ -18,6 +18,28 @@ pub const VERSION: u32 = 5;
 /// mishears names ("a matchy" for Omarchy), drops words and places
 /// them loosely, and every caption made from it had to be rewritten.
 pub const MODELS: [&str; 2] = ["whisper_large_v3_turbo_q5", "whisper_base_ggml"];
+
+/// Force transcription onto the CPU. Set from the preference; when it has
+/// never been set, the `KLIPP_TRANSCRIBE_ON_CPU=1` environment variable
+/// is honoured instead, so scripts and older callers keep working.
+static FORCE_CPU: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static FORCE_CPU_SET: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Set whether transcription runs on the CPU (slower, no GPU needed).
+pub fn set_transcribe_on_cpu(on: bool) {
+    FORCE_CPU.store(on, std::sync::atomic::Ordering::Relaxed);
+    FORCE_CPU_SET.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Whether transcription should run on the CPU: the preference if set,
+/// else the `KLIPP_TRANSCRIBE_ON_CPU` environment variable.
+pub fn transcribe_on_cpu() -> bool {
+    if FORCE_CPU_SET.load(std::sync::atomic::Ordering::Relaxed) {
+        FORCE_CPU.load(std::sync::atomic::Ordering::Relaxed)
+    } else {
+        std::env::var("KLIPP_TRANSCRIBE_ON_CPU").map(|v| v == "1").unwrap_or(false)
+    }
+}
 /// The model a download fetches.
 pub const MODEL_ID: &str = MODELS[0];
 
@@ -354,8 +376,9 @@ fn transcribe(model_id: &str, model: &std::path::Path, audio: &[f32], duration_s
     whisper_rs::install_logging_hooks();
     let mut cparams = WhisperContextParameters::default();
     // On the GPU, through Vulkan, whichever vendor's it is: the app
-    // needs one to run at all. `KLIPP_TRANSCRIBE_ON_CPU=1` keeps it off.
-    let on_gpu = std::env::var("KLIPP_TRANSCRIBE_ON_CPU").map(|v| v != "1").unwrap_or(true);
+    // needs one to run at all. A preference override wins; otherwise
+    // `KLIPP_TRANSCRIBE_ON_CPU=1` keeps it off.
+    let on_gpu = !transcribe_on_cpu();
     cparams.use_gpu(on_gpu);
     // Word times from the model's alignment heads (DTW over the
     // cross-attention), not from its timestamp tokens: those put a

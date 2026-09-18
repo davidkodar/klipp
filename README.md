@@ -112,6 +112,8 @@ Between them an agent can orient itself, import and analyse footage (shot bounda
 
 None of it needs a particular GPU vendor: the AI runs on CPU (the ONNX and Candle vision models) and Vulkan (Whisper speech, and all playback, effects and scopes), and video decode / encode fall back to software. CUDA is an optional accelerator only — nothing requires it.
 
+All of the on-device AI is **opt-in-by-default and easy to turn off**: **Preferences → AI** has the master switch (off means transcription and subject detection never run), the "AI ready / MCP ready" status, a CPU-vs-GPU choice for transcription, and the speech (Whisper) models with their sizes, with a link to the full model manager for downloading and switching every model.
+
 ## Architecture
 
 Klipp is a 32-crate Cargo workspace organised into layers, with dependencies flowing one way and no cycles. Every crate carries a `//!` overview; `ARCHITECTURE.md` is the system map.
