@@ -4352,15 +4352,18 @@ impl PlaybackEngine {
                 self.last_direct_present_blockers = interesting;
             }
             // The stack first, when it presents without a readback: the
-            // decoded frame seeded where it is, blended, encoded into the
-            // viewer's texture. The fast paths below read 33 MB back and
-            // the UI uploads them again; the stack does neither. It takes
-            // the frame the direct path would, and the one only a grade
-            // keeps off it. When it declines — HDR monitoring, another
-            // working space, a node with no GPU pass — the fast paths
-            // take the frame as before.
-            let stack_first = (blockers.is_empty() || Self::only_the_graded_path_handles(&blockers))
-                && self.stack_presents_zero_copy();
+            // decoded frame seeded where it is, graded, its effects run
+            // on it, blended, encoded into the viewer's texture. The fast
+            // paths below read 33 MB back and the UI uploads them again;
+            // the stack does neither. It takes the frame the direct path
+            // would, the one only a grade keeps off it, and — because
+            // `place_layer` applies them on the GPU — the one a grade
+            // plus a GPU-capable builtin-effect chain or a keyframed
+            // transform keeps off it too. When it declines — HDR
+            // monitoring, another working space, a node with no GPU pass
+            // — the fast paths take the frame as before.
+            let stack_first =
+                self.stack_present_handles(&blockers) && self.stack_presents_zero_copy();
             if stack_first {
                 if let Some(held) = streams::HeldFrame::from_gpu_frame(&frame) {
                     if self.present_frame_with(Some(held), true) {
@@ -6379,6 +6382,52 @@ impl PlaybackEngine {
                     | "HDR preview"
                     | "BT.1886 viewer transfer"
             )
+        })
+    }
+
+    /// Whether the zero-copy GPU *stack* present can show this frame:
+    /// everything [`Self::only_the_graded_path_handles`] accepts, plus
+    /// the two things the stack applies that the lean graded present
+    /// cannot — a GPU-capable builtin-effect chain and render keyframes.
+    ///
+    /// `present_frame_with(_, true)` runs the frame through
+    /// `render_composite_on_gpu` → `place_layer`, which grades on the
+    /// GPU *and* applies the clip's effects there (a keyframed pan/zoom
+    /// is baked to a `Transform` in `clip_effects` and run on the GPU as
+    /// a static one is), with no per-frame readback. So a graded clip
+    /// carrying a reframe or an animated transform keeps the whole
+    /// picture GPU-resident instead of falling to the CPU compositor.
+    ///
+    /// Only the *stack* gate may widen this far.
+    /// `present_graded_frame_on_gpu` grades and nothing else, so routing
+    /// an effect or a keyframed transform there would drop it from the
+    /// picture — that gate stays on `only_the_graded_path_handles`.
+    ///
+    /// A builtin chain is admitted only when every effect has a GPU pass
+    /// (`chain_supports_gpu`); a Frei0r plugin is CPU-only and keeps the
+    /// frame off this path. The keyframe-baked transform is always a
+    /// `Transform`, which the GPU has, so "render keyframes on clip" is
+    /// always safe here.
+    fn stack_present_handles(&self, blockers: &[&'static str]) -> bool {
+        if blockers.is_empty() {
+            return true;
+        }
+        let builtin_on_gpu = {
+            let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
+            self.v1_clip_id(&seq)
+                .and_then(|id| seq.tracks.iter().flat_map(|t| t.clips.iter()).find(|c| c.id == id))
+                .is_some_and(|c| klipp_effects::chain_supports_gpu(&c.builtin_effects))
+        };
+        blockers.iter().all(|b| {
+            matches!(
+                *b,
+                "grade graph is not an identity"
+                    | "ACES working space"
+                    | "BT.2020 working space"
+                    | "HDR preview"
+                    | "BT.1886 viewer transfer"
+                    | "render keyframes on clip"
+            ) || (*b == "builtin effects on clip" && builtin_on_gpu)
         })
     }
 

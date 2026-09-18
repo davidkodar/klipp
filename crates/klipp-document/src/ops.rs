@@ -71,6 +71,10 @@ pub enum Edge {
 }
 
 /// One editorial operation.
+// The `title` variant carries many optional style/motion fields, so it is
+// larger than the rest; ops are resolved one at a time, never held in bulk,
+// so the size disparity does not matter.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum Op {

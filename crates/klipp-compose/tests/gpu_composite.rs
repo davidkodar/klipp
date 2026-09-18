@@ -347,3 +347,80 @@ fn a_layer_of_another_size_is_fitted_on_the_gpu() {
         assert!(d <= 1, "{w}x{h}: GPU fit differs from the CPU fit by {d} levels");
     }
 }
+
+/// One Media clip whose frame is on the GPU, carrying BOTH a primary
+/// grade and a GPU-capable builtin effect (a reframe `Transform`). The
+/// stack must grade it and apply the effect on the GPU — the grade must
+/// not fall back to the CPU because an effect follows it — and its frame
+/// must be the CPU renderer's. This is the resident path playback rides
+/// for a graded, reframed clip (the case a static reframe or an animated
+/// zoom's baked per-frame `Transform` produces).
+struct OneGpu {
+    id: ClipId,
+    srgb: Arc<Vec<u8>>,
+}
+
+impl FrameSource for OneGpu {
+    fn frame(&mut self, clip: &Clip, _secs: f64, width: u32, height: u32) -> Option<SourceFrame> {
+        if clip.id != self.id {
+            return None;
+        }
+        Some(SourceFrame {
+            pixels: SourcePixels::Gpu(Arc::new(OtherSize { srgb: Arc::clone(&self.srgb), w: width, h: height })),
+            width,
+            height,
+            pts: None,
+        })
+    }
+}
+
+#[test]
+fn a_graded_clip_with_a_gpu_effect_stays_on_the_stack() {
+    let srgb: Vec<u8> = (0..H)
+        .flat_map(|y| (0..W).flat_map(move |x| [(x * 255 / W) as u8, (y * 255 / H) as u8, ((x + y) * 7 % 256) as u8, 255]))
+        .collect();
+    let mut seq = Sequence::new_default();
+    seq.resolution = klipp_core::Resolution { width: W, height: H };
+    let mut v = Track::new("V1", TrackKind::Video);
+    let mut c = clip(ClipKind::Media { media_id: klipp_core::MediaId::new() }, 0.0, 10.0);
+    c.node_graph = {
+        use klipp_nodes::{graph::{Edge, Node, NodeGraph, NodeId, NodePos}, kinds::NodeKind, params::NodeParams};
+        let node = |kind: NodeKind, params: NodeParams| Node {
+            id: NodeId::new_v4(), kind, label: format!("{kind:?}"), enabled: true, params, keyframes: Default::default(), output_link: None, input_links: vec![],
+        };
+        let nodes = vec![
+            node(NodeKind::Source, NodeParams::default()),
+            node(NodeKind::Exposure, NodeParams { exposure: Some(-0.5), ..Default::default() }),
+            node(NodeKind::Output, NodeParams::default()),
+        ];
+        let edges = (0..2).map(|i| Edge { from_node: nodes[i].id, from_port: 0, to_node: nodes[i + 1].id, to_port: 0 }).collect();
+        let node_positions = nodes.iter().enumerate().map(|(i, n)| (n.id, NodePos { x: i as f32 * 100.0, y: 0.0 })).collect();
+        NodeGraph { output_node_id: nodes[2].id, nodes, edges, node_positions, working_space_override: None, frames: vec![], sticky_notes: vec![] }
+    };
+    c.builtin_effects = vec![klipp_effects::BuiltinEffect::Transform {
+        position_x: 12.0,
+        position_y: -8.0,
+        scale_x: 1.25,
+        scale_y: 1.25,
+        rotation: 0.0,
+        anchor_x: 0.5,
+        anchor_y: 0.5,
+        rotation_x: 0.0,
+        rotation_y: 0.0,
+        perspective: 0.0,
+        focal_ref: None,
+    }];
+    let id = c.id;
+    v.clips = vec![c];
+    seq.tracks = vec![v];
+    let mut src = OneGpu { id, srgb: Arc::new(srgb) };
+
+    let mut r = renderer();
+    let Some((gpu, _)) = r.render_display_u8_on_gpu(&seq, tc(1.0), W, H, &mut src, RenderOptions::default()) else {
+        eprintln!("skipping: the GPU stack declined (no usable GPU?)");
+        return;
+    };
+    let cpu = display(&r.render(&seq, tc(1.0), W, H, &mut src, RenderOptions::default()));
+    let d = worst(&cpu, &gpu);
+    assert!(d <= 1, "graded + GPU effect: GPU stack differs from the CPU renderer by {d} levels");
+}
