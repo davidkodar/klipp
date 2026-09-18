@@ -299,6 +299,22 @@ pub enum Op {
         #[serde(default)]
         y: f32,
     },
+    /// Animate a picture's zoom over the clip: scale `from` at the start
+    /// to `to` at the end — a slow push-in (`from` 1, `to` 1.15) or a
+    /// pull-out (`from` 1.2, `to` 1). Optionally push toward `x`,`y`
+    /// (-1..1) for a Ken Burns move. 1 is as shot, up to 4. Renders as
+    /// per-frame transform keyframes on the GPU; use it for energy on a
+    /// static shot where a hard reframe would sit still.
+    Zoom {
+        clip_id: ClipRef,
+        #[serde(default = "default_reframe_scale")]
+        from: f32,
+        to: f32,
+        #[serde(default)]
+        x: f32,
+        #[serde(default)]
+        y: f32,
+    },
     /// Apply a creative look — a 3D LUT — to a picture clip, as one node
     /// after the grade so the look sits on the corrected image. `lut_path`
     /// is the resolved file; `name` is what to call it in the reply;
@@ -423,6 +439,71 @@ pub enum Op {
         backing: Option<f32>,
         #[serde(default)]
         outline: Option<f32>,
+    },
+    /// Create a title from scratch with any look and motion — the way to
+    /// put a heading, a callout or a hero card on screen. `text` is the
+    /// words; `at` and `secs` place and hold it; `track` names a text
+    /// track (one is made on top if left out). Look: `x`,`y` centre the
+    /// text (0..1), `size` in px of a 1080-line frame, `color` #rrggbb,
+    /// `font`, `bold`, `align` (left/center/right); `backing` a dark
+    /// panel behind the text (0..1) or `backing_color`, `full_frame` a
+    /// solid colour card behind everything, `outline`+`outline_color` a
+    /// stroke, `glow`+`glow_color` a neon glow, `gradient` a two-colour
+    /// fill (#top,#bottom). Motion: `animate` an entrance (fade, rise,
+    /// drop, slide_left, slide_right, scale_up, scale_down, blur,
+    /// typewriter) over `animate_secs`, `stagger` (line/word/char) for
+    /// per-unit timing; `loop` a continuous effect (pulse, flash/blink,
+    /// neon, wave, shake, color_cycle); `glitch` and `chromatic` (0..1)
+    /// add a digital edge.
+    Title {
+        text: String,
+        at: Anchor,
+        #[serde(default = "default_title_secs")]
+        secs: f64,
+        #[serde(default)]
+        track: Option<TrackRef>,
+        #[serde(default)]
+        x: Option<f32>,
+        #[serde(default)]
+        y: Option<f32>,
+        #[serde(default)]
+        size: Option<f32>,
+        #[serde(default)]
+        color: Option<String>,
+        #[serde(default)]
+        font: Option<String>,
+        #[serde(default)]
+        bold: Option<bool>,
+        #[serde(default)]
+        align: Option<String>,
+        #[serde(default)]
+        backing: Option<f32>,
+        #[serde(default)]
+        backing_color: Option<String>,
+        #[serde(default)]
+        full_frame: Option<String>,
+        #[serde(default)]
+        outline: Option<f32>,
+        #[serde(default)]
+        outline_color: Option<String>,
+        #[serde(default)]
+        glow: Option<f32>,
+        #[serde(default)]
+        glow_color: Option<String>,
+        #[serde(default)]
+        gradient: Option<[String; 2]>,
+        #[serde(default)]
+        animate: Option<String>,
+        #[serde(default)]
+        animate_secs: Option<f32>,
+        #[serde(default)]
+        stagger: Option<String>,
+        #[serde(default, rename = "loop")]
+        loop_effect: Option<String>,
+        #[serde(default)]
+        glitch: Option<f32>,
+        #[serde(default)]
+        chromatic: Option<f32>,
     },
 }
 
@@ -839,6 +920,10 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
             let (ti, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
             reframe(seq, pool, i, ti, clip, *scale, *x, *y)
         }
+        Op::Zoom { clip_id, from, to, x, y } => {
+            let (ti, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
+            zoom(seq, pool, i, ti, clip, *from, *to, *x, *y)
+        }
         Op::Look { clip_id, lut_path, name, opacity, remove } => {
             let (ti, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
             apply_look(seq, pool, i, ti, clip, lut_path, name.as_deref(), *opacity, *remove)
@@ -898,6 +983,18 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
             let one = clip_id.as_ref().map(|r| resolve_clip(seq, fps, r, i)).transpose()?;
             let ti = track.as_ref().map(|t| resolve_track(seq, t, i)).transpose()?;
             style(seq, pool, i, one.map(|(ti, _, c)| (ti, c)), ti, from, to, &look)
+        }
+        Op::Title { text, at, secs, track, x, y, size, color, font, bold, align, backing, backing_color, full_frame, outline, outline_color, glow, glow_color, gradient, animate, animate_secs, stagger, loop_effect, glitch, chromatic } => {
+            let at = resolve_anchor(seq, fps, at, i)?;
+            let args = TitleArgs {
+                text, secs: *secs, track: track.as_ref(), x: *x, y: *y, size: *size,
+                color: color.as_deref(), font: font.clone(), bold: *bold, align: align.as_deref(),
+                backing: *backing, backing_color: backing_color.as_deref(), full_frame: full_frame.as_deref(),
+                outline: *outline, outline_color: outline_color.as_deref(), glow: *glow, glow_color: glow_color.as_deref(),
+                gradient: gradient.as_ref(), animate: animate.as_deref(), animate_secs: *animate_secs, stagger: stagger.as_deref(),
+                loop_effect: loop_effect.as_deref(), glitch: *glitch, chromatic: *chromatic,
+            };
+            title_op(seq, fps, i, at, args)
         }
         Op::LowerThird { name, role, at, secs: hold, track, side, x, y } => {
             let at = resolve_anchor(seq, fps, at, i)?;
@@ -1790,10 +1887,32 @@ fn picture_effect(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &
     let fx = match kind.to_lowercase().as_str() {
         "vignette" => E::Vignette { amount: -a * 0.8, size: 0.8, softness: 0.5, roundness: 0.7 },
         "grain" | "film_grain" => E::FilmGrain { amount: a * 0.5, size: 1.0, color: 0, shadows: 0.3, seed: 1 },
-        "glow" | "diffusion" | "bloom" => E::Glow { radius: 30.0, intensity: a },
+        "glow" => E::Glow { radius: 30.0, intensity: a },
+        "bloom" => E::Bloom { threshold: 0.7, radius: a * 40.0 + 10.0, intensity: a },
+        "diffusion" | "pro_mist" => E::Diffusion { amount: a, radius: 20.0, threshold: 0.6, desaturation: 0.1 },
+        "halation" | "film_halation" => E::FilmHalation { threshold: 0.75, radius: a * 30.0 + 10.0, intensity: a, hue: 0.05 },
+        "light_rays" | "god_rays" => E::LightRays { center_x: 0.5, center_y: 0.35, threshold: 0.7, samples: 48, decay: 0.95, intensity: a },
+        "lens_flare" => E::LensFlare { position_x: 0.7, position_y: 0.3, brightness: a, flare_size: 1.0, ghost_count: 4, ghost_intensity: a * 0.5, chromatic_aberration: 0.3 },
+        "anamorphic" | "anamorphic_streak" | "streak" => E::AnamorphicStreak { threshold: 0.75, length: a, intensity: a, tint: 0.6 },
+        "light_wrap" => E::LightWrap { width: a * 20.0, intensity: a, softness: 0.5 },
         "blur" => E::GaussianBlur { radius: a * 20.0 },
+        "radial_blur" | "zoom_blur" => E::RadialBlur { center_x: 0.5, center_y: 0.5, amount: a * 0.3, samples: 24, mode: 0 },
+        "spin_blur" => E::RadialBlur { center_x: 0.5, center_y: 0.5, amount: a * 0.3, samples: 24, mode: 1 },
+        "directional_blur" | "motion_blur" => E::DirectionalBlur { angle: 0.0, distance: a * 40.0, samples: 24 },
         "sharpen" => E::Sharpen { amount: a },
-        other => return Err(refuse(i, format!("\"{other}\" is not an effect"), "use vignette, grain, glow, blur or sharpen")),
+        "chromatic_aberration" | "rgb_split" | "fringe" => E::ChromaticAberration { red_shift: a * 8.0, blue_shift: -a * 8.0, center_x: 0.5, center_y: 0.5 },
+        "tilt_shift" => E::TiltShift { center: 0.5, width: 0.3, softness: 0.2, radius: a * 20.0 },
+        "mosaic" | "pixelate" => E::Mosaic { block_size: a * 40.0 + 2.0 },
+        "posterize" => E::Posterize { levels: (32.0 - a * 28.0).max(2.0) },
+        "invert" => E::Invert { mix: a },
+        "mirror" => E::Mirror { horizontal: 1, vertical: 0 },
+        "lens_distortion" | "barrel" => E::LensDistortion { distortion: a * 0.5, scale: 1.0 },
+        "emboss" => E::Emboss { angle: 0.0, strength: a, mix: a },
+        "edge_detect" | "edges" => E::EdgeDetect { strength: a, mix: a },
+        "denoise" => E::Denoise { spatial_sigma: a * 4.0, color_sigma: a * 0.1, iterations: 1 },
+        "vhs" => E::Vhs { tracking: a * 0.5, bleed: a, noise: a * 0.5, scanlines: a, seed: 1 },
+        "old_film" => E::OldFilm { flicker: a * 0.5, scratches: a, dust: a, weave: a * 0.5, sepia: a * 0.5, seed: 1 },
+        other => return Err(refuse(i, format!("\"{other}\" is not an effect"), "use e.g. vignette, grain, glow, bloom, diffusion, halation, light_rays, lens_flare, anamorphic, blur, radial_blur, directional_blur, sharpen, chromatic_aberration, tilt_shift, mosaic, posterize, invert, mirror, lens_distortion, edge_detect, denoise, vhs or old_film")),
     };
     // The same kind of effect replaces the one that is there.
     let same_kind = |e: &E| std::mem::discriminant(e) == std::mem::discriminant(&fx);
@@ -1825,6 +1944,57 @@ fn reframe(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip, s
     effects.insert(0, fx);
     let what = format!("reframe {}: scale {scale:.2}, pan {x:.2}, {y:.2}", clip_name(seq, pool, clip));
     Ok((what, set_builtin_effects(clip, effects), vec![clip.id]))
+}
+
+/// An animated zoom over the clip: transform keyframes for a push-in or
+/// pull-out, optionally moving toward a point. The renderer bakes a
+/// per-frame `Transform` from these, so it runs on the GPU.
+fn zoom(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip, from: f32, to: f32, x: f32, y: f32) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
+    require_picture(seq, pool, i, ti, clip, "zoom")?;
+    for (name, v) in [("from", from), ("to", to)] {
+        if !v.is_finite() || !(1.0..=4.0).contains(&v) {
+            return Err(refuse(i, format!("{name} {v} is out of range"), format!("give {name} between 1 and 4")));
+        }
+    }
+    for (name, v) in [("x", x), ("y", y)] {
+        if !v.is_finite() || !(-1.0..=1.0).contains(&v) {
+            return Err(refuse(i, format!("{name} {v} is out of range"), format!("give {name} between -1 and 1")));
+        }
+    }
+    if (from - to).abs() < 1e-4 && x.abs() < 1e-4 && y.abs() < 1e-4 {
+        return Err(refuse(i, "nothing to zoom", "give a different from and to, or an x/y to push toward"));
+    }
+    let dur = (clip.timeline_out.to_secs_f64() - clip.timeline_in.to_secs_f64()).max(0.05);
+    let old_state = crate::history::KeyframeSnapshot::from_clip(clip);
+    let mut new_state = old_state.clone();
+    // Keyframes in the clip's own time: start scale to end scale.
+    let mut scale_kfs = Vec::new();
+    klipp_core::keyframe::upsert_keyframe(&mut scale_kfs, 0.0, from);
+    klipp_core::keyframe::upsert_keyframe(&mut scale_kfs, dur, to);
+    new_state.transform_scale_keyframes = scale_kfs;
+    // A pan toward (x, y): position of 1 moves by half the frame, as reframe.
+    if x.abs() > 1e-4 || y.abs() > 1e-4 {
+        let mut px = Vec::new();
+        klipp_core::keyframe::upsert_keyframe(&mut px, 0.0, 0.0);
+        klipp_core::keyframe::upsert_keyframe(&mut px, dur, x * 0.5);
+        new_state.transform_pos_x_keyframes = px;
+        let mut py = Vec::new();
+        klipp_core::keyframe::upsert_keyframe(&mut py, 0.0, 0.0);
+        klipp_core::keyframe::upsert_keyframe(&mut py, dur, y * 0.5);
+        new_state.transform_pos_y_keyframes = py;
+    }
+    let push = if x.abs() > 1e-4 || y.abs() > 1e-4 { format!(", push to {x:.2},{y:.2}") } else { String::new() };
+    let what = format!("zoom {}: {from:.2}\u{2192}{to:.2}{push}", clip_name(seq, pool, clip));
+    let edit = EditCommand::EditKeyframes {
+        clip_id: clip.id,
+        linked_clip_id: None,
+        description: "Zoom",
+        old_state,
+        new_state,
+        old_linked_state: None,
+        new_linked_state: None,
+    };
+    Ok((what, edit, vec![clip.id]))
 }
 
 fn apply_look(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip, lut_path: &str, name: Option<&str>, opacity: Option<f32>, remove: bool) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
@@ -2470,6 +2640,212 @@ fn lower_third_title(name: &str, role: Option<&str>, place: LowerThirdPlace) -> 
 }
 
 #[allow(clippy::too_many_arguments)]
+fn default_title_secs() -> f64 {
+    3.0
+}
+
+struct TitleArgs<'a> {
+    text: &'a str,
+    secs: f64,
+    track: Option<&'a TrackRef>,
+    x: Option<f32>,
+    y: Option<f32>,
+    size: Option<f32>,
+    color: Option<&'a str>,
+    font: Option<String>,
+    bold: Option<bool>,
+    align: Option<&'a str>,
+    backing: Option<f32>,
+    backing_color: Option<&'a str>,
+    full_frame: Option<&'a str>,
+    outline: Option<f32>,
+    outline_color: Option<&'a str>,
+    glow: Option<f32>,
+    glow_color: Option<&'a str>,
+    gradient: Option<&'a [String; 2]>,
+    animate: Option<&'a str>,
+    animate_secs: Option<f32>,
+    stagger: Option<&'a str>,
+    loop_effect: Option<&'a str>,
+    glitch: Option<f32>,
+    chromatic: Option<f32>,
+}
+
+/// Build a styled, animated title from scratch and place it on a text
+/// track — the general-purpose sibling of `lower_third`/`captions`.
+fn title_op(seq: &Sequence, fps: Fps, i: usize, at: Timecode, a: TitleArgs) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
+    use klipp_core::title_motion::{Motion, MotionKind, StaggerUnit, TitleLoop, TitleMotion};
+    use klipp_timeline::{FontStyle, TextAlignment, TextBox, TextGlow, TextGradient, TextOutline, TitleBackground, TitleData};
+    let text = a.text.trim();
+    if text.is_empty() {
+        return Err(refuse(i, "a title needs some text", "give the words to show"));
+    }
+    if !a.secs.is_finite() || a.secs < 0.2 {
+        return Err(refuse(i, format!("{} s is too short", a.secs), "hold it at least a fraction of a second"));
+    }
+    let col = |c: Option<&str>, what: &str| -> Result<Option<[u8; 4]>, Refusal> {
+        c.map(|s| parse_color(s).ok_or_else(|| refuse(i, format!("\"{s}\" is not a colour"), format!("write {what} as #rrggbb or #rrggbbaa"))))
+            .transpose()
+    };
+
+    let mut tb = TextBox { text: text.to_string(), ..Default::default() };
+    if let Some(s) = a.size {
+        if !s.is_finite() || !(4.0..=400.0).contains(&s) {
+            return Err(refuse(i, format!("size {s} is out of range"), "give size between 4 and 400"));
+        }
+        tb.font_size = s;
+    }
+    if let Some(c) = col(a.color, "the colour")? {
+        tb.color = c;
+    }
+    if let Some(f) = a.font {
+        tb.font_name = f;
+    }
+    tb.font_style = match a.bold {
+        Some(true) => FontStyle::Bold,
+        Some(false) => FontStyle::Regular,
+        None => tb.font_style,
+    };
+    if let Some(al) = a.align {
+        tb.alignment = match al.to_lowercase().as_str() {
+            "left" => TextAlignment::Left,
+            "center" | "centre" => TextAlignment::Center,
+            "right" => TextAlignment::Right,
+            other => return Err(refuse(i, format!("\"{other}\" is not an alignment"), "use left, center or right")),
+        };
+    }
+    if let Some(w) = a.outline {
+        if !w.is_finite() || !(0.0..=40.0).contains(&w) {
+            return Err(refuse(i, format!("outline {w} is out of range"), "give an outline width 0 to 40"));
+        }
+        let color = col(a.outline_color, "the outline")?.unwrap_or([0, 0, 0, 255]);
+        tb.outlines = vec![TextOutline { enabled: true, color, width: w, width_keyframes: Vec::new() }];
+    }
+    if let Some(g) = a.glow {
+        if !g.is_finite() || !(0.0..=1.0).contains(&g) {
+            return Err(refuse(i, format!("glow {g} is out of range"), "give a glow 0 to 1"));
+        }
+        let color = col(a.glow_color, "the glow")?.unwrap_or(tb.color);
+        tb.glows = vec![TextGlow { enabled: true, color, radius: 18.0, radius_keyframes: Vec::new(), intensity: g, intensity_keyframes: Vec::new() }];
+    }
+    if let Some(gr) = a.gradient {
+        let top = parse_color(&gr[0]).ok_or_else(|| refuse(i, format!("\"{}\" is not a colour", gr[0]), "write the gradient colours as #rrggbb"))?;
+        let bottom = parse_color(&gr[1]).ok_or_else(|| refuse(i, format!("\"{}\" is not a colour", gr[1]), "write the gradient colours as #rrggbb"))?;
+        tb.gradient = Some(TextGradient { top_color: top, bottom_color: bottom, enabled: true });
+    }
+    if let Some(gl) = a.glitch {
+        if !gl.is_finite() || !(0.0..=1.0).contains(&gl) {
+            return Err(refuse(i, format!("glitch {gl} is out of range"), "give a glitch 0 to 1"));
+        }
+        tb.glitch_intensity = gl;
+    }
+    if let Some(ch) = a.chromatic {
+        if !ch.is_finite() || !(0.0..=1.0).contains(&ch) {
+            return Err(refuse(i, format!("chromatic {ch} is out of range"), "give a chromatic 0 to 1"));
+        }
+        tb.chromatic_aberration_px = ch * 12.0;
+    }
+    if let Some(an) = a.animate {
+        let kind = match an.to_lowercase().as_str() {
+            "fade" => MotionKind::Fade,
+            "rise" => MotionKind::Rise,
+            "drop" => MotionKind::Drop,
+            "slide_left" | "slide" | "slideleft" => MotionKind::SlideLeft,
+            "slide_right" | "slideright" => MotionKind::SlideRight,
+            "scale_up" | "scaleup" | "zoom_in" | "pop" => MotionKind::ScaleUp,
+            "scale_down" | "scaledown" => MotionKind::ScaleDown,
+            "blur" | "focus" => MotionKind::Blur,
+            "typewriter" | "type" => MotionKind::Typewriter,
+            other => return Err(refuse(i, format!("\"{other}\" is not an entrance"), "use fade, rise, drop, slide_left, slide_right, scale_up, scale_down, blur or typewriter")),
+        };
+        let mut m = Motion::new(kind).duration(a.animate_secs.unwrap_or(0.6).clamp(0.05, 5.0));
+        match a.stagger {
+            Some(st) => {
+                let unit = match st.to_lowercase().as_str() {
+                    "none" => StaggerUnit::None,
+                    "line" => StaggerUnit::Line,
+                    "word" => StaggerUnit::Word,
+                    "char" | "character" => StaggerUnit::Char,
+                    other => return Err(refuse(i, format!("\"{other}\" is not a stagger"), "use none, line, word or char")),
+                };
+                m = m.stagger(unit, 0.05);
+            }
+            None if matches!(kind, MotionKind::Typewriter) => m = m.stagger(StaggerUnit::Char, 0.04),
+            None => {}
+        }
+        tb.motion = TitleMotion::enter(m);
+    }
+    if let Some(lp) = a.loop_effect {
+        let l = match lp.to_lowercase().as_str() {
+            "pulse" | "breathe" => TitleLoop::Pulse { rate_hz: 1.0, min_opacity: 0.4 },
+            "flash" | "blink" => TitleLoop::Blink { rate_hz: 2.0, duty: 0.6 },
+            "neon" => TitleLoop::ColorBlend { color_a: tb.color, color_b: tb.glows.first().map(|g| g.color).unwrap_or([255, 40, 120, 255]), rate_hz: 1.5 },
+            "wave" => TitleLoop::Wave { amplitude: 0.12, rate_hz: 1.0 },
+            "shake" => TitleLoop::Shake { amplitude: 0.04, rate_hz: 10.0 },
+            "color_cycle" | "colour_cycle" | "rainbow" => TitleLoop::ColorCycle { rate_hz: 0.4 },
+            other => return Err(refuse(i, format!("\"{other}\" is not a loop"), "use pulse, flash, neon, wave, shake or color_cycle")),
+        };
+        tb.loops = vec![l];
+    }
+
+    let mut td = TitleData::single_text(tb);
+    if a.x.is_some() || a.y.is_some() {
+        if let Some(obj) = td.objects.get_mut(0) {
+            if let Some(x) = a.x {
+                obj.transform.center.x = x.clamp(0.0, 1.0);
+            }
+            if let Some(y) = a.y {
+                obj.transform.center.y = y.clamp(0.0, 1.0);
+            }
+        }
+    }
+    if let Some(ff) = a.full_frame {
+        let color = parse_color(ff).ok_or_else(|| refuse(i, format!("\"{ff}\" is not a colour"), "write the full-frame colour as #rrggbb"))?;
+        td.background = TitleBackground::FullFrame { color };
+    } else if let Some(bc) = a.backing_color {
+        let color = parse_color(bc).ok_or_else(|| refuse(i, format!("\"{bc}\" is not a colour"), "write the backing colour as #rrggbb"))?;
+        td.background = TitleBackground::Color { color, padding: 0.3 };
+    } else if let Some(b) = a.backing {
+        let alpha = (b.clamp(0.0, 1.0) * 255.0) as u8;
+        td.background = TitleBackground::Color { color: [0, 0, 0, alpha], padding: 0.3 };
+    }
+
+    let tl_in = at;
+    let tl_out = tl_in + snap(a.secs, fps);
+    if tl_out > seq.total_duration() {
+        return Err(refuse(i, format!("it would run to {:.2} s, past the end of the timeline at {:.2} s", secs(tl_out), secs(seq.total_duration())), "start it earlier or hold it shorter"));
+    }
+    let fits = |ti: usize| overlapping(seq, ti, tl_in, tl_out, None).is_none() && !seq.tracks[ti].locked;
+    let existing = match a.track {
+        Some(t) => {
+            let ti = resolve_track(seq, t, i)?;
+            if !matches!(seq.tracks[ti].kind, TrackKind::Text | TrackKind::Video) {
+                return Err(refuse(i, format!("track {ti} is not a text track"), "name a text track, or leave the track out"));
+            }
+            if !fits(ti) {
+                return Err(refuse(i, format!("track {ti} is locked or has a clip there"), "leave the track out and one with room is found or made"));
+            }
+            Some(ti)
+        }
+        None => (0..seq.tracks.len()).find(|ti| seq.tracks[*ti].kind == TrackKind::Text && fits(*ti)),
+    };
+    let clip = title_clip(td, tl_in, tl_out, fps);
+    let id = clip.id;
+    let short: String = text.chars().take(24).collect();
+    let what = format!(
+        "title \"{short}\" at {:.2}-{:.2} s on {}",
+        secs(tl_in),
+        secs(tl_out),
+        match existing {
+            Some(ti) => format!("track {ti}"),
+            None if seq.tracks.is_empty() => "a new text track 0".to_string(),
+            None => "a new text track 0; every other track's index moves down by one".to_string(),
+        },
+    );
+    let edit = EditCommand::AddTitleClip { clip, track_index: existing.unwrap_or(0), created_track: existing.is_none() };
+    Ok((what, edit, vec![id]))
+}
+
 fn lower_third(
     seq: &Sequence,
     fps: Fps,
@@ -3034,6 +3410,40 @@ mod tests {
         assert!(bad(Op::Reframe { clip_id: ClipRef::Id(a), scale: 9.0, x: 0.0, y: 0.0 }).why.contains("scale"));
         assert!(bad(Op::Reframe { clip_id: ClipRef::Id(a), scale: 1.0, x: 0.0, y: 0.0 }).why.contains("nothing to reframe"));
         let _: Vec<Op> = serde_json::from_str(r#"[{"op":"reframe","clip_id":{"track":0,"secs":1.0},"scale":1.3}]"#).unwrap();
+    }
+
+    #[test]
+    fn zoom_writes_scale_keyframes() {
+        let (seq, pool, _media, a, _) = fixture();
+        let plan = resolve(&seq, &pool, &[Op::Zoom { clip_id: ClipRef::Id(a), from: 1.0, to: 1.3, x: 0.0, y: 0.0 }]).unwrap();
+        assert!(plan.steps[0].what.contains("1.00\u{2192}1.30"), "{}", plan.steps[0].what);
+        let EditCommand::EditKeyframes { new_state, .. } = &plan.steps[0].edit else { panic!("keyframes edit") };
+        assert_eq!(new_state.transform_scale_keyframes.len(), 2, "start and end keyframes");
+        assert!((new_state.transform_scale_keyframes[0].value - 1.0).abs() < 1e-4);
+        assert!((new_state.transform_scale_keyframes[1].value - 1.3).abs() < 1e-4);
+        // Out of range and no-op are refused.
+        assert!(resolve(&seq, &pool, &[Op::Zoom { clip_id: ClipRef::Id(a), from: 1.0, to: 9.0, x: 0.0, y: 0.0 }]).is_err());
+        assert!(resolve(&seq, &pool, &[Op::Zoom { clip_id: ClipRef::Id(a), from: 1.0, to: 1.0, x: 0.0, y: 0.0 }]).unwrap_err().why.contains("nothing to zoom"));
+        let _: Vec<Op> = serde_json::from_str(r#"[{"op":"zoom","clip_id":{"track":0,"secs":1.0},"to":1.2}]"#).unwrap();
+    }
+
+    #[test]
+    fn title_builds_a_styled_animated_clip() {
+        let (seq, pool, _media, _a, _) = fixture();
+        let ops: Vec<Op> = serde_json::from_str(r##"[{"op":"title","text":"STRATA","at":{"secs":0.5},"secs":2.0,"size":120,"color":"#ffffff","glow":0.8,"glow_color":"#ff2a78","animate":"rise","stagger":"char","loop":"pulse","backing":0.4}]"##).unwrap();
+        let plan = resolve(&seq, &pool, &ops).unwrap();
+        assert!(plan.steps[0].what.contains("title \"STRATA\""), "{}", plan.steps[0].what);
+        let EditCommand::AddTitleClip { clip, created_track, .. } = &plan.steps[0].edit else { panic!("a title clip") };
+        assert!(created_track, "a text track is made when there is none");
+        let td = clip.title_data().unwrap();
+        assert_eq!(td.text(), "STRATA");
+        let klipp_timeline::TitleObjectContent::TextBox(tb) = &td.objects[0].content else { panic!("text box") };
+        assert!(!tb.glows.is_empty(), "the neon glow landed");
+        assert!(tb.motion.enter.is_some(), "the entrance landed");
+        assert!(!tb.loops.is_empty(), "the pulse loop landed");
+        assert!(matches!(td.background, klipp_timeline::TitleBackground::Color { .. }), "the backing panel landed");
+        // Empty text is refused.
+        assert!(resolve(&seq, &pool, &[Op::Title { text: "  ".into(), at: Anchor::Secs(0.5), secs: 2.0, track: None, x: None, y: None, size: None, color: None, font: None, bold: None, align: None, backing: None, backing_color: None, full_frame: None, outline: None, outline_color: None, glow: None, glow_color: None, gradient: None, animate: None, animate_secs: None, stagger: None, loop_effect: None, glitch: None, chromatic: None }]).is_err());
     }
 
     #[test]

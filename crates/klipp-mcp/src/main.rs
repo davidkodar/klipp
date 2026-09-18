@@ -637,7 +637,19 @@ fn content_for(name: &str, result: &Value) -> Result<Vec<Value>, String> {
             return Ok(with_next(out));
         }
     }
-    if name == "klipp_timeline" || name == "klipp_media_analysis" || name == "klipp_plan" || name == "klipp_check" || name == "klipp_brief" || name == "klipp_transcript" || name == "klipp_cut_points" || name == "klipp_selects" || name == "klipp_beats" || name == "klipp_style_profile" || name == "klipp_looks" || name == "klipp_frame_stats" {
+    // Beats: the readable line PLUS the beat_times array, so the agent can
+    // snap cuts to the actual beats (the summary text hides the grid).
+    if name == "klipp_beats" {
+        if let Some(text) = result.get("text").and_then(|v| v.as_str()) {
+            let mut out = text.to_string();
+            if let Some(bt) = result.get("beat_times") {
+                out.push_str("\n\nCut or place on one of these beat times (seconds):\n");
+                out.push_str(&serde_json::to_string(bt).unwrap_or_default());
+            }
+            return Ok(with_next(out));
+        }
+    }
+    if name == "klipp_timeline" || name == "klipp_media_analysis" || name == "klipp_plan" || name == "klipp_check" || name == "klipp_brief" || name == "klipp_transcript" || name == "klipp_cut_points" || name == "klipp_selects" || name == "klipp_style_profile" || name == "klipp_looks" || name == "klipp_frame_stats" {
         if let Some(text) = result.get("text").and_then(|v| v.as_str()) {
             return Ok(with_next(text.to_string()));
         }
@@ -964,8 +976,10 @@ fn tool_definitions() -> Vec<Value> {
               lift/gamma/gain the shadows/mids/highlights; vibrance is skin-safe saturation; \
               reset takes it to neutral first. Read frame_stats and grade to the numbers; grade \
               for continuity first — shots that follow each other should match — then the look.\n\
-              effect {clip_id, kind, amount?} — a finishing effect: vignette, grain, glow, blur, \
-              sharpen; amount 0-1. clean_audio {clip_id, wind?, hiss?, hum?, deess?} — clean a \
+              effect {clip_id, kind, amount?} — a finishing effect on a picture: vignette, grain, glow, \
+              bloom, diffusion, halation, light_rays, lens_flare, anamorphic, blur, radial_blur, \
+              directional_blur, sharpen, chromatic_aberration, tilt_shift, mosaic, posterize, invert, \
+              mirror, lens_distortion, edge_detect, denoise, vhs, old_film; amount 0-1. clean_audio {clip_id, wind?, hiss?, hum?, deess?} — clean a \
               clip's sound: wind/rumble, tape hiss, mains hum, harsh sibilance, each its tool. \
               stabilize {clip_id, smoothing?} — steady a shaky clip (0-1, crops a little). \
               retime {clip_id, speed} — change speed (>1 faster/shorter, <1 slower/longer); the \
@@ -973,6 +987,9 @@ fn tool_definitions() -> Vec<Value> {
               reframe {clip_id, scale?, x?, y?} — punch in and reposition a picture: scale zooms \
               (1 as shot, up to 4), x and y pan -1..1. Salvage a wide or badly-framed shot, \
               or set a slow push; it sits before other effects.\n\
+              zoom {clip_id, from?, to, x?, y?} — an ANIMATED zoom over the clip: scale from→to \
+              (1 as shot, up to 4), a push-in or pull-out, optionally moving toward x,y (-1..1) for \
+              a Ken Burns move. Renders on the GPU; motion on a still shot.\n\
               qualify {clip_id, target?|hue?, hue_width?, sat_low?, sat_high?, lum_low?, lum_high?, \
               invert?, exposure?, saturation?, hue_shift?, temperature?, remove?} — a secondary: \
               key a colour or tone (target skin/sky/foliage/reds…, or a hue in degrees, with \
@@ -997,6 +1014,15 @@ fn tool_definitions() -> Vec<Value> {
               the speaker is not on the left or the picture has its own name burnt in there, \
               side \"right\" sets it against the right edge, x is that edge and y the name's line, \
               as fractions of the frame inside title-safe.\n\
+              title {text, at, secs?, track?, x?, y?, size?, color?, font?, bold?, align?, backing?, \
+              backing_color?, full_frame?, outline?, outline_color?, glow?, glow_color?, gradient?, \
+              animate?, animate_secs?, stagger?, loop?, glitch?, chromatic?} — a title from scratch, \
+              any look and motion: x,y centre (0..1), size in px of a 1080 frame, color #rrggbb; \
+              backing a dark panel (0..1) or backing_color, full_frame a solid card, outline+outline_color \
+              a stroke, glow+glow_color a neon glow, gradient [#top,#bottom]; animate an entrance (fade, \
+              rise, drop, slide_left, slide_right, scale_up, scale_down, blur, typewriter) with stagger \
+              (line/word/char); loop a continuous effect (pulse, flash, neon, wave, shake, color_cycle); \
+              glitch and chromatic (0..1) for a digital edge.\n\
               set_text {clip_id, text} — the words of a title or a caption, its look, place and \
               timing kept: for a cue the transcript misheard or a name it cannot spell.\n\
               trim {clip_id, edge: \"in\"|\"out\", to, ripple?, linked?} — one edge to an anchor, the \
@@ -1059,8 +1085,10 @@ fn tool_definitions() -> Vec<Value> {
               lift/gamma/gain the shadows/mids/highlights; vibrance is skin-safe saturation; \
               reset takes it to neutral first. Read frame_stats and grade to the numbers; grade \
               for continuity first — shots that follow each other should match — then the look.\n\
-              effect {clip_id, kind, amount?} — a finishing effect: vignette, grain, glow, blur, \
-              sharpen; amount 0-1. clean_audio {clip_id, wind?, hiss?, hum?, deess?} — clean a \
+              effect {clip_id, kind, amount?} — a finishing effect on a picture: vignette, grain, glow, \
+              bloom, diffusion, halation, light_rays, lens_flare, anamorphic, blur, radial_blur, \
+              directional_blur, sharpen, chromatic_aberration, tilt_shift, mosaic, posterize, invert, \
+              mirror, lens_distortion, edge_detect, denoise, vhs, old_film; amount 0-1. clean_audio {clip_id, wind?, hiss?, hum?, deess?} — clean a \
               clip's sound: wind/rumble, tape hiss, mains hum, harsh sibilance, each its tool. \
               stabilize {clip_id, smoothing?} — steady a shaky clip (0-1, crops a little). \
               retime {clip_id, speed} — change speed (>1 faster/shorter, <1 slower/longer); the \
@@ -1068,6 +1096,9 @@ fn tool_definitions() -> Vec<Value> {
               reframe {clip_id, scale?, x?, y?} — punch in and reposition a picture: scale zooms \
               (1 as shot, up to 4), x and y pan -1..1. Salvage a wide or badly-framed shot, \
               or set a slow push; it sits before other effects.\n\
+              zoom {clip_id, from?, to, x?, y?} — an ANIMATED zoom over the clip: scale from→to \
+              (1 as shot, up to 4), a push-in or pull-out, optionally moving toward x,y (-1..1) for \
+              a Ken Burns move. Renders on the GPU; motion on a still shot.\n\
               qualify {clip_id, target?|hue?, hue_width?, sat_low?, sat_high?, lum_low?, lum_high?, \
               invert?, exposure?, saturation?, hue_shift?, temperature?, remove?} — a secondary: \
               key a colour or tone (target skin/sky/foliage/reds…, or a hue in degrees, with \
@@ -1092,6 +1123,15 @@ fn tool_definitions() -> Vec<Value> {
               the speaker is not on the left or the picture has its own name burnt in there, \
               side \"right\" sets it against the right edge, x is that edge and y the name's line, \
               as fractions of the frame inside title-safe.\n\
+              title {text, at, secs?, track?, x?, y?, size?, color?, font?, bold?, align?, backing?, \
+              backing_color?, full_frame?, outline?, outline_color?, glow?, glow_color?, gradient?, \
+              animate?, animate_secs?, stagger?, loop?, glitch?, chromatic?} — a title from scratch, \
+              any look and motion: x,y centre (0..1), size in px of a 1080 frame, color #rrggbb; \
+              backing a dark panel (0..1) or backing_color, full_frame a solid card, outline+outline_color \
+              a stroke, glow+glow_color a neon glow, gradient [#top,#bottom]; animate an entrance (fade, \
+              rise, drop, slide_left, slide_right, scale_up, scale_down, blur, typewriter) with stagger \
+              (line/word/char); loop a continuous effect (pulse, flash, neon, wave, shake, color_cycle); \
+              glitch and chromatic (0..1) for a digital edge.\n\
               set_text {clip_id, text} — the words of a title or a caption, its look, place and \
               timing kept: for a cue the transcript misheard or a name it cannot spell.\n\
               trim {clip_id, edge: \"in\"|\"out\", to, ripple?, linked?} — one edge to an anchor, the \
