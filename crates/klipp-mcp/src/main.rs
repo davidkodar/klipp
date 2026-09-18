@@ -624,7 +624,20 @@ fn content_for(name: &str, result: &Value) -> Result<Vec<Value>, String> {
         }
         vec![json!({ "type": "text", "text": text })]
     };
-    if name == "klipp_timeline" || name == "klipp_media_analysis" || name == "klipp_plan" || name == "klipp_check" || name == "klipp_brief" || name == "klipp_transcript" || name == "klipp_cut_points" || name == "klipp_selects" || name == "klipp_beats" || name == "klipp_style_profile" || name == "klipp_search_music" || name == "klipp_search_sfx" || name == "klipp_looks" || name == "klipp_frame_stats" {
+    // Music/SFX search: the readable list PLUS the machine-usable fields,
+    // because add_music needs a result's URLs and the summary text hides
+    // them. Without this the search→add workflow cannot complete.
+    if name == "klipp_search_music" || name == "klipp_search_sfx" {
+        if let Some(text) = result.get("text").and_then(|v| v.as_str()) {
+            let mut out = text.to_string();
+            if let Some(results) = result.get("results") {
+                out.push_str("\n\nTo add one, pass its fields to klipp_add_music. Results:\n");
+                out.push_str(&serde_json::to_string_pretty(results).unwrap_or_default());
+            }
+            return Ok(with_next(out));
+        }
+    }
+    if name == "klipp_timeline" || name == "klipp_media_analysis" || name == "klipp_plan" || name == "klipp_check" || name == "klipp_brief" || name == "klipp_transcript" || name == "klipp_cut_points" || name == "klipp_selects" || name == "klipp_beats" || name == "klipp_style_profile" || name == "klipp_looks" || name == "klipp_frame_stats" {
         if let Some(text) = result.get("text").and_then(|v| v.as_str()) {
             return Ok(with_next(text.to_string()));
         }
