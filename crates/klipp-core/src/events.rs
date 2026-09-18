@@ -807,6 +807,17 @@ pub enum AiToolsTaskTag {
     TrackObject,
 }
 
+/// Where a freshly added clip should land relative to the timeline.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClipDrop {
+    /// Media pool only — leave the timeline untouched.
+    PoolOnly,
+    /// Drop at the playhead, on a fresh track below the stack.
+    AtPlayhead,
+    /// Append at the end of the existing V1/A1 stack (the double-click default).
+    EndOfTimeline,
+}
+
 #[derive(Debug, Clone)]
 pub enum AppCommand {
     // Transport
@@ -826,6 +837,12 @@ pub enum AppCommand {
     // Media
     LoadMediaFile { path: PathBuf, media_id: MediaId },
     ImportMedia { path: PathBuf },
+    /// Import a file and, once it has loaded, drop it on the timeline
+    /// at the chosen place. The Audio Library uses this so a downloaded
+    /// track can go straight to the playhead or the end of the timeline.
+    ImportMediaTo { path: PathBuf, drop: ClipDrop },
+    /// Place an already-imported pool item on the timeline.
+    PlaceMedia { media_id: MediaId, drop: ClipDrop },
     /// Recursively import all media files from a directory.
     ImportMediaFolder { directory: PathBuf },
 

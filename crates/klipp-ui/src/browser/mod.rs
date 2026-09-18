@@ -790,6 +790,10 @@ pub struct BrowserPanel {
     pub audio_preview_receiver: Option<std::sync::mpsc::Receiver<Result<Vec<u8>, String>>>,
     /// A track being downloaded to add: `(path, title)` when it lands.
     pub audio_download_receiver: Option<std::sync::mpsc::Receiver<Result<(std::path::PathBuf, String), String>>>,
+    /// The provider id of the result currently previewing, so its row shows Pause/Stop.
+    pub audio_preview_id: Option<String>,
+    /// Where the in-flight Audio Library download should land once it arrives.
+    pub audio_add_drop: klipp_core::events::ClipDrop,
     // Scroll-to request from RevealMediaInBrowser
     pub scroll_to_media_id: Option<klipp_core::MediaId>,
     // Files tab state
@@ -1026,6 +1030,8 @@ impl Default for BrowserPanel {
             audio_search_error: None,
             audio_preview_receiver: None,
             audio_download_receiver: None,
+            audio_preview_id: None,
+            audio_add_drop: klipp_core::events::ClipDrop::PoolOnly,
             scroll_to_media_id: None,
             files_current_path: dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("/")),
             files_entries: Vec::new(),
@@ -4883,8 +4889,13 @@ impl BrowserPanel {
         if let Some(rx) = &self.audio_download_receiver {
             match rx.try_recv() {
                 Ok(Ok((path, title))) => {
-                    cmds.push(AppCommand::ImportMedia { path });
-                    state.toast.show(format!("Added \u{201c}{}\u{201d}", title));
+                    cmds.push(AppCommand::ImportMediaTo { path, drop: self.audio_add_drop });
+                    let where_to = match self.audio_add_drop {
+                        klipp_core::events::ClipDrop::AtPlayhead => " at the playhead",
+                        klipp_core::events::ClipDrop::EndOfTimeline => " to the timeline",
+                        klipp_core::events::ClipDrop::PoolOnly => "",
+                    };
+                    state.toast.show(format!("Added \u{201c}{}\u{201d}{}", title, where_to));
                     self.audio_download_receiver = None;
                 }
                 Ok(Err(e)) => {
@@ -4923,19 +4934,13 @@ impl BrowserPanel {
             } else {
                 "upbeat, cinematic, calm piano…"
             };
-            let field_w = (ui.available_width() - 84.0).max(120.0);
+            let field_w = (ui.available_width() - 64.0).max(90.0);
             let resp = ui.add(egui::TextEdit::singleline(&mut self.audio_search_query).hint_text(hint).desired_width(field_w));
             if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                 do_search = true;
             }
             if ui.add_enabled(!searching, egui::Button::new(if searching { "…" } else { "Search" })).clicked() {
                 do_search = true;
-            }
-            if ui.button("Pause").on_hover_text("Pause or resume the preview").clicked() {
-                klipp_audio_search::preview_toggle_pause();
-            }
-            if ui.button("Stop").on_hover_text("Stop the preview").clicked() {
-                klipp_audio_search::preview_stop();
             }
         });
 
@@ -4988,8 +4993,13 @@ impl BrowserPanel {
                 ui.label(egui::RichText::new("Search royalty-free music and sound effects, preview, and add.").color(theme.text_secondary));
             });
         }
-        let mut preview_req: Option<String> = None;
-        let mut add_req: Option<klipp_audio_search::Track> = None;
+        let mut preview_req: Option<(String, String)> = None;
+        let mut pause_req = false;
+        let mut stop_req = false;
+        let mut add_req: Option<(klipp_audio_search::Track, klipp_core::events::ClipDrop)> = None;
+        let preview_id = self.audio_preview_id.clone();
+        let preview_paused = klipp_audio_search::preview_is_paused();
+        let preview_active = klipp_audio_search::preview_active();
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
             for t in &results {
                 ui.add_space(4.0);
@@ -5003,20 +5013,53 @@ impl BrowserPanel {
                 });
                 ui.horizontal(|ui| {
                     ui.add_space(8.0);
-                    let can_preview = !t.preview_url.is_empty() && !previewing;
-                    if ui.add_enabled(can_preview, egui::Button::new(if previewing { "…" } else { "Preview" })).on_hover_text("Listen in the app").clicked() {
-                        preview_req = Some(t.preview_url.clone());
+                    // This row's transport: Preview until it is playing, then
+                    // Pause/Resume and Stop right here on the same row.
+                    let is_this = preview_active && preview_id.as_deref() == Some(t.id.as_str());
+                    if is_this {
+                        if ui.button(if preview_paused { "Resume" } else { "Pause" }).clicked() {
+                            pause_req = true;
+                        }
+                        if ui.button("Stop").clicked() {
+                            stop_req = true;
+                        }
+                    } else if !t.preview_url.is_empty()
+                        && ui.add_enabled(!previewing, egui::Button::new(if previewing { "…" } else { "Preview" })).on_hover_text("Listen in the app").clicked()
+                    {
+                        preview_req = Some((t.id.clone(), t.preview_url.clone()));
                     }
-                    if ui.add_enabled(!adding, egui::Button::new(if adding { "…" } else { "Add" })).on_hover_text("Download into the pool, with its credit kept").clicked() {
-                        add_req = Some(t.clone());
-                    }
+                    ui.add_enabled_ui(!adding, |ui| {
+                        ui.menu_button(if adding { "…" } else { "Add ▾" }, |ui| {
+                            use klipp_core::events::ClipDrop;
+                            if ui.button("Add to media pool").clicked() {
+                                add_req = Some((t.clone(), ClipDrop::PoolOnly));
+                                ui.close_menu();
+                            }
+                            if ui.button("Add at playhead").clicked() {
+                                add_req = Some((t.clone(), ClipDrop::AtPlayhead));
+                                ui.close_menu();
+                            }
+                            if ui.button("Add to end of timeline").clicked() {
+                                add_req = Some((t.clone(), ClipDrop::EndOfTimeline));
+                                ui.close_menu();
+                            }
+                        }).response.on_hover_text("Download into the pool, with its credit kept");
+                    });
                 });
                 ui.add_space(4.0);
                 ui.separator();
             }
         });
+        if pause_req {
+            klipp_audio_search::preview_toggle_pause();
+        }
+        if stop_req {
+            klipp_audio_search::preview_stop();
+            self.audio_preview_id = None;
+        }
         // A preview download runs off-thread and plays when it arrives.
-        if let Some(url) = preview_req {
+        if let Some((id, url)) = preview_req {
+            self.audio_preview_id = Some(id);
             let (tx, rx) = std::sync::mpsc::channel();
             std::thread::Builder::new().name("klipp-audio-preview".into()).spawn(move || {
                 let _ = tx.send(klipp_audio_search::download_bytes(&url));
@@ -5026,7 +5069,8 @@ impl BrowserPanel {
         }
         // Add downloads off-thread (a blocking download here would freeze
         // the UI); it imports when the file lands.
-        if let Some(t) = add_req {
+        if let Some((t, drop)) = add_req {
+            self.audio_add_drop = drop;
             let (tx, rx) = std::sync::mpsc::channel();
             state.toast.show(format!("Downloading \u{201c}{}\u{201d}\u{2026}", t.title));
             std::thread::Builder::new().name("klipp-audio-add".into()).spawn(move || {

@@ -1653,6 +1653,13 @@ impl KlippApp {
                             self.state.pending_media_path = None;
                         }
 
+                        // If this import asked for a timeline destination
+                        // (the Audio Library's "Add at playhead" / "Add to
+                        // timeline"), drop it now that it is in the pool.
+                        if let Some(drop) = self.state.pending_media_drop.remove(&media_id) {
+                            let _ = self.cmd_tx.send(AppCommand::PlaceMedia { media_id, drop });
+                        }
+
                         // Start thumbnail (always) + optional filmstrip/audio/skim generation
                         self.spawn_thumbnail(media_id, path.clone(), duration);
                         if filmstrips_enabled {
@@ -11245,6 +11252,36 @@ impl KlippApp {
                         path: path.clone(),
                         media_id,
                     });
+                    true
+                }
+                AppCommand::ImportMediaTo { ref path, drop } => {
+                    // Import, and remember where to drop it once it loads.
+                    let media_id = klipp_core::MediaId::new();
+                    self.state.pending_media_path = None;
+                    if *drop != klipp_core::events::ClipDrop::PoolOnly {
+                        self.state.pending_media_drop.insert(media_id, *drop);
+                    }
+                    let _ = self.cmd_tx.send(AppCommand::LoadMediaFile {
+                        path: path.clone(),
+                        media_id,
+                    });
+                    true
+                }
+                AppCommand::PlaceMedia { media_id, drop } => {
+                    match drop {
+                        klipp_core::events::ClipDrop::PoolOnly => {}
+                        klipp_core::events::ClipDrop::EndOfTimeline => {
+                            // The existing linked-import path already appends
+                            // onto V1/A1 and links video to its audio.
+                            let _ = self.cmd_tx.send(AppCommand::ImportMediaLinked {
+                                media_id: *media_id,
+                                on_new_tracks: false,
+                            });
+                        }
+                        klipp_core::events::ClipDrop::AtPlayhead => {
+                            self.place_media_at_playhead(*media_id);
+                        }
+                    }
                     true
                 }
                 AppCommand::ImportMediaFolder { ref directory } => {
@@ -22044,6 +22081,114 @@ impl KlippApp {
                 self.state.push_history(EditCommand::Magnetic(result.command));
             }
         }
+    }
+
+    /// Drop an already-imported pool item on the timeline at the
+    /// playhead, on fresh track(s) below the stack. Audio-only media
+    /// lands on a new audio track; video media on a new video track,
+    /// with its audio on a new audio track linked to it. Backs the
+    /// Audio Library's "Add at playhead" and the media pool's
+    /// right-click equivalent.
+    fn place_media_at_playhead(&mut self, media_id: klipp_core::MediaId) {
+        let Some(item) = self.state.media_pool.get(&media_id).cloned() else {
+            self.state.toast.show("That clip is no longer in the media pool");
+            return;
+        };
+        if item.offline {
+            self.state.toast.show(format!("Cannot add '{}' — media is offline", item.filename));
+            return;
+        }
+        let has_video = !item.video_codec.is_empty();
+        let has_audio = item.has_audio;
+        let rate = item.duration.rate;
+        let source_in = klipp_core::Timecode { value: 0, rate };
+        let source_out = item.duration;
+        let start = self.state.playhead;
+        let end = start + item.duration;
+        let seq_idx = self.state.active_sequence_idx;
+
+        // FCP: the first video clip sets the sequence resolution + fps.
+        let mut autoset = None;
+        if has_video && item.resolution.width > 0 && item.resolution.height > 0 {
+            let seq = &mut self.state.sequences[seq_idx];
+            let has_video_clips = seq.tracks.iter()
+                .filter(|t| t.kind == klipp_timeline::TrackKind::Video)
+                .any(|t| !t.clips.is_empty());
+            if !has_video_clips {
+                let prev = (seq.resolution, seq.fps);
+                seq.resolution = item.resolution;
+                seq.fps = item.fps;
+                self.state.fps = item.fps;
+                autoset = Some((prev, (item.resolution, item.fps)));
+            }
+        }
+
+        let mut hist_video = None;
+        let mut hist_audio = None;
+        let mut created_video_track_at = None;
+        let mut created_audio_track_at = None;
+        let mut video_clip_id = None;
+
+        // Video onto a new video track (inserts at index 0).
+        if has_video {
+            let seq = &mut self.state.sequences[seq_idx];
+            let count = seq.tracks.iter().filter(|t| t.kind == klipp_timeline::TrackKind::Video).count();
+            seq.add_video_track(format!("Video {}", count + 1));
+            let vi = 0usize;
+            created_video_track_at = Some(vi);
+            let mut clip = klipp_timeline::Clip::media(media_id, start, end, source_in, source_out);
+            clip.source_rotation = item.source_rotation;
+            let cid = clip.id;
+            Self::overwrite_insert_clip_on_track(&mut seq.tracks[vi], clip);
+            video_clip_id = Some(cid);
+            self.apply_detected_log_format(cid, media_id);
+            if let Some(c) = self.state.sequences[seq_idx].tracks[vi].find_clip(cid) {
+                hist_video = Some((c.clone(), vi));
+            }
+        }
+
+        // Audio onto a new audio track (pushed to the end).
+        if has_audio || !has_video {
+            let seq = &mut self.state.sequences[seq_idx];
+            let count = seq.tracks.iter().filter(|t| t.kind == klipp_timeline::TrackKind::Audio).count();
+            seq.add_audio_track(format!("Audio {}", count + 1));
+            let ai = seq.tracks.len() - 1;
+            created_audio_track_at = Some(ai);
+            let mut clip = klipp_timeline::Clip::media(media_id, start, end, source_in, source_out);
+            if let Some(vid) = video_clip_id {
+                clip.linked_clip_id = Some(vid);
+            }
+            let aid = clip.id;
+            Self::overwrite_insert_clip_on_track(&mut seq.tracks[ai], clip);
+            if let Some(vid) = video_clip_id {
+                for track in self.state.sequences[seq_idx].tracks.iter_mut() {
+                    if let Some(vc) = track.find_clip_mut(vid) {
+                        vc.linked_clip_id = Some(aid);
+                        break;
+                    }
+                }
+            }
+            if let Some(c) = self.state.sequences[seq_idx].tracks[ai].find_clip(aid) {
+                hist_audio = Some((c.clone(), ai));
+            }
+            self.state.selected_clip = Some(video_clip_id.unwrap_or(aid));
+        } else if let Some(vid) = video_clip_id {
+            self.state.selected_clip = Some(vid);
+        }
+
+        if hist_video.is_some() || hist_audio.is_some() {
+            self.state.active_history_mut().push(crate::history::HistoryEntry {
+                command: crate::history::EditCommand::LinkedImport {
+                    video: hist_video,
+                    audio: hist_audio,
+                    created_video_track_at,
+                    created_audio_track_at,
+                    autoset,
+                },
+            });
+        }
+        self.state.dirty = true;
+        self.sync_sequence_to_engine();
     }
 
     /// Overwrite-insert a clip onto a track at a given position.

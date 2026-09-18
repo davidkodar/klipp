@@ -1115,6 +1115,9 @@ pub struct AppState {
     pub show_unsaved_dialog: bool,
     pub unsaved_dialog_action: UnsavedAction,
     pub pending_media_path: Option<PathBuf>,
+    /// Media imported with a timeline destination (e.g. from the Audio
+    /// Library): once its async load lands in the pool, drop it there.
+    pub pending_media_drop: std::collections::HashMap<klipp_core::MediaId, klipp_core::events::ClipDrop>,
 
     // Thumbnails
     pub thumbnail_cache: ThumbnailCache,
@@ -3317,6 +3320,7 @@ impl Default for AppState {
             show_unsaved_dialog: false,
             unsaved_dialog_action: UnsavedAction::None,
             pending_media_path: None,
+            pending_media_drop: std::collections::HashMap::new(),
             thumbnail_cache: ThumbnailCache::new(),
             thumbnail_textures: std::collections::HashMap::new(),
             filmstrip_textures: std::collections::HashMap::new(),

@@ -376,6 +376,16 @@ pub fn preview_toggle_pause() -> bool {
     })
 }
 
+/// Whether a preview is loaded (playing OR paused) — for showing controls.
+pub fn preview_active() -> bool {
+    PREVIEW.with(|cell| cell.borrow().as_ref().is_some_and(|p| !p.sink.empty()))
+}
+
+/// Whether the current preview is paused.
+pub fn preview_is_paused() -> bool {
+    PREVIEW.with(|cell| cell.borrow().as_ref().is_some_and(|p| p.sink.is_paused()))
+}
+
 /// Whether a preview is currently playing (not stopped, not paused).
 pub fn preview_is_playing() -> bool {
     PREVIEW.with(|cell| cell.borrow().as_ref().is_some_and(|p| !p.sink.empty() && !p.sink.is_paused()))

@@ -2017,7 +2017,11 @@ fn show_context_menu(
         cmds.push(AppCommand::LoadSourceMedia { media_id });
         ui.close_menu();
     }
-    if ui.button("Add to Timeline").clicked() {
+    if ui.button("Add at Playhead").clicked() {
+        cmds.push(AppCommand::PlaceMedia { media_id, drop: klipp_core::events::ClipDrop::AtPlayhead });
+        ui.close_menu();
+    }
+    if ui.button("Add to End of Timeline").clicked() {
         cmds.push(AppCommand::ImportMediaLinked { media_id, on_new_tracks: false });
         ui.close_menu();
     }
