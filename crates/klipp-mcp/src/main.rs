@@ -478,6 +478,11 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
             if let Some(x) = args.get("limit").and_then(|v| v.as_u64()) { v["limit"] = json!(x); }
             v
         }
+        "klipp_search_sfx" => {
+            let mut v = json!({ "method": "search_sfx", "query": arg_str(args, "query")? });
+            if let Some(x) = args.get("limit").and_then(|v| v.as_u64()) { v["limit"] = json!(x); }
+            v
+        }
         "klipp_add_music" => {
             let mut v = json!({ "method": "add_music" });
             for key in ["title", "artist", "track_id", "download_url", "preview_url", "license", "license_url", "page_url"] {
@@ -619,7 +624,7 @@ fn content_for(name: &str, result: &Value) -> Result<Vec<Value>, String> {
         }
         vec![json!({ "type": "text", "text": text })]
     };
-    if name == "klipp_timeline" || name == "klipp_media_analysis" || name == "klipp_plan" || name == "klipp_check" || name == "klipp_brief" || name == "klipp_transcript" || name == "klipp_cut_points" || name == "klipp_selects" || name == "klipp_beats" || name == "klipp_style_profile" || name == "klipp_search_music" || name == "klipp_looks" || name == "klipp_frame_stats" {
+    if name == "klipp_timeline" || name == "klipp_media_analysis" || name == "klipp_plan" || name == "klipp_check" || name == "klipp_brief" || name == "klipp_transcript" || name == "klipp_cut_points" || name == "klipp_selects" || name == "klipp_beats" || name == "klipp_style_profile" || name == "klipp_search_music" || name == "klipp_search_sfx" || name == "klipp_looks" || name == "klipp_frame_stats" {
         if let Some(text) = result.get("text").and_then(|v| v.as_str()) {
             return Ok(with_next(text.to_string()));
         }
@@ -1187,8 +1192,15 @@ fn tool_definitions() -> Vec<Value> {
               client id in the user's key config. Use the reference's feel (style_profile) to \
               pick music of matching energy — never the reference's own track.",
              json!({ "query": { "type": "string" }, "limit": { "type": "integer" } }), vec!["query"]),
+        tool("klipp_search_sfx",
+             "Search royalty-free sound effects by keyword (e.g. \"whoosh\", \"door slam\", \"rain\", \
+              \"impact\") from Freesound. Each result shows its licence and whether it clears \
+              commercial use; preview a result's preview_url, then add it with klipp_add_music \
+              (it takes a sound effect the same as a track). Good for transitions, cuts and \
+              atmosphere. Needs a Freesound token in the user's key config.",
+             json!({ "query": { "type": "string" }, "limit": { "type": "integer" } }), vec!["query"]),
         tool("klipp_add_music",
-             "Download a searched music track into the media pool, keeping its licence and \
+             "Download a searched music track OR sound effect into the media pool, keeping its licence and \
               attribution beside the file for your export credits. Pass the fields from a \
               klipp_search_music result (title, artist, download_url, license, license_url, \
               page_url). Then place it on an audio track, mark the track Music, and duck it \

@@ -363,6 +363,13 @@ pub enum ControlCommand {
         #[serde(default)]
         limit: Option<u32>,
     },
+    /// Search royalty-free sound effects (Freesound) by keyword. A read;
+    /// needs a Freesound token in the user's key config.
+    SearchSfx {
+        query: String,
+        #[serde(default)]
+        limit: Option<u32>,
+    },
     /// Download a searched track into the media pool, with its licence and
     /// attribution kept beside it. Pass the fields from a search result.
     AddMusic {

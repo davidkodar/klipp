@@ -2067,6 +2067,27 @@ reference:   {}",
             Ok(json!({ "text": text, "results": results, "next": "Listen to a track's preview_url before you commit. Add one with add_music (copy its title, artist, download_url, license, license_url, page_url). Honour the licence: non-commercial tracks stay out of commercial work, and the credit is kept for you." }))
         }
 
+        ControlCommand::SearchSfx { query, limit } => {
+            if in_batch {
+                return read_in_batch("search_sfx");
+            }
+            if !klipp_audio_search::sfx_available() {
+                return Err("sound-effect search is not set up: put freesound_token in ~/.config/klipp/keys.toml (or set KLIPP_FREESOUND_TOKEN)".into());
+            }
+            let tracks = klipp_audio_search::search_sfx(&query, limit.unwrap_or(12))?;
+            let mut text = format!("{} royalty-free sound effects for \"{query}\" (Freesound):\n", tracks.len());
+            for t in &tracks {
+                text.push_str(&format!("  {} — {}  ({}, {:.1}s){}\n", t.title, t.artist, t.license, t.duration_secs, if t.commercial_ok { "" } else { " [non-commercial]" }));
+            }
+            let results: Vec<serde_json::Value> = tracks.iter().map(|t| json!({
+                "title": t.title, "artist": t.artist, "track_id": t.id,
+                "duration_secs": t.duration_secs, "license": t.license, "license_url": t.license_url,
+                "commercial_ok": t.commercial_ok, "preview_url": t.preview_url, "download_url": t.download_url,
+                "page_url": t.page_url, "tags": t.tags,
+            })).collect();
+            Ok(json!({ "text": text, "results": results, "next": "Preview a sound's preview_url, then add it with add_music (it takes a sound effect just the same: pass title, artist, preview_url, license, license_url, page_url). The credit is kept; honour the licence." }))
+        }
+
         ControlCommand::AddMusic { title, artist, track_id, download_url, preview_url, license, license_url, page_url } => {
             if in_batch {
                 return Err("add_music downloads and imports a file; send it on its own, not in a batch".into());
