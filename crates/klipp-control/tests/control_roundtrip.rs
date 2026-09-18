@@ -794,3 +794,21 @@ fn orient_hands_over_the_whole_situation() {
     assert!(r["media"].is_array() && r["clips"].is_number());
     assert!(r["guide"].as_str().unwrap().contains("klipp_guide"));
 }
+
+/// The scope readings measure a made frame: a mid-grey field reads
+/// neutral at mid IRE; a warm, bright, low-contrast field reads a red
+/// cast and high black point.
+#[test]
+fn frame_stats_reads_the_scopes_of_a_frame() {
+    // frame_stats is a pure measurement; call it through the module.
+    let grey: Vec<u8> = std::iter::repeat_n([128u8, 128, 128, 255], 320 * 180).flatten().collect();
+    let v = klipp_control::frame_stats(&grey, 320, 180, 1.0);
+    assert!((v["luma_ire"]["mid"].as_f64().unwrap() - 50.0).abs() < 2.0, "{v}");
+    assert_eq!(v["rgb_balance"]["note"], "neutral");
+    assert!(v["text"].as_str().unwrap().contains("mid 50"));
+
+    let warm: Vec<u8> = std::iter::repeat_n([200u8, 150, 120, 255], 320 * 180).flatten().collect();
+    let v = klipp_control::frame_stats(&warm, 320, 180, 2.0);
+    assert!(v["rgb_balance"]["note"].as_str().unwrap().contains("red cast"), "{v}");
+    assert!(v["luma_ire"]["black"].as_f64().unwrap() > 55.0, "a bright field lifts the black point: {v}");
+}

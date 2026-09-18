@@ -81,7 +81,10 @@ override any of them; what matters is that breaking one is a choice.
   has to ask for; for an interview or a documentary the answer is
   nowhere.
 - Grade for continuity first: shots that follow each other should match
-  before anything looks "better".
+  before anything looks "better". Read `frame_stats` on each: the black
+  point wants to reach near 0 IRE and the white near 100 without
+  clipping, mid grey around 40-50, the balance neutral unless the look
+  asks otherwise, and skin tones on the skin-tone line.
 
 ## Delivery
 

@@ -382,6 +382,145 @@ fn timeline_text(
 
 /// `text` within `max_chars`, cut on a line boundary and saying so, and
 /// whether it was cut.
+/// Seek to `secs`, wait for the frame there, read its RGBA bytes, and
+/// seek back — the picture as the viewer shows it, for measuring. Shares
+/// the one-grab lock and the wait with frame_at.
+fn grab_frame_rgba(ctx: &ControlContext, secs: f64, timeout_ms: Option<u64>) -> Result<(Vec<u8>, u32, u32), String> {
+    static ONE_GRAB: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _one = ONE_GRAB.lock().unwrap_or_else(|e| e.into_inner());
+    let (was_at, fps) = {
+        let fb = ctx.frame_buffer.lock().map_err(|_| "frame buffer lock poisoned")?;
+        let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
+        (fb.latest_presented(), seq.fps)
+    };
+    let target = klipp_core::Timecode::from_secs_f64(secs.max(0.0), fps.rate());
+    let before = ctx.frame_buffer.lock().map_err(|_| "frame buffer lock poisoned")?.latest_generation();
+    send_envelope(ctx, vec![AppCommand::Pause, AppCommand::SeekTo(target)], false)?;
+    let wait = std::time::Duration::from_millis(timeout_ms.unwrap_or(3000));
+    let deadline = std::time::Instant::now() + wait;
+    loop {
+        let (g, at, complete) = {
+            let fb = ctx.frame_buffer.lock().map_err(|_| "frame buffer lock poisoned")?;
+            (fb.latest_generation(), fb.latest_presented(), fb.latest_complete())
+        };
+        if g != before && at.is_some_and(|a| a.cmp(&target) == std::cmp::Ordering::Equal) && complete {
+            break;
+        }
+        if std::time::Instant::now() >= deadline {
+            if let Some(t) = was_at {
+                let _ = send_envelope(ctx, vec![AppCommand::SeekTo(t)], false);
+            }
+            return Err(format!("no frame at {secs:.3} s within {} ms; give a longer timeout_ms", wait.as_millis()));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    let (data, width, height) = {
+        let fb = ctx.frame_buffer.lock().map_err(|_| "frame buffer lock poisoned")?;
+        let (d, w, h, _) = fb.latest_frame();
+        (d.to_vec(), w, h)
+    };
+    if let Some(t) = was_at {
+        let _ = send_envelope(ctx, vec![AppCommand::SeekTo(t)], false);
+    }
+    let expected = (width as usize) * (height as usize) * 4;
+    if width == 0 || height == 0 || data.len() < expected {
+        return Err("the viewer has no frame to measure yet".into());
+    }
+    Ok((data[..expected].to_vec(), width, height))
+}
+
+/// The scope readings of a display-referred sRGB RGBA frame: what a
+/// colourist reads before touching a wheel. Luma is Rec.709 on
+/// gamma-encoded values, in IRE (0 black, 100 white), which is how
+/// waveforms are read. Everything is measured on a grid of samples, not
+/// every pixel — enough to be exact to a fraction and cheap on a 4K
+/// frame.
+/// Public for tests and tools that measure a frame without the socket.
+pub fn frame_stats(data: &[u8], width: u32, height: u32, secs: f64) -> serde_json::Value {
+    let (w, h) = (width as usize, height as usize);
+    let step = ((w * h) / 200_000).max(1);
+    let mut lumas: Vec<f32> = Vec::new();
+    let (mut r_sum, mut g_sum, mut b_sum) = (0f64, 0f64, 0f64);
+    let (mut sat_sum, mut n) = (0f64, 0usize);
+    let (mut clip_hi, mut clip_lo) = (0usize, 0usize);
+    let (mut skin_on, mut skin_total) = (0usize, 0usize);
+    let mut i = 0;
+    while i < w * h {
+        let p = i * 4;
+        let (r, g, b) = (data[p] as f32, data[p + 1] as f32, data[p + 2] as f32);
+        let luma = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+        lumas.push(luma / 255.0 * 100.0);
+        r_sum += r as f64;
+        g_sum += g as f64;
+        b_sum += b as f64;
+        let (mx, mn) = (r.max(g).max(b), r.min(g).min(b));
+        let sat = if mx > 0.0 { (mx - mn) / mx } else { 0.0 };
+        sat_sum += sat as f64;
+        if mx >= 254.0 {
+            clip_hi += 1;
+        }
+        if mn <= 1.0 {
+            clip_lo += 1;
+        }
+        // A pixel bright and warm enough to be skin, and whether its hue
+        // sits on the I-line (the vectorscope's skin-tone axis, ~123°):
+        // colourists land skin there. Hue from the usual HSV formula.
+        if sat > 0.15 && luma > 60.0 && r > g && g >= b {
+            let hue = {
+                let d = mx - mn;
+                let hp = if mx == r { ((g - b) / d).rem_euclid(6.0) } else if mx == g { (b - r) / d + 2.0 } else { (r - g) / d + 4.0 };
+                hp * 60.0
+            };
+            skin_total += 1;
+            if (20.0..=50.0).contains(&hue) {
+                skin_on += 1;
+            }
+        }
+        n += 1;
+        i += step;
+    }
+    lumas.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let pct = |q: f32| lumas.get(((lumas.len() as f32 * q) as usize).min(lumas.len().saturating_sub(1))).copied().unwrap_or(0.0);
+    let nn = n.max(1) as f64;
+    let (rb, gb, bb) = (r_sum / nn / 255.0, g_sum / nn / 255.0, b_sum / nn / 255.0);
+    let grey = (rb + gb + bb) / 3.0;
+    // The cast, if any: which channel leads and by how much, in percent
+    // of the grey level — what "warm" or "cool" means as a number.
+    let cast = |name: &'static str, v: f64| (name, ((v - grey) / grey.max(1e-6) * 100.0) as f32);
+    let mut casts = [cast("red", rb), cast("green", gb), cast("blue", bb)];
+    casts.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+    let balance_note = if casts[0].1 - casts[2].1 < 4.0 {
+        "neutral".to_string()
+    } else {
+        format!("{} cast, {:.0}% over {}", casts[0].0, casts[0].1 - casts[2].1, casts[2].0)
+    };
+    let clip_hi_pct = clip_hi as f64 / nn * 100.0;
+    let clip_lo_pct = clip_lo as f64 / nn * 100.0;
+    let skin_note = if skin_total < (n / 200).max(20) {
+        "no clear skin tones".to_string()
+    } else {
+        format!("{:.0}% of skin-toned pixels sit on the skin-tone line", skin_on as f64 / skin_total as f64 * 100.0)
+    };
+    let text = format!(
+        "Frame at {secs:.2} s, scope readings (luma in IRE, 0 black to 100 white):\n\
+         black point {:.0}, mid {:.0}, white point {:.0}\n\
+         RGB balance: {balance_note}\n\
+         average saturation {:.0}% of full\n\
+         clipping: {clip_hi_pct:.1}% at white, {clip_lo_pct:.1}% at black\n\
+         skin: {skin_note}",
+        pct(0.02), pct(0.5), pct(0.98), sat_sum / nn * 100.0,
+    );
+    json!({
+        "text": text,
+        "secs": secs,
+        "luma_ire": { "black": pct(0.02), "mid": pct(0.5), "white": pct(0.98) },
+        "rgb_balance": { "red": rb, "green": gb, "blue": bb, "note": balance_note },
+        "saturation_pct": sat_sum / nn * 100.0,
+        "clipping_pct": { "high": clip_hi_pct, "low": clip_lo_pct },
+        "skin": skin_note,
+    })
+}
+
 fn cut_to_budget(text: &str, max_chars: usize) -> (String, bool) {
     cut_to_budget_with(text, max_chars, "ask again with a larger max_chars, or list_clips for the rest")
 }
@@ -1564,6 +1703,14 @@ fn handle(
                 "duration_secs": seq.total_duration().to_secs_f64(),
                 "revision": ctx.shared.revision(),
             }))
+        }
+
+        ControlCommand::FrameStats { secs, timeout_ms } => {
+            if in_batch {
+                return read_in_batch("frame_stats");
+            }
+            let (data, width, height) = grab_frame_rgba(ctx, secs, timeout_ms)?;
+            Ok(frame_stats(&data, width, height, secs))
         }
 
         ControlCommand::FrameAt { secs, path, max_width, timeout_ms } => {

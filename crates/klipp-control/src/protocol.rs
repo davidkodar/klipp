@@ -331,6 +331,16 @@ pub enum ControlCommand {
         #[serde(default)]
         discard_changes: bool,
     },
+    /// What a colourist would read off the scopes for the frame at
+    /// `secs`: the black, mid and white luma points, the RGB balance,
+    /// the saturation, how much is clipped, and where skin tones sit —
+    /// so a grade is set to numbers, not by eye. Seeks there and back
+    /// like frame_at.
+    FrameStats {
+        secs: f64,
+        #[serde(default)]
+        timeout_ms: Option<u64>,
+    },
     /// The frame at `secs`, as a PNG, without leaving the playhead where
     /// it was: seeks there, waits for the frame, captures, seeks back.
     FrameAt {

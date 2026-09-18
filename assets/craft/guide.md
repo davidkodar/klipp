@@ -43,7 +43,10 @@ frames.
    planned. `klipp_undo` takes the whole action back.
 5. **Look.** `klipp_frame_at` for the frame at a time (the playhead
    comes back where it was), `klipp_screenshot` for the viewer,
-   `klipp_contact_sheet` over the range you cut.
+   `klipp_contact_sheet` over the range you cut. `klipp_frame_stats`
+   for the scope readings a colourist grades to: the black, mid and
+   white points, the balance, the clipping, the skin tones. Grade to
+   those numbers, and match a shot to its neighbours by them.
 6. **Check.** `klipp_check` reads the finished timeline the way an
    editor watches it once: black frames, flashes, jump cuts with
    nothing over them, titles across a cut, sound cut inside a word,

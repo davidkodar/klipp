@@ -477,6 +477,7 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
             "path": arg_str(args, "path")?,
             "discard_changes": args.get("discard_changes").and_then(|v| v.as_bool()).unwrap_or(false),
         }),
+        "klipp_frame_stats" => json!({ "method": "frame_stats", "secs": args.get("secs").and_then(|v| v.as_f64()).ok_or("missing required argument: secs")?, "timeout_ms": args.get("timeout_ms").and_then(|v| v.as_u64()) }),
         "klipp_frame_at" => {
             let mut v = json!({
                 "method": "frame_at",
@@ -566,7 +567,7 @@ fn content_for(name: &str, result: &Value) -> Result<Vec<Value>, String> {
         }
         vec![json!({ "type": "text", "text": text })]
     };
-    if name == "klipp_timeline" || name == "klipp_media_analysis" || name == "klipp_plan" || name == "klipp_check" || name == "klipp_brief" || name == "klipp_transcript" {
+    if name == "klipp_timeline" || name == "klipp_media_analysis" || name == "klipp_plan" || name == "klipp_check" || name == "klipp_brief" || name == "klipp_transcript" || name == "klipp_frame_stats" {
         if let Some(text) = result.get("text").and_then(|v| v.as_str()) {
             return Ok(with_next(text.to_string()));
         }
@@ -1108,6 +1109,13 @@ fn tool_definitions() -> Vec<Value> {
               while the open project has unsaved changes: save it first, or pass \
               discard_changes true to lose them on purpose.",
              json!({ "path": { "type": "string" }, "discard_changes": { "type": "boolean" } }), vec!["path"]),
+        tool("klipp_frame_stats",
+             "The scope readings of the frame at a time, the numbers a colourist grades to: \
+              the black, mid and white luma points in IRE, the RGB balance and any cast, the \
+              saturation, how much is clipped at white and black, and where skin tones sit. \
+              Read it before and after a grade — grade to the numbers, not by eye, and match \
+              a shot to its neighbours by them.",
+             json!({ "secs": { "type": "number" }, "timeout_ms": { "type": "integer" } }), vec!["secs"]),
         tool("klipp_frame_at",
              "The frame at a time on the timeline, as a PNG, without leaving the playhead \
               where it was: seeks there, waits for the frame, captures, seeks back. Use \
