@@ -509,6 +509,13 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
             "discard_changes": args.get("discard_changes").and_then(|v| v.as_bool()).unwrap_or(false),
         }),
         "klipp_frame_stats" => json!({ "method": "frame_stats", "secs": args.get("secs").and_then(|v| v.as_f64()).ok_or("missing required argument: secs")?, "timeout_ms": args.get("timeout_ms").and_then(|v| v.as_u64()) }),
+        "klipp_scope" => {
+            let mut v = json!({ "method": "scope", "mode": args.get("mode").and_then(|v| v.as_str()).unwrap_or("waveform") });
+            if let Some(x) = args.get("secs").and_then(|v| v.as_f64()) { v["secs"] = json!(x); }
+            if let Some(p) = args.get("path").and_then(|v| v.as_str()) { v["path"] = json!(p); }
+            if let Some(t) = args.get("timeout_ms").and_then(|v| v.as_u64()) { v["timeout_ms"] = json!(t); }
+            v
+        }
         "klipp_frame_at" => {
             let mut v = json!({
                 "method": "frame_at",
@@ -615,7 +622,7 @@ fn content_for(name: &str, result: &Value) -> Result<Vec<Value>, String> {
     // Pictures and sound come back as a path; inline them too when
     // small enough to be worth a context window.
     let inline = match name {
-        "klipp_screenshot" | "klipp_frame_at" => Some(("image", "image/png")),
+        "klipp_screenshot" | "klipp_frame_at" | "klipp_scope" => Some(("image", "image/png")),
         "klipp_contact_sheet" => Some(("image", "image/jpeg")),
         "klipp_audio_excerpt" => Some(("audio", "audio/wav")),
         _ => None,
@@ -1242,5 +1249,18 @@ fn tool_definitions() -> Vec<Value> {
                  "timeout_ms": { "type": "integer" },
              }),
              vec!["secs"]),
+        tool("klipp_scope",
+             "A scope image of a frame, GPU-drawn the way the app's own scopes are: the \
+              waveform, the RGB parade, the vectorscope, or the histogram, as a PNG. It reads \
+              the frame at secs (the playhead when omitted) without disturbing the scopes the \
+              viewer is looking at. The colourist's second eye; frame_stats gives the same \
+              frame as numbers to grade to.",
+             json!({
+                 "mode": { "type": "string", "description": "waveform, parade, vectorscope, or histogram (waveform by default)" },
+                 "secs": { "type": "number", "description": "timeline seconds; the playhead when omitted" },
+                 "path": { "type": "string", "description": "Absolute PNG path; temp dir when omitted" },
+                 "timeout_ms": { "type": "integer" },
+             }),
+             vec![]),
     ]
 }

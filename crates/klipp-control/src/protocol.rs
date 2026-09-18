@@ -343,6 +343,19 @@ pub enum ControlCommand {
         #[serde(default)]
         min_gap_secs: Option<f64>,
     },
+    /// A scope image of a frame: waveform, parade, vectorscope or
+    /// histogram, GPU-drawn from the frame at `secs`, written to `path`.
+    /// Measures the frame without disturbing the viewer's own scopes.
+    Scope {
+        #[serde(default)]
+        mode: Option<String>,
+        #[serde(default)]
+        secs: Option<f64>,
+        #[serde(default)]
+        path: Option<String>,
+        #[serde(default)]
+        timeout_ms: Option<u64>,
+    },
     /// The clean places to cut in a piece of media: the measured pauses,
     /// the sentence boundaries from the transcript, and the shot changes,
     /// ranked. With `near_secs`, it also says whether that moment is

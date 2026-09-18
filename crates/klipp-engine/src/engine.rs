@@ -2669,6 +2669,23 @@ impl PlaybackEngine {
                 // frame over the skim a skim cycle later, again and again.
                 self.draw_scopes(None, Some(DisplayScopeFrame::rec709(&rgba)), width, height);
             }
+            AppCommand::RenderScopeSnapshot { modes, rgba, width, height } => {
+                // Draw the requested scopes of a supplied frame into the
+                // snapshot store, without touching the live scope state.
+                let wanted: Vec<u8> = modes.iter().copied().filter(|m| *m <= 3).collect();
+                if let Some(results) = self.render_scopes_on_gpu(None, Some(DisplayScopeFrame::rec709(&rgba)), width, height, &wanted) {
+                    let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
+                    for (mode, res) in wanted.iter().zip(results) {
+                        if let Some((bytes, w, h)) = res {
+                            let e = fb.snapshot_scope_textures.entry(*mode).or_insert(crate::texture::ScopeTextureEntry { data: Vec::new(), w: 0, h: 0, generation: 0 });
+                            e.data = bytes;
+                            e.w = w;
+                            e.h = h;
+                            e.generation = e.generation.wrapping_add(1);
+                        }
+                    }
+                }
+            }
             AppCommand::SetScopeTapNode { clip_id, node_id } => {
                 self.inspect_clip = Some(clip_id);
                 self.scope_tap_node = node_id;

@@ -1501,6 +1501,12 @@ pub enum AppCommand {
     /// hover skim, a timeline scrub) into `frame_buffer.scope_textures`,
     /// the way the playback pipeline draws them.
     RenderScopesForFrame { rgba: Vec<u8>, width: u32, height: u32 },
+    /// Draw the scopes of an sRGB RGBA frame into `frame_buffer.
+    /// snapshot_scope_textures`, a store separate from the live scopes, so
+    /// an off-screen reader (the agent's `scope` tool) can measure any
+    /// frame without disturbing what the viewer's scopes show. `modes` are
+    /// 0 waveform, 1 parade, 2 vectorscope, 3 histogram.
+    RenderScopeSnapshot { modes: Vec<u8>, rgba: Vec<u8>, width: u32, height: u32 },
     SetNodeParam { clip_id: ClipId, node_id: uuid::Uuid, param: String, value: f32 },
     /// Called when the user starts dragging a color-grading parameter
     /// (color wheel, sat/bri slider, scrubby slider, etc.). Snapshots the

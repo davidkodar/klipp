@@ -58,6 +58,10 @@ frames.
    for the scope readings a colourist grades to: the black, mid and
    white points, the balance, the clipping, the skin tones. Grade to
    those numbers, and match a shot to its neighbours by them.
+   `klipp_scope` draws the actual scope of a frame — waveform, parade,
+   vectorscope or histogram — as an image, GPU-drawn the way the app's
+   own scopes are, without disturbing the viewer's; the numbers guide the
+   grade, the picture confirms it.
    `klipp_match_grade` does that match in one call: it reads both shots
    and sets the target's exposure, lift, gain, temperature and tint to
    bring it toward a reference shot — the continuity grade first, then

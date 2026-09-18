@@ -69,6 +69,10 @@ pub struct FrameBuffer {
     /// mode in `active_scope_modes` each scope pass; the main dock reads
     /// its active mode and each floating pane its own.
     pub scope_textures: HashMap<u8, ScopeTextureEntry>,
+    /// Scope textures drawn for an off-screen reader (the agent's `scope`
+    /// tool), kept apart from `scope_textures` so measuring a frame never
+    /// disturbs what the viewer's own scopes show.
+    pub snapshot_scope_textures: HashMap<u8, ScopeTextureEntry>,
     pub width: u32,
     pub height: u32,
     pub dirty: bool,
@@ -151,6 +155,7 @@ impl FrameBuffer {
             scope_preview_w: 0,
             scope_preview_h: 0,
             scope_textures: HashMap::new(),
+            snapshot_scope_textures: HashMap::new(),
             width,
             height,
             dirty: false,

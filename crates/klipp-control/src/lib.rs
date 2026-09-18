@@ -429,6 +429,33 @@ fn grab_frame_rgba(ctx: &ControlContext, secs: f64, timeout_ms: Option<u64>) -> 
     Ok((data[..expected].to_vec(), width, height))
 }
 
+/// A GPU-drawn scope image (`mode`: 0 waveform, 1 parade, 2 vectorscope,
+/// 3 histogram) of the frame at `secs`, as RGBA plus its size. Grabs the
+/// frame, has the engine draw the scope into its snapshot store — apart
+/// from the viewer's live scopes — and reads it back.
+fn grab_scope(ctx: &ControlContext, mode: u8, secs: f64, timeout_ms: Option<u64>) -> Result<(Vec<u8>, u32, u32), String> {
+    let (rgba, w, h) = grab_frame_rgba(ctx, secs, timeout_ms)?;
+    let before = ctx.frame_buffer.lock().map_err(|_| "frame buffer lock poisoned")?
+        .snapshot_scope_textures.get(&mode).map(|e| e.generation);
+    send_envelope(ctx, vec![AppCommand::RenderScopeSnapshot { modes: vec![mode], rgba, width: w, height: h }], false)?;
+    let wait = std::time::Duration::from_millis(timeout_ms.unwrap_or(3000));
+    let deadline = std::time::Instant::now() + wait;
+    loop {
+        {
+            let fb = ctx.frame_buffer.lock().map_err(|_| "frame buffer lock poisoned")?;
+            if let Some(e) = fb.snapshot_scope_textures.get(&mode) {
+                if !e.data.is_empty() && Some(e.generation) != before {
+                    return Ok((e.data.clone(), e.w, e.h));
+                }
+            }
+        }
+        if std::time::Instant::now() >= deadline {
+            return Err(format!("the scope was not drawn within {} ms; give a longer timeout_ms, or the frame had nothing to measure", wait.as_millis()));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+}
+
 /// The scope readings of a display-referred sRGB RGBA frame: what a
 /// colourist reads before touching a wheel. Luma is Rec.709 on
 /// gamma-encoded values, in IRE (0 black, 100 white), which is how
@@ -1890,6 +1917,42 @@ reference:   {}",
             v["knobs_moved"] = json!(moved);
             v["next"] = json!("A first pass. Run check with color, or frame_stats on both shots, to see the match; nudge exposure/temperature/tint with grade if it is not there yet.");
             Ok(v)
+        }
+
+        ControlCommand::Scope { mode, secs, path, timeout_ms } => {
+            if in_batch {
+                return read_in_batch("scope");
+            }
+            let name = mode.as_deref().unwrap_or("waveform").to_lowercase();
+            let m: u8 = match name.as_str() {
+                "waveform" | "wave" | "wfm" => 0,
+                "parade" | "rgb_parade" | "rgb" => 1,
+                "vectorscope" | "vector" | "vscope" => 2,
+                "histogram" | "hist" => 3,
+                _ => return Err(format!("\"{name}\" is not a scope; use waveform, parade, vectorscope or histogram")),
+            };
+            let secs = match secs {
+                Some(s) => s,
+                None => {
+                    let fb = ctx.frame_buffer.lock().map_err(|_| "frame buffer lock poisoned")?;
+                    fb.latest_presented().map(|t| t.to_secs_f64()).unwrap_or(0.0)
+                }
+            };
+            let (data, w, h) = grab_scope(ctx, m, secs, timeout_ms)?;
+            let out = match path {
+                Some(p) => std::path::PathBuf::from(p),
+                None => {
+                    let ts = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0);
+                    std::env::temp_dir().join(format!("klipp-scope-{name}-{ts}.png"))
+                }
+            };
+            write_png(&out, &data, w, h)?;
+            Ok(json!({
+                "path": out.to_string_lossy(),
+                "width": w, "height": h, "mode": name, "secs": secs,
+                "text": format!("{name} scope of the frame at {secs:.2} s, {w}x{h}, written to {}", out.display()),
+                "next": "The scope is the colourist's second eye; frame_stats gives the same frame as numbers to grade to.",
+            }))
         }
 
         ControlCommand::Selects { media_id, min_gap_secs } => {
