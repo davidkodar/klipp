@@ -298,6 +298,16 @@ pub enum ControlCommand {
         #[serde(default)]
         words: bool,
     },
+    /// Line a clip's sound up with a reference clip's by cross-correlating
+    /// their audio — dual-system sound, a separate recorder against the
+    /// camera's scratch track. Moves `clip_id` so it plays in sync with
+    /// `reference_clip_id`; refuses when the two share no common sound.
+    AlignAudio {
+        clip_id: String,
+        reference_clip_id: String,
+        #[serde(default)]
+        max_offset_secs: Option<f64>,
+    },
     /// Apply a creative look — a bundled 3D LUT chosen by name — to a
     /// picture clip, as one node after its grade. opacity fades it in;
     /// remove clears it. Names resolve against the bundled LUT library.

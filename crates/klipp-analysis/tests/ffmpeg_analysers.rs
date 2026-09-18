@@ -139,3 +139,38 @@ fn a_sheet_of_a_long_file_when_asked() {
     let sheet = klipp_analysis::sheet::contact_sheet(&ctx.ffmpeg, std::path::Path::new(&path), 0.0, 1680.0, 24, 6, 320, &out).expect("sheet");
     eprintln!("24 tiles across 28 minutes in {:.1} s: {}x{} at {}", t.elapsed().as_secs_f64(), sheet.width, sheet.height, out.display());
 }
+
+/// The whole sync path against ffmpeg: the same noise delayed by half a
+/// second must come back as a +0.5 s offset with a confident match.
+#[test]
+fn align_audio_recovers_a_known_delay() {
+    let ctx = AnalysisCtx::default();
+    if !ctx.ffmpeg_available() {
+        eprintln!("skipping: no ffmpeg");
+        return;
+    }
+    let dir = std::env::temp_dir().join(format!("klipp-sync-test-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let refp = dir.join("ref.wav");
+    let tgtp = dir.join("tgt.wav");
+    // Deterministic noise: a strong, unambiguous correlation peak.
+    let ok = std::process::Command::new(&ctx.ffmpeg)
+        .args(["-y", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "anoisesrc=seed=12345:d=4:sample_rate=8000"])
+        .arg(&refp).status().unwrap().success();
+    assert!(ok, "ffmpeg made the reference");
+    // The same noise, delayed 500 ms → content starts half a second later.
+    let ok = std::process::Command::new(&ctx.ffmpeg)
+        .args(["-y", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "anoisesrc=seed=12345:d=4:sample_rate=8000", "-af", "adelay=500"])
+        .arg(&tgtp).status().unwrap().success();
+    assert!(ok, "ffmpeg made the delayed target");
+
+    use klipp_analysis::audio_sync::{decode_mono_pcm, find_sync_offset_scored};
+    let sr = 8_000u32;
+    let r = decode_mono_pcm(&ctx.ffmpeg, &refp, sr, 0.0, 10.0).unwrap();
+    let t = decode_mono_pcm(&ctx.ffmpeg, &tgtp, sr, 0.0, 10.0).unwrap();
+    let (off, conf) = find_sync_offset_scored(&r, &t, sr, 2.0);
+    let off_secs = off as f64 / sr as f64;
+    assert!((off_secs - 0.5).abs() < 0.02, "expected +0.5 s, got {off_secs:.3} s");
+    assert!(conf > 0.5, "the match should be confident, got {conf:.2}");
+    let _ = std::fs::remove_dir_all(&dir);
+}

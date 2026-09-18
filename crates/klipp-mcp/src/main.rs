@@ -473,6 +473,11 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
             v
         }
         "klipp_match_grade" => json!({ "method": "match_grade", "clip_id": arg_str(args, "clip_id")?, "reference_clip_id": arg_str(args, "reference_clip_id")? }),
+        "klipp_align_audio" => {
+            let mut v = json!({ "method": "align_audio", "clip_id": arg_str(args, "clip_id")?, "reference_clip_id": arg_str(args, "reference_clip_id")? });
+            if let Some(x) = args.get("max_offset_secs").and_then(|v| v.as_f64()) { v["max_offset_secs"] = json!(x); }
+            v
+        }
         "klipp_looks" => {
             let mut v = json!({ "method": "looks" });
             if let Some(c) = args.get("category").and_then(|v| v.as_str()) { v["category"] = json!(c); }
@@ -1134,6 +1139,14 @@ fn tool_definitions() -> Vec<Value> {
               first pass, applied as one undo step; verify with klipp_check color or \
               klipp_frame_stats and refine with grade. Both must be picture clips.",
              json!({ "clip_id": { "type": "string", "description": "the shot to grade" }, "reference_clip_id": { "type": "string", "description": "the shot to match it to" } }),
+             vec!["clip_id", "reference_clip_id"]),
+        tool("klipp_align_audio",
+             "Line a clip's sound up with another's — dual-system sound, a separate recorder \
+              against the camera's scratch track. It cross-correlates the two clips' audio, \
+              finds the offset, and moves clip_id so it plays in sync with reference_clip_id; \
+              it reports the match confidence and refuses when the two share no common sound. \
+              max_offset_secs bounds the search (30 by default). Both clips must carry audio.",
+             json!({ "clip_id": { "type": "string", "description": "the clip to move into sync (e.g. the external audio)" }, "reference_clip_id": { "type": "string", "description": "the clip to sync to (e.g. the camera)" }, "max_offset_secs": { "type": "number" } }),
              vec!["clip_id", "reference_clip_id"]),
         tool("klipp_looks",
              "The bundled looks — 3D LUTs — an agent can apply, by category: cinematic and film \

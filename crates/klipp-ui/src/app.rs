@@ -2297,7 +2297,7 @@ impl KlippApp {
         std::thread::Builder::new()
             .name("klipp-audio-sync".into())
             .spawn(move || {
-                use crate::audio_sync::{find_sync_offset, load_pcm_mono};
+                use klipp_analysis::audio_sync::{find_sync_offset, load_pcm_mono};
                 const SR: u32 = 48_000;
 
                 let ref_full = match load_pcm_mono(&ref_path) {
@@ -3781,7 +3781,7 @@ impl KlippApp {
         std::thread::Builder::new()
             .name("klipp-media-sync".into())
             .spawn(move || {
-                use crate::audio_sync::{find_sync_offset, load_pcm_mono};
+                use klipp_analysis::audio_sync::{find_sync_offset, load_pcm_mono};
                 const SR: u32 = 48_000;
                 let (v, a) = match (load_pcm_mono(&video_pcm), load_pcm_mono(&audio_pcm)) {
                     (Ok(v), Ok(a)) => (v, a),

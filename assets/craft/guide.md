@@ -168,6 +168,11 @@ exist until the plan runs.
   sound. Each flag adds the right tool: wind and rumble, tape or air
   hiss, mains hum, harsh sibilance. The beach-in-a-gale clip wants
   `wind`.
+- `align_audio` (the `klipp_align_audio` tool): line a clip's sound up
+  with a reference clip's — dual-system sound, a separate recorder
+  against the camera's scratch track. It cross-correlates the two,
+  reports the match confidence, and moves the clip into sync; it refuses
+  when the two share no common sound.
 - `transition {clip_id, kind?, secs?}`: a transition between a clip and
   the one after it, `secs` long, on the cut. `cross_dissolve` is the
   default and the only one an interview or a documentary wants; a

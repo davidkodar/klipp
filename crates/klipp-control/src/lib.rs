@@ -1722,6 +1722,61 @@ fn handle(
             Ok(json!({ "text": text, "cut": cut }))
         }
 
+        ControlCommand::AlignAudio { clip_id: c, reference_clip_id: r, max_offset_secs } => {
+            if in_batch {
+                return Err("align_audio moves a clip; send it on its own, not in a batch".into());
+            }
+            let tgt_id = clip_id(&c)?;
+            let ref_id = clip_id(&r)?;
+            // The two media paths and source-in points, and the reference's
+            // place on the timeline — read, then let the lock go for ffmpeg.
+            let (tgt_path, tgt_src_in, ref_path, ref_src_in, ref_tl_in, tgt_name) = {
+                let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
+                let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
+                let find = |id: klipp_core::ClipId| seq.tracks.iter().flat_map(|t| t.clips.iter()).find(move |cl| cl.id == id).cloned();
+                let tgt = find(tgt_id).ok_or_else(|| format!("no clip with id {c}"))?;
+                let refc = find(ref_id).ok_or_else(|| format!("no clip with id {r}"))?;
+                let media_of = |cl: &klipp_timeline::Clip, which: &str| -> Result<std::path::PathBuf, String> {
+                    let mid = cl.media_id().ok_or_else(|| format!("the {which} clip has no media"))?;
+                    let item = pool.get(&mid).ok_or_else(|| format!("the {which} clip's media is gone"))?;
+                    if !item.has_audio {
+                        return Err(format!("the {which} clip ({}) has no sound to sync", item.filename));
+                    }
+                    Ok(item.path.clone())
+                };
+                let tp = media_of(&tgt, "target")?;
+                let rp = media_of(&refc, "reference")?;
+                let tname = pool.get(&tgt.media_id().unwrap_or(klipp_core::MediaId(uuid::Uuid::nil()))).map(|m| m.filename.clone()).unwrap_or_else(|| "the clip".into());
+                (tp, tgt.source_in.to_secs_f64(), rp, refc.source_in.to_secs_f64(), refc.timeline_in.to_secs_f64(), tname)
+            };
+            const SR: u32 = 8_000;
+            let max_off = max_offset_secs.unwrap_or(30.0).clamp(1.0, 300.0);
+            // Decode enough past the search window to hold a real match.
+            let window = max_off + 90.0;
+            let ffmpeg = std::path::Path::new("ffmpeg");
+            let ref_pcm = klipp_analysis::audio_sync::decode_mono_pcm(ffmpeg, &ref_path, SR, ref_src_in, window)?;
+            let tgt_pcm = klipp_analysis::audio_sync::decode_mono_pcm(ffmpeg, &tgt_path, SR, tgt_src_in, window)?;
+            let (off_samples, confidence) = klipp_analysis::audio_sync::find_sync_offset_scored(&ref_pcm, &tgt_pcm, SR, max_off as f32);
+            let offset_secs = off_samples as f64 / SR as f64;
+            if confidence < 0.2 {
+                return Err(format!("{tgt_name} and the reference do not seem to share any sound (match {:.0}%); nothing moved. Use a reference clip recorded at the same moment.", confidence * 100.0));
+            }
+            let new_in = ref_tl_in - offset_secs;
+            if new_in < 0.0 {
+                return Err(format!("the offset {offset_secs:+.3} s would push {tgt_name} before the timeline start; move the reference clip later first, then align"));
+            }
+            use klipp_document::ops::{Anchor, ClipRef, Op};
+            let op = Op::Move { clip_id: ClipRef::Id(tgt_id), to: Anchor::Secs(new_in) };
+            let (plan, revision) = resolve_plan(ctx, std::slice::from_ref(&op))?;
+            let edits: Vec<klipp_document::history::EditCommand> = plan.steps.iter().map(|s| s.edit.clone()).collect();
+            let mut v = send_full_envelope(ctx, Vec::new(), edits, true, Some(revision), Some(format!("sync {tgt_name}")))?;
+            v["text"] = json!(format!("Aligned {tgt_name} to the reference: offset {offset_secs:+.3} s, match {:.0}%. Moved it to {new_in:.3} s on the timeline.", confidence * 100.0));
+            v["offset_secs"] = json!(offset_secs);
+            v["confidence"] = json!(confidence);
+            v["next"] = json!("Play across the join to confirm the sound and picture line up. If it drifts over a long take, the two clocks differ — you may need a second sync point.");
+            Ok(v)
+        }
+
         ControlCommand::Looks { category } => {
             if in_batch {
                 return read_in_batch("looks");

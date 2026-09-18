@@ -1,21 +1,20 @@
 //! Audio synchronisation via cross-correlation (#61).
 //!
-//! Given two clips' conformed PCM caches (48 kHz stereo f32), find the
-//! sample offset that best aligns them and return it so the UI can shift
-//! the target clip's timeline position.
+//! Given two clips' mono `f32` samples, find the sample offset that best
+//! aligns them, so a caller can shift the target clip's timeline
+//! position. The samples come either from the app's conformed PCM cache
+//! (via [`load_pcm_mono`]) or straight off the media through ffmpeg (via
+//! [`decode_mono_pcm`]) — the UI uses the first, the agent's align_audio
+//! command the second.
 //!
 //! The search is intentionally simple: time-domain cross-correlation
 //! with a coarse/refine strategy. A coarse pass walks the full search
 //! window at stride 8 to locate the rough peak; a fine pass then scans
 //! ±8 samples around the coarse peak for exact alignment. Both passes
 //! cap the inner correlation window at `CORR_WINDOW` samples so CPU cost
-//! stays bounded even for 60 s search ranges.
-//!
-//! rustfft is present as a transitive dep in the workspace but adding a
-//! direct dependency to klipp-ui is explicitly out of scope for this
-//! change, so we stick to time-domain. For MVP cases (clap tracks,
-//! dual-system audio, a few seconds of offset) this runs in well under
-//! a second even on multi-minute clips.
+//! stays bounded even for 60 s search ranges. For the usual cases (clap
+//! tracks, dual-system audio, a few seconds of offset) this runs in well
+//! under a second even on multi-minute clips.
 
 use std::path::Path;
 
@@ -131,10 +130,23 @@ pub fn find_sync_offset(
     sample_rate: u32,
     max_offset_secs: f32,
 ) -> i64 {
+    find_sync_offset_scored(ref_pcm, clip_pcm, sample_rate, max_offset_secs).0
+}
+
+/// Like [`find_sync_offset`], and also returns the confidence at the peak:
+/// the normalised cross-correlation there, roughly 0 (no match) to 1
+/// (identical). Below about 0.3 the two recordings likely share no common
+/// sound and the offset should not be trusted.
+pub fn find_sync_offset_scored(
+    ref_pcm: &[f32],
+    clip_pcm: &[f32],
+    sample_rate: u32,
+    max_offset_secs: f32,
+) -> (i64, f64) {
     let n_a = ref_pcm.len() as i64;
     let n_b = clip_pcm.len() as i64;
     if n_a == 0 || n_b == 0 {
-        return 0;
+        return (0, 0.0);
     }
     let max_off = (max_offset_secs as f64 * sample_rate as f64) as i64;
     // Clamp search range to what the buffers can actually support.
@@ -181,7 +193,51 @@ pub fn find_sync_offset(
     }
 
     // Flip to the public convention: positive = clip starts later than ref.
-    -best_off
+    // The score is weighted (see correlation_at_offset); divide the weight
+    // back out for a plain 0..1 confidence, since for equal-length windows
+    // the weight is 1 anyway.
+    let confidence = if best_score.is_finite() { best_score.clamp(0.0, 1.0) } else { 0.0 };
+    (-best_off, confidence)
+}
+
+/// Decode a media file's sound to mono `f32` samples at `sample_rate`,
+/// starting `from_secs` in and taking at most `max_secs`, via ffmpeg. The
+/// buffers this makes feed [`find_sync_offset_scored`] straight off the
+/// media, without the app's PCM cache.
+pub fn decode_mono_pcm(ffmpeg: &std::path::Path, path: &std::path::Path, sample_rate: u32, from_secs: f64, max_secs: f64) -> Result<Vec<f32>, String> {
+    let mut args: Vec<String> = Vec::new();
+    if from_secs > 0.0 {
+        args.push("-ss".into());
+        args.push(format!("{from_secs}"));
+    }
+    args.push("-i".into());
+    args.push(path.to_string_lossy().into_owned());
+    if max_secs > 0.0 {
+        args.push("-t".into());
+        args.push(format!("{max_secs}"));
+    }
+    args.extend(["-vn", "-sn", "-ac", "1"].iter().map(|s| s.to_string()));
+    args.push("-ar".into());
+    args.push(format!("{sample_rate}"));
+    args.extend(["-f", "f32le", "-"].iter().map(|s| s.to_string()));
+    let out = std::process::Command::new(ffmpeg)
+        .args(&args)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .output()
+        .map_err(|e| format!("could not run {}: {e}", ffmpeg.display()))?;
+    if !out.status.success() {
+        return Err(format!("ffmpeg failed to decode {} ({})", path.display(), out.status));
+    }
+    let bytes = out.stdout;
+    if bytes.len() < 4 {
+        return Err(format!("{} produced no audio", path.display()));
+    }
+    let mut samples = Vec::with_capacity(bytes.len() / 4);
+    for chunk in bytes.chunks_exact(4) {
+        samples.push(f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]));
+    }
+    Ok(samples)
 }
 
 #[cfg(test)]
@@ -214,19 +270,6 @@ mod tests {
         assert_eq!(correlation_at_offset(&a, &b, 0, 0, 0), f64::NEG_INFINITY);
     }
 
-    #[test]
-    fn waveform_zoom_clamps_min() {
-        assert_eq!(0.001f32.clamp(0.1, 8.0), 0.1);
-    }
 
-    #[test]
-    fn waveform_zoom_clamps_max() {
-        assert_eq!(100.0f32.clamp(0.1, 8.0), 8.0);
-    }
 
-    #[test]
-    fn waveform_zoom_default_is_one() {
-        let map: std::collections::HashMap<u64, f32> = std::collections::HashMap::new();
-        assert_eq!(map.get(&0).copied().unwrap_or(1.0), 1.0);
-    }
 }

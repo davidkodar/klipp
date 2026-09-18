@@ -22,6 +22,7 @@
 //! and audio excerpts, on demand.
 
 pub mod audio;
+pub mod audio_sync;
 pub mod motion;
 pub mod report;
 pub mod sheet;
