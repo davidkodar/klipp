@@ -1,0 +1,98 @@
+# Maintainer: David Kodar <fds.bolin@gmail.com>
+#
+# Builds Klipp from the checkout this file sits in (../) and installs it
+# as a pacman package. Run `makepkg -si` from this directory.
+#
+# Layout: the three binaries and the bundled LUTs live together under
+# /usr/lib/klipp so Klipp's exe-adjacent asset lookup finds them, and
+# /usr/bin/{klipp,klipp-mcp} are symlinks to the real binaries (Linux
+# resolves them via /proc/self/exe, so the lookup still lands in
+# /usr/lib/klipp).
+
+pkgname=klipp-git
+pkgver=0
+pkgrel=1
+pkgdesc="GPU-accelerated non-linear video editor for Linux, with a linear-light colour pipeline and an AI assistant"
+arch=('x86_64')
+url="https://github.com/davidkodar/klipp"
+license=('GPL-3.0-only')
+provides=('klipp')
+conflicts=('klipp')
+# Runtime libraries the binaries link (directly or by dlopen) and the
+# programs Klipp runs. ffmpeg pulls the whole codec / libplacebo /
+# librsvg closure, which covers most of the transitive libraries.
+depends=(
+  'ffmpeg'              # libav* + swscale/swresample, and the ffmpeg/ffprobe binaries
+  'vulkan-icd-loader'   # Vulkan: GPU playback, effects, scopes, and Whisper on the GPU
+  'alsa-lib'            # audio output (cpal)
+  'lilv'                # the LV2 audio-plugin host
+  'fontconfig'          # font matching (fc-match) and text
+  'freetype2'           # glyph rasterising
+  'libxkbcommon'        # keyboard handling (Wayland)
+  'wayland'             # the Wayland window (Omarchy / Hyprland)
+  'gcc-libs'            # libstdc++ / libgcc_s
+  'hicolor-icon-theme'  # the icon theme the launcher entry lives in
+  'xdg-utils'           # opening files and links (xdg-open)
+  'pciutils'            # GPU probing (lspci)
+)
+makedepends=(
+  'rust'
+  'cargo'
+  'clang'
+  'lld'
+  'cmake'
+  'pkgconf'
+  'vulkan-headers'      # build-time: the Whisper GPU build compiles against these
+  'shaderc'             # build-time: glslc compiles the Whisper shaders into the binary
+  'git'
+)
+optdepends=(
+  'pipewire: PipeWire audio output (ALSA is used otherwise)'
+  'cudnn: NVIDIA GPU acceleration for the ONNX / Candle AI models'
+  'frei0r-plugins: extra video effects through the frei0r host'
+  'lsp-plugins-lv2: a large set of audio effects for the LV2 host'
+  'calf: more LV2 audio effects'
+)
+options=('!lto' '!debug')
+
+# The source is the repository this PKGBUILD lives in; nothing is
+# downloaded. `_root` is the checkout root (the parent of packaging/).
+_root="${startdir}/.."
+
+pkgver() {
+  cd "$_root"
+  # A monotonic version from git: r<commit-count>.<short-sha>.
+  printf 'r%s.%s' "$(git rev-list --count HEAD)" "$(git rev-parse --short HEAD)"
+}
+
+build() {
+  cd "$_root"
+  # Lay out the Vulkan SDK directory the speech model's build expects.
+  ./scripts/vulkan-sdk.sh
+  # klipp-app is the editor, klipp-hdr-out the HDR reference presenter it
+  # spawns, klipp-mcp the Model Context Protocol server for the agent.
+  cargo build --release --locked -p klipp-app -p klipp-hdr-out -p klipp-mcp
+}
+
+package() {
+  cd "$_root"
+
+  # Binaries and the bundled LUTs, kept together for the exe-adjacent lookup.
+  install -Dm755 target/release/klipp-app "${pkgdir}/usr/lib/klipp/klipp"
+  install -Dm755 target/release/klipp-hdr-out "${pkgdir}/usr/lib/klipp/klipp-hdr-out"
+  install -Dm755 target/release/klipp-mcp "${pkgdir}/usr/lib/klipp/klipp-mcp"
+  cp -r assets/luts "${pkgdir}/usr/lib/klipp/assets/luts"
+
+  # The commands on PATH: the editor, and the MCP server an agent points at.
+  install -dm755 "${pkgdir}/usr/bin"
+  ln -s /usr/lib/klipp/klipp "${pkgdir}/usr/bin/klipp"
+  ln -s /usr/lib/klipp/klipp-mcp "${pkgdir}/usr/bin/klipp-mcp"
+
+  # Desktop entry and icons for the Omarchy app menu.
+  install -Dm644 assets/klipp.desktop "${pkgdir}/usr/share/applications/klipp.desktop"
+  for size in 16 22 24 32 36 48 64 72 96 128 192 256 384 512; do
+    icon="assets/icons/klipp_app_icons/hicolor/${size}x${size}/apps/klipp.png"
+    [ -f "$icon" ] && install -Dm644 "$icon" \
+      "${pkgdir}/usr/share/icons/hicolor/${size}x${size}/apps/klipp.png"
+  done
+}

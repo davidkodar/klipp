@@ -31,6 +31,22 @@ Klipp is a native Linux NLE built around three ideas:
 
 Large parts of the editor are built and usable, but Klipp makes no stability commitment: there is no release schedule, no pre-built binaries, and no support. Building from source, you should still expect rough edges, breaking changes, and areas that are further along than others (reliability hardening, soak-testing, and broad AMD/Intel GPU validation are ongoing). If you need a Linux NLE to rely on today, use Kdenlive, DaVinci Resolve, or Olive.
 
+Klipp is developed and tested day-to-day on [Omarchy](https://omarchy.org/) 4.0.4 (DHH's Arch- and Hyprland-based Linux). Any recent Arch or Arch-derived system should behave the same; other distributions are untested.
+
+Progress is fast right now, most of all on the AI framework: the control socket, the MCP server, the footage analysers, and the professional-finishing operations an agent uses are landing quickly, so the assistant surface changes week to week.
+
+### Try it on Omarchy / Arch
+
+There's a `makepkg` recipe under [`packaging/`](packaging/) that builds Klipp from source and installs it as a normal pacman package, with a launcher entry that shows up in the Omarchy app menu:
+
+```bash
+git clone https://github.com/davidkodar/klipp
+cd klipp/packaging
+makepkg -si          # builds from source, then installs klipp-git via pacman
+```
+
+`makepkg` pulls the build tools it needs, runs the release build (this takes a while the first time), and installs the `klipp` and `klipp-mcp` commands plus the desktop entry and icons. Everything built-in works out of the box — GPU playback, the bundled effects, LUTs and fonts, and the MCP tools; the AI models (speech and vision) download themselves on first use, verified against the bundled manifest. Remove it later with `pacman -R klipp-git`. The [Building](#building) section below covers the plain `cargo` workflow for development.
+
 ## Building
 
 ### Prerequisites
@@ -88,9 +104,11 @@ See [docs/src/getting-started/installation.md](docs/src/getting-started/installa
 Klipp exposes a running instance to an agent so an edit can be built through tools alone. Two crates carry it:
 
 - **`klipp-control`** opens a Unix-socket JSON protocol on a running app: read the state, run analysers, apply undoable edit operations, grab frames and scopes, export.
-- **`klipp-mcp`** wraps that socket as a [Model Context Protocol](https://modelcontextprotocol.io) server, so any MCP client can call the tools.
+- **`klipp-mcp`** wraps that socket as a [Model Context Protocol](https://modelcontextprotocol.io) server, so any MCP client can call the tools. The package installs it as the `klipp-mcp` command; point your MCP client at it while Klipp is running, and the tools appear.
 
 Between them an agent can orient itself, import and analyse footage (shot boundaries, silence and loudness, motion, transcript, framing), find clean cut points and cut a long take down to its selects, place clips, grade to the scope numbers and match shots for continuity, pull HSL secondaries, apply LUT looks, clean wind / hum / hiss and sync dual-system sound, caption from the transcript, run a delivery quality-check (picture **and** sound), and export — each step one undo. The craft guidance the assistant follows lives in [`assets/craft/`](assets/craft/).
+
+None of it needs a particular GPU vendor: the AI runs on CPU (the ONNX and Candle vision models) and Vulkan (Whisper speech, and all playback, effects and scopes), and video decode / encode fall back to software. CUDA is an optional accelerator only — nothing requires it.
 
 ## Architecture
 
@@ -167,6 +185,15 @@ Klipp ships ~300 film-emulation and cinematic LUTs for colour grading:
 - **Film Emulation LUTs** — derived from [G'MIC](https://gmic.eu/) film simulation presets, packaged by [YahiaAngelo/Film-Luts](https://github.com/YahiaAngelo/Film-Luts). Includes Kodak Portra, Tri-X, Fuji Velvia, Superia, Provia, Agfa, Polaroid, and many more. Licensed under **MIT**.
 - **Cinematic Blockbuster LUTs** — by [IRCGraphic](https://github.com/IRCGraphic/D-Cinelike-and-Normal-Blockbuster-LUTs). Licensed under **CC0 1.0** (public domain).
 
+### Fonts
+
+Klipp bundles these typefaces for its title tool, each under the **SIL Open Font License 1.1**:
+
+- **Inter** — [Rasmus Andersson](https://rsms.me/inter/)
+- **Bebas Neue** — [Ryoichi Tsunekawa / Dharma Type](https://www.dafont.com/bebas-neue.font)
+- **Libre Baskerville** — [Impallari Type](https://github.com/impallari/Libre-Baskerville)
+- **JetBrains Mono** — [JetBrains](https://www.jetbrains.com/lp/mono/)
+
 ### Icons
 
 - **Phosphor Icons** — [phosphoricons.com](https://phosphoricons.com/). Licensed under **MIT**.
@@ -174,6 +201,10 @@ Klipp ships ~300 film-emulation and cinematic LUTs for colour grading:
 ### Models
 
 See the AI Models table above; each model retains its upstream attribution and licence.
+
+## Acknowledgements
+
+Klipp stands on a lot of open-source work. Beyond the crates in the tech stack, it links or builds against, and is grateful to, [FFmpeg](https://ffmpeg.org/) (decode / encode / analysis), the [Vulkan](https://www.vulkan.org/) loader and [wgpu](https://wgpu.rs/) (all GPU work), [whisper.cpp / ggml](https://github.com/ggerganov/whisper.cpp) (speech, via [whisper-rs](https://crates.io/crates/whisper-rs)), [egui](https://github.com/emilk/egui) (UI), [cpal](https://crates.io/crates/cpal) and the [LV2](https://lv2plug.in/) ecosystem via [lilv](https://gitlab.com/lv2/lilv) (audio), and [frei0r](https://frei0r.dyne.org/) (video plugins). Each is used under its own licence. Contributions of missing or incorrect attribution are welcome — open an issue.
 
 ## License
 
