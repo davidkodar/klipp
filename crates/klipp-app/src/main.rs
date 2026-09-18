@@ -186,6 +186,8 @@ fn main() -> Result<()> {
                      klipp_timeline=debug,klipp_jobs=debug,klipp_title=debug,\
                      klipp_nodes=debug,klipp_compose=debug,\
                      klipp_ml=debug,klipp_ml_candle=debug,klipp_ml_ort=debug,\
+                     klipp_render=debug,klipp_export=debug,klipp_analysis=debug,\
+                     klipp_control=debug,klipp_document=debug,\
                      wgpu=warn,naga=warn",
                 )
             }),

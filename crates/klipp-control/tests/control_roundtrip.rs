@@ -626,6 +626,9 @@ fn export_is_refused_where_it_would_go_wrong_and_status_reads_the_queue() {
         stage: "Encoding".into(),
         error: None,
         loudness: None,
+        hardware: "Decode: CUDA (NVDEC) | Encode: h264_nvenc".into(),
+        fps: Some(28.0),
+        eta_secs: Some(2),
     });
     let st = h.ok(json!({ "method": "export_status" }));
     assert_eq!(st["jobs"][0]["status"], json!("rendering"));

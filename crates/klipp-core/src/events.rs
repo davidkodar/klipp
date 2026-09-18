@@ -3767,4 +3767,14 @@ pub struct ExportStatus {
     pub stage: String,
     pub error: Option<String>,
     pub loudness: Option<String>,
+    /// How the job decodes and encodes: "Decode: CUDA (NVDEC) | Encode: …".
+    #[serde(default)]
+    pub hardware: String,
+    /// Frames a second since the job started, and how long the rest
+    /// should take at that rate. A ninety-second piece once took twenty
+    /// minutes with no way to tell in advance.
+    #[serde(default)]
+    pub fps: Option<f32>,
+    #[serde(default)]
+    pub eta_secs: Option<u64>,
 }
