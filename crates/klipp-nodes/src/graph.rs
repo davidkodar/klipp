@@ -365,6 +365,42 @@ impl NodeGraph {
         new_id
     }
 
+    /// Ensure a single Qualifier node (an HSL secondary), wired after the
+    /// corrector so it keys and corrects the graded image, and return its
+    /// id. If one exists already it is reused.
+    pub fn ensure_qualifier(&mut self) -> NodeId {
+        if let Some(idx) = self.nodes.iter().position(|n| n.kind == NodeKind::Qualifier) {
+            return self.nodes[idx].id;
+        }
+        let new_id = NodeId::new_v4();
+        let output_id = self.output_node_id;
+        let insert_at = self.nodes.iter().position(|n| n.id == output_id)
+            .unwrap_or(self.nodes.len());
+        self.nodes.insert(insert_at, Node {
+            id: new_id,
+            kind: NodeKind::Qualifier,
+            label: "Qualifier".to_string(),
+            enabled: true,
+            params: NodeParams::default(),
+            keyframes: NodeKeyframeTracks::default(),
+            output_link: None,
+            input_links: Vec::new(),
+        });
+        for edge in &mut self.edges {
+            if edge.to_node == output_id && edge.to_port == 0 {
+                edge.to_node = new_id;
+                edge.to_port = 0;
+            }
+        }
+        self.edges.push(Edge { from_node: new_id, from_port: 0, to_node: output_id, to_port: 0 });
+        if let Some(out_pos) = self.node_positions.get(&output_id).copied() {
+            self.node_positions.insert(new_id, NodePos { x: out_pos.x - 160.0, y: out_pos.y - 120.0 });
+        } else {
+            self.node_positions.insert(new_id, NodePos { x: 280.0, y: -120.0 });
+        }
+        new_id
+    }
+
     /// Ensure a single 3D-LUT node, wired last in the chain (after the
     /// corrector, so a creative look sits on the graded image), and
     /// return its id. If one exists already it is reused.

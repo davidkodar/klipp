@@ -934,6 +934,12 @@ fn tool_definitions() -> Vec<Value> {
               reframe {clip_id, scale?, x?, y?} — punch in and reposition a picture: scale zooms \
               (1 as shot, up to 4), x and y pan -1..1. Salvage a wide or badly-framed shot, \
               or set a slow push; it sits before other effects.\n\
+              qualify {clip_id, target?|hue?, hue_width?, sat_low?, sat_high?, lum_low?, lum_high?, \
+              invert?, exposure?, saturation?, hue_shift?, temperature?, remove?} — a secondary: \
+              key a colour or tone (target skin/sky/foliage/reds…, or a hue in degrees, with \
+              saturation and luminance windows) and correct only it (exposure, saturation, \
+              hue_shift, temperature); invert grades all but the key. Fix a sky, calm a loud \
+              shirt, warm skin.\n\
               transition {clip_id, kind?, secs?} — a transition between a clip and the one after \
               it on its track, secs long (0.5 default), centred on the cut. kind is cross_dissolve \
               (the default, and all an interview or documentary wants), dip_to_black, dip_to_white, \
@@ -1023,6 +1029,12 @@ fn tool_definitions() -> Vec<Value> {
               reframe {clip_id, scale?, x?, y?} — punch in and reposition a picture: scale zooms \
               (1 as shot, up to 4), x and y pan -1..1. Salvage a wide or badly-framed shot, \
               or set a slow push; it sits before other effects.\n\
+              qualify {clip_id, target?|hue?, hue_width?, sat_low?, sat_high?, lum_low?, lum_high?, \
+              invert?, exposure?, saturation?, hue_shift?, temperature?, remove?} — a secondary: \
+              key a colour or tone (target skin/sky/foliage/reds…, or a hue in degrees, with \
+              saturation and luminance windows) and correct only it (exposure, saturation, \
+              hue_shift, temperature); invert grades all but the key. Fix a sky, calm a loud \
+              shirt, warm skin.\n\
               transition {clip_id, kind?, secs?} — a transition between a clip and the one after \
               it on its track, secs long (0.5 default), centred on the cut. kind is cross_dissolve \
               (the default, and all an interview or documentary wants), dip_to_black, dip_to_white, \

@@ -158,6 +158,13 @@ exist until the plan runs.
   from -1 to 1. Use it to salvage a wide or badly-framed shot, to fit a
   vertical delivery, or to set a slow push. It sits before other
   effects, so a vignette or grade after it sees the reframed picture.
+- `qualify {clip_id, target?|hue?, …, exposure?, saturation?, hue_shift?,
+  temperature?}`: a secondary. Key a colour or tone — a named `target`
+  (skin, sky, foliage, reds, blues…) or an explicit `hue` in degrees,
+  narrowed by `hue_width` and saturation/luminance windows — and correct
+  only what is keyed. `invert` grades everything but the key; `remove`
+  clears it. Fix a sky, calm a loud shirt, keep skin warm while cooling
+  the rest. Grade the primary first, then reach for a secondary.
 - `look` (the `klipp_look` tool): put a creative look — a bundled 3D
   LUT — on a picture clip, as one node after the grade so it sits on the
   corrected image. `name` is a look from `klipp_looks` (category/name, or

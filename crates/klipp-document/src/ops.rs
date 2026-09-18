@@ -314,6 +314,41 @@ pub enum Op {
         #[serde(default)]
         remove: bool,
     },
+    /// A secondary (HSL qualifier) grade on a picture clip: key a colour
+    /// or tone range — by a named `target` (skin, sky, foliage, reds…) or
+    /// an explicit `hue` with `hue_width`, and optional saturation and
+    /// luminance windows — then correct only what is keyed with
+    /// `exposure`, `saturation`, `hue_shift` or `temperature`. `invert`
+    /// grades everything but the key; `remove` clears it.
+    Qualify {
+        clip_id: ClipRef,
+        #[serde(default)]
+        target: Option<String>,
+        #[serde(default)]
+        hue: Option<f32>,
+        #[serde(default)]
+        hue_width: Option<f32>,
+        #[serde(default)]
+        sat_low: Option<f32>,
+        #[serde(default)]
+        sat_high: Option<f32>,
+        #[serde(default)]
+        lum_low: Option<f32>,
+        #[serde(default)]
+        lum_high: Option<f32>,
+        #[serde(default)]
+        invert: bool,
+        #[serde(default)]
+        exposure: Option<f32>,
+        #[serde(default)]
+        saturation: Option<f32>,
+        #[serde(default)]
+        hue_shift: Option<f32>,
+        #[serde(default)]
+        temperature: Option<f32>,
+        #[serde(default)]
+        remove: bool,
+    },
     /// Change a clip's speed. `speed` above 1 is faster and shorter, below
     /// 1 slower and longer (0.5 is half speed); the clips after it on the
     /// track keep their place, so a gap or an overlap is yours to close.
@@ -807,6 +842,11 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
         Op::Look { clip_id, lut_path, name, opacity, remove } => {
             let (ti, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
             apply_look(seq, pool, i, ti, clip, lut_path, name.as_deref(), *opacity, *remove)
+        }
+        Op::Qualify { clip_id, target, hue, hue_width, sat_low, sat_high, lum_low, lum_high, invert, exposure, saturation, hue_shift, temperature, remove } => {
+            let (ti, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
+            let q = QualifyArgs { target: target.as_deref(), hue: *hue, hue_width: *hue_width, sat_low: *sat_low, sat_high: *sat_high, lum_low: *lum_low, lum_high: *lum_high, invert: *invert, exposure: *exposure, saturation: *saturation, hue_shift: *hue_shift, temperature: *temperature, remove: *remove };
+            qualify(seq, pool, i, ti, clip, q)
         }
         Op::Retime { clip_id, speed } => {
             let (ti, ci, clip) = resolve_clip(seq, fps, clip_id, i)?;
@@ -1822,6 +1862,126 @@ fn apply_look(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip
     } else {
         format!("look on {}: {} at {:.0}%", clip_name(seq, pool, clip), label(), op * 100.0)
     };
+    Ok((what, EditCommand::SetNodeGraph { clip_id: clip.id, old_graph: clip.node_graph.clone(), new_graph: graph }, vec![clip.id]))
+}
+
+struct QualifyArgs<'a> {
+    target: Option<&'a str>,
+    hue: Option<f32>,
+    hue_width: Option<f32>,
+    sat_low: Option<f32>,
+    sat_high: Option<f32>,
+    lum_low: Option<f32>,
+    lum_high: Option<f32>,
+    invert: bool,
+    exposure: Option<f32>,
+    saturation: Option<f32>,
+    hue_shift: Option<f32>,
+    temperature: Option<f32>,
+    remove: bool,
+}
+
+/// A named colour target for the qualifier: its hue centre and width in
+/// degrees, where colourists usually key each.
+fn qualifier_target(name: &str) -> Option<(f32, f32)> {
+    match name.trim().to_lowercase().as_str() {
+        "skin" | "skin_tone" | "skintone" | "faces" => Some((28.0, 18.0)),
+        "reds" | "red" => Some((0.0, 20.0)),
+        "oranges" | "orange" => Some((30.0, 20.0)),
+        "yellows" | "yellow" => Some((55.0, 25.0)),
+        "greens" | "green" | "foliage" | "grass" => Some((120.0, 50.0)),
+        "cyans" | "cyan" | "teal" => Some((190.0, 30.0)),
+        "blues" | "blue" | "sky" => Some((220.0, 40.0)),
+        "magentas" | "magenta" | "purple" | "purples" => Some((300.0, 30.0)),
+        _ => None,
+    }
+}
+
+fn qualify(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip, a: QualifyArgs) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
+    require_picture(seq, pool, i, ti, clip, "grade a secondary on")?;
+    if a.remove {
+        let has = clip.node_graph.nodes.iter().any(|n| n.kind == klipp_nodes::NodeKind::Qualifier && n.params.qualifier.as_ref().is_some_and(|q| q.enabled));
+        if !has {
+            return Err(refuse(i, "no secondary to remove", "this clip has no qualifier on it"));
+        }
+        let mut graph = clip.node_graph.clone();
+        for node in graph.nodes.iter_mut().filter(|n| n.kind == klipp_nodes::NodeKind::Qualifier) {
+            if let Some(q) = node.params.qualifier.as_mut() {
+                q.enabled = false;
+                q.exposure = 0.0;
+                q.saturation = 1.0;
+                q.hue_shift = 0.0;
+                q.temperature = 0.0;
+            }
+        }
+        let what = format!("clear the secondary on {}", clip_name(seq, pool, clip));
+        return Ok((what, EditCommand::SetNodeGraph { clip_id: clip.id, old_graph: clip.node_graph.clone(), new_graph: graph }, vec![clip.id]));
+    }
+
+    // Resolve a named target to a hue centre/width, unless one was given.
+    let (mut hue_center, mut hue_width) = (a.hue, a.hue_width);
+    if let Some(name) = a.target {
+        let (c, w) = qualifier_target(name).ok_or_else(|| refuse(i, format!("\"{name}\" is not a colour I key"), "target one of: skin, reds, oranges, yellows, greens, cyans, blues, magentas — or give a hue in degrees"))?;
+        hue_center.get_or_insert(c);
+        hue_width.get_or_insert(w);
+    }
+
+    let key_given = hue_center.is_some() || a.sat_low.is_some() || a.sat_high.is_some() || a.lum_low.is_some() || a.lum_high.is_some();
+    let corr_given = a.exposure.is_some() || a.saturation.is_some() || a.hue_shift.is_some() || a.temperature.is_some();
+    if !key_given {
+        return Err(refuse(i, "nothing keyed", "say what to key: a target, a hue, or a saturation or luminance window"));
+    }
+    if !corr_given {
+        return Err(refuse(i, "nothing to change in the keyed range", "give exposure, saturation, hue_shift or temperature for the secondary"));
+    }
+
+    // (param name, value, low, high) — each validated then applied.
+    let knobs: [(&str, Option<f32>, f32, f32); 10] = [
+        ("qual_hue_center", hue_center, 0.0, 360.0),
+        ("qual_hue_width", hue_width, 1.0, 180.0),
+        ("qual_sat_low", a.sat_low, 0.0, 1.0),
+        ("qual_sat_high", a.sat_high, 0.0, 1.0),
+        ("qual_lum_low", a.lum_low, 0.0, 1.0),
+        ("qual_lum_high", a.lum_high, 0.0, 1.0),
+        ("qual_exposure", a.exposure, -3.0, 3.0),
+        ("qual_saturation", a.saturation, 0.0, 3.0),
+        ("qual_hue_shift", a.hue_shift, -180.0, 180.0),
+        ("qual_temperature", a.temperature, -1.0, 1.0),
+    ];
+    for (name, v, lo, hi) in knobs {
+        if let Some(v) = v {
+            if !v.is_finite() || v < lo || v > hi {
+                return Err(refuse(i, format!("{} {v} is out of range", name.trim_start_matches("qual_")), format!("give it between {lo} and {hi}")));
+            }
+        }
+    }
+
+    let mut graph = clip.node_graph.clone();
+    if graph.is_identity() {
+        graph = klipp_nodes::defaults::default_graph();
+    }
+    let qid = graph.ensure_qualifier();
+    let node = graph.nodes.iter_mut().find(|n| n.id == qid).expect("ensure_qualifier made it");
+    for (name, v, _, _) in knobs {
+        if let Some(v) = v {
+            if !node.params.apply_override(name, v) {
+                return Err(refuse(i, format!("the qualifier has no \"{name}\""), "this is a bug: tell the user the secondary param went nowhere"));
+            }
+        }
+    }
+    if a.invert {
+        node.params.apply_override("qual_invert", 1.0);
+    }
+
+    let mut said = Vec::new();
+    if let Some(name) = a.target { said.push(name.to_string()); }
+    else if let Some(h) = hue_center { said.push(format!("hue {h:.0}°")); }
+    if a.invert { said.push("inverted".into()); }
+    let mut corr = Vec::new();
+    for (label, v) in [("exposure", a.exposure), ("saturation", a.saturation), ("hue_shift", a.hue_shift), ("temperature", a.temperature)] {
+        if let Some(v) = v { corr.push(format!("{label} {v}")); }
+    }
+    let what = format!("secondary on {}: key {}, {}", clip_name(seq, pool, clip), said.join(", "), corr.join(", "));
     Ok((what, EditCommand::SetNodeGraph { clip_id: clip.id, old_graph: clip.node_graph.clone(), new_graph: graph }, vec![clip.id]))
 }
 
@@ -2912,6 +3072,47 @@ mod tests {
         assert!(bad(Op::Look { clip_id: ClipRef::Id(a), lut_path: String::new(), name: None, opacity: None, remove: false }).why.contains("no LUT"));
         assert!(bad(Op::Look { clip_id: ClipRef::Id(a), lut_path: String::new(), name: None, opacity: None, remove: true }).why.contains("no look to remove"));
         assert!(bad(Op::Look { clip_id: ClipRef::Id(a), lut_path: "/x.cube".into(), name: None, opacity: Some(9.0), remove: false }).why.contains("out of range"));
+    }
+
+    #[test]
+    fn a_secondary_keys_a_colour_and_corrects_only_it() {
+        let (seq, pool, _media, a, _) = fixture();
+        let q = |target: Option<&str>, hue: Option<f32>, exposure: Option<f32>, saturation: Option<f32>, remove: bool| Op::Qualify {
+            clip_id: ClipRef::Id(a), target: target.map(|s| s.to_string()), hue, hue_width: None,
+            sat_low: None, sat_high: None, lum_low: None, lum_high: None, invert: false,
+            exposure, saturation, hue_shift: None, temperature: None, remove,
+        };
+
+        // Key the sky and cool it down.
+        let plan = resolve(&seq, &pool, &[q(Some("sky"), None, None, Some(0.6), false)]).unwrap();
+        assert!(plan.steps[0].what.contains("sky") && plan.steps[0].what.contains("saturation 0.6"), "{}", plan.steps[0].what);
+        let EditCommand::SetNodeGraph { new_graph, .. } = &plan.steps[0].edit else { panic!("node-graph edit") };
+        let node = new_graph.nodes.iter().find(|n| n.kind == klipp_nodes::NodeKind::Qualifier).expect("a qualifier");
+        let qs = node.params.qualifier.as_ref().expect("qualifier settings");
+        assert!(qs.enabled && (qs.hue_center - 220.0).abs() < 1.0 && (qs.saturation - 0.6).abs() < 1e-4);
+
+        // Reuse, not stack: a second qualify edits the same node, and undo clears it.
+        let mut seqs = vec![seq.clone()];
+        let mut p = pool.clone();
+        let mut fps = seq.fps;
+        {
+            let mut view = crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut p, fps: &mut fps };
+            view.apply_forward(&plan.steps[0].edit);
+        }
+        let plan2 = resolve(&seqs[0], &p, &[q(None, Some(28.0), Some(0.3), None, false)]).unwrap();
+        let EditCommand::SetNodeGraph { new_graph: g2, .. } = &plan2.steps[0].edit else { panic!("edit") };
+        assert_eq!(g2.nodes.iter().filter(|n| n.kind == klipp_nodes::NodeKind::Qualifier).count(), 1, "one qualifier");
+        let plan3 = resolve(&seqs[0], &p, &[q(None, None, None, None, true)]).unwrap();
+        let EditCommand::SetNodeGraph { new_graph: g3, .. } = &plan3.steps[0].edit else { panic!("edit") };
+        assert!(g3.nodes.iter().filter(|n| n.kind == klipp_nodes::NodeKind::Qualifier).all(|n| n.params.qualifier.as_ref().map(|q| !q.enabled).unwrap_or(true)), "secondary cleared");
+
+        // Refusals: no key, no correction, unknown target, out of range.
+        let bad = |op: Op| resolve(&seq, &pool, &[op]).unwrap_err();
+        assert!(bad(q(None, None, Some(0.5), None, false)).why.contains("nothing keyed"));
+        assert!(bad(q(Some("skin"), None, None, None, false)).why.contains("nothing to change"));
+        assert!(bad(q(Some("teapot"), None, Some(0.5), None, false)).why.contains("not a colour"));
+        assert!(bad(q(None, Some(999.0), Some(0.5), None, false)).why.contains("out of range"));
+        assert!(bad(q(None, None, None, None, true)).why.contains("no secondary to remove"));
     }
 
     #[test]
