@@ -93,9 +93,17 @@ fn read_key(env: &str, toml_key: &str) -> Option<String> {
     None
 }
 
-/// The Jamendo client id, if the user has set one.
+/// A key baked in at build time (release binaries carry the app's own),
+/// used only when the user has set none of their own.
+fn baked(v: Option<&'static str>) -> Option<String> {
+    v.map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
+}
+
+/// The Jamendo client id: a user-supplied key first (env or config), then
+/// the one baked into a release build.
 pub fn jamendo_client_id() -> Option<String> {
     read_key("KLIPP_JAMENDO_CLIENT_ID", "jamendo_client_id")
+        .or_else(|| baked(option_env!("KLIPP_JAMENDO_CLIENT_ID_BAKED")))
 }
 
 /// Whether music search is configured.
@@ -128,9 +136,11 @@ fn cc_label(url: &str) -> (String, bool) {
     (name.to_string(), commercial)
 }
 
-/// The Freesound API token, if the user has set one.
+/// The Freesound API token: a user-supplied key first (env or config),
+/// then the one baked into a release build.
 pub fn freesound_token() -> Option<String> {
     read_key("KLIPP_FREESOUND_TOKEN", "freesound_token")
+        .or_else(|| baked(option_env!("KLIPP_FREESOUND_TOKEN_BAKED")))
 }
 
 /// Whether sound-effect search is configured.
