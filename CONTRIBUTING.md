@@ -18,10 +18,15 @@ You need:
   libswresample-dev`.
 * **lld** — the workspace is configured to link with `lld` via
   `.cargo/config.toml`. `pacman -S lld` or `apt install lld`.
-* **Vulkan** — wgpu needs a working Vulkan ICD. Nvidia users: note
-  that CachyOS puts `nvidia_icd.json` under `/usr/share/vulkan/icd.d/`
-  rather than `/etc/vulkan/icd.d/`, so the binary sets `VK_DRIVER_FILES`
-  at startup if it finds the file there.
+* **Vulkan** — wgpu needs a working Vulkan ICD at runtime. Nvidia
+  users: note that CachyOS puts `nvidia_icd.json` under
+  `/usr/share/vulkan/icd.d/` rather than `/etc/vulkan/icd.d/`, so the
+  binary sets `VK_DRIVER_FILES` at startup if it finds the file there.
+* **Vulkan headers + `glslc` / `shaderc`** — build-time only. The
+  speech-transcription model (Whisper via `whisper-rs`) runs on the GPU
+  through Vulkan and compiles its shaders into the binary. Run
+  `./scripts/vulkan-sdk.sh` once to lay out the SDK directory the build
+  expects.
 * **PipeWire** (recommended) / ALSA — cpal uses whichever is available.
 
 ## Running
@@ -88,10 +93,16 @@ None of these are wired into CI yet. Contributions welcome.
    Our own `.klipp` format is trusted because `save::save_project`
    writes it.
 
-6. **Colour math is currently 8-bit sRGB-byte.** If you're adding a
-   new effect, match the convention (the CPU / GPU pair must produce
-   identical output). When the linear-light pipeline lands, every
-   effect will flip in one coordinated change.
+6. **Colour math is linear-light f32.** Decoders emit f32 RGBA in the
+   project working space, the grade chain operates on those linear
+   values, and a single display transform at the end encodes for the
+   viewer or the export. A new effect operates on linear f32 RGBA, and
+   its CPU and GPU implementations must produce identical output.
+   Gamut-aware ops carry a `_ws` variant that takes the working space's
+   luma coefficients; the `_bt709` form is a thin wrapper kept for
+   byte-identity with pre-migration code. The ACES output transforms are
+   checked against OCIO — see the colour-pipeline section of
+   `ARCHITECTURE.md`.
 
 7. **WGSL uniform padding** uses individual scalar `_pad0: u32,
    _pad1: u32, …` fields. Never `array<u32, N>` on the WGSL side —
@@ -140,7 +151,9 @@ is always preferable to a crash.
 Before you open a PR (or before you ask me to review, if we're
 pair-shipping):
 
-1. `cargo c` clean — zero new clippy warnings.
+1. `cargo c` clean — zero new clippy warnings. The pre-push git hook
+   enforces this: it runs `clippy -D warnings`, a rustdoc pass, and the
+   workspace tests, and blocks the push on any failure.
 2. `cargo test --workspace` green.
 3. `cargo +nightly check -p klipp-ui` produces no new
    f64→f32-fallback warnings (rust-lang/rust#154024). Run

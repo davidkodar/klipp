@@ -1,28 +1,35 @@
 # Klipp
 
-**Klipp** is a free, open-source non-linear video editor for Linux.
+**Klipp** is a free, open-source, GPU-accelerated non-linear video editor for Linux, with a linear-light colour pipeline and an on-device AI assistant an agent can drive.
 
 > *Klipp* is Swedish for "cut" — the fundamental act of film editing.
 
 ---
 
-## Direction
+## What it is
 
-Things being explored — none finished:
+Klipp is a native Linux NLE built around three ideas:
 
-- A native NLE for Linux with a magnetic timeline
-- A linear-light colour pipeline with ACEScg working space and per-clip source-colourspace detection
-- GPU-accelerated playback, effects, and ML inference
-- On-device AI assist (masking, isolation, segmentation) — no cloud calls
-- Permissive bundled assets so the source stays redistributable
+- **A real editor.** A magnetic timeline with video, audio, title and subtitle tracks; real-time playback that stays on the GPU from decode to display; import of OTIO, FCPXML and MLT projects; and a `.klipp` project format of its own.
+- **A colourist's pipeline.** Grading happens in scene-linear light with an ACEScg working space and camera-log decoders (Sony, Canon, Panasonic, ARRI, Apple, RED). Node-graph grading covers primaries, HSL secondaries, curves, colour wheels and a colour warper; there are ~300 bundled 3D LUTs, GPU scopes, and real HDR (PQ / HLG) grading and export.
+- **An AI-first surface.** A control socket and a Model Context Protocol server let an agent drive a running Klipp: analyse the footage, assemble selects on clean cut points, grade to the scopes, match shots for continuity, clean and sync the sound, caption, quality-check and export — all as undoable operations, with no cloud calls.
+
+## What it can do today
+
+- **Editing** — magnetic multi-track timeline; insert and ripple edits, splits and ripple deletes; J and L cuts; markers; per-clip retime and reframe.
+- **Colour** — scene-linear node-graph grading (primary + HSL secondary qualifiers, curves, wheels, warper), 3D-LUT looks, shot-to-shot colour match, BT.1886 and HDR grade encodings, GPU waveform / parade / vectorscope / histogram, and per-frame scope readings.
+- **Audio** — multi-track mixer with one pan law for playback and export; per-clip DSP (noise reduction, mains-hum removal, de-esser, gate, compressor, EQ, limiter); EBU R128 loudness metering and normalisation; dual-system sound sync by cross-correlation.
+- **Titles, transitions, effects** — a text/title engine with styled runs; over 60 transitions; built-in GPU effects (vignette, film grain, glow, blur, sharpen, stabilisation, transform).
+- **Media management** — bins and rule-based smart bins, markers, shot logging, metadata (EXIF stills, Sony/Canon camera XML sidecars), and CSV/ALE sheets.
+- **On-device AI** — subject masking and segmentation (BiRefNet, MobileSAM, RF-DETR-Seg) and speech transcription (Whisper Large v3 Turbo on the GPU via Vulkan), all local.
+- **Plugins** — OFX 1.5 and frei0r hosts.
+- **Delivery** — export with CPU/GPU render parity and real HDR output; burnt-in or sidecar captions.
 
 ## Status
 
-🚧 **Early development.**
+🚧 **Pre-release, single-developer, moving fast.**
 
-Many subsystems are stubbed, half-built, or actively changing. There is no stability commitment, no release schedule, no pre-built binaries, and no support — if you build it from source, expect to hit rough edges, breakage, and incomplete features. A long list of fundamentals (reliability, soak-testing, AMD/Intel GPU support, large parts of the audio and effects surface) is still ahead of any "usable for real work" milestone.
-
-If you're looking for a Linux NLE you can rely on today, use Kdenlive, DaVinci Resolve, or Olive. Klipp is not a replacement for any of them yet.
+Large parts of the editor are built and usable, but Klipp makes no stability commitment: there is no release schedule, no pre-built binaries, and no support. Building from source, you should still expect rough edges, breaking changes, and areas that are further along than others (reliability hardening, soak-testing, and broad AMD/Intel GPU validation are ongoing). If you need a Linux NLE to rely on today, use Kdenlive, DaVinci Resolve, or Olive.
 
 ## Building
 
@@ -39,9 +46,9 @@ sudo apt install rustup ffmpeg libavcodec-dev libavformat-dev libavutil-dev \
     libpipewire-0.3-dev
 ```
 
-The Vulkan headers and `glslc` are needed to build only: the speech model runs on the GPU through Vulkan (NVIDIA, AMD or Intel), and its shaders are compiled into the binary. A built Klipp needs nothing beyond the GPU driver it already requires.
+The Vulkan headers and `glslc` are build-time only: the speech model runs on the GPU through Vulkan (NVIDIA, AMD or Intel) and its shaders are compiled into the binary. A built Klipp needs nothing beyond the GPU driver it already requires.
 
-For NVIDIA GPU acceleration of AI inference (recommended; not strictly required — Klipp falls back to CPU):
+For NVIDIA GPU acceleration of the ONNX / Candle AI models (recommended, not required — Klipp falls back to CPU):
 
 ```bash
 # Arch / CachyOS
@@ -57,11 +64,11 @@ sudo apt install libcudnn9-cuda-12
 git clone https://github.com/davidkodar/klipp
 cd klipp
 ./scripts/vulkan-sdk.sh   # once: lays out the Vulkan SDK directory the speech model's build expects
-cargo r          # debug build
-cargo rr         # release build
+cargo r                   # debug build (aliased: run -p klipp-app)
+cargo rr                  # release build
 ```
 
-AI features ship enabled by default and run on CPU out of the box. For NVIDIA GPU acceleration:
+AI features ship enabled by default and run on CPU out of the box. For NVIDIA GPU acceleration of the ONNX / Candle models:
 
 ```bash
 cargo r-ort-cuda    # GPU AI for BiRefNet + RF-DETR-Seg (no nvcc needed)
@@ -76,45 +83,61 @@ cargo run -p klipp-app --no-default-features
 
 See [docs/src/getting-started/installation.md](docs/src/getting-started/installation.md) for the build-time vs runtime CUDA distinction and full instructions.
 
+## The AI assistant
+
+Klipp exposes a running instance to an agent so an edit can be built through tools alone. Two crates carry it:
+
+- **`klipp-control`** opens a Unix-socket JSON protocol on a running app: read the state, run analysers, apply undoable edit operations, grab frames and scopes, export.
+- **`klipp-mcp`** wraps that socket as a [Model Context Protocol](https://modelcontextprotocol.io) server, so any MCP client can call the tools.
+
+Between them an agent can orient itself, import and analyse footage (shot boundaries, silence and loudness, motion, transcript, framing), find clean cut points and cut a long take down to its selects, place clips, grade to the scope numbers and match shots for continuity, pull HSL secondaries, apply LUT looks, clean wind / hum / hiss and sync dual-system sound, caption from the transcript, run a delivery quality-check (picture **and** sound), and export — each step one undo. The craft guidance the assistant follows lives in [`assets/craft/`](assets/craft/).
+
 ## Architecture
 
-Klipp is a Cargo workspace with focused crates organised into layers. Dependencies flow in one direction with no cycles.
+Klipp is a 32-crate Cargo workspace organised into layers, with dependencies flowing one way and no cycles. Every crate carries a `//!` overview; `ARCHITECTURE.md` is the system map.
 
 | Crate | Responsibility |
 |---|---|
-| `klipp-core` | Foundation types: IDs, RationalTime, events, errors |
-| `klipp-project` | `.klipp` directory format, serialisation, versioning |
-| `klipp-timeline` | Sequence/Track/Clip/Transition data model, magnetic timeline |
-| `klipp-media` | MediaPool, thumbnails, filmstrip generation |
-| `klipp-nodes` | Per-clip node graph (mattes, correctors, mask combine) |
-| `klipp-engine` | FFmpeg decode (CUDA NVDEC + software), cpal audio, MasterClock |
-| `klipp-effects` | GPU compute-shader effects via wgpu (Vulkan) |
-| `klipp-stab` | Motion stabilisation (sequential frame decoder) |
-| `klipp-scenedetect` | Scene-change detection |
-| `klipp-title` | Title generator (cosmic-text + GPU rasterisation) |
-| `klipp-ml` | Model manifest, registry, downloader, telemetry |
-| `klipp-ml-ort` | ONNX inference via `ort` (BiRefNet, RF-DETR-Seg) |
-| `klipp-ml-candle` | Pure-Rust inference via `candle` (MobileSAM) |
-| `klipp-jobs` | Background job queue (export, stabilise, scene detect, AI) |
-| `klipp-ui` | egui/eframe panels, command palette, theme registry |
+| `klipp-core` | Foundation types: IDs, rational time, events, config, errors |
+| `klipp-project` | `.klipp` project format, serialisation, OTIO / FCPXML / MLT import |
+| `klipp-timeline` | Sequence / track / clip model and the magnetic-timeline editor |
+| `klipp-media` | Media pool, bins, thumbnails, waveforms, on-disk caches |
+| `klipp-audio` | DSP effects, LUFS metering, multi-track mixer |
+| `klipp-color` | Colour grading, LUTs, scopes, camera-log decoders |
+| `klipp-grade-model` | The primary grade's maths (lift/gamma/gain/offset, contrast, BT.1886) |
+| `klipp-nodes` | Per-clip colour node-graph model and executor |
+| `klipp-engine` | Real-time playback: decode, composite, mix, output |
+| `klipp-compose` | The one definition of how a timeline frame is rendered |
+| `klipp-effects` | Built-in GPU effects and the shared scope pipeline (wgpu / Vulkan) |
+| `klipp-transitions` | Transition pixel-math |
+| `klipp-title` | Title / text rasteriser: layout, glyphs, style runs |
+| `klipp-plugin` | OFX 1.5 plugin host (C ABI, dlopen) |
+| `klipp-frei0r` | frei0r 1.x plugin host |
+| `klipp-render` / `klipp-export` | Offline render pipeline and the export-queue model |
+| `klipp-hdr-out` | HDR reference output shared by viewer and export |
+| `klipp-validation` | Project validation and pre-flight checks |
+| `klipp-ml` / `klipp-ml-ort` / `klipp-ml-candle` | Model manifest + ONNX (`ort`) and Candle inference backends |
+| `klipp-analysis` | Footage analysers: shots, audio, motion, transcript, framing |
+| `klipp-document` | The edit history and the application of its commands |
+| `klipp-control` | Control surface for a running instance (socket protocol) |
+| `klipp-mcp` | Model Context Protocol server |
+| `klipp-jobs` | Background job scheduling primitives |
+| `klipp-ui` | The egui / eframe desktop editor surface |
 | `klipp-app` | Binary entry point |
-| `klipp-smoke` | End-to-end smoke tests |
-| `klipp-testing` | Snapshot/parity test scaffolding |
+| `klipp-perf` / `klipp-smoke` / `klipp-testing` | Perf harness, headless engine harness, test scaffolding |
 
 ## Tech Stack
-
-The libraries doing most of the heavy lifting:
 
 - **UI** — [egui](https://github.com/emilk/egui)
 - **GPU** — [wgpu](https://wgpu.rs/) (Vulkan backend)
 - **Decode / Encode** — [ffmpeg-next](https://crates.io/crates/ffmpeg-next)
 - **Audio** — [cpal](https://crates.io/crates/cpal) with PipeWire / ALSA / JACK
-- **AI inference** — [ort](https://crates.io/crates/ort) and [candle](https://crates.io/crates/candle-core)
-- **Colour** — in-house ACEScg pipeline with source-colourspace auto-detection for common camera log formats (Sony / Canon / Panasonic / ARRI / Apple / RED). Not yet validated against reference workflows.
+- **AI inference** — [ort](https://crates.io/crates/ort) and [candle](https://crates.io/crates/candle-core) for vision models; [whisper-rs](https://crates.io/crates/whisper-rs) (Vulkan) for speech
+- **Colour** — an in-house scene-linear ACEScg pipeline with camera-log auto-detection; the ACES output transforms are checked against OCIO
 
 ## Documentation
 
-There's an mdbook under [`docs/`](docs/) that documents what's currently built:
+There's an mdbook under [`docs/`](docs/):
 
 ```bash
 mdbook serve docs --open
@@ -126,13 +149,12 @@ Useful entry points: [Installation](docs/src/getting-started/installation.md), [
 
 Models are downloaded on demand, verified by SHA-256 against the bundled manifest, and stored in `~/.cache/klipp/models/`. Klipp does not redistribute weights — the manifest points at upstream HuggingFace mirrors.
 
-Currently wired up:
-
-| Model | Size | Licence |
-|---|---|---|
-| BiRefNet Lite | 224 MB | MIT |
-| MobileSAM | 40 MB | Apache-2.0 |
-| RF-DETR-Seg (Preview / Medium) | 134 / 139 MB | Apache-2.0 |
+| Model | Role | Size | Licence |
+|---|---|---|---|
+| Whisper Large v3 Turbo (q5) | Speech transcription | ~574 MB | MIT (whisper.cpp / ggml) |
+| BiRefNet Lite | Subject masking | 224 MB | MIT |
+| MobileSAM | Promptable segmentation | 40 MB | Apache-2.0 |
+| RF-DETR-Seg (Preview / Medium) | Detection + segmentation | 134 / 139 MB | Apache-2.0 |
 
 See [docs/src/ai-tools/models.md](docs/src/ai-tools/models.md) for the full picture, including licence audit notes.
 
@@ -140,7 +162,7 @@ See [docs/src/ai-tools/models.md](docs/src/ai-tools/models.md) for the full pict
 
 ### LUTs (Colour Look-Up Tables)
 
-Klipp ships ~300 film emulation and cinematic LUTs for colour grading:
+Klipp ships ~300 film-emulation and cinematic LUTs for colour grading:
 
 - **Film Emulation LUTs** — derived from [G'MIC](https://gmic.eu/) film simulation presets, packaged by [YahiaAngelo/Film-Luts](https://github.com/YahiaAngelo/Film-Luts). Includes Kodak Portra, Tri-X, Fuji Velvia, Superia, Provia, Agfa, Polaroid, and many more. Licensed under **MIT**.
 - **Cinematic Blockbuster LUTs** — by [IRCGraphic](https://github.com/IRCGraphic/D-Cinelike-and-Normal-Blockbuster-LUTs). Licensed under **CC0 1.0** (public domain).

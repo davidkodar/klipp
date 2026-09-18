@@ -10,28 +10,43 @@ every crate now carries a `//!` overview.
 
 ## Workspace
 
-Klipp is a 17-crate Cargo workspace. Dependencies flow strictly
+Klipp is a 32-crate Cargo workspace. Dependencies flow strictly
 bottom-up — no cycles — and every crate depends on `klipp-core`.
 
 ```
 klipp-app ── the binary; wires everything.
     └── klipp-ui ── egui desktop editor
+            ├── klipp-control ── socket control surface for a running app
+            │       └── klipp-mcp ── Model Context Protocol server
+            ├── klipp-document ── undoable edit history + command apply
+            ├── klipp-analysis ── shots, audio, motion, transcript, framing
             └── klipp-engine ── real-time playback
+                    ├── klipp-compose ── the one definition of a rendered frame
                     ├── klipp-render ── offline export
                     │       └── klipp-export ── render-queue model
-                    ├── klipp-effects ── GPU effects (wgpu)
-                    ├── klipp-color ── colour grading, LUTs, scopes
-                    ├── klipp-audio ── DSP, LUFS, mixer, LADSPA
+                    ├── klipp-hdr-out ── HDR reference output (viewer + export)
+                    ├── klipp-effects ── GPU effects + scope pipeline (wgpu)
+                    ├── klipp-color ── colour grading, LUTs, scopes, log decoders
+                    │       └── klipp-grade-model ── primary-grade maths (BT.1886)
+                    ├── klipp-audio ── DSP, LUFS, mixer
                     ├── klipp-nodes ── colour-grading node graph
                     ├── klipp-plugin ── OFX 1.5 host (C ABI, dlopen)
+                    ├── klipp-frei0r ── frei0r 1.x host
                     ├── klipp-title ── title / text rasteriser
                     ├── klipp-transitions ── transition kernels
+                    ├── klipp-ml ── model manifest + registry
+                    │       ├── klipp-ml-ort ── ONNX (ort) inference
+                    │       └── klipp-ml-candle ── Candle inference
                     ├── klipp-timeline ── Sequence / Track / Clip model
                     │       └── klipp-validation ── invariant checks
                     ├── klipp-project ── .klipp save/load + importers
                     └── klipp-media ── MediaPool + on-disk caches
                             └── klipp-core ── IDs, time, events, config
 ```
+
+`klipp-jobs` (background scheduling), `klipp-perf`, `klipp-smoke` and
+`klipp-testing` (perf / headless / snapshot harnesses) sit off to the
+side of the editor layers.
 
 Structural rule: if two crates both need a shared type, it goes down to
 `klipp-core` (or, for timeline-model types, `klipp-timeline`). Crates
@@ -241,6 +256,46 @@ Three on-disk caches sit alongside the pool:
 * **Thumbnail cache** (`thumbnail`) — ThumbnailCache + FilmstripFrame.
 * **Waveform** (`waveform`) — mono peak buckets for the timeline's
   audio lanes.
+
+### Control surface & the AI assistant
+
+Four crates let an agent drive a running Klipp through tools alone,
+with every edit going through the normal history so it undoes like a
+hand edit.
+
+* **`klipp-document`** owns the edit history off the UI. `Op`
+  (`ops.rs`) is the agent-facing intent — place, trim, split, move,
+  grade, `qualify` (HSL secondary), `look` (LUT), `match_grade`,
+  `clean_audio`, `reframe`, `retime`, `transition`, `effect`,
+  `captions`, and so on. `resolve` simulates a batch of ops on a clone
+  and returns a `Plan` of `EditCommand`s (or a `Refusal` naming the
+  step, the reason, and the fix); the UI applies the plan as one
+  history batch. `qc::check` is the delivery quality-check: black and
+  flash frames, jump cuts, titles across a cut, sound cut inside a
+  word, music under speech, loudness, the brief.
+
+* **`klipp-analysis`** turns footage into facts, each analyser an
+  ffmpeg or on-device-model pass cached on disk: shot boundaries,
+  the audio envelope (silence, EBU R128 loudness, and the spectral
+  bands that tell wind / rumble / hum / hiss apart), motion, the
+  transcript (Whisper, with word times), and framing (RF-DETR).
+  `audio_sync` cross-correlates two clips' sound for dual-system sync.
+
+* **`klipp-control`** exposes a running instance over a Unix-socket
+  JSON protocol (`ControlCommand` in `protocol.rs`): read the state,
+  run analysers, `plan` / `apply` document ops, grab a frame's scope
+  readings (`frame_stats`) or a scope image (`scope`), find clean cut
+  points, check, export. Writes carry a revision so a stale batch is
+  refused rather than misapplied.
+
+* **`klipp-mcp`** wraps that socket as a Model Context Protocol
+  server over stdio, with a tool per command and text views written
+  for an agent to read. The craft guidance it serves lives in
+  `assets/craft/`.
+
+The control layer runs inside the app process and talks to the engine
+through the same `AppCommand` / `AppEvent` channels as the UI; it never
+reaches into engine state directly.
 
 ---
 
