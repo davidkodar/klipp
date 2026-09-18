@@ -472,6 +472,8 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
             if let Some(x) = args.get("min_gap_secs").and_then(|v| v.as_f64()) { v["min_gap_secs"] = json!(x); }
             v
         }
+        "klipp_beats" => json!({ "method": "beats", "media_id": arg_str(args, "media_id")? }),
+        "klipp_style_profile" => json!({ "method": "style_profile", "media_id": arg_str(args, "media_id")? }),
         "klipp_match_grade" => json!({ "method": "match_grade", "clip_id": arg_str(args, "clip_id")?, "reference_clip_id": arg_str(args, "reference_clip_id")? }),
         "klipp_align_audio" => {
             let mut v = json!({ "method": "align_audio", "clip_id": arg_str(args, "clip_id")?, "reference_clip_id": arg_str(args, "reference_clip_id")? });
@@ -605,7 +607,7 @@ fn content_for(name: &str, result: &Value) -> Result<Vec<Value>, String> {
         }
         vec![json!({ "type": "text", "text": text })]
     };
-    if name == "klipp_timeline" || name == "klipp_media_analysis" || name == "klipp_plan" || name == "klipp_check" || name == "klipp_brief" || name == "klipp_transcript" || name == "klipp_cut_points" || name == "klipp_selects" || name == "klipp_looks" || name == "klipp_frame_stats" {
+    if name == "klipp_timeline" || name == "klipp_media_analysis" || name == "klipp_plan" || name == "klipp_check" || name == "klipp_brief" || name == "klipp_transcript" || name == "klipp_cut_points" || name == "klipp_selects" || name == "klipp_beats" || name == "klipp_style_profile" || name == "klipp_looks" || name == "klipp_frame_stats" {
         if let Some(text) = result.get("text").and_then(|v| v.as_str()) {
             return Ok(with_next(text.to_string()));
         }
@@ -1150,6 +1152,21 @@ fn tool_definitions() -> Vec<Value> {
               read; changes nothing.",
              json!({ "media_id": { "type": "string" }, "min_gap_secs": { "type": "number", "description": "the pause length that splits one select from the next, seconds" } }),
              vec!["media_id"]),
+        tool("klipp_beats",
+             "The tempo and beat grid of a clip's sound: BPM, a confidence, and the beat times \
+              in seconds. Run it on the music you are cutting to, then place or trim cuts to a \
+              beat time for a musical rhythm. A low confidence means no clear beat (speech or \
+              ambience). A read; changes nothing.",
+             json!({ "media_id": { "type": "string" } }), vec!["media_id"]),
+        tool("klipp_style_profile",
+             "Read a reference video's editing style as facts, so you can build a clip in the \
+              same feel from other footage: its cut cadence (how many shots, how long, how many \
+              per minute, and whether it cuts on the beat), its tempo, its look measured off the \
+              picture through the scopes (blacks, whites, contrast, saturation, warmth), and its \
+              motion. It reads only — it copies nothing. Match the feel with your own footage \
+              and your own or licensed music, never the reference's track. The reference must be \
+              imported and analysed first.",
+             json!({ "media_id": { "type": "string" } }), vec!["media_id"]),
         tool("klipp_match_grade",
              "Match one shot's grade to another's. It reads a frame of each clip through the \
               scopes and sets the target's exposure, lift, gain, temperature and tint to bring \

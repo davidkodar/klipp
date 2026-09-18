@@ -41,6 +41,12 @@ frames.
    splits the speech into the runs between real pauses, marks each keep
    or drop (filler and dead air are drops), and reports how much is worth
    keeping — build a tight cut by placing the keep ranges in order.
+   `klipp_beats` reads a clip's tempo and beat grid, so cuts can land on
+   the beat of your music. `klipp_style_profile` reads a reference
+   video's whole editing style — its cut cadence and whether it cuts on
+   the beat, its tempo, its look off the picture, its motion — so you can
+   build a clip in the same feel from your own footage, and your own or
+   licensed music, never the reference's track.
    `klipp_analysis_status` says
    which analyser is at work and for how long, and which models are
    installed; a transcript takes about a third of the file's length. `klipp_contact_sheet` to see a range with

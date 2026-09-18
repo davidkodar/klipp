@@ -356,6 +356,15 @@ pub enum ControlCommand {
         #[serde(default)]
         timeout_ms: Option<u64>,
     },
+    /// The tempo and beat grid of a clip's sound: BPM, a confidence, and
+    /// the beat times, for cutting to the music.
+    Beats { media_id: String },
+    /// A reference video's editing style as facts: its cut cadence and
+    /// whether it cuts on the beat, its tempo, its look measured off the
+    /// picture, and its motion — so an agent can build a clip in the same
+    /// feel from other footage. The reference must be imported and
+    /// analysed. Reads only; nothing is copied.
+    StyleProfile { media_id: String },
     /// The clean places to cut in a piece of media: the measured pauses,
     /// the sentence boundaries from the transcript, and the shot changes,
     /// ranked. With `near_secs`, it also says whether that moment is

@@ -174,3 +174,30 @@ fn align_audio_recovers_a_known_delay() {
     assert!(conf > 0.5, "the match should be confident, got {conf:.2}");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// The beat detector against a real ffmpeg click track: a 1 kHz pulse
+/// every 0.6 s is 100 BPM, and detect() should land near it.
+#[test]
+fn beats_detect_a_100_bpm_click_track() {
+    let ctx = AnalysisCtx::default();
+    if !ctx.ffmpeg_available() {
+        eprintln!("skipping: no ffmpeg");
+        return;
+    }
+    let dir = std::env::temp_dir().join(format!("klipp-beats-test-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let wav = dir.join("click100.wav");
+    let ok = std::process::Command::new(&ctx.ffmpeg)
+        .args([
+            "-y", "-hide_banner", "-loglevel", "error",
+            "-f", "lavfi",
+            "-i", "aevalsrc=if(lt(mod(t\\,0.6)\\,0.02)\\,sin(2*PI*1000*t)\\,0):s=22050:d=10",
+            "-ac", "1",
+        ])
+        .arg(&wav).status().unwrap().success();
+    assert!(ok, "ffmpeg made the click track");
+    let b = klipp_analysis::beats::detect(&ctx.ffmpeg, &wav, 10.0).unwrap();
+    assert!((b.bpm - 100.0).abs() < 6.0, "expected ~100 BPM, got {}", b.bpm);
+    assert!(b.confidence > 0.4, "a clean click is confident, got {}", b.confidence);
+    let _ = std::fs::remove_dir_all(&dir);
+}

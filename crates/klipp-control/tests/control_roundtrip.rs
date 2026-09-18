@@ -917,3 +917,24 @@ fn selects_split_a_take_and_drop_the_filler() {
     assert!(sel[1].filler, "a lone 'um' is a drop: {:?}", sel[1]);
     assert!(!sel[2].filler && sel[2].text.contains("point stands"));
 }
+
+/// style_cut_summary reads pace from the shot lengths and finds how many
+/// cuts land on the beat.
+#[test]
+fn style_cut_summary_reads_pace_and_beat_alignment() {
+    use klipp_analysis::beats::BeatData;
+    // Six 0.5 s shots → fast, cut every half second.
+    let shots: Vec<(f64, f64)> = (0..6).map(|i| (i as f64 * 0.5, i as f64 * 0.5 + 0.5)).collect();
+    let boundaries: Vec<f64> = (1..6).map(|i| i as f64 * 0.5).collect(); // 0.5,1.0,1.5,2.0,2.5
+    // A 120 BPM grid: beats every 0.5 s — every cut lands on one.
+    let beats = BeatData { bpm: 120.0, confidence: 0.9, beat_times: (0..20).map(|i| i as f64 * 0.5).collect() };
+    let v = klipp_control::style_cut_summary(&shots, &boundaries, 3.0, &beats);
+    assert_eq!(v["pace"], "fast");
+    assert_eq!(v["shot_count"], 6);
+    assert!((v["cut_on_beat_ratio"].as_f64().unwrap() - 1.0).abs() < 1e-6, "all cuts on the beat: {v}");
+
+    // Off-beat cuts: a grid the cuts never touch → low ratio.
+    let offbeat = BeatData { bpm: 120.0, confidence: 0.9, beat_times: (0..20).map(|i| i as f64 * 0.5 + 0.25).collect() };
+    let v2 = klipp_control::style_cut_summary(&shots, &boundaries, 3.0, &offbeat);
+    assert!(v2["cut_on_beat_ratio"].as_f64().unwrap() < 0.5, "few cuts on this grid: {v2}");
+}

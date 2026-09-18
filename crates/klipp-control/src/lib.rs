@@ -673,6 +673,60 @@ pub fn suggest_selects(words: &[(f64, f64, String)], min_gap: f64, min_len: f64)
     selects
 }
 
+/// Decode one frame of a media file at `secs` to 320x180 RGBA through
+/// ffmpeg, for measuring a reference clip's look off the file (not the
+/// timeline). Scaled small: the scope stats read colour and luma, which a
+/// downscale preserves.
+fn decode_frame_rgba(path: &std::path::Path, secs: f64) -> Result<(Vec<u8>, u32, u32), String> {
+    let (w, h) = (320u32, 180u32);
+    let out = std::process::Command::new("ffmpeg")
+        .args(["-hide_banner", "-nostats", "-ss", &format!("{secs}"), "-i"])
+        .arg(path)
+        .args(["-frames:v", "1", "-vf", &format!("scale={w}:{h}"), "-f", "rawvideo", "-pix_fmt", "rgba", "-"])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .output()
+        .map_err(|e| format!("could not run ffmpeg: {e}"))?;
+    let need = (w * h * 4) as usize;
+    if out.stdout.len() < need {
+        return Err(format!("no frame decoded at {secs:.2} s"));
+    }
+    Ok((out.stdout[..need].to_vec(), w, h))
+}
+
+/// Summarise a reference's editing from its shots and beats: the cut
+/// cadence, and how tightly the cuts fall on the beat. Pure, so it is
+/// unit-tested without ffmpeg. `shots` are `(start, end)` in seconds,
+/// `boundaries` the cut times, `beats` the tempo grid.
+pub fn style_cut_summary(shots: &[(f64, f64)], boundaries: &[f64], duration: f64, beats: &klipp_analysis::beats::BeatData) -> serde_json::Value {
+    let mut lengths: Vec<f64> = shots.iter().map(|(a, b)| b - a).filter(|d| *d > 0.0).collect();
+    lengths.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let n = lengths.len();
+    let mean = if n > 0 { lengths.iter().sum::<f64>() / n as f64 } else { 0.0 };
+    let median = if n > 0 { lengths[n / 2] } else { 0.0 };
+    let cuts_per_min = if duration > 0.0 { boundaries.len() as f64 / (duration / 60.0) } else { 0.0 };
+    let pace = if mean == 0.0 { "unknown" } else if mean < 1.5 { "fast" } else if mean < 4.0 { "medium" } else { "slow" };
+    // How many cuts land on a beat (within a 12th of a second).
+    let on_beat = if beats.beat_times.len() >= 2 && beats.confidence > 0.3 && !boundaries.is_empty() {
+        let hits = boundaries.iter().filter(|&&c| {
+            beats.beat_times.iter().any(|&b| (b - c).abs() < 0.12)
+        }).count();
+        Some(hits as f64 / boundaries.len() as f64)
+    } else {
+        None
+    };
+    serde_json::json!({
+        "shot_count": n,
+        "mean_shot_secs": (mean * 100.0).round() / 100.0,
+        "median_shot_secs": (median * 100.0).round() / 100.0,
+        "shortest_shot_secs": lengths.first().copied().unwrap_or(0.0),
+        "longest_shot_secs": lengths.last().copied().unwrap_or(0.0),
+        "cuts_per_min": (cuts_per_min * 10.0).round() / 10.0,
+        "pace": pace,
+        "cut_on_beat_ratio": on_beat,
+    })
+}
+
 /// Where a cut is clean, and where it is not. Folds the measured
 /// silences, the transcript's sentence boundaries, and the shot changes
 /// into ranked cut opportunities, and — when `near` is given —
@@ -1989,6 +2043,118 @@ reference:   {}",
                 "selects": selects.iter().map(|s| json!({ "in_secs": s.in_secs, "out_secs": s.out_secs, "text": s.text, "keep": !s.filler })).collect::<Vec<_>>(),
                 "kept_secs": kept_secs, "duration_secs": dur,
                 "next": "Place each keep range (place with the clip's source in/out at these times), in order, on the timeline; drop the rest. Then cover any jump cuts and check.",
+            }))
+        }
+
+        ControlCommand::Beats { media_id } => {
+            if in_batch {
+                return read_in_batch("beats");
+            }
+            let id = klipp_core::MediaId(media_id.parse().map_err(|e| format!("media_id is not a uuid: {e}"))?);
+            let (path, filename, has_audio) = {
+                let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
+                let item = pool.get(&id).ok_or_else(|| format!("no media item {}", id.0))?;
+                (item.path.clone(), item.filename.clone(), item.has_audio)
+            };
+            if !has_audio {
+                return Err(format!("{filename} has no sound to find a beat in"));
+            }
+            let b = klipp_analysis::beats::detect(std::path::Path::new("ffmpeg"), &path, 0.0)?;
+            let text = if b.confidence < 0.3 {
+                format!("{filename}: no clear beat (match {:.0}%). Probably speech or ambience, not music.", b.confidence * 100.0)
+            } else {
+                format!("{filename}: {:.0} BPM, match {:.0}%, {} beats over the read. Cut or place on a beat time.", b.bpm, b.confidence * 100.0, b.beat_times.len())
+            };
+            let beats: Vec<f64> = b.beat_times.iter().take(500).copied().collect();
+            Ok(json!({ "text": text, "media_id": media_id, "bpm": b.bpm, "confidence": b.confidence, "beat_times": beats, "next": "Place or trim spoken and B-roll cuts to a beat time for a musical rhythm. style_profile reads a whole reference at once." }))
+        }
+
+        ControlCommand::StyleProfile { media_id } => {
+            if in_batch {
+                return read_in_batch("style_profile");
+            }
+            let id = klipp_core::MediaId(media_id.parse().map_err(|e| format!("media_id is not a uuid: {e}"))?);
+            let (path, filename, dur, has_audio) = {
+                let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
+                let item = pool.get(&id).ok_or_else(|| format!("no media item {}", id.0))?;
+                (item.path.clone(), item.filename.clone(), item.duration.to_secs_f64(), item.has_audio)
+            };
+            let report = klipp_analysis::report::MediaAnalysis::load(&path);
+            let Some(shots) = report.shots.as_ref() else {
+                let state = klipp_analysis::service::status(id).map(|s| format!("{:?}", s.state).to_lowercase()).unwrap_or_else(|| "not asked for".into());
+                return Err(format!("{filename} has no shot analysis yet (analysis: {state}); analyse the reference first, then read its style"));
+            };
+            let shot_pairs: Vec<(f64, f64)> = shots.shots.iter().map(|s| (s.start_secs, s.end_secs)).collect();
+            let sdur = if shots.duration_secs > 0.0 { shots.duration_secs } else { dur };
+            let beats = if has_audio {
+                klipp_analysis::beats::detect(std::path::Path::new("ffmpeg"), &path, 0.0).unwrap_or(klipp_analysis::beats::BeatData { bpm: 0.0, confidence: 0.0, beat_times: Vec::new() })
+            } else {
+                klipp_analysis::beats::BeatData { bpm: 0.0, confidence: 0.0, beat_times: Vec::new() }
+            };
+            let cuts = style_cut_summary(&shot_pairs, &shots.boundaries, sdur, &beats);
+
+            // Look: measure a spread of frames off the file through the scopes.
+            let n = 8usize;
+            let (mut black, mut mid, mut white, mut sat, mut warm, mut cnt) = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
+            for i in 0..n {
+                let t = (i as f64 + 0.5) / n as f64 * dur;
+                if let Ok((data, w, h)) = decode_frame_rgba(&path, t) {
+                    let st = frame_stats(&data, w, h, t);
+                    let g = |a: &str, b: &str| st.get(a).and_then(|x| x.get(b)).and_then(|x| x.as_f64()).unwrap_or(0.0);
+                    black += g("luma_ire", "black");
+                    mid += g("luma_ire", "mid");
+                    white += g("luma_ire", "white");
+                    sat += st.get("saturation_pct").and_then(|x| x.as_f64()).unwrap_or(0.0);
+                    warm += g("rgb_balance", "red") - g("rgb_balance", "blue");
+                    cnt += 1.0;
+                }
+            }
+            let look = if cnt > 0.0 {
+                let (black, mid, white, sat, warm) = (black / cnt, mid / cnt, white / cnt, sat / cnt, warm / cnt * 100.0);
+                let contrast = white - black;
+                let tone = if warm > 3.0 { "warm" } else if warm < -3.0 { "cool" } else { "neutral" };
+                let punch = if contrast > 75.0 { "high-contrast" } else if contrast < 45.0 { "flat" } else { "medium-contrast" };
+                let col = if sat > 45.0 { "saturated" } else if sat < 20.0 { "muted" } else { "natural" };
+                json!({ "black_ire": black.round(), "mid_ire": mid.round(), "white_ire": white.round(), "contrast_ire": contrast.round(), "saturation_pct": sat.round(), "warmth": (warm.round()), "summary": format!("{tone}, {punch}, {col}") })
+            } else {
+                json!(null)
+            };
+            let motion = report.motion.as_ref().map(|m| json!({ "class": klipp_analysis::motion::class_for(m.mean), "mean": m.mean }));
+
+            // Guidance: turn the numbers into how to build the same feel.
+            let pace = cuts["pace"].as_str().unwrap_or("medium");
+            let mean_shot = cuts["mean_shot_secs"].as_f64().unwrap_or(0.0);
+            let mut guide = format!("Cut {pace}: aim for shots around {mean_shot:.1} s. ");
+            if beats.confidence > 0.3 {
+                let onb = cuts["cut_on_beat_ratio"].as_f64().unwrap_or(0.0);
+                if onb > 0.4 {
+                    guide.push_str(&format!("It cuts on the beat ({:.0}% of cuts) at {:.0} BPM — place your cuts on beat times (klipp_beats on your music). ", onb * 100.0, beats.bpm));
+                } else {
+                    guide.push_str(&format!("The music runs at {:.0} BPM; lean cuts toward the beat. ", beats.bpm));
+                }
+            }
+            if let Some(l) = look.as_object() {
+                guide.push_str(&format!("Grade toward the look ({}): blacks ~{} IRE, whites ~{} IRE, saturation ~{}%. Use match_grade against a frame of the reference, or look for a LUT. ", l.get("summary").and_then(|v| v.as_str()).unwrap_or(""), l.get("black_ire").and_then(|v| v.as_f64()).unwrap_or(0.0), l.get("white_ire").and_then(|v| v.as_f64()).unwrap_or(0.0), l.get("saturation_pct").and_then(|v| v.as_f64()).unwrap_or(0.0)));
+            }
+            guide.push_str("Match the energy with your own or licensed music, not the reference's track.");
+
+            let text = format!(
+                "Style of {filename}:\ncuts — {} shots, mean {:.1} s, {:.0} per minute ({pace}){}\nlook — {}\nmotion — {}\n\n{guide}",
+                cuts["shot_count"].as_i64().unwrap_or(0),
+                mean_shot,
+                cuts["cuts_per_min"].as_f64().unwrap_or(0.0),
+                if beats.confidence > 0.3 { format!("; {:.0} BPM", beats.bpm) } else { String::new() },
+                look.get("summary").and_then(|v| v.as_str()).unwrap_or("not measured"),
+                motion.as_ref().and_then(|m| m.get("class")).and_then(|v| v.as_str()).unwrap_or("unknown"),
+            );
+            Ok(json!({
+                "text": text, "media_id": media_id, "filename": filename,
+                "cuts": cuts,
+                "tempo": { "bpm": beats.bpm, "confidence": beats.confidence },
+                "look": look,
+                "motion": motion,
+                "guidance": guide,
+                "next": "Build the edit in this feel from your own footage: selects at the target shot length, cuts on the beat (klipp_beats on your music), grade toward the look, then transitions and effects to taste. Never the reference's actual music or footage.",
             }))
         }
 

@@ -23,6 +23,7 @@
 
 pub mod audio;
 pub mod audio_sync;
+pub mod beats;
 pub mod motion;
 pub mod report;
 pub mod sheet;
