@@ -32,6 +32,7 @@ members = [
     "crates/klipp-analysis",
     "crates/klipp-hdr-out",
     "crates/klipp-mcp",
+    "crates/klipp-audio-search",
 ]
 resolver = "2"
 
@@ -226,6 +227,7 @@ klipp-document = { path = "crates/klipp-document" }
 klipp-analysis = { path = "crates/klipp-analysis" }
 klipp-hdr-out = { path = "crates/klipp-hdr-out" }
 klipp-mcp = { path = "crates/klipp-mcp" }
+klipp-audio-search = { path = "crates/klipp-audio-search" }
 
 # ─── Workspace-wide profile settings ────────────────────────────────────────
 [profile.dev]

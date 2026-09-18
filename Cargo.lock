@@ -2681,6 +2681,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "klipp-audio-search"
+version = "0.1.0"
+dependencies = [
+ "dirs",
+ "serde",
+ "serde_json",
+ "ureq",
+]
+
+[[package]]
 name = "klipp-color"
 version = "0.1.0"
 dependencies = [
@@ -2716,6 +2726,7 @@ version = "0.1.0"
 dependencies = [
  "crossbeam-channel",
  "klipp-analysis",
+ "klipp-audio-search",
  "klipp-core",
  "klipp-document",
  "klipp-engine",

@@ -21,6 +21,7 @@ klipp-core = { workspace = true }
 klipp-document = { workspace = true }
 klipp-timeline = { workspace = true }
 klipp-media = { workspace = true }
+klipp-audio-search = { workspace = true }
 klipp-engine = { workspace = true }
 klipp-analysis = { workspace = true }
 klipp-nodes = { workspace = true }

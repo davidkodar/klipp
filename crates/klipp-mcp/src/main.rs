@@ -473,6 +473,18 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
             v
         }
         "klipp_beats" => json!({ "method": "beats", "media_id": arg_str(args, "media_id")? }),
+        "klipp_search_music" => {
+            let mut v = json!({ "method": "search_music", "query": arg_str(args, "query")? });
+            if let Some(x) = args.get("limit").and_then(|v| v.as_u64()) { v["limit"] = json!(x); }
+            v
+        }
+        "klipp_add_music" => {
+            let mut v = json!({ "method": "add_music" });
+            for key in ["title", "artist", "track_id", "download_url", "preview_url", "license", "license_url", "page_url"] {
+                if let Some(x) = args.get(key).and_then(|v| v.as_str()) { v[key] = json!(x); }
+            }
+            v
+        }
         "klipp_style_profile" => json!({ "method": "style_profile", "media_id": arg_str(args, "media_id")? }),
         "klipp_match_grade" => json!({ "method": "match_grade", "clip_id": arg_str(args, "clip_id")?, "reference_clip_id": arg_str(args, "reference_clip_id")? }),
         "klipp_align_audio" => {
@@ -607,7 +619,7 @@ fn content_for(name: &str, result: &Value) -> Result<Vec<Value>, String> {
         }
         vec![json!({ "type": "text", "text": text })]
     };
-    if name == "klipp_timeline" || name == "klipp_media_analysis" || name == "klipp_plan" || name == "klipp_check" || name == "klipp_brief" || name == "klipp_transcript" || name == "klipp_cut_points" || name == "klipp_selects" || name == "klipp_beats" || name == "klipp_style_profile" || name == "klipp_looks" || name == "klipp_frame_stats" {
+    if name == "klipp_timeline" || name == "klipp_media_analysis" || name == "klipp_plan" || name == "klipp_check" || name == "klipp_brief" || name == "klipp_transcript" || name == "klipp_cut_points" || name == "klipp_selects" || name == "klipp_beats" || name == "klipp_style_profile" || name == "klipp_search_music" || name == "klipp_looks" || name == "klipp_frame_stats" {
         if let Some(text) = result.get("text").and_then(|v| v.as_str()) {
             return Ok(with_next(text.to_string()));
         }
@@ -1167,6 +1179,22 @@ fn tool_definitions() -> Vec<Value> {
               and your own or licensed music, never the reference's track. The reference must be \
               imported and analysed first.",
              json!({ "media_id": { "type": "string" } }), vec!["media_id"]),
+        tool("klipp_search_music",
+             "Search royalty-free music by mood or genre (e.g. \"upbeat electronic\", \"calm \
+              piano\", \"cinematic\") from Jamendo. Each result shows its title, artist, length, \
+              and licence — including whether it clears commercial use. Preview a result's \
+              preview_url before committing, then add it with klipp_add_music. Needs a Jamendo \
+              client id in the user's key config. Use the reference's feel (style_profile) to \
+              pick music of matching energy — never the reference's own track.",
+             json!({ "query": { "type": "string" }, "limit": { "type": "integer" } }), vec!["query"]),
+        tool("klipp_add_music",
+             "Download a searched music track into the media pool, keeping its licence and \
+              attribution beside the file for your export credits. Pass the fields from a \
+              klipp_search_music result (title, artist, download_url, license, license_url, \
+              page_url). Then place it on an audio track, mark the track Music, and duck it \
+              under speech. Honour the licence — keep non-commercial tracks out of commercial work.",
+             json!({ "title": { "type": "string" }, "artist": { "type": "string" }, "track_id": { "type": "string" }, "download_url": { "type": "string" }, "preview_url": { "type": "string" }, "license": { "type": "string" }, "license_url": { "type": "string" }, "page_url": { "type": "string" } }),
+             vec!["download_url"]),
         tool("klipp_match_grade",
              "Match one shot's grade to another's. It reads a frame of each clip through the \
               scopes and sets the target's exposure, lift, gain, temperature and tint to bring \

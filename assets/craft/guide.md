@@ -181,6 +181,12 @@ exist until the plan runs.
   any words that pick one out); `opacity` fades it in; `remove` clears
   it. Grade for exposure and continuity first, then a look for style.
   `klipp_looks` lists the library: cinematic and film emulations.
+- `search_music` / `add_music` (the `klipp_search_music` / `klipp_add_music`
+  tools): find royalty-free music by mood or genre and add it to the
+  pool. Each result shows its licence (and whether it clears commercial
+  use); preview before you commit, and the credit is kept beside the file
+  for your export notes. Match the reference's energy with legally-usable
+  music, never its own track.
 - `clean_audio {clip_id, wind?, hiss?, hum?, deess?}`: clean a clip's
   sound. Each flag adds the right tool: wind and rumble, tape or air
   hiss, mains hum, harsh sibilance. The beach-in-a-gale clip wants

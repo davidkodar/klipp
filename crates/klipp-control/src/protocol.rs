@@ -356,6 +356,33 @@ pub enum ControlCommand {
         #[serde(default)]
         timeout_ms: Option<u64>,
     },
+    /// Search royalty-free music (Jamendo) by mood or genre words. A
+    /// read; needs a Jamendo client id in the user's key config.
+    SearchMusic {
+        query: String,
+        #[serde(default)]
+        limit: Option<u32>,
+    },
+    /// Download a searched track into the media pool, with its licence and
+    /// attribution kept beside it. Pass the fields from a search result.
+    AddMusic {
+        #[serde(default)]
+        title: String,
+        #[serde(default)]
+        artist: String,
+        #[serde(default)]
+        track_id: String,
+        #[serde(default)]
+        download_url: String,
+        #[serde(default)]
+        preview_url: String,
+        #[serde(default)]
+        license: String,
+        #[serde(default)]
+        license_url: String,
+        #[serde(default)]
+        page_url: String,
+    },
     /// The tempo and beat grid of a clip's sound: BPM, a confidence, and
     /// the beat times, for cutting to the music.
     Beats { media_id: String },

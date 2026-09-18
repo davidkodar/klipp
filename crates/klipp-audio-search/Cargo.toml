@@ -1,0 +1,12 @@
+[package]
+name = "klipp-audio-search"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-only"
+description = "Search royalty-free music and sound effects (Jamendo, Freesound) for Klipp."
+
+[dependencies]
+ureq = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+dirs = { workspace = true }

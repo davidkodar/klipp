@@ -2046,6 +2046,45 @@ reference:   {}",
             }))
         }
 
+        ControlCommand::SearchMusic { query, limit } => {
+            if in_batch {
+                return read_in_batch("search_music");
+            }
+            if !klipp_audio_search::music_available() {
+                return Err("music search is not set up: put jamendo_client_id in ~/.config/klipp/keys.toml (or set KLIPP_JAMENDO_CLIENT_ID)".into());
+            }
+            let tracks = klipp_audio_search::search_music(&query, limit.unwrap_or(12))?;
+            let mut text = format!("{} royalty-free music results for \"{query}\" (Jamendo):\n", tracks.len());
+            for t in &tracks {
+                text.push_str(&format!("  {} — {}  ({}, {:.0}s){}\n", t.title, t.artist, t.license, t.duration_secs, if t.commercial_ok { "" } else { " [non-commercial]" }));
+            }
+            let results: Vec<serde_json::Value> = tracks.iter().map(|t| json!({
+                "title": t.title, "artist": t.artist, "track_id": t.id,
+                "duration_secs": t.duration_secs, "license": t.license, "license_url": t.license_url,
+                "commercial_ok": t.commercial_ok, "preview_url": t.preview_url, "download_url": t.download_url,
+                "page_url": t.page_url, "tags": t.tags,
+            })).collect();
+            Ok(json!({ "text": text, "results": results, "next": "Listen to a track's preview_url before you commit. Add one with add_music (copy its title, artist, download_url, license, license_url, page_url). Honour the licence: non-commercial tracks stay out of commercial work, and the credit is kept for you." }))
+        }
+
+        ControlCommand::AddMusic { title, artist, track_id, download_url, preview_url, license, license_url, page_url } => {
+            if in_batch {
+                return Err("add_music downloads and imports a file; send it on its own, not in a batch".into());
+            }
+            let track = klipp_audio_search::Track {
+                source: klipp_audio_search::Source::JamendoMusic,
+                id: track_id, title: title.clone(), artist: artist.clone(),
+                duration_secs: 0.0, license: license.clone(), license_url,
+                commercial_ok: true, preview_url, download_url, page_url, image_url: String::new(), tags: Vec::new(),
+            };
+            let path = klipp_audio_search::download_track(&track, &klipp_audio_search::download_dir())?;
+            let mut v = handle(ctx, ControlCommand::ImportMedia { path: path.to_string_lossy().to_string() }, &mut None)?;
+            v["text"] = json!(format!("Added \"{title}\" by {artist} ({license}) to the media pool. Place it on an audio track, mark the track Music, and duck it under speech.", license = if license.is_empty() { "licence with the file".to_string() } else { license }));
+            v["attribution"] = json!(track.attribution());
+            v["next"] = json!("Place it on an audio track (append_clip), set the track's role to Music so the loudness check treats it right, and duck it under any speech. The credit is saved beside the file for your export notes.");
+            Ok(v)
+        }
+
         ControlCommand::Beats { media_id } => {
             if in_batch {
                 return read_in_batch("beats");
