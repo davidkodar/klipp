@@ -793,8 +793,9 @@ impl KlippApp {
         app.state.toast_duration_secs = app.prefs.advanced.toast_duration_secs;
         app.state.toast.visible_duration = app.prefs.advanced.toast_duration_secs;
         // Carry the AI preferences into the analysis pipeline at startup,
-        // so a saved opt-out or CPU choice takes effect before any import.
-        klipp_analysis::set_ai_enabled(app.prefs.ai.enabled);
+        // so saved opt-outs and the CPU choice take effect before any import.
+        klipp_analysis::set_transcription_enabled(app.prefs.ai.transcription);
+        klipp_analysis::set_subject_detection_enabled(app.prefs.ai.subject_detection);
         klipp_analysis::transcript::set_transcribe_on_cpu(app.prefs.ai.transcribe_on_cpu);
         let _ = app.cmd_tx.send(AppCommand::SetPanLaw(app.prefs.audio.pan_law));
         klipp_engine::pcm_reader::set_anti_click_fade_ms(app.prefs.advanced.anti_click_fade_ms);
@@ -11820,6 +11821,22 @@ impl KlippApp {
                 AppCommand::RelinkMedia { media_id, new_path } => {
                     self.relink_media(*media_id, new_path);
                     self.state.dirty = true;
+                    true
+                }
+                AppCommand::TranscribeClip { media_id } => {
+                    let info = self.state.media_pool.get(media_id).map(|item| {
+                        if item.has_audio {
+                            klipp_analysis::service::request_transcription(item);
+                        }
+                        (item.has_audio, item.filename.clone())
+                    });
+                    if let Some((has_audio, filename)) = info {
+                        if has_audio {
+                            self.state.toast.show(format!("Transcribing {filename}\u{2026}"));
+                        } else {
+                            self.state.toast.show(format!("{filename} has no sound to transcribe"));
+                        }
+                    }
                     true
                 }
                 AppCommand::RelinkAllFromDirectory { directory } => {

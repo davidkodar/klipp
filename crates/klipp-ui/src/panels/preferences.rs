@@ -2082,44 +2082,67 @@ impl PreferencesPanel {
         });
         ui.add_space(4.0);
 
-        // ── Master switch ──
-        Self::section_header(ui, "ON-DEVICE AI", theme);
-        Self::setting_row_with_subtitle(ui, "Enable AI features", "Transcription, subject detection and the assistant. All on-device — nothing leaves your machine.", theme, |ui| {
-            let mut val = prefs.ai.enabled;
+        // ── Features (each its own opt-out) ──
+        Self::section_header(ui, "FEATURES", theme);
+        ui.horizontal(|ui| {
+            ui.add_space(14.0);
+            ui.label(egui::RichText::new("All on-device — nothing here ever leaves your machine. The non-AI analysis (shots, silence, loudness) always runs.").color(theme.text_secondary));
+        });
+        ui.add_space(6.0);
+        Self::setting_row_with_subtitle(ui, "Speech transcription", "For captions and subtitles. Runs on import, and on demand from a clip's right-click menu.", theme, |ui| {
+            let mut val = prefs.ai.transcription;
             if ui.add(crate::widgets::toggle::toggle(&mut val)).changed() {
-                prefs.ai.enabled = val;
-                klipp_analysis::set_ai_enabled(val);
+                prefs.ai.transcription = val;
+                klipp_analysis::set_transcription_enabled(val);
+                *dirty = true;
+            }
+        });
+        Self::setting_row_with_subtitle(ui, "Subject detection", "Finds people and objects in the picture for framing and masking.", theme, |ui| {
+            let mut val = prefs.ai.subject_detection;
+            if ui.add(crate::widgets::toggle::toggle(&mut val)).changed() {
+                prefs.ai.subject_detection = val;
+                klipp_analysis::set_subject_detection_enabled(val);
+                *dirty = true;
+            }
+        });
+        Self::setting_row_with_subtitle(ui, "AI assistant (MCP)  \u{2022}  restart required", "Runs the control socket and MCP server so an agent can drive Klipp through the klipp-mcp tools. Off means no agent can connect.", theme, |ui| {
+            let mut val = prefs.ai.assistant;
+            if ui.add(crate::widgets::toggle::toggle(&mut val)).changed() {
+                prefs.ai.assistant = val;
                 *dirty = true;
             }
         });
 
-        if !prefs.ai.enabled {
-            ui.add_space(10.0);
-            ui.horizontal(|ui| {
-                ui.add_space(14.0);
-                ui.label(egui::RichText::new("AI is off. Turn it on to transcribe speech, detect subjects, and use the assistant. The non-AI analysis (shots, silence, loudness) still runs.").color(theme.text_secondary));
-            });
-            return;
-        }
-
         // ── Status ──
         Self::section_header(ui, "STATUS", theme);
-        let speech_status = match klipp_analysis::transcript::installed_model() {
-            Some((id, _)) => format!("Ready — {}", model_display_name(id)),
-            None => "No speech model downloaded — get one below".to_string(),
+        let speech_status = if !prefs.ai.transcription {
+            "Off".to_string()
+        } else {
+            match klipp_analysis::transcript::installed_model() {
+                Some((id, _)) => format!("Ready — {}", model_display_name(id)),
+                None => "No speech model downloaded — get one below".to_string(),
+            }
         };
         Self::setting_row(ui, "Speech (transcription)", theme, |ui| {
             ui.label(egui::RichText::new(speech_status).color(theme.text_secondary));
         });
-        Self::setting_row(ui, "Vision runtime", theme, |ui| {
-            ui.label(egui::RichText::new(ai_vision_status()).color(theme.text_secondary));
+        let vision_status = if prefs.ai.subject_detection { ai_vision_status() } else { "Off".to_string() };
+        Self::setting_row(ui, "Subject detection", theme, |ui| {
+            ui.label(egui::RichText::new(vision_status).color(theme.text_secondary));
         });
         Self::setting_row_with_subtitle(ui, "Assistant (MCP)", "Point an MCP client at the klipp-mcp command while Klipp is running.", theme, |ui| {
-            ui.label(egui::RichText::new("Ready").color(theme.text_secondary));
+            let s = if prefs.ai.assistant { "Ready" } else { "Off" };
+            ui.label(egui::RichText::new(s).color(theme.text_secondary));
         });
 
         // ── Transcription (speech) ──
         Self::section_header(ui, "TRANSCRIPTION (SPEECH)", theme);
+        if !prefs.ai.transcription {
+            ui.horizontal(|ui| {
+                ui.add_space(14.0);
+                ui.label(egui::RichText::new("Turn on Speech transcription above to use these.").color(theme.text_secondary));
+            });
+        }
         Self::setting_row_with_subtitle(ui, "Transcribe on CPU", "Slower, but works without a Vulkan GPU.", theme, |ui| {
             let mut val = prefs.ai.transcribe_on_cpu;
             if ui.add(crate::widgets::toggle::toggle(&mut val)).changed() {

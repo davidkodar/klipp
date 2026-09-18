@@ -470,22 +470,29 @@ fn main() -> Result<()> {
     let (control_tx, control_rx) = crossbeam_channel::unbounded::<klipp_document::control::ControlEnvelope>();
     let control_shared = std::sync::Arc::new(klipp_core::ControlShared::default());
     let repaint_ctx_for_control = std::sync::Arc::clone(&repaint_ctx);
-    match klipp_control::spawn(klipp_control::ControlContext {
-        commands: control_tx,
-        shared: std::sync::Arc::clone(&control_shared),
-        wake_ui: std::sync::Arc::new(move || {
-            if let Some(ctx) = repaint_ctx_for_control.get() {
-                ctx.request_repaint();
-            }
-        }),
-        sequence: sequence.clone(),
-        media_pool: media_pool.clone(),
-        frame_buffer: frame_buffer.clone(),
-        perf_ring: perf_ring.clone(),
-        log_path: std::path::PathBuf::from("klipp-debug.log"),
-    }) {
-        Some(p) => info!("control socket ready at {}", p.display()),
-        None => info!("control socket not started"),
+    // The assistant is opt-out in preferences (Preferences → AI). Off means
+    // the control socket and MCP server never start, so no agent can drive
+    // this instance. Read at launch — the toggle is restart-scoped.
+    if !klipp_ui::Preferences::load().ai.assistant {
+        info!("control socket disabled by preference (AI assistant off)");
+    } else {
+        match klipp_control::spawn(klipp_control::ControlContext {
+            commands: control_tx,
+            shared: std::sync::Arc::clone(&control_shared),
+            wake_ui: std::sync::Arc::new(move || {
+                if let Some(ctx) = repaint_ctx_for_control.get() {
+                    ctx.request_repaint();
+                }
+            }),
+            sequence: sequence.clone(),
+            media_pool: media_pool.clone(),
+            frame_buffer: frame_buffer.clone(),
+            perf_ring: perf_ring.clone(),
+            log_path: std::path::PathBuf::from("klipp-debug.log"),
+        }) {
+            Some(p) => info!("control socket ready at {}", p.display()),
+            None => info!("control socket not started"),
+        }
     }
 
     let cmd_tx_clone = cmd_tx.clone();

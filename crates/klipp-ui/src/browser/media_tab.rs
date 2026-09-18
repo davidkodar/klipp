@@ -1967,6 +1967,13 @@ fn show_context_menu(
         cmds.push(AppCommand::ClearSyncedAudio { video_id: media_id });
         ui.close_menu();
     }
+    if !offline && ui.button("Transcribe Clip")
+        .on_hover_text("Run speech-to-text on this clip now, even when automatic transcription is off.")
+        .clicked()
+    {
+        cmds.push(AppCommand::TranscribeClip { media_id });
+        ui.close_menu();
+    }
     // Relink — only shown for offline items, sits at the top so it's
     // the first action a user sees when reaching for a missing clip.
     if offline {

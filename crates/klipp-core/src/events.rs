@@ -1321,6 +1321,10 @@ pub enum AppCommand {
     EndScrub,
     /// Relink a specific offline media item to a new path.
     RelinkMedia { media_id: MediaId, new_path: PathBuf },
+    /// Transcribe one clip now — the media browser's "Transcribe Clip"
+    /// right-click action. Runs speech-to-text on this item even when
+    /// automatic transcription is switched off in preferences.
+    TranscribeClip { media_id: MediaId },
     /// Read these items' files again for what the camera recorded about
     /// the shot (timecode, reel, exposure, sidecar, every tag), keeping
     /// what the user said about them.

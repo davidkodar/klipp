@@ -1808,14 +1808,20 @@ impl Default for ExternalToolsPrefs {
     }
 }
 
-/// On-device AI: the opt-out switch and how speech transcription runs.
+/// On-device AI: the three features, each its own opt-out, and how speech
+/// transcription runs. Nothing here ever leaves the machine.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AiPrefs {
-    /// Master switch for the on-device AI. Off means transcription and
-    /// subject detection never run on import, and the assistant / AI
-    /// tools stay out of the way. Nothing here ever leaves the machine.
+    /// Speech transcription (for captions and subtitles).
     #[serde(default = "default_true")]
-    pub enabled: bool,
+    pub transcription: bool,
+    /// Subject detection — the framing / masking vision model.
+    #[serde(default = "default_true")]
+    pub subject_detection: bool,
+    /// The AI assistant: whether the control socket and MCP server run,
+    /// so an agent can drive the app. Takes effect on restart.
+    #[serde(default = "default_true")]
+    pub assistant: bool,
     /// Run speech transcription on the CPU instead of the GPU: slower,
     /// but works without a working Vulkan GPU.
     #[serde(default)]
@@ -1824,7 +1830,7 @@ pub struct AiPrefs {
 
 impl Default for AiPrefs {
     fn default() -> Self {
-        Self { enabled: true, transcribe_on_cpu: false }
+        Self { transcription: true, subject_detection: true, assistant: true, transcribe_on_cpu: false }
     }
 }
 

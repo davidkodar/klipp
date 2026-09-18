@@ -89,30 +89,41 @@ impl AnalysisCtx {
     }
 }
 
-/// Whether the on-device AI analysers (speech transcription, framing) run.
-/// The non-AI analysers — shots, audio, motion — always run. A user can
-/// opt out of AI in preferences; this is how that reaches the pipeline.
-static AI_ENABLED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+/// The on-device AI analysers are opt-out, each on its own. The non-AI
+/// analysers — shots, audio, motion — always run; these two are gated by
+/// their preference so a user can, say, keep transcription and drop
+/// subject detection. Speech transcription:
+static TRANSCRIPTION_ENABLED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+/// Subject detection (the framing analyser):
+static SUBJECT_DETECTION_ENABLED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
 
-/// Turn the AI analysers on or off. Off by preference means transcription
-/// and framing never run on import; shots, audio and motion still do.
-pub fn set_ai_enabled(on: bool) {
-    AI_ENABLED.store(on, std::sync::atomic::Ordering::Relaxed);
+/// Turn automatic speech transcription on or off.
+pub fn set_transcription_enabled(on: bool) {
+    TRANSCRIPTION_ENABLED.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+/// Whether automatic speech transcription is enabled.
+pub fn transcription_enabled() -> bool {
+    TRANSCRIPTION_ENABLED.load(std::sync::atomic::Ordering::Relaxed)
+}
+/// Turn subject detection (framing) on or off.
+pub fn set_subject_detection_enabled(on: bool) {
+    SUBJECT_DETECTION_ENABLED.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+/// Whether subject detection is enabled.
+pub fn subject_detection_enabled() -> bool {
+    SUBJECT_DETECTION_ENABLED.load(std::sync::atomic::Ordering::Relaxed)
 }
 
-/// Whether the AI analysers are enabled.
-pub fn ai_enabled() -> bool {
-    AI_ENABLED.load(std::sync::atomic::Ordering::Relaxed)
-}
-
-/// Every analyser this build ships, in the order they pay off. The AI
-/// analysers are left out when AI is disabled in preferences.
+/// Every analyser this build ships, in the order they pay off. Each AI
+/// analyser is left out when its feature is switched off in preferences.
 pub fn analysers() -> Vec<Box<dyn Analyser>> {
     let mut v: Vec<Box<dyn Analyser>> = vec![Box::new(shots::ShotsAnalyser), Box::new(audio::AudioAnalyser), Box::new(motion::MotionAnalyser)];
-    if ai_enabled() {
-        #[cfg(feature = "transcript")]
+    #[cfg(feature = "transcript")]
+    if transcription_enabled() {
         v.push(Box::new(transcript::TranscriptAnalyser));
-        #[cfg(feature = "framing")]
+    }
+    #[cfg(feature = "framing")]
+    if subject_detection_enabled() {
         v.push(Box::new(framing::FramingAnalyser));
     }
     v
@@ -158,14 +169,23 @@ mod ai_toggle_tests {
     /// Disabling AI drops the transcript and framing analysers but keeps
     /// shots, audio and motion; re-enabling restores them.
     #[test]
-    fn ai_toggle_gates_only_the_ai_analysers() {
-        super::set_ai_enabled(true);
+    fn each_ai_feature_gates_its_own_analyser() {
+        super::set_transcription_enabled(true);
+        super::set_subject_detection_enabled(true);
         let on: Vec<&str> = super::analysers().iter().map(|a| a.id()).collect();
         assert!(on.contains(&"shots") && on.contains(&"audio") && on.contains(&"motion"));
-        super::set_ai_enabled(false);
-        let off: Vec<&str> = super::analysers().iter().map(|a| a.id()).collect();
-        assert!(off.contains(&"shots") && off.contains(&"audio") && off.contains(&"motion"), "non-AI analysers stay");
-        assert!(!off.contains(&"transcript") && !off.contains(&"framing"), "AI analysers gone: {off:?}");
-        super::set_ai_enabled(true);
+        // Drop subject detection only: transcription stays.
+        super::set_subject_detection_enabled(false);
+        let ids: Vec<&str> = super::analysers().iter().map(|a| a.id()).collect();
+        assert!(!ids.contains(&"framing"), "framing gone: {ids:?}");
+        #[cfg(feature = "transcript")]
+        assert!(ids.contains(&"transcript"), "transcription stays: {ids:?}");
+        // Drop transcription too.
+        super::set_transcription_enabled(false);
+        let none: Vec<&str> = super::analysers().iter().map(|a| a.id()).collect();
+        assert!(none.contains(&"shots") && none.contains(&"audio") && none.contains(&"motion"), "non-AI stay");
+        assert!(!none.contains(&"transcript") && !none.contains(&"framing"), "AI gone: {none:?}");
+        super::set_transcription_enabled(true);
+        super::set_subject_detection_enabled(true);
     }
 }

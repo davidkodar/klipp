@@ -47,11 +47,14 @@ struct Service {
     /// Items whose analysis finished since the host last asked, so it
     /// can read the results once rather than poll every item.
     completed: Vec<MediaId>,
+    /// Items an on-demand "Transcribe clip" queued: run the speech
+    /// analyser for these even when automatic transcription is off.
+    force_transcript: std::collections::HashSet<MediaId>,
 }
 
 fn service() -> &'static Mutex<Service> {
     static S: OnceLock<Mutex<Service>> = OnceLock::new();
-    S.get_or_init(|| Mutex::new(Service { statuses: HashMap::new(), queue: Vec::new(), running: 0, ctx: AnalysisCtx::default(), completed: Vec::new() }))
+    S.get_or_init(|| Mutex::new(Service { statuses: HashMap::new(), queue: Vec::new(), running: 0, ctx: AnalysisCtx::default(), completed: Vec::new(), force_transcript: std::collections::HashSet::new() }))
 }
 
 /// Ask for `item` to be analysed. Returns at once with its state;
@@ -89,6 +92,27 @@ pub fn request(item: &MediaItem) -> Status {
     st
 }
 
+/// Transcribe one clip now — the on-demand "Transcribe clip" action. Runs
+/// the speech analyser for this item even when automatic transcription is
+/// switched off, without touching the other analysers or the global
+/// preference. The item appears in `take_completed()` when it is done. A
+/// no-op if a run for the item is already in flight, or if the clip has no
+/// sound to transcribe.
+pub fn request_transcription(item: &MediaItem) -> Status {
+    let mut s = service().lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(st) = s.statuses.get(&item.id) {
+        if matches!(st.state, State::Queued | State::Running) {
+            return st.clone();
+        }
+    }
+    s.force_transcript.insert(item.id);
+    let st = Status { media_id: item.id.0.to_string(), filename: item.filename.clone(), state: State::Queued, done: Vec::new(), failed: Vec::new(), current: None, current_for_secs: None, current_since: None };
+    s.statuses.insert(item.id, st.clone());
+    s.queue.push(item.clone());
+    pump(&mut s);
+    st
+}
+
 /// Start queued work while there is room.
 fn pump(s: &mut Service) {
     while s.running < MAX_RUNNING && !s.queue.is_empty() {
@@ -98,10 +122,11 @@ fn pump(s: &mut Service) {
             st.state = State::Running;
         }
         let ctx = s.ctx.clone();
+        let force_transcript = s.force_transcript.remove(&item.id);
         std::thread::Builder::new()
             .name(format!("klipp-analysis:{}", item.filename))
             .spawn(move || {
-                let (done, failed) = run_all(&item, &ctx);
+                let (done, failed) = run_all(&item, &ctx, force_transcript);
                 let mut s = service().lock().unwrap_or_else(|e| e.into_inner());
                 s.running = s.running.saturating_sub(1);
                 let any_done = !done.is_empty();
@@ -123,14 +148,22 @@ fn pump(s: &mut Service) {
 
 /// Every analyser that wants `item` and has no stored result, run in
 /// order; each result saved as it is made.
-fn run_all(item: &MediaItem, ctx: &AnalysisCtx) -> (Vec<&'static str>, Vec<(String, String)>) {
+fn run_all(item: &MediaItem, ctx: &AnalysisCtx, force_transcript: bool) -> (Vec<&'static str>, Vec<(String, String)>) {
     let mut done = Vec::new();
     let mut failed = Vec::new();
     let Some(key) = crate::store::key_for(&item.path) else {
         failed.push(("store".to_string(), format!("{} is not readable", item.path.display())));
         return (done, failed);
     };
-    for a in analysers() {
+    // The on-demand transcribe forces the speech analyser in even when
+    // automatic transcription is off; otherwise the enabled set is used.
+    let mut list = analysers();
+    #[cfg(feature = "transcript")]
+    if force_transcript && !list.iter().any(|a| a.id() == crate::transcript::ID) {
+        list.push(Box::new(crate::transcript::TranscriptAnalyser));
+    }
+    let _ = force_transcript;
+    for a in list {
         if !a.wants(item) {
             continue;
         }
@@ -189,7 +222,7 @@ pub fn all() -> Vec<Status> {
 /// Run every analyser for `item` on this thread and return the report;
 /// for tests and tools, not the app.
 pub fn run_now(item: &MediaItem, ctx: &AnalysisCtx) -> Result<crate::report::MediaAnalysis, String> {
-    let (_, failed) = run_all(item, ctx);
+    let (_, failed) = run_all(item, ctx, false);
     if let Some((id, why)) = failed.first() {
         return Err(format!("{id}: {why}"));
     }

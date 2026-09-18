@@ -112,7 +112,7 @@ Between them an agent can orient itself, import and analyse footage (shot bounda
 
 None of it needs a particular GPU vendor: the AI runs on CPU (the ONNX and Candle vision models) and Vulkan (Whisper speech, and all playback, effects and scopes), and video decode / encode fall back to software. CUDA is an optional accelerator only — nothing requires it.
 
-All of the on-device AI is **opt-in-by-default and easy to turn off**: **Preferences → AI** has the master switch (off means transcription and subject detection never run), the "AI ready / MCP ready" status, a CPU-vs-GPU choice for transcription, and the speech (Whisper) models with their sizes, with a link to the full model manager for downloading and switching every model.
+All of the on-device AI is **easy to turn off, one piece at a time**: **Preferences → AI** has a separate switch for speech transcription, for subject detection, and for the AI assistant (the MCP server), so you can, say, keep transcription and turn the assistant off entirely. It also shows the "ready / off" status of each, a CPU-vs-GPU choice for transcription, and the speech (Whisper) models with their sizes and a link to the full model manager. A clip's right-click menu has **Transcribe Clip** to run speech-to-text on one clip on demand, even with automatic transcription off.
 
 ## Architecture
 
