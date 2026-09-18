@@ -167,6 +167,18 @@ pub fn check(seq: &Sequence, pool: &MediaPool, transcripts: &dyn Transcripts) ->
             if !(same_media && meets && jumps) {
                 continue;
             }
+            // The picture changes shot in the file between the two: a
+            // split screen becoming a stacked one is a cut, not a jump.
+            let source_cut_between = match (&a.kind, a.media_id().and_then(|id| pool.get(&id))) {
+                (ClipKind::Media { .. }, Some(item)) => {
+                    let (lo, hi) = (secs(a.source_out).min(secs(b.source_in)), secs(a.source_out).max(secs(b.source_in)));
+                    transcripts.shot_changes(item).iter().any(|t| *t > lo && *t < hi)
+                }
+                _ => false,
+            };
+            if source_cut_between {
+                continue;
+            }
             // Covered when a picture on a track above runs across the cut.
             let covered = pictures.iter().any(|(tj, c)| tj < ti && secs(c.timeline_in) <= cut - 0.2 && secs(c.timeline_out) >= cut + 0.2);
             if !covered {
@@ -194,7 +206,15 @@ pub fn check(seq: &Sequence, pool: &MediaPool, transcripts: &dyn Transcripts) ->
         if low {
             if let Some(cap) = captions.iter().find(|k| secs(k.timeline_in) < b && secs(k.timeline_out) > a) {
                 let from = a.max(secs(cap.timeline_in));
-                add(Severity::Warning, "captions_under_title", Some(from), format!("{} and the captions share the bottom of the frame from {from:.2} s", clip_label(pool, c)), "Lift the captions for that stretch (style the subtitle track with from, to and a y of about 0.7), or put the title up where nobody is speaking");
+                // A title set to one side and captions in the middle share
+                // the band but not the space: worth a look, not a change.
+                let title_x = td.objects.iter().filter(|o| o.visible).map(|o| o.transform.center.x).fold(0.5f32, |acc, x| if (x - 0.5).abs() > (acc - 0.5).abs() { x } else { acc });
+                let caption_x = cap.title_data().and_then(|t| t.objects.first()).map(|o| o.transform.center.x).unwrap_or(0.5);
+                if (title_x - caption_x).abs() > 0.3 {
+                    add(Severity::Note, "captions_beside_title", Some(from), format!("{} and the captions share the bottom of the frame from {from:.2} s, at different sides", clip_label(pool, c)), "Look at one frame to see they do not touch");
+                } else {
+                    add(Severity::Warning, "captions_under_title", Some(from), format!("{} and the captions share the bottom of the frame from {from:.2} s", clip_label(pool, c)), "Lift the captions for that stretch (style the subtitle track with from, to and a y of about 0.7), or put the title up where nobody is speaking");
+                }
             }
         }
     }
@@ -290,7 +310,8 @@ mod tests {
         RationalTime::from_secs_f64(s, 25)
     }
 
-    /// The same interview, measured silent around 5.3 and 9.3 s, where the second select is cut.
+    /// The same interview, measured silent around 5.3 and 9.3 s, where the second select is cut,
+    /// and with a change of shot in the file at 12 s.
     struct Gated(klipp_core::MediaId);
 
     impl Transcripts for Gated {
@@ -299,6 +320,9 @@ mod tests {
         }
         fn silences(&self, item: &klipp_media::MediaItem) -> Vec<(f64, f64)> {
             if item.id == self.0 { vec![(5.2, 5.4), (9.2, 9.4)] } else { Vec::new() }
+        }
+        fn shot_changes(&self, item: &klipp_media::MediaItem) -> Vec<f64> {
+            if item.id == self.0 { vec![12.0] } else { Vec::new() }
         }
     }
 
@@ -382,6 +406,9 @@ mod tests {
         }
         let r = check(&seq, &pool, &Spoken(talk));
         assert!(rules(&r).contains(&"jump_cut") && !rules(&r).contains(&"black"), "{}", r.text());
+        // The file changes shot at 12 s, between the two selects' source times
+        // (4 s and 20 s): that is a cut in the picture, not a jump.
+        assert!(!rules(&check(&seq, &pool, &Gated(talk))).contains(&"jump_cut"));
         let mut broll = Track::new("V2", TrackKind::Video);
         let mut cover = Clip::media(music, tc(3.0), tc(5.0), tc(0.0), tc(2.0));
         cover.volume = 0.0;

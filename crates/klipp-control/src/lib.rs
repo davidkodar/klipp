@@ -466,6 +466,10 @@ impl klipp_document::ops::Transcripts for AnalysedTranscripts {
     fn silences(&self, item: &klipp_media::MediaItem) -> Vec<(f64, f64)> {
         klipp_analysis::report::MediaAnalysis::load(&item.path).audio.map(|a| a.silences.iter().map(|s| (s.start_secs, s.end_secs)).collect()).unwrap_or_default()
     }
+
+    fn shot_changes(&self, item: &klipp_media::MediaItem) -> Vec<f64> {
+        klipp_analysis::report::MediaAnalysis::load(&item.path).shots.map(|s| s.boundaries).unwrap_or_default()
+    }
 }
 
 /// A media item's file and duration, by id.
@@ -650,6 +654,7 @@ fn handle(
                 "project": {
                     "path": project.path.as_ref().map(|p| p.to_string_lossy().to_string()),
                     "unsaved_changes": project.dirty,
+                    "unsaved_changes_from": if project.dirty { project.changed_by.clone().or(Some("edits".into())) } else { None },
                 },
                 "tracks": seq.tracks.len(),
                 "clips": seq.tracks.iter().map(|t| t.clips.len()).sum::<usize>(),
@@ -833,6 +838,13 @@ fn handle(
             if in_batch {
                 return read_in_batch("find_shots");
             }
+            // A search over files still being analysed is a search over
+            // part of the footage: said, with which files.
+            let pending: Vec<String> = klipp_analysis::service::all()
+                .into_iter()
+                .filter(|s| matches!(s.state, klipp_analysis::service::State::Queued | klipp_analysis::service::State::Running))
+                .map(|s| s.filename)
+                .collect();
             let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
             let max = max_hits.unwrap_or(50);
             let mut hits = Vec::new();
@@ -893,7 +905,12 @@ fn handle(
                     }
                 }
             }
-            Ok(json!({ "hits": hits }))
+            let mut v = json!({ "hits": hits });
+            if !pending.is_empty() {
+                v["still_analysing"] = json!(pending);
+                v["note"] = json!(format!("these files are still being analysed and are not in the hits yet: {}; see analysis_status and ask again when they are done", pending.join(", ")));
+            }
+            Ok(v)
         }
 
         ControlCommand::ContactSheet { media_id, from_secs, to_secs, frames, cols, tile_width, path } => {
@@ -1253,7 +1270,20 @@ fn handle(
             let mut v = send_full_envelope(ctx, Vec::new(), vec![edit], true, None, Some("Set Brief".into()))?;
             v["text"] = json!(text);
             if respelt && !new_spellings.is_empty() {
-                v["note"] = json!("the spellings changed: run analyze to have the speech transcribed again with them, before captions or a transcript search");
+                // Only when a transcript was made without them: one that
+                // already carries them is as good as it will get.
+                let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
+                let lacking: Vec<String> = pool
+                    .all()
+                    .filter_map(|m| klipp_analysis::report::MediaAnalysis::load(&m.path).transcript.map(|t| (m.filename.clone(), t.vocabulary)))
+                    .filter(|(_, had)| klipp_analysis::transcript::lacks_spellings(had, &new_spellings))
+                    .map(|(f, _)| f)
+                    .collect();
+                v["note"] = json!(if lacking.is_empty() {
+                    "the transcripts made so far already carry these spellings; a file analysed from now on gets them too".to_string()
+                } else {
+                    format!("the spellings changed and these transcripts were made without them: {}; run analyze to have them transcribed again before captions or a transcript search", lacking.join(", "))
+                });
             }
             Ok(v)
         }

@@ -320,6 +320,11 @@ pub trait Transcripts {
     fn silences(&self, _item: &klipp_media::MediaItem) -> Vec<(f64, f64)> {
         Vec::new()
     }
+    /// Where `item`'s picture changes shot, in the file's seconds: two
+    /// selects from either side of one are a cut, not a jump cut.
+    fn shot_changes(&self, _item: &klipp_media::MediaItem) -> Vec<f64> {
+        Vec::new()
+    }
 }
 
 /// No transcripts at all: `captions` is refused.
@@ -1487,7 +1492,7 @@ fn captions(
     // caller that cannot see them cannot proofread them.
     let listing: String = cues.iter().map(|c| format!("\n     {:7.2}-{:<7.2} {}", c.start, c.end, c.text.replace('\n', " / "))).collect();
     let what = format!(
-        "captions: {} cues from {:.2} to {:.2} s on {}subtitle track {ti}, at most {max_lines} lines of {max_chars}{}; correct one with set_text:{listing}",
+        "captions: {} cues from {:.2} to {:.2} s on {}subtitle track {ti}, at most {max_lines} lines of {max_chars}{}; a \" / \" below marks a line break (set_text takes a real newline); correct one with set_text:{listing}",
         cues.len(),
         cues.first().map(|c| c.start).unwrap_or(0.0),
         cues.last().map(|c| c.end).unwrap_or(0.0),

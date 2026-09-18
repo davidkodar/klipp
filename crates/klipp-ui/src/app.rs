@@ -1256,6 +1256,9 @@ impl KlippApp {
                 if let Ok(mut project) = self.state.control_shared.project.lock() {
                     project.path = self.state.project_path.clone();
                     project.dirty = self.state.dirty;
+                    if self.state.dirty && refused.is_none() {
+                        project.changed_by = Some("edits".into());
+                    }
                 }
                 let _ = ack.send(klipp_document::control::ControlAck { revision: self.state.control_shared.revision(), refused });
             }
@@ -1310,6 +1313,12 @@ impl KlippApp {
         }
         if changed {
             self.state.dirty = true;
+            // Said to the socket: a project saved a moment ago reads as
+            // unsaved with no edit made, and an agent wondered what it did.
+            if let Ok(mut project) = self.state.control_shared.project.lock() {
+                project.dirty = true;
+                project.changed_by = Some("analysis markers arriving on media items".into());
+            }
             self.sync_media_pool_to_engine();
         }
     }
@@ -22353,6 +22362,9 @@ impl KlippApp {
             project.dirty = self.state.dirty;
             project.generation += 1;
             project.last_error = error;
+            if !self.state.dirty {
+                project.changed_by = None;
+            }
         }
     }
 

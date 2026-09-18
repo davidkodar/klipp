@@ -3737,6 +3737,10 @@ pub struct ProjectStatus {
     pub generation: u64,
     /// Why the last save or open failed, until the next one succeeds.
     pub last_error: Option<String>,
+    /// What made the project unsaved, when it is: "edits", or something
+    /// that changed it on its own, such as analysis markers arriving.
+    #[serde(default)]
+    pub changed_by: Option<String>,
 }
 
 impl ControlShared {
