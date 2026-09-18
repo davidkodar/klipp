@@ -4841,45 +4841,60 @@ impl BrowserPanel {
 
         // Collect an async search result if one has arrived.
         if let Some(rx) = &self.audio_search_receiver {
-            if let Ok(res) = rx.try_recv() {
-                match res {
-                    Ok(tracks) => {
-                        self.audio_search_results = tracks;
-                        self.audio_search_error = None;
-                    }
-                    Err(e) => {
-                        self.audio_search_error = Some(e);
-                        self.audio_search_results.clear();
-                    }
+            match rx.try_recv() {
+                Ok(Ok(tracks)) => {
+                    self.audio_search_results = tracks;
+                    self.audio_search_error = None;
+                    self.audio_search_receiver = None;
                 }
-                self.audio_search_receiver = None;
+                Ok(Err(e)) => {
+                    self.audio_search_error = Some(e);
+                    self.audio_search_results.clear();
+                    self.audio_search_receiver = None;
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    self.audio_search_receiver = None;
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
             }
         }
         // A downloaded preview arriving: play it in the app.
         if let Some(rx) = &self.audio_preview_receiver {
-            if let Ok(res) = rx.try_recv() {
-                match res {
-                    Ok(bytes) => {
-                        if let Err(e) = klipp_audio_search::preview_play(bytes) {
-                            state.toast.show(format!("Preview: {e}"));
-                        }
+            match rx.try_recv() {
+                Ok(Ok(bytes)) => {
+                    if let Err(e) = klipp_audio_search::preview_play(bytes) {
+                        state.toast.show(format!("Preview: {e}"));
                     }
-                    Err(e) => state.toast.show(format!("Preview: {e}")),
+                    self.audio_preview_receiver = None;
                 }
-                self.audio_preview_receiver = None;
+                Ok(Err(e)) => {
+                    state.toast.show(format!("Preview: {e}"));
+                    self.audio_preview_receiver = None;
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    self.audio_preview_receiver = None;
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
             }
         }
         // A track finished downloading: import it through the normal path.
+        // Also clear the slot if the worker vanished, so a later Add never
+        // stays wedged behind a receiver that will never deliver.
         if let Some(rx) = &self.audio_download_receiver {
-            if let Ok(res) = rx.try_recv() {
-                match res {
-                    Ok((path, title)) => {
-                        cmds.push(AppCommand::ImportMedia { path });
-                        state.toast.show(format!("Added \u{201c}{}\u{201d}", title));
-                    }
-                    Err(e) => state.toast.show(format!("Couldn't add it: {e}")),
+            match rx.try_recv() {
+                Ok(Ok((path, title))) => {
+                    cmds.push(AppCommand::ImportMedia { path });
+                    state.toast.show(format!("Added \u{201c}{}\u{201d}", title));
+                    self.audio_download_receiver = None;
                 }
-                self.audio_download_receiver = None;
+                Ok(Err(e)) => {
+                    state.toast.show(format!("Couldn't add it: {e}"));
+                    self.audio_download_receiver = None;
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    self.audio_download_receiver = None;
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
             }
         }
         let searching = self.audio_search_receiver.is_some();
