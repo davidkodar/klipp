@@ -881,3 +881,21 @@ fn match_grade_knobs_close_the_gap() {
     let same = match_grade_knobs(&reference, &reference);
     assert!(same.is_empty(), "no gap, no grade: {same:?}");
 }
+
+/// resolve_look picks a look by a distinctive word, takes an absolute
+/// .cube path as-is, and says so when a name matches nothing.
+#[test]
+fn looks_resolve_by_name_and_path() {
+    // A distinctive token picks exactly one look out of the library.
+    let (path, name) = klipp_control::resolve_look("gyroflow").expect("gyroflow is one look");
+    assert!(path.to_string_lossy().ends_with("GYROFLOW CONVERSION Legal to Full.cube"), "{path:?}");
+    assert_eq!(name, "GYROFLOW CONVERSION Legal to Full");
+
+    // A word in many looks asks the agent to be more specific.
+    let ambiguous = klipp_control::resolve_look("normal");
+    assert!(ambiguous.is_err(), "'normal' should match several");
+
+    // Nothing matches → a helpful error, not a panic.
+    let miss = klipp_control::resolve_look("no-such-look-zzz").unwrap_err();
+    assert!(miss.contains("no look matches"), "{miss}");
+}

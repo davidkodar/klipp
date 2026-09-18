@@ -150,6 +150,12 @@ exist until the plan runs.
   from -1 to 1. Use it to salvage a wide or badly-framed shot, to fit a
   vertical delivery, or to set a slow push. It sits before other
   effects, so a vignette or grade after it sees the reframed picture.
+- `look` (the `klipp_look` tool): put a creative look — a bundled 3D
+  LUT — on a picture clip, as one node after the grade so it sits on the
+  corrected image. `name` is a look from `klipp_looks` (category/name, or
+  any words that pick one out); `opacity` fades it in; `remove` clears
+  it. Grade for exposure and continuity first, then a look for style.
+  `klipp_looks` lists the library: cinematic and film emulations.
 - `clean_audio {clip_id, wind?, hiss?, hum?, deess?}`: clean a clip's
   sound. Each flag adds the right tool: wind and rumble, tape or air
   hiss, mains hum, harsh sibilance. The beach-in-a-gale clip wants

@@ -298,6 +298,24 @@ pub enum ControlCommand {
         #[serde(default)]
         words: bool,
     },
+    /// Apply a creative look — a bundled 3D LUT chosen by name — to a
+    /// picture clip, as one node after its grade. opacity fades it in;
+    /// remove clears it. Names resolve against the bundled LUT library.
+    Look {
+        clip_id: String,
+        #[serde(default)]
+        name: Option<String>,
+        #[serde(default)]
+        opacity: Option<f32>,
+        #[serde(default)]
+        remove: bool,
+    },
+    /// The bundled looks (3D LUTs) an agent can apply, by category, so it
+    /// knows what names `look` will take.
+    Looks {
+        #[serde(default)]
+        category: Option<String>,
+    },
     /// Match a picture clip's grade to a reference clip's: read a frame
     /// of each through the scopes and set the target's exposure, lift,
     /// gain, temperature and tint to bring its black, mid and white

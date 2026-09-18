@@ -299,6 +299,21 @@ pub enum Op {
         #[serde(default)]
         y: f32,
     },
+    /// Apply a creative look — a 3D LUT — to a picture clip, as one node
+    /// after the grade so the look sits on the corrected image. `lut_path`
+    /// is the resolved file; `name` is what to call it in the reply;
+    /// `opacity` (default 1) fades the look in; `remove` clears it.
+    Look {
+        clip_id: ClipRef,
+        #[serde(default)]
+        lut_path: String,
+        #[serde(default)]
+        name: Option<String>,
+        #[serde(default)]
+        opacity: Option<f32>,
+        #[serde(default)]
+        remove: bool,
+    },
     /// Change a clip's speed. `speed` above 1 is faster and shorter, below
     /// 1 slower and longer (0.5 is half speed); the clips after it on the
     /// track keep their place, so a gap or an overlap is yours to close.
@@ -788,6 +803,10 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
         Op::Reframe { clip_id, scale, x, y } => {
             let (ti, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
             reframe(seq, pool, i, ti, clip, *scale, *x, *y)
+        }
+        Op::Look { clip_id, lut_path, name, opacity, remove } => {
+            let (ti, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
+            apply_look(seq, pool, i, ti, clip, lut_path, name.as_deref(), *opacity, *remove)
         }
         Op::Retime { clip_id, speed } => {
             let (ti, ci, clip) = resolve_clip(seq, fps, clip_id, i)?;
@@ -1766,6 +1785,44 @@ fn reframe(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip, s
     effects.insert(0, fx);
     let what = format!("reframe {}: scale {scale:.2}, pan {x:.2}, {y:.2}", clip_name(seq, pool, clip));
     Ok((what, set_builtin_effects(clip, effects), vec![clip.id]))
+}
+
+fn apply_look(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip, lut_path: &str, name: Option<&str>, opacity: Option<f32>, remove: bool) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
+    require_picture(seq, pool, i, ti, clip, "put a look on")?;
+    let label = || name.map(|n| n.to_string()).unwrap_or_else(|| std::path::Path::new(lut_path).file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "a look".into()));
+    if remove {
+        if !clip.node_graph.nodes.iter().any(|n| n.kind == klipp_nodes::NodeKind::Lut3D && n.params.lut_path.is_some()) {
+            return Err(refuse(i, "no look to remove", "this clip has no look on it"));
+        }
+        let mut graph = clip.node_graph.clone();
+        for node in graph.nodes.iter_mut().filter(|n| n.kind == klipp_nodes::NodeKind::Lut3D) {
+            node.params.lut_path = None;
+            node.params.lut_opacity = None;
+        }
+        let what = format!("clear the look on {}", clip_name(seq, pool, clip));
+        return Ok((what, EditCommand::SetNodeGraph { clip_id: clip.id, old_graph: clip.node_graph.clone(), new_graph: graph }, vec![clip.id]));
+    }
+    if lut_path.is_empty() {
+        return Err(refuse(i, "no LUT given", "give a look to apply"));
+    }
+    let op = opacity.unwrap_or(1.0);
+    if !op.is_finite() || !(0.0..=1.0).contains(&op) {
+        return Err(refuse(i, format!("opacity {op} is out of range"), "give opacity between 0 and 1"));
+    }
+    let mut graph = clip.node_graph.clone();
+    if graph.is_identity() {
+        graph = klipp_nodes::defaults::default_graph();
+    }
+    let lut_id = graph.ensure_lut3d();
+    let node = graph.nodes.iter_mut().find(|n| n.id == lut_id).expect("ensure_lut3d made it");
+    node.params.lut_path = Some(std::path::PathBuf::from(lut_path));
+    node.params.lut_opacity = Some(op);
+    let what = if (op - 1.0).abs() < 1e-4 {
+        format!("look on {}: {}", clip_name(seq, pool, clip), label())
+    } else {
+        format!("look on {}: {} at {:.0}%", clip_name(seq, pool, clip), label(), op * 100.0)
+    };
+    Ok((what, EditCommand::SetNodeGraph { clip_id: clip.id, old_graph: clip.node_graph.clone(), new_graph: graph }, vec![clip.id]))
 }
 
 fn stabilize(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip, smoothing: f32) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
@@ -2817,6 +2874,44 @@ mod tests {
         assert!(bad(Op::Reframe { clip_id: ClipRef::Id(a), scale: 9.0, x: 0.0, y: 0.0 }).why.contains("scale"));
         assert!(bad(Op::Reframe { clip_id: ClipRef::Id(a), scale: 1.0, x: 0.0, y: 0.0 }).why.contains("nothing to reframe"));
         let _: Vec<Op> = serde_json::from_str(r#"[{"op":"reframe","clip_id":{"track":0,"secs":1.0},"scale":1.3}]"#).unwrap();
+    }
+
+    #[test]
+    fn a_look_adds_one_lut_node_after_the_grade_and_clears() {
+        let (seq, pool, _media, a, _) = fixture();
+
+        // A look adds a single Lut3D node with the path and opacity.
+        let plan = resolve(&seq, &pool, &[Op::Look { clip_id: ClipRef::Id(a), lut_path: "/luts/kodak.cube".into(), name: Some("Kodak 2383".into()), opacity: Some(0.8), remove: false }]).unwrap();
+        assert!(plan.steps[0].what.contains("Kodak 2383") && plan.steps[0].what.contains("80%"), "{}", plan.steps[0].what);
+        let EditCommand::SetNodeGraph { new_graph, .. } = &plan.steps[0].edit else { panic!("node-graph edit") };
+        let luts: Vec<_> = new_graph.nodes.iter().filter(|n| n.kind == klipp_nodes::NodeKind::Lut3D).collect();
+        assert_eq!(luts.len(), 1, "one LUT node");
+        assert_eq!(luts[0].params.lut_path.as_ref().unwrap().to_str().unwrap(), "/luts/kodak.cube");
+        assert_eq!(luts[0].params.lut_opacity, Some(0.8));
+
+        // Applying a second look reuses the node, never stacks a second.
+        let mut seqs = vec![seq.clone()];
+        let mut p = pool.clone();
+        let mut fps = seq.fps;
+        {
+            let mut view = crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut p, fps: &mut fps };
+            view.apply_forward(&plan.steps[0].edit);
+        }
+        let plan2 = resolve(&seqs[0], &p, &[Op::Look { clip_id: ClipRef::Id(a), lut_path: "/luts/fuji.cube".into(), name: None, opacity: None, remove: false }]).unwrap();
+        let EditCommand::SetNodeGraph { new_graph: g2, .. } = &plan2.steps[0].edit else { panic!("node-graph edit") };
+        assert_eq!(g2.nodes.iter().filter(|n| n.kind == klipp_nodes::NodeKind::Lut3D).count(), 1, "still one LUT");
+        assert_eq!(g2.nodes.iter().find(|n| n.kind == klipp_nodes::NodeKind::Lut3D).unwrap().params.lut_path.as_ref().unwrap().to_str().unwrap(), "/luts/fuji.cube");
+
+        // Removing clears the LUT path.
+        let plan3 = resolve(&seqs[0], &p, &[Op::Look { clip_id: ClipRef::Id(a), lut_path: String::new(), name: None, opacity: None, remove: true }]).unwrap();
+        let EditCommand::SetNodeGraph { new_graph: g3, .. } = &plan3.steps[0].edit else { panic!("node-graph edit") };
+        assert!(g3.nodes.iter().filter(|n| n.kind == klipp_nodes::NodeKind::Lut3D).all(|n| n.params.lut_path.is_none()), "look cleared");
+
+        // Refusals: a look with no LUT, a remove with nothing on, out of range.
+        let bad = |op: Op| resolve(&seq, &pool, &[op]).unwrap_err();
+        assert!(bad(Op::Look { clip_id: ClipRef::Id(a), lut_path: String::new(), name: None, opacity: None, remove: false }).why.contains("no LUT"));
+        assert!(bad(Op::Look { clip_id: ClipRef::Id(a), lut_path: String::new(), name: None, opacity: None, remove: true }).why.contains("no look to remove"));
+        assert!(bad(Op::Look { clip_id: ClipRef::Id(a), lut_path: "/x.cube".into(), name: None, opacity: Some(9.0), remove: false }).why.contains("out of range"));
     }
 
     #[test]

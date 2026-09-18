@@ -473,6 +473,88 @@ pub fn color_faults(stats: &serde_json::Value, secs: f64) -> Vec<(f64, String, S
     out
 }
 
+/// Where the bundled LUT library sits: next to the executable, or in the
+/// source tree at build time. Mirrors the app's own lookup.
+fn bundled_luts_dir() -> Option<std::path::PathBuf> {
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            let c = dir.join("assets").join("luts");
+            if c.exists() {
+                return Some(c);
+            }
+        }
+    }
+    let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().and_then(|p| p.parent()).map(|p| p.join("assets").join("luts"));
+    src.filter(|p| p.exists())
+}
+
+const LOOK_CATEGORIES: &[(&str, &str)] = &[
+    ("cinematic", "Cinematic"),
+    ("film-bw", "Film B&W"),
+    ("film-slide", "Film Slide"),
+    ("film-negative", "Film Negative"),
+    ("film-print", "Film Print"),
+    ("film-instant", "Film Instant"),
+    ("fuji-xtrans", "Fuji X-Trans"),
+];
+
+/// One bundled look: its category, its display name (the file stem), path.
+fn scan_looks() -> Vec<(String, String, std::path::PathBuf)> {
+    let mut out = Vec::new();
+    let Some(base) = bundled_luts_dir() else { return out };
+    for (dir, _label) in LOOK_CATEGORIES {
+        let cat = base.join(dir);
+        let Ok(rd) = std::fs::read_dir(&cat) else { continue };
+        let mut entries: Vec<_> = rd.filter_map(|e| e.ok())
+            .filter(|e| e.path().extension().is_some_and(|x| x == "cube" || x == "3dl" || x == "csp"))
+            .collect();
+        entries.sort_by_key(|e| e.file_name());
+        for e in entries {
+            let stem = e.path().file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+            out.push((dir.to_string(), stem, e.path()));
+        }
+    }
+    out
+}
+
+/// Resolve a look name (or an absolute .cube path) to a file and a
+/// display name. A query matches when every whitespace token appears in
+/// the category or the file name; an exact name wins a tie.
+pub fn resolve_look(name: &str) -> Result<(std::path::PathBuf, String), String> {
+    let q = name.trim();
+    // An explicit path to a real LUT file is taken as-is.
+    let as_path = std::path::Path::new(q);
+    if as_path.is_absolute() && as_path.is_file() {
+        let stem = as_path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| q.to_string());
+        return Ok((as_path.to_path_buf(), stem));
+    }
+    let looks = scan_looks();
+    if looks.is_empty() {
+        return Err("the bundled LUT library was not found next to the app; give an absolute .cube path instead".into());
+    }
+    let ql = q.to_lowercase();
+    let tokens: Vec<&str> = ql.split_whitespace().collect();
+    let hay = |cat: &str, stem: &str| format!("{cat} {stem}").to_lowercase();
+    let matches: Vec<&(String, String, std::path::PathBuf)> = looks.iter()
+        .filter(|(cat, stem, _)| tokens.iter().all(|t| hay(cat, stem).contains(t)))
+        .collect();
+    match matches.len() {
+        0 => {
+            let sample: Vec<String> = looks.iter().take(8).map(|(c, s, _)| format!("{c}/{s}")).collect();
+            Err(format!("no look matches \"{q}\"; call looks to see the library. A few: {}", sample.join(", ")))
+        }
+        1 => Ok((matches[0].2.clone(), matches[0].1.clone())),
+        _ => {
+            // An exact stem match settles it; otherwise ask to be specific.
+            if let Some(exact) = matches.iter().find(|(_, s, _)| s.to_lowercase() == ql) {
+                return Ok((exact.2.clone(), exact.1.clone()));
+            }
+            let names: Vec<String> = matches.iter().take(10).map(|(c, s, _)| format!("{c}/{s}")).collect();
+            Err(format!("\"{q}\" matches {} looks; be more specific: {}", matches.len(), names.join(", ")))
+        }
+    }
+}
+
 /// The grade knobs that move a shot toward a reference shot, from the
 /// two frames' scope readings: lift from the black-point gap, gain from
 /// the white-point gap, exposure from the mid gap, and temperature and
@@ -1589,6 +1671,55 @@ fn handle(
             }
             let (text, cut) = cut_to_budget_with(&out, 12_000, "ask for a shorter stretch with from_secs and to_secs");
             Ok(json!({ "text": text, "cut": cut }))
+        }
+
+        ControlCommand::Looks { category } => {
+            if in_batch {
+                return read_in_batch("looks");
+            }
+            let looks = scan_looks();
+            if looks.is_empty() {
+                return Err("the bundled LUT library was not found next to the app".into());
+            }
+            let want = category.as_ref().map(|c| c.to_lowercase());
+            let mut text = String::from("Bundled looks (apply with look, name is category/name or any words that pick one out):
+");
+            let mut cats = serde_json::Map::new();
+            for (dir, label) in LOOK_CATEGORIES {
+                if let Some(w) = &want {
+                    if !dir.contains(w.as_str()) && !label.to_lowercase().contains(w.as_str()) { continue; }
+                }
+                let names: Vec<String> = looks.iter().filter(|(c, _, _)| c == dir).map(|(_, s, _)| s.clone()).collect();
+                if names.is_empty() { continue; }
+                let show = if want.is_some() { names.len() } else { 6 };
+                let sample = names.iter().take(show).cloned().collect::<Vec<_>>().join(", ");
+                let more = if names.len() > show { format!(" (+{} more)", names.len() - show) } else { String::new() };
+                text.push_str(&format!("  {label} ({}): {sample}{more}
+", names.len()));
+                cats.insert(dir.to_string(), json!({ "label": label, "count": names.len(), "names": names }));
+            }
+            Ok(json!({ "text": text, "categories": cats, "total": looks.len(), "next": "Apply one with look {clip_id, name}. Pass a category name here to see all of its looks." }))
+        }
+
+        ControlCommand::Look { clip_id: c, name, opacity, remove } => {
+            if in_batch {
+                return Err("look applies a grade; send it on its own, not in a batch".into());
+            }
+            let target_id = clip_id(&c)?;
+            use klipp_document::ops::{ClipRef, Op};
+            let op = if remove {
+                Op::Look { clip_id: ClipRef::Id(target_id), lut_path: String::new(), name: None, opacity: None, remove: true }
+            } else {
+                let name = name.ok_or("give a look name (see looks), or remove to clear")?;
+                let (path, display) = resolve_look(&name)?;
+                Op::Look { clip_id: ClipRef::Id(target_id), lut_path: path.to_string_lossy().to_string(), name: Some(display), opacity, remove: false }
+            };
+            let (plan, revision) = resolve_plan(ctx, std::slice::from_ref(&op))?;
+            let edits: Vec<klipp_document::history::EditCommand> = plan.steps.iter().map(|s| s.edit.clone()).collect();
+            let mut v = send_full_envelope(ctx, Vec::new(), edits, true, Some(revision), Some(plan.steps.first().map(|s| s.what.clone()).unwrap_or_else(|| "look".into())))?;
+            v["text"] = json!(plan.text_folded());
+            v["next"] = json!("Look on. See it with frame_at or screenshot; check color reads the graded frame. Fade it with opacity, or remove to clear.");
+            Ok(v)
         }
 
         ControlCommand::MatchGrade { clip_id: c, reference_clip_id: r } => {

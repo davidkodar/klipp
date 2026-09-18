@@ -468,6 +468,17 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
             v
         }
         "klipp_match_grade" => json!({ "method": "match_grade", "clip_id": arg_str(args, "clip_id")?, "reference_clip_id": arg_str(args, "reference_clip_id")? }),
+        "klipp_looks" => {
+            let mut v = json!({ "method": "looks" });
+            if let Some(c) = args.get("category").and_then(|v| v.as_str()) { v["category"] = json!(c); }
+            v
+        }
+        "klipp_look" => {
+            let mut v = json!({ "method": "look", "clip_id": arg_str(args, "clip_id")?, "remove": args.get("remove").and_then(|v| v.as_bool()).unwrap_or(false) });
+            if let Some(n) = args.get("name").and_then(|v| v.as_str()) { v["name"] = json!(n); }
+            if let Some(o) = args.get("opacity").and_then(|v| v.as_f64()) { v["opacity"] = json!(o); }
+            v
+        }
         "klipp_export_status" => json!({ "method": "export_status" }),
         "klipp_export_subtitles" => json!({ "method": "export_subtitles", "path": arg_str(args, "path")? }),
         "klipp_orient" => json!({ "method": "orient" }),
@@ -577,7 +588,7 @@ fn content_for(name: &str, result: &Value) -> Result<Vec<Value>, String> {
         }
         vec![json!({ "type": "text", "text": text })]
     };
-    if name == "klipp_timeline" || name == "klipp_media_analysis" || name == "klipp_plan" || name == "klipp_check" || name == "klipp_brief" || name == "klipp_transcript" || name == "klipp_cut_points" || name == "klipp_frame_stats" {
+    if name == "klipp_timeline" || name == "klipp_media_analysis" || name == "klipp_plan" || name == "klipp_check" || name == "klipp_brief" || name == "klipp_transcript" || name == "klipp_cut_points" || name == "klipp_looks" || name == "klipp_frame_stats" {
         if let Some(text) = result.get("text").and_then(|v| v.as_str()) {
             return Ok(with_next(text.to_string()));
         }
@@ -1110,6 +1121,20 @@ fn tool_definitions() -> Vec<Value> {
               klipp_frame_stats and refine with grade. Both must be picture clips.",
              json!({ "clip_id": { "type": "string", "description": "the shot to grade" }, "reference_clip_id": { "type": "string", "description": "the shot to match it to" } }),
              vec!["clip_id", "reference_clip_id"]),
+        tool("klipp_looks",
+             "The bundled looks — 3D LUTs — an agent can apply, by category: cinematic and film \
+              emulations (B&W, slide, negative, print, instant, Fuji). Read it to see the names \
+              klipp_look takes; pass a category to see all of its looks. A creative choice a \
+              piece asks for, on top of the grade, never a substitute for grading to the numbers.",
+             json!({ "category": { "type": "string", "description": "a category to list in full, e.g. cinematic or film-print" } }), vec![]),
+        tool("klipp_look",
+             "Put a creative look on a picture clip: a bundled 3D LUT, chosen by name (see \
+              klipp_looks), as one node after the grade so it sits on the corrected image. name \
+              is category/name or any words that pick one out; opacity (0-1, default 1) fades it \
+              in; remove clears it. Applied as one undo step. Grade for exposure and continuity \
+              first, then a look for style. See it with frame_at.",
+             json!({ "clip_id": { "type": "string" }, "name": { "type": "string", "description": "a look name from klipp_looks, or an absolute .cube path" }, "opacity": { "type": "number" }, "remove": { "type": "boolean" } }),
+             vec!["clip_id"]),
         tool("klipp_orient",
              "Start here. One call for where you are: the build, the project and whether it is \
               saved, the brief, every media item with its analysis state, the sequence so far, \
