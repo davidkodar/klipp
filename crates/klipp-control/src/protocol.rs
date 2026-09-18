@@ -169,6 +169,13 @@ pub enum ControlCommand {
         #[serde(default)]
         max_chars: Option<usize>,
     },
+    /// The screencast beat sheet of a media item: where the picture is
+    /// settled versus changing, the candidate cut points (cut to a
+    /// settle, hold until readable), and the title/hold windows. Reads
+    /// the stored analysis; run `analyze` first.
+    BeatSheet {
+        media_id: String,
+    },
 
     /// Shots across every analysed item matching what is asked: a
     /// framing word (close-up, medium close-up, medium, wide, very

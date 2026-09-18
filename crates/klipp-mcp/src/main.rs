@@ -350,6 +350,7 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
             }
             v
         }
+        "klipp_beat_sheet" => json!({ "method": "beat_sheet", "media_id": arg_str(args, "media_id")? }),
         "klipp_find_shots" => {
             let mut v = json!({ "method": "find_shots" });
             for key in ["framing", "object", "motion"] {
@@ -649,6 +650,21 @@ fn content_for(name: &str, result: &Value) -> Result<Vec<Value>, String> {
             return Ok(with_next(out));
         }
     }
+    // Beat sheet: the readable summary PLUS the machine-usable cut points
+    // and title/hold windows, so the agent can place cuts and titles on
+    // exact times instead of guessing.
+    if name == "klipp_beat_sheet" {
+        if let Some(text) = result.get("text").and_then(|v| v.as_str()) {
+            let mut out = text.to_string();
+            for (label, key) in [("Cut points", "cut_points"), ("Title / hold windows", "title_windows")] {
+                if let Some(arr) = result.get(key) {
+                    out.push_str(&format!("\n\n{label} (JSON):\n"));
+                    out.push_str(&serde_json::to_string(arr).unwrap_or_default());
+                }
+            }
+            return Ok(with_next(out));
+        }
+    }
     if name == "klipp_timeline" || name == "klipp_media_analysis" || name == "klipp_plan" || name == "klipp_check" || name == "klipp_brief" || name == "klipp_transcript" || name == "klipp_cut_points" || name == "klipp_selects" || name == "klipp_style_profile" || name == "klipp_looks" || name == "klipp_frame_stats" {
         if let Some(text) = result.get("text").and_then(|v| v.as_str()) {
             return Ok(with_next(text.to_string()));
@@ -904,6 +920,17 @@ fn tool_definitions() -> Vec<Value> {
               shows the same facts per clip in brief. Times are seconds from the file's \
               start; a clip's source_in maps them to the timeline.",
              json!({ "media_id": { "type": "string" }, "max_chars": { "type": "integer", "description": "Cut at this many characters (default 8000)" } }),
+             vec!["media_id"]),
+        tool("klipp_beat_sheet",
+             "The screencast/demo beat sheet of a media item: where the picture is \
+              settled versus changing (idle/action segments), the candidate cut points \
+              (a scene change, or where a change just settled — cut TO a settle and hold \
+              until it reads, never mid-action), and the title/hold windows (settled \
+              stretches long enough to hold a title without it fighting a moving picture). \
+              Built from the shots + motion passes — run analyze first. Coarse (per-second): \
+              treat the times as where to LOOK, then confirm with frame_at/contact_sheet. \
+              Ideal for cutting a screen recording into a promo without cutting mid-feature.",
+             json!({ "media_id": { "type": "string" } }),
              vec!["media_id"]),
         tool("klipp_find_shots",
              "Find shots across every analysed media item: by framing (close-up, medium \

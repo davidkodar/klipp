@@ -24,6 +24,7 @@
 pub mod audio;
 pub mod audio_sync;
 pub mod beats;
+pub mod beatsheet;
 pub mod motion;
 pub mod report;
 pub mod sheet;
@@ -118,7 +119,14 @@ pub fn subject_detection_enabled() -> bool {
 /// Every analyser this build ships, in the order they pay off. Each AI
 /// analyser is left out when its feature is switched off in preferences.
 pub fn analysers() -> Vec<Box<dyn Analyser>> {
-    let mut v: Vec<Box<dyn Analyser>> = vec![Box::new(shots::ShotsAnalyser), Box::new(audio::AudioAnalyser), Box::new(motion::MotionAnalyser)];
+    // The beat sheet is last of the always-on set: it synthesises the
+    // shots and motion that run before it into an idle/action map.
+    let mut v: Vec<Box<dyn Analyser>> = vec![
+        Box::new(shots::ShotsAnalyser),
+        Box::new(audio::AudioAnalyser),
+        Box::new(motion::MotionAnalyser),
+        Box::new(beatsheet::BeatSheetAnalyser),
+    ];
     #[cfg(feature = "transcript")]
     if transcription_enabled() {
         v.push(Box::new(transcript::TranscriptAnalyser));

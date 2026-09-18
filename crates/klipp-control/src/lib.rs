@@ -1401,7 +1401,36 @@ fn handle(
                 "transcript": report.transcript,
                 "motion": report.motion,
                 "framing": report.framing,
+                "beatsheet": report.beatsheet,
             }))
+        }
+        ControlCommand::BeatSheet { media_id } => {
+            if in_batch {
+                return read_in_batch("beat_sheet");
+            }
+            let id = klipp_core::MediaId(media_id.parse().map_err(|e| format!("media_id is not a uuid: {e}"))?);
+            let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
+            let item = pool.get(&id).ok_or_else(|| format!("no media item {}", id.0))?;
+            let report = klipp_analysis::report::MediaAnalysis::load(&item.path);
+            let status = klipp_analysis::service::status(id).map(|s| s.state);
+            match report.beatsheet {
+                Some(bs) => {
+                    let text = format!("{}  {:.2} s\n{}", item.filename, item.duration.to_secs_f64(), bs.summary());
+                    Ok(json!({
+                        "text": text,
+                        "state": status,
+                        "cut_points": bs.cut_points,
+                        "title_windows": bs.title_windows,
+                        "reveals": bs.reveals,
+                        "segments": bs.segments,
+                        "next": "Cut to a strong cut point and hold on a settled stretch until it reads; look at the frame there (frame_at/contact_sheet) to confirm what is shown and refine the exact cut.",
+                    }))
+                }
+                None => Ok(json!({
+                    "text": format!("{}: no beat sheet yet. Run analyze first (it needs the shots and motion passes), then read it again.", item.filename),
+                    "state": status,
+                })),
+            }
         }
 
         ControlCommand::FindShots { framing, min_people, object, motion, with_speech, min_secs, max_hits } => {

@@ -1,7 +1,7 @@
 //! What a reader gets for a media item: every stored result, and the
 //! text a model reads.
 
-use crate::{audio::AudioEnvelope, motion::Motion, shots::Shots};
+use crate::{audio::AudioEnvelope, beatsheet::BeatSheet, motion::Motion, shots::Shots};
 use std::fmt::Write as _;
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -9,6 +9,7 @@ pub struct MediaAnalysis {
     pub shots: Option<Shots>,
     pub audio: Option<AudioEnvelope>,
     pub motion: Option<Motion>,
+    pub beatsheet: Option<BeatSheet>,
     #[cfg(feature = "transcript")]
     pub transcript: Option<crate::transcript::Transcript>,
     #[cfg(feature = "framing")]
@@ -27,6 +28,7 @@ impl MediaAnalysis {
         let shots = crate::store::load(key, crate::shots::ID, crate::shots::VERSION).and_then(|v| serde_json::from_value(v).ok());
         let audio = crate::store::load(key, crate::audio::ID, crate::audio::VERSION).and_then(|v| serde_json::from_value(v).ok());
         let motion = crate::store::load(key, crate::motion::ID, crate::motion::VERSION).and_then(|v| serde_json::from_value(v).ok());
+        let beatsheet = crate::store::load(key, crate::beatsheet::ID, crate::beatsheet::VERSION).and_then(|v| serde_json::from_value(v).ok());
         #[cfg(feature = "transcript")]
         let transcript = crate::store::load(key, crate::transcript::ID, crate::transcript::VERSION).and_then(|v| serde_json::from_value(v).ok());
         #[cfg(feature = "framing")]
@@ -35,6 +37,7 @@ impl MediaAnalysis {
             shots,
             audio,
             motion,
+            beatsheet,
             #[cfg(feature = "transcript")]
             transcript,
             #[cfg(feature = "framing")]
@@ -173,6 +176,9 @@ impl MediaAnalysis {
             let _ = writeln!(out, "Motion: {} overall (mean {:.1}, p95 {:.1} on ffmpeg's YDIF scale); per second: {}",
                 crate::motion::class_for(m.mean), m.mean, m.p95,
                 m.per_second.iter().take(120).map(|v| format!("{v:.0}")).collect::<Vec<_>>().join(" "));
+        }
+        if let Some(bs) = &self.beatsheet {
+            out.push_str(&bs.summary());
         }
         if let Some(a) = &self.audio {
             let _ = writeln!(
