@@ -25,7 +25,8 @@ frames.
    knows about it in brief. `klipp_list_media` for the pool.
 2. **Learn the footage.** `klipp_analyze` once (it also runs on import
    and on project open), then `klipp_media_analysis` for a file's
-   shots, motion, loudness, silences and transcript;
+   shots, motion, loudness (with the spectral bands that reveal wind,
+   rumble, hum and hiss), silences and transcript;
    `klipp_search_transcripts` to find where something is said;
    `klipp_find_shots` to find shots by framing, people, objects,
    motion, speech or length. `klipp_transcript` for a stretch of the
@@ -66,6 +67,9 @@ frames.
    for clipped highlights, crushed blacks, a dull or over-saturated
    picture, and skin off the skin-tone line — so the grade is checked to
    the numbers, not by eye.
+   Check always reads the sound faults too — wind, rumble, mains hum,
+   hiss — measured from the analysis bands, and names the `clean_audio`
+   flag that fixes each.
 7. **Deliver.** `klipp_export` to a file, `klipp_export_status` until
    it is complete, `klipp_export_subtitles` for captions.
 8. **Save.** `klipp_rename_sequence` so the timeline is called what

@@ -1946,7 +1946,7 @@ reference:   {}",
             }
             // The colour pass grabs frames, so it takes the sequence read
             // lock for a moment only; work out the times first, then let go.
-            let (report, color_times) = {
+            let (report, color_times, audio_media) = {
                 let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
                 let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
                 let report = klipp_document::qc::check(&seq, &pool, &AnalysedTranscripts);
@@ -1960,12 +1960,37 @@ reference:   {}",
                 } else {
                     Vec::new()
                 };
-                (report, times)
+                // Each distinct piece of media that carries sound, with a
+                // time it plays at — for reading its spectral faults off
+                // the analysis (no rendering, so this is always on).
+                let mut seen = std::collections::HashSet::new();
+                let mut audio_media: Vec<(std::path::PathBuf, String, f64)> = Vec::new();
+                for t in &seq.tracks {
+                    for c in t.clips.iter().filter(|c| c.enabled) {
+                        if let Some(mid) = c.media_id() {
+                            if let Some(item) = pool.get(&mid) {
+                                if item.has_audio && seen.insert(mid) {
+                                    audio_media.push((item.path.clone(), item.filename.clone(), (c.timeline_in.to_secs_f64() + c.timeline_out.to_secs_f64()) / 2.0));
+                                }
+                            }
+                        }
+                    }
+                }
+                (report, times, audio_media)
             };
             let mut color_findings = Vec::new();
             for t in &color_times {
                 if let Ok((data, w, h)) = grab_frame_rgba(ctx, *t, Some(4000)) {
                     color_findings.extend(color_faults(&frame_stats(&data, w, h, *t), *t));
+                }
+            }
+            // Sound faults: wind, rumble, hum, hiss, from the analysis bands.
+            let mut audio_findings: Vec<(f64, String, String, String)> = Vec::new();
+            for (path, name, at) in &audio_media {
+                if let Some(au) = klipp_analysis::report::MediaAnalysis::load(path).audio {
+                    for (what, fix) in au.faults() {
+                        audio_findings.push((*at, name.clone(), what, fix));
+                    }
                 }
             }
 
@@ -1987,8 +2012,15 @@ reference:   {}",
                     }
                 }
             }
+            if !audio_findings.is_empty() {
+                text.push_str("\n\nSound:");
+                for f in &audio_findings {
+                    text.push_str(&format!("\n[warning] {}: {}. {}", f.1, f.2, f.3));
+                }
+            }
             let findings_json: Vec<serde_json::Value> = color_findings.iter().map(|f| json!({ "severity": "warning", "rule": "color", "at_secs": f.0, "what": f.1, "hint": f.2 })).collect();
-            Ok(json!({ "text": text, "errors": report.errors, "warnings": report.warnings + color_findings.len(), "findings": report.findings, "color_findings": findings_json, "duration_secs": report.duration_secs, "revision": ctx.shared.revision(), "next": next }))
+            let audio_json: Vec<serde_json::Value> = audio_findings.iter().map(|f| json!({ "severity": "warning", "rule": "sound", "at_secs": f.0, "media": f.1, "what": f.2, "hint": f.3 })).collect();
+            Ok(json!({ "text": text, "errors": report.errors, "warnings": report.warnings + color_findings.len() + audio_findings.len(), "findings": report.findings, "color_findings": findings_json, "sound_findings": audio_json, "duration_secs": report.duration_secs, "revision": ctx.shared.revision(), "next": next }))
         }
 
         ControlCommand::Undo => send(AppCommand::Undo),

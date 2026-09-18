@@ -185,6 +185,16 @@ impl MediaAnalysis {
                 a.silences.len(),
                 a.silence_within(0.0, a.duration_secs),
             );
+            if let (Some(rms), Some(floor)) = (a.rms_db, a.noise_floor_db) {
+                let _ = writeln!(out, "  level {rms:.0} dB RMS, noise floor {floor:.0} dB; bands under the whole: low {}, hum {}, high {}",
+                    a.low_db.map_or("?".to_string(), |v| format!("{:+.0} dB", v - rms)),
+                    a.hum_db.map_or("?".to_string(), |v| format!("{:+.0} dB", v - rms)),
+                    a.high_db.map_or("?".to_string(), |v| format!("{:+.0} dB", v - rms)),
+                );
+            }
+            for (what, fix) in a.faults() {
+                let _ = writeln!(out, "  sound fault: {what} — {fix}");
+            }
             for (i, sp) in a.silences.iter().enumerate() {
                 let _ = writeln!(out, "  silence {:.2}-{:.2} s", sp.start_secs, sp.end_secs);
                 if out.len() > budget_chars {
