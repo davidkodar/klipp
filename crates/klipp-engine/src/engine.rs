@@ -3670,6 +3670,49 @@ pub(crate) fn audio_chain_fingerprint_for(
     fp
 }
 
+/// Decide whether the audio pipeline must be resynced (mix-staging flush +
+/// PCM reseek, or a full stop-and-reopen) when the video playhead lands on
+/// `tc`, given the currently-streaming audio sources described by their
+/// `(track_index, media_id, audio_chain_fingerprint)`.
+///
+/// Returns `false` — the audio is CONTINUOUS across this boundary and must
+/// keep streaming untouched — when every active source still sits on the
+/// same media file and the same audio chain as the clip under it at `tc`.
+/// Returns `true` only when a source no longer matches: a different media /
+/// source, a real gap (no clip under the source at `tc`), or an
+/// audio-effect / chain change. Those are the only cases that genuinely
+/// need a resync.
+///
+/// This is the single source of truth shared by the video-contiguous
+/// clip-advance branch and the video jump-cut branches (same-file /
+/// preroll-hit / full-open), so a video-only cut over a continuous audio
+/// clip is treated identically no matter which branch handles it — the
+/// audio never flushes or reseeks. Kept as a free function over the
+/// sequence so it can be unit-tested without a live `PlaybackEngine`.
+pub(crate) fn audio_resync_needed(
+    seq: &klipp_timeline::Sequence,
+    tc: Timecode,
+    active: impl IntoIterator<Item = (usize, MediaId, u64)>,
+) -> bool {
+    active.into_iter().any(|(track_index, media_id, fingerprint)| {
+        let Some(track) = seq.tracks.get(track_index) else {
+            // The source's track vanished — safest to resync.
+            return true;
+        };
+        match track.clip_at_timecode(tc) {
+            Some((_, clip)) => {
+                if clip.media_id() != Some(media_id) {
+                    return true;
+                }
+                audio_chain_fingerprint_for(&clip.audio_effects, &clip.audio_effect_keyframes)
+                    != fingerprint
+            }
+            // No clip under the source at `tc` — a gap; resync (drops it).
+            None => true,
+        }
+    })
+}
+
 impl PlaybackEngine {
 
     fn stop_all_audio(&mut self) {
@@ -3817,6 +3860,81 @@ impl PlaybackEngine {
 
     /// Seek all audio sources to match the clip at `tc` on each source's track.
     /// Flushes the mix pipeline, bumps seek_gen, and waits for all sources to confirm.
+    /// True when the audio must be resynced at `tc` — a different
+    /// media/source, a real gap, or an audio-chain change on some active
+    /// source. False means the audio is continuous across the boundary and
+    /// must keep streaming untouched. Thin wrapper over the pure
+    /// [`audio_resync_needed`] so the video-contiguous and video-jump
+    /// clip-advance paths share one decision.
+    fn audio_needs_resync_at(&self, tc: Timecode) -> bool {
+        let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
+        audio_resync_needed(
+            &seq,
+            tc,
+            self.audio_sources
+                .iter()
+                .map(|a| (a.track_index, a.media_id, a.audio_chain_fingerprint)),
+        )
+    }
+
+    /// Refresh the fade / gain envelope on every active audio source from the
+    /// audio clip under it at `tc`, WITHOUT reopening, reseeking, or flushing
+    /// the source. Used when a clip boundary is crossed but the audio stays
+    /// continuous — the video-contiguous cut and the video jump-cut over a
+    /// continuous audio clip both land here so their audio is handled
+    /// identically. The `-1.0 / +1.0` offset keeps the fade envelope from
+    /// snapping the source back to "position 0" (which would re-trigger a
+    /// fade-in from silence) at a boundary the audio is streaming straight
+    /// through.
+    fn refresh_audio_fades(&self, tc: Timecode) {
+        let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
+        for active_src in &self.audio_sources {
+            if let Some(track) = seq.tracks.get(active_src.track_index) {
+                if let Some((_idx, new_clip)) = track.clip_at_timecode(tc) {
+                    let new_source_in = new_clip.source_in.to_secs_f64();
+                    let new_clip_dur = new_clip.duration().to_secs_f64();
+                    active_src.source.set_fade(
+                        new_source_in - 1.0,
+                        new_clip_dur + 1.0,
+                        new_clip.fade_in_secs as f64,
+                        new_clip.fade_out_secs as f64,
+                        fade_curve_to_u32(new_clip.fade_in_curve),
+                        fade_curve_to_u32(new_clip.fade_out_curve),
+                        new_clip.gain,
+                    );
+                }
+            }
+        }
+    }
+
+    /// Handle the AUDIO side of a video JUMP-cut clip advance (the same-file,
+    /// preroll-hit and full-open branches), given `self.playhead` already set
+    /// to the new clip's boundary.
+    ///
+    /// When the audio is CONTINUOUS across the boundary (every active source
+    /// still matches the audio clip under it — same media, no gap, no chain
+    /// change), leave every source streaming untouched (no mix-staging flush,
+    /// no PCM reseek) and only refresh the fade envelope, then return the wall
+    /// seconds elapsed since `t_cut`. The video branches add that to their
+    /// master-clock anchor so the video lands exactly where the free-running
+    /// audio now is — the audio never gaps and the A/V offset never
+    /// accumulates across a montage of jump cuts.
+    ///
+    /// When the audio actually changes at the boundary (different media /
+    /// source, a real gap, or an audio-chain change), reseed it exactly as
+    /// before — `seek_all_audio_to_timecode` flushes + reseeks — and return
+    /// `0.0` so the video anchors on the boundary, matching the freshly
+    /// positioned audio.
+    fn advance_audio_over_video_cut(&mut self, t_cut: std::time::Instant) -> f64 {
+        if self.audio_needs_resync_at(self.playhead) {
+            self.seek_all_audio_to_timecode(self.playhead);
+            0.0
+        } else {
+            self.refresh_audio_fades(self.playhead);
+            t_cut.elapsed().as_secs_f64()
+        }
+    }
+
     fn seek_all_audio_to_timecode(&mut self, tc: Timecode) {
         if self.audio_sources.is_empty() {
             return;
@@ -4426,6 +4544,19 @@ impl PlaybackEngine {
     }
 
     fn advance_to_next_clip(&mut self) {
+        // Wall-clock reference for A/V catch-up. At function entry the
+        // playhead sits on the outgoing clip's boundary and the audio,
+        // still streaming, is aligned with it. When we advance the VIDEO
+        // over a JUMP cut but leave a continuous audio clip streaming
+        // (no flush, no reseek), the audio keeps advancing in real time
+        // while the master clock is briefly repositioned for the video
+        // seek. Re-anchoring the master clock to exactly the boundary
+        // would leave the video that many milliseconds behind the audio,
+        // and the error would ACCUMULATE across a montage of jump cuts.
+        // The video jump-cut branches below add `t_cut.elapsed()` to the
+        // new anchor so the video catches up to where the free-running
+        // audio actually is — zero drift, no accumulation.
+        let t_cut = std::time::Instant::now();
         let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
         let old_clip = self.v1_clip_id(&seq);
 
@@ -4545,36 +4676,19 @@ impl PlaybackEngine {
             // once the old media runs out. Scan the audio sources and, if
             // any sits on a media that no longer matches the clip at the
             // new playhead, delegate to `start_all_audio` to stop-and-reopen
-            // the decoders. Video stays contiguous regardless. Mirrors the
-            // matching check in `seek_all_audio_to_timecode`.
+            // the decoders. Video stays contiguous regardless.
             //
             // We also restart when the AUDIO CHAIN changed — two clips
             // that share the same media file can carry different
             // audio_effects / audio_effect_keyframes, and without this
             // check the prior clip's chain bleeds into the next one
             // (manifests as "the effect is applied to the whole track").
-            let audio_chain_or_media_changed = {
-                let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
-                self.audio_sources.iter().any(|active| {
-                    let Some(track) = seq.tracks.get(active.track_index) else {
-                        return true;
-                    };
-                    match track.clip_at_timecode(self.playhead) {
-                        Some((_, clip)) => {
-                            if clip.media_id() != Some(active.media_id) {
-                                return true;
-                            }
-                            let new_fp = audio_chain_fingerprint_for(
-                                &clip.audio_effects,
-                                &clip.audio_effect_keyframes,
-                            );
-                            new_fp != active.audio_chain_fingerprint
-                        }
-                        None => true,
-                    }
-                })
-            };
-            if audio_chain_or_media_changed {
+            //
+            // `audio_needs_resync_at` is the shared decision — the video
+            // jump-cut branches below use the very same check so a
+            // continuous audio clip is preserved identically whether the
+            // video cut is contiguous or a jump.
+            if self.audio_needs_resync_at(self.playhead) {
                 info!(
                     "CUT-DIAG CONTIGUOUS: audio media or chain changed at boundary — restarting audio sources",
                 );
@@ -4583,27 +4697,9 @@ impl PlaybackEngine {
                 return;
             }
 
-            // CRITICAL: Immediately update fade parameters on audio sources
-            {
-                let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
-                for active_src in &self.audio_sources {
-                    if let Some(track) = seq.tracks.get(active_src.track_index) {
-                        if let Some((_idx, new_clip)) = track.clip_at_timecode(self.playhead) {
-                            let new_source_in = new_clip.source_in.to_secs_f64();
-                            let new_clip_dur = new_clip.duration().to_secs_f64();
-                            active_src.source.set_fade(
-                                new_source_in - 1.0,
-                                new_clip_dur + 1.0,
-                                new_clip.fade_in_secs as f64,
-                                new_clip.fade_out_secs as f64,
-                                fade_curve_to_u32(new_clip.fade_in_curve),
-                                fade_curve_to_u32(new_clip.fade_out_curve),
-                                new_clip.gain,
-                            );
-                        }
-                    }
-                }
-            }
+            // CRITICAL: Immediately update fade parameters on audio sources,
+            // but leave them streaming — the audio is continuous here.
+            self.refresh_audio_fades(self.playhead);
 
             self.sync_streams();
             return;
@@ -4625,14 +4721,24 @@ impl PlaybackEngine {
                     self.current_file = Some(path);
                 }
 
-                self.seek_all_audio_to_timecode(self.playhead);
+                // Audio continuity across a video-only jump cut: when every
+                // active audio source still matches the audio clip at the new
+                // playhead (same media, no gap, no chain change), the audio
+                // is continuous across this boundary — leave it streaming
+                // untouched (no mix-staging flush, no PCM reseek), exactly as
+                // the video-contiguous branch does; only refresh its fade
+                // envelope. Reseed audio only when it actually changes.
+                let audio_catch_up = self.advance_audio_over_video_cut(t_cut);
 
-                let start_us = (source_in_secs * 1_000_000.0) as u64;
+                let anchor_secs = source_in_secs + audio_catch_up * next_clip_speed;
+                let start_us = (anchor_secs * 1_000_000.0) as u64;
                 self.master_clock.seek(start_us);
                 self.master_clock.resume();
 
                 self.clip_source_start = source_in_secs;
                 self.clip_timeline_start = timeline_in;
+                self.playhead =
+                    timeline_in + RationalTime::from_secs_f64(audio_catch_up, self.fps.rate());
                 self.clip_speed = next_clip_speed;
                 self.refresh_speed_keyframes();
                 // Path-aware rotation — see effective_rotation_for. Skim
@@ -4666,14 +4772,24 @@ impl PlaybackEngine {
 
                 self.master_clock.pause();
                 self.wait_for_valid_frame(source_in_secs);
-                self.seek_all_audio_to_timecode(self.playhead);
+                // Audio continuity across a video-only jump cut — see
+                // `advance_audio_over_video_cut`. When the audio is
+                // continuous it keeps streaming untouched (no flush, no
+                // reseek) through the video decoder's brief seek; the
+                // returned catch-up advances the video anchor to where the
+                // free-running audio now is (the master clock was paused for
+                // the seek while the audio played on).
+                let audio_catch_up = self.advance_audio_over_video_cut(t_cut);
 
-                let start_us = (source_in_secs * 1_000_000.0) as u64;
+                let anchor_secs = source_in_secs + audio_catch_up * next_clip_speed;
+                let start_us = (anchor_secs * 1_000_000.0) as u64;
                 self.master_clock.seek(start_us);
                 self.master_clock.resume();
 
                 self.clip_source_start = source_in_secs;
                 self.clip_timeline_start = timeline_in;
+                self.playhead =
+                    timeline_in + RationalTime::from_secs_f64(audio_catch_up, self.fps.rate());
                 self.clip_speed = next_clip_speed;
                 self.refresh_speed_keyframes();
                 // Path-aware rotation — see effective_rotation_for. Skim
@@ -4691,12 +4807,24 @@ impl PlaybackEngine {
 
             info!("Advancing to clip {} ({:?})", actual_idx, path);
 
+            // Decide the audio fate BEFORE touching the video decoder. This
+            // full-open path (different video file, no preroll) normally tears
+            // down and reopens every audio source, which gaps a continuous
+            // music clip exactly like a flush would. When the audio is
+            // continuous across this boundary, keep every source streaming
+            // through the video reopen and only refresh fades — the audio
+            // pipeline runs on its own threads, so it plays straight through
+            // even while this thread blocks opening the new video decoder.
+            let audio_continuous = !self.audio_needs_resync_at(self.playhead);
+
             self.retire_v1_decoder(old_clip);
-            for active in &mut self.audio_sources {
-                active.source.stop_detached();
+            if !audio_continuous {
+                for active in &mut self.audio_sources {
+                    active.source.stop_detached();
+                }
+                self.audio_sources.clear();
+                self.audio_output = None;
             }
-            self.audio_sources.clear();
-            self.audio_output = None;
 
             // Open new video decoder
             let effective_rot = self.effective_decode_rotation(media_id, &path, source_rotation);
@@ -4716,20 +4844,35 @@ impl PlaybackEngine {
                 }
             }
 
-            // Open audio for all tracks at the new clip position
-            let start_us = (source_in_secs * 1_000_000.0) as u64;
-            self.master_clock.seek(start_us);
-            self.start_all_audio(self.playhead);
+            if audio_continuous {
+                // Audio streamed straight through the video reopen; only the
+                // fade envelope needs refreshing. Advance the video anchor to
+                // where the free-running audio now is (opening the decoder
+                // took wall time during which the audio played on).
+                self.refresh_audio_fades(self.playhead);
+                let audio_catch_up = t_cut.elapsed().as_secs_f64();
+                let anchor_secs = source_in_secs + audio_catch_up * next_clip_speed;
+                let start_us = (anchor_secs * 1_000_000.0) as u64;
+                self.master_clock.seek(start_us);
+                self.master_clock.resume();
+                self.playhead =
+                    timeline_in + RationalTime::from_secs_f64(audio_catch_up, self.fps.rate());
+            } else {
+                // Audio genuinely changes here — reopen at the new position.
+                let start_us = (source_in_secs * 1_000_000.0) as u64;
+                self.master_clock.seek(start_us);
+                self.start_all_audio(self.playhead);
 
-            // Pre-fill + resume
-            for active in &self.audio_sources {
-                active.source.resume();
+                // Pre-fill + resume
+                for active in &self.audio_sources {
+                    active.source.resume();
+                }
+                std::thread::sleep(Duration::from_millis(10));
+                if let Some(aout) = &self.audio_output {
+                    aout.0.resume();
+                }
+                self.master_clock.resume();
             }
-            std::thread::sleep(Duration::from_millis(10));
-            if let Some(aout) = &self.audio_output {
-                aout.0.resume();
-            }
-            self.master_clock.resume();
 
             self.clip_source_start = source_in_secs;
             self.clip_timeline_start = timeline_in;
@@ -10986,5 +11129,131 @@ mod cached_frame_display_tests {
                 "{op:?}: the cache-hit shortcut does not match the path it replaces",
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod audio_continuity_tests {
+    //! KLIPP-AUDIO-JUMPCUT — the pure audio-continuity decision that keeps a
+    //! continuous music clip streaming across a video-only jump cut.
+    //!
+    //! During live playback, advancing the VIDEO clip must NOT flush the mix
+    //! staging or reseek the audio PCM feed when the audio track is one
+    //! continuous clip across the boundary — that flush + reseek is the
+    //! audible micro-stutter. `audio_resync_needed` is the shared gate the
+    //! video-contiguous branch and every video jump-cut branch consult:
+    //! `false` = leave audio streaming untouched, `true` = a genuine audio
+    //! change (media/source, gap, or chain) → resync exactly as before.
+    use super::{audio_chain_fingerprint_for, audio_resync_needed};
+    use klipp_core::{AudioEffectInstance, MediaId, RationalTime, Timecode};
+    use klipp_timeline::{Clip, Sequence, Track, TrackKind};
+    use std::collections::HashMap;
+
+    fn tc(frames: i64) -> Timecode {
+        RationalTime::from_frames(frames, 24)
+    }
+
+    /// Fingerprint of an empty audio chain — what a source opened on a clip
+    /// with no audio effects carries.
+    fn empty_fp() -> u64 {
+        audio_chain_fingerprint_for(&[], &HashMap::new())
+    }
+
+    #[test]
+    fn continuous_audio_under_video_jumpcut_needs_no_resync() {
+        // V1 — two clips, contiguous in the TIMELINE but a JUMP in SOURCE
+        // (clip B reads source [200,248) instead of continuing from 48).
+        // A1 — ONE continuous music clip spanning both video clips.
+        let mut s = Sequence::new_default();
+        s.tracks.clear(); // deterministic indices — drop new_default's tracks
+        let vid = MediaId::new();
+        let music = MediaId::new();
+
+        let mut v = Track::new("V1", TrackKind::Video);
+        v.clips.push(Clip::media(vid, tc(0), tc(48), tc(0), tc(48)));
+        v.clips.push(Clip::media(vid, tc(48), tc(96), tc(200), tc(248)));
+        s.tracks.push(v);
+
+        let mut a = Track::new("A1", TrackKind::Audio);
+        a.clips.push(Clip::media(music, tc(0), tc(96), tc(0), tc(96)));
+        s.tracks.push(a);
+
+        // Active audio source: the A1 music clip (track index 1), empty chain.
+        let active = [(1usize, music, empty_fp())];
+        // At the video cut boundary (frame 48) the audio clip under the
+        // source is unchanged → NO resync: the music keeps streaming.
+        assert!(
+            !audio_resync_needed(&s, tc(48), active),
+            "continuous audio across a video jump cut must NOT trigger a resync",
+        );
+    }
+
+    #[test]
+    fn audio_media_change_at_boundary_needs_resync() {
+        let music_a = MediaId::new();
+        let music_b = MediaId::new();
+        let mut s = Sequence::new_default();
+        s.tracks.clear();
+        let mut a = Track::new("A1", TrackKind::Audio);
+        a.clips.push(Clip::media(music_a, tc(0), tc(48), tc(0), tc(48)));
+        a.clips.push(Clip::media(music_b, tc(48), tc(96), tc(0), tc(48)));
+        s.tracks.push(a);
+        // Source is on music_a; at frame 48 the clip under it is music_b.
+        let active = [(0usize, music_a, empty_fp())];
+        assert!(
+            audio_resync_needed(&s, tc(48), active),
+            "a real audio media change at the boundary MUST resync",
+        );
+    }
+
+    #[test]
+    fn audio_chain_change_at_boundary_needs_resync() {
+        let music = MediaId::new();
+        let mut s = Sequence::new_default();
+        s.tracks.clear();
+        let mut a = Track::new("A1", TrackKind::Audio);
+        // One continuous media, but the clip carries an audio effect the
+        // streaming source was not opened with.
+        let mut clip = Clip::media(music, tc(0), tc(96), tc(0), tc(96));
+        clip.audio_effects.push(AudioEffectInstance {
+            effect_type: "reverb".into(),
+            enabled: true,
+            wet_dry: 1.0,
+            params: vec![],
+        });
+        a.clips.push(clip);
+        s.tracks.push(a);
+        // Source opened with an EMPTY chain fingerprint → chain differs.
+        let active = [(0usize, music, empty_fp())];
+        assert!(
+            audio_resync_needed(&s, tc(10), active),
+            "an audio-chain change MUST resync even when the media is unchanged",
+        );
+    }
+
+    #[test]
+    fn gap_under_audio_source_needs_resync() {
+        let music = MediaId::new();
+        let mut s = Sequence::new_default();
+        s.tracks.clear();
+        let mut a = Track::new("A1", TrackKind::Audio);
+        a.clips.push(Clip::media(music, tc(0), tc(48), tc(0), tc(48)));
+        s.tracks.push(a);
+        // At frame 60 there is no clip under the source → resync (drop it).
+        let active = [(0usize, music, empty_fp())];
+        assert!(
+            audio_resync_needed(&s, tc(60), active),
+            "a gap (no audio clip at tc) MUST resync",
+        );
+    }
+
+    #[test]
+    fn no_active_sources_never_needs_resync() {
+        let s = Sequence::new_default();
+        let active: [(usize, MediaId, u64); 0] = [];
+        assert!(
+            !audio_resync_needed(&s, tc(0), active),
+            "with no active audio sources there is nothing to resync",
+        );
     }
 }
