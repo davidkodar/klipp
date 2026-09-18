@@ -828,3 +828,37 @@ fn color_faults_flag_what_a_colourist_would() {
     let dull = klipp_control::frame_stats(&std::iter::repeat_n([40u8, 40, 40, 255], 320*180).flatten().collect::<Vec<u8>>(), 320, 180, 3.0);
     assert!(klipp_control::color_faults(&dull, 3.0).iter().any(|f| f.1.contains("dull")), "{dull}");
 }
+
+/// cut_points ranks pauses over sentence ends over phrase breaks, and
+/// tells the truth about a target that lands mid-word or mid-sentence.
+#[test]
+fn cut_points_find_the_clean_joins() {
+    let words = vec![
+        (0.0f64, 0.4, "So".into()),
+        (0.5, 1.2, "anyway".into()),
+        (2.0, 2.6, "right".into()),
+    ];
+    let segments = vec![
+        (0.0f64, 1.2, "So anyway.".into()),   // ends a sentence
+        (2.0, 2.6, "right".into()),           // no full stop → phrase
+    ];
+    let silences = vec![(1.2f64, 2.0)];       // a 0.8 s pause
+    let shots = vec![3.0f64];
+    let v = klipp_control::cut_points(&words, &segments, &silences, &shots, Some(1.0), (0.0, 4.0));
+
+    // The pause is strength 3 and is the nearest clean point to 1.0 s.
+    let points = v["points"].as_array().unwrap();
+    let pause = points.iter().find(|p| p["kind"] == "silence").unwrap();
+    assert_eq!(pause["strength"], 3);
+    // 1.0 s lands inside the word "anyway" → mid-word, honestly flagged.
+    assert_eq!(v["target"]["verdict"], "mid-word");
+    assert!(v["target"]["why"].as_str().unwrap().contains("anyway"));
+    let nearest = v["target"]["nearest_clean_secs"].as_f64().unwrap();
+    assert!((nearest - 1.2).abs() < 0.01, "nearest clean is the full stop at 1.2, got {nearest}");
+
+    // A target sitting inside "right" with no full stop is mid-sentence.
+    let v2 = klipp_control::cut_points(&words, &segments, &silences, &shots, Some(2.3), (0.0, 4.0));
+    assert_eq!(v2["target"]["verdict"], "mid-word");
+    // The shot change is a clean strength-2 point.
+    assert!(v2["points"].as_array().unwrap().iter().any(|p| p["kind"] == "shot_change" && p["strength"] == 2));
+}

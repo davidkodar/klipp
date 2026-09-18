@@ -473,6 +473,118 @@ pub fn color_faults(stats: &serde_json::Value, secs: f64) -> Vec<(f64, String, S
     out
 }
 
+/// Where a cut is clean, and where it is not. Folds the measured
+/// silences, the transcript's sentence boundaries, and the shot changes
+/// into ranked cut opportunities, and — when `near` is given —
+/// classifies that moment as clean, mid-sentence, or mid-word, with the
+/// nearest clean point. So an agent trims and places on a pause, a
+/// full stop or a shot change, and never through the middle of a word
+/// or a sentence.
+///
+/// `words` and `segments` are `(start, end, text)` in file seconds,
+/// `silences` are `(start, end)` gaps, `shots` are boundary times.
+pub fn cut_points(
+    words: &[(f64, f64, String)],
+    segments: &[(f64, f64, String)],
+    silences: &[(f64, f64)],
+    shots: &[f64],
+    near: Option<f64>,
+    range: (f64, f64),
+) -> serde_json::Value {
+    let (a, b) = range;
+    let in_range = |t: f64| t >= a - 1e-6 && t <= b + 1e-6;
+    let ends_sentence = |s: &str| s.trim_end().chars().last().is_some_and(|c| matches!(c, '.' | '?' | '!' | '…'));
+    // strength: 3 a silent gap (cleanest), 2 a full stop or a shot cut, 1 a phrase break.
+    let mut pts: Vec<(f64, u8, &'static str, String)> = Vec::new();
+    for &(s, e) in silences {
+        let mid = (s + e) / 2.0;
+        if in_range(mid) {
+            pts.push((mid, 3, "silence", format!("a {:.2} s pause ({s:.2}-{e:.2})", e - s)));
+        }
+    }
+    for (s, e, text) in segments {
+        if ends_sentence(text) {
+            if in_range(*e) {
+                pts.push((*e, 2, "sentence_end", "a sentence ends".into()));
+            }
+            if in_range(*s) {
+                pts.push((*s, 2, "sentence_start", "a sentence begins".into()));
+            }
+        } else {
+            if in_range(*e) {
+                pts.push((*e, 1, "phrase", "a phrase break".into()));
+            }
+            if in_range(*s) {
+                pts.push((*s, 1, "phrase", "a phrase begins".into()));
+            }
+        }
+    }
+    for &t in shots {
+        if in_range(t) {
+            pts.push((t, 2, "shot_change", "the picture cuts".into()));
+        }
+    }
+    // Merge points within a frame of each other, keeping the strongest.
+    pts.sort_by(|x, y| x.0.partial_cmp(&y.0).unwrap_or(std::cmp::Ordering::Equal));
+    let mut merged: Vec<(f64, u8, &'static str, String)> = Vec::new();
+    for p in pts {
+        match merged.last_mut() {
+            Some(last) if (p.0 - last.0).abs() < 0.05 => {
+                if p.1 > last.1 {
+                    *last = p;
+                }
+            }
+            _ => merged.push(p),
+        }
+    }
+
+    // Classify the target moment, if one was asked about.
+    let target = near.map(|t| {
+        let in_word = words.iter().find(|(s, e, _)| t > *s + 1e-3 && t < *e - 1e-3);
+        let in_silence = silences.iter().any(|(s, e)| t >= *s && t <= *e);
+        let (verdict, why) = if let Some((_, _, w)) = in_word {
+            ("mid-word", format!("the cut lands inside the word \"{w}\" — it would clip the sound"))
+        } else if in_silence {
+            ("clean", "the cut lands in a pause".into())
+        } else if segments.iter().any(|(s, e, _)| t > *s && t < *e) {
+            ("mid-sentence", "the cut lands inside a spoken sentence".into())
+        } else {
+            ("clean", "the cut lands between segments".into())
+        };
+        // The nearest clean point (silence or sentence end/start) to move to.
+        let nearest = merged.iter().filter(|p| p.1 >= 2).min_by(|x, y| (x.0 - t).abs().partial_cmp(&(y.0 - t).abs()).unwrap_or(std::cmp::Ordering::Equal));
+        json!({
+            "secs": t,
+            "verdict": verdict,
+            "why": why,
+            "nearest_clean_secs": nearest.map(|p| p.0),
+            "nearest_clean_delta_secs": nearest.map(|p| p.0 - t),
+        })
+    });
+
+    // The list the agent reads: nearest first when a target was given.
+    let mut ordered: Vec<&(f64, u8, &'static str, String)> = merged.iter().collect();
+    if let Some(t) = near {
+        ordered.sort_by(|x, y| (x.0 - t).abs().partial_cmp(&(y.0 - t).abs()).unwrap_or(std::cmp::Ordering::Equal));
+    }
+    let points: Vec<serde_json::Value> = ordered.iter().take(24).map(|(s, strength, kind, why)| json!({
+        "secs": s, "kind": kind, "why": why, "strength": strength,
+    })).collect();
+
+    let mut text = String::new();
+    if let Some(tg) = &target {
+        text.push_str(&format!("At {:.2} s: {} — {}\n", near.unwrap_or(0.0), tg["verdict"].as_str().unwrap_or(""), tg["why"].as_str().unwrap_or("")));
+        if let Some(n) = tg["nearest_clean_secs"].as_f64() {
+            text.push_str(&format!("Nearest clean cut: {:.2} s ({:+.2} s away)\n", n, n - near.unwrap_or(0.0)));
+        }
+    }
+    text.push_str("Clean cut points (strength 3 a pause, 2 a full stop or shot cut, 1 a phrase break):\n");
+    for p in &points {
+        text.push_str(&format!("  {:.2} s  {}  {}\n", p["secs"].as_f64().unwrap_or(0.0), p["kind"].as_str().unwrap_or(""), p["why"].as_str().unwrap_or("")));
+    }
+    json!({ "text": text, "target": target, "points": points })
+}
+
 /// Public for tests and tools that measure a frame without the socket.
 pub fn frame_stats(data: &[u8], width: u32, height: u32, secs: f64) -> serde_json::Value {
     let (w, h) = (width as usize, height as usize);
@@ -1435,6 +1547,31 @@ fn handle(
             }
             let (text, cut) = cut_to_budget_with(&out, 12_000, "ask for a shorter stretch with from_secs and to_secs");
             Ok(json!({ "text": text, "cut": cut }))
+        }
+
+        ControlCommand::CutPoints { media_id, near_secs, from_secs, to_secs } => {
+            if in_batch {
+                return read_in_batch("cut_points");
+            }
+            let id = klipp_core::MediaId(media_id.parse().map_err(|e| format!("media_id is not a uuid: {e}"))?);
+            let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
+            let item = pool.get(&id).ok_or_else(|| format!("no media item {}", id.0))?;
+            let report = klipp_analysis::report::MediaAnalysis::load(&item.path);
+            let dur = item.duration.to_secs_f64();
+            let (a, b) = (from_secs.unwrap_or(0.0), to_secs.unwrap_or(dur));
+            let words: Vec<(f64, f64, String)> = report.transcript.as_ref().map(|t| t.words.iter().map(|w| (w.start_secs, w.end_secs, w.text.clone())).collect()).unwrap_or_default();
+            let segments: Vec<(f64, f64, String)> = report.transcript.as_ref().map(|t| t.segments.iter().map(|s| (s.start_secs, s.end_secs, s.text.clone())).collect()).unwrap_or_default();
+            let silences: Vec<(f64, f64)> = report.audio.as_ref().map(|au| au.silences.iter().map(|s| (s.start_secs, s.end_secs)).collect()).unwrap_or_default();
+            let shots: Vec<f64> = report.shots.as_ref().map(|s| s.boundaries.clone()).unwrap_or_default();
+            if words.is_empty() && segments.is_empty() && silences.is_empty() && shots.is_empty() {
+                let state = klipp_analysis::service::status(id).map(|s| format!("{:?}", s.state).to_lowercase()).unwrap_or_else(|| "not asked for".into());
+                return Err(format!("{} has no transcript, silence or shot analysis yet (analysis: {state}); analyze it, and see analysis_status", item.filename));
+            }
+            let mut v = cut_points(&words, &segments, &silences, &shots, near_secs, (a, b));
+            v["media_id"] = json!(media_id);
+            v["filename"] = json!(item.filename);
+            v["next"] = json!("Cut on a strength-3 pause where you can; a strength-2 full stop or shot change is clean too. Trim or place to the point's secs. Then check.");
+            Ok(v)
         }
 
         ControlCommand::Orient => {

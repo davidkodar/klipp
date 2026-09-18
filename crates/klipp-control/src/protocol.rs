@@ -298,6 +298,20 @@ pub enum ControlCommand {
         #[serde(default)]
         words: bool,
     },
+    /// The clean places to cut in a piece of media: the measured pauses,
+    /// the sentence boundaries from the transcript, and the shot changes,
+    /// ranked. With `near_secs`, it also says whether that moment is
+    /// clean, mid-sentence or mid-word, and the nearest clean point to
+    /// move to — so a cut never lands through a word or a sentence.
+    CutPoints {
+        media_id: String,
+        #[serde(default)]
+        near_secs: Option<f64>,
+        #[serde(default)]
+        from_secs: Option<f64>,
+        #[serde(default)]
+        to_secs: Option<f64>,
+    },
     /// Name the active sequence: what the timeline is called in the app
     /// and in the project. A new project's sequence keeps a default name
     /// until someone names it.

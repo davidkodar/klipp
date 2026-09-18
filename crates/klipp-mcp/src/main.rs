@@ -458,6 +458,15 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
             }
             v
         }
+        "klipp_cut_points" => {
+            let mut v = json!({ "method": "cut_points", "media_id": arg_str(args, "media_id")? });
+            for key in ["near_secs", "from_secs", "to_secs"] {
+                if let Some(x) = args.get(key).and_then(|v| v.as_f64()) {
+                    v[key] = json!(x);
+                }
+            }
+            v
+        }
         "klipp_export_status" => json!({ "method": "export_status" }),
         "klipp_export_subtitles" => json!({ "method": "export_subtitles", "path": arg_str(args, "path")? }),
         "klipp_orient" => json!({ "method": "orient" }),
@@ -567,7 +576,7 @@ fn content_for(name: &str, result: &Value) -> Result<Vec<Value>, String> {
         }
         vec![json!({ "type": "text", "text": text })]
     };
-    if name == "klipp_timeline" || name == "klipp_media_analysis" || name == "klipp_plan" || name == "klipp_check" || name == "klipp_brief" || name == "klipp_transcript" || name == "klipp_frame_stats" {
+    if name == "klipp_timeline" || name == "klipp_media_analysis" || name == "klipp_plan" || name == "klipp_check" || name == "klipp_brief" || name == "klipp_transcript" || name == "klipp_cut_points" || name == "klipp_frame_stats" {
         if let Some(text) = result.get("text").and_then(|v| v.as_str()) {
             return Ok(with_next(text.to_string()));
         }
@@ -1081,6 +1090,15 @@ fn tool_definitions() -> Vec<Value> {
               a word or in a silence (a cut in measured silence is clean), and to read a \
               stretch the analysis text cut short.",
              json!({ "media_id": { "type": "string" }, "from_secs": { "type": "number" }, "to_secs": { "type": "number" }, "words": { "type": "boolean" } }),
+             vec!["media_id"]),
+        tool("klipp_cut_points",
+             "The clean places to cut in a media file, ranked: the measured pauses (strength \
+              3, the cleanest), the sentence ends and shot changes (strength 2), the phrase \
+              breaks (strength 1). Pass near_secs and it also says whether that moment is \
+              clean, mid-sentence or mid-word, and the nearest clean point to move to. Use it \
+              before you trim or place a spoken clip, so a cut never lands through a word or \
+              the middle of a sentence. from_secs and to_secs narrow the range.",
+             json!({ "media_id": { "type": "string" }, "near_secs": { "type": "number" }, "from_secs": { "type": "number" }, "to_secs": { "type": "number" } }),
              vec!["media_id"]),
         tool("klipp_orient",
              "Start here. One call for where you are: the build, the project and whether it is \

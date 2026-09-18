@@ -30,7 +30,13 @@ frames.
    `klipp_find_shots` to find shots by framing, people, objects,
    motion, speech or length. `klipp_transcript` for a stretch of the
    speech with every word's time and the measured silences: cut on a
-   word's edge or, better, in a silence. `klipp_analysis_status` says
+   word's edge or, better, in a silence. `klipp_cut_points` goes
+   further: it ranks the clean places to cut — the pauses first, then
+   sentence ends and shot changes, then phrase breaks — and, given a
+   `near_secs`, says whether that moment is clean, mid-sentence or
+   mid-word and where the nearest clean point is. Use it before you
+   trim or place a spoken clip, so a cut never lands through a word or
+   a sentence. `klipp_analysis_status` says
    which analyser is at work and for how long, and which models are
    installed; a transcript takes about a third of the file's length. `klipp_contact_sheet` to see a range with
    times burnt in; `klipp_audio_excerpt` to hear one.
