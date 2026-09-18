@@ -460,6 +460,7 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
         }
         "klipp_export_status" => json!({ "method": "export_status" }),
         "klipp_export_subtitles" => json!({ "method": "export_subtitles", "path": arg_str(args, "path")? }),
+        "klipp_orient" => json!({ "method": "orient" }),
         "klipp_brief" => json!({ "method": "brief" }),
         "klipp_set_brief" => json!({ "method": "set_brief", "brief": args.get("brief").cloned().ok_or("missing required argument: brief")? }),
         "klipp_check" => json!({ "method": "check" }),
@@ -1027,6 +1028,12 @@ fn tool_definitions() -> Vec<Value> {
               stretch the analysis text cut short.",
              json!({ "media_id": { "type": "string" }, "from_secs": { "type": "number" }, "to_secs": { "type": "number" }, "words": { "type": "boolean" } }),
              vec!["media_id"]),
+        tool("klipp_orient",
+             "Start here. One call for where you are: the build, the project and whether it is \
+              saved, the brief, every media item with its analysis state, the sequence so far, \
+              and — in \"next\" — what to do now. Call it first, and again whenever you are \
+              unsure of the state.",
+             json!({}), vec![]),
         tool("klipp_brief",
              "The brief: what the piece is for. Its length, platform, picture size, loudness, \
               whether it is captioned and has music, and the cast with names and roles as \

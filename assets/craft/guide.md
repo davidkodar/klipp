@@ -9,6 +9,10 @@ frames.
 
 ## The loop
 
+0. **Orient.** `klipp_orient` first: where you are in one call — the
+   build, the project, the brief, the footage and its analysis, the
+   sequence, and what to do next. Call it again whenever you lose the
+   thread.
 0. **The brief.** `klipp_brief` says what the piece is for: its
    length, platform, loudness, whether it is captioned, and the cast
    with their names and roles. If there is none, ask the user what it

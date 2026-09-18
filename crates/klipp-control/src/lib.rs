@@ -1228,6 +1228,73 @@ fn handle(
             Ok(json!({ "text": text, "cut": cut }))
         }
 
+        ControlCommand::Orient => {
+            if in_batch {
+                return read_in_batch("orient");
+            }
+            let project = project_status(ctx)?;
+            let brief = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?.brief.clone();
+            let statuses = klipp_analysis::service::all();
+            let state_of = |path: &std::path::Path| -> serde_json::Value {
+                let filename = path.file_name().map(|f| f.to_string_lossy().to_string()).unwrap_or_default();
+                match statuses.iter().find(|s| s.filename == filename) {
+                    Some(s) => json!({ "state": format!("{:?}", s.state).to_lowercase(), "done": s.done, "current": s.current, "current_for_secs": s.current_for_secs }),
+                    None => json!({ "state": "not analysed" }),
+                }
+            };
+            let (media, all_analysed, any_running) = {
+                let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
+                let media: Vec<serde_json::Value> = pool.all().map(|m| json!({
+                    "media_id": m.id.0.to_string(),
+                    "filename": m.filename,
+                    "duration_secs": m.duration.to_secs_f64(),
+                    "width": m.resolution.width,
+                    "height": m.resolution.height,
+                    "fps": m.fps.as_f64(),
+                    "has_audio": m.has_audio,
+                    "analysis": state_of(&m.path),
+                })).collect();
+                let all_analysed = !media.is_empty() && statuses.iter().filter(|s| pool.all().any(|m| m.filename == s.filename)).all(|s| matches!(s.state, klipp_analysis::service::State::Done));
+                let any_running = statuses.iter().any(|s| matches!(s.state, klipp_analysis::service::State::Queued | klipp_analysis::service::State::Running));
+                (media, all_analysed, any_running)
+            };
+            let (seq_text, clips) = {
+                let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
+                let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
+                let clips: usize = seq.tracks.iter().map(|t| t.clips.len()).sum();
+                (timeline_text(&seq, &pool, None, ctx.shared.revision()), clips)
+            };
+            // What to do next, from where the work stands.
+            let next = if media.is_empty() {
+                "Import the footage with import_media. Then set the brief with set_brief (its title, length, platform, loudness, captions, and the cast with names and spellings), and analyze."
+            } else if brief.is_none() {
+                "Set the brief with set_brief: the piece's title, target length, platform, loudness, whether it is captioned, and the cast with their names and how things are spelt. The spellings sharpen the transcript."
+            } else if any_running {
+                "Analysis is still running (see the media states). Read the transcript and the shots for the files that are done, and pull selects, while the rest finishes."
+            } else if !all_analysed {
+                "Analyze the footage: analyze runs shots, sound, motion, the transcript and framing. Then read a transcript to pull selects, and find_shots for B-roll."
+            } else if clips == 0 {
+                "The footage is analysed. Read a transcript (with words) to choose the selects, then place them; find_shots with no people for B-roll over the joins."
+            } else {
+                "Clips are down. Look with frame_at and contact_sheet, run check to hold the cut to the brief and the craft, fix what it finds, then export at the brief's loudness and save_project."
+            };
+            Ok(json!({
+                "build": build_json(),
+                "project": {
+                    "path": project.path.as_ref().map(|p| p.to_string_lossy().to_string()),
+                    "unsaved_changes": project.dirty,
+                    "unsaved_changes_from": if project.dirty { project.changed_by.clone().or(Some("edits".into())) } else { None },
+                },
+                "brief": brief.as_ref().map(|b| b.text()),
+                "media": media,
+                "sequence": seq_text,
+                "clips": clips,
+                "revision": ctx.shared.revision(),
+                "next": next,
+                "guide": "Call klipp_guide for how to work here, the craft rules and worked recipes.",
+            }))
+        }
+
         ControlCommand::Brief => {
             if in_batch {
                 return read_in_batch("brief");

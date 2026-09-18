@@ -775,3 +775,20 @@ fn a_brief_is_set_and_the_piece_is_checked_against_it() {
     assert!(r["text"].as_str().unwrap().starts_with("Checked "), "{r}");
     assert!(r["findings"].as_array().unwrap().iter().any(|f| f["rule"] == "no_brief"), "{r}");
 }
+
+/// One call tells a session where it stands and what to do next.
+#[test]
+fn orient_hands_over_the_whole_situation() {
+    let mut h = harness();
+    let r = h.ok(json!({ "method": "orient" }));
+    assert!(r["build"]["commit"].is_string());
+    assert_eq!(r["project"]["path"], json!(null));
+    assert_eq!(r["brief"], json!(null));
+    assert!(r["sequence"].as_str().unwrap().contains("Tracks"), "{r}");
+    // With no footage and no brief, the next step is to import and set one.
+    assert!(r["next"].as_str().unwrap().contains("Import the footage"), "{}", r["next"]);
+    // Media and sequence come through the same call (the stand-in UI does
+    // not apply edits, so the brief stays as the sequence holds it).
+    assert!(r["media"].is_array() && r["clips"].is_number());
+    assert!(r["guide"].as_str().unwrap().contains("klipp_guide"));
+}

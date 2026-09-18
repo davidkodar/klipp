@@ -302,6 +302,11 @@ pub enum ControlCommand {
     /// and in the project. A new project's sequence keeps a default name
     /// until someone names it.
     RenameSequence { name: String },
+    /// Everything a session needs to know where it is, in one call: the
+    /// build, the project and whether it is saved, the brief, every media
+    /// item with its analysis state, the sequence, and what to do next.
+    /// The first thing to call.
+    Orient,
     /// The sequence's brief: what the piece is for.
     Brief,
     /// Replace the brief, as one undo step. Fields left out ask for nothing.
