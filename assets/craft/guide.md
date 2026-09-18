@@ -123,6 +123,18 @@ exist until the plan runs.
   white balance; `lift`, `gamma`, `gain` move the shadows, mids and
   highlights; `reset` takes the clip to neutral first. Match shots to
   each other before making any of them look better.
+- `effect {clip_id, kind, amount?}`: a finishing effect on a picture
+  clip. `kind` is vignette, grain, glow, blur or sharpen; `amount` 0 to
+  1. A second of the same kind replaces the first.
+- `stabilize {clip_id, smoothing?}`: steady a shaky clip; it crops the
+  edges a little to hide the movement.
+- `retime {clip_id, speed}`: change a clip's speed. Above 1 is faster
+  and shorter, below 1 slower and longer. The clips after it keep their
+  place, so close the gap or overlap with move or ripple.
+- `clean_audio {clip_id, wind?, hiss?, hum?, deess?}`: clean a clip's
+  sound. Each flag adds the right tool: wind and rumble, tape or air
+  hiss, mains hum, harsh sibilance. The beach-in-a-gale clip wants
+  `wind`.
 - `transition {clip_id, kind?, secs?}`: a transition between a clip and
   the one after it, `secs` long, on the cut. `cross_dissolve` is the
   default and the only one an interview or a documentary wants; a

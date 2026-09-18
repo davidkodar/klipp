@@ -888,11 +888,18 @@ fn tool_definitions() -> Vec<Value> {
               fade_secs (0.5) each way, as volume keyframes. Set the music's volume first, \
               place the speech first.\n\
               grade {clip_id, exposure?, contrast?, saturation?, temperature?, tint?, lift?, gamma?, \
-              gain?, highlights?, shadows?, reset?} — a picture clip's primary grade: what is \
-              given is set, the rest stays. Every knob is 0 at neutral except saturation and \
-              contrast (1). exposure in stops; temperature/tint the white balance; lift/gamma/gain \
-              the shadows/mids/highlights; reset takes it to neutral first. Grade for continuity \
-              first — shots that follow each other should match — then for the look.\n\
+              gain?, highlights?, shadows?, vibrance?, reset?} — a picture clip's primary grade: \
+              what is given is set, the rest stays. Every knob is 0 at neutral except saturation \
+              and contrast (1). exposure in stops; temperature/tint the white balance; \
+              lift/gamma/gain the shadows/mids/highlights; vibrance is skin-safe saturation; \
+              reset takes it to neutral first. Read frame_stats and grade to the numbers; grade \
+              for continuity first — shots that follow each other should match — then the look.\n\
+              effect {clip_id, kind, amount?} — a finishing effect: vignette, grain, glow, blur, \
+              sharpen; amount 0-1. clean_audio {clip_id, wind?, hiss?, hum?, deess?} — clean a \
+              clip's sound: wind/rumble, tape hiss, mains hum, harsh sibilance, each its tool. \
+              stabilize {clip_id, smoothing?} — steady a shaky clip (0-1, crops a little). \
+              retime {clip_id, speed} — change speed (>1 faster/shorter, <1 slower/longer); the \
+              clips after keep their place, close the gap or overlap yourself.\n\
               transition {clip_id, kind?, secs?} — a transition between a clip and the one after \
               it on its track, secs long (0.5 default), centred on the cut. kind is cross_dissolve \
               (the default, and all an interview or documentary wants), dip_to_black, dip_to_white, \
@@ -967,11 +974,18 @@ fn tool_definitions() -> Vec<Value> {
               fade_secs (0.5) each way, as volume keyframes. Set the music's volume first, \
               place the speech first.\n\
               grade {clip_id, exposure?, contrast?, saturation?, temperature?, tint?, lift?, gamma?, \
-              gain?, highlights?, shadows?, reset?} — a picture clip's primary grade: what is \
-              given is set, the rest stays. Every knob is 0 at neutral except saturation and \
-              contrast (1). exposure in stops; temperature/tint the white balance; lift/gamma/gain \
-              the shadows/mids/highlights; reset takes it to neutral first. Grade for continuity \
-              first — shots that follow each other should match — then for the look.\n\
+              gain?, highlights?, shadows?, vibrance?, reset?} — a picture clip's primary grade: \
+              what is given is set, the rest stays. Every knob is 0 at neutral except saturation \
+              and contrast (1). exposure in stops; temperature/tint the white balance; \
+              lift/gamma/gain the shadows/mids/highlights; vibrance is skin-safe saturation; \
+              reset takes it to neutral first. Read frame_stats and grade to the numbers; grade \
+              for continuity first — shots that follow each other should match — then the look.\n\
+              effect {clip_id, kind, amount?} — a finishing effect: vignette, grain, glow, blur, \
+              sharpen; amount 0-1. clean_audio {clip_id, wind?, hiss?, hum?, deess?} — clean a \
+              clip's sound: wind/rumble, tape hiss, mains hum, harsh sibilance, each its tool. \
+              stabilize {clip_id, smoothing?} — steady a shaky clip (0-1, crops a little). \
+              retime {clip_id, speed} — change speed (>1 faster/shorter, <1 slower/longer); the \
+              clips after keep their place, close the gap or overlap yourself.\n\
               transition {clip_id, kind?, secs?} — a transition between a clip and the one after \
               it on its track, secs long (0.5 default), centred on the cut. kind is cross_dissolve \
               (the default, and all an interview or documentary wants), dip_to_black, dip_to_white, \

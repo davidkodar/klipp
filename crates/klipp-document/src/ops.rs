@@ -257,9 +257,56 @@ pub enum Op {
         highlights: Option<f32>,
         #[serde(default)]
         shadows: Option<f32>,
+        /// Saturation that protects skin and already-saturated colours:
+        /// the pro way to add life without turning faces orange. Zero
+        /// neutral.
+        #[serde(default)]
+        vibrance: Option<f32>,
         /// Take the grade back to neutral first, then set what is given.
         #[serde(default)]
         reset: bool,
+    },
+    /// A finishing effect on a picture clip. `kind` is "vignette" (darken
+    /// the edges), "grain" (film grain), "glow" (soften the highlights, a
+    /// dreamy diffusion), "blur", or "sharpen". `amount` is 0 to 1, the
+    /// strength; left out, a tasteful default. A second effect of the
+    /// same kind replaces the first.
+    Effect {
+        clip_id: ClipRef,
+        kind: String,
+        #[serde(default)]
+        amount: Option<f32>,
+    },
+    /// Steady a shaky clip. `smoothing` 0 to 1 is how much camera motion
+    /// is ironed out (0.5 default); the frame is cropped a little to hide
+    /// the edges it moves.
+    Stabilize {
+        clip_id: ClipRef,
+        #[serde(default = "default_stabilize")]
+        smoothing: f32,
+    },
+    /// Change a clip's speed. `speed` above 1 is faster and shorter, below
+    /// 1 slower and longer (0.5 is half speed); the clips after it on the
+    /// track keep their place, so a gap or an overlap is yours to close.
+    Retime {
+        clip_id: ClipRef,
+        speed: f64,
+    },
+    /// Clean a clip's sound. Each flag adds the tool for it: `wind` a
+    /// broadband reducer for wind and rumble, `hiss` the same lighter
+    /// for tape or air hiss, `hum` a notch for 50/60 Hz mains buzz,
+    /// `deess` a de-esser for harsh sibilance. Set on the clip whose
+    /// sound plays (a linked video clip's, as elsewhere).
+    CleanAudio {
+        clip_id: ClipRef,
+        #[serde(default)]
+        wind: bool,
+        #[serde(default)]
+        hiss: bool,
+        #[serde(default)]
+        hum: bool,
+        #[serde(default)]
+        deess: bool,
     },
     /// A transition between `clip_id` and the clip after it on its track,
     /// `secs` long, centred on the cut. `kind` is a transition's name.
@@ -346,6 +393,10 @@ fn default_transition_kind() -> String {
 }
 
 fn default_transition_secs() -> f64 {
+    0.5
+}
+
+fn default_stabilize() -> f32 {
     0.5
 }
 
@@ -708,9 +759,25 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
             let (ti, ci, clip) = resolve_clip(seq, fps, clip_id, i)?;
             transition(seq, pool, fps, i, ti, ci, clip, kind, *secs)
         }
-        Op::Grade { clip_id, exposure, contrast, saturation, temperature, tint, lift, gamma, gain, highlights, shadows, reset } => {
+        Op::Effect { clip_id, kind, amount } => {
             let (ti, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
-            let knobs: [(&str, &str, Option<f32>, f32, f32); 10] = [
+            picture_effect(seq, pool, i, ti, clip, kind, *amount)
+        }
+        Op::Stabilize { clip_id, smoothing } => {
+            let (ti, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
+            stabilize(seq, pool, i, ti, clip, *smoothing)
+        }
+        Op::Retime { clip_id, speed } => {
+            let (ti, ci, clip) = resolve_clip(seq, fps, clip_id, i)?;
+            retime(seq, pool, fps, i, ti, ci, clip, *speed)
+        }
+        Op::CleanAudio { clip_id, wind, hiss, hum, deess } => {
+            let (_, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
+            clean_audio(seq, pool, i, clip, *wind, *hiss, *hum, *deess)
+        }
+        Op::Grade { clip_id, exposure, contrast, saturation, temperature, tint, lift, gamma, gain, highlights, shadows, vibrance, reset } => {
+            let (ti, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
+            let knobs: [(&str, &str, Option<f32>, f32, f32); 11] = [
                 ("exposure", "exposure", *exposure, -6.0, 6.0),
                 ("contrast", "contrast", *contrast, 0.0, 4.0),
                 ("saturation", "saturation", *saturation, 0.0, 4.0),
@@ -721,6 +788,7 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
                 ("gain", "gain_master", *gain, -1.0, 1.0),
                 ("highlights", "highlights", *highlights, -1.0, 1.0),
                 ("shadows", "shadows", *shadows, -1.0, 1.0),
+                ("vibrance", "vibrance", *vibrance, -1.0, 1.0),
             ];
             grade(seq, pool, i, ti, clip, &knobs, *reset)
         }
@@ -1607,6 +1675,151 @@ fn set_text(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip, 
     Ok((what, edit, vec![clip.id]))
 }
 
+/// Set a picture clip's builtin effects to `new`, recorded as one
+/// undoable edit; the enabled-flags vec is grown to match.
+fn set_builtin_effects(clip: &Clip, new: Vec<klipp_effects::BuiltinEffect>) -> EditCommand {
+    let mut new_enabled = clip.builtin_effects_enabled.clone();
+    new_enabled.resize(new.len(), true);
+    EditCommand::SetBuiltinEffects {
+        clip_id: clip.id,
+        old_effects: clip.builtin_effects.clone(),
+        old_enabled: clip.builtin_effects_enabled.clone(),
+        new_effects: new,
+        new_enabled,
+    }
+}
+
+fn require_picture(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip, verb: &str) -> Result<(), Refusal> {
+    if seq.tracks[ti].locked {
+        return Err(refuse(i, format!("track {ti} is locked"), "unlock it first"));
+    }
+    if !matches!(clip.kind, ClipKind::Media { .. }) {
+        return Err(refuse(i, format!("{} is not a picture clip", clip_name(seq, pool, clip)), format!("{verb} a media clip")));
+    }
+    Ok(())
+}
+
+fn picture_effect(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip, kind: &str, amount: Option<f32>) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
+    require_picture(seq, pool, i, ti, clip, "add the effect to")?;
+    let a = amount.unwrap_or(match kind.to_lowercase().as_str() { "sharpen" => 0.4, "glow" | "grain" => 0.4, _ => 0.5 });
+    if !a.is_finite() || !(0.0..=1.0).contains(&a) {
+        return Err(refuse(i, format!("amount {a} is out of range"), "give amount between 0 and 1"));
+    }
+    use klipp_effects::BuiltinEffect as E;
+    let fx = match kind.to_lowercase().as_str() {
+        "vignette" => E::Vignette { amount: -a * 0.8, size: 0.8, softness: 0.5, roundness: 0.7 },
+        "grain" | "film_grain" => E::FilmGrain { amount: a * 0.5, size: 1.0, color: 0, shadows: 0.3, seed: 1 },
+        "glow" | "diffusion" | "bloom" => E::Glow { radius: 30.0, intensity: a },
+        "blur" => E::GaussianBlur { radius: a * 20.0 },
+        "sharpen" => E::Sharpen { amount: a },
+        other => return Err(refuse(i, format!("\"{other}\" is not an effect"), "use vignette, grain, glow, blur or sharpen")),
+    };
+    // The same kind of effect replaces the one that is there.
+    let same_kind = |e: &E| std::mem::discriminant(e) == std::mem::discriminant(&fx);
+    let mut effects: Vec<E> = clip.builtin_effects.iter().filter(|e| !same_kind(e)).cloned().collect();
+    effects.push(fx);
+    let what = format!("{} {a:.2} on {}", kind.to_lowercase(), clip_name(seq, pool, clip));
+    let edit = set_builtin_effects(clip, effects);
+    Ok((what, edit, vec![clip.id]))
+}
+
+fn stabilize(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip, smoothing: f32) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
+    require_picture(seq, pool, i, ti, clip, "stabilise")?;
+    if !smoothing.is_finite() || !(0.0..=1.0).contains(&smoothing) {
+        return Err(refuse(i, format!("smoothing {smoothing} is out of range"), "give smoothing between 0 and 1"));
+    }
+    use klipp_effects::BuiltinEffect as E;
+    let fx = E::VideoStabilization { smoothing, crop_ratio: 0.05 + smoothing * 0.05, zoom: true };
+    let mut effects: Vec<E> = clip.builtin_effects.iter().filter(|e| !matches!(e, E::VideoStabilization { .. })).cloned().collect();
+    effects.push(fx);
+    let what = format!("stabilise {} at {smoothing:.2}", clip_name(seq, pool, clip));
+    Ok((what, set_builtin_effects(clip, effects), vec![clip.id]))
+}
+
+fn retime(seq: &Sequence, pool: &MediaPool, fps: Fps, i: usize, ti: usize, ci: usize, clip: &Clip, speed: f64) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
+    if seq.tracks[ti].locked {
+        return Err(refuse(i, format!("track {ti} is locked"), "unlock it first"));
+    }
+    if !matches!(clip.kind, ClipKind::Media { .. }) {
+        return Err(refuse(i, format!("{} cannot be retimed", clip_name(seq, pool, clip)), "retime a media clip"));
+    }
+    if !speed.is_finite() || !(0.1..=8.0).contains(&speed) {
+        return Err(refuse(i, format!("a speed of {speed}"), "give speed between 0.1 and 8"));
+    }
+    let source_len = clip.source_out - clip.source_in;
+    let new_len_secs = crate::ops::secs(source_len) / speed;
+    let new_out = clip.timeline_in + snap(new_len_secs, fps);
+    if new_out <= clip.timeline_in + one_frame(fps) {
+        return Err(refuse(i, "the clip would be shorter than a frame", "use a smaller speed"));
+    }
+    // Overlap with the next clip is the caller's to close: said, not fixed.
+    let runs_into = seq.tracks[ti].clips.get(ci + 1).filter(|n| new_out > n.timeline_in).map(|n| clip_name(seq, pool, n));
+    let old_out = clip.timeline_out;
+    let what = format!(
+        "retime {} to {speed:.2}x (now {:.2}-{:.2} s){}",
+        clip_name(seq, pool, clip),
+        crate::ops::secs(clip.timeline_in),
+        crate::ops::secs(new_out),
+        runs_into.map(|n| format!("; it now overlaps {n} — move or ripple to close it")).unwrap_or_default(),
+    );
+    let edit = EditCommand::SetClipSpeed {
+        clip_id: clip.id,
+        old_speed: clip.speed,
+        new_speed: speed,
+        old_timeline_out: old_out,
+        new_timeline_out: new_out,
+    };
+    Ok((what, edit, vec![clip.id]))
+}
+
+fn clean_audio(seq: &Sequence, pool: &MediaPool, i: usize, given: &Clip, wind: bool, hiss: bool, hum: bool, deess: bool) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
+    let clip = sound_settings_clip(seq, given);
+    if !clip.media_id().and_then(|id| pool.get(&id)).is_some_and(|m| m.has_audio) {
+        return Err(refuse(i, format!("{} has no sound", clip_name(seq, pool, clip)), "name a clip whose media has audio"));
+    }
+    if !(wind || hiss || hum || deess) {
+        return Err(refuse(i, "nothing to clean", "set wind, hiss, hum or deess"));
+    }
+    let mk = |effect_type: &str, params: Vec<(&str, f32)>| klipp_core::AudioEffectInstance {
+        effect_type: effect_type.to_string(),
+        enabled: true,
+        wet_dry: 1.0,
+        params: params.into_iter().map(|(k, v)| (k.to_string(), v)).collect(),
+    };
+    let mut chain = clip.audio_effects.clone();
+    let has = |chain: &[klipp_core::AudioEffectInstance], t: &str| chain.iter().any(|e| e.effect_type == t);
+    let mut said = Vec::new();
+    // Wind and hiss both go to the broadband reducer, wind stronger; one
+    // of it, so two flags do not stack two reducers.
+    if (wind || hiss) && !has(&chain, "noise_reduction") {
+        let reduction = if wind { 0.7 } else { 0.4 };
+        chain.push(mk("noise_reduction", vec![("reduction", reduction), ("sensitivity", 0.5), ("smoothing", 0.5)]));
+        said.push(if wind { "wind and rumble reduced" } else { "hiss reduced" });
+    }
+    if hum && !has(&chain, "hum_removal") {
+        chain.push(mk("hum_removal", vec![("fundamental_hz", 50.0), ("harmonics", 4.0), ("q", 30.0)]));
+        said.push("mains hum removed");
+    }
+    if deess && !has(&chain, "deesser") {
+        chain.push(mk("deesser", vec![("frequency", 6500.0), ("threshold", -24.0), ("reduction", 6.0), ("bandwidth", 1.0)]));
+        said.push("sibilance tamed");
+    }
+    if said.is_empty() {
+        return Err(refuse(i, "the sound already has these cleaners", "nothing to add"));
+    }
+    let mut new_state = crate::history::AudioChainSnapshot::from_clip(clip);
+    new_state.audio_effects = chain;
+    let on = if clip.id == given.id { String::new() } else { " (on the linked audio)".to_string() };
+    let what = format!("clean {}: {}{on}", clip_name(seq, pool, given), said.join(", "));
+    let edit = EditCommand::EditAudioChain {
+        clip_id: clip.id,
+        description: "Clean Audio",
+        old_state: crate::history::AudioChainSnapshot::from_clip(clip),
+        new_state,
+    };
+    Ok((what, edit, vec![given.id]))
+}
+
 /// A transition between `clip` and the clip after it on its track. The
 /// registry names the kind; a stylised one is spelt by its key or a
 /// friendly alias. Both clips need source beyond the cut to overlap by.
@@ -2481,9 +2694,54 @@ mod tests {
     }
 
     #[test]
+    fn finishing_ops_add_effects_stabilise_retime_and_clean_audio() {
+        let (seq, pool, media, a, _) = fixture();
+        use klipp_effects::BuiltinEffect as E;
+
+        // An effect appends a builtin effect; the same kind replaces it.
+        let plan = resolve(&seq, &pool, &[Op::Effect { clip_id: ClipRef::Id(a), kind: "vignette".into(), amount: Some(0.6) }]).unwrap();
+        assert!(plan.steps[0].what.starts_with("vignette 0.60"), "{}", plan.steps[0].what);
+        let EditCommand::SetBuiltinEffects { new_effects, .. } = &plan.steps[0].edit else { panic!("effects edit") };
+        assert!(matches!(new_effects.last(), Some(E::Vignette { .. })));
+
+        // Stabilise appends VideoStabilization; replay and undo.
+        let plan = resolve(&seq, &pool, &[Op::Stabilize { clip_id: ClipRef::Id(a), smoothing: 0.5 }]).unwrap();
+        let mut seqs = vec![seq.clone()];
+        let mut p = pool.clone();
+        let mut fps = seq.fps;
+        let mut view = crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut p, fps: &mut fps };
+        view.apply_forward(&plan.steps[0].edit);
+        assert!(view.sequences[0].tracks[0].clips[0].builtin_effects.iter().any(|e| matches!(e, E::VideoStabilization { .. })));
+        view.apply_inverse(&plan.steps[0].edit);
+        assert!(view.sequences[0].tracks[0].clips[0].builtin_effects.is_empty());
+
+        // Retime to 2x halves the clip and says nothing runs into the next
+        // (clip a is 0-4, clip b starts at 4; 2x makes a 0-2, a gap opens).
+        let plan = resolve(&seq, &pool, &[Op::Retime { clip_id: ClipRef::Id(a), speed: 2.0 }]).unwrap();
+        assert!(plan.steps[0].what.contains("2.00x") && plan.steps[0].what.contains("0.00-2.00 s"), "{}", plan.steps[0].what);
+        // Half speed makes a run into b.
+        let plan = resolve(&seq, &pool, &[Op::Retime { clip_id: ClipRef::Id(a), speed: 0.5 }]).unwrap();
+        assert!(plan.steps[0].what.contains("overlaps"), "{}", plan.steps[0].what);
+
+        // Clean audio adds the DSP for each flag, on the clip's own sound.
+        let plan = resolve(&seq, &pool, &[Op::CleanAudio { clip_id: ClipRef::Id(a), wind: true, hiss: false, hum: true, deess: true }]).unwrap();
+        assert!(plan.steps[0].what.contains("wind and rumble") && plan.steps[0].what.contains("hum") && plan.steps[0].what.contains("sibilance"), "{}", plan.steps[0].what);
+        let EditCommand::EditAudioChain { new_state, .. } = &plan.steps[0].edit else { panic!("audio edit") };
+        let types: Vec<&str> = new_state.audio_effects.iter().map(|e| e.effect_type.as_str()).collect();
+        assert!(types.contains(&"noise_reduction") && types.contains(&"hum_removal") && types.contains(&"deesser"), "{types:?}");
+
+        // Refusals and the JSON shape.
+        let bad = |op: Op| resolve(&seq, &pool, &[op]).unwrap_err();
+        assert!(bad(Op::Effect { clip_id: ClipRef::Id(a), kind: "sparkle".into(), amount: None }).why.contains("not an effect"));
+        assert!(bad(Op::CleanAudio { clip_id: ClipRef::Id(a), wind: false, hiss: false, hum: false, deess: false }).why.contains("nothing to clean"));
+        let _: Vec<Op> = serde_json::from_str(r#"[{"op":"effect","clip_id":{"track":0,"secs":1.0},"kind":"glow"},{"op":"retime","clip_id":{"track":0,"secs":1.0},"speed":0.5},{"op":"clean_audio","clip_id":{"track":0,"secs":1.0},"wind":true}]"#).unwrap();
+        let _ = media;
+    }
+
+    #[test]
     fn a_grade_sets_the_primary_knobs_and_undo_takes_it_back() {
         let (seq, pool, media, a, _) = fixture();
-        let plan = resolve(&seq, &pool, &[Op::Grade { clip_id: ClipRef::Id(a), exposure: Some(0.5), contrast: Some(1.2), saturation: Some(1.3), temperature: Some(0.1), tint: None, lift: Some(0.05), gamma: None, gain: Some(-0.1), highlights: None, shadows: Some(0.2), reset: false }]).unwrap();
+        let plan = resolve(&seq, &pool, &[Op::Grade { clip_id: ClipRef::Id(a), exposure: Some(0.5), contrast: Some(1.2), saturation: Some(1.3), temperature: Some(0.1), tint: None, lift: Some(0.05), gamma: None, gain: Some(-0.1), highlights: None, shadows: Some(0.2), vibrance: Some(0.3), reset: false }]).unwrap();
         assert!(plan.steps[0].what.contains("exposure 0.5") && plan.steps[0].what.contains("gain -0.1"), "{}", plan.steps[0].what);
         let EditCommand::SetNodeGraph { new_graph, .. } = &plan.steps[0].edit else { panic!("a node-graph edit") };
         let node = new_graph.nodes.iter().find(|n| n.kind == klipp_nodes::NodeKind::Corrector).expect("a corrector");
@@ -2504,8 +2762,8 @@ mod tests {
 
         // Out of range, nothing to change, a title: refused.
         let bad = |op: Op| resolve(&seq, &pool, &[op]).unwrap_err();
-        assert!(bad(Op::Grade { clip_id: ClipRef::Id(a), exposure: Some(99.0), contrast: None, saturation: None, temperature: None, tint: None, lift: None, gamma: None, gain: None, highlights: None, shadows: None, reset: false }).why.contains("out of range"));
-        assert!(bad(Op::Grade { clip_id: ClipRef::Id(a), exposure: None, contrast: None, saturation: None, temperature: None, tint: None, lift: None, gamma: None, gain: None, highlights: None, shadows: None, reset: false }).why.contains("nothing to grade"));
+        assert!(bad(Op::Grade { clip_id: ClipRef::Id(a), exposure: Some(99.0), contrast: None, saturation: None, temperature: None, tint: None, lift: None, gamma: None, gain: None, highlights: None, shadows: None, vibrance: None, reset: false }).why.contains("out of range"));
+        assert!(bad(Op::Grade { clip_id: ClipRef::Id(a), exposure: None, contrast: None, saturation: None, temperature: None, tint: None, lift: None, gamma: None, gain: None, highlights: None, shadows: None, vibrance: None, reset: false }).why.contains("nothing to grade"));
 
         // As the tools send it.
         let _: Vec<Op> = serde_json::from_str(r#"[{"op":"grade","clip_id":{"track":0,"secs":1.0},"exposure":0.3,"saturation":1.1,"reset":true}]"#).unwrap();

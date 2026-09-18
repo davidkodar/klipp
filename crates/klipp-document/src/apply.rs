@@ -582,6 +582,17 @@ impl DocumentView<'_> {
                 effects.sync_sequence = true;
                 effects.set_playhead = true;
             }
+            EditCommand::SetBuiltinEffects { clip_id, old_effects, old_enabled, .. } => {
+                for track in &mut self.sequences[self.active].tracks {
+                    if let Some(clip) = track.find_clip_mut(*clip_id) {
+                        clip.builtin_effects = old_effects.clone();
+                        clip.builtin_effects_enabled = old_enabled.clone();
+                        break;
+                    }
+                }
+                effects.sync_sequence = true;
+                effects.notify_engine = true;
+            }
             EditCommand::EditAudioChain { clip_id, old_state, .. } => {
                 for track in &mut self.sequences[self.active].tracks {
                     if let Some(clip) = track.find_clip_mut(*clip_id) {
@@ -1124,6 +1135,17 @@ impl DocumentView<'_> {
                 }
                 effects.sync_sequence = true;
                 effects.set_playhead = true;
+            }
+            EditCommand::SetBuiltinEffects { clip_id, new_effects, new_enabled, .. } => {
+                for track in &mut self.sequences[self.active].tracks {
+                    if let Some(clip) = track.find_clip_mut(*clip_id) {
+                        clip.builtin_effects = new_effects.clone();
+                        clip.builtin_effects_enabled = new_enabled.clone();
+                        break;
+                    }
+                }
+                effects.sync_sequence = true;
+                effects.notify_engine = true;
             }
             EditCommand::EditAudioChain { clip_id, new_state, .. } => {
                 for track in &mut self.sequences[self.active].tracks {

@@ -80,6 +80,8 @@ override any of them; what matters is that breaking one is a choice.
   a passage of time or place. Anything else is a style choice the brief
   has to ask for; for an interview or a documentary the answer is
   nowhere.
+- Raise saturation with `vibrance`, not `saturation`, when faces are in
+  frame: vibrance protects skin tones and colours already saturated.
 - Grade for continuity first: shots that follow each other should match
   before anything looks "better". Read `frame_stats` on each: the black
   point wants to reach near 0 IRE and the white near 100 without

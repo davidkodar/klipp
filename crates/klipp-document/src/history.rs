@@ -449,6 +449,16 @@ pub enum EditCommand {
         old_effect: klipp_effects::BuiltinEffect,
         new_effect: klipp_effects::BuiltinEffect,
     },
+    /// The whole builtin-effects list of a clip, replaced: adding a
+    /// vignette, a grain, a stabiliser. The enabled-flags vec goes with
+    /// it. Snapshot both sides, restore on undo.
+    SetBuiltinEffects {
+        clip_id: ClipId,
+        old_effects: Vec<klipp_effects::BuiltinEffect>,
+        old_enabled: Vec<bool>,
+        new_effects: Vec<klipp_effects::BuiltinEffect>,
+        new_enabled: Vec<bool>,
+    },
     /// Per-effect enable/disable for builtin effects. Both undo and redo
     /// simply flip the boolean at `index`, so only the index is stored.
     ToggleBuiltinEffectEnabled {
@@ -655,6 +665,7 @@ impl EditCommand {
             EditCommand::EditKeyframes { description, .. } => description,
             EditCommand::EditClipAudio { .. } => "Edit Audio",
             EditCommand::EditBuiltinEffect { .. } => "Edit Effect",
+            EditCommand::SetBuiltinEffects { .. } => "Effects",
             EditCommand::ToggleBuiltinEffectEnabled { .. } => "Toggle Effect",
             EditCommand::SetOFXEffectEnabled { .. } => "Toggle Effect",
             EditCommand::SetClipSpeed { .. } => "Set Clip Speed",
