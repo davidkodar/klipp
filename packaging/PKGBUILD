@@ -34,6 +34,7 @@ depends=(
   'hicolor-icon-theme'  # the icon theme the launcher entry lives in
   'xdg-utils'           # opening files and links (xdg-open)
   'pciutils'            # GPU probing (lspci)
+  'onnxruntime'         # libonnxruntime.so for the ONNX vision models (BiRefNet, RF-DETR), CPU by default
 )
 makedepends=(
   'rust'
@@ -47,7 +48,6 @@ makedepends=(
   'git'
 )
 optdepends=(
-  'onnxruntime: CPU execution for the ONNX vision models (BiRefNet, RF-DETR); MobileSAM works without it'
   'cudnn: NVIDIA GPU acceleration for the ONNX vision models (with a CUDA onnxruntime)'
   'pipewire: PipeWire audio output (ALSA is used otherwise)'
   'frei0r-plugins: extra video effects through the frei0r host'
