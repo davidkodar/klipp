@@ -591,6 +591,25 @@ pub trait Transcripts {
     fn screen_beats(&self, _item: &klipp_media::MediaItem) -> Option<ScreenBeats> {
         None
     }
+    /// What on `item`'s screen looks like it should not be published,
+    /// each with its kind, a masked version, when (file seconds) and
+    /// where (left, top, width, height as fractions of the frame).
+    fn screen_sensitive(&self, _item: &klipp_media::MediaItem) -> Vec<SensitiveText> {
+        Vec::new()
+    }
+}
+
+/// A secret left on screen, as the check reads it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SensitiveText {
+    pub kind: String,
+    pub masked: String,
+    pub start_secs: f64,
+    pub end_secs: f64,
+    pub x: f32,
+    pub y: f32,
+    pub w: f32,
+    pub h: f32,
 }
 
 /// A screen recording's beat sheet as the check reads it, all in the

@@ -369,7 +369,7 @@ impl PreferencesPanel {
         match tab {
             PrefsTab::General => &["general", "auto-save", "backup", "recent projects", "project", "default folder", "inspector", "startup", "launch", "open last"],
             PrefsTab::Appearance => &["appearance", "theme", "ui scale", "accent color", "role colors", "video", "dialogue", "music", "sfx"],
-            PrefsTab::Ai => &["ai", "artificial intelligence", "transcription", "transcribe", "whisper", "speech", "subtitles", "captions", "model", "models", "download", "gpu", "cpu", "mcp", "assistant", "opt out", "disable", "enable", "vision", "onnx"],
+            PrefsTab::Ai => &["ai", "artificial intelligence", "transcription", "transcribe", "whisper", "speech", "subtitles", "captions", "model", "models", "download", "gpu", "cpu", "mcp", "assistant", "opt out", "disable", "enable", "vision", "onnx", "ocr", "screen text", "text on screen", "redact"],
             PrefsTab::System => &["system", "gpu", "hardware", "decode", "threads", "frame queue", "playback resolution", "nvdec", "vaapi", "cuda"],
             PrefsTab::Playback => &["playback", "quality", "background render", "pre-roll", "jkl", "speed", "loop"],
             PrefsTab::MediaCache => &["cache", "thumbnail", "waveform", "render cache", "cache size", "transcode", "clear cache"],
@@ -2105,6 +2105,14 @@ impl PreferencesPanel {
                 *dirty = true;
             }
         });
+        Self::setting_row_with_subtitle(ui, "Screen text (OCR)", "Reads what is on screen in a screen recording, so footage can be searched by its text and secrets left on screen are flagged. Needs two small models (about 10 MB), downloaded only when you ask.", theme, |ui| {
+            let mut val = prefs.ai.screen_text;
+            if ui.add(crate::widgets::toggle::toggle(&mut val)).changed() {
+                prefs.ai.screen_text = val;
+                klipp_analysis::set_screen_text_enabled(val);
+                *dirty = true;
+            }
+        });
         Self::setting_row_with_subtitle(ui, "AI assistant (MCP)  \u{2022}  restart required", "Runs the control socket and MCP server so an agent can drive Klipp through the klipp-mcp tools. Off means no agent can connect.", theme, |ui| {
             let mut val = prefs.ai.assistant;
             if ui.add(crate::widgets::toggle::toggle(&mut val)).changed() {
@@ -2129,6 +2137,16 @@ impl PreferencesPanel {
         let vision_status = if prefs.ai.subject_detection { ai_vision_status() } else { "Off".to_string() };
         Self::setting_row(ui, "Subject detection", theme, |ui| {
             ui.label(egui::RichText::new(vision_status).color(theme.text_secondary));
+        });
+        let text_status = if !prefs.ai.screen_text {
+            "Off".to_string()
+        } else if klipp_analysis::screentext::installed() {
+            "Ready".to_string()
+        } else {
+            "No OCR models downloaded — get them below".to_string()
+        };
+        Self::setting_row(ui, "Screen text (OCR)", theme, |ui| {
+            ui.label(egui::RichText::new(text_status).color(theme.text_secondary));
         });
         Self::setting_row_with_subtitle(ui, "Assistant (MCP)", "Point an MCP client at the klipp-mcp command while Klipp is running.", theme, |ui| {
             let s = if prefs.ai.assistant { "Ready" } else { "Off" };
@@ -2160,6 +2178,26 @@ impl PreferencesPanel {
                 whisper_blurb(id).to_string()
             };
             Self::setting_row_with_subtitle(ui, &format!("{name}  ({size})"), &sub, theme, |ui| {
+                if installed {
+                    ui.label(egui::RichText::new("Installed").color(theme.text_secondary));
+                } else if ui.button("Download").clicked() {
+                    cmds.push(AppCommand::OpenModelDownloadDialog { model_id: id.to_string() });
+                }
+            });
+        }
+
+        // ── Screen text (OCR) ──
+        Self::section_header(ui, "SCREEN TEXT (OCR)", theme);
+        if !prefs.ai.screen_text {
+            ui.horizontal(|ui| {
+                ui.add_space(14.0);
+                ui.label(egui::RichText::new("Turn on Screen text above to use these.").color(theme.text_secondary));
+            });
+        }
+        for id in klipp_analysis::screentext::MODEL_IDS {
+            let (name, size, installed) = model_row_info(id);
+            let sub = if id == klipp_analysis::screentext::DET_MODEL_ID { "Finds where text is on the screen (PaddleOCR, Apache-2.0)." } else { "Reads each line of English text (PaddleOCR, Apache-2.0)." };
+            Self::setting_row_with_subtitle(ui, &format!("{name}  ({size})"), sub, theme, |ui| {
                 if installed {
                     ui.label(egui::RichText::new("Installed").color(theme.text_secondary));
                 } else if ui.button("Download").clicked() {

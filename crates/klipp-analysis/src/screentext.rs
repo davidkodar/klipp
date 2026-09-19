@@ -1,0 +1,426 @@
+//! What is written on the screen, and when: the settled frames the
+//! beat sheet picks (or one every few seconds without one), read by
+//! PP-OCR through ONNX Runtime with the models from the registry.
+//! Consecutive reads of the same line fold into spans — "Search &
+//! Filtering, on screen 0:12–0:18" — so a recording can be searched
+//! by what it showed, and anything that looks like a secret left on
+//! screen is flagged with where and when to blur it.
+
+use serde::{Deserialize, Serialize};
+
+pub const ID: &str = "screentext";
+pub const VERSION: u32 = 3;
+pub const DET_MODEL_ID: &str = "ppocr_en_det_v3";
+pub const REC_MODEL_ID: &str = "ppocr_en_rec_v4";
+pub const MODEL_IDS: [&str; 2] = [DET_MODEL_ID, REC_MODEL_ID];
+
+/// Frames are read at their own width within these bounds: a 4K
+/// screen keeps the small type legible, a 720p one is brought up.
+const READ_WIDTH_MIN: u32 = 1280;
+const READ_WIDTH_MAX: u32 = 2560;
+/// Frames decoded and read together; bounds the memory a 4K read takes.
+const READ_BATCH: usize = 6;
+/// At most this many frames per file.
+const MAX_FRAMES: usize = 80;
+/// Two picks closer than this are one.
+const MIN_GAP_SECS: f64 = 1.0;
+/// Without a beat sheet, a frame this often.
+const FALLBACK_STEP_SECS: f64 = 4.0;
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Line {
+    pub text: String,
+    pub confidence: f32,
+    /// Where on the frame, as fractions: left, top, width, height.
+    pub x: f32,
+    pub y: f32,
+    pub w: f32,
+    pub h: f32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct FrameText {
+    pub secs: f64,
+    pub lines: Vec<Line>,
+}
+
+/// One line of text as long as it stayed on screen.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct TextSpan {
+    pub text: String,
+    pub start_secs: f64,
+    pub end_secs: f64,
+    pub x: f32,
+    pub y: f32,
+    pub w: f32,
+    pub h: f32,
+    /// How many read frames it was seen in.
+    pub frames: u32,
+}
+
+/// Something that looks like it should not be published.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Sensitive {
+    /// "email", "key", "credential" or "card".
+    pub kind: String,
+    /// The first and last characters only.
+    pub masked: String,
+    pub start_secs: f64,
+    pub end_secs: f64,
+    pub x: f32,
+    pub y: f32,
+    pub w: f32,
+    pub h: f32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct ScreenText {
+    pub duration_secs: f64,
+    pub model: String,
+    pub frames_read: u32,
+    pub frames: Vec<FrameText>,
+    pub spans: Vec<TextSpan>,
+    pub sensitive: Vec<Sensitive>,
+}
+
+fn norm(s: &str) -> String {
+    s.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase()
+}
+
+impl ScreenText {
+    /// Spans whose text contains every word of `query`, case aside.
+    pub fn search(&self, query: &str) -> Vec<&TextSpan> {
+        let words: Vec<String> = query.split_whitespace().map(|w| w.to_lowercase()).collect();
+        if words.is_empty() {
+            return Vec::new();
+        }
+        self.spans.iter().filter(|s| { let t = s.text.to_lowercase(); words.iter().all(|w| t.contains(w.as_str())) }).collect()
+    }
+
+    /// The read frame nearest `secs`, if one is within a few seconds.
+    pub fn frame_near(&self, secs: f64) -> Option<&FrameText> {
+        self.frames.iter().min_by(|a, b| (a.secs - secs).abs().partial_cmp(&(b.secs - secs).abs()).unwrap_or(std::cmp::Ordering::Equal)).filter(|f| (f.secs - secs).abs() <= FALLBACK_STEP_SECS)
+    }
+
+    /// The text on screen between `from` and `to`, longest-lived first.
+    pub fn spans_within(&self, from: f64, to: f64) -> Vec<&TextSpan> {
+        let mut v: Vec<&TextSpan> = self.spans.iter().filter(|s| s.end_secs > from && s.start_secs < to).collect();
+        v.sort_by(|a, b| (b.end_secs - b.start_secs).partial_cmp(&(a.end_secs - a.start_secs)).unwrap_or(std::cmp::Ordering::Equal));
+        v
+    }
+
+    /// A few lines for a model: how much was read, the longest-lived
+    /// lines, and anything sensitive.
+    pub fn summary(&self) -> String {
+        use std::fmt::Write as _;
+        let mut out = String::new();
+        let _ = writeln!(out, "Screen text: {} lines read across {} frames ({})", self.spans.len(), self.frames_read, self.model);
+        let mut longest: Vec<&TextSpan> = self.spans.iter().collect();
+        longest.sort_by(|a, b| (b.end_secs - b.start_secs).partial_cmp(&(a.end_secs - a.start_secs)).unwrap_or(std::cmp::Ordering::Equal));
+        for s in longest.iter().take(12) {
+            let _ = writeln!(out, "  {:.1}-{:.1} s  \"{}\"", s.start_secs, s.end_secs, s.text);
+        }
+        for s in &self.sensitive {
+            let _ = writeln!(out, "  SENSITIVE {} {:.1}-{:.1} s at ({:.2},{:.2}) {}", s.kind, s.start_secs, s.end_secs, s.x, s.y, s.masked);
+        }
+        out
+    }
+}
+
+/// Reads folded into spans: a line seen in one frame and again in the
+/// next, with the same words near the same place, is one span.
+pub fn fold_spans(frames: &[FrameText], step_secs: f64) -> Vec<TextSpan> {
+    let mut open: Vec<(String, TextSpan)> = Vec::new();
+    let mut done: Vec<TextSpan> = Vec::new();
+    for (fi, f) in frames.iter().enumerate() {
+        let next_secs = frames.get(fi + 1).map(|n| n.secs).unwrap_or(f.secs + step_secs);
+        let mut still: Vec<(String, TextSpan)> = Vec::new();
+        let mut used = vec![false; f.lines.len()];
+        for (key, mut span) in open.drain(..) {
+            let hit = f.lines.iter().enumerate().find(|(i, l)| !used[*i] && norm(&l.text) == key && (l.y - span.y).abs() < 0.08);
+            match hit {
+                Some((i, l)) => {
+                    used[i] = true;
+                    span.end_secs = next_secs.min(f.secs + step_secs);
+                    span.frames += 1;
+                    span.x = l.x; span.y = l.y; span.w = l.w; span.h = l.h;
+                    still.push((key, span));
+                }
+                None => done.push(span),
+            }
+        }
+        for (i, l) in f.lines.iter().enumerate() {
+            if used[i] || l.text.trim().len() < 2 {
+                continue;
+            }
+            still.push((norm(&l.text), TextSpan { text: l.text.clone(), start_secs: f.secs, end_secs: next_secs.min(f.secs + step_secs), x: l.x, y: l.y, w: l.w, h: l.h, frames: 1 }));
+        }
+        open = still;
+    }
+    done.extend(open.into_iter().map(|(_, s)| s));
+    done.sort_by(|a, b| a.start_secs.partial_cmp(&b.start_secs).unwrap_or(std::cmp::Ordering::Equal));
+    done
+}
+
+/// What in a line looks like a secret: an email address, an API key
+/// or token, a value after a "password"-like label, a card number.
+pub fn sensitive_in(text: &str) -> Option<(&'static str, String)> {
+    let mask = |s: &str| -> String {
+        let n = s.chars().count();
+        if n <= 6 { return "…".repeat(3); }
+        let head: String = s.chars().take(3).collect();
+        let tail: String = s.chars().skip(n - 2).collect();
+        format!("{head}…{tail}")
+    };
+    let tokens: Vec<&str> = text.split(|c: char| c.is_whitespace() || matches!(c, ',' | ';' | '"' | '\'' | '(' | ')' | '[' | ']' | '{' | '}' | '<' | '>')).filter(|t| !t.is_empty()).collect();
+    let lower = text.to_lowercase();
+    for t in tokens.iter() {
+        if let Some(at) = t.find('@') {
+            let (user, host) = t.split_at(at);
+            let host = &host[1..];
+            if user.chars().any(|c| c.is_alphanumeric()) && host.contains('.') && host.chars().last().is_some_and(|c| c.is_alphabetic()) {
+                return Some(("email", mask(t)));
+            }
+        }
+        let known_prefix = ["sk-", "sk_live_", "sk_test_", "pk_live_", "ghp_", "gho_", "github_pat_", "AKIA", "xoxb-", "xoxp-", "eyJ", "AIza", "glpat-"].iter().any(|p| t.starts_with(p));
+        let body_ok = t.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '+' | '/' | '=' | '.'));
+        let digits = t.chars().filter(|c| c.is_ascii_digit()).count();
+        let letters = t.chars().filter(|c| c.is_ascii_alphabetic()).count();
+        if body_ok && ((known_prefix && t.len() >= 16) || (t.len() >= 28 && digits >= 4 && letters >= 6 && !t.contains('.'))) {
+            return Some(("key", mask(t)));
+        }
+        if t.len() >= 32 && t.chars().all(|c| c.is_ascii_hexdigit()) {
+            return Some(("key", mask(t)));
+        }
+    }
+    for (k, t) in tokens.iter().enumerate() {
+        // "password: hunter2", "token = abc"
+        let label = t.trim_end_matches([':', '=']).to_lowercase();
+        if matches!(label.as_str(), "password" | "passwd" | "pwd" | "secret" | "token" | "api_key" | "apikey" | "api-key") {
+            let value = tokens.get(k + 1).filter(|v| !matches!(**v, ":" | "=")).or_else(|| tokens.get(k + 2));
+            if let Some(v) = value {
+                if v.len() >= 4 && !v.chars().all(|c| c == '*' || c == '•') {
+                    return Some(("credential", mask(v)));
+                }
+            }
+        }
+    }
+    // A card number: 16 digits, in groups of four or not.
+    let digits_only: String = lower.chars().filter(|c| !c.is_whitespace() && *c != '-').collect();
+    if let Some(start) = digits_only.as_bytes().windows(16).position(|w| w.iter().all(|b| b.is_ascii_digit())) {
+        let run = &digits_only[start..start + 16];
+        if luhn(run) {
+            return Some(("card", mask(run)));
+        }
+    }
+    None
+}
+
+fn luhn(digits: &str) -> bool {
+    let mut sum = 0;
+    for (i, c) in digits.chars().rev().enumerate() {
+        let mut d = c.to_digit(10).unwrap_or(0);
+        if i % 2 == 1 { d *= 2; if d > 9 { d -= 9; } }
+        sum += d;
+    }
+    sum % 10 == 0
+}
+
+/// Both OCR models, when they are in the cache.
+pub fn model_paths() -> Option<(std::path::PathBuf, std::path::PathBuf)> {
+    let manifest = klipp_ml::manifest::load_effective().ok()?;
+    let cache = klipp_ml::cache::ModelCache::open().ok()?;
+    let mut paths = Vec::new();
+    for id in MODEL_IDS {
+        let entry = manifest.get(id)?;
+        let p = cache.path_for(entry);
+        if !p.is_file() { return None; }
+        paths.push(p);
+    }
+    Some((paths.remove(0), paths.remove(0)))
+}
+
+/// Whether both models are downloaded.
+pub fn installed() -> bool {
+    model_paths().is_some()
+}
+
+/// The models, downloaded and verified when `download` and not there.
+pub fn ensure_models(download: bool) -> Result<(std::path::PathBuf, std::path::PathBuf), String> {
+    if let Some(p) = model_paths() {
+        return Ok(p);
+    }
+    if !download {
+        return Err(format!("the screen-text models {} are not downloaded; ask with download_models", MODEL_IDS.join(" + ")));
+    }
+    let manifest = klipp_ml::manifest::load_effective().map_err(|e| format!("model manifest: {e:?}"))?;
+    let cache = klipp_ml::cache::ModelCache::open().map_err(|e| format!("model cache: {e:?}"))?;
+    let cancel = std::sync::atomic::AtomicBool::new(false);
+    for id in MODEL_IDS {
+        let entry = manifest.get(id).ok_or_else(|| format!("no manifest entry {id}"))?;
+        let mut progress = klipp_ml::download::NoOpProgress;
+        klipp_ml::download::download_to_cache(&cache, entry, &mut progress, &cancel).map_err(|e| format!("download of {id}: {e:?}"))?;
+    }
+    model_paths().ok_or_else(|| "the models were downloaded but are not in the cache".to_string())
+}
+
+/// The times to read: the beat sheet's reveals and the middle of each
+/// settled stretch, else one every few seconds; never more than
+/// `MAX_FRAMES`, never two within a second.
+fn pick_times(duration: f64, beats: Option<&crate::beatsheet::BeatSheet>) -> Vec<f64> {
+    let mut t: Vec<f64> = match beats.filter(|b| b.has_freeze) {
+        Some(b) => {
+            let mut v: Vec<f64> = vec![0.2];
+            v.extend(b.reveals.iter().map(|r| r + 0.3));
+            v.extend(b.segments.iter().filter(|s| s.kind == "idle").map(|s| (s.start_secs + s.end_secs) / 2.0));
+            v
+        }
+        None => {
+            let mut v = Vec::new();
+            let mut x = 0.2;
+            while x < duration { v.push(x); x += FALLBACK_STEP_SECS; }
+            v
+        }
+    };
+    t.retain(|x| *x >= 0.0 && *x < duration - 0.05);
+    t.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    t.dedup_by(|a, b| (*a - *b).abs() < MIN_GAP_SECS);
+    if t.len() > MAX_FRAMES {
+        t = (0..MAX_FRAMES).map(|i| t[i * t.len() / MAX_FRAMES]).collect();
+    }
+    t
+}
+
+/// The size a `w`×`h` picture is read at: the width within bounds,
+/// the aspect kept, both even.
+fn read_size(w: u32, h: u32) -> (u32, u32) {
+    let rw = (w.clamp(READ_WIDTH_MIN, READ_WIDTH_MAX) / 2) * 2;
+    let raw = h as f64 * rw as f64 / w.max(1) as f64;
+    (rw, ((raw / 2.0).round() as u32 * 2).max(2))
+}
+
+/// Frames at `times` (at most `READ_BATCH`), `width`×`height`, as
+/// RGBA8: exactly one frame per time, the first at or after it.
+fn frames_at(ffmpeg: &std::path::Path, media: &std::path::Path, times: &[f64], width: u32, height: u32) -> Result<Vec<Vec<u8>>, String> {
+    if times.is_empty() {
+        return Ok(Vec::new());
+    }
+    // `prev_t` makes each pick exactly one frame, whatever the rate:
+    // the first frame at or after the time.
+    let picks: Vec<String> = times.iter().map(|t| format!("(gte(t,{t:.3})*lt(prev_t,{t:.3}))")).collect();
+    let vf = format!("select='{}',scale={width}:{height}", picks.join("+"));
+    let out = std::process::Command::new(ffmpeg)
+        .args(["-hide_banner", "-nostats", "-loglevel", "error", "-i"])
+        .arg(media)
+        .args(["-an", "-sn", "-vf", &vf, "-fps_mode", "passthrough", "-f", "rawvideo", "-pix_fmt", "rgba", "-"])
+        .stderr(std::process::Stdio::piped())
+        .output()
+        .map_err(|e| format!("could not run {}: {e}", ffmpeg.display()))?;
+    if !out.status.success() {
+        return Err(format!("ffmpeg could not decode frames: {}", String::from_utf8_lossy(&out.stderr).trim()));
+    }
+    let frame_bytes = (width * height * 4) as usize;
+    let frames: Vec<Vec<u8>> = out.stdout.chunks_exact(frame_bytes).map(|c| c.to_vec()).collect();
+    if frames.len() != times.len() {
+        return Err(format!("ffmpeg gave {} frames for {} times", frames.len(), times.len()));
+    }
+    Ok(frames)
+}
+
+pub struct ScreenTextAnalyser;
+
+impl crate::Analyser for ScreenTextAnalyser {
+    fn id(&self) -> &'static str {
+        ID
+    }
+    fn schema_version(&self) -> u32 {
+        VERSION
+    }
+    fn wants(&self, item: &klipp_media::MediaItem) -> bool {
+        !item.is_still && !item.video_codec.is_empty() && item.duration.to_secs_f64() > 0.0 && installed() && klipp_ml_ort::runtime_resolve::ensure_runtime_loadable().is_ok()
+    }
+    fn run(&self, item: &klipp_media::MediaItem, ctx: &crate::AnalysisCtx) -> Result<serde_json::Value, String> {
+        let (det, rec) = model_paths().ok_or_else(|| format!("the screen-text models are not downloaded; ask with download_models ({})", MODEL_IDS.join(" + ")))?;
+        let duration = item.duration.to_secs_f64();
+        let key = crate::store::key_for(&item.path).ok_or("file not readable")?;
+        let beats: Option<crate::beatsheet::BeatSheet> = crate::store::load(&key, crate::beatsheet::ID, crate::beatsheet::VERSION).and_then(|v| serde_json::from_value(v).ok());
+        let times = pick_times(duration, beats.as_ref());
+        let (w, h) = read_size(item.resolution.width, item.resolution.height);
+        let mut reader = klipp_ml_ort::ppocr::TextReader::open(&det, &rec)?;
+        let mut read: Vec<FrameText> = Vec::new();
+        // A few frames at a time: a 4K frame is fourteen megabytes.
+        for chunk in times.chunks(READ_BATCH) {
+            let frames = frames_at(&ctx.ffmpeg, &item.path, chunk, w, h)?;
+            for (t, f) in chunk.iter().zip(frames.iter()) {
+                let lines = reader.read(f, w, h)?.into_iter().map(|l| Line { text: l.text, confidence: l.confidence, x: l.x, y: l.y, w: l.w, h: l.h }).collect();
+                read.push(FrameText { secs: *t, lines });
+            }
+        }
+        let spans = fold_spans(&read, FALLBACK_STEP_SECS);
+        let sensitive = spans.iter().filter_map(|s| sensitive_in(&s.text).map(|(kind, masked)| Sensitive { kind: kind.into(), masked, start_secs: s.start_secs, end_secs: s.end_secs, x: s.x, y: s.y, w: s.w, h: s.h })).collect();
+        let out = ScreenText { duration_secs: duration, model: format!("{DET_MODEL_ID} + {REC_MODEL_ID}"), frames_read: read.len() as u32, frames: read, spans, sensitive };
+        serde_json::to_value(out).map_err(|e| e.to_string())
+    }
+    fn stale(&self, stored: &serde_json::Value) -> bool {
+        stored.get("model").and_then(|m| m.as_str()) != Some(&format!("{DET_MODEL_ID} + {REC_MODEL_ID}"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn line(text: &str, y: f32) -> Line {
+        Line { text: text.into(), confidence: 0.9, x: 0.1, y, w: 0.3, h: 0.03 }
+    }
+
+    #[test]
+    fn the_same_line_frame_after_frame_is_one_span() {
+        let frames = vec![
+            FrameText { secs: 0.0, lines: vec![line("File Edit View", 0.02), line("Welcome", 0.5)] },
+            FrameText { secs: 4.0, lines: vec![line("File  Edit View", 0.02)] },
+            FrameText { secs: 8.0, lines: vec![line("File Edit View", 0.02), line("Welcome", 0.5)] },
+        ];
+        let spans = fold_spans(&frames, 4.0);
+        let menu = spans.iter().find(|s| s.text.starts_with("File")).unwrap();
+        assert_eq!((menu.start_secs, menu.end_secs, menu.frames), (0.0, 12.0, 3));
+        let welcomes: Vec<&TextSpan> = spans.iter().filter(|s| s.text == "Welcome").collect();
+        assert_eq!(welcomes.len(), 2, "gone and back is two spans: {spans:?}");
+        assert_eq!((welcomes[0].start_secs, welcomes[0].end_secs), (0.0, 4.0));
+        let st = ScreenText { spans, ..Default::default() };
+        assert_eq!(st.search("edit view").len(), 1);
+        assert!(st.search("nothing").is_empty());
+    }
+
+    #[test]
+    fn secrets_on_screen_are_seen_and_masked() {
+        assert_eq!(sensitive_in("Contact: ada@example.com today").unwrap().0, "email");
+        assert_eq!(sensitive_in("OPENAI_API_KEY=sk-proj-abc123def456ghi789").unwrap().0, "key");
+        let (kind, masked) = sensitive_in("token ghp_16C7e42F292c6912E7710c838347Ae178B4a").unwrap();
+        assert_eq!(kind, "key");
+        assert!(masked.starts_with("ghp") && masked.ends_with("4a") && masked.contains('…'), "{masked}");
+        assert_eq!(sensitive_in("password: hunter22").unwrap(), ("credential", "hun…22".into()));
+        assert_eq!(sensitive_in("Card 4111 1111 1111 1111").unwrap().0, "card");
+        for plain in ["File Edit View Help", "Search & Filtering", "password: ********", "version 2.4.1-beta.3", "https://example.com/docs"] {
+            assert!(sensitive_in(plain).is_none(), "{plain}");
+        }
+    }
+
+    #[test]
+    fn the_read_size_keeps_the_aspect_within_bounds_and_stays_even() {
+        assert_eq!(read_size(3840, 2132), (2560, 1422));
+        assert_eq!(read_size(1920, 1080), (1920, 1080));
+        assert_eq!(read_size(640, 360), (1280, 720));
+    }
+
+    #[test]
+    fn frames_are_picked_from_the_beat_sheet_and_bounded() {
+        let none = pick_times(20.0, None);
+        assert_eq!(none.len(), 5);
+        let long = pick_times(1000.0, None);
+        assert_eq!(long.len(), MAX_FRAMES);
+        let bs = crate::beatsheet::BeatSheet { duration_secs: 20.0, has_freeze: true, reveals: vec![5.0, 5.4, 12.0], segments: vec![crate::beatsheet::Segment { start_secs: 0.0, end_secs: 4.0, kind: "idle".into() }], ..Default::default() };
+        let picked = pick_times(20.0, Some(&bs));
+        assert_eq!(picked, vec![0.2, 2.0, 5.3, 12.3], "{picked:?}");
+    }
+}

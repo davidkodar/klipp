@@ -54,6 +54,10 @@ pub enum ModelKind {
     ObjectDetector,
     /// Speech to text with timestamps: the transcript analyser.
     Transcriber,
+    /// Where text is in a picture (the OCR detector).
+    TextDetector,
+    /// What a line of text says (the OCR recogniser).
+    TextRecognizer,
 }
 
 /// Which backend crate runs the model. Lets the registry pick the

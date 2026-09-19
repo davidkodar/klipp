@@ -1014,6 +1014,10 @@ impl klipp_document::ops::Transcripts for AnalysedTranscripts {
         klipp_analysis::report::MediaAnalysis::load(&item.path).shots.map(|s| s.boundaries).unwrap_or_default()
     }
 
+    fn screen_sensitive(&self, item: &klipp_media::MediaItem) -> Vec<klipp_document::ops::SensitiveText> {
+        klipp_analysis::report::MediaAnalysis::load(&item.path).screentext.map(|st| st.sensitive.into_iter().map(|s| klipp_document::ops::SensitiveText { kind: s.kind, masked: s.masked, start_secs: s.start_secs, end_secs: s.end_secs, x: s.x, y: s.y, w: s.w, h: s.h }).collect()).unwrap_or_default()
+    }
+
     fn screen_beats(&self, item: &klipp_media::MediaItem) -> Option<klipp_document::ops::ScreenBeats> {
         let bs = klipp_analysis::report::MediaAnalysis::load(&item.path).beatsheet?;
         if !bs.has_freeze {
@@ -1369,6 +1373,62 @@ fn handle(
                 }
                 if hits.len() >= max {
                     break;
+                }
+            }
+            Ok(json!({ "query": query, "hits": hits }))
+        }
+
+        ControlCommand::ScreenText { media_id, from_secs, to_secs } => {
+            if in_batch {
+                return read_in_batch("screen_text");
+            }
+            let id = klipp_core::MediaId(media_id.parse().map_err(|e| format!("media_id is not a uuid: {e}"))?);
+            let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
+            let item = pool.get(&id).ok_or_else(|| format!("no media item {}", id.0))?;
+            let report = klipp_analysis::report::MediaAnalysis::load(&item.path);
+            let Some(st) = report.screentext else {
+                let installed = klipp_analysis::screentext::installed();
+                let enabled = klipp_analysis::screen_text_enabled();
+                return Ok(json!({
+                    "text": format!("{}: no screen text read yet. {}", item.filename, if !enabled { "Screen text is switched off in preferences." } else if !installed { "The OCR models are not downloaded: analyze with download_models true (about 10 MB, the user should know), then read it again." } else { "Run analyze, then read it again." }),
+                    "installed": installed,
+                    "enabled": enabled,
+                }));
+            };
+            let (a, b) = (from_secs.unwrap_or(0.0), to_secs.unwrap_or(st.duration_secs));
+            let spans: Vec<serde_json::Value> = st.spans_within(a, b).into_iter().map(|s| json!({ "text": s.text, "start_secs": s.start_secs, "end_secs": s.end_secs, "x": s.x, "y": s.y, "w": s.w, "h": s.h })).collect();
+            let mut text = format!("{}  on-screen text {:.2}-{:.2} s ({} lines, {} frames read)\n", item.filename, a, b, spans.len(), st.frames_read);
+            for s in st.spans_within(a, b).iter().take(200) {
+                text.push_str(&format!("[{:.2}-{:.2}] ({:.2},{:.2}) {}\n", s.start_secs, s.end_secs, s.x, s.y, s.text));
+            }
+            for s in st.sensitive.iter().filter(|s| s.end_secs > a && s.start_secs < b) {
+                text.push_str(&format!("SENSITIVE {} {:.2}-{:.2} s at ({:.2},{:.2}): {}\n", s.kind, s.start_secs, s.end_secs, s.x, s.y, s.masked));
+            }
+            Ok(json!({
+                "text": text,
+                "media_id": media_id,
+                "spans": spans,
+                "sensitive": st.sensitive,
+                "frames_read": st.frames_read,
+                "next": "Cut to where the text that matters is up and hold until it reads; a SENSITIVE line must be blurred or cut before delivery (check says so too).",
+            }))
+        }
+
+        ControlCommand::SearchScreenText { query, max_hits } => {
+            if in_batch {
+                return read_in_batch("search_screen_text");
+            }
+            let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
+            let mut hits = Vec::new();
+            let max = max_hits.unwrap_or(50);
+            'files: for m in pool.all() {
+                let report = klipp_analysis::report::MediaAnalysis::load(&m.path);
+                let Some(st) = report.screentext.as_ref() else { continue };
+                for s in st.search(&query) {
+                    hits.push(json!({ "media_id": m.id.0.to_string(), "filename": m.filename, "start_secs": s.start_secs, "end_secs": s.end_secs, "text": s.text, "x": s.x, "y": s.y, "w": s.w, "h": s.h }));
+                    if hits.len() >= max {
+                        break 'files;
+                    }
                 }
             }
             Ok(json!({ "query": query, "hits": hits }))

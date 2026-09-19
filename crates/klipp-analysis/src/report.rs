@@ -14,6 +14,8 @@ pub struct MediaAnalysis {
     pub transcript: Option<crate::transcript::Transcript>,
     #[cfg(feature = "framing")]
     pub framing: Option<crate::framing::Framing>,
+    #[cfg(feature = "ocr")]
+    pub screentext: Option<crate::screentext::ScreenText>,
 }
 
 impl MediaAnalysis {
@@ -33,6 +35,8 @@ impl MediaAnalysis {
         let transcript = crate::store::load(key, crate::transcript::ID, crate::transcript::VERSION).and_then(|v| serde_json::from_value(v).ok());
         #[cfg(feature = "framing")]
         let framing = crate::store::load(key, crate::framing::ID, crate::framing::VERSION).and_then(|v| serde_json::from_value(v).ok());
+        #[cfg(feature = "ocr")]
+        let screentext = crate::store::load(key, crate::screentext::ID, crate::screentext::VERSION).and_then(|v| serde_json::from_value(v).ok());
         Self {
             shots,
             audio,
@@ -42,6 +46,8 @@ impl MediaAnalysis {
             transcript,
             #[cfg(feature = "framing")]
             framing,
+            #[cfg(feature = "ocr")]
+            screentext,
         }
     }
 
@@ -179,6 +185,10 @@ impl MediaAnalysis {
         }
         if let Some(bs) = &self.beatsheet {
             out.push_str(&bs.summary());
+        }
+        #[cfg(feature = "ocr")]
+        if let Some(st) = &self.screentext {
+            out.push_str(&st.summary());
         }
         if let Some(a) = &self.audio {
             let _ = writeln!(

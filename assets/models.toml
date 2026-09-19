@@ -205,3 +205,38 @@ sources = [
 prompts = ""
 kind = "transcriber"
 runtime = "whisper_cpp"
+
+# ── Screen text (OCR) ─────────────────────────────────────────────
+# PP-OCR mobile models (PaddleOCR, Apache-2.0) in ONNX: a DBNet text
+# detector and a PP-OCRv4 English CRNN recogniser. Small, fast on the
+# CPU, and good on clean screen text. Read only from the settled
+# frames the beat sheet picks. Both are optional: the screen-text
+# analyser simply does not run until they are downloaded.
+
+[[model]]
+id = "ppocr_en_det_v3"
+display_name = "PP-OCR Text Detector (English, v3)"
+size_bytes = 2423224
+sha256 = "f139598bc2af4e4b6fe98dec11574e30edfdd91fc94ac1425c18ace3bd5a866b"
+license = "Apache-2.0"
+attribution = "PaddlePaddle / PaddleOCR (ONNX export mirrored at SWHL/RapidOCR on HuggingFace)"
+sources = [
+    { url = "https://huggingface.co/SWHL/RapidOCR/resolve/main/PP-OCRv4/en_PP-OCRv3_det_infer.onnx" },
+]
+kind = "text_detector"
+runtime = "ort"
+prompts = ""
+
+[[model]]
+id = "ppocr_en_rec_v4"
+display_name = "PP-OCR Text Recognizer (English, v4)"
+size_bytes = 7656802
+sha256 = "5ca59a096cf493d5fd5044b9ccc1bdea9229fbcf656bd76040ff80a00201ee16"
+license = "Apache-2.0"
+attribution = "PaddlePaddle / PaddleOCR (ONNX export mirrored at breezedeus/cnocr-ppocr-en_PP-OCRv4 on HuggingFace)"
+sources = [
+    { url = "https://huggingface.co/breezedeus/cnocr-ppocr-en_PP-OCRv4/resolve/main/en_PP-OCRv4_rec_infer.onnx" },
+]
+kind = "text_recognizer"
+runtime = "ort"
+prompts = ""

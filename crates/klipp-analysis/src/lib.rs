@@ -35,6 +35,8 @@ pub mod store;
 pub mod transcript;
 #[cfg(feature = "framing")]
 pub mod framing;
+#[cfg(feature = "ocr")]
+pub mod screentext;
 
 use std::path::{Path, PathBuf};
 
@@ -115,6 +117,17 @@ pub fn set_subject_detection_enabled(on: bool) {
 pub fn subject_detection_enabled() -> bool {
     SUBJECT_DETECTION_ENABLED.load(std::sync::atomic::Ordering::Relaxed)
 }
+/// Reading on-screen text (the screen-text analyser):
+static SCREEN_TEXT_ENABLED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+
+/// Turn on-screen text reading (OCR) on or off.
+pub fn set_screen_text_enabled(on: bool) {
+    SCREEN_TEXT_ENABLED.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+/// Whether on-screen text reading is enabled.
+pub fn screen_text_enabled() -> bool {
+    SCREEN_TEXT_ENABLED.load(std::sync::atomic::Ordering::Relaxed)
+}
 
 /// Every analyser this build ships, in the order they pay off. Each AI
 /// analyser is left out when its feature is switched off in preferences.
@@ -135,6 +148,11 @@ pub fn analysers() -> Vec<Box<dyn Analyser>> {
     if subject_detection_enabled() {
         v.push(Box::new(framing::FramingAnalyser));
     }
+    // After the beat sheet, whose settled frames it reads.
+    #[cfg(feature = "ocr")]
+    if screen_text_enabled() {
+        v.push(Box::new(screentext::ScreenTextAnalyser));
+    }
     v
 }
 
@@ -152,6 +170,11 @@ pub fn download_models() -> Result<Vec<String>, String> {
     {
         framing::ensure_model(true)?;
         got.push(framing::MODEL_ID.to_string());
+    }
+    #[cfg(feature = "ocr")]
+    if screen_text_enabled() {
+        screentext::ensure_models(true)?;
+        got.extend(screentext::MODEL_IDS.iter().map(|s| s.to_string()));
     }
     Ok(got)
 }

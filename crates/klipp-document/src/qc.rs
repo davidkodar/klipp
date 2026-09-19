@@ -7,7 +7,7 @@ use klipp_media::MediaPool;
 use klipp_timeline::{Clip, ClipKind, Sequence, TitleObjectContent, TrackKind};
 use serde::Serialize;
 
-use crate::ops::{is_heard, linear_to_db, sound_settings_clip, ScreenBeats, SpokenWord, Transcripts};
+use crate::ops::{is_heard, linear_to_db, sound_settings_clip, ScreenBeats, SensitiveText, SpokenWord, Transcripts};
 
 /// A cut this close to a settle point is a cut to the settle.
 const SETTLE_NEAR_SECS: f64 = 0.6;
@@ -227,6 +227,21 @@ pub fn check(seq: &Sequence, pool: &MediaPool, transcripts: &dyn Transcripts) ->
         let len = t_out - t_in;
         if len + 1e-6 < READ_MIN_SECS && (len * fps).round() as i64 >= 8 {
             add(Severity::Warning, "too_short_to_read", Some(t_in), format!("{label} shows a screen for {len:.1} s"), "A screen needs about two seconds to be read: hold it, or take it out");
+        }
+    }
+
+    // Secrets on screen: an email, a key, a password, a card number the
+    // recording caught, within the stretch of the file that is used.
+    let mut sensitive_cache: std::collections::HashMap<klipp_core::MediaId, Vec<SensitiveText>> = std::collections::HashMap::new();
+    for (_, c) in &pictures {
+        let Some(media_id) = c.media_id() else { continue };
+        let Some(item) = pool.get(&media_id) else { continue };
+        let found = sensitive_cache.entry(media_id).or_insert_with(|| transcripts.screen_sensitive(item));
+        let (s_in, s_out, t_in) = (secs(c.source_in), secs(c.source_out), secs(c.timeline_in));
+        for s in found.iter().filter(|s| s.end_secs > s_in && s.start_secs < s_out) {
+            let from = t_in + (s.start_secs - s_in).max(0.0);
+            let to = t_in + (s.end_secs.min(s_out) - s_in);
+            add(Severity::Error, "sensitive_on_screen", Some(from), format!("{} shows what looks like a {} ({}) from {from:.2} to {to:.2} s, at {:.0}% across and {:.0}% down the frame", clip_label(pool, c), s.kind, s.masked, s.x * 100.0, s.y * 100.0), "Blur or mosaic it (split the clip around that stretch and put a mosaic effect on it), reframe past it, or cut it out");
         }
     }
 
@@ -525,6 +540,28 @@ mod tests {
         // The last shot is a second and a half of screen: too short to read.
         let short = r.findings.iter().find(|f| f.rule == "too_short_to_read").expect("too short");
         assert_eq!(short.at_secs, Some(12.0));
+    }
+
+    #[test]
+    fn a_secret_on_screen_is_an_error_where_the_cut_shows_it() {
+        struct Leaky(klipp_core::MediaId);
+        impl Transcripts for Leaky {
+            fn words(&self, _item: &klipp_media::MediaItem) -> Option<Vec<SpokenWord>> {
+                None
+            }
+            fn screen_sensitive(&self, item: &klipp_media::MediaItem) -> Vec<SensitiveText> {
+                if item.id != self.0 { return Vec::new(); }
+                vec![SensitiveText { kind: "key".into(), masked: "sk-…9z".into(), start_secs: 10.0, end_secs: 14.0, x: 0.2, y: 0.6, w: 0.3, h: 0.03 }]
+            }
+        }
+        // The first shot uses 0-4 s of the file: clean. The second uses 12-17 s: the key is up.
+        let (seq, pool, screen) = screencast(&[(0.0, 4.0, 0.0), (4.0, 9.0, 12.0)]);
+        let r = check(&seq, &pool, &Leaky(screen));
+        let f = r.findings.iter().find(|f| f.rule == "sensitive_on_screen").unwrap_or_else(|| panic!("{}", r.text()));
+        assert_eq!((f.severity, f.at_secs), (Severity::Error, Some(4.0)));
+        assert!(f.what.contains("key (sk-…9z) from 4.00 to 6.00 s") && f.what.contains("20% across"), "{}", f.what);
+        let (seq, pool, screen) = screencast(&[(0.0, 4.0, 0.0), (4.0, 9.0, 20.0)]);
+        assert!(!rules(&check(&seq, &pool, &Leaky(screen))).contains(&"sensitive_on_screen"));
     }
 
     #[test]

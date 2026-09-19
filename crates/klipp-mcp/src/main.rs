@@ -335,6 +335,19 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
             }
             v
         }
+        "klipp_screen_text" => {
+            let mut v = json!({ "method": "screen_text", "media_id": arg_str(args, "media_id")? });
+            if let Some(f) = args.get("from_secs").and_then(|v| v.as_f64()) { v["from_secs"] = json!(f); }
+            if let Some(t) = args.get("to_secs").and_then(|v| v.as_f64()) { v["to_secs"] = json!(t); }
+            v
+        }
+        "klipp_search_screen_text" => {
+            let mut v = json!({ "method": "search_screen_text", "query": arg_str(args, "query")? });
+            if let Some(n) = args.get("max_hits").and_then(|v| v.as_u64()) {
+                v["max_hits"] = json!(n as usize);
+            }
+            v
+        }
         "klipp_search_transcripts" => {
             let mut v = json!({ "method": "search_transcripts", "query": arg_str(args, "query")? });
             if let Some(n) = args.get("max_hits").and_then(|v| v.as_u64()) {
@@ -673,7 +686,7 @@ fn content_for(name: &str, result: &Value) -> Result<Vec<Value>, String> {
             return Ok(with_next(out));
         }
     }
-    if name == "klipp_timeline" || name == "klipp_media_analysis" || name == "klipp_plan" || name == "klipp_check" || name == "klipp_brief" || name == "klipp_edit_plan" || name == "klipp_build_edit_plan" || name == "klipp_transcript" || name == "klipp_cut_points" || name == "klipp_selects" || name == "klipp_style_profile" || name == "klipp_looks" || name == "klipp_frame_stats" {
+    if name == "klipp_timeline" || name == "klipp_media_analysis" || name == "klipp_plan" || name == "klipp_check" || name == "klipp_brief" || name == "klipp_edit_plan" || name == "klipp_build_edit_plan" || name == "klipp_screen_text" || name == "klipp_transcript" || name == "klipp_cut_points" || name == "klipp_selects" || name == "klipp_style_profile" || name == "klipp_looks" || name == "klipp_frame_stats" {
         if let Some(text) = result.get("text").and_then(|v| v.as_str()) {
             return Ok(with_next(text.to_string()));
         }
@@ -905,11 +918,14 @@ fn tool_definitions() -> Vec<Value> {
              "Find what is in the footage, in the background: shot boundaries (where the \
               picture cuts), EBU R128 loudness and true peak, the spans of silence, and \
               the transcript with word timestamps and the language when the speech model \
-              is downloaded. One media item by id, or every file in the pool when \
+              is downloaded, the beat sheet of a screen recording, and its on-screen text \
+              (OCR) when those models are downloaded. One media item by id, or every file in the pool when \
               media_id is omitted. Returns at once; poll klipp_analysis_status, then read \
               klipp_media_analysis. Items already analysed cost nothing. Runs on import \
               too, without downloading anything: pass download_models to fetch the \
-              148 MB speech model once, with the user's knowledge.",
+              missing models once, with the user's knowledge — the speech model is \
+              large (hundreds of MB), the OCR pair about 10 MB; each is only fetched \
+              when its feature is on in preferences.",
              json!({
                  "media_id": { "type": "string", "description": "From klipp_list_media; omit for every item" },
                  "download_models": { "type": "boolean", "description": "Fetch missing models first (the user should know a download happens)" },
@@ -918,6 +934,23 @@ fn tool_definitions() -> Vec<Value> {
         tool("klipp_search_transcripts",
              "Find where something is said: every transcript segment containing the query, \
               case-insensitively, with its media item and its start and end in the file.",
+             json!({ "query": { "type": "string" }, "max_hits": { "type": "integer" } }),
+             vec!["query"]),
+        tool("klipp_screen_text",
+             "What was on the screen of a screen recording and when: every line OCR read, \
+              folded into spans with the seconds it stayed up and where on the frame \
+              (x, y, w, h as fractions), between from_secs and to_secs. Says which screen a \
+              beat shows — \"Search & Filtering\" up 12–18 s — so a plan can name the right \
+              moment. SENSITIVE lines (an email, a key, a password, a card number) are listed \
+              masked with where to blur. Needs the two OCR models (about 10 MB): if the reply \
+              says they are not downloaded, ask the user before klipp_analyze with \
+              download_models true.",
+             json!({ "media_id": { "type": "string" }, "from_secs": { "type": "number" }, "to_secs": { "type": "number" } }),
+             vec!["media_id"]),
+        tool("klipp_search_screen_text",
+             "Find every moment a word or phrase was on screen, across all footage: the \
+              screen recording's Cmd-F. Each hit has the media item, the seconds it stayed \
+              up, the text and where on the frame.",
              json!({ "query": { "type": "string" }, "max_hits": { "type": "integer" } }),
              vec!["query"]),
         tool("klipp_analysis_status", "Where every requested analysis stands: queued, running, done, failed.",

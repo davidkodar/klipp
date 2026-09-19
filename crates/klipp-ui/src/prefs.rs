@@ -1852,6 +1852,11 @@ pub struct AiPrefs {
     /// Subject detection — the framing / masking vision model.
     #[serde(default = "default_true")]
     pub subject_detection: bool,
+    /// Reading on-screen text (OCR) in screen recordings, for search,
+    /// the beat sheet and the sensitive-text check. Its two small
+    /// models are downloaded only on request.
+    #[serde(default = "default_true")]
+    pub screen_text: bool,
     /// The AI assistant: whether the control socket and MCP server run,
     /// so an agent can drive the app. Takes effect on restart.
     #[serde(default = "default_true")]
@@ -1864,7 +1869,7 @@ pub struct AiPrefs {
 
 impl Default for AiPrefs {
     fn default() -> Self {
-        Self { transcription: true, subject_detection: true, assistant: true, transcribe_on_cpu: false }
+        Self { transcription: true, subject_detection: true, screen_text: true, assistant: true, transcribe_on_cpu: false }
     }
 }
 

@@ -804,6 +804,7 @@ impl KlippApp {
         // so saved opt-outs and the CPU choice take effect before any import.
         klipp_analysis::set_transcription_enabled(app.prefs.ai.transcription);
         klipp_analysis::set_subject_detection_enabled(app.prefs.ai.subject_detection);
+        klipp_analysis::set_screen_text_enabled(app.prefs.ai.screen_text);
         klipp_analysis::transcript::set_transcribe_on_cpu(app.prefs.ai.transcribe_on_cpu);
         let _ = app.cmd_tx.send(AppCommand::SetPanLaw(app.prefs.audio.pan_law));
         klipp_engine::pcm_reader::set_anti_click_fade_ms(app.prefs.advanced.anti_click_fade_ms);

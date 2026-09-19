@@ -50,6 +50,7 @@
 
 pub mod birefnet_lite;
 pub mod postprocess;
+pub mod ppocr;
 pub mod preprocess;
 pub mod rf_detr_seg;
 pub mod runtime_resolve;

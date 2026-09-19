@@ -160,6 +160,22 @@ pub enum ControlCommand {
         #[serde(default)]
         max_hits: Option<usize>,
     },
+    /// What was on the screen of a media item and when: the lines read
+    /// by OCR, folded into spans, between `from_secs` and `to_secs`.
+    ScreenText {
+        media_id: String,
+        #[serde(default)]
+        from_secs: Option<f64>,
+        #[serde(default)]
+        to_secs: Option<f64>,
+    },
+    /// Where on-screen text matching `query` was shown, across every
+    /// media item.
+    SearchScreenText {
+        query: String,
+        #[serde(default)]
+        max_hits: Option<usize>,
+    },
     /// Where every requested item stands.
     AnalysisStatus,
     /// What is known about a media item, as text: the shot list, the
