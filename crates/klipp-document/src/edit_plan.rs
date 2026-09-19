@@ -409,7 +409,7 @@ mod tests {
         assert!(bad(EditPlan { segments: vec![seg(screen, 5.0, 5.0)], ..Default::default() }).contains("in order"));
         assert!(bad(EditPlan { segments: vec![PlanSegment { feature: "Filters".into(), ..seg(screen, 1.0, 2.0) }], ..Default::default() }).contains("Search"));
         assert!(bad(EditPlan { segments: vec![PlanSegment { transition: Some("cross_dissolve".into()), ..seg(screen, 1.0, 2.0) }], ..Default::default() }).contains("nothing before it"));
-        assert!(bad(EditPlan { segments: vec![PlanSegment { title: Some(PlanTitle { text: "x".into(), secs: None, style: "banner".into(), color: None, fill: None, ..Default::default() }), ..seg(screen, 1.0, 2.0) }], ..Default::default() }).contains("heading, callout or card"));
+        assert!(bad(EditPlan { segments: vec![PlanSegment { title: Some(PlanTitle { text: "x".into(), secs: None, style: "banner".into(), color: None, fill: None, ..Default::default() }), ..seg(screen, 1.0, 2.0) }], ..Default::default() }).contains("heading, callout, card"));
         let unknown = EditPlan { segments: vec![seg(MediaId::new(), 1.0, 2.0)], ..Default::default() };
         assert!(bad(unknown).contains("no media item"));
     }

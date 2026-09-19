@@ -360,6 +360,59 @@ pub enum Op {
         #[serde(default)]
         y: f32,
     },
+    /// An animated crop that follows the action: `keys` are poses in
+    /// the clip's own seconds, each a `scale` (1 as shot, up to 4)
+    /// centred on the frame point `x`,`y` (0..1, as the beat sheet's
+    /// spots and screen text give them); the picture eases from one to
+    /// the next and never shows past its edge. Transform keyframes on
+    /// the GPU, like zoom.
+    Pan {
+        clip_id: ClipRef,
+        keys: Vec<PanKey>,
+    },
+    /// A pan made from the beat sheet: at each spot where something
+    /// happened inside the clip's stretch, the picture pushes to
+    /// `scale` on it, holds `hold_secs`, and eases back out unless the
+    /// next spot is near. Needs the file's beat sheet (analyze).
+    Follow {
+        clip_id: ClipRef,
+        #[serde(default = "default_follow_scale")]
+        scale: f32,
+        #[serde(default = "default_follow_hold")]
+        hold_secs: f64,
+    },
+    /// A highlight over the picture at `at` for `secs`: `kind` "box" (a
+    /// rounded stroke round the region), "ring" (a capsule) or "spot"
+    /// (everything outside it dimmed). The region is centred on `x`,`y`
+    /// with size `w`×`h`, all fractions of the frame. `color` #rrggbb
+    /// (the brand's first colour when left out), `stroke` in px.
+    Highlight {
+        at: Anchor,
+        #[serde(default = "default_title_secs")]
+        secs: f64,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        #[serde(default = "default_highlight_kind")]
+        kind: String,
+        #[serde(default)]
+        color: Option<String>,
+        #[serde(default)]
+        stroke: Option<f32>,
+        #[serde(default)]
+        track: Option<TrackRef>,
+    },
+    /// A speed ramp over the clip: from `from`× to `to`× (0.1 to 8) over
+    /// `secs` from the clip's start (the whole clip when left out), then
+    /// holding `to`. The clip's length on the timeline follows.
+    Ramp {
+        clip_id: ClipRef,
+        from: f64,
+        to: f64,
+        #[serde(default)]
+        secs: Option<f64>,
+    },
     /// Apply a creative look — a 3D LUT — to a picture clip, as one node
     /// after the grade so the look sits on the corrected image. `lut_path`
     /// is the resolved file; `name` is what to call it in the reply;
@@ -603,6 +656,79 @@ fn default_redact_kind() -> String {
     "mosaic".into()
 }
 
+fn default_highlight_kind() -> String {
+    "box".into()
+}
+
+fn default_follow_scale() -> f32 {
+    1.6
+}
+
+fn default_follow_hold() -> f64 {
+    1.2
+}
+
+/// One pose of a pan: at `secs` into the clip, `scale` centred on the
+/// frame point `x`,`y` (fractions of the frame).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct PanKey {
+    pub secs: f64,
+    #[serde(default = "default_reframe_scale")]
+    pub scale: f32,
+    #[serde(default = "half")]
+    pub x: f32,
+    #[serde(default = "half")]
+    pub y: f32,
+}
+
+fn half() -> f32 {
+    0.5
+}
+
+/// The poses a follow makes of the spots: to each spot, a hold, and back
+/// out unless the next is near.
+pub fn follow_keys(spots: &[(f64, f32, f32)], clip_secs: f64, scale: f32, hold: f64) -> Vec<PanKey> {
+    const EASE: f64 = 0.35;
+    let rest = |t: f64| PanKey { secs: t, scale: 1.0, x: 0.5, y: 0.5 };
+    let mut keys: Vec<PanKey> = Vec::new();
+    let mut last_end: Option<f64> = None;
+    for (n, (t, x, y)) in spots.iter().enumerate() {
+        let start = (t - EASE).max(0.0);
+        match last_end {
+            // The next spot comes before the last hold is over: the hold
+            // ends where the move to the next begins, no pull-out between.
+            Some(e) if start <= e + EASE + 0.05 => {
+                if let Some(end_key) = keys.pop() {
+                    let prev_t = keys.last().map(|k| k.secs).unwrap_or(0.0);
+                    let cut = start.max(prev_t);
+                    if cut > prev_t + 1e-6 {
+                        keys.push(PanKey { secs: cut, ..end_key });
+                    }
+                }
+            }
+            Some(e) => {
+                keys.push(rest(e + EASE));
+                keys.push(rest(start));
+            }
+            None => {
+                if start > 0.0 {
+                    keys.push(rest(0.0));
+                    keys.push(rest(start));
+                }
+            }
+        }
+        let end = (t + hold).min(clip_secs);
+        keys.push(PanKey { secs: *t, scale, x: *x, y: *y });
+        keys.push(PanKey { secs: end, scale, x: *x, y: *y });
+        last_end = Some(end);
+        if n + 1 == spots.len() && end + EASE < clip_secs {
+            keys.push(rest(end + EASE));
+        }
+    }
+    keys.dedup_by(|a, b| (a.secs - b.secs).abs() < 1e-6);
+    keys
+}
+
 fn default_reframe_scale() -> f32 {
     1.0
 }
@@ -675,6 +801,8 @@ pub struct ScreenBeats {
     pub action: Vec<(f64, f64)>,
     pub settles: Vec<f64>,
     pub holds: Vec<(f64, f64)>,
+    /// Where things happened: (seconds, x, y) as fractions of the frame.
+    pub spots: Vec<(f64, f32, f32)>,
 }
 
 /// No transcripts at all: `captions` is refused.
@@ -1056,6 +1184,29 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
         Op::Zoom { clip_id, from, to, x, y } => {
             let (ti, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
             zoom(seq, pool, i, ti, clip, *from, *to, *x, *y)
+        }
+        Op::Pan { clip_id, keys } => {
+            let (ti, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
+            pan(seq, pool, i, ti, clip, keys, "pan")
+        }
+        Op::Follow { clip_id, scale, hold_secs } => {
+            let (ti, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
+            let item = clip.media_id().and_then(|id| pool.get(&id)).ok_or_else(|| refuse(i, format!("{} has no media", clip_name(seq, pool, clip)), "follow a media clip"))?;
+            let (s_in, s_out) = (secs(clip.source_in), secs(clip.source_out));
+            let spots: Vec<(f64, f32, f32)> = transcripts.screen_beats(item).map(|b| b.spots).unwrap_or_default().into_iter().filter(|(t, _, _)| *t >= s_in && *t < s_out).map(|(t, x, y)| (t - s_in, x, y)).collect();
+            if spots.is_empty() {
+                return Err(refuse(i, format!("nothing happened on screen in {}", clip_name(seq, pool, clip)), "the beat sheet has no spot in this stretch (analyze first, or the screen held still); use pan with keys of your own"));
+            }
+            let keys = follow_keys(&spots, secs(clip.timeline_out) - secs(clip.timeline_in), *scale, *hold_secs);
+            pan(seq, pool, i, ti, clip, &keys, "follow")
+        }
+        Op::Highlight { at, secs: hold, x, y, w, h, kind, color, stroke, track } => {
+            let at = resolve_anchor(seq, fps, at, i)?;
+            highlight(seq, fps, i, at, *hold, [*x, *y, *w, *h], kind, color.as_deref(), *stroke, track.as_ref())
+        }
+        Op::Ramp { clip_id, from, to, secs: over } => {
+            let (ti, ci, clip) = resolve_clip(seq, fps, clip_id, i)?;
+            ramp(seq, pool, fps, i, ti, ci, clip, *from, *to, *over)
         }
         Op::Look { clip_id, lut_path, name, opacity, remove } => {
             let (ti, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
@@ -2152,6 +2303,197 @@ fn reframe(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip, s
     effects.insert(0, fx);
     let what = format!("reframe {}: scale {scale:.2}, pan {x:.2}, {y:.2}", clip_name(seq, pool, clip));
     Ok((what, set_builtin_effects(clip, effects), vec![clip.id]))
+}
+
+/// An animated crop through `keys`: at each, `scale` centred on the frame
+/// point; a scaled picture shifted so far that its edge would show is
+/// held at the edge.
+fn pan(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip, keys: &[PanKey], verb: &str) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
+    require_picture(seq, pool, i, ti, clip, verb)?;
+    if keys.len() < 2 {
+        return Err(refuse(i, format!("a {verb} needs at least two keys"), "give the pose at two or more times"));
+    }
+    let dur = (secs(clip.timeline_out) - secs(clip.timeline_in)).max(0.05);
+    for k in keys {
+        if !k.secs.is_finite() || k.secs < 0.0 || k.secs > dur + 1e-6 {
+            return Err(refuse(i, format!("a key at {:.2} s is outside the clip", k.secs), format!("keys are seconds into the clip, 0 to {dur:.2}")));
+        }
+        if !k.scale.is_finite() || !(1.0..=4.0).contains(&k.scale) {
+            return Err(refuse(i, format!("scale {} is out of range", k.scale), "give scale between 1 and 4"));
+        }
+        if !k.x.is_finite() || !k.y.is_finite() || !(0.0..=1.0).contains(&k.x) || !(0.0..=1.0).contains(&k.y) {
+            return Err(refuse(i, format!("point {:.2},{:.2} is outside the frame", k.x, k.y), "x and y are fractions of the frame, 0 to 1"));
+        }
+    }
+    let mut sorted: Vec<PanKey> = keys.to_vec();
+    sorted.sort_by(|a, b| a.secs.total_cmp(&b.secs));
+    let old_state = crate::history::KeyframeSnapshot::from_clip(clip);
+    let mut new_state = old_state.clone();
+    let (mut sk, mut px, mut py) = (Vec::new(), Vec::new(), Vec::new());
+    for k in &sorted {
+        let (x, y) = pan_position(k.scale, k.x, k.y);
+        klipp_core::keyframe::upsert_keyframe(&mut sk, k.secs, k.scale);
+        klipp_core::keyframe::upsert_keyframe(&mut px, k.secs, x);
+        klipp_core::keyframe::upsert_keyframe(&mut py, k.secs, y);
+    }
+    new_state.transform_scale_keyframes = sk;
+    new_state.transform_pos_x_keyframes = px;
+    new_state.transform_pos_y_keyframes = py;
+    let poses: Vec<String> = sorted.iter().map(|k| format!("{:.2}s {:.2}x@{:.2},{:.2}", k.secs, k.scale, k.x, k.y)).collect();
+    let what = format!("{verb} {}: {}", clip_name(seq, pool, clip), poses.join(" \u{2192} "));
+    let edit = EditCommand::EditKeyframes {
+        clip_id: clip.id,
+        linked_clip_id: None,
+        description: "Pan",
+        old_state,
+        new_state,
+        old_linked_state: None,
+        new_linked_state: None,
+    };
+    Ok((what, edit, vec![clip.id]))
+}
+
+/// The transform position that puts frame point (`x`, `y`) at the
+/// centre at `scale`: a position of 1 is half a frame, and the picture
+/// stops where its edge would show.
+pub fn pan_position(scale: f32, x: f32, y: f32) -> (f32, f32) {
+    let reach = (scale - 1.0).max(0.0);
+    (((x - 0.5) * 2.0 * scale).clamp(-reach, reach), ((y - 0.5) * 2.0 * scale).clamp(-reach, reach))
+}
+
+/// A speed ramp: speed keyframes from `from` to `to` over `over` seconds
+/// of timeline, then `to`; the clip's end on the timeline follows the
+/// integral so the whole stretch of the file is still played.
+#[allow(clippy::too_many_arguments)]
+fn ramp(seq: &Sequence, pool: &MediaPool, fps: Fps, i: usize, ti: usize, ci: usize, clip: &Clip, from: f64, to: f64, over: Option<f64>) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
+    if seq.tracks[ti].locked {
+        return Err(refuse(i, format!("track {ti} is locked"), "unlock it first"));
+    }
+    if !matches!(clip.kind, ClipKind::Media { .. }) {
+        return Err(refuse(i, format!("{} cannot be ramped", clip_name(seq, pool, clip)), "ramp a media clip"));
+    }
+    for (name, v) in [("from", from), ("to", to)] {
+        if !v.is_finite() || !(0.1..=8.0).contains(&v) {
+            return Err(refuse(i, format!("a {name} speed of {v}"), format!("give {name} between 0.1 and 8")));
+        }
+    }
+    if (from - to).abs() < 1e-6 {
+        return Err(refuse(i, "from and to are the same speed", "give two speeds, or use retime for one"));
+    }
+    let source_len = secs(clip.source_out - clip.source_in);
+    // The ramp's length on the timeline: as asked, else the whole clip
+    // played at the mean of the two speeds.
+    let over = over.unwrap_or(source_len / ((from + to) / 2.0));
+    if !over.is_finite() || over <= 0.0 {
+        return Err(refuse(i, format!("a ramp over {over} s"), "give secs above zero"));
+    }
+    let mut kfs = Vec::new();
+    klipp_core::keyframe::upsert_keyframe(&mut kfs, 0.0, from as f32);
+    klipp_core::keyframe::upsert_keyframe(&mut kfs, over, to as f32);
+    let new_len = klipp_timeline::effective_timeline_duration_for_keyframes(&kfs, source_len, fps.as_f64(), clip.speed);
+    let new_out = clip.timeline_in + snap(new_len, fps);
+    if new_out <= clip.timeline_in + one_frame(fps) {
+        return Err(refuse(i, "the clip would be shorter than a frame", "use slower speeds"));
+    }
+    let runs_into = seq.tracks[ti].clips.get(ci + 1).filter(|n| new_out > n.timeline_in).map(|n| clip_name(seq, pool, n));
+    let old_state = crate::history::KeyframeSnapshot::from_clip(clip);
+    let mut new_state = old_state.clone();
+    new_state.speed_keyframes = kfs;
+    let what = format!(
+        "ramp {} from {from:.2}x to {to:.2}x over {over:.2} s (now {:.2}-{:.2} s){}",
+        clip_name(seq, pool, clip),
+        secs(clip.timeline_in),
+        secs(new_out),
+        runs_into.map(|n| format!("; it now overlaps {n} — move or ripple to close it")).unwrap_or_default(),
+    );
+    let edit = EditCommand::Batch(vec![
+        EditCommand::EditKeyframes { clip_id: clip.id, linked_clip_id: None, description: "Speed Ramp", old_state, new_state, old_linked_state: None, new_linked_state: None },
+        EditCommand::SetClipSpeed { clip_id: clip.id, old_speed: clip.speed, new_speed: clip.speed, old_timeline_out: clip.timeline_out, new_timeline_out: new_out },
+    ]);
+    Ok((what, edit, vec![clip.id]))
+}
+
+/// A highlight: shapes on a title clip over the region, faded in and out.
+#[allow(clippy::too_many_arguments)]
+fn highlight(seq: &Sequence, fps: Fps, i: usize, at: Timecode, hold: f64, region: [f32; 4], kind: &str, color: Option<&str>, stroke: Option<f32>, track: Option<&TrackRef>) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
+    use klipp_timeline::{ObjectTransform, Shape, ShapeKind, ShapeStroke, TitleData, TitleObjectContent, TitlePosition};
+    let [x, y, w, h] = region;
+    for (name, v) in [("x", x), ("y", y)] {
+        if !v.is_finite() || !(0.0..=1.0).contains(&v) {
+            return Err(refuse(i, format!("{name} {v} is outside the frame"), "x and y are the region's centre as fractions of the frame"));
+        }
+    }
+    for (name, v) in [("w", w), ("h", h)] {
+        if !v.is_finite() || !(0.01..=1.0).contains(&v) {
+            return Err(refuse(i, format!("{name} {v} is not a size"), "w and h are fractions of the frame, above 0 to 1"));
+        }
+    }
+    if !hold.is_finite() || hold < 0.2 {
+        return Err(refuse(i, format!("{hold} s is too short"), "hold it at least a fraction of a second"));
+    }
+    let color = color.map(|c| parse_color(c).ok_or_else(|| refuse(i, format!("\"{c}\" is not a colour"), "write it as #rrggbb"))).transpose()?
+        .or_else(|| seq.brief.as_ref().and_then(|b| b.primary_color()).and_then(parse_color))
+        .unwrap_or([255, 42, 120, 255]);
+    let stroke = stroke.unwrap_or(6.0);
+    if !stroke.is_finite() || !(1.0..=40.0).contains(&stroke) {
+        return Err(refuse(i, format!("stroke {stroke} is out of range"), "give a stroke width 1 to 40"));
+    }
+    let mut td = TitleData { objects: Vec::new(), next_object_id: 0, animation_type: Default::default(), background: klipp_timeline::TitleBackground::None };
+    let boxed = |cx: f32, cy: f32, bw: f32, bh: f32| ObjectTransform { center: TitlePosition { x: cx, y: cy }, size: TitlePosition { x: bw, y: bh }, ..klipp_timeline::default_text_transform() };
+    match kind.to_lowercase().as_str() {
+        "box" | "ring" => {
+            // A ring is a capsule: corners rounded to half the shorter side.
+            let radius = if kind.eq_ignore_ascii_case("ring") { (w.min(h) * 1080.0 * 0.5).max(1.0) } else { 12.0 };
+            td.add_object(
+                TitleObjectContent::Shape(Shape { kind: ShapeKind::Rectangle { corner_radius: radius }, fill: None, stroke: Some(ShapeStroke { color, width: stroke }) }),
+                boxed(x, y, w, h),
+            );
+        }
+        "spot" => {
+            // Everything outside the region dimmed: four panels round it.
+            let dim = [0, 0, 0, 150];
+            let (x0, x1, y0, y1) = ((x - w / 2.0).clamp(0.0, 1.0), (x + w / 2.0).clamp(0.0, 1.0), (y - h / 2.0).clamp(0.0, 1.0), (y + h / 2.0).clamp(0.0, 1.0));
+            let panel = |cx: f32, cy: f32, bw: f32, bh: f32, td: &mut TitleData| {
+                if bw > 0.001 && bh > 0.001 {
+                    td.add_object(TitleObjectContent::Shape(Shape { kind: ShapeKind::Rectangle { corner_radius: 0.0 }, fill: Some(dim), stroke: None }), boxed(cx, cy, bw, bh));
+                }
+            };
+            panel(0.5, y0 / 2.0, 1.0, y0, &mut td);
+            panel(0.5, (y1 + 1.0) / 2.0, 1.0, 1.0 - y1, &mut td);
+            panel(x0 / 2.0, (y0 + y1) / 2.0, x0, y1 - y0, &mut td);
+            panel((x1 + 1.0) / 2.0, (y0 + y1) / 2.0, 1.0 - x1, y1 - y0, &mut td);
+        }
+        other => return Err(refuse(i, format!("\"{other}\" is not a highlight"), "use box, ring or spot")),
+    }
+    let tl_in = at;
+    let tl_out = tl_in + snap(hold, fps);
+    if tl_out > seq.total_duration() {
+        return Err(refuse(i, format!("it would run to {:.2} s, past the end of the timeline at {:.2} s", secs(tl_out), secs(seq.total_duration())), "start it earlier or hold it shorter"));
+    }
+    let fits = |ti: usize| overlapping(seq, ti, tl_in, tl_out, None).is_none() && !seq.tracks[ti].locked;
+    let existing = match track {
+        Some(t) => {
+            let ti = resolve_track(seq, t, i)?;
+            if !matches!(seq.tracks[ti].kind, TrackKind::Text | TrackKind::Video) || !fits(ti) {
+                return Err(refuse(i, format!("track {ti} is not a free text track"), "leave the track out and one with room is found or made"));
+            }
+            Some(ti)
+        }
+        None => (0..seq.tracks.len()).find(|ti| seq.tracks[*ti].kind == TrackKind::Text && fits(*ti)),
+    };
+    let mut clip = title_clip(td, tl_in, tl_out, fps);
+    // In and out over a fifth of a second.
+    let fade = 0.2f64.min(hold / 3.0);
+    let mut op = Vec::new();
+    klipp_core::keyframe::upsert_keyframe(&mut op, 0.0, 0.0);
+    klipp_core::keyframe::upsert_keyframe(&mut op, fade, 1.0);
+    klipp_core::keyframe::upsert_keyframe(&mut op, hold - fade, 1.0);
+    klipp_core::keyframe::upsert_keyframe(&mut op, hold, 0.0);
+    clip.opacity_keyframes = op;
+    let id = clip.id;
+    let what = format!("{kind} highlight at {x:.2},{y:.2} ({w:.2}\u{00d7}{h:.2}) {:.2}-{:.2} s on {}", secs(tl_in), secs(tl_out), match existing { Some(ti) => format!("track {ti}"), None => "a new text track 0".to_string() });
+    let edit = EditCommand::AddTitleClip { clip, track_index: existing.unwrap_or(0), created_track: existing.is_none() };
+    Ok((what, edit, vec![id]))
 }
 
 /// An animated zoom over the clip: transform keyframes for a push-in or
@@ -3253,6 +3595,50 @@ fn split_edit(seq: &Sequence, pool: &MediaPool, fps: Fps, i: usize, clip_id: Cli
 
 #[cfg(test)]
 mod tests {
+    /// A pan keys scale and position from frame points, held at the
+    /// picture's edge; a highlight's spot is four panels round the
+    /// region on a faded title clip; a ramp's clip length follows the
+    /// speed integral; a follow's keys go to each spot and back.
+    #[test]
+    fn pans_highlights_and_ramps_land_as_keyframes_and_shapes() {
+        let (seq, pool, _, a, _) = fixture();
+        let keys = vec![PanKey { secs: 0.0, scale: 1.0, x: 0.5, y: 0.5 }, PanKey { secs: 2.0, scale: 2.0, x: 1.0, y: 0.25 }];
+        let plan = resolve(&seq, &pool, &[Op::Pan { clip_id: ClipRef::Id(a), keys }]).unwrap();
+        let EditCommand::EditKeyframes { new_state, .. } = &plan.steps[0].edit else { panic!("keyframes") };
+        assert_eq!(new_state.transform_scale_keyframes.iter().map(|k| k.value).collect::<Vec<_>>(), vec![1.0, 2.0]);
+        // Centring the right edge at 2x would shift a whole frame; held at the edge (scale - 1).
+        assert_eq!(new_state.transform_pos_x_keyframes[1].value, 1.0);
+        assert!((new_state.transform_pos_y_keyframes[1].value + 1.0).abs() < 1e-6);
+        assert_eq!(pan_position(1.5, 0.5, 0.5), (0.0, 0.0));
+        let err = resolve(&seq, &pool, &[Op::Pan { clip_id: ClipRef::Id(a), keys: vec![PanKey { secs: 9.0, scale: 1.0, x: 0.5, y: 0.5 }, PanKey { secs: 0.0, scale: 1.0, x: 0.5, y: 0.5 }] }]).unwrap_err();
+        assert!(format!("{err:?}").contains("outside the clip"));
+
+        let plan = resolve(&seq, &pool, &[Op::Highlight { at: Anchor::Secs(1.0), secs: 2.0, x: 0.5, y: 0.5, w: 0.4, h: 0.2, kind: "spot".into(), color: None, stroke: None, track: None }]).unwrap();
+        let EditCommand::AddTitleClip { clip, .. } = &plan.steps[0].edit else { panic!("a title clip") };
+        let ClipKind::Title(td) = &clip.kind else { panic!() };
+        assert_eq!(td.objects.len(), 4, "four dim panels round the region");
+        assert_eq!(clip.opacity_keyframes.len(), 4, "faded in and out");
+        let plan = resolve(&seq, &pool, &[Op::Highlight { at: Anchor::Secs(1.0), secs: 2.0, x: 0.3, y: 0.3, w: 0.2, h: 0.1, kind: "ring".into(), color: Some("#00ff00".into()), stroke: Some(4.0), track: None }]).unwrap();
+        let EditCommand::AddTitleClip { clip, .. } = &plan.steps[0].edit else { panic!() };
+        let ClipKind::Title(td) = &clip.kind else { panic!() };
+        assert_eq!(td.objects.len(), 1);
+        assert!(resolve(&seq, &pool, &[Op::Highlight { at: Anchor::Secs(1.0), secs: 2.0, x: 0.3, y: 0.3, w: 0.2, h: 0.1, kind: "arrow".into(), color: None, stroke: None, track: None }]).is_err());
+
+        let plan = resolve(&seq, &pool, &[Op::Ramp { clip_id: ClipRef::Id(a), from: 1.0, to: 2.0, secs: None }]).unwrap();
+        let EditCommand::Batch(edits) = &plan.steps[0].edit else { panic!("a batch") };
+        let EditCommand::SetClipSpeed { new_timeline_out, .. } = &edits[1] else { panic!() };
+        // Four seconds of source at 1x rising to 2x over its mean-speed length lands near 2.7 s.
+        let len = new_timeline_out.to_secs_f64();
+        assert!(len > 2.0 && len < 3.5, "{len}");
+
+        let keys = follow_keys(&[(1.0, 0.2, 0.3), (1.5, 0.8, 0.7), (6.0, 0.5, 0.9)], 8.0, 1.6, 1.0);
+        assert!((keys[0].secs, keys[0].scale) == (0.0, 1.0) && keys[1].secs < 1.0, "rest, then ease in: {keys:?}");
+        assert!(keys.iter().any(|k| k.secs == 1.0 && k.x == 0.2), "to the first spot");
+        assert!(keys.iter().any(|k| k.secs == 1.5 && k.x == 0.8), "straight on to the near one");
+        assert!(keys.windows(2).all(|w| w[0].secs <= w[1].secs), "in order: {keys:?}");
+        assert_eq!(keys.last().map(|k| k.scale), Some(1.0), "and back out at the end");
+    }
+
     /// A title that names a brief type style takes the look's fields and
     /// keeps its own; a name the brief does not know is refused with
     /// the names it does.

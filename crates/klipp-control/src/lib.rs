@@ -1027,6 +1027,7 @@ impl klipp_document::ops::Transcripts for AnalysedTranscripts {
             action: bs.segments.iter().filter(|s| s.kind == "action").map(|s| (s.start_secs, s.end_secs)).collect(),
             settles: bs.reveals.iter().copied().chain(bs.cut_points.iter().map(|c| c.secs)).collect(),
             holds: bs.title_windows.iter().map(|w| (w.start_secs, w.end_secs)).collect(),
+            spots: bs.spots.iter().map(|s| (s.secs, s.x, s.y)).collect(),
         })
     }
 }
@@ -1558,6 +1559,7 @@ fn handle(
                         "cut_points": bs.cut_points,
                         "title_windows": bs.title_windows,
                         "reveals": bs.reveals,
+                        "spots": bs.spots,
                         "segments": bs.segments,
                         "beats": beats,
                         "reveals_labelled": reveals,

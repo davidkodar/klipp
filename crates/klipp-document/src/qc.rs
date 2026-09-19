@@ -507,7 +507,7 @@ mod tests {
             None
         }
         fn screen_beats(&self, item: &klipp_media::MediaItem) -> Option<ScreenBeats> {
-            (item.id == self.0).then(|| ScreenBeats { action: vec![(10.0, 12.0), (30.0, 33.0)], settles: vec![12.0, 33.0], holds: vec![(0.0, 10.0), (12.0, 30.0), (33.0, 60.0)] })
+            (item.id == self.0).then(|| ScreenBeats { action: vec![(10.0, 12.0), (30.0, 33.0)], settles: vec![12.0, 33.0], holds: vec![(0.0, 10.0), (12.0, 30.0), (33.0, 60.0)], spots: vec![(10.5, 0.3, 0.4), (31.0, 0.7, 0.6)] })
         }
     }
 

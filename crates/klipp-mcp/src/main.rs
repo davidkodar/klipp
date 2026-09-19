@@ -1084,6 +1084,16 @@ fn tool_definitions() -> Vec<Value> {
               zoom {clip_id, from?, to, x?, y?} — an ANIMATED zoom over the clip: scale from→to \
               (1 as shot, up to 4), a push-in or pull-out, optionally moving toward x,y (-1..1) for \
               a Ken Burns move. Renders on the GPU; motion on a still shot.\n\
+              pan {clip_id, keys: [{secs, scale?, x?, y?}]} — an animated crop through poses in \
+              the clip's own seconds: scale (1-4) centred on frame point x,y (0..1, as the beat \
+              sheet's spots and screen text give them); eases between, never past the edge.\n\
+              follow {clip_id, scale?, hold_secs?} — a pan made from the beat sheet: push to each \
+              spot where something happened in the clip's stretch, hold, ease back out.\n\
+              highlight {at, secs?, x, y, w, h, kind? box|ring|spot, color?, stroke?, track?} — a \
+              highlight over the region (centre x,y, size w,h, fractions of the frame): a rounded \
+              box, a capsule ring, or everything outside it dimmed; fades in and out.\n\
+              ramp {clip_id, from, to, secs?} — a speed ramp from×→to× over secs of timeline, then \
+              holding to; the clip's length follows.\n\
               qualify {clip_id, target?|hue?, hue_width?, sat_low?, sat_high?, lum_low?, lum_high?, \
               invert?, exposure?, saturation?, hue_shift?, temperature?, remove?} — a secondary: \
               key a colour or tone (target skin/sky/foliage/reds…, or a hue in degrees, with \
@@ -1204,6 +1214,16 @@ fn tool_definitions() -> Vec<Value> {
               zoom {clip_id, from?, to, x?, y?} — an ANIMATED zoom over the clip: scale from→to \
               (1 as shot, up to 4), a push-in or pull-out, optionally moving toward x,y (-1..1) for \
               a Ken Burns move. Renders on the GPU; motion on a still shot.\n\
+              pan {clip_id, keys: [{secs, scale?, x?, y?}]} — an animated crop through poses in \
+              the clip's own seconds: scale (1-4) centred on frame point x,y (0..1, as the beat \
+              sheet's spots and screen text give them); eases between, never past the edge.\n\
+              follow {clip_id, scale?, hold_secs?} — a pan made from the beat sheet: push to each \
+              spot where something happened in the clip's stretch, hold, ease back out.\n\
+              highlight {at, secs?, x, y, w, h, kind? box|ring|spot, color?, stroke?, track?} — a \
+              highlight over the region (centre x,y, size w,h, fractions of the frame): a rounded \
+              box, a capsule ring, or everything outside it dimmed; fades in and out.\n\
+              ramp {clip_id, from, to, secs?} — a speed ramp from×→to× over secs of timeline, then \
+              holding to; the clip's length follows.\n\
               qualify {clip_id, target?|hue?, hue_width?, sat_low?, sat_high?, lum_low?, lum_high?, \
               invert?, exposure?, saturation?, hue_shift?, temperature?, remove?} — a secondary: \
               key a colour or tone (target skin/sky/foliage/reds…, or a hue in degrees, with \

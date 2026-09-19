@@ -21,7 +21,7 @@ use serde::{Deserialize, Serialize};
 use crate::shots::Shots;
 
 pub const ID: &str = "beatsheet";
-pub const VERSION: u32 = 5;
+pub const VERSION: u32 = 6;
 
 /// Frames sampled a second for freeze detection: enough to place a settle
 /// to a sixth of a second, cheap to decode.
@@ -82,6 +82,20 @@ pub struct BeatSheet {
     /// measured. Absent when the whole picture was read.
     #[serde(default)]
     pub busy_inset: Option<[f32; 4]>,
+    /// Where each thing happened: the centre of the cells that changed
+    /// at a grid event, as fractions of the frame. A follow or a
+    /// highlight goes to the spot.
+    #[serde(default)]
+    pub spots: Vec<Spot>,
+}
+
+/// A moment something happened on screen, and where.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct Spot {
+    pub secs: f64,
+    /// The centre of the change, as fractions of the frame.
+    pub x: f32,
+    pub y: f32,
 }
 
 /// Build the beat sheet from the frozen (settled) spans and the shots.
@@ -178,6 +192,7 @@ pub fn build(duration_secs: f64, shots: Option<&Shots>, frozen: &[(f64, f64)]) -
         has_shots: shots.is_some(),
         has_freeze: !merged.is_empty(),
         busy_inset: None,
+        spots: Vec::new(),
     }
 }
 
@@ -247,6 +262,33 @@ pub fn grid_events(grid: &[u8]) -> Vec<f64> {
                 out.push(t);
             }
         }
+    }
+    out
+}
+
+/// The grid's events with where they happened: the centre of the cells
+/// that changed, weighted by how much, on the event's frame.
+pub fn grid_event_spots(grid: &[u8]) -> Vec<Spot> {
+    let cells = GRID_W * GRID_H;
+    let mut out: Vec<Spot> = Vec::new();
+    for (f, frame) in grid.chunks_exact(cells).enumerate() {
+        if !frame.iter().any(|v| *v > GRID_EVENT) {
+            continue;
+        }
+        let t = f as f64 / GRID_FPS as f64;
+        if out.last().is_some_and(|last| t - last.secs < 0.5) {
+            continue;
+        }
+        let (mut sx, mut sy, mut sw) = (0.0f32, 0.0f32, 0.0f32);
+        for (c, v) in frame.iter().enumerate() {
+            if *v > GRID_EVENT {
+                let w = *v as f32;
+                sx += ((c % GRID_W) as f32 + 0.5) / GRID_W as f32 * w;
+                sy += ((c / GRID_W) as f32 + 0.5) / GRID_H as f32 * w;
+                sw += w;
+            }
+        }
+        out.push(Spot { secs: t, x: sx / sw, y: sy / sw });
     }
     out
 }
@@ -359,6 +401,12 @@ impl BeatSheet {
         if let Some([x, y, w, h]) = self.busy_inset {
             let _ = writeln!(out, "A patch at {:.0}%,{:.0}% ({:.0}% by {:.0}%) moved all through — a presenter inset — and was left out of the settling.", x * 100.0, y * 100.0, w * 100.0, h * 100.0);
         }
+        if !self.spots.is_empty() {
+            let _ = writeln!(out, "Where things happened (a follow or highlight goes to the spot):");
+            for s in self.spots.iter().take(30) {
+                let _ = writeln!(out, "  {:.2} s  at {:.0}%,{:.0}%", s.secs, s.x * 100.0, s.y * 100.0);
+            }
+        }
         let strong: Vec<&CutPoint> = self.cut_points.iter().filter(|c| c.strength >= 2).collect();
         if !strong.is_empty() {
             let _ = writeln!(out, "Cut points (cut TO a settle, hold until it reads; never mid-action):");
@@ -425,6 +473,7 @@ impl crate::Analyser for BeatSheetAnalyser {
             .and_then(|v| serde_json::from_value(v).ok());
         let mut sheet = build(duration, shots.as_ref(), &frozen);
         sheet.busy_inset = busy_inset;
+        sheet.spots = grid_event_spots(&grid);
         serde_json::to_value(sheet).map_err(|e| e.to_string())
     }
 }
@@ -467,6 +516,9 @@ mod tests {
         grid[12 * cells + 6] = 60;
         grid[30 * cells + 100] = 90;
         assert_eq!(grid_events(&grid), vec![6.0, 15.0]);
+        let spots = grid_event_spots(&grid);
+        assert_eq!(spots.len(), 2);
+        assert!((spots[0].secs - 6.0).abs() < 1e-9);
         assert_eq!(split_frozen(&[(0.0, 20.0)], &[6.0, 15.0]), vec![(0.0, 6.0), (6.0, 15.0), (15.0, 20.0)]);
         // Too close to an edge: no cut.
         assert_eq!(split_frozen(&[(5.8, 20.0)], &[6.0]), vec![(5.8, 20.0)]);
