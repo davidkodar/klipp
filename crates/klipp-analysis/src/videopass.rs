@@ -83,13 +83,16 @@ fn run_with(ctx: &crate::AnalysisCtx, item: &klipp_media::MediaItem, plan: crate
     let ydif_path = dir.join(format!("klipp-vp-{stamp}-ydif.txt"));
     let (fast, slow, ydif) = (fast_path.to_string_lossy().into_owned(), slow_path.to_string_lossy().into_owned(), ydif_path.to_string_lossy().into_owned());
     let sc = |w: u32| crate::scale_filter(&ctx.ffmpeg, plan, w, -2);
+    // The branches that only print end in a null sink: an output that
+    // never gets a frame (a screen recording with no scene change) would
+    // fail the whole run at the end of the file.
     let graph = format!(
         "[0:v:0]split=4[s1][s2][m][b];\
-         [s1]{s320},select='gt(scene,{})',metadata=print:key=lavfi.scene_score:file={fast}[s1o];\
-         [s2]fps=2,{s320},select='gt(scene,{})',metadata=print:key=lavfi.scene_score:file={slow}[s2o];\
-         [m]{s160},signalstats,metadata=print:key=lavfi.signalstats.YDIF:file={ydif}[mo];\
+         [s1]{s320},select='gt(scene,{})',metadata=print:key=lavfi.scene_score:file={fast},nullsink;\
+         [s2]fps=2,{s320},select='gt(scene,{})',metadata=print:key=lavfi.scene_score:file={slow},nullsink;\
+         [m]{s160},signalstats,metadata=print:key=lavfi.signalstats.YDIF:file={ydif},nullsink;\
          [b]fps={},{s480},split[fz][act];\
-         [fz]freezedetect=n={}:d={}[fzo];\
+         [fz]freezedetect=n={}:d={},nullsink;\
          [act]fps={},format=gray,tblend=all_mode=difference,scale={}:{}:flags=area[acto]",
         crate::shots::THRESHOLD, crate::shots::SLOW_THRESHOLD,
         crate::beatsheet::SAMPLE_FPS, crate::beatsheet::FREEZE_NOISE, crate::beatsheet::FREEZE_MIN_SECS,
@@ -100,9 +103,6 @@ fn run_with(ctx: &crate::AnalysisCtx, item: &klipp_media::MediaItem, plan: crate
     cmd.args(["-hide_banner", "-nostats", "-loglevel", "info"]);
     cmd.args(crate::decode_input_args(&ctx.ffmpeg, plan, &item.video_codec));
     cmd.arg("-i").arg(&item.path).args(["-an", "-sn", "-filter_complex", &graph]);
-    for out in ["[s1o]", "[s2o]", "[mo]", "[fzo]"] {
-        cmd.args(["-map", out, "-f", "null", "-"]);
-    }
     cmd.args(["-map", "[acto]", "-f", "rawvideo", "-pix_fmt", "gray", "-"]);
     let out = cmd.stderr(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).output().map_err(|e| format!("could not run {}: {e}", ctx.ffmpeg.display()))?;
     let stderr = String::from_utf8_lossy(&out.stderr).into_owned();

@@ -200,9 +200,9 @@ pub fn detect_frozen(ffmpeg: &std::path::Path, path: &std::path::Path, codec: &s
         cmd.arg("-i").arg(path).args(["-an", "-sn"]);
         if with_grid {
             let graph = format!(
-                "[0:v:0]fps={SAMPLE_FPS},{scaled},{masked}split[fz][act];[fz]freezedetect=n={FREEZE_NOISE}:d={FREEZE_MIN_SECS}[fzo];[act]fps={GRID_FPS},format=gray,tblend=all_mode=difference,scale={GRID_W}:{GRID_H}:flags=area[acto]"
+                "[0:v:0]fps={SAMPLE_FPS},{scaled},{masked}split[fz][act];[fz]freezedetect=n={FREEZE_NOISE}:d={FREEZE_MIN_SECS},nullsink;[act]fps={GRID_FPS},format=gray,tblend=all_mode=difference,scale={GRID_W}:{GRID_H}:flags=area[acto]"
             );
-            cmd.args(["-filter_complex", &graph, "-map", "[fzo]", "-f", "null", "-", "-map", "[acto]", "-f", "rawvideo", "-pix_fmt", "gray", "-"]);
+            cmd.args(["-filter_complex", &graph, "-map", "[acto]", "-f", "rawvideo", "-pix_fmt", "gray", "-"]);
         } else {
             let vf = format!("fps={SAMPLE_FPS},{scaled},{masked}freezedetect=n={FREEZE_NOISE}:d={FREEZE_MIN_SECS}");
             cmd.args(["-vf", &vf, "-f", "null", "-"]);
