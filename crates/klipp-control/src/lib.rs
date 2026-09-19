@@ -1487,7 +1487,19 @@ fn handle(
             let status = klipp_analysis::service::status(id).map(|s| s.state);
             match report.beatsheet {
                 Some(bs) => {
-                    let text = format!("{}  {:.2} s\n{}", item.filename, item.duration.to_secs_f64(), bs.summary());
+                    let mut text = format!("{}  {:.2} s\n{}", item.filename, item.duration.to_secs_f64(), bs.summary());
+                    // With the screen read, every beat says what it showed.
+                    let labels = report.screentext.as_ref().map(|st| klipp_analysis::screentext::label_beats(&bs, st));
+                    if let Some(l) = &labels {
+                        text.push_str(&klipp_analysis::screentext::labelled_beats_text(&bs, l));
+                    }
+                    let beats: Vec<serde_json::Value> = bs.segments.iter().enumerate().map(|(i, s)| json!({
+                        "start_secs": s.start_secs, "end_secs": s.end_secs, "kind": s.kind,
+                        "label": labels.as_ref().and_then(|l| l.segments.get(i).cloned().flatten()),
+                    })).collect();
+                    let reveals: Vec<serde_json::Value> = bs.reveals.iter().enumerate().map(|(i, r)| json!({
+                        "secs": r, "label": labels.as_ref().and_then(|l| l.reveals.get(i).cloned().flatten()),
+                    })).collect();
                     Ok(json!({
                         "text": text,
                         "state": status,
@@ -1495,7 +1507,10 @@ fn handle(
                         "title_windows": bs.title_windows,
                         "reveals": bs.reveals,
                         "segments": bs.segments,
-                        "next": "Cut to a strong cut point and hold on a settled stretch until it reads; look at the frame there (frame_at/contact_sheet) to confirm what is shown and refine the exact cut.",
+                        "beats": beats,
+                        "reveals_labelled": reveals,
+                        "labelled": labels.is_some(),
+                        "next": if labels.is_some() { "Plan by name: each settled beat says what the screen showed. Cut to its reveal and hold until it reads; confirm with frame_at where it matters." } else { "Cut to a strong cut point and hold on a settled stretch until it reads; look at the frame there (frame_at/contact_sheet) to confirm what is shown and refine the exact cut. With the OCR models downloaded, analyze names every beat by its on-screen text." },
                     }))
                 }
                 None => Ok(json!({

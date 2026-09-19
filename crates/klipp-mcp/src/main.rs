@@ -677,7 +677,7 @@ fn content_for(name: &str, result: &Value) -> Result<Vec<Value>, String> {
     if name == "klipp_beat_sheet" {
         if let Some(text) = result.get("text").and_then(|v| v.as_str()) {
             let mut out = text.to_string();
-            for (label, key) in [("Cut points", "cut_points"), ("Title / hold windows", "title_windows")] {
+            for (label, key) in [("Cut points", "cut_points"), ("Title / hold windows", "title_windows"), ("Beats with labels", "beats")] {
                 if let Some(arr) = result.get(key) {
                     out.push_str(&format!("\n\n{label} (JSON):\n"));
                     out.push_str(&serde_json::to_string(arr).unwrap_or_default());
@@ -968,9 +968,12 @@ fn tool_definitions() -> Vec<Value> {
               (a scene change, or where a change just settled — cut TO a settle and hold \
               until it reads, never mid-action), and the title/hold windows (settled \
               stretches long enough to hold a title without it fighting a moving picture). \
-              Built from the shots + motion passes — run analyze first. Coarse (per-second): \
-              treat the times as where to LOOK, then confirm with frame_at/contact_sheet. \
-              Ideal for cutting a screen recording into a promo without cutting mid-feature.",
+              Built from the shots + motion passes — run analyze first. With the OCR models \
+              downloaded, every settled beat and reveal is named by what the screen showed \
+              (\"6.13-14.50 s SEARCH & FILTERING\"), so a plan can be made by feature name. \
+              Coarse (per-second): treat the times as where to LOOK, then confirm with \
+              frame_at/contact_sheet where it matters. Ideal for cutting a screen recording \
+              into a promo without cutting mid-feature.",
              json!({ "media_id": { "type": "string" } }),
              vec!["media_id"]),
         tool("klipp_find_shots",

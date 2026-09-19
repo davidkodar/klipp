@@ -9,7 +9,7 @@
 use serde::{Deserialize, Serialize};
 
 pub const ID: &str = "screentext";
-pub const VERSION: u32 = 3;
+pub const VERSION: u32 = 4;
 pub const DET_MODEL_ID: &str = "ppocr_en_det_v3";
 pub const REC_MODEL_ID: &str = "ppocr_en_rec_v4";
 pub const MODEL_IDS: [&str; 2] = [DET_MODEL_ID, REC_MODEL_ID];
@@ -48,6 +48,9 @@ pub struct FrameText {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct TextSpan {
     pub text: String,
+    /// The recogniser's confidence, averaged over the frames it was seen in.
+    #[serde(default)]
+    pub confidence: f32,
     pub start_secs: f64,
     pub end_secs: f64,
     pub x: f32,
@@ -127,6 +130,93 @@ impl ScreenText {
     }
 }
 
+/// What each beat of a screen recording shows, by the text on it: a
+/// label per beat-sheet segment, reveal and hold window, `None` where
+/// nothing readable was up.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct BeatLabels {
+    pub segments: Vec<Option<String>>,
+    pub reveals: Vec<Option<String>>,
+    pub windows: Vec<Option<String>>,
+}
+
+/// A reader's confidence below this is a guess, not a name.
+const LABEL_MIN_CONFIDENCE: f32 = 0.85;
+
+/// A line that could name a beat: read with confidence, a few words,
+/// mostly letters, at least one real word.
+fn is_label_worthy(s: &TextSpan) -> bool {
+    let n = s.text.chars().count();
+    let letters = s.text.chars().filter(|c| c.is_alphabetic() || *c == ' ' || *c == '&').count();
+    let words = s.text.split_whitespace().count();
+    let real_word = s.text.split_whitespace().any(|w| w.chars().count() >= 4 && w.chars().all(|c| c.is_alphabetic()));
+    s.confidence >= LABEL_MIN_CONFIDENCE && (3..=60).contains(&n) && words <= 6 && letters * 10 >= n * 7 && real_word
+}
+
+/// How much a line looks like a heading: bigger, higher on the screen,
+/// set in capitals.
+fn heading_score(s: &TextSpan) -> f64 {
+    let caps = s.text.chars().filter(|c| c.is_alphabetic()).all(|c| c.is_uppercase());
+    let words = s.text.split_whitespace().count() as f64;
+    s.h as f64 * (1.3 - 0.6 * s.y as f64) * if caps { 1.6 } else { 1.0 } * if words <= 3.0 { 1.2 } else { 1.0 }
+}
+
+/// The line that best names `a..b`: one that is there for this stretch
+/// rather than the whole recording (the sidebar and the menu bar are
+/// always up and name nothing), and of those the most heading-like.
+/// With nothing of its own, the stretch takes the chrome's best.
+fn dominant_label(spans: &[TextSpan], a: f64, b: f64) -> Option<String> {
+    let mut specific: Vec<&TextSpan> = Vec::new();
+    let mut chrome: Vec<&TextSpan> = Vec::new();
+    for s in spans.iter().filter(|s| is_label_worthy(s) && s.end_secs > a && s.start_secs < b) {
+        let overlap = s.end_secs.min(b) - s.start_secs.max(a);
+        let life = (s.end_secs - s.start_secs).max(0.1);
+        if overlap <= 0.0 || overlap * 2.0 < (b - a).min(life) {
+            continue; // up for less than half the beat: passing through
+        }
+        if overlap / life >= 0.5 { specific.push(s) } else { chrome.push(s) }
+    }
+    let pool = if specific.is_empty() { chrome } else { specific };
+    pool.into_iter().max_by(|x, y| heading_score(x).partial_cmp(&heading_score(y)).unwrap_or(std::cmp::Ordering::Equal)).map(|s| s.text.clone())
+}
+
+/// What appeared at a reveal: the largest line that came up with it.
+fn reveal_label(spans: &[TextSpan], at: f64) -> Option<String> {
+    spans
+        .iter()
+        .filter(|s| is_label_worthy(s) && s.start_secs >= at - 0.5 && s.start_secs <= at + 2.0)
+        .max_by(|x, y| heading_score(x).partial_cmp(&heading_score(y)).unwrap_or(std::cmp::Ordering::Equal))
+        .map(|s| s.text.clone())
+}
+
+/// The beat sheet's beats, named by what was on screen.
+pub fn label_beats(bs: &crate::beatsheet::BeatSheet, st: &ScreenText) -> BeatLabels {
+    BeatLabels {
+        segments: bs.segments.iter().map(|s| dominant_label(&st.spans, s.start_secs, s.end_secs)).collect(),
+        reveals: bs.reveals.iter().map(|r| reveal_label(&st.spans, *r)).collect(),
+        windows: bs.title_windows.iter().map(|w| dominant_label(&st.spans, w.start_secs, w.end_secs)).collect(),
+    }
+}
+
+/// The beats as lines a model reads to plan by feature: each settled
+/// stretch with what it showed, and each reveal with what came up.
+pub fn labelled_beats_text(bs: &crate::beatsheet::BeatSheet, labels: &BeatLabels) -> String {
+    use std::fmt::Write as _;
+    let mut out = String::new();
+    let _ = writeln!(out, "Beats by what the screen showed (settled stretches and what came up at each reveal):");
+    for (s, label) in bs.segments.iter().zip(&labels.segments).filter(|(s, _)| s.kind == "idle" && s.end_secs - s.start_secs >= 0.8) {
+        let _ = writeln!(out, "  {:.2}-{:.2} s  ({:.1} s)  {}", s.start_secs, s.end_secs, s.end_secs - s.start_secs, label.as_deref().unwrap_or("(no readable text)"));
+    }
+    let named: Vec<(f64, &String)> = bs.reveals.iter().zip(&labels.reveals).filter_map(|(r, l)| l.as_ref().map(|l| (*r, l))).collect();
+    if !named.is_empty() {
+        let _ = writeln!(out, "Reveals:");
+        for (r, l) in named.iter().take(60) {
+            let _ = writeln!(out, "  {r:.2} s  {l}");
+        }
+    }
+    out
+}
+
 /// Reads folded into spans: a line seen in one frame and again in the
 /// next, with the same words near the same place, is one span.
 pub fn fold_spans(frames: &[FrameText], step_secs: f64) -> Vec<TextSpan> {
@@ -142,6 +232,7 @@ pub fn fold_spans(frames: &[FrameText], step_secs: f64) -> Vec<TextSpan> {
                 Some((i, l)) => {
                     used[i] = true;
                     span.end_secs = next_secs.min(f.secs + step_secs);
+                    span.confidence = (span.confidence * span.frames as f32 + l.confidence) / (span.frames + 1) as f32;
                     span.frames += 1;
                     span.x = l.x; span.y = l.y; span.w = l.w; span.h = l.h;
                     still.push((key, span));
@@ -153,7 +244,7 @@ pub fn fold_spans(frames: &[FrameText], step_secs: f64) -> Vec<TextSpan> {
             if used[i] || l.text.trim().len() < 2 {
                 continue;
             }
-            still.push((norm(&l.text), TextSpan { text: l.text.clone(), start_secs: f.secs, end_secs: next_secs.min(f.secs + step_secs), x: l.x, y: l.y, w: l.w, h: l.h, frames: 1 }));
+            still.push((norm(&l.text), TextSpan { text: l.text.clone(), confidence: l.confidence, start_secs: f.secs, end_secs: next_secs.min(f.secs + step_secs), x: l.x, y: l.y, w: l.w, h: l.h, frames: 1 }));
         }
         open = still;
     }
@@ -384,12 +475,53 @@ mod tests {
         let spans = fold_spans(&frames, 4.0);
         let menu = spans.iter().find(|s| s.text.starts_with("File")).unwrap();
         assert_eq!((menu.start_secs, menu.end_secs, menu.frames), (0.0, 12.0, 3));
+        assert!((menu.confidence - 0.9).abs() < 1e-6);
         let welcomes: Vec<&TextSpan> = spans.iter().filter(|s| s.text == "Welcome").collect();
         assert_eq!(welcomes.len(), 2, "gone and back is two spans: {spans:?}");
         assert_eq!((welcomes[0].start_secs, welcomes[0].end_secs), (0.0, 4.0));
         let st = ScreenText { spans, ..Default::default() };
         assert_eq!(st.search("edit view").len(), 1);
         assert!(st.search("nothing").is_empty());
+    }
+
+    #[test]
+    fn beats_are_named_by_what_was_on_screen_and_not_by_the_chrome() {
+        let span = |text: &str, a: f64, b: f64, h: f32| TextSpan { text: text.into(), confidence: 0.95, start_secs: a, end_secs: b, x: 0.3, y: 0.2, w: 0.2, h, frames: 3 };
+        let st = ScreenText {
+            spans: vec![
+                span("SETTINGS", 0.0, 40.0, 0.02),          // the sidebar: up throughout
+                span("File Edit View", 0.0, 40.0, 0.012),   // the menu bar
+                span("SEARCH & FILTERING", 6.0, 14.0, 0.014),
+                span("Type to search", 6.0, 14.0, 0.012),
+                TextSpan { y: 0.7, ..span("Pictures Videos", 6.0, 14.0, 0.02) }, // buttons, low and large
+                span("APPEARANCE", 15.0, 30.0, 0.014),
+                span("2026-09-19 10:41", 15.0, 30.0, 0.05), // a clock: digits, not a name
+                TextSpan { confidence: 0.6, ..span("Ofra ort. ora ornt.", 15.0, 30.0, 0.05) }, // a guess at thumbnails
+                span("Hr ot", 15.0, 30.0, 0.05),            // no real word
+            ],
+            ..Default::default()
+        };
+        let bs = crate::beatsheet::BeatSheet {
+            duration_secs: 40.0,
+            has_freeze: true,
+            segments: vec![
+                crate::beatsheet::Segment { start_secs: 6.0, end_secs: 14.0, kind: "idle".into() },
+                crate::beatsheet::Segment { start_secs: 14.0, end_secs: 15.0, kind: "action".into() },
+                crate::beatsheet::Segment { start_secs: 15.0, end_secs: 30.0, kind: "idle".into() },
+                crate::beatsheet::Segment { start_secs: 35.0, end_secs: 40.0, kind: "idle".into() },
+            ],
+            reveals: vec![6.0, 15.0, 35.0],
+            title_windows: vec![crate::beatsheet::Window { start_secs: 15.0, end_secs: 30.0 }],
+            ..Default::default()
+        };
+        let labels = label_beats(&bs, &st);
+        assert_eq!(labels.segments[0].as_deref(), Some("SEARCH & FILTERING"));
+        assert_eq!(labels.segments[2].as_deref(), Some("APPEARANCE"));
+        assert_eq!(labels.segments[3].as_deref(), Some("SETTINGS"), "with nothing of its own, the chrome names it");
+        assert_eq!(labels.reveals, vec![Some("SEARCH & FILTERING".to_string()), Some("APPEARANCE".to_string()), None]);
+        assert_eq!(labels.windows[0].as_deref(), Some("APPEARANCE"));
+        let text = labelled_beats_text(&bs, &labels);
+        assert!(text.contains("6.00-14.00 s  (8.0 s)  SEARCH & FILTERING") && text.contains("Reveals:\n  6.00 s  SEARCH & FILTERING"), "{text}");
     }
 
     #[test]

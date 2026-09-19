@@ -188,6 +188,9 @@ impl MediaAnalysis {
         }
         #[cfg(feature = "ocr")]
         if let Some(st) = &self.screentext {
+            if let Some(bs) = &self.beatsheet {
+                out.push_str(&crate::screentext::labelled_beats_text(bs, &crate::screentext::label_beats(bs, st)));
+            }
             out.push_str(&st.summary());
         }
         if let Some(a) = &self.audio {
