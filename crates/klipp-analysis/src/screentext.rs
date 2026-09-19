@@ -429,14 +429,21 @@ impl crate::Analyser for ScreenTextAnalyser {
         let (w, h) = read_size(item.resolution.width, item.resolution.height);
         let mut reader = klipp_ml_ort::ppocr::TextReader::open(&det, &rec)?;
         let mut read: Vec<FrameText> = Vec::new();
+        let mut grab_secs = 0.0;
         // A few frames at a time: a 4K frame is fourteen megabytes.
         for chunk in times.chunks(READ_BATCH) {
+            let started = std::time::Instant::now();
             let frames = frames_at(&ctx.ffmpeg, item, chunk, w, h)?;
+            grab_secs += started.elapsed().as_secs_f64();
             for (t, f) in chunk.iter().zip(frames.iter()) {
                 let lines = reader.read(f, w, h)?.into_iter().map(|l| Line { text: l.text, confidence: l.confidence, x: l.x, y: l.y, w: l.w, h: l.h }).collect();
                 read.push(FrameText { secs: *t, lines });
             }
         }
+        tracing::info!(
+            "screen text of {}: {} frames at {w}x{h}; grabbing {grab_secs:.1} s, detecting {:.1} s, reading {} lines {:.1} s",
+            item.filename, read.len(), reader.det_secs, reader.lines_read, reader.rec_secs
+        );
         let spans = fold_spans(&read, FALLBACK_STEP_SECS);
         let sensitive = spans.iter().filter_map(|s| sensitive_in(&s.text).map(|(kind, masked)| Sensitive { kind: kind.into(), masked, start_secs: s.start_secs, end_secs: s.end_secs, x: s.x, y: s.y, w: s.w, h: s.h })).collect();
         let out = ScreenText { duration_secs: duration, model: format!("{DET_MODEL_ID} + {REC_MODEL_ID}"), frames_read: read.len() as u32, frames: read, spans, sensitive };

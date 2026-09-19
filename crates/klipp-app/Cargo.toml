@@ -9,7 +9,10 @@ edition = "2021"
 # explicitly with `--features ai-ort-cuda,ai-candle-cuda` (or a
 # single one) when the local toolchain has nvcc. Strip everything
 # AI with `--no-default-features`.
-default = ["ai-ort", "ai-candle"]
+# The CUDA provider is on by default: without a GPU build of the ONNX
+# runtime on the machine it is refused at run time and the CPU provider
+# carries on, so it costs nothing where it cannot help.
+default = ["ai-ort", "ai-ort-cuda", "ai-candle"]
 ai-ort = ["klipp-ui/ai-ort"]
 ai-ort-cuda = ["klipp-ui/ai-ort-cuda"]
 ai-candle = ["klipp-ui/ai-candle"]

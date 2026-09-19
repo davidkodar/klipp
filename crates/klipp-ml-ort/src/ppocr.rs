@@ -19,6 +19,8 @@ pub const DET_MAX_SIDE: u32 = 1600;
 pub const REC_HEIGHT: u32 = 48;
 /// The widest crop the recogniser is handed, in pixels.
 pub const REC_MAX_WIDTH: u32 = 1280;
+/// Lines read in one run of the recogniser.
+pub const REC_BATCH: usize = 16;
 /// Probability-map threshold for "this pixel is text".
 pub const DET_THRESH: f32 = 0.3;
 /// A box whose mean probability is under this is noise.
@@ -210,6 +212,11 @@ mod infer {
     pub struct TextReader {
         det: ort::session::Session,
         rec: ort::session::Session,
+        /// Time spent in the detector and the recogniser so far, for
+        /// whoever wants to say where a pass went.
+        pub det_secs: f64,
+        pub rec_secs: f64,
+        pub lines_read: usize,
     }
 
     fn session(weights: &std::path::Path) -> Result<ort::session::Session, String> {
@@ -237,7 +244,7 @@ mod infer {
 
     impl TextReader {
         pub fn open(det: &std::path::Path, rec: &std::path::Path) -> Result<Self, String> {
-            Ok(Self { det: session(det)?, rec: session(rec)? })
+            Ok(Self { det: session(det)?, rec: session(rec)?, det_secs: 0.0, rec_secs: 0.0, lines_read: 0 })
         }
 
         /// Every line of text in an RGBA8 frame, top to bottom.
@@ -247,6 +254,7 @@ mod infer {
             }
             // ── Detect ── PaddleOCR feeds the picture as OpenCV reads it,
             // blue first, normalised by ImageNet's mean and deviation.
+            let started = std::time::Instant::now();
             let (dw, dh) = det_input_size(w, h);
             let small = resize_rgba8(rgba, w, h, dw, dh);
             let n = (dw * dh) as usize;
@@ -270,35 +278,61 @@ mod infer {
             }
             let boxes = boxes_from_map(&prob[..mh * mw], mw, mh);
             drop(outputs);
-            // Map coordinates back onto the frame.
+            self.det_secs += started.elapsed().as_secs_f64();
+            let started = std::time::Instant::now();
+            // Map coordinates back onto the frame, and cut each line to a
+            // strip 48 high with its width by aspect, values in -1..1.
             let (fx, fy) = (w as f32 / mw as f32, h as f32 / mh as f32);
-            let mut lines = Vec::new();
+            let mut strips: Vec<(PxBox, u32, Vec<u8>)> = Vec::new();
             for b in boxes {
                 let px = PxBox { x: (b.x as f32 * fx) as u32, y: (b.y as f32 * fy) as u32, w: ((b.w as f32 * fx).ceil() as u32).max(1), h: ((b.h as f32 * fy).ceil() as u32).max(1) };
                 let (crop, cw, ch) = crop_rgba8(rgba, w, h, px);
-                // ── Recognise ── height 48, width by aspect, values in -1..1.
                 let rw = ((cw as f32 * REC_HEIGHT as f32 / ch.max(1) as f32).round() as u32).clamp(8, REC_MAX_WIDTH);
-                let strip = resize_rgba8(&crop, cw, ch, rw, REC_HEIGHT);
-                let m = (rw * REC_HEIGHT) as usize;
-                let mut chw = vec![0f32; 3 * m];
-                for i in 0..m {
-                    for (c, src_c) in [(0usize, 2usize), (1, 1), (2, 0)] {
-                        chw[c * m + i] = (strip[i * 4 + src_c] as f32 / 255.0 - 0.5) / 0.5;
+                strips.push((px, rw, resize_rgba8(&crop, cw, ch, rw, REC_HEIGHT)));
+            }
+            // ── Recognise ── in batches of strips of a similar width, each
+            // padded to the widest: one run reads a whole frame's worth of
+            // lines, where a run per line cost the frame's whole budget.
+            strips.sort_by_key(|(_, rw, _)| *rw);
+            let mut lines = Vec::new();
+            for batch in strips.chunks(REC_BATCH) {
+                let bw = batch.iter().map(|(_, rw, _)| *rw).max().unwrap_or(8).div_ceil(8) * 8;
+                let m = (bw * REC_HEIGHT) as usize;
+                let mut chw = vec![0f32; batch.len() * 3 * m];
+                for (bi, (_, rw, strip)) in batch.iter().enumerate() {
+                    for y in 0..REC_HEIGHT as usize {
+                        for x in 0..*rw as usize {
+                            let s = (y * *rw as usize + x) * 4;
+                            let d = y * bw as usize + x;
+                            for (c, src_c) in [(0usize, 2usize), (1, 1), (2, 0)] {
+                                chw[bi * 3 * m + c * m + d] = (strip[s + src_c] as f32 / 255.0 - 0.5) / 0.5;
+                            }
+                        }
                     }
                 }
-                let input = ort::value::Value::from_array(([1i64, 3, REC_HEIGHT as i64, rw as i64], chw)).map_err(|e| format!("rec input: {e}"))?;
+                let input = ort::value::Value::from_array(([batch.len() as i64, 3, REC_HEIGHT as i64, bw as i64], chw)).map_err(|e| format!("rec input: {e}"))?;
                 let outputs = self.rec.run(ort::inputs![input]).map_err(|e| format!("rec run: {e}"))?;
                 let (shape, probs) = first_output(&outputs)?;
-                let (steps, classes) = match shape.as_slice() {
-                    [_, t, c] => (*t as usize, *c as usize),
-                    other => return Err(format!("rec output shape {other:?} is not steps by classes")),
+                let (n, steps, classes) = match shape.as_slice() {
+                    [n, t, c] => (*n as usize, *t as usize, *c as usize),
+                    other => return Err(format!("rec output shape {other:?} is not batch by steps by classes")),
                 };
-                let (text, confidence) = ctc_decode(&probs[..(steps * classes).min(probs.len())], steps, classes, EN_DICT);
-                if text.is_empty() || confidence < 0.5 {
-                    continue;
+                for (bi, (px, _, _)) in batch.iter().enumerate().take(n) {
+                    let from = bi * steps * classes;
+                    let to = (from + steps * classes).min(probs.len());
+                    if to <= from {
+                        break;
+                    }
+                    let (text, confidence) = ctc_decode(&probs[from..to], steps, classes, EN_DICT);
+                    if text.is_empty() || confidence < 0.5 {
+                        continue;
+                    }
+                    lines.push(TextLine { text, confidence, x: px.x as f32 / w as f32, y: px.y as f32 / h as f32, w: px.w as f32 / w as f32, h: px.h as f32 / h as f32 });
                 }
-                lines.push(TextLine { text, confidence, x: px.x as f32 / w as f32, y: px.y as f32 / h as f32, w: px.w as f32 / w as f32, h: px.h as f32 / h as f32 });
             }
+            lines.sort_by(|a, b| (a.y, a.x).partial_cmp(&(b.y, b.x)).unwrap_or(std::cmp::Ordering::Equal));
+            self.rec_secs += started.elapsed().as_secs_f64();
+            self.lines_read += lines.len();
             Ok(lines)
         }
     }

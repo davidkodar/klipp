@@ -12,7 +12,7 @@ default = []
 ai-ort = ["dep:klipp-ml-ort", "klipp-ml-ort/ort"]
 # NVIDIA acceleration via ort's CUDA execution provider. Implies
 # ai-ort. Requires CUDA 12.8+/cuDNN 9.19+ on the user's machine.
-ai-ort-cuda = ["ai-ort", "klipp-ml-ort/cuda"]
+ai-ort-cuda = ["ai-ort", "klipp-ml-ort/cuda", "klipp-analysis/cuda"]
 # Pulls in the candle-backed MobileSAM implementation. Pure-Rust
 # (no C library required at runtime). Auto-registers MobileSAM for
 # Isolate Object (click-to-mask).

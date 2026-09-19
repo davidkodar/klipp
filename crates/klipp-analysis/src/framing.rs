@@ -281,7 +281,7 @@ impl crate::Analyser for FramingAnalyser {
         let mut detector = klipp_ml_ort::RfDetrSegBuilder::new()
             .weights(model)
             .model_id(model_id, "RF-DETR-Seg")
-            .device(klipp_ml::DevicePreference::Cpu)
+            .device(klipp_ml::DevicePreference::GpuPreferCpu)
             .score_threshold(MIN_SCORE)
             .build()
             .map_err(|e| format!("detector: {e}"))?;
