@@ -1037,7 +1037,9 @@ impl klipp_document::ops::Transcripts for AnalysedTranscripts {
 fn next_after_ops(ops: &[klipp_document::ops::Op]) -> Option<&'static str> {
     use klipp_document::ops::Op;
     let has = |f: &dyn Fn(&Op) -> bool| ops.iter().any(f);
-    if has(&|o| matches!(o, Op::Place { with_audio: true, .. })) && ops.len() >= 2 {
+    if has(&|o| matches!(o, Op::Redact { .. })) {
+        Some("Redacted. Look at a frame inside the stretch (frame_at) to see the box covers what it should — the copy on the track above hides it — then check again.")
+    } else if has(&|o| matches!(o, Op::Place { with_audio: true, .. })) && ops.len() >= 2 {
         Some("The selects are down. Where two from the same set-up meet is a jump cut: cover the joins with B-roll on a track above (place with_audio false), or j_cut the sound. Then captions, then check.")
     } else if has(&|o| matches!(o, Op::Captions { .. })) {
         Some("Captions are down. Read the cues in the reply and correct any the transcript misheard with set_text. Then check, and export with the brief's loudness.")
@@ -1432,6 +1434,49 @@ fn handle(
                 }
             }
             Ok(json!({ "query": query, "hits": hits }))
+        }
+
+        ControlCommand::AutoRedact { apply } => {
+            if in_batch {
+                return Err("auto_redact is its own batch; send it on its own".into());
+            }
+            use klipp_document::ops::{Anchor, ClipRef, Op, Transcripts as _};
+            let ops: Vec<Op> = {
+                let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
+                let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
+                let mut ops = Vec::new();
+                let mut cache: std::collections::HashMap<klipp_core::MediaId, Vec<klipp_document::ops::SensitiveText>> = std::collections::HashMap::new();
+                for t in seq.tracks.iter().filter(|t| t.kind == klipp_timeline::TrackKind::Video) {
+                    for c in t.clips.iter().filter(|c| c.enabled) {
+                        let Some(media_id) = c.media_id() else { continue };
+                        let Some(item) = pool.get(&media_id) else { continue };
+                        let found = cache.entry(media_id).or_insert_with(|| AnalysedTranscripts.screen_sensitive(item));
+                        let (s_in, s_out, t_in) = (c.source_in.to_secs_f64(), c.source_out.to_secs_f64(), c.timeline_in.to_secs_f64());
+                        for s in found.iter().filter(|s| s.end_secs > s_in && s.start_secs < s_out) {
+                            let from = t_in + (s.start_secs.max(s_in) - s_in);
+                            let to = t_in + (s.end_secs.min(s_out) - s_in);
+                            ops.push(Op::Redact { clip_id: ClipRef::Id(c.id), from: Some(Anchor::Secs(from)), to: Some(Anchor::Secs(to)), x: s.x, y: s.y, w: s.w, h: s.h, kind: "mosaic".into(), amount: None });
+                        }
+                    }
+                }
+                ops
+            };
+            if ops.is_empty() {
+                return Ok(json!({ "text": "Nothing to redact: the screen text found nothing sensitive in the stretches the timeline shows (or it has not been read: analyze with the OCR models).", "steps_resolved": 0, "applied": false }));
+            }
+            let (plan, revision) = resolve_plan(ctx, &ops)?;
+            let mut v = if apply {
+                let edits: Vec<klipp_document::history::EditCommand> = plan.steps.iter().map(|s| s.edit.clone()).collect();
+                let mut v = send_full_envelope(ctx, Vec::new(), edits, true, Some(revision), Some("Auto Redact".into()))?;
+                v["next"] = json!("Redacted. Look at a frame inside each stretch (frame_at) to see the box covers the text, then check again.");
+                v
+            } else {
+                json!({ "revision": revision, "applied": false, "next": "That is what auto_redact would hide. Run it with apply true to do it as one undo step." })
+            };
+            v["text"] = json!(plan.text());
+            v["steps_resolved"] = json!(plan.steps.len());
+            v["ops"] = json!(ops);
+            Ok(v)
         }
 
         ControlCommand::AnalysisStatus => {

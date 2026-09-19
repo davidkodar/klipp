@@ -348,6 +348,7 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
             }
             v
         }
+        "klipp_auto_redact" => json!({ "method": "auto_redact", "apply": args.get("apply").and_then(|v| v.as_bool()).unwrap_or(false) }),
         "klipp_search_transcripts" => {
             let mut v = json!({ "method": "search_transcripts", "query": arg_str(args, "query")? });
             if let Some(n) = args.get("max_hits").and_then(|v| v.as_u64()) {
@@ -686,7 +687,7 @@ fn content_for(name: &str, result: &Value) -> Result<Vec<Value>, String> {
             return Ok(with_next(out));
         }
     }
-    if name == "klipp_timeline" || name == "klipp_media_analysis" || name == "klipp_plan" || name == "klipp_check" || name == "klipp_brief" || name == "klipp_edit_plan" || name == "klipp_build_edit_plan" || name == "klipp_screen_text" || name == "klipp_transcript" || name == "klipp_cut_points" || name == "klipp_selects" || name == "klipp_style_profile" || name == "klipp_looks" || name == "klipp_frame_stats" {
+    if name == "klipp_timeline" || name == "klipp_media_analysis" || name == "klipp_plan" || name == "klipp_check" || name == "klipp_brief" || name == "klipp_edit_plan" || name == "klipp_build_edit_plan" || name == "klipp_screen_text" || name == "klipp_auto_redact" || name == "klipp_transcript" || name == "klipp_cut_points" || name == "klipp_selects" || name == "klipp_style_profile" || name == "klipp_looks" || name == "klipp_frame_stats" {
         if let Some(text) = result.get("text").and_then(|v| v.as_str()) {
             return Ok(with_next(text.to_string()));
         }
@@ -947,6 +948,14 @@ fn tool_definitions() -> Vec<Value> {
               download_models true.",
              json!({ "media_id": { "type": "string" }, "from_secs": { "type": "number" }, "to_secs": { "type": "number" } }),
              vec!["media_id"]),
+        tool("klipp_auto_redact",
+             "Hide everything the screen text found sensitive — emails, keys, passwords, card \
+              numbers — wherever the timeline shows it: one redact op per finding (a cropped, \
+              pixelated copy of the footage on a video track above), resolved as a plan. A dry \
+              run by default; with apply true it is done as one undo step. Needs the OCR pass \
+              (klipp_analyze with the OCR models). Look at a frame afterwards to see each box \
+              covers its text.",
+             json!({ "apply": { "type": "boolean" } }), vec![]),
         tool("klipp_search_screen_text",
              "Find every moment a word or phrase was on screen, across all footage: the \
               screen recording's Cmd-F. Each hit has the media item, the seconds it stayed \
@@ -1047,6 +1056,11 @@ fn tool_definitions() -> Vec<Value> {
               lift/gamma/gain the shadows/mids/highlights; vibrance is skin-safe saturation; \
               reset takes it to neutral first. Read frame_stats and grade to the numbers; grade \
               for continuity first — shots that follow each other should match — then the look.\n\
+              redact {clip_id, x, y, w, h, from?, to?, kind?, amount?} — hide a patch of the picture \
+              (an email, a key, a face) for a stretch: a cropped copy pixelated (kind mosaic, \
+              default) or blurred on a video track above; x, y, w, h are fractions of the frame \
+              from the top left, as check's sensitive_on_screen and klipp_screen_text give them; \
+              from and to default to the clip's edges. auto_redact does every finding at once.\n\
               effect {clip_id, kind, amount?} — a finishing effect on a picture: vignette, grain, glow, \
               bloom, diffusion, halation, light_rays, lens_flare, anamorphic, blur, radial_blur, \
               directional_blur, sharpen, chromatic_aberration, tilt_shift, mosaic, posterize, invert, \
@@ -1156,6 +1170,11 @@ fn tool_definitions() -> Vec<Value> {
               lift/gamma/gain the shadows/mids/highlights; vibrance is skin-safe saturation; \
               reset takes it to neutral first. Read frame_stats and grade to the numbers; grade \
               for continuity first — shots that follow each other should match — then the look.\n\
+              redact {clip_id, x, y, w, h, from?, to?, kind?, amount?} — hide a patch of the picture \
+              (an email, a key, a face) for a stretch: a cropped copy pixelated (kind mosaic, \
+              default) or blurred on a video track above; x, y, w, h are fractions of the frame \
+              from the top left, as check's sensitive_on_screen and klipp_screen_text give them; \
+              from and to default to the clip's edges. auto_redact does every finding at once.\n\
               effect {clip_id, kind, amount?} — a finishing effect on a picture: vignette, grain, glow, \
               bloom, diffusion, halation, light_rays, lens_flare, anamorphic, blur, radial_blur, \
               directional_blur, sharpen, chromatic_aberration, tilt_shift, mosaic, posterize, invert, \

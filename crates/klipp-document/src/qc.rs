@@ -241,7 +241,7 @@ pub fn check(seq: &Sequence, pool: &MediaPool, transcripts: &dyn Transcripts) ->
         for s in found.iter().filter(|s| s.end_secs > s_in && s.start_secs < s_out) {
             let from = t_in + (s.start_secs - s_in).max(0.0);
             let to = t_in + (s.end_secs.min(s_out) - s_in);
-            add(Severity::Error, "sensitive_on_screen", Some(from), format!("{} shows what looks like a {} ({}) from {from:.2} to {to:.2} s, at {:.0}% across and {:.0}% down the frame", clip_label(pool, c), s.kind, s.masked, s.x * 100.0, s.y * 100.0), "Blur or mosaic it (split the clip around that stretch and put a mosaic effect on it), reframe past it, or cut it out");
+            add(Severity::Error, "sensitive_on_screen", Some(from), format!("{} shows what looks like a {} ({}) from {from:.2} to {to:.2} s, at {:.0}% across and {:.0}% down the frame", clip_label(pool, c), s.kind, s.masked, s.x * 100.0, s.y * 100.0), "Redact it: the redact op with this clip, from, to and the box (auto_redact does every finding at once), or cut it out");
         }
     }
 

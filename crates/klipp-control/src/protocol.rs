@@ -176,6 +176,13 @@ pub enum ControlCommand {
         #[serde(default)]
         max_hits: Option<usize>,
     },
+    /// Hide everything the screen text found sensitive, wherever the
+    /// timeline shows it: a redact op per finding, resolved as a plan;
+    /// applied as one undo step with `apply`.
+    AutoRedact {
+        #[serde(default)]
+        apply: bool,
+    },
     /// Where every requested item stands.
     AnalysisStatus,
     /// What is known about a media item, as text: the shot list, the

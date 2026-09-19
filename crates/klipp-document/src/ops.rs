@@ -281,6 +281,29 @@ pub enum Op {
         #[serde(default)]
         amount: Option<f32>,
     },
+    /// Hide a patch of the picture — an email, a key, a face — for a
+    /// stretch of a clip: a cropped copy of the same footage goes on a
+    /// video track above (one is made on top if none has room), covering
+    /// `x`,`y`,`w`,`h` of the frame (fractions, from the top left) from
+    /// `from` to `to` (the clip's own edges when left out), pixelated
+    /// (`kind` "mosaic", the default) or blurred (`kind` "blur"), by
+    /// `amount` 0 to 1. The copy follows nothing: move the clip and
+    /// redact again. Refused on a retimed clip.
+    Redact {
+        clip_id: ClipRef,
+        #[serde(default)]
+        from: Option<Anchor>,
+        #[serde(default)]
+        to: Option<Anchor>,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        #[serde(default = "default_redact_kind")]
+        kind: String,
+        #[serde(default)]
+        amount: Option<f32>,
+    },
     /// Steady a shaky clip. `smoothing` 0 to 1 is how much camera motion
     /// is ironed out (0.5 default); the frame is cropped a little to hide
     /// the edges it moves.
@@ -547,6 +570,10 @@ fn default_transition_secs() -> f64 {
 
 fn default_stabilize() -> f32 {
     0.5
+}
+
+fn default_redact_kind() -> String {
+    "mosaic".into()
 }
 
 fn default_reframe_scale() -> f32 {
@@ -955,6 +982,12 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
         Op::Stabilize { clip_id, smoothing } => {
             let (ti, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
             stabilize(seq, pool, i, ti, clip, *smoothing)
+        }
+        Op::Redact { clip_id, from, to, x, y, w, h, kind, amount } => {
+            let (ti, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
+            let from = match from { Some(a) => Some(resolve_anchor(seq, fps, a, i)?), None => None };
+            let to = match to { Some(a) => Some(resolve_anchor(seq, fps, a, i)?), None => None };
+            redact(seq, pool, fps, i, ti, clip, from, to, [*x, *y, *w, *h], kind, *amount)
         }
         Op::Reframe { clip_id, scale, x, y } => {
             let (ti, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
@@ -1895,6 +1928,66 @@ fn set_text(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip, 
 
 /// Set a picture clip's builtin effects to `new`, recorded as one
 /// undoable edit; the enabled-flags vec is grown to match.
+/// A little past the box on every side, so the mosaic's blocks cover
+/// the text's edges too.
+const REDACT_MARGIN: f32 = 0.006;
+
+#[allow(clippy::too_many_arguments)]
+fn redact(seq: &Sequence, pool: &MediaPool, fps: Fps, i: usize, ti: usize, clip: &Clip, from: Option<Timecode>, to: Option<Timecode>, rect: [f32; 4], kind: &str, amount: Option<f32>) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
+    use klipp_effects::BuiltinEffect as E;
+    let ClipKind::Media { media_id } = &clip.kind else {
+        return Err(refuse(i, format!("{} is not a media clip", clip_name(seq, pool, clip)), "redact a picture from a file"));
+    };
+    if (clip.speed - 1.0).abs() > 1e-6 || !clip.speed_keyframes.is_empty() {
+        return Err(refuse(i, format!("{} is retimed", clip_name(seq, pool, clip)), "redact it before the retime, or cover the patch with a title"));
+    }
+    let [x, y, w, h] = rect;
+    if !(w > 0.0 && h > 0.0) || !(0.0..=1.0).contains(&x) || !(0.0..=1.0).contains(&y) {
+        return Err(refuse(i, "the box has no size or is off the frame", "x, y, w, h are fractions of the frame from the top left; check's sensitive_on_screen finding gives them"));
+    }
+    let a = from.unwrap_or(clip.timeline_in).max(clip.timeline_in);
+    let b = to.unwrap_or(clip.timeline_out).min(clip.timeline_out);
+    if b <= a {
+        return Err(refuse(i, format!("{:.2}-{:.2} s is not a stretch inside {}", secs(a), secs(b), clip_name(seq, pool, clip)), "give from and to inside the clip, in order"));
+    }
+    let src_in = clip.source_in + (a - clip.timeline_in);
+    let src_out = clip.source_in + (b - clip.timeline_in);
+    let strength = amount.unwrap_or(0.5).clamp(0.0, 1.0);
+    let hide = match kind.to_lowercase().as_str() {
+        "mosaic" | "pixelate" => E::Mosaic { block_size: 12.0 + strength * 48.0 },
+        "blur" => E::GaussianBlur { radius: 10.0 + strength * 50.0 },
+        other => return Err(refuse(i, format!("\"{other}\" is not a way to redact"), "use mosaic or blur")),
+    };
+    let left = (x - REDACT_MARGIN).clamp(0.0, 1.0);
+    let top = (y - REDACT_MARGIN).clamp(0.0, 1.0);
+    let right = (1.0 - (x + w + REDACT_MARGIN)).clamp(0.0, 1.0);
+    let bottom = (1.0 - (y + h + REDACT_MARGIN)).clamp(0.0, 1.0);
+    // The hidden patch is worked at full strength first, then cut to
+    // the box: the crop is applied last so the mosaic's blocks do not
+    // bleed the outside in.
+    let mut cover = Clip::media(*media_id, a, b, src_in, src_out);
+    cover.volume = 0.0;
+    cover.builtin_effects = vec![hide, E::Crop { left, right, top, bottom, feather: 0.0 }];
+    cover.builtin_effects_enabled = vec![true, true];
+    // A video track above with room, else a new one on top.
+    let above = (0..ti).rev().find(|k| seq.tracks[*k].kind == TrackKind::Video && !seq.tracks[*k].locked && overlapping(seq, *k, a, b, None).is_none());
+    let (video, created) = match above {
+        Some(k) => ((cover, k), None),
+        None => ((cover, 0), Some(0)),
+    };
+    let ids = vec![video.0.id];
+    let where_ = match created {
+        Some(_) => "a new video track on top; every other track's index moves down by one".to_string(),
+        None => format!("track {}", video.1),
+    };
+    let what = format!(
+        "redact {} of {} from {:.2} to {:.2} s: {kind} over the box at {:.0}%,{:.0}% ({:.0}% by {:.0}%), a cropped copy on {where_}",
+        short_name(&pool.get(media_id).map(|m| m.filename.clone()).unwrap_or_default()), clip_name(seq, pool, clip), secs(a), secs(b), x * 100.0, y * 100.0, w * 100.0, h * 100.0
+    );
+    let _ = fps;
+    Ok((what, EditCommand::LinkedImport { video: Some(video), audio: None, created_video_track_at: created, created_audio_track_at: None, autoset: None }, ids))
+}
+
 fn set_builtin_effects(clip: &Clip, new: Vec<klipp_effects::BuiltinEffect>) -> EditCommand {
     let mut new_enabled = clip.builtin_effects_enabled.clone();
     new_enabled.resize(new.len(), true);
@@ -3142,6 +3235,35 @@ mod tests {
         // Alone, when asked.
         let plan = resolve(&seq, &pool, &[Op::Trim { clip_id: ClipRef::Id(a), edge: Edge::Out, to: Anchor::Secs(3.0), ripple: false, linked: false }]).unwrap();
         assert_eq!(plan.steps[0].after.len(), 1);
+    }
+
+    #[test]
+    fn a_redaction_is_a_cropped_pixelated_copy_on_the_track_above() {
+        let (seq, pool, _, a, _) = fixture();
+        // Clip a runs 0-4 s from 0-4 s of the file; hide a box from 1 to 3 s.
+        let op = Op::Redact { clip_id: ClipRef::Id(a), from: Some(Anchor::Secs(1.0)), to: Some(Anchor::Secs(3.0)), x: 0.2, y: 0.6, w: 0.3, h: 0.05, kind: "mosaic".into(), amount: None };
+        let plan = resolve(&seq, &pool, std::slice::from_ref(&op)).unwrap();
+        let step = &plan.steps[0];
+        assert!(step.what.contains("from 1.00 to 3.00 s") && step.what.contains("a new video track on top"), "{}", step.what);
+        let EditCommand::LinkedImport { video: Some((cover, track)), created_video_track_at: Some(0), audio: None, .. } = &step.edit else { panic!("{:?}", step.edit) };
+        assert_eq!(*track, 0);
+        assert_eq!((secs(cover.timeline_in), secs(cover.timeline_out), secs(cover.source_in), secs(cover.source_out)), (1.0, 3.0, 1.0, 3.0));
+        assert_eq!(cover.volume, 0.0);
+        assert!(matches!(cover.builtin_effects.as_slice(), [klipp_effects::BuiltinEffect::Mosaic { .. }, klipp_effects::BuiltinEffect::Crop { left, top, .. }] if (*left - 0.194).abs() < 1e-3 && (*top - 0.594).abs() < 1e-3), "{:?}", cover.builtin_effects);
+        assert_eq!((step.after[0].timeline_in_secs, step.after[0].timeline_out_secs), (1.0, 3.0));
+
+        // With a video track above that has room, it goes there and no track is made.
+        let mut seq2 = seq.clone();
+        seq2.tracks.insert(0, Track::new("V2", TrackKind::Video));
+        let plan = resolve(&seq2, &pool, std::slice::from_ref(&op)).unwrap();
+        assert!(matches!(&plan.steps[0].edit, EditCommand::LinkedImport { video: Some((_, 0)), created_video_track_at: None, .. }), "{:?}", plan.steps[0].edit);
+        assert!(plan.steps[0].what.contains("on track 0"));
+
+        // Outside the clip, a bad box, an unknown kind: refused with why.
+        let mk = |from: f64, to: f64, w: f32, kind: &str| Op::Redact { clip_id: ClipRef::Id(a), from: Some(Anchor::Secs(from)), to: Some(Anchor::Secs(to)), x: 0.2, y: 0.6, w, h: 0.05, kind: kind.into(), amount: None };
+        assert!(resolve(&seq, &pool, &[mk(5.0, 9.0, 0.3, "mosaic")]).unwrap_err().why.contains("not a stretch inside"));
+        assert!(resolve(&seq, &pool, &[mk(1.0, 3.0, 0.0, "mosaic")]).unwrap_err().why.contains("no size"));
+        assert!(resolve(&seq, &pool, &[mk(1.0, 3.0, 0.3, "paint")]).unwrap_err().hint.contains("mosaic or blur"));
     }
 
     #[test]
