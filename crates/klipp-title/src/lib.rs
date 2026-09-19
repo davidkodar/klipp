@@ -80,6 +80,123 @@ pub struct TitleLayout {
     pub glyph_colors: Vec<GlyphColorInfo>,
     /// Per-glyph coverage bitmaps for rich text fill. Empty = use alpha_mask with uniform color.
     pub glyph_coverages: Vec<Vec<u8>>,
+    /// Which glyph each mask pixel belongs to (`GLYPH_NONE` for none),
+    /// mask-local; filled only for a title with a staggered motion.
+    pub glyph_index: Vec<u16>,
+    /// Each glyph's bitmap box in frame pixels, `[x0, y0, x1, y1]`.
+    pub glyph_boxes: Vec<[i32; 4]>,
+    /// Each glyph's character, for the unit it staggers with.
+    pub glyph_parents: Vec<char>,
+    /// The padding the mask carries round the text for its effects.
+    pub pad: i32,
+}
+
+/// No glyph: the value of `glyph_index` where nothing was painted.
+pub const GLYPH_NONE: u16 = u16::MAX;
+
+/// Which glyph each pixel of a resting render belongs to, over the
+/// region round the text, with the glyph boxes and characters a
+/// staggered motion poses them by. Pixels of glow, shadow and outline
+/// go to the nearest glyph box.
+#[derive(Debug, Clone)]
+pub struct UnitMap {
+    pub x0: u32,
+    pub y0: u32,
+    pub w: u32,
+    pub h: u32,
+    pub index: Vec<u16>,
+    pub boxes: Vec<[i32; 4]>,
+    pub parents: Vec<char>,
+    pub pad: i32,
+}
+
+impl UnitMap {
+    fn from_layout(layout: &TitleLayout, buf: &[u8], width: u32, height: u32) -> Self {
+        let (x0, y0, w, h) = (layout.mask_x0, layout.mask_y0, layout.mask_w, layout.mask_h);
+        let mut index = layout.glyph_index.clone();
+        index.resize((w * h) as usize, GLYPH_NONE);
+        let boxes = &layout.glyph_boxes;
+        let fw = width as usize;
+        for my in 0..h as usize {
+            let fy = y0 as usize + my;
+            if fy >= height as usize {
+                break;
+            }
+            for mx in 0..w as usize {
+                let fx = x0 as usize + mx;
+                if fx >= fw {
+                    break;
+                }
+                let i = my * w as usize + mx;
+                if index[i] != GLYPH_NONE || buf[(fy * fw + fx) * 4 + 3] == 0 {
+                    continue;
+                }
+                // The nearest glyph box, by the distance to its edges.
+                let (px, py) = (fx as f32 + 0.5, fy as f32 + 0.5);
+                let mut best = (f32::MAX, GLYPH_NONE);
+                for (g, b) in boxes.iter().enumerate() {
+                    if b[2] <= b[0] || b[3] <= b[1] {
+                        continue;
+                    }
+                    let ddx = (b[0] as f32 - px).max(px - b[2] as f32).max(0.0);
+                    let ddy = (b[1] as f32 - py).max(py - b[3] as f32).max(0.0);
+                    let d = ddx * ddx + ddy * ddy;
+                    if d < best.0 {
+                        best = (d, g as u16);
+                    }
+                }
+                index[i] = best.1;
+            }
+        }
+        Self { x0, y0, w, h, index, boxes: layout.glyph_boxes.clone(), parents: layout.glyph_parents.clone(), pad: layout.pad }
+    }
+
+    /// The glyph at frame pixel `(x, y)`, if any.
+    #[inline]
+    pub fn at(&self, x: i64, y: i64) -> u16 {
+        let (mx, my) = (x - self.x0 as i64, y - self.y0 as i64);
+        if mx < 0 || my < 0 || mx >= self.w as i64 || my >= self.h as i64 {
+            return GLYPH_NONE;
+        }
+        self.index[my as usize * self.w as usize + mx as usize]
+    }
+}
+
+/// One glyph's pose in a staggered motion: where the resting glyph
+/// goes, scaled about `anchor`, and the rows it may show in (a mask
+/// motion clips it to its resting box). `moved` is the frame box the
+/// posed glyph can touch.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct GlyphPose {
+    pub dx: f32,
+    pub dy: f32,
+    pub scale: f32,
+    pub alpha: f32,
+    pub anchor: (f32, f32),
+    /// Rows `y0..y1` the glyph may paint; `None` for all.
+    pub clip: Option<(i32, i32)>,
+    pub moved: [i32; 4],
+}
+
+impl GlyphPose {
+    /// The sixteen numbers the GPU pass reads per glyph.
+    pub fn packed(&self) -> [f32; 16] {
+        let (c0, c1) = self.clip.map_or((0.0, -1.0), |(a, b)| (a as f32, b as f32));
+        [
+            self.moved[0] as f32, self.moved[1] as f32, self.moved[2] as f32, self.moved[3] as f32,
+            self.dx, self.dy, self.scale, self.alpha,
+            self.anchor.0, self.anchor.1, c0, c1,
+            0.0, 0.0, 0.0, 0.0,
+        ]
+    }
+}
+
+/// A resting render and, for a title whose motion staggers, the map of
+/// which glyph each pixel is: what `render_resting` makes and `adopt`
+/// takes.
+pub struct RestingRender {
+    pub pixels: Vec<u8>,
+    pub units: Option<std::sync::Arc<UnitMap>>,
 }
 
 /// Color and position info for a single glyph in rich text mode.
@@ -134,6 +251,7 @@ struct CachedRender {
     rows: (u32, u32),
     /// The columns with any coverage, `x0..x1`.
     cols: (u32, u32),
+    units: Option<std::sync::Arc<UnitMap>>,
     /// Names this render to whoever keeps a copy of it elsewhere (a
     /// GPU sprite): never reused within a renderer.
     id: u64,
@@ -149,6 +267,9 @@ pub struct RestingSprite {
     /// pose scales about.
     pub cols: (u32, u32),
     pub id: u64,
+    /// Which glyph each pixel is, for a staggered motion; made only
+    /// for a title that has one.
+    pub units: Option<std::sync::Arc<UnitMap>>,
 }
 
 impl RestingSprite {
@@ -179,8 +300,15 @@ pub enum TitleFrame {
         scale: f32,
         anchor: (f32, f32),
         under: Option<[u8; 4]>,
+        /// A blur (sigma, pixels) over the placed sprite: the blur
+        /// entrance coming into focus. 0 for none.
+        blur: f32,
         rows: (u32, u32),
     },
+    /// The resting render's glyphs each placed on its own: a motion
+    /// that staggers by character, word or line. The frame's bytes are
+    /// those `pose_sprite_glyphs` makes from the sprite's `units`.
+    Glyphs { sprite: RestingSprite, poses: Vec<GlyphPose>, rows: (u32, u32) },
     /// Rendered for this time alone.
     Rendered { pixels: Vec<u8>, rows: (u32, u32) },
 }
@@ -255,6 +383,11 @@ pub struct TitleRenderer {
     render_cache: Vec<CachedRender>,
     /// The rows with coverage in the last render, `y0..y1`.
     last_rows: (u32, u32),
+    /// The blur the last `Placed` frame asked for, so a caller that
+    /// took bytes can apply it.
+    last_blur: f32,
+    /// The unit map the last `render_inner` made, for `cache_store`.
+    last_units: Option<std::sync::Arc<UnitMap>>,
     /// The next `CachedRender::id`.
     next_cache_id: u64,
     /// The clip's length while rendering with `render_with_window`,
@@ -295,6 +428,8 @@ impl TitleRenderer {
             texture_fill_cache: None,
             render_cache: Vec::with_capacity(RENDER_CACHE_CAP),
             last_rows: (0, 0),
+            last_blur: 0.0,
+            last_units: None,
             next_cache_id: 1,
             motion_window: None,
             loop_wave: None,
@@ -679,6 +814,10 @@ impl TitleRenderer {
                 scale,
                 glyph_colors: Vec::new(),
                 glyph_coverages: Vec::new(),
+                glyph_index: Vec::new(),
+                glyph_boxes: Vec::new(),
+                glyph_parents: Vec::new(),
+                pad: 0,
             };
         }
 
@@ -815,8 +954,17 @@ impl TitleRenderer {
                 scale,
                 glyph_colors: Vec::new(),
                 glyph_coverages: Vec::new(),
+                glyph_index: Vec::new(),
+                glyph_boxes: Vec::new(),
+                glyph_parents: Vec::new(),
+                pad: max_pad,
             };
         }
+        // A staggered motion poses each glyph on its own from the
+        // resting render, so it needs to know which glyph a pixel is.
+        let staggers = |m: Option<klipp_timeline::Motion>| m.is_some_and(|m| m.stagger != klipp_timeline::StaggerUnit::None);
+        let tag_glyphs = time_secs.is_none() && (staggers(tb.motion.enter) || staggers(tb.motion.exit));
+        let mut glyph_index = if tag_glyphs { vec![GLYPH_NONE; mask_w * mask_h] } else { Vec::new() };
 
         // Rasterize glyphs into alpha mask. When the textbox has a
         // `char_animation` AND the renderer was called with a clip
@@ -838,6 +986,7 @@ impl TitleRenderer {
                     font, glyphs,
                     offset_x, offset_y,
                     &mut alpha_mask, mask_w, mask_h, mask_x0, mask_y0,
+                    if tag_glyphs { Some(&mut glyph_index) } else { None },
                 );
             }
         }
@@ -907,6 +1056,13 @@ impl TitleRenderer {
             (Vec::new(), Vec::new())
         };
 
+        let glyph_boxes = glyphs
+            .iter()
+            .map(|g| {
+                let (gx, gy) = ((g.x + offset_x) as i32, (g.y + offset_y) as i32);
+                [gx, gy, gx + g.width as i32, gy + g.height as i32]
+            })
+            .collect();
         TitleLayout {
             alpha_mask,
             mask_w: mask_w as u32,
@@ -921,6 +1077,10 @@ impl TitleRenderer {
             scale,
             glyph_colors,
             glyph_coverages,
+            glyph_index,
+            glyph_boxes,
+            glyph_parents: glyphs.iter().map(|g| g.parent).collect(),
+            pad: max_pad,
         }
     }
 
@@ -1042,6 +1202,10 @@ impl TitleRenderer {
                 scale,
                 glyph_colors: Vec::new(),
                 glyph_coverages: Vec::new(),
+                glyph_index: Vec::new(),
+                glyph_boxes: Vec::new(),
+                glyph_parents: Vec::new(),
+                pad: 0,
             };
         }
 
@@ -1070,6 +1234,10 @@ impl TitleRenderer {
             scale,
             glyph_colors: Vec::new(),
             glyph_coverages: Vec::new(),
+            glyph_index: Vec::new(),
+            glyph_boxes: Vec::new(),
+            glyph_parents: Vec::new(),
+            pad: 0,
         }
     }
 
@@ -1455,9 +1623,13 @@ impl TitleRenderer {
         time_secs: f32,
     ) -> Vec<u8> {
         match self.frame_at(title, width, height, gpu, time_secs) {
-            TitleFrame::Placed { sprite, dx, dy, opacity, scale, anchor, under, rows } => {
+            TitleFrame::Placed { sprite, dx, dy, opacity, scale, anchor, under, rows, .. } => {
                 pose_sprite(&sprite.pixels, width, height, dx, dy, opacity, scale, anchor, under, rows)
             }
+            TitleFrame::Glyphs { sprite, poses, rows } => match &sprite.units {
+                Some(units) => pose_sprite_glyphs(&sprite.pixels, width, height, units, &poses, rows),
+                None => vec![0u8; (width as usize) * (height as usize) * 4],
+            },
             TitleFrame::Rendered { pixels, .. } => pixels,
         }
     }
@@ -1552,26 +1724,42 @@ impl TitleRenderer {
         // as a loop is: the frame is the sprite placed, on the GPU where
         // the compositor keeps it. Rastered afresh, it cost 30 ms a
         // frame at 4K for the whole of a half-second rise.
-        let motion_pose: Option<(f32, f32, f32, f32, bool)> = if any_motion_live && visible == 1 && !loops_need_raster {
+        // (opacity, dx, dy, scale, blur sigma, clip to the resting box)
+        let motion_pose: Option<(f32, f32, f32, f32, f32, bool)> = if any_motion_live && visible == 1 && !loops_need_raster {
             title.objects.iter().find(|o| o.visible).and_then(|o| {
                 let TitleObjectContent::TextBox(tb) = &o.content else { return None };
-                let whole = |m: Option<klipp_timeline::Motion>| {
-                    m.is_none_or(|m| m.stagger == klipp_timeline::StaggerUnit::None && m.kind != klipp_timeline::MotionKind::Blur)
-                };
+                let whole = |m: Option<klipp_timeline::Motion>| m.is_none_or(|m| m.stagger == klipp_timeline::StaggerUnit::None);
                 if !(whole(tb.motion.enter) && whole(tb.motion.exit)) {
                     return None;
                 }
                 let font_px = tb.font_size * scale;
                 let (pe, px) = tb.motion.progress(time_secs, window, 0);
                 let rest = (1.0, 0.0, 0.0, 1.0, 0.0, false);
-                let (a1, dx1, dy1, s1, _, c1) = tb.motion.enter.map(|m| m.pose(pe, font_px)).unwrap_or(rest);
-                let (a2, dx2, dy2, s2, _, c2) = tb.motion.exit.map(|m| m.pose(px, font_px)).unwrap_or(rest);
-                Some((a1 * a2, dx1 + dx2, dy1 + dy2, s1 * s2, c1 || c2))
+                let (a1, dx1, dy1, s1, b1, c1) = tb.motion.enter.map(|m| m.pose(pe, font_px)).unwrap_or(rest);
+                let (a2, dx2, dy2, s2, b2, c2) = tb.motion.exit.map(|m| m.pose(px, font_px)).unwrap_or(rest);
+                Some((a1 * a2, dx1 + dx2, dy1 + dy2, s1 * s2, b1.max(b2), c1 || c2))
             })
         } else {
             None
         };
-        let any_char_anim = (any_motion_live && motion_pose.is_none()) || (!poses.is_empty() && translate_only.is_none());
+        // A motion that staggers by character, word or line poses each
+        // glyph on its own from the resting render's glyph map — the
+        // frame is the glyphs placed, on the GPU. A blur cannot be
+        // posed per glyph and is rastered.
+        let staggered: Option<&klipp_timeline::TextBox> = if any_motion_live && motion_pose.is_none() && visible == 1 && !loops_need_raster {
+            title.objects.iter().find(|o| o.visible).and_then(|o| match &o.content {
+                TitleObjectContent::TextBox(tb)
+                    if tb.motion.enter.is_none_or(|m| m.kind != klipp_timeline::MotionKind::Blur)
+                        && tb.motion.exit.is_none_or(|m| m.kind != klipp_timeline::MotionKind::Blur) =>
+                {
+                    Some(tb)
+                }
+                _ => None,
+            })
+        } else {
+            None
+        };
+        let any_char_anim = (any_motion_live && motion_pose.is_none() && staggered.is_none()) || (!poses.is_empty() && translate_only.is_none());
 
         // Glitch is per-frame (deterministic seed bound to clip
         // time, but pattern shifts ~12 times/sec) so it bypasses
@@ -1657,6 +1845,7 @@ impl TitleRenderer {
             || any_extrusion_keyframes
             || any_outline_keyframes;
 
+        let mut gpu = gpu;
         if !any_render_time_override {
             // A full-frame card: the words are the sprite and the fill
             // goes under them at placement, so the fill stays put while
@@ -1666,19 +1855,43 @@ impl TitleRenderer {
                 TitleBackground::FullFrame { color } => Some(*color),
                 _ => None,
             };
-            let sprite = self.resting_sprite(&resting_title(title), width, height, gpu);
+            let sprite = self.resting_sprite(&resting_title(title), width, height, gpu.take());
             let rows = sprite.rows;
-            let (mut dx, mut dy, mut opacity, mut scale, mut clip) = (0.0f32, 0.0f32, 1.0f32, 1.0f32, false);
+            if let Some(tb) = staggered {
+                if let Some(units) = sprite.units.clone().filter(|u| u.boxes.len() <= MAX_POSED_GLYPHS) {
+                    let font_px = tb.font_size * scale;
+                    let loop_pose = translate_only.as_ref().map(|p| (p.dx, p.dy, p.opacity)).unwrap_or((0.0, 0.0, 1.0));
+                    let poses = glyph_poses(&units, &tb.motion, time_secs, window, font_px, loop_pose, under.is_some());
+                    let rows = if under.is_some() {
+                        (0, height)
+                    } else {
+                        let (mut y0, mut y1) = (i32::MAX, i32::MIN);
+                        for p in &poses {
+                            if p.alpha > 0.001 && p.moved[3] > p.moved[1] {
+                                y0 = y0.min(p.moved[1]);
+                                y1 = y1.max(p.moved[3]);
+                            }
+                        }
+                        if y1 <= y0 { (0, 0) } else { (y0.clamp(0, height as i32) as u32, y1.clamp(0, height as i32) as u32) }
+                    };
+                    self.last_rows = rows;
+                    self.last_blur = 0.0;
+                    return TitleFrame::Glyphs { sprite, poses, rows };
+                }
+                // Too many glyphs to pose: rastered, below.
+            } else {
+            let (mut dx, mut dy, mut opacity, mut scale, mut blur, mut clip) = (0.0f32, 0.0f32, 1.0f32, 1.0f32, 0.0f32, false);
             if let Some(pose) = &translate_only {
                 dx += pose.dx;
                 dy += pose.dy;
                 opacity *= pose.opacity;
             }
-            if let Some((a, mx, my, ms, c)) = motion_pose {
+            if let Some((a, mx, my, ms, b, c)) = motion_pose {
                 dx += mx;
                 dy += my;
                 opacity *= a;
                 scale *= ms;
+                blur = b;
                 clip = c;
             }
             let (dx, dy, opacity) = (dx.round() as i32, dy.round() as i32, opacity.clamp(0.0, 1.0));
@@ -1692,13 +1905,17 @@ impl TitleRenderer {
                 rows
             } else {
                 let grown = |y: u32| anchor.1 + (y as f32 - anchor.1) * scale + dy as f32;
-                let y0 = grown(rows.0).floor() - 1.0;
-                let y1 = grown(rows.1).ceil() + 1.0;
+                let reach = if blur > 0.5 { blur * 3.0 } else { 0.0 };
+                let y0 = grown(rows.0).floor() - 1.0 - reach;
+                let y1 = grown(rows.1).ceil() + 1.0 + reach;
                 (y0.clamp(0.0, height as f32) as u32, y1.clamp(0.0, height as f32) as u32)
             };
             self.last_rows = rows;
-            return TitleFrame::Placed { sprite, dx, dy, opacity, scale, anchor, under, rows };
+            self.last_blur = if blur > 0.5 { blur } else { 0.0 };
+            return TitleFrame::Placed { sprite, dx, dy, opacity, scale, anchor, under, blur: self.last_blur, rows };
+            }
         }
+        self.last_blur = 0.0;
 
         // Build a one-frame derived TitleData that applies every
         // active render-time override. The clone is bounded to
@@ -1947,6 +2164,7 @@ impl TitleRenderer {
             }
         }
 
+        self.last_units = (!layout.glyph_index.is_empty()).then(|| std::sync::Arc::new(UnitMap::from_layout(&layout, &buf, width, height)));
         buf
     }
 
@@ -1956,21 +2174,30 @@ impl TitleRenderer {
     /// The resting render of `title` (as `resting_title` names it) at
     /// `width`×`height`, made here on the CPU: for a warm-up on another
     /// thread, handed to the renderer that will place it by `adopt`.
-    pub fn render_resting(&mut self, title: &TitleData, width: u32, height: u32) -> Vec<u8> {
-        self.render_inner(&resting_title(title), width, height, None, None)
+    pub fn render_resting(&mut self, title: &TitleData, width: u32, height: u32) -> RestingRender {
+        let pixels = self.render_inner(&resting_title(title), width, height, None, None);
+        RestingRender { pixels, units: self.last_units.take() }
     }
 
     /// Keep a resting render of `title` made by `render_resting`
     /// elsewhere, so the first frame of the title costs this thread
     /// nothing. Ignored when one is cached already or the bytes are not
     /// a frame.
-    pub fn adopt(&mut self, title: &TitleData, width: u32, height: u32, pixels: Vec<u8>) {
+    pub fn adopt(&mut self, title: &TitleData, width: u32, height: u32, render: RestingRender) {
         let key = resting_title(title);
+        let RestingRender { pixels, units } = render;
         if pixels.len() != (width as usize) * (height as usize) * 4 || self.cache_lookup(&key, width, height).is_some() {
             return;
         }
         let rows = alpha_rows(&pixels, width, height);
+        self.last_units = units;
         self.cache_store(key.into_owned(), width, height, pixels, rows);
+    }
+
+    /// The blur the last placed frame asked for (sigma in pixels): a
+    /// caller working from the bytes applies it as a Gaussian blur.
+    pub fn last_blur(&self) -> f32 {
+        self.last_blur
     }
 
     /// The resting render of `title`: from the cache, or made and kept.
@@ -1991,7 +2218,7 @@ impl TitleRenderer {
         })?;
         // Move to front (LRU).
         let entry = self.render_cache.remove(pos);
-        let sprite = RestingSprite { pixels: std::sync::Arc::clone(&entry.buffer), rows: entry.rows, cols: entry.cols, id: entry.id };
+        let sprite = RestingSprite { pixels: std::sync::Arc::clone(&entry.buffer), rows: entry.rows, cols: entry.cols, id: entry.id, units: entry.units.clone() };
         self.render_cache.insert(0, entry);
         Some(sprite)
     }
@@ -2005,6 +2232,7 @@ impl TitleRenderer {
         let id = self.next_cache_id;
         self.next_cache_id += 1;
         let cols = alpha_cols(&buffer, width, height, rows);
+        let units = self.last_units.take();
         let pixels = std::sync::Arc::new(buffer);
         self.render_cache.insert(
             0,
@@ -2015,10 +2243,11 @@ impl TitleRenderer {
                 buffer: std::sync::Arc::clone(&pixels),
                 rows,
                 cols,
+                units: units.clone(),
                 id,
             },
         );
-        RestingSprite { pixels, rows, cols, id }
+        RestingSprite { pixels, rows, cols, id, units }
     }
 
     /// Drop every cached rasterised buffer. Useful when the host
@@ -2962,6 +3191,169 @@ fn scale_layer_alpha(layer: &mut [u8], factor: f32) {
     });
 }
 
+/// Glyphs a staggered motion poses one by one at most; beyond it the
+/// frame is rastered. Every output pixel considers every glyph.
+pub const MAX_POSED_GLYPHS: usize = 256;
+
+/// Which unit each glyph belongs to for `unit`: the line, word or
+/// non-space character it is in, counted as `motion_units` counts them.
+pub fn units_of(parents: &[char], unit: klipp_timeline::StaggerUnit) -> Vec<usize> {
+    use klipp_timeline::StaggerUnit as U;
+    let mut out = Vec::with_capacity(parents.len());
+    let (mut line, mut word, mut ch) = (0usize, 0usize, 0usize);
+    let mut in_word = false;
+    for &c in parents {
+        if c == '\n' {
+            line += 1;
+            in_word = false;
+            out.push(match unit { U::None => 0, U::Line => line, U::Word => word.saturating_sub(1), U::Char => ch });
+            continue;
+        }
+        if c.is_whitespace() {
+            in_word = false;
+        } else if !in_word {
+            in_word = true;
+            word += 1;
+        }
+        out.push(match unit { U::None => 0, U::Line => line, U::Word => word.saturating_sub(1), U::Char => ch });
+        if !c.is_whitespace() {
+            ch += 1;
+        }
+    }
+    out
+}
+
+/// Every glyph's pose at `time_secs` for a staggered motion: the
+/// entrance and exit progress of the glyph's unit, the poses they
+/// give, and the loop's offset and fade on top — as the per-glyph
+/// rasteriser combines them.
+fn glyph_poses(
+    units: &UnitMap,
+    motion: &klipp_timeline::TitleMotion,
+    time_secs: f32,
+    window: Option<f32>,
+    font_px: f32,
+    loop_pose: (f32, f32, f32),
+    full_frame: bool,
+) -> Vec<GlyphPose> {
+    let enter_units = units_of(&units.parents, motion.enter.map(|m| m.stagger).unwrap_or_default());
+    let exit_units = units_of(&units.parents, motion.exit.map(|m| m.stagger).unwrap_or_default());
+    let rest = (1.0, 0.0, 0.0, 1.0, 0.0, false);
+    let pad = units.pad as f32;
+    units
+        .boxes
+        .iter()
+        .enumerate()
+        .map(|(g, b)| {
+            let (pe, _) = motion.progress(time_secs, window, enter_units.get(g).copied().unwrap_or(0));
+            let (_, px) = motion.progress(time_secs, window, exit_units.get(g).copied().unwrap_or(0));
+            let (a1, dx1, dy1, s1, _, c1) = motion.enter.map(|m| m.pose(pe, font_px)).unwrap_or(rest);
+            let (a2, dx2, dy2, s2, _, c2) = motion.exit.map(|m| m.pose(px, font_px)).unwrap_or(rest);
+            let alpha = a1 * a2 * loop_pose.2;
+            let (dx, dy) = (dx1 + dx2 + loop_pose.0, dy1 + dy2 + loop_pose.1);
+            let scale = s1 * s2;
+            let anchor = ((b[0] + b[2]) as f32 * 0.5, (b[1] + b[3]) as f32 * 0.5);
+            let clip = (c1 || c2).then_some((b[1], b[3]));
+            // The frame box the posed glyph, its effects round it
+            // included, can touch.
+            let grow = |v: i32, c: f32, sign: f32| c + (v as f32 + sign * pad - c) * scale;
+            let mut moved = [
+                (grow(b[0], anchor.0, -1.0) + dx).floor() as i32 - 1,
+                (grow(b[1], anchor.1, -1.0) + dy).floor() as i32 - 1,
+                (grow(b[2], anchor.0, 1.0) + dx).ceil() as i32 + 1,
+                (grow(b[3], anchor.1, 1.0) + dy).ceil() as i32 + 1,
+            ];
+            if let Some((y0, y1)) = clip {
+                moved[1] = moved[1].max(y0);
+                moved[3] = moved[3].min(y1);
+            }
+            if b[2] <= b[0] || b[3] <= b[1] || (alpha <= 0.001 && !full_frame) {
+                moved = [0, 0, 0, 0];
+            }
+            GlyphPose { dx, dy, scale, alpha, anchor, clip, moved }
+        })
+        .collect()
+}
+
+/// The frame a [`TitleFrame::Glyphs`] names, made on the CPU: each
+/// glyph of the resting render, by the sprite's glyph map, moved,
+/// scaled about its own box and faded by its pose, laid over the
+/// glyphs before it; only within `rows`. The GPU glyph pass is its
+/// twin.
+pub fn pose_sprite_glyphs(rest: &[u8], width: u32, height: u32, units: &UnitMap, poses: &[GlyphPose], rows: (u32, u32)) -> Vec<u8> {
+    use rayon::prelude::*;
+    let (w, h) = (width as usize, height as usize);
+    let mut out = vec![0u8; w * h * 4];
+    if rest.len() < w * h * 4 || w == 0 {
+        return out;
+    }
+    let (y0, y1) = ((rows.0 as usize).min(h), (rows.1 as usize).min(h));
+    // A tap of glyph `g`: the sprite's pixel where the map says `g`,
+    // premultiplied, in sRGB-encoded units; nothing elsewhere.
+    let tap = |x: i64, y: i64, g: u16| -> [f32; 4] {
+        if x < 0 || y < 0 || x >= w as i64 || y >= h as i64 || units.at(x, y) != g {
+            return [0.0; 4];
+        }
+        let p = &rest[(y as usize * w + x as usize) * 4..][..4];
+        let a = p[3] as f32 / 255.0;
+        [p[0] as f32 * a, p[1] as f32 * a, p[2] as f32 * a, a]
+    };
+    out.par_chunks_mut(w * 4).enumerate().for_each(|(y, row)| {
+        if y < y0 || y >= y1 {
+            return;
+        }
+        let yi = y as i32;
+        for (x, px) in row.chunks_exact_mut(4).enumerate() {
+            let xi = x as i32;
+            let mut acc = [0.0f32; 4];
+            for (g, p) in poses.iter().enumerate() {
+                if xi < p.moved[0] || xi >= p.moved[2] || yi < p.moved[1] || yi >= p.moved[3] {
+                    continue;
+                }
+                let fx = (x as f32 + 0.5 - p.dx - p.anchor.0) / p.scale + p.anchor.0 - 0.5;
+                let fy = (y as f32 + 0.5 - p.dy - p.anchor.1) / p.scale + p.anchor.1 - 0.5;
+                let (x0, yy0) = (fx.floor(), fy.floor());
+                let (tx, ty) = (fx - x0, fy - yy0);
+                let (x0, yy0) = (x0 as i64, yy0 as i64);
+                let mut s = [0.0f32; 4];
+                for (sx, sy, wgt) in [
+                    (x0, yy0, (1.0 - tx) * (1.0 - ty)),
+                    (x0 + 1, yy0, tx * (1.0 - ty)),
+                    (x0, yy0 + 1, (1.0 - tx) * ty),
+                    (x0 + 1, yy0 + 1, tx * ty),
+                ] {
+                    let t = tap(sx, sy, g as u16);
+                    for k in 0..4 {
+                        s[k] += t[k] * wgt;
+                    }
+                }
+                if s[3] <= 0.0 {
+                    continue;
+                }
+                // The glyph's alpha to whole levels, as a placed sprite's.
+                let a8 = (s[3] * 255.0 * p.alpha + 0.5).floor().clamp(0.0, 255.0);
+                if a8 <= 0.0 {
+                    continue;
+                }
+                let a = a8 / 255.0;
+                let rgb = [(s[0] / s[3] + 0.5).floor(), (s[1] / s[3] + 0.5).floor(), (s[2] / s[3] + 0.5).floor()];
+                // Over the glyphs before it, premultiplied.
+                for k in 0..3 {
+                    acc[k] = rgb[k] * a + acc[k] * (1.0 - a);
+                }
+                acc[3] = a + acc[3] * (1.0 - a);
+            }
+            if acc[3] > 0.0 {
+                px[0] = (acc[0] / acc[3]).round().clamp(0.0, 255.0) as u8;
+                px[1] = (acc[1] / acc[3]).round().clamp(0.0, 255.0) as u8;
+                px[2] = (acc[2] / acc[3]).round().clamp(0.0, 255.0) as u8;
+                px[3] = (acc[3] * 255.0).round().clamp(0.0, 255.0) as u8;
+            }
+        }
+    });
+    out
+}
+
 /// The frame a [`TitleFrame::Placed`] names, made on the CPU: the
 /// resting render moved by `(dx, dy)`, scaled by `scale` about `anchor`
 /// (bilinear, premultiplied), its alpha scaled by `opacity`, laid over
@@ -3638,8 +4030,9 @@ fn rasterize_to_mask(
     mask_h: usize,
     mask_x0: usize,
     mask_y0: usize,
+    mut index: Option<&mut [u16]>,
 ) {
-    for glyph in glyphs {
+    for (gi, glyph) in glyphs.iter().enumerate() {
         if glyph.width == 0 || glyph.height == 0 {
             continue;
         }
@@ -3659,7 +4052,13 @@ fn rasterize_to_mask(
                 let cov = coverage[row * glyph.width + col];
                 if cov == 0 { continue; }
                 let idx = my as usize * mask_w + mx as usize;
-                // Max blend so overlapping glyphs don't exceed 255
+                // Max blend so overlapping glyphs don't exceed 255;
+                // the pixel is the glyph that painted it darkest.
+                if cov > mask[idx] {
+                    if let Some(index) = index.as_deref_mut() {
+                        index[idx] = gi.min(GLYPH_NONE as usize - 1) as u16;
+                    }
+                }
                 mask[idx] = mask[idx].max(cov);
             }
         }
@@ -3696,30 +4095,8 @@ fn paint_alpha_mask_stripe(
 /// Which stagger unit each glyph belongs to, in glyph order: the line,
 /// word or character index, or 0 for everything at once.
 fn motion_units(glyphs: &[fontdue::layout::GlyphPosition], unit: klipp_timeline::StaggerUnit) -> Vec<usize> {
-    use klipp_timeline::StaggerUnit as U;
-    let mut out = Vec::with_capacity(glyphs.len());
-    let (mut line, mut word, mut ch) = (0usize, 0usize, 0usize);
-    let mut in_word = false;
-    for g in glyphs {
-        let c = g.parent;
-        if c == '\n' {
-            line += 1;
-            in_word = false;
-            out.push(match unit { U::None => 0, U::Line => line, U::Word => word.saturating_sub(1), U::Char => ch });
-            continue;
-        }
-        if c.is_whitespace() {
-            in_word = false;
-        } else if !in_word {
-            in_word = true;
-            word += 1;
-        }
-        out.push(match unit { U::None => 0, U::Line => line, U::Word => word.saturating_sub(1), U::Char => ch });
-        if !c.is_whitespace() {
-            ch += 1;
-        }
-    }
-    out
+    let parents: Vec<char> = glyphs.iter().map(|g| g.parent).collect();
+    units_of(&parents, unit)
 }
 
 /// Rasterize the alpha mask with `TitleMotion` applied per glyph: the
@@ -4967,28 +5344,19 @@ mod tests {
         };
         let td = klipp_timeline::TitleData::single_text(tb);
 
-        // local_t at t=0.2 = 0.5 → mid-entrance, decent alpha.
-        let buf_blurred = renderer.render_with_time(&td, 1280, 720, None, 0.20);
-        let buf_sharp = renderer.render_with_time(&td, 1280, 720, None, 10.0);
-
-        let bbox_width = |buf: &[u8], w: u32| -> u32 {
-            let mut min_x = u32::MAX;
-            let mut max_x = 0u32;
-            for (i, p) in buf.chunks_exact(4).enumerate() {
-                if p[3] > 0 {
-                    let x = (i as u32) % w;
-                    if x < min_x { min_x = x; }
-                    if x > max_x { max_x = x; }
-                }
-            }
-            if min_x == u32::MAX { 0 } else { max_x - min_x }
-        };
-        let blur_w = bbox_width(&buf_blurred, 1280);
-        let sharp_w = bbox_width(&buf_sharp, 1280);
-        assert!(
-            blur_w > sharp_w,
-            "Mid-entrance Gaussian blur footprint must extend beyond the sharp glyph's bounding box. blur_w={blur_w} sharp_w={sharp_w}"
-        );
+        // local_t at t=0.2 = 0.5 → mid-entrance, decent alpha. The
+        // frame is the resting sprite placed, and the blur it asks for
+        // is the compositor's to apply (a Gaussian on the layer, on the
+        // GPU or the CPU alike), so the renderer reports the sigma.
+        let mid = renderer.frame_with_window(&td, 1280, 720, None, 0.20, Some(4.0));
+        let TitleFrame::Placed { blur, opacity, .. } = mid else { panic!("a blur entrance is the sprite placed") };
+        assert!(blur > 0.5, "mid-entrance the frame asks for a blur: sigma {blur}");
+        assert!(opacity > 0.3 && opacity < 1.0, "mid-entrance the sprite is faded: {opacity}");
+        assert!(renderer.last_blur() > 0.5);
+        let rest = renderer.frame_with_window(&td, 1280, 720, None, 10.0, Some(20.0));
+        let TitleFrame::Placed { blur, .. } = rest else { panic!("at rest: the sprite placed") };
+        assert_eq!(blur, 0.0, "at rest nothing is blurred");
+        assert_eq!(renderer.last_blur(), 0.0);
     }
 
     /// Per-object opacity multiplies into the rendered alpha.

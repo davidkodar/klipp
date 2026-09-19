@@ -329,6 +329,12 @@ pub struct GpuEffectsPipeline {
     stack_sprites: Vec<ResidentSprite>,
     stack_sprite_tick: u64,
     sprite_place_pipeline: wgpu::ComputePipeline,
+    /// The per-glyph sprite pass: sprite, output, params, glyph map,
+    /// glyph table.
+    sprite_glyphs_bgl: wgpu::BindGroupLayout,
+    sprite_glyphs_pipeline: wgpu::ComputePipeline,
+    /// The glyph table of the frame being placed (grows as needed).
+    sprite_glyph_table: Option<wgpu::Buffer>,
     stack_buf_size: u64,
     /// Whether anything has been blended into the accumulator yet.
     stack_acc_touched: bool,
@@ -1172,6 +1178,33 @@ impl GpuEffectsPipeline {
         let premultiply_pipeline = create_pipeline(&device, &pipeline_layout, "premultiply", SHADER_PREMULTIPLY);
         let sprite_rows_pipeline = create_pipeline(&device, &pipeline_layout, "sprite_rows", SHADER_SPRITE_ROWS);
         let sprite_place_pipeline = create_pipeline(&device, &pipeline_layout, "sprite_place", SHADER_SPRITE_PLACE);
+        let storage_entry = |binding: u32, read_only: bool| wgpu::BindGroupLayoutEntry {
+            binding,
+            visibility: wgpu::ShaderStages::COMPUTE,
+            ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only }, has_dynamic_offset: false, min_binding_size: None },
+            count: None,
+        };
+        let sprite_glyphs_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("sprite_glyphs_bgl"),
+            entries: &[
+                storage_entry(0, true),
+                storage_entry(1, false),
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None },
+                    count: None,
+                },
+                storage_entry(3, true),
+                storage_entry(4, true),
+            ],
+        });
+        let sprite_glyphs_pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("sprite_glyphs_pl"),
+            bind_group_layouts: &[&sprite_glyphs_bgl],
+            push_constant_ranges: &[],
+        });
+        let sprite_glyphs_pipeline = create_pipeline(&device, &sprite_glyphs_pl, "sprite_glyphs", SHADER_SPRITE_GLYPHS);
         let matte_extract_pipeline = create_pipeline(&device, &pipeline_layout, "matte_extract", SHADER_MATTE_EXTRACT);
         let mask_min_h_pipeline = create_pipeline(&device, &pipeline_layout, "mask_min_h", SHADER_MASK_MIN_H);
         let mask_min_v_pipeline = create_pipeline(&device, &pipeline_layout, "mask_min_v", SHADER_MASK_MIN_V);
@@ -1339,6 +1372,9 @@ impl GpuEffectsPipeline {
             stack_sprites: Vec::new(),
             stack_sprite_tick: 0,
             sprite_place_pipeline,
+            sprite_glyphs_bgl,
+            sprite_glyphs_pipeline,
+            sprite_glyph_table: None,
             stack_buf_size: 0,
             stack_acc_touched: false,
             stack_dims: (0, 0),
@@ -5156,7 +5192,7 @@ impl GpuEffectsPipeline {
                     mapped_at_creation: false,
                 });
                 self.upload(&buffer, 0, pixels);
-                self.stack_sprites.push(ResidentSprite { id, buffer, used: tick });
+                self.stack_sprites.push(ResidentSprite { id, buffer, used: tick, units: None });
                 self.stack_sprites.len() - 1
             }
         };
@@ -5186,6 +5222,114 @@ impl GpuEffectsPipeline {
     }
 
     /// Whether title sprite `id` is on the GPU.
+    /// Layer `i` takes the resident sprite `id`'s glyphs each placed on
+    /// its own: `units` is the sprite's glyph map over `(x0, y0, w, h)`
+    /// (`u16::MAX` for no glyph), `glyphs` one sixteen-float record per
+    /// glyph as `klipp_title::GlyphPose::packed` lays it out (moved box,
+    /// dx dy scale alpha, anchor and clip rows). The twin of
+    /// `klipp_title::pose_sprite_glyphs`; only rows `y0..y1` are written.
+    #[allow(clippy::too_many_arguments)]
+    pub fn stack_layer_place_glyphs(
+        &mut self,
+        i: usize,
+        id: u64,
+        pixels: &[u8],
+        units: (u32, u32, u32, u32, &[u16]),
+        glyphs: &[[f32; 16]],
+        y0: u32,
+        y1: u32,
+    ) -> bool {
+        if self.is_device_lost() || i >= self.stack_layers.len() {
+            return false;
+        }
+        let (width, height) = self.stack_dims;
+        let pixel_count = self.stack_pixel_count();
+        let (ux0, uy0, uw, uh, index) = units;
+        if pixels.len() as u64 != pixel_count * 4 || index.len() as u64 != (uw as u64) * (uh as u64) || glyphs.is_empty() {
+            return false;
+        }
+        let y0 = y0.min(height);
+        let y1 = y1.min(height);
+        let layer = std::sync::Arc::clone(&self.stack_layers[i]);
+        let mut enc = self.encoder(Some("stack_sprite_clear"));
+        enc.clear_buffer(&layer, 0, Some(pixel_count * 16));
+        self.submit(enc);
+        if y1 <= y0 {
+            return true;
+        }
+        self.stack_sprite_tick += 1;
+        let tick = self.stack_sprite_tick;
+        let pos = match self.stack_sprites.iter().position(|r| r.id == id) {
+            Some(pos) => pos,
+            None => {
+                if self.stack_sprites.len() >= STACK_SPRITE_CAP {
+                    let oldest = self.stack_sprites.iter().enumerate().min_by_key(|(_, r)| r.used).map(|(i, _)| i).unwrap();
+                    self.stack_sprites.remove(oldest);
+                }
+                let buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("stack_resident_sprite"),
+                    size: pixel_count * 4,
+                    usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                    mapped_at_creation: false,
+                });
+                self.upload(&buffer, 0, pixels);
+                self.stack_sprites.push(ResidentSprite { id, buffer, used: tick, units: None });
+                self.stack_sprites.len() - 1
+            }
+        };
+        self.stack_sprites[pos].used = tick;
+        if self.stack_sprites[pos].units.as_ref().is_none_or(|u| (u.0, u.1, u.2, u.3) != (ux0, uy0, uw, uh)) {
+            let mut packed: Vec<u32> = Vec::with_capacity(index.len().div_ceil(2));
+            for pair in index.chunks(2) {
+                packed.push(pair[0] as u32 | ((pair.get(1).copied().unwrap_or(0) as u32) << 16));
+            }
+            let buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("stack_sprite_units"),
+                size: ((packed.len().max(1)) * 4) as u64,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            self.upload(&buffer, 0, bytemuck::cast_slice(&packed));
+            self.stack_sprites[pos].units = Some((ux0, uy0, uw, uh, buffer));
+        }
+        let table_bytes = (glyphs.len() * 64) as u64;
+        if self.sprite_glyph_table.as_ref().is_none_or(|b| b.size() < table_bytes) {
+            self.sprite_glyph_table = Some(self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("stack_sprite_glyphs"),
+                size: table_bytes.max(64),
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            }));
+        }
+        let flat: Vec<f32> = glyphs.iter().flatten().copied().collect();
+        let table = self.sprite_glyph_table.as_ref().unwrap();
+        self.upload(table, 0, bytemuck::cast_slice(&flat));
+        self.write_params(&SpriteGlyphsParams { width, height, y0, y1, n: glyphs.len() as u32, ux0, uy0, uw, uh, _p0: 0, _p1: 0, _p2: 0 });
+        let sprite = &self.stack_sprites[pos];
+        let units_buf = &sprite.units.as_ref().unwrap().4;
+        let bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("stack_sprite_glyphs"),
+            layout: &self.sprite_glyphs_bgl,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: sprite.buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: layer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 2, resource: self.params_binding() },
+                wgpu::BindGroupEntry { binding: 3, resource: units_buf.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 4, resource: table.as_entire_binding() },
+            ],
+        });
+        let rows_px = (y1 - y0) * width;
+        let mut enc = self.encoder(Some("stack_sprite_glyphs"));
+        {
+            let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: None, timestamp_writes: None });
+            pass.set_pipeline(&self.sprite_glyphs_pipeline);
+            pass.set_bind_group(0, &bg, &[]);
+            pass.dispatch_workgroups(rows_px.div_ceil(WORKGROUP_SIZE), 1, 1);
+        }
+        self.submit(enc);
+        true
+    }
+
     pub fn stack_sprite_resident(&self, id: u64) -> bool {
         self.stack_sprites.iter().any(|r| r.id == id)
     }
@@ -6853,6 +6997,23 @@ struct BlendLayerParams {
 
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct SpriteGlyphsParams {
+    width: u32,
+    height: u32,
+    y0: u32,
+    y1: u32,
+    n: u32,
+    ux0: u32,
+    uy0: u32,
+    uw: u32,
+    uh: u32,
+    _p0: u32,
+    _p1: u32,
+    _p2: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct SpriteRowsParams {
     width: u32,
     height: u32,
@@ -6888,6 +7049,9 @@ struct ResidentSprite {
     id: u64,
     buffer: wgpu::Buffer,
     used: u64,
+    /// The sprite's glyph map, `(x0, y0, w, h, two u16 per u32)`, once a
+    /// staggered motion has asked for it.
+    units: Option<(u32, u32, u32, u32, wgpu::Buffer)>,
 }
 
 /// Sprites kept on the GPU at once: a frame-sized RGBA8 buffer each.
@@ -9306,6 +9470,88 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         o = (lin * sa + vec3<f32>(params.under_r, params.under_g, params.under_b) * ua) / oa;
     }
     output[idx] = pack(vec4<f32>(o, oa));
+}
+"
+);
+
+// A resident sprite's glyphs each placed on its own — a motion that
+// staggers by character, word or line: `klipp_title`'s
+// `pose_sprite_glyphs`, then the sprite decode, in one. Every pixel in
+// the rows asks every glyph whose moved box holds it for its bilinear,
+// glyph-masked sample, and lays the glyphs over one another in order.
+const SHADER_SPRITE_GLYPHS: &str = concat!(
+    shader_pixel_storage_wgsl!(),
+    "
+struct Params { width: u32, height: u32, y0: u32, y1: u32, n: u32, ux0: u32, uy0: u32, uw: u32, uh: u32, _p0: u32, _p1: u32, _p2: u32 }
+@group(0) @binding(0) var<storage, read> sprite: array<u32>;
+@group(0) @binding(1) var<storage, read_write> output: array<vec4<f32>>;
+@group(0) @binding(2) var<uniform> params: Params;
+@group(0) @binding(3) var<storage, read> units: array<u32>;
+@group(0) @binding(4) var<storage, read> glyphs: array<vec4<f32>>;
+
+fn srgb_to_linear_c(c: f32) -> f32 {
+    if (c <= 0.04045) { return c / 12.92; }
+    return pow((c + 0.055) / 1.055, 2.4);
+}
+
+fn unit_at(x: i32, y: i32) -> u32 {
+    let mx = x - i32(params.ux0);
+    let my = y - i32(params.uy0);
+    if mx < 0 || my < 0 || mx >= i32(params.uw) || my >= i32(params.uh) { return 0xFFFFu; }
+    let i = u32(my) * params.uw + u32(mx);
+    let word = units[i >> 1u];
+    if (i & 1u) == 0u { return word & 0xFFFFu; }
+    return (word >> 16u) & 0xFFFFu;
+}
+
+fn tap(x: i32, y: i32, g: u32) -> vec4<f32> {
+    if x < 0 || y < 0 || x >= i32(params.width) || y >= i32(params.height) || unit_at(x, y) != g {
+        return vec4<f32>(0.0);
+    }
+    let packed = sprite[u32(y) * params.width + u32(x)];
+    let a = f32((packed >> 24u) & 0xFFu) / 255.0;
+    return vec4<f32>(f32((packed >> 0u) & 0xFFu) * a, f32((packed >> 8u) & 0xFFu) * a, f32((packed >> 16u) & 0xFFu) * a, a);
+}
+
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let idx = params.y0 * params.width + gid.x;
+    if idx >= params.y1 * params.width { return; }
+    let x = i32(idx % params.width);
+    let y = i32(idx / params.width);
+    var acc = vec4<f32>(0.0);
+    for (var g = 0u; g < params.n; g = g + 1u) {
+        let moved = glyphs[g * 4u];
+        if f32(x) < moved.x || f32(x) >= moved.z || f32(y) < moved.y || f32(y) >= moved.w { continue; }
+        let pose = glyphs[g * 4u + 1u];
+        let anch = glyphs[g * 4u + 2u];
+        let fx = (f32(x) + 0.5 - pose.x - anch.x) / pose.z + anch.x - 0.5;
+        let fy = (f32(y) + 0.5 - pose.y - anch.y) / pose.z + anch.y - 0.5;
+        let x0f = floor(fx);
+        let y0f = floor(fy);
+        let tx = fx - x0f;
+        let ty = fy - y0f;
+        let x0 = i32(x0f);
+        let y0 = i32(y0f);
+        let s = tap(x0, y0, g) * ((1.0 - tx) * (1.0 - ty))
+              + tap(x0 + 1, y0, g) * (tx * (1.0 - ty))
+              + tap(x0, y0 + 1, g) * ((1.0 - tx) * ty)
+              + tap(x0 + 1, y0 + 1, g) * (tx * ty);
+        if s.w <= 0.0 { continue; }
+        let a8 = clamp(floor(s.w * 255.0 * pose.w + 0.5), 0.0, 255.0);
+        if a8 <= 0.0 { continue; }
+        let a = a8 / 255.0;
+        let rgb = floor(s.xyz / s.w + vec3<f32>(0.5));
+        acc = vec4<f32>(rgb * a + acc.xyz * (1.0 - a), a + acc.w * (1.0 - a));
+    }
+    if acc.w <= 0.0 {
+        output[idx] = pack(vec4<f32>(0.0));
+        return;
+    }
+    // To the bytes the CPU twin stores, then decoded as an upload is.
+    let rgb8 = clamp(floor(acc.xyz / acc.w + vec3<f32>(0.5)), vec3<f32>(0.0), vec3<f32>(255.0));
+    let a8 = clamp(floor(acc.w * 255.0 + 0.5), 0.0, 255.0);
+    output[idx] = pack(vec4<f32>(srgb_to_linear_c(rgb8.x / 255.0), srgb_to_linear_c(rgb8.y / 255.0), srgb_to_linear_c(rgb8.z / 255.0), a8 / 255.0));
 }
 "
 );
@@ -15507,6 +15753,7 @@ pub fn shader_sources() -> Vec<(&'static str, &'static str)> {
         ("SHADER_SCALE_ALPHA", SHADER_SCALE_ALPHA),
         ("SHADER_U8_TO_TEXTURE", SHADER_U8_TO_TEXTURE),
         ("SHADER_SPRITE_PLACE", SHADER_SPRITE_PLACE),
+        ("SHADER_SPRITE_GLYPHS", SHADER_SPRITE_GLYPHS),
         ("SHADER_U8_FIT_TO_LINEAR", SHADER_U8_FIT_TO_LINEAR),
     ]
 }

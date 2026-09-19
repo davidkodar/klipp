@@ -218,3 +218,93 @@ fn a_posed_sprite_is_the_cpu_pose_uploaded() {
         );
     }
 }
+
+/// A sprite's glyphs placed one by one on the GPU — each moved, scaled
+/// about its own box and faded, laid over the ones before — are
+/// `klipp_title::pose_sprite_glyphs` decoded as rows, to a level.
+#[test]
+fn posed_glyphs_are_the_cpu_glyph_pose_uploaded() {
+    let Some(mut gpu) = pipeline() else { return };
+    // Three "glyphs": boxes of solid colour with soft edges, and a
+    // halo round each that the map gives to the nearest box.
+    let boxes = [[4i32, 8, 14, 30], [18, 8, 30, 30], [34, 10, 44, 28]];
+    let colours = [[240u8, 60, 40], [40, 220, 90], [70, 90, 250]];
+    let mut rgba = vec![0u8; (W * H * 4) as usize];
+    let (ux0, uy0, uw, uh) = (0u32, 4u32, W, 32u32);
+    let mut index = vec![u16::MAX; (uw * uh) as usize];
+    for y in 0..H as i32 {
+        for x in 0..W as i32 {
+            let mut best = (f32::MAX, u16::MAX);
+            for (g, b) in boxes.iter().enumerate() {
+                let ddx = (b[0] as f32 - x as f32).max(x as f32 - b[2] as f32).max(0.0);
+                let ddy = (b[1] as f32 - y as f32).max(y as f32 - b[3] as f32).max(0.0);
+                let d = (ddx * ddx + ddy * ddy).sqrt();
+                if d < best.0 {
+                    best = (d, g as u16);
+                }
+            }
+            let a = ((3.0 - best.0) / 3.0 * 255.0).clamp(0.0, 255.0) as u8;
+            if a > 0 {
+                let i = ((y as u32 * W + x as u32) * 4) as usize;
+                let c = colours[best.1 as usize];
+                rgba[i..i + 4].copy_from_slice(&[c[0], c[1], c[2], a]);
+                if y as u32 >= uy0 && (y as u32) < uy0 + uh {
+                    index[((y as u32 - uy0) * uw + x as u32) as usize] = best.1;
+                }
+            }
+        }
+    }
+    let units = klipp_title::UnitMap { x0: ux0, y0: uy0, w: uw, h: uh, index, boxes: boxes.to_vec(), parents: vec!['a', 'b', 'c'], pad: 3 };
+    let pose = |g: usize, dx: f32, dy: f32, scale: f32, alpha: f32, clip: Option<(i32, i32)>| {
+        let b = boxes[g];
+        let anchor = ((b[0] + b[2]) as f32 * 0.5, (b[1] + b[3]) as f32 * 0.5);
+        let grow = |v: i32, c: f32, sign: f32| c + (v as f32 + sign * 3.0 - c) * scale;
+        let mut moved = [
+            (grow(b[0], anchor.0, -1.0) + dx).floor() as i32 - 1,
+            (grow(b[1], anchor.1, -1.0) + dy).floor() as i32 - 1,
+            (grow(b[2], anchor.0, 1.0) + dx).ceil() as i32 + 1,
+            (grow(b[3], anchor.1, 1.0) + dy).ceil() as i32 + 1,
+        ];
+        if let Some((y0, y1)) = clip {
+            moved[1] = moved[1].max(y0);
+            moved[3] = moved[3].min(y1);
+        }
+        klipp_title::GlyphPose { dx, dy, scale, alpha, anchor, clip, moved }
+    };
+    let cases: Vec<Vec<klipp_title::GlyphPose>> = vec![
+        vec![pose(0, 0.0, 0.0, 1.0, 1.0, None), pose(1, 0.0, 0.0, 1.0, 1.0, None), pose(2, 0.0, 0.0, 1.0, 1.0, None)],
+        vec![pose(0, 5.0, -3.0, 1.0, 0.6, None), pose(1, 0.0, 6.0, 1.0, 1.0, None), pose(2, -8.0, 0.0, 1.0, 0.3, None)],
+        vec![pose(0, 0.0, 0.0, 1.3, 1.0, None), pose(1, 2.0, 1.0, 0.7, 0.8, None), pose(2, 0.0, 0.0, 1.0, 0.0, None)],
+        vec![pose(0, 0.0, 9.0, 1.0, 1.0, Some((8, 30))), pose(1, 0.0, 4.0, 1.0, 1.0, Some((8, 30))), pose(2, 0.0, 0.0, 1.0, 1.0, None)],
+        // Glyphs slid over one another: the later one lies on top.
+        vec![pose(0, 14.0, 0.0, 1.0, 1.0, None), pose(1, 0.0, 0.0, 1.0, 0.7, None), pose(2, -16.0, 0.0, 1.0, 1.0, None)],
+    ];
+    for (n, poses) in cases.iter().enumerate() {
+        let want_u8 = klipp_title::pose_sprite_glyphs(&rgba, W, H, &units, poses, (0, H));
+        assert!(gpu.stack_begin(W, H, 1));
+        assert!(gpu.stack_layer_from_srgb_u8_rows(0, &want_u8, 0, H));
+        assert!(gpu.stack_blend(0, 1.0, 0));
+        assert!(gpu.stack_finish_into_chain(true));
+        let want = gpu.stack_download_linear();
+
+        let packed: Vec<[f32; 16]> = poses.iter().map(|p| p.packed()).collect();
+        assert!(gpu.stack_begin(W, H, 1));
+        assert!(gpu.stack_layer_place_glyphs(0, 93, &rgba, (units.x0, units.y0, units.w, units.h, &units.index), &packed, 0, H));
+        assert!(gpu.stack_blend(0, 1.0, 0));
+        assert!(gpu.stack_finish_into_chain(true));
+        let got = gpu.stack_download_linear();
+        let worst = worst_level(&want, &got);
+        let at = want.iter().zip(&got).enumerate().max_by(|a, b| (a.1 .0 - a.1 .1).abs().total_cmp(&(b.1 .0 - b.1 .1).abs())).map(|(i, _)| i).unwrap_or(0);
+        let px = at / 4;
+        assert!(
+            worst <= 2.3,
+            "posed glyphs case {n} differ by {worst:.3} levels at pixel ({}, {}) channel {}: twin {:?} gpu {:?}, twin bytes {:?}",
+            px % W as usize,
+            px / W as usize,
+            at % 4,
+            &want[px * 4..px * 4 + 4],
+            &got[px * 4..px * 4 + 4],
+            &want_u8[px * 4..px * 4 + 4],
+        );
+    }
+}

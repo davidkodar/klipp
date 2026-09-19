@@ -391,7 +391,7 @@ pub struct Renderer {
     /// The warm-up thread's ends: titles to render ahead go out, their
     /// resting renders come back for `titles` to keep.
     warm_tx: Option<std::sync::mpsc::Sender<(klipp_timeline::TitleData, u32, u32)>>,
-    warm_rx: Option<std::sync::mpsc::Receiver<(klipp_timeline::TitleData, u32, u32, Vec<u8>)>>,
+    warm_rx: Option<std::sync::mpsc::Receiver<(klipp_timeline::TitleData, u32, u32, klipp_title::RestingRender)>>,
     glyph_cache: HashMap<ClipId, klipp_title::GlyphCacheEntry>,
     working: WorkingColorspace,
     /// Why the GPU stack last declined a frame, so the log says it once.
@@ -518,9 +518,9 @@ impl Renderer {
                     let mut titles = klipp_title::TitleRenderer::new();
                     while let Ok((td, w, h)) = rx.recv() {
                         let t = Instant::now();
-                        let pixels = titles.render_resting(&td, w, h);
+                        let render = titles.render_resting(&td, w, h);
                         tracing::debug!("title warmed ahead at {w}x{h} in {:.1} ms", t.elapsed().as_secs_f64() * 1000.0);
-                        if done_tx.send((td, w, h, pixels)).is_err() {
+                        if done_tx.send((td, w, h, render)).is_err() {
                             break;
                         }
                     }
@@ -542,8 +542,8 @@ impl Renderer {
     pub fn adopt_warm_titles(&mut self) -> usize {
         let mut n = 0;
         if let Some(rx) = &self.warm_rx {
-            while let Ok((td, w, h, pixels)) = rx.try_recv() {
-                self.titles.adopt(&td, w, h, pixels);
+            while let Ok((td, w, h, render)) = rx.try_recv() {
+                self.titles.adopt(&td, w, h, render);
                 n += 1;
             }
         }
@@ -1386,11 +1386,26 @@ impl Renderer {
                 // keeps that render on the GPU: no raster, no upload, one
                 // pass. Anything else is rendered here and goes up as rows.
                 match self.titles.frame_with_window(td, width, height, gpu, clip_time as f32, Some(total)) {
-                    klipp_title::TitleFrame::Placed { sprite, dx, dy, opacity, scale, anchor, under, rows: r } => {
+                    klipp_title::TitleFrame::Placed { sprite, dx, dy, opacity, scale, anchor, under, blur, rows: r } => {
                         rows = r;
+                        if blur > 0.5 {
+                            // The blur entrance: the placed sprite, blurred
+                            // on the layer with the clip's other effects.
+                            fx.push(BuiltinEffect::GaussianBlur { radius: blur });
+                        }
                         self.executor.gpu_pipeline_or_init().is_some_and(|p| {
                             p.stack_layer_place_sprite_posed(slot, sprite.id, &sprite.pixels, dx, dy, opacity, scale, anchor, under, r.0, r.1)
                         })
+                    }
+                    klipp_title::TitleFrame::Glyphs { sprite, poses, rows: r } => {
+                        rows = r;
+                        let packed: Vec<[f32; 16]> = poses.iter().map(|p| p.packed()).collect();
+                        match &sprite.units {
+                            Some(u) => self.executor.gpu_pipeline_or_init().is_some_and(|p| {
+                                p.stack_layer_place_glyphs(slot, sprite.id, &sprite.pixels, (u.x0, u.y0, u.w, u.h, &u.index), &packed, r.0, r.1)
+                            }),
+                            None => false,
+                        }
                     }
                     klipp_title::TitleFrame::Rendered { pixels, rows: r } => {
                         rows = r;
@@ -1765,6 +1780,12 @@ impl Renderer {
                     );
                 }
                 let mut linear = klipp_effects::srgb_u8_to_linear_f32_rgba(&u8s);
+                let blur = self.titles.last_blur();
+                if blur > 0.5 {
+                    // The blur entrance, as the GPU stack blurs the placed sprite.
+                    let luma = klipp_color::linear::luma_coefs(self.working);
+                    linear = klipp_effects::apply_effects_with_luma(&[BuiltinEffect::GaussianBlur { radius: blur }], linear, width, height, clip_time, luma);
+                }
                 self.authored_to_working(&mut linear);
                 (GradeInput::Cpu(Arc::new(linear)), None)
             }
