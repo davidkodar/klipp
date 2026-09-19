@@ -2802,6 +2802,7 @@ dependencies = [
  "klipp-frei0r",
  "klipp-grade-model",
  "klipp-testing",
+ "klipp-title",
  "naga",
  "pollster 0.4.0",
  "rayon",
