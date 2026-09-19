@@ -395,6 +395,12 @@ pub enum ControlCommand {
         query: String,
         #[serde(default)]
         limit: Option<u32>,
+        /// Only tracks whose licence allows commercial use.
+        #[serde(default)]
+        commercial_only: bool,
+        /// Only instrumental tracks.
+        #[serde(default)]
+        instrumental: bool,
     },
     /// Search royalty-free sound effects (Freesound) by keyword. A read;
     /// needs a Freesound token in the user's key config.

@@ -2214,14 +2214,14 @@ reference:   {}",
             }))
         }
 
-        ControlCommand::SearchMusic { query, limit } => {
+        ControlCommand::SearchMusic { query, limit, commercial_only, instrumental } => {
             if in_batch {
                 return read_in_batch("search_music");
             }
             if !klipp_audio_search::music_available() {
                 return Err("music search is not set up: put jamendo_client_id in ~/.config/klipp/keys.toml (or set KLIPP_JAMENDO_CLIENT_ID)".into());
             }
-            let tracks = klipp_audio_search::search_music(&query, limit.unwrap_or(12))?;
+            let tracks = klipp_audio_search::search_music_filtered(&query, limit.unwrap_or(12), klipp_audio_search::MusicFilter { commercial_only, instrumental })?;
             let mut text = format!("{} royalty-free music results for \"{query}\" (Jamendo):\n", tracks.len());
             for t in &tracks {
                 text.push_str(&format!("  {} — {}  ({}, {:.0}s){}\n", t.title, t.artist, t.license, t.duration_secs, if t.commercial_ok { "" } else { " [non-commercial]" }));

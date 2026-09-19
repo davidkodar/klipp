@@ -492,6 +492,8 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
         "klipp_search_music" => {
             let mut v = json!({ "method": "search_music", "query": arg_str(args, "query")? });
             if let Some(x) = args.get("limit").and_then(|v| v.as_u64()) { v["limit"] = json!(x); }
+            if let Some(c) = args.get("commercial_only").and_then(|v| v.as_bool()) { v["commercial_only"] = json!(c); }
+            if let Some(c) = args.get("instrumental").and_then(|v| v.as_bool()) { v["instrumental"] = json!(c); }
             v
         }
         "klipp_search_sfx" => {
@@ -1053,10 +1055,16 @@ fn tool_definitions() -> Vec<Value> {
               grade {clip_id, exposure?, contrast?, saturation?, temperature?, tint?, lift?, gamma?, \
               gain?, highlights?, shadows?, vibrance?, reset?} — a picture clip's primary grade: \
               what is given is set, the rest stays. Every knob is 0 at neutral except saturation \
-              and contrast (1). exposure in stops; temperature/tint the white balance; \
+              and contrast, which are multipliers with 1 as shot (1.1 a touch more, 0.9 less); exposure in stops; temperature/tint the white balance; \
               lift/gamma/gain the shadows/mids/highlights; vibrance is skin-safe saturation; \
               reset takes it to neutral first. Read frame_stats and grade to the numbers; grade \
               for continuity first — shots that follow each other should match — then the look.\n\
+              slip {clip_id, secs} — move what a clip shows, not the clip: source in and out both by \
+              secs (later in the file for positive), the timeline untouched. role {clip_id, role} — \
+              what a clip is to the mix and the checks: dialogue, music, sfx, ambience, foley, \
+              voiceover, broll, graphics; a bed marked music is never taken for speech. format \
+              {width, height, fps?} — the sequence's picture size (and rate): the delivery's, \
+              the picture fitted, never stretched.\n\
               redact {clip_id, x, y, w, h, from?, to?, kind?, amount?} — hide a patch of the picture \
               (an email, a key, a face) for a stretch: a cropped copy pixelated (kind mosaic, \
               default) or blurred on a video track above; x, y, w, h are fractions of the frame \
@@ -1087,7 +1095,7 @@ fn tool_definitions() -> Vec<Value> {
               (the default, and all an interview or documentary wants), dip_to_black, dip_to_white, \
               or a stylised one (zoom, whip, glitch, film_burn) a piece asks for by its style, \
               never by default. Both clips need footage beyond the cut to overlap.\n\
-              style {clip_id | track, from?, to?, size?, color?, font?, bold?, align?, x?, y?, backing?, outline?} \
+              style {clip_id | track, from?, to?, size?, color?, font?, bold?, align?, x?, y?, backing?, outline?, full_frame?} \
               — the look and place of one title, or of every title on a track (\"subtitle\" for \
               all the captions), between from and to when given: size in pixels of a 1080-line \
               frame, color #rrggbb, x and y where the text's centre goes (0 to 1), backing how \
@@ -1167,10 +1175,16 @@ fn tool_definitions() -> Vec<Value> {
               grade {clip_id, exposure?, contrast?, saturation?, temperature?, tint?, lift?, gamma?, \
               gain?, highlights?, shadows?, vibrance?, reset?} — a picture clip's primary grade: \
               what is given is set, the rest stays. Every knob is 0 at neutral except saturation \
-              and contrast (1). exposure in stops; temperature/tint the white balance; \
+              and contrast, which are multipliers with 1 as shot (1.1 a touch more, 0.9 less); exposure in stops; temperature/tint the white balance; \
               lift/gamma/gain the shadows/mids/highlights; vibrance is skin-safe saturation; \
               reset takes it to neutral first. Read frame_stats and grade to the numbers; grade \
               for continuity first — shots that follow each other should match — then the look.\n\
+              slip {clip_id, secs} — move what a clip shows, not the clip: source in and out both by \
+              secs (later in the file for positive), the timeline untouched. role {clip_id, role} — \
+              what a clip is to the mix and the checks: dialogue, music, sfx, ambience, foley, \
+              voiceover, broll, graphics; a bed marked music is never taken for speech. format \
+              {width, height, fps?} — the sequence's picture size (and rate): the delivery's, \
+              the picture fitted, never stretched.\n\
               redact {clip_id, x, y, w, h, from?, to?, kind?, amount?} — hide a patch of the picture \
               (an email, a key, a face) for a stretch: a cropped copy pixelated (kind mosaic, \
               default) or blurred on a video track above; x, y, w, h are fractions of the frame \
@@ -1201,7 +1215,7 @@ fn tool_definitions() -> Vec<Value> {
               (the default, and all an interview or documentary wants), dip_to_black, dip_to_white, \
               or a stylised one (zoom, whip, glitch, film_burn) a piece asks for by its style, \
               never by default. Both clips need footage beyond the cut to overlap.\n\
-              style {clip_id | track, from?, to?, size?, color?, font?, bold?, align?, x?, y?, backing?, outline?} \
+              style {clip_id | track, from?, to?, size?, color?, font?, bold?, align?, x?, y?, backing?, outline?, full_frame?} \
               — the look and place of one title, or of every title on a track (\"subtitle\" for \
               all the captions), between from and to when given: size in pixels of a 1080-line \
               frame, color #rrggbb, x and y where the text's centre goes (0 to 1), backing how \
@@ -1335,7 +1349,7 @@ fn tool_definitions() -> Vec<Value> {
               preview_url before committing, then add it with klipp_add_music. Needs a Jamendo \
               client id in the user's key config. Use the reference's feel (style_profile) to \
               pick music of matching energy — never the reference's own track.",
-             json!({ "query": { "type": "string" }, "limit": { "type": "integer" } }), vec!["query"]),
+             json!({ "query": { "type": "string" }, "limit": { "type": "integer" }, "commercial_only": { "type": "boolean", "description": "only tracks whose licence allows commercial use" }, "instrumental": { "type": "boolean", "description": "only instrumental tracks, for a promo with its own titles" } }), vec!["query"]),
         tool("klipp_search_sfx",
              "Search royalty-free sound effects by keyword (e.g. \"whoosh\", \"door slam\", \"rain\", \
               \"impact\") from Freesound. Each result shows its licence and whether it clears \
@@ -1350,7 +1364,7 @@ fn tool_definitions() -> Vec<Value> {
               page_url). Then place it on an audio track, mark the track Music, and duck it \
               under speech. Honour the licence — keep non-commercial tracks out of commercial work.",
              json!({ "title": { "type": "string" }, "artist": { "type": "string" }, "track_id": { "type": "string" }, "download_url": { "type": "string" }, "preview_url": { "type": "string" }, "license": { "type": "string" }, "license_url": { "type": "string" }, "page_url": { "type": "string" } }),
-             vec!["download_url"]),
+             vec![]),
         tool("klipp_match_grade",
              "Match one shot's grade to another's. It reads a frame of each clip through the \
               scopes and sets the target's exposure, lift, gain, temperature and tint to bring \

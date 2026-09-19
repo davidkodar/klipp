@@ -21,6 +21,15 @@ pub struct PlanTitle {
     /// break or a call to action). Left out: a heading.
     #[serde(default)]
     pub style: String,
+    /// The text's colour, `#rrggbb`; left out, the brand's first colour
+    /// (white on a card).
+    #[serde(default)]
+    pub color: Option<String>,
+    /// A card's fill, or a heading's or callout's backing panel,
+    /// `#rrggbb`; left out, the brand's first colour for a card and a
+    /// dark panel otherwise.
+    #[serde(default)]
+    pub fill: Option<String>,
 }
 
 /// An animated push on a segment, scale `from` to `to` toward `x`,`y`.
@@ -79,6 +88,17 @@ pub struct PlanMusic {
     /// How far the music drops under speech, in dB; 9 by default.
     #[serde(default)]
     pub duck_db: Option<f32>,
+    /// Where in the file the bed starts, in seconds: put the first
+    /// downbeat at 0 of the cut. 0 when left out.
+    #[serde(default)]
+    pub source_in_secs: Option<f64>,
+    /// The bed's level in dB (0 as it is), and its fades in seconds.
+    #[serde(default)]
+    pub volume_db: Option<f32>,
+    #[serde(default)]
+    pub fade_in_secs: Option<f64>,
+    #[serde(default)]
+    pub fade_out_secs: Option<f64>,
 }
 
 /// The paper edit. `approved` is set by a person (or on their word),

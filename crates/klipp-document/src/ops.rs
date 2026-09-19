@@ -304,6 +304,24 @@ pub enum Op {
         #[serde(default)]
         amount: Option<f32>,
     },
+    /// Move what a clip shows without moving the clip: its source in and
+    /// out both by `secs` (later in the file for positive), the timeline
+    /// untouched. Refused past the file's start or end.
+    Slip { clip_id: ClipRef, secs: f64 },
+    /// What a clip is to the mix and the checks: "dialogue", "music",
+    /// "sfx", "ambience", "foley", "voiceover", "broll" or "graphics". A
+    /// music bed and a sound effect are told from speech by this, so
+    /// they are never taken for speech and speech is never ducked.
+    Role { clip_id: ClipRef, role: String },
+    /// The sequence's picture size, and its rate when given: what the
+    /// delivery is. The picture is fitted, never stretched. The brief's
+    /// size, when the footage is another.
+    Format {
+        width: u32,
+        height: u32,
+        #[serde(default)]
+        fps: Option<f64>,
+    },
     /// Steady a shaky clip. `smoothing` 0 to 1 is how much camera motion
     /// is ironed out (0.5 default); the frame is cropped a little to hide
     /// the edges it moves.
@@ -466,6 +484,10 @@ pub enum Op {
         backing: Option<f32>,
         #[serde(default)]
         outline: Option<f32>,
+        /// A solid colour card behind everything, `#rrggbb`: a card's
+        /// fill, changed after the fact.
+        #[serde(default)]
+        full_frame: Option<String>,
     },
     /// Create a title from scratch with any look and motion — the way to
     /// put a heading, a callout or a hero card on screen. `text` is the
@@ -537,6 +559,7 @@ pub enum Op {
 /// What a `style` op changes, gathered.
 #[derive(Debug, Clone, Default, PartialEq)]
 struct Look {
+    full_frame: Option<[u8; 4]>,
     size: Option<f32>,
     color: Option<[u8; 4]>,
     font: Option<String>,
@@ -989,6 +1012,39 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
             let to = match to { Some(a) => Some(resolve_anchor(seq, fps, a, i)?), None => None };
             redact(seq, pool, fps, i, ti, clip, from, to, [*x, *y, *w, *h], kind, *amount)
         }
+        Op::Slip { clip_id, secs: by } => {
+            let (ti, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
+            slip(seq, pool, fps, i, ti, clip, *by)
+        }
+        Op::Role { clip_id, role } => {
+            let (_, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
+            let new = match role.trim().to_lowercase().as_str() {
+                "dialogue" | "speech" => klipp_core::ClipRole::Dialogue,
+                "music" => klipp_core::ClipRole::Music,
+                "sfx" | "effects" | "effect" => klipp_core::ClipRole::SFX,
+                "ambience" | "atmos" => klipp_core::ClipRole::Ambience,
+                "foley" => klipp_core::ClipRole::Foley,
+                "voiceover" | "vo" => klipp_core::ClipRole::Voiceover,
+                "broll" | "b-roll" => klipp_core::ClipRole::BRoll,
+                "graphics" | "title" => klipp_core::ClipRole::Graphics,
+                other => return Err(refuse(i, format!("\"{other}\" is not a role"), "use dialogue, music, sfx, ambience, foley, voiceover, broll or graphics")),
+            };
+            let what = format!("{} is {}", clip_name(seq, pool, clip), role.trim().to_lowercase());
+            Ok((what, EditCommand::SetClipRole { clip_id: clip.id, old: clip.role, new }, vec![clip.id]))
+        }
+        Op::Format { width, height, fps: rate } => {
+            if *width < 16 || *height < 16 || *width > 16384 || *height > 16384 {
+                return Err(refuse(i, format!("{width}x{height} is not a picture size"), "give the delivery's width and height in pixels"));
+            }
+            let new_fps = match rate {
+                Some(r) if *r > 0.0 && r.is_finite() => fps_from_f64(*r),
+                Some(r) => return Err(refuse(i, format!("{r} is not a frame rate"), "give the rate in frames a second, or leave it out")),
+                None => seq.fps,
+            };
+            let new = (klipp_core::Resolution { width: *width, height: *height }, new_fps);
+            let what = format!("the sequence becomes {width}x{height} at {:.3} fps (was {}x{} at {:.3})", new_fps.as_f64(), seq.resolution.width, seq.resolution.height, seq.fps.as_f64());
+            Ok((what, EditCommand::SetSequenceFormat { old: (seq.resolution, seq.fps), new }, Vec::new()))
+        }
         Op::Reframe { clip_id, scale, x, y } => {
             let (ti, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
             reframe(seq, pool, i, ti, clip, *scale, *x, *y)
@@ -1018,7 +1074,10 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
             let (ti, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
             let knobs: [(&str, &str, Option<f32>, f32, f32); 11] = [
                 ("exposure", "exposure", *exposure, -6.0, 6.0),
-                ("contrast", "contrast", *contrast, 0.0, 4.0),
+                // The grade's contrast is 0 at neutral (+1 doubles the distance
+                // from mid grey); the op speaks in the multiplier the UI shows,
+                // 1 as shot, like saturation.
+                ("contrast", "contrast", contrast.map(|c| c - 1.0), -1.0, 3.0),
                 ("saturation", "saturation", *saturation, 0.0, 4.0),
                 ("temperature", "temperature", *temperature, -1.0, 1.0),
                 ("tint", "tint", *tint, -1.0, 1.0),
@@ -1031,8 +1090,9 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
             ];
             grade(seq, pool, i, ti, clip, &knobs, *reset)
         }
-        Op::Style { clip_id, track, from, to, size, color, font, bold, align, x, y, backing, outline } => {
+        Op::Style { clip_id, track, from, to, size, color, font, bold, align, x, y, backing, outline, full_frame } => {
             let look = Look {
+                full_frame: full_frame.as_deref().map(|c| parse_color(c).ok_or_else(|| refuse(i, format!("\"{c}\" is not a colour"), "write the full-frame colour as #rrggbb"))).transpose()?,
                 size: *size,
                 color: color.as_deref().map(|c| parse_color(c).ok_or_else(|| refuse(i, format!("\"{c}\" is not a colour"), "write it as #rrggbb or #rrggbbaa"))).transpose()?,
                 font: font.clone(),
@@ -2288,6 +2348,39 @@ fn qualify(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip, a
     Ok((what, EditCommand::SetNodeGraph { clip_id: clip.id, old_graph: clip.node_graph.clone(), new_graph: graph }, vec![clip.id]))
 }
 
+/// A rate as a fraction: the NTSC ones over 1001, the rest whole.
+fn fps_from_f64(rate: f64) -> Fps {
+    let ntsc = rate * 1001.0 / 1000.0;
+    if (ntsc - ntsc.round()).abs() < 0.01 && (rate - rate.round()).abs() > 0.01 {
+        Fps::new((ntsc.round() as u32) * 1000, 1001)
+    } else {
+        Fps::new(rate.round().max(1.0) as u32, 1)
+    }
+}
+
+fn slip(seq: &Sequence, pool: &MediaPool, fps: Fps, i: usize, ti: usize, clip: &Clip, by: f64) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
+    let ClipKind::Media { media_id } = &clip.kind else {
+        return Err(refuse(i, format!("{} is not a media clip", clip_name(seq, pool, clip)), "slip a clip from a file"));
+    };
+    if seq.tracks[ti].locked {
+        return Err(refuse(i, format!("track {ti} is locked"), "unlock it first"));
+    }
+    let item = pool.get(media_id).ok_or_else(|| refuse(i, format!("no media item {}", media_id.0), "media ids are in list_media"))?;
+    let shift = snap(by.abs(), fps);
+    let (new_in, new_out) = if by >= 0.0 { (clip.source_in + shift, clip.source_out + shift) } else { (clip.source_in - shift, clip.source_out - shift) };
+    if new_in.value < 0 {
+        return Err(refuse(i, format!("{} would start {:.2} s before the file begins", clip_name(seq, pool, clip), -secs(new_in)), "slip it by less"));
+    }
+    if secs(new_out) > secs(item.duration) + 1e-6 {
+        return Err(refuse(i, format!("{} would run {:.2} s past the end of {}", clip_name(seq, pool, clip), secs(new_out) - secs(item.duration), item.filename), "slip it by less"));
+    }
+    if shift.value == 0 {
+        return Err(refuse(i, "a slip of no frames", "give secs of at least a frame"));
+    }
+    let what = format!("slip {} by {:+.2} s: it now shows {:.2}-{:.2} s of the file, where it was", clip_name(seq, pool, clip), if by >= 0.0 { secs(shift) } else { -secs(shift) }, secs(new_in), secs(new_out));
+    Ok((what, EditCommand::LegacySlipClip { clip_id: clip.id, old_source_in: clip.source_in, old_source_out: clip.source_out, new_source_in: new_in, new_source_out: new_out }, vec![clip.id]))
+}
+
 fn stabilize(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip, smoothing: f32) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
     require_picture(seq, pool, i, ti, clip, "stabilise")?;
     if !smoothing.is_finite() || !(0.0..=1.0).contains(&smoothing) {
@@ -2592,7 +2685,9 @@ fn restyle(td: &klipp_timeline::TitleData, look: &Look) -> klipp_timeline::Title
             }
         }
     }
-    if let Some(dark) = look.backing {
+    if let Some(color) = look.full_frame {
+        new.background = TitleBackground::FullFrame { color };
+    } else if let Some(dark) = look.backing {
         new.background = if dark <= 0.0 {
             TitleBackground::None
         } else {

@@ -198,14 +198,52 @@ pub fn search_sfx(query: &str, limit: u32) -> Result<Vec<Track>, String> {
     Ok(tracks)
 }
 
+/// What a music search is narrowed to.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct MusicFilter {
+    /// Only tracks whose licence allows commercial use.
+    pub commercial_only: bool,
+    /// Only instrumental tracks: no voice over a promo's own titles.
+    pub instrumental: bool,
+}
+
 /// Search Jamendo for music. `query` is matched as fuzzy tags (moods,
-/// genres), so "upbeat electronic" finds upbeat electronic tracks.
+/// genres), so "upbeat electronic" finds upbeat electronic tracks; when
+/// the tags find nothing, the words are tried as a plain search, then
+/// each word alone, so a natural phrase still finds something.
 pub fn search_music(query: &str, limit: u32) -> Result<Vec<Track>, String> {
-    let cid = jamendo_client_id().ok_or_else(|| "no Jamendo client id set — put jamendo_client_id in ~/.config/klipp/keys.toml or set KLIPP_JAMENDO_CLIENT_ID".to_string())?;
+    search_music_filtered(query, limit, MusicFilter::default())
+}
+
+pub fn search_music_filtered(query: &str, limit: u32, filter: MusicFilter) -> Result<Vec<Track>, String> {
     let limit = limit.clamp(1, 50);
-    let q = encode(query.trim());
+    // Ask for more than wanted when a filter will thin the results.
+    let ask = if filter.commercial_only || filter.instrumental { (limit * 3).min(200) } else { limit };
+    let words: Vec<String> = query.split_whitespace().map(|w| w.to_lowercase()).collect();
+    let mut attempts: Vec<String> = vec![format!("fuzzytags={}", encode(&words.join("+"))), format!("search={}", encode(query.trim()))];
+    if words.len() > 1 {
+        attempts.extend(words.iter().map(|w| format!("fuzzytags={}", encode(w))));
+    }
+    let mut tracks = Vec::new();
+    for extra in attempts {
+        tracks = jamendo_tracks(&extra, ask, filter.instrumental)?;
+        tracks.retain(|t| !t.preview_url.is_empty() || !t.download_url.is_empty());
+        if filter.commercial_only {
+            tracks.retain(|t| t.commercial_ok);
+        }
+        if !tracks.is_empty() {
+            break;
+        }
+    }
+    tracks.truncate(limit as usize);
+    Ok(tracks)
+}
+
+fn jamendo_tracks(extra: &str, limit: u32, instrumental: bool) -> Result<Vec<Track>, String> {
+    let cid = jamendo_client_id().ok_or_else(|| "no Jamendo client id set — put jamendo_client_id in ~/.config/klipp/keys.toml or set KLIPP_JAMENDO_CLIENT_ID".to_string())?;
+    let vocal = if instrumental { "&vocalinstrumental=instrumental" } else { "" };
     let url = format!(
-        "https://api.jamendo.com/v3.0/tracks/?client_id={cid}&format=json&limit={limit}&order=popularity_total&include=musicinfo+licenses&audioformat=mp32&fuzzytags={q}"
+        "https://api.jamendo.com/v3.0/tracks/?client_id={cid}&format=json&limit={limit}&order=popularity_total&include=musicinfo+licenses&audioformat=mp32{vocal}&{extra}"
     );
     let text = ureq::get(&url)
         .timeout(std::time::Duration::from_secs(30))

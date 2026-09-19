@@ -23,7 +23,15 @@ impl MediaAnalysis {
     /// versions; empty fields for what has not been made.
     pub fn load(path: &std::path::Path) -> Self {
         let Some(key) = crate::store::key_for(path) else { return Self::default() };
-        Self::load_key(&key)
+        #[allow(unused_mut)]
+        let mut report = Self::load_key(&key);
+        // A library track or effect has no speech: a transcript made of
+        // it before that was known is a hallucination, and is not read.
+        #[cfg(feature = "transcript")]
+        if crate::is_licensed_audio(path) {
+            report.transcript = None;
+        }
+        report
     }
 
     pub fn load_key(key: &str) -> Self {

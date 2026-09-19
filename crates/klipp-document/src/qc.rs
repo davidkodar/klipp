@@ -199,8 +199,11 @@ pub fn check(seq: &Sequence, pool: &MediaPool, transcripts: &dyn Transcripts) ->
             if source_cut_between || to_settle {
                 continue;
             }
-            // Covered when a picture on a track above runs across the cut.
-            let covered = pictures.iter().any(|(tj, c)| tj < ti && secs(c.timeline_in) <= cut - 0.2 && secs(c.timeline_out) >= cut + 0.2);
+            // Covered when a picture on a track above runs across the cut,
+            // or a title does: a card hides the join, a heading carries the
+            // eye across it.
+            let title_over = seq.tracks.iter().filter(|t| t.kind == TrackKind::Text && t.visible).flat_map(|t| t.clips.iter()).any(|c| c.enabled && matches!(c.kind, ClipKind::Title(_)) && secs(c.timeline_in) <= cut - 0.2 && secs(c.timeline_out) >= cut + 0.2);
+            let covered = title_over || pictures.iter().any(|(tj, c)| tj < ti && secs(c.timeline_in) <= cut - 0.2 && secs(c.timeline_out) >= cut + 0.2);
             if !covered {
                 add(Severity::Warning, "jump_cut", Some(cut), format!("a jump cut: {} cuts to itself, {:.1} s later in the file, with nothing over the join", clip_label(pool, a), secs(b.source_in) - secs(a.source_out)), "Cover the join with B-roll or a reaction, or keep it if jump cuts are the piece's style");
             }
@@ -303,6 +306,16 @@ pub fn check(seq: &Sequence, pool: &MediaPool, transcripts: &dyn Transcripts) ->
         for c in t.clips.iter().filter(|c| is_heard(seq, pool, t, c)) {
             let Some(media_id) = c.media_id() else { continue };
             let Some(item) = pool.get(&media_id) else { continue };
+            // A clip's role settles what it is before any transcript does:
+            // a bed is music, an effect is neither speech nor music.
+            match c.role {
+                klipp_core::ClipRole::Music => {
+                    musics.push(c);
+                    continue;
+                }
+                klipp_core::ClipRole::SFX | klipp_core::ClipRole::Ambience | klipp_core::ClipRole::Foley => continue,
+                _ => {}
+            }
             let words = cache.entry(media_id).or_insert_with(|| transcripts.words(item));
             let (s_in, s_out) = (secs(c.source_in), secs(c.source_out));
             let inside: Vec<&SpokenWord> = words.as_deref().unwrap_or(&[]).iter().filter(|w| w.end_secs > s_in && w.start_secs < s_out).collect();

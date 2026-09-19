@@ -66,6 +66,17 @@ impl DocumentView<'_> {
             EditCommand::SetEditPlan { old, .. } => {
                 self.sequences[self.active].edit_plan = old.as_deref().cloned();
             }
+            EditCommand::SetClipRole { clip_id, old, .. } => {
+                if let Some(c) = self.sequences[self.active].tracks.iter_mut().flat_map(|t| t.clips.iter_mut()).find(|c| c.id == *clip_id) {
+                    c.role = *old;
+                }
+            }
+            EditCommand::SetSequenceFormat { old, .. } => {
+                let seq = &mut self.sequences[self.active];
+                seq.resolution = old.0;
+                seq.fps = old.1;
+                *self.fps = old.1;
+            }
             EditCommand::AddTitleClip { clip, track_index, created_track } => {
                 let seq = &mut self.sequences[self.active];
                 if *created_track {
@@ -629,6 +640,17 @@ impl DocumentView<'_> {
             }
             EditCommand::SetEditPlan { new, .. } => {
                 self.sequences[self.active].edit_plan = new.as_deref().cloned();
+            }
+            EditCommand::SetClipRole { clip_id, new, .. } => {
+                if let Some(c) = self.sequences[self.active].tracks.iter_mut().flat_map(|t| t.clips.iter_mut()).find(|c| c.id == *clip_id) {
+                    c.role = *new;
+                }
+            }
+            EditCommand::SetSequenceFormat { new, .. } => {
+                let seq = &mut self.sequences[self.active];
+                seq.resolution = new.0;
+                seq.fps = new.1;
+                *self.fps = new.1;
             }
             EditCommand::AddTitleClip { clip, track_index, created_track } => {
                 let seq = &mut self.sequences[self.active];

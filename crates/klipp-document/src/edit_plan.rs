@@ -116,7 +116,19 @@ pub fn to_ops(plan: &EditPlan, seq: &Sequence, pool: &MediaPool, brief: Option<&
             with_audio: s.with_audio,
         });
         if let Some(z) = &s.zoom {
-            ops.push(Op::Zoom { clip_id: clip(i), from: z.from, to: z.to, x: z.x, y: z.y });
+            if (z.from - z.to).abs() < 1e-4 {
+                // No movement asked for: a reframe, held.
+                ops.push(Op::Reframe { clip_id: clip(i), scale: z.from, x: z.x, y: z.y });
+            } else {
+                ops.push(Op::Zoom { clip_id: clip(i), from: z.from, to: z.to, x: z.x, y: z.y });
+            }
+        }
+        // The delivery's size is the brief's, not the first file's: the
+        // first place sets the sequence to the footage, this puts it right.
+        if i == 0 && start == 0.0 && seq.tracks.iter().all(|t| t.clips.is_empty()) {
+            if let Some((w, h)) = brief.and_then(|b| b.width.zip(b.height)) {
+                ops.push(Op::Format { width: w, height: h, fps: None });
+            }
         }
     }
     // The joins: a transition sits on the outgoing clip, the one before.
@@ -135,16 +147,22 @@ pub fn to_ops(plan: &EditPlan, seq: &Sequence, pool: &MediaPool, brief: Option<&
         let any_with_audio = plan.segments.iter().any(|s| s.with_audio);
         let music_track = seq.tracks.len() + usize::from(!has_video) + usize::from(!has_audio && any_with_audio);
         ops.push(Op::AddTrack { kind: "audio".into(), name: Some("Music".into()) });
-        let laid = total.min(file);
+        let from = m.source_in_secs.unwrap_or(0.0).max(0.0);
+        let laid = total.min((file - from).max(0.0));
         ops.push(Op::Place {
             media_id: m.media_id,
             track: TrackRef::Index(music_track),
             at: Anchor::Secs(start),
-            source_in: Some(0.0),
-            source_out: Some(laid),
+            source_in: Some(from),
+            source_out: Some(from + laid),
             insert: false,
             with_audio: true,
         });
+        // The bed is what it is to the mix, and at the level asked for.
+        ops.push(Op::Role { clip_id: ClipRef::At { track: music_track, secs: start + laid / 2.0 }, role: "music".into() });
+        if m.volume_db.is_some() || m.fade_in_secs.is_some() || m.fade_out_secs.is_some() {
+            ops.push(Op::Audio { clip_id: ClipRef::At { track: music_track, secs: start + laid / 2.0 }, volume_db: m.volume_db, gain_db: None, pan: None, fade_in: m.fade_in_secs.map(|f| f as f32), fade_out: m.fade_out_secs.map(|f| f as f32) });
+        }
         // Ducked under the segments' own sound; with none, there is
         // nothing to duck under and the op would refuse.
         if any_with_audio {
@@ -164,7 +182,7 @@ pub fn to_ops(plan: &EditPlan, seq: &Sequence, pool: &MediaPool, brief: Option<&
         for (i, s) in plan.segments.iter().enumerate() {
             if let Some(t) = &s.title {
                 let hold = t.secs.filter(|x| *x > 0.0).unwrap_or(DEFAULT_TITLE_SECS).min(s.duration_secs());
-                ops.push(title_op(s, &t.text, hold, t.style.trim(), color.as_deref(), ClipRef::At { track: video_below, secs: mids[i] }));
+                ops.push(title_op(s, &t.text, hold, t.style.trim(), t.color.as_deref().or(color.as_deref()), t.fill.as_deref(), ClipRef::At { track: video_below, secs: mids[i] }));
             }
         }
     }
@@ -174,19 +192,20 @@ pub fn to_ops(plan: &EditPlan, seq: &Sequence, pool: &MediaPool, brief: Option<&
 /// A title in one of the plan's three styles: a heading in the upper
 /// third that rises in, a callout low and backed that fades in, or a
 /// full-frame card in the brand's colour.
-fn title_op(_s: &PlanSegment, text: &str, secs: f64, style: &str, color: Option<&str>, over: ClipRef) -> Op {
+fn title_op(_s: &PlanSegment, text: &str, secs: f64, style: &str, color: Option<&str>, fill: Option<&str>, over: ClipRef) -> Op {
     let (x, y, size, bold, text_color, backing, full_frame, animate, animate_secs) = match style {
-        "callout" => (0.5, 0.85, 40.0, false, None, Some(0.6), None, "fade", 0.3),
-        "card" => (0.5, 0.5, 84.0, true, Some("#ffffff".to_string()), None, Some(color.unwrap_or("#101418").to_string()), "fade", 0.4),
-        _ => (0.5, 0.22, 72.0, true, color.map(str::to_string), None, None, "rise", 0.4),
+        "callout" => (0.5, 0.85, 40.0, false, color.map(str::to_string), if fill.is_some() { None } else { Some(0.6) }, None, "fade", 0.3),
+        "card" => (0.5, 0.5, 84.0, true, Some(color.unwrap_or("#ffffff").to_string()), None, Some(fill.or(color).unwrap_or("#101418").to_string()), "fade", 0.4),
+        _ => (0.5, 0.22, 72.0, true, color.map(str::to_string), if fill.is_some() { None } else { Some(0.45) }, None, "rise", 0.4),
     };
+    let backing_color = if style == "card" { None } else { fill.map(str::to_string) };
     Op::Title {
         text: text.to_string(),
         at: Anchor::ClipStart(over),
         secs,
         track: Some(TrackRef::Kind("text".into())),
         x: Some(x), y: Some(y), size: Some(size), color: text_color, font: None, bold: Some(bold), align: None,
-        backing, backing_color: None, full_frame, outline: None, outline_color: None,
+        backing, backing_color, full_frame, outline: None, outline_color: None,
         glow: None, glow_color: None, gradient: None,
         animate: Some(animate.into()), animate_secs: Some(animate_secs), stagger: None,
         loop_effect: None, glitch: None, chromatic: None,
@@ -228,28 +247,31 @@ mod tests {
     #[test]
     fn a_plan_builds_end_to_end_with_its_titles_music_and_joins() {
         let (seq, pool, screen, bed) = fixture();
-        let brief = Brief { features: vec![Feature { title: "Search".into(), description: String::new(), rank: 1 }], brand_colors: vec!["#ff6600".into()], ..Default::default() };
+        let brief = Brief { features: vec![Feature { title: "Search".into(), description: String::new(), rank: 1 }], brand_colors: vec!["#ff6600".into()], width: Some(1280), height: Some(720), ..Default::default() };
         let plan = EditPlan {
             segments: vec![
-                PlanSegment { title: Some(PlanTitle { text: "Klipp".into(), secs: Some(2.0), style: "card".into() }), ..seg(screen, 0.0, 3.0) },
-                PlanSegment { feature: "Search".into(), with_audio: true, title: Some(PlanTitle { text: "Search".into(), secs: None, style: String::new() }), zoom: Some(PlanZoom { from: 1.0, to: 1.15, x: 0.0, y: 0.0 }), ..seg(screen, 10.0, 16.0) },
-                PlanSegment { transition: Some("cross_dissolve".into()), title: Some(PlanTitle { text: "Try it".into(), secs: Some(9.0), style: "callout".into() }), ..seg(screen, 30.0, 34.0) },
+                PlanSegment { title: Some(PlanTitle { text: "Klipp".into(), secs: Some(2.0), style: "card".into(), color: None, fill: None }), ..seg(screen, 0.0, 3.0) },
+                PlanSegment { feature: "Search".into(), with_audio: true, title: Some(PlanTitle { text: "Search".into(), secs: None, style: String::new(), color: None, fill: None }), zoom: Some(PlanZoom { from: 1.0, to: 1.15, x: 0.0, y: 0.0 }), ..seg(screen, 10.0, 16.0) },
+                PlanSegment { transition: Some("cross_dissolve".into()), title: Some(PlanTitle { text: "Try it".into(), secs: Some(9.0), style: "callout".into(), color: None, fill: None }), ..seg(screen, 30.0, 34.0) },
             ],
-            music: Some(PlanMusic { media_id: bed, duck_db: None }),
+            music: Some(PlanMusic { media_id: bed, duck_db: None, source_in_secs: Some(0.5), volume_db: Some(-6.0), fade_in_secs: None, fade_out_secs: Some(1.5) }),
             approved: true,
             notes: String::new(),
         };
         validate(&plan, &pool, Some(&brief)).unwrap();
         let ops = to_ops(&plan, &seq, &pool, Some(&brief));
         // Picture first, then the join, the music, the text track, the titles.
-        let kinds: Vec<&str> = ops.iter().map(|o| match o { Op::Place { .. } => "place", Op::Zoom { .. } => "zoom", Op::Transition { .. } => "transition", Op::Duck { .. } => "duck", Op::AddTrack { kind, .. } => kind.as_str(), Op::Title { .. } => "title", _ => "?" }).collect();
-        assert_eq!(kinds, vec!["place", "place", "zoom", "place", "transition", "audio", "place", "duck", "text", "title", "title", "title"]);
+        let kinds: Vec<&str> = ops.iter().map(|o| match o { Op::Place { .. } => "place", Op::Zoom { .. } => "zoom", Op::Reframe { .. } => "reframe", Op::Format { .. } => "format", Op::Role { .. } => "role", Op::Audio { .. } => "audio", Op::Transition { .. } => "transition", Op::Duck { .. } => "duck", Op::AddTrack { kind, .. } => kind.as_str(), Op::Title { .. } => "title", _ => "?" }).collect();
+        assert_eq!(kinds, vec!["place", "format", "place", "zoom", "place", "transition", "audio", "place", "role", "audio", "duck", "text", "title", "title", "title"]);
         let built = resolve(&seq, &pool, &ops).unwrap();
         assert!((built.duration_secs - 13.0).abs() < 1e-6, "{}", built.text());
         // The titles land where their segments start, on the new text track.
         let titles: Vec<(f64, f64)> = built.steps.iter().filter(|s| matches!(s.op, Op::Title { .. })).map(|s| (s.after[0].timeline_in_secs, s.after[0].timeline_out_secs)).collect();
         assert_eq!(titles, vec![(0.0, 2.0), (3.0, 6.0), (9.0, 13.0)], "{}", built.text());
-        assert!(matches!(&ops[9], Op::Title { full_frame: Some(c), .. } if c == "#ff6600"), "the card takes the brand colour");
+        assert!(matches!(&ops[12], Op::Title { full_frame: Some(c), .. } if c == "#ff6600"), "the card takes the brand colour");
+        assert!(built.text().contains("1280x720"), "the delivery's size is the brief's: {}", built.text());
+        let music = built.steps.iter().find(|s| matches!(&s.op, Op::Place { media_id, .. } if *media_id == bed)).unwrap();
+        assert!((music.after[0].source_in_secs - 0.5).abs() < 1e-6, "the bed starts at its in-point");
         // The bed is on its own track under the segment's sound, and ducked there.
         let music = built.steps.iter().find(|s| matches!(&s.op, Op::Place { media_id, .. } if *media_id == bed)).unwrap();
         assert_eq!(music.after[0].track, 2, "{}", built.text());
@@ -273,7 +295,7 @@ mod tests {
         assert!(bad(EditPlan { segments: vec![seg(screen, 5.0, 5.0)], ..Default::default() }).contains("in order"));
         assert!(bad(EditPlan { segments: vec![PlanSegment { feature: "Filters".into(), ..seg(screen, 1.0, 2.0) }], ..Default::default() }).contains("Search"));
         assert!(bad(EditPlan { segments: vec![PlanSegment { transition: Some("cross_dissolve".into()), ..seg(screen, 1.0, 2.0) }], ..Default::default() }).contains("nothing before it"));
-        assert!(bad(EditPlan { segments: vec![PlanSegment { title: Some(PlanTitle { text: "x".into(), secs: None, style: "banner".into() }), ..seg(screen, 1.0, 2.0) }], ..Default::default() }).contains("heading, callout or card"));
+        assert!(bad(EditPlan { segments: vec![PlanSegment { title: Some(PlanTitle { text: "x".into(), secs: None, style: "banner".into(), color: None, fill: None }), ..seg(screen, 1.0, 2.0) }], ..Default::default() }).contains("heading, callout or card"));
         let unknown = EditPlan { segments: vec![seg(MediaId::new(), 1.0, 2.0)], ..Default::default() };
         assert!(bad(unknown).contains("no media item"));
     }
@@ -282,7 +304,7 @@ mod tests {
     fn a_plan_builds_after_what_is_already_down() {
         let (mut seq, pool, screen, _) = fixture();
         seq.tracks[0].clips.push(klipp_timeline::Clip::media(screen, tc(0.0), tc(4.0), tc(20.0), tc(24.0)));
-        let plan = EditPlan { segments: vec![PlanSegment { title: Some(PlanTitle { text: "Next".into(), secs: Some(1.0), style: String::new() }), ..seg(screen, 0.0, 2.0) }], ..Default::default() };
+        let plan = EditPlan { segments: vec![PlanSegment { title: Some(PlanTitle { text: "Next".into(), secs: Some(1.0), style: String::new(), color: None, fill: None }), ..seg(screen, 0.0, 2.0) }], ..Default::default() };
         let built = resolve(&seq, &pool, &to_ops(&plan, &seq, &pool, None)).unwrap();
         let place = built.steps.iter().find(|s| matches!(s.op, Op::Place { .. })).unwrap();
         assert_eq!((place.after[0].timeline_in_secs, place.after[0].timeline_out_secs), (4.0, 6.0));

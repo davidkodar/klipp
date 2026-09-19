@@ -146,6 +146,11 @@ pub enum EditCommand {
     SetBrief { old: Option<Box<klipp_timeline::Brief>>, new: Option<Box<klipp_timeline::Brief>> },
     /// The sequence's edit plan, replaced whole.
     SetEditPlan { old: Option<Box<klipp_timeline::EditPlan>>, new: Option<Box<klipp_timeline::EditPlan>> },
+    /// A clip's role: dialogue, music, effects… what the mix and the
+    /// checks treat it as.
+    SetClipRole { clip_id: ClipId, old: klipp_core::ClipRole, new: klipp_core::ClipRole },
+    /// The sequence's picture size and rate, as (resolution, fps).
+    SetSequenceFormat { old: (Resolution, Fps), new: (Resolution, Fps) },
     /// Title clip added (with optional track creation for undo)
     AddTitleClip {
         clip: Clip,
@@ -633,6 +638,8 @@ impl EditCommand {
             EditCommand::AddTrack { .. } => "Add Track",
             EditCommand::SetBrief { .. } => "Set Brief",
             EditCommand::SetEditPlan { .. } => "Set Edit Plan",
+            EditCommand::SetClipRole { .. } => "Set Clip Role",
+            EditCommand::SetSequenceFormat { .. } => "Sequence Format",
             EditCommand::LegacyAppendClip { .. } => "Append Clip",
             EditCommand::LinkedImport { .. } => "Add to Timeline",
             EditCommand::LegacyRemoveClip { .. } | EditCommand::LegacyRippleRemove { .. } => "Remove Clip",
