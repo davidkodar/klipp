@@ -246,7 +246,8 @@ pub fn show(
                     || m.tags.iter().any(|t| t.to_lowercase().contains(&search_lower))
                     || m.log.matches(&search_lower)
                     || m.camera_model.as_deref().is_some_and(|c| c.to_lowercase().contains(&search_lower))
-                    || m.shot.lens.as_deref().is_some_and(|l| l.to_lowercase().contains(&search_lower));
+                    || m.shot.lens.as_deref().is_some_and(|l| l.to_lowercase().contains(&search_lower))
+                    || m.screen_text.to_lowercase().contains(&search_lower);
             }
             true
         })

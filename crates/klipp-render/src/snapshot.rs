@@ -807,6 +807,7 @@ mod tests {
             log: Default::default(),
             synced_audio: None,
             markers: Vec::new(),
+            screen_text: String::new(),
             span: None,
         }
     }

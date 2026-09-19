@@ -90,6 +90,7 @@ impl FieldValue for Field {
                 let n = item.markers.iter().filter(|m| m.kind == klipp_core::MediaMarkerKind::Note).count();
                 if n == 0 { String::new() } else { n.to_string() }
             }
+            Field::ScreenText => item.screen_text.clone(),
         }
     }
 

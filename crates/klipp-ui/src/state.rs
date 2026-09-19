@@ -2080,6 +2080,9 @@ pub struct AppState {
     // Rebuilt lazily when media_usage_cache_dirty is set (after any timeline edit).
     pub media_usage_cache: std::collections::HashMap<MediaId, usize>,
     pub media_usage_cache_dirty: bool,
+    /// Moves every time an analysis result lands on a media item, so a
+    /// panel caching what it read from the analysis knows to read again.
+    pub analysis_generation: u64,
 
     // New Project dialog
     pub show_new_project_dialog: bool,
@@ -3649,6 +3652,7 @@ impl Default for AppState {
             export_source_overwrite_warning: None,
             media_usage_cache: std::collections::HashMap::new(),
             media_usage_cache_dirty: true,
+            analysis_generation: 0,
             show_new_project_dialog: false,
             show_batch_rename_dialog: false,
             batch_rename_ids: Vec::new(),

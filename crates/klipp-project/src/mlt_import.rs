@@ -572,6 +572,7 @@ fn register_media(
         log: Default::default(),
         synced_audio: None,
         markers: Vec::new(),
+        screen_text: String::new(),
         span: None,
     };
     Some(media_pool.add(item))

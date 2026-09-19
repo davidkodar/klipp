@@ -386,6 +386,7 @@ fn register_asset_media(
         log: Default::default(),
         synced_audio: None,
         markers: Vec::new(),
+        screen_text: String::new(),
         span: None,
     };
     let id = media_pool.add(item);

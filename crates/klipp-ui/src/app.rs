@@ -1324,6 +1324,14 @@ impl KlippApp {
             // its analysis already cached came up with unsaved changes,
             // and asked to be saved before it could be closed.
             changed |= item.markers != before;
+            // What the screen showed, each line once, for the pool's
+            // search, its Screen text column and smart-bin rules.
+            let digest = report.screentext.as_ref().map(screen_text_digest).unwrap_or_default();
+            if item.screen_text != digest {
+                item.screen_text = digest;
+                changed = true;
+            }
+            self.state.analysis_generation += 1;
         }
         if changed {
             self.state.dirty = true;
@@ -1553,6 +1561,7 @@ impl KlippApp {
                         log: Default::default(),
                         synced_audio: None,
                         markers: Vec::new(),
+                        screen_text: String::new(),
                         span: None,
                     };
 
@@ -12279,6 +12288,7 @@ impl KlippApp {
                         log: Default::default(),
                         synced_audio: None,
                         markers: Vec::new(),
+                        screen_text: String::new(),
                         span: None,
                     };
                     let span_path = media_item.path.clone();
@@ -33927,6 +33937,7 @@ fn build_whoosh_media_item(
         log: Default::default(),
         synced_audio: None,
         markers: Vec::new(),
+        screen_text: String::new(),
         span: None,
     }
 }
@@ -37194,6 +37205,7 @@ mod insert_audio_media_clip_tests {
             log: Default::default(),
             synced_audio: None,
             markers: Vec::new(),
+            screen_text: String::new(),
             span: None,
         }
     }
@@ -37574,5 +37586,42 @@ mod proxy_completeness_tests {
         assert!(transcode_is_complete(Some(590.0), 600.0), "two percent on a long clip");
         assert!(!transcode_is_complete(Some(60.0), 120.0), "half the clip is a cut-short generation");
         assert!(!transcode_is_complete(None, 120.0), "a file that does not probe is not one");
+    }
+}
+
+/// The lines a screen recording showed, each once in the order first
+/// seen, joined for a field; cut at a few thousand characters so a
+/// long recording's chrome does not swamp the pool.
+fn screen_text_digest(st: &klipp_analysis::screentext::ScreenText) -> String {
+    const MAX_CHARS: usize = 4000;
+    let mut seen = std::collections::HashSet::new();
+    let mut out = String::new();
+    for s in &st.spans {
+        let key: String = s.text.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase();
+        if key.len() < 2 || !seen.insert(key) {
+            continue;
+        }
+        if !out.is_empty() {
+            out.push_str(" · ");
+        }
+        out.push_str(s.text.trim());
+        if out.len() > MAX_CHARS {
+            break;
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod screen_text_digest_tests {
+    use super::screen_text_digest;
+    use klipp_analysis::screentext::{ScreenText, TextSpan};
+
+    #[test]
+    fn the_digest_lists_each_line_once_in_order_first_seen() {
+        let span = |t: &str, a: f64| TextSpan { text: t.into(), confidence: 0.9, start_secs: a, end_secs: a + 4.0, x: 0.1, y: 0.1, w: 0.2, h: 0.02, frames: 1 };
+        let st = ScreenText { spans: vec![span("SETTINGS", 0.0), span("General", 0.0), span("settings", 8.0), span("  General ", 12.0), span("x", 12.0)], ..Default::default() };
+        assert_eq!(screen_text_digest(&st), "SETTINGS · General");
+        assert_eq!(screen_text_digest(&ScreenText::default()), "");
     }
 }

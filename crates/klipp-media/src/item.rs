@@ -274,6 +274,11 @@ pub struct MediaItem {
     /// Notes, favourite stretches and rejected ones the editor marked.
     #[serde(default)]
     pub markers: Vec<klipp_core::MediaMarker>,
+    /// The lines the screen-text analysis read off the picture, each
+    /// once, for finding and binning footage by what it showed. Empty
+    /// until that analysis has run.
+    #[serde(default)]
+    pub screen_text: String,
     /// Which part of a split take this is, when it is one.
     #[serde(default)]
     pub span: Option<klipp_core::ClipSpan>,
@@ -410,6 +415,7 @@ impl MediaItem {
             log: Default::default(),
             synced_audio: None,
             markers: Vec::new(),
+            screen_text: String::new(),
             span: None,
         }
     }
@@ -587,6 +593,7 @@ mod subclip_tests {
             log: Default::default(),
             synced_audio: None,
             markers: Vec::new(),
+            screen_text: String::new(),
             span: None,
         }
     }
@@ -767,6 +774,7 @@ mod effective_rotation_tests {
             log: Default::default(),
             synced_audio: None,
             markers: Vec::new(),
+            screen_text: String::new(),
             span: None,
         }
     }
@@ -950,6 +958,7 @@ impl MediaItem {
             log: Default::default(),
             synced_audio: None,
             markers: Vec::new(),
+            screen_text: String::new(),
             span: None,
         }
     }

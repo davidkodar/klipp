@@ -34,23 +34,26 @@ pub enum Field {
     Favourite,
     Rejected,
     Markers,
+    /// What the screen-text analysis read off a screen recording: the
+    /// lines it showed, so footage can be found and binned by them.
+    ScreenText,
 }
 
 impl Field {
-    pub const ALL: [Field; 27] = [
+    pub const ALL: [Field; 28] = [
         Field::Name, Field::Duration, Field::Resolution, Field::Fps, Field::Codec, Field::FileSize, Field::Rating,
         Field::ColourLabel, Field::Tags, Field::Camera, Field::Lens, Field::Timecode, Field::Reel, Field::ShootDate,
         Field::DateAdded, Field::Scene, Field::Shot, Field::Take, Field::Keywords, Field::Description, Field::Comments,
-        Field::GoodTake, Field::Kind, Field::Offline, Field::Favourite, Field::Rejected, Field::Markers,
+        Field::GoodTake, Field::Kind, Field::Offline, Field::Favourite, Field::Rejected, Field::Markers, Field::ScreenText,
     ];
 
     /// The fields the list view can show as columns; the name is always
     /// the first column and is not among them.
-    pub const COLUMNS: [Field; 24] = [
+    pub const COLUMNS: [Field; 25] = [
         Field::Rating, Field::Duration, Field::Resolution, Field::Fps, Field::Codec, Field::FileSize, Field::Camera,
         Field::Lens, Field::Timecode, Field::Reel, Field::ShootDate, Field::DateAdded, Field::Scene, Field::Shot,
         Field::Take, Field::Keywords, Field::Description, Field::Comments, Field::GoodTake, Field::ColourLabel, Field::Tags,
-        Field::Favourite, Field::Rejected, Field::Markers,
+        Field::Favourite, Field::Rejected, Field::Markers, Field::ScreenText,
     ];
 
     /// The columns a fresh list shows.
@@ -94,6 +97,7 @@ impl Field {
             Field::Favourite => "Favourite",
             Field::Rejected => "Rejected",
             Field::Markers => "Markers",
+            Field::ScreenText => "Screen text",
         }
     }
 
@@ -106,7 +110,7 @@ impl Field {
             Field::Resolution | Field::Timecode => 84.0,
             Field::ShootDate | Field::DateAdded => 110.0,
             Field::Camera | Field::Lens | Field::Tags | Field::Keywords | Field::Name => 140.0,
-            Field::Description | Field::Comments => 200.0,
+            Field::Description | Field::Comments | Field::ScreenText => 200.0,
         }
     }
 

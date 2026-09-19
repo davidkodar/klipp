@@ -791,6 +791,10 @@ pub struct TimelinePanel {
     /// marker paint passes can look up "is this clip a match?"
     /// without rerunning the predicates.
     pub(crate) search_hits: Vec<crate::panels::timeline_search::SearchHit>,
+    /// What each media item's screen showed, read from the analysis
+    /// once per `analysis_generation` while a search is open.
+    pub(crate) screen_text_cache: std::collections::HashMap<klipp_core::MediaId, std::rc::Rc<Vec<crate::panels::timeline_search::ScreenLine>>>,
+    pub(crate) screen_text_cache_generation: u64,
 }
 
 /// Tracks the most-recent on-snap legend kind + when it changed, so
@@ -1548,6 +1552,10 @@ impl TimelinePanel {
         let q = &self.search_query;
         let cs = self.search_case_sensitive;
         let seq = state.sequence();
+        if self.screen_text_cache_generation != state.analysis_generation {
+            self.screen_text_cache.clear();
+            self.screen_text_cache_generation = state.analysis_generation;
+        }
 
         for m in &seq.markers {
             if sequence_marker_matches(&m.label, &m.comment, m.kind, q, cs) {
@@ -1573,6 +1581,28 @@ impl TimelinePanel {
                         track_idx: Some(track_idx),
                         clip_id: Some(clip.id),
                     });
+                }
+                // Lines the screen showed, at the moment each came up.
+                if track.kind == klipp_timeline::TrackKind::Video {
+                    if let Some((mid, item)) = clip.media_id().and_then(|mid| state.media_pool.get(&mid).map(|m| (mid, m))) {
+                        let lines = self.screen_text_cache.entry(mid).or_insert_with(|| {
+                            std::rc::Rc::new(
+                                klipp_analysis::report::MediaAnalysis::load(&item.path)
+                                    .screentext
+                                    .map(|st| st.spans.into_iter().map(|s| crate::panels::timeline_search::ScreenLine { text: s.text, start_secs: s.start_secs, end_secs: s.end_secs }).collect())
+                                    .unwrap_or_default(),
+                            )
+                        }).clone();
+                        let rate = clip.timeline_in.rate;
+                        for off in crate::panels::timeline_search::screen_text_hits(&lines, clip.source_in.to_secs_f64(), clip.source_out.to_secs_f64(), q, cs) {
+                            self.search_hits.push(SearchHit {
+                                kind: SearchHitKind::ScreenText,
+                                position: clip.timeline_in + klipp_core::RationalTime::from_secs_f64(off, rate),
+                                track_idx: Some(track_idx),
+                                clip_id: Some(clip.id),
+                            });
+                        }
+                    }
                 }
                 for cm in &clip.clip_markers {
                     if clip_marker_matches(&cm.name, &cm.comment, q, cs) {
@@ -1671,7 +1701,7 @@ impl TimelinePanel {
             [text_width, 22.0],
             egui::TextEdit::singleline(&mut self.search_query)
                 .id(text_id)
-                .hint_text("Find clip / marker\u{2026}"),
+                .hint_text("Find clip / marker / on-screen text\u{2026}"),
         );
 
         // One-shot focus grab from the Ctrl+F dispatcher.
@@ -1844,7 +1874,7 @@ impl TimelinePanel {
                         }
                     }
                 }
-                SearchHitKind::ClipMarker => {
+                SearchHitKind::ClipMarker | SearchHitKind::ScreenText => {
                     // Vertical bar inside the host clip at the marker
                     // position. We don't have the per-clip-marker
                     // pixel position cached, so recompute from

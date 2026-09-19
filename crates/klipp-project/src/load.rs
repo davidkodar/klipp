@@ -198,6 +198,7 @@ pub fn load_project(dir: &Path) -> Result<LoadResult, String> {
             log: Default::default(),
             synced_audio: None,
             markers: Vec::new(),
+            screen_text: String::new(),
             span: None,
         };
         // Re-run the log-format heuristic now that the metadata
