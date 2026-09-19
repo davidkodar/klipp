@@ -602,7 +602,7 @@ mod tests {
         seq.brief = Some(Brief { features: vec![Feature { title: "Timeline".into(), rank: 1, ..Default::default() }, Feature { title: "Grade".into(), rank: 2, ..Default::default() }], ..Default::default() });
         let got = rules(&check(&seq, &pool, &Screen(screen)));
         assert!(got.contains(&"no_edit_plan"), "{got:?}");
-        let seg = |feature: &str, a: f64, b: f64| PlanSegment { feature: feature.into(), media_id: screen, source_in_secs: a, source_out_secs: b, note: String::new(), with_audio: false, title: None, transition: None, zoom: None };
+        let seg = |feature: &str, a: f64, b: f64| PlanSegment { feature: feature.into(), media_id: screen, source_in_secs: a, source_out_secs: b, note: String::new(), with_audio: false, title: None, transition: None, sfx: None, zoom: None };
         // Timeline gets a second, Grade nothing; the plan is approved and not built.
         seq.edit_plan = Some(EditPlan { segments: vec![seg("Timeline", 40.0, 41.0)], approved: true, ..Default::default() });
         let r = check(&seq, &pool, &Screen(screen));

@@ -1434,8 +1434,13 @@ fn tool_definitions() -> Vec<Value> {
               order: {media_id, source_in_secs, source_out_secs, feature? (a title from the \
               brief's features, as spelt there), note? (what it shows and why — write one), \
               with_audio? (the file's own sound; off by default), title? {text, secs?, style? \
-              heading|callout|card}, transition? (\"cross_dissolve\", \"dip_to_black\": how it \
-              joins the segment before), zoom? {from?, to, x?, y?}}. Ground the stretches in \
+              heading|callout|card, color?, fill?, glow? 0-1, glow_color?, gradient? [top, \
+              bottom], animate? fade|rise|drop|slide_left|slide_right|scale_up|scale_down|blur|\
+              typewriter, animate_secs?, stagger? char|word|line}, transition? \
+              (\"cross_dissolve\", \"dip_to_black\": how it joins the segment before), zoom? \
+              {from?, to, x?, y?}, sfx? {media_id (from search_sfx), at_secs? into the \
+              segment, source_in_secs?, secs?, volume_db?}}. Music is {media_id, duck_db?, \
+              source_in_secs?, volume_db?, fade_in_secs?, fade_out_secs?}. Ground the stretches in \
               klipp_beat_sheet: cut to a settled reveal and hold until it reads; put titles in \
               a hold window. The plan is stored unapproved; the reply says which of the brief's \
               features it leaves out. Show its text to the user and ask.",

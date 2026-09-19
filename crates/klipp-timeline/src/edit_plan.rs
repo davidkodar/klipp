@@ -30,6 +30,48 @@ pub struct PlanTitle {
     /// dark panel otherwise.
     #[serde(default)]
     pub fill: Option<String>,
+    /// A glow round the letters, 0 to 1, in `glow_color` (`#rrggbb`;
+    /// the text's colour when left out).
+    #[serde(default)]
+    pub glow: Option<f32>,
+    #[serde(default)]
+    pub glow_color: Option<String>,
+    /// A vertical gradient fill, top and bottom colours, `#rrggbb`.
+    #[serde(default)]
+    pub gradient: Option<[String; 2]>,
+    /// How it comes in: fade, rise, drop, slide_left, slide_right,
+    /// scale_up, scale_down, blur or typewriter; the style's own when
+    /// left out. `animate_secs` is how long that takes; `stagger`
+    /// (char, word, line) has the letters, words or lines arrive one
+    /// by one.
+    #[serde(default)]
+    pub animate: Option<String>,
+    #[serde(default)]
+    pub animate_secs: Option<f64>,
+    #[serde(default)]
+    pub stagger: Option<String>,
+}
+
+/// A sound effect on a segment: a whoosh on the cut, a click on a
+/// reveal. It sits on a track of its own, marked as an effect to the
+/// mix.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct PlanSfx {
+    pub media_id: MediaId,
+    /// Seconds after the segment starts; 0 (the cut itself) when left
+    /// out.
+    #[serde(default)]
+    pub at_secs: Option<f64>,
+    /// Where in the file it starts, in seconds; 0 when left out.
+    #[serde(default)]
+    pub source_in_secs: Option<f64>,
+    /// How much of the file, in seconds; to the file's end, at most
+    /// eight seconds, when left out.
+    #[serde(default)]
+    pub secs: Option<f64>,
+    /// Its level in dB (0 as it is).
+    #[serde(default)]
+    pub volume_db: Option<f32>,
 }
 
 /// An animated push on a segment, scale `from` to `to` toward `x`,`y`.
@@ -73,6 +115,9 @@ pub struct PlanSegment {
     pub transition: Option<String>,
     #[serde(default)]
     pub zoom: Option<PlanZoom>,
+    /// A sound effect with the segment.
+    #[serde(default)]
+    pub sfx: Option<PlanSfx>,
 }
 
 impl PlanSegment {
@@ -147,7 +192,24 @@ impl EditPlan {
             }
             if let Some(t) = &s.title {
                 let style = if t.style.trim().is_empty() { "heading" } else { t.style.trim() };
-                out.push(format!("      title ({style}): \"{}\"", t.text));
+                let mut extras = Vec::new();
+                if let Some(a) = &t.animate {
+                    extras.push(match &t.stagger {
+                        Some(st) => format!("{a} by {st}"),
+                        None => a.clone(),
+                    });
+                }
+                if t.glow.is_some() {
+                    extras.push("glow".into());
+                }
+                if t.gradient.is_some() {
+                    extras.push("gradient".into());
+                }
+                let extras = if extras.is_empty() { String::new() } else { format!("  {}", extras.join(", ")) };
+                out.push(format!("      title ({style}): \"{}\"{extras}", t.text));
+            }
+            if let Some(x) = &s.sfx {
+                out.push(format!("      sfx {} at +{:.2} s", x.media_id.0, x.at_secs.unwrap_or(0.0)));
             }
             at += d;
         }
@@ -176,7 +238,7 @@ mod tests {
     use super::*;
 
     fn seg(a: f64, b: f64) -> PlanSegment {
-        PlanSegment { feature: String::new(), media_id: MediaId::new(), source_in_secs: a, source_out_secs: b, note: String::new(), with_audio: false, title: None, transition: None, zoom: None }
+        PlanSegment { feature: String::new(), media_id: MediaId::new(), source_in_secs: a, source_out_secs: b, note: String::new(), with_audio: false, title: None, transition: None, sfx: None, zoom: None }
     }
 
     #[test]

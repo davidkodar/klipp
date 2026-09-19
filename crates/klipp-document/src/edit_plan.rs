@@ -12,7 +12,7 @@
 
 use crate::ops::{Anchor, ClipRef, Op, TrackRef};
 use klipp_media::MediaPool;
-use klipp_timeline::{Brief, EditPlan, PlanSegment, Sequence, TrackKind};
+use klipp_timeline::{Brief, EditPlan, PlanTitle, Sequence, TrackKind};
 
 /// A join with no length given is this long.
 const DEFAULT_TRANSITION_SECS: f64 = 0.5;
@@ -54,6 +54,38 @@ pub fn validate(plan: &EditPlan, pool: &MediaPool, brief: Option<&Brief>) -> Res
             }
             if t.secs.is_some_and(|x| !x.is_finite() || x < 0.0) {
                 return Err(format!("segment {n}: a title's secs must be zero or more"));
+            }
+            if t.glow.is_some_and(|g| !(0.0..=1.0).contains(&g)) {
+                return Err(format!("segment {n}: a title's glow is 0 to 1"));
+            }
+            if let Some(a) = t.animate.as_deref() {
+                if !matches!(a, "fade" | "rise" | "drop" | "slide_left" | "slide_right" | "scale_up" | "scale_down" | "blur" | "typewriter") {
+                    return Err(format!("segment {n}: \"{a}\" is not an entrance; use fade, rise, drop, slide_left, slide_right, scale_up, scale_down, blur or typewriter"));
+                }
+            }
+            if let Some(st) = t.stagger.as_deref() {
+                if !matches!(st, "char" | "word" | "line") {
+                    return Err(format!("segment {n}: \"{st}\" is not a stagger; use char, word or line"));
+                }
+            }
+            if t.animate_secs.is_some_and(|x| !x.is_finite() || x <= 0.0 || x > 5.0) {
+                return Err(format!("segment {n}: a title's animate_secs is 0 to 5"));
+            }
+        }
+        if let Some(x) = &s.sfx {
+            let item = pool.get(&x.media_id).ok_or_else(|| format!("segment {n}: sfx: no media item {}; media ids are in list_media, and search_sfx brings one in", x.media_id.0))?;
+            if !item.has_audio {
+                return Err(format!("segment {n}: sfx: {} has no sound", item.filename));
+            }
+            let at = x.at_secs.unwrap_or(0.0);
+            if !at.is_finite() || at < 0.0 || at >= s.duration_secs() {
+                return Err(format!("segment {n}: sfx: at_secs is seconds into the segment, 0 to {:.2}", s.duration_secs()));
+            }
+            if x.source_in_secs.is_some_and(|v| !v.is_finite() || v < 0.0 || v >= item.duration.to_secs_f64()) {
+                return Err(format!("segment {n}: sfx: source_in_secs is inside {} ({:.2} s)", item.filename, item.duration.to_secs_f64()));
+            }
+            if x.secs.is_some_and(|v| !v.is_finite() || v <= 0.0) {
+                return Err(format!("segment {n}: sfx: secs must be more than zero"));
             }
         }
         if let Some(z) = &s.zoom {
@@ -169,6 +201,37 @@ pub fn to_ops(plan: &EditPlan, seq: &Sequence, pool: &MediaPool, brief: Option<&
             ops.push(Op::Duck { clip_id: ClipRef::At { track: music_track, secs: start + laid / 2.0 }, by_db: m.duck_db.unwrap_or(9.0), fade_secs: 0.5 });
         }
     }
+    // The sound effects, on a track of their own below the music: each
+    // where its segment starts plus its offset, marked as an effect so
+    // the mix and the check treat it as one.
+    if plan.segments.iter().any(|s| s.sfx.is_some()) {
+        let any_with_audio = plan.segments.iter().any(|s| s.with_audio);
+        let sfx_track = seq.tracks.len() + usize::from(!has_video) + usize::from(!has_audio && any_with_audio) + usize::from(plan.music.is_some());
+        ops.push(Op::AddTrack { kind: "audio".into(), name: Some("SFX".into()) });
+        let mut at = start;
+        for s in &plan.segments {
+            if let Some(x) = &s.sfx {
+                let file = pool.get(&x.media_id).map(|it| it.duration.to_secs_f64()).unwrap_or(8.0);
+                let from = x.source_in_secs.unwrap_or(0.0).max(0.0);
+                let secs = x.secs.unwrap_or((file - from).min(8.0)).min((file - from).max(0.05));
+                let when = at + x.at_secs.unwrap_or(0.0);
+                ops.push(Op::Place {
+                    media_id: x.media_id,
+                    track: TrackRef::Index(sfx_track),
+                    at: Anchor::Secs(when),
+                    source_in: Some(from),
+                    source_out: Some(from + secs),
+                    insert: false,
+                    with_audio: true,
+                });
+                ops.push(Op::Role { clip_id: ClipRef::At { track: sfx_track, secs: when + secs / 2.0 }, role: "sfx".into() });
+                if let Some(v) = x.volume_db {
+                    ops.push(Op::Audio { clip_id: ClipRef::At { track: sfx_track, secs: when + secs / 2.0 }, volume_db: Some(v), gain_db: None, pan: None, fade_in: None, fade_out: None });
+                }
+            }
+            at += s.duration_secs();
+        }
+    }
     // The titles, last: a text track made on top shifts every index, so
     // it is made before any title and the picture is named one lower.
     let any_title = plan.segments.iter().any(|s| s.title.is_some());
@@ -182,7 +245,7 @@ pub fn to_ops(plan: &EditPlan, seq: &Sequence, pool: &MediaPool, brief: Option<&
         for (i, s) in plan.segments.iter().enumerate() {
             if let Some(t) = &s.title {
                 let hold = t.secs.filter(|x| *x > 0.0).unwrap_or(DEFAULT_TITLE_SECS).min(s.duration_secs());
-                ops.push(title_op(s, &t.text, hold, t.style.trim(), t.color.as_deref().or(color.as_deref()), t.fill.as_deref(), ClipRef::At { track: video_below, secs: mids[i] }));
+                ops.push(title_op(t, hold, t.color.as_deref().or(color.as_deref()), ClipRef::At { track: video_below, secs: mids[i] }));
             }
         }
     }
@@ -192,22 +255,28 @@ pub fn to_ops(plan: &EditPlan, seq: &Sequence, pool: &MediaPool, brief: Option<&
 /// A title in one of the plan's three styles: a heading in the upper
 /// third that rises in, a callout low and backed that fades in, or a
 /// full-frame card in the brand's colour.
-fn title_op(_s: &PlanSegment, text: &str, secs: f64, style: &str, color: Option<&str>, fill: Option<&str>, over: ClipRef) -> Op {
+fn title_op(t: &PlanTitle, secs: f64, color: Option<&str>, over: ClipRef) -> Op {
+    let style = t.style.trim();
+    let fill = t.fill.as_deref();
+    // A heading sits in the top tenth, clear of a screen's own headings
+    // and toolbars; at 0.22 it lay across them.
     let (x, y, size, bold, text_color, backing, full_frame, animate, animate_secs) = match style {
         "callout" => (0.5, 0.85, 40.0, false, color.map(str::to_string), if fill.is_some() { None } else { Some(0.6) }, None, "fade", 0.3),
         "card" => (0.5, 0.5, 84.0, true, Some(color.unwrap_or("#ffffff").to_string()), None, Some(fill.or(color).unwrap_or("#101418").to_string()), "fade", 0.4),
-        _ => (0.5, 0.22, 72.0, true, color.map(str::to_string), if fill.is_some() { None } else { Some(0.45) }, None, "rise", 0.4),
+        _ => (0.5, 0.10, 72.0, true, color.map(str::to_string), if fill.is_some() { None } else { Some(0.45) }, None, "rise", 0.4),
     };
     let backing_color = if style == "card" { None } else { fill.map(str::to_string) };
     Op::Title {
-        text: text.to_string(),
+        text: t.text.clone(),
         at: Anchor::ClipStart(over),
         secs,
         track: Some(TrackRef::Kind("text".into())),
         x: Some(x), y: Some(y), size: Some(size), color: text_color, font: None, bold: Some(bold), align: None,
         backing, backing_color, full_frame, outline: None, outline_color: None,
-        glow: None, glow_color: None, gradient: None,
-        animate: Some(animate.into()), animate_secs: Some(animate_secs), stagger: None,
+        glow: t.glow, glow_color: t.glow_color.clone(), gradient: t.gradient.clone(),
+        animate: Some(t.animate.clone().unwrap_or_else(|| animate.into())),
+        animate_secs: Some(t.animate_secs.map(|v| v as f32).unwrap_or(animate_secs)),
+        stagger: t.stagger.clone(),
         loop_effect: None, glitch: None, chromatic: None,
     }
 }
@@ -217,7 +286,7 @@ mod tests {
     use super::*;
     use crate::ops::resolve;
     use klipp_core::{Fps, MediaId, Timecode};
-    use klipp_timeline::{Feature, PlanMusic, PlanTitle, PlanZoom};
+    use klipp_timeline::{Feature, PlanMusic, PlanSegment, PlanSfx, PlanTitle, PlanZoom};
 
     fn tc(secs: f64) -> Timecode {
         Timecode { value: (secs * 25.0).round() as i64, rate: 25 }
@@ -241,7 +310,7 @@ mod tests {
     }
 
     fn seg(media: MediaId, a: f64, b: f64) -> PlanSegment {
-        PlanSegment { feature: String::new(), media_id: media, source_in_secs: a, source_out_secs: b, note: String::new(), with_audio: false, title: None, transition: None, zoom: None }
+        PlanSegment { feature: String::new(), media_id: media, source_in_secs: a, source_out_secs: b, note: String::new(), with_audio: false, title: None, transition: None, sfx: None, zoom: None }
     }
 
     #[test]
@@ -250,9 +319,9 @@ mod tests {
         let brief = Brief { features: vec![Feature { title: "Search".into(), description: String::new(), rank: 1 }], brand_colors: vec!["#ff6600".into()], width: Some(1280), height: Some(720), ..Default::default() };
         let plan = EditPlan {
             segments: vec![
-                PlanSegment { title: Some(PlanTitle { text: "Klipp".into(), secs: Some(2.0), style: "card".into(), color: None, fill: None }), ..seg(screen, 0.0, 3.0) },
-                PlanSegment { feature: "Search".into(), with_audio: true, title: Some(PlanTitle { text: "Search".into(), secs: None, style: String::new(), color: None, fill: None }), zoom: Some(PlanZoom { from: 1.0, to: 1.15, x: 0.0, y: 0.0 }), ..seg(screen, 10.0, 16.0) },
-                PlanSegment { transition: Some("cross_dissolve".into()), title: Some(PlanTitle { text: "Try it".into(), secs: Some(9.0), style: "callout".into(), color: None, fill: None }), ..seg(screen, 30.0, 34.0) },
+                PlanSegment { title: Some(PlanTitle { text: "Klipp".into(), secs: Some(2.0), style: "card".into(), color: None, fill: None, ..Default::default() }), ..seg(screen, 0.0, 3.0) },
+                PlanSegment { feature: "Search".into(), with_audio: true, title: Some(PlanTitle { text: "Search".into(), secs: None, style: String::new(), color: None, fill: None, ..Default::default() }), zoom: Some(PlanZoom { from: 1.0, to: 1.15, x: 0.0, y: 0.0 }), ..seg(screen, 10.0, 16.0) },
+                PlanSegment { transition: Some("cross_dissolve".into()), title: Some(PlanTitle { text: "Try it".into(), secs: Some(9.0), style: "callout".into(), color: None, fill: None, ..Default::default() }), ..seg(screen, 30.0, 34.0) },
             ],
             music: Some(PlanMusic { media_id: bed, duck_db: None, source_in_secs: Some(0.5), volume_db: Some(-6.0), fade_in_secs: None, fade_out_secs: Some(1.5) }),
             approved: true,
@@ -282,6 +351,45 @@ mod tests {
         silent.segments.iter_mut().for_each(|s| s.with_audio = false);
         let ops = to_ops(&silent, &seq, &pool, Some(&brief));
         assert!(!ops.iter().any(|o| matches!(o, Op::Duck { .. })));
+    }
+
+    /// A segment's sound effect lands on an "SFX" track of its own,
+    /// below the music, at the segment's start plus its offset, as an
+    /// effect to the mix; a title's glow, gradient and staggered
+    /// entrance reach the title op.
+    #[test]
+    fn sound_effects_and_title_extras_reach_the_ops() {
+        let (seq, pool, screen, bed) = fixture();
+        let plan = EditPlan {
+            segments: vec![
+                PlanSegment {
+                    title: Some(PlanTitle { text: "Klipp".into(), glow: Some(0.6), glow_color: Some("#ff2a78".into()), animate: Some("rise".into()), stagger: Some("char".into()), ..Default::default() }),
+                    sfx: Some(PlanSfx { media_id: bed, at_secs: Some(0.5), source_in_secs: Some(1.0), secs: Some(1.5), volume_db: Some(-6.0) }),
+                    ..seg(screen, 0.0, 3.0)
+                },
+                seg(screen, 3.0, 6.0),
+            ],
+            music: Some(PlanMusic { media_id: bed, duck_db: None, source_in_secs: None, volume_db: None, fade_in_secs: None, fade_out_secs: None }),
+            approved: true,
+            ..Default::default()
+        };
+        validate(&plan, &pool, None).unwrap();
+        let ops = to_ops(&plan, &seq, &pool, None);
+        let sfx_track = ops.iter().position(|o| matches!(o, Op::AddTrack { name: Some(n), .. } if n == "SFX")).expect("an SFX track");
+        let music_track = ops.iter().position(|o| matches!(o, Op::AddTrack { name: Some(n), .. } if n == "Music")).unwrap();
+        assert!(sfx_track > music_track, "the SFX track is made after the music's, below it");
+        let place = ops.iter().find(|o| matches!(o, Op::Place { at: Anchor::Secs(t), source_in: Some(f), source_out: Some(g), .. } if (*t - 0.5).abs() < 1e-9 && (*f - 1.0).abs() < 1e-9 && (*g - 2.5).abs() < 1e-9));
+        assert!(place.is_some(), "the effect is placed half a second in, 1.0-2.5 of its file: {ops:?}");
+        assert!(ops.iter().any(|o| matches!(o, Op::Role { role, .. } if role == "sfx")));
+        assert!(ops.iter().any(|o| matches!(o, Op::Audio { volume_db: Some(v), .. } if (*v + 6.0).abs() < 1e-6)));
+        let title = ops.iter().find(|o| matches!(o, Op::Title { .. })).unwrap();
+        let Op::Title { glow, glow_color, animate, stagger, y, .. } = title else { unreachable!() };
+        assert_eq!((*glow, glow_color.as_deref(), animate.as_deref(), stagger.as_deref()), (Some(0.6), Some("#ff2a78"), Some("rise"), Some("char")));
+        assert_eq!(*y, Some(0.10), "a heading sits in the top tenth");
+        // An effect past the segment's end is refused.
+        let mut late = plan.clone();
+        late.segments[0].sfx.as_mut().unwrap().at_secs = Some(3.5);
+        assert!(validate(&late, &pool, None).unwrap_err().contains("at_secs"));
         resolve(&seq, &pool, &ops).unwrap();
     }
 
@@ -295,7 +403,7 @@ mod tests {
         assert!(bad(EditPlan { segments: vec![seg(screen, 5.0, 5.0)], ..Default::default() }).contains("in order"));
         assert!(bad(EditPlan { segments: vec![PlanSegment { feature: "Filters".into(), ..seg(screen, 1.0, 2.0) }], ..Default::default() }).contains("Search"));
         assert!(bad(EditPlan { segments: vec![PlanSegment { transition: Some("cross_dissolve".into()), ..seg(screen, 1.0, 2.0) }], ..Default::default() }).contains("nothing before it"));
-        assert!(bad(EditPlan { segments: vec![PlanSegment { title: Some(PlanTitle { text: "x".into(), secs: None, style: "banner".into(), color: None, fill: None }), ..seg(screen, 1.0, 2.0) }], ..Default::default() }).contains("heading, callout or card"));
+        assert!(bad(EditPlan { segments: vec![PlanSegment { title: Some(PlanTitle { text: "x".into(), secs: None, style: "banner".into(), color: None, fill: None, ..Default::default() }), ..seg(screen, 1.0, 2.0) }], ..Default::default() }).contains("heading, callout or card"));
         let unknown = EditPlan { segments: vec![seg(MediaId::new(), 1.0, 2.0)], ..Default::default() };
         assert!(bad(unknown).contains("no media item"));
     }
@@ -304,7 +412,7 @@ mod tests {
     fn a_plan_builds_after_what_is_already_down() {
         let (mut seq, pool, screen, _) = fixture();
         seq.tracks[0].clips.push(klipp_timeline::Clip::media(screen, tc(0.0), tc(4.0), tc(20.0), tc(24.0)));
-        let plan = EditPlan { segments: vec![PlanSegment { title: Some(PlanTitle { text: "Next".into(), secs: Some(1.0), style: String::new(), color: None, fill: None }), ..seg(screen, 0.0, 2.0) }], ..Default::default() };
+        let plan = EditPlan { segments: vec![PlanSegment { title: Some(PlanTitle { text: "Next".into(), secs: Some(1.0), style: String::new(), color: None, fill: None, ..Default::default() }), ..seg(screen, 0.0, 2.0) }], ..Default::default() };
         let built = resolve(&seq, &pool, &to_ops(&plan, &seq, &pool, None)).unwrap();
         let place = built.steps.iter().find(|s| matches!(s.op, Op::Place { .. })).unwrap();
         assert_eq!((place.after[0].timeline_in_secs, place.after[0].timeline_out_secs), (4.0, 6.0));
