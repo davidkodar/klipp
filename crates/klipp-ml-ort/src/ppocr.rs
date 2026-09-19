@@ -21,6 +21,28 @@ pub const REC_HEIGHT: u32 = 48;
 pub const REC_MAX_WIDTH: u32 = 1280;
 /// Lines read in one run of the recogniser.
 pub const REC_BATCH: usize = 16;
+/// Threads a session gets. Eight read a line fastest on a many-core
+/// machine; the runtime's default of one per core is slower and
+/// leaves nothing for the analyser running alongside.
+pub const SESSION_THREADS: usize = 8;
+/// A strip whose pixels differ from the previous frame's at the same
+/// place by less than this, on average, is the same line: its read is
+/// reused. Screen chrome is most of what a screen recording shows.
+pub const SAME_STRIP_MEAN_DIFF: f32 = 2.0;
+
+/// Mean absolute difference between two RGBA8 strips of one size.
+pub fn strip_mean_diff(a: &[u8], b: &[u8]) -> f32 {
+    if a.len() != b.len() || a.is_empty() {
+        return f32::MAX;
+    }
+    let sum: u64 = a.iter().zip(b).map(|(x, y)| (*x as i16 - *y as i16).unsigned_abs() as u64).sum();
+    sum as f32 / a.len() as f32
+}
+
+/// Where a box sits, coarsely: the key under which its last read is kept.
+pub fn box_key(b: PxBox) -> (u32, u32, u32, u32) {
+    (b.x / 8, b.y / 8, b.w / 8, b.h / 8)
+}
 /// Probability-map threshold for "this pixel is text".
 pub const DET_THRESH: f32 = 0.3;
 /// A box whose mean probability is under this is noise.
@@ -212,11 +234,16 @@ mod infer {
     pub struct TextReader {
         det: ort::session::Session,
         rec: ort::session::Session,
+        /// The previous frame's strips and what they read, by where they
+        /// were: a line that has not changed is not read again.
+        previous: std::collections::HashMap<(u32, u32, u32, u32), (u32, Vec<u8>, String, f32)>,
         /// Time spent in the detector and the recogniser so far, for
         /// whoever wants to say where a pass went.
         pub det_secs: f64,
         pub rec_secs: f64,
         pub lines_read: usize,
+        /// Lines whose read was reused from the frame before.
+        pub lines_reused: usize,
     }
 
     fn session(weights: &std::path::Path) -> Result<ort::session::Session, String> {
@@ -226,7 +253,9 @@ mod infer {
         let mut builder = ort::session::Session::builder()
             .map_err(|e| format!("session builder: {e}"))?
             .with_optimization_level(GraphOptimizationLevel::Level3)
-            .map_err(|e| format!("set optimisation: {e}"))?;
+            .map_err(|e| format!("set optimisation: {e}"))?
+            .with_intra_threads(SESSION_THREADS)
+            .map_err(|e| format!("set threads: {e}"))?;
         #[cfg(feature = "cuda")]
         {
             builder = builder
@@ -244,7 +273,7 @@ mod infer {
 
     impl TextReader {
         pub fn open(det: &std::path::Path, rec: &std::path::Path) -> Result<Self, String> {
-            Ok(Self { det: session(det)?, rec: session(rec)?, det_secs: 0.0, rec_secs: 0.0, lines_read: 0 })
+            Ok(Self { det: session(det)?, rec: session(rec)?, previous: std::collections::HashMap::new(), det_secs: 0.0, rec_secs: 0.0, lines_read: 0, lines_reused: 0 })
         }
 
         /// Every line of text in an RGBA8 frame, top to bottom.
@@ -290,12 +319,30 @@ mod infer {
                 let rw = ((cw as f32 * REC_HEIGHT as f32 / ch.max(1) as f32).round() as u32).clamp(8, REC_MAX_WIDTH);
                 strips.push((px, rw, resize_rgba8(&crop, cw, ch, rw, REC_HEIGHT)));
             }
+            // A strip that looks as it did in the previous frame at the
+            // same place reads as it did then.
+            let mut lines = Vec::new();
+            let mut next: std::collections::HashMap<(u32, u32, u32, u32), (u32, Vec<u8>, String, f32)> = std::collections::HashMap::new();
+            let mut unread: Vec<(PxBox, u32, Vec<u8>)> = Vec::new();
+            for (px, rw, strip) in strips {
+                let key = box_key(px);
+                if let Some((prw, pstrip, text, conf)) = self.previous.get(&key) {
+                    if *prw == rw && strip_mean_diff(pstrip, &strip) < SAME_STRIP_MEAN_DIFF {
+                        self.lines_reused += 1;
+                        if !text.is_empty() {
+                            lines.push(TextLine { text: text.clone(), confidence: *conf, x: px.x as f32 / w as f32, y: px.y as f32 / h as f32, w: px.w as f32 / w as f32, h: px.h as f32 / h as f32 });
+                        }
+                        next.insert(key, (rw, strip, text.clone(), *conf));
+                        continue;
+                    }
+                }
+                unread.push((px, rw, strip));
+            }
             // ── Recognise ── in batches of strips of a similar width, each
             // padded to the widest: one run reads a whole frame's worth of
             // lines, where a run per line cost the frame's whole budget.
-            strips.sort_by_key(|(_, rw, _)| *rw);
-            let mut lines = Vec::new();
-            for batch in strips.chunks(REC_BATCH) {
+            unread.sort_by_key(|(_, rw, _)| *rw);
+            for batch in unread.chunks(REC_BATCH) {
                 let bw = batch.iter().map(|(_, rw, _)| *rw).max().unwrap_or(8).div_ceil(8) * 8;
                 let m = (bw * REC_HEIGHT) as usize;
                 let mut chw = vec![0f32; batch.len() * 3 * m];
@@ -317,19 +364,22 @@ mod infer {
                     [n, t, c] => (*n as usize, *t as usize, *c as usize),
                     other => return Err(format!("rec output shape {other:?} is not batch by steps by classes")),
                 };
-                for (bi, (px, _, _)) in batch.iter().enumerate().take(n) {
+                for (bi, (px, rw, strip)) in batch.iter().enumerate().take(n) {
                     let from = bi * steps * classes;
                     let to = (from + steps * classes).min(probs.len());
                     if to <= from {
                         break;
                     }
                     let (text, confidence) = ctc_decode(&probs[from..to], steps, classes, EN_DICT);
+                    let kept = if text.is_empty() || confidence < 0.5 { (String::new(), 0.0) } else { (text.clone(), confidence) };
+                    next.insert(box_key(*px), (*rw, strip.clone(), kept.0, kept.1));
                     if text.is_empty() || confidence < 0.5 {
                         continue;
                     }
                     lines.push(TextLine { text, confidence, x: px.x as f32 / w as f32, y: px.y as f32 / h as f32, w: px.w as f32 / w as f32, h: px.h as f32 / h as f32 });
                 }
             }
+            self.previous = next;
             lines.sort_by(|a, b| (a.y, a.x).partial_cmp(&(b.y, b.x)).unwrap_or(std::cmp::Ordering::Equal));
             self.rec_secs += started.elapsed().as_secs_f64();
             self.lines_read += lines.len();
@@ -385,6 +435,18 @@ mod tests {
         assert_eq!(det_input_size(3840, 2160), (1600, 896));
         assert_eq!(det_input_size(640, 480), (640, 480));
         assert_eq!(det_input_size(10, 10), (32, 32));
+    }
+
+    #[test]
+    fn a_strip_that_barely_changed_is_the_same_line() {
+        let a: Vec<u8> = (0..48 * 40 * 4).map(|i| (i % 251) as u8).collect();
+        let mut b = a.clone();
+        for v in b.iter_mut().step_by(7) { *v = v.saturating_add(3); }
+        assert!(strip_mean_diff(&a, &b) < SAME_STRIP_MEAN_DIFF);
+        let c: Vec<u8> = a.iter().map(|v| v.wrapping_add(40)).collect();
+        assert!(strip_mean_diff(&a, &c) > SAME_STRIP_MEAN_DIFF);
+        assert_eq!(strip_mean_diff(&a, &a[..8]), f32::MAX);
+        assert_eq!(box_key(PxBox { x: 17, y: 9, w: 300, h: 40 }), (2, 1, 37, 5));
     }
 
     #[test]

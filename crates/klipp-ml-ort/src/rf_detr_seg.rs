@@ -608,7 +608,11 @@ fn build_session(
     let mut builder = ort::session::Session::builder()
         .map_err(|e| MaskError::BackendInit(format!("session builder: {e}")))?
         .with_optimization_level(GraphOptimizationLevel::Level3)
-        .map_err(|e| MaskError::BackendInit(format!("set optimisation: {e}")))?;
+        .map_err(|e| MaskError::BackendInit(format!("set optimisation: {e}")))?
+        // One thread per core is slower than a few on a many-core machine
+        // and leaves nothing for the analyser running alongside.
+        .with_intra_threads(crate::ppocr::SESSION_THREADS)
+        .map_err(|e| MaskError::BackendInit(format!("set threads: {e}")))?;
 
     #[cfg(feature = "cuda")]
     {

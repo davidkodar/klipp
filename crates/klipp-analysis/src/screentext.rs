@@ -441,8 +441,8 @@ impl crate::Analyser for ScreenTextAnalyser {
             }
         }
         tracing::info!(
-            "screen text of {}: {} frames at {w}x{h}; grabbing {grab_secs:.1} s, detecting {:.1} s, reading {} lines {:.1} s",
-            item.filename, read.len(), reader.det_secs, reader.lines_read, reader.rec_secs
+            "screen text of {}: {} frames at {w}x{h}; grabbing {grab_secs:.1} s, detecting {:.1} s, reading {} lines {:.1} s ({} reused unchanged)",
+            item.filename, read.len(), reader.det_secs, reader.lines_read, reader.rec_secs, reader.lines_reused
         );
         let spans = fold_spans(&read, FALLBACK_STEP_SECS);
         let sensitive = spans.iter().filter_map(|s| sensitive_in(&s.text).map(|(kind, masked)| Sensitive { kind: kind.into(), masked, start_secs: s.start_secs, end_secs: s.end_secs, x: s.x, y: s.y, w: s.w, h: s.h })).collect();
