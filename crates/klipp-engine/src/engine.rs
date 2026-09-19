@@ -977,6 +977,8 @@ pub struct PlaybackEngine {
     /// for ahead of their start; cleared when the layout changes.
     titles_warmed: std::collections::HashSet<(klipp_core::ClipId, u32, u32)>,
     titles_warm_checked: std::time::Instant,
+    /// Until when each presented or missing frame is logged after a cut.
+    cut_diag_until: Option<std::time::Instant>,
     // Audio — one source per active track, mixed through mix thread
     audio_sources: Vec<ActiveAudioSource>,
     audio_output: Option<SendAudioOutput>,
@@ -1681,6 +1683,7 @@ impl PlaybackEngine {
             renderer: klipp_compose::Renderer::new(ofx_host, title_renderer),
             titles_warmed: std::collections::HashSet::new(),
             titles_warm_checked: std::time::Instant::now(),
+            cut_diag_until: None,
             audio_sources: Vec::new(),
             audio_output,
             mix_thread: Some(mix_thread),
@@ -2293,15 +2296,23 @@ impl PlaybackEngine {
                     // This is the primary cause of the 2–3 s Play-
                     // after-pause latency the user hit.
                     if let Some(dec) = &self.v1_decoder {
-                        let queue_has_target = {
+                        let (queue_has_target, queue_empty) = {
                             let q = dec.frame_queue().lock().unwrap_or_else(|e| e.into_inner());
-                            matches!(
-                                q.front(),
-                                Some(f) if !f.is_eof
-                                    && (f.pts_secs() - source_secs).abs() < 0.1
+                            (
+                                matches!(
+                                    q.front(),
+                                    Some(f) if !f.is_eof
+                                        && (f.pts_secs() - source_secs).abs() < 0.1
+                                ),
+                                q.is_empty(),
                             )
                         };
-                        if !queue_has_target {
+                        // A seek to this very place is still decoding (the
+                        // scrub that put the playhead here): its frames are
+                        // on their way, and seeking again would start the
+                        // group of pictures over.
+                        let seek_under_way = queue_empty && dec.last_seek_secs().is_some_and(|t| (t - source_secs).abs() < 0.1);
+                        if !queue_has_target && !seek_under_way {
                             dec.seek(source_secs);
                         }
                         dec.resume();
@@ -4423,6 +4434,16 @@ impl PlaybackEngine {
             }
         }
 
+        if self.cut_diag_until.is_some_and(|t| std::time::Instant::now() < t) {
+            let (front, len) = self.v1_decoder.as_ref().map(|d| {
+                let q = d.frame_queue().lock().unwrap_or_else(|e| e.into_inner());
+                (q.front().map(|f| f.pts_secs()), q.len())
+            }).unwrap_or((None, 0));
+            match &display_frame {
+                Some(f) => debug!("CUT-DIAG FRAME pts={:.4} clock={:.4} q_len={len} front={front:?}", f.pts_secs(), current_source_secs),
+                None => debug!("CUT-DIAG STARVED clock={:.4} q_len={len} front={front:?}", current_source_secs),
+            }
+        }
         let frame = match display_frame {
             Some(f) => f,
             None => {
@@ -4546,6 +4567,7 @@ impl PlaybackEngine {
                     frame.pts_secs(), clip.source_out.to_secs_f64(),
                     clip.timeline_out.to_secs_f64(), current_source_secs);
                 self.playhead = clip.timeline_out;
+                self.cut_diag_until = Some(std::time::Instant::now() + Duration::from_millis(1500));
                 self.advance_to_next_clip();
                 return;
             }
@@ -7852,9 +7874,15 @@ impl PlaybackEngine {
     /// Wait for a video frame near `target_secs` to appear in the queue.
     /// Drains any stale frames that are far from the target (>2s away).
     /// This ensures the clock and audio don't start before video is ready.
+    /// Hold until the decoder has a frame near `target_secs` at the
+    /// front of its queue, up to a second and a half: the clock and the
+    /// sound start together with the picture, instead of running ahead
+    /// while a 4K group of pictures decodes and the video then jumping
+    /// to catch up.
     fn wait_for_valid_frame(&self, target_secs: f64) {
         let Some(dec) = &self.v1_decoder else { return };
-        let deadline = std::time::Instant::now() + Duration::from_millis(200);
+        let started = std::time::Instant::now();
+        let deadline = started + Duration::from_millis(1500);
         loop {
             {
                 let mut queue = dec.frame_queue().lock().unwrap_or_else(|e| e.into_inner());
@@ -7863,6 +7891,10 @@ impl PlaybackEngine {
                     let pts = front.pts_secs();
                     if (pts - target_secs).abs() < 2.0 || front.is_eof {
                         // Frame is close enough to target — good to go
+                        let waited = started.elapsed();
+                        if waited > Duration::from_millis(100) {
+                            info!("play waited {:.0} ms for the first frame near {target_secs:.3}s", waited.as_secs_f64() * 1000.0);
+                        }
                         return;
                     }
                     // Stale frame from a previous position — discard

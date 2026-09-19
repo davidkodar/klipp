@@ -545,6 +545,10 @@ pub struct VideoDecoder {
     /// goes out, so a consumer can read it without having tracked the
     /// return value of every seek call.
     seek_epoch: Arc<std::sync::atomic::AtomicU64>,
+    /// The second the newest seek asked for, as f64 bits; `u64::MAX`
+    /// for none. So a play right after a seek to the same place waits
+    /// for that seek's frames instead of seeking again.
+    last_seek_bits: std::sync::atomic::AtomicU64,
     /// The presentation time of the last frame the decode thread decoded,
     /// as `f64` bits; [`NO_PTS`] before the first frame and after a
     /// container seek. Read by [`VideoDecoder::seek`] to decide whether a
@@ -616,6 +620,7 @@ impl VideoDecoder {
         Ok(Self {
             frame_queue,
             seek_epoch: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            last_seek_bits: std::sync::atomic::AtomicU64::new(u64::MAX),
             decode_thread: Some(thread),
             decode_cmd_tx: cmd_tx,
             hw_active,
@@ -641,6 +646,7 @@ impl VideoDecoder {
     /// [`Self::requested_seek`]: frames stamped with anything lower were
     /// decoded before this seek and are stale.
     pub fn seek(&self, secs: f64) -> u64 {
+        self.last_seek_bits.store(secs.to_bits(), std::sync::atomic::Ordering::Relaxed);
         let epoch = self.seek_epoch.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
         // Decided here, not on the decode thread: the epoch is already
         // the new one, so the caller's next look at the queue treats every
@@ -659,6 +665,12 @@ impl VideoDecoder {
         let cmd = if decode_on { DecodeCommand::SeekOn(secs, epoch) } else { DecodeCommand::SeekTo(secs, epoch) };
         let _ = self.decode_cmd_tx.send(cmd);
         epoch
+    }
+
+    /// The second the newest seek asked for, if any.
+    pub fn last_seek_secs(&self) -> Option<f64> {
+        let bits = self.last_seek_bits.load(std::sync::atomic::Ordering::Relaxed);
+        (bits != u64::MAX).then(|| f64::from_bits(bits))
     }
 
     /// The epoch of the newest seek asked for — 0 if there has been none.
