@@ -1,27 +1,41 @@
-//! A screencast/demo beat sheet: from the shots (scene changes) and the
-//! motion (how much the picture moves, second by second), a map of where
-//! the screen is *doing something* versus *settled* — so a cut can land
-//! when an action finishes and a title can sit where the picture holds.
+//! A screencast/demo beat sheet: where the screen is *settled* versus
+//! *changing*, so a cut can land when an action finishes and a title can
+//! sit where the picture holds.
 //!
-//! It reads the stored `shots` and `motion` results and synthesises them;
-//! it decodes nothing itself. Motion is per-second, so the segmentation is
-//! coarse: it points at moments — "a change settles around 14 s" — that a
-//! caller refines by looking at the frames there (shot boundaries are the
-//! precise cut times). Cheap, deterministic, cached like any analyser.
+//! Screen recordings defeat the camera-tuned signals: a UI change is small
+//! and localised, so the whole-frame luma difference (`motion`) rounds to
+//! zero and the scene-change score (`shots`) never fires — a four-minute
+//! demo reads as one frozen shot. So this analyser measures stillness
+//! directly with ffmpeg's `freezedetect`: a run of near-identical frames is
+//! a *freeze* (the screen is settled); the gaps between freezes are where
+//! something is happening. A freeze that *begins* is a change that just
+//! settled — a reveal, and the best moment to cut to and hold.
+//!
+//! Coarse on purpose (a low sampling rate): it points at moments — "a
+//! change settles around 14 s" — that a caller refines by looking at the
+//! frames there. The scene changes from `shots`, when there are any, are
+//! added as precise cut points.
 
 use serde::{Deserialize, Serialize};
 
-use crate::motion::Motion;
 use crate::shots::Shots;
 
 pub const ID: &str = "beatsheet";
-pub const VERSION: u32 = 1;
+pub const VERSION: u32 = 2;
 
-/// YDIF at or above which a second counts as *action* — ffmpeg's scale,
-/// the "moving" band of [`crate::motion::class_for`]. Below it the picture
-/// is settled enough to read, to cut on, or to hold a title over.
-const ACTION_YDIF: f32 = 4.0;
-/// The shortest settled stretch worth offering as a title / hold window.
+/// Frames sampled a second for freeze detection: enough to place a settle
+/// to a sixth of a second, cheap to decode.
+const SAMPLE_FPS: u32 = 6;
+/// Analysis width; small UI changes survive this, unlike the 160 px the
+/// `motion` pass uses.
+const SCALE_W: u32 = 480;
+/// How different two frames may be and still count as frozen (a ratio,
+/// 0–1). Above it the screen is changing. Low enough to catch a panel
+/// opening, high enough to ignore a blinking cursor or caret.
+const FREEZE_NOISE: &str = "0.003";
+/// The shortest stillness that counts as a settle / hold window.
+const FREEZE_MIN_SECS: &str = "0.5";
+/// A settled stretch at least this long is offered as a title / hold window.
 const MIN_WINDOW_SECS: f64 = 1.2;
 /// Two cut candidates closer than this are the same opportunity.
 const CUT_MERGE_SECS: f64 = 0.6;
@@ -32,13 +46,12 @@ pub struct Segment {
     pub end_secs: f64,
     /// "idle" (settled, readable) or "action" (the screen is changing).
     pub kind: String,
-    pub motion_mean: f32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct CutPoint {
     pub secs: f64,
-    /// 3 (a real scene change, or a change that just finished) down to 1.
+    /// 3 (a scene change, or a change that just settled) down to 2.
     pub strength: u8,
     pub why: String,
 }
@@ -53,63 +66,70 @@ pub struct Window {
 pub struct BeatSheet {
     pub duration_secs: f64,
     pub segments: Vec<Segment>,
-    /// Times where an action ended and the picture settled — a reveal
-    /// completed; the best moments to cut *to* and hold on.
+    /// Times where the screen settled after a change — a reveal completed;
+    /// the best moments to cut *to* and hold on.
     pub reveals: Vec<f64>,
     pub cut_points: Vec<CutPoint>,
-    /// Settled stretches long enough to hold a title without it fighting
-    /// a moving picture.
+    /// Settled stretches long enough to hold a title without it fighting a
+    /// moving picture.
     pub title_windows: Vec<Window>,
     pub has_shots: bool,
-    pub has_motion: bool,
+    /// Whether freeze detection found any settled stretch at all.
+    pub has_freeze: bool,
 }
 
-/// Build the beat sheet from whatever of shots/motion is available. Pure
-/// so it can be tested without ffmpeg or the store.
-pub fn build(duration_secs: f64, shots: Option<&Shots>, motion: Option<&Motion>) -> BeatSheet {
-    let kind_at = |ydif: f32| if ydif >= ACTION_YDIF { "action" } else { "idle" };
-
-    // Per-second idle/action, merged into contiguous segments.
-    let mut segments: Vec<Segment> = Vec::new();
-    if let Some(m) = motion {
-        let mut i = 0usize;
-        while i < m.per_second.len() {
-            let k = kind_at(m.per_second[i]);
-            let start = i;
-            let (mut sum, mut n) = (0.0f32, 0u32);
-            while i < m.per_second.len() && kind_at(m.per_second[i]) == k {
-                sum += m.per_second[i];
-                n += 1;
-                i += 1;
-            }
-            segments.push(Segment {
-                start_secs: start as f64,
-                end_secs: (i as f64).min(duration_secs),
-                kind: k.to_string(),
-                motion_mean: if n > 0 { sum / n as f32 } else { 0.0 },
-            });
+/// Build the beat sheet from the frozen (settled) spans and the shots.
+/// `frozen` is the list of `(start, end)` settled stretches, in seconds.
+/// Pure, so it can be tested without ffmpeg.
+pub fn build(duration_secs: f64, shots: Option<&Shots>, frozen: &[(f64, f64)]) -> BeatSheet {
+    // Normalise the frozen spans: clamp to the file, drop empties, sort,
+    // and merge any that touch.
+    let mut spans: Vec<(f64, f64)> = frozen
+        .iter()
+        .map(|(a, b)| (a.max(0.0), b.min(duration_secs)))
+        .filter(|(a, b)| b - a > 1e-3)
+        .collect();
+    spans.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+    let mut merged: Vec<(f64, f64)> = Vec::new();
+    for s in spans {
+        match merged.last_mut() {
+            Some(last) if s.0 <= last.1 + 1e-3 => last.1 = last.1.max(s.1),
+            _ => merged.push(s),
         }
     }
 
-    // A reveal is where an action segment gives way to an idle one.
-    let reveals: Vec<f64> = segments
-        .windows(2)
-        .filter(|w| w[0].kind == "action" && w[1].kind == "idle")
-        .map(|w| w[1].start_secs)
-        .collect();
+    // Walk the file: frozen spans are idle, the gaps between them action.
+    let mut segments: Vec<Segment> = Vec::new();
+    let mut reveals: Vec<f64> = Vec::new();
+    let mut cursor = 0.0;
+    for &(fs, fe) in &merged {
+        if fs - cursor > 1e-3 {
+            segments.push(Segment { start_secs: cursor, end_secs: fs, kind: "action".into() });
+        }
+        // A freeze that begins after some action is a settle / reveal.
+        if fs > 1e-3 {
+            reveals.push(fs);
+        }
+        segments.push(Segment { start_secs: fs, end_secs: fe, kind: "idle".into() });
+        cursor = fe;
+    }
+    if duration_secs - cursor > 1e-3 {
+        segments.push(Segment { start_secs: cursor, end_secs: duration_secs, kind: "action".into() });
+    }
 
-    // Cut candidates: real scene changes, plus the edges of actions.
+    // Cut candidates: real scene changes, plus the edges of freezes.
     let mut cuts: Vec<CutPoint> = Vec::new();
     if let Some(s) = shots {
         for b in &s.boundaries {
             cuts.push(CutPoint { secs: *b, strength: 3, why: "shot change".into() });
         }
     }
-    for w in segments.windows(2) {
-        match (w[0].kind.as_str(), w[1].kind.as_str()) {
-            ("action", "idle") => cuts.push(CutPoint { secs: w[1].start_secs, strength: 3, why: "a change just settled".into() }),
-            ("idle", "action") => cuts.push(CutPoint { secs: w[1].start_secs, strength: 2, why: "just before a change starts".into() }),
-            _ => {}
+    for &(fs, fe) in &merged {
+        if fs > 1e-3 {
+            cuts.push(CutPoint { secs: fs, strength: 3, why: "a change just settled".into() });
+        }
+        if fe < duration_secs - 1e-3 {
+            cuts.push(CutPoint { secs: fe, strength: 2, why: "just before a change starts".into() });
         }
     }
     cuts.sort_by(|a, b| a.secs.partial_cmp(&b.secs).unwrap_or(std::cmp::Ordering::Equal));
@@ -127,10 +147,10 @@ pub fn build(duration_secs: f64, shots: Option<&Shots>, motion: Option<&Motion>)
     }
 
     // Title / hold windows: settled stretches long enough to hold text.
-    let title_windows: Vec<Window> = segments
+    let title_windows: Vec<Window> = merged
         .iter()
-        .filter(|s| s.kind == "idle" && s.end_secs - s.start_secs >= MIN_WINDOW_SECS)
-        .map(|s| Window { start_secs: s.start_secs, end_secs: s.end_secs })
+        .filter(|(a, b)| b - a >= MIN_WINDOW_SECS)
+        .map(|&(a, b)| Window { start_secs: a, end_secs: b })
         .collect();
 
     BeatSheet {
@@ -140,8 +160,49 @@ pub fn build(duration_secs: f64, shots: Option<&Shots>, motion: Option<&Motion>)
         cut_points,
         title_windows,
         has_shots: shots.is_some(),
-        has_motion: motion.is_some(),
+        has_freeze: !merged.is_empty(),
     }
+}
+
+/// Run ffmpeg's `freezedetect` over the file and return the frozen
+/// (settled) spans as `(start, end)` seconds. Empty on a file that never
+/// settles, or on an ffmpeg failure (the caller degrades gracefully).
+pub fn detect_frozen(ffmpeg: &std::path::Path, path: &std::path::Path, duration_secs: f64) -> Vec<(f64, f64)> {
+    let vf = format!("fps={SAMPLE_FPS},scale={SCALE_W}:-2,freezedetect=n={FREEZE_NOISE}:d={FREEZE_MIN_SECS}");
+    // freezedetect logs `freeze_start`/`freeze_end` at info level.
+    let out = std::process::Command::new(ffmpeg)
+        .args(["-hide_banner", "-nostats", "-loglevel", "info", "-i"])
+        .arg(path)
+        .args(["-an", "-sn", "-vf", &vf, "-f", "null", "-"])
+        .stderr(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .output();
+    let Ok(out) = out else { return Vec::new() };
+    parse_freezedetect(&String::from_utf8_lossy(&out.stderr), duration_secs)
+}
+
+/// Parse freezedetect's log lines into `(start, end)` spans. A freeze that
+/// is still open at the end of the log closes at `duration_secs`.
+pub fn parse_freezedetect(stderr: &str, duration_secs: f64) -> Vec<(f64, f64)> {
+    let value_after = |line: &str, key: &str| -> Option<f64> {
+        let i = line.find(key)? + key.len();
+        line[i..].split_whitespace().next()?.parse().ok()
+    };
+    let mut spans: Vec<(f64, f64)> = Vec::new();
+    let mut open: Option<f64> = None;
+    for line in stderr.lines() {
+        if let Some(t) = value_after(line, "freeze_start:") {
+            open = Some(t);
+        } else if let Some(t) = value_after(line, "freeze_end:") {
+            if let Some(start) = open.take() {
+                spans.push((start, t));
+            }
+        }
+    }
+    if let Some(start) = open {
+        spans.push((start, duration_secs));
+    }
+    spans
 }
 
 impl BeatSheet {
@@ -162,20 +223,20 @@ impl BeatSheet {
             self.cut_points.len(),
             self.title_windows.len(),
         );
-        if !self.has_motion {
-            let _ = writeln!(out, "(No motion analysis stored yet — cut points are shot changes only; the idle/action segmentation is unavailable.)");
+        if !self.has_freeze {
+            let _ = writeln!(out, "(The screen never settled for long — freeze detection found no hold; try a shorter freeze threshold, or the footage is genuinely continuous motion.)");
         }
         let strong: Vec<&CutPoint> = self.cut_points.iter().filter(|c| c.strength >= 2).collect();
         if !strong.is_empty() {
-            let _ = writeln!(out, "Strong cut points (cut to a settle, hold until readable):");
-            for c in strong.iter().take(24) {
+            let _ = writeln!(out, "Cut points (cut TO a settle, hold until it reads; never mid-action):");
+            for c in strong.iter().take(30) {
                 let _ = writeln!(out, "  {:.2} s  strength {}  {}", c.secs, c.strength, c.why);
             }
         }
         if !self.title_windows.is_empty() {
             let _ = writeln!(out, "Title / hold windows (place a title where the picture holds):");
-            for w in self.title_windows.iter().take(24) {
-                let _ = writeln!(out, "  {:.2}-{:.2} s", w.start_secs, w.end_secs);
+            for w in self.title_windows.iter().take(30) {
+                let _ = writeln!(out, "  {:.2}-{:.2} s  ({:.1} s)", w.start_secs, w.end_secs, w.end_secs - w.start_secs);
             }
         }
         out
@@ -194,21 +255,16 @@ impl crate::Analyser for BeatSheetAnalyser {
     fn wants(&self, item: &klipp_media::MediaItem) -> bool {
         !item.is_still && !item.video_codec.is_empty() && item.duration.to_secs_f64() > 0.0
     }
-    fn run(&self, item: &klipp_media::MediaItem, _ctx: &crate::AnalysisCtx) -> Result<serde_json::Value, String> {
-        // Synthesised from the stored shots and motion — which run before
-        // this one, so they are on disk under the same cache key. If a
-        // file has no shot/motion result (analysis failed), the sheet is
-        // built from whatever is present and says so.
-        let key = crate::store::key_for(&item.path).ok_or("file not readable")?;
-        let shots: Option<Shots> = crate::store::load(&key, crate::shots::ID, crate::shots::VERSION).and_then(|v| serde_json::from_value(v).ok());
-        let motion: Option<Motion> = crate::store::load(&key, crate::motion::ID, crate::motion::VERSION).and_then(|v| serde_json::from_value(v).ok());
-        let sheet = build(item.duration.to_secs_f64(), shots.as_ref(), motion.as_ref());
+    fn run(&self, item: &klipp_media::MediaItem, ctx: &crate::AnalysisCtx) -> Result<serde_json::Value, String> {
+        let duration = item.duration.to_secs_f64();
+        let frozen = detect_frozen(&ctx.ffmpeg, &item.path, duration);
+        // The scene changes, when they exist, are precise cut points; a
+        // screen recording usually has none, and that is fine.
+        let shots: Option<Shots> = crate::store::key_for(&item.path)
+            .and_then(|key| crate::store::load(&key, crate::shots::ID, crate::shots::VERSION))
+            .and_then(|v| serde_json::from_value(v).ok());
+        let sheet = build(duration, shots.as_ref(), &frozen);
         serde_json::to_value(sheet).map_err(|e| e.to_string())
-    }
-    /// Redo a beat sheet that was built before its motion existed, so a
-    /// thin (shots-only) sheet is replaced once the motion pass lands.
-    fn stale(&self, stored: &serde_json::Value) -> bool {
-        stored.get("has_motion").and_then(|v| v.as_bool()) == Some(false)
     }
 }
 
@@ -217,56 +273,56 @@ mod tests {
     use super::*;
     use crate::shots::Shots;
 
-    fn motion(per_second: Vec<f32>) -> Motion {
-        Motion { duration_secs: per_second.len() as f64, per_second, mean: 0.0, p95: 0.0 }
-    }
-
     #[test]
-    fn idle_and_action_segments_from_motion() {
-        // idle, idle, action, action, idle  (YDIF)
-        let m = motion(vec![0.5, 1.0, 8.0, 12.0, 0.5]);
-        let bs = build(5.0, None, Some(&m));
-        assert_eq!(bs.segments.len(), 3);
-        assert_eq!(bs.segments[0].kind, "idle");
-        assert_eq!((bs.segments[0].start_secs, bs.segments[0].end_secs), (0.0, 2.0));
-        assert_eq!(bs.segments[1].kind, "action");
-        assert_eq!((bs.segments[1].start_secs, bs.segments[1].end_secs), (2.0, 4.0));
-        assert_eq!(bs.segments[2].kind, "idle");
-        // A reveal where the action settled back to idle.
+    fn frozen_spans_become_idle_and_gaps_action() {
+        // Idle 0-3, action 3-4, idle 4-8 on a 10 s file (action tail 8-10).
+        let bs = build(10.0, None, &[(0.0, 3.0), (4.0, 8.0)]);
+        assert_eq!(bs.segments.len(), 4);
+        assert_eq!((bs.segments[0].kind.as_str(), bs.segments[0].start_secs, bs.segments[0].end_secs), ("idle", 0.0, 3.0));
+        assert_eq!((bs.segments[1].kind.as_str(), bs.segments[1].start_secs, bs.segments[1].end_secs), ("action", 3.0, 4.0));
+        assert_eq!((bs.segments[2].kind.as_str(), bs.segments[2].start_secs, bs.segments[2].end_secs), ("idle", 4.0, 8.0));
+        assert_eq!((bs.segments[3].kind.as_str(), bs.segments[3].start_secs, bs.segments[3].end_secs), ("action", 8.0, 10.0));
+        // The freeze that begins at 4 s (after action) is a reveal; the one
+        // at 0 is not.
         assert_eq!(bs.reveals, vec![4.0]);
     }
 
     #[test]
-    fn cut_points_prefer_settles_and_scene_changes() {
-        let m = motion(vec![0.5, 1.0, 8.0, 12.0, 0.5]);
-        let shots = Shots::from_boundaries(5.0, vec![2.0]);
-        let bs = build(5.0, Some(&shots), Some(&m));
-        // The idle→action edge at 2 s coincides with the shot change; kept
-        // once at the strongest (3).
-        let at2 = bs.cut_points.iter().find(|c| (c.secs - 2.0).abs() < 0.01).unwrap();
-        assert_eq!(at2.strength, 3);
-        // The action→idle settle at 4 s is a strength-3 cut point.
+    fn settle_and_scene_change_are_cut_points() {
+        let shots = Shots::from_boundaries(10.0, vec![4.0]);
+        let bs = build(10.0, Some(&shots), &[(0.0, 3.0), (4.0, 8.0)]);
+        // Settle at 4 s (freeze start) coincides with the shot change: kept
+        // once at the strongest.
         let at4 = bs.cut_points.iter().find(|c| (c.secs - 4.0).abs() < 0.01).unwrap();
         assert_eq!(at4.strength, 3);
-        assert_eq!(at4.why, "a change just settled");
+        // Freeze end at 3 s = just before a change: strength 2.
+        let at3 = bs.cut_points.iter().find(|c| (c.secs - 3.0).abs() < 0.01).unwrap();
+        assert_eq!(at3.strength, 2);
     }
 
     #[test]
-    fn title_windows_are_the_long_idle_stretches() {
-        // A 3 s idle open, a 1 s action, then a short idle tail.
-        let m = motion(vec![0.5, 0.5, 0.5, 9.0, 0.5]);
-        let bs = build(5.0, None, Some(&m));
-        // Only the 3 s idle stretch clears MIN_WINDOW_SECS.
+    fn title_windows_are_the_long_freezes() {
+        let bs = build(10.0, None, &[(0.0, 3.0), (4.0, 4.8)]);
+        // Only the 3 s freeze clears MIN_WINDOW_SECS; the 0.8 s one does not.
         assert_eq!(bs.title_windows, vec![Window { start_secs: 0.0, end_secs: 3.0 }]);
     }
 
     #[test]
-    fn no_motion_falls_back_to_shots_only() {
-        let shots = Shots::from_boundaries(10.0, vec![3.0, 6.0]);
-        let bs = build(10.0, Some(&shots), None);
-        assert!(!bs.has_motion);
-        assert!(bs.segments.is_empty());
-        assert_eq!(bs.cut_points.len(), 2);
-        assert!(bs.cut_points.iter().all(|c| c.why == "shot change"));
+    fn no_freeze_is_all_action() {
+        let bs = build(10.0, None, &[]);
+        assert!(!bs.has_freeze);
+        assert_eq!(bs.segments, vec![Segment { start_secs: 0.0, end_secs: 10.0, kind: "action".into() }]);
+        assert!(bs.title_windows.is_empty());
+    }
+
+    #[test]
+    fn freezedetect_log_parses_into_spans() {
+        let log = "\
+[freezedetect @ 0x1] lavfi.freezedetect.freeze_start: 5.005\n\
+[freezedetect @ 0x1] lavfi.freezedetect.freeze_duration: 2.002\n\
+[freezedetect @ 0x1] lavfi.freezedetect.freeze_end: 7.007\n\
+[freezedetect @ 0x1] lavfi.freezedetect.freeze_start: 12.0\n";
+        let spans = parse_freezedetect(log, 20.0);
+        assert_eq!(spans, vec![(5.005, 7.007), (12.0, 20.0)]);
     }
 }
