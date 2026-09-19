@@ -350,6 +350,13 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
             v
         }
         "klipp_auto_redact" => json!({ "method": "auto_redact", "apply": args.get("apply").and_then(|v| v.as_bool()).unwrap_or(false) }),
+        "klipp_auto_sfx" => json!({
+            "method": "auto_sfx",
+            "whoosh": args.get("whoosh").cloned().unwrap_or(serde_json::Value::Null),
+            "click": args.get("click").cloned().unwrap_or(serde_json::Value::Null),
+            "riser": args.get("riser").cloned().unwrap_or(serde_json::Value::Null),
+            "apply": args.get("apply").and_then(|v| v.as_bool()).unwrap_or(false),
+        }),
         "klipp_search_transcripts" => {
             let mut v = json!({ "method": "search_transcripts", "query": arg_str(args, "query")? });
             if let Some(n) = args.get("max_hits").and_then(|v| v.as_u64()) {
@@ -690,7 +697,7 @@ fn content_for(name: &str, result: &Value) -> Result<Vec<Value>, String> {
             return Ok(with_next(out));
         }
     }
-    if name == "klipp_timeline" || name == "klipp_media_analysis" || name == "klipp_plan" || name == "klipp_check" || name == "klipp_brief" || name == "klipp_edit_plan" || name == "klipp_build_edit_plan" || name == "klipp_screen_text" || name == "klipp_auto_redact" || name == "klipp_transcript" || name == "klipp_cut_points" || name == "klipp_selects" || name == "klipp_style_profile" || name == "klipp_looks" || name == "klipp_frame_stats" {
+    if name == "klipp_timeline" || name == "klipp_media_analysis" || name == "klipp_plan" || name == "klipp_check" || name == "klipp_brief" || name == "klipp_edit_plan" || name == "klipp_build_edit_plan" || name == "klipp_screen_text" || name == "klipp_auto_redact" || name == "klipp_auto_sfx" || name == "klipp_transcript" || name == "klipp_cut_points" || name == "klipp_selects" || name == "klipp_style_profile" || name == "klipp_looks" || name == "klipp_frame_stats" {
         if let Some(text) = result.get("text").and_then(|v| v.as_str()) {
             return Ok(with_next(text.to_string()));
         }
@@ -951,6 +958,15 @@ fn tool_definitions() -> Vec<Value> {
               download_models true.",
              json!({ "media_id": { "type": "string" }, "from_secs": { "type": "number" }, "to_secs": { "type": "number" }, "all": { "type": "boolean", "description": "every line read, not the summary of headings and lines that stayed up" } }),
              vec!["media_id"]),
+        tool("klipp_auto_sfx",
+             "Sound design from the cut, as one undo step with apply true (a dry run without): \
+              a whoosh on every cut of the top picture track (its loudest moment landing on the \
+              cut), a click on every reveal the beat sheet found inside the clips (none near a \
+              cut, at most one every second and a half), a riser ending on the last cut. Give \
+              the effects by media id — search_sfx for \"whoosh\", \"click\" and \"riser\" first \
+              and pass the ids you imported. They go on an SFX track, marked sfx, at -6/-8 dB; \
+              nothing is placed where that track already has a clip, so it can be run again.",
+             json!({ "whoosh": { "type": "string" }, "click": { "type": "string" }, "riser": { "type": "string" }, "apply": { "type": "boolean" } }), vec![]),
         tool("klipp_auto_redact",
              "Hide everything the screen text found sensitive — emails, keys, passwords, card \
               numbers — wherever the timeline shows it: one redact op per finding (a cropped, \
@@ -1465,7 +1481,10 @@ fn tool_definitions() -> Vec<Value> {
               (\"cross_dissolve\", \"dip_to_black\": how it joins the segment before), zoom? \
               {from?, to, x?, y?}, sfx? {media_id (from search_sfx), at_secs? into the \
               segment, source_in_secs?, secs?, volume_db?}}. Music is {media_id, duck_db?, \
-              source_in_secs?, volume_db?, fade_in_secs?, fade_out_secs?}. Ground the stretches in \
+              source_in_secs?, volume_db?, fade_in_secs?, fade_out_secs?}. With snap_to_bars \
+              true the bed's beats are read and every segment is rounded to whole bars (half \
+              bars under one) and the bed starts on its first beat; the reply says what moved. \
+              Ground the stretches in \
               klipp_beat_sheet: cut to a settled reveal and hold until it reads; put titles in \
               a hold window. The plan is stored unapproved; the reply says which of the brief's \
               features it leaves out. Show its text to the user and ask.",

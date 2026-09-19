@@ -156,6 +156,11 @@ pub struct EditPlan {
     pub music: Option<PlanMusic>,
     #[serde(default)]
     pub approved: bool,
+    /// Cut on the music's bars: each segment's length is rounded to
+    /// whole bars of the bed (half bars under one), and the bed starts
+    /// on its first beat, when the plan is set.
+    #[serde(default)]
+    pub snap_to_bars: bool,
     /// Anything the reader should know about the plan as a whole.
     #[serde(default)]
     pub notes: String,

@@ -186,6 +186,21 @@ pub enum ControlCommand {
         #[serde(default)]
         apply: bool,
     },
+    /// Sound design from the cut: a whoosh on every cut of the top
+    /// picture track, a click on every reveal the beat sheet found, a
+    /// riser into the last cut, from the effects given by media id
+    /// (search_sfx brings them in). Resolved as a plan; applied as one
+    /// undo step with `apply`.
+    AutoSfx {
+        #[serde(default)]
+        whoosh: Option<klipp_core::MediaId>,
+        #[serde(default)]
+        click: Option<klipp_core::MediaId>,
+        #[serde(default)]
+        riser: Option<klipp_core::MediaId>,
+        #[serde(default)]
+        apply: bool,
+    },
     /// Where every requested item stands.
     AnalysisStatus,
     /// What is known about a media item, as text: the shot list, the

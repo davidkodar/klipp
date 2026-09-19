@@ -1487,6 +1487,50 @@ fn handle(
             Ok(v)
         }
 
+        ControlCommand::AutoSfx { whoosh, click, riser, apply } => {
+            if in_batch {
+                return Err("auto_sfx is its own batch; send it on its own".into());
+            }
+            if whoosh.is_none() && click.is_none() && riser.is_none() {
+                return Err("auto_sfx needs at least one effect: search_sfx for a whoosh, a click and a riser, then give their media ids as whoosh, click and riser".into());
+            }
+            let (placements, ops) = {
+                let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
+                let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
+                for (name, id) in [("whoosh", whoosh), ("click", click), ("riser", riser)] {
+                    if let Some(id) = id {
+                        let item = pool.get(&id).ok_or_else(|| format!("{name}: no media item {}; media ids are in list_media", id.0))?;
+                        if !item.has_audio {
+                            return Err(format!("{name}: {} has no sound", item.filename));
+                        }
+                    }
+                }
+                let reveals = |id: klipp_core::MediaId| pool.get(&id).and_then(|it| klipp_analysis::report::MediaAnalysis::load(&it.path).beatsheet).map(|b| b.reveals).unwrap_or_default();
+                let loudest = |id: klipp_core::MediaId| pool.get(&id).and_then(|it| klipp_analysis::report::MediaAnalysis::load(&it.path).audio).and_then(|a| a.loudest_secs);
+                let kit = klipp_document::sound_design::SfxKit { whoosh, click, riser };
+                let placements = klipp_document::sound_design::placements(&seq, &pool, kit, &reveals, &loudest);
+                let ops = klipp_document::sound_design::ops(&seq, &placements);
+                (placements, ops)
+            };
+            if ops.is_empty() {
+                return Ok(json!({ "text": "Nothing to place: no cut on the top picture track without an effect there already, and no reveal inside its clips (analyze gives the beat sheet).", "steps_resolved": 0, "applied": false }));
+            }
+            let (plan, revision) = resolve_plan(ctx, &ops)?;
+            let summary: Vec<String> = placements.iter().map(|p| format!("{} at {:.2} s", p.what, p.at_secs)).collect();
+            let mut v = if apply {
+                let edits: Vec<klipp_document::history::EditCommand> = plan.steps.iter().map(|s| s.edit.clone()).collect();
+                let mut v = send_full_envelope(ctx, Vec::new(), edits, true, Some(revision), Some("Auto SFX".into()))?;
+                v["next"] = json!("Placed. Play across a cut to hear the whoosh land on it; check reads the levels.");
+                v
+            } else {
+                json!({ "revision": revision, "applied": false, "next": "That is what auto_sfx would place. Run it with apply true to do it as one undo step." })
+            };
+            v["text"] = json!(format!("{}\n{}", summary.join("; "), plan.text()));
+            v["placements"] = json!(summary);
+            v["steps_resolved"] = json!(plan.steps.len());
+            Ok(v)
+        }
+
         ControlCommand::AnalysisStatus => {
             if in_batch {
                 return read_in_batch("analysis_status");
@@ -2531,14 +2575,30 @@ reference:   {}",
             if in_batch {
                 return Err("set_edit_plan is its own undo step; send it on its own".into());
             }
-            let (old, brief, text) = {
+            let (old, brief, text, snapped) = {
                 let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
                 let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
                 klipp_document::edit_plan::validate(&plan, &pool, seq.brief.as_ref())?;
+                // Cut on the bars: the bed's beats, read now, round every
+                // segment to whole bars and start the bed on its first beat.
+                let mut snapped: Vec<String> = Vec::new();
+                if plan.snap_to_bars {
+                    let Some(m) = &plan.music else { return Err("snap_to_bars needs music in the plan: the bars are the bed's".into()) };
+                    let path = pool.get(&m.media_id).map(|it| it.path.clone()).ok_or("music: no such media item")?;
+                    let beats = klipp_analysis::beats::detect(std::path::Path::new("ffmpeg"), &path, 0.0)?;
+                    if beats.bpm <= 0.0 || beats.beat_times.is_empty() {
+                        snapped.push("no beat was found in the music; nothing snapped".into());
+                    } else {
+                        let bar = 240.0 / beats.bpm as f64;
+                        snapped = klipp_document::edit_plan::snap_to_bars(&mut plan, bar, beats.beat_times[0], &pool);
+                        snapped.insert(0, format!("bars of {bar:.3} s at {:.1} bpm", beats.bpm));
+                        klipp_document::edit_plan::validate(&plan, &pool, seq.brief.as_ref())?;
+                    }
+                }
                 // A proposal is never its own approval.
                 plan.approved = false;
                 let text = plan.text(seq.brief.as_ref().and_then(|b| b.target_secs));
-                (seq.edit_plan.clone(), seq.brief.clone(), text)
+                (seq.edit_plan.clone(), seq.brief.clone(), text, snapped)
             };
             let missing: Vec<String> = brief.as_ref().map(|b| b.ranked_features().iter().filter(|f| !plan.segments.iter().any(|s| s.feature.trim().eq_ignore_ascii_case(f.title.trim()))).map(|f| f.title.clone()).collect()).unwrap_or_default();
             let edit = klipp_document::history::EditCommand::SetEditPlan { old: old.map(Box::new), new: Some(Box::new(plan)) };
@@ -2546,6 +2606,9 @@ reference:   {}",
             v["text"] = json!(text);
             if !missing.is_empty() {
                 v["note"] = json!(format!("the brief's features not in the plan: {}", missing.join(", ")));
+            }
+            if !snapped.is_empty() {
+                v["snapped"] = json!(snapped);
             }
             v["next"] = json!("Show the plan to the user, as text, and ask whether to build it. On their word call approve_edit_plan; then build_edit_plan to see what it builds, and build_edit_plan with apply true to build it.");
             Ok(v)

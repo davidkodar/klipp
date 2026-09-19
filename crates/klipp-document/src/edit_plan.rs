@@ -106,6 +106,39 @@ pub fn validate(plan: &EditPlan, pool: &MediaPool, brief: Option<&Brief>) -> Res
     Ok(())
 }
 
+/// Round every segment to the music's bars: a length under a bar goes
+/// to the nearest half bar (at least one), longer ones to whole bars;
+/// a stretch that would run past its file is shortened by whole bars.
+/// The bed's in-point goes to its first beat when none was given. What
+/// changed, one line per segment.
+pub fn snap_to_bars(plan: &mut EditPlan, bar_secs: f64, first_beat_secs: f64, pool: &MediaPool) -> Vec<String> {
+    let mut notes = Vec::new();
+    if !(bar_secs > 0.05) {
+        return notes;
+    }
+    for (i, s) in plan.segments.iter_mut().enumerate() {
+        let dur = s.duration_secs();
+        let unit = if dur < bar_secs { bar_secs / 2.0 } else { bar_secs };
+        let mut want = ((dur / unit).round().max(1.0)) * unit;
+        if let Some(file) = pool.get(&s.media_id).map(|it| it.duration.to_secs_f64()) {
+            while s.source_in_secs + want > file + 1e-6 && want > unit + 1e-9 {
+                want -= unit;
+            }
+        }
+        if (want - dur).abs() > 0.01 {
+            notes.push(format!("segment {}: {:.2} s \u{2192} {:.2} s ({} of {:.2} s)", i + 1, dur, want, if unit < bar_secs { "half bars" } else { "bars" }, bar_secs));
+            s.source_out_secs = s.source_in_secs + want;
+        }
+    }
+    if let Some(m) = plan.music.as_mut() {
+        if m.source_in_secs.is_none() && first_beat_secs > 0.0 {
+            m.source_in_secs = Some(first_beat_secs);
+            notes.push(format!("music: starts on its first beat at {first_beat_secs:.3} s"));
+        }
+    }
+    notes
+}
+
 /// Where each segment's clip will sit on the picture track, as the
 /// midpoint of its stretch: what `ClipRef::At` needs, and safe against a
 /// frame of snapping at either edge.
