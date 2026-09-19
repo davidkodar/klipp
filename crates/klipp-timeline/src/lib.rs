@@ -63,7 +63,7 @@ pub use clip_kind::{
     TitleAsset,
     TitleBackground, TitleData, TitleObject, TitleObjectContent, TitleObjectId, TitlePosition,
     TitleShadow, GeneratorData, ImageFit, ImageLayer};
-pub use brief::{Brief, CastMember, Feature};
+pub use brief::{Brief, CastMember, Feature, TypeStyle};
 pub use edit_plan::{EditPlan, PlanMusic, PlanSegment, PlanSfx, PlanTitle, PlanZoom};
 pub use marker::Marker;
 pub use sequence::{

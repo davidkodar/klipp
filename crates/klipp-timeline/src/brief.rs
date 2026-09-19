@@ -88,9 +88,103 @@ pub struct Brief {
     /// Anything else the editor should know.
     #[serde(default)]
     pub notes: String,
+    /// The brand's type system: named looks for titles. A title op or
+    /// a plan title names one by `style`; its own fields override the
+    /// look's. `heading`, `callout` and `card` are built in and a brief
+    /// style of the same name replaces the built-in one.
+    #[serde(default)]
+    pub type_styles: Vec<TypeStyle>,
+}
+
+/// A named look for titles, every field optional: what the brief
+/// settles once so every title agrees.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct TypeStyle {
+    pub name: String,
+    #[serde(default)]
+    pub font: Option<String>,
+    #[serde(default)]
+    pub bold: Option<bool>,
+    /// In px of a 1080-line frame.
+    #[serde(default)]
+    pub size: Option<f32>,
+    /// `#rrggbb`; left out, the brand's first colour (white on a card).
+    #[serde(default)]
+    pub color: Option<String>,
+    /// A card's fill or a backing panel's colour, `#rrggbb`.
+    #[serde(default)]
+    pub fill: Option<String>,
+    /// A dark panel behind the words, 0 to 1.
+    #[serde(default)]
+    pub backing: Option<f32>,
+    /// A full-frame card behind everything.
+    #[serde(default)]
+    pub full_frame: Option<bool>,
+    /// Where the words sit, as fractions of the frame (centre).
+    #[serde(default)]
+    pub x: Option<f32>,
+    #[serde(default)]
+    pub y: Option<f32>,
+    #[serde(default)]
+    pub align: Option<String>,
+    #[serde(default)]
+    pub outline: Option<f32>,
+    #[serde(default)]
+    pub outline_color: Option<String>,
+    #[serde(default)]
+    pub glow: Option<f32>,
+    #[serde(default)]
+    pub glow_color: Option<String>,
+    #[serde(default)]
+    pub gradient: Option<[String; 2]>,
+    #[serde(default)]
+    pub animate: Option<String>,
+    #[serde(default)]
+    pub animate_secs: Option<f32>,
+    #[serde(default)]
+    pub stagger: Option<String>,
+    #[serde(default)]
+    pub loop_effect: Option<String>,
+}
+
+impl TypeStyle {
+    /// The three looks every brief has unless it says otherwise: a
+    /// heading in the top tenth that rises in, a callout low and backed
+    /// that fades in, a full-frame card.
+    pub fn builtin(name: &str) -> Option<TypeStyle> {
+        let base = TypeStyle { name: name.to_string(), x: Some(0.5), bold: Some(true), ..Default::default() };
+        Some(match name {
+            "heading" => TypeStyle { y: Some(0.10), size: Some(72.0), backing: Some(0.45), animate: Some("rise".into()), animate_secs: Some(0.4), ..base },
+            "callout" => TypeStyle { y: Some(0.85), size: Some(40.0), bold: Some(false), backing: Some(0.6), animate: Some("fade".into()), animate_secs: Some(0.3), ..base },
+            "card" => TypeStyle { y: Some(0.5), size: Some(84.0), full_frame: Some(true), color: Some("#ffffff".into()), fill: Some("#101418".into()), animate: Some("fade".into()), animate_secs: Some(0.4), ..base },
+            _ => return None,
+        })
+    }
+
+    /// The names of the built-in looks.
+    pub const BUILTIN: [&'static str; 3] = ["heading", "callout", "card"];
 }
 
 impl Brief {
+    /// The type style called `name`: the brief's own first, then a
+    /// built-in one.
+    pub fn type_style(&self, name: &str) -> Option<TypeStyle> {
+        let want = name.trim().to_lowercase();
+        self.type_styles.iter().find(|s| s.name.trim().to_lowercase() == want).cloned().or_else(|| TypeStyle::builtin(&want))
+    }
+
+    /// Every style name a title may use: the brief's, then the built-in
+    /// ones it does not replace.
+    pub fn type_style_names(&self) -> Vec<String> {
+        let mut names: Vec<String> = self.type_styles.iter().map(|s| s.name.trim().to_lowercase()).filter(|n| !n.is_empty()).collect();
+        for b in TypeStyle::BUILTIN {
+            if !names.iter().any(|n| n == b) {
+                names.push(b.to_string());
+            }
+        }
+        names
+    }
+
     /// The cast member called `name`, compared without case or outer space.
     pub fn cast_member(&self, name: &str) -> Option<&CastMember> {
         let want = name.trim().to_lowercase();
@@ -153,6 +247,17 @@ impl Brief {
                 who.push_str(&format!(" ({})", c.described));
             }
             out.push(format!("Cast: {who}"));
+        }
+        if !self.type_styles.is_empty() {
+            let looks: Vec<String> = self.type_styles.iter().map(|s| {
+                let mut bits = Vec::new();
+                if let Some(f) = &s.font { bits.push(f.clone()); }
+                if let Some(z) = s.size { bits.push(format!("{z:.0} px")); }
+                if let Some(c) = &s.color { bits.push(c.clone()); }
+                if let Some(a) = &s.animate { bits.push(a.clone()); }
+                if bits.is_empty() { s.name.clone() } else { format!("{} ({})", s.name, bits.join(", ")) }
+            }).collect();
+            out.push(format!("Type styles: {}", looks.join("; ")));
         }
         for f in self.ranked_features() {
             let mut what = f.title.clone();

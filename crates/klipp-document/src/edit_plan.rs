@@ -12,7 +12,7 @@
 
 use crate::ops::{Anchor, ClipRef, Op, TrackRef};
 use klipp_media::MediaPool;
-use klipp_timeline::{Brief, EditPlan, PlanTitle, Sequence, TrackKind};
+use klipp_timeline::{Brief, EditPlan, PlanTitle, Sequence, TrackKind, TypeStyle};
 
 /// A join with no length given is this long.
 const DEFAULT_TRANSITION_SECS: f64 = 0.5;
@@ -49,8 +49,8 @@ pub fn validate(plan: &EditPlan, pool: &MediaPool, brief: Option<&Brief>) -> Res
                 return Err(format!("segment {n}: a title needs text"));
             }
             let style = t.style.trim();
-            if !(style.is_empty() || matches!(style, "heading" | "callout" | "card")) {
-                return Err(format!("segment {n}: \"{style}\" is not a title style; use heading, callout or card"));
+            if !(style.is_empty() || crate::title_style::look(brief, style).is_some()) {
+                return Err(format!("segment {n}: \"{style}\" is not a title style; the styles are {}", crate::title_style::names(brief).join(", ")));
             }
             if t.secs.is_some_and(|x| !x.is_finite() || x < 0.0) {
                 return Err(format!("segment {n}: a title's secs must be zero or more"));
@@ -245,7 +245,7 @@ pub fn to_ops(plan: &EditPlan, seq: &Sequence, pool: &MediaPool, brief: Option<&
         for (i, s) in plan.segments.iter().enumerate() {
             if let Some(t) = &s.title {
                 let hold = t.secs.filter(|x| *x > 0.0).unwrap_or(DEFAULT_TITLE_SECS).min(s.duration_secs());
-                ops.push(title_op(t, hold, t.color.as_deref().or(color.as_deref()), ClipRef::At { track: video_below, secs: mids[i] }));
+                ops.push(title_op(t, hold, color.as_deref(), brief, ClipRef::At { track: video_below, secs: mids[i] }));
             }
         }
     }
@@ -255,29 +255,35 @@ pub fn to_ops(plan: &EditPlan, seq: &Sequence, pool: &MediaPool, brief: Option<&
 /// A title in one of the plan's three styles: a heading in the upper
 /// third that rises in, a callout low and backed that fades in, or a
 /// full-frame card in the brand's colour.
-fn title_op(t: &PlanTitle, secs: f64, color: Option<&str>, over: ClipRef) -> Op {
-    let style = t.style.trim();
-    let fill = t.fill.as_deref();
-    // A heading sits in the top tenth, clear of a screen's own headings
-    // and toolbars; at 0.22 it lay across them.
-    let (x, y, size, bold, text_color, backing, full_frame, animate, animate_secs) = match style {
-        "callout" => (0.5, 0.85, 40.0, false, color.map(str::to_string), if fill.is_some() { None } else { Some(0.6) }, None, "fade", 0.3),
-        "card" => (0.5, 0.5, 84.0, true, Some(color.unwrap_or("#ffffff").to_string()), None, Some(fill.or(color).unwrap_or("#101418").to_string()), "fade", 0.4),
-        _ => (0.5, 0.10, 72.0, true, color.map(str::to_string), if fill.is_some() { None } else { Some(0.45) }, None, "rise", 0.4),
+fn title_op(t: &PlanTitle, secs: f64, brand: Option<&str>, brief: Option<&Brief>, over: ClipRef) -> Op {
+    let style = if t.style.trim().is_empty() { "heading" } else { t.style.trim() };
+    let look = crate::title_style::look(brief, style).unwrap_or_else(|| TypeStyle::builtin("heading").unwrap());
+    let card = look.full_frame.unwrap_or(false);
+    // A look the brief wrote is its own; a built-in one defers to the brand.
+    let from_brief = brief.is_some_and(|b| b.type_styles.iter().any(|s| s.name.trim().eq_ignore_ascii_case(style)));
+    // The words' colour: the title's, the look's, else the brand's (white on a card).
+    let color = t.color.clone().or(look.color.clone()).or_else(|| if card { Some("#ffffff".into()) } else { brand.map(str::to_string) });
+    let fill = t.fill.clone().or_else(|| if from_brief { look.fill.clone().or_else(|| brand.map(str::to_string)) } else { brand.map(str::to_string).or(look.fill.clone()) });
+    let (full_frame, backing_color, backing) = if card {
+        (Some(fill.or_else(|| brand.map(str::to_string)).unwrap_or_else(|| "#101418".into())), None, None)
+    } else if t.fill.is_some() {
+        (None, t.fill.clone(), None)
+    } else {
+        (None, None, look.backing)
     };
-    let backing_color = if style == "card" { None } else { fill.map(str::to_string) };
     Op::Title {
         text: t.text.clone(),
         at: Anchor::ClipStart(over),
+        style: None,
         secs,
         track: Some(TrackRef::Kind("text".into())),
-        x: Some(x), y: Some(y), size: Some(size), color: text_color, font: None, bold: Some(bold), align: None,
-        backing, backing_color, full_frame, outline: None, outline_color: None,
-        glow: t.glow, glow_color: t.glow_color.clone(), gradient: t.gradient.clone(),
-        animate: Some(t.animate.clone().unwrap_or_else(|| animate.into())),
-        animate_secs: Some(t.animate_secs.map(|v| v as f32).unwrap_or(animate_secs)),
-        stagger: t.stagger.clone(),
-        loop_effect: None, glitch: None, chromatic: None,
+        x: Some(look.x.unwrap_or(0.5)), y: Some(look.y.unwrap_or(0.10)), size: look.size, color, font: look.font.clone(), bold: look.bold, align: look.align.clone(),
+        backing, backing_color, full_frame, outline: look.outline, outline_color: look.outline_color.clone(),
+        glow: t.glow.or(look.glow), glow_color: t.glow_color.clone().or(look.glow_color.clone()), gradient: t.gradient.clone().or(look.gradient.clone()),
+        animate: t.animate.clone().or(look.animate.clone()),
+        animate_secs: t.animate_secs.map(|v| v as f32).or(look.animate_secs),
+        stagger: t.stagger.clone().or(look.stagger.clone()),
+        loop_effect: look.loop_effect.clone(), glitch: None, chromatic: None,
     }
 }
 

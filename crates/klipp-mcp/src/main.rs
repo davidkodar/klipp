@@ -1108,7 +1108,7 @@ fn tool_definitions() -> Vec<Value> {
               the speaker is not on the left or the picture has its own name burnt in there, \
               side \"right\" sets it against the right edge, x is that edge and y the name's line, \
               as fractions of the frame inside title-safe.\n\
-              title {text, at, secs?, track?, x?, y?, size?, color?, font?, bold?, align?, backing?, \
+              title {text, at, style? (a brief type style or heading|callout|card), secs?, track?, x?, y?, size?, color?, font?, bold?, align?, backing?, \
               backing_color?, full_frame?, outline?, outline_color?, glow?, glow_color?, gradient?, \
               animate?, animate_secs?, stagger?, loop?, glitch?, chromatic?} — a title from scratch, \
               any look and motion: x,y centre (0..1), size in px of a 1080 frame, color #rrggbb; \
@@ -1228,7 +1228,7 @@ fn tool_definitions() -> Vec<Value> {
               the speaker is not on the left or the picture has its own name burnt in there, \
               side \"right\" sets it against the right edge, x is that edge and y the name's line, \
               as fractions of the frame inside title-safe.\n\
-              title {text, at, secs?, track?, x?, y?, size?, color?, font?, bold?, align?, backing?, \
+              title {text, at, style? (a brief type style or heading|callout|card), secs?, track?, x?, y?, size?, color?, font?, bold?, align?, backing?, \
               backing_color?, full_frame?, outline?, outline_color?, glow?, glow_color?, gradient?, \
               animate?, animate_secs?, stagger?, loop?, glitch?, chromatic?} — a title from scratch, \
               any look and motion: x,y centre (0..1), size in px of a 1080 frame, color #rrggbb; \
@@ -1410,6 +1410,11 @@ fn tool_definitions() -> Vec<Value> {
              json!({}), vec![]),
         tool("klipp_set_brief",
              "Replace the brief, as one undo step. A brief is an object with any of: title, \
+              type_styles (the brand's type system: [{name, font?, bold?, size?, color?, \
+              fill?, backing?, full_frame?, x?, y?, align?, outline?, outline_color?, glow?, \
+              glow_color?, gradient?, animate?, animate_secs?, stagger?, loop_effect?}] — a \
+              title op or a plan title names one by style and its own fields override; \
+              heading, callout and card are built in and a style of that name replaces it), \
               about (what the piece is about), tone, platform, target_secs, width and height \
               (the delivery's picture), loudness_lufs (about -14 for the web, -23 for \
               broadcast), captions (bool), music (bool), cast (a list of {name, role, \

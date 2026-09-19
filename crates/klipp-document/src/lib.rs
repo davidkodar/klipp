@@ -26,3 +26,4 @@ pub mod edit_plan;
 pub mod history;
 pub mod ops;
 pub mod qc;
+pub mod title_style;
