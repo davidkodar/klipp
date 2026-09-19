@@ -973,6 +973,10 @@ pub struct PlaybackEngine {
     /// renderer, and rules, export uses. Owns the node-graph executor and
     /// GPU effects pipeline the fast paths drive too.
     renderer: klipp_compose::Renderer,
+    /// Title clips (and the frame size) whose resting render was asked
+    /// for ahead of their start; cleared when the layout changes.
+    titles_warmed: std::collections::HashSet<(klipp_core::ClipId, u32, u32)>,
+    titles_warm_checked: std::time::Instant,
     // Audio — one source per active track, mixed through mix thread
     audio_sources: Vec<ActiveAudioSource>,
     audio_output: Option<SendAudioOutput>,
@@ -1410,6 +1414,52 @@ impl PlaybackEngine {
             .collect()
     }
 
+    /// Titles about to start get their resting render made ahead on the
+    /// warm-up thread, so the frame they start on places a sprite that
+    /// is already there. Rastered on this thread at the cut, 4K of text
+    /// cost 60–130 ms: a hitch at every cut into a title.
+    fn warm_upcoming_titles(&mut self) {
+        const AHEAD_SECS: f64 = 2.0;
+        if self.state != PlaybackState::Playing || self.titles_warm_checked.elapsed() < Duration::from_millis(250) {
+            return;
+        }
+        self.titles_warm_checked = std::time::Instant::now();
+        let now = self.playhead.to_secs_f64();
+        let mut wants = Vec::new();
+        {
+            let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
+            let pool = self.media_pool.read().unwrap_or_else(|e| e.into_inner());
+            for track in seq.tracks.iter().filter(|t| t.kind == klipp_timeline::TrackKind::Text) {
+                for clip in &track.clips {
+                    let klipp_timeline::ClipKind::Title(td) = &clip.kind else { continue };
+                    let start = clip.timeline_in.to_secs_f64();
+                    if !clip.enabled || start < now - 0.1 || start > now + AHEAD_SECS {
+                        continue;
+                    }
+                    // The frame size the title is placed at: the video
+                    // under it, else the sequence's.
+                    let (w, h) = seq
+                        .tracks
+                        .iter()
+                        .filter(|t| t.kind == klipp_timeline::TrackKind::Video)
+                        .find_map(|t| {
+                            let (_, c) = t.clip_at_timecode(clip.timeline_in)?;
+                            let item = pool.get(&c.media_id()?)?;
+                            Some((item.resolution.width, item.resolution.height))
+                        })
+                        .unwrap_or((seq.resolution.width, seq.resolution.height));
+                    if w == 0 || h == 0 {
+                        continue;
+                    }
+                    if self.titles_warmed.insert((clip.id, w, h)) {
+                        wants.push((td.clone(), w, h));
+                    }
+                }
+            }
+        }
+        self.renderer.warm_titles(wants);
+    }
+
     /// While playing, the audio sources follow the audio clips under the
     /// playhead: a clip that begins between video cuts (a sound effect
     /// on a cut, a bed that starts late) gets its source the tick it
@@ -1629,6 +1679,8 @@ impl PlaybackEngine {
             v1_decoder: None,
             streams: streams::ClipStreams::new(MAX_CLIP_STREAMS),
             renderer: klipp_compose::Renderer::new(ofx_host, title_renderer),
+            titles_warmed: std::collections::HashSet::new(),
+            titles_warm_checked: std::time::Instant::now(),
             audio_sources: Vec::new(),
             audio_output,
             mix_thread: Some(mix_thread),
@@ -2903,6 +2955,7 @@ impl PlaybackEngine {
                 if layout != self.layout_fingerprint {
                     self.layout_fingerprint = layout;
                     self.frame_cache.clear();
+                    self.titles_warmed.clear();
                 }
                 // The project's frame rate may be what changed.
                 self.sync_fps_to_sequence();
@@ -4205,6 +4258,8 @@ impl PlaybackEngine {
         self.drain_param_changes();
         stage_drain_us = t_stage.elapsed().as_micros();
         self.reconcile_audio_sources();
+        self.warm_upcoming_titles();
+        self.renderer.adopt_warm_titles();
         t_stage = std::time::Instant::now();
 
         // Time-remap: sample the instantaneous speed curve and re-anchor the

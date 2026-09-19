@@ -388,6 +388,10 @@ pub struct Renderer {
     allow_gpu: bool,
     ofx: klipp_plugin::OfxHost,
     titles: klipp_title::TitleRenderer,
+    /// The warm-up thread's ends: titles to render ahead go out, their
+    /// resting renders come back for `titles` to keep.
+    warm_tx: Option<std::sync::mpsc::Sender<(klipp_timeline::TitleData, u32, u32)>>,
+    warm_rx: Option<std::sync::mpsc::Receiver<(klipp_timeline::TitleData, u32, u32, Vec<u8>)>>,
     glyph_cache: HashMap<ClipId, klipp_title::GlyphCacheEntry>,
     working: WorkingColorspace,
     /// Why the GPU stack last declined a frame, so the log says it once.
@@ -456,6 +460,8 @@ impl Renderer {
             allow_gpu: true,
             ofx,
             titles,
+            warm_tx: None,
+            warm_rx: None,
             glyph_cache: HashMap::new(),
             working: WorkingColorspace::default(),
             last_gpu_stack_decline: None,
@@ -495,6 +501,55 @@ impl Renderer {
     /// A title clip's layer at `time` as straight-alpha sRGB bytes at
     /// the frame size, for laying over a presented picture on the
     /// viewer's fast path. `None` for any other clip kind.
+    /// Have the resting renders of these titles, at these frame sizes,
+    /// made on the warm-up thread; `adopt_warm_titles` takes them in.
+    /// A title's first frame then places a sprite that is already
+    /// there, instead of rastering 4K of text on the frame's thread.
+    pub fn warm_titles(&mut self, wants: Vec<(klipp_timeline::TitleData, u32, u32)>) {
+        if wants.is_empty() {
+            return;
+        }
+        if self.warm_tx.is_none() {
+            let (tx, rx) = std::sync::mpsc::channel::<(klipp_timeline::TitleData, u32, u32)>();
+            let (done_tx, done_rx) = std::sync::mpsc::channel();
+            let spawned = std::thread::Builder::new()
+                .name("klipp-title-warm".into())
+                .spawn(move || {
+                    let mut titles = klipp_title::TitleRenderer::new();
+                    while let Ok((td, w, h)) = rx.recv() {
+                        let t = Instant::now();
+                        let pixels = titles.render_resting(&td, w, h);
+                        tracing::debug!("title warmed ahead at {w}x{h} in {:.1} ms", t.elapsed().as_secs_f64() * 1000.0);
+                        if done_tx.send((td, w, h, pixels)).is_err() {
+                            break;
+                        }
+                    }
+                })
+                .is_ok();
+            if spawned {
+                self.warm_tx = Some(tx);
+                self.warm_rx = Some(done_rx);
+            }
+        }
+        if let Some(tx) = &self.warm_tx {
+            for want in wants {
+                let _ = tx.send(want);
+            }
+        }
+    }
+
+    /// Take in the resting renders the warm-up thread has finished.
+    pub fn adopt_warm_titles(&mut self) -> usize {
+        let mut n = 0;
+        if let Some(rx) = &self.warm_rx {
+            while let Ok((td, w, h, pixels)) = rx.try_recv() {
+                self.titles.adopt(&td, w, h, pixels);
+                n += 1;
+            }
+        }
+        n
+    }
+
     pub fn render_title_layer_u8(&mut self, clip: &Clip, time: Timecode, width: u32, height: u32) -> Option<Vec<u8>> {
         let ClipKind::Title(td) = &clip.kind else { return None };
         let clip_time = eval_clip_time(clip, time);
@@ -1331,10 +1386,10 @@ impl Renderer {
                 // keeps that render on the GPU: no raster, no upload, one
                 // pass. Anything else is rendered here and goes up as rows.
                 match self.titles.frame_with_window(td, width, height, gpu, clip_time as f32, Some(total)) {
-                    klipp_title::TitleFrame::Placed { sprite, dx, dy, opacity, rows: r } => {
+                    klipp_title::TitleFrame::Placed { sprite, dx, dy, opacity, scale, anchor, under, rows: r } => {
                         rows = r;
                         self.executor.gpu_pipeline_or_init().is_some_and(|p| {
-                            p.stack_layer_place_sprite(slot, sprite.id, &sprite.pixels, dx, dy, opacity, r.0, r.1)
+                            p.stack_layer_place_sprite_posed(slot, sprite.id, &sprite.pixels, dx, dy, opacity, scale, anchor, under, r.0, r.1)
                         })
                     }
                     klipp_title::TitleFrame::Rendered { pixels, rows: r } => {

@@ -132,6 +132,8 @@ struct CachedRender {
     buffer: std::sync::Arc<Vec<u8>>,
     /// The rows with any coverage, `y0..y1`.
     rows: (u32, u32),
+    /// The columns with any coverage, `x0..x1`.
+    cols: (u32, u32),
     /// Names this render to whoever keeps a copy of it elsewhere (a
     /// GPU sprite): never reused within a renderer.
     id: u64,
@@ -143,7 +145,18 @@ struct CachedRender {
 pub struct RestingSprite {
     pub pixels: std::sync::Arc<Vec<u8>>,
     pub rows: (u32, u32),
+    /// The columns with any coverage, `x0..x1`; with `rows`, the box a
+    /// pose scales about.
+    pub cols: (u32, u32),
     pub id: u64,
+}
+
+impl RestingSprite {
+    /// The centre of the covered box, in frame pixels: what a scale
+    /// keeps in place.
+    pub fn anchor(&self) -> (f32, f32) {
+        ((self.cols.0 + self.cols.1) as f32 * 0.5, (self.rows.0 + self.rows.1) as f32 * 0.5)
+    }
 }
 
 /// A title's frame at a time, in the cheapest form that is exact.
@@ -154,9 +167,54 @@ pub enum TitleFrame {
     /// are the destination rows the moved sprite covers. The frame's
     /// bytes are those `shift_and_fade` would make; a compositor that
     /// keeps the sprite can make them where it composites.
-    Placed { sprite: RestingSprite, dx: i32, dy: i32, opacity: f32, rows: (u32, u32) },
+    /// `scale` grows or shrinks it about `anchor` (an entrance that
+    /// scales); `under` is a full-frame background laid beneath the
+    /// posed text, so a card's fill stays put while its words move.
+    /// The frame's bytes are those `pose_sprite` makes.
+    Placed {
+        sprite: RestingSprite,
+        dx: i32,
+        dy: i32,
+        opacity: f32,
+        scale: f32,
+        anchor: (f32, f32),
+        under: Option<[u8; 4]>,
+        rows: (u32, u32),
+    },
     /// Rendered for this time alone.
     Rendered { pixels: Vec<u8>, rows: (u32, u32) },
+}
+
+/// The title whose resting render is the sprite: a full-frame card's
+/// words alone (its fill goes under them when the sprite is placed);
+/// any other title as it is.
+pub fn resting_title(title: &TitleData) -> std::borrow::Cow<'_, TitleData> {
+    if matches!(title.background, TitleBackground::FullFrame { .. }) {
+        let mut words = title.clone();
+        words.background = TitleBackground::None;
+        std::borrow::Cow::Owned(words)
+    } else {
+        std::borrow::Cow::Borrowed(title)
+    }
+}
+
+/// The columns of `rows` of a frame-sized RGBA8 buffer that carry any
+/// alpha, as `x0..x1` (empty when nothing does).
+fn alpha_cols(buf: &[u8], width: u32, height: u32, rows: (u32, u32)) -> (u32, u32) {
+    let (w, h) = (width as usize, height as usize);
+    if w == 0 || buf.len() < w * h * 4 || rows.1 <= rows.0 {
+        return (0, 0);
+    }
+    let (mut lo, mut hi) = (w, 0usize);
+    for y in rows.0 as usize..(rows.1 as usize).min(h) {
+        let row = &buf[y * w * 4..(y + 1) * w * 4];
+        if let Some(first) = row.chunks_exact(4).position(|p| p[3] != 0) {
+            lo = lo.min(first);
+            let last = row.chunks_exact(4).rposition(|p| p[3] != 0).unwrap_or(first);
+            hi = hi.max(last + 1);
+        }
+    }
+    if hi <= lo { (0, 0) } else { (lo as u32, hi as u32) }
 }
 
 /// The rows of a frame-sized RGBA8 buffer that carry any alpha, as
@@ -1397,8 +1455,8 @@ impl TitleRenderer {
         time_secs: f32,
     ) -> Vec<u8> {
         match self.frame_at(title, width, height, gpu, time_secs) {
-            TitleFrame::Placed { sprite, dx, dy, opacity, .. } => {
-                shift_and_fade((*sprite.pixels).clone(), width, height, dx, dy, opacity)
+            TitleFrame::Placed { sprite, dx, dy, opacity, scale, anchor, under, rows } => {
+                pose_sprite(&sprite.pixels, width, height, dx, dy, opacity, scale, anchor, under, rows)
             }
             TitleFrame::Rendered { pixels, .. } => pixels,
         }
@@ -1486,10 +1544,34 @@ impl TitleRenderer {
         // render, shifted and faded, is the frame.
         let visible = title.objects.iter().filter(|o| o.visible).count();
         let translate_only = match poses.as_slice() {
-            [(_, p)] => (!loops_need_raster && visible == 1 && !matches!(title.background, TitleBackground::FullFrame { .. })).then(|| p.clone()),
+            [(_, p)] => (!loops_need_raster && visible == 1).then(|| p.clone()),
             _ => None,
         };
-        let any_char_anim = any_motion_live || (!poses.is_empty() && translate_only.is_none());
+        // An entrance or exit that moves, fades or scales the whole
+        // layer — no stagger, no blur — is a pose on the resting render,
+        // as a loop is: the frame is the sprite placed, on the GPU where
+        // the compositor keeps it. Rastered afresh, it cost 30 ms a
+        // frame at 4K for the whole of a half-second rise.
+        let motion_pose: Option<(f32, f32, f32, f32, bool)> = if any_motion_live && visible == 1 && !loops_need_raster {
+            title.objects.iter().find(|o| o.visible).and_then(|o| {
+                let TitleObjectContent::TextBox(tb) = &o.content else { return None };
+                let whole = |m: Option<klipp_timeline::Motion>| {
+                    m.is_none_or(|m| m.stagger == klipp_timeline::StaggerUnit::None && m.kind != klipp_timeline::MotionKind::Blur)
+                };
+                if !(whole(tb.motion.enter) && whole(tb.motion.exit)) {
+                    return None;
+                }
+                let font_px = tb.font_size * scale;
+                let (pe, px) = tb.motion.progress(time_secs, window, 0);
+                let rest = (1.0, 0.0, 0.0, 1.0, 0.0, false);
+                let (a1, dx1, dy1, s1, _, c1) = tb.motion.enter.map(|m| m.pose(pe, font_px)).unwrap_or(rest);
+                let (a2, dx2, dy2, s2, _, c2) = tb.motion.exit.map(|m| m.pose(px, font_px)).unwrap_or(rest);
+                Some((a1 * a2, dx1 + dx2, dy1 + dy2, s1 * s2, c1 || c2))
+            })
+        } else {
+            None
+        };
+        let any_char_anim = (any_motion_live && motion_pose.is_none()) || (!poses.is_empty() && translate_only.is_none());
 
         // Glitch is per-frame (deterministic seed bound to clip
         // time, but pattern shifts ~12 times/sec) so it bypasses
@@ -1576,28 +1658,46 @@ impl TitleRenderer {
             || any_outline_keyframes;
 
         if !any_render_time_override {
-            let sprite = match self.cache_lookup(title, width, height) {
-                Some(hit) => hit,
-                None => {
-                    let buf = self.render_inner(title, width, height, gpu, None);
-                    let rows = alpha_rows(&buf, width, height);
-                    self.cache_store(title.clone(), width, height, buf, rows)
-                }
+            // A full-frame card: the words are the sprite and the fill
+            // goes under them at placement, so the fill stays put while
+            // the words move, and one resting render serves the card
+            // moving and at rest.
+            let under = match &title.background {
+                TitleBackground::FullFrame { color } => Some(*color),
+                _ => None,
             };
+            let sprite = self.resting_sprite(&resting_title(title), width, height, gpu);
             let rows = sprite.rows;
-            return match translate_only {
-                Some(pose) => {
-                    let dy = pose.dy.round() as i32;
-                    let shifted = |y: u32| (y as i64 + dy as i64).clamp(0, height as i64) as u32;
-                    let rows = if pose.opacity <= 0.001 || rows.1 <= rows.0 { (0, 0) } else { (shifted(rows.0), shifted(rows.1)) };
-                    self.last_rows = rows;
-                    TitleFrame::Placed { sprite, dx: pose.dx.round() as i32, dy, opacity: pose.opacity.clamp(0.0, 1.0), rows }
-                }
-                None => {
-                    self.last_rows = rows;
-                    TitleFrame::Placed { sprite, dx: 0, dy: 0, opacity: 1.0, rows }
-                }
+            let (mut dx, mut dy, mut opacity, mut scale, mut clip) = (0.0f32, 0.0f32, 1.0f32, 1.0f32, false);
+            if let Some(pose) = &translate_only {
+                dx += pose.dx;
+                dy += pose.dy;
+                opacity *= pose.opacity;
+            }
+            if let Some((a, mx, my, ms, c)) = motion_pose {
+                dx += mx;
+                dy += my;
+                opacity *= a;
+                scale *= ms;
+                clip = c;
+            }
+            let (dx, dy, opacity) = (dx.round() as i32, dy.round() as i32, opacity.clamp(0.0, 1.0));
+            let anchor = sprite.anchor();
+            let rows = if under.is_some() {
+                (0, height)
+            } else if opacity <= 0.001 || rows.1 <= rows.0 {
+                (0, 0)
+            } else if clip {
+                // A mask motion: the words show inside their resting box only.
+                rows
+            } else {
+                let grown = |y: u32| anchor.1 + (y as f32 - anchor.1) * scale + dy as f32;
+                let y0 = grown(rows.0).floor() - 1.0;
+                let y1 = grown(rows.1).ceil() + 1.0;
+                (y0.clamp(0.0, height as f32) as u32, y1.clamp(0.0, height as f32) as u32)
             };
+            self.last_rows = rows;
+            return TitleFrame::Placed { sprite, dx, dy, opacity, scale, anchor, under, rows };
         }
 
         // Build a one-frame derived TitleData that applies every
@@ -1853,13 +1953,45 @@ impl TitleRenderer {
     /// Look up a cached rasterised buffer for the given title +
     /// dimensions. On hit, moves the entry to the front of the LRU
     /// (most-recently-used end) and returns a memcpy of the buffer.
+    /// The resting render of `title` (as `resting_title` names it) at
+    /// `width`×`height`, made here on the CPU: for a warm-up on another
+    /// thread, handed to the renderer that will place it by `adopt`.
+    pub fn render_resting(&mut self, title: &TitleData, width: u32, height: u32) -> Vec<u8> {
+        self.render_inner(&resting_title(title), width, height, None, None)
+    }
+
+    /// Keep a resting render of `title` made by `render_resting`
+    /// elsewhere, so the first frame of the title costs this thread
+    /// nothing. Ignored when one is cached already or the bytes are not
+    /// a frame.
+    pub fn adopt(&mut self, title: &TitleData, width: u32, height: u32, pixels: Vec<u8>) {
+        let key = resting_title(title);
+        if pixels.len() != (width as usize) * (height as usize) * 4 || self.cache_lookup(&key, width, height).is_some() {
+            return;
+        }
+        let rows = alpha_rows(&pixels, width, height);
+        self.cache_store(key.into_owned(), width, height, pixels, rows);
+    }
+
+    /// The resting render of `title`: from the cache, or made and kept.
+    fn resting_sprite(&mut self, title: &TitleData, width: u32, height: u32, gpu: Option<&mut dyn AlphaMaskProcessor>) -> RestingSprite {
+        match self.cache_lookup(title, width, height) {
+            Some(hit) => hit,
+            None => {
+                let buf = self.render_inner(title, width, height, gpu, None);
+                let rows = alpha_rows(&buf, width, height);
+                self.cache_store(title.clone(), width, height, buf, rows)
+            }
+        }
+    }
+
     fn cache_lookup(&mut self, title: &TitleData, width: u32, height: u32) -> Option<RestingSprite> {
         let pos = self.render_cache.iter().position(|c| {
             c.width == width && c.height == height && &c.title == title
         })?;
         // Move to front (LRU).
         let entry = self.render_cache.remove(pos);
-        let sprite = RestingSprite { pixels: std::sync::Arc::clone(&entry.buffer), rows: entry.rows, id: entry.id };
+        let sprite = RestingSprite { pixels: std::sync::Arc::clone(&entry.buffer), rows: entry.rows, cols: entry.cols, id: entry.id };
         self.render_cache.insert(0, entry);
         Some(sprite)
     }
@@ -1872,6 +2004,7 @@ impl TitleRenderer {
         }
         let id = self.next_cache_id;
         self.next_cache_id += 1;
+        let cols = alpha_cols(&buffer, width, height, rows);
         let pixels = std::sync::Arc::new(buffer);
         self.render_cache.insert(
             0,
@@ -1881,10 +2014,11 @@ impl TitleRenderer {
                 height,
                 buffer: std::sync::Arc::clone(&pixels),
                 rows,
+                cols,
                 id,
             },
         );
-        RestingSprite { pixels, rows, id }
+        RestingSprite { pixels, rows, cols, id }
     }
 
     /// Drop every cached rasterised buffer. Useful when the host
@@ -2826,6 +2960,121 @@ fn scale_layer_alpha(layer: &mut [u8], factor: f32) {
             px[3] = ((px[3] as f32) * f).round().clamp(0.0, 255.0) as u8;
         }
     });
+}
+
+/// The frame a [`TitleFrame::Placed`] names, made on the CPU: the
+/// resting render moved by `(dx, dy)`, scaled by `scale` about `anchor`
+/// (bilinear, premultiplied), its alpha scaled by `opacity`, laid over
+/// a full-frame `under` colour when there is one, and only within
+/// `rows` (a mask motion shows the words inside their resting box).
+/// The GPU sprite pass (`stack_layer_place_sprite_posed`) is its twin;
+/// the parity tests hold the two to a level. With no scale, no `under`
+/// and every row, it is `shift_and_fade`.
+#[allow(clippy::too_many_arguments)]
+pub fn pose_sprite(
+    rest: &[u8],
+    width: u32,
+    height: u32,
+    dx: i32,
+    dy: i32,
+    opacity: f32,
+    scale: f32,
+    anchor: (f32, f32),
+    under: Option<[u8; 4]>,
+    rows: (u32, u32),
+) -> Vec<u8> {
+    use rayon::prelude::*;
+    let plain = (scale - 1.0).abs() < 1e-6;
+    let (w, h) = (width as usize, height as usize);
+    if plain && under.is_none() {
+        let mut out = shift_and_fade(rest.to_vec(), width, height, dx, dy, opacity);
+        let (y0, y1) = ((rows.0 as usize).min(h), (rows.1 as usize).min(h));
+        out[..y0 * w * 4].fill(0);
+        out[y1.max(y0) * w * 4..].fill(0);
+        return out;
+    }
+    let mut out = vec![0u8; w * h * 4];
+    if rest.len() < w * h * 4 || w == 0 {
+        return out;
+    }
+    let (y0, y1) = ((rows.0 as usize).min(h), (rows.1 as usize).min(h));
+    let f = opacity.clamp(0.0, 1.0);
+    let under_lin = under.map(|c| [srgb_u8_to_linear(c[0]), srgb_u8_to_linear(c[1]), srgb_u8_to_linear(c[2]), c[3] as f32 / 255.0]);
+    // A tap: the sprite's pixel, premultiplied, in sRGB-encoded units.
+    let tap = |x: i64, y: i64| -> [f32; 4] {
+        if x < 0 || y < 0 || x >= w as i64 || y >= h as i64 {
+            return [0.0; 4];
+        }
+        let p = &rest[(y as usize * w + x as usize) * 4..][..4];
+        let a = p[3] as f32 / 255.0;
+        [p[0] as f32 * a, p[1] as f32 * a, p[2] as f32 * a, a]
+    };
+    out.par_chunks_mut(w * 4).enumerate().for_each(|(y, row)| {
+        if y < y0 || y >= y1 {
+            return;
+        }
+        for (x, px) in row.chunks_exact_mut(4).enumerate() {
+            let s = if plain {
+                tap(x as i64 - dx as i64, y as i64 - dy as i64)
+            } else {
+                let fx = (x as f32 + 0.5 - dx as f32 - anchor.0) / scale + anchor.0 - 0.5;
+                let fy = (y as f32 + 0.5 - dy as f32 - anchor.1) / scale + anchor.1 - 0.5;
+                let (x0, y0) = (fx.floor(), fy.floor());
+                let (tx, ty) = (fx - x0, fy - y0);
+                let (x0, y0) = (x0 as i64, y0 as i64);
+                let mut acc = [0.0f32; 4];
+                for (sx, sy, wgt) in [
+                    (x0, y0, (1.0 - tx) * (1.0 - ty)),
+                    (x0 + 1, y0, tx * (1.0 - ty)),
+                    (x0, y0 + 1, (1.0 - tx) * ty),
+                    (x0 + 1, y0 + 1, tx * ty),
+                ] {
+                    let t = tap(sx, sy);
+                    for k in 0..4 {
+                        acc[k] += t[k] * wgt;
+                    }
+                }
+                acc
+            };
+            let a = s[3];
+            let a8 = (a * 255.0 * f + 0.5).floor().clamp(0.0, 255.0);
+            // No colour under no alpha: what a tie in the sum rounds to
+            // must not show as a colour difference.
+            let rgb = if a > 0.0 && (plain || a8 > 0.0) { [s[0] / a, s[1] / a, s[2] / a] } else { [0.0; 3] };
+            match under_lin {
+                None => {
+                    px[0] = rgb[0].round().clamp(0.0, 255.0) as u8;
+                    px[1] = rgb[1].round().clamp(0.0, 255.0) as u8;
+                    px[2] = rgb[2].round().clamp(0.0, 255.0) as u8;
+                    px[3] = a8 as u8;
+                }
+                Some(u) => {
+                    let sa = a8 / 255.0;
+                    let sl = [srgb_to_linear_f(rgb[0] / 255.0), srgb_to_linear_f(rgb[1] / 255.0), srgb_to_linear_f(rgb[2] / 255.0)];
+                    let oa = sa + u[3] * (1.0 - sa);
+                    for k in 0..3 {
+                        let c = if oa > 0.0 { (sl[k] * sa + u[k] * u[3] * (1.0 - sa)) / oa } else { 0.0 };
+                        px[k] = (linear_to_srgb_f(c) * 255.0).round().clamp(0.0, 255.0) as u8;
+                    }
+                    px[3] = (oa * 255.0).round().clamp(0.0, 255.0) as u8;
+                }
+            }
+        }
+    });
+    out
+}
+
+fn srgb_to_linear_f(c: f32) -> f32 {
+    if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
+}
+
+fn linear_to_srgb_f(c: f32) -> f32 {
+    let c = c.clamp(0.0, 1.0);
+    if c <= 0.0031308 { c * 12.92 } else { 1.055 * c.powf(1.0 / 2.4) - 0.055 }
+}
+
+fn srgb_u8_to_linear(v: u8) -> f32 {
+    srgb_to_linear_f(v as f32 / 255.0)
 }
 
 /// The resting render moved by `(dx, dy)` pixels and faded to

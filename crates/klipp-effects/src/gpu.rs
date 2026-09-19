@@ -5095,6 +5095,29 @@ impl GpuEffectsPipeline {
     /// it covers, the rest of the layer is cleared.
     #[allow(clippy::too_many_arguments)]
     pub fn stack_layer_place_sprite(&mut self, i: usize, id: u64, pixels: &[u8], dx: i32, dy: i32, opacity: f32, y0: u32, y1: u32) -> bool {
+        self.stack_layer_place_sprite_posed(i, id, pixels, dx, dy, opacity, 1.0, (0.0, 0.0), None, y0, y1)
+    }
+
+    /// [`Self::stack_layer_place_sprite`] with the whole pose: the
+    /// sprite scaled by `scale` about `anchor` (bilinear, premultiplied,
+    /// in the sprite's sRGB-encoded units) and laid over a full-frame
+    /// `under` colour (sRGB8, straight alpha) when there is one. The
+    /// twin of `klipp_title::pose_sprite`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn stack_layer_place_sprite_posed(
+        &mut self,
+        i: usize,
+        id: u64,
+        pixels: &[u8],
+        dx: i32,
+        dy: i32,
+        opacity: f32,
+        scale: f32,
+        anchor: (f32, f32),
+        under: Option<[u8; 4]>,
+        y0: u32,
+        y1: u32,
+    ) -> bool {
         if self.is_device_lost() || i >= self.stack_layers.len() {
             return false;
         }
@@ -5109,9 +5132,14 @@ impl GpuEffectsPipeline {
         let mut enc = self.encoder(Some("stack_sprite_clear"));
         enc.clear_buffer(&layer, 0, Some(pixel_count * 16));
         self.submit(enc);
-        if y1 <= y0 || opacity <= 0.001 {
+        if y1 <= y0 || (opacity <= 0.001 && under.is_none()) {
             return true;
         }
+        let srgb = |v: u8| {
+            let c = v as f32 / 255.0;
+            if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
+        };
+        let under = under.map(|c| [srgb(c[0]), srgb(c[1]), srgb(c[2]), c[3] as f32 / 255.0]).unwrap_or([0.0; 4]);
         self.stack_sprite_tick += 1;
         let tick = self.stack_sprite_tick;
         let pos = match self.stack_sprites.iter().position(|r| r.id == id) {
@@ -5133,7 +5161,24 @@ impl GpuEffectsPipeline {
             }
         };
         self.stack_sprites[pos].used = tick;
-        self.write_params(&SpritePlaceParams { width, height, y0, y1, dx, dy, opacity, _pad: 0 });
+        self.write_params(&SpritePlaceParams {
+            width,
+            height,
+            y0,
+            y1,
+            dx,
+            dy,
+            opacity,
+            scale: if (scale - 1.0).abs() < 1e-6 { 1.0 } else { scale },
+            anchor_x: anchor.0,
+            anchor_y: anchor.1,
+            under_r: under[0],
+            under_g: under[1],
+            under_b: under[2],
+            under_a: under[3],
+            _pad0: 0,
+            _pad1: 0,
+        });
         let rows_px = (y1 - y0) * width;
         let sprite = &self.stack_sprites[pos].buffer;
         self.stack_pass(&self.sprite_place_pipeline, sprite, &layer, rows_px.div_ceil(WORKGROUP_SIZE), "stack_sprite_place");
@@ -6825,7 +6870,17 @@ struct SpritePlaceParams {
     dx: i32,
     dy: i32,
     opacity: f32,
-    _pad: u32,
+    scale: f32,
+    anchor_x: f32,
+    anchor_y: f32,
+    /// The full-frame colour under the sprite, linear, straight alpha;
+    /// alpha 0 means none.
+    under_r: f32,
+    under_g: f32,
+    under_b: f32,
+    under_a: f32,
+    _pad0: u32,
+    _pad1: u32,
 }
 
 /// A title's resting render on the GPU; see `stack_sprites`.
@@ -9161,7 +9216,12 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 const SHADER_SPRITE_PLACE: &str = concat!(
     shader_pixel_storage_wgsl!(),
     "
-struct Params { width: u32, height: u32, y0: u32, y1: u32, dx: i32, dy: i32, opacity: f32, _pad: u32 }
+struct Params {
+    width: u32, height: u32, y0: u32, y1: u32,
+    dx: i32, dy: i32, opacity: f32, scale: f32,
+    anchor_x: f32, anchor_y: f32, under_r: f32, under_g: f32,
+    under_b: f32, under_a: f32, _pad0: u32, _pad1: u32,
+}
 @group(0) @binding(0) var<storage, read> sprite: array<u32>;
 @group(0) @binding(1) var<storage, read_write> output: array<vec4<f32>>;
 @group(0) @binding(2) var<uniform> params: Params;
@@ -9171,27 +9231,81 @@ fn srgb_to_linear_c(c: f32) -> f32 {
     return pow((c + 0.055) / 1.055, 2.4);
 }
 
+// A tap of the sprite, premultiplied, in its sRGB-encoded 0..255 units
+// (alpha 0..1); nothing outside the frame.
+fn tap(x: i32, y: i32) -> vec4<f32> {
+    if x < 0 || y < 0 || x >= i32(params.width) || y >= i32(params.height) {
+        return vec4<f32>(0.0);
+    }
+    let packed = sprite[u32(y) * params.width + u32(x)];
+    let a = f32((packed >> 24u) & 0xFFu) / 255.0;
+    return vec4<f32>(
+        f32((packed >> 0u) & 0xFFu) * a,
+        f32((packed >> 8u) & 0xFFu) * a,
+        f32((packed >> 16u) & 0xFFu) * a,
+        a,
+    );
+}
+
 @compute @workgroup_size(256)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let idx = params.y0 * params.width + gid.x;
     if idx >= params.y1 * params.width { return; }
     let x = i32(idx % params.width);
     let y = i32(idx / params.width);
-    let sx = x - params.dx;
-    let sy = y - params.dy;
-    if sx < 0 || sy < 0 || sx >= i32(params.width) || sy >= i32(params.height) {
-        output[idx] = pack(vec4<f32>(0.0));
-        return;
+    var rgb = vec3<f32>(0.0);
+    var a8 = 0.0;
+    if params.scale == 1.0 {
+        // Unscaled: the pixel as it is, colour kept under zero alpha,
+        // exactly what the upload of the same bytes decodes to.
+        let sx = x - params.dx;
+        let sy = y - params.dy;
+        if sx >= 0 && sy >= 0 && sx < i32(params.width) && sy < i32(params.height) {
+            let packed = sprite[u32(sy) * params.width + u32(sx)];
+            rgb = vec3<f32>(f32((packed >> 0u) & 0xFFu), f32((packed >> 8u) & 0xFFu), f32((packed >> 16u) & 0xFFu));
+            a8 = f32((packed >> 24u) & 0xFFu);
+        }
+    } else {
+        // The sprite scaled about the anchor: the source position of
+        // this pixel's centre, sampled bilinearly, as the CPU twin does.
+        let fx = (f32(x) + 0.5 - f32(params.dx) - params.anchor_x) / params.scale + params.anchor_x - 0.5;
+        let fy = (f32(y) + 0.5 - f32(params.dy) - params.anchor_y) / params.scale + params.anchor_y - 0.5;
+        let x0f = floor(fx);
+        let y0f = floor(fy);
+        let tx = fx - x0f;
+        let ty = fy - y0f;
+        let x0 = i32(x0f);
+        let y0 = i32(y0f);
+        let s = tap(x0, y0) * ((1.0 - tx) * (1.0 - ty))
+          + tap(x0 + 1, y0) * (tx * (1.0 - ty))
+          + tap(x0, y0 + 1) * ((1.0 - tx) * ty)
+          + tap(x0 + 1, y0 + 1) * (tx * ty);
+        if s.w > 0.0 {
+            // To whole sRGB levels, as the CPU twin stores them.
+            rgb = floor(s.xyz / s.w + vec3<f32>(0.5));
+        }
+        a8 = s.w * 255.0;
     }
-    let packed = sprite[u32(sy) * params.width + u32(sx)];
-    let r = f32((packed >> 0u) & 0xFFu) / 255.0;
-    let g = f32((packed >> 8u) & 0xFFu) / 255.0;
-    let b = f32((packed >> 16u) & 0xFFu) / 255.0;
-    var a8 = f32((packed >> 24u) & 0xFFu);
-    if params.opacity < 0.9999 {
+    if params.opacity < 0.9999 || params.scale != 1.0 {
         a8 = clamp(floor(a8 * params.opacity + 0.5), 0.0, 255.0);
     }
-    output[idx] = pack(vec4<f32>(srgb_to_linear_c(r), srgb_to_linear_c(g), srgb_to_linear_c(b), a8 / 255.0));
+    if params.scale != 1.0 && a8 <= 0.0 {
+        rgb = vec3<f32>(0.0);
+    }
+    let lin = vec3<f32>(srgb_to_linear_c(rgb.x / 255.0), srgb_to_linear_c(rgb.y / 255.0), srgb_to_linear_c(rgb.z / 255.0));
+    if params.under_a <= 0.0 {
+        output[idx] = pack(vec4<f32>(lin, a8 / 255.0));
+        return;
+    }
+    // Over the full-frame colour beneath, in linear light.
+    let sa = a8 / 255.0;
+    let ua = params.under_a * (1.0 - sa);
+    let oa = sa + ua;
+    var o = vec3<f32>(0.0);
+    if oa > 0.0 {
+        o = (lin * sa + vec3<f32>(params.under_r, params.under_g, params.under_b) * ua) / oa;
+    }
+    output[idx] = pack(vec4<f32>(o, oa));
 }
 "
 );

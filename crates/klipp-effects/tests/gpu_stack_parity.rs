@@ -158,3 +158,63 @@ fn a_placed_sprite_is_the_shifted_and_faded_upload() {
         assert!(worst < 1e-5, "placed sprite ({dx}, {dy}, {opacity}) differs from the shifted upload by {worst}");
     }
 }
+
+/// A sprite posed — scaled about its anchor, faded, laid over a
+/// full-frame colour, clipped to its rows — is `klipp_title::pose_sprite`
+/// decoded as rows, to a level: the same words an entrance moves, on the
+/// GPU where the compositor keeps them.
+#[test]
+fn a_posed_sprite_is_the_cpu_pose_uploaded() {
+    let Some(mut gpu) = pipeline() else { return };
+    // A soft blob with a hard edge, so scaling and blending both matter.
+    let mut rgba = vec![0u8; (W * H * 4) as usize];
+    for y in 0..H {
+        for x in 0..W {
+            let d = (((x as f32 - 20.0).powi(2) + (y as f32 - 12.0).powi(2)).sqrt() / 9.0).min(1.0);
+            let a = ((1.0 - d) * 255.0) as u8;
+            let i = ((y * W + x) * 4) as usize;
+            rgba[i..i + 4].copy_from_slice(&[(x * 9 % 256) as u8, 200, (y * 17 % 256) as u8, if x > 30 { 255 } else { a }]);
+        }
+    }
+    let anchor = (20.0f32, 12.0f32);
+    let cases: [(i32, i32, f32, f32, Option<[u8; 4]>, (u32, u32)); 6] = [
+        (0, 0, 1.0, 1.0, None, (0, H)),
+        (3, -2, 0.7, 1.3, None, (0, H)),
+        (0, 4, 1.0, 0.6, None, (0, H)),
+        (0, 0, 1.0, 1.0, Some([16, 20, 24, 255]), (0, H)),
+        (-2, 1, 0.5, 1.15, Some([200, 40, 90, 255]), (0, H)),
+        (0, 6, 1.0, 1.0, None, (8, 16)),
+    ];
+    for (dx, dy, opacity, scale, under, rows) in cases {
+        let want_u8 = klipp_title::pose_sprite(&rgba, W, H, dx, dy, opacity, scale, anchor, under, rows);
+        assert!(gpu.stack_begin(W, H, 1));
+        assert!(gpu.stack_layer_from_srgb_u8_rows(0, &want_u8, 0, H));
+        assert!(gpu.stack_blend(0, 1.0, 0));
+        assert!(gpu.stack_finish_into_chain(true));
+        let want = gpu.stack_download_linear();
+
+        assert!(gpu.stack_begin(W, H, 1));
+        assert!(gpu.stack_layer_place_sprite_posed(0, 91, &rgba, dx, dy, opacity, scale, anchor, under, rows.0, rows.1));
+        assert!(gpu.stack_blend(0, 1.0, 0));
+        assert!(gpu.stack_finish_into_chain(true));
+        let got = gpu.stack_download_linear();
+        let worst = worst_level(&want, &got);
+        // Unscaled with nothing under: the same bytes, decoded. Scaled
+        // or blended: the twin stores whole sRGB codes and a bilinear
+        // sum that lands on a tie can round either way — one code, which
+        // at the bright end is 2.2 levels of linear light.
+        let tolerance = if scale == 1.0 && under.is_none() { 1e-3 } else { 2.3 };
+        let at = want.iter().zip(&got).enumerate().max_by(|a, b| (a.1 .0 - a.1 .1).abs().total_cmp(&(b.1 .0 - b.1 .1).abs())).map(|(i, _)| i).unwrap_or(0);
+        let px = at / 4;
+        assert!(
+            worst <= tolerance,
+            "posed sprite ({dx}, {dy}, {opacity}, ×{scale}, {under:?}, rows {rows:?}) differs by {worst:.3} levels at pixel ({}, {}) channel {}: twin {:?} gpu {:?}, twin bytes {:?}",
+            px % W as usize,
+            px / W as usize,
+            at % 4,
+            &want[px * 4..px * 4 + 4],
+            &got[px * 4..px * 4 + 4],
+            &want_u8[px * 4..px * 4 + 4],
+        );
+    }
+}

@@ -93,7 +93,7 @@ fn a_placed_frame_is_the_rendered_frame() {
     for t in [0.5f32, 1.5, 2.5] {
         let want = r.render_with_window(&td, w, h, None, t, Some(4.0));
         let frame = r.frame_with_window(&td, w, h, None, t, Some(4.0));
-        let klipp_title::TitleFrame::Placed { sprite, dx, dy, opacity, rows } = frame else {
+        let klipp_title::TitleFrame::Placed { sprite, dx, dy, opacity, rows, .. } = frame else {
             panic!("a scroll is the resting render moved, not a render of its own");
         };
         assert_eq!(sprite.pixels.len(), want.len());
@@ -137,15 +137,20 @@ fn a_motion_without_stagger_rests_as_soon_as_it_has_run() {
         let mut r = TitleRenderer::new();
         matches!(r.frame_with_window(td, 320, 180, None, t, Some(4.0)), klipp_title::TitleFrame::Placed { .. })
     };
+    // The resting render placed at full opacity: at rest.
+    let resting = |td: &TitleData, t: f32| {
+        let mut r = TitleRenderer::new();
+        matches!(r.frame_with_window(td, 320, 180, None, t, Some(4.0)), klipp_title::TitleFrame::Placed { opacity, .. } if opacity >= 0.999)
+    };
     let fade = || Motion::new(MotionKind::Fade).duration(0.4);
     let mut td = title(TitleMotion::both(fade(), fade()));
     if let klipp_timeline::TitleObjectContent::TextBox(tb) = &mut td.objects[0].content {
         tb.text = "David Heinemeier Hansson".into();
     }
-    assert!(!placed(&td, 0.2), "fading in: rendered");
-    assert!(placed(&td, 0.6), "at rest just after a 0.4 s fade: the cached render");
-    assert!(placed(&td, 3.4), "and until the exit starts");
-    assert!(!placed(&td, 3.8), "fading out: rendered");
+    assert!(placed(&td, 0.2) && !resting(&td, 0.2), "fading in: the resting render placed, faded");
+    assert!(resting(&td, 0.6), "at rest just after a 0.4 s fade: the cached render");
+    assert!(resting(&td, 3.4), "and until the exit starts");
+    assert!(placed(&td, 3.8) && !resting(&td, 3.8), "fading out: placed, faded");
 
     // Staggered by character, the last letter arrives late, and the
     // title is not at rest until it has.
