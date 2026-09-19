@@ -21,7 +21,7 @@ use serde::{Deserialize, Serialize};
 use crate::shots::Shots;
 
 pub const ID: &str = "beatsheet";
-pub const VERSION: u32 = 4;
+pub const VERSION: u32 = 5;
 
 /// Frames sampled a second for freeze detection: enough to place a settle
 /// to a sixth of a second, cheap to decode.
@@ -96,10 +96,20 @@ pub fn build(duration_secs: f64, shots: Option<&Shots>, frozen: &[(f64, f64)]) -
         .filter(|(a, b)| b - a > 1e-3)
         .collect();
     spans.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+    // Spans that overlap are one; spans that merely touch are two: a
+    // freeze that ends at the instant the next begins is one frame that
+    // differed — a change that settled at once — and that instant is a
+    // reveal, so a sample's gap is opened between them.
     let mut merged: Vec<(f64, f64)> = Vec::new();
-    for s in spans {
+    for mut s in spans {
         match merged.last_mut() {
-            Some(last) if s.0 <= last.1 + 1e-3 => last.1 = last.1.max(s.1),
+            Some(last) if s.0 < last.1 - 1e-3 => last.1 = last.1.max(s.1),
+            Some(last) if s.0 <= last.1 + 1e-3 => {
+                s.0 = last.1 + 1.0 / SAMPLE_FPS as f64;
+                if s.1 > s.0 {
+                    merged.push(s);
+                }
+            }
             _ => merged.push(s),
         }
     }
@@ -222,7 +232,7 @@ pub fn detect_frozen(ffmpeg: &std::path::Path, path: &std::path::Path, codec: &s
 /// this (of 255) saw something happen there — a dialog, a menu, a
 /// window — even when the whole frame's change stayed under
 /// freezedetect's noise.
-pub(crate) const GRID_EVENT: u8 = 48;
+pub(crate) const GRID_EVENT: u8 = 10;
 
 /// The times at which some cell of the grid jumped: local changes that
 /// freezedetect, which reads the whole frame, does not see. Two within
@@ -461,6 +471,17 @@ mod tests {
         // Too close to an edge: no cut.
         assert_eq!(split_frozen(&[(5.8, 20.0)], &[6.0]), vec![(5.8, 20.0)]);
         assert_eq!(split_frozen(&[(0.0, 3.0), (10.0, 12.0)], &[6.0]), vec![(0.0, 3.0), (10.0, 12.0)]);
+    }
+
+    #[test]
+    fn spans_that_touch_are_a_change_that_settled_at_once() {
+        // freezedetect: a freeze to 5.5, another from 5.5: one frame differed.
+        let bs = build(20.0, None, &[(0.0, 5.5), (5.5, 15.0)]);
+        assert_eq!(bs.reveals, vec![5.5 + 1.0 / SAMPLE_FPS as f64], "{:?}", bs.reveals);
+        assert_eq!(bs.segments.iter().filter(|s| s.kind == "idle").count(), 2);
+        // Overlapping spans are still one.
+        let bs = build(20.0, None, &[(0.0, 6.0), (5.5, 15.0)]);
+        assert_eq!(bs.segments.iter().filter(|s| s.kind == "idle").count(), 1);
     }
 
     #[test]
