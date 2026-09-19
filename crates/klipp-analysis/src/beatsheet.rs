@@ -21,20 +21,20 @@ use serde::{Deserialize, Serialize};
 use crate::shots::Shots;
 
 pub const ID: &str = "beatsheet";
-pub const VERSION: u32 = 2;
+pub const VERSION: u32 = 3;
 
 /// Frames sampled a second for freeze detection: enough to place a settle
 /// to a sixth of a second, cheap to decode.
-const SAMPLE_FPS: u32 = 6;
+pub(crate) const SAMPLE_FPS: u32 = 6;
 /// Analysis width; small UI changes survive this, unlike the 160 px the
 /// `motion` pass uses.
-const SCALE_W: u32 = 480;
+pub(crate) const SCALE_W: u32 = 480;
 /// How different two frames may be and still count as frozen (a ratio,
 /// 0–1). Above it the screen is changing. Low enough to catch a panel
 /// opening, high enough to ignore a blinking cursor or caret.
-const FREEZE_NOISE: &str = "0.003";
+pub(crate) const FREEZE_NOISE: &str = "0.003";
 /// The shortest stillness that counts as a settle / hold window.
-const FREEZE_MIN_SECS: &str = "0.5";
+pub(crate) const FREEZE_MIN_SECS: &str = "0.5";
 /// A settled stretch at least this long is offered as a title / hold window.
 const MIN_WINDOW_SECS: f64 = 1.2;
 /// Two cut candidates closer than this are the same opportunity.
@@ -76,6 +76,12 @@ pub struct BeatSheet {
     pub has_shots: bool,
     /// Whether freeze detection found any settled stretch at all.
     pub has_freeze: bool,
+    /// A patch of the picture that moved all through the recording — a
+    /// presenter's webcam inset — as fractions of the frame (left, top,
+    /// width, height), masked out before the screen's own settling was
+    /// measured. Absent when the whole picture was read.
+    #[serde(default)]
+    pub busy_inset: Option<[f32; 4]>,
 }
 
 /// Build the beat sheet from the frozen (settled) spans and the shots.
@@ -161,24 +167,97 @@ pub fn build(duration_secs: f64, shots: Option<&Shots>, frozen: &[(f64, f64)]) -
         title_windows,
         has_shots: shots.is_some(),
         has_freeze: !merged.is_empty(),
+        busy_inset: None,
     }
 }
 
+/// The activity grid: how much each cell of a coarse grid changed
+/// from one sampled frame to the next, over the whole file.
+pub(crate) const GRID_W: usize = 16;
+pub(crate) const GRID_H: usize = 9;
+pub(crate) const GRID_FPS: u32 = 2;
+/// A cell's mean change above this (of 255) counts as the cell moving.
+const GRID_MOVED: u8 = 3;
+
+/// The drawbox filter that blanks `rect` (fractions of the frame).
+fn mask_filter(rect: [f32; 4]) -> String {
+    let [x, y, w, h] = rect;
+    format!("drawbox=x=iw*{x:.4}:y=ih*{y:.4}:w=iw*{w:.4}:h=ih*{h:.4}:color=black:t=fill,")
+}
+
 /// Run ffmpeg's `freezedetect` over the file and return the frozen
-/// (settled) spans as `(start, end)` seconds. Empty on a file that never
-/// settles, or on an ffmpeg failure (the caller degrades gracefully).
-pub fn detect_frozen(ffmpeg: &std::path::Path, path: &std::path::Path, duration_secs: f64) -> Vec<(f64, f64)> {
-    let vf = format!("fps={SAMPLE_FPS},scale={SCALE_W}:-2,freezedetect=n={FREEZE_NOISE}:d={FREEZE_MIN_SECS}");
-    // freezedetect logs `freeze_start`/`freeze_end` at info level.
-    let out = std::process::Command::new(ffmpeg)
-        .args(["-hide_banner", "-nostats", "-loglevel", "info", "-i"])
-        .arg(path)
-        .args(["-an", "-sn", "-vf", &vf, "-f", "null", "-"])
-        .stderr(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::null())
-        .output();
-    let Ok(out) = out else { return Vec::new() };
-    parse_freezedetect(&String::from_utf8_lossy(&out.stderr), duration_secs)
+/// (settled) spans as `(start, end)` seconds, and — on the first pass,
+/// when `with_grid` — the activity grid, in one decode. `mask` blanks a
+/// patch of the picture first. Empty on a file that never settles, or
+/// on an ffmpeg failure (the caller degrades gracefully).
+pub fn detect_frozen(ffmpeg: &std::path::Path, path: &std::path::Path, codec: &str, duration_secs: f64, mask: Option<[f32; 4]>, with_grid: bool) -> (Vec<(f64, f64)>, Vec<u8>) {
+    let masked = mask.map(mask_filter).unwrap_or_default();
+    for plan in crate::decode_plans(ffmpeg) {
+        let scaled = crate::scale_filter(ffmpeg, plan, SCALE_W, -2);
+        let mut cmd = std::process::Command::new(ffmpeg);
+        cmd.args(["-hide_banner", "-nostats", "-loglevel", "info"]);
+        cmd.args(crate::decode_input_args(ffmpeg, plan, codec));
+        cmd.arg("-i").arg(path).args(["-an", "-sn"]);
+        if with_grid {
+            let graph = format!(
+                "[0:v:0]fps={SAMPLE_FPS},{scaled},{masked}split[fz][act];[fz]freezedetect=n={FREEZE_NOISE}:d={FREEZE_MIN_SECS}[fzo];[act]fps={GRID_FPS},format=gray,tblend=all_mode=difference,scale={GRID_W}:{GRID_H}:flags=area[acto]"
+            );
+            cmd.args(["-filter_complex", &graph, "-map", "[fzo]", "-f", "null", "-", "-map", "[acto]", "-f", "rawvideo", "-pix_fmt", "gray", "-"]);
+        } else {
+            let vf = format!("fps={SAMPLE_FPS},{scaled},{masked}freezedetect=n={FREEZE_NOISE}:d={FREEZE_MIN_SECS}");
+            cmd.args(["-vf", &vf, "-f", "null", "-"]);
+        }
+        // freezedetect logs `freeze_start`/`freeze_end` at info level.
+        let Ok(out) = cmd.stderr(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).output() else { return (Vec::new(), Vec::new()) };
+        if !out.status.success() {
+            tracing::warn!("freezedetect of {} with {plan:?} failed; trying the next", path.display());
+            continue;
+        }
+        return (parse_freezedetect(&String::from_utf8_lossy(&out.stderr), duration_secs), if with_grid { out.stdout } else { Vec::new() });
+    }
+    (Vec::new(), Vec::new())
+}
+
+/// A patch that moved nearly all the time while the rest of the picture
+/// mostly held still — a webcam inset — from the activity grid: the
+/// cells that changed in over half the frames and at three times the
+/// median cell, at least two of them, boxed, and no more than half the
+/// frame either way. As fractions of the frame, half a cell of margin.
+pub fn busy_inset_from_grid(grid: &[u8]) -> Option<[f32; 4]> {
+    let cells = GRID_W * GRID_H;
+    let frames = grid.len() / cells;
+    if frames < 20 {
+        return None;
+    }
+    let mut hot = vec![0usize; cells];
+    for f in 0..frames {
+        for (c, h) in hot.iter_mut().enumerate() {
+            if grid[f * cells + c] > GRID_MOVED {
+                *h += 1;
+            }
+        }
+    }
+    let share: Vec<f32> = hot.iter().map(|h| *h as f32 / frames as f32).collect();
+    let mut sorted = share.clone();
+    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let median = sorted[cells / 2];
+    let threshold = (3.0 * median).max(0.5);
+    let busy: Vec<(usize, usize)> = (0..cells).filter(|c| share[*c] > threshold).map(|c| (c % GRID_W, c / GRID_W)).collect();
+    if busy.len() < 2 {
+        return None;
+    }
+    let (x0, x1) = (busy.iter().map(|b| b.0).min()?, busy.iter().map(|b| b.0).max()?);
+    let (y0, y1) = (busy.iter().map(|b| b.1).min()?, busy.iter().map(|b| b.1).max()?);
+    let (cw, ch) = (x1 + 1 - x0, y1 + 1 - y0);
+    if cw * 2 > GRID_W || ch * 2 > GRID_H {
+        return None; // half the screen moving is the screen, not an inset
+    }
+    let (fx, fy) = (1.0 / GRID_W as f32, 1.0 / GRID_H as f32);
+    let x = (x0 as f32 - 0.5) * fx;
+    let y = (y0 as f32 - 0.5) * fy;
+    let w = (cw as f32 + 1.0) * fx;
+    let h = (ch as f32 + 1.0) * fy;
+    Some([x.max(0.0), y.max(0.0), w.min(1.0 - x.max(0.0)), h.min(1.0 - y.max(0.0))])
 }
 
 /// Parse freezedetect's log lines into `(start, end)` spans. A freeze that
@@ -226,6 +305,9 @@ impl BeatSheet {
         if !self.has_freeze {
             let _ = writeln!(out, "(The screen never settled for long — freeze detection found no hold; try a shorter freeze threshold, or the footage is genuinely continuous motion.)");
         }
+        if let Some([x, y, w, h]) = self.busy_inset {
+            let _ = writeln!(out, "A patch at {:.0}%,{:.0}% ({:.0}% by {:.0}%) moved all through — a presenter inset — and was left out of the settling.", x * 100.0, y * 100.0, w * 100.0, h * 100.0);
+        }
         let strong: Vec<&CutPoint> = self.cut_points.iter().filter(|c| c.strength >= 2).collect();
         if !strong.is_empty() {
             let _ = writeln!(out, "Cut points (cut TO a settle, hold until it reads; never mid-action):");
@@ -257,13 +339,25 @@ impl crate::Analyser for BeatSheetAnalyser {
     }
     fn run(&self, item: &klipp_media::MediaItem, ctx: &crate::AnalysisCtx) -> Result<serde_json::Value, String> {
         let duration = item.duration.to_secs_f64();
-        let frozen = detect_frozen(&ctx.ffmpeg, &item.path, duration);
+        // One pass reads the settling and the activity grid; a moving
+        // inset found in the grid is blanked and the settling read again,
+        // so a presenter's nod does not break the screen's hold.
+        let pass = crate::videopass::get(ctx, item)?;
+        let mut frozen = pass.frozen.clone();
+        let busy_inset = busy_inset_from_grid(&pass.grid);
+        if let Some(rect) = busy_inset {
+            let (masked, _) = detect_frozen(&ctx.ffmpeg, &item.path, &item.video_codec, duration, Some(rect), false);
+            if !masked.is_empty() {
+                frozen = masked;
+            }
+        }
         // The scene changes, when they exist, are precise cut points; a
         // screen recording usually has none, and that is fine.
         let shots: Option<Shots> = crate::store::key_for(&item.path)
             .and_then(|key| crate::store::load(&key, crate::shots::ID, crate::shots::VERSION))
             .and_then(|v| serde_json::from_value(v).ok());
-        let sheet = build(duration, shots.as_ref(), &frozen);
+        let mut sheet = build(duration, shots.as_ref(), &frozen);
+        sheet.busy_inset = busy_inset;
         serde_json::to_value(sheet).map_err(|e| e.to_string())
     }
 }
@@ -272,6 +366,30 @@ impl crate::Analyser for BeatSheetAnalyser {
 mod tests {
     use super::*;
     use crate::shots::Shots;
+
+    #[test]
+    fn a_corner_that_moves_all_the_time_is_a_busy_inset_and_a_busy_screen_is_not() {
+        let cells = GRID_W * GRID_H;
+        let mut grid = vec![0u8; cells * 100];
+        // Two cells bottom right move in nine frames of ten; the rest in one of ten.
+        for f in 0..100 {
+            for c in 0..cells {
+                let (x, y) = (c % GRID_W, c / GRID_W);
+                let inset = (14..16).contains(&x) && (4..6).contains(&y);
+                grid[f * cells + c] = if inset || f % 10 == 0 { 20 } else { 0 };
+            }
+        }
+        let [x, y, w, h] = busy_inset_from_grid(&grid).expect("an inset");
+        assert!((x - 13.5 / 16.0).abs() < 1e-5 && (y - 3.5 / 9.0).abs() < 1e-5, "{x} {y}");
+        assert!((w - 2.5 / 16.0).abs() < 1e-5 && (h - 3.0 / 9.0).abs() < 1e-5, "clipped to the frame edge: {w} {h}");
+        // A screen that moves everywhere has no inset; nor does one cell alone; nor too few frames.
+        assert!(busy_inset_from_grid(&vec![20u8; cells * 100]).is_none());
+        let mut one = vec![0u8; cells * 100];
+        for f in 0..100 { one[f * cells + 5] = 20; }
+        assert!(busy_inset_from_grid(&one).is_none());
+        assert!(busy_inset_from_grid(&grid[..cells * 10]).is_none());
+        assert!(mask_filter([0.5, 0.25, 0.1, 0.2]).starts_with("drawbox=x=iw*0.5000:y=ih*0.2500:w=iw*0.1000:h=ih*0.2000:color=black:t=fill,"));
+    }
 
     #[test]
     fn frozen_spans_become_idle_and_gaps_action() {

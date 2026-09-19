@@ -180,41 +180,13 @@ pub fn ensure_model(download: bool) -> Result<std::path::PathBuf, String> {
     klipp_ml::download::download_to_cache(&cache, entry, &mut progress, &cancel).map_err(|e| format!("download of {MODEL_ID}: {e:?}"))
 }
 
-/// The frames at `times` of `media`, decoded once in one pass, each
-/// letterboxed into a `FRAME_SIZE` square of RGBA8.
-fn frames_at(ffmpeg: &std::path::Path, media: &std::path::Path, times: &[f64]) -> Result<Vec<Vec<u8>>, String> {
-    if times.is_empty() {
-        return Ok(Vec::new());
-    }
-    // ffmpeg's expression parser has a limit a long file's sample list
-    // runs past; a long list is decoded in slices instead, each a pass.
-    const MAX_PICKS: usize = 24;
-    if times.len() > MAX_PICKS {
-        let mut out = Vec::with_capacity(times.len());
-        for chunk in times.chunks(MAX_PICKS) {
-            out.extend(frames_at(ffmpeg, media, chunk)?);
-        }
-        return Ok(out);
-    }
-    // One frame per time: the first frame within a fortieth of a second
-    // of it, which at any frame rate is at most one frame.
-    let picks: Vec<String> = times.iter().map(|t| format!("lt(abs(t-{t:.3}),0.02)")).collect();
-    let vf = format!(
-        "select='{}',scale={FRAME_SIZE}:{FRAME_SIZE}:force_original_aspect_ratio=decrease,pad={FRAME_SIZE}:{FRAME_SIZE}:(ow-iw)/2:(oh-ih)/2:color=black",
-        picks.join("+")
-    );
-    let out = std::process::Command::new(ffmpeg)
-        .args(["-hide_banner", "-nostats", "-loglevel", "error", "-i"])
-        .arg(media)
-        .args(["-an", "-sn", "-vf", &vf, "-fps_mode", "passthrough", "-f", "rawvideo", "-pix_fmt", "rgba", "-"])
-        .stderr(std::process::Stdio::piped())
-        .output()
-        .map_err(|e| format!("could not run {}: {e}", ffmpeg.display()))?;
-    if !out.status.success() {
-        return Err(format!("ffmpeg could not decode frames: {}", String::from_utf8_lossy(&out.stderr).trim()));
-    }
-    let frame_bytes = (FRAME_SIZE * FRAME_SIZE * 4) as usize;
-    Ok(out.stdout.chunks_exact(frame_bytes).map(|c| c.to_vec()).collect())
+/// The frames at `times` of `media`, each a seek and a decode from the
+/// keyframe before it, letterboxed into a `FRAME_SIZE` square of RGBA8.
+fn frames_at(ffmpeg: &std::path::Path, item: &klipp_media::MediaItem, times: &[f64]) -> Result<Vec<Vec<u8>>, String> {
+    // The GPU scales the longest side to the square's; the CPU pads the
+    // small result into it.
+    let after = format!("scale={FRAME_SIZE}:{FRAME_SIZE}:force_original_aspect_ratio=decrease,pad={FRAME_SIZE}:{FRAME_SIZE}:(ow-iw)/2:(oh-ih)/2:color=black");
+    crate::grab_frames(ffmpeg, item, times, FRAME_SIZE, -2, &after, (FRAME_SIZE * FRAME_SIZE * 4) as usize)
 }
 
 /// Where the picture sits in the letterboxed square: (x, y, w, h) of
@@ -303,7 +275,7 @@ impl crate::Analyser for FramingAnalyser {
         }
         times.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
         let t0 = std::time::Instant::now();
-        let frames = frames_at(&ctx.ffmpeg, &item.path, &times.iter().map(|(_, t)| *t).collect::<Vec<_>>())?;
+        let frames = frames_at(&ctx.ffmpeg, item, &times.iter().map(|(_, t)| *t).collect::<Vec<_>>())?;
         let decode_ms = t0.elapsed().as_millis();
 
         let mut detector = klipp_ml_ort::RfDetrSegBuilder::new()

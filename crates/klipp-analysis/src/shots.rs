@@ -11,9 +11,9 @@ pub const VERSION: u32 = 2;
 /// `scene` is 0 to 1, and 0.3 is the customary threshold.
 /// At two frames a second a slow change adds up; this is what it has
 /// to add up to.
-const SLOW_THRESHOLD: f32 = 0.22;
+pub(crate) const SLOW_THRESHOLD: f32 = 0.22;
 
-const THRESHOLD: f32 = 0.3;
+pub(crate) const THRESHOLD: f32 = 0.3;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Shot {
@@ -90,24 +90,11 @@ impl crate::Analyser for ShotsAnalyser {
         // stacked one, a share opening — which frame to frame is a run
         // of small scores and never a cut. A podcast whose layout
         // changed four times came back as two shots.
-        let pass = |vf: String| -> Result<Vec<f64>, String> {
-            let args = vec![
-                "-hide_banner".to_string(),
-                "-nostats".to_string(),
-                "-i".to_string(),
-                item.path.to_string_lossy().into_owned(),
-                "-an".to_string(),
-                "-sn".to_string(),
-                "-vf".to_string(),
-                vf,
-                "-f".to_string(),
-                "null".to_string(),
-                "-".to_string(),
-            ];
-            Ok(parse_showinfo(&crate::ffmpeg_stderr(&ctx.ffmpeg, &args)?))
-        };
-        let mut boundaries = pass(format!("scale=320:-2,select='gt(scene,{THRESHOLD})',showinfo"))?;
-        boundaries.extend(pass(format!("fps=2,scale=320:-2,select='gt(scene,{SLOW_THRESHOLD})',showinfo"))?);
+        // Both rates come out of the one decode every whole-picture
+        // analyser shares (see `videopass`).
+        let pass = crate::videopass::get(ctx, item)?;
+        let mut boundaries = pass.scene_fast.clone();
+        boundaries.extend(pass.scene_slow.iter().copied());
         let shots = Shots::from_boundaries(item.duration.to_secs_f64(), boundaries);
         serde_json::to_value(shots).map_err(|e| e.to_string())
     }

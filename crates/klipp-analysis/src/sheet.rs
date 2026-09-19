@@ -36,8 +36,9 @@ fn any_font() -> Option<PathBuf> {
 fn sheet_by_seeking(ffmpeg: &Path, media: &Path, tiles_secs: &[f64], cols: u32, rows: u32, tile_width: u32, out: &Path) -> Result<(), String> {
     let mut cmd = std::process::Command::new(ffmpeg);
     cmd.args(["-hide_banner", "-nostats", "-loglevel", "error", "-y"]);
+    let hw = crate::hwaccel_args(ffmpeg, "");
     for t in tiles_secs {
-        cmd.arg("-ss").arg(format!("{t:.3}")).arg("-i").arg(media);
+        cmd.args(&hw).arg("-ss").arg(format!("{t:.3}")).arg("-i").arg(media);
     }
     let w = tile_width.clamp(64, 1024);
     let font = any_font();
@@ -110,7 +111,9 @@ pub fn contact_sheet(
     }
     vf.push_str(&format!(",tile={cols}x{rows}"));
     let status = std::process::Command::new(ffmpeg)
-        .args(["-hide_banner", "-nostats", "-loglevel", "error", "-y", "-ss"])
+        .args(["-hide_banner", "-nostats", "-loglevel", "error", "-y"])
+        .args(crate::hwaccel_args(ffmpeg, ""))
+        .arg("-ss")
         .arg(format!("{from_secs:.3}"))
         .arg("-t")
         .arg(format!("{span:.3}"))

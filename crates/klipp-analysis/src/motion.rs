@@ -91,17 +91,9 @@ impl crate::Analyser for MotionAnalyser {
         !item.is_still && !item.video_codec.is_empty() && item.duration.to_secs_f64() > 0.0
     }
     fn run(&self, item: &klipp_media::MediaItem, ctx: &crate::AnalysisCtx) -> Result<serde_json::Value, String> {
-        let out = std::process::Command::new(&ctx.ffmpeg)
-            .args(["-hide_banner", "-nostats", "-loglevel", "error", "-i"])
-            .arg(&item.path)
-            .args(["-an", "-sn", "-vf", "scale=160:-2,signalstats,metadata=print:key=lavfi.signalstats.YDIF:file=-", "-f", "null", "-"])
-            .stderr(std::process::Stdio::piped())
-            .output()
-            .map_err(|e| format!("could not run {}: {e}", ctx.ffmpeg.display()))?;
-        if !out.status.success() {
-            return Err(format!("ffmpeg failed: {}", String::from_utf8_lossy(&out.stderr).trim()));
-        }
-        let motion = parse_metadata(&String::from_utf8_lossy(&out.stdout), item.duration.to_secs_f64());
+        // From the one decode every whole-picture analyser shares.
+        let pass = crate::videopass::get(ctx, item)?;
+        let motion = parse_metadata(&pass.ydif_text, item.duration.to_secs_f64());
         serde_json::to_value(motion).map_err(|e| e.to_string())
     }
 }

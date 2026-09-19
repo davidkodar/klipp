@@ -9,7 +9,7 @@
 use serde::{Deserialize, Serialize};
 
 pub const ID: &str = "screentext";
-pub const VERSION: u32 = 4;
+pub const VERSION: u32 = 5;
 pub const DET_MODEL_ID: &str = "ppocr_en_det_v3";
 pub const REC_MODEL_ID: &str = "ppocr_en_rec_v4";
 pub const MODEL_IDS: [&str; 2] = [DET_MODEL_ID, REC_MODEL_ID];
@@ -20,8 +20,15 @@ const READ_WIDTH_MIN: u32 = 1280;
 const READ_WIDTH_MAX: u32 = 2560;
 /// Frames decoded and read together; bounds the memory a 4K read takes.
 const READ_BATCH: usize = 6;
-/// At most this many frames per file.
-const MAX_FRAMES: usize = 80;
+/// How many frames a file gets: one per five seconds, never fewer than
+/// this many nor more than `MAX_FRAMES`.
+const MIN_FRAMES: usize = 80;
+const MAX_FRAMES: usize = 360;
+const SECS_PER_FRAME: f64 = 5.0;
+
+fn frame_budget(duration: f64) -> usize {
+    ((duration / SECS_PER_FRAME) as usize).clamp(MIN_FRAMES, MAX_FRAMES)
+}
 /// Two picks closer than this are one.
 const MIN_GAP_SECS: f64 = 1.0;
 /// Without a beat sheet, a frame this often.
@@ -356,30 +363,35 @@ pub fn ensure_models(download: bool) -> Result<(std::path::PathBuf, std::path::P
 }
 
 /// The times to read: the beat sheet's reveals and the middle of each
-/// settled stretch, else one every few seconds; never more than
-/// `MAX_FRAMES`, never two within a second.
+/// settled stretch, else one every few seconds; never two within a
+/// second. Over the file's budget, the longer settled stretches and
+/// the reveals are kept and the brief flickers dropped.
 fn pick_times(duration: f64, beats: Option<&crate::beatsheet::BeatSheet>) -> Vec<f64> {
-    let mut t: Vec<f64> = match beats.filter(|b| b.has_freeze) {
+    let budget = frame_budget(duration);
+    // (time, weight): what to keep when there are too many.
+    let mut t: Vec<(f64, f64)> = match beats.filter(|b| b.has_freeze) {
         Some(b) => {
-            let mut v: Vec<f64> = vec![0.2];
-            v.extend(b.reveals.iter().map(|r| r + 0.3));
-            v.extend(b.segments.iter().filter(|s| s.kind == "idle").map(|s| (s.start_secs + s.end_secs) / 2.0));
+            let mut v: Vec<(f64, f64)> = vec![(0.2, 1.0)];
+            v.extend(b.reveals.iter().map(|r| (r + 0.3, 2.0)));
+            v.extend(b.segments.iter().filter(|s| s.kind == "idle").map(|s| ((s.start_secs + s.end_secs) / 2.0, s.end_secs - s.start_secs)));
             v
         }
         None => {
             let mut v = Vec::new();
             let mut x = 0.2;
-            while x < duration { v.push(x); x += FALLBACK_STEP_SECS; }
+            while x < duration { v.push((x, 1.0)); x += FALLBACK_STEP_SECS; }
             v
         }
     };
-    t.retain(|x| *x >= 0.0 && *x < duration - 0.05);
-    t.sort_by(|a, b| a.partial_cmp(b).unwrap());
-    t.dedup_by(|a, b| (*a - *b).abs() < MIN_GAP_SECS);
-    if t.len() > MAX_FRAMES {
-        t = (0..MAX_FRAMES).map(|i| t[i * t.len() / MAX_FRAMES]).collect();
+    t.retain(|(x, _)| *x >= 0.0 && *x < duration - 0.05);
+    t.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+    t.dedup_by(|a, b| { if (a.0 - b.0).abs() < MIN_GAP_SECS { b.1 = b.1.max(a.1); true } else { false } });
+    if t.len() > budget {
+        t.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+        t.truncate(budget);
+        t.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
     }
-    t
+    t.into_iter().map(|(x, _)| x).collect()
 }
 
 /// The size a `w`×`h` picture is read at: the width within bounds,
@@ -390,32 +402,10 @@ fn read_size(w: u32, h: u32) -> (u32, u32) {
     (rw, ((raw / 2.0).round() as u32 * 2).max(2))
 }
 
-/// Frames at `times` (at most `READ_BATCH`), `width`×`height`, as
-/// RGBA8: exactly one frame per time, the first at or after it.
-fn frames_at(ffmpeg: &std::path::Path, media: &std::path::Path, times: &[f64], width: u32, height: u32) -> Result<Vec<Vec<u8>>, String> {
-    if times.is_empty() {
-        return Ok(Vec::new());
-    }
-    // `prev_t` makes each pick exactly one frame, whatever the rate:
-    // the first frame at or after the time.
-    let picks: Vec<String> = times.iter().map(|t| format!("(gte(t,{t:.3})*lt(prev_t,{t:.3}))")).collect();
-    let vf = format!("select='{}',scale={width}:{height}", picks.join("+"));
-    let out = std::process::Command::new(ffmpeg)
-        .args(["-hide_banner", "-nostats", "-loglevel", "error", "-i"])
-        .arg(media)
-        .args(["-an", "-sn", "-vf", &vf, "-fps_mode", "passthrough", "-f", "rawvideo", "-pix_fmt", "rgba", "-"])
-        .stderr(std::process::Stdio::piped())
-        .output()
-        .map_err(|e| format!("could not run {}: {e}", ffmpeg.display()))?;
-    if !out.status.success() {
-        return Err(format!("ffmpeg could not decode frames: {}", String::from_utf8_lossy(&out.stderr).trim()));
-    }
-    let frame_bytes = (width * height * 4) as usize;
-    let frames: Vec<Vec<u8>> = out.stdout.chunks_exact(frame_bytes).map(|c| c.to_vec()).collect();
-    if frames.len() != times.len() {
-        return Err(format!("ffmpeg gave {} frames for {} times", frames.len(), times.len()));
-    }
-    Ok(frames)
+/// Frames at `times`, `width`×`height`, as RGBA8: each a seek and a
+/// decode from the keyframe before it, never a pass over the file.
+fn frames_at(ffmpeg: &std::path::Path, item: &klipp_media::MediaItem, times: &[f64], width: u32, height: u32) -> Result<Vec<Vec<u8>>, String> {
+    crate::grab_frames(ffmpeg, item, times, width, height as i64, "", (width * height * 4) as usize)
 }
 
 pub struct ScreenTextAnalyser;
@@ -441,7 +431,7 @@ impl crate::Analyser for ScreenTextAnalyser {
         let mut read: Vec<FrameText> = Vec::new();
         // A few frames at a time: a 4K frame is fourteen megabytes.
         for chunk in times.chunks(READ_BATCH) {
-            let frames = frames_at(&ctx.ffmpeg, &item.path, chunk, w, h)?;
+            let frames = frames_at(&ctx.ffmpeg, item, chunk, w, h)?;
             for (t, f) in chunk.iter().zip(frames.iter()) {
                 let lines = reader.read(f, w, h)?.into_iter().map(|l| Line { text: l.text, confidence: l.confidence, x: l.x, y: l.y, w: l.w, h: l.h }).collect();
                 read.push(FrameText { secs: *t, lines });
@@ -549,8 +539,16 @@ mod tests {
     fn frames_are_picked_from_the_beat_sheet_and_bounded() {
         let none = pick_times(20.0, None);
         assert_eq!(none.len(), 5);
-        let long = pick_times(1000.0, None);
-        assert_eq!(long.len(), MAX_FRAMES);
+        assert_eq!(pick_times(1000.0, None).len(), 200, "one frame per five seconds");
+        assert_eq!(pick_times(10_000.0, None).len(), MAX_FRAMES);
+        assert_eq!(frame_budget(30.0), MIN_FRAMES);
+        // Over budget, the long settled stretches and the reveals stay.
+        let mut segs: Vec<crate::beatsheet::Segment> = (0..300).map(|i| crate::beatsheet::Segment { start_secs: i as f64 * 3.0, end_secs: i as f64 * 3.0 + 0.9, kind: "idle".into() }).collect();
+        segs.push(crate::beatsheet::Segment { start_secs: 901.0, end_secs: 950.0, kind: "idle".into() });
+        let bs = crate::beatsheet::BeatSheet { duration_secs: 960.0, has_freeze: true, reveals: vec![955.0], segments: segs, ..Default::default() };
+        let picked = pick_times(960.0, Some(&bs));
+        assert_eq!(picked.len(), frame_budget(960.0));
+        assert!(picked.contains(&925.5) && picked.contains(&955.3), "{picked:?}");
         let bs = crate::beatsheet::BeatSheet { duration_secs: 20.0, has_freeze: true, reveals: vec![5.0, 5.4, 12.0], segments: vec![crate::beatsheet::Segment { start_secs: 0.0, end_secs: 4.0, kind: "idle".into() }], ..Default::default() };
         let picked = pick_times(20.0, Some(&bs));
         assert_eq!(picked, vec![0.2, 2.0, 5.3, 12.3], "{picked:?}");

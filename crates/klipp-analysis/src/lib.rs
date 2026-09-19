@@ -31,6 +31,7 @@ pub mod sheet;
 pub mod service;
 pub mod shots;
 pub mod store;
+pub(crate) mod videopass;
 #[cfg(feature = "transcript")]
 pub mod transcript;
 #[cfg(feature = "framing")]
@@ -179,6 +180,142 @@ pub fn download_models() -> Result<Vec<String>, String> {
     Ok(got)
 }
 
+/// Which hardware decoder ffmpeg is asked for, chosen once: the first of
+/// the well-known ones this ffmpeg lists. `KLIPP_ANALYSIS_HWACCEL` names
+/// one, or `0`/`none` for software decoding. When the driver refuses, ffmpeg
+/// itself falls back to software decoding, so a wrong guess costs a
+/// warning, not a failure.
+pub fn hwaccel_name(ffmpeg: &Path) -> Option<String> {
+    static CHOSEN: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+    CHOSEN
+        .get_or_init(|| {
+            let env = std::env::var("KLIPP_ANALYSIS_HWACCEL").ok();
+            let listed = std::process::Command::new(ffmpeg).args(["-hide_banner", "-hwaccels"]).output().map(|o| String::from_utf8_lossy(&o.stdout).into_owned()).unwrap_or_default();
+            pick_hwaccel(&listed, env.as_deref())
+        })
+        .clone()
+}
+
+/// The choice from what ffmpeg lists and what the environment says.
+pub fn pick_hwaccel(listed: &str, env: Option<&str>) -> Option<String> {
+    let available: Vec<&str> = listed.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with("Hardware")).collect();
+    match env.map(str::trim) {
+        Some("0") | Some("none") | Some("off") => None,
+        Some(name) if !name.is_empty() => Some(name.to_string()),
+        _ => ["cuda", "vaapi", "videotoolbox", "qsv"].iter().find(|w| available.contains(w)).map(|w| w.to_string()),
+    }
+}
+
+/// How the picture reaches the filters: decoded and scaled on the GPU
+/// with only the small result downloaded, decoded on the GPU and
+/// scaled on the CPU, or all on the CPU. Tried in that order; the CPU
+/// is the last resort, not the default.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Decode {
+    GpuScaled,
+    Gpu,
+    Cpu,
+}
+
+/// The ways worth trying for this ffmpeg, best first.
+pub(crate) fn decode_plans(ffmpeg: &Path) -> Vec<Decode> {
+    match hwaccel_name(ffmpeg).as_deref() {
+        Some("cuda") | Some("vaapi") => vec![Decode::GpuScaled, Decode::Gpu, Decode::Cpu],
+        Some(_) => vec![Decode::Gpu, Decode::Cpu],
+        None => vec![Decode::Cpu],
+    }
+}
+
+/// The input options for a plan, to go before `-i`. `codec` is the
+/// file's video codec as probed: for AV1, ffmpeg's default decoder is
+/// the software dav1d, registered ahead of the native one that can use
+/// the GPU, so the native one is named.
+pub(crate) fn decode_input_args(ffmpeg: &Path, plan: Decode, codec: &str) -> Vec<String> {
+    let Some(name) = hwaccel_name(ffmpeg) else { return Vec::new() };
+    let mut v = match plan {
+        Decode::GpuScaled => vec!["-hwaccel".into(), name.clone(), "-hwaccel_output_format".into(), name],
+        Decode::Gpu => vec!["-hwaccel".into(), name],
+        Decode::Cpu => return Vec::new(),
+    };
+    if codec.trim().eq_ignore_ascii_case("av1") {
+        v.push("-c:v".into());
+        v.push("av1".into());
+    }
+    v
+}
+
+/// The filter that scales to `width`×`height` (`-2` keeps the aspect)
+/// and hands the frames to the CPU filters as yuv420p, for a plan.
+pub(crate) fn scale_filter(ffmpeg: &Path, plan: Decode, width: u32, height: i64) -> String {
+    match (plan, hwaccel_name(ffmpeg).as_deref()) {
+        (Decode::GpuScaled, Some("cuda")) => format!("scale_cuda={width}:{height},hwdownload,format=nv12,format=yuv420p"),
+        (Decode::GpuScaled, Some("vaapi")) => format!("scale_vaapi=w={width}:h={height},hwdownload,format=nv12,format=yuv420p"),
+        _ => format!("scale={width}:{height}"),
+    }
+}
+
+/// The input options that ask for the hardware decoder alone, to go
+/// before `-i`, for a command whose filters need CPU frames as decoded.
+pub(crate) fn hwaccel_args(ffmpeg: &Path, codec: &str) -> Vec<String> {
+    decode_input_args(ffmpeg, Decode::Gpu, codec)
+}
+
+/// Seeks handed to one ffmpeg process: one start-up and one GPU
+/// context for all of them, each still a seek to the keyframe before
+/// its time and a decode from there, never a pass over the file.
+const GRAB_BATCH: usize = 8;
+
+/// The frames of `media` at `times`, each scaled to `width`×`height`
+/// (`-2` keeps the aspect) and put through `after` (a filter chain, or
+/// empty), as RGBA8 bytes of `frame_bytes` each. On the GPU where it
+/// can be; the CPU is the last resort.
+pub(crate) fn grab_frames(ffmpeg: &Path, item: &klipp_media::MediaItem, times: &[f64], width: u32, height: i64, after: &str, frame_bytes: usize) -> Result<Vec<Vec<u8>>, String> {
+    let mut out = Vec::with_capacity(times.len());
+    for chunk in times.chunks(GRAB_BATCH) {
+        out.extend(grab_batch(ffmpeg, item, chunk, width, height, after, frame_bytes)?);
+    }
+    Ok(out)
+}
+
+fn grab_batch(ffmpeg: &Path, item: &klipp_media::MediaItem, times: &[f64], width: u32, height: i64, after: &str, frame_bytes: usize) -> Result<Vec<Vec<u8>>, String> {
+    let media = &item.path;
+    let mut last = String::new();
+    for plan in decode_plans(ffmpeg) {
+        let mut cmd = std::process::Command::new(ffmpeg);
+        cmd.args(["-hide_banner", "-nostats", "-loglevel", "error"]);
+        let input_args = decode_input_args(ffmpeg, plan, &item.video_codec);
+        for t in times {
+            cmd.args(&input_args).arg("-ss").arg(format!("{t:.3}")).arg("-i").arg(media);
+        }
+        let scale = scale_filter(ffmpeg, plan, width, height);
+        let mut graph = String::new();
+        for k in 0..times.len() {
+            // `:0`: the file's first video stream, the picture — not a
+            // cover art stream that some files carry.
+            graph.push_str(&format!("[{k}:v:0]trim=end_frame=1,{scale}"));
+            if !after.is_empty() {
+                graph.push(',');
+                graph.push_str(after);
+            }
+            graph.push_str(&format!("[t{k}];"));
+        }
+        for k in 0..times.len() {
+            graph.push_str(&format!("[t{k}]"));
+        }
+        graph.push_str(&format!("concat=n={}:v=1:a=0,format=rgba[out]", times.len()));
+        // Every frame through as it comes: the raw muxer would otherwise
+        // drop the ones whose timestamps step back after the concat.
+        cmd.args(["-an", "-sn", "-filter_complex", &graph, "-map", "[out]", "-fps_mode", "passthrough", "-f", "rawvideo", "-pix_fmt", "rgba", "-"]);
+        let out = cmd.stderr(std::process::Stdio::piped()).output().map_err(|e| format!("could not run {}: {e}", ffmpeg.display()))?;
+        if out.status.success() && out.stdout.len() >= frame_bytes * times.len() {
+            return Ok(out.stdout.chunks_exact(frame_bytes).take(times.len()).map(|c| c.to_vec()).collect());
+        }
+        last = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        tracing::warn!("frames at {:?}: {plan:?} decode gave {} bytes for {} frames ({last}); trying the next", times, out.stdout.len(), times.len());
+    }
+    Err(format!("ffmpeg could not decode frames at {times:?}: {last}"))
+}
+
 /// Run `ffmpeg` with `args` and return its stderr, which is where the
 /// filters print.
 pub(crate) fn ffmpeg_stderr(ffmpeg: &Path, args: &[String]) -> Result<String, String> {
@@ -219,5 +356,21 @@ mod ai_toggle_tests {
         assert!(!none.contains(&"transcript") && !none.contains(&"framing"), "AI gone: {none:?}");
         super::set_transcription_enabled(true);
         super::set_subject_detection_enabled(true);
+    }
+}
+
+#[cfg(test)]
+mod hwaccel_tests {
+    use super::pick_hwaccel;
+
+    #[test]
+    fn the_first_known_decoder_listed_is_taken_unless_the_environment_says() {
+        let listed = "Hardware acceleration methods:\nvdpau\ncuda\nvaapi\nvulkan\n";
+        assert_eq!(pick_hwaccel(listed, None).as_deref(), Some("cuda"));
+        assert_eq!(pick_hwaccel("Hardware acceleration methods:\nvaapi\n", None).as_deref(), Some("vaapi"));
+        assert_eq!(pick_hwaccel("Hardware acceleration methods:\nvdpau\n", None), None);
+        assert_eq!(pick_hwaccel(listed, Some("0")), None);
+        assert_eq!(pick_hwaccel(listed, Some("none")), None);
+        assert_eq!(pick_hwaccel(listed, Some("vulkan")).as_deref(), Some("vulkan"));
     }
 }
