@@ -454,6 +454,7 @@ impl crate::Analyser for ScreenTextAnalyser {
         let mut grab_secs = 0.0;
         // A few frames at a time: a 4K frame is fourteen megabytes.
         for chunk in times.chunks(READ_BATCH) {
+            crate::hold::wait();
             let started = std::time::Instant::now();
             let frames = frames_at(&ctx.ffmpeg, item, chunk, w, h)?;
             grab_secs += started.elapsed().as_secs_f64();

@@ -4842,19 +4842,25 @@ impl GpuEffectsPipeline {
             return false;
         }
         let byte_size = (width as u64) * (height as u64) * 16;
-        let make = |device: &wgpu::Device, label: &str| {
-            std::sync::Arc::new(device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some(label),
-                size: byte_size,
-                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC,
-                mapped_at_creation: false,
-            }))
-        };
         if byte_size > self.stack_buf_size {
             self.stack_layers.clear();
             self.stack_acc = None;
             self.stack_buf_size = byte_size;
         }
+        // Every buffer in the pool is the pool's size, never this frame's:
+        // a layer first wanted by a smaller frame (a 2128-row clip after a
+        // 2132-row one) would otherwise be short for the next larger
+        // frame, whose copies then overrun it — a validation error that
+        // took the GPU away for the rest of the session.
+        let pool_size = self.stack_buf_size;
+        let make = |device: &wgpu::Device, label: &str| {
+            std::sync::Arc::new(device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some(label),
+                size: pool_size,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC,
+                mapped_at_creation: false,
+            }))
+        };
         while self.stack_layers.len() < layers {
             let label = format!("stack_layer_{}", self.stack_layers.len());
             self.stack_layers.push(make(&self.device, &label));
@@ -4972,10 +4978,24 @@ impl GpuEffectsPipeline {
         self.submit(enc);
     }
 
-    fn stack_copy(&self, from: &wgpu::Buffer, to: &wgpu::Buffer, label: &str) {
+    /// A whole-frame copy between two of the stack's buffers. `false`,
+    /// and nothing recorded, when either is too small for the frame:
+    /// an overrunning copy is a validation error, and the frame is
+    /// better declined than the device marked bad.
+    fn stack_copy(&self, from: &wgpu::Buffer, to: &wgpu::Buffer, label: &str) -> bool {
+        let bytes = self.stack_pixel_count() * 16;
+        if from.size() < bytes || to.size() < bytes {
+            error!(
+                "GPU stack: {label} needs {bytes} bytes but has {} to copy from and {} to copy into; the frame is declined",
+                from.size(),
+                to.size()
+            );
+            return false;
+        }
         let mut enc = self.encoder(Some(label));
-        enc.copy_buffer_to_buffer(from, 0, to, 0, self.stack_pixel_count() * 16);
+        enc.copy_buffer_to_buffer(from, 0, to, 0, bytes);
         self.submit(enc);
+        true
     }
 
     /// The accumulator, a canvas if nothing has been laid on it yet,
@@ -5007,8 +5027,7 @@ impl GpuEffectsPipeline {
         }
         let src = if slot_a { self.buf_a.as_ref() } else { self.buf_b.as_ref() };
         let Some(src) = src else { return false };
-        self.stack_copy(src, &self.stack_layers[i], "stack_layer_from_chain");
-        true
+        self.stack_copy(src, &self.stack_layers[i], "stack_layer_from_chain")
     }
 
     /// Layer `i` takes a linear working-space frame from the CPU.
@@ -5137,11 +5156,12 @@ impl GpuEffectsPipeline {
         }
         let (width, height) = self.stack_dims;
         let layer = std::sync::Arc::clone(&self.stack_layers[i]);
-        self.stack_copy(&layer, self.buf_a.as_ref().unwrap(), "stack_layer_to_chain");
+        if !self.stack_copy(&layer, self.buf_a.as_ref().unwrap(), "stack_layer_to_chain") {
+            return false;
+        }
         let in_a = self.run_effects_in_chain(effects, width, height);
         let out = if in_a { self.buf_a.as_ref().unwrap() } else { self.buf_b.as_ref().unwrap() };
-        self.stack_copy(out, &layer, "stack_chain_to_layer");
-        true
+        self.stack_copy(out, &layer, "stack_chain_to_layer")
     }
 
     /// Multiply layer `i`'s alpha by `factor` (a transition side's
@@ -5259,7 +5279,9 @@ impl GpuEffectsPipeline {
         let (y0, y1) = (y0.min(height), y1.min(height));
         if !self.stack_acc_touched && mode == 0 && opacity >= 1.0 && y0 == 0 && y1 == height {
             let acc = self.stack_acc.clone().unwrap();
-            self.stack_copy(&self.stack_layers[i], &acc, "stack_move_in");
+            if !self.stack_copy(&self.stack_layers[i], &acc, "stack_move_in") {
+                return false;
+            }
             self.stack_acc_touched = true;
             return true;
         }
@@ -5281,8 +5303,7 @@ impl GpuEffectsPipeline {
             return false;
         }
         let acc = self.stack_acc.clone().unwrap();
-        self.stack_copy(&acc, self.buf_a.as_ref().unwrap(), "stack_acc_to_chain");
-        true
+        self.stack_copy(&acc, self.buf_a.as_ref().unwrap(), "stack_acc_to_chain")
     }
 
     /// Chain slot B into slot A, so an effects run can start from A.
@@ -5317,8 +5338,7 @@ impl GpuEffectsPipeline {
         let (width, height) = self.stack_dims;
         let acc = self.stack_acc.clone().unwrap();
         if keep_alpha {
-            self.stack_copy(&acc, self.buf_a.as_ref().unwrap(), "stack_finish_copy");
-            return true;
+            return self.stack_copy(&acc, self.buf_a.as_ref().unwrap(), "stack_finish_copy");
         }
         self.write_params(&BridgeU8Params { width, height, _pad0: 0, _pad1: 0 });
         let wg = (self.stack_pixel_count() as u32).div_ceil(WORKGROUP_SIZE);

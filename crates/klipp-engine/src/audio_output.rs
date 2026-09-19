@@ -23,6 +23,18 @@ pub fn set_preferred_device(name: Option<String>) {
 // (e.g. via JACK or PipeWire direct routing), read the monitoring_mode pref
 // here to select the path.
 
+/// Output callbacks while playing that ran out of samples part-way
+/// through, after the ring had been feeding them: each is a gap the
+/// listener hears as a click or a dropout.
+pub static UNDERRUN_CALLBACKS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+static LAST_CALLBACK_SHORT: AtomicBool = AtomicBool::new(true);
+
+/// How many gaps have opened mid-stream since the app started.
+pub fn underrun_callbacks() -> u64 {
+    UNDERRUN_CALLBACKS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// Flush all samples from a skim consumer (drains to silence).
 pub fn flush_skim_consumer(skim: &SkimConsumer) {
     if let Ok(mut guard) = skim.lock() {
@@ -439,6 +451,15 @@ impl AudioOutput {
                                 }
                                 let filled = consumer.pop_slice(data);
                                 data[filled..].fill(0.0);
+                                // A gap that opens mid-stream is a dropout the
+                                // listener hears; the silence before the ring
+                                // has filled at the start of playback is not.
+                                let short = filled < data.len();
+                                if short && !LAST_CALLBACK_SHORT.swap(short, Ordering::Relaxed) && filled > 0 {
+                                    UNDERRUN_CALLBACKS.fetch_add(1, Ordering::Relaxed);
+                                } else {
+                                    LAST_CALLBACK_SHORT.store(short, Ordering::Relaxed);
+                                }
                                 // Apply gain + clip volume + master volume + clip pan (lock-free, instant)
                                 let master_vol = f32::from_bits(master_vol_flag.load(Ordering::Relaxed));
                                 let clip_vol = f32::from_bits(clip_vol_flag.load(Ordering::Relaxed));

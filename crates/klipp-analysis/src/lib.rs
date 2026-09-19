@@ -25,6 +25,7 @@ pub mod audio;
 pub mod audio_sync;
 pub mod beats;
 pub mod beatsheet;
+pub mod hold;
 pub mod motion;
 pub mod report;
 pub mod sheet;
@@ -313,7 +314,7 @@ fn grab_batch(ffmpeg: &Path, item: &klipp_media::MediaItem, times: &[f64], width
         // Every frame through as it comes: the raw muxer would otherwise
         // drop the ones whose timestamps step back after the concat.
         cmd.args(["-an", "-sn", "-filter_complex", &graph, "-map", "[out]", "-fps_mode", "passthrough", "-f", "rawvideo", "-pix_fmt", "rgba", "-"]);
-        let out = cmd.stderr(std::process::Stdio::piped()).output().map_err(|e| format!("could not run {}: {e}", ffmpeg.display()))?;
+        let out = crate::hold::output(&mut cmd).map_err(|e| format!("could not run {}: {e}", ffmpeg.display()))?;
         if out.status.success() && out.stdout.len() >= frame_bytes * times.len() {
             return Ok(out.stdout.chunks_exact(frame_bytes).take(times.len()).map(|c| c.to_vec()).collect());
         }
@@ -326,12 +327,9 @@ fn grab_batch(ffmpeg: &Path, item: &klipp_media::MediaItem, times: &[f64], width
 /// Run `ffmpeg` with `args` and return its stderr, which is where the
 /// filters print.
 pub(crate) fn ffmpeg_stderr(ffmpeg: &Path, args: &[String]) -> Result<String, String> {
-    let out = std::process::Command::new(ffmpeg)
-        .args(args)
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::piped())
-        .output()
-        .map_err(|e| format!("could not run {}: {e}", ffmpeg.display()))?;
+    let mut cmd = std::process::Command::new(ffmpeg);
+    cmd.args(args);
+    let out = crate::hold::output(&mut cmd).map_err(|e| format!("could not run {}: {e}", ffmpeg.display()))?;
     let text = String::from_utf8_lossy(&out.stderr).into_owned();
     if !out.status.success() {
         let tail: String = text.lines().rev().take(5).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join(" | ");

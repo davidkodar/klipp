@@ -714,6 +714,17 @@ impl KlippApp {
                 initial_scheduler_policy,
             ),
         };
+        // Analysis waits while the person is playing, scrubbing or has
+        // just touched the controls, unless they chose throughput over
+        // responsiveness for background work.
+        {
+            let fg = Arc::clone(&app.foreground_activity);
+            let sched = Arc::clone(&app.job_scheduler);
+            klipp_analysis::hold::install(Arc::new(move || {
+                sched.policy() != klipp_jobs::SchedulerPolicy::MaxThroughput
+                    && fg.is_user_busy(std::time::Duration::from_millis(1500))
+            }));
+        }
         // Build false color LUT from loaded preferences
         app.state.false_color_lut = app.prefs.viewer.false_color_palette.build_lut();
         // Probe audio backend status

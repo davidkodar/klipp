@@ -30,8 +30,12 @@ ocr = ["dep:klipp-ml-ort", "klipp-ml-ort/ort", "dep:klipp-ml"]
 # provider is refused and the CPU provider carries on.
 cuda = ["klipp-ml-ort/cuda"]
 
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [dependencies]
 klipp-core = { workspace = true }
+klipp-jobs = { path = "../klipp-jobs" }
 klipp-media = { workspace = true }
 klipp-ml = { workspace = true, optional = true }
 klipp-ml-ort = { workspace = true, optional = true }

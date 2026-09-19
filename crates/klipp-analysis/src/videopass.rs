@@ -104,7 +104,7 @@ fn run_with(ctx: &crate::AnalysisCtx, item: &klipp_media::MediaItem, plan: crate
     cmd.args(crate::decode_input_args(&ctx.ffmpeg, plan, &item.video_codec));
     cmd.arg("-i").arg(&item.path).args(["-an", "-sn", "-filter_complex", &graph]);
     cmd.args(["-map", "[acto]", "-f", "rawvideo", "-pix_fmt", "gray", "-"]);
-    let out = cmd.stderr(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).output().map_err(|e| format!("could not run {}: {e}", ctx.ffmpeg.display()))?;
+    let out = crate::hold::output(&mut cmd).map_err(|e| format!("could not run {}: {e}", ctx.ffmpeg.display()))?;
     let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
     let read = |p: &std::path::Path| std::fs::read_to_string(p).unwrap_or_default();
     let (fast_text, slow_text, ydif_text) = (read(&fast_path), read(&slow_path), read(&ydif_path));

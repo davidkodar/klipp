@@ -2650,9 +2650,11 @@ name = "klipp-analysis"
 version = "0.1.0"
 dependencies = [
  "klipp-core",
+ "klipp-jobs",
  "klipp-media",
  "klipp-ml",
  "klipp-ml-ort",
+ "libc",
  "serde",
  "serde_json",
  "tracing",

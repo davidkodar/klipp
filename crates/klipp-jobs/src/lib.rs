@@ -31,4 +31,4 @@ pub use job::{BackgroundJob, ChunkResult, JobId, JobPriority, ResourceClass};
 pub use pause::PauseToken;
 pub use scheduler::{JobScheduler, SchedulerPolicy};
 pub use subprocess::SubprocessJob;
-pub use thread_job::ThreadJob;
+pub use thread_job::{lower_current_thread_priority, ThreadJob};

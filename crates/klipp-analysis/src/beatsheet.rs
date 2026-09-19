@@ -218,7 +218,7 @@ pub fn detect_frozen(ffmpeg: &std::path::Path, path: &std::path::Path, codec: &s
             cmd.args(["-vf", &vf, "-f", "null", "-"]);
         }
         // freezedetect logs `freeze_start`/`freeze_end` at info level.
-        let Ok(out) = cmd.stderr(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).output() else { return (Vec::new(), Vec::new()) };
+        let Ok(out) = crate::hold::output(&mut cmd) else { return (Vec::new(), Vec::new()) };
         if !out.status.success() {
             tracing::warn!("freezedetect of {} with {plan:?} failed; trying the next", path.display());
             continue;

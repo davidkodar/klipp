@@ -156,6 +156,14 @@ fn nice_offset_for_priority(priority: JobPriority) -> i32 {
     }
 }
 
+/// Lower the calling thread's scheduling priority by `offset` nice
+/// steps (Linux; a no-op elsewhere). Threads and processes it starts
+/// afterwards inherit it, so a worker that calls this first keeps its
+/// whole tree below the editor's own threads.
+pub fn lower_current_thread_priority(offset: i32) {
+    set_thread_nice(offset);
+}
+
 #[cfg(unix)]
 fn set_thread_nice(offset: i32) {
     if offset == 0 { return; }

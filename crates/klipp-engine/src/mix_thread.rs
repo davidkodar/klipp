@@ -23,6 +23,8 @@ enum MixCommand {
     },
     /// Clear all staging consumers (called on stop/clip change).
     ClearAll,
+    /// Drop the staging consumer of one track: its clip has ended.
+    RemoveStaging { track_index: usize },
     /// Drain all staging consumers and main producer (on seek).
     /// The mix thread sets the ack flag when done.
     Flush { ack: Arc<AtomicBool> },
@@ -141,6 +143,11 @@ impl MixThread {
             consumer,
             latency_advertise,
         });
+    }
+
+    /// Remove one track's staging consumer; the others play on.
+    pub fn remove_staging(&self, track_index: usize) {
+        let _ = self.cmd_tx.send(MixCommand::RemoveStaging { track_index });
     }
 
     /// Remove all staging consumers (e.g., on clip change or stop).
@@ -279,6 +286,10 @@ fn mix_loop(
                 MixCommand::ClearAll => {
                     debug!("Mix thread: cleared all stagings");
                     stagings.clear();
+                }
+                MixCommand::RemoveStaging { track_index } => {
+                    debug!("Mix thread: removed staging for track {track_index}");
+                    stagings.retain(|s| s.track_index != track_index);
                 }
                 MixCommand::Flush { ack } => {
                     // Drain all staging consumers

@@ -197,6 +197,16 @@ static SHARED_FROM_UI: std::sync::atomic::AtomicBool = std::sync::atomic::Atomic
 /// handler) also keeps the GPU-COMPOUND-PANIC class diagnosable: the
 /// original validation message that names the offending resource
 /// lands in klipp-debug.log immediately before any downstream abort.
+/// Validation errors seen on the device this session, and how many are
+/// put up with before GPU effects are switched off.
+static VALIDATION_ERRORS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+const VALIDATION_ERRORS_TOLERATED: u64 = 32;
+
+/// How many validation errors the device has reported this session.
+pub fn validation_errors() -> u64 {
+    VALIDATION_ERRORS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 fn register_device_callbacks(
     device: &wgpu::Device,
 ) -> std::sync::Arc<std::sync::atomic::AtomicBool> {
@@ -205,8 +215,25 @@ fn register_device_callbacks(
     {
         let flag = device_lost.clone();
         device.on_uncaptured_error(Box::new(move |err| {
-            tracing::error!("WGPU_UNCAPTURED: {err} — disabling GPU effects");
-            tracing::error!("WGPU_UNCAPTURED debug:\n{err:#?}");
+            // A validation error is one dropped command on a device that
+            // is otherwise fine: the frame it was part of is wrong, the
+            // next frame records afresh. It used to take the GPU away
+            // for the rest of the session, and a 4K timeline then ran on
+            // the CPU at five frames a second with nothing on screen to
+            // say why. Only a run of them, or memory or the device going,
+            // does that now.
+            if matches!(err, wgpu::Error::Validation { .. }) {
+                let n = VALIDATION_ERRORS.fetch_add(1, Ordering::SeqCst) + 1;
+                if n <= VALIDATION_ERRORS_TOLERATED {
+                    tracing::error!("WGPU_UNCAPTURED validation error {n} of {VALIDATION_ERRORS_TOLERATED} tolerated: {err}");
+                    tracing::error!("WGPU_UNCAPTURED debug:\n{err:#?}");
+                    return;
+                }
+                tracing::error!("WGPU_UNCAPTURED: {err} — the {n}th validation error, disabling GPU effects");
+            } else {
+                tracing::error!("WGPU_UNCAPTURED: {err} — disabling GPU effects");
+                tracing::error!("WGPU_UNCAPTURED debug:\n{err:#?}");
+            }
             flag.store(true, Ordering::SeqCst);
         }));
     }

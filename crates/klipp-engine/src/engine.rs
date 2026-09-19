@@ -1346,7 +1346,131 @@ pub struct PlaybackEngine {
     preroll_source_in: f64,
 }
 
+/// One track's audio at a time: track index, media, decode path, the
+/// source second the playhead is at, and the clip's audio chain.
+type TrackAudioRow = (
+    usize,
+    MediaId,
+    PathBuf,
+    f64,
+    Vec<klipp_core::AudioEffectInstance>,
+    std::collections::HashMap<String, Vec<klipp_core::Keyframe>>,
+);
+
 impl PlaybackEngine {
+    /// Every track with an audio clip under `tc` that should sound: an
+    /// enabled clip on media with audio, and not the video half of a
+    /// linked pair whose audio half sits on an audio track.
+    fn audio_rows_at(&self, tc: Timecode) -> Vec<TrackAudioRow> {
+        let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
+        let pool = self.media_pool.read().unwrap_or_else(|e| e.into_inner());
+        seq.tracks
+            .iter()
+            .enumerate()
+            .filter_map(|(track_idx, track)| {
+                let (_clip_idx, clip) = track.clip_at_timecode(tc)?;
+                if !clip.enabled { return None; }
+                let media_id = clip.media_id()?;
+                let item = pool.get(&media_id)?;
+                if !item.has_audio {
+                    return None;
+                }
+                // Skip audio for video-track clips that have a linked audio-track partner
+                // (the audio track clip will produce audio instead)
+                if track.kind == klipp_timeline::TrackKind::Video {
+                    if let Some(lid) = clip.linked_clip_id {
+                        let partner_on_audio = seq.tracks.iter().any(|t| {
+                            t.kind == klipp_timeline::TrackKind::Audio
+                                && t.clips.iter().any(|c| c.id == lid)
+                        });
+                        if partner_on_audio {
+                            return None;
+                        }
+                    }
+                }
+                let source_secs = clip.source_in.to_secs_f64()
+                    + (tc - clip.timeline_in).to_secs_f64() * clip.speed;
+                let decode_path = if self.use_proxies && item.proxy_ready {
+                    item.proxy_path.as_ref()
+                        .filter(|p| p.exists())
+                        .cloned()
+                        .unwrap_or_else(|| item.path.clone())
+                } else {
+                    item.path.clone()
+                };
+                Some((
+                    track_idx,
+                    media_id,
+                    decode_path,
+                    source_secs,
+                    clip.audio_effects.clone(),
+                    clip.audio_effect_keyframes.clone(),
+                ))
+            })
+            .collect()
+    }
+
+    /// While playing, the audio sources follow the audio clips under the
+    /// playhead: a clip that begins between video cuts (a sound effect
+    /// on a cut, a bed that starts late) gets its source the tick it
+    /// begins, and a source whose clip has ended, or whose track now
+    /// holds a different clip, is retired on its own. Nothing else is
+    /// touched, so the music never restarts for a sound effect coming or
+    /// going. Before this, sources were made only when playback started
+    /// and at a video cut, so a late effect was silent and an ended one
+    /// restarted every source at the next cut — a gap in the music.
+    fn reconcile_audio_sources(&mut self) {
+        if self.state != PlaybackState::Playing {
+            return;
+        }
+        let tc = self.playhead;
+        let rows = self.audio_rows_at(tc);
+        let wanted: std::collections::HashMap<usize, (MediaId, u64)> = rows
+            .iter()
+            .map(|(t, m, _, _, fx, kfs)| (*t, (*m, audio_chain_fingerprint_for(fx, kfs))))
+            .collect();
+        let mut retired = Vec::new();
+        self.audio_sources.retain_mut(|a| {
+            let keep = wanted.get(&a.track_index).is_some_and(|(m, fp)| *m == a.media_id && *fp == a.audio_chain_fingerprint);
+            if !keep {
+                a.source.stop_detached();
+                retired.push(a.track_index);
+            }
+            keep
+        });
+        for t in &retired {
+            if let Some(mt) = &self.mix_thread {
+                mt.remove_staging(*t);
+            }
+            debug!("audio source on track {t} retired: no clip of its media under {:.3}s", tc.to_secs_f64());
+        }
+        let have: std::collections::HashSet<usize> = self.audio_sources.iter().map(|a| a.track_index).collect();
+        let mut opened = false;
+        for (track_idx, media_id, path, source_secs, fx, kfs) in rows {
+            if have.contains(&track_idx) {
+                continue;
+            }
+            let before = self.audio_sources.len();
+            self.open_audio_source(track_idx, media_id, &path, source_secs, fx, kfs);
+            if self.audio_sources.len() > before {
+                if let Some(a) = self.audio_sources.last() {
+                    a.source.resume();
+                }
+                debug!("audio source on track {track_idx} opened at {source_secs:.3}s for the clip beginning under {:.3}s", tc.to_secs_f64());
+                opened = true;
+            }
+        }
+        if opened {
+            self.sync_clip_volumes();
+            if let Some(aout) = &self.audio_output {
+                aout.0.resume();
+            }
+        }
+    }
+}
+
+impl PlaybackEngine {
+
     /// Handle to the shared spectrum PCM ring fed by the mix thread — clone
     /// and stash on the UI side so the audio-spectrum scope can drain samples
     /// each frame without going through the event channel. Returns `None` if
@@ -1978,7 +2102,7 @@ impl PlaybackEngine {
                     0.0
                 };
                 tracing::info!(
-                    "ENGINE_HEARTBEAT state={:?} updates={} regrades={} param_changes={} cmds={} elapsed={:.2}s rate={:.1}/s drops_total={} hw_decode={:?} has_v1={} overlays={} cpu_readbacks={} readback_avg={:.2}ms readback_total={:.1}ms",
+                    "ENGINE_HEARTBEAT state={:?} updates={} regrades={} param_changes={} cmds={} elapsed={:.2}s rate={:.1}/s drops_total={} hw_decode={:?} has_v1={} overlays={} cpu_readbacks={} readback_avg={:.2}ms readback_total={:.1}ms audio_gaps={}",
                     self.state,
                     self.dbg_update_playback_count,
                     self.dbg_regrade_count,
@@ -1993,6 +2117,7 @@ impl PlaybackEngine {
                     rb_count,
                     rb_avg_ms,
                     rb_us as f64 / 1000.0,
+                    crate::audio_output::underrun_callbacks(),
                 );
                 self.last_stats_time = std::time::Instant::now();
                 self.dbg_update_playback_count = 0;
@@ -3294,63 +3419,7 @@ impl PlaybackEngine {
         self.last_audio_fingerprint = self.compute_audio_fingerprint();
         self.stop_all_audio();
 
-        // Collect (track_index, media_id, path, source_secs, effects, kfs) for every track with audio at tc
-        type TrackAudioRow = (
-            usize,
-            MediaId,
-            PathBuf,
-            f64,
-            Vec<klipp_core::AudioEffectInstance>,
-            std::collections::HashMap<String, Vec<klipp_core::Keyframe>>,
-        );
-        let track_audio: Vec<TrackAudioRow> = {
-            let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
-            let pool = self.media_pool.read().unwrap_or_else(|e| e.into_inner());
-            seq.tracks
-                .iter()
-                .enumerate()
-                .filter_map(|(track_idx, track)| {
-                    let (_clip_idx, clip) = track.clip_at_timecode(tc)?;
-                    if !clip.enabled { return None; }
-                    let media_id = clip.media_id()?;
-                    let item = pool.get(&media_id)?;
-                    if !item.has_audio {
-                        return None;
-                    }
-                    // Skip audio for video-track clips that have a linked audio-track partner
-                    // (the audio track clip will produce audio instead)
-                    if track.kind == klipp_timeline::TrackKind::Video {
-                        if let Some(lid) = clip.linked_clip_id {
-                            let partner_on_audio = seq.tracks.iter().any(|t| {
-                                t.kind == klipp_timeline::TrackKind::Audio
-                                    && t.clips.iter().any(|c| c.id == lid)
-                            });
-                            if partner_on_audio {
-                                return None;
-                            }
-                        }
-                    }
-                    let source_secs = clip.source_in.to_secs_f64()
-                        + (tc - clip.timeline_in).to_secs_f64() * clip.speed;
-                    let decode_path = if self.use_proxies && item.proxy_ready {
-                        item.proxy_path.as_ref()
-                            .filter(|p| p.exists())
-                            .cloned()
-                            .unwrap_or_else(|| item.path.clone())
-                    } else {
-                        item.path.clone()
-                    };
-                    Some((
-                        track_idx,
-                        media_id,
-                        decode_path,
-                        source_secs,
-                        clip.audio_effects.clone(),
-                        clip.audio_effect_keyframes.clone(),
-                    ))
-                })
-                .collect()
-        };
+        let track_audio = self.audio_rows_at(tc);
 
         debug!("start_all_audio: {} tracks with audio at {:.3}s", track_audio.len(), tc.to_secs_f64());
         for (track_idx, media_id, path, source_secs, audio_effects, audio_effect_keyframes) in track_audio {
@@ -3707,8 +3776,11 @@ pub(crate) fn audio_resync_needed(
                 audio_chain_fingerprint_for(&clip.audio_effects, &clip.audio_effect_keyframes)
                     != fingerprint
             }
-            // No clip under the source at `tc` — a gap; resync (drops it).
-            None => true,
+            // No clip under the source at `tc`: the source is silent
+            // there and `reconcile_audio_sources` retires it alone on the
+            // next tick. Restarting every source for it put a gap in the
+            // music at each video cut after a sound effect had ended.
+            None => false,
         }
     })
 }
@@ -4132,6 +4204,7 @@ impl PlaybackEngine {
         // without contending with the long read lock that follows.
         self.drain_param_changes();
         stage_drain_us = t_stage.elapsed().as_micros();
+        self.reconcile_audio_sources();
         t_stage = std::time::Instant::now();
 
         // Time-remap: sample the instantaneous speed curve and re-anchor the
@@ -11232,18 +11305,19 @@ mod audio_continuity_tests {
     }
 
     #[test]
-    fn gap_under_audio_source_needs_resync() {
+    fn gap_under_audio_source_needs_no_resync() {
         let music = MediaId::new();
         let mut s = Sequence::new_default();
         s.tracks.clear();
         let mut a = Track::new("A1", TrackKind::Audio);
         a.clips.push(Clip::media(music, tc(0), tc(48), tc(0), tc(48)));
         s.tracks.push(a);
-        // At frame 60 there is no clip under the source → resync (drop it).
+        // At frame 60 there is no clip under the source: the source is
+        // retired on its own; the others must not be restarted for it.
         let active = [(0usize, music, empty_fp())];
         assert!(
-            audio_resync_needed(&s, tc(60), active),
-            "a gap (no audio clip at tc) MUST resync",
+            !audio_resync_needed(&s, tc(60), active),
+            "a gap under one source must not restart every source",
         );
     }
 
