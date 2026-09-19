@@ -21,7 +21,7 @@ use serde::{Deserialize, Serialize};
 use crate::shots::Shots;
 
 pub const ID: &str = "beatsheet";
-pub const VERSION: u32 = 3;
+pub const VERSION: u32 = 4;
 
 /// Frames sampled a second for freeze detection: enough to place a settle
 /// to a sixth of a second, cheap to decode.
@@ -218,6 +218,47 @@ pub fn detect_frozen(ffmpeg: &std::path::Path, path: &std::path::Path, codec: &s
     (Vec::new(), Vec::new())
 }
 
+/// A cell whose mean change from one sampled frame to the next is above
+/// this (of 255) saw something happen there — a dialog, a menu, a
+/// window — even when the whole frame's change stayed under
+/// freezedetect's noise.
+pub(crate) const GRID_EVENT: u8 = 48;
+
+/// The times at which some cell of the grid jumped: local changes that
+/// freezedetect, which reads the whole frame, does not see. Two within
+/// half a second are one.
+pub fn grid_events(grid: &[u8]) -> Vec<f64> {
+    let cells = GRID_W * GRID_H;
+    let mut out: Vec<f64> = Vec::new();
+    for (f, frame) in grid.chunks_exact(cells).enumerate() {
+        if frame.iter().any(|v| *v > GRID_EVENT) {
+            let t = f as f64 / GRID_FPS as f64;
+            if out.last().is_none_or(|last| t - *last >= 0.5) {
+                out.push(t);
+            }
+        }
+    }
+    out
+}
+
+/// Frozen spans cut at the grid's events, so a stretch the whole frame
+/// held still through is two beats when a dialog came up in the middle
+/// of it. A cut that would leave a piece under half a second is not made.
+pub fn split_frozen(frozen: &[(f64, f64)], events: &[f64]) -> Vec<(f64, f64)> {
+    let mut out = Vec::new();
+    for (a, b) in frozen {
+        let mut start = *a;
+        for e in events.iter().filter(|e| **e > *a && **e < *b) {
+            if e - start >= 0.5 && b - e >= 0.5 {
+                out.push((start, *e));
+                start = *e;
+            }
+        }
+        out.push((start, *b));
+    }
+    out
+}
+
 /// A patch that moved nearly all the time while the rest of the picture
 /// mostly held still — a webcam inset — from the activity grid: the
 /// cells that changed in over half the frames and at three times the
@@ -351,6 +392,22 @@ impl crate::Analyser for BeatSheetAnalyser {
                 frozen = masked;
             }
         }
+        // A dialog or a window that came up inside a still stretch is a
+        // beat of its own, though the whole frame's change was under the
+        // noise. The inset's own cells are not events.
+        let mut grid = pass.grid.clone();
+        if let Some([x, y, w, h]) = busy_inset {
+            let cells = GRID_W * GRID_H;
+            for frame in grid.chunks_exact_mut(cells) {
+                for (c, v) in frame.iter_mut().enumerate() {
+                    let (cx, cy) = ((c % GRID_W) as f32 / GRID_W as f32, (c / GRID_W) as f32 / GRID_H as f32);
+                    if cx >= x - 0.01 && cx < x + w && cy >= y - 0.01 && cy < y + h {
+                        *v = 0;
+                    }
+                }
+            }
+        }
+        frozen = split_frozen(&frozen, &grid_events(&grid));
         // The scene changes, when they exist, are precise cut points; a
         // screen recording usually has none, and that is fine.
         let shots: Option<Shots> = crate::store::key_for(&item.path)
@@ -389,6 +446,21 @@ mod tests {
         assert!(busy_inset_from_grid(&one).is_none());
         assert!(busy_inset_from_grid(&grid[..cells * 10]).is_none());
         assert!(mask_filter([0.5, 0.25, 0.1, 0.2]).starts_with("drawbox=x=iw*0.5000:y=ih*0.2500:w=iw*0.1000:h=ih*0.2000:color=black:t=fill,"));
+    }
+
+    #[test]
+    fn a_still_stretch_is_split_where_a_cell_of_the_grid_jumps() {
+        let cells = GRID_W * GRID_H;
+        // 20 s at 2 fps: one cell jumps at 6.0 s and again at 6.2 s (one event), and at 15 s.
+        let mut grid = vec![0u8; cells * 40];
+        grid[12 * cells + 5] = 60;
+        grid[12 * cells + 6] = 60;
+        grid[30 * cells + 100] = 90;
+        assert_eq!(grid_events(&grid), vec![6.0, 15.0]);
+        assert_eq!(split_frozen(&[(0.0, 20.0)], &[6.0, 15.0]), vec![(0.0, 6.0), (6.0, 15.0), (15.0, 20.0)]);
+        // Too close to an edge: no cut.
+        assert_eq!(split_frozen(&[(5.8, 20.0)], &[6.0]), vec![(5.8, 20.0)]);
+        assert_eq!(split_frozen(&[(0.0, 3.0), (10.0, 12.0)], &[6.0]), vec![(0.0, 3.0), (10.0, 12.0)]);
     }
 
     #[test]

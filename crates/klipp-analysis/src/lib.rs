@@ -180,6 +180,13 @@ pub fn download_models() -> Result<Vec<String>, String> {
     Ok(got)
 }
 
+/// Whether `path` is a music track or a sound effect the app fetched
+/// from a library: its credit line sits beside it. Such a file has no
+/// speech to transcribe and its low end is not a fault.
+pub fn is_licensed_audio(path: &Path) -> bool {
+    path.with_extension("klipp-credit.txt").is_file()
+}
+
 /// Which hardware decoder ffmpeg is asked for, chosen once: the first of
 /// the well-known ones this ffmpeg lists. `KLIPP_ANALYSIS_HWACCEL` names
 /// one, or `0`/`none` for software decoding. When the driver refuses, ffmpeg

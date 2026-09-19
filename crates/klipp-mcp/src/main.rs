@@ -339,6 +339,7 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
             let mut v = json!({ "method": "screen_text", "media_id": arg_str(args, "media_id")? });
             if let Some(f) = args.get("from_secs").and_then(|v| v.as_f64()) { v["from_secs"] = json!(f); }
             if let Some(t) = args.get("to_secs").and_then(|v| v.as_f64()) { v["to_secs"] = json!(t); }
+            if let Some(a) = args.get("all").and_then(|v| v.as_bool()) { v["all"] = json!(a); }
             v
         }
         "klipp_search_screen_text" => {
@@ -946,7 +947,7 @@ fn tool_definitions() -> Vec<Value> {
               masked with where to blur. Needs the two OCR models (about 10 MB): if the reply \
               says they are not downloaded, ask the user before klipp_analyze with \
               download_models true.",
-             json!({ "media_id": { "type": "string" }, "from_secs": { "type": "number" }, "to_secs": { "type": "number" } }),
+             json!({ "media_id": { "type": "string" }, "from_secs": { "type": "number" }, "to_secs": { "type": "number" }, "all": { "type": "boolean", "description": "every line read, not the summary of headings and lines that stayed up" } }),
              vec!["media_id"]),
         tool("klipp_auto_redact",
              "Hide everything the screen text found sensitive — emails, keys, passwords, card \

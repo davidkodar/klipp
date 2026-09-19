@@ -204,6 +204,9 @@ impl MediaAnalysis {
                 a.silences.len(),
                 a.silence_within(0.0, a.duration_secs),
             );
+            if let Some(t) = a.loudest_secs {
+                let _ = writeln!(out, "  loudest at {t:.2} s (where a hit or a riser lands: put that on the cut)");
+            }
             if let (Some(rms), Some(floor)) = (a.rms_db, a.noise_floor_db) {
                 let _ = writeln!(out, "  level {rms:.0} dB RMS, noise floor {floor:.0} dB; bands under the whole: low {}, hum {}, high {}",
                     a.low_db.map_or("?".to_string(), |v| format!("{:+.0} dB", v - rms)),

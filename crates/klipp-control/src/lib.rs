@@ -1380,7 +1380,7 @@ fn handle(
             Ok(json!({ "query": query, "hits": hits }))
         }
 
-        ControlCommand::ScreenText { media_id, from_secs, to_secs } => {
+        ControlCommand::ScreenText { media_id, from_secs, to_secs, all } => {
             if in_batch {
                 return read_in_batch("screen_text");
             }
@@ -1398,9 +1398,16 @@ fn handle(
                 }));
             };
             let (a, b) = (from_secs.unwrap_or(0.0), to_secs.unwrap_or(st.duration_secs));
-            let spans: Vec<serde_json::Value> = st.spans_within(a, b).into_iter().map(|s| json!({ "text": s.text, "start_secs": s.start_secs, "end_secs": s.end_secs, "x": s.x, "y": s.y, "w": s.w, "h": s.h })).collect();
-            let mut text = format!("{}  on-screen text {:.2}-{:.2} s ({} lines, {} frames read)\n", item.filename, a, b, spans.len(), st.frames_read);
-            for s in st.spans_within(a, b).iter().take(200) {
+            let within = st.spans_within(a, b);
+            // The summary: what stayed up a second or more, or reads as a
+            // heading — short, mostly letters, read with confidence — the
+            // sidebar and the menu bar once each; not every line of body
+            // text in every settings page.
+            let heading_like = |s: &klipp_analysis::screentext::TextSpan| s.confidence >= 0.85 && s.text.split_whitespace().count() <= 6 && s.text.chars().filter(|c| c.is_alphabetic()).count() * 10 >= s.text.chars().count() * 7;
+            let chosen: Vec<&klipp_analysis::screentext::TextSpan> = if all { within.clone() } else { within.iter().copied().filter(|s| s.end_secs - s.start_secs >= 1.0 || heading_like(s)).take(80).collect() };
+            let spans: Vec<serde_json::Value> = chosen.iter().map(|s| json!({ "text": s.text, "start_secs": s.start_secs, "end_secs": s.end_secs, "x": s.x, "y": s.y, "w": s.w, "h": s.h, "confidence": s.confidence })).collect();
+            let mut text = format!("{}  on-screen text {:.2}-{:.2} s ({} of {} lines{}, {} frames read)\n", item.filename, a, b, chosen.len(), within.len(), if all || chosen.len() == within.len() { "" } else { "; all true for every line" }, st.frames_read);
+            for s in chosen.iter().take(if all { 400 } else { 80 }) {
                 text.push_str(&format!("[{:.2}-{:.2}] ({:.2},{:.2}) {}\n", s.start_secs, s.end_secs, s.x, s.y, s.text));
             }
             for s in st.sensitive.iter().filter(|s| s.end_secs > a && s.start_secs < b) {
@@ -2286,8 +2293,15 @@ reference:   {}",
             } else {
                 format!("{filename}: {:.0} BPM, match {:.0}%, {} beats over the read. Cut or place on a beat time.", b.bpm, b.confidence * 100.0, b.beat_times.len())
             };
-            let beats: Vec<f64> = b.beat_times.iter().take(500).copied().collect();
-            Ok(json!({ "text": text, "media_id": media_id, "bpm": b.bpm, "confidence": b.confidence, "beat_times": beats, "next": "Place or trim spoken and B-roll cuts to a beat time for a musical rhythm. style_profile reads a whole reference at once." }))
+            // The grid, not the list: the first beat and the interval say
+            // where every beat is, and a few are given to check the drift.
+            let first = b.beat_times.first().copied().unwrap_or(0.0);
+            let interval: f64 = if b.bpm > 0.0 { 60.0 / b.bpm as f64 } else { 0.0 };
+            let first_beats: Vec<f64> = b.beat_times.iter().take(32).map(|t| (t * 1000.0).round() / 1000.0).collect();
+            let last = b.beat_times.last().copied().unwrap_or(first);
+            let drift = if b.beat_times.len() > 1 && interval > 0.0 { last - (first + interval * (b.beat_times.len() - 1) as f64) } else { 0.0 };
+            let text = format!("{text}\nFirst beat at {first:.3} s, then every {interval:.4} s ({:.1} s a bar of four); beat n = {first:.3} + n × {interval:.4}, drifting {drift:+.2} s by the end of the read. The first {} beats: {}", interval * 4.0, first_beats.len(), first_beats.iter().map(|t| format!("{t:.2}")).collect::<Vec<_>>().join(" "));
+            Ok(json!({ "text": text, "media_id": media_id, "bpm": b.bpm, "confidence": b.confidence, "first_beat_secs": first, "beat_interval_secs": interval, "bar_secs": interval * 4.0, "beats_read": b.beat_times.len(), "drift_secs": drift, "first_beats": first_beats, "next": "Cut on beat n = first + n × interval; a shot of two bars is 8 beats. style_profile reads a whole reference at once." }))
         }
 
         ControlCommand::StyleProfile { media_id } => {
@@ -2635,6 +2649,10 @@ reference:   {}",
                 let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
                 let lacking: Vec<String> = pool
                     .all()
+                    // Only what this project has analysed: a transcript in
+                    // the cache from another day is re-made when the item
+                    // is analysed here, and is nothing to warn about yet.
+                    .filter(|m| klipp_analysis::service::status(m.id).is_some_and(|s| matches!(s.state, klipp_analysis::service::State::Done)))
                     .filter_map(|m| klipp_analysis::report::MediaAnalysis::load(&m.path).transcript.map(|t| (m.filename.clone(), t.vocabulary)))
                     .filter(|(_, had)| klipp_analysis::transcript::lacks_spellings(had, &new_spellings))
                     .map(|(f, _)| f)
@@ -2695,6 +2713,11 @@ reference:   {}",
             // Sound faults: wind, rumble, hum, hiss, from the analysis bands.
             let mut audio_findings: Vec<(f64, String, String, String)> = Vec::new();
             for (path, name, at) in &audio_media {
+                // A library track or effect is what it is: its low end is
+                // not a hum to clean.
+                if klipp_analysis::is_licensed_audio(path) {
+                    continue;
+                }
                 if let Some(au) = klipp_analysis::report::MediaAnalysis::load(path).audio {
                     for (what, fix) in au.faults() {
                         audio_findings.push((*at, name.clone(), what, fix));

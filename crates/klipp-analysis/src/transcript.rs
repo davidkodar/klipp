@@ -204,6 +204,34 @@ pub fn ensure_model(download: bool) -> Result<(&'static str, std::path::PathBuf)
     Ok((MODEL_ID, path))
 }
 
+/// The spans of segments that are a model's hallucination: one text
+/// (letters only, case aside) said by more than a third of the
+/// segments when there are at least four, or three or more in a row.
+/// Real speech does not repeat a sentence like that; music under a
+/// speech model does.
+pub fn hallucinated_spans(segments: &[Segment]) -> Vec<(f64, f64)> {
+    let key = |s: &Segment| plain(&s.text);
+    let mut counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    for s in segments {
+        *counts.entry(key(s)).or_default() += 1;
+    }
+    let mut out = Vec::new();
+    for (i, s) in segments.iter().enumerate() {
+        let k = key(s);
+        if k.is_empty() {
+            continue;
+        }
+        let dominant = counts[&k] >= 4 && counts[&k] * 2 >= segments.len();
+        let run = (i >= 2 && key(&segments[i - 1]) == k && key(&segments[i - 2]) == k)
+            || (i + 2 < segments.len() && key(&segments[i + 1]) == k && key(&segments[i + 2]) == k)
+            || (i >= 1 && i + 1 < segments.len() && key(&segments[i - 1]) == k && key(&segments[i + 1]) == k);
+        if dominant || run {
+            out.push((s.start_secs, s.end_secs));
+        }
+    }
+    out
+}
+
 /// Letters and digits, lower case: what two spellings of a name share.
 fn plain(s: &str) -> String {
     s.chars().filter(|c| c.is_alphanumeric()).flat_map(|c| c.to_lowercase()).collect()
@@ -332,7 +360,9 @@ impl crate::Analyser for TranscriptAnalyser {
         VERSION
     }
     fn wants(&self, item: &klipp_media::MediaItem) -> bool {
-        item.has_audio && item.duration.to_secs_f64() > 0.0 && model_path().is_some()
+        // A library track or effect has no speech; a model given one
+        // hallucinates a sentence and repeats it for the whole file.
+        item.has_audio && item.duration.to_secs_f64() > 0.0 && model_path().is_some() && !crate::is_licensed_audio(&item.path)
     }
     /// Made by a lesser model than the one installed now, or with
     /// another list of how things are spelt.
@@ -463,6 +493,15 @@ fn transcribe(model_id: &str, model: &std::path::Path, audio: &[f32], duration_s
             let (t0, t1) = if d.t_dtw >= 0 { (d.t_dtw as f64 / 100.0, f64::NAN) } else { (d.t0 as f64 / 100.0, d.t1 as f64 / 100.0) };
             tokens.push(Token { text, t0, t1, p: d.p });
         }
+    }
+    // Music or noise makes the model repeat one sentence for the whole
+    // file; those segments are not speech and are dropped with their
+    // tokens.
+    let dropped = hallucinated_spans(&segments);
+    if !dropped.is_empty() {
+        tracing::info!("transcript: {} repeated segments dropped as hallucination", dropped.len());
+        tokens.retain(|t| !dropped.iter().any(|(a, b)| t.t0 >= *a - 0.01 && t.t0 < *b + 0.01));
+        segments.retain(|s| !dropped.iter().any(|(a, b)| (s.start_secs - *a).abs() < 1e-6 && (s.end_secs - *b).abs() < 1e-6));
     }
     settle_token_ends(&mut tokens, &segments);
     let spoken = group_words(&tokens);
@@ -666,5 +705,17 @@ mod tests {
         let t = Transcript { segments: vec![Segment { start_secs: 0.0, end_secs: 1.0, text: "Hello world.".into() }], words: w, ..Default::default() };
         assert_eq!(t.search("WORLD").len(), 1);
         assert_eq!(t.words_within(0.0, 0.25).len(), 1);
+    }
+
+    #[test]
+    fn a_sentence_repeated_across_a_file_is_a_hallucination() {
+        let seg = |a: f64, t: &str| Segment { start_secs: a, end_secs: a + 2.0, text: t.into() };
+        let music: Vec<Segment> = (0..10).map(|i| seg(i as f64 * 2.0, if i == 3 { "Inc. Rep seb" } else { "I'm not sure if you're a fan" })).collect();
+        let dropped = hallucinated_spans(&music);
+        assert_eq!(dropped.len(), 9, "{dropped:?}");
+        let talk = vec![seg(0.0, "Hello"), seg(2.0, "This is a talk"), seg(4.0, "about files"), seg(6.0, "Hello"), seg(8.0, "and folders")];
+        assert!(hallucinated_spans(&talk).is_empty());
+        let stuck = vec![seg(0.0, "One"), seg(2.0, "Two"), seg(4.0, "Two"), seg(6.0, "Two"), seg(8.0, "Three"), seg(10.0, "Four"), seg(12.0, "Five"), seg(14.0, "Six")];
+        assert_eq!(hallucinated_spans(&stuck).len(), 3);
     }
 }

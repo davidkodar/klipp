@@ -9,7 +9,7 @@
 use serde::{Deserialize, Serialize};
 
 pub const ID: &str = "screentext";
-pub const VERSION: u32 = 5;
+pub const VERSION: u32 = 6;
 pub const DET_MODEL_ID: &str = "ppocr_en_det_v3";
 pub const REC_MODEL_ID: &str = "ppocr_en_rec_v4";
 pub const MODEL_IDS: [&str; 2] = [DET_MODEL_ID, REC_MODEL_ID];
@@ -284,10 +284,17 @@ pub fn sensitive_in(text: &str) -> Option<(&'static str, String)> {
         let body_ok = t.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '+' | '/' | '=' | '.'));
         let digits = t.chars().filter(|c| c.is_ascii_digit()).count();
         let letters = t.chars().filter(|c| c.is_ascii_alphabetic()).count();
-        if body_ok && ((known_prefix && t.len() >= 16) || (t.len() >= 28 && digits >= 4 && letters >= 6 && !t.contains('.'))) {
-            return Some(("key", mask(t)));
-        }
-        if t.len() >= 32 && t.chars().all(|c| c.is_ascii_hexdigit()) {
+        // A file name is not a key: a hash with an extension after it, or
+        // a hash-named photo in a list, is what a file manager shows.
+        let has_extension = t.rsplit_once('.').is_some_and(|(stem, ext)| !stem.is_empty() && (2..=5).contains(&ext.len()) && ext.chars().all(|c| c.is_ascii_alphanumeric()));
+        let pure_hex = t.chars().all(|c| c.is_ascii_hexdigit());
+        if pure_hex {
+            // A hash: a 40- or 64-digit one is a token or a commit; a 32-digit
+            // one is what photos and caches are named.
+            if t.len() >= 40 && !has_extension {
+                return Some(("key", mask(t)));
+            }
+        } else if body_ok && !has_extension && ((known_prefix && t.len() >= 16) || (t.len() >= 28 && digits >= 4 && letters >= 6 && !t.contains('.'))) {
             return Some(("key", mask(t)));
         }
     }
@@ -297,7 +304,12 @@ pub fn sensitive_in(text: &str) -> Option<(&'static str, String)> {
         if matches!(label.as_str(), "password" | "passwd" | "pwd" | "secret" | "token" | "api_key" | "apikey" | "api-key") {
             let value = tokens.get(k + 1).filter(|v| !matches!(**v, ":" | "=")).or_else(|| tokens.get(k + 2));
             if let Some(v) = value {
-                if v.len() >= 4 && !v.chars().all(|c| c == '*' || c == '•') {
+                // The value has to look like a secret, not the next word of
+                // a sentence: digits or symbols in it, or long and mixed case.
+                let masked_out = v.chars().all(|c| c == '*' || c == '•');
+                let secret_like = v.chars().any(|c| c.is_ascii_digit() || (!c.is_alphanumeric() && c != '\'' ))
+                    || (v.len() >= 12 && v.chars().any(|c| c.is_uppercase()) && v.chars().any(|c| c.is_lowercase()));
+                if v.len() >= 4 && !masked_out && secret_like {
                     return Some(("credential", mask(v)));
                 }
             }
@@ -530,9 +542,12 @@ mod tests {
         assert!(masked.starts_with("ghp") && masked.ends_with("4a") && masked.contains('…'), "{masked}");
         assert_eq!(sensitive_in("password: hunter22").unwrap(), ("credential", "hun…22".into()));
         assert_eq!(sensitive_in("Card 4111 1111 1111 1111").unwrap().0, "card");
-        for plain in ["File Edit View Help", "Search & Filtering", "password: ********", "version 2.4.1-beta.3", "https://example.com/docs"] {
+        for plain in ["File Edit View Help", "Search & Filtering", "password: ********", "version 2.4.1-beta.3", "https://example.com/docs",
+            "open Strata with the password prompt instead of udiskie's dialog", "b52d86f6e1a24c7f9d3e0b1a2c3d4e5f.jpg", "3f2a9c8b1d7e4f6a5b0c9d8e7f6a5b4c", "token manager"] {
             assert!(sensitive_in(plain).is_none(), "{plain}");
         }
+        assert_eq!(sensitive_in("password: Tr0ub4dor&3").unwrap().0, "credential");
+        assert_eq!(sensitive_in("3f2a9c8b1d7e4f6a5b0c9d8e7f6a5b4c3f2a9c8b").unwrap().0, "key");
     }
 
     #[test]

@@ -168,6 +168,9 @@ pub enum ControlCommand {
         from_secs: Option<f64>,
         #[serde(default)]
         to_secs: Option<f64>,
+        /// Every line read, not the summary of what mattered.
+        #[serde(default)]
+        all: bool,
     },
     /// Where on-screen text matching `query` was shown, across every
     /// media item.

@@ -45,6 +45,11 @@ pub struct AudioEnvelope {
     /// RMS above 7 kHz — hiss and air live here.
     #[serde(default)]
     pub high_db: Option<f32>,
+    /// When the sound is loudest, in seconds of the file (the peak of
+    /// the momentary loudness): where a riser hits, where a stinger
+    /// lands. Place that on the cut.
+    #[serde(default)]
+    pub loudest_secs: Option<f64>,
 }
 
 impl AudioEnvelope {
@@ -117,7 +122,17 @@ pub fn parse(stderr: &str, duration_secs: f64) -> AudioEnvelope {
     let mut env = AudioEnvelope { duration_secs, silence_threshold_db: SILENCE_DB, ..Default::default() };
     let mut open: Option<f64> = None;
     let mut in_summary = false;
+    let mut loudest: Option<(f64, f64)> = None;
     for line in stderr.lines() {
+        // The momentary loudness ebur128 prints ten times a second:
+        // "t: 12.3 TARGET:-23 LUFS M: -18.4 S: ..." — the loudest tenth.
+        if line.contains("ebur128") && line.contains(" M:") {
+            if let (Some(t), Some(m)) = (number_after(line, "t:"), number_after(line, "M:")) {
+                if m.is_finite() && loudest.is_none_or(|(_, best)| m > best) {
+                    loudest = Some((t, m));
+                }
+            }
+        }
         if line.contains("silence_start:") {
             open = number_after(line, "silence_start:");
         } else if line.contains("silence_end:") {
@@ -143,6 +158,7 @@ pub fn parse(stderr: &str, duration_secs: f64) -> AudioEnvelope {
             env.silences.push(Span { start_secs: start, end_secs: duration_secs });
         }
     }
+    env.loudest_secs = loudest.map(|(t, _)| t);
     env
 }
 
