@@ -1427,7 +1427,8 @@ fn tool_definitions() -> Vec<Value> {
              json!({ "plan": { "type": "object" } }), vec!["plan"]),
         tool("klipp_approve_edit_plan",
              "Mark the edit plan approved, as one undo step. Call it only after the user has \
-              read the plan and said to build it — never on your own judgement.",
+              read the plan and said to build it — never on your own judgement. The user can \
+              also approve and build it themselves in Klipp's Edit Plan window (Window menu).",
              json!({}), vec![]),
         tool("klipp_build_edit_plan",
              "Build the approved edit plan onto the timeline after whatever is down, as a dry \

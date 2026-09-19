@@ -1041,6 +1041,11 @@ pub struct AppState {
     pub project_notes: String,
     /// Whether the Project Notes window is open.
     pub show_project_notes: bool,
+    /// Whether the Edit Plan window is open.
+    pub show_edit_plan: bool,
+    /// What the Edit Plan window last did or could not do, shown under
+    /// its buttons.
+    pub edit_plan_note: Option<String>,
     /// Mirrored from `prefs.audio.tp_oversample`. Drives the meter
     /// tooltip wording so users know whether they're seeing real
     /// 4× true-peak or sample-hold.
@@ -3621,6 +3626,8 @@ impl Default for AppState {
             show_markers_panel: false,
             show_subtitle_editor: false,
             show_project_notes: false,
+            show_edit_plan: false,
+            edit_plan_note: None,
             tp_oversample: true,
             project_notes: String::new(),
             subtitle_editor: SubtitleEditorState::default(),

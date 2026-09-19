@@ -1233,18 +1233,12 @@ impl KlippApp {
                         refused = Some(format!("the document is at revision {now}, the plan was made at {r}; plan again"));
                     }
                     _ => {
-                        self.state.active_history_mut().begin_batch();
-                        for e in &env.edits {
-                            self.apply_edit_forward(e);
-                            self.state.push_history(e.clone());
-                        }
-                        self.state.active_history_mut().end_batch();
-                        self.state.dirty = true;
-                        self.state.media_usage_cache_dirty = true;
-                        self.sync_sequence_to_engine();
-                        let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
-                        if let Some(label) = &env.label {
-                            tracing::info!("applied plan \"{label}\": {} edits", env.edits.len());
+                        self.apply_edits_as_one(&env.edits, env.label.as_deref().unwrap_or("plan"));
+                        // A plan proposed for the person's approval opens
+                        // where they can read it.
+                        if env.edits.iter().any(|e| matches!(e, EditCommand::SetEditPlan { new: Some(p), .. } if !p.approved)) {
+                            self.state.show_edit_plan = true;
+                            self.state.edit_plan_note = None;
                         }
                     }
                 }
@@ -1275,6 +1269,74 @@ impl KlippApp {
                     }
                 }
                 let _ = ack.send(klipp_document::control::ControlAck { revision: self.state.control_shared.revision(), refused });
+            }
+        }
+    }
+
+    /// A list of recorded edits applied forward as one history entry —
+    /// one undo step — with the document marked changed and the engine
+    /// told. What the control socket's plans go through; the Edit Plan
+    /// window's buttons too.
+    fn apply_edits_as_one(&mut self, edits: &[EditCommand], label: &str) {
+        if edits.is_empty() {
+            return;
+        }
+        self.state.active_history_mut().begin_batch();
+        for e in edits {
+            self.apply_edit_forward(e);
+            self.state.push_history(e.clone());
+        }
+        self.state.active_history_mut().end_batch();
+        self.state.dirty = true;
+        self.state.media_usage_cache_dirty = true;
+        self.sync_sequence_to_engine();
+        let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
+        tracing::info!("applied \"{label}\": {} edits", edits.len());
+    }
+
+    /// What the Edit Plan window asked for: approval recorded, the plan
+    /// built after what is down, or the plan discarded — each one undo step.
+    fn act_on_edit_plan(&mut self, action: crate::panels::edit_plan::PlanAction) {
+        use crate::panels::edit_plan::PlanAction;
+        let Some(plan) = self.state.sequence().edit_plan.clone() else { return };
+        match action {
+            PlanAction::None => {}
+            PlanAction::Approve => {
+                let mut approved = plan.clone();
+                approved.approved = true;
+                self.apply_edits_as_one(&[EditCommand::SetEditPlan { old: Some(Box::new(plan)), new: Some(Box::new(approved)) }], "Approve Edit Plan");
+                self.state.edit_plan_note = Some("Approved. Build places it after whatever is on the timeline.".into());
+            }
+            PlanAction::Discard => {
+                self.apply_edits_as_one(&[EditCommand::SetEditPlan { old: Some(Box::new(plan)), new: None }], "Discard Edit Plan");
+                self.state.edit_plan_note = None;
+            }
+            PlanAction::Build => {
+                if !plan.approved {
+                    self.state.edit_plan_note = Some("Approve the plan first.".into());
+                    return;
+                }
+                let (edits, summary) = {
+                    let seq = self.state.sequence();
+                    let pool = &self.state.media_pool;
+                    if let Err(e) = klipp_document::edit_plan::validate(&plan, pool, seq.brief.as_ref()) {
+                        self.state.edit_plan_note = Some(format!("The plan no longer builds: {e}"));
+                        return;
+                    }
+                    let ops = klipp_document::edit_plan::to_ops(&plan, seq, pool, seq.brief.as_ref());
+                    match klipp_document::ops::resolve_with(seq, pool, &ops, &klipp_document::ops::NoTranscripts) {
+                        Ok(resolved) => {
+                            let edits: Vec<EditCommand> = resolved.steps.iter().map(|s| s.edit.clone()).collect();
+                            (edits, format!("Built: {} steps, the timeline now runs {:.1} s.", resolved.steps.len(), resolved.duration_secs))
+                        }
+                        Err(r) => {
+                            self.state.edit_plan_note = Some(format!("Step {} could not be built: {}. {}", r.step + 1, r.why, r.hint));
+                            return;
+                        }
+                    }
+                };
+                self.apply_edits_as_one(&edits, "Build Edit Plan");
+                self.state.edit_plan_note = Some(summary);
             }
         }
     }
@@ -26530,6 +26592,14 @@ impl eframe::App for KlippApp {
                 &mut open,
             );
             self.state.show_project_notes = open;
+        }
+
+        // Edit Plan window: the paper edit awaiting the person's word.
+        if self.state.show_edit_plan {
+            let mut open = self.state.show_edit_plan;
+            let action = crate::panels::edit_plan::show_edit_plan(ctx, &self.state, &self.theme, &mut open);
+            self.state.show_edit_plan = open;
+            self.act_on_edit_plan(action);
         }
 
         // Command palette (Ctrl+K). Entry list comes from

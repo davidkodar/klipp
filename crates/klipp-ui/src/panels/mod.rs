@@ -21,6 +21,7 @@ pub mod markers;
 pub mod new_project_dialog;
 pub mod project_info;
 pub mod project_notes;
+pub mod edit_plan;
 pub mod file_info;
 pub mod framerate_mismatch_dialog;
 pub mod preferences;
