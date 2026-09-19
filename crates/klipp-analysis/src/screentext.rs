@@ -9,7 +9,7 @@
 use serde::{Deserialize, Serialize};
 
 pub const ID: &str = "screentext";
-pub const VERSION: u32 = 6;
+pub const VERSION: u32 = 7;
 pub const DET_MODEL_ID: &str = "ppocr_en_det_v3";
 pub const REC_MODEL_ID: &str = "ppocr_en_rec_v4";
 pub const MODEL_IDS: [&str; 2] = [DET_MODEL_ID, REC_MODEL_ID];
@@ -270,7 +270,8 @@ pub fn sensitive_in(text: &str) -> Option<(&'static str, String)> {
         let tail: String = s.chars().skip(n - 2).collect();
         format!("{head}…{tail}")
     };
-    let tokens: Vec<&str> = text.split(|c: char| c.is_whitespace() || matches!(c, ',' | ';' | '"' | '\'' | '(' | ')' | '[' | ']' | '{' | '}' | '<' | '>')).filter(|t| !t.is_empty()).collect();
+    // `=` separates too: "OPENAI_API_KEY=sk-…" is a name and a key.
+    let tokens: Vec<&str> = text.split(|c: char| c.is_whitespace() || matches!(c, ',' | ';' | '"' | '\'' | '(' | ')' | '[' | ']' | '{' | '}' | '<' | '>' | '=')).filter(|t| !t.is_empty()).collect();
     let lower = text.to_lowercase();
     for t in tokens.iter() {
         if let Some(at) = t.find('@') {
@@ -288,13 +289,22 @@ pub fn sensitive_in(text: &str) -> Option<(&'static str, String)> {
         // a hash-named photo in a list, is what a file manager shows.
         let has_extension = t.rsplit_once('.').is_some_and(|(stem, ext)| !stem.is_empty() && (2..=5).contains(&ext.len()) && ext.chars().all(|c| c.is_ascii_alphanumeric()));
         let pure_hex = t.chars().all(|c| c.is_ascii_hexdigit());
+        // A file manager's names: a UUID (hex groups joined by hyphens), a
+        // slug-with-a-number ("himmelstraeume-bachalpsee-7572"), a name cut
+        // short with dots. A key interleaves letters and digits many times
+        // and has no hyphens unless it begins with a known prefix.
+        let hyphen_groups_hex = t.contains('-') && t.split('-').all(|g| !g.is_empty() && g.chars().all(|c| c.is_ascii_hexdigit()));
+        let truncated = t.ends_with('.') || t.ends_with('…');
+        let runs = t.chars().map(|c| c.is_ascii_digit()).fold((0usize, None::<bool>), |(n, prev), d| (if prev.is_some_and(|p| p != d) { n + 1 } else { n }, Some(d))).0;
         if pure_hex {
             // A hash: a 40- or 64-digit one is a token or a commit; a 32-digit
             // one is what photos and caches are named.
             if t.len() >= 40 && !has_extension {
                 return Some(("key", mask(t)));
             }
-        } else if body_ok && !has_extension && ((known_prefix && t.len() >= 16) || (t.len() >= 28 && digits >= 4 && letters >= 6 && !t.contains('.'))) {
+        } else if body_ok && !has_extension && !truncated && !hyphen_groups_hex
+            && ((known_prefix && t.len() >= 16) || (t.len() >= 28 && digits >= 4 && letters >= 6 && !t.contains('.') && !t.contains('-') && runs >= 4))
+        {
             return Some(("key", mask(t)));
         }
     }
@@ -543,10 +553,13 @@ mod tests {
         assert_eq!(sensitive_in("password: hunter22").unwrap(), ("credential", "hun…22".into()));
         assert_eq!(sensitive_in("Card 4111 1111 1111 1111").unwrap().0, "card");
         for plain in ["File Edit View Help", "Search & Filtering", "password: ********", "version 2.4.1-beta.3", "https://example.com/docs",
-            "open Strata with the password prompt instead of udiskie's dialog", "b52d86f6e1a24c7f9d3e0b1a2c3d4e5f.jpg", "3f2a9c8b1d7e4f6a5b0c9d8e7f6a5b4c", "token manager"] {
+            "open Strata with the password prompt instead of udiskie's dialog", "b52d86f6e1a24c7f9d3e0b1a2c3d4e5f.jpg", "3f2a9c8b1d7e4f6a5b0c9d8e7f6a5b4c", "token manager",
+            "b52464F7-937145b4-9a80-a7d7eb.", "mmelstraeume-bachaLpsee-7572", "immelstraeunebachalpsee7572.", "b1f1a62-4ce-423-8318-07857c", "immelstraeunebachalpsee7572"] {
             assert!(sensitive_in(plain).is_none(), "{plain}");
         }
         assert_eq!(sensitive_in("password: Tr0ub4dor&3").unwrap().0, "credential");
+        assert_eq!(sensitive_in("AKIAIOSFODNN7EXAMPLE").unwrap().0, "key");
+        assert_eq!(sensitive_in("k9Xz2Qm7pL4vN8bR1tY6wE3uH5sA0dF2gJ").unwrap().0, "key");
         assert_eq!(sensitive_in("3f2a9c8b1d7e4f6a5b0c9d8e7f6a5b4c3f2a9c8b").unwrap().0, "key");
     }
 
