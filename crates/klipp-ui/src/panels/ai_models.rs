@@ -687,6 +687,7 @@ pub fn show_ai_models_dialog(ctx: &egui::Context, state: &mut AppState, theme: &
                         (ModelKind::Transcriber, "TRANSCRIBER"),
                         (ModelKind::TextDetector, "SCREEN TEXT (OCR)"),
                         (ModelKind::TextRecognizer, "SCREEN TEXT (OCR)"),
+                        (ModelKind::Voice, "NARRATION (VOICE)"),
                     ];
                     for (kind, header) in kinds_in_order {
                         let entries: Vec<&ModelEntry> = visible_entries
@@ -2808,6 +2809,7 @@ fn kind_label(kind: klipp_ml::manifest::ModelKind) -> &'static str {
         ModelKind::Transcriber => "Transcriber",
         ModelKind::TextDetector => "Text Detector (OCR)",
         ModelKind::TextRecognizer => "Text Recognizer (OCR)",
+        ModelKind::Voice => "Narration Voice",
     }
 }
 

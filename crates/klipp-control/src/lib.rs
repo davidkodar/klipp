@@ -1067,6 +1067,68 @@ fn media_path_and_duration(ctx: &ControlContext, media_id: &str) -> Result<(std:
 }
 
 /// An absolute output path the caller gave, or one in the temp dir.
+/// The pool item for a file just imported, waited for: the import is
+/// the app's to finish, and it answers before the item is in the pool.
+fn imported_id(ctx: &ControlContext, path: &std::path::Path) -> Option<String> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        if let Ok(pool) = ctx.media_pool.read() {
+            if let Some(item) = pool.find_by_path(path) {
+                return Some(item.id.0.to_string());
+            }
+        }
+        if std::time::Instant::now() >= deadline {
+            return None;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+}
+
+/// A program on the PATH, if it is there.
+fn which(name: &str) -> Option<std::path::PathBuf> {
+    std::env::var_os("PATH").and_then(|paths| std::env::split_paths(&paths).map(|d| d.join(name)).find(|p| p.is_file()))
+}
+
+/// A short hash of a text, for a file name that follows its words.
+fn seahash(text: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    text.hash(&mut h);
+    h.finish()
+}
+
+/// Seconds since the epoch, for a file name.
+fn chrono_stamp() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
+}
+
+/// The voice's model and settings files from the model cache, downloaded
+/// when asked and not there: the voice `id` in the manifest and its
+/// `<id>_config` companion.
+fn voice_files(voice: &str, download: bool) -> Result<(std::path::PathBuf, std::path::PathBuf), String> {
+    let manifest = klipp_ml::manifest::load_effective().map_err(|e| format!("model manifest: {e:?}"))?;
+    let cache = klipp_ml::cache::ModelCache::open().map_err(|e| format!("model cache: {e:?}"))?;
+    let ids = [voice.to_string(), format!("{voice}_config")];
+    let mut paths = Vec::new();
+    for id in &ids {
+        let entry = manifest.get(id).ok_or_else(|| {
+            let voices: Vec<&str> = manifest.models.iter().filter(|e| e.kind == klipp_ml::manifest::ModelKind::Voice && !e.id.ends_with("_config")).map(|e| e.id.as_str()).collect();
+            format!("no voice {id} in the manifest; the voices are {}", voices.join(", "))
+        })?;
+        let p = cache.path_for(entry);
+        if !p.is_file() {
+            if !download {
+                return Err(format!("the voice {voice} is not downloaded ({} MB); ask with download_models true, or download it in Preferences", entry.size_bytes / 1_000_000));
+            }
+            let cancel = std::sync::atomic::AtomicBool::new(false);
+            let mut progress = klipp_ml::download::NoOpProgress;
+            klipp_ml::download::download_to_cache(&cache, entry, &mut progress, &cancel).map_err(|e| format!("download of {id}: {e:?}"))?;
+        }
+        paths.push(cache.path_for(entry));
+    }
+    Ok((paths.remove(0), paths.remove(0)))
+}
+
 fn temp_output(path: Option<String>, stem: &str, ext: &str) -> Result<std::path::PathBuf, String> {
     match path {
         Some(p) => {
@@ -1528,6 +1590,184 @@ fn handle(
             v["text"] = json!(format!("{}\n{}", summary.join("; "), plan.text()));
             v["placements"] = json!(summary);
             v["steps_resolved"] = json!(plan.steps.len());
+            Ok(v)
+        }
+
+        ControlCommand::Review { max_width, frames, cols, path } => {
+            if in_batch {
+                return Err("review renders and reads; send it on its own".into());
+            }
+            let sheet_out = temp_output(path, "klipp-review", "jpg")?;
+            let draft = sheet_out.with_extension("mp4");
+            let (w, h, duration) = {
+                let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
+                let (sw, sh) = (seq.resolution.width.max(16), seq.resolution.height.max(9));
+                let w = max_width.unwrap_or(640).clamp(160, 1920);
+                let h = ((w as f64 * sh as f64 / sw as f64 / 2.0).round() as u32 * 2).max(2);
+                (w, h, seq.total_duration().to_secs_f64())
+            };
+            if duration <= 0.0 {
+                return Err("the timeline is empty; nothing to review".into());
+            }
+            let _ = std::fs::remove_file(&draft);
+            handle(ctx, ControlCommand::Export { path: draft.to_string_lossy().to_string(), width: Some(w), height: Some(h), fps: None, crf: Some(30), target_lufs: None, burn_captions: None }, &mut None)?;
+            // The draft, waited for: a review is the picture as rendered.
+            let started = std::time::Instant::now();
+            let job = loop {
+                let jobs = ctx.shared.exports.lock().map_err(|_| "export status lock poisoned")?;
+                let job = jobs.iter().find(|j| j.path == draft).cloned();
+                drop(jobs);
+                match job {
+                    Some(j) if j.status == "complete" => break j,
+                    Some(j) if j.status == "failed" || j.status == "cancelled" => return Err(format!("the draft render {}: {}", j.status, j.error.unwrap_or_default())),
+                    _ => {}
+                }
+                if started.elapsed() > std::time::Duration::from_secs(600) {
+                    return Err("the draft render did not finish within ten minutes; export_status says where it is".into());
+                }
+                std::thread::sleep(std::time::Duration::from_millis(200));
+            };
+            let frames = frames.unwrap_or(((duration / 2.0).ceil() as u32).clamp(8, 48));
+            let sheet = klipp_analysis::sheet::contact_sheet(std::path::Path::new("ffmpeg"), &draft, 0.0, duration, frames, cols.unwrap_or(6), 320, &sheet_out)?;
+            let check = handle(ctx, ControlCommand::Check { color: true }, &mut None)?;
+            Ok(json!({
+                "draft": draft,
+                "sheet": sheet,
+                "render_secs": started.elapsed().as_secs_f64(),
+                "loudness": job.loudness,
+                "check": check,
+                "text": format!("Draft rendered in {:.1} s at {w}x{h}; {frames} frames on the sheet at {}. {}", started.elapsed().as_secs_f64(), sheet_out.display(), check["text"].as_str().unwrap_or("")),
+                "next": "Read the sheet for the shape of the cut, and the check for what to fix; frame_at for any frame that needs a closer look.",
+            }))
+        }
+
+        ControlCommand::Narrate { text, at_secs, voice, download_models, apply, path } => {
+            if in_batch {
+                return Err("narrate synthesises and imports; send it on its own".into());
+            }
+            let text = text.trim().to_string();
+            if text.is_empty() {
+                return Err("narrate needs the words to say".into());
+            }
+            let piper = std::env::var("KLIPP_PIPER").ok().map(std::path::PathBuf::from).filter(|p| p.is_file()).or_else(|| which("piper")).or_else(|| which("piper-tts"))
+                .ok_or("the piper program is not installed; on Arch: pacman -S piper-tts, elsewhere pip install piper-tts, or set KLIPP_PIPER to the program")?;
+            let voice = voice.unwrap_or_else(|| "piper_en_us_lessac_medium".into());
+            let (model, config) = voice_files(&voice, download_models)?;
+            let out = match path {
+                Some(p) => std::path::PathBuf::from(p),
+                None => {
+                    let dir = klipp_audio_search::download_dir().join("narration");
+                    std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+                    let stem: String = text.chars().filter(|c| c.is_alphanumeric() || *c == ' ').take(40).collect::<String>().trim().replace(' ', "-").to_lowercase();
+                    dir.join(format!("{}-{:x}.wav", if stem.is_empty() { "narration".into() } else { stem }, seahash(&text)))
+                }
+            };
+            let t = std::time::Instant::now();
+            let mut child = std::process::Command::new(&piper)
+                .arg("--model").arg(&model).arg("--config").arg(&config).arg("--output_file").arg(&out)
+                .stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::piped())
+                .spawn().map_err(|e| format!("could not run {}: {e}", piper.display()))?;
+            {
+                use std::io::Write as _;
+                let mut stdin = child.stdin.take().ok_or("piper's stdin")?;
+                stdin.write_all(text.as_bytes()).and_then(|_| stdin.write_all(b"\n")).map_err(|e| format!("writing to piper: {e}"))?;
+            }
+            let done = child.wait_with_output().map_err(|e| format!("piper: {e}"))?;
+            if !done.status.success() || !out.is_file() {
+                return Err(format!("piper failed ({}): {}", done.status, String::from_utf8_lossy(&done.stderr).trim()));
+            }
+            let mut v = handle(ctx, ControlCommand::ImportMedia { path: out.to_string_lossy().to_string() }, &mut None)?;
+            let media_id = imported_id(ctx, &out).ok_or("the narration was made but did not reach the media pool")?;
+            v["media_id"] = json!(media_id);
+            v["path"] = json!(out);
+            v["synth_secs"] = json!(t.elapsed().as_secs_f64());
+            if apply {
+                use klipp_document::ops::{Anchor, ClipRef, Op, TrackRef};
+                let at = at_secs.unwrap_or(0.0).max(0.0);
+                let ops: Vec<Op> = {
+                    let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
+                    let mut ops = Vec::new();
+                    let track = match seq.tracks.iter().position(|t| t.kind == klipp_timeline::TrackKind::Audio && t.name.eq_ignore_ascii_case("voice")) {
+                        Some(ti) => ti,
+                        None => {
+                            ops.push(Op::AddTrack { kind: "audio".into(), name: Some("Voice".into()) });
+                            seq.tracks.len()
+                        }
+                    };
+                    ops.push(Op::Place { media_id: klipp_core::MediaId(media_id.parse().map_err(|e| format!("media id: {e}"))?), track: TrackRef::Index(track), at: Anchor::Secs(at), source_in: None, source_out: None, insert: false, with_audio: true });
+                    ops.push(Op::Role { clip_id: ClipRef::At { track, secs: at + 0.05 }, role: "dialogue".into() });
+                    ops
+                };
+                let (plan, revision) = resolve_plan(ctx, &ops)?;
+                let edits: Vec<klipp_document::history::EditCommand> = plan.steps.iter().map(|s| s.edit.clone()).collect();
+                let placed = send_full_envelope(ctx, Vec::new(), edits, true, Some(revision), Some("Narrate".into()))?;
+                v["placed"] = placed;
+                v["text"] = json!(format!("Narration made and placed at {at:.2} s on the Voice track as dialogue: {}", plan.text()));
+                v["next"] = json!("Duck the music under it (duck), and transcript reads the words back with their times for cutting to them.");
+            } else {
+                v["text"] = json!(format!("Narration made and imported as {media_id}: {}", out.display()));
+                v["next"] = json!("Place it (place on an audio track, role dialogue), or run narrate again with apply true and at_secs.");
+            }
+            Ok(v)
+        }
+
+        ControlCommand::Record { secs, target, fps, path, import } => {
+            if in_batch {
+                return Err("record takes the time it records; send it on its own".into());
+            }
+            if !secs.is_finite() || !(0.5..=600.0).contains(&secs) {
+                return Err("secs is how long to record, half a second to ten minutes".into());
+            }
+            let out = match path {
+                Some(p) => std::path::PathBuf::from(p),
+                None => {
+                    let dir = klipp_audio_search::download_dir().parent().map(|p| p.join("recordings")).unwrap_or_else(std::env::temp_dir);
+                    std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+                    dir.join(format!("klipp-recording-{}.mp4", chrono_stamp()))
+                }
+            };
+            let target = target.unwrap_or_else(|| "focused".into());
+            let fps = fps.unwrap_or(60).clamp(1, 240);
+            let child = if let Some(gsr) = which("gpu-screen-recorder") {
+                let mut c = std::process::Command::new(gsr);
+                if target.contains('+') && target.contains('x') {
+                    c.args(["-w", "region", "-region", &target]);
+                } else {
+                    c.args(["-w", &target]);
+                }
+                c.args(["-f", &fps.to_string(), "-k", "h264", "-q", "high", "-cursor", "yes", "-o"]).arg(&out);
+                c
+            } else if let Some(wfr) = which("wf-recorder") {
+                let mut c = std::process::Command::new(wfr);
+                if target.contains('+') && target.contains('x') {
+                    // wf-recorder wants "X,Y WxH".
+                    let (size, pos) = target.split_once('+').unwrap_or((&target, "0+0"));
+                    c.args(["-g", &format!("{} {}", pos.replace('+', ","), size)]);
+                }
+                c.args(["-r", &fps.to_string(), "-f"]).arg(&out);
+                c
+            } else {
+                return Err("no screen recorder found: install gpu-screen-recorder (or wf-recorder) and it is used".into());
+            }
+            .stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::piped())
+            .spawn().map_err(|e| format!("could not start the recorder: {e}"))?;
+            std::thread::sleep(std::time::Duration::from_secs_f64(secs));
+            #[cfg(unix)]
+            // SAFETY: SIGINT to a child this process spawned; the recorder finishes its file on it.
+            unsafe { libc::kill(child.id() as libc::pid_t, libc::SIGINT); }
+            let done = child.wait_with_output().map_err(|e| format!("the recorder: {e}"))?;
+            if !out.is_file() {
+                return Err(format!("the recorder wrote nothing ({}): {}", done.status, String::from_utf8_lossy(&done.stderr).lines().last().unwrap_or("")));
+            }
+            let mut v = json!({ "path": out, "secs": secs, "target": target });
+            if import.unwrap_or(true) {
+                handle(ctx, ControlCommand::ImportMedia { path: out.to_string_lossy().to_string() }, &mut None)?;
+                v["media_id"] = json!(imported_id(ctx, &out));
+                v["next"] = json!("Recorded and imported; analyze reads it (the beat sheet finds the reveals), then place or plan with it.");
+            } else {
+                v["next"] = json!("Recorded. import_media brings it into the pool.");
+            }
+            v["text"] = json!(format!("Recorded {secs:.1} s of {target} to {}", out.display()));
             Ok(v)
         }
 

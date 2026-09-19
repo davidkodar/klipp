@@ -240,3 +240,33 @@ sources = [
 kind = "text_recognizer"
 runtime = "ort"
 prompts = ""
+
+# ── Narration: a Piper voice (run by the piper program, installed apart) ──
+
+[[model]]
+id = "piper_en_us_lessac_medium"
+display_name = "Piper voice — English (US), Lessac, medium"
+size_bytes = 63201294
+sha256 = "5efe09e69902187827af646e1a6e9d269dee769f9877d17b16b1b46eeaaf019f"
+license = "MIT (Piper) / voice: public domain (Lessac, blizzard 2013)"
+attribution = "rhasspy/piper-voices on HuggingFace, en_US-lessac-medium"
+sources = [
+    { url = "https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/en/en_US/lessac/medium/en_US-lessac-medium.onnx" },
+]
+kind = "voice"
+runtime = "piper"
+prompts = ""
+
+[[model]]
+id = "piper_en_us_lessac_medium_config"
+display_name = "Piper voice — English (US), Lessac, medium (settings)"
+size_bytes = 4885
+sha256 = "efe19c417bed055f2d69908248c6ba650fa135bc868b0e6abb3da181dab690a0"
+license = "MIT (Piper) / voice: public domain (Lessac, blizzard 2013)"
+attribution = "rhasspy/piper-voices on HuggingFace, en_US-lessac-medium"
+sources = [
+    { url = "https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/en/en_US/lessac/medium/en_US-lessac-medium.onnx.json" },
+]
+kind = "voice"
+runtime = "piper"
+prompts = ""

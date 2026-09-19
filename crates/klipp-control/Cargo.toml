@@ -16,7 +16,11 @@ publish = false
 # of the socket. `ControlCommand` is small, stable, and maps *into*
 # AppCommand.
 
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [dependencies]
+klipp-ml = { workspace = true }
 klipp-core = { workspace = true }
 klipp-document = { workspace = true }
 klipp-timeline = { workspace = true }

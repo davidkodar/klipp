@@ -350,6 +350,30 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
             v
         }
         "klipp_auto_redact" => json!({ "method": "auto_redact", "apply": args.get("apply").and_then(|v| v.as_bool()).unwrap_or(false) }),
+        "klipp_review" => json!({
+            "method": "review",
+            "max_width": args.get("max_width").cloned().unwrap_or(serde_json::Value::Null),
+            "frames": args.get("frames").cloned().unwrap_or(serde_json::Value::Null),
+            "cols": args.get("cols").cloned().unwrap_or(serde_json::Value::Null),
+            "path": args.get("path").cloned().unwrap_or(serde_json::Value::Null),
+        }),
+        "klipp_narrate" => json!({
+            "method": "narrate",
+            "text": arg_str(args, "text")?,
+            "at_secs": args.get("at_secs").cloned().unwrap_or(serde_json::Value::Null),
+            "voice": args.get("voice").cloned().unwrap_or(serde_json::Value::Null),
+            "download_models": args.get("download_models").and_then(|v| v.as_bool()).unwrap_or(false),
+            "apply": args.get("apply").and_then(|v| v.as_bool()).unwrap_or(false),
+            "path": args.get("path").cloned().unwrap_or(serde_json::Value::Null),
+        }),
+        "klipp_record" => json!({
+            "method": "record",
+            "secs": args.get("secs").and_then(|v| v.as_f64()).ok_or("missing required argument: secs")?,
+            "target": args.get("target").cloned().unwrap_or(serde_json::Value::Null),
+            "fps": args.get("fps").cloned().unwrap_or(serde_json::Value::Null),
+            "path": args.get("path").cloned().unwrap_or(serde_json::Value::Null),
+            "import": args.get("import").cloned().unwrap_or(serde_json::Value::Null),
+        }),
         "klipp_auto_sfx" => json!({
             "method": "auto_sfx",
             "whoosh": args.get("whoosh").cloned().unwrap_or(serde_json::Value::Null),
@@ -697,7 +721,7 @@ fn content_for(name: &str, result: &Value) -> Result<Vec<Value>, String> {
             return Ok(with_next(out));
         }
     }
-    if name == "klipp_timeline" || name == "klipp_media_analysis" || name == "klipp_plan" || name == "klipp_check" || name == "klipp_brief" || name == "klipp_edit_plan" || name == "klipp_build_edit_plan" || name == "klipp_screen_text" || name == "klipp_auto_redact" || name == "klipp_auto_sfx" || name == "klipp_transcript" || name == "klipp_cut_points" || name == "klipp_selects" || name == "klipp_style_profile" || name == "klipp_looks" || name == "klipp_frame_stats" {
+    if name == "klipp_timeline" || name == "klipp_media_analysis" || name == "klipp_plan" || name == "klipp_check" || name == "klipp_brief" || name == "klipp_edit_plan" || name == "klipp_build_edit_plan" || name == "klipp_screen_text" || name == "klipp_auto_redact" || name == "klipp_auto_sfx" || name == "klipp_review" || name == "klipp_transcript" || name == "klipp_cut_points" || name == "klipp_selects" || name == "klipp_style_profile" || name == "klipp_looks" || name == "klipp_frame_stats" {
         if let Some(text) = result.get("text").and_then(|v| v.as_str()) {
             return Ok(with_next(text.to_string()));
         }
@@ -958,6 +982,30 @@ fn tool_definitions() -> Vec<Value> {
               download_models true.",
              json!({ "media_id": { "type": "string" }, "from_secs": { "type": "number" }, "to_secs": { "type": "number" }, "all": { "type": "boolean", "description": "every line read, not the summary of headings and lines that stayed up" } }),
              vec!["media_id"]),
+        tool("klipp_review",
+             "The cut as an editor scrubs it, in one call: a draft render of the whole timeline \
+              (max_width 640 by default, fast), a contact sheet of the draft (frames tiles in cols \
+              columns, one every couple of seconds), and the check with its colour pass. Read the \
+              sheet image for the shape of the cut — the rhythm, the titles, the cards — and the \
+              check for what to fix; frame_at for a closer look at one frame. Takes as long as the \
+              draft render (seconds to a minute).",
+             json!({ "max_width": { "type": "integer" }, "frames": { "type": "integer" }, "cols": { "type": "integer" }, "path": { "type": "string" } }), vec![]),
+        tool("klipp_narrate",
+             "Narration from text: spoken by a Piper voice (the manifest's piper_en_us_lessac_medium, \
+              63 MB, downloaded only with download_models true or from Preferences) through the \
+              piper program on the machine (pacman -S piper-tts / pip install piper-tts; KLIPP_PIPER \
+              names it otherwise), imported into the pool, and with apply true placed on a Voice \
+              track at at_secs as dialogue. Then duck the music under it and transcript gives the \
+              words with their times. A scratch voice to cut to; replace the file with a recorded \
+              one later.",
+             json!({ "text": { "type": "string" }, "at_secs": { "type": "number" }, "voice": { "type": "string" }, "download_models": { "type": "boolean" }, "apply": { "type": "boolean" }, "path": { "type": "string" } }), vec!["text"]),
+        tool("klipp_record",
+             "Record the screen for secs with the recorder on the machine (gpu-screen-recorder, else \
+              wf-recorder): target \"focused\" (the focused window, the default), \"screen\", a \
+              monitor's name, or a region \"WxH+X+Y\"; fps 60. Imported into the pool unless import \
+              is false, so the footage of the product can be made from here: ask the user to bring \
+              the window up, record, analyze, cut.",
+             json!({ "secs": { "type": "number" }, "target": { "type": "string" }, "fps": { "type": "integer" }, "path": { "type": "string" }, "import": { "type": "boolean" } }), vec!["secs"]),
         tool("klipp_auto_sfx",
              "Sound design from the cut, as one undo step with apply true (a dry run without): \
               a whoosh on every cut of the top picture track (its loudest moment landing on the \

@@ -201,6 +201,54 @@ pub enum ControlCommand {
         #[serde(default)]
         apply: bool,
     },
+    /// The cut as an editor scrubs it: a draft render of the whole
+    /// timeline at `max_width` (640), a contact sheet of it (`frames`
+    /// tiles in `cols` columns), and the check with the colour pass.
+    /// `path` names the sheet; the draft sits beside it.
+    Review {
+        #[serde(default)]
+        max_width: Option<u32>,
+        #[serde(default)]
+        frames: Option<u32>,
+        #[serde(default)]
+        cols: Option<u32>,
+        #[serde(default)]
+        path: Option<String>,
+    },
+    /// Narration: `text` spoken by the `voice` (the manifest's Piper
+    /// voice, downloaded with `download_models`) through the piper
+    /// program, imported, and with `apply` placed on a Voice track at
+    /// `at_secs` as dialogue. Without apply the file is made and
+    /// imported only.
+    Narrate {
+        text: String,
+        #[serde(default)]
+        at_secs: Option<f64>,
+        #[serde(default)]
+        voice: Option<String>,
+        #[serde(default)]
+        download_models: bool,
+        #[serde(default)]
+        apply: bool,
+        #[serde(default)]
+        path: Option<String>,
+    },
+    /// Record the screen for `secs` with the recorder on the machine
+    /// (gpu-screen-recorder, else wf-recorder): `target` "focused"
+    /// (the focused window), "screen", a monitor's name, or a region
+    /// "WxH+X+Y"; `fps` 60. Imported into the pool unless `import` is
+    /// false.
+    Record {
+        secs: f64,
+        #[serde(default)]
+        target: Option<String>,
+        #[serde(default)]
+        fps: Option<u32>,
+        #[serde(default)]
+        path: Option<String>,
+        #[serde(default)]
+        import: Option<bool>,
+    },
     /// Where every requested item stands.
     AnalysisStatus,
     /// What is known about a media item, as text: the shot list, the

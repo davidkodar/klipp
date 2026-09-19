@@ -58,6 +58,8 @@ pub enum ModelKind {
     TextDetector,
     /// What a line of text says (the OCR recogniser).
     TextRecognizer,
+    /// A voice for narration: text to speech.
+    Voice,
 }
 
 /// Which backend crate runs the model. Lets the registry pick the
@@ -84,6 +86,9 @@ pub enum ModelRuntime {
     /// real inference, no network, no weights on disk.
     #[default]
     Stub,
+    /// The `piper` text-to-speech program, run as a separate process
+    /// with the voice file; nothing of it is linked in.
+    Piper,
 }
 
 impl ModelRuntime {
