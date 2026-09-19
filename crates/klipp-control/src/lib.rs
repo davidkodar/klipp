@@ -1067,6 +1067,86 @@ fn media_path_and_duration(ctx: &ControlContext, media_id: &str) -> Result<(std:
 }
 
 /// An absolute output path the caller gave, or one in the temp dir.
+/// The heads of the people in the picture at a timeline second: the top
+/// picture clip there, its file's framing samples nearest the source
+/// second, each person's box cut down to the head.
+fn faces_at(ctx: &ControlContext, secs: f64) -> Vec<[f32; 4]> {
+    let seq = match ctx.sequence.read() { Ok(s) => s, Err(_) => return Vec::new() };
+    let pool = match ctx.media_pool.read() { Ok(p) => p, Err(_) => return Vec::new() };
+    let tc = klipp_core::Timecode::from_secs_f64(secs.max(0.0), seq.fps.rate());
+    let Some((clip, item)) = seq.tracks.iter().filter(|t| t.kind == klipp_timeline::TrackKind::Video && t.visible).find_map(|t| {
+        let (_, c) = t.clip_at_timecode(tc)?;
+        let item = pool.get(&c.media_id()?)?;
+        c.enabled.then_some((c.clone(), item.clone()))
+    }) else { return Vec::new() };
+    let source = clip.source_in.to_secs_f64() + (secs - clip.timeline_in.to_secs_f64()).max(0.0) * clip.speed.max(0.001);
+    let Some(framing) = klipp_analysis::report::MediaAnalysis::load(&item.path).framing else { return Vec::new() };
+    framing.people_at(source, 1.5).map(|s| s.people.iter().map(|p| klipp_color::measure::head_region([p.0, p.1, p.2, p.3])).collect()).unwrap_or_default()
+}
+
+/// The frame at a timeline second, measured: Lab readings and the faces.
+fn measure_at(ctx: &ControlContext, secs: f64, timeout_ms: Option<u64>) -> Result<klipp_color::measure::FrameMeasure, String> {
+    let (data, w, h) = grab_frame_rgba(ctx, secs, timeout_ms)?;
+    let faces = faces_at(ctx, secs);
+    Ok(klipp_color::measure::measure_frame(&data, w, h, &faces))
+}
+
+/// The look a frame is judged against: the brief's, else neutral; a
+/// screen recording (the beat sheet found holds) is judged as one when
+/// the brief names no look.
+fn look_for(ctx: &ControlContext, secs: f64) -> klipp_color::measure::LookTarget {
+    use klipp_color::measure::LookTarget;
+    if let Ok(seq) = ctx.sequence.read() {
+        if let Some(look) = seq.brief.as_ref().and_then(|b| b.look.clone()) {
+            return resolve_look_target(look);
+        }
+        let tc = klipp_core::Timecode::from_secs_f64(secs.max(0.0), seq.fps.rate());
+        if let Ok(pool) = ctx.media_pool.read() {
+            let screen = seq.tracks.iter().filter(|t| t.kind == klipp_timeline::TrackKind::Video).find_map(|t| t.clip_at_timecode(tc)).and_then(|(_, c)| pool.get(&c.media_id()?)).and_then(|it| klipp_analysis::report::MediaAnalysis::load(&it.path).beatsheet).is_some_and(|b| b.has_freeze);
+            if screen {
+                return LookTarget::preset("screencast").unwrap();
+            }
+        }
+    }
+    LookTarget::preset("broadcast_neutral").unwrap()
+}
+
+/// A look given by name alone takes the preset's numbers.
+fn resolve_look_target(look: klipp_color::measure::LookTarget) -> klipp_color::measure::LookTarget {
+    use klipp_color::measure::LookTarget;
+    let bare = look.black_l.is_none() && look.white_l.is_none() && look.mid_l.is_none() && look.contrast_range.is_none() && look.chroma_mean.is_none() && look.cast_a.is_none() && look.skin_hue.is_none();
+    if bare {
+        if let Some(p) = LookTarget::preset(&look.name) {
+            return p;
+        }
+    }
+    look
+}
+
+/// The colour findings of a frame as report entries: (severity, secs, what, hint).
+fn colour_report(m: &klipp_color::measure::FrameMeasure, look: &klipp_color::measure::LookTarget, secs: f64) -> Vec<(String, f64, String, String)> {
+    use klipp_color::measure::Verdict;
+    klipp_color::measure::judge(m, look)
+        .into_iter()
+        .filter(|f| f.verdict != Verdict::Pass)
+        .map(|f| ((if f.verdict == Verdict::Fail { "error" } else { "warning" }).to_string(), secs, format!("{} [{}]", f.what, f.rule), f.fix.to_string()))
+        .collect()
+}
+
+/// The clip's Corrector knobs as they are: what a grade step adds to.
+fn corrector_now(clip: &klipp_timeline::Clip) -> klipp_color::measure::PrimaryStep {
+    let mut s = klipp_color::measure::PrimaryStep { saturation: 1.0, ..Default::default() };
+    if let Some(n) = clip.node_graph.nodes.iter().find(|n| n.kind == klipp_nodes::NodeKind::Corrector) {
+        s.exposure = n.params.exposure.unwrap_or(0.0);
+        s.lift = n.params.lift_master.unwrap_or(0.0);
+        s.gain = n.params.gain_master.unwrap_or(0.0);
+        s.temperature = n.params.temperature.unwrap_or(0.0);
+        s.tint = n.params.tint.unwrap_or(0.0);
+        s.saturation = n.params.saturation.unwrap_or(1.0);
+    }
+    s
+}
+
 /// The pool item for a file just imported, waited for: the import is
 /// the app's to finish, and it answers before the item is in the pool.
 fn imported_id(ctx: &ControlContext, path: &std::path::Path) -> Option<String> {
@@ -1591,6 +1671,123 @@ fn handle(
             v["placements"] = json!(summary);
             v["steps_resolved"] = json!(plan.steps.len());
             Ok(v)
+        }
+
+        ControlCommand::SkinBalance { clip_id, apply } => {
+            if in_batch {
+                return Err("skin_balance measures and applies; send it on its own".into());
+            }
+            use klipp_color::measure::{SKIN_HUE_CENTRE, SKIN_HUE_HIGH, SKIN_HUE_LOW};
+            let (mid, name) = {
+                let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
+                let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
+                let id = klipp_core::ClipId(clip_id.parse().map_err(|e| format!("clip_id is not a uuid: {e}"))?);
+                let clip = seq.tracks.iter().flat_map(|t| t.clips.iter()).find(|c| c.id == id).ok_or_else(|| format!("no clip {clip_id}"))?;
+                let name = clip.media_id().and_then(|m| pool.get(&m)).map(|it| it.filename.clone()).unwrap_or_else(|| "the clip".into());
+                ((clip.timeline_in.to_secs_f64() + clip.timeline_out.to_secs_f64()) / 2.0, name)
+            };
+            let look = look_for(ctx, mid);
+            let target = look.skin_hue.unwrap_or(SKIN_HUE_CENTRE);
+            let mut rounds = Vec::new();
+            let mut shift = 0.0f32;
+            let mut m = measure_at(ctx, mid, Some(6000))?;
+            let Some(face0) = m.faces.iter().find(|f| f.patches >= 4).cloned() else {
+                return Err(format!("no face to read in {name} at {mid:.2} s: the framing analysis found no person there (analyze with the detector), or the face is too small"));
+            };
+            if face0.mixed_light {
+                return Err(format!("{name}: the face is lit by two colours of light (hue spread {:.0}°); a skin secondary would fix one side and break the other — grade the light, not the skin", face0.hue_iqr));
+            }
+            let scene_cast = m.cast() >= 3.0;
+            let same_way = scene_cast && ((face0.hue - target) * klipp_color::measure::Lab { l: 50.0, a: m.cast_a, b: m.cast_b }.hue().signum()) != 0.0 && face0.hue_off_band > 0.0;
+            let mut before = json!({ "hue": face0.hue, "chroma": face0.chroma, "l": face0.median.l, "patches": face0.patches, "scene_cast": m.cast(), "scene_cast_toward": klipp_color::measure::cast_name(m.cast_a, m.cast_b) });
+            if same_way && face0.hue_off_band > 4.0 {
+                before["advice"] = json!("the neutrals carry a cast too: white balance first (grade temperature and tint, or grade_to_target), then skin_balance for what is left");
+            }
+            let n_rounds = if apply { 3 } else { 0 };
+            for round in 0..n_rounds {
+                let Some(face) = m.faces.iter().find(|f| f.patches >= 4) else { break };
+                let off = if face.hue < SKIN_HUE_LOW { SKIN_HUE_LOW - face.hue } else if face.hue > SKIN_HUE_HIGH { face.hue - SKIN_HUE_HIGH } else { 0.0 };
+                let want = target - face.hue;
+                if off <= 2.0 && want.abs() <= 4.0 {
+                    break;
+                }
+                shift = (shift + want * 0.8).clamp(-30.0, 30.0);
+                let op: klipp_document::ops::Op = serde_json::from_value(json!({ "op": "qualify", "clip_id": clip_id, "target": "skin", "hue_shift": shift })).map_err(|e| e.to_string())?;
+                let (plan, revision) = resolve_plan(ctx, &[op])?;
+                let edits: Vec<klipp_document::history::EditCommand> = plan.steps.iter().map(|s| s.edit.clone()).collect();
+                send_full_envelope(ctx, Vec::new(), edits, true, Some(revision), Some("Skin Balance".into()))?;
+                m = measure_at(ctx, mid, Some(6000))?;
+                let after = m.faces.iter().find(|f| f.patches >= 4).map(|f| json!({ "hue": f.hue, "chroma": f.chroma }));
+                rounds.push(json!({ "round": round + 1, "hue_shift": shift, "after": after }));
+            }
+            let face_now = m.faces.iter().find(|f| f.patches >= 4);
+            let text = match face_now {
+                Some(f) => format!("{name}: skin hue {:.0}° → {:.0}° (band {SKIN_HUE_LOW:.0}–{SKIN_HUE_HIGH:.0}°, aim {target:.0}°), chroma {:.0}, L* {:.0}, {} patches{}{}", face0.hue, f.hue, f.chroma, f.median.l, f.patches, if apply { format!("; {} round(s), skin secondary hue shift {shift:+.0}°", rounds.len()) } else { String::new() }, before.get("advice").and_then(|a| a.as_str()).map(|a| format!(". {a}")).unwrap_or_default()),
+                None => format!("{name}: the face could not be read after the change"),
+            };
+            Ok(json!({ "text": text, "before": before, "rounds": rounds, "hue_shift": shift, "applied": apply && !rounds.is_empty(), "revision": ctx.shared.revision(), "next": if apply { "frame_at to see it; check with color reads every shot." } else { "Run it with apply true to turn the skin onto the band as one undo step per round." } }))
+        }
+
+        ControlCommand::GradeToTarget { clip_id, apply, rounds } => {
+            if in_batch {
+                return Err("grade_to_target measures and applies; send it on its own".into());
+            }
+            let shots: Vec<(String, f64, String)> = {
+                let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
+                let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
+                let want = clip_id.as_deref().map(|s| s.parse::<uuid::Uuid>().map_err(|e| format!("clip_id is not a uuid: {e}"))).transpose()?;
+                seq.tracks.iter().filter(|t| t.kind == klipp_timeline::TrackKind::Video && t.visible).take(1)
+                    .flat_map(|t| t.clips.iter())
+                    .filter(|c| c.enabled && matches!(c.kind, klipp_timeline::ClipKind::Media { .. }) && want.is_none_or(|w| c.id.0 == w))
+                    .map(|c| (c.id.0.to_string(), (c.timeline_in.to_secs_f64() + c.timeline_out.to_secs_f64()) / 2.0, c.media_id().and_then(|m| pool.get(&m)).map(|it| it.filename.clone()).unwrap_or_else(|| "clip".into())))
+                    .take(48)
+                    .collect()
+            };
+            if shots.is_empty() {
+                return Err("no picture clip to grade on the top video track".into());
+            }
+            let n_rounds = if apply { rounds.unwrap_or(3).clamp(1, 5) } else { 0 };
+            let mut per_shot = Vec::new();
+            let mut lines = Vec::new();
+            for (id, mid, name) in &shots {
+                let look = look_for(ctx, *mid);
+                let mut m = measure_at(ctx, *mid, Some(6000))?;
+                let before = colour_report(&m, &look, *mid);
+                let mut step = klipp_color::measure::primaries_toward(&m, &look);
+                let mut done_rounds = 0u32;
+                for _ in 0..n_rounds {
+                    let fails = colour_report(&m, &look, *mid);
+                    let moving = step.exposure.abs() > 0.03 || step.lift.abs() > 0.01 || step.gain.abs() > 0.01 || step.temperature.abs() > 0.01 || step.tint.abs() > 0.01 || step.saturation.abs() > 0.03;
+                    if fails.is_empty() || !moving {
+                        break;
+                    }
+                    let now = {
+                        let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
+                        let cid = klipp_core::ClipId(id.parse().map_err(|e| format!("{e}"))?);
+                        seq.tracks.iter().flat_map(|t| t.clips.iter()).find(|c| c.id == cid).map(corrector_now).unwrap_or_default()
+                    };
+                    let op: klipp_document::ops::Op = serde_json::from_value(json!({
+                        "op": "grade", "clip_id": id,
+                        "exposure": (now.exposure + step.exposure).clamp(-6.0, 6.0),
+                        "lift": (now.lift + step.lift).clamp(-1.0, 1.0),
+                        "gain": (now.gain + step.gain).clamp(-1.0, 1.0),
+                        "temperature": (now.temperature + step.temperature).clamp(-1.0, 1.0),
+                        "tint": (now.tint + step.tint).clamp(-1.0, 1.0),
+                        "saturation": (now.saturation * (1.0 + step.saturation)).clamp(0.0, 4.0),
+                    })).map_err(|e| e.to_string())?;
+                    let (plan, revision) = resolve_plan(ctx, &[op])?;
+                    let edits: Vec<klipp_document::history::EditCommand> = plan.steps.iter().map(|s| s.edit.clone()).collect();
+                    send_full_envelope(ctx, Vec::new(), edits, true, Some(revision), Some("Grade To Target".into()))?;
+                    done_rounds += 1;
+                    m = measure_at(ctx, *mid, Some(6000))?;
+                    step = klipp_color::measure::primaries_toward(&m, &look);
+                }
+                let after = colour_report(&m, &look, *mid);
+                let short: String = name.chars().take(28).collect();
+                lines.push(format!("{short} at {mid:.2} s [{}]: {} before, {} after{}{}", look.name, before.len(), after.len(), if done_rounds > 0 { format!(" ({done_rounds} round(s))") } else { String::new() }, if after.is_empty() { "; on target".to_string() } else { format!("; left: {}", after.iter().map(|f| f.2.clone()).collect::<Vec<_>>().join(", ")) }));
+                per_shot.push(json!({ "clip_id": id, "secs": mid, "look": look.name, "before": before.iter().map(|f| json!({ "severity": f.0, "what": f.2, "fix": f.3 })).collect::<Vec<_>>(), "after": after.iter().map(|f| json!({ "severity": f.0, "what": f.2, "fix": f.3 })).collect::<Vec<_>>(), "rounds": done_rounds, "next_step": step, "lab": m }));
+            }
+            Ok(json!({ "text": lines.join("\n"), "shots": per_shot, "applied": apply, "revision": ctx.shared.revision(), "next": if apply { "check with color reads every shot again; skin_balance for a face still off the band; a look (klipp_look) for style, after the grade." } else { "That is where every shot stands against the look and the first step each would take. Run it with apply true to grade them, one undo step a round." } }))
         }
 
         ControlCommand::Review { max_width, frames, cols, path } => {
@@ -2617,9 +2814,12 @@ reference:   {}",
             // Look: measure a spread of frames off the file through the scopes.
             let n = 8usize;
             let (mut black, mut mid, mut white, mut sat, mut warm, mut cnt) = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
+            let mut measures: Vec<klipp_color::measure::FrameMeasure> = Vec::new();
             for i in 0..n {
                 let t = (i as f64 + 0.5) / n as f64 * dur;
                 if let Ok((data, w, h)) = decode_frame_rgba(&path, t) {
+                    let faces: Vec<[f32; 4]> = report.framing.as_ref().and_then(|f| f.people_at(t, 1.5)).map(|s| s.people.iter().map(|p| klipp_color::measure::head_region([p.0, p.1, p.2, p.3])).collect()).unwrap_or_default();
+                    measures.push(klipp_color::measure::measure_frame(&data, w, h, &faces));
                     let st = frame_stats(&data, w, h, t);
                     let g = |a: &str, b: &str| st.get(a).and_then(|x| x.get(b)).and_then(|x| x.as_f64()).unwrap_or(0.0);
                     black += g("luma_ire", "black");
@@ -2636,7 +2836,7 @@ reference:   {}",
                 let tone = if warm > 3.0 { "warm" } else if warm < -3.0 { "cool" } else { "neutral" };
                 let punch = if contrast > 75.0 { "high-contrast" } else if contrast < 45.0 { "flat" } else { "medium-contrast" };
                 let col = if sat > 45.0 { "saturated" } else if sat < 20.0 { "muted" } else { "natural" };
-                json!({ "black_ire": black.round(), "mid_ire": mid.round(), "white_ire": white.round(), "contrast_ire": contrast.round(), "saturation_pct": sat.round(), "warmth": (warm.round()), "summary": format!("{tone}, {punch}, {col}") })
+                json!({ "black_ire": black.round(), "mid_ire": mid.round(), "white_ire": white.round(), "contrast_ire": contrast.round(), "saturation_pct": sat.round(), "warmth": (warm.round()), "summary": format!("{tone}, {punch}, {col}"), "look_target": klipp_color::measure::LookTarget::from_measures(&format!("like {filename}"), &measures) })
             } else {
                 json!(null)
             };
@@ -2909,7 +3109,7 @@ reference:   {}",
             Ok(v)
         }
 
-        ControlCommand::SetBrief { brief } => {
+        ControlCommand::SetBrief { mut brief } => {
             if in_batch {
                 return Err("set_brief is its own undo step; send it on its own".into());
             }
@@ -2937,6 +3137,14 @@ reference:   {}",
             }
             if let Some(dup) = brief.features.iter().enumerate().find(|(i, f)| brief.features[..*i].iter().any(|d| d.title.trim().eq_ignore_ascii_case(f.title.trim()))) {
                 return Err(format!("the feature \"{}\" is listed twice", dup.1.title));
+            }
+            if let Some(look) = brief.look.take() {
+                let name = look.name.clone();
+                let resolved = resolve_look_target(look);
+                if resolved.mid_l.is_none() && resolved.cast_a.is_none() && !resolved.screencast {
+                    return Err(format!("look \"{name}\" is neither a preset ({}) nor numbers; give a name, or the fields black_l, white_l, mid_l, contrast_range, chroma_mean, cast_a, cast_b, skin_hue — style_profile lifts them from a reference", klipp_color::measure::LookTarget::PRESETS.join(", ")));
+                }
+                brief.look = Some(resolved);
             }
             if let Some(c) = brief.brand_colors.iter().find(|c| { let c = c.trim(); !(c.len() == 7 && c.starts_with('#') && c[1..].chars().all(|ch| ch.is_ascii_hexdigit())) }) {
                 return Err(format!("\"{c}\" is not a brand colour; give #rrggbb"));
@@ -3010,10 +3218,18 @@ reference:   {}",
                 }
                 (report, times, audio_media)
             };
-            let mut color_findings = Vec::new();
+            // Every shot read in Lab against the brief's look (or the
+            // neutral one, or the screen recording's), faces and all.
+            let mut color_findings: Vec<(String, f64, String, String)> = Vec::new();
+            let mut shots_on_target = 0usize;
             for t in &color_times {
-                if let Ok((data, w, h)) = grab_frame_rgba(ctx, *t, Some(4000)) {
-                    color_findings.extend(color_faults(&frame_stats(&data, w, h, *t), *t));
+                if let Ok(m) = measure_at(ctx, *t, Some(4000)) {
+                    let look = look_for(ctx, *t);
+                    let found = colour_report(&m, &look, *t);
+                    if found.is_empty() {
+                        shots_on_target += 1;
+                    }
+                    color_findings.extend(found);
                 }
             }
             // Sound faults: wind, rumble, hum, hiss, from the analysis bands.
@@ -3040,12 +3256,12 @@ reference:   {}",
             };
             let mut text = report.text();
             if color {
-                text.push_str(&format!("\n\nColour (measured on {} shot{}):", color_times.len(), if color_times.len() == 1 { "" } else { "s" }));
+                text.push_str(&format!("\n\nColour (measured in Lab on {} shot{}, {shots_on_target} on target):", color_times.len(), if color_times.len() == 1 { "" } else { "s" }));
                 if color_findings.is_empty() {
                     text.push_str(" nothing amiss.");
                 } else {
                     for f in &color_findings {
-                        text.push_str(&format!("\n[warning] {:.2} s  {}. {}", f.0, f.1, f.2));
+                        text.push_str(&format!("\n[{}] {:.2} s  {}. {}", f.0, f.1, f.2, f.3));
                     }
                 }
             }
@@ -3055,9 +3271,10 @@ reference:   {}",
                     text.push_str(&format!("\n[warning] {}: {}. {}", f.1, f.2, f.3));
                 }
             }
-            let findings_json: Vec<serde_json::Value> = color_findings.iter().map(|f| json!({ "severity": "warning", "rule": "color", "at_secs": f.0, "what": f.1, "hint": f.2 })).collect();
+            let findings_json: Vec<serde_json::Value> = color_findings.iter().map(|f| json!({ "severity": f.0, "rule": "color", "at_secs": f.1, "what": f.2, "hint": f.3 })).collect();
+            let colour_errors = color_findings.iter().filter(|f| f.0 == "error").count();
             let audio_json: Vec<serde_json::Value> = audio_findings.iter().map(|f| json!({ "severity": "warning", "rule": "sound", "at_secs": f.0, "media": f.1, "what": f.2, "hint": f.3 })).collect();
-            Ok(json!({ "text": text, "errors": report.errors, "warnings": report.warnings + color_findings.len() + audio_findings.len(), "findings": report.findings, "color_findings": findings_json, "sound_findings": audio_json, "duration_secs": report.duration_secs, "revision": ctx.shared.revision(), "next": next }))
+            Ok(json!({ "text": text, "errors": report.errors + colour_errors, "warnings": report.warnings + (color_findings.len() - colour_errors) + audio_findings.len(), "findings": report.findings, "color_findings": findings_json, "shots_on_target": shots_on_target, "sound_findings": audio_json, "duration_secs": report.duration_secs, "revision": ctx.shared.revision(), "next": next }))
         }
 
         ControlCommand::Undo => send(AppCommand::Undo),
@@ -3227,7 +3444,24 @@ reference:   {}",
                 return read_in_batch("frame_stats");
             }
             let (data, width, height) = grab_frame_rgba(ctx, secs, timeout_ms)?;
-            Ok(frame_stats(&data, width, height, secs))
+            let mut v = frame_stats(&data, width, height, secs);
+            let faces = faces_at(ctx, secs);
+            let m = klipp_color::measure::measure_frame(&data, width, height, &faces);
+            let look = look_for(ctx, secs);
+            let findings = klipp_color::measure::judge(&m, &look);
+            let mut text = v["text"].as_str().unwrap_or("").to_string();
+            text.push_str(&format!("\nLab (D65): L* p1 {:.0} p50 {:.0} p99 {:.0}, contrast {:.0}, chroma mean {:.0}; neutrals a* {:.1} b* {:.1} ({}, {:.0}% of the frame)", m.l_p1, m.l_p50, m.l_p99, m.contrast_range, m.chroma_mean, m.cast_a, m.cast_b, if m.cast() < 3.0 { "neutral".to_string() } else { format!("cast toward {}", klipp_color::measure::cast_name(m.cast_a, m.cast_b)) }, m.neutral_pct));
+            for (i, f) in m.faces.iter().enumerate() {
+                if f.patches >= 4 {
+                    text.push_str(&format!("\nface {}: skin hue {:.0}° (band {:.0}–{:.0}), chroma {:.0}, L* {:.0}, {} patches, hue spread {:.0}°{}", i + 1, f.hue, klipp_color::measure::SKIN_HUE_LOW, klipp_color::measure::SKIN_HUE_HIGH, f.chroma, f.median.l, f.patches, f.hue_iqr, if f.mixed_light { " (two lights)" } else { "" }));
+                }
+            }
+            text.push_str(&format!("\nAgainst the look \"{}\": {}", look.name, findings.iter().filter(|f| f.verdict != klipp_color::measure::Verdict::Pass).map(|f| format!("{:?} {}", f.verdict, f.what)).collect::<Vec<_>>().join("; ").replace("Fail", "FAIL").replace("Warn", "warn")));
+            v["text"] = json!(text);
+            v["lab"] = json!(m);
+            v["look"] = json!(look);
+            v["findings"] = json!(findings);
+            Ok(v)
         }
 
         ControlCommand::FrameAt { secs, path, max_width, timeout_ms } => {

@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+serde = { workspace = true }
 klipp-grade-model = { workspace = true }
 klipp-core = { workspace = true }
 rayon = "1"

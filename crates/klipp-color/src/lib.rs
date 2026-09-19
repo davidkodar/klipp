@@ -47,6 +47,7 @@
 //! full-resolution GPU pass. Both use BT.709 coefficients on sRGB code
 //! values, matching Resolve's non-linear scope convention.
 
+pub mod measure;
 pub mod aces;
 pub mod camera_log;
 pub mod color_match;

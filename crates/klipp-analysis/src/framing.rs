@@ -13,7 +13,7 @@
 use serde::{Deserialize, Serialize};
 
 pub const ID: &str = "framing";
-pub const VERSION: u32 = 2;
+pub const VERSION: u32 = 3;
 /// The detectors in the registry, best first: the medium tier where it
 /// is downloaded, else the preview tier. `MODEL_ID` names what
 /// `download_models` fetches.
@@ -53,6 +53,25 @@ pub struct Framing {
     pub model: String,
     pub frames_looked_at: u32,
     pub shots: Vec<ShotFraming>,
+    /// Every frame looked at, with where the people were: what a face
+    /// measure reads skin in, and what a title keeps clear of.
+    #[serde(default)]
+    pub samples: Vec<FrameSample>,
+}
+
+/// The people in one sampled frame, as normalised boxes (x, y, w, h).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FrameSample {
+    pub secs: f64,
+    pub people: Vec<(f32, f32, f32, f32)>,
+}
+
+impl Framing {
+    /// The people nearest `secs` of the file, when a frame was looked at
+    /// within `within` seconds of it.
+    pub fn people_at(&self, secs: f64, within: f64) -> Option<&FrameSample> {
+        self.samples.iter().filter(|s| (s.secs - secs).abs() <= within).min_by(|a, b| (a.secs - secs).abs().total_cmp(&(b.secs - secs).abs()))
+    }
 }
 
 impl Framing {
@@ -286,9 +305,10 @@ impl crate::Analyser for FramingAnalyser {
             .build()
             .map_err(|e| format!("detector: {e}"))?;
         let mut facts: Vec<Vec<FrameFacts>> = vec![Vec::new(); chosen.len()];
+        let mut samples: Vec<FrameSample> = Vec::new();
         let mut linear = vec![0.0f32; (FRAME_SIZE * FRAME_SIZE * 4) as usize];
         let t1 = std::time::Instant::now();
-        for ((si, _), rgba) in times.iter().zip(frames.iter()) {
+        for ((si, t), rgba) in times.iter().zip(frames.iter()) {
             let rect = content_rect(rgba);
             for (o, px) in linear.chunks_exact_mut(4).zip(rgba.chunks_exact(4)) {
                 o[0] = srgb_to_linear(px[0]);
@@ -318,6 +338,7 @@ impl crate::Analyser for FramingAnalyser {
                     _ => {}
                 }
             }
+            samples.push(FrameSample { secs: *t, people: f.people.clone() });
             facts[*si].push(f);
         }
         tracing::info!(
@@ -327,7 +348,7 @@ impl crate::Analyser for FramingAnalyser {
             t1.elapsed().as_millis()
         );
         let shots = chosen.iter().zip(&facts).map(|((a, b), f)| shot_framing(*a, *b, f)).collect();
-        let out = Framing { duration_secs: duration, model: model_id.into(), frames_looked_at: times.len() as u32, shots };
+        let out = Framing { duration_secs: duration, model: model_id.into(), frames_looked_at: times.len() as u32, shots, samples };
         serde_json::to_value(out).map_err(|e| e.to_string())
     }
 }

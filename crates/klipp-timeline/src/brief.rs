@@ -94,6 +94,14 @@ pub struct Brief {
     /// style of the same name replaces the built-in one.
     #[serde(default)]
     pub type_styles: Vec<TypeStyle>,
+    /// The look the piece is graded to, as numbers: black, white and
+    /// mid lightness, contrast, chroma, the cast on neutrals, skin hue.
+    /// `{name: "web_punchy"}` alone takes a preset (broadcast_neutral,
+    /// web_punchy, film_soft, warm_interview, cool_tech, screencast);
+    /// style_profile lifts one from a reference. Left out: neutral, and
+    /// a screen recording judged as one.
+    #[serde(default)]
+    pub look: Option<klipp_color::measure::LookTarget>,
 }
 
 /// A named look for titles, every field optional: what the brief
@@ -247,6 +255,9 @@ impl Brief {
                 who.push_str(&format!(" ({})", c.described));
             }
             out.push(format!("Cast: {who}"));
+        }
+        if let Some(look) = &self.look {
+            out.push(format!("Look: {}{}", if look.name.is_empty() { "custom" } else { look.name.as_str() }, look.mid_l.map(|m| format!(" (mid L* {m:.0}, contrast {:.0}, chroma {:.0})", look.contrast_range.unwrap_or(0.0), look.chroma_mean.unwrap_or(0.0))).unwrap_or_default()));
         }
         if !self.type_styles.is_empty() {
             let looks: Vec<String> = self.type_styles.iter().map(|s| {

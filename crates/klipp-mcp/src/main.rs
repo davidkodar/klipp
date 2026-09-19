@@ -350,6 +350,13 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
             v
         }
         "klipp_auto_redact" => json!({ "method": "auto_redact", "apply": args.get("apply").and_then(|v| v.as_bool()).unwrap_or(false) }),
+        "klipp_skin_balance" => json!({ "method": "skin_balance", "clip_id": arg_str(args, "clip_id")?, "apply": args.get("apply").and_then(|v| v.as_bool()).unwrap_or(false) }),
+        "klipp_grade_to_target" => json!({
+            "method": "grade_to_target",
+            "clip_id": args.get("clip_id").cloned().unwrap_or(serde_json::Value::Null),
+            "apply": args.get("apply").and_then(|v| v.as_bool()).unwrap_or(false),
+            "rounds": args.get("rounds").cloned().unwrap_or(serde_json::Value::Null),
+        }),
         "klipp_review" => json!({
             "method": "review",
             "max_width": args.get("max_width").cloned().unwrap_or(serde_json::Value::Null),
@@ -721,7 +728,7 @@ fn content_for(name: &str, result: &Value) -> Result<Vec<Value>, String> {
             return Ok(with_next(out));
         }
     }
-    if name == "klipp_timeline" || name == "klipp_media_analysis" || name == "klipp_plan" || name == "klipp_check" || name == "klipp_brief" || name == "klipp_edit_plan" || name == "klipp_build_edit_plan" || name == "klipp_screen_text" || name == "klipp_auto_redact" || name == "klipp_auto_sfx" || name == "klipp_review" || name == "klipp_transcript" || name == "klipp_cut_points" || name == "klipp_selects" || name == "klipp_style_profile" || name == "klipp_looks" || name == "klipp_frame_stats" {
+    if name == "klipp_timeline" || name == "klipp_media_analysis" || name == "klipp_plan" || name == "klipp_check" || name == "klipp_brief" || name == "klipp_edit_plan" || name == "klipp_build_edit_plan" || name == "klipp_screen_text" || name == "klipp_auto_redact" || name == "klipp_auto_sfx" || name == "klipp_review" || name == "klipp_grade_to_target" || name == "klipp_skin_balance" || name == "klipp_transcript" || name == "klipp_cut_points" || name == "klipp_selects" || name == "klipp_style_profile" || name == "klipp_looks" || name == "klipp_frame_stats" {
         if let Some(text) = result.get("text").and_then(|v| v.as_str()) {
             return Ok(with_next(text.to_string()));
         }
@@ -982,6 +989,28 @@ fn tool_definitions() -> Vec<Value> {
               download_models true.",
              json!({ "media_id": { "type": "string" }, "from_secs": { "type": "number" }, "to_secs": { "type": "number" }, "all": { "type": "boolean", "description": "every line read, not the summary of headings and lines that stayed up" } }),
              vec!["media_id"]),
+        tool("klipp_grade_to_target",
+             "Grade every shot of the top picture track (or one clip) to the brief's look, by \
+              measurement: each shot's frame is read in CIELAB (black, white and mid lightness, \
+              contrast, chroma, the cast on its neutrals, and every face's skin hue), judged \
+              against the look's numbers, and the primaries are moved toward the target — lift \
+              from the black point, gain from the white, exposure from the median, temperature \
+              and tint from the cast, saturation from the chroma — then read again, up to three \
+              rounds. A dry run reports where every shot stands and its first step; apply true \
+              grades them, one undo step a round. A screen recording is held only to its cast \
+              and to clipping. Then klipp_skin_balance for a face still off the band, and a \
+              look (klipp_look) for style on top.",
+             json!({ "clip_id": { "type": "string" }, "apply": { "type": "boolean" }, "rounds": { "type": "integer" } }), vec![]),
+        tool("klipp_skin_balance",
+             "Skin onto the skin band, by measurement: the faces in the clip's frame (the framing \
+              analysis's people, the head of each) are read as an 8×8 grid of skin patches in \
+              CIELAB; the face's median hue is held to the band 40–65° that real skin of every \
+              kind sits in. With apply true a skin secondary (a qualifier keyed on skin, a hue \
+              shift) turns the hue onto the band, measured again after each of up to three \
+              rounds. Refused when the face is lit by two colours of light; when the scene's \
+              neutrals carry the same cast the reply says to white balance first. Read a face \
+              at any time with klipp_frame_stats.",
+             json!({ "clip_id": { "type": "string" }, "apply": { "type": "boolean" } }), vec!["clip_id"]),
         tool("klipp_review",
              "The cut as an editor scrubs it, in one call: a draft render of the whole timeline \
               (max_width 640 by default, fast), a contact sheet of the draft (frames tiles in cols \
@@ -1506,6 +1535,10 @@ fn tool_definitions() -> Vec<Value> {
               shows off, 1 the headline — the edit plan's segments name these), arc (its \
               shape: \"hook, three features, call to action\"), cta (what the viewer is asked \
               to do), brand_colors ([\"#rrggbb\", ...], the first is what titles take), \
+              look ({name} for a preset — broadcast_neutral, web_punchy, film_soft, \
+              warm_interview, cool_tech, screencast — or the numbers black_l, white_l, mid_l, \
+              contrast_range, chroma_mean, cast_a, cast_b, skin_hue; style_profile lifts a \
+              look_target from a reference to paste here), \
               vocabulary (names, products and terms as they are spelt, for the \
               speech-to-text: run klipp_analyze after setting it), notes. What is left out asks for nothing. Names in lower thirds \
               come from the cast, klipp_check holds the piece to the brief, and an export \
@@ -1584,9 +1617,12 @@ fn tool_definitions() -> Vec<Value> {
         tool("klipp_frame_stats",
              "The scope readings of the frame at a time, the numbers a colourist grades to: \
               the black, mid and white luma points in IRE, the RGB balance and any cast, the \
-              saturation, how much is clipped at white and black, and where skin tones sit. \
-              Read it before and after a grade — grade to the numbers, not by eye, and match \
-              a shot to its neighbours by them.",
+              saturation, how much is clipped at white and black — and in CIELAB: lightness \
+              percentiles, contrast, chroma, the cast on the neutrals (a*, b*, named), and \
+              every face read as a grid of skin patches (hue against the 40–65° skin band, \
+              chroma, lightness, spread), each judged against the brief's look with the knob \
+              that fixes it. Read it before and after a grade — grade to the numbers, not by \
+              eye, and match a shot to its neighbours by them.",
              json!({ "secs": { "type": "number" }, "timeout_ms": { "type": "integer" } }), vec!["secs"]),
         tool("klipp_frame_at",
              "The frame at a time on the timeline, as a PNG, without leaving the playhead \

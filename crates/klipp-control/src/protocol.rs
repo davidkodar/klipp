@@ -249,6 +249,27 @@ pub enum ControlCommand {
         #[serde(default)]
         import: Option<bool>,
     },
+    /// Skin on the band: measure the faces in a clip's frame, and with
+    /// `apply` add a skin secondary that turns their hue onto it,
+    /// measured again after each round (up to three). Refused when the
+    /// scene's neutrals carry the same cast — that is a white balance.
+    SkinBalance {
+        clip_id: String,
+        #[serde(default)]
+        apply: bool,
+    },
+    /// Grade every shot of the top picture track (or one clip) to the
+    /// brief's look: measure, move the primaries toward the target,
+    /// measure again, up to three rounds each; every round one undo
+    /// step. Without `apply`, the readings and the first step only.
+    GradeToTarget {
+        #[serde(default)]
+        clip_id: Option<String>,
+        #[serde(default)]
+        apply: bool,
+        #[serde(default)]
+        rounds: Option<u32>,
+    },
     /// Where every requested item stands.
     AnalysisStatus,
     /// What is known about a media item, as text: the shot list, the

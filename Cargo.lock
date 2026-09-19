@@ -2722,6 +2722,7 @@ dependencies = [
  "klipp-grade-model",
  "klipp-testing",
  "rayon",
+ "serde",
  "serde_json",
  "tracing",
 ]
@@ -2751,6 +2752,7 @@ dependencies = [
  "crossbeam-channel",
  "klipp-analysis",
  "klipp-audio-search",
+ "klipp-color",
  "klipp-core",
  "klipp-document",
  "klipp-engine",
@@ -3107,6 +3109,7 @@ dependencies = [
 name = "klipp-timeline"
 version = "0.1.0"
 dependencies = [
+ "klipp-color",
  "klipp-core",
  "klipp-effects",
  "klipp-nodes",
