@@ -2657,11 +2657,12 @@ reference:   {}",
                     .filter(|(_, had)| klipp_analysis::transcript::lacks_spellings(had, &new_spellings))
                     .map(|(f, _)| f)
                     .collect();
-                v["note"] = json!(if lacking.is_empty() {
-                    "the transcripts made so far already carry these spellings; a file analysed from now on gets them too".to_string()
-                } else {
-                    format!("the spellings changed and these transcripts were made without them: {}; run analyze to have them transcribed again before captions or a transcript search", lacking.join(", "))
-                });
+                let analysed_any = pool.all().any(|m| klipp_analysis::service::status(m.id).is_some_and(|s| matches!(s.state, klipp_analysis::service::State::Done)));
+                if !lacking.is_empty() {
+                    v["note"] = json!(format!("the spellings changed and these transcripts were made without them: {}; run analyze to have them transcribed again before captions or a transcript search", lacking.join(", ")));
+                } else if analysed_any {
+                    v["note"] = json!("the transcripts made so far already carry these spellings; a file analysed from now on gets them too");
+                }
             }
             Ok(v)
         }
