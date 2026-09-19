@@ -7,7 +7,18 @@ use klipp_media::MediaPool;
 use klipp_timeline::{Clip, ClipKind, Sequence, TitleObjectContent, TrackKind};
 use serde::Serialize;
 
-use crate::ops::{is_heard, linear_to_db, sound_settings_clip, SpokenWord, Transcripts};
+use crate::ops::{is_heard, linear_to_db, sound_settings_clip, ScreenBeats, SpokenWord, Transcripts};
+
+/// A cut this close to a settle point is a cut to the settle.
+const SETTLE_NEAR_SECS: f64 = 0.6;
+/// A screen needs about this long to be read, until OCR can say how much is on it.
+const READ_MIN_SECS: f64 = 2.0;
+/// A feature of the brief needs at least this long on screen to register.
+const FEATURE_MIN_SECS: f64 = 3.0;
+/// A title over a screen that is changing for longer than this fights it.
+const BUSY_UNDER_TITLE_SECS: f64 = 0.5;
+/// Shots all within this much of their mean length are a flat cadence.
+const FLAT_CADENCE: f64 = 0.15;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -149,6 +160,12 @@ pub fn check(seq: &Sequence, pool: &MediaPool, transcripts: &dyn Transcripts) ->
         }
     }
 
+    // What the beat sheet says about each screen recording, read once.
+    let mut beats_cache: std::collections::HashMap<klipp_core::MediaId, Option<ScreenBeats>> = std::collections::HashMap::new();
+    let mut beats_of = |media_id: klipp_core::MediaId| -> Option<ScreenBeats> {
+        beats_cache.entry(media_id).or_insert_with(|| pool.get(&media_id).and_then(|item| transcripts.screen_beats(item))).clone()
+    };
+
     // Flash frames and jump cuts, track by track.
     for (ti, t) in &video_tracks {
         let clips: Vec<&Clip> = t.clips.iter().filter(|c| is_picture(c)).collect();
@@ -176,7 +193,10 @@ pub fn check(seq: &Sequence, pool: &MediaPool, transcripts: &dyn Transcripts) ->
                 }
                 _ => false,
             };
-            if source_cut_between {
+            // On a screen recording, a cut to where a change has just
+            // settled is the cut the beat sheet asked for, not a jump.
+            let to_settle = a.media_id().and_then(&mut beats_of).is_some_and(|bt| bt.settles.iter().any(|s| (s - secs(b.source_in)).abs() <= SETTLE_NEAR_SECS));
+            if source_cut_between || to_settle {
                 continue;
             }
             // Covered when a picture on a track above runs across the cut.
@@ -184,6 +204,29 @@ pub fn check(seq: &Sequence, pool: &MediaPool, transcripts: &dyn Transcripts) ->
             if !covered {
                 add(Severity::Warning, "jump_cut", Some(cut), format!("a jump cut: {} cuts to itself, {:.1} s later in the file, with nothing over the join", clip_label(pool, a), secs(b.source_in) - secs(a.source_out)), "Cover the join with B-roll or a reaction, or keep it if jump cuts are the piece's style");
             }
+        }
+    }
+
+    // Screen recordings: a cut in or out while the screen is still
+    // changing lands mid-action; a screen needs time to be read.
+    for (_, c) in &pictures {
+        let Some(beats) = c.media_id().and_then(&mut beats_of) else { continue };
+        let (s_in, s_out, t_in, t_out) = (secs(c.source_in), secs(c.source_out), secs(c.timeline_in), secs(c.timeline_out));
+        let label = clip_label(pool, c);
+        let inside = |t: f64| beats.action.iter().find(|(a, b)| t > *a + 0.15 && t < *b - 0.05).copied();
+        if let Some((a, b)) = inside(s_in) {
+            let settle = beats.settles.iter().copied().filter(|s| *s >= s_in).fold(None, |m: Option<f64>, s| Some(m.map_or(s, |m| m.min(s))));
+            add(Severity::Warning, "cut_mid_action", Some(t_in), format!("{label} cuts in at {s_in:.2} s of the file while the screen is still changing ({a:.2}-{b:.2} s)"), &match settle {
+                Some(s) => format!("Cut in at {s:.2} s of the file, where the change has settled, or at {a:.2} s before it starts"),
+                None => format!("Cut in before the change starts at {a:.2} s, or after it settles at {b:.2} s"),
+            });
+        }
+        if let Some((a, b)) = inside(s_out) {
+            add(Severity::Warning, "cut_mid_action", Some(t_out), format!("{label} cuts away at {s_out:.2} s of the file in the middle of a change ({a:.2}-{b:.2} s)"), &format!("Hold until it settles at {b:.2} s of the file, or cut before the change starts at {a:.2} s"));
+        }
+        let len = t_out - t_in;
+        if len + 1e-6 < READ_MIN_SECS && (len * fps).round() as i64 >= 8 {
+            add(Severity::Warning, "too_short_to_read", Some(t_in), format!("{label} shows a screen for {len:.1} s"), "A screen needs about two seconds to be read: hold it, or take it out");
         }
     }
 
@@ -201,6 +244,23 @@ pub fn check(seq: &Sequence, pool: &MediaPool, transcripts: &dyn Transcripts) ->
         let needs = (words as f64 * 0.3).max(1.5);
         if b - a + 1e-6 < needs {
             add(Severity::Warning, "title_short", Some(a), format!("{} has {words} word{} and {:.1} s to be read in", clip_label(pool, c), if words == 1 { "" } else { "s" }, b - a), &format!("Hold it at least {needs:.1} s: about a third of a second a word, never under a second and a half"));
+        }
+        // Over a screen that is changing, a title fights the picture.
+        for (_, p) in &pictures {
+            let Some(beats) = p.media_id().and_then(&mut beats_of) else { continue };
+            let (t_in, t_out) = (secs(p.timeline_in), secs(p.timeline_out));
+            let (lo, hi) = (a.max(t_in), b.min(t_out));
+            if hi <= lo {
+                continue;
+            }
+            let file_at = |t: f64| secs(p.source_in) + (t - t_in);
+            let (f_lo, f_hi) = (file_at(lo), file_at(hi));
+            if let Some((x, _)) = beats.action.iter().find(|(x, y)| f_hi.min(*y) - f_lo.max(*x) > BUSY_UNDER_TITLE_SECS) {
+                let from = lo + (x - f_lo).max(0.0);
+                let holds: Vec<String> = beats.holds.iter().filter(|(h0, h1)| h1 - h0 >= b - a).take(3).map(|(h0, h1)| format!("{h0:.1}-{h1:.1} s")).collect();
+                add(Severity::Warning, "title_over_busy", Some(from), format!("{} is up over a changing screen from {from:.2} s", clip_label(pool, c)), &if holds.is_empty() { "Move it to where the screen holds still".to_string() } else { format!("Move it to where the screen holds still: {} of the file", holds.join(", ")) });
+                break;
+            }
         }
         let low = td.objects.iter().any(|o| o.visible && o.transform.center.y > 0.72);
         if low {
@@ -291,6 +351,46 @@ pub fn check(seq: &Sequence, pool: &MediaPool, transcripts: &dyn Transcripts) ->
             if let Some(l) = brief.loudness_lufs {
                 add(Severity::Note, "loudness", None, format!("the delivery's loudness is {l:.0} LUFS"), "An export with no target of its own takes this one; the export's status reports what the file measures");
             }
+            // The features the brief ranks, held to by the edit plan.
+            let ranked = brief.ranked_features();
+            if !ranked.is_empty() {
+                match &seq.edit_plan {
+                    None => add(Severity::Note, "no_edit_plan", None, format!("the brief ranks {} feature{} and there is no edit plan to hold the cut to them", ranked.len(), if ranked.len() == 1 { "" } else { "s" }), "Propose one with set_edit_plan, a segment for each"),
+                    Some(plan) => {
+                        for fe in ranked {
+                            let total: f64 = plan.segments.iter().filter(|s| s.feature.trim().eq_ignore_ascii_case(fe.title.trim())).map(|s| s.duration_secs()).sum();
+                            if total <= 0.0 {
+                                add(Severity::Warning, "feature_unplanned", None, format!("the brief's feature \"{}\"{} is in no segment of the edit plan", fe.title, if fe.rank > 0 { format!(" (rank {})", fe.rank) } else { String::new() }), "Give it a segment, or take it out of the brief");
+                            } else if total + 1e-6 < FEATURE_MIN_SECS {
+                                add(Severity::Warning, "feature_short", None, format!("the brief's feature \"{}\" gets {total:.1} s in the edit plan", fe.title), "Three seconds at least for a feature to register: hold its reveal");
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // The approved edit plan against what is down.
+    if let Some(plan) = seq.edit_plan.as_ref().filter(|p| p.approved && !p.segments.is_empty()) {
+        let on_timeline = |s: &klipp_timeline::PlanSegment| pictures.iter().any(|(_, c)| c.media_id() == Some(s.media_id) && (secs(c.source_in) - s.source_in_secs).abs() < 1.0);
+        let missing: Vec<String> = plan.segments.iter().enumerate().filter(|(_, s)| !on_timeline(s)).map(|(i, _)| (i + 1).to_string()).collect();
+        if missing.len() == plan.segments.len() {
+            add(Severity::Note, "plan_not_built", None, "the approved edit plan is not on the timeline".into(), "build_edit_plan with apply true builds it as one undo step");
+        } else if !missing.is_empty() {
+            add(Severity::Warning, "plan_drift", None, format!("segment{} {} of the approved edit plan {} not on the timeline", if missing.len() == 1 { "" } else { "s" }, missing.join(", "), if missing.len() == 1 { "is" } else { "are" }), "The cut has moved on from the plan: bring the plan up to date with set_edit_plan, or put the segments back");
+        }
+    }
+
+    // Pacing: shots all of a length read as a flat cadence.
+    if let Some((_, t)) = video_tracks.first() {
+        let lens: Vec<f64> = t.clips.iter().filter(|c| is_picture(c)).map(|c| secs(c.timeline_out) - secs(c.timeline_in)).collect();
+        if lens.len() >= 4 {
+            let mean = lens.iter().sum::<f64>() / lens.len() as f64;
+            let spread = lens.iter().map(|l| (l - mean).abs()).fold(0.0, f64::max) / mean.max(1e-9);
+            if spread < FLAT_CADENCE {
+                add(Severity::Note, "pacing_flat", None, format!("all {} shots run about {mean:.1} s: the cadence is flat", lens.len()), "Vary the lengths: hold the reveals, move through the rest");
+            }
         }
     }
 
@@ -368,6 +468,107 @@ mod tests {
 
     fn rules(r: &Report) -> Vec<&'static str> {
         r.findings.iter().map(|f| f.rule).collect()
+    }
+
+    /// A screen recording whose screen changes at 10-12 s and 30-33 s of
+    /// the file, settling at 12 and 33; still from 0-10, 12-30 and 33-60.
+    struct Screen(klipp_core::MediaId);
+
+    impl Transcripts for Screen {
+        fn words(&self, _item: &klipp_media::MediaItem) -> Option<Vec<SpokenWord>> {
+            None
+        }
+        fn screen_beats(&self, item: &klipp_media::MediaItem) -> Option<ScreenBeats> {
+            (item.id == self.0).then(|| ScreenBeats { action: vec![(10.0, 12.0), (30.0, 33.0)], settles: vec![12.0, 33.0], holds: vec![(0.0, 10.0), (12.0, 30.0), (33.0, 60.0)] })
+        }
+    }
+
+    /// One screen recording cut into shots, no sound.
+    fn screencast(shots: &[(f64, f64, f64)]) -> (Sequence, MediaPool, klipp_core::MediaId) {
+        let mut pool = MediaPool::new();
+        let mut item = klipp_media::MediaItem::synthetic_for_test("/tmp/screen.mp4".into(), None);
+        item.duration = tc(60.0);
+        item.video_codec = "h264".into();
+        let screen = pool.add(item);
+        let mut seq = Sequence::new_default();
+        seq.fps = Fps::new(25, 1);
+        let mut v = Track::new("V1", TrackKind::Video);
+        for (t0, t1, s0) in shots {
+            v.clips.push(Clip::media(screen, tc(*t0), tc(*t1), tc(*s0), tc(s0 + t1 - t0)));
+        }
+        seq.tracks = vec![v];
+        (seq, pool, screen)
+    }
+
+    #[test]
+    fn a_screencast_is_held_to_its_beat_sheet() {
+        // Four four-second shots: the second cuts in mid-change (11 s of the
+        // file), the fourth cuts away mid-change (at 31 s).
+        let (seq, pool, screen) = screencast(&[(0.0, 4.0, 0.0), (4.0, 8.0, 11.0), (8.0, 12.0, 20.0), (12.0, 16.0, 27.0)]);
+        let r = check(&seq, &pool, &Screen(screen));
+        let got = rules(&r);
+        let mid: Vec<&Finding> = r.findings.iter().filter(|f| f.rule == "cut_mid_action").collect();
+        assert_eq!(mid.len(), 2, "{}", r.text());
+        assert!(mid[0].what.contains("cuts in at 11.00 s") && mid[0].hint.contains("12.00 s"), "{:?}", mid[0]);
+        assert!(mid[1].what.contains("cuts away at 31.00 s") && mid[1].hint.contains("33.00 s"), "{:?}", mid[1]);
+        // All of a length: flat. Every join skips ahead in the file to no
+        // settle: three jump cuts.
+        assert!(got.contains(&"pacing_flat"), "{}", r.text());
+        assert_eq!(got.iter().filter(|r| **r == "jump_cut").count(), 3, "{}", r.text());
+
+        // Cut to the settles instead (12 and 33 s), the third shot running on
+        // from the second: nothing mid-action, and no jump cut either.
+        let (seq, pool, screen) = screencast(&[(0.0, 4.0, 0.0), (4.0, 9.0, 12.0), (9.0, 12.0, 17.0), (12.0, 13.5, 33.0)]);
+        let r = check(&seq, &pool, &Screen(screen));
+        let got = rules(&r);
+        assert!(!got.contains(&"cut_mid_action") && !got.contains(&"jump_cut") && !got.contains(&"pacing_flat"), "{}", r.text());
+        // The last shot is a second and a half of screen: too short to read.
+        let short = r.findings.iter().find(|f| f.rule == "too_short_to_read").expect("too short");
+        assert_eq!(short.at_secs, Some(12.0));
+    }
+
+    #[test]
+    fn a_title_over_a_changing_screen_is_sent_to_a_hold() {
+        let (mut seq, pool, screen) = screencast(&[(0.0, 8.0, 6.0)]);
+        // The screen changes at 10-12 s of the file: 4-6 s of the timeline.
+        let mut text = Track::new("T1", TrackKind::Text);
+        let td = klipp_timeline::TitleData::single_text(klipp_timeline::TextBox { text: "Search".into(), ..Default::default() });
+        text.clips.push(Clip { id: klipp_core::ClipId::new(), kind: ClipKind::Title(td), source_in: tc(0.0), source_out: tc(4.0), ..Clip::gap(tc(3.0), tc(7.0)) });
+        seq.tracks.insert(0, text);
+        let r = check(&seq, &pool, &Screen(screen));
+        let busy = r.findings.iter().find(|f| f.rule == "title_over_busy").unwrap_or_else(|| panic!("{}", r.text()));
+        assert_eq!(busy.at_secs, Some(4.0));
+        assert!(busy.hint.contains("0.0-10.0 s") && busy.hint.contains("12.0-30.0 s"), "{}", busy.hint);
+        // Inside a hold, nothing to say.
+        seq.tracks[0].clips[0].timeline_in = tc(0.0);
+        seq.tracks[0].clips[0].timeline_out = tc(3.5);
+        assert!(!rules(&check(&seq, &pool, &Screen(screen))).contains(&"title_over_busy"));
+    }
+
+    #[test]
+    fn the_brief_s_features_are_held_to_by_the_edit_plan() {
+        use klipp_timeline::{EditPlan, Feature, PlanSegment};
+        let (mut seq, pool, screen) = screencast(&[(0.0, 4.0, 0.0), (4.0, 9.0, 12.0)]);
+        seq.brief = Some(Brief { features: vec![Feature { title: "Timeline".into(), rank: 1, ..Default::default() }, Feature { title: "Grade".into(), rank: 2, ..Default::default() }], ..Default::default() });
+        let got = rules(&check(&seq, &pool, &Screen(screen)));
+        assert!(got.contains(&"no_edit_plan"), "{got:?}");
+        let seg = |feature: &str, a: f64, b: f64| PlanSegment { feature: feature.into(), media_id: screen, source_in_secs: a, source_out_secs: b, note: String::new(), with_audio: false, title: None, transition: None, zoom: None };
+        // Timeline gets a second, Grade nothing; the plan is approved and not built.
+        seq.edit_plan = Some(EditPlan { segments: vec![seg("Timeline", 40.0, 41.0)], approved: true, ..Default::default() });
+        let r = check(&seq, &pool, &Screen(screen));
+        let got = rules(&r);
+        for rule in ["feature_short", "feature_unplanned", "plan_not_built"] {
+            assert!(got.contains(&rule), "{rule} missing from {}", r.text());
+        }
+        // Built in part: one segment is down, one is not.
+        seq.edit_plan = Some(EditPlan { segments: vec![seg("Timeline", 0.0, 4.0), seg("Grade", 12.0, 17.0), seg("", 50.0, 53.0)], approved: true, ..Default::default() });
+        let r = check(&seq, &pool, &Screen(screen));
+        let drift = r.findings.iter().find(|f| f.rule == "plan_drift").unwrap_or_else(|| panic!("{}", r.text()));
+        assert!(drift.what.contains("segment 3 "), "{}", drift.what);
+        assert!(!rules(&r).contains(&"feature_unplanned") && !rules(&r).contains(&"feature_short"));
+        // Unapproved, the plan is a proposal and the timeline is not held to it.
+        seq.edit_plan.as_mut().unwrap().approved = false;
+        assert!(!rules(&check(&seq, &pool, &Screen(screen))).contains(&"plan_drift"));
     }
 
     #[test]

@@ -1385,7 +1385,12 @@ fn tool_definitions() -> Vec<Value> {
               frames, jump cuts with nothing over the join, titles across a cut or too short \
               to read, captions under a lower third, sound cut inside a word, music left at \
               full level under speech, picture and sound ending apart, offline media, and \
-              the brief: length, size, captions, cast, music. Every finding says where, \
+              the brief: length, size, captions, cast, music. On a screen recording with a \
+              beat sheet: a cut in or out while the screen is still changing, a screen too \
+              short to read, a title over a changing screen (with the file's hold windows \
+              to move it to), a flat cadence; a cut to a settle is not called a jump cut. \
+              With an edit plan: the brief's features it leaves out or gives under three \
+              seconds, and an approved plan not built or drifted from. Every finding says where, \
               what, and what would put it right. Changes nothing. Run it before klipp_export, \
               fix the errors, decide about the warnings. Pass color:true to also read a \
               frame of each shot on the top track through the scopes — clipped highlights, \

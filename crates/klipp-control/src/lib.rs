@@ -1013,6 +1013,18 @@ impl klipp_document::ops::Transcripts for AnalysedTranscripts {
     fn shot_changes(&self, item: &klipp_media::MediaItem) -> Vec<f64> {
         klipp_analysis::report::MediaAnalysis::load(&item.path).shots.map(|s| s.boundaries).unwrap_or_default()
     }
+
+    fn screen_beats(&self, item: &klipp_media::MediaItem) -> Option<klipp_document::ops::ScreenBeats> {
+        let bs = klipp_analysis::report::MediaAnalysis::load(&item.path).beatsheet?;
+        if !bs.has_freeze {
+            return None;
+        }
+        Some(klipp_document::ops::ScreenBeats {
+            action: bs.segments.iter().filter(|s| s.kind == "action").map(|s| (s.start_secs, s.end_secs)).collect(),
+            settles: bs.reveals.iter().copied().chain(bs.cut_points.iter().map(|c| c.secs)).collect(),
+            holds: bs.title_windows.iter().map(|w| (w.start_secs, w.end_secs)).collect(),
+        })
+    }
 }
 
 /// What to do after a batch of ops was applied, from the ops in it: the

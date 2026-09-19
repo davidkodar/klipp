@@ -585,6 +585,23 @@ pub trait Transcripts {
     fn shot_changes(&self, _item: &klipp_media::MediaItem) -> Vec<f64> {
         Vec::new()
     }
+    /// How `item`'s screen behaves over time, when it is a screen
+    /// recording with a beat sheet; `None` for a camera file or one
+    /// not analysed for it.
+    fn screen_beats(&self, _item: &klipp_media::MediaItem) -> Option<ScreenBeats> {
+        None
+    }
+}
+
+/// A screen recording's beat sheet as the check reads it, all in the
+/// file's seconds: where the screen was changing, where a change
+/// settled (the places to cut to), and where it held still long enough
+/// to carry a title.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ScreenBeats {
+    pub action: Vec<(f64, f64)>,
+    pub settles: Vec<f64>,
+    pub holds: Vec<(f64, f64)>,
 }
 
 /// No transcripts at all: `captions` is refused.
