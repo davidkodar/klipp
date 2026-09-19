@@ -189,6 +189,7 @@ fn sequence_to_json(seq: &Sequence, color: &ColorSettings, project_dir: &Path) -
         auto_generate_filmstrips: color.auto_generate_filmstrips,
         auto_generate_skim: color.auto_generate_skim,
         brief: seq.brief.clone(),
+        edit_plan: seq.edit_plan.clone(),
         last_playhead: seq.last_playhead.map(|rt| TimecodeJson { value: rt.value, rate: rt.rate }),
         markers: seq.markers.iter().map(|m| {
             MarkerJson {

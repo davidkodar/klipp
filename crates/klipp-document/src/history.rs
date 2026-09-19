@@ -144,6 +144,8 @@ pub enum EditCommand {
     AddTrack { index: usize, track: klipp_timeline::Track },
     /// The sequence's brief, replaced whole.
     SetBrief { old: Option<Box<klipp_timeline::Brief>>, new: Option<Box<klipp_timeline::Brief>> },
+    /// The sequence's edit plan, replaced whole.
+    SetEditPlan { old: Option<Box<klipp_timeline::EditPlan>>, new: Option<Box<klipp_timeline::EditPlan>> },
     /// Title clip added (with optional track creation for undo)
     AddTitleClip {
         clip: Clip,
@@ -630,6 +632,7 @@ impl EditCommand {
             EditCommand::AddTitleClip { .. } => "Add Title",
             EditCommand::AddTrack { .. } => "Add Track",
             EditCommand::SetBrief { .. } => "Set Brief",
+            EditCommand::SetEditPlan { .. } => "Set Edit Plan",
             EditCommand::LegacyAppendClip { .. } => "Append Clip",
             EditCommand::LinkedImport { .. } => "Add to Timeline",
             EditCommand::LegacyRemoveClip { .. } | EditCommand::LegacyRippleRemove { .. } => "Remove Clip",

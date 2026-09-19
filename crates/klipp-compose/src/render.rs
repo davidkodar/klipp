@@ -317,6 +317,7 @@ pub fn frame_snapshot(seq: &Sequence, time: Timecode) -> Sequence {
         markers: Vec::new(),
         last_playhead: None,
         brief: None,
+        edit_plan: None,
     }
 }
 

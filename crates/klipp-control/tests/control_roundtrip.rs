@@ -778,6 +778,31 @@ fn a_brief_is_set_and_the_piece_is_checked_against_it() {
     assert!(r["findings"].as_array().unwrap().iter().any(|f| f["rule"] == "no_brief"), "{r}");
 }
 
+/// The edit plan is proposed as a recorded edit, never approved by its
+/// proposer, and neither approved nor built when there is none; a plan
+/// that cannot be built is refused with which segment and why.
+#[test]
+fn an_edit_plan_is_proposed_unapproved_and_refused_when_it_cannot_build() {
+    let mut h = harness();
+    let r = h.ok(json!({ "method": "edit_plan" }));
+    assert_eq!(r["plan"], json!(null));
+    assert!(r["text"].as_str().unwrap().contains("no edit plan"), "{r}");
+    for method in ["approve_edit_plan", "build_edit_plan"] {
+        let r = h.call(json!({ "method": method }));
+        assert!(r["error"].as_str().unwrap().contains("no edit plan"), "{r}");
+    }
+
+    let r = h.call(json!({ "method": "set_edit_plan", "plan": { "segments": [] } }));
+    assert!(r["error"].as_str().unwrap().contains("at least one segment"), "{r}");
+    // The harness's pool is empty: a segment's file must exist.
+    let r = h.call(json!({ "method": "set_edit_plan", "plan": { "segments": [
+        { "media_id": "00000000-0000-0000-0000-000000000001", "source_in_secs": 1.0, "source_out_secs": 2.0 } ] } }));
+    assert!(r["error"].as_str().unwrap().contains("segment 1: no media item"), "{r}");
+    assert!(h.edits_seen.lock().unwrap().is_empty(), "a refused plan records nothing");
+    // A plan that says it is approved is stored unapproved all the same;
+    // that is checked in the document tests, where the pool has a file.
+}
+
 /// One call tells a session where it stands and what to do next.
 #[test]
 fn orient_hands_over_the_whole_situation() {

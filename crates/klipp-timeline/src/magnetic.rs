@@ -2066,6 +2066,7 @@ mod tests {
             markers: Vec::new(),
             last_playhead: None,
             brief: None,
+            edit_plan: None,
         }
     }
 
@@ -2095,6 +2096,7 @@ mod tests {
             markers: Vec::new(),
             last_playhead: None,
             brief: None,
+            edit_plan: None,
         }
     }
 

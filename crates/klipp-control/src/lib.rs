@@ -2277,7 +2277,10 @@ reference:   {}",
                 return read_in_batch("orient");
             }
             let project = project_status(ctx)?;
-            let brief = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?.brief.clone();
+            let (brief, edit_plan) = {
+                let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
+                (seq.brief.clone(), seq.edit_plan.clone())
+            };
             let statuses = klipp_analysis::service::all();
             let state_of = |path: &std::path::Path| -> serde_json::Value {
                 let filename = path.file_name().map(|f| f.to_string_lossy().to_string()).unwrap_or_default();
@@ -2317,8 +2320,12 @@ reference:   {}",
                 "Analysis is still running (see the media states). Read the transcript and the shots for the files that are done, and pull selects, while the rest finishes."
             } else if !all_analysed {
                 "Analyze the footage: analyze runs shots, sound, motion, the transcript and framing. Then read a transcript to pull selects, and find_shots for B-roll."
+            } else if clips == 0 && edit_plan.is_none() {
+                "The footage is analysed. Propose the paper edit: read each file's beat_sheet (and transcript, where there is speech) and set_edit_plan with one segment per beat of the brief's arc — a stretch of a file for each ranked feature, a note saying what it shows, titles where the beat sheet has a hold window. Then show it to the user for approval."
+            } else if clips == 0 && edit_plan.as_ref().is_some_and(|p| !p.approved) {
+                "An edit plan is proposed and awaits approval. Show it to the user (edit_plan gives the text); change it with set_edit_plan if they ask; on their word, approve_edit_plan, then build_edit_plan."
             } else if clips == 0 {
-                "The footage is analysed. Read a transcript (with words) to choose the selects, then place them; find_shots with no people for B-roll over the joins."
+                "The edit plan is approved. build_edit_plan shows what it builds; build_edit_plan with apply true builds it as one undo step."
             } else {
                 "Clips are down. Look with frame_at and contact_sheet, run check to hold the cut to the brief and the craft, fix what it finds, then export at the brief's loudness and save_project."
             };
@@ -2330,6 +2337,7 @@ reference:   {}",
                     "unsaved_changes_from": if project.dirty { project.changed_by.clone().or(Some("edits".into())) } else { None },
                 },
                 "brief": brief.as_ref().map(|b| b.text()),
+                "edit_plan": edit_plan.as_ref().map(|p| p.text(brief.as_ref().and_then(|b| b.target_secs))),
                 "media": media,
                 "sequence": seq_text,
                 "clips": clips,
@@ -2348,6 +2356,106 @@ reference:   {}",
                 Some(b) => json!({ "brief": b, "text": b.text() }),
                 None => json!({ "brief": null, "text": "There is no brief. Set one with set_brief: what the piece is about, its length, platform, loudness, whether it is captioned, and the cast with names and roles as they should appear." }),
             })
+        }
+
+        ControlCommand::EditPlan => {
+            if in_batch {
+                return read_in_batch("edit_plan");
+            }
+            let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
+            let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
+            Ok(match &seq.edit_plan {
+                Some(p) => {
+                    let ops = klipp_document::edit_plan::to_ops(p, &seq, &pool, seq.brief.as_ref());
+                    json!({
+                        "plan": p,
+                        "text": p.text(seq.brief.as_ref().and_then(|b| b.target_secs)),
+                        "approved": p.approved,
+                        "ops": ops,
+                        "next": if p.approved { "Approved. build_edit_plan shows what it builds; build_edit_plan with apply true builds it as one undo step." } else { "Show the plan to the user and ask for their approval; on their word, approve_edit_plan, then build_edit_plan." },
+                    })
+                }
+                None => json!({ "plan": null, "text": "There is no edit plan. Propose one with set_edit_plan: the segments in order, each a stretch of a file for a feature of the brief, with a note saying what it shows and why; titles, joins and a music bed as the piece wants them." }),
+            })
+        }
+
+        ControlCommand::SetEditPlan { mut plan } => {
+            if in_batch {
+                return Err("set_edit_plan is its own undo step; send it on its own".into());
+            }
+            let (old, brief, text) = {
+                let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
+                let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
+                klipp_document::edit_plan::validate(&plan, &pool, seq.brief.as_ref())?;
+                // A proposal is never its own approval.
+                plan.approved = false;
+                let text = plan.text(seq.brief.as_ref().and_then(|b| b.target_secs));
+                (seq.edit_plan.clone(), seq.brief.clone(), text)
+            };
+            let missing: Vec<String> = brief.as_ref().map(|b| b.ranked_features().iter().filter(|f| !plan.segments.iter().any(|s| s.feature.trim().eq_ignore_ascii_case(f.title.trim()))).map(|f| f.title.clone()).collect()).unwrap_or_default();
+            let edit = klipp_document::history::EditCommand::SetEditPlan { old: old.map(Box::new), new: Some(Box::new(plan)) };
+            let mut v = send_full_envelope(ctx, Vec::new(), vec![edit], true, None, Some("Set Edit Plan".into()))?;
+            v["text"] = json!(text);
+            if !missing.is_empty() {
+                v["note"] = json!(format!("the brief's features not in the plan: {}", missing.join(", ")));
+            }
+            v["next"] = json!("Show the plan to the user, as text, and ask whether to build it. On their word call approve_edit_plan; then build_edit_plan to see what it builds, and build_edit_plan with apply true to build it.");
+            Ok(v)
+        }
+
+        ControlCommand::ApproveEditPlan => {
+            if in_batch {
+                return Err("approve_edit_plan is its own undo step; send it on its own".into());
+            }
+            let old = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?.edit_plan.clone();
+            let Some(old) = old else {
+                return Err("there is no edit plan to approve; propose one with set_edit_plan".into());
+            };
+            if old.approved {
+                return Ok(json!({ "approved": true, "revision": ctx.shared.revision(), "text": "The edit plan is already approved.", "next": "build_edit_plan shows what it builds; with apply true it builds it." }));
+            }
+            let mut new = old.clone();
+            new.approved = true;
+            let edit = klipp_document::history::EditCommand::SetEditPlan { old: Some(Box::new(old)), new: Some(Box::new(new)) };
+            let mut v = send_full_envelope(ctx, Vec::new(), vec![edit], true, None, Some("Approve Edit Plan".into()))?;
+            v["approved"] = json!(true);
+            v["next"] = json!("Approved. build_edit_plan shows what it builds; build_edit_plan with apply true builds it as one undo step. Then look (frame_at, contact_sheet), check, and export.");
+            Ok(v)
+        }
+
+        ControlCommand::BuildEditPlan { apply, detail } => {
+            if in_batch {
+                return Err("build_edit_plan is its own batch; send it on its own".into());
+            }
+            let ops = {
+                let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
+                let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
+                let Some(plan) = seq.edit_plan.as_ref() else {
+                    return Err("there is no edit plan to build; propose one with set_edit_plan".into());
+                };
+                if !plan.approved {
+                    return Err("the edit plan is not approved; show it to the user and, on their word, approve_edit_plan".into());
+                }
+                klipp_document::edit_plan::validate(plan, &pool, seq.brief.as_ref()).map_err(|e| format!("the edit plan no longer builds: {e}"))?;
+                klipp_document::edit_plan::to_ops(plan, &seq, &pool, seq.brief.as_ref())
+            };
+            let (plan, revision) = resolve_plan(ctx, &ops)?;
+            let mut v = if apply {
+                let edits: Vec<klipp_document::history::EditCommand> = plan.steps.iter().map(|s| s.edit.clone()).collect();
+                let mut v = send_full_envelope(ctx, Vec::new(), edits, true, Some(revision), Some("Build Edit Plan".into()))?;
+                v["next"] = json!("Built. Look at it (frame_at at each cut, contact_sheet), run check to hold it to the brief and the craft, fix what it finds, then export at the brief's loudness and save_project.");
+                v
+            } else {
+                json!({ "revision": revision, "applied": false, "next": "That is what it builds. build_edit_plan with apply true builds it as one undo step." })
+            };
+            v["text"] = json!(if detail { plan.text() } else { plan.text_folded() });
+            v["steps_resolved"] = json!(plan.steps.len());
+            v["duration_secs"] = json!(plan.duration_secs);
+            v["ops"] = json!(ops);
+            if detail {
+                v["steps"] = json!(plan.report());
+            }
+            Ok(v)
         }
 
         ControlCommand::SetBrief { brief } => {
@@ -2372,6 +2480,15 @@ reference:   {}",
             }
             if brief.cast.iter().any(|c| c.name.trim().is_empty()) {
                 return Err("a cast member needs a name".into());
+            }
+            if brief.features.iter().any(|f| f.title.trim().is_empty()) {
+                return Err("a feature needs a title".into());
+            }
+            if let Some(dup) = brief.features.iter().enumerate().find(|(i, f)| brief.features[..*i].iter().any(|d| d.title.trim().eq_ignore_ascii_case(f.title.trim()))) {
+                return Err(format!("the feature \"{}\" is listed twice", dup.1.title));
+            }
+            if let Some(c) = brief.brand_colors.iter().find(|c| { let c = c.trim(); !(c.len() == 7 && c.starts_with('#') && c[1..].chars().all(|ch| ch.is_ascii_hexdigit())) }) {
+                return Err(format!("\"{c}\" is not a brand colour; give #rrggbb"));
             }
             let old = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?.brief.clone();
             let text = brief.text();

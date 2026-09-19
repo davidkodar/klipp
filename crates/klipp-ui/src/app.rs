@@ -4327,6 +4327,7 @@ impl KlippApp {
             markers: Vec::new(),
             last_playhead: None,
             brief: None,
+            edit_plan: None,
         };
 
         // Reproduce track structure and move clips (offset to start at 0)
@@ -17729,6 +17730,7 @@ impl KlippApp {
                     markers: Vec::new(),
                     last_playhead: None,
                     brief: None,
+                    edit_plan: None,
                 };
                 self.state.sequences = vec![seq];
                 self.state.active_sequence_idx = 0;
@@ -17829,6 +17831,7 @@ impl KlippApp {
                     markers: Vec::new(),
                     last_playhead: None,
                     brief: None,
+                    edit_plan: None,
                 };
                 self.state.sequences.push(seq);
                 self.state.dirty = true;
@@ -35612,6 +35615,7 @@ mod compound_clip_cycle_tests {
             markers: Vec::new(),
             last_playhead: None,
             brief: None,
+            edit_plan: None,
         }
     }
 

@@ -65,6 +65,10 @@ pub struct Sequence {
     /// What the piece is for; see [`crate::Brief`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub brief: Option<crate::Brief>,
+    /// The paper edit, proposed and approved before it is built; see
+    /// [`crate::EditPlan`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub edit_plan: Option<crate::EditPlan>,
 }
 
 impl Sequence {
@@ -88,6 +92,7 @@ impl Sequence {
             markers: Vec::new(),
             last_playhead: None,
             brief: None,
+            edit_plan: None,
         }
     }
 
@@ -2978,6 +2983,7 @@ mod tests {
             markers: Vec::new(),
             last_playhead: None,
             brief: None,
+            edit_plan: None,
         }
     }
 

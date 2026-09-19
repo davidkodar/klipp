@@ -100,6 +100,9 @@ pub struct SequenceJson {
     /// What the piece is for. Absent in projects saved before there was one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub brief: Option<klipp_timeline::Brief>,
+    /// The paper edit awaiting or past approval. Absent when there is none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub edit_plan: Option<klipp_timeline::EditPlan>,
 }
 
 fn default_header_width() -> f32 { 160.0 }

@@ -514,6 +514,14 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
         "klipp_orient" => json!({ "method": "orient" }),
         "klipp_brief" => json!({ "method": "brief" }),
         "klipp_set_brief" => json!({ "method": "set_brief", "brief": args.get("brief").cloned().ok_or("missing required argument: brief")? }),
+        "klipp_edit_plan" => json!({ "method": "edit_plan" }),
+        "klipp_set_edit_plan" => json!({ "method": "set_edit_plan", "plan": args.get("plan").cloned().ok_or("missing required argument: plan")? }),
+        "klipp_approve_edit_plan" => json!({ "method": "approve_edit_plan" }),
+        "klipp_build_edit_plan" => json!({
+            "method": "build_edit_plan",
+            "apply": args.get("apply").and_then(|v| v.as_bool()).unwrap_or(false),
+            "detail": args.get("detail").and_then(|v| v.as_bool()).unwrap_or(false),
+        }),
         "klipp_check" => json!({ "method": "check", "color": args.get("color").and_then(|v| v.as_bool()).unwrap_or(false) }),
         "klipp_rename_sequence" => json!({ "method": "rename_sequence", "name": arg_str(args, "name")? }),
         "klipp_save_project" => {
@@ -665,7 +673,7 @@ fn content_for(name: &str, result: &Value) -> Result<Vec<Value>, String> {
             return Ok(with_next(out));
         }
     }
-    if name == "klipp_timeline" || name == "klipp_media_analysis" || name == "klipp_plan" || name == "klipp_check" || name == "klipp_brief" || name == "klipp_transcript" || name == "klipp_cut_points" || name == "klipp_selects" || name == "klipp_style_profile" || name == "klipp_looks" || name == "klipp_frame_stats" {
+    if name == "klipp_timeline" || name == "klipp_media_analysis" || name == "klipp_plan" || name == "klipp_check" || name == "klipp_brief" || name == "klipp_edit_plan" || name == "klipp_build_edit_plan" || name == "klipp_transcript" || name == "klipp_cut_points" || name == "klipp_selects" || name == "klipp_style_profile" || name == "klipp_looks" || name == "klipp_frame_stats" {
         if let Some(text) = result.get("text").and_then(|v| v.as_str()) {
             return Ok(with_next(text.to_string()));
         }
@@ -1335,11 +1343,43 @@ fn tool_definitions() -> Vec<Value> {
               about (what the piece is about), tone, platform, target_secs, width and height \
               (the delivery's picture), loudness_lufs (about -14 for the web, -23 for \
               broadcast), captions (bool), music (bool), cast (a list of {name, role, \
-              described}), vocabulary (names, products and terms as they are spelt, for the \
+              described}), features (a list of {title, description, rank}: what the piece \
+              shows off, 1 the headline — the edit plan's segments name these), arc (its \
+              shape: \"hook, three features, call to action\"), cta (what the viewer is asked \
+              to do), brand_colors ([\"#rrggbb\", ...], the first is what titles take), \
+              vocabulary (names, products and terms as they are spelt, for the \
               speech-to-text: run klipp_analyze after setting it), notes. What is left out asks for nothing. Names in lower thirds \
               come from the cast, klipp_check holds the piece to the brief, and an export \
               that names no size or loudness takes the brief's.",
              json!({ "brief": { "type": "object" } }), vec!["brief"]),
+        tool("klipp_edit_plan",
+             "The edit plan: the paper edit, as text and as JSON, with whether it is approved and \
+              the ops it lowers to. Read it to show the user what is proposed, or to see what \
+              build_edit_plan would build.",
+             json!({}), vec![]),
+        tool("klipp_set_edit_plan",
+             "Propose the paper edit, as one undo step: the cut said before a clip is placed, so \
+              the user can read, change and approve it while changing it is cheap. `plan` is \
+              {segments: [...], music?: {media_id, duck_db?}, notes?}. Each segment, in cut \
+              order: {media_id, source_in_secs, source_out_secs, feature? (a title from the \
+              brief's features, as spelt there), note? (what it shows and why — write one), \
+              with_audio? (the file's own sound; off by default), title? {text, secs?, style? \
+              heading|callout|card}, transition? (\"cross_dissolve\", \"dip_to_black\": how it \
+              joins the segment before), zoom? {from?, to, x?, y?}}. Ground the stretches in \
+              klipp_beat_sheet: cut to a settled reveal and hold until it reads; put titles in \
+              a hold window. The plan is stored unapproved; the reply says which of the brief's \
+              features it leaves out. Show its text to the user and ask.",
+             json!({ "plan": { "type": "object" } }), vec!["plan"]),
+        tool("klipp_approve_edit_plan",
+             "Mark the edit plan approved, as one undo step. Call it only after the user has \
+              read the plan and said to build it — never on your own judgement.",
+             json!({}), vec![]),
+        tool("klipp_build_edit_plan",
+             "Build the approved edit plan onto the timeline after whatever is down, as a dry \
+              run by default — the reply says what it would build, step by step, and changes \
+              nothing. With apply true it is built as one undo step (undo takes it all back). \
+              Refused while the plan is unapproved. `detail` adds every step as JSON.",
+             json!({ "apply": { "type": "boolean" }, "detail": { "type": "boolean" } }), vec![]),
         tool("klipp_check",
              "The check before delivery, as an editor would watch it once: black and flash \
               frames, jump cuts with nothing over the join, titles across a cut or too short \

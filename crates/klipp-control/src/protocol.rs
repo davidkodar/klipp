@@ -433,6 +433,23 @@ pub enum ControlCommand {
     Brief,
     /// Replace the brief, as one undo step. Fields left out ask for nothing.
     SetBrief { brief: klipp_timeline::Brief },
+    /// The edit plan: the paper edit, proposed and approved before it is
+    /// built, with the ops it lowers to.
+    EditPlan,
+    /// Replace the edit plan, as one undo step. It is stored unapproved:
+    /// approval is the user's, given through `approve_edit_plan`.
+    SetEditPlan { plan: klipp_timeline::EditPlan },
+    /// Mark the edit plan approved, on the user's word. One undo step.
+    ApproveEditPlan,
+    /// Build the approved edit plan onto the timeline, after whatever is
+    /// down: a dry run that says what would be built, or with `apply`
+    /// the build itself as one undo step. `detail` adds the steps as JSON.
+    BuildEditPlan {
+        #[serde(default)]
+        apply: bool,
+        #[serde(default)]
+        detail: bool,
+    },
     /// The check before delivery: the timeline read against the craft's
     /// rules and the brief, every finding with where, what and what
     /// would put it right. Changes nothing. With `color`, it also

@@ -19,6 +19,20 @@ pub struct CastMember {
     pub described: String,
 }
 
+/// Something the piece shows off: a feature of the product, a beat of
+/// the story. The edit plan's segments name these, so every feature
+/// the brief ranks can be checked for in the cut.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct Feature {
+    pub title: String,
+    /// What it is and what the viewer should take from seeing it.
+    #[serde(default)]
+    pub description: String,
+    /// 1 is the headline; higher numbers matter less. 0 is unranked.
+    #[serde(default)]
+    pub rank: u32,
+}
+
 /// What the piece is for. Every field is optional in the sense that an
 /// empty or absent one asks for nothing; what is given is checked.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -54,6 +68,18 @@ pub struct Brief {
     pub music: bool,
     #[serde(default)]
     pub cast: Vec<CastMember>,
+    /// What it shows, ranked: the features a promo walks through.
+    #[serde(default)]
+    pub features: Vec<Feature>,
+    /// The shape of the piece: "hook, three features, call to action".
+    #[serde(default)]
+    pub arc: String,
+    /// What the viewer is asked to do at the end: "try it free at …".
+    #[serde(default)]
+    pub cta: String,
+    /// The brand's colours as `#rrggbb`, first the one titles take.
+    #[serde(default)]
+    pub brand_colors: Vec<String>,
     /// How things are spelt: names, products and terms of art the
     /// speech-to-text would otherwise guess at ("Omarchy", "QML"). The
     /// cast's names count without being listed.
@@ -75,6 +101,24 @@ impl Brief {
     /// names, then the vocabulary.
     pub fn spellings(&self) -> Vec<String> {
         self.cast.iter().map(|c| c.name.clone()).chain(self.vocabulary.iter().cloned()).filter(|w| !w.trim().is_empty()).collect()
+    }
+
+    /// The feature called `title`, compared without case or outer space.
+    pub fn feature(&self, title: &str) -> Option<&Feature> {
+        let want = title.trim().to_lowercase();
+        self.features.iter().find(|f| f.title.trim().to_lowercase() == want)
+    }
+
+    /// The features in rank order, the unranked last, ties as listed.
+    pub fn ranked_features(&self) -> Vec<&Feature> {
+        let mut v: Vec<&Feature> = self.features.iter().collect();
+        v.sort_by_key(|f| if f.rank == 0 { u32::MAX } else { f.rank });
+        v
+    }
+
+    /// The first brand colour, the one titles take, if any.
+    pub fn primary_color(&self) -> Option<&str> {
+        self.brand_colors.iter().map(|c| c.trim()).find(|c| !c.is_empty())
     }
 
     /// How far a length may be from the target and still be the brief's:
@@ -109,6 +153,26 @@ impl Brief {
                 who.push_str(&format!(" ({})", c.described));
             }
             out.push(format!("Cast: {who}"));
+        }
+        for f in self.ranked_features() {
+            let mut what = f.title.clone();
+            if !f.description.trim().is_empty() {
+                what.push_str(&format!(" — {}", f.description));
+            }
+            if f.rank > 0 {
+                out.push(format!("Feature {}: {what}", f.rank));
+            } else {
+                out.push(format!("Feature: {what}"));
+            }
+        }
+        if !self.arc.trim().is_empty() {
+            out.push(format!("Arc: {}", self.arc));
+        }
+        if !self.cta.trim().is_empty() {
+            out.push(format!("Call to action: {}", self.cta));
+        }
+        if !self.brand_colors.is_empty() {
+            out.push(format!("Colours: {}", self.brand_colors.join(", ")));
         }
         if !self.vocabulary.is_empty() {
             out.push(format!("Spelt: {}", self.vocabulary.join(", ")));
