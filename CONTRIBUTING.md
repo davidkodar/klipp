@@ -1,7 +1,157 @@
 # Contributing to Klipp
 
 Thanks for taking a look. This is a short, practical guide — read
-`ARCHITECTURE.md` alongside for the system map.
+`ARCHITECTURE.md` alongside for the system map, and
+`CODE_OF_CONDUCT.md` for how we treat each other.
+
+Klipp is pre-release and moves fast. That makes some kinds of
+contribution much easier to accept than others, so this document leads
+with the process rather than the build.
+
+---
+
+## Before you write code
+
+**Open an issue first.** For anything beyond a typo or an obvious
+one-line fix, describe the problem before you write the fix. Klipp has
+a lot of load-bearing invariants that are not visible from the call
+site — the colour pipeline is linear-light end to end, the decode loop
+is two-phase, GPU and CPU render paths are held to each other frame for
+frame — and a patch that violates one of them is a patch nobody can
+merge, however good the code is. Ten minutes in an issue saves you an
+afternoon.
+
+There are two issue forms:
+
+* **Bug report** — what you did, what happened, what you expected.
+  Include your distribution, GPU and driver, `klipp --version`, and the
+  relevant part of `klipp-debug.log`. A bug we cannot reproduce is a
+  bug we cannot fix.
+* **Feature request** — the problem you have, not the solution you have
+  in mind. "I cannot tell which take is sharpest" is a better request
+  than "add a focus-peaking overlay", because the first admits more
+  answers.
+
+Good things to pick up: anything labelled `good first issue`, missing
+or wrong attribution in the credits, distribution packaging beyond
+Arch, and failures on GPUs we do not have — AMD and Intel coverage is
+genuinely thin and reports from those machines are valuable.
+
+Things to discuss before building: a new crate, a new dependency, a new
+model in the manifest, anything that changes the `.klipp` format, and
+anything that touches the colour pipeline's numerical output.
+
+---
+
+## How work gets merged
+
+`main` is the only long-lived branch. It is always buildable and always
+green, and nothing is pushed to it directly — not by contributors, not
+by the maintainer. Everything arrives as a pull request.
+
+```
+main  ──●──●──●──●──●──●──●──▶   protected, always green
+         ╲        ╱      ╲  ╱
+          ●──●──●'        ●─'    short-lived branches, one PR each
+
+            ▲                ▲
+        v0.1.0-rc.1      v0.1.0   ← releases are tags, not branches
+```
+
+Releases are **tags**, because being released is a property of a
+commit, not of a branch. A release candidate is `v0.1.0-rc.1`; the
+release is `v0.1.0`. If a shipped version ever needs a fix while `main`
+has moved past it, a `release/0.1.x` branch is cut from the tag at that
+moment — there is no permanently-maintained stable or dev tree, and
+adding one before there is something to maintain would just be a
+promotion chore.
+
+The flow:
+
+0. Run `scripts/install-hooks.sh` if you have not already.
+1. Fork, or branch if you have push access. Name the branch for what it
+   does: `fix/decode-eagain-retry`, `feat/focus-peaking`.
+2. Keep it short-lived. A branch that lives a week is a branch that
+   conflicts.
+3. Open a PR against `main`. Fill in the template; link the issue.
+4. It gets reviewed. Expect questions about invariants more than about
+   style.
+5. The maintainer runs the full suite locally on a machine with a GPU.
+6. It lands **squash-merged**, so `main` keeps one commit per logical
+   change. Write your PR title as the commit subject you want — see
+   [Commit style](#commit-style).
+
+---
+
+## Who may be the author of a commit
+
+**Commit under your own name and your own email address.** This is not
+negotiable, and it applies to everyone including the maintainer.
+
+Specifically:
+
+* **Never set an AI agent as the author or committer of a commit.** Not
+  as `author`, not as `committer`, not in a `Co-Authored-By` trailer,
+  not in the PR description. Klipp is written with heavy AI assistance
+  and that is not a secret — but a commit's authorship is a statement
+  about *who is answerable for this code*, and a model cannot be
+  answerable for anything. The person who read the diff and decided to
+  ship it is the author. If you did not read it, do not send it.
+* **No `Co-Authored-By` trailers at all**, for humans either. If two
+  people worked on a change, say so in the body in prose.
+* Use a real, reachable email. `git config user.email` should be
+  something we can contact you at. GitHub's `noreply` addresses are
+  fine.
+
+Using an AI to help write a patch is welcome and expected. Sending one
+you have not read and cannot explain is not — and in review it shows
+immediately, because the first question is always "why does this need
+to change?"
+
+### Sign your work
+
+Klipp uses the [Developer Certificate of Origin](https://developercertificate.org/)
+(DCO) — the same one-line attestation the Linux kernel uses. There is
+no CLA and you keep your copyright.
+
+Add a `Signed-off-by` line to each commit:
+
+```bash
+git commit -s -m "Subject line"
+```
+
+which appends:
+
+```
+Signed-off-by: Your Name <your.email@example.com>
+```
+
+By doing that you certify the terms at the link above: in short, that
+you wrote the patch or have the right to submit it under the project's
+licence, and that you are content for it to be distributed under that
+licence forever.
+
+The name in `Signed-off-by` must be a real name and must match the
+commit author. This is the mechanism that makes the rule above
+enforceable rather than decorative: an agent cannot sign off, because
+signing off is a statement a person makes.
+
+---
+
+## Licence
+
+Klipp is **GPL-3.0**, and contributions are accepted under GPL-3.0.
+See `LICENSE` for the full text.
+
+This is not an arbitrary choice: Klipp links against an FFmpeg built
+with `--enable-gpl --enable-version3` (x264 and x265 are GPL), and
+hosts frei0r plugins, which are GPL too. A permissively-licensed Klipp
+would be a permissive label on source that can only be built into a
+GPL binary — which helps nobody and misleads the reader.
+
+If you add a dependency, check its licence is compatible and add it to
+the credits section of `README.md`. `cargo deny check licenses` is the
+mechanical version of that check.
 
 ---
 
@@ -61,7 +211,64 @@ cargo install cargo-audit cargo-deny cargo-outdated cargo-udeps cargo-nextest to
 * **cargo nextest run** — faster test runner with better reporting.
 * **tokei crates/** — LOC / comments / blanks per crate.
 
-None of these are wired into CI yet. Contributions welcome.
+### The gate runs on your machine
+
+**Install the hooks. This is step one, before you write anything:**
+
+```bash
+scripts/install-hooks.sh     # once, after cloning
+```
+
+After that every `git push` runs the authorship check, clippy with
+`-D warnings`, a rustdoc pass, and `cargo test --workspace` — about
+75 s warm — and refuses the push on any failure.
+
+Klipp's tests run locally rather than in CI, and this is a deliberate
+choice rather than a gap we have not got round to.
+
+The reason is that **the tests need a GPU and a cloud runner does not
+have one**. Klipp's correctness argument for the colour pipeline is
+that its CPU and GPU paths agree, and around ninety of the tests that
+check this are written to skip when a GPU constructor returns `None`.
+That is right on a machine with no GPU — and it means a cloud runner
+reports a confident green on a build where a shader stopped compiling.
+Your laptop is a *better* gate than GitHub's runner, not a worse one.
+
+There is a CI workflow in `.github/workflows/`, and it is dormant:
+it is guarded on the repository being public, because Actions minutes
+are metered on private repositories and a cold build of this workspace
+would spend a month's budget in a handful of runs. It switches itself
+on when the repo goes public — which is both when minutes become free
+and when people start contributing from forks, where nobody can be made
+to install a hook. Even then it will be **advisory**, for the GPU
+reason above.
+
+`KLIPP_SKIP_TESTS=1 git push` bypasses the hook for a genuine reason (a
+work-in-progress branch, a mid-bisect push, a machine with no GPU). It
+is not for getting a red suite past the gate.
+
+**If you have no GPU**, say so in the PR. Your run will have skipped
+the parity tests without telling you, and the maintainer will run the
+full suite on real hardware before merging. That is the backstop, and
+it is why an unverifiable "I ran the tests" costs nobody anything: the
+claim is a courtesy that saves a round-trip, not the thing being
+trusted.
+
+### Checking authorship without pushing
+
+The sign-off and authorship rules are checked by the same hook, and you
+can run them over any range yourself:
+
+```bash
+scripts/check-signoff.sh                 # origin/main..HEAD
+scripts/check-signoff.sh main..my-branch
+```
+
+It is instant, and it runs before clippy so a commit that needs
+amending does not cost you 75 s first.
+
+If you do not have a GPU, say so in the PR. The maintainer will run the
+full suite locally before merging.
 
 ---
 
@@ -109,8 +316,9 @@ None of these are wired into CI yet. Contributions welcome.
    naga validation fails silently and the effect breaks at runtime.
    The Rust `#[repr(C)]` struct can still use `[u32; N]`.
 
-8. **No commits without explicit OK.** Direct-to-main is discouraged;
-   unsaved user work on a broken change is expensive.
+8. **Nothing lands on `main` except through a PR** — see
+   [How work gets merged](#how-work-gets-merged). `main` is protected,
+   so this is enforced rather than merely asked for.
 
 ---
 
@@ -123,9 +331,12 @@ None of these are wired into CI yet. Contributions welcome.
 * Messages explain **why**, not **what** — the diff shows the what.
 * Short subject line (≤ 70 chars), imperative mood, no trailing full
   stop. Blank line. Body wrapped at ~72.
-* No `Co-Authored-By` trailers. No references to audit-internal item
-  IDs or internal planning documents — commit messages are the
-  public-facing record of the code's history.
+* No `Co-Authored-By` trailers, and no AI agent as author or
+  committer — see [Who may be the author of a commit](#who-may-be-the-author-of-a-commit).
+* Sign off with `git commit -s`.
+* No references to audit-internal item IDs or internal planning
+  documents — commit messages are the public-facing record of the
+  code's history.
 
 Example:
 
@@ -148,9 +359,11 @@ is always preferable to a crash.
 
 ## Pull request checklist
 
-Before you open a PR (or before you ask me to review, if we're
-pair-shipping):
+Before you open a PR:
 
+0. Every commit is signed off (`git commit -s`), authored under your
+   own name and email, with no agent as author, committer or
+   co-author.
 1. `cargo c` clean — zero new clippy warnings. The pre-push git hook
    enforces this: it runs `clippy -D warnings`, a rustdoc pass, and the
    workspace tests, and blocks the push on any failure.
@@ -168,8 +381,36 @@ pair-shipping):
 
 ---
 
+## Releasing
+
+For the maintainer, and written down so it is the same every time.
+
+1. `main` is green and the working tree is clean.
+2. Tag a candidate: `git tag -a v0.1.0-rc.1 -m "v0.1.0-rc.1"` and push
+   the tag. Live with it for a few days on real work.
+3. If it holds, tag the release: `git tag -a v0.1.0 -m "v0.1.0"`, push,
+   and cut a GitHub Release from the tag with notes written from the
+   commits since the last one.
+4. Only if a shipped release later needs a fix while `main` has moved
+   on: `git switch -c release/0.1.x v0.1.0`, fix there, tag `v0.1.1`,
+   and cherry-pick the fix onto `main`. Do not create that branch in
+   advance.
+
+---
+
+## Security
+
+Do not open a public issue for a security problem. `SECURITY.md` says
+where to send it.
+
+---
+
 ## Where to ask questions
 
 `ARCHITECTURE.md` answers most structural questions. For specific
 invariants, the relevant crate's `//!` docstring is the fastest
 lookup (`cargo doc --open`, navigate to the crate).
+
+Beyond that: open an issue. A question that took you an hour to answer
+from the source is a documentation bug, and saying so is a
+contribution.

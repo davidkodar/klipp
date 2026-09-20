@@ -2,10 +2,16 @@
 # Run clippy, rustdoc and the workspace's tests before anything leaves
 # this machine.
 #
-# This is the project's only automated gate. There is no CI — the repo is
-# private and cloud runners were ruled out — so without this, nothing ever
-# runs the test suite except a human remembering to. That matters more
-# here than it would elsewhere for two reasons:
+# This is the project's real gate. There is a CI workflow, but it stays
+# dormant while the repository is private — Actions minutes are metered
+# there, and a cold build of this workspace would eat the month's budget
+# in a handful of runs. It switches itself on when the repo goes public,
+# which is both when the minutes become free and when contributors who
+# cannot be made to install this hook start showing up.
+#
+# So for now, without this, nothing ever runs the test suite except a
+# human remembering to. That matters more here than it would elsewhere
+# for two reasons:
 #
 #   * the suite is the correctness argument for a colour pipeline whose
 #     CPU and GPU paths have to agree, and most of those parity tests can
@@ -63,8 +69,13 @@ if ! command -v cargo >/dev/null 2>&1; then
     exit 1
 fi
 
-printf '\n  pre-push: clippy, rustdoc, then the workspace tests (~75 s warm).\n'
+printf '\n  pre-push: sign-off, clippy, rustdoc, then the workspace tests (~75 s warm).\n'
 printf '            KLIPP_SKIP_TESTS=1 git push   to bypass.\n\n'
+
+if ! "$ROOT/scripts/check-signoff.sh"; then
+    printf '  pre-push: authorship check failed — push refused.\n\n' >&2
+    exit 1
+fi
 
 if ! cargo clippy --workspace --all-targets -- -D warnings; then
     printf '\n  pre-push: clippy warned — push refused.\n' >&2

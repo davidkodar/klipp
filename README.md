@@ -281,6 +281,30 @@ See the AI Models table above; each model retains its upstream attribution and l
 
 Klipp stands on a lot of open-source work. Beyond the crates in the tech stack, it links or builds against, and is grateful to, [FFmpeg](https://ffmpeg.org/) (decode / encode / analysis), the [Vulkan](https://www.vulkan.org/) loader and [wgpu](https://wgpu.rs/) (all GPU work), [whisper.cpp / ggml](https://github.com/ggerganov/whisper.cpp) (speech, via [whisper-rs](https://crates.io/crates/whisper-rs)), [PaddleOCR](https://github.com/PaddlePaddle/PaddleOCR) (on-screen text), [Piper](https://github.com/rhasspy/piper) (the scratch voice), [libfacedetection / YuNet](https://github.com/ShiqiYu/libfacedetection) (faces), [egui](https://github.com/emilk/egui) (UI), [cpal](https://crates.io/crates/cpal) and the [LV2](https://lv2plug.in/) ecosystem via [lilv](https://gitlab.com/lv2/lilv) (audio), [frei0r](https://frei0r.dyne.org/) (video plugins), and [Jamendo](https://www.jamendo.com/) and [Freesound](https://freesound.org/) (the music and sound-effect libraries). Each is used under its own licence. Contributions of missing or incorrect attribution are welcome — open an issue.
 
+## Contributing
+
+Issues and pull requests are welcome — read
+[CONTRIBUTING.md](CONTRIBUTING.md) first, and
+[CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) alongside it. Two rules are
+worth knowing before you start: open an issue before writing anything
+non-trivial, and **commit under your own name** — contributions are
+signed off under the [DCO](https://developercertificate.org/), and an
+AI agent is never the author, committer or co-author of a commit.
+Security problems go through [SECURITY.md](SECURITY.md), not the issue
+tracker.
+
+Klipp's tests run on your machine rather than in CI — `scripts/install-hooks.sh`
+after cloning, and every `git push` then runs the suite. That is not a
+gap: the colour pipeline's correctness argument is that its CPU and GPU
+paths agree, and a cloud runner has no GPU to check it with.
+
 ## License
 
-GPL-3.0.
+**GPL-3.0** — see [LICENSE](LICENSE) for the full text.
+
+Klipp links against an FFmpeg built with `--enable-gpl
+--enable-version3` (x264 and x265 are GPL) and hosts frei0r plugins,
+which are GPL as well, so the editor you build from this source is a
+GPL work whatever label the repository carried. The licence says what
+is already true rather than choosing against the grain of the
+dependencies.

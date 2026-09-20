@@ -1,0 +1,72 @@
+name: Bug report
+description: Something in Klipp behaves wrongly
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. A bug we can reproduce is a bug we can fix,
+        so the environment and log fields below matter more than they look.
+
+        If this is a **security** problem, close this and follow
+        [SECURITY.md](../blob/main/SECURITY.md) instead — do not post it
+        publicly.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you did, what Klipp did, and what you expected instead.
+      placeholder: |
+        1. Imported a 4K ProRes clip
+        2. Dragged it to the timeline
+        3. Pressed play
+        → the viewer stayed black; expected the first frame
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Klipp version
+      description: "`klipp --version`, or the commit you built from."
+      placeholder: r1842.f5a62523
+    validations:
+      required: true
+
+  - type: input
+    id: distro
+    attributes:
+      label: Distribution and kernel
+      placeholder: Omarchy 4.0.4 / Arch, kernel 7.2.3
+    validations:
+      required: true
+
+  - type: input
+    id: gpu
+    attributes:
+      label: GPU and driver
+      description: Vendor, model and driver version. `vulkaninfo --summary | head -30` covers it.
+      placeholder: NVIDIA RTX 4080, 580.82.09
+    validations:
+      required: true
+
+  - type: textarea
+    id: log
+    attributes:
+      label: Relevant part of klipp-debug.log
+      description: >
+        At the workspace root, or ~/.local/share/klipp/. Run with
+        `RUST_LOG=debug` if the default log says nothing. Paste the part
+        around the failure rather than the whole file.
+      render: text
+
+  - type: textarea
+    id: media
+    attributes:
+      label: Media details
+      description: >
+        If it involves a specific file, its `ffprobe` output — codec,
+        pixel format, colour metadata and frame rate are usually the
+        first thing we need.
+      render: text
