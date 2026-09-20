@@ -27075,6 +27075,16 @@ impl eframe::App for KlippApp {
                 self.state.scope_bloom,
             );
             self.scope_window_runtime.hdr_levels = self.state.hdr_monitor.renders_hdr();
+            // The look's skin level, for the false-colour pane's green
+            // band, so it agrees with the skin findings rather than
+            // being a second opinion from a fixed IRE window.
+            self.state.scope_window.look_skin_l = self
+                .state
+                .sequence()
+                .brief
+                .as_ref()
+                .and_then(|b| b.look.as_ref())
+                .and_then(|l| l.skin_l);
             crate::widgets::scope_window::show_scope_window(
                 ctx,
                 &mut self.state.scope_window,

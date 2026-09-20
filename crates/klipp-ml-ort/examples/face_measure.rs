@@ -43,12 +43,14 @@ fn main() {
     let mut look_name = "broadcast_neutral".to_string();
     let mut secs = 0.0f64;
     let mut matching = false;
+    let mut false_colour_dir: Option<String> = None;
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
             "--look" => { look_name = args.remove(i + 1); args.remove(i); }
             "--secs" => { secs = args.remove(i + 1).parse().unwrap_or(0.0); args.remove(i); }
             "--match" => { matching = true; args.remove(i); }
+            "--false-colour" => { false_colour_dir = Some(args.remove(i + 1)); args.remove(i); }
             _ => i += 1,
         }
     }
@@ -99,6 +101,23 @@ fn main() {
         }
         let step = measure::primaries_toward(&m, &look);
         println!("   toward the look: exposure {:+.2} lift {:+.3} gain {:+.3} temp {:+.3} tint {:+.3} sat {:+.2}\n", step.exposure, step.lift, step.gain, step.temperature, step.tint, step.saturation);
+        // The picture repainted by exposure, if asked for: the fastest
+        // way to see whether the skin band lands where a face is.
+        if let Some(dir) = &false_colour_dir {
+            let mut look = look.clone();
+            // The look's own skin level, or this face's, so the band is
+            // where the picture says a face should be.
+            if look.skin_l.is_none() {
+                look.skin_l = m.faces.iter().find(|f| f.readable()).map(|f| f.median.l);
+            }
+            let painted = klipp_color::false_colour::repaint(&rgba, w, h, &look);
+            let out = std::path::Path::new(dir).join(format!("{}-false.png", name.trim_end_matches(".jpg").trim_end_matches(".mp4")));
+            let _ = std::fs::create_dir_all(dir);
+            match write_png(&out, &painted, w, h) {
+                Ok(()) => println!("   false colour → {}", out.display()),
+                Err(e) => println!("   false colour failed: {e}"),
+            }
+        }
         measured.push((name, m));
     }
     if matching && measured.len() > 1 {
@@ -121,6 +140,15 @@ fn main() {
             println!();
         }
     }
+}
+
+/// An RGBA frame as a PNG.
+fn write_png(path: &std::path::Path, rgba: &[u8], w: u32, h: u32) -> Result<(), String> {
+    let file = std::fs::File::create(path).map_err(|e| e.to_string())?;
+    let mut enc = png::Encoder::new(std::io::BufWriter::new(file), w, h);
+    enc.set_color(png::ColorType::Rgba);
+    enc.set_depth(png::BitDepth::Eight);
+    enc.write_header().map_err(|e| e.to_string())?.write_image_data(rgba).map_err(|e| e.to_string())
 }
 
 /// The face model in the app's cache.

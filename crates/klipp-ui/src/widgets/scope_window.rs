@@ -614,7 +614,21 @@ fn render_pane_scope(
                         })
                     });
 
-                if let Some(image) = scope_texture {
+                if pane.scope_type == ScopeType::FalseColour {
+                    // The displayed frame repainted by exposure. This
+                    // one *does* read `fb.data`, unlike the CIE plot:
+                    // false colour is a statement about the picture as
+                    // shown, so the display transform belongs in it.
+                    let mut look = klipp_color::measure::LookTarget::preset("broadcast_neutral").unwrap_or_default();
+                    if let Some(l) = state.look_skin_l {
+                        look.skin_l = Some(l);
+                    }
+                    let painted = klipp_color::false_colour::repaint(&fb.data, fb.width, fb.height, &look);
+                    Some((
+                        egui::ColorImage::from_rgba_unmultiplied([fb.width as usize, fb.height as usize], &painted),
+                        fb.generation,
+                    ))
+                } else if let Some(image) = scope_texture {
                     Some((image, gen))
                 } else if pane.scope_type == ScopeType::CIEChromaticity
                     && !fb.cie_samples.is_empty()
@@ -1065,6 +1079,9 @@ pub fn draw_scope_cursor_indicator(
                 }
             }
         }
+        // The cursor has nothing to point at on a false colour: the
+        // picture is where it already is, and the reading is its colour.
+        ScopeType::FalseColour => {}
         ScopeType::CIEChromaticity => {
             // Read the picture, exactly as the plot does — and draw nothing
             // rather than guess when the samples are not there yet, since a
@@ -1116,6 +1133,11 @@ fn draw_pane_settings(
         ScopeType::Histogram => draw_histogram_settings(ui, pane_idx, state, theme),
         ScopeType::CIEChromaticity => {
             ui.label("No settings available.");
+        }
+        ScopeType::FalseColour => {
+            ui.label("No settings available.");
+            ui.small("The picture repainted by exposure. Purple is at black and red is at white — both mean detail already gone.");
+            ui.small("Pink means skin is exposed as the look asks, as it is on an ARRI or a Blackmagic, taken from the brief's skin level, so it agrees with the skin findings rather than being a second opinion.");
         }
         ScopeType::AudioSpectrum => {
             ui.label("No settings available.");

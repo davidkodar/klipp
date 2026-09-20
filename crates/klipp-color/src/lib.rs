@@ -56,6 +56,7 @@ pub mod curves;
 pub mod denoise;
 pub mod difference_key;
 pub mod display;
+pub mod false_colour;
 pub mod gamut;
 /// The primary grade's model, shared with the GPU grade in `klipp-effects`.
 pub use klipp_grade_model as grade_model;

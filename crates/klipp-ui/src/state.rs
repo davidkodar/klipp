@@ -2731,6 +2731,11 @@ pub enum ScopeType {
     Vectorscope,
     Histogram,
     CIEChromaticity,
+    /// The picture repainted by exposure, with a band that means "skin
+    /// is exposed as the look asks". A colourist cannot judge exposure
+    /// by looking, because the eye adapts; this paints the answer onto
+    /// the face itself.
+    FalseColour,
     AudioSpectrum,
     /// Audio phase/correlation goniometer — Lissajous plot of L vs R plus
     /// a Pearson-correlation strip meter. Audio-only (skips the video
@@ -2764,6 +2769,7 @@ impl ScopeType {
             Self::Vectorscope => "Vectorscope",
             Self::Histogram => "Histogram",
             Self::CIEChromaticity => "CIE Chromaticity",
+            Self::FalseColour => "False Colour",
             Self::AudioSpectrum => "Audio Spectrum",
             Self::AudioCorrelation => "Audio Correlation",
             Self::LoudnessHistory => "Loudness History",
@@ -2771,9 +2777,9 @@ impl ScopeType {
         }
     }
 
-    pub const ALL: [ScopeType; 9] = [
-        Self::Waveform, Self::Parade, Self::Vectorscope, Self::Histogram, Self::CIEChromaticity, Self::AudioSpectrum,
-        Self::AudioCorrelation, Self::LoudnessHistory, Self::Spectrogram,
+    pub const ALL: [ScopeType; 10] = [
+        Self::Waveform, Self::Parade, Self::Vectorscope, Self::Histogram, Self::CIEChromaticity, Self::FalseColour,
+        Self::AudioSpectrum, Self::AudioCorrelation, Self::LoudnessHistory, Self::Spectrogram,
     ];
 
     /// Convert to ScopeMode for the existing render pipeline (CIE/Audio scopes have no video render mode).
@@ -2784,6 +2790,7 @@ impl ScopeType {
             Self::Vectorscope => Some(ScopeMode::Vectorscope),
             Self::Histogram => Some(ScopeMode::Histogram),
             Self::CIEChromaticity => None,
+            Self::FalseColour => None,
             Self::AudioSpectrum => None,
             Self::AudioCorrelation => None,
             Self::LoudnessHistory => None,
@@ -3097,6 +3104,12 @@ pub struct ScopeWindowState {
     pub show_legal_range: bool,
     pub vectorscope_scale: VectorscopeScaleStyle,
     pub qualifier_focus: bool,
+    /// The skin level the brief's look asks for, as the false-colour
+    /// pane's green band. Set from the sequence each frame rather than
+    /// read here, because this state is serialised with the window
+    /// layout and a look belongs to the project, not to the window.
+    #[serde(skip)]
+    pub look_skin_l: Option<f32>,
 }
 
 impl Default for ScopeWindowState {
@@ -3112,6 +3125,7 @@ impl Default for ScopeWindowState {
             show_legal_range: false,
             vectorscope_scale: VectorscopeScaleStyle::default(),
             qualifier_focus: false,
+            look_skin_l: None,
         }
     }
 }

@@ -18,6 +18,7 @@ ort = ["dep:ort"]
 cuda = ["ort", "ort?/cuda"]
 
 [dependencies]
+png = "0.18"
 klipp-ml    = { workspace = true }
 klipp-color = { workspace = true }
 bitflags    = { workspace = true }

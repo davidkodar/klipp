@@ -2977,6 +2977,7 @@ dependencies = [
  "klipp-color",
  "klipp-ml",
  "ort",
+ "png 0.18.1",
  "thiserror 1.0.69",
  "tracing",
 ]
