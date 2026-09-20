@@ -795,6 +795,13 @@ pub struct TimelinePanel {
     /// once per `analysis_generation` while a search is open.
     pub(crate) screen_text_cache: std::collections::HashMap<klipp_core::MediaId, std::rc::Rc<Vec<crate::panels::timeline_search::ScreenLine>>>,
     pub(crate) screen_text_cache_generation: u64,
+    /// Which clip the Colour strip has already been scrolled to reveal.
+    ///
+    /// Only so the reveal fires when the selection changes rather than
+    /// every frame — otherwise it would fight the user scrolling the
+    /// strip by hand. Cleared on leaving Colour, so coming back reveals
+    /// again. `None` in every other workspace.
+    pub(crate) colour_revealed_clip: Option<ClipId>,
 }
 
 /// Tracks the most-recent on-snap legend kind + when it changed, so
@@ -1227,6 +1234,7 @@ impl TimelinePanel {
             .sum();
         let available_h = content_rect.bottom() - tracks_start_y;
         let max_scroll_y = (total_tracks_h - available_h).max(0.0);
+        self.reveal_graded_track(state, available_h);
         state.timeline_scroll_y = state.timeline_scroll_y.clamp(0.0, max_scroll_y);
         let scroll_y = state.timeline_scroll_y;
         let tracks_clip_bottom = content_rect.bottom();
@@ -1833,6 +1841,56 @@ impl TimelinePanel {
             row_top += track_row_height(&seq.tracks[ti]);
         }
         state.timeline_scroll_y = row_top;
+    }
+
+    /// Bring the track holding the clip being graded into the Colour
+    /// strip, when the selection changes.
+    ///
+    /// Colour's timeline is deliberately a ribbon — 112 px by default,
+    /// which is two track rows. On any sequence with titles or B-roll
+    /// above the main video, the clip actually being graded sits below
+    /// those two rows, so the strip showed everything except the shot
+    /// on screen, with nothing to say there was more underneath.
+    ///
+    /// Only a reveal, never a re-centre: a track already fully visible
+    /// is left exactly where it is, so this cannot yank the strip
+    /// around while someone is working in it. Scrolling the strip by
+    /// hand then stays put until the selection next changes.
+    fn reveal_graded_track(&mut self, state: &mut AppState, available_h: f32) {
+        if !state.show_color_panel {
+            self.colour_revealed_clip = None;
+            return;
+        }
+        let Some(clip_id) = state.selected_clip else { return };
+        if self.colour_revealed_clip == Some(clip_id) {
+            return;
+        }
+        self.colour_revealed_clip = Some(clip_id);
+
+        let seq = state.sequence();
+        let Some((track_idx, _)) = seq.find_clip(clip_id) else { return };
+        let mut row_top = 0.0_f32;
+        for ti in 0..track_idx {
+            row_top += track_row_height(&seq.tracks[ti]);
+        }
+        let row_h = track_row_height(&seq.tracks[track_idx]);
+        let row_bottom = row_top + row_h;
+
+        let view_top = state.timeline_scroll_y;
+        let view_bottom = view_top + available_h;
+        if row_top < view_top {
+            // Above the band: put its top at the top.
+            state.timeline_scroll_y = row_top;
+        } else if row_bottom > view_bottom {
+            // Below the band: show as much of it as the band allows.
+            // A row taller than the whole strip still lands top-aligned
+            // rather than showing only its last pixels.
+            state.timeline_scroll_y = if row_h >= available_h {
+                row_top
+            } else {
+                row_bottom - available_h
+            };
+        }
     }
 
     /// Paint match highlights on top of the regular clip / marker
@@ -15762,6 +15820,97 @@ mod tests {
 
     fn make_text_track() -> Track {
         Track::new("Text 1", TrackKind::Text)
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // reveal_graded_track
+    // ═══════════════════════════════════════════════════════════════
+
+    /// A sequence shaped like every real one: titles and B-roll above
+    /// the video track the shots actually live on.
+    fn colour_state_with_selection_on(track_idx: usize) -> (AppState, ClipId) {
+        let mut state = AppState::default();
+        let mut tracks = vec![
+            make_text_track(),
+            Track::new("B-roll", TrackKind::Video),
+            make_video_track(),
+            make_audio_track(),
+        ];
+        let clip = klipp_timeline::Clip::media(
+            MediaId::new(),
+            Timecode::from_frames(0, 30),
+            Timecode::from_frames(30, 30),
+            Timecode::from_frames(0, 30),
+            Timecode::from_frames(30, 30),
+        );
+        let clip_id = clip.id;
+        tracks[track_idx].clips.push(clip);
+        let seq_idx = state.active_sequence_idx;
+        state.sequences[seq_idx].tracks = tracks;
+        state.show_color_panel = true;
+        state.selected_clip = Some(clip_id);
+        (state, clip_id)
+    }
+
+    /// Colour's strip is a ribbon two rows tall. The shot being graded
+    /// is on the third track, so before this it was simply off the
+    /// bottom with nothing to say so.
+    #[test]
+    fn colour_reveals_the_track_holding_the_graded_clip() {
+        let (mut state, _) = colour_state_with_selection_on(2);
+        let mut panel = TimelinePanel::default();
+        let two_rows = track_row_height(&make_text_track())
+            + track_row_height(&Track::new("B-roll", TrackKind::Video));
+
+        panel.reveal_graded_track(&mut state, two_rows);
+
+        assert!(
+            state.timeline_scroll_y > 0.0,
+            "the strip stayed at the top with the graded track below it",
+        );
+    }
+
+    /// A track already on screen is left exactly where it is: this
+    /// reveals, it never re-centres, so selecting a clip cannot yank
+    /// the strip out from under someone working in it.
+    #[test]
+    fn colour_leaves_an_already_visible_track_alone() {
+        let (mut state, _) = colour_state_with_selection_on(0);
+        let mut panel = TimelinePanel::default();
+
+        panel.reveal_graded_track(&mut state, 400.0);
+
+        assert_eq!(state.timeline_scroll_y, 0.0);
+    }
+
+    /// Only on a change of selection. Otherwise every frame would fight
+    /// the user scrolling the strip by hand.
+    #[test]
+    fn colour_does_not_re_reveal_the_same_clip() {
+        let (mut state, _) = colour_state_with_selection_on(2);
+        let mut panel = TimelinePanel::default();
+        let two_rows = track_row_height(&make_text_track())
+            + track_row_height(&Track::new("B-roll", TrackKind::Video));
+        panel.reveal_graded_track(&mut state, two_rows);
+
+        // The colourist scrolls the strip somewhere else by hand.
+        state.timeline_scroll_y = 0.0;
+        panel.reveal_graded_track(&mut state, two_rows);
+
+        assert_eq!(state.timeline_scroll_y, 0.0, "it scrolled back on its own");
+    }
+
+    /// Outside Colour this does nothing at all — the Edit timeline is
+    /// tall enough to show its tracks and owns its own scrolling.
+    #[test]
+    fn outside_colour_the_reveal_is_inert() {
+        let (mut state, _) = colour_state_with_selection_on(2);
+        state.show_color_panel = false;
+        let mut panel = TimelinePanel::default();
+
+        panel.reveal_graded_track(&mut state, 40.0);
+
+        assert_eq!(state.timeline_scroll_y, 0.0);
     }
 
     // ═══════════════════════════════════════════════════════════════

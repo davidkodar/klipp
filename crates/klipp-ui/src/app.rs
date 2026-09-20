@@ -494,6 +494,9 @@ pub struct KlippApp {
     curve_editor: crate::panels::curve_editor::CurveEditorPanel,
     // Floating scope window runtime (textures, UI state)
     scope_window_runtime: crate::widgets::scope_window::ScopeWindowRuntime,
+    /// Textures and per-pane UI state for the docked scopes, separate
+    /// from the floating window's so the two never share a slot.
+    scope_dock_runtime: crate::widgets::scope_window::ScopeWindowRuntime,
     /// Shared per-frame perf telemetry from the engine. Painted by
     /// the performance overlay and snapshotted to JSON when the user
     /// clicks "Record Performance".
@@ -744,6 +747,7 @@ impl KlippApp {
             system_theme_changed: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             curve_editor: crate::panels::curve_editor::CurveEditorPanel::new(),
             scope_window_runtime: crate::widgets::scope_window::ScopeWindowRuntime::default(),
+            scope_dock_runtime: crate::widgets::scope_window::ScopeWindowRuntime::default(),
             perf_ring,
             param_change_queue,
             // Engine writes is_playing/is_scrubbing to this Arc; the
@@ -26085,8 +26089,13 @@ impl eframe::App for KlippApp {
             let mut active: std::collections::BTreeSet<u8> =
                 std::collections::BTreeSet::new();
             active.insert(mode_byte);
-            if self.state.scope_window.open {
-                for pane in &self.state.scope_window.panes {
+            // Every pane that is actually on screen asks for its mode:
+            // the floating window's when it is open, and the dock's when
+            // it is showing a grid. A pane whose mode is missing from
+            // this set has no texture to lift and draws blank.
+            let want_pane_modes = |panes: &[crate::state::PaneConfig],
+                                       active: &mut std::collections::BTreeSet<u8>| {
+                for pane in panes {
                     if let Some(sm) = pane.scope_type.to_scope_mode() {
                         let pane_byte = match sm {
                             crate::state::ScopeMode::Waveform => 0u8,
@@ -26102,6 +26111,14 @@ impl eframe::App for KlippApp {
                         active.insert(klipp_engine::scopes::CIE_SAMPLES_MODE);
                     }
                 }
+            };
+            if self.state.scope_window.open {
+                want_pane_modes(&self.state.scope_window.panes, &mut active);
+            }
+            if self.state.scopes_docked()
+                && self.state.scope_dock.layout != crate::state::ScopeLayout::OnePane
+            {
+                want_pane_modes(&self.state.scope_dock.panes, &mut active);
             }
             if self.last_sent_active_scope_modes.as_ref() != Some(&active) {
                 let _ = self.cmd_tx.send(AppCommand::SetActiveScopeModes {
@@ -26117,7 +26134,8 @@ impl eframe::App for KlippApp {
             // and a closed pane stops asking.
             let mut sizes: std::collections::BTreeMap<u8, (u32, u32)> = std::collections::BTreeMap::new();
             let shown = std::iter::once(self.state.scope_state.shown_size.take())
-                .chain(self.scope_window_runtime.shown_sizes.iter_mut().map(Option::take));
+                .chain(self.scope_window_runtime.shown_sizes.iter_mut().map(Option::take))
+                .chain(self.scope_dock_runtime.shown_sizes.iter_mut().map(Option::take));
             for (mode, (w, h)) in shown.flatten() {
                 let size = sizes.entry(mode).or_insert((0, 0));
                 *size = (size.0.max(w), size.1.max(h));
@@ -32657,53 +32675,99 @@ impl KlippApp {
 
                 if self.state.show_scopes {
                     ui.separator();
-                    use crate::state::{ScopeMode, ScopeScale};
+                    use crate::state::{ScopeLayout, ScopeMode, ScopeScale};
 
-                    let modes = [
-                        (ScopeMode::Waveform, "Wave"),
-                        (ScopeMode::Parade, "Parade"),
-                        (ScopeMode::Vectorscope, "Vector"),
-                        (ScopeMode::Histogram, "Hist"),
+                    // How many instruments the dock shows at once.
+                    // Nine is deliberately absent: it belongs to the
+                    // floating window, which can be dragged to whatever
+                    // size nine panes need. In a dock sharing the
+                    // workspace with the picture it would give each pane
+                    // a strip too short to read.
+                    let layouts = [
+                        (ScopeLayout::OnePane, "1"),
+                        (ScopeLayout::TwoPane, "2"),
+                        (ScopeLayout::FourPane, "4"),
                     ];
-                    let labels: Vec<&str> = modes.iter().map(|m| m.1).collect();
-                    let active = modes.iter().position(|m| m.0 == self.state.scope_mode).unwrap_or(0);
+                    let layout_labels: Vec<&str> = layouts.iter().map(|l| l.1).collect();
+                    let layout_active = layouts
+                        .iter()
+                        .position(|l| l.0 == self.state.scope_dock.layout)
+                        .unwrap_or(0);
                     if let Some(i) = crate::widgets::segmented::segmented(
-                        ui, &labels, active, theme,
-                        egui::FontId::proportional(crate::theme::type_scale::CAPTION), crate::theme::control::COMPACT,
+                        ui, &layout_labels, layout_active, theme,
+                        egui::FontId::proportional(crate::theme::type_scale::CAPTION),
+                        crate::theme::control::COMPACT,
                     ) {
-                        let mode = modes[i].0;
-                        tracing::info!("UI: scope mode button clicked: {:?} (was {:?})", mode, self.state.scope_mode);
-                        self.state.scope_mode = mode;
-                        let mode_byte = match mode {
-                            ScopeMode::Waveform => 0u8,
-                            ScopeMode::Parade => 1,
-                            ScopeMode::Vectorscope => 2,
-                            ScopeMode::Histogram => 3,
-                        };
-                        let _ = self.cmd_tx.send(AppCommand::SetScopeRenderMode { mode: mode_byte });
-                        let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
-                        // Force the per-mode staleness check to invalidate
-                        // immediately so the scope dock re-renders this
-                        // mode on the next frame instead of displaying
-                        // its (possibly stale) cached texture.
-                        self.state.scope_state.increment_settings_generation();
-                        ui.ctx().request_repaint();
+                        let picked = layouts[i].0;
+                        if picked != self.state.scope_dock.layout {
+                            self.state.scope_dock.layout = picked;
+                            self.state.scope_dock.panes =
+                                crate::state::PaneConfig::default_for_layout(picked);
+                            // Going back to one pane, carry the pane the
+                            // colourist was looking at into the single
+                            // scope, rather than snapping to whatever
+                            // `scope_mode` was left on before the grid.
+                            if picked == ScopeLayout::OnePane {
+                                self.state.scope_dock.panes =
+                                    vec![crate::state::PaneConfig::new(self.state.scope_mode.into())];
+                            }
+                        }
                     }
+                    ui.separator();
 
-                    if matches!(self.state.scope_mode, ScopeMode::Waveform | ScopeMode::Parade) {
-                        ui.separator();
-                        for (label, color, enabled) in [
-                            ("R", egui::Color32::from_rgb(0xd0, 0x40, 0x40), &mut self.state.scope_show_r),
-                            ("G", egui::Color32::from_rgb(0x40, 0xb0, 0x40), &mut self.state.scope_show_g),
-                            ("B", egui::Color32::from_rgb(0x40, 0x50, 0xd0), &mut self.state.scope_show_b),
-                        ] {
-                            let bg = if *enabled { color } else { theme.bg_raised };
-                            let text_c = if *enabled { egui::Color32::WHITE } else { theme.text_dim };
-                            let btn = egui::Button::new(egui::RichText::new(label).size(crate::theme::type_scale::CAPTION).color(text_c).strong())
-                                .fill(bg)
-                                .min_size(egui::vec2(20.0, crate::theme::control::COMPACT - 4.0))
-                                .rounding(crate::theme::radius::CONTROL);
-                            if ui.add(btn).on_hover_text(format!("Show the {label} channel")).clicked() { *enabled = !*enabled; }
+                    // Only meaningful for the single scope. Each pane
+                    // in a grid carries its own type dropdown and its
+                    // own channel settings in its header, so leaving a
+                    // global Wave/Parade/Vector/Hist control up there
+                    // would be a second, contradicting answer to "which
+                    // scope am I looking at".
+                    if self.state.scope_dock.layout == ScopeLayout::OnePane {
+                        let modes = [
+                            (ScopeMode::Waveform, "Wave"),
+                            (ScopeMode::Parade, "Parade"),
+                            (ScopeMode::Vectorscope, "Vector"),
+                            (ScopeMode::Histogram, "Hist"),
+                        ];
+                        let labels: Vec<&str> = modes.iter().map(|m| m.1).collect();
+                        let active = modes.iter().position(|m| m.0 == self.state.scope_mode).unwrap_or(0);
+                        if let Some(i) = crate::widgets::segmented::segmented(
+                            ui, &labels, active, theme,
+                            egui::FontId::proportional(crate::theme::type_scale::CAPTION), crate::theme::control::COMPACT,
+                        ) {
+                            let mode = modes[i].0;
+                            tracing::info!("UI: scope mode button clicked: {:?} (was {:?})", mode, self.state.scope_mode);
+                            self.state.scope_mode = mode;
+                            let mode_byte = match mode {
+                                ScopeMode::Waveform => 0u8,
+                                ScopeMode::Parade => 1,
+                                ScopeMode::Vectorscope => 2,
+                                ScopeMode::Histogram => 3,
+                            };
+                            let _ = self.cmd_tx.send(AppCommand::SetScopeRenderMode { mode: mode_byte });
+                            let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
+                            // Force the per-mode staleness check to invalidate
+                            // immediately so the scope dock re-renders this
+                            // mode on the next frame instead of displaying
+                            // its (possibly stale) cached texture.
+                            self.state.scope_state.increment_settings_generation();
+                            ui.ctx().request_repaint();
+                        }
+
+                        if matches!(self.state.scope_mode, ScopeMode::Waveform | ScopeMode::Parade) {
+                            ui.separator();
+                            for (label, color, enabled) in [
+                                ("R", egui::Color32::from_rgb(0xd0, 0x40, 0x40), &mut self.state.scope_show_r),
+                                ("G", egui::Color32::from_rgb(0x40, 0xb0, 0x40), &mut self.state.scope_show_g),
+                                ("B", egui::Color32::from_rgb(0x40, 0x50, 0xd0), &mut self.state.scope_show_b),
+                            ] {
+                                let bg = if *enabled { color } else { theme.bg_raised };
+                                let text_c = if *enabled { egui::Color32::WHITE } else { theme.text_dim };
+                                let btn = egui::Button::new(egui::RichText::new(label).size(crate::theme::type_scale::CAPTION).color(text_c).strong())
+                                    .fill(bg)
+                                    .min_size(egui::vec2(20.0, crate::theme::control::COMPACT - 4.0))
+                                    .rounding(crate::theme::radius::CONTROL);
+                                if ui.add(btn).on_hover_text(format!("Show the {label} channel")).clicked() { *enabled = !*enabled; }
+                            }
                         }
                     }
 
@@ -32884,6 +32948,63 @@ impl KlippApp {
             self.state.scope_state.show_g = self.state.scope_show_g;
             self.state.scope_state.show_b = self.state.scope_show_b;
             self.state.scope_state.quality = self.state.scope_quality;
+
+            // Above one pane the dock draws the same grid the floating
+            // window does, from the same `draw_pane`: one instrument,
+            // two places to put it. A colourist reading a grade wants
+            // parade and vectorscope at the same time — judging chroma
+            // off a scope you have to switch away from to see the other
+            // one is not how the work is done.
+            //
+            // At one pane nothing changes: the original single-scope
+            // renderer, driven by `scope_mode`, keeps the familiar
+            // Wave/Parade/Vector/Hist control and the R/G/B buttons.
+            if self.state.scope_dock.layout != crate::state::ScopeLayout::OnePane {
+                self.scope_dock_runtime.hdr_levels = self.state.hdr_monitor.renders_hdr();
+                crate::widgets::scope_window::show_shared_toggles(
+                    &mut self.state.scope_dock,
+                    self.state.scope_low_pass,
+                    self.state.scope_bloom,
+                );
+                let correlation_samples: Vec<f32> =
+                    if let Ok(ring) = self.state.spectrum_ring.try_lock() {
+                        const N: usize = 4096;
+                        let len = ring.len();
+                        ring.iter().copied().skip(len.saturating_sub(N)).collect()
+                    } else {
+                        Vec::new()
+                    };
+                let lufs_history: Vec<f32> =
+                    self.state.lufs_short_term_history.iter().copied().collect();
+                let spectrum_history: Vec<Vec<f32>> =
+                    self.state.spectrum_history.iter().cloned().collect();
+                crate::widgets::scope_window::draw_pane_grid(
+                    ui,
+                    &mut self.state.scope_dock,
+                    &mut self.state.scope_options,
+                    &mut self.scope_dock_runtime,
+                    &self.frame_buffer,
+                    self.prefs.color.vectorscope_skin_angle,
+                    self.state.playback == PlaybackState::Playing,
+                    bottom_scope_cursor,
+                    &self.state.spectrum_bins,
+                    &correlation_samples,
+                    &lufs_history,
+                    self.state.lufs_target,
+                    &spectrum_history,
+                    &self.theme,
+                    klipp_color::scopes::ScopeBasis::for_working_space(
+                        self.state.project_working_colorspace,
+                    ),
+                );
+                crate::widgets::scope_window::take_shared_toggles(
+                    &self.state.scope_dock,
+                    &mut self.state.scope_low_pass,
+                    &mut self.state.scope_bloom,
+                );
+                return;
+            }
+
             crate::widgets::scopes::show_scopes(
                 ui,
                 &mut self.state.scope_state,

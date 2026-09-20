@@ -1742,6 +1742,19 @@ pub struct AppState {
     pub scope_settings_open: bool,
     /// Floating scope window state.
     pub scope_window: ScopeWindowState,
+    /// The docked scopes in the Colour workspace, when shown as more
+    /// than one pane.
+    ///
+    /// Its own pane set and its own layout, kept apart from
+    /// `scope_window` so opening the floating window does not rearrange
+    /// the dock and vice versa. `open` is unused here — the dock's
+    /// visibility is `show_scopes` / `scopes_docked()` as before.
+    ///
+    /// At [`ScopeLayout::OnePane`] the dock keeps its original single
+    /// renderer driven by `scope_mode`, so the familiar
+    /// Wave/Parade/Vector/Hist control and the R/G/B buttons behave
+    /// exactly as they did. The pane grid takes over above one.
+    pub scope_dock: ScopeWindowState,
 
     /// Viewer image rect (set by viewer each frame for scope cursor sampling).
     pub viewer_image_rect: Option<egui::Rect>,
@@ -3568,6 +3581,16 @@ impl Default for AppState {
             scope_bloom: false,
             scope_settings_open: false,
             scope_window: ScopeWindowState::default(),
+            // The dock starts as the single large scope it has always
+            // been. Multi-pane is one click away in the scope bar, and
+            // defaulting to it would shrink the instrument for everyone
+            // working in a small window — where four panes are worse
+            // than one good one.
+            scope_dock: ScopeWindowState {
+                layout: ScopeLayout::OnePane,
+                panes: PaneConfig::default_for_layout(ScopeLayout::OnePane),
+                ..ScopeWindowState::default()
+            },
             viewer_image_rect: None,
             viewer_panel_rect: egui::Rect::NOTHING,
             viewer_pointer_pos: None,

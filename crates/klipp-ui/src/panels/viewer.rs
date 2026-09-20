@@ -1606,8 +1606,26 @@ impl ViewerPanel {
         self.draw_text_edit_widget(ui, state, theme, &frame, cmds);
 
         // ── On-screen transform controls ──
-        // Suppress transform controls during text edit mode
-        if state.show_transform_controls && !state.viewer_text_edit && state.eyedropper_mode == crate::state::EyedropperMode::None && !state.has_modal_open() {
+        // Suppress transform controls during text edit mode, and in the
+        // Colour workspace.
+        //
+        // Colour is where the picture is judged, and these draw a white
+        // box, eight handles and a centre crosshair across it — the
+        // crosshair lands on whatever is framed centre, which in
+        // practice is the face whose skin tone is being matched. White
+        // geometry over an image changes how the eye reads the tones
+        // underneath it, which is the whole reason grading suites dim
+        // the surround. Sizing is an Edit-side task and there is no
+        // sizing UI surfaced in Colour to go with the handles anyway.
+        //
+        // The toggle itself is untouched: leaving Colour brings them
+        // straight back, and nothing is written to the user's prefs.
+        if state.show_transform_controls
+            && !state.show_color_panel
+            && !state.viewer_text_edit
+            && state.eyedropper_mode == crate::state::EyedropperMode::None
+            && !state.has_modal_open()
+        {
             self.draw_transform_controls(ui, state, image_rect, video_w, video_h, cmds);
         }
 
