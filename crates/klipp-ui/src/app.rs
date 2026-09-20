@@ -383,6 +383,9 @@ pub struct KlippApp {
     /// Playhead position the Colour workspace last followed, so the
     /// follow fires on movement rather than every frame.
     last_graded_playhead: Option<klipp_core::Timecode>,
+    /// Browser visibility before the Colour workspace borrowed its
+    /// width, restored on leaving.
+    browser_before_colour: Option<bool>,
     hb_max_gap: std::time::Duration,
     hb_max_update: std::time::Duration,
     /// When the last `update()` returned, for the gap above.
@@ -695,6 +698,7 @@ impl KlippApp {
             hb_input_events: 0,
             hb_max_batch: 0,
             last_graded_playhead: None,
+            browser_before_colour: None,
             hb_max_gap: std::time::Duration::ZERO,
             hb_max_update: std::time::Duration::ZERO,
             last_update_end: std::time::Instant::now(),
@@ -14694,9 +14698,30 @@ impl KlippApp {
                 if self.state.active_workspace == Workspace::Color {
                     self.state.active_workspace = Workspace::Edit;
                     self.state.show_color_panel = false;
+                    // Give the browser back exactly as it was found.
+                    if let Some(was) = self.browser_before_colour.take() {
+                        self.set_browser_visible(was);
+                    }
                 } else {
                     self.state.active_workspace = Workspace::Color;
                     self.state.show_color_panel = true;
+                    // The picture is the instrument here. The built-in
+                    // Colour workspace layout has said `show_browser:
+                    // false` — "browser hidden to maximise scopes +
+                    // viewer real estate" — since it was written, but
+                    // the workspace switcher never applied it, so
+                    // grading happened with the effects library holding
+                    // a third of the window and the image reduced to a
+                    // thumbnail between it and the scopes.
+                    //
+                    // Collapsed rather than removed: the rail keeps the
+                    // browser one click away, and what it was is
+                    // restored on the way out, so this borrows the
+                    // space rather than taking it.
+                    if self.browser_before_colour.is_none() {
+                        self.browser_before_colour = Some(self.state.show_browser_panel);
+                    }
+                    self.set_browser_visible(false);
                 }
                 true
             }

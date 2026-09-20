@@ -250,6 +250,21 @@ impl NodeInspectorPanel {
             self.show_tool_preset_bar(ui, &tool, graph, clip_id, cmds, theme);
         }
 
+        // Contrast belongs with the wheels. It is the control a
+        // colourist works against them continuously — set the lift,
+        // check the contrast, adjust the gain, check it again — and
+        // having it only on the COLOUR tab meant leaving the wheels to
+        // reach it and coming back to see what it did. Every grading
+        // suite puts contrast on the primaries bar for this reason.
+        //
+        // Pivot deliberately not offered: this grade model pivots
+        // contrast on mid grey, 0.18 linear, as a fixed point in the
+        // grade encoding. Making it adjustable is a change to the
+        // colour science and its CPU/GPU parity, not a slider.
+        if *color_tab == ColorTab::Wheels {
+            self.show_wheels_contrast_row(ui, graph, clip_id, cmds, theme);
+        }
+
         match color_tab {
             ColorTab::Adjustments => {
                 self.show_adjustments_tab(ui, graph, clip_id, selected_node, cmds, theme, clip_time_secs);
@@ -909,6 +924,81 @@ impl NodeInspectorPanel {
         if masks_changed {
             cmds.push(AppCommand::SetNodeMasks { clip_id, node_id, masks: masks.clone() });
         }
+    }
+
+    /// Contrast, and a reset for every wheel, sitting above the wheels
+    /// themselves.
+    ///
+    /// Contrast is worked against the wheels continuously, so reaching
+    /// it meant leaving the tab. Reset-all exists because the wheels
+    /// each reset individually (double-click or right-click) and
+    /// starting the primaries over meant eight separate gestures.
+    fn show_wheels_contrast_row(
+        &mut self,
+        ui: &mut egui::Ui,
+        graph: &mut NodeGraph,
+        clip_id: ClipId,
+        cmds: &mut Vec<AppCommand>,
+        theme: &KlippTheme,
+    ) {
+        // Same target the wheels themselves write to: the Corrector when
+        // there is one, else a standalone node of the right kind.
+        let target = graph
+            .nodes
+            .iter()
+            .find(|n| n.kind == NodeKind::Corrector)
+            .map(|n| n.id)
+            .or_else(|| graph.nodes.iter().find(|n| n.kind == NodeKind::Contrast).map(|n| n.id));
+        let Some(nid) = target else { return };
+
+        ui.add_space(4.0);
+        if let Some(node) = graph.nodes.iter_mut().find(|n| n.id == nid) {
+            let mut val = node.params.contrast.unwrap_or(0.0);
+            if inspector_row(ui, "Contrast", &mut val, -1.0..=1.0, "", theme, cmds, clip_id) {
+                node.params.contrast = Some(val);
+                cmds.push(AppCommand::SetNodeParam {
+                    clip_id, node_id: nid, param: "contrast".into(), value: val,
+                });
+            }
+        }
+
+        ui.horizontal(|ui| {
+            ui.add_space(12.0);
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.add_space(12.0);
+                let resp = ui.add(
+                    egui::Button::new(
+                        egui::RichText::new("Reset wheels").size(10.0).color(theme.text_dim),
+                    )
+                    .frame(true),
+                );
+                if resp.on_hover_text("Lift, Gamma, Gain and Offset back to neutral").clicked() {
+                    if let Some(node) = graph.nodes.iter_mut().find(|n| n.id == nid) {
+                        let p = &mut node.params;
+                        p.lift_x = Some(0.0); p.lift_y = Some(0.0); p.lift_master = Some(0.0);
+                        p.gamma_x = Some(0.0); p.gamma_y = Some(0.0); p.gamma_master = Some(0.0);
+                        p.gain_x = Some(0.0); p.gain_y = Some(0.0); p.gain_master = Some(0.0);
+                        p.offset_x = Some(0.0); p.offset_y = Some(0.0); p.offset_master = Some(0.0);
+                    }
+                    // One undo step for the lot, like every other
+                    // multi-parameter reset in this panel.
+                    atomic_node_edit_batch(cmds, clip_id, |c| {
+                        for param in [
+                            "lift_x", "lift_y", "lift_master",
+                            "gamma_x", "gamma_y", "gamma_master",
+                            "gain_x", "gain_y", "gain_master",
+                            "offset_x", "offset_y", "offset_master",
+                        ] {
+                            c.push(AppCommand::SetNodeParam {
+                                clip_id, node_id: nid, param: param.into(), value: 0.0,
+                            });
+                        }
+                    });
+                }
+            });
+        });
+        ui.add_space(4.0);
+        section_divider(ui, theme);
     }
 
     fn show_adjustments_tab(
