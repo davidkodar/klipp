@@ -1017,7 +1017,11 @@ fn subject_pair(a: &FrameMeasure, b: &FrameMeasure) -> Option<(f32, f32)> {
 /// cast is taken off. Two faces both on the band match, whoever they
 /// belong to.
 ///
-/// *A different framing is not a mismatch either.* See [`subject_pair`].
+/// *A different framing is not a mismatch either.* The frame's median
+/// is whatever fills the picture, so it moves when the camera moves in
+/// and not only when the light does: on the test footage a big
+/// close-up of one subject under one lamp read 10.6 ΔE from its own
+/// source shot, while the subject's own level did not move at all.
 /// The exposure is read two ways, from the subject and from the whole
 /// frame, and the smaller difference is the one that counts. Each
 /// reading has its own blind spot — re-framing fools the frame, a new
