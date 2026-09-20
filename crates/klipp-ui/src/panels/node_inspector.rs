@@ -2072,11 +2072,23 @@ impl NodeInspectorPanel {
                     };
 
                     // Hue/Sat curves read against luma: their x axis is
-                    // hue or luma, so the luma distribution is the useful
-                    // backdrop rather than a per-primary one.
+                    // hue, luma or saturation, so the luma distribution
+                    // is the useful backdrop rather than a per-primary one.
                     let hist = self.curve_histogram.as_ref().map(|h| h.luma);
-                    let resp = curves_editor::curves_editor_sized(
+                    // What the horizontal axis of each curve measures.
+                    // Named on the row above; drawn as a strip below, so
+                    // the oranges are findable by eye.
+                    let x_axis = match curve_idx {
+                        0..=2 => curves_editor::CurveAxis::Hue,
+                        3 => curves_editor::CurveAxis::Luma,
+                        _ => curves_editor::CurveAxis::Saturation,
+                    };
+                    let resp = curves_editor::curves_editor_in(
                         ui, theme, *channel, points, curve_h, hist.as_ref(),
+                        // Relative: the pipeline fills these LUTs with
+                        // 0.5 and reads them as (v - 0.5) * 2.
+                        curves_editor::CurveSpace::Relative,
+                        x_axis,
                     );
                     if resp.changed { huesat_changed = true; }
                     ui.add_space(4.0);
