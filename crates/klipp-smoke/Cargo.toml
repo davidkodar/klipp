@@ -2,6 +2,7 @@
 name = "klipp-smoke"
 version = "0.1.0"
 edition = "2021"
+license.workspace = true
 publish = false
 
 # Headless single-frame engine harness — replaces "open the GUI app,

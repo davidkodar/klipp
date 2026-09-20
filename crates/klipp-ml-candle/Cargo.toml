@@ -2,6 +2,7 @@
 name = "klipp-ml-candle"
 version = "0.1.0"
 edition = "2021"
+license.workspace = true
 description = "Candle (pure-Rust) backend for klipp-ml — MobileSAM, SAM v1, future SAM-family models"
 
 [features]
