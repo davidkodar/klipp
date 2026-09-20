@@ -23131,6 +23131,20 @@ impl KlippApp {
                 tracing::info!("Project loaded from {:?}", path);
                 self.note_project_event(None);
 
+                // Show the frame the playhead is on.
+                //
+                // Opening a project set the playhead to zero, cleared
+                // the frame buffer and stopped the engine — and then
+                // asked nobody to decode anything, so the program
+                // viewer stayed black until the user happened to move
+                // the playhead, which is the first thing that issues a
+                // seek. A new project opening onto an empty viewer
+                // reads as a project that failed to load.
+                //
+                // Sent after the sequence and media pool are in the
+                // engine, so there is something to decode.
+                self.cmd_tx.send(AppCommand::SeekTo(self.state.playhead)).ok();
+
                 // Start file watcher for all media paths
                 let media_paths: Vec<std::path::PathBuf> = self.state.media_pool.all()
                     .filter(|m| !m.offline)
