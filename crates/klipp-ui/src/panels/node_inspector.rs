@@ -2854,14 +2854,20 @@ impl NodeInspectorPanel {
                 egui::Stroke::new(0.3_f32, theme.overlay(12)),
             );
 
-            // Subtle hue dot at center of each sector
-            let dot_x = center.x + angle.cos() * radius * 0.5;
-            let dot_y = center.y - angle.sin() * radius * 0.5;
+            // A faint tint marking which way each sector lies.
+            //
+            // This was an eight-pixel filled circle, which at a glance
+            // was indistinguishable from a control point — twelve dim
+            // dots inside the ring that looked like handles and did
+            // nothing. Smaller and dimmer: enough to place the sector,
+            // not enough to be mistaken for something to grab.
+            let dot_x = center.x + angle.cos() * radius * 0.42;
+            let dot_y = center.y - angle.sin() * radius * 0.42;
             painter.circle_filled(
                 egui::pos2(dot_x, dot_y),
-                8.0,
+                2.0,
                 egui::Color32::from_rgba_premultiplied(
-                    (hr * 40.0) as u8, (hg * 40.0) as u8, (hb * 40.0) as u8, 40
+                    (hr * 60.0) as u8, (hg * 60.0) as u8, (hb * 60.0) as u8, 60
                 ),
             );
 
@@ -2882,6 +2888,60 @@ impl NodeInspectorPanel {
             );
         }
 
+        // ── The mesh ──
+        //
+        // A warper is a field, not twelve unrelated nudges, and until
+        // now it was drawn as twelve unconnected dots: you could see
+        // that a point had moved but not what the warp was doing
+        // between them. Joining the control points into a closed loop
+        // makes the deformation the thing you look at — the ring bulges
+        // where saturation is pushed and leans where hue is rotated,
+        // against the neutral circle it started from.
+        let positions: Vec<egui::Pos2> = (0..12)
+            .map(|i| {
+                let base_angle = (i as f32 * 30.0).to_radians();
+                let a = base_angle + warper.hue_shifts[i].to_radians() * 0.02;
+                let r = neutral_r + warper.sat_shifts[i] * radius * 0.25;
+                egui::pos2(center.x + a.cos() * r, center.y - a.sin() * r)
+            })
+            .collect();
+
+        // The shape the warp started from, so the deformation is read
+        // against something rather than in the abstract.
+        painter.circle_stroke(
+            center,
+            neutral_r,
+            egui::Stroke::new(1.0_f32, theme.overlay(35)),
+        );
+
+        // Catmull-Rom through the twelve points, closed, so the mesh
+        // curves the way the warp does instead of showing twelve
+        // straight chords that imply corners the grade does not have.
+        let mut mesh: Vec<egui::Pos2> = Vec::with_capacity(12 * 8);
+        for i in 0..12 {
+            let p0 = positions[(i + 11) % 12];
+            let p1 = positions[i];
+            let p2 = positions[(i + 1) % 12];
+            let p3 = positions[(i + 2) % 12];
+            for step in 0..8 {
+                let t = step as f32 / 8.0;
+                let t2 = t * t;
+                let t3 = t2 * t;
+                let x = 0.5 * ((2.0 * p1.x) + (-p0.x + p2.x) * t
+                    + (2.0 * p0.x - 5.0 * p1.x + 4.0 * p2.x - p3.x) * t2
+                    + (-p0.x + 3.0 * p1.x - 3.0 * p2.x + p3.x) * t3);
+                let y = 0.5 * ((2.0 * p1.y) + (-p0.y + p2.y) * t
+                    + (2.0 * p0.y - 5.0 * p1.y + 4.0 * p2.y - p3.y) * t2
+                    + (-p0.y + 3.0 * p1.y - 3.0 * p2.y + p3.y) * t3);
+                mesh.push(egui::pos2(x, y));
+            }
+        }
+        for w in 0..mesh.len() {
+            let a = mesh[w];
+            let b = mesh[(w + 1) % mesh.len()];
+            painter.line_segment([a, b], egui::Stroke::new(1.6_f32, theme.overlay(150)));
+        }
+
         // Draw control points and shift indicators
         for i in 0..12 {
             let base_angle = (i as f32 * 30.0).to_radians();
@@ -2892,15 +2952,7 @@ impl NodeInspectorPanel {
             let nx = center.x + base_angle.cos() * neutral_r;
             let ny = center.y - base_angle.sin() * neutral_r;
 
-            // Shifted position: tangential = hue shift, radial = sat shift
-            let hue_offset_angle = warper.hue_shifts[i].to_radians() * 0.02; // scale down for UI
-            let sat_offset_r = warper.sat_shifts[i] * radius * 0.25;
-
-            let point_angle = base_angle + hue_offset_angle;
-            let point_r = neutral_r + sat_offset_r;
-
-            let px = center.x + point_angle.cos() * point_r;
-            let py = center.y - point_angle.sin() * point_r;
+            let (px, py) = (positions[i].x, positions[i].y);
 
             // Draw shift line from neutral to current position
             if warper.hue_shifts[i].abs() > 0.1 || warper.sat_shifts[i].abs() > 0.01 {
@@ -2952,6 +3004,29 @@ impl NodeInspectorPanel {
 
                 warper.hue_shifts[sector] = new_hue_shift;
                 warper.sat_shifts[sector] = new_sat_shift;
+
+                // Say what the drag is doing, in the units the
+                // parameters are in. Without it the warper can be
+                // moved but not set: you cannot match a sector across
+                // two shots, or put back what you just changed.
+                let label = format!(
+                    "{}   hue {:+.0}\u{00B0}   sat {:+.0}%",
+                    sector_labels[sector], new_hue_shift, new_sat_shift * 100.0,
+                );
+                let galley = painter.layout_no_wrap(
+                    label,
+                    egui::FontId::monospace(10.0),
+                    theme.text_primary,
+                );
+                // Top-left of the wheel, clear of the ring and of the
+                // pointer wherever it is.
+                let at = egui::pos2(rect.min.x + 8.0, rect.min.y + 6.0);
+                painter.rect_filled(
+                    egui::Rect::from_min_size(at, galley.size()).expand(4.0),
+                    3.0,
+                    theme.bg_deep,
+                );
+                painter.galley(at, galley, theme.text_primary);
 
                 cmds.push(AppCommand::SetNodeParam {
                     clip_id,
