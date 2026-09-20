@@ -612,23 +612,16 @@ mod registry_coverage {
 
     use super::KeyBindings;
 
-    /// Actions declared here that no handler reads. Down from 54 to 11.
+    /// Actions declared here that no handler reads. Empty, and the two
+    /// tests below keep it that way.
     ///
-    /// What is left is not the same kind of thing as what was fixed.
-    /// The nine multicam angles and `set_range_to_clip` have no
-    /// keyboard handler *anywhere* — the feature is reachable by menu
-    /// and mouse only, so there is nothing to convert, and wiring them
-    /// means writing the handler rather than moving one.
-    /// `toggle_edit_mode` is declared as Shift+W but implemented on
-    /// bare W, and deciding which is right is a call about the edit
-    /// model, not a mechanical change.
-    ///
-    /// Remove entries as they are converted; never add.
-    const UNWIRED: &[&str] = &[
-        "multicam_angle_1", "multicam_angle_2", "multicam_angle_3", "multicam_angle_4",
-        "multicam_angle_5", "multicam_angle_6", "multicam_angle_7", "multicam_angle_8",
-        "multicam_angle_9", "set_range_to_clip", "toggle_edit_mode",
-    ];
+    /// It was 54. Most were real: the key worked from a hardcoded
+    /// `key_pressed` check while the registry entry sat inert, so
+    /// Preferences -> Keybindings accepted a remap and changed nothing.
+    /// Eleven were not — the multicam angles are dispatched through a
+    /// name built at run time, which a literal search cannot see, and
+    /// `is_dispatched` now accounts for that.
+    const UNWIRED: &[&str] = &[];
 
     fn sources() -> String {
         // Every file that dispatches a key. Adding a handler somewhere
@@ -651,6 +644,32 @@ mod registry_coverage {
         ("Ctrl+C", "copy_clip / copy_color_nodes — resolved by active panel"),
         ("Ctrl+V", "paste_clip / paste_color_nodes — resolved by active panel"),
     ];
+
+    /// Whether any handler dispatches `action`.
+    ///
+    /// Not just a search for the literal name: the multicam angles are
+    /// dispatched through a name built at run time
+    /// (`format!("multicam_angle_{n}")`), so a literal-only search
+    /// reported all nine as unwired when they have always worked. Any
+    /// action whose name shares a prefix with a `format!` used at a
+    /// dispatch site counts as reached.
+    fn is_dispatched(action: &str, src: &str) -> bool {
+        if src.contains(&format!("is_action_pressed(\"{action}\"")) {
+            return true;
+        }
+        // A dispatched format! string: take the literal part before the
+        // first `{` and see whether this action starts with it.
+        for (i, _) in src.match_indices("let action = format!(\"") {
+            let rest = &src[i + "let action = format!(\"".len()..];
+            let Some(end) = rest.find('"') else { continue };
+            let pattern = &rest[..end];
+            let prefix = pattern.split('{').next().unwrap_or("");
+            if !prefix.is_empty() && action.starts_with(prefix) {
+                return true;
+            }
+        }
+        false
+    }
 
     #[test]
     fn no_combo_runs_two_actions() {
@@ -682,7 +701,7 @@ mod registry_coverage {
         let unwired: Vec<String> = kb
             .bindings
             .keys()
-            .filter(|a| !src.contains(&format!("is_action_pressed(\"{a}\"")))
+            .filter(|a| !is_dispatched(a, &src))
             .cloned()
             .collect();
 
@@ -702,7 +721,7 @@ mod registry_coverage {
         let src = sources();
         let stale: Vec<&&str> = UNWIRED
             .iter()
-            .filter(|a| src.contains(&format!("is_action_pressed(\"{a}\"")))
+            .filter(|a| is_dispatched(a, &src))
             .collect();
         assert!(
             stale.is_empty(),
