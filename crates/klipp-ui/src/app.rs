@@ -23433,7 +23433,7 @@ impl KlippApp {
         let kb = self.key_bindings.clone();
         ctx.input(|i| {
             // S (no modifiers) — Toggle skimming
-            if !i.modifiers.ctrl && !i.modifiers.shift && i.key_pressed(egui::Key::S) {
+            if kb.is_action_pressed("toggle_skimming", i) {
                 self.state.skimming_enabled = !self.state.skimming_enabled;
                 // End audio skim session when disabling all skimming
                 if !self.state.skimming_enabled {
@@ -23450,7 +23450,7 @@ impl KlippApp {
             }
 
             // G (no modifiers) — Connect selected clip to nearest primary clip
-            if !i.modifiers.ctrl && !i.modifiers.shift && i.key_pressed(egui::Key::G) {
+            if kb.is_action_pressed("connect_clip", i) {
                 if let Some(clip_id) = self.state.selected_clip {
                     let clip_track = self.state.sequences[self.state.active_sequence_idx].tracks.iter()
                         .position(|t| t.clips.iter().any(|c| c.id == clip_id));
@@ -23484,7 +23484,7 @@ impl KlippApp {
             }
 
             // Shift+G (no ctrl) — Disconnect selected clip
-            if !i.modifiers.ctrl && i.modifiers.shift && i.key_pressed(egui::Key::G) {
+            if kb.is_action_pressed("disconnect_clip", i) {
                 if let Some(clip_id) = self.state.selected_clip {
                     let has_anchor = self.state.sequences[self.state.active_sequence_idx].tracks.iter()
                         .flat_map(|t| t.clips.iter())
@@ -23551,10 +23551,11 @@ impl KlippApp {
     }
 
     fn shortcuts_delete(&mut self, ctx: &egui::Context, cmds: &mut Vec<AppCommand>) {
+        let kb = self.key_bindings.clone();
         ctx.input(|i| {
             // Delete/Backspace — Remove selected keyframe (if one is selected on timeline)
             let mut keyframe_deleted = false;
-            if !i.modifiers.shift && (i.key_pressed(egui::Key::Delete) || i.key_pressed(egui::Key::Backspace)) {
+            if kb.is_action_pressed("delete_clip", i) {
                 if let Some(sk) = self.state.selected_keyframe.take() {
                     let seq = &self.state.sequences[self.state.active_sequence_idx];
                     let clip = seq.tracks.iter().flat_map(|t| t.clips.iter()).find(|c| c.id == sk.clip_id);
@@ -23610,7 +23611,7 @@ impl KlippApp {
             }
 
             // Shift+Delete — Lift (leave gap, no ripple) on magnetic tracks
-            if !keyframe_deleted && i.modifiers.shift && (i.key_pressed(egui::Key::Delete) || i.key_pressed(egui::Key::Backspace)) {
+            if !keyframe_deleted && kb.is_action_pressed("lift_clip", i) {
                 if let Some(clip_id) = self.state.selected_clip {
                     let track_idx = self.state.sequences[self.state.active_sequence_idx].tracks.iter()
                         .position(|t| t.clips.iter().any(|c| c.id == clip_id));
@@ -23627,7 +23628,7 @@ impl KlippApp {
                 }
             }
             // Delete/Backspace — remove selected clip OR extract range (plain, no shift)
-            else if !keyframe_deleted && !i.modifiers.shift && (i.key_pressed(egui::Key::Delete) || i.key_pressed(egui::Key::Backspace)) {
+            else if !keyframe_deleted && kb.is_action_pressed("delete_clip", i) {
                 if let Some(clip_id) = self.state.selected_clip {
                     cmds.push(AppCommand::RemoveClip { clip_id });
                 } else if self.state.selected_clips.is_empty()
@@ -23707,27 +23708,19 @@ impl KlippApp {
                 cmds.push(AppCommand::ToggleInspectorPanel);
             }
             // B key (bare) — toggle before/after
-            if !i.modifiers.ctrl && !i.modifiers.alt && !i.modifiers.shift
-                && i.key_pressed(egui::Key::B)
-            {
+            if kb.is_action_pressed("toggle_before_after", i) {
                 cmds.push(AppCommand::ToggleBeforeAfter);
             }
             // C key (bare) — toggle color panel
-            if !i.modifiers.ctrl && !i.modifiers.alt && !i.modifiers.shift
-                && i.key_pressed(egui::Key::C)
-            {
+            if kb.is_action_pressed("toggle_color_panel", i) {
                 cmds.push(AppCommand::ToggleColorPanel);
             }
             // Z key (bare) — toggle zebra overlay
-            if !i.modifiers.ctrl && !i.modifiers.alt && !i.modifiers.shift
-                && i.key_pressed(egui::Key::Z)
-            {
+            if kb.is_action_pressed("toggle_zebra", i) {
                 self.state.viewer_overlays.zebras = !self.state.viewer_overlays.zebras;
             }
             // Alt+F — toggle false color overlay
-            if !i.modifiers.ctrl && i.modifiers.alt && !i.modifiers.shift
-                && i.key_pressed(egui::Key::F)
-            {
+            if kb.is_action_pressed("toggle_false_color", i) {
                 self.state.viewer_overlays.false_color = !self.state.viewer_overlays.false_color;
             }
             // Ctrl+P — toggle focus peaking overlay
@@ -23943,26 +23936,27 @@ impl KlippApp {
     }
 
     fn shortcuts_title_and_tools2(&mut self, ctx: &egui::Context, cmds: &mut Vec<AppCommand>) {
+        let kb = self.key_bindings.clone();
         let mut pending_perf_recording_toggle = false;
         ctx.input(|i| {
             // Ctrl+T — a title at the playhead.
-            if i.modifiers.ctrl && i.key_pressed(egui::Key::T) {
+            if kb.is_action_pressed("create_title", i) {
                 cmds.push(AppCommand::AddTitleAtPlayhead { over_clip: None });
             }
             // B — Blade tool
-            if !i.modifiers.ctrl && i.key_pressed(egui::Key::B) {
-                tracing::debug!("B key pressed -> Blade tool");
+            if kb.is_action_pressed("blade_tool", i) {
+                tracing::debug!("Blade tool");
                 cmds.push(AppCommand::SetActiveTool(Tool::Blade));
             }
             // V — Select tool
-            if !i.modifiers.ctrl && i.key_pressed(egui::Key::V) {
-                tracing::debug!("V key pressed -> Select tool");
+            if kb.is_action_pressed("select_tool", i) {
+                tracing::debug!("Select tool");
                 cmds.push(AppCommand::SetActiveTool(Tool::Select));
             }
             // R — Range tool toggle (Shift+R in the source viewer rejects
             // a stretch instead; see the marker keys)
             let rejecting = i.modifiers.shift && self.state.viewer_mode == ViewerMode::Source && self.state.source_media_id.is_some();
-            if !i.modifiers.ctrl && !rejecting && i.key_pressed(egui::Key::R) {
+            if !rejecting && kb.is_action_pressed("range_tool", i) {
                 if self.state.active_tool == Tool::Range {
                     cmds.push(AppCommand::SetActiveTool(Tool::Select));
                 } else {
@@ -23970,8 +23964,8 @@ impl KlippApp {
                 }
             }
             // T — Trim tool (bare T; Ctrl+T handled elsewhere for Create Title)
-            if !i.modifiers.ctrl && i.key_pressed(egui::Key::T) {
-                tracing::debug!("T key pressed -> Trim tool");
+            if kb.is_action_pressed("trim_tool", i) {
+                tracing::debug!("Trim tool");
                 cmds.push(AppCommand::SetActiveTool(Tool::Trim));
             }
             // X — Set range to clip at playhead / Alt+X — Clear range
@@ -24016,21 +24010,22 @@ impl KlippApp {
                     }
                 }
             }
-            // F — Toggle fullscreen viewer (Shift+F in the source viewer
-            // favourites a stretch instead; see the marker keys)
-            let favouriting = i.modifiers.shift && self.state.viewer_mode == ViewerMode::Source && self.state.source_media_id.is_some();
-            if i.key_pressed(egui::Key::F) && !i.modifiers.ctrl && !favouriting {
+            // Fullscreen viewer, on F11 — the combo every desktop
+            // agrees on. It was on bare F, which is Match Frame, so a
+            // single press ran both: you matched the frame and the
+            // viewer went fullscreen underneath you.
+            if kb.is_action_pressed("toggle_fullscreen", i) {
                 cmds.push(AppCommand::ToggleFullscreen);
             }
             // P — Toggle performance overlay
-            if i.key_pressed(egui::Key::P) && !i.modifiers.ctrl {
+            if kb.is_action_pressed("toggle_perf_overlay", i) {
                 self.state.show_perf_overlay = !self.state.show_perf_overlay;
             }
             // Ctrl+Shift+P — Toggle perf recording session. Captured
             // as a boolean here; the actual ring-buffer mark/dump
             // happens in `update` after the input phase so the
             // borrow on self can release cleanly.
-            if i.key_pressed(egui::Key::P) && i.modifiers.ctrl && i.modifiers.shift {
+            if kb.is_action_pressed("toggle_perf_recording", i) {
                 pending_perf_recording_toggle = true;
             }
         });
@@ -24057,13 +24052,13 @@ impl KlippApp {
             // N — Toggle snap (dispatches through AppCommand so layout
             // persists on flip, matching the toolbar / palette / View
             // menu surfaces).
-            if i.key_pressed(egui::Key::N) && !i.modifiers.ctrl {
+            if kb.is_action_pressed("toggle_snap", i) {
                 cmds.push(AppCommand::SetSnapMaster(!self.state.snap.master));
             }
             // I/O — In/Out markers (context-dependent on viewer mode)
-            if i.key_pressed(egui::Key::I) && !i.modifiers.ctrl {
-                if i.modifiers.shift {
-                    tracing::debug!("Shift+I -> Clear sequence in point");
+            if kb.is_action_pressed("clear_in_point", i) || kb.is_action_pressed("set_in_point", i) {
+                if kb.is_action_pressed("clear_in_point", i) {
+                    tracing::debug!("Clear sequence in point");
                     let old_in = self.state.sequence().in_point;
                     let old_out = self.state.sequence().out_point;
                     cmds.push(AppCommand::ClearSequenceInPoint);
@@ -24088,9 +24083,9 @@ impl KlippApp {
                     });
                 }
             }
-            if i.key_pressed(egui::Key::O) && !i.modifiers.ctrl {
-                if i.modifiers.shift {
-                    tracing::debug!("Shift+O -> Clear sequence out point");
+            if kb.is_action_pressed("clear_out_point", i) || kb.is_action_pressed("set_out_point", i) {
+                if kb.is_action_pressed("clear_out_point", i) {
+                    tracing::debug!("Clear sequence out point");
                     let old_in = self.state.sequence().in_point;
                     let old_out = self.state.sequence().out_point;
                     cmds.push(AppCommand::ClearSequenceOutPoint);
@@ -24117,7 +24112,7 @@ impl KlippApp {
             }
 
             // Alt+X — clear both in/out points (standard NLE shortcut)
-            if i.modifiers.alt && i.key_pressed(egui::Key::X) {
+            if kb.is_action_pressed("clear_in_out", i) {
                 let old_in = self.state.sequence().in_point;
                 let old_out = self.state.sequence().out_point;
                 if old_in.is_some() || old_out.is_some() {
@@ -24193,14 +24188,15 @@ impl KlippApp {
     }
 
     fn shortcuts_keyframe_and_zoom(&mut self, ctx: &egui::Context, cmds: &mut Vec<AppCommand>) {
+        let kb = self.key_bindings.clone();
         ctx.input(|i| {
             // Alt+M — Toggle matte preview
-            if i.key_pressed(egui::Key::M) && i.modifiers.alt && !i.modifiers.ctrl {
+            if kb.is_action_pressed("toggle_matte_preview", i) {
                 self.state.matte_preview_active = !self.state.matte_preview_active;
                 cmds.push(AppCommand::SetMattePreview(self.state.matte_preview_active));
             }
             // K — Toggle keyframe at playhead for the active parameter
-            if i.key_pressed(egui::Key::K) && !i.modifiers.ctrl && !i.modifiers.alt && !i.modifiers.shift {
+            if kb.is_action_pressed("toggle_keyframe", i) {
                 if let Some(clip_id) = self.state.selected_clip {
                     let seq = &self.state.sequences[self.state.active_sequence_idx];
                     // Find the clip and its track kind
@@ -24298,25 +24294,22 @@ impl KlippApp {
                 }
             }
             // Shift+K — Toggle curve editor (keyframe editor) panel
-            if i.key_pressed(egui::Key::K) && i.modifiers.shift && !i.modifiers.ctrl && !i.modifiers.alt {
+            if kb.is_action_pressed("toggle_keyframe_editor", i) {
                 self.state.show_curve_editor = !self.state.show_curve_editor;
                 self.state.show_keyframe_editor = self.state.show_curve_editor;
             }
             // Ctrl+Shift+M — Toggle audio mixer panel
-            if i.key_pressed(egui::Key::M) && i.modifiers.ctrl && i.modifiers.shift && !i.modifiers.alt {
-                self.state.show_audio_mixer = !self.state.show_audio_mixer;
-            }
-            // Ctrl+Shift+T — Toggle subtitle editor panel
-            // (Ctrl+Shift+S is already bound to Save Project As)
-            if i.key_pressed(egui::Key::T) && i.modifiers.ctrl && i.modifiers.shift && !i.modifiers.alt {
-                self.state.show_subtitle_editor = !self.state.show_subtitle_editor;
-            }
+            // Audio mixer and subtitle editor moved to the keybinding
+            // registry (toggle_audio_mixer / toggle_subtitle_editor) and
+            // are handled in shortcuts_ctrl_global. Handling them here
+            // too toggled each twice a frame, which is the same as not
+            // at all.
             // Ctrl+Shift+N — Toggle Project Notes panel
-            if i.key_pressed(egui::Key::N) && i.modifiers.ctrl && i.modifiers.shift && !i.modifiers.alt {
+            if kb.is_action_pressed("toggle_project_notes", i) {
                 self.state.show_project_notes = !self.state.show_project_notes;
             }
             // Alt+Left — Navigate to previous keyframe
-            if i.modifiers.alt && !i.modifiers.ctrl && i.key_pressed(egui::Key::ArrowLeft) {
+            if kb.is_action_pressed("prev_keyframe", i) {
                 if let Some(clip_id) = self.state.selected_clip {
                     let seq = &self.state.sequences[self.state.active_sequence_idx];
                     let clip_and_kind = seq.tracks.iter().find_map(|t| {
@@ -24362,7 +24355,7 @@ impl KlippApp {
                 }
             }
             // Alt+Right — Navigate to next keyframe
-            if i.modifiers.alt && !i.modifiers.ctrl && i.key_pressed(egui::Key::ArrowRight) {
+            if kb.is_action_pressed("next_keyframe", i) {
                 if let Some(clip_id) = self.state.selected_clip {
                     let seq = &self.state.sequences[self.state.active_sequence_idx];
                     let clip_and_kind = seq.tracks.iter().find_map(|t| {
@@ -24412,7 +24405,7 @@ impl KlippApp {
             // one — the stretch between the in and out points, or the
             // whole clip when none are set.
             let in_source = self.state.viewer_mode == ViewerMode::Source && self.state.source_media_id.is_some();
-            if in_source && i.key_pressed(egui::Key::M) && !i.modifiers.ctrl && !i.modifiers.alt && !i.modifiers.shift {
+            if in_source && kb.is_action_pressed("add_marker", i) {
                 if let Some(media_id) = self.state.source_media_id {
                     cmds.push(AppCommand::AddMediaMarker { media_id, marker: klipp_core::MediaMarker::note(self.state.source_playhead.to_secs_f64()) });
                 }
@@ -24427,7 +24420,7 @@ impl KlippApp {
                 }
             }
             // M — Add sequence marker (no modifiers, no shift)
-            if !in_source && i.key_pressed(egui::Key::M) && !i.modifiers.ctrl && !i.modifiers.alt && !i.modifiers.shift {
+            if !in_source && kb.is_action_pressed("add_marker", i) {
                 cmds.push(AppCommand::AddMarker {
                     position: self.state.playhead,
                     label: String::new(),
@@ -24435,7 +24428,7 @@ impl KlippApp {
                 });
             }
             // Shift+M — Add per-clip marker at playhead on selected clip
-            if i.key_pressed(egui::Key::M) && i.modifiers.shift && !i.modifiers.ctrl && !i.modifiers.alt {
+            if kb.is_action_pressed("add_clip_marker", i) {
                 if let Some(clip_id) = self.state.selected_clip {
                     // Find the clip and compute the time relative to source_in
                     let clip_info = self.state.sequences[self.state.active_sequence_idx].tracks.iter()
@@ -24459,7 +24452,7 @@ impl KlippApp {
                 }
             }
             // Z — Fit to window (no modifiers)
-            if i.key_pressed(egui::Key::Z) && !i.modifiers.ctrl && !i.modifiers.shift {
+            if kb.is_action_pressed("fit_to_window", i) {
                 let dur_secs = self.state.sequence_duration().to_secs_f64() as f32;
                 if dur_secs > 0.0 {
                     let content_width = self.state.last_timeline_content_width - 20.0;
@@ -24468,7 +24461,7 @@ impl KlippApp {
                 }
             }
             // Shift+Z — Zoom to selection
-            if i.key_pressed(egui::Key::Z) && i.modifiers.shift && !i.modifiers.ctrl {
+            if kb.is_action_pressed("zoom_to_selection", i) {
                 if let Some(clip_id) = self.state.selected_clip {
                     let clip = self.state.sequences[self.state.active_sequence_idx].tracks.iter()
                         .flat_map(|t| t.clips.iter())
@@ -24496,14 +24489,13 @@ impl KlippApp {
                 self.state.timeline_zoom = new_zoom;
             }
             // - — Zoom out (playhead-centred)
-            if i.key_pressed(egui::Key::Minus) && !i.modifiers.ctrl {
-                let playhead_secs = self.state.playhead_smooth_secs as f32;
-                let old_zoom = self.state.timeline_zoom;
-                let new_zoom = (old_zoom / self.state.zoom_step).clamp(0.1, 2000.0);
-                self.state.timeline_scroll_x = (playhead_secs * new_zoom
-                    - (playhead_secs * old_zoom - self.state.timeline_scroll_x))
-                    .max(0.0);
-                self.state.timeline_zoom = new_zoom;
+            if kb.is_action_pressed("zoom_out", i) {
+                self.zoom_timeline_by(1.0 / self.state.zoom_step);
+            }
+            // Zoom in had a binding and a menu entry but no handler at
+            // all: the View menu said "=" and the key did nothing.
+            if kb.is_action_pressed("zoom_in", i) {
+                self.zoom_timeline_by(self.state.zoom_step);
             }
         });
     }
@@ -26589,7 +26581,7 @@ impl eframe::App for KlippApp {
         all_cmds.extend(kb_cmds);
 
         // 3. Handle transport keyboard shortcuts
-        let transport_cmds = self.transport.handle_keyboard(ctx, &self.state);
+        let transport_cmds = self.transport.handle_keyboard(ctx, &self.state, &self.key_bindings);
         all_cmds.extend(transport_cmds);
 
         self.scope_window_runtime.pointer_over = false;
@@ -31895,6 +31887,19 @@ impl KlippApp {
             self.set_inspector_visible(false);
         }
         self.state.focus_title_text = self.state.focus_title_text.saturating_sub(1);
+    }
+
+    /// Scale the timeline about the playhead, so the frame under it
+    /// stays put. Both zoom keys go through here rather than each
+    /// keeping its own copy of the scroll arithmetic.
+    fn zoom_timeline_by(&mut self, factor: f32) {
+        let playhead_secs = self.state.playhead_smooth_secs as f32;
+        let old_zoom = self.state.timeline_zoom;
+        let new_zoom = (old_zoom * factor).clamp(0.1, 2000.0);
+        self.state.timeline_scroll_x = (playhead_secs * new_zoom
+            - (playhead_secs * old_zoom - self.state.timeline_scroll_x))
+            .max(0.0);
+        self.state.timeline_zoom = new_zoom;
     }
 
     fn render_browser_panel(
