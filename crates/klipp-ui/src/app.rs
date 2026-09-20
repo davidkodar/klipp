@@ -371,6 +371,19 @@ pub struct KlippApp {
     /// responding" with the UI thread idle in the event loop.
     hb_input_events: u64,
     hb_max_batch: usize,
+    /// Longest gap between two `update()` calls in the current
+    /// heartbeat interval, and the longest time spent *inside* one.
+    ///
+    /// Together they say where a freeze lives. A 94-second gap with a
+    /// 3 ms update means the thread was not in our code at all — it was
+    /// in eframe's paint-and-present, which on Wayland blocks inside
+    /// `Surface::get_current_texture` when the compositor is not
+    /// returning buffers for an occluded window. A long update means
+    /// the opposite, and `ui_stage` then says where.
+    hb_max_gap: std::time::Duration,
+    hb_max_update: std::time::Duration,
+    /// When the last `update()` returned, for the gap above.
+    last_update_end: std::time::Instant,
     last_frame_at: std::time::Instant,
     /// Throttle for `refresh_scope_preview_fast`. The UI-thread scope
     /// preview re-grade is ~10 ms at 1080p/4 on a simple grade, which
@@ -678,6 +691,9 @@ impl KlippApp {
             last_heartbeat_frame: 0,
             hb_input_events: 0,
             hb_max_batch: 0,
+            hb_max_gap: std::time::Duration::ZERO,
+            hb_max_update: std::time::Duration::ZERO,
+            last_update_end: std::time::Instant::now(),
             last_frame_at: std::time::Instant::now(),
             last_scope_preview_refresh: std::time::Instant::now()
                 - std::time::Duration::from_secs(1),
@@ -25745,6 +25761,11 @@ impl eframe::App for KlippApp {
         // node graph layout, mutex wait) freezes the counter.
         klipp_engine::UI_TICK.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         klipp_engine::ui_stage::mark(klipp_engine::ui_stage::FRAME_TOP);
+        // How long we were *outside* this function. Everything eframe
+        // does between two updates — paint, submit, present, and the
+        // wait for a surface texture — lands here.
+        let update_entered = std::time::Instant::now();
+        self.hb_max_gap = self.hb_max_gap.max(self.last_update_end.elapsed());
 
         // End-to-end UI tick timing. A single update() that exceeds the
         // 16.6 ms frame budget starves the window of paint events —
@@ -25828,11 +25849,13 @@ impl eframe::App for KlippApp {
                 self.frame_count.saturating_sub(self.last_heartbeat_frame);
             let ui_fps = frames_in_interval as f64 / elapsed.max(0.001);
             tracing::info!(
-                "UI_HEARTBEAT fps={:.1} frames={} events={} max_batch={} focused={} state={:?} viewer_mode={:?} elapsed={:.2}s show_scopes={} show_color={}",
+                "UI_HEARTBEAT fps={:.1} frames={} events={} max_batch={} max_gap={:.0}ms max_update={:.0}ms focused={} state={:?} viewer_mode={:?} elapsed={:.2}s show_scopes={} show_color={}",
                 ui_fps,
                 frames_in_interval,
                 self.hb_input_events,
                 self.hb_max_batch,
+                self.hb_max_gap.as_secs_f64() * 1000.0,
+                self.hb_max_update.as_secs_f64() * 1000.0,
                 ctx.input(|i| i.focused),
                 self.state.playback,
                 self.state.viewer_mode,
@@ -25842,6 +25865,8 @@ impl eframe::App for KlippApp {
             );
             self.last_heartbeat = std::time::Instant::now();
             self.last_heartbeat_frame = self.frame_count;
+            self.hb_max_gap = std::time::Duration::ZERO;
+            self.hb_max_update = std::time::Duration::ZERO;
             self.hb_input_events = 0;
             self.hb_max_batch = 0;
         }
@@ -27564,6 +27589,10 @@ impl eframe::App for KlippApp {
             );
         }
 
+        // Closes the pair opened at the top: time inside this function,
+        // and the mark for the gap until the next call.
+        self.hb_max_update = self.hb_max_update.max(update_entered.elapsed());
+        self.last_update_end = std::time::Instant::now();
     }
 }
 
